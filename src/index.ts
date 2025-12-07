@@ -23,6 +23,8 @@ import { logger } from './utils/logger.js';
 import { testConnection, isDatabaseAvailable } from './db/index.js';
 import { runMigrations, seedTestData } from './db/schema.js';
 import { checkRateLimit, isRateLimitingEnabled, testRedisConnection } from './middleware/rateLimiter.js';
+import { validateEnv, logEnvStatus } from './utils/envValidator.js';
+import { runHealthCheck, quickHealthCheck } from './utils/healthCheck.js';
 import type { OrchestrateMode, TaskDraft, TaskCategory } from './types/index.js';
 
 const fastify = Fastify({
@@ -68,13 +70,14 @@ const ConfirmTaskSchema = z.object({
 // Routes
 // ============================================
 
-// Health check
+// Quick health check (for load balancers - fast response)
 fastify.get('/health', async () => {
-    return {
-        status: 'ok',
-        timestamp: new Date().toISOString(),
-        version: '1.0.0',
-    };
+    return quickHealthCheck();
+});
+
+// Detailed health check (includes service connectivity)
+fastify.get('/health/detailed', async () => {
+    return await runHealthCheck();
 });
 
 // Main AI orchestration endpoint
@@ -700,6 +703,10 @@ const PORT = parseInt(process.env.PORT || '3000');
 
 async function start() {
     try {
+        // Validate environment variables
+        const envResult = validateEnv();
+        logEnvStatus(envResult);
+
         // Initialize database
         if (isDatabaseAvailable()) {
             const connected = await testConnection();
@@ -707,8 +714,6 @@ async function start() {
                 await runMigrations();
                 await seedTestData();
             }
-        } else {
-            logger.warn('DATABASE_URL not set - using in-memory storage');
         }
 
         // Start server
