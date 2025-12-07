@@ -8,11 +8,12 @@ import type {
     HustlerProfile
 } from '../types/index.js';
 import { serviceLogger } from '../utils/logger.js';
+import { sql, isDatabaseAvailable } from '../db/index.js';
 
-// In-memory store - replace with database later
-const tasks: Map<string, Task> = new Map();
+// In-memory store as fallback when database is not available
+const tasksMemory: Map<string, Task> = new Map();
 
-// Mock hustlers for development
+// Mock hustlers for fallback
 const mockHustlers: HustlerProfile[] = [
     {
         userId: 'hustler-1',
@@ -102,8 +103,31 @@ class TaskServiceClass {
             updatedAt: new Date(),
         };
 
-        tasks.set(task.id, task);
-        serviceLogger.info({ taskId: task.id, category: task.category }, 'Task created');
+        if (isDatabaseAvailable() && sql) {
+            try {
+                await sql`
+          INSERT INTO tasks (
+            id, client_id, title, description, category, 
+            min_price, recommended_price, max_price,
+            location_text, latitude, longitude,
+            time_window_start, time_window_end, flags, status
+          ) VALUES (
+            ${task.id}, ${task.clientId}, ${task.title}, ${task.description}, ${task.category},
+            ${task.minPrice}, ${task.recommendedPrice}, ${task.maxPrice || null},
+            ${task.locationText || null}, ${task.latitude || null}, ${task.longitude || null},
+            ${task.timeWindow?.start || null}, ${task.timeWindow?.end || null},
+            ${task.flags}, ${task.status}
+          )
+        `;
+                serviceLogger.info({ taskId: task.id, category: task.category, db: true }, 'Task created in database');
+            } catch (error) {
+                serviceLogger.error({ error }, 'Failed to create task in database, using memory');
+                tasksMemory.set(task.id, task);
+            }
+        } else {
+            tasksMemory.set(task.id, task);
+            serviceLogger.info({ taskId: task.id, category: task.category, db: false }, 'Task created in memory');
+        }
 
         return task;
     }
@@ -126,29 +150,64 @@ class TaskServiceClass {
     }
 
     async getTask(taskId: string): Promise<Task | null> {
-        return tasks.get(taskId) || null;
+        if (isDatabaseAvailable() && sql) {
+            try {
+                const rows = await sql`SELECT * FROM tasks WHERE id = ${taskId}`;
+                if (rows.length === 0) return null;
+                return this.rowToTask(rows[0]);
+            } catch (error) {
+                serviceLogger.error({ error }, 'Failed to get task from database');
+            }
+        }
+        return tasksMemory.get(taskId) || null;
     }
 
     async searchTasks(args: SearchTasksArgs): Promise<Task[]> {
-        let results = Array.from(tasks.values());
+        if (isDatabaseAvailable() && sql) {
+            try {
+                let query = `SELECT * FROM tasks WHERE status = 'open'`;
+                const params: unknown[] = [];
 
-        // Filter by category
+                if (args.category) {
+                    params.push(args.category);
+                    query += ` AND category = $${params.length}`;
+                }
+                if (args.minPrice !== undefined) {
+                    params.push(args.minPrice);
+                    query += ` AND recommended_price >= $${params.length}`;
+                }
+                if (args.maxPrice !== undefined) {
+                    params.push(args.maxPrice);
+                    query += ` AND recommended_price <= $${params.length}`;
+                }
+
+                query += ` ORDER BY created_at DESC`;
+
+                if (args.limit) {
+                    params.push(args.limit);
+                    query += ` LIMIT $${params.length}`;
+                }
+
+                const rows = await sql(query, params);
+                return rows.map(row => this.rowToTask(row));
+            } catch (error) {
+                serviceLogger.error({ error }, 'Failed to search tasks from database');
+            }
+        }
+
+        // Fallback to memory
+        let results = Array.from(tasksMemory.values());
+
         if (args.category) {
             results = results.filter(t => t.category === args.category);
         }
-
-        // Filter by price range
         if (args.minPrice !== undefined) {
             results = results.filter(t => t.recommendedPrice >= args.minPrice!);
         }
         if (args.maxPrice !== undefined) {
             results = results.filter(t => t.recommendedPrice <= args.maxPrice!);
         }
-
-        // Filter by status (only open tasks)
         results = results.filter(t => t.status === 'open');
-
-        // Limit results
         if (args.limit) {
             results = results.slice(0, args.limit);
         }
@@ -157,42 +216,70 @@ class TaskServiceClass {
     }
 
     async getOpenTasksForHustler(hustlerId: string, limit = 20): Promise<Task[]> {
-        // In a real implementation, this would filter by hustler's skills and location
-        return Array.from(tasks.values())
+        if (isDatabaseAvailable() && sql) {
+            try {
+                const rows = await sql`
+          SELECT * FROM tasks 
+          WHERE status = 'open' 
+          ORDER BY created_at DESC 
+          LIMIT ${limit}
+        `;
+                return rows.map(row => this.rowToTask(row));
+            } catch (error) {
+                serviceLogger.error({ error }, 'Failed to get tasks from database');
+            }
+        }
+
+        return Array.from(tasksMemory.values())
             .filter(t => t.status === 'open')
             .slice(0, limit);
     }
 
     async getCandidateHustlers(task: Task, limit = 20): Promise<HustlerCandidate[]> {
-        // Basic candidate ranking algorithm
-        const candidates: HustlerCandidate[] = mockHustlers
-            .filter(h => h.isActive)
-            .filter(h => h.skills.includes(task.category))
-            .map(hustler => {
-                // Calculate distance if both have coordinates
-                let distanceKm: number | undefined;
-                if (task.latitude && task.longitude && hustler.latitude && hustler.longitude) {
-                    distanceKm = this.calculateDistance(
-                        task.latitude, task.longitude,
-                        hustler.latitude, hustler.longitude
-                    );
-                }
+        let hustlers: HustlerProfile[] = [];
 
-                // Calculate basic score
-                const ratingScore = hustler.rating * 20; // 0-100
-                const completionScore = hustler.completionRate * 30; // 0-30
-                const xpScore = Math.min(hustler.xp / 100, 25); // 0-25
-                const distanceScore = distanceKm ? Math.max(25 - distanceKm * 2, 0) : 10; // 0-25
+        if (isDatabaseAvailable() && sql) {
+            try {
+                const rows = await sql`
+          SELECT * FROM hustler_profiles 
+          WHERE is_active = true 
+          AND ${task.category} = ANY(skills)
+          ORDER BY rating DESC
+          LIMIT ${limit * 2}
+        `;
+                hustlers = rows.map(row => this.rowToHustlerProfile(row));
+            } catch (error) {
+                serviceLogger.error({ error }, 'Failed to get hustlers from database');
+                hustlers = mockHustlers.filter(h => h.isActive && h.skills.includes(task.category));
+            }
+        } else {
+            hustlers = mockHustlers.filter(h => h.isActive && h.skills.includes(task.category));
+        }
 
-                const score = ratingScore + completionScore + xpScore + distanceScore;
+        // Score and rank candidates
+        const candidates: HustlerCandidate[] = hustlers.map(hustler => {
+            let distanceKm: number | undefined;
+            if (task.latitude && task.longitude && hustler.latitude && hustler.longitude) {
+                distanceKm = this.calculateDistance(
+                    task.latitude, task.longitude,
+                    hustler.latitude, hustler.longitude
+                );
+            }
 
-                return {
-                    ...hustler,
-                    score,
-                    distanceKm,
-                    matchReasons: this.getMatchReasons(hustler, task),
-                };
-            })
+            const ratingScore = hustler.rating * 20;
+            const completionScore = hustler.completionRate * 30;
+            const xpScore = Math.min(hustler.xp / 100, 25);
+            const distanceScore = distanceKm ? Math.max(25 - distanceKm * 2, 0) : 10;
+
+            const score = ratingScore + completionScore + xpScore + distanceScore;
+
+            return {
+                ...hustler,
+                score,
+                distanceKm,
+                matchReasons: this.getMatchReasons(hustler, task),
+            };
+        })
             .sort((a, b) => b.score - a.score)
             .slice(0, limit);
 
@@ -200,7 +287,20 @@ class TaskServiceClass {
     }
 
     async assignHustler(taskId: string, hustlerId: string): Promise<Task | null> {
-        const task = tasks.get(taskId);
+        if (isDatabaseAvailable() && sql) {
+            try {
+                await sql`
+          UPDATE tasks 
+          SET assigned_hustler_id = ${hustlerId}, status = 'assigned', updated_at = NOW()
+          WHERE id = ${taskId}
+        `;
+                return this.getTask(taskId);
+            } catch (error) {
+                serviceLogger.error({ error }, 'Failed to assign hustler in database');
+            }
+        }
+
+        const task = tasksMemory.get(taskId);
         if (!task) return null;
 
         task.assignedHustlerId = hustlerId;
@@ -212,7 +312,20 @@ class TaskServiceClass {
     }
 
     async completeTask(taskId: string): Promise<Task | null> {
-        const task = tasks.get(taskId);
+        if (isDatabaseAvailable() && sql) {
+            try {
+                await sql`
+          UPDATE tasks 
+          SET status = 'completed', updated_at = NOW()
+          WHERE id = ${taskId}
+        `;
+                return this.getTask(taskId);
+            } catch (error) {
+                serviceLogger.error({ error }, 'Failed to complete task in database');
+            }
+        }
+
+        const task = tasksMemory.get(taskId);
         if (!task) return null;
 
         task.status = 'completed';
@@ -222,9 +335,50 @@ class TaskServiceClass {
         return task;
     }
 
+    private rowToTask(row: Record<string, unknown>): Task {
+        return {
+            id: row.id as string,
+            clientId: row.client_id as string,
+            title: row.title as string,
+            description: row.description as string,
+            category: row.category as TaskCategory,
+            minPrice: Number(row.min_price),
+            recommendedPrice: Number(row.recommended_price),
+            maxPrice: row.max_price ? Number(row.max_price) : undefined,
+            locationText: row.location_text as string | undefined,
+            latitude: row.latitude ? Number(row.latitude) : undefined,
+            longitude: row.longitude ? Number(row.longitude) : undefined,
+            timeWindow: row.time_window_start ? {
+                start: new Date(row.time_window_start as string),
+                end: new Date(row.time_window_end as string),
+            } : undefined,
+            flags: (row.flags as TaskFlag[]) || [],
+            status: row.status as Task['status'],
+            assignedHustlerId: row.assigned_hustler_id as string | undefined,
+            createdAt: new Date(row.created_at as string),
+            updatedAt: new Date(row.updated_at as string),
+        };
+    }
+
+    private rowToHustlerProfile(row: Record<string, unknown>): HustlerProfile {
+        return {
+            userId: row.user_id as string,
+            skills: (row.skills as TaskCategory[]) || [],
+            rating: Number(row.rating),
+            completedTasks: Number(row.completed_tasks),
+            completionRate: Number(row.completion_rate),
+            xp: Number(row.xp),
+            level: Number(row.level),
+            streak: Number(row.streak),
+            latitude: row.latitude ? Number(row.latitude) : undefined,
+            longitude: row.longitude ? Number(row.longitude) : undefined,
+            isActive: row.is_active as boolean,
+            bio: row.bio as string | undefined,
+        };
+    }
+
     private calculateDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
-        // Haversine formula
-        const R = 6371; // Earth's radius in km
+        const R = 6371;
         const dLat = this.toRad(lat2 - lat1);
         const dLon = this.toRad(lon2 - lon1);
         const a =

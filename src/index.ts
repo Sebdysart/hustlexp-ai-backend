@@ -15,6 +15,9 @@ import { tools } from './ai/tools.js';
 import { TaskService } from './services/TaskService.js';
 import { getAIEventsSummary, getRecentAIEvents } from './utils/aiEventLogger.js';
 import { logger } from './utils/logger.js';
+import { testConnection, isDatabaseAvailable } from './db/index.js';
+import { runMigrations, seedTestData } from './db/schema.js';
+import { checkRateLimit, isRateLimitingEnabled, testRedisConnection } from './middleware/rateLimiter.js';
 import type { OrchestrateMode, TaskDraft, TaskCategory } from './types/index.js';
 
 const fastify = Fastify({
@@ -73,6 +76,17 @@ fastify.get('/health', async () => {
 fastify.post('/ai/orchestrate', async (request, reply) => {
     try {
         const body = OrchestrateSchema.parse(request.body);
+
+        // Check rate limit
+        const rateLimit = await checkRateLimit('ai', body.userId);
+        if (!rateLimit.success) {
+            reply.status(429);
+            return {
+                error: 'Rate limit exceeded',
+                remaining: rateLimit.remaining,
+                resetAt: new Date(rateLimit.reset).toISOString(),
+            };
+        }
 
         const result = await orchestrate({
             userId: body.userId,
@@ -172,15 +186,31 @@ fastify.get('/api/ai/analytics', async () => {
 
 const PORT = parseInt(process.env.PORT || '3000');
 
-try {
-    await fastify.listen({ port: PORT, host: '0.0.0.0' });
+async function start() {
+    try {
+        // Initialize database
+        if (isDatabaseAvailable()) {
+            const connected = await testConnection();
+            if (connected) {
+                await runMigrations();
+                await seedTestData();
+            }
+        } else {
+            logger.warn('DATABASE_URL not set - using in-memory storage');
+        }
 
-    logger.info(`
+        // Start server
+        await fastify.listen({ port: PORT, host: '0.0.0.0' });
+
+        const dbStatus = isDatabaseAvailable() ? '✓ Connected' : '✗ Memory mode';
+
+        logger.info(`
 ╔═══════════════════════════════════════════════════════╗
 ║         HustleXP AI Backend Started                   ║
 ╠═══════════════════════════════════════════════════════╣
 ║  Port: ${PORT}                                          ║
-║  Environment: ${process.env.NODE_ENV || 'development'}                       ║
+║  Database: ${dbStatus.padEnd(14)}                       ║
+║  Environment: ${(process.env.NODE_ENV || 'development').padEnd(11)}                       ║
 ║                                                       ║
 ║  Endpoints:                                           ║
 ║    POST /ai/orchestrate     - Main AI endpoint        ║
@@ -189,8 +219,11 @@ try {
 ║    GET  /api/ai/analytics   - AI usage analytics      ║
 ║    GET  /health             - Health check            ║
 ╚═══════════════════════════════════════════════════════╝
-  `);
-} catch (err) {
-    logger.error(err);
-    process.exit(1);
+    `);
+    } catch (err) {
+        logger.error(err);
+        process.exit(1);
+    }
 }
+
+start();
