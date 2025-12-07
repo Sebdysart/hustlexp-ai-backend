@@ -83,3 +83,21 @@ export const router = {
     routedGenerate,
     generateWithProvider,
 };
+
+/**
+ * Convenience wrapper for routed generation
+ */
+export const modelRouter = {
+    async generateRouted(
+        taskType: ModelTaskType,
+        systemPrompt: string,
+        options: { temperature?: number; maxTokens?: number } = {}
+    ): Promise<GenerateResult> {
+        return routedGenerate(taskType, {
+            system: systemPrompt,
+            messages: [{ role: 'user', content: 'Execute the system instruction.' }],
+            temperature: options.temperature,
+            maxTokens: options.maxTokens,
+        });
+    },
+};

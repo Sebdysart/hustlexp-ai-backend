@@ -13,6 +13,7 @@ import { z } from 'zod';
 import { orchestrate } from './ai/orchestrator.js';
 import { tools } from './ai/tools.js';
 import { TaskService } from './services/TaskService.js';
+import { OnboardingService } from './services/OnboardingService.js';
 import { getAIEventsSummary, getRecentAIEvents } from './utils/aiEventLogger.js';
 import { logger } from './utils/logger.js';
 import { testConnection, isDatabaseAvailable } from './db/index.js';
@@ -178,6 +179,100 @@ fastify.get('/api/ai/analytics', async () => {
         summary,
         recentEvents,
     };
+});
+
+// ============================================
+// AI Onboarding Endpoints
+// ============================================
+
+const OnboardingStartSchema = z.object({
+    userId: z.string(),
+    referralCode: z.string().optional(),
+});
+
+const OnboardingRoleSchema = z.object({
+    sessionId: z.string(),
+    role: z.enum(['hustler', 'client']),
+});
+
+const OnboardingAnswerSchema = z.object({
+    sessionId: z.string(),
+    questionKey: z.string(),
+    answer: z.string().optional().default(''),
+    skip: z.boolean().optional().default(false),
+});
+
+// Start or resume onboarding - AI introduces itself
+fastify.post('/ai/onboarding/start', async (request, reply) => {
+    try {
+        const body = OnboardingStartSchema.parse(request.body);
+        const result = await OnboardingService.startOnboarding(body.userId, body.referralCode);
+        return result;
+    } catch (error) {
+        logger.error({ error }, 'Onboarding start error');
+        if (error instanceof z.ZodError) {
+            reply.status(400);
+            return { error: 'Invalid request', details: error.errors };
+        }
+        reply.status(500);
+        return { error: 'Failed to start onboarding' };
+    }
+});
+
+// Choose role (hustler or client)
+fastify.post('/ai/onboarding/role', async (request, reply) => {
+    try {
+        const body = OnboardingRoleSchema.parse(request.body);
+        const result = await OnboardingService.chooseRole(body.sessionId, body.role);
+        return result;
+    } catch (error) {
+        logger.error({ error }, 'Onboarding role error');
+        if (error instanceof z.ZodError) {
+            reply.status(400);
+            return { error: 'Invalid request', details: error.errors };
+        }
+        reply.status(500);
+        return { error: 'Failed to set role' };
+    }
+});
+
+// Answer interview question (or skip if allowed)
+fastify.post('/ai/onboarding/answer', async (request, reply) => {
+    try {
+        const body = OnboardingAnswerSchema.parse(request.body);
+        const result = await OnboardingService.answerQuestion(
+            body.sessionId,
+            body.questionKey,
+            body.answer,
+            body.skip
+        );
+        return result;
+    } catch (error) {
+        logger.error({ error }, 'Onboarding answer error');
+        if (error instanceof z.ZodError) {
+            reply.status(400);
+            return { error: 'Invalid request', details: error.errors };
+        }
+        if (error instanceof Error && error.message.includes('cannot be skipped')) {
+            reply.status(400);
+            return { error: error.message };
+        }
+        reply.status(500);
+        return { error: 'Failed to process answer' };
+    }
+});
+
+// Get referral stats
+fastify.get('/ai/onboarding/referral/:userId', async (request, reply) => {
+    const { userId } = request.params as { userId: string };
+    const stats = OnboardingService.getReferralStats(userId);
+
+    if (!stats) {
+        reply.status(404);
+        return { error: 'No referral code found' };
+    }
+
+    return stats;
 });
 
 // ============================================
