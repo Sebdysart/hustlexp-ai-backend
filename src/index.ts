@@ -14,6 +14,8 @@ import { orchestrate } from './ai/orchestrator.js';
 import { tools } from './ai/tools.js';
 import { TaskService } from './services/TaskService.js';
 import { OnboardingService } from './services/OnboardingService.js';
+import { TaskCardGenerator } from './services/TaskCardGenerator.js';
+import { PriorityBoostService, HustlerTaskPlanner } from './services/PriorityBoostService.js';
 import { getAIEventsSummary, getRecentAIEvents } from './utils/aiEventLogger.js';
 import { logger } from './utils/logger.js';
 import { testConnection, isDatabaseAvailable } from './db/index.js';
@@ -273,6 +275,195 @@ fastify.get('/ai/onboarding/referral/:userId', async (request, reply) => {
     }
 
     return stats;
+});
+
+// ============================================
+// AI Task Card Generator
+// ============================================
+
+const TaskCardSchema = z.object({
+    rawText: z.string().min(3),
+    location: z.string().optional(),
+    categoryHint: z.enum(['delivery', 'moving', 'cleaning', 'pet_care', 'errands', 'handyman', 'tech_help', 'yard_work', 'event_help', 'other']).optional(),
+    scheduledTime: z.string().optional(),
+    userId: z.string().optional(),
+    userLevel: z.number().optional(),
+    userStreak: z.number().optional(),
+});
+
+// Generate enriched task card from minimal input
+fastify.post('/ai/task-card', async (request, reply) => {
+    try {
+        const body = TaskCardSchema.parse(request.body);
+        const card = await TaskCardGenerator.generateCard({
+            rawText: body.rawText,
+            location: body.location,
+            categoryHint: body.categoryHint,
+            scheduledTime: body.scheduledTime,
+            userId: body.userId,
+            userLevel: body.userLevel,
+            userStreak: body.userStreak,
+        });
+        return card;
+    } catch (error) {
+        logger.error({ error }, 'Task card generation error');
+        if (error instanceof z.ZodError) {
+            reply.status(400);
+            return { error: 'Invalid request', details: error.errors };
+        }
+        reply.status(500);
+        return { error: 'Failed to generate task card' };
+    }
+});
+
+// ============================================
+// Priority Boost Endpoints
+// ============================================
+
+// Get boost options for a price
+fastify.get('/api/boost/options/:price', async (request) => {
+    const { price } = request.params as { price: string };
+    const basePrice = parseInt(price);
+
+    if (isNaN(basePrice) || basePrice <= 0) {
+        return { error: 'Invalid price' };
+    }
+
+    const options = PriorityBoostService.getBoostOptions(basePrice);
+    return { basePrice, options };
+});
+
+// Apply boost to a task
+const ApplyBoostSchema = z.object({
+    taskId: z.string(),
+    basePrice: z.number().positive(),
+    tier: z.enum(['normal', 'priority', 'rush', 'vip']),
+});
+
+fastify.post('/api/boost/apply', async (request, reply) => {
+    try {
+        const body = ApplyBoostSchema.parse(request.body);
+        const boost = PriorityBoostService.applyBoost(body.taskId, body.basePrice, body.tier);
+        return boost;
+    } catch (error) {
+        logger.error({ error }, 'Boost apply error');
+        reply.status(400);
+        return { error: 'Failed to apply boost' };
+    }
+});
+
+// Get task boost info
+fastify.get('/api/boost/task/:taskId', async (request, reply) => {
+    const { taskId } = request.params as { taskId: string };
+    const boost = PriorityBoostService.getTaskBoost(taskId);
+
+    if (!boost) {
+        reply.status(404);
+        return { error: 'No boost found for this task' };
+    }
+
+    return boost;
+});
+
+// ============================================
+// Hustler Task Planner Endpoints
+// ============================================
+
+const GeneratePlanSchema = z.object({
+    taskId: z.string(),
+    hustlerId: z.string(),
+    task: z.object({
+        title: z.string(),
+        category: z.enum(['delivery', 'moving', 'cleaning', 'pet_care', 'errands', 'handyman', 'tech_help', 'yard_work', 'event_help', 'other']),
+        description: z.string(),
+        durationMinutes: z.number(),
+        location: z.string(),
+        baseXP: z.number().optional().default(100),
+    }),
+    boostMultiplier: z.number().optional().default(1.0),
+});
+
+// Generate task plan for hustler
+fastify.post('/api/planner/generate', async (request, reply) => {
+    try {
+        const body = GeneratePlanSchema.parse(request.body);
+        const plan = await HustlerTaskPlanner.generatePlan(
+            body.taskId,
+            body.hustlerId,
+            body.task,
+            body.boostMultiplier
+        );
+        return plan;
+    } catch (error) {
+        logger.error({ error }, 'Plan generation error');
+        reply.status(500);
+        return { error: 'Failed to generate plan' };
+    }
+});
+
+// Get plan by ID
+fastify.get('/api/planner/:planId', async (request, reply) => {
+    const { planId } = request.params as { planId: string };
+    const plan = HustlerTaskPlanner.getPlan(planId);
+
+    if (!plan) {
+        reply.status(404);
+        return { error: 'Plan not found' };
+    }
+
+    return plan;
+});
+
+// Update objective
+const UpdateObjectiveSchema = z.object({
+    planId: z.string(),
+    objectiveId: z.string(),
+    status: z.enum(['pending', 'in_progress', 'completed', 'skipped']),
+    photoUrl: z.string().optional(),
+    notes: z.string().optional(),
+});
+
+fastify.post('/api/planner/objective', async (request, reply) => {
+    try {
+        const body = UpdateObjectiveSchema.parse(request.body);
+        const result = await HustlerTaskPlanner.updateObjective(
+            body.planId,
+            body.objectiveId,
+            body.status,
+            body.photoUrl,
+            body.notes
+        );
+        return result;
+    } catch (error) {
+        logger.error({ error }, 'Objective update error');
+        reply.status(500);
+        return { error: 'Failed to update objective' };
+    }
+});
+
+// Record checkpoint (arrival, photo, completion)
+const CheckpointSchema = z.object({
+    planId: z.string(),
+    checkpointType: z.enum(['arrival', 'progress', 'completion', 'photo', 'signature']),
+});
+
+fastify.post('/api/planner/checkpoint', async (request, reply) => {
+    try {
+        const body = CheckpointSchema.parse(request.body);
+        const result = await HustlerTaskPlanner.recordCheckpoint(body.planId, body.checkpointType);
+        return result;
+    } catch (error) {
+        logger.error({ error }, 'Checkpoint error');
+        reply.status(500);
+        return { error: 'Failed to record checkpoint' };
+    }
+});
+
+// Get hustler's plans
+fastify.get('/api/planner/hustler/:hustlerId', async (request) => {
+    const { hustlerId } = request.params as { hustlerId: string };
+    const plans = HustlerTaskPlanner.getHustlerPlans(hustlerId);
+    return { plans, count: plans.length };
 });
 
 // ============================================
