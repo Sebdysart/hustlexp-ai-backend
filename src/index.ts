@@ -16,6 +16,8 @@ import { TaskService } from './services/TaskService.js';
 import { OnboardingService } from './services/OnboardingService.js';
 import { TaskCardGenerator } from './services/TaskCardGenerator.js';
 import { PriorityBoostService, HustlerTaskPlanner } from './services/PriorityBoostService.js';
+import { AIProofService } from './services/AIProofService.js';
+import { PricingEngine } from './services/PricingEngine.js';
 import { getAIEventsSummary, getRecentAIEvents } from './utils/aiEventLogger.js';
 import { logger } from './utils/logger.js';
 import { testConnection, isDatabaseAvailable } from './db/index.js';
@@ -464,6 +466,230 @@ fastify.get('/api/planner/hustler/:hustlerId', async (request) => {
     const { hustlerId } = request.params as { hustlerId: string };
     const plans = HustlerTaskPlanner.getHustlerPlans(hustlerId);
     return { plans, count: plans.length };
+});
+
+// ============================================
+// AI Proof System Endpoints
+// ============================================
+
+const StartProofSchema = z.object({
+    taskId: z.string(),
+    hustlerId: z.string(),
+    category: z.enum(['delivery', 'moving', 'cleaning', 'pet_care', 'errands', 'handyman', 'tech_help', 'yard_work', 'event_help', 'other']),
+});
+
+// Start proof session for a task
+fastify.post('/api/proof/start', async (request, reply) => {
+    try {
+        const body = StartProofSchema.parse(request.body);
+        const session = AIProofService.startProofSession(body.taskId, body.hustlerId, body.category);
+        const nextPrompt = AIProofService.getNextProofPrompt(session.sessionId);
+        return { session, nextPrompt };
+    } catch (error) {
+        logger.error({ error }, 'Proof start error');
+        reply.status(500);
+        return { error: 'Failed to start proof session' };
+    }
+});
+
+// Get next proof prompt
+fastify.get('/api/proof/:sessionId/next', async (request, reply) => {
+    const { sessionId } = request.params as { sessionId: string };
+    const prompt = AIProofService.getNextProofPrompt(sessionId);
+
+    if (!prompt) {
+        reply.status(404);
+        return { error: 'Session not found or completed' };
+    }
+
+    return prompt;
+});
+
+// Submit proof photo
+const SubmitProofSchema = z.object({
+    sessionId: z.string(),
+    requirementId: z.string(),
+    photoUrl: z.string().url(),
+    caption: z.string().optional(),
+});
+
+fastify.post('/api/proof/submit', async (request, reply) => {
+    try {
+        const body = SubmitProofSchema.parse(request.body);
+        const result = await AIProofService.submitProof(
+            body.sessionId,
+            body.requirementId,
+            body.photoUrl,
+            body.caption
+        );
+        return result;
+    } catch (error) {
+        logger.error({ error }, 'Proof submit error');
+        if (error instanceof Error) {
+            reply.status(400);
+            return { error: error.message };
+        }
+        reply.status(500);
+        return { error: 'Failed to submit proof' };
+    }
+});
+
+// Get proof session status
+fastify.get('/api/proof/session/:sessionId', async (request, reply) => {
+    const { sessionId } = request.params as { sessionId: string };
+    const session = AIProofService.getSession(sessionId);
+
+    if (!session) {
+        reply.status(404);
+        return { error: 'Session not found' };
+    }
+
+    return session;
+});
+
+// Get live task update (for client view)
+fastify.get('/api/proof/task/:taskId', async (request, reply) => {
+    const { taskId } = request.params as { taskId: string };
+    const update = AIProofService.getLiveTaskUpdate(taskId);
+
+    if (!update) {
+        reply.status(404);
+        return { error: 'No proof session for this task' };
+    }
+
+    return update;
+});
+
+// Get trust profile
+fastify.get('/api/proof/trust/:hustlerId', async (request, reply) => {
+    const { hustlerId } = request.params as { hustlerId: string };
+    const profile = AIProofService.getTrustProfile(hustlerId);
+
+    if (!profile) {
+        // Return default profile
+        return {
+            hustlerId,
+            trustScore: 50,
+            verifiedProofCount: 0,
+            proofStreak: 0,
+            badges: [],
+            recentProofs: [],
+        };
+    }
+
+    return profile;
+});
+
+// Get proof feed (for profile gallery)
+fastify.get('/api/proof/feed/:hustlerId', async (request) => {
+    const { hustlerId } = request.params as { hustlerId: string };
+    const limit = parseInt((request.query as { limit?: string }).limit || '20');
+    const feed = AIProofService.getProofFeed(hustlerId, limit);
+    return { proofs: feed, count: feed.length };
+});
+
+// ============================================
+// Pricing Engine Endpoints
+// ============================================
+
+// Get pricing breakdown for a task
+fastify.get('/api/pricing/calculate/:price', async (request) => {
+    const { price } = request.params as { price: string };
+    const basePrice = parseFloat(price);
+    const query = request.query as { boost?: string; newHustler?: string; rating?: string };
+
+    if (isNaN(basePrice) || basePrice <= 0) {
+        return { error: 'Invalid price' };
+    }
+
+    const boostTier = (query.boost || 'normal') as 'normal' | 'priority' | 'rush' | 'vip';
+    const pricing = PricingEngine.calculatePricing(basePrice, boostTier, {
+        isNewHustler: query.newHustler === 'true',
+        hustlerRating: query.rating ? parseFloat(query.rating) : undefined,
+    });
+
+    return pricing;
+});
+
+// Get comparison table for all tiers
+fastify.get('/api/pricing/table/:price', async (request) => {
+    const { price } = request.params as { price: string };
+    const basePrice = parseFloat(price);
+
+    if (isNaN(basePrice) || basePrice <= 0) {
+        return { error: 'Invalid price' };
+    }
+
+    return PricingEngine.getPricingTable(basePrice);
+});
+
+// Get poster quote (what client sees)
+fastify.get('/api/pricing/quote/:price', async (request) => {
+    const { price } = request.params as { price: string };
+    const query = request.query as { boost?: string };
+    const basePrice = parseFloat(price);
+    const boostTier = (query.boost || 'normal') as 'normal' | 'priority' | 'rush' | 'vip';
+
+    if (isNaN(basePrice) || basePrice <= 0) {
+        return { error: 'Invalid price' };
+    }
+
+    return PricingEngine.getPosterQuote(basePrice, boostTier);
+});
+
+// Get hustler earnings preview
+fastify.get('/api/pricing/earnings/:price', async (request) => {
+    const { price } = request.params as { price: string };
+    const query = request.query as { boost?: string; newHustler?: string; rating?: string };
+    const basePrice = parseFloat(price);
+    const boostTier = (query.boost || 'normal') as 'normal' | 'priority' | 'rush' | 'vip';
+
+    if (isNaN(basePrice) || basePrice <= 0) {
+        return { error: 'Invalid price' };
+    }
+
+    return PricingEngine.getHustlerEarnings(basePrice, boostTier, {
+        isNewHustler: query.newHustler === 'true',
+        hustlerRating: query.rating ? parseFloat(query.rating) : undefined,
+    });
+});
+
+// Request instant payout
+const InstantPayoutSchema = z.object({
+    hustlerId: z.string(),
+    taskId: z.string(),
+    amount: z.number().positive(),
+});
+
+fastify.post('/api/pricing/payout/instant', async (request, reply) => {
+    try {
+        const body = InstantPayoutSchema.parse(request.body);
+        const payout = PricingEngine.requestInstantPayout(body.hustlerId, body.taskId, body.amount);
+        return payout;
+    } catch (error) {
+        logger.error({ error }, 'Instant payout error');
+        reply.status(400);
+        return { error: 'Failed to process payout' };
+    }
+});
+
+// Get payout history
+fastify.get('/api/pricing/payout/:hustlerId', async (request) => {
+    const { hustlerId } = request.params as { hustlerId: string };
+    const history = PricingEngine.getPayoutHistory(hustlerId);
+    return { payouts: history, count: history.length };
+});
+
+// Get revenue metrics
+fastify.get('/api/pricing/revenue', async (request) => {
+    const query = request.query as { period?: string };
+    const period = (query.period || 'all') as 'day' | 'week' | 'month' | 'all';
+    return PricingEngine.getRevenueMetrics(period);
+});
+
+// Get/update pricing config (admin)
+fastify.get('/api/pricing/config', async () => {
+    return PricingEngine.getConfig();
 });
 
 // ============================================
