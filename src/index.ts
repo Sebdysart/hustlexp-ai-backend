@@ -18,6 +18,7 @@ import { TaskCardGenerator } from './services/TaskCardGenerator.js';
 import { PriorityBoostService, HustlerTaskPlanner } from './services/PriorityBoostService.js';
 import { AIProofService } from './services/AIProofService.js';
 import { PricingEngine } from './services/PricingEngine.js';
+import { TaskCompletionService } from './services/TaskCompletionService.js';
 import { getAIEventsSummary, getRecentAIEvents } from './utils/aiEventLogger.js';
 import { logger } from './utils/logger.js';
 import { testConnection, isDatabaseAvailable } from './db/index.js';
@@ -25,6 +26,7 @@ import { runMigrations, seedTestData } from './db/schema.js';
 import { checkRateLimit, isRateLimitingEnabled, testRedisConnection } from './middleware/rateLimiter.js';
 import { validateEnv, logEnvStatus } from './utils/envValidator.js';
 import { runHealthCheck, quickHealthCheck } from './utils/healthCheck.js';
+import { requireAuth, optionalAuth, isAuthEnabled } from './middleware/firebaseAuth.js';
 import type { OrchestrateMode, TaskDraft, TaskCategory } from './types/index.js';
 
 const fastify = Fastify({
@@ -34,6 +36,29 @@ const fastify = Fastify({
 // Register CORS
 await fastify.register(cors, {
     origin: true,
+});
+
+// ============================================
+// Global Authentication Hook
+// ============================================
+
+// Public routes that don't require authentication
+const PUBLIC_ROUTES = [
+    '/health',
+    '/health/detailed',
+];
+
+// Add global auth hook - protects ALL routes except public ones
+fastify.addHook('onRequest', async (request, reply) => {
+    const path = request.url.split('?')[0]; // Remove query params
+
+    // Skip auth for public routes
+    if (PUBLIC_ROUTES.some(route => path === route || path.startsWith(route + '/'))) {
+        return;
+    }
+
+    // Require authentication for all other routes
+    await requireAuth(request, reply);
 });
 
 // ============================================
@@ -185,6 +210,69 @@ fastify.get('/api/ai/analytics', async () => {
     return {
         summary,
         recentEvents,
+    };
+});
+
+// ============================================
+// Task Completion Endpoints (Smart Completion Flow)
+// ============================================
+
+const CompleteTaskSchema = z.object({
+    hustlerId: z.string(),
+    rating: z.number().min(1).max(5).optional(),
+    skipProofCheck: z.boolean().optional(),
+});
+
+// Check completion eligibility
+fastify.get('/api/tasks/:taskId/eligibility', async (request, reply) => {
+    const { taskId } = request.params as { taskId: string };
+    const eligibility = await TaskCompletionService.getCompletionEligibility(taskId);
+    return eligibility;
+});
+
+// Smart complete a task (full reward flow)
+fastify.post('/api/tasks/:taskId/complete', async (request, reply) => {
+    try {
+        const { taskId } = request.params as { taskId: string };
+        const body = CompleteTaskSchema.parse(request.body);
+
+        const result = await TaskCompletionService.smartComplete(taskId, body.hustlerId, {
+            rating: body.rating,
+            skipProofCheck: body.skipProofCheck,
+        });
+
+        if (!result.success) {
+            reply.status(400);
+            return { error: result.message };
+        }
+
+        return result;
+    } catch (error) {
+        logger.error({ error }, 'Task completion error');
+        if (error instanceof z.ZodError) {
+            reply.status(400);
+            return { error: 'Invalid request', details: error.errors };
+        }
+        reply.status(500);
+        return { error: 'Failed to complete task' };
+    }
+});
+
+// Get streak status for a hustler
+fastify.get('/api/users/:userId/streak', async (request) => {
+    const { userId } = request.params as { userId: string };
+    const streak = TaskCompletionService.getStreakStatus(userId);
+    return streak;
+});
+
+// Get completion history for a hustler
+fastify.get('/api/users/:userId/completions', async (request) => {
+    const { userId } = request.params as { userId: string };
+    const { limit } = request.query as { limit?: string };
+    const history = TaskCompletionService.getCompletionHistory(userId);
+    return {
+        completions: history.slice(0, limit ? parseInt(limit) : 20),
+        count: history.length,
     };
 });
 
