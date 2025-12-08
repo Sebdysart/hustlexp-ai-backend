@@ -22,6 +22,9 @@ import { TaskCompletionService } from './services/TaskCompletionService.js';
 import { DynamicBadgeEngine } from './services/DynamicBadgeEngine.js';
 import { QuestEngine } from './services/QuestEngine.js';
 import { AIGrowthCoachService } from './services/AIGrowthCoachService.js';
+import { ContextualCoachService, type ScreenContext } from './services/ContextualCoachService.js';
+import { ProfileOptimizerService } from './services/ProfileOptimizerService.js';
+import { SocialCardGenerator } from './services/SocialCardGenerator.js';
 import { getAIEventsSummary, getRecentAIEvents } from './utils/aiEventLogger.js';
 import { logger } from './utils/logger.js';
 import { testConnection, isDatabaseAvailable } from './db/index.js';
@@ -969,6 +972,247 @@ fastify.post('/api/quests/:userId/generate', async (request, reply) => {
         reply.status(500);
         return { error: 'Failed to generate quest' };
     }
+});
+
+// ============================================
+// Contextual Coach Endpoints (Phase 2: Live Coaching)
+// ============================================
+
+// Get contextual tip for current screen
+fastify.get('/api/tips/:userId/screen/:screen', async (request) => {
+    const { userId, screen } = request.params as { userId: string; screen: string };
+    const tip = ContextualCoachService.getTipForScreen(userId, screen as ScreenContext);
+    return tip ? { tip } : { message: 'No tip available for this context' };
+});
+
+// Get best contextual tip (auto-detect)
+fastify.get('/api/tips/:userId/contextual', async (request) => {
+    const { userId } = request.params as { userId: string };
+    const tip = ContextualCoachService.getContextualTip(userId);
+    return tip ? { tip } : { message: 'No tips right now' };
+});
+
+// Get time-sensitive opportunities
+fastify.get('/api/tips/:userId/time-sensitive', async (request) => {
+    const { userId } = request.params as { userId: string };
+    const tip = ContextualCoachService.getTimeSensitiveTip(userId);
+    return tip ? { tip } : { message: 'No time-sensitive opportunities right now' };
+});
+
+// Get streak-related tip
+fastify.get('/api/tips/:userId/streak', async (request) => {
+    const { userId } = request.params as { userId: string };
+    const { currentStreak } = request.query as { currentStreak?: string };
+    const tip = ContextualCoachService.getStreakTip(userId, parseInt(currentStreak || '0'));
+    return tip ? { tip } : { message: 'No streak tips right now' };
+});
+
+// Get all relevant tips
+fastify.get('/api/tips/:userId/all', async (request) => {
+    const { userId } = request.params as { userId: string };
+    const { limit } = request.query as { limit?: string };
+    const tips = ContextualCoachService.getAllRelevantTips(userId, parseInt(limit || '3'));
+    return { tips, count: tips.length };
+});
+
+// ============================================
+// Profile Optimizer Endpoints (Phase 2)
+// ============================================
+
+// Get full profile analysis
+fastify.get('/api/profile/:userId/score', async (request) => {
+    const { userId } = request.params as { userId: string };
+    const score = ProfileOptimizerService.getProfileScore(userId);
+    return score;
+});
+
+// Get improvement suggestions
+fastify.get('/api/profile/:userId/suggestions', async (request) => {
+    const { userId } = request.params as { userId: string };
+    const suggestions = ProfileOptimizerService.getProfileSuggestions(userId);
+    return { suggestions, count: suggestions.length };
+});
+
+// Generate AI bio
+const GenerateBioSchema = z.object({
+    currentBio: z.string().optional(),
+    skills: z.array(z.string()).optional(),
+    personality: z.string().optional(),
+});
+
+fastify.post('/api/profile/:userId/generate-bio', async (request, reply) => {
+    try {
+        const { userId } = request.params as { userId: string };
+        const body = GenerateBioSchema.parse(request.body);
+        const result = await ProfileOptimizerService.generateBioSuggestion(userId, body);
+        return result;
+    } catch (error) {
+        logger.error({ error }, 'Bio generation failed');
+        reply.status(500);
+        return { error: 'Failed to generate bio' };
+    }
+});
+
+// Generate AI headline
+const GenerateHeadlineSchema = z.object({
+    currentHeadline: z.string().optional(),
+    skills: z.array(z.string()).optional(),
+    specialty: z.string().optional(),
+});
+
+fastify.post('/api/profile/:userId/generate-headline', async (request, reply) => {
+    try {
+        const { userId } = request.params as { userId: string };
+        const body = GenerateHeadlineSchema.parse(request.body);
+        const result = await ProfileOptimizerService.generateHeadlineSuggestion(userId, body);
+        return result;
+    } catch (error) {
+        logger.error({ error }, 'Headline generation failed');
+        reply.status(500);
+        return { error: 'Failed to generate headline' };
+    }
+});
+
+// Get skill recommendations
+fastify.get('/api/profile/:userId/skill-recommendations', async (request) => {
+    const { userId } = request.params as { userId: string };
+    const recommendations = ProfileOptimizerService.getSkillRecommendations(userId);
+    return recommendations;
+});
+
+// Predict earnings impact of profile changes
+const EarningsImpactSchema = z.object({
+    photoUrl: z.string().optional(),
+    bio: z.string().optional(),
+    skills: z.array(z.string()).optional(),
+    availabilitySet: z.boolean().optional(),
+});
+
+fastify.post('/api/profile/:userId/earnings-impact', async (request, reply) => {
+    try {
+        const { userId } = request.params as { userId: string };
+        const changes = EarningsImpactSchema.parse(request.body);
+        const impact = ProfileOptimizerService.predictEarningsImpact(userId, changes);
+        return impact;
+    } catch (error) {
+        reply.status(400);
+        return { error: 'Invalid request body' };
+    }
+});
+
+// ============================================
+// Social Card Endpoints (Phase 2: Viral Growth)
+// ============================================
+
+// Generate a social card
+const GenerateCardSchema = z.object({
+    type: z.enum(['task_completed', 'level_up', 'badge_unlocked', 'streak_milestone', 'earnings_milestone', 'quest_completed', 'first_task', 'weekly_recap']),
+    data: z.object({
+        taskTitle: z.string().optional(),
+        taskCategory: z.string().optional(),
+        earnings: z.number().optional(),
+        xpEarned: z.number().optional(),
+        rating: z.number().optional(),
+        newLevel: z.number().optional(),
+        totalXP: z.number().optional(),
+        badgeName: z.string().optional(),
+        badgeIcon: z.string().optional(),
+        badgeRarity: z.string().optional(),
+        streakDays: z.number().optional(),
+        streakBonus: z.number().optional(),
+        milestoneAmount: z.number().optional(),
+        period: z.string().optional(),
+        questTitle: z.string().optional(),
+        questXP: z.number().optional(),
+        weeklyTasks: z.number().optional(),
+        weeklyEarnings: z.number().optional(),
+        weeklyXP: z.number().optional(),
+        weeklyStreak: z.number().optional(),
+    }),
+    userName: z.string().optional(),
+});
+
+fastify.post('/api/cards/:userId/generate', async (request, reply) => {
+    try {
+        const { userId } = request.params as { userId: string };
+        const body = GenerateCardSchema.parse(request.body);
+        const cardData = {
+            ...body.data,
+            taskCategory: body.data.taskCategory as TaskCategory | undefined,
+        };
+        const card = SocialCardGenerator.generateCard(userId, body.type, cardData, body.userName);
+        return { card, ascii: SocialCardGenerator.getCardAscii(card) };
+    } catch (error) {
+        logger.error({ error }, 'Card generation failed');
+        reply.status(500);
+        return { error: 'Failed to generate card' };
+    }
+});
+
+// Get recent cards
+fastify.get('/api/cards/:userId/recent', async (request) => {
+    const { userId } = request.params as { userId: string };
+    const { limit } = request.query as { limit?: string };
+    const cards = SocialCardGenerator.getRecentCards(userId, parseInt(limit || '10'));
+    return { cards, count: cards.length };
+});
+
+// Get specific card
+fastify.get('/api/cards/:cardId', async (request) => {
+    const { cardId } = request.params as { cardId: string };
+    const card = SocialCardGenerator.getCard(cardId);
+    return card ? { card } : { error: 'Card not found' };
+});
+
+// Generate weekly recap card
+const WeeklyRecapSchema = z.object({
+    tasks: z.number(),
+    earnings: z.number(),
+    xp: z.number(),
+    streak: z.number(),
+    topCategory: z.string().optional(),
+    userName: z.string().optional(),
+});
+
+fastify.post('/api/cards/:userId/weekly-recap', async (request, reply) => {
+    try {
+        const { userId } = request.params as { userId: string };
+        const body = WeeklyRecapSchema.parse(request.body);
+        const card = SocialCardGenerator.generateWeeklyRecap(userId, {
+            tasks: body.tasks,
+            earnings: body.earnings,
+            xp: body.xp,
+            streak: body.streak,
+            topCategory: body.topCategory as TaskCategory | undefined,
+        }, body.userName);
+        return { card, ascii: SocialCardGenerator.getCardAscii(card) };
+    } catch (error) {
+        logger.error({ error }, 'Weekly recap generation failed');
+        reply.status(500);
+        return { error: 'Failed to generate weekly recap' };
+    }
+});
+
+// Get share text for specific platform
+fastify.get('/api/cards/:cardId/share/:platform', async (request) => {
+    const { cardId, platform } = request.params as { cardId: string; platform: string };
+    const card = SocialCardGenerator.getCard(cardId);
+
+    if (!card) {
+        return { error: 'Card not found' };
+    }
+
+    const validPlatforms = ['twitter', 'instagram', 'tiktok', 'sms'];
+    if (!validPlatforms.includes(platform)) {
+        return { error: 'Invalid platform. Use: twitter, instagram, tiktok, or sms' };
+    }
+
+    const shareText = SocialCardGenerator.getShareTextForPlatform(
+        card,
+        platform as 'twitter' | 'instagram' | 'tiktok' | 'sms'
+    );
+
+    return { platform, shareText };
 });
 
 // ============================================
