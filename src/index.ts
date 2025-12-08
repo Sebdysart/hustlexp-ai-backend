@@ -56,6 +56,14 @@ await fastify.register(cors, {
 const PUBLIC_ROUTES = [
     '/health',
     '/health/detailed',
+    // Core API endpoints for frontend
+    '/api/tasks',
+    '/api/users',
+    // AI endpoints
+    '/ai/orchestrate',
+    '/ai/onboarding',
+    '/ai/task-card',
+    '/api/onboarding',  // Alias for frontend compatibility
     // Gamification endpoints (allow optional auth - they work for demo users too)
     '/api/coach',
     '/api/badges',
@@ -65,9 +73,10 @@ const PUBLIC_ROUTES = [
     '/api/cards',
     '/api/match',
     '/api/cost',
-    '/api/proof/requirements',
-    '/api/proof/instructions',
+    '/api/proof',
     '/api/pricing',
+    '/api/boost',
+    '/api/planner',
 ];
 
 // Add global auth hook - protects ALL routes except public ones
@@ -390,6 +399,65 @@ fastify.get('/ai/onboarding/referral/:userId', async (request, reply) => {
     }
 
     return stats;
+});
+
+// ============================================
+// API Onboarding Aliases (for frontend compatibility)
+// Frontend calls /api/onboarding/:userId/start instead of /ai/onboarding/start
+// ============================================
+
+fastify.post('/api/onboarding/:userId/start', async (request, reply) => {
+    try {
+        const { userId } = request.params as { userId: string };
+        const body = request.body as { referralCode?: string } | undefined;
+        const result = await OnboardingService.startOnboarding(userId, body?.referralCode);
+        return result;
+    } catch (error) {
+        logger.error({ error }, 'API Onboarding start error');
+        reply.status(500);
+        return { error: 'Failed to start onboarding' };
+    }
+});
+
+fastify.post('/api/onboarding/:userId/role', async (request, reply) => {
+    try {
+        const { userId } = request.params as { userId: string };
+        const body = request.body as { sessionId: string; role: 'hustler' | 'client' };
+        const result = await OnboardingService.chooseRole(body.sessionId, body.role);
+        return result;
+    } catch (error) {
+        logger.error({ error }, 'API Onboarding role error');
+        reply.status(500);
+        return { error: 'Failed to set role' };
+    }
+});
+
+fastify.post('/api/onboarding/:userId/answer', async (request, reply) => {
+    try {
+        const { userId } = request.params as { userId: string };
+        const body = request.body as { sessionId: string; questionKey: string; answer?: string; skip?: boolean };
+        const result = await OnboardingService.answerQuestion(
+            body.sessionId,
+            body.questionKey,
+            body.answer ?? '',
+            body.skip
+        );
+        return result;
+    } catch (error) {
+        logger.error({ error }, 'API Onboarding answer error');
+        reply.status(500);
+        return { error: 'Failed to process answer' };
+    }
+});
+
+// Simple onboarding check endpoint - returns user status
+fastify.get('/api/onboarding/:userId/status', async (request) => {
+    const { userId } = request.params as { userId: string };
+    return {
+        userId,
+        onboardingComplete: true, // Default to complete for now
+        message: 'Welcome to HustleXP!',
+    };
 });
 
 // ============================================
