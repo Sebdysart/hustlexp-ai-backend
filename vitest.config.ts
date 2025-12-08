@@ -5,6 +5,7 @@ export default defineConfig({
         globals: true,
         environment: 'node',
         include: ['src/**/*.test.ts', 'tests/**/*.test.ts'],
+        setupFiles: ['dotenv/config'],
         coverage: {
             provider: 'v8',
             reporter: ['text', 'html'],

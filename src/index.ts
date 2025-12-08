@@ -19,6 +19,9 @@ import { PriorityBoostService, HustlerTaskPlanner } from './services/PriorityBoo
 import { AIProofService } from './services/AIProofService.js';
 import { PricingEngine } from './services/PricingEngine.js';
 import { TaskCompletionService } from './services/TaskCompletionService.js';
+import { DynamicBadgeEngine } from './services/DynamicBadgeEngine.js';
+import { QuestEngine } from './services/QuestEngine.js';
+import { AIGrowthCoachService } from './services/AIGrowthCoachService.js';
 import { getAIEventsSummary, getRecentAIEvents } from './utils/aiEventLogger.js';
 import { logger } from './utils/logger.js';
 import { testConnection, isDatabaseAvailable } from './db/index.js';
@@ -781,6 +784,191 @@ fastify.get('/api/pricing/revenue', async (request) => {
 // Get/update pricing config (admin)
 fastify.get('/api/pricing/config', async () => {
     return PricingEngine.getConfig();
+});
+
+// ============================================
+// Growth Coach Endpoints (Phase 1: Dopamine Core)
+// ============================================
+
+// Get full personalized growth plan
+fastify.get('/api/coach/:userId/plan', async (request) => {
+    const { userId } = request.params as { userId: string };
+    const plan = await AIGrowthCoachService.getGrowthPlan(userId);
+    return plan;
+});
+
+// Get earnings projection
+fastify.get('/api/coach/:userId/earnings', async (request) => {
+    const { userId } = request.params as { userId: string };
+    const plan = await AIGrowthCoachService.getGrowthPlan(userId);
+    return {
+        current: plan.earnings,
+        projection: plan.projection,
+    };
+});
+
+// Get single best next action
+fastify.get('/api/coach/:userId/next-action', async (request) => {
+    const { userId } = request.params as { userId: string };
+    const action = await AIGrowthCoachService.getNextBestAction(userId);
+    return action || { message: 'No recommendations right now', type: 'none' };
+});
+
+// Get optimal tasks for this user
+fastify.get('/api/coach/:userId/optimal-tasks', async (request) => {
+    const { userId } = request.params as { userId: string };
+    const { limit } = request.query as { limit?: string };
+    const tasks = await AIGrowthCoachService.getOptimalTasks(userId, limit ? parseInt(limit) : 5);
+    return { tasks, count: tasks.length };
+});
+
+// Get context-aware coaching tip
+fastify.get('/api/coach/:userId/tip', async (request) => {
+    const { userId } = request.params as { userId: string };
+    const { context } = request.query as { context?: string };
+    const tip = await AIGrowthCoachService.getCoachingTip(userId, undefined, context);
+    return tip;
+});
+
+// Get poster insights
+fastify.get('/api/coach/poster/:userId/insights', async (request) => {
+    const { userId } = request.params as { userId: string };
+    const insights = AIGrowthCoachService.getPosterInsights(userId);
+    return insights;
+});
+
+// ============================================
+// Badge Endpoints (Dynamic Badge Engine)
+// ============================================
+
+// Get all badges with progress for user
+fastify.get('/api/badges/:userId', async (request) => {
+    const { userId } = request.params as { userId: string };
+    const progress = DynamicBadgeEngine.getBadgeProgress(userId);
+    const stats = DynamicBadgeEngine.getBadgeStats(userId);
+    return {
+        badges: progress,
+        stats,
+        totalAvailable: DynamicBadgeEngine.getAllBadges().length,
+    };
+});
+
+// Get recently earned badges
+fastify.get('/api/badges/:userId/recent', async (request) => {
+    const { userId } = request.params as { userId: string };
+    const { limit } = request.query as { limit?: string };
+    const badges = DynamicBadgeEngine.getRecentBadges(userId, limit ? parseInt(limit) : 5);
+    return { badges, count: badges.length };
+});
+
+// Get public profile showcase badges
+fastify.get('/api/badges/:userId/showcase', async (request) => {
+    const { userId } = request.params as { userId: string };
+    const badges = DynamicBadgeEngine.getBadgeShowcase(userId);
+    return { badges, count: badges.length };
+});
+
+// Get seasonal/special badges
+fastify.get('/api/badges/seasonal', async () => {
+    const badges = DynamicBadgeEngine.getSeasonalBadges();
+    return { badges, count: badges.length };
+});
+
+// Evaluate and award badges for user
+fastify.post('/api/badges/:userId/evaluate', async (request) => {
+    const { userId } = request.params as { userId: string };
+    const result = await DynamicBadgeEngine.evaluateBadges(userId);
+    return {
+        newBadges: result.newBadges,
+        xpAwarded: result.totalXPAwarded,
+        message: result.newBadges.length > 0
+            ? `🎉 Unlocked ${result.newBadges.length} new badge(s)!`
+            : 'No new badges unlocked',
+    };
+});
+
+// Award beta pioneer badge (special)
+fastify.post('/api/badges/:userId/beta-pioneer', async (request) => {
+    const { userId } = request.params as { userId: string };
+    const badge = DynamicBadgeEngine.awardBetaPioneer(userId);
+    return badge
+        ? { success: true, badge, message: '🚀 Beta Pioneer badge awarded!' }
+        : { success: false, message: 'Badge already awarded or not found' };
+});
+
+// ============================================
+// Quest Endpoints (Quest Engine)
+// ============================================
+
+// Get daily quests
+fastify.get('/api/quests/:userId/daily', async (request) => {
+    const { userId } = request.params as { userId: string };
+    const quests = QuestEngine.getDailyQuests(userId);
+    return { quests, count: quests.length };
+});
+
+// Get weekly quests
+fastify.get('/api/quests/:userId/weekly', async (request) => {
+    const { userId } = request.params as { userId: string };
+    const quests = QuestEngine.getWeeklyQuests(userId);
+    return { quests, count: quests.length };
+});
+
+// Get seasonal quests
+fastify.get('/api/quests/:userId/seasonal', async (request) => {
+    const { userId } = request.params as { userId: string };
+    const quests = QuestEngine.getSeasonalQuests(userId);
+    return { quests, count: quests.length };
+});
+
+// Get all active quests
+fastify.get('/api/quests/:userId/all', async (request) => {
+    const { userId } = request.params as { userId: string };
+    const quests = QuestEngine.getAllActiveQuests(userId);
+    const stats = QuestEngine.getQuestStats(userId);
+    return { quests, count: quests.length, stats };
+});
+
+// Refresh daily quests
+fastify.post('/api/quests/:userId/refresh', async (request) => {
+    const { userId } = request.params as { userId: string };
+    const quests = QuestEngine.refreshDailyQuests(userId);
+    return { quests, count: quests.length, message: '🔄 Daily quests refreshed!' };
+});
+
+// Claim quest reward
+fastify.post('/api/quests/:userId/:questId/claim', async (request) => {
+    const { userId, questId } = request.params as { userId: string; questId: string };
+    const result = QuestEngine.claimQuest(userId, questId);
+    return result;
+});
+
+// Generate personalized AI quest
+const GenerateQuestSchema = z.object({
+    topCategories: z.array(z.string()).optional().default([]),
+    currentStreak: z.number().optional().default(0),
+    recentEarnings: z.number().optional().default(0),
+    level: z.number().optional().default(1),
+});
+
+fastify.post('/api/quests/:userId/generate', async (request, reply) => {
+    try {
+        const { userId } = request.params as { userId: string };
+        const body = GenerateQuestSchema.parse(request.body);
+        const quest = await QuestEngine.generatePersonalizedQuest(userId, {
+            topCategories: body.topCategories as TaskCategory[],
+            currentStreak: body.currentStreak,
+            recentEarnings: body.recentEarnings,
+            level: body.level,
+        });
+        return quest
+            ? { success: true, quest }
+            : { success: false, message: 'Failed to generate quest' };
+    } catch (error) {
+        logger.error({ error }, 'Quest generation failed');
+        reply.status(500);
+        return { error: 'Failed to generate quest' };
+    }
 });
 
 // ============================================
