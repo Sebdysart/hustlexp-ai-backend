@@ -64,6 +64,24 @@ Response: {
 ```javascript
 GET /api/onboarding/{userId}/status
 
+// For new users (never started onboarding):
+Response: {
+  "userId": "...",
+  "onboardingComplete": false,
+  "message": "Start your journey with HustleXP!"
+}
+
+// For users in progress:
+Response: {
+  "userId": "...",
+  "onboardingComplete": false,
+  "currentStep": 2,
+  "totalSteps": 5,
+  "role": "hustler",
+  "message": "Continue your onboarding to unlock all features!"
+}
+
+// For completed users:
 Response: {
   "userId": "...",
   "onboardingComplete": true,
