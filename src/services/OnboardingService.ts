@@ -86,6 +86,7 @@ const VERIFICATION_LEVELS: Record<VerificationLevel, { name: string; xpRequired:
 
 const sessionsMemory = new Map<string, OnboardingSession>();
 const userSessions = new Map<string, string>(); // userId -> sessionId (for resume)
+const completedOnboarding = new Set<string>(); // Track users who have completed onboarding
 
 // ============================================
 // Question Configurations
@@ -426,6 +427,9 @@ class OnboardingServiceClass {
         this.saveSession(session);
         await GamificationService.awardXP(session.userId, completionXP, 'onboarding_complete');
 
+        // Mark onboarding as complete for this user
+        completedOnboarding.add(session.userId);
+
         // Build animations list
         const animations: AnimationType[] = ['confetti', 'levelUp', 'badge'];
         if (session.skippedQuestions.length === 0) animations.push('sparkle');
@@ -660,6 +664,62 @@ class OnboardingServiceClass {
      */
     getVerificationInfo(level: VerificationLevel) {
         return VERIFICATION_LEVELS[level];
+    }
+
+    /**
+     * Get onboarding status for a user
+     * This allows the frontend to determine if a user needs to go through onboarding
+     */
+    getOnboardingStatus(userId: string): {
+        userId: string;
+        onboardingComplete: boolean;
+        currentStep?: number;
+        totalSteps?: number;
+        role?: UserRole | null;
+        message: string;
+    } {
+        // Check if user has completed onboarding
+        if (completedOnboarding.has(userId)) {
+            return {
+                userId,
+                onboardingComplete: true,
+                message: 'Welcome to HustleXP!',
+            };
+        }
+
+        // Check if user has an active session
+        const sessionId = userSessions.get(userId);
+        if (sessionId) {
+            const session = sessionsMemory.get(sessionId);
+            if (session) {
+                // Check if session indicates completion (step > totalSteps)
+                if (session.step > session.totalSteps) {
+                    completedOnboarding.add(userId);
+                    return {
+                        userId,
+                        onboardingComplete: true,
+                        message: 'Welcome to HustleXP!',
+                    };
+                }
+
+                // User has started but not completed onboarding
+                return {
+                    userId,
+                    onboardingComplete: false,
+                    currentStep: session.step,
+                    totalSteps: session.totalSteps,
+                    role: session.role,
+                    message: 'Continue your onboarding to unlock all features!',
+                };
+            }
+        }
+
+        // User has never started onboarding
+        return {
+            userId,
+            onboardingComplete: false,
+            message: 'Start your journey with HustleXP!',
+        };
     }
 
     // Session management

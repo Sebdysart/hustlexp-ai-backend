@@ -450,14 +450,10 @@ fastify.post('/api/onboarding/:userId/answer', async (request, reply) => {
     }
 });
 
-// Simple onboarding check endpoint - returns user status
+// Get onboarding status for a user (used by frontend to determine if onboarding is needed)
 fastify.get('/api/onboarding/:userId/status', async (request) => {
     const { userId } = request.params as { userId: string };
-    return {
-        userId,
-        onboardingComplete: true, // Default to complete for now
-        message: 'Welcome to HustleXP!',
-    };
+    return OnboardingService.getOnboardingStatus(userId);
 });
 
 // ============================================
