@@ -56,6 +56,18 @@ await fastify.register(cors, {
 const PUBLIC_ROUTES = [
     '/health',
     '/health/detailed',
+    // Gamification endpoints (allow optional auth - they work for demo users too)
+    '/api/coach',
+    '/api/badges',
+    '/api/quests',
+    '/api/tips',
+    '/api/profile',
+    '/api/cards',
+    '/api/match',
+    '/api/cost',
+    '/api/proof/requirements',
+    '/api/proof/instructions',
+    '/api/pricing',
 ];
 
 // Add global auth hook - protects ALL routes except public ones
