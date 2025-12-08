@@ -25,6 +25,10 @@ import { AIGrowthCoachService } from './services/AIGrowthCoachService.js';
 import { ContextualCoachService, type ScreenContext } from './services/ContextualCoachService.js';
 import { ProfileOptimizerService } from './services/ProfileOptimizerService.js';
 import { SocialCardGenerator } from './services/SocialCardGenerator.js';
+import { EnhancedAIProofService } from './services/EnhancedAIProofService.js';
+import { AICostGuardService } from './services/AICostGuardService.js';
+import { SmartMatchAIService } from './services/SmartMatchAIService.js';
+import { ErrorTracker } from './utils/errorTracker.js';
 import { getAIEventsSummary, getRecentAIEvents } from './utils/aiEventLogger.js';
 import { logger } from './utils/logger.js';
 import { testConnection, isDatabaseAvailable } from './db/index.js';
@@ -1213,6 +1217,155 @@ fastify.get('/api/cards/:cardId/share/:platform', async (request) => {
     );
 
     return { platform, shareText };
+});
+
+// ============================================
+// Enhanced Proof Photo Endpoints
+// ============================================
+
+// Initialize proof workflow for a task
+fastify.post('/api/proof/:taskId/init', async (request) => {
+    const { taskId } = request.params as { taskId: string };
+    const { category } = request.body as { category: TaskCategory };
+    const workflow = EnhancedAIProofService.initializeWorkflow(taskId, category);
+    return workflow;
+});
+
+// Get proof requirements for a category
+fastify.get('/api/proof/requirements/:category', async (request) => {
+    const { category } = request.params as { category: string };
+    const requirements = EnhancedAIProofService.getRequirements(category as TaskCategory);
+    return { category, requirements };
+});
+
+// Get proof instructions for UI
+fastify.get('/api/proof/instructions/:category', async (request) => {
+    const { category } = request.params as { category: string };
+    const instructions = EnhancedAIProofService.getProofInstructions(category as TaskCategory);
+    return instructions;
+});
+
+// Submit a proof photo
+fastify.post('/api/proof/:taskId/submit', async (request, reply) => {
+    try {
+        const { taskId } = request.params as { taskId: string };
+        const { userId, phase, photoUrl, caption } = request.body as {
+            userId: string;
+            phase: 'before' | 'during' | 'after';
+            photoUrl: string;
+            caption?: string;
+        };
+        const submission = await EnhancedAIProofService.submitPhoto(taskId, userId, phase, photoUrl, caption);
+        return submission;
+    } catch (error) {
+        reply.status(400);
+        return { error: (error as Error).message };
+    }
+});
+
+// Get workflow status
+fastify.get('/api/proof/:taskId/status', async (request) => {
+    const { taskId } = request.params as { taskId: string };
+    const workflow = EnhancedAIProofService.getWorkflow(taskId);
+    return workflow || { error: 'Workflow not found' };
+});
+
+// Verify proof consistency
+fastify.post('/api/proof/:taskId/verify', async (request) => {
+    const { taskId } = request.params as { taskId: string };
+    const result = await EnhancedAIProofService.verifyConsistency(taskId);
+    return result;
+});
+
+// ============================================
+// AI Cost Guard Endpoints
+// ============================================
+
+// Check if user can make AI call
+fastify.get('/api/cost/:userId/check/:provider', async (request) => {
+    const { userId, provider } = request.params as { userId: string; provider: string };
+    const result = AICostGuardService.checkLimit(userId, provider as 'openai' | 'deepseek' | 'qwen');
+    return result;
+});
+
+// Get user's AI usage stats
+fastify.get('/api/cost/:userId/stats', async (request) => {
+    const { userId } = request.params as { userId: string };
+    const stats = AICostGuardService.getUserStats(userId);
+    return stats;
+});
+
+// Get system-wide AI stats (admin)
+fastify.get('/api/cost/system/stats', async (request) => {
+    const stats = AICostGuardService.getSystemStats();
+    const limits = AICostGuardService.getLimits();
+    return { stats, limits };
+});
+
+// Update cost limits (admin)
+fastify.post('/api/cost/limits', async (request) => {
+    const newLimits = request.body as Partial<typeof AICostGuardService extends { updateLimits: (l: infer P) => unknown } ? P : never>;
+    const limits = AICostGuardService.updateLimits(newLimits);
+    return limits;
+});
+
+// ============================================
+// SmartMatch AI Endpoints
+// ============================================
+
+// Re-rank candidates for a task
+fastify.post('/api/match/:taskId/rerank', async (request, reply) => {
+    try {
+        const { taskId } = request.params as { taskId: string };
+        const { task, candidates, limit } = request.body as {
+            task: Parameters<typeof SmartMatchAIService.reRankCandidates>[0];
+            candidates: Parameters<typeof SmartMatchAIService.reRankCandidates>[1];
+            limit?: number;
+        };
+        const result = await SmartMatchAIService.reRankCandidates(task, candidates, limit);
+        return result;
+    } catch (error) {
+        reply.status(500);
+        return { error: 'Match ranking failed' };
+    }
+});
+
+// Quick score a candidate
+fastify.post('/api/match/quick-score', async (request) => {
+    const { task, candidate } = request.body as {
+        task: Parameters<typeof SmartMatchAIService.quickScore>[0];
+        candidate: Parameters<typeof SmartMatchAIService.quickScore>[1];
+    };
+    const score = SmartMatchAIService.quickScore(task, candidate);
+    return { score };
+});
+
+// Explain a match
+fastify.post('/api/match/explain', async (request) => {
+    const { task, candidate } = request.body as {
+        task: Parameters<typeof SmartMatchAIService.explainMatch>[0];
+        candidate: Parameters<typeof SmartMatchAIService.explainMatch>[1];
+    };
+    const explanation = await SmartMatchAIService.explainMatch(task, candidate);
+    return explanation;
+});
+
+// Get test candidates for simulation
+fastify.get('/api/match/test-candidates', async (request) => {
+    const { count } = request.query as { count?: string };
+    const candidates = SmartMatchAIService.generateTestCandidates(parseInt(count || '10'));
+    return { candidates };
+});
+
+// ============================================
+// Error Tracking Endpoints
+// ============================================
+
+// Get recent errors (admin)
+fastify.get('/api/errors/recent', async (request) => {
+    const { limit } = request.query as { limit?: string };
+    const events = ErrorTracker.getRecentEvents(parseInt(limit || '10'));
+    return { events, enabled: ErrorTracker.isEnabled() };
 });
 
 // ============================================
