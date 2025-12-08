@@ -457,6 +457,13 @@ class AIProofServiceClass {
     }
 
     /**
+     * Get proof session by taskId
+     */
+    getSessionByTaskId(taskId: string): ProofSession | null {
+        return Array.from(proofSessions.values()).find(s => s.taskId === taskId) || null;
+    }
+
+    /**
      * Get live task card update (for client view)
      */
     getLiveTaskUpdate(taskId: string): {

@@ -23,6 +23,9 @@ const ENV_CONFIG: EnvConfig = {
         'DATABASE_URL',
         'UPSTASH_REDIS_REST_URL',
         'UPSTASH_REDIS_REST_TOKEN',
+        'FIREBASE_PROJECT_ID',
+        'FIREBASE_CLIENT_EMAIL',
+        'FIREBASE_PRIVATE_KEY',
         'PORT',
         'NODE_ENV',
     ],
@@ -75,6 +78,15 @@ export function validateEnv(): ValidationResult {
         warnings.push('Redis not configured - rate limiting disabled');
     }
 
+    // Validate Firebase (required for authentication)
+    const hasFirebase = !!process.env.FIREBASE_PROJECT_ID &&
+        !!process.env.FIREBASE_CLIENT_EMAIL &&
+        !!process.env.FIREBASE_PRIVATE_KEY;
+    if (!hasFirebase) {
+        warnings.push('Firebase not configured - authentication disabled');
+    }
+    configured['FIREBASE_CONFIGURED'] = hasFirebase;
+
     return {
         valid: missing.length === 0,
         missing,
@@ -102,6 +114,7 @@ export function logEnvStatus(result: ValidationResult): void {
         groq: result.configured.GROQ_API_KEY ? '✓' : '✗',
         database: result.configured.DATABASE_URL ? '✓' : '✗',
         redis: result.configured.UPSTASH_REDIS_REST_URL ? '✓' : '✗',
+        firebase: result.configured.FIREBASE_CONFIGURED ? '✓' : '✗',
     };
 
     logger.info({ services }, 'Service configuration');
@@ -118,5 +131,6 @@ export function getEnvStatus(): Record<string, boolean> {
         groq: result.configured.GROQ_API_KEY || false,
         database: result.configured.DATABASE_URL || false,
         redis: (result.configured.UPSTASH_REDIS_REST_URL && result.configured.UPSTASH_REDIS_REST_TOKEN) || false,
+        firebase: result.configured.FIREBASE_CONFIGURED || false,
     };
 }
