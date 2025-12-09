@@ -79,6 +79,7 @@ const PUBLIC_ROUTES = [
     '/api/planner',
     '/api/actions',
     '/api/brain',
+    '/api/memory',
 ];
 
 // Add global auth hook - protects ALL routes except public ones
