@@ -3,9 +3,26 @@ import type { GenerateOptions, GenerateResult } from '../../types/index.js';
 import { logAIEvent } from '../../utils/aiEventLogger.js';
 import { aiLogger } from '../../utils/logger.js';
 
-const client = new Groq({
-    apiKey: process.env.GROQ_API_KEY,
-});
+// Lazy initialization - only create client when needed
+let client: Groq | null = null;
+
+function getClient(): Groq {
+    if (!client) {
+        const apiKey = process.env.GROQ_API_KEY;
+        if (!apiKey) {
+            throw new Error('GROQ_API_KEY is not configured');
+        }
+        client = new Groq({ apiKey });
+    }
+    return client;
+}
+
+/**
+ * Check if Groq is configured
+ */
+export function isConfigured(): boolean {
+    return !!process.env.GROQ_API_KEY;
+}
 
 /**
  * Qwen via Groq client for fast, cheap operations:
@@ -17,7 +34,17 @@ const client = new Groq({
 export async function generate(options: GenerateOptions): Promise<GenerateResult> {
     const startTime = Date.now();
 
+    if (!isConfigured()) {
+        aiLogger.warn('Groq not configured, returning fallback response');
+        return {
+            content: 'AI service temporarily unavailable. Please try again later.',
+            tokensUsed: { input: 0, output: 0 },
+            latencyMs: 0,
+        };
+    }
+
     try {
+        const groq = getClient();
         const messages: Groq.Chat.ChatCompletionMessageParam[] = [
             { role: 'system', content: options.system },
             ...options.messages.map((m) => ({
@@ -26,7 +53,7 @@ export async function generate(options: GenerateOptions): Promise<GenerateResult
             })),
         ];
 
-        const response = await client.chat.completions.create({
+        const response = await groq.chat.completions.create({
             model: 'llama-3.3-70b-versatile', // Using Llama on Groq which is very fast
             messages,
             max_tokens: options.maxTokens || 1024,
@@ -69,4 +96,5 @@ export async function generate(options: GenerateOptions): Promise<GenerateResult
     }
 }
 
-export const qwenGroqClient = { generate };
+export const qwenGroqClient = { generate, isConfigured };
+
