@@ -1801,9 +1801,22 @@ const CreateConnectAccountSchema = z.object({
     phone: z.string().optional(),
 });
 
-fastify.post('/api/stripe/connect/create', async (request, reply) => {
+// Create Stripe Connect account for hustler - HUSTLER ONLY (own account)
+fastify.post('/api/stripe/connect/create', { preHandler: [requireRole('hustler')] }, async (request, reply) => {
     try {
+        if (!request.user) {
+            reply.status(401);
+            return { error: 'Authentication required' };
+        }
+
         const body = CreateConnectAccountSchema.parse(request.body);
+
+        // CRITICAL: User can only create Connect account for themselves
+        if (body.userId !== request.user.uid) {
+            reply.status(403);
+            return { error: 'Cannot create Connect account for another user' };
+        }
+
         const result = await StripeService.createConnectAccount(
             body.userId,
             body.email,
@@ -1823,9 +1836,21 @@ fastify.post('/api/stripe/connect/create', async (request, reply) => {
     }
 });
 
-// Get account onboarding link (for restarting onboarding)
-fastify.get('/api/stripe/connect/:userId/onboard', async (request, reply) => {
+// Get account onboarding link - AUTH REQUIRED (own account)
+fastify.get('/api/stripe/connect/:userId/onboard', { preHandler: [requireAuth] }, async (request, reply) => {
+    if (!request.user) {
+        reply.status(401);
+        return { error: 'Authentication required' };
+    }
+
     const { userId } = request.params as { userId: string };
+
+    // CRITICAL: User can only access their own onboarding link
+    if (userId !== request.user.uid) {
+        reply.status(403);
+        return { error: 'Cannot access another user onboarding' };
+    }
+
     const accountId = StripeService.getConnectAccountId(userId);
 
     if (!accountId) {
@@ -1837,9 +1862,21 @@ fastify.get('/api/stripe/connect/:userId/onboard', async (request, reply) => {
     return { onboardingUrl: url };
 });
 
-// Get account status
-fastify.get('/api/stripe/connect/:userId/status', async (request, reply) => {
+// Get account status - AUTH REQUIRED (own account)
+fastify.get('/api/stripe/connect/:userId/status', { preHandler: [requireAuth] }, async (request, reply) => {
+    if (!request.user) {
+        reply.status(401);
+        return { error: 'Authentication required' };
+    }
+
     const { userId } = request.params as { userId: string };
+
+    // CRITICAL: User can only view their own account status
+    if (userId !== request.user.uid) {
+        reply.status(403);
+        return { error: 'Cannot view another user account status' };
+    }
+
     const status = await StripeService.getAccountStatus(userId);
 
     if (!status) {
@@ -2154,14 +2191,25 @@ fastify.get('/api/payouts/:hustlerId', { preHandler: [requireAuth] }, async (req
     };
 });
 
-// Get single payout details
-fastify.get('/api/payouts/detail/:payoutId', async (request, reply) => {
+// Get single payout details - AUTH REQUIRED (own payout or related party)
+fastify.get('/api/payouts/detail/:payoutId', { preHandler: [requireAuth] }, async (request, reply) => {
+    if (!request.user) {
+        reply.status(401);
+        return { error: 'Authentication required' };
+    }
+
     const { payoutId } = request.params as { payoutId: string };
     const payout = StripeService.getPayout(payoutId);
 
     if (!payout) {
         reply.status(404);
         return { error: 'Payout not found' };
+    }
+
+    // CRITICAL: Only hustler who received payout can view details
+    if (payout.hustlerId !== request.user.uid) {
+        reply.status(403);
+        return { error: 'Not authorized to view this payout' };
     }
 
     return payout;
