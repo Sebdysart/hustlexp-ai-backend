@@ -187,6 +187,15 @@ const SCHEMA_STATEMENTS = [
     CONSTRAINT payout_status_check CHECK (status IN ('pending', 'processing', 'completed', 'failed'))
   )`,
 
+  // Processed Stripe events table - CRITICAL for webhook idempotency
+  // Prevents double-processing of Stripe webhooks (double payouts, double state changes)
+  `CREATE TABLE IF NOT EXISTS processed_stripe_events (
+    event_id VARCHAR(255) PRIMARY KEY,
+    event_type VARCHAR(100) NOT NULL,
+    processed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    payload_hash VARCHAR(64)
+  )`,
+
   // Proof photos table - stores task completion evidence
   `CREATE TABLE IF NOT EXISTS proof_photos (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
