@@ -409,9 +409,22 @@ fastify.get('/ai/onboarding/referral/:userId', async (request, reply) => {
 // Frontend calls /api/onboarding/:userId/start instead of /ai/onboarding/start
 // ============================================
 
-fastify.post('/api/onboarding/:userId/start', async (request, reply) => {
+// SECURED: Start onboarding - requires auth, self-only
+fastify.post('/api/onboarding/:userId/start', { preHandler: [requireAuth] }, async (request, reply) => {
     try {
+        if (!request.user) {
+            reply.status(401);
+            return { error: 'Authentication required' };
+        }
+
         const { userId } = request.params as { userId: string };
+
+        // CRITICAL: User can only start their own onboarding
+        if (userId !== request.user.uid) {
+            reply.status(403);
+            return { error: 'Cannot start onboarding for another user' };
+        }
+
         const body = request.body as { referralCode?: string } | undefined;
         const result = await OnboardingService.startOnboarding(userId, body?.referralCode);
         return result;
@@ -422,10 +435,30 @@ fastify.post('/api/onboarding/:userId/start', async (request, reply) => {
     }
 });
 
-fastify.post('/api/onboarding/:userId/role', async (request, reply) => {
+// SECURED: Choose role - requires auth, self-only, NO admin escalation
+fastify.post('/api/onboarding/:userId/role', { preHandler: [requireAuth] }, async (request, reply) => {
     try {
+        if (!request.user) {
+            reply.status(401);
+            return { error: 'Authentication required' };
+        }
+
         const { userId } = request.params as { userId: string };
+
+        // CRITICAL: User can only change their own role
+        if (userId !== request.user.uid) {
+            reply.status(403);
+            return { error: 'Cannot change role for another user' };
+        }
+
         const body = request.body as { sessionId: string; role: 'hustler' | 'client' };
+
+        // CRITICAL: Only allow poster/hustler roles - NEVER admin via this endpoint
+        if (body.role !== 'hustler' && body.role !== 'client') {
+            reply.status(400);
+            return { error: 'Invalid role. Must be hustler or client' };
+        }
+
         const result = await OnboardingService.chooseRole(body.sessionId, body.role);
         return result;
     } catch (error) {

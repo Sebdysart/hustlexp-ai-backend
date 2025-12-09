@@ -97,6 +97,7 @@ export interface PayoutRecord {
 const escrowLedger = new Map<string, EscrowRecord>();
 const payoutLedger = new Map<string, PayoutRecord>();
 const connectAccounts = new Map<string, string>(); // userId -> stripeAccountId
+const processedEvents = new Set<string>(); // Webhook idempotency - event IDs already processed
 
 // ============================================
 // Stripe Service Class
@@ -537,9 +538,23 @@ class StripeServiceClass {
     }
 
     /**
-     * Handle webhook event
+     * Handle webhook event - WITH IDEMPOTENCY CHECK
      */
     async handleWebhookEvent(event: Stripe.Event): Promise<void> {
+        // CRITICAL: Idempotency check - prevent double processing
+        if (processedEvents.has(event.id)) {
+            serviceLogger.info({ eventId: event.id, type: event.type }, 'Webhook event already processed - skipping');
+            return;
+        }
+
+        // Mark as processed BEFORE applying changes (prevents race conditions)
+        processedEvents.add(event.id);
+
+        // TODO: Also persist to processed_stripe_events DB table for permanent record
+        // await sql`INSERT INTO processed_stripe_events (event_id, event_type) VALUES (${event.id}, ${event.type}) ON CONFLICT DO NOTHING`;
+
+        serviceLogger.info({ eventId: event.id, type: event.type }, 'Processing webhook event');
+
         switch (event.type) {
             case 'payout.paid': {
                 const payout = event.data.object as Stripe.Payout;
@@ -549,7 +564,7 @@ class StripeServiceClass {
                         record.status = 'completed';
                         record.completedAt = new Date();
                         payoutLedger.set(id, record);
-                        serviceLogger.info({ payoutId: id }, 'Payout completed');
+                        serviceLogger.info({ payoutId: id, eventId: event.id }, 'Payout completed');
                     }
                 }
                 break;
@@ -562,7 +577,7 @@ class StripeServiceClass {
                         record.status = 'failed';
                         record.failureReason = payout.failure_message || 'Unknown failure';
                         payoutLedger.set(id, record);
-                        serviceLogger.error({ payoutId: id, reason: record.failureReason }, 'Payout failed');
+                        serviceLogger.error({ payoutId: id, reason: record.failureReason, eventId: event.id }, 'Payout failed');
                     }
                 }
                 break;
@@ -574,13 +589,21 @@ class StripeServiceClass {
                     accountId: account.id,
                     chargesEnabled: account.charges_enabled,
                     payoutsEnabled: account.payouts_enabled,
+                    eventId: event.id,
                 }, 'Connect account updated');
                 break;
             }
 
             default:
-                serviceLogger.debug({ type: event.type }, 'Unhandled webhook event');
+                serviceLogger.debug({ type: event.type, eventId: event.id }, 'Unhandled webhook event');
         }
+    }
+
+    /**
+     * Check if event was already processed (for testing/debugging)
+     */
+    isEventProcessed(eventId: string): boolean {
+        return processedEvents.has(eventId);
     }
 }
 
