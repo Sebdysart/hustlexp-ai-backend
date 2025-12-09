@@ -12,6 +12,7 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.947.0",
     "@fastify/cors": "^9.0.1",
     "@neondatabase/serverless": "^0.9.5",
     "@upstash/ratelimit": "^2.0.4",
@@ -23,6 +24,7 @@
     "openai": "^4.68.0",
     "pino": "^9.4.0",
     "pino-pretty": "^11.2.2",
+    "stripe": "^20.0.0",
     "uuid": "^10.0.0",
     "zod": "^3.23.8"
   },
