@@ -2,26 +2,29 @@
  * Firebase Admin SDK Service
  * 
  * Initializes Firebase Admin and provides user verification.
+ * Token verification works with OR without service account credentials
+ * by using Google's public JWKS endpoint as fallback.
  */
 
 import admin from 'firebase-admin';
 import { logger } from '../utils/logger.js';
+import * as jose from 'jose';
 
-// Check if Firebase is configured
+// Check if Firebase is configured with full credentials
 const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID;
 const FIREBASE_CLIENT_EMAIL = process.env.FIREBASE_CLIENT_EMAIL;
 const FIREBASE_PRIVATE_KEY = process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n');
 
-const isFirebaseConfigured = !!(
+const isFirebaseFullyConfigured = !!(
     FIREBASE_PROJECT_ID &&
     FIREBASE_CLIENT_EMAIL &&
     FIREBASE_PRIVATE_KEY
 );
 
-// Initialize Firebase Admin
+// Initialize Firebase Admin (full mode if credentials available)
 let firebaseApp: admin.app.App | null = null;
 
-if (isFirebaseConfigured) {
+if (isFirebaseFullyConfigured) {
     try {
         firebaseApp = admin.initializeApp({
             credential: admin.credential.cert({
@@ -30,10 +33,13 @@ if (isFirebaseConfigured) {
                 privateKey: FIREBASE_PRIVATE_KEY,
             }),
         });
-        logger.info({ projectId: FIREBASE_PROJECT_ID }, 'Firebase Admin SDK initialized');
+        logger.info({ projectId: FIREBASE_PROJECT_ID }, 'Firebase Admin SDK initialized (full mode)');
     } catch (error) {
         logger.error({ error }, 'Failed to initialize Firebase Admin SDK');
     }
+} else if (FIREBASE_PROJECT_ID) {
+    // Partial config - can still verify tokens via JWKS
+    logger.info({ projectId: FIREBASE_PROJECT_ID }, 'Firebase configured for JWKS token verification only');
 } else {
     logger.warn('Firebase credentials not configured - authentication disabled');
 }
@@ -69,32 +75,75 @@ export interface DecodedToken {
     };
 }
 
+// Cache JWKS for performance
+let cachedJWKS: jose.JWTVerifyGetKey | null = null;
+
+async function getJWKS(): Promise<jose.JWTVerifyGetKey> {
+    if (!cachedJWKS) {
+        cachedJWKS = jose.createRemoteJWKSet(
+            new URL('https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com')
+        );
+    }
+    return cachedJWKS;
+}
+
 // ============================================
 // Firebase Service
 // ============================================
 
 class FirebaseServiceClass {
     /**
-     * Check if Firebase is available
+     * Check if Firebase is available for token verification
      */
     isAvailable(): boolean {
-        return firebaseApp !== null;
+        return firebaseApp !== null || !!FIREBASE_PROJECT_ID;
     }
 
     /**
      * Verify a Firebase ID token
+     * Uses Admin SDK if available, otherwise uses JWKS verification
      */
     async verifyIdToken(idToken: string): Promise<DecodedToken | null> {
-        if (!firebaseApp) {
-            logger.warn('Firebase not initialized - cannot verify token');
+        // Try Admin SDK first if available
+        if (firebaseApp) {
+            try {
+                const decodedToken = await admin.auth().verifyIdToken(idToken);
+                return decodedToken as DecodedToken;
+            } catch (error) {
+                logger.warn({ error }, 'Admin SDK token verification failed');
+                return null;
+            }
+        }
+
+        // Fallback to JWKS verification (no private key needed)
+        if (!FIREBASE_PROJECT_ID) {
+            logger.warn('No Firebase project ID - cannot verify token');
             return null;
         }
 
         try {
-            const decodedToken = await admin.auth().verifyIdToken(idToken);
-            return decodedToken as DecodedToken;
+            const JWKS = await getJWKS();
+            const { payload } = await jose.jwtVerify(idToken, JWKS, {
+                issuer: `https://securetoken.google.com/${FIREBASE_PROJECT_ID}`,
+                audience: FIREBASE_PROJECT_ID,
+            });
+
+            // Map to our DecodedToken interface
+            const decoded: DecodedToken = {
+                uid: payload.sub!,
+                email: payload.email as string | undefined,
+                email_verified: payload.email_verified as boolean | undefined,
+                name: payload.name as string | undefined,
+                auth_time: payload.auth_time as number,
+                iat: payload.iat!,
+                exp: payload.exp!,
+                firebase: payload.firebase as DecodedToken['firebase'],
+            };
+
+            logger.debug({ uid: decoded.uid }, 'Token verified via JWKS');
+            return decoded;
         } catch (error) {
-            logger.warn({ error }, 'Invalid Firebase ID token');
+            logger.warn({ error }, 'JWKS token verification failed');
             return null;
         }
     }
