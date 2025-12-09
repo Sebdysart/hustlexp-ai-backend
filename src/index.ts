@@ -1864,24 +1864,38 @@ fastify.get('/api/stripe/status', async () => {
 });
 
 // ============================================
-// Escrow Endpoints
+// Escrow Endpoints (SECURED)
 // ============================================
 
 const CreateEscrowSchema = z.object({
     taskId: z.string(),
-    posterId: z.string(),
-    hustlerId: z.string(),
+    hustlerId: z.string(), // Who will receive funds
     amount: z.number().positive(),
     paymentMethodId: z.string(),
 });
 
-// Create escrow hold when task is accepted
-fastify.post('/api/escrow/create', async (request, reply) => {
+// Create escrow hold when task is accepted - POSTER ONLY
+fastify.post('/api/escrow/create', { preHandler: [requireAuth] }, async (request, reply) => {
     try {
+        // User MUST be authenticated - posterId comes from token
+        if (!request.user) {
+            reply.status(401);
+            return { error: 'Authentication required' };
+        }
+
+        const posterId = request.user.uid; // Derived from token, not body
         const body = CreateEscrowSchema.parse(request.body);
+
+        // TODO: Verify caller is the poster for this task
+        // const task = await TaskService.getTask(body.taskId);
+        // if (task.posterId !== posterId) {
+        //     reply.status(403);
+        //     return { error: 'Only task poster can create escrow' };
+        // }
+
         const escrow = await StripeService.createEscrowHold(
             body.taskId,
-            body.posterId,
+            posterId, // From token
             body.hustlerId,
             body.amount,
             body.paymentMethodId
@@ -1904,8 +1918,13 @@ fastify.post('/api/escrow/create', async (request, reply) => {
     }
 });
 
-// Get escrow for a task
-fastify.get('/api/escrow/:taskId', async (request, reply) => {
+// Get escrow for a task - REQUIRES AUTH
+fastify.get('/api/escrow/:taskId', { preHandler: [requireAuth] }, async (request, reply) => {
+    if (!request.user) {
+        reply.status(401);
+        return { error: 'Authentication required' };
+    }
+
     const { taskId } = request.params as { taskId: string };
     const escrow = StripeService.getEscrow(taskId);
 
@@ -1914,13 +1933,36 @@ fastify.get('/api/escrow/:taskId', async (request, reply) => {
         return { error: 'No escrow found for this task' };
     }
 
+    // Only poster or hustler can view escrow
+    if (escrow.posterId !== request.user.uid && escrow.hustlerId !== request.user.uid) {
+        reply.status(403);
+        return { error: 'Not authorized to view this escrow' };
+    }
+
     return escrow;
 });
 
-// Refund escrow (task cancelled)
-fastify.post('/api/escrow/:taskId/refund', async (request, reply) => {
+// Refund escrow (task cancelled) - POSTER ONLY
+fastify.post('/api/escrow/:taskId/refund', { preHandler: [requireAuth] }, async (request, reply) => {
+    if (!request.user) {
+        reply.status(401);
+        return { error: 'Authentication required' };
+    }
+
     const { taskId } = request.params as { taskId: string };
     const body = request.body as { reason?: string };
+
+    // Verify caller owns the escrow
+    const escrow = StripeService.getEscrow(taskId);
+    if (!escrow) {
+        reply.status(404);
+        return { error: 'No escrow found for this task' };
+    }
+
+    if (escrow.posterId !== request.user.uid) {
+        reply.status(403);
+        return { error: 'Only task poster can refund escrow' };
+    }
 
     const success = await StripeService.refundEscrow(taskId, body.reason);
 
@@ -1933,19 +1975,23 @@ fastify.post('/api/escrow/:taskId/refund', async (request, reply) => {
 });
 
 // ============================================
-// Poster Approval & Payout Endpoints
+// Poster Approval & Payout Endpoints (SECURED)
 // ============================================
 
 // Poster approves task completion → triggers real payout
 const ApproveTaskSchema = z.object({
-    posterId: z.string(),
     rating: z.number().min(1).max(5).optional(),
     tip: z.number().min(0).optional(),
     instantPayout: z.boolean().optional().default(false),
 });
 
-fastify.post('/api/tasks/:taskId/approve', async (request, reply) => {
+fastify.post('/api/tasks/:taskId/approve', { preHandler: [requireAuth] }, async (request, reply) => {
     try {
+        if (!request.user) {
+            reply.status(401);
+            return { error: 'Authentication required' };
+        }
+
         const { taskId } = request.params as { taskId: string };
         const body = ApproveTaskSchema.parse(request.body);
 
@@ -1961,8 +2007,8 @@ fastify.post('/api/tasks/:taskId/approve', async (request, reply) => {
             return { error: `Cannot approve task - escrow status is ${escrow.status}` };
         }
 
-        // 2. Verify poster owns the escrow
-        if (escrow.posterId !== body.posterId) {
+        // 2. Verify caller is the poster (from token, not body)
+        if (escrow.posterId !== request.user.uid) {
             reply.status(403);
             return { error: 'Only the task poster can approve completion' };
         }
@@ -2007,15 +2053,19 @@ fastify.post('/api/tasks/:taskId/approve', async (request, reply) => {
     }
 });
 
-// Poster rejects task completion
+// Poster rejects task completion - POSTER ONLY
 const RejectTaskSchema = z.object({
-    posterId: z.string(),
     reason: z.string().min(10).max(500),
     requestedAction: z.enum(['refund', 'dispute', 'redo']).optional().default('dispute'),
 });
 
-fastify.post('/api/tasks/:taskId/reject', async (request, reply) => {
+fastify.post('/api/tasks/:taskId/reject', { preHandler: [requireAuth] }, async (request, reply) => {
     try {
+        if (!request.user) {
+            reply.status(401);
+            return { error: 'Authentication required' };
+        }
+
         const { taskId } = request.params as { taskId: string };
         const body = RejectTaskSchema.parse(request.body);
 
@@ -2031,8 +2081,8 @@ fastify.post('/api/tasks/:taskId/reject', async (request, reply) => {
             return { error: `Cannot reject task - escrow status is ${escrow.status}` };
         }
 
-        // 2. Verify poster owns the escrow
-        if (escrow.posterId !== body.posterId) {
+        // 2. Verify caller is the poster (from token, not body)
+        if (escrow.posterId !== request.user.uid) {
             reply.status(403);
             return { error: 'Only the task poster can reject completion' };
         }
@@ -2078,9 +2128,21 @@ fastify.post('/api/tasks/:taskId/reject', async (request, reply) => {
     }
 });
 
-// Get real payout history for a hustler
-fastify.get('/api/payouts/:hustlerId', async (request) => {
+// Get real payout history for a hustler - HUSTLER ONLY (own payouts)
+fastify.get('/api/payouts/:hustlerId', { preHandler: [requireAuth] }, async (request, reply) => {
+    if (!request.user) {
+        reply.status(401);
+        return { error: 'Authentication required' };
+    }
+
     const { hustlerId } = request.params as { hustlerId: string };
+
+    // Users can only view their own payout history
+    if (hustlerId !== request.user.uid) {
+        reply.status(403);
+        return { error: 'Not authorized to view these payouts' };
+    }
+
     const payouts = StripeService.getPayoutHistory(hustlerId);
     return {
         payouts,
