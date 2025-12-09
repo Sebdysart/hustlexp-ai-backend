@@ -5,12 +5,13 @@ import { logger } from '../utils/logger.js';
  * Database schema statements - each must be run individually for Neon serverless
  */
 const SCHEMA_STATEMENTS = [
-  // Users table
+  // Users table - roles: poster, hustler, admin
   `CREATE TABLE IF NOT EXISTS users (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    firebase_uid VARCHAR(128) UNIQUE,
     email VARCHAR(255) UNIQUE NOT NULL,
     name VARCHAR(255) NOT NULL,
-    role VARCHAR(50) NOT NULL DEFAULT 'client',
+    role VARCHAR(50) NOT NULL DEFAULT 'poster',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
   )`,

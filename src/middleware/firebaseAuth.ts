@@ -1,22 +1,24 @@
 /**
  * Firebase Authentication Middleware
  * 
- * Verifies Firebase ID tokens and attaches user info to requests.
- * Can be used as a Fastify preHandler.
+ * Verifies Firebase ID tokens via JWKS and attaches user info to requests.
+ * Roles are fetched from the database (UserService), NOT Firebase custom claims.
  */
 
 import type { FastifyRequest, FastifyReply } from 'fastify';
 import { FirebaseService, type DecodedToken } from '../services/FirebaseService.js';
+import { UserService, type UserRole, type DbUser } from '../services/UserService.js';
 import { logger } from '../utils/logger.js';
 
 // ============================================
 // Types
 // ============================================
 
-// Extend FastifyRequest to include user info
+// Extend FastifyRequest to include user info WITH ROLE
 declare module 'fastify' {
     interface FastifyRequest {
         user?: AuthenticatedUser;
+        dbUser?: DbUser;
     }
 }
 
@@ -30,6 +32,7 @@ export interface AuthenticatedUser {
     signInProvider: string;
     authTime: Date;
     tokenExpiry: Date;
+    role?: UserRole; // Role from database
 }
 
 // ============================================
@@ -59,9 +62,7 @@ function tokenToUser(token: DecodedToken): AuthenticatedUser {
         email: token.email,
         emailVerified: token.email_verified ?? false,
         name: token.name,
-        picture: token.picture,
-        phoneNumber: token.phone_number,
-        signInProvider: token.firebase.sign_in_provider,
+        signInProvider: token.firebase?.sign_in_provider || 'unknown',
         authTime: new Date(token.auth_time * 1000),
         tokenExpiry: new Date(token.exp * 1000),
     };
@@ -73,6 +74,7 @@ function tokenToUser(token: DecodedToken): AuthenticatedUser {
 
 /**
  * Require authentication - blocks request if not authenticated
+ * Also fetches user from database and attaches role
  */
 export async function requireAuth(
     request: FastifyRequest,
@@ -91,6 +93,7 @@ export async function requireAuth(
                 signInProvider: 'development',
                 authTime: new Date(),
                 tokenExpiry: new Date(Date.now() + 3600000),
+                role: 'poster',
             };
             return;
         }
@@ -113,7 +116,7 @@ export async function requireAuth(
         return;
     }
 
-    // Verify token
+    // Verify token via JWKS
     const decodedToken = await FirebaseService.verifyIdToken(token);
 
     if (!decodedToken) {
@@ -124,10 +127,28 @@ export async function requireAuth(
         return;
     }
 
-    // Attach user to request
-    request.user = tokenToUser(decodedToken);
+    // Convert to user object
+    const user = tokenToUser(decodedToken);
 
-    logger.debug({ uid: request.user.uid }, 'Request authenticated');
+    // Fetch or create user in database to get role
+    const dbUser = await UserService.getOrCreate(
+        decodedToken.uid,
+        decodedToken.email || `${decodedToken.uid}@hustlexp.com`,
+        decodedToken.name
+    );
+
+    if (dbUser) {
+        user.role = dbUser.role;
+        request.dbUser = dbUser;
+    } else {
+        // Default to poster if can't get from DB
+        user.role = 'poster';
+    }
+
+    // Attach user to request
+    request.user = user;
+
+    logger.debug({ uid: user.uid, role: user.role }, 'Request authenticated with role');
 }
 
 /**
@@ -150,22 +171,30 @@ export async function optionalAuth(
     const decodedToken = await FirebaseService.verifyIdToken(token);
 
     if (decodedToken) {
-        request.user = tokenToUser(decodedToken);
-        logger.debug({ uid: request.user.uid }, 'Optional auth - user attached');
+        const user = tokenToUser(decodedToken);
+
+        // Fetch role from database
+        const dbUser = await UserService.getByFirebaseUid(decodedToken.uid);
+        if (dbUser) {
+            user.role = dbUser.role;
+            request.dbUser = dbUser;
+        }
+
+        request.user = user;
+        logger.debug({ uid: user.uid, role: user.role }, 'Optional auth - user attached');
     }
 }
 
 /**
- * Require specific role (from custom claims)
+ * Require specific role - uses database role, NOT Firebase custom claims
  */
-export function requireRole(role: string) {
+export function requireRole(role: UserRole) {
     return async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
         // First ensure authenticated
         await requireAuth(request, reply);
 
         if (reply.sent) return; // Auth already failed
 
-        // Check role in custom claims
         const user = request.user;
         if (!user) {
             reply.status(403).send({
@@ -175,14 +204,26 @@ export function requireRole(role: string) {
             return;
         }
 
-        // Get full user info to check claims
-        const fullUser = await FirebaseService.getUser(user.uid);
-        const userRole = fullUser?.customClaims?.role as string | undefined;
+        // Check role from database (already attached by requireAuth)
+        const userRole = user.role;
 
-        if (userRole !== role && userRole !== 'admin') {
+        // Admin can do anything
+        if (userRole === 'admin') {
+            return;
+        }
+
+        if (userRole !== role) {
+            logger.warn({
+                uid: user.uid,
+                userRole,
+                requiredRole: role
+            }, 'Role check failed');
+
             reply.status(403).send({
-                error: `Role '${role}' required`,
+                error: 'FORBIDDEN',
                 code: 'INSUFFICIENT_ROLE',
+                userRole: userRole,
+                requiredRole: role,
             });
             return;
         }
@@ -195,3 +236,4 @@ export function requireRole(role: string) {
 export function isAuthEnabled(): boolean {
     return FirebaseService.isAvailable();
 }
+
