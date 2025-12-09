@@ -3,9 +3,26 @@ import type { GenerateOptions, GenerateResult, Message } from '../../types/index
 import { logAIEvent } from '../../utils/aiEventLogger.js';
 import { aiLogger } from '../../utils/logger.js';
 
-const client = new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY,
-});
+// Lazy initialization - only create client when needed
+let client: OpenAI | null = null;
+
+function getClient(): OpenAI {
+    if (!client) {
+        const apiKey = process.env.OPENAI_API_KEY;
+        if (!apiKey) {
+            throw new Error('OPENAI_API_KEY is not configured');
+        }
+        client = new OpenAI({ apiKey });
+    }
+    return client;
+}
+
+/**
+ * Check if OpenAI is configured
+ */
+export function isConfigured(): boolean {
+    return !!process.env.OPENAI_API_KEY;
+}
 
 /**
  * OpenAI GPT-4o client for high-stakes operations:
@@ -16,7 +33,18 @@ const client = new OpenAI({
 export async function generate(options: GenerateOptions): Promise<GenerateResult> {
     const startTime = Date.now();
 
+    // Check if configured before attempting
+    if (!isConfigured()) {
+        aiLogger.warn('OpenAI not configured, returning fallback response');
+        return {
+            content: 'AI service temporarily unavailable. Please try again later.',
+            tokensUsed: { input: 0, output: 0 },
+            latencyMs: 0,
+        };
+    }
+
     try {
+        const openai = getClient();
         const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
             { role: 'system', content: options.system },
             ...options.messages.map((m) => ({
@@ -25,7 +53,7 @@ export async function generate(options: GenerateOptions): Promise<GenerateResult
             })),
         ];
 
-        const response = await client.chat.completions.create({
+        const response = await openai.chat.completions.create({
             model: 'gpt-4o',
             messages,
             max_tokens: options.maxTokens || 2048,
@@ -68,4 +96,5 @@ export async function generate(options: GenerateOptions): Promise<GenerateResult
     }
 }
 
-export const openaiClient = { generate };
+export const openaiClient = { generate, isConfigured };
+

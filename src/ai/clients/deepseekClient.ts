@@ -3,11 +3,29 @@ import type { GenerateOptions, GenerateResult } from '../../types/index.js';
 import { logAIEvent } from '../../utils/aiEventLogger.js';
 import { aiLogger } from '../../utils/logger.js';
 
-// DeepSeek uses OpenAI-compatible API
-const client = new OpenAI({
-    apiKey: process.env.DEEPSEEK_API_KEY,
-    baseURL: 'https://api.deepseek.com/v1',
-});
+// Lazy initialization - only create client when needed
+let client: OpenAI | null = null;
+
+function getClient(): OpenAI {
+    if (!client) {
+        const apiKey = process.env.DEEPSEEK_API_KEY;
+        if (!apiKey) {
+            throw new Error('DEEPSEEK_API_KEY is not configured');
+        }
+        client = new OpenAI({
+            apiKey,
+            baseURL: 'https://api.deepseek.com/v1',
+        });
+    }
+    return client;
+}
+
+/**
+ * Check if DeepSeek is configured
+ */
+export function isConfigured(): boolean {
+    return !!process.env.DEEPSEEK_API_KEY;
+}
 
 /**
  * DeepSeek client for reasoning-heavy tasks:
@@ -18,7 +36,17 @@ const client = new OpenAI({
 export async function generate(options: GenerateOptions): Promise<GenerateResult> {
     const startTime = Date.now();
 
+    if (!isConfigured()) {
+        aiLogger.warn('DeepSeek not configured, returning fallback response');
+        return {
+            content: 'AI service temporarily unavailable. Please try again later.',
+            tokensUsed: { input: 0, output: 0 },
+            latencyMs: 0,
+        };
+    }
+
     try {
+        const deepseek = getClient();
         const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
             { role: 'system', content: options.system },
             ...options.messages.map((m) => ({
@@ -27,7 +55,7 @@ export async function generate(options: GenerateOptions): Promise<GenerateResult
             })),
         ];
 
-        const response = await client.chat.completions.create({
+        const response = await deepseek.chat.completions.create({
             model: 'deepseek-chat',
             messages,
             max_tokens: options.maxTokens || 2048,
@@ -70,4 +98,5 @@ export async function generate(options: GenerateOptions): Promise<GenerateResult
     }
 }
 
-export const deepseekClient = { generate };
+export const deepseekClient = { generate, isConfigured };
+
