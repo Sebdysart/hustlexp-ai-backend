@@ -769,6 +769,211 @@ fastify.get('/api/proof/feed/:hustlerId', async (request) => {
 });
 
 // ============================================
+// Validated Proof System (Phase B) - GPS Required
+// ============================================
+
+import { ProofValidationService, type GPSLocation } from './services/ProofValidationService.js';
+
+// Submit validated proof with GPS
+const ValidatedProofSchema = z.object({
+    taskId: z.string(),
+    hustlerId: z.string(),
+    photoData: z.string(), // base64 encoded
+    photoType: z.enum(['before', 'during', 'after', 'result']),
+    gps: z.object({
+        latitude: z.number().min(-90).max(90),
+        longitude: z.number().min(-180).max(180),
+        accuracy: z.number().optional(),
+        timestamp: z.string().optional(),
+    }),
+    caption: z.string().max(500).optional(),
+});
+
+fastify.post('/api/proof/validated/submit', async (request, reply) => {
+    try {
+        const body = ValidatedProofSchema.parse(request.body);
+
+        const result = await ProofValidationService.submitProof({
+            taskId: body.taskId,
+            hustlerId: body.hustlerId,
+            photoData: body.photoData,
+            photoType: body.photoType,
+            gps: {
+                latitude: body.gps.latitude,
+                longitude: body.gps.longitude,
+                accuracy: body.gps.accuracy,
+                timestamp: body.gps.timestamp ? new Date(body.gps.timestamp) : undefined,
+            },
+            caption: body.caption,
+        });
+
+        if (!result.success) {
+            reply.status(400);
+            return {
+                error: result.error,
+                verificationStatus: result.verificationStatus,
+            };
+        }
+
+        return {
+            success: true,
+            proof: result.proof,
+            session: result.session,
+            verificationStatus: result.verificationStatus,
+        };
+    } catch (error) {
+        logger.error({ error }, 'Validated proof submission error');
+        if (error instanceof z.ZodError) {
+            reply.status(400);
+            return { error: 'Invalid request', details: error.errors };
+        }
+        reply.status(500);
+        return { error: 'Failed to submit proof' };
+    }
+});
+
+// Get task verification status (for poster review screen)
+fastify.get('/api/proof/validated/:taskId/status', async (request) => {
+    const { taskId } = request.params as { taskId: string };
+    return ProofValidationService.getTaskVerificationStatus(taskId);
+});
+
+// Check if task is ready for approval
+fastify.get('/api/proof/validated/:taskId/can-approve', async (request) => {
+    const { taskId } = request.params as { taskId: string };
+    const result = ProofValidationService.canApprove(taskId);
+    return {
+        canApprove: result.canApprove,
+        reason: result.reason,
+        session: result.session ? {
+            sessionId: result.session.sessionId,
+            status: result.session.status,
+            proofCount: result.session.proofs.length,
+            requiredTypes: result.session.requiredProofTypes,
+            completedTypes: result.session.completedTypes,
+        } : null,
+    };
+});
+
+// Poster approves task with validated proofs → triggers real payout
+const PosterApproveSchema = z.object({
+    posterId: z.string(),
+    rating: z.number().min(1).max(5).optional(),
+    tip: z.number().min(0).optional(),
+    instantPayout: z.boolean().optional().default(false),
+});
+
+fastify.post('/api/proof/validated/:taskId/approve', async (request, reply) => {
+    try {
+        const { taskId } = request.params as { taskId: string };
+        const body = PosterApproveSchema.parse(request.body);
+
+        const result = await ProofValidationService.approveTask(taskId, body.posterId, {
+            rating: body.rating,
+            tip: body.tip,
+            instantPayout: body.instantPayout,
+        });
+
+        if (!result.success) {
+            reply.status(400);
+            return { error: result.message };
+        }
+
+        return result;
+    } catch (error) {
+        logger.error({ error }, 'Proof approval error');
+        if (error instanceof z.ZodError) {
+            reply.status(400);
+            return { error: 'Invalid request', details: error.errors };
+        }
+        reply.status(500);
+        return { error: 'Failed to approve task' };
+    }
+});
+
+// Poster rejects task → refund or dispute
+const PosterRejectSchema = z.object({
+    posterId: z.string(),
+    reason: z.string().min(10).max(500),
+    action: z.enum(['refund', 'dispute', 'redo']).optional().default('dispute'),
+});
+
+fastify.post('/api/proof/validated/:taskId/reject', async (request, reply) => {
+    try {
+        const { taskId } = request.params as { taskId: string };
+        const body = PosterRejectSchema.parse(request.body);
+
+        const result = await ProofValidationService.rejectTask(
+            taskId,
+            body.posterId,
+            body.reason,
+            body.action
+        );
+
+        if (!result.success) {
+            reply.status(400);
+            return { error: result.message };
+        }
+
+        return result;
+    } catch (error) {
+        logger.error({ error }, 'Proof rejection error');
+        if (error instanceof z.ZodError) {
+            reply.status(400);
+            return { error: 'Invalid request', details: error.errors };
+        }
+        reply.status(500);
+        return { error: 'Failed to reject task' };
+    }
+});
+
+// Get all proofs for a task (for poster review)
+fastify.get('/api/proof/validated/:taskId/proofs', async (request) => {
+    const { taskId } = request.params as { taskId: string };
+    const proofs = ProofValidationService.getProofsForTask(taskId);
+    return {
+        proofs: proofs.map(p => ({
+            id: p.id,
+            photoUrl: p.photoUrl,
+            photoType: p.photoType,
+            latitude: p.latitude,
+            longitude: p.longitude,
+            neighborhood: p.neighborhood,
+            verificationStatus: p.verificationStatus,
+            gpsValidated: p.gpsValidated,
+            caption: p.caption,
+            createdAt: p.createdAt,
+        })),
+        count: proofs.length,
+    };
+});
+
+// Get moderation logs for a task
+fastify.get('/api/proof/validated/:taskId/moderation-logs', async (request) => {
+    const { taskId } = request.params as { taskId: string };
+    const logs = ProofValidationService.getModerationLogs(taskId);
+    return { logs, count: logs.length };
+});
+
+// Validate GPS location (utility endpoint)
+fastify.post('/api/proof/validate-gps', async (request) => {
+    const { latitude, longitude } = request.body as { latitude: number; longitude: number };
+    const result = ProofValidationService.isWithinSeattle(latitude, longitude);
+    const neighborhood = ProofValidationService.getNeighborhood(latitude, longitude);
+
+    return {
+        isWithinSeattle: result,
+        neighborhood,
+        bounds: {
+            north: 47.7341,
+            south: 47.4919,
+            east: -122.2244,
+            west: -122.4596,
+        },
+    };
+});
+
+// ============================================
 // Pricing Engine Endpoints
 // ============================================
 
@@ -1583,15 +1788,1038 @@ fastify.get('/api/match/test-candidates', async (request) => {
 });
 
 // ============================================
-// Error Tracking Endpoints
+// Stripe Connect & Real Payout Endpoints
 // ============================================
 
-// Get recent errors (admin)
-fastify.get('/api/errors/recent', async (request) => {
-    const { limit } = request.query as { limit?: string };
-    const events = ErrorTracker.getRecentEvents(parseInt(limit || '10'));
-    return { events, enabled: ErrorTracker.isEnabled() };
+import { StripeService } from './services/StripeService.js';
+
+// Create Stripe Connect account for hustler
+const CreateConnectAccountSchema = z.object({
+    userId: z.string(),
+    email: z.string().email(),
+    name: z.string().optional(),
+    phone: z.string().optional(),
 });
+
+fastify.post('/api/stripe/connect/create', async (request, reply) => {
+    try {
+        const body = CreateConnectAccountSchema.parse(request.body);
+        const result = await StripeService.createConnectAccount(
+            body.userId,
+            body.email,
+            { name: body.name, phone: body.phone }
+        );
+
+        if (!result.success) {
+            reply.status(400);
+            return { error: result.error };
+        }
+
+        return result;
+    } catch (error) {
+        logger.error({ error }, 'Create Connect account error');
+        reply.status(500);
+        return { error: 'Failed to create payment account' };
+    }
+});
+
+// Get account onboarding link (for restarting onboarding)
+fastify.get('/api/stripe/connect/:userId/onboard', async (request, reply) => {
+    const { userId } = request.params as { userId: string };
+    const accountId = StripeService.getConnectAccountId(userId);
+
+    if (!accountId) {
+        reply.status(404);
+        return { error: 'No payment account found' };
+    }
+
+    const url = await StripeService.createAccountLink(accountId);
+    return { onboardingUrl: url };
+});
+
+// Get account status
+fastify.get('/api/stripe/connect/:userId/status', async (request, reply) => {
+    const { userId } = request.params as { userId: string };
+    const status = await StripeService.getAccountStatus(userId);
+
+    if (!status) {
+        return {
+            status: 'none',
+            chargesEnabled: false,
+            payoutsEnabled: false,
+            detailsSubmitted: false,
+            requirements: [],
+        };
+    }
+
+    return status;
+});
+
+// Check if Stripe is available
+fastify.get('/api/stripe/status', async () => {
+    return {
+        available: StripeService.isAvailable(),
+        escrowBalance: StripeService.getEscrowBalance(),
+    };
+});
+
+// ============================================
+// Escrow Endpoints
+// ============================================
+
+const CreateEscrowSchema = z.object({
+    taskId: z.string(),
+    posterId: z.string(),
+    hustlerId: z.string(),
+    amount: z.number().positive(),
+    paymentMethodId: z.string(),
+});
+
+// Create escrow hold when task is accepted
+fastify.post('/api/escrow/create', async (request, reply) => {
+    try {
+        const body = CreateEscrowSchema.parse(request.body);
+        const escrow = await StripeService.createEscrowHold(
+            body.taskId,
+            body.posterId,
+            body.hustlerId,
+            body.amount,
+            body.paymentMethodId
+        );
+
+        if (!escrow) {
+            reply.status(400);
+            return { error: 'Failed to create escrow' };
+        }
+
+        return escrow;
+    } catch (error) {
+        logger.error({ error }, 'Create escrow error');
+        if (error instanceof z.ZodError) {
+            reply.status(400);
+            return { error: 'Invalid request', details: error.errors };
+        }
+        reply.status(500);
+        return { error: 'Failed to create escrow hold' };
+    }
+});
+
+// Get escrow for a task
+fastify.get('/api/escrow/:taskId', async (request, reply) => {
+    const { taskId } = request.params as { taskId: string };
+    const escrow = StripeService.getEscrow(taskId);
+
+    if (!escrow) {
+        reply.status(404);
+        return { error: 'No escrow found for this task' };
+    }
+
+    return escrow;
+});
+
+// Refund escrow (task cancelled)
+fastify.post('/api/escrow/:taskId/refund', async (request, reply) => {
+    const { taskId } = request.params as { taskId: string };
+    const body = request.body as { reason?: string };
+
+    const success = await StripeService.refundEscrow(taskId, body.reason);
+
+    if (!success) {
+        reply.status(400);
+        return { error: 'Failed to refund escrow' };
+    }
+
+    return { success: true, message: 'Escrow refunded' };
+});
+
+// ============================================
+// Poster Approval & Payout Endpoints
+// ============================================
+
+// Poster approves task completion → triggers real payout
+const ApproveTaskSchema = z.object({
+    posterId: z.string(),
+    rating: z.number().min(1).max(5).optional(),
+    tip: z.number().min(0).optional(),
+    instantPayout: z.boolean().optional().default(false),
+});
+
+fastify.post('/api/tasks/:taskId/approve', async (request, reply) => {
+    try {
+        const { taskId } = request.params as { taskId: string };
+        const body = ApproveTaskSchema.parse(request.body);
+
+        // 1. Verify escrow exists and is held
+        const escrow = StripeService.getEscrow(taskId);
+        if (!escrow) {
+            reply.status(404);
+            return { error: 'No escrow found for this task' };
+        }
+
+        if (escrow.status !== 'held') {
+            reply.status(400);
+            return { error: `Cannot approve task - escrow status is ${escrow.status}` };
+        }
+
+        // 2. Verify poster owns the escrow
+        if (escrow.posterId !== body.posterId) {
+            reply.status(403);
+            return { error: 'Only the task poster can approve completion' };
+        }
+
+        // 3. Release escrow and create real payout
+        const payoutType = body.instantPayout ? 'instant' : 'standard';
+        const payout = await StripeService.releaseEscrow(taskId, payoutType);
+
+        if (!payout) {
+            reply.status(500);
+            return { error: 'Failed to process payout' };
+        }
+
+        // 4. Update task status (would be in TaskService in production)
+        logger.info({
+            taskId,
+            payoutId: payout.id,
+            amount: payout.netAmount,
+            type: payout.type,
+        }, 'Task approved and payout initiated');
+
+        return {
+            success: true,
+            message: 'Task approved, payout initiated',
+            payout: {
+                id: payout.id,
+                amount: payout.amount,
+                fee: payout.fee,
+                netAmount: payout.netAmount,
+                type: payout.type,
+                status: payout.status,
+            },
+        };
+    } catch (error) {
+        logger.error({ error }, 'Task approval error');
+        if (error instanceof z.ZodError) {
+            reply.status(400);
+            return { error: 'Invalid request', details: error.errors };
+        }
+        reply.status(500);
+        return { error: 'Failed to approve task' };
+    }
+});
+
+// Poster rejects task completion
+const RejectTaskSchema = z.object({
+    posterId: z.string(),
+    reason: z.string().min(10).max(500),
+    requestedAction: z.enum(['refund', 'dispute', 'redo']).optional().default('dispute'),
+});
+
+fastify.post('/api/tasks/:taskId/reject', async (request, reply) => {
+    try {
+        const { taskId } = request.params as { taskId: string };
+        const body = RejectTaskSchema.parse(request.body);
+
+        // 1. Verify escrow exists
+        const escrow = StripeService.getEscrow(taskId);
+        if (!escrow) {
+            reply.status(404);
+            return { error: 'No escrow found for this task' };
+        }
+
+        if (escrow.status !== 'held') {
+            reply.status(400);
+            return { error: `Cannot reject task - escrow status is ${escrow.status}` };
+        }
+
+        // 2. Verify poster owns the escrow
+        if (escrow.posterId !== body.posterId) {
+            reply.status(403);
+            return { error: 'Only the task poster can reject completion' };
+        }
+
+        // 3. Handle based on requested action
+        if (body.requestedAction === 'refund') {
+            // Full refund
+            const success = await StripeService.refundEscrow(taskId, body.reason);
+            if (!success) {
+                reply.status(500);
+                return { error: 'Failed to process refund' };
+            }
+
+            return {
+                success: true,
+                action: 'refund',
+                message: 'Task rejected, payment refunded',
+            };
+        } else {
+            // Dispute or redo - keep funds in escrow, create dispute record
+            // In production, this would create a dispute record for manual review
+            logger.warn({
+                taskId,
+                action: body.requestedAction,
+                reason: body.reason,
+            }, 'Task rejection - dispute created');
+
+            return {
+                success: true,
+                action: body.requestedAction,
+                message: `Task rejected, ${body.requestedAction} initiated. Support will review.`,
+                disputeId: `dispute_${Date.now()}`,
+            };
+        }
+    } catch (error) {
+        logger.error({ error }, 'Task rejection error');
+        if (error instanceof z.ZodError) {
+            reply.status(400);
+            return { error: 'Invalid request', details: error.errors };
+        }
+        reply.status(500);
+        return { error: 'Failed to reject task' };
+    }
+});
+
+// Get real payout history for a hustler
+fastify.get('/api/payouts/:hustlerId', async (request) => {
+    const { hustlerId } = request.params as { hustlerId: string };
+    const payouts = StripeService.getPayoutHistory(hustlerId);
+    return {
+        payouts,
+        count: payouts.length,
+        totalEarned: payouts
+            .filter(p => p.status === 'completed')
+            .reduce((sum, p) => sum + p.netAmount, 0),
+    };
+});
+
+// Get single payout details
+fastify.get('/api/payouts/detail/:payoutId', async (request, reply) => {
+    const { payoutId } = request.params as { payoutId: string };
+    const payout = StripeService.getPayout(payoutId);
+
+    if (!payout) {
+        reply.status(404);
+        return { error: 'Payout not found' };
+    }
+
+    return payout;
+});
+
+// ============================================
+// Stripe Webhook Endpoint
+// ============================================
+
+fastify.post('/api/stripe/webhook', {
+    config: {
+        rawBody: true,
+    },
+}, async (request, reply) => {
+    const signature = request.headers['stripe-signature'] as string;
+
+    if (!signature) {
+        reply.status(400);
+        return { error: 'Missing stripe-signature header' };
+    }
+
+    const event = StripeService.verifyWebhook(
+        request.body as string | Buffer,
+        signature
+    );
+
+    if (!event) {
+        reply.status(400);
+        return { error: 'Invalid webhook signature' };
+    }
+
+    await StripeService.handleWebhookEvent(event);
+
+    return { received: true };
+});
+
+// ============================================
+// Admin Endpoints - Phase C (Disputes, Safety, Strikes)
+// ============================================
+
+import { DisputeService, type DisputeStatus } from './services/DisputeService.js';
+import { SafetyService } from './services/SafetyService.js';
+import { requireRole } from './middleware/firebaseAuth.js';
+
+// All admin endpoints require 'admin' role
+
+// List disputes with filters
+fastify.get('/api/admin/disputes', { preHandler: [requireRole('admin')] }, async (request) => {
+    const { status, posterId, hustlerId, limit } = request.query as {
+        status?: DisputeStatus;
+        posterId?: string;
+        hustlerId?: string;
+        limit?: string;
+    };
+
+    const disputes = DisputeService.listDisputes({
+        status,
+        posterId,
+        hustlerId,
+        limit: limit ? parseInt(limit) : 50,
+    });
+
+    return {
+        disputes,
+        count: disputes.length,
+        stats: DisputeService.getStats(),
+    };
+});
+
+// Get single dispute with full details
+fastify.get('/api/admin/disputes/:disputeId', { preHandler: [requireRole('admin')] }, async (request, reply) => {
+    const { disputeId } = request.params as { disputeId: string };
+    const dispute = DisputeService.getDispute(disputeId);
+
+    if (!dispute) {
+        reply.status(404);
+        return { error: 'Dispute not found' };
+    }
+
+    // Get related data
+    const escrow = StripeService.getEscrow(dispute.taskId);
+    const proofs = ProofValidationService.getProofsForTask(dispute.taskId);
+    const moderationLogs = SafetyService.getModerationLogs({ taskId: dispute.taskId });
+    const hustlerStrikes = DisputeService.getUserStrikes(dispute.hustlerId);
+    const posterStrikes = DisputeService.getUserStrikes(dispute.posterId);
+
+    return {
+        dispute,
+        escrow,
+        proofs,
+        moderationLogs,
+        hustlerStrikes: hustlerStrikes.length,
+        posterStrikes: posterStrikes.length,
+    };
+});
+
+// Resolve dispute (admin action)
+const ResolveDisputeSchema = z.object({
+    resolution: z.enum(['refund', 'payout', 'split']),
+    resolutionNote: z.string().optional(),
+    splitAmountHustler: z.number().optional(),
+    splitAmountPoster: z.number().optional(),
+});
+
+fastify.post('/api/admin/disputes/:disputeId/resolve', { preHandler: [requireRole('admin')] }, async (request, reply) => {
+    try {
+        const { disputeId } = request.params as { disputeId: string };
+        const body = ResolveDisputeSchema.parse(request.body);
+        const adminId = (request as { user?: { uid?: string } }).user?.uid || 'admin';
+
+        const result = await DisputeService.resolveDispute(
+            disputeId,
+            adminId,
+            body.resolution,
+            {
+                resolutionNote: body.resolutionNote,
+                splitAmountHustler: body.splitAmountHustler,
+                splitAmountPoster: body.splitAmountPoster,
+            }
+        );
+
+        if (!result.success) {
+            reply.status(400);
+            return { error: result.message };
+        }
+
+        return result;
+    } catch (error) {
+        logger.error({ error }, 'Dispute resolution error');
+        if (error instanceof z.ZodError) {
+            reply.status(400);
+            return { error: 'Invalid request', details: error.errors };
+        }
+        reply.status(500);
+        return { error: 'Failed to resolve dispute' };
+    }
+});
+
+// Hustler submits response to dispute
+const HustlerResponseSchema = z.object({
+    response: z.string().min(10).max(1000),
+});
+
+fastify.post('/api/disputes/:disputeId/respond', async (request, reply) => {
+    try {
+        const { disputeId } = request.params as { disputeId: string };
+        const body = HustlerResponseSchema.parse(request.body);
+        const hustlerId = (request as { user?: { uid?: string } }).user?.uid;
+
+        if (!hustlerId) {
+            reply.status(401);
+            return { error: 'Authentication required' };
+        }
+
+        const dispute = DisputeService.submitHustlerResponse(disputeId, hustlerId, body.response);
+
+        if (!dispute) {
+            reply.status(400);
+            return { error: 'Could not submit response' };
+        }
+
+        return { success: true, dispute };
+    } catch (error) {
+        logger.error({ error }, 'Dispute response error');
+        if (error instanceof z.ZodError) {
+            reply.status(400);
+            return { error: 'Invalid request', details: error.errors };
+        }
+        reply.status(500);
+        return { error: 'Failed to submit response' };
+    }
+});
+
+// Get moderation logs with filters
+fastify.get('/api/admin/moderation/logs', { preHandler: [requireRole('admin')] }, async (request) => {
+    const { userId, taskId, type, severity, limit } = request.query as {
+        userId?: string;
+        taskId?: string;
+        type?: string;
+        severity?: 'info' | 'warn' | 'critical';
+        limit?: string;
+    };
+
+    const logs = SafetyService.getModerationLogs({
+        userId,
+        taskId,
+        type: type as any,
+        severity,
+        limit: limit ? parseInt(limit) : 100,
+    });
+
+    return {
+        logs,
+        count: logs.length,
+        stats: SafetyService.getStats(),
+    };
+});
+
+// Get user strikes
+fastify.get('/api/admin/user/:userId/strikes', { preHandler: [requireRole('admin')] }, async (request) => {
+    const { userId } = request.params as { userId: string };
+    const strikes = DisputeService.getUserStrikes(userId);
+    const suspension = DisputeService.isUserSuspended(userId);
+
+    return {
+        strikes,
+        count: strikes.length,
+        suspension,
+    };
+});
+
+// Add manual strike (admin)
+const AddStrikeSchema = z.object({
+    reason: z.string().min(5),
+    severity: z.number().min(1).max(3),
+    taskId: z.string().optional(),
+});
+
+fastify.post('/api/admin/user/:userId/strikes', { preHandler: [requireRole('admin')] }, async (request, reply) => {
+    try {
+        const { userId } = request.params as { userId: string };
+        const body = AddStrikeSchema.parse(request.body);
+
+        const strike = DisputeService.addStrike(
+            userId,
+            body.reason,
+            body.severity as 1 | 2 | 3,
+            'manual',
+            { taskId: body.taskId }
+        );
+
+        const suspension = DisputeService.isUserSuspended(userId);
+
+        return {
+            strike,
+            suspension,
+        };
+    } catch (error) {
+        logger.error({ error }, 'Add strike error');
+        if (error instanceof z.ZodError) {
+            reply.status(400);
+            return { error: 'Invalid request', details: error.errors };
+        }
+        reply.status(500);
+        return { error: 'Failed to add strike' };
+    }
+});
+
+// Unsuspend user (admin)
+fastify.post('/api/admin/user/:userId/unsuspend', { preHandler: [requireRole('admin')] }, async (request, reply) => {
+    const { userId } = request.params as { userId: string };
+    const adminId = (request as { user?: { uid?: string } }).user?.uid || 'admin';
+
+    const success = DisputeService.unsuspendUser(userId, adminId);
+
+    if (!success) {
+        reply.status(400);
+        return { error: 'User was not suspended' };
+    }
+
+    return { success: true, message: 'User unsuspended' };
+});
+
+// Check user suspension status (public, for app use)
+fastify.get('/api/user/:userId/suspension', async (request) => {
+    const { userId } = request.params as { userId: string };
+    return DisputeService.isUserSuspended(userId);
+});
+
+// Safety stats (admin)
+fastify.get('/api/admin/safety/stats', { preHandler: [requireRole('admin')] }, async () => {
+    return {
+        moderation: SafetyService.getStats(),
+        disputes: DisputeService.getStats(),
+    };
+});
+
+// ============================================
+// Admin Insights API - Phase D (Metrics & Analytics)
+// ============================================
+
+import { MetricsService } from './services/MetricsService.js';
+import { EventLogger, type EventType } from './utils/EventLogger.js';
+
+// Parse date range from query params
+function parseDateRange(query: { since?: string; until?: string }): { since?: Date; until?: Date } {
+    return {
+        since: query.since ? new Date(query.since) : undefined,
+        until: query.until ? new Date(query.until) : undefined,
+    };
+}
+
+// Get global funnel metrics
+fastify.get('/api/admin/metrics/funnel', { preHandler: [requireRole('admin')] }, async (request) => {
+    const range = parseDateRange(request.query as { since?: string; until?: string });
+    const funnel = MetricsService.getGlobalFunnel(range);
+
+    return {
+        ...funnel,
+        range: {
+            since: range.since?.toISOString(),
+            until: range.until?.toISOString(),
+        },
+    };
+});
+
+// Get zone health metrics
+fastify.get('/api/admin/metrics/zones', { preHandler: [requireRole('admin')] }, async (request) => {
+    const range = parseDateRange(request.query as { since?: string; until?: string });
+    const zones = MetricsService.getZoneHealth(range);
+
+    return {
+        zones,
+        count: zones.length,
+        range: {
+            since: range.since?.toISOString(),
+            until: range.until?.toISOString(),
+        },
+    };
+});
+
+// Get AI metrics summary
+fastify.get('/api/admin/metrics/ai', { preHandler: [requireRole('admin')] }, async (request) => {
+    const range = parseDateRange(request.query as { since?: string; until?: string });
+    const summary = MetricsService.getAIMetricsSummary(range);
+
+    // Totals
+    const totalCalls = summary.reduce((sum, s) => sum + s.calls, 0);
+    const totalCost = summary.reduce((sum, s) => sum + s.totalCostUsd, 0);
+
+    return {
+        summary,
+        totals: {
+            calls: totalCalls,
+            costUsd: totalCost,
+            avgCostPerCall: totalCalls > 0 ? totalCost / totalCalls : 0,
+        },
+        range: {
+            since: range.since?.toISOString(),
+            until: range.until?.toISOString(),
+        },
+    };
+});
+
+// Get hustler earnings summary
+fastify.get('/api/admin/metrics/hustler/:userId', { preHandler: [requireRole('admin')] }, async (request) => {
+    const { userId } = request.params as { userId: string };
+    const range = parseDateRange(request.query as { since?: string; until?: string });
+
+    const summary = MetricsService.getUserEarningsSummary(userId, range);
+
+    return {
+        ...summary,
+        range: {
+            since: range.since?.toISOString(),
+            until: range.until?.toISOString(),
+        },
+    };
+});
+
+// Get events log (paginated)
+fastify.get('/api/admin/events', { preHandler: [requireRole('admin')] }, async (request) => {
+    const { eventType, userId, taskId, source, limit } = request.query as {
+        eventType?: EventType;
+        userId?: string;
+        taskId?: string;
+        source?: 'frontend' | 'backend' | 'ai';
+        limit?: string;
+    };
+    const range = parseDateRange(request.query as { since?: string; until?: string });
+
+    const events = EventLogger.getEvents({
+        eventType,
+        userId,
+        taskId,
+        source,
+        since: range.since,
+        until: range.until,
+        limit: limit ? parseInt(limit) : 50,
+    });
+
+    return {
+        events,
+        count: events.length,
+    };
+});
+
+// Get overall stats dashboard
+fastify.get('/api/admin/metrics/overview', { preHandler: [requireRole('admin')] }, async () => {
+    return MetricsService.getOverallStats();
+});
+
+// Get sample data for documentation
+fastify.get('/api/admin/metrics/samples', { preHandler: [requireRole('admin')] }, async () => {
+    return {
+        sampleEvent: EventLogger.getSampleEvent(),
+        sampleAIMetric: MetricsService.getSampleAIMetric(),
+        sampleFunnel: MetricsService.getGlobalFunnel(),
+    };
+});
+
+// ============================================
+// Admin Jobs & Config API - Phase E
+// ============================================
+
+import { JobController } from './services/JobController.js';
+import { CityService } from './services/CityService.js';
+import { RulesService } from './services/RulesService.js';
+import { FeatureFlagService } from './services/FeatureFlagService.js';
+import { getProviderHealth, getAllCircuitStates, resetCircuit } from './utils/reliability.js';
+
+// --- Background Jobs ---
+
+// Daily maintenance job
+fastify.post('/api/admin/jobs/run/daily-maintenance', { preHandler: [requireRole('admin')] }, async () => {
+    return JobController.runDailyMaintenance();
+});
+
+// Weekly maintenance job
+fastify.post('/api/admin/jobs/run/weekly-maintenance', { preHandler: [requireRole('admin')] }, async () => {
+    return JobController.runWeeklyMaintenance();
+});
+
+// Hourly health check
+fastify.post('/api/admin/jobs/run/hourly-health', { preHandler: [requireRole('admin')] }, async () => {
+    return JobController.runHourlyHealth();
+});
+
+// Get job history
+fastify.get('/api/admin/jobs/history', { preHandler: [requireRole('admin')] }, async (request) => {
+    const { limit } = request.query as { limit?: string };
+    return { jobs: JobController.getJobHistory(limit ? parseInt(limit) : 20) };
+});
+
+// Get daily metrics snapshots
+fastify.get('/api/admin/metrics/daily', { preHandler: [requireRole('admin')] }, async (request) => {
+    const { cityId, limit } = request.query as { cityId?: string; limit?: string };
+    return { snapshots: JobController.getDailySnapshots({ cityId, limit: limit ? parseInt(limit) : 30 }) };
+});
+
+// Get weekly metrics snapshots
+fastify.get('/api/admin/metrics/weekly', { preHandler: [requireRole('admin')] }, async (request) => {
+    const { cityId, limit } = request.query as { cityId?: string; limit?: string };
+    return { snapshots: JobController.getWeeklySnapshots({ cityId, limit: limit ? parseInt(limit) : 12 }) };
+});
+
+// --- City & Zone Config ---
+
+// Get all active cities
+fastify.get('/api/admin/cities', { preHandler: [requireRole('admin')] }, async () => {
+    return { cities: CityService.getActiveCities(), stats: CityService.getCoverageStats() };
+});
+
+// Get zones for a city
+fastify.get('/api/admin/cities/:cityId/zones', { preHandler: [requireRole('admin')] }, async (request) => {
+    const { cityId } = request.params as { cityId: string };
+    return { zones: CityService.getZonesForCity(cityId) };
+});
+
+// Resolve location (public - useful for app)
+fastify.post('/api/location/resolve', async (request) => {
+    const { lat, lng } = request.body as { lat: number; lng: number };
+    return CityService.resolveCityFromLatLng(lat, lng);
+});
+
+// --- Marketplace Rules ---
+
+// Get all rules for a city
+fastify.get('/api/admin/rules/:cityId', { preHandler: [requireRole('admin')] }, async (request) => {
+    const { cityId } = request.params as { cityId: string };
+    return { rules: RulesService.getAllRules(cityId), sample: RulesService.getSampleRuleRow() };
+});
+
+// Set a rule
+fastify.post('/api/admin/rules/:cityId', { preHandler: [requireRole('admin')] }, async (request, reply) => {
+    const { cityId } = request.params as { cityId: string };
+    const { key, value } = request.body as { key: string; value: unknown };
+
+    if (!key) {
+        reply.status(400);
+        return { error: 'Key required' };
+    }
+
+    RulesService.setRule(cityId, key, value);
+    return { success: true, key, value };
+});
+
+// --- Feature Flags ---
+
+// Get all flags
+fastify.get('/api/admin/flags', { preHandler: [requireRole('admin')] }, async () => {
+    return { flags: FeatureFlagService.getAllFlags() };
+});
+
+// Check if flag enabled (public - useful for app)
+fastify.get('/api/flags/:key', async (request) => {
+    const { key } = request.params as { key: string };
+    const { cityId, userId } = request.query as { cityId?: string; userId?: string };
+    return { enabled: FeatureFlagService.isEnabled(key, { cityId, userId }) };
+});
+
+// Toggle flag (admin)
+fastify.post('/api/admin/flags/:key/toggle', { preHandler: [requireRole('admin')] }, async (request) => {
+    const { key } = request.params as { key: string };
+    const enabled = FeatureFlagService.toggleFlag(key);
+    return { key, enabled };
+});
+
+// Set city override
+fastify.post('/api/admin/flags/:key/city-override', { preHandler: [requireRole('admin')] }, async (request, reply) => {
+    const { key } = request.params as { key: string };
+    const { cityId, enabled } = request.body as { cityId: string; enabled: boolean };
+
+    if (!cityId) {
+        reply.status(400);
+        return { error: 'cityId required' };
+    }
+
+    const override = FeatureFlagService.setCityOverride(key, cityId, enabled);
+    return override ? { success: true, override } : { error: 'Flag not found' };
+});
+
+// --- Reliability & Health ---
+
+// Get provider health
+fastify.get('/api/admin/health/providers', { preHandler: [requireRole('admin')] }, async () => {
+    return { providers: getProviderHealth(), circuits: getAllCircuitStates() };
+});
+
+// Reset a circuit breaker
+fastify.post('/api/admin/health/reset-circuit/:provider', { preHandler: [requireRole('admin')] }, async (request) => {
+    const { provider } = request.params as { provider: string };
+    resetCircuit(provider);
+    return { success: true, provider, message: 'Circuit reset' };
+});
+
+// ============================================
+// Phase F — Admin Console, Beta Guardrails & API Docs
+// ============================================
+
+import { NotificationService } from './services/NotificationService.js';
+import { InviteService } from './services/InviteService.js';
+import { getAPIDocs, getEndpointsByTag, getSampleEndpoint } from './utils/apiDocs.js';
+
+// --- API Documentation ---
+
+// Get full API docs (public for mobile app)
+fastify.get('/api/docs', async () => {
+    return getAPIDocs();
+});
+
+// Get docs by tag
+fastify.get('/api/docs/:tag', async (request) => {
+    const { tag } = request.params as { tag: string };
+    return { endpoints: getEndpointsByTag(tag) };
+});
+
+// --- Beta Guardrails ---
+
+// Validate invite code (public - for signup flow)
+fastify.post('/api/beta/validate-invite', async (request) => {
+    const { code, role, cityId } = request.body as { code: string; role: 'hustler' | 'poster'; cityId?: string };
+
+    if (!code || !role) {
+        return { valid: false, reason: 'MISSING_PARAMS' };
+    }
+
+    return InviteService.validate(code, role, cityId);
+});
+
+// Check signup allowed (public - for signup flow)
+fastify.post('/api/beta/check-signup', async (request) => {
+    const { role, cityId, inviteCode } = request.body as {
+        role: 'hustler' | 'poster';
+        cityId: string;
+        inviteCode?: string;
+    };
+
+    return InviteService.checkSignupAllowed(role, cityId, inviteCode);
+});
+
+// Consume invite (called after successful signup)
+fastify.post('/api/beta/consume-invite', { preHandler: [requireAuth] }, async (request) => {
+    const { code, userId } = request.body as { code: string; userId: string };
+
+    if (!code || !userId) {
+        return { success: false, reason: 'MISSING_PARAMS' };
+    }
+
+    const consumed = InviteService.consume(code, userId);
+    return { success: consumed };
+});
+
+// --- Admin Beta Management ---
+
+// Create invite code
+fastify.post('/api/admin/beta/invites', { preHandler: [requireRole('admin')] }, async (request) => {
+    const { code, role, cityId, maxUses, expiresAt } = request.body as {
+        code: string;
+        role: 'hustler' | 'poster' | 'both';
+        cityId?: string;
+        maxUses?: number;
+        expiresAt?: string;
+    };
+
+    if (!code || !role) {
+        return { error: 'code and role required' };
+    }
+
+    const invite = InviteService.createInvite(code, role, {
+        cityId,
+        maxUses,
+        expiresAt: expiresAt ? new Date(expiresAt) : undefined,
+        createdBy: (request as any).user?.uid,
+    });
+
+    return { invite };
+});
+
+// List all invites
+fastify.get('/api/admin/beta/invites', { preHandler: [requireRole('admin')] }, async () => {
+    return {
+        invites: InviteService.getAllInvites(),
+        sample: InviteService.getSampleRow(),
+    };
+});
+
+// Get city capacity stats
+fastify.get('/api/admin/beta/city-stats/:cityId', { preHandler: [requireRole('admin')] }, async (request) => {
+    const { cityId } = request.params as { cityId: string };
+    return InviteService.getCityStats(cityId);
+});
+
+// --- Admin Notifications ---
+
+// Get notification stats
+fastify.get('/api/admin/notifications/stats', { preHandler: [requireRole('admin')] }, async () => {
+    return NotificationService.getStats();
+});
+
+// List notifications
+fastify.get('/api/admin/notifications', { preHandler: [requireRole('admin')] }, async (request) => {
+    const { type, status, limit } = request.query as {
+        type?: any;
+        status?: 'pending' | 'sent' | 'failed';
+        limit?: string;
+    };
+
+    return {
+        notifications: NotificationService.getAllNotifications({
+            type,
+            status,
+            limit: limit ? parseInt(limit) : 50,
+        }),
+        sample: NotificationService.getSampleRow(),
+    };
+});
+
+// Get user notifications
+fastify.get('/api/notifications', { preHandler: [requireAuth] }, async (request) => {
+    const userId = (request as any).user?.uid;
+    if (!userId) return { notifications: [] };
+
+    return {
+        notifications: NotificationService.getNotifications(userId, { limit: 20 }),
+    };
+});
+
+// --- Admin Users (extended) ---
+
+// Force complete a task
+fastify.post('/api/admin/tasks/:taskId/force-complete', { preHandler: [requireRole('admin')] }, async (request) => {
+    const { taskId } = request.params as { taskId: string };
+    const { reason } = request.body as { reason?: string };
+    const adminId = (request as any).user?.uid || 'system';
+
+    EventLogger.logEvent({
+        eventType: 'custom',
+        taskId,
+        source: 'backend',
+        metadata: { type: 'admin_action', action: 'force_complete', adminId, reason },
+    });
+
+    return { success: true, taskId, action: 'force_complete', reason };
+});
+
+// Force refund a task
+fastify.post('/api/admin/tasks/:taskId/force-refund', { preHandler: [requireRole('admin')] }, async (request) => {
+    const { taskId } = request.params as { taskId: string };
+    const { reason } = request.body as { reason?: string };
+    const adminId = (request as any).user?.uid || 'system';
+
+    // Would call StripeService.refundEscrow(taskId) with admin override
+    EventLogger.logEvent({
+        eventType: 'payout_refunded',
+        taskId,
+        userId: adminId,
+        source: 'backend',
+        metadata: { type: 'admin_action', action: 'force_refund', adminId, reason },
+    });
+
+    return { success: true, taskId, action: 'force_refund', reason };
+});
+
+// Get AI routing config
+fastify.get('/api/admin/ai/routes', { preHandler: [requireRole('admin')] }, async () => {
+    return {
+        routes: {
+            safety: 'openai',
+            planning: 'deepseek',
+            pricing: 'deepseek',
+            intent: 'groq',
+            translate: 'groq',
+            small_aux: 'groq',
+        },
+    };
+});
+
+// ============================================
+// Error Tracking Endpoints
+// ============================================
 
 // ============================================
 // Server Startup
