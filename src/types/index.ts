@@ -152,11 +152,58 @@ export interface IntentClassification {
 
 export type OrchestrateMode = 'client_assistant' | 'hustler_assistant' | 'support';
 
+// Screen context for always-aware AI
+export type ScreenContext =
+    | 'home'
+    | 'feed'
+    | 'task_create'
+    | 'task_detail'
+    | 'profile'
+    | 'earnings'
+    | 'quests'
+    | 'badges'
+    | 'settings'
+    | 'onboarding'
+    | 'wallet'
+    | 'chat';
+
+// Recent action for AI context
+export interface RecentAction {
+    type: string;
+    category?: TaskCategory;
+    timestamp?: Date;
+}
+
+// Profile snapshot for AI context
+export interface ProfileSnapshot {
+    role: 'hustler' | 'client' | 'both';
+    level: number;
+    xp: number;
+    streakDays: number;
+    topCategories: TaskCategory[];
+    earningsLast7d: number;
+    tasksCompletedTotal?: number;
+    rating?: number;
+}
+
+// Full AI context block
+export interface AIContextBlock {
+    screen: ScreenContext;
+    recentActions: RecentAction[];
+    profileSnapshot: ProfileSnapshot;
+    aiHistorySummary?: string;
+}
+
 export interface OrchestrateInput {
     userId: string;
     message: string;
     mode: OrchestrateMode;
-    context?: Record<string, unknown>;
+
+    // NEW: Always-aware context (optional for backwards compatibility)
+    context?: AIContextBlock;
+
+    // Legacy field (deprecated, use context instead)
+    legacyContext?: Record<string, unknown>;
 }
 
 export type OrchestrateResponseType =
