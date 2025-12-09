@@ -4,6 +4,9 @@
  * This is the main entry point for all AI interactions.
  * It classifies intent, routes to the appropriate handler,
  * and returns structured responses.
+ * 
+ * UPGRADED: Now integrates UserBrainService for continuous learning.
+ * Every interaction → learning → better next response.
  */
 
 import type {
@@ -11,6 +14,7 @@ import type {
     OrchestrateResponse,
     TaskDraft,
     Intent,
+    ScreenContext,
 } from '../types/index.js';
 import { classifyIntent } from './intents.js';
 import { routedGenerate } from './router.js';
@@ -20,19 +24,35 @@ import { getSmartMatchPrompt } from './prompts/smartMatch.js';
 import { getPriceAdvisorPrompt } from './prompts/priceAdvisor.js';
 import { getHustlerCoachPrompt } from './prompts/hustlerCoach.js';
 import { aiLogger } from '../utils/logger.js';
+import { UserBrainService } from '../services/UserBrainService.js';
+import { ActionTrackerService } from '../services/ActionTrackerService.js';
 
 /**
  * Main orchestration entry point
+ * Now includes learning loop from every interaction
  */
 export async function orchestrate(input: OrchestrateInput): Promise<OrchestrateResponse> {
     const startTime = Date.now();
 
     try {
+        // NEW: Get user's brain for personalization
+        const userBrain = UserBrainService.getUserBrain(input.userId);
+        const screen: ScreenContext = input.context?.screen || 'chat';
+
         aiLogger.info({
             userId: input.userId,
             mode: input.mode,
             messageLength: input.message.length,
-        }, 'Orchestration started');
+            screen,
+            learningScore: userBrain.learningScore,
+        }, 'Orchestration started (context-aware)');
+
+        // NEW: Track this message as an action
+        ActionTrackerService.trackAction(input.userId, {
+            actionType: 'sent_message',
+            screen,
+            metadata: { messageLength: input.message.length },
+        });
 
         // Step 1: Classify intent
         const intentResult = await classifyIntent(input.message, input.mode);
@@ -45,11 +65,15 @@ export async function orchestrate(input: OrchestrateInput): Promise<OrchestrateR
         // Step 2: Route to appropriate handler
         const response = await routeToHandler(input, intentResult.intent);
 
+        // NEW: Learn from this interaction
+        await UserBrainService.updateFromChat(input.userId, input.message, response.message);
+
         aiLogger.info({
             intent: intentResult.intent,
             responseType: response.type,
             duration: Date.now() - startTime,
-        }, 'Orchestration completed');
+            learned: true,
+        }, 'Orchestration completed (with learning)');
 
         return response;
     } catch (error) {

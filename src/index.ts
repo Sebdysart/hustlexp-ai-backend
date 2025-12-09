@@ -37,7 +37,7 @@ import { checkRateLimit, isRateLimitingEnabled, testRedisConnection } from './mi
 import { validateEnv, logEnvStatus } from './utils/envValidator.js';
 import { runHealthCheck, quickHealthCheck } from './utils/healthCheck.js';
 import { requireAuth, optionalAuth, isAuthEnabled } from './middleware/firebaseAuth.js';
-import type { OrchestrateMode, TaskDraft, TaskCategory } from './types/index.js';
+import type { OrchestrateMode, TaskDraft, TaskCategory, AIContextBlock } from './types/index.js';
 
 const fastify = Fastify({
     logger: false, // We use our own pino logger
@@ -77,6 +77,8 @@ const PUBLIC_ROUTES = [
     '/api/pricing',
     '/api/boost',
     '/api/planner',
+    '/api/actions',
+    '/api/brain',
 ];
 
 // Add global auth hook - protects ALL routes except public ones
@@ -156,7 +158,7 @@ fastify.post('/ai/orchestrate', async (request, reply) => {
             userId: body.userId,
             message: body.message,
             mode: body.mode as OrchestrateMode,
-            context: body.context,
+            context: body.context as AIContextBlock | undefined,
         });
 
         return result;
@@ -1093,6 +1095,152 @@ fastify.get('/api/tips/:userId/all', async (request) => {
     const { limit } = request.query as { limit?: string };
     const tips = ContextualCoachService.getAllRelevantTips(userId, parseInt(limit || '3'));
     return { tips, count: tips.length };
+});
+
+// ============================================
+// Action Tracking & User Brain Endpoints (Always-Aware AI)
+// ============================================
+
+import { UserBrainService } from './services/UserBrainService.js';
+import { ActionTrackerService, type ActionType } from './services/ActionTrackerService.js';
+import type { ScreenContext as BrainScreenContext } from './services/UserBrainService.js';
+
+// Track user action
+fastify.post('/api/actions/track', async (request, reply) => {
+    try {
+        const body = request.body as {
+            userId: string;
+            actionType: ActionType;
+            screen: BrainScreenContext;
+            metadata?: Record<string, unknown>;
+        };
+
+        if (!body.userId || !body.actionType || !body.screen) {
+            reply.status(400);
+            return { error: 'Missing required fields: userId, actionType, screen' };
+        }
+
+        const action = ActionTrackerService.trackAction(body.userId, {
+            actionType: body.actionType,
+            screen: body.screen,
+            metadata: body.metadata,
+        });
+
+        return { tracked: true, actionId: action.id };
+    } catch (error) {
+        logger.error({ error }, 'Action tracking failed');
+        reply.status(500);
+        return { error: 'Failed to track action' };
+    }
+});
+
+// Get user's recent actions
+fastify.get('/api/actions/:userId/recent', async (request) => {
+    const { userId } = request.params as { userId: string };
+    const { limit } = request.query as { limit?: string };
+    const actions = ActionTrackerService.getRecentActions(userId, parseInt(limit || '10'));
+    return { actions, count: actions.length };
+});
+
+// Get user's action patterns (for debugging/analytics)
+fastify.get('/api/actions/:userId/patterns', async (request) => {
+    const { userId } = request.params as { userId: string };
+    const patterns = ActionTrackerService.analyzePatterns(userId);
+    const stats = ActionTrackerService.getStats(userId);
+    return { patterns, stats };
+});
+
+// Get user's brain (learned preferences)
+fastify.get('/api/brain/:userId', async (request) => {
+    const { userId } = request.params as { userId: string };
+    const brain = UserBrainService.getUserBrain(userId);
+    return {
+        userId: brain.userId,
+        role: brain.role,
+        goals: brain.goals,
+        constraints: brain.constraints,
+        taskPreferences: brain.taskPreferences,
+        aiHistorySummary: brain.aiHistorySummary,
+        learningScore: brain.learningScore,
+        totalInteractions: brain.totalInteractions,
+        lastActiveAt: brain.lastActiveAt,
+    };
+});
+
+// Get AI context for a user (what the AI knows)
+fastify.get('/api/brain/:userId/context', async (request) => {
+    const { userId } = request.params as { userId: string };
+    const context = await UserBrainService.getContextForAI(userId);
+    return { context };
+});
+
+// Update brain from external source (e.g., profile update)
+fastify.post('/api/brain/:userId/learn', async (request, reply) => {
+    try {
+        const { userId } = request.params as { userId: string };
+        const body = request.body as { message: string };
+
+        if (!body.message) {
+            reply.status(400);
+            return { error: 'Missing message field' };
+        }
+
+        await UserBrainService.updateFromChat(userId, body.message);
+        const brain = UserBrainService.getUserBrain(userId);
+
+        return {
+            learned: true,
+            learningScore: brain.learningScore,
+            aiHistorySummary: brain.aiHistorySummary,
+        };
+    } catch (error) {
+        logger.error({ error }, 'Brain learning failed');
+        reply.status(500);
+        return { error: 'Failed to learn from message' };
+    }
+});
+
+// ============================================
+// AI Memory Endpoints (Phase 2: Conversation Memory)
+// ============================================
+
+import { AIMemoryService } from './services/AIMemoryService.js';
+
+// Get user's conversation history
+fastify.get('/api/memory/:userId/history', async (request) => {
+    const { userId } = request.params as { userId: string };
+    const { limit } = request.query as { limit?: string };
+    const history = AIMemoryService.getRecentConversation(userId, parseInt(limit || '20'));
+    return { history, count: history.length };
+});
+
+// Get extracted facts
+fastify.get('/api/memory/:userId/facts', async (request) => {
+    const { userId } = request.params as { userId: string };
+    const facts = AIMemoryService.getFacts(userId);
+    const structured = AIMemoryService.getStructuredData(userId);
+    return { facts, structured, count: facts.length };
+});
+
+// Get AI-generated summary
+fastify.get('/api/memory/:userId/summary', async (request) => {
+    const { userId } = request.params as { userId: string };
+    const summary = AIMemoryService.getSummary(userId);
+    const stats = AIMemoryService.getStats(userId);
+    return { summary, stats };
+});
+
+// Force regenerate summary
+fastify.post('/api/memory/:userId/regenerate-summary', async (request, reply) => {
+    try {
+        const { userId } = request.params as { userId: string };
+        const summary = await AIMemoryService.regenerateSummary(userId);
+        return { summary, regenerated: true };
+    } catch (error) {
+        logger.error({ error }, 'Summary regeneration failed');
+        reply.status(500);
+        return { error: 'Failed to regenerate summary' };
+    }
 });
 
 // ============================================
