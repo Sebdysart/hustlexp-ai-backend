@@ -1875,9 +1875,9 @@ const CreateEscrowSchema = z.object({
 });
 
 // Create escrow hold when task is accepted - POSTER ONLY
-fastify.post('/api/escrow/create', { preHandler: [requireAuth] }, async (request, reply) => {
+fastify.post('/api/escrow/create', { preHandler: [requireRole('poster')] }, async (request, reply) => {
     try {
-        // User MUST be authenticated - posterId comes from token
+        // User MUST be authenticated with poster role - posterId comes from token
         if (!request.user) {
             reply.status(401);
             return { error: 'Authentication required' };
@@ -1943,7 +1943,7 @@ fastify.get('/api/escrow/:taskId', { preHandler: [requireAuth] }, async (request
 });
 
 // Refund escrow (task cancelled) - POSTER ONLY
-fastify.post('/api/escrow/:taskId/refund', { preHandler: [requireAuth] }, async (request, reply) => {
+fastify.post('/api/escrow/:taskId/refund', { preHandler: [requireRole('poster')] }, async (request, reply) => {
     if (!request.user) {
         reply.status(401);
         return { error: 'Authentication required' };
@@ -1985,7 +1985,8 @@ const ApproveTaskSchema = z.object({
     instantPayout: z.boolean().optional().default(false),
 });
 
-fastify.post('/api/tasks/:taskId/approve', { preHandler: [requireAuth] }, async (request, reply) => {
+// Poster approves task completion - POSTER ONLY
+fastify.post('/api/tasks/:taskId/approve', { preHandler: [requireRole('poster')] }, async (request, reply) => {
     try {
         if (!request.user) {
             reply.status(401);
@@ -2059,7 +2060,7 @@ const RejectTaskSchema = z.object({
     requestedAction: z.enum(['refund', 'dispute', 'redo']).optional().default('dispute'),
 });
 
-fastify.post('/api/tasks/:taskId/reject', { preHandler: [requireAuth] }, async (request, reply) => {
+fastify.post('/api/tasks/:taskId/reject', { preHandler: [requireRole('poster')] }, async (request, reply) => {
     try {
         if (!request.user) {
             reply.status(401);
