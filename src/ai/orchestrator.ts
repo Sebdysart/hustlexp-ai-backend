@@ -292,7 +292,7 @@ async function handleHustlerPlan(input: OrchestrateInput): Promise<OrchestrateRe
 - Rating: ${stats.rating}
 
 Open tasks nearby:
-${openTasks.map(t => `- ${t.id}: ${t.title} (${t.category}) - $${t.recommendedPrice}`).join('\n')}
+${openTasks.map((t: { id: string; title: string; category: string; recommendedPrice: number }) => `- ${t.id}: ${t.title} (${t.category}) - $${t.recommendedPrice}`).join('\n')}
 
 Create a task plan for today.`,
                 },
@@ -304,7 +304,7 @@ Create a task plan for today.`,
         const plan = JSON.parse(result.content);
 
         // Map selected task IDs to full task objects
-        const selectedTasks = openTasks.filter(t => plan.selectedTaskIds?.includes(t.id));
+        const selectedTasks = openTasks.filter((t: { id: string }) => plan.selectedTaskIds?.includes(t.id));
 
         return {
             type: 'HUSTLER_PLAN',
