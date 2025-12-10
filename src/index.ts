@@ -2101,34 +2101,58 @@ fastify.post('/api/tasks/:taskId/approve', { preHandler: [requireRole('poster')]
         }
 
         // 3. Release escrow and create real payout
-        const payoutType = body.instantPayout ? 'instant' : 'standard';
-        const payout = await StripeService.releaseEscrow(taskId, payoutType);
 
-        if (!payout) {
+
+        // 3. Release escrow and create real payout
+        const payoutType = body.instantPayout ? 'instant' : 'standard';
+
+        try {
+            const payout = await StripeService.releaseEscrow(taskId, payoutType);
+
+            if (!payout) {
+                // Determine why it failed
+                const escrow = StripeService.getEscrow(taskId);
+                const accountId = StripeService.getConnectAccountId(escrow?.hustlerId || '');
+
+                reply.status(500);
+                return {
+                    error: 'Failed to process payout (releaseEscrow returned null)',
+                    details: {
+                        taskId,
+                        status: escrow?.status,
+                        hustlerId: escrow?.hustlerId,
+                        hasConnectAccount: !!accountId,
+                        accountId
+                    }
+                };
+            }
+
+            // 4. Update task status (would be in TaskService in production)
+            logger.info({
+                taskId,
+                payoutId: payout.id,
+                amount: payout.netAmount,
+                type: payoutType
+            }, 'Task approved and payout released');
+
+            return {
+                success: true,
+                message: 'Task approved and payout initiated',
+                payout: {
+                    id: payout.id,
+                    amount: payout.netAmount,
+                    status: payout.status,
+                    arrivalDate: payout.type === 'instant' ? 'Instant' : '2 business days'
+                }
+            };
+        } catch (error: any) {
             reply.status(500);
-            return { error: 'Failed to process payout' };
+            return {
+                error: 'Exception during payout processing',
+                details: error?.message || String(error)
+            };
         }
 
-        // 4. Update task status (would be in TaskService in production)
-        logger.info({
-            taskId,
-            payoutId: payout.id,
-            amount: payout.netAmount,
-            type: payout.type,
-        }, 'Task approved and payout initiated');
-
-        return {
-            success: true,
-            message: 'Task approved, payout initiated',
-            payout: {
-                id: payout.id,
-                amount: payout.amount,
-                fee: payout.fee,
-                netAmount: payout.netAmount,
-                type: payout.type,
-                status: payout.status,
-            },
-        };
     } catch (error) {
         logger.error({ error }, 'Task approval error');
         if (error instanceof z.ZodError) {
@@ -2520,7 +2544,14 @@ fastify.post('/api/admin/user/:userId/unsuspend', { preHandler: [requireAdminFro
         return { error: 'User was not suspended' };
     }
 
-    return { success: true, message: 'User unsuspended' };
+    return { success: true, message: 'Revoked all sessions for user' };
+});
+
+// DEBUG: Restore Connect account mapping manually (Admin only)
+fastify.post('/api/admin/debug/link-connect', { preHandler: [requireAdminFromJWT] }, async (request, reply) => {
+    const { userId, accountId } = request.body as { userId: string; accountId: string };
+    StripeService.setConnectAccountId(userId, accountId);
+    return { success: true, message: `Linked ${userId} to ${accountId}` };
 });
 
 // Check user suspension status (public, for app use)
