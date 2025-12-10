@@ -301,8 +301,6 @@ class StripeServiceClass {
                     type: 'escrow_hold',
                 },
                 transfer_group: taskId, // Group related transfers
-                // REQUIRED for platform fee separation and transfers
-                application_fee_amount: platformFeeCents,
                 // OPTIONAL but recommended: charge on behalf of hustler
                 // This requires the Connect account to be linked/known
                 ...(connectAccounts.get(hustlerId) ? {
