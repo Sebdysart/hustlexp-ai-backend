@@ -301,11 +301,6 @@ class StripeServiceClass {
                     type: 'escrow_hold',
                 },
                 transfer_group: taskId, // Group related transfers
-                // OPTIONAL but recommended: charge on behalf of hustler
-                // This requires the Connect account to be linked/known
-                ...(connectAccounts.get(hustlerId) ? {
-                    on_behalf_of: connectAccounts.get(hustlerId),
-                } : {}),
             });
 
             const escrow: EscrowRecord = {
