@@ -292,8 +292,7 @@ class StripeServiceClass {
                 currency: 'usd',
                 payment_method: paymentMethodId,
                 capture_method: 'manual', // Hold funds, don't transfer yet
-                confirm: true,
-                automatic_payment_methods: { enabled: false },
+                confirm: false, // Don't confirm yet to prevent auto-capture
                 return_url: `${process.env.FRONTEND_URL || 'https://hustlexp.app'}/task/${taskId}/payment-complete`,
                 metadata: {
                     taskId,
@@ -304,6 +303,11 @@ class StripeServiceClass {
                 transfer_group: taskId, // Group related transfers
             });
 
+            // Explicitly confirm to enforce manual capture behavior
+            const confirmedPI = await stripe.paymentIntents.confirm(paymentIntent.id, {
+                payment_method: paymentMethodId,
+            });
+
             const escrow: EscrowRecord = {
                 id: `escrow_${Date.now()}`,
                 taskId,
@@ -312,7 +316,7 @@ class StripeServiceClass {
                 amount,
                 platformFee: platformFeeCents / 100,
                 hustlerPayout: hustlerPayoutCents / 100,
-                paymentIntentId: paymentIntent.id,
+                paymentIntentId: confirmedPI.id,
                 status: 'held',
                 createdAt: new Date(),
             };
@@ -323,10 +327,10 @@ class StripeServiceClass {
                 taskId,
                 escrowId: escrow.id,
                 amount,
-                paymentIntentId: paymentIntent.id,
+                paymentIntentId: confirmedPI.id,
             }, 'Created escrow hold');
 
-            return { ...escrow, _debug_pi: paymentIntent };
+            return { ...escrow, _debug_pi: confirmedPI };
         } catch (error) {
             serviceLogger.error({ error, taskId }, 'Failed to create escrow hold');
             return null;
