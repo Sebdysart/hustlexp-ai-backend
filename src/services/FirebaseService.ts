@@ -14,12 +14,21 @@ import * as jose from 'jose';
 // Only need project ID for token verification
 const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID;
 
-// SECURITY: Warn if private key is present in runtime (should NEVER be in production)
+// SECURITY GUARD: Kill server IMMEDIATELY if private key is detected
+// This prevents any regression - admin keys must NEVER be in production
 if (process.env.FIREBASE_PRIVATE_KEY) {
-    logger.error('SECURITY WARNING: FIREBASE_PRIVATE_KEY detected in environment. This should be removed from production!');
+    console.error('\n');
+    console.error('═══════════════════════════════════════════════════════════════');
+    console.error('  FATAL SECURITY VIOLATION: FIREBASE_PRIVATE_KEY DETECTED');
+    console.error('  Admin private key must NOT be present in production runtime.');
+    console.error('  Remove FIREBASE_PRIVATE_KEY from environment and redeploy.');
+    console.error('═══════════════════════════════════════════════════════════════');
+    console.error('\n');
+    process.exit(1);
 }
+
 if (process.env.FIREBASE_CLIENT_EMAIL) {
-    logger.warn('FIREBASE_CLIENT_EMAIL detected but not used. Consider removing from production.');
+    logger.warn('FIREBASE_CLIENT_EMAIL detected - consider removing from production.');
 }
 
 // NO Admin SDK initialization - JWKS only
