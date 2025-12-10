@@ -1,47 +1,32 @@
 /**
- * Firebase Admin SDK Service
+ * Firebase Token Verification Service (JWKS-only)
  * 
- * Initializes Firebase Admin and provides user verification.
- * Token verification works with OR without service account credentials
- * by using Google's public JWKS endpoint as fallback.
+ * SECURITY: This service uses Google's public JWKS endpoint ONLY for token verification.
+ * The Firebase Admin SDK private key is NOT used at runtime.
+ * 
+ * Admin claim assignment can ONLY be done via offline scripts with local private key.
+ * If you see private key in production environment, that's a security misconfiguration.
  */
 
-import admin from 'firebase-admin';
 import { logger } from '../utils/logger.js';
 import * as jose from 'jose';
 
-// Check if Firebase is configured with full credentials
+// Only need project ID for token verification
 const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID;
-const FIREBASE_CLIENT_EMAIL = process.env.FIREBASE_CLIENT_EMAIL;
-const FIREBASE_PRIVATE_KEY = process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n');
 
-const isFirebaseFullyConfigured = !!(
-    FIREBASE_PROJECT_ID &&
-    FIREBASE_CLIENT_EMAIL &&
-    FIREBASE_PRIVATE_KEY
-);
+// SECURITY: Warn if private key is present in runtime (should NEVER be in production)
+if (process.env.FIREBASE_PRIVATE_KEY) {
+    logger.error('SECURITY WARNING: FIREBASE_PRIVATE_KEY detected in environment. This should be removed from production!');
+}
+if (process.env.FIREBASE_CLIENT_EMAIL) {
+    logger.warn('FIREBASE_CLIENT_EMAIL detected but not used. Consider removing from production.');
+}
 
-// Initialize Firebase Admin (full mode if credentials available)
-let firebaseApp: admin.app.App | null = null;
-
-if (isFirebaseFullyConfigured) {
-    try {
-        firebaseApp = admin.initializeApp({
-            credential: admin.credential.cert({
-                projectId: FIREBASE_PROJECT_ID,
-                clientEmail: FIREBASE_CLIENT_EMAIL,
-                privateKey: FIREBASE_PRIVATE_KEY,
-            }),
-        });
-        logger.info({ projectId: FIREBASE_PROJECT_ID }, 'Firebase Admin SDK initialized (full mode)');
-    } catch (error) {
-        logger.error({ error }, 'Failed to initialize Firebase Admin SDK');
-    }
-} else if (FIREBASE_PROJECT_ID) {
-    // Partial config - can still verify tokens via JWKS
-    logger.info({ projectId: FIREBASE_PROJECT_ID }, 'Firebase configured for JWKS token verification only');
+// NO Admin SDK initialization - JWKS only
+if (FIREBASE_PROJECT_ID) {
+    logger.info({ projectId: FIREBASE_PROJECT_ID }, 'Firebase configured for JWKS-only token verification (secure mode)');
 } else {
-    logger.warn('Firebase credentials not configured - authentication disabled');
+    logger.warn('FIREBASE_PROJECT_ID not configured - authentication disabled');
 }
 
 // ============================================
@@ -91,7 +76,7 @@ async function getJWKS(): Promise<jose.JWTVerifyGetKey> {
 }
 
 // ============================================
-// Firebase Service
+// Firebase Service (JWKS-only, no Admin SDK)
 // ============================================
 
 class FirebaseServiceClass {
@@ -99,26 +84,13 @@ class FirebaseServiceClass {
      * Check if Firebase is available for token verification
      */
     isAvailable(): boolean {
-        return firebaseApp !== null || !!FIREBASE_PROJECT_ID;
+        return !!FIREBASE_PROJECT_ID;
     }
 
     /**
-     * Verify a Firebase ID token
-     * Uses Admin SDK if available, otherwise uses JWKS verification
+     * Verify a Firebase ID token using JWKS (no private key required)
      */
     async verifyIdToken(idToken: string): Promise<DecodedToken | null> {
-        // Try Admin SDK first if available
-        if (firebaseApp) {
-            try {
-                const decodedToken = await admin.auth().verifyIdToken(idToken);
-                return decodedToken as DecodedToken;
-            } catch (error) {
-                logger.warn({ error }, 'Admin SDK token verification failed');
-                return null;
-            }
-        }
-
-        // Fallback to JWKS verification (no private key needed)
         if (!FIREBASE_PROJECT_ID) {
             logger.warn('No Firebase project ID - cannot verify token');
             return null;
@@ -156,81 +128,37 @@ class FirebaseServiceClass {
     }
 
     /**
-     * Get user by UID
+     * DISABLED: Get user by UID - requires Admin SDK (not available in runtime)
      */
-    async getUser(uid: string): Promise<FirebaseUser | null> {
-        if (!firebaseApp) return null;
-
-        try {
-            const user = await admin.auth().getUser(uid);
-            return {
-                uid: user.uid,
-                email: user.email,
-                emailVerified: user.emailVerified,
-                displayName: user.displayName,
-                photoURL: user.photoURL,
-                phoneNumber: user.phoneNumber,
-                disabled: user.disabled,
-                customClaims: user.customClaims,
-            };
-        } catch (error) {
-            logger.warn({ error, uid }, 'User not found');
-            return null;
-        }
+    async getUser(_uid: string): Promise<FirebaseUser | null> {
+        logger.warn('getUser() is disabled in runtime - use offline admin scripts');
+        return null;
     }
 
     /**
-     * Get user by email
+     * DISABLED: Get user by email - requires Admin SDK (not available in runtime)
      */
-    async getUserByEmail(email: string): Promise<FirebaseUser | null> {
-        if (!firebaseApp) return null;
-
-        try {
-            const user = await admin.auth().getUserByEmail(email);
-            return {
-                uid: user.uid,
-                email: user.email,
-                emailVerified: user.emailVerified,
-                displayName: user.displayName,
-                photoURL: user.photoURL,
-                phoneNumber: user.phoneNumber,
-                disabled: user.disabled,
-                customClaims: user.customClaims,
-            };
-        } catch (error) {
-            logger.warn({ error, email }, 'User not found by email');
-            return null;
-        }
+    async getUserByEmail(_email: string): Promise<FirebaseUser | null> {
+        logger.warn('getUserByEmail() is disabled in runtime - use offline admin scripts');
+        return null;
     }
 
     /**
-     * Set custom claims on a user (for roles, permissions, etc.)
+     * DISABLED: Set custom claims - NEVER available at runtime
+     * Use offline admin scripts: npx tsx scripts/admin-manage.ts grant <uid>
      */
-    async setCustomClaims(uid: string, claims: Record<string, unknown>): Promise<boolean> {
-        if (!firebaseApp) return false;
-
-        try {
-            await admin.auth().setCustomUserClaims(uid, claims);
-            logger.info({ uid, claims }, 'Custom claims set');
-            return true;
-        } catch (error) {
-            logger.error({ error, uid }, 'Failed to set custom claims');
-            return false;
-        }
+    async setCustomClaims(_uid: string, _claims: Record<string, unknown>): Promise<boolean> {
+        logger.error('SECURITY: setCustomClaims() is disabled in production runtime. Use offline admin scripts.');
+        throw new Error('Admin elevation disabled in runtime');
     }
 
     /**
-     * Create a custom token for a user (for testing or special auth flows)
+     * DISABLED: Create custom token - NEVER available at runtime
+     * Use offline admin scripts for token generation
      */
-    async createCustomToken(uid: string, claims?: Record<string, unknown>): Promise<string | null> {
-        if (!firebaseApp) return null;
-
-        try {
-            return await admin.auth().createCustomToken(uid, claims);
-        } catch (error) {
-            logger.error({ error, uid }, 'Failed to create custom token');
-            return null;
-        }
+    async createCustomToken(_uid: string, _claims?: Record<string, unknown>): Promise<string | null> {
+        logger.error('SECURITY: createCustomToken() is disabled in production runtime. Use offline admin scripts.');
+        throw new Error('Token creation disabled in runtime');
     }
 }
 
