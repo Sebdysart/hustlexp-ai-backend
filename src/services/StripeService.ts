@@ -369,7 +369,14 @@ class StripeServiceClass {
 
         try {
             // 1. Capture the payment (move from hold to captured)
-            await stripe.paymentIntents.capture(escrow.paymentIntentId);
+            // 1. Capture the payment (move from hold to captured)
+            let capturedPI = await stripe.paymentIntents.retrieve(escrow.paymentIntentId);
+            if (capturedPI.status === 'requires_capture') {
+                capturedPI = await stripe.paymentIntents.capture(escrow.paymentIntentId);
+            } else if (capturedPI.status !== 'succeeded') {
+                throw new Error(`Invalid PI status for release: ${capturedPI.status}`);
+            }
+            const chargeId = capturedPI.latest_charge as string;
 
             // 2. Calculate payout amount
             let payoutAmount = escrow.hustlerPayout;
@@ -394,6 +401,7 @@ class StripeServiceClass {
                     hustlerId: escrow.hustlerId,
                     type,
                 },
+                source_transaction: chargeId,
             });
 
             // 4. Create payout record
