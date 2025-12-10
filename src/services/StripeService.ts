@@ -10,6 +10,7 @@
 
 import Stripe from 'stripe';
 import { serviceLogger } from '../utils/logger.js';
+import { sql, isDatabaseAvailable } from '../db/index.js';
 
 // ============================================
 // Configuration
@@ -538,20 +539,45 @@ class StripeServiceClass {
     }
 
     /**
-     * Handle webhook event - WITH IDEMPOTENCY CHECK
+     * Handle webhook event - WITH PERSISTENT IDEMPOTENCY CHECK
+     * Writes to DB FIRST, then applies changes - survives restarts/deploys
      */
     async handleWebhookEvent(event: Stripe.Event): Promise<void> {
-        // CRITICAL: Idempotency check - prevent double processing
+        // STEP 1: Check in-memory cache first (fast path)
         if (processedEvents.has(event.id)) {
-            serviceLogger.info({ eventId: event.id, type: event.type }, 'Webhook event already processed - skipping');
+            serviceLogger.info({ eventId: event.id, type: event.type }, 'Webhook event already processed (cache) - skipping');
             return;
         }
 
-        // Mark as processed BEFORE applying changes (prevents race conditions)
-        processedEvents.add(event.id);
+        // STEP 2: Try to INSERT into DB - this is the authoritative check
+        // ON CONFLICT DO NOTHING means if row exists, 0 rows affected
+        if (isDatabaseAvailable() && sql) {
+            try {
+                const result = await sql`
+                    INSERT INTO processed_stripe_events (event_id, event_type)
+                    VALUES (${event.id}, ${event.type})
+                    ON CONFLICT (event_id) DO NOTHING
+                    RETURNING event_id
+                `;
 
-        // TODO: Also persist to processed_stripe_events DB table for permanent record
-        // await sql`INSERT INTO processed_stripe_events (event_id, event_type) VALUES (${event.id}, ${event.type}) ON CONFLICT DO NOTHING`;
+                // If insert returned 0 rows, event was already processed
+                if (result.length === 0) {
+                    // Add to local cache for future fast-path
+                    processedEvents.add(event.id);
+                    serviceLogger.info({ eventId: event.id, type: event.type }, 'Webhook event already processed (DB) - skipping');
+                    return;
+                }
+
+                serviceLogger.info({ eventId: event.id, type: event.type }, 'Webhook event recorded in DB');
+            } catch (dbError) {
+                // DB error - log and continue with caution
+                // Better to potentially process twice than miss an event
+                serviceLogger.error({ error: dbError, eventId: event.id }, 'Failed to record webhook event in DB - proceeding with caution');
+            }
+        }
+
+        // STEP 3: Add to local cache
+        processedEvents.add(event.id);
 
         serviceLogger.info({ eventId: event.id, type: event.type }, 'Processing webhook event');
 

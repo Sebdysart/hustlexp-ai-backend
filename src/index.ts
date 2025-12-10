@@ -435,7 +435,7 @@ fastify.post('/api/onboarding/:userId/start', { preHandler: [requireAuth] }, asy
     }
 });
 
-// SECURED: Choose role - requires auth, self-only, NO admin escalation
+// SECURED: Choose role - requires auth, self-only, ONE-TIME ONLY, NO admin escalation
 fastify.post('/api/onboarding/:userId/role', { preHandler: [requireAuth] }, async (request, reply) => {
     try {
         if (!request.user) {
@@ -451,15 +451,31 @@ fastify.post('/api/onboarding/:userId/role', { preHandler: [requireAuth] }, asyn
             return { error: 'Cannot change role for another user' };
         }
 
+        // CRITICAL: One-time role assignment only
+        // If user already has a role set (not the default 'poster'), reject
+        // The dbUser is attached by requireAuth middleware
+        const existingUser = request.dbUser;
+        if (existingUser && existingUser.role && existingUser.role !== 'poster') {
+            reply.status(403);
+            return {
+                error: 'Role already assigned',
+                code: 'ROLE_ALREADY_SET',
+                currentRole: existingUser.role,
+                message: 'Role can only be set once during onboarding. Contact support to change.'
+            };
+        }
+
         const body = request.body as { sessionId: string; role: 'hustler' | 'client' };
 
         // CRITICAL: Only allow poster/hustler roles - NEVER admin via this endpoint
-        if (body.role !== 'hustler' && body.role !== 'client') {
+        // Normalize to lowercase for safety
+        const normalizedRole = body.role?.toLowerCase();
+        if (normalizedRole !== 'hustler' && normalizedRole !== 'client') {
             reply.status(400);
             return { error: 'Invalid role. Must be hustler or client' };
         }
 
-        const result = await OnboardingService.chooseRole(body.sessionId, body.role);
+        const result = await OnboardingService.chooseRole(body.sessionId, normalizedRole as 'hustler' | 'client');
         return result;
     } catch (error) {
         logger.error({ error }, 'API Onboarding role error');
