@@ -2301,12 +2301,13 @@ fastify.post('/api/stripe/webhook', {
 
 import { DisputeService, type DisputeStatus } from './services/DisputeService.js';
 import { SafetyService } from './services/SafetyService.js';
-import { requireRole } from './middleware/firebaseAuth.js';
+import { requireRole, requireAdminFromJWT } from './middleware/firebaseAuth.js';
 
-// All admin endpoints require 'admin' role
+// SECURITY: All admin endpoints use requireAdminFromJWT which validates
+// the admin claim from the cryptographically signed JWT, NOT from DB.
 
 // List disputes with filters
-fastify.get('/api/admin/disputes', { preHandler: [requireRole('admin')] }, async (request) => {
+fastify.get('/api/admin/disputes', { preHandler: [requireAdminFromJWT] }, async (request) => {
     const { status, posterId, hustlerId, limit } = request.query as {
         status?: DisputeStatus;
         posterId?: string;
@@ -2329,7 +2330,7 @@ fastify.get('/api/admin/disputes', { preHandler: [requireRole('admin')] }, async
 });
 
 // Get single dispute with full details
-fastify.get('/api/admin/disputes/:disputeId', { preHandler: [requireRole('admin')] }, async (request, reply) => {
+fastify.get('/api/admin/disputes/:disputeId', { preHandler: [requireAdminFromJWT] }, async (request, reply) => {
     const { disputeId } = request.params as { disputeId: string };
     const dispute = DisputeService.getDispute(disputeId);
 
@@ -2363,7 +2364,7 @@ const ResolveDisputeSchema = z.object({
     splitAmountPoster: z.number().optional(),
 });
 
-fastify.post('/api/admin/disputes/:disputeId/resolve', { preHandler: [requireRole('admin')] }, async (request, reply) => {
+fastify.post('/api/admin/disputes/:disputeId/resolve', { preHandler: [requireAdminFromJWT] }, async (request, reply) => {
     try {
         const { disputeId } = request.params as { disputeId: string };
         const body = ResolveDisputeSchema.parse(request.body);
@@ -2433,7 +2434,7 @@ fastify.post('/api/disputes/:disputeId/respond', async (request, reply) => {
 });
 
 // Get moderation logs with filters
-fastify.get('/api/admin/moderation/logs', { preHandler: [requireRole('admin')] }, async (request) => {
+fastify.get('/api/admin/moderation/logs', { preHandler: [requireAdminFromJWT] }, async (request) => {
     const { userId, taskId, type, severity, limit } = request.query as {
         userId?: string;
         taskId?: string;
@@ -2458,7 +2459,7 @@ fastify.get('/api/admin/moderation/logs', { preHandler: [requireRole('admin')] }
 });
 
 // Get user strikes
-fastify.get('/api/admin/user/:userId/strikes', { preHandler: [requireRole('admin')] }, async (request) => {
+fastify.get('/api/admin/user/:userId/strikes', { preHandler: [requireAdminFromJWT] }, async (request) => {
     const { userId } = request.params as { userId: string };
     const strikes = DisputeService.getUserStrikes(userId);
     const suspension = DisputeService.isUserSuspended(userId);
@@ -2477,7 +2478,7 @@ const AddStrikeSchema = z.object({
     taskId: z.string().optional(),
 });
 
-fastify.post('/api/admin/user/:userId/strikes', { preHandler: [requireRole('admin')] }, async (request, reply) => {
+fastify.post('/api/admin/user/:userId/strikes', { preHandler: [requireAdminFromJWT] }, async (request, reply) => {
     try {
         const { userId } = request.params as { userId: string };
         const body = AddStrikeSchema.parse(request.body);
@@ -2508,7 +2509,7 @@ fastify.post('/api/admin/user/:userId/strikes', { preHandler: [requireRole('admi
 });
 
 // Unsuspend user (admin)
-fastify.post('/api/admin/user/:userId/unsuspend', { preHandler: [requireRole('admin')] }, async (request, reply) => {
+fastify.post('/api/admin/user/:userId/unsuspend', { preHandler: [requireAdminFromJWT] }, async (request, reply) => {
     const { userId } = request.params as { userId: string };
     const adminId = (request as { user?: { uid?: string } }).user?.uid || 'admin';
 
@@ -2529,7 +2530,7 @@ fastify.get('/api/user/:userId/suspension', async (request) => {
 });
 
 // Safety stats (admin)
-fastify.get('/api/admin/safety/stats', { preHandler: [requireRole('admin')] }, async () => {
+fastify.get('/api/admin/safety/stats', { preHandler: [requireAdminFromJWT] }, async () => {
     return {
         moderation: SafetyService.getStats(),
         disputes: DisputeService.getStats(),
@@ -2552,7 +2553,7 @@ function parseDateRange(query: { since?: string; until?: string }): { since?: Da
 }
 
 // Get global funnel metrics
-fastify.get('/api/admin/metrics/funnel', { preHandler: [requireRole('admin')] }, async (request) => {
+fastify.get('/api/admin/metrics/funnel', { preHandler: [requireAdminFromJWT] }, async (request) => {
     const range = parseDateRange(request.query as { since?: string; until?: string });
     const funnel = MetricsService.getGlobalFunnel(range);
 
@@ -2566,7 +2567,7 @@ fastify.get('/api/admin/metrics/funnel', { preHandler: [requireRole('admin')] },
 });
 
 // Get zone health metrics
-fastify.get('/api/admin/metrics/zones', { preHandler: [requireRole('admin')] }, async (request) => {
+fastify.get('/api/admin/metrics/zones', { preHandler: [requireAdminFromJWT] }, async (request) => {
     const range = parseDateRange(request.query as { since?: string; until?: string });
     const zones = MetricsService.getZoneHealth(range);
 
@@ -2581,7 +2582,7 @@ fastify.get('/api/admin/metrics/zones', { preHandler: [requireRole('admin')] }, 
 });
 
 // Get AI metrics summary
-fastify.get('/api/admin/metrics/ai', { preHandler: [requireRole('admin')] }, async (request) => {
+fastify.get('/api/admin/metrics/ai', { preHandler: [requireAdminFromJWT] }, async (request) => {
     const range = parseDateRange(request.query as { since?: string; until?: string });
     const summary = MetricsService.getAIMetricsSummary(range);
 
@@ -2604,7 +2605,7 @@ fastify.get('/api/admin/metrics/ai', { preHandler: [requireRole('admin')] }, asy
 });
 
 // Get hustler earnings summary
-fastify.get('/api/admin/metrics/hustler/:userId', { preHandler: [requireRole('admin')] }, async (request) => {
+fastify.get('/api/admin/metrics/hustler/:userId', { preHandler: [requireAdminFromJWT] }, async (request) => {
     const { userId } = request.params as { userId: string };
     const range = parseDateRange(request.query as { since?: string; until?: string });
 
@@ -2620,7 +2621,7 @@ fastify.get('/api/admin/metrics/hustler/:userId', { preHandler: [requireRole('ad
 });
 
 // Get events log (paginated)
-fastify.get('/api/admin/events', { preHandler: [requireRole('admin')] }, async (request) => {
+fastify.get('/api/admin/events', { preHandler: [requireAdminFromJWT] }, async (request) => {
     const { eventType, userId, taskId, source, limit } = request.query as {
         eventType?: EventType;
         userId?: string;
@@ -2647,12 +2648,12 @@ fastify.get('/api/admin/events', { preHandler: [requireRole('admin')] }, async (
 });
 
 // Get overall stats dashboard
-fastify.get('/api/admin/metrics/overview', { preHandler: [requireRole('admin')] }, async () => {
+fastify.get('/api/admin/metrics/overview', { preHandler: [requireAdminFromJWT] }, async () => {
     return MetricsService.getOverallStats();
 });
 
 // Get sample data for documentation
-fastify.get('/api/admin/metrics/samples', { preHandler: [requireRole('admin')] }, async () => {
+fastify.get('/api/admin/metrics/samples', { preHandler: [requireAdminFromJWT] }, async () => {
     return {
         sampleEvent: EventLogger.getSampleEvent(),
         sampleAIMetric: MetricsService.getSampleAIMetric(),
@@ -2673,34 +2674,34 @@ import { getProviderHealth, getAllCircuitStates, resetCircuit } from './utils/re
 // --- Background Jobs ---
 
 // Daily maintenance job
-fastify.post('/api/admin/jobs/run/daily-maintenance', { preHandler: [requireRole('admin')] }, async () => {
+fastify.post('/api/admin/jobs/run/daily-maintenance', { preHandler: [requireAdminFromJWT] }, async () => {
     return JobController.runDailyMaintenance();
 });
 
 // Weekly maintenance job
-fastify.post('/api/admin/jobs/run/weekly-maintenance', { preHandler: [requireRole('admin')] }, async () => {
+fastify.post('/api/admin/jobs/run/weekly-maintenance', { preHandler: [requireAdminFromJWT] }, async () => {
     return JobController.runWeeklyMaintenance();
 });
 
 // Hourly health check
-fastify.post('/api/admin/jobs/run/hourly-health', { preHandler: [requireRole('admin')] }, async () => {
+fastify.post('/api/admin/jobs/run/hourly-health', { preHandler: [requireAdminFromJWT] }, async () => {
     return JobController.runHourlyHealth();
 });
 
 // Get job history
-fastify.get('/api/admin/jobs/history', { preHandler: [requireRole('admin')] }, async (request) => {
+fastify.get('/api/admin/jobs/history', { preHandler: [requireAdminFromJWT] }, async (request) => {
     const { limit } = request.query as { limit?: string };
     return { jobs: JobController.getJobHistory(limit ? parseInt(limit) : 20) };
 });
 
 // Get daily metrics snapshots
-fastify.get('/api/admin/metrics/daily', { preHandler: [requireRole('admin')] }, async (request) => {
+fastify.get('/api/admin/metrics/daily', { preHandler: [requireAdminFromJWT] }, async (request) => {
     const { cityId, limit } = request.query as { cityId?: string; limit?: string };
     return { snapshots: JobController.getDailySnapshots({ cityId, limit: limit ? parseInt(limit) : 30 }) };
 });
 
 // Get weekly metrics snapshots
-fastify.get('/api/admin/metrics/weekly', { preHandler: [requireRole('admin')] }, async (request) => {
+fastify.get('/api/admin/metrics/weekly', { preHandler: [requireAdminFromJWT] }, async (request) => {
     const { cityId, limit } = request.query as { cityId?: string; limit?: string };
     return { snapshots: JobController.getWeeklySnapshots({ cityId, limit: limit ? parseInt(limit) : 12 }) };
 });
@@ -2708,12 +2709,12 @@ fastify.get('/api/admin/metrics/weekly', { preHandler: [requireRole('admin')] },
 // --- City & Zone Config ---
 
 // Get all active cities
-fastify.get('/api/admin/cities', { preHandler: [requireRole('admin')] }, async () => {
+fastify.get('/api/admin/cities', { preHandler: [requireAdminFromJWT] }, async () => {
     return { cities: CityService.getActiveCities(), stats: CityService.getCoverageStats() };
 });
 
 // Get zones for a city
-fastify.get('/api/admin/cities/:cityId/zones', { preHandler: [requireRole('admin')] }, async (request) => {
+fastify.get('/api/admin/cities/:cityId/zones', { preHandler: [requireAdminFromJWT] }, async (request) => {
     const { cityId } = request.params as { cityId: string };
     return { zones: CityService.getZonesForCity(cityId) };
 });
@@ -2727,13 +2728,13 @@ fastify.post('/api/location/resolve', async (request) => {
 // --- Marketplace Rules ---
 
 // Get all rules for a city
-fastify.get('/api/admin/rules/:cityId', { preHandler: [requireRole('admin')] }, async (request) => {
+fastify.get('/api/admin/rules/:cityId', { preHandler: [requireAdminFromJWT] }, async (request) => {
     const { cityId } = request.params as { cityId: string };
     return { rules: RulesService.getAllRules(cityId), sample: RulesService.getSampleRuleRow() };
 });
 
 // Set a rule
-fastify.post('/api/admin/rules/:cityId', { preHandler: [requireRole('admin')] }, async (request, reply) => {
+fastify.post('/api/admin/rules/:cityId', { preHandler: [requireAdminFromJWT] }, async (request, reply) => {
     const { cityId } = request.params as { cityId: string };
     const { key, value } = request.body as { key: string; value: unknown };
 
@@ -2749,7 +2750,7 @@ fastify.post('/api/admin/rules/:cityId', { preHandler: [requireRole('admin')] },
 // --- Feature Flags ---
 
 // Get all flags
-fastify.get('/api/admin/flags', { preHandler: [requireRole('admin')] }, async () => {
+fastify.get('/api/admin/flags', { preHandler: [requireAdminFromJWT] }, async () => {
     return { flags: FeatureFlagService.getAllFlags() };
 });
 
@@ -2761,14 +2762,14 @@ fastify.get('/api/flags/:key', async (request) => {
 });
 
 // Toggle flag (admin)
-fastify.post('/api/admin/flags/:key/toggle', { preHandler: [requireRole('admin')] }, async (request) => {
+fastify.post('/api/admin/flags/:key/toggle', { preHandler: [requireAdminFromJWT] }, async (request) => {
     const { key } = request.params as { key: string };
     const enabled = FeatureFlagService.toggleFlag(key);
     return { key, enabled };
 });
 
 // Set city override
-fastify.post('/api/admin/flags/:key/city-override', { preHandler: [requireRole('admin')] }, async (request, reply) => {
+fastify.post('/api/admin/flags/:key/city-override', { preHandler: [requireAdminFromJWT] }, async (request, reply) => {
     const { key } = request.params as { key: string };
     const { cityId, enabled } = request.body as { cityId: string; enabled: boolean };
 
@@ -2784,12 +2785,12 @@ fastify.post('/api/admin/flags/:key/city-override', { preHandler: [requireRole('
 // --- Reliability & Health ---
 
 // Get provider health
-fastify.get('/api/admin/health/providers', { preHandler: [requireRole('admin')] }, async () => {
+fastify.get('/api/admin/health/providers', { preHandler: [requireAdminFromJWT] }, async () => {
     return { providers: getProviderHealth(), circuits: getAllCircuitStates() };
 });
 
 // Reset a circuit breaker
-fastify.post('/api/admin/health/reset-circuit/:provider', { preHandler: [requireRole('admin')] }, async (request) => {
+fastify.post('/api/admin/health/reset-circuit/:provider', { preHandler: [requireAdminFromJWT] }, async (request) => {
     const { provider } = request.params as { provider: string };
     resetCircuit(provider);
     return { success: true, provider, message: 'Circuit reset' };
@@ -2855,7 +2856,7 @@ fastify.post('/api/beta/consume-invite', { preHandler: [requireAuth] }, async (r
 // --- Admin Beta Management ---
 
 // Create invite code
-fastify.post('/api/admin/beta/invites', { preHandler: [requireRole('admin')] }, async (request) => {
+fastify.post('/api/admin/beta/invites', { preHandler: [requireAdminFromJWT] }, async (request) => {
     const { code, role, cityId, maxUses, expiresAt } = request.body as {
         code: string;
         role: 'hustler' | 'poster' | 'both';
@@ -2879,7 +2880,7 @@ fastify.post('/api/admin/beta/invites', { preHandler: [requireRole('admin')] }, 
 });
 
 // List all invites
-fastify.get('/api/admin/beta/invites', { preHandler: [requireRole('admin')] }, async () => {
+fastify.get('/api/admin/beta/invites', { preHandler: [requireAdminFromJWT] }, async () => {
     return {
         invites: InviteService.getAllInvites(),
         sample: InviteService.getSampleRow(),
@@ -2887,7 +2888,7 @@ fastify.get('/api/admin/beta/invites', { preHandler: [requireRole('admin')] }, a
 });
 
 // Get city capacity stats
-fastify.get('/api/admin/beta/city-stats/:cityId', { preHandler: [requireRole('admin')] }, async (request) => {
+fastify.get('/api/admin/beta/city-stats/:cityId', { preHandler: [requireAdminFromJWT] }, async (request) => {
     const { cityId } = request.params as { cityId: string };
     return InviteService.getCityStats(cityId);
 });
@@ -2895,12 +2896,12 @@ fastify.get('/api/admin/beta/city-stats/:cityId', { preHandler: [requireRole('ad
 // --- Admin Notifications ---
 
 // Get notification stats
-fastify.get('/api/admin/notifications/stats', { preHandler: [requireRole('admin')] }, async () => {
+fastify.get('/api/admin/notifications/stats', { preHandler: [requireAdminFromJWT] }, async () => {
     return NotificationService.getStats();
 });
 
 // List notifications
-fastify.get('/api/admin/notifications', { preHandler: [requireRole('admin')] }, async (request) => {
+fastify.get('/api/admin/notifications', { preHandler: [requireAdminFromJWT] }, async (request) => {
     const { type, status, limit } = request.query as {
         type?: any;
         status?: 'pending' | 'sent' | 'failed';
@@ -2930,7 +2931,7 @@ fastify.get('/api/notifications', { preHandler: [requireAuth] }, async (request)
 // --- Admin Users (extended) ---
 
 // Force complete a task
-fastify.post('/api/admin/tasks/:taskId/force-complete', { preHandler: [requireRole('admin')] }, async (request) => {
+fastify.post('/api/admin/tasks/:taskId/force-complete', { preHandler: [requireAdminFromJWT] }, async (request) => {
     const { taskId } = request.params as { taskId: string };
     const { reason } = request.body as { reason?: string };
     const adminId = (request as any).user?.uid || 'system';
@@ -2946,7 +2947,7 @@ fastify.post('/api/admin/tasks/:taskId/force-complete', { preHandler: [requireRo
 });
 
 // Force refund a task
-fastify.post('/api/admin/tasks/:taskId/force-refund', { preHandler: [requireRole('admin')] }, async (request) => {
+fastify.post('/api/admin/tasks/:taskId/force-refund', { preHandler: [requireAdminFromJWT] }, async (request) => {
     const { taskId } = request.params as { taskId: string };
     const { reason } = request.body as { reason?: string };
     const adminId = (request as any).user?.uid || 'system';
@@ -2964,7 +2965,7 @@ fastify.post('/api/admin/tasks/:taskId/force-refund', { preHandler: [requireRole
 });
 
 // Get AI routing config
-fastify.get('/api/admin/ai/routes', { preHandler: [requireRole('admin')] }, async () => {
+fastify.get('/api/admin/ai/routes', { preHandler: [requireAdminFromJWT] }, async () => {
     return {
         routes: {
             safety: 'openai',
