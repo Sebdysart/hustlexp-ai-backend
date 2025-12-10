@@ -275,7 +275,7 @@ class StripeServiceClass {
         hustlerId: string,
         amount: number,
         paymentMethodId: string
-    ): Promise<EscrowRecord | null> {
+    ): Promise<any | null> {
         if (!stripe) {
             serviceLogger.warn('Stripe not configured - cannot create escrow');
             return null;
@@ -293,6 +293,7 @@ class StripeServiceClass {
                 payment_method: paymentMethodId,
                 capture_method: 'manual', // Hold funds, don't transfer yet
                 confirm: true,
+                automatic_payment_methods: { enabled: false },
                 return_url: `${process.env.FRONTEND_URL || 'https://hustlexp.app'}/task/${taskId}/payment-complete`,
                 metadata: {
                     taskId,
@@ -325,7 +326,7 @@ class StripeServiceClass {
                 paymentIntentId: paymentIntent.id,
             }, 'Created escrow hold');
 
-            return escrow;
+            return { ...escrow, _debug_pi: paymentIntent };
         } catch (error) {
             serviceLogger.error({ error, taskId }, 'Failed to create escrow hold');
             return null;
