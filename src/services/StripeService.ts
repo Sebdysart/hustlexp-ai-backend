@@ -286,26 +286,26 @@ class StripeServiceClass {
             const platformFeeCents = Math.round(amount * SEATTLE_PLATFORM_FEE_PERCENT * 100);
             const hustlerPayoutCents = amountCents - platformFeeCents;
 
-            // Create PaymentIntent with capture_method: manual for escrow
+            // 1. CREATE (NO return_url allowed here)
             const paymentIntent = await stripe.paymentIntents.create({
                 amount: amountCents,
                 currency: 'usd',
                 payment_method: paymentMethodId,
-                capture_method: 'manual', // Hold funds, don't transfer yet
-                confirm: false, // Don't confirm yet to prevent auto-capture
-                return_url: `${process.env.FRONTEND_URL || 'https://hustlexp.app'}/task/${taskId}/payment-complete`,
+                capture_method: 'manual',
+                confirm: false, // Split flow
                 metadata: {
                     taskId,
                     posterId,
                     hustlerId,
                     type: 'escrow_hold',
                 },
-                transfer_group: taskId, // Group related transfers
+                transfer_group: taskId,
             });
 
-            // Explicitly confirm to enforce manual capture behavior
+            // 2. CONFIRM (return_url MUST be here)
             const confirmedPI = await stripe.paymentIntents.confirm(paymentIntent.id, {
                 payment_method: paymentMethodId,
+                return_url: `${process.env.FRONTEND_URL || 'https://hustlexp.app'}/task/${taskId}/payment-complete`,
             });
 
             const escrow: EscrowRecord = {
