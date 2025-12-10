@@ -293,6 +293,25 @@ export async function requireAdminFromJWT(
         return;
     }
 
+    // STAGE-2 SECURITY: Check denylist AFTER JWT verification
+    // Even with valid admin JWT, if UID is in denylist, access is blocked
+    // This enables instant revocation without waiting for JWT expiry
+    const { AdminDenylistService } = await import('../services/AdminDenylistService.js');
+    const isDenied = await AdminDenylistService.isDenied(decodedToken.uid);
+
+    if (isDenied) {
+        logger.warn({
+            uid: decodedToken.uid,
+        }, 'Admin access blocked - UID is in denylist (revoked)');
+
+        reply.status(403).send({
+            error: 'FORBIDDEN',
+            code: 'ADMIN_REVOKED',
+            message: 'Admin access has been revoked for this account',
+        });
+        return;
+    }
+
     // Admin verified - attach user info
     const user = tokenToUser(decodedToken);
     user.role = 'admin'; // Mark as admin since JWT confirms it
