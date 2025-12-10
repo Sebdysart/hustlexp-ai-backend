@@ -73,6 +73,9 @@ export interface DecodedToken {
         identities: Record<string, unknown>;
         sign_in_provider: string;
     };
+    // Custom claims (set via Firebase Admin SDK)
+    admin?: boolean;  // CRITICAL: Only admin if this is TRUE in signed JWT
+    role?: string;    // Token-embedded role claim (optional, for reference)
 }
 
 // Cache JWKS for performance
@@ -129,6 +132,7 @@ class FirebaseServiceClass {
             });
 
             // Map to our DecodedToken interface
+            // CRITICAL: Extract custom claims (admin, role) from the signed JWT
             const decoded: DecodedToken = {
                 uid: payload.sub!,
                 email: payload.email as string | undefined,
@@ -138,6 +142,9 @@ class FirebaseServiceClass {
                 iat: payload.iat!,
                 exp: payload.exp!,
                 firebase: payload.firebase as DecodedToken['firebase'],
+                // SECURITY: These are signed by Google - trustworthy source of admin privilege
+                admin: payload.admin === true,  // Explicit boolean check for safety
+                role: payload.role as string | undefined,
             };
 
             logger.debug({ uid: decoded.uid }, 'Token verified via JWKS');

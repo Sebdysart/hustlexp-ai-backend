@@ -186,7 +186,8 @@ export async function optionalAuth(
 }
 
 /**
- * Require specific role - uses database role, NOT Firebase custom claims
+ * Require specific role - uses database role for poster/hustler
+ * SECURITY: Admin bypass REMOVED - admin is now ONLY via JWT claim
  */
 export function requireRole(role: UserRole) {
     return async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
@@ -207,10 +208,9 @@ export function requireRole(role: UserRole) {
         // Check role from database (already attached by requireAuth)
         const userRole = user.role;
 
-        // Admin can do anything
-        if (userRole === 'admin') {
-            return;
-        }
+        // SECURITY FIX: Removed DB-based admin bypass!
+        // Admin is no longer checked here - use requireAdminFromJWT() for admin endpoints
+        // This function now ONLY checks for exact role match (poster/hustler)
 
         if (userRole !== role) {
             logger.warn({
@@ -231,9 +231,79 @@ export function requireRole(role: UserRole) {
 }
 
 /**
+ * CRITICAL SECURITY: Require admin privilege from JWT custom claims ONLY
+ * 
+ * Admin privilege is determined by:
+ * 1. The JWT must be valid (signed by Google/Firebase)
+ * 2. The JWT payload must contain: admin: true
+ * 3. DB role is IRRELEVANT for admin - cannot grant nor revoke admin
+ * 
+ * To set admin on a user, use Firebase Admin SDK:
+ *   admin.auth().setCustomUserClaims(uid, { admin: true })
+ * 
+ * This can ONLY be done with the private key, never via API.
+ */
+export async function requireAdminFromJWT(
+    request: FastifyRequest,
+    reply: FastifyReply
+): Promise<void> {
+    // Check if Firebase is configured
+    if (!FirebaseService.isAvailable()) {
+        reply.status(503).send({
+            error: 'Authentication service unavailable',
+            code: 'AUTH_SERVICE_UNAVAILABLE',
+        });
+        return;
+    }
+
+    // Extract token
+    const token = extractBearerToken(request.headers.authorization);
+
+    if (!token) {
+        reply.status(401).send({
+            error: 'Authorization header required',
+            code: 'MISSING_TOKEN',
+        });
+        return;
+    }
+
+    // Verify token via JWKS - this validates the signature is from Google
+    const decodedToken = await FirebaseService.verifyIdToken(token);
+
+    if (!decodedToken) {
+        reply.status(401).send({
+            error: 'Invalid or expired token',
+            code: 'INVALID_TOKEN',
+        });
+        return;
+    }
+
+    // CRITICAL: Check admin claim from JWT (signed by Google, NOT from DB)
+    if (decodedToken.admin !== true) {
+        logger.warn({
+            uid: decodedToken.uid,
+            hasAdminClaim: decodedToken.admin,
+        }, 'Admin access denied - JWT admin claim missing or false');
+
+        reply.status(403).send({
+            error: 'FORBIDDEN',
+            code: 'ADMIN_REQUIRED',
+            message: 'This endpoint requires admin privileges (set via Firebase custom claims)',
+        });
+        return;
+    }
+
+    // Admin verified - attach user info
+    const user = tokenToUser(decodedToken);
+    user.role = 'admin'; // Mark as admin since JWT confirms it
+    request.user = user;
+
+    logger.info({ uid: user.uid }, 'Admin access granted via JWT claim');
+}
+
+/**
  * Check if Firebase authentication is enabled
  */
 export function isAuthEnabled(): boolean {
     return FirebaseService.isAvailable();
 }
-
