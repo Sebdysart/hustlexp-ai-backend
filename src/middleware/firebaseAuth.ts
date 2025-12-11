@@ -88,8 +88,17 @@ export async function requireAuth(
             const testRole = (request.headers['x-test-role'] as UserRole) || 'poster';
             logger.warn({ testRole }, 'Using development auth bypass with role');
 
+            // Static UUIDs for testing consistency
+            const DEV_POSTER_ID = '11111111-1111-1111-1111-111111111111';
+            const DEV_HUSTLER_ID = '22222222-2222-2222-2222-222222222222';
+            const DEV_ADMIN_ID = '33333333-3333-3333-3333-333333333333';
+
+            let uid = DEV_POSTER_ID;
+            if (testRole === 'hustler') uid = DEV_HUSTLER_ID;
+            if (testRole === 'admin') uid = DEV_ADMIN_ID;
+
             request.user = {
-                uid: 'dev-user',
+                uid: uid,
                 email: 'dev@local.test',
                 emailVerified: true,
                 name: 'Development User',
@@ -252,6 +261,25 @@ export async function requireAdminFromJWT(
 ): Promise<void> {
     // Check if Firebase is configured
     if (!FirebaseService.isAvailable()) {
+        // In development without Firebase, allow requests through with mock user
+        if (process.env.NODE_ENV === 'development') {
+            const testRole = (request.headers['x-test-role'] as UserRole);
+            if (testRole === 'admin') {
+                logger.warn('Using development admin bypass');
+                request.user = {
+                    uid: '33333333-3333-3333-3333-333333333333',
+                    email: 'admin@dev.local',
+                    role: 'admin',
+                    emailVerified: true,
+                    name: 'Dev Admin',
+                    signInProvider: 'dev',
+                    authTime: new Date(),
+                    tokenExpiry: new Date()
+                };
+                return;
+            }
+        }
+
         reply.status(503).send({
             error: 'Authentication service unavailable',
             code: 'AUTH_SERVICE_UNAVAILABLE',

@@ -340,7 +340,7 @@ Be strict about safety for this Seattle beta launch.`;
         const content = `${title}\n${description}`;
 
         // Check user suspension first
-        const suspension = DisputeService.isUserSuspended(userId);
+        const suspension = await DisputeService.isUserSuspended(userId);
         if (suspension.suspended) {
             return {
                 allowed: false,

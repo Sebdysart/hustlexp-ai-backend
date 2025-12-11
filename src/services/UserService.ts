@@ -253,6 +253,27 @@ class UserServiceClass {
             updated_at: row.updated_at as Date,
         };
     }
+
+    /**
+     * Get Stripe Connect Account ID for a user (hustler)
+     */
+    async getStripeConnectId(internalUserId: string): Promise<string> {
+        if (isDatabaseAvailable() && sql) {
+            try {
+                const rows = await sql`
+                    SELECT stripe_account_id FROM users 
+                    WHERE id = ${internalUserId}
+                `;
+                if (rows.length > 0 && rows[0].stripe_account_id) {
+                    return rows[0].stripe_account_id as string;
+                }
+            } catch (error) {
+                serviceLogger.error({ error, internalUserId }, 'Failed to fetch Stripe Connect ID');
+            }
+        }
+
+        throw new Error(`Stripe Connect ID not found for user ${internalUserId}`);
+    }
 }
 
 export const UserService = new UserServiceClass();
