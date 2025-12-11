@@ -411,6 +411,22 @@ class TaskServiceClass {
 
         return reasons;
     }
+
+    async getTaskWithEscrow(taskId: string): Promise<Task & { hustlerPayout: number; posterId: string }> {
+        // For Beta, we assume recommendedPrice is the agreed price.
+        // In full prod, we might have an 'agreed_price' column or separate 'escrow' table entry.
+        // But money_state_lock is now the source of state truth.
+        const task = await this.getTask(taskId);
+        if (!task) throw new Error(`Task ${taskId} not found`);
+
+        // We assume posterId is clientId (mapped in rowToTask)
+        return {
+            ...task,
+            posterId: task.clientId,
+            hustlerPayout: task.recommendedPrice
+        };
+    }
 }
 
 export const TaskService = new TaskServiceClass();
+

@@ -258,21 +258,36 @@ const SCHEMA_STATEMENTS = [
   // Disputes table - handles poster/hustler conflicts
   `CREATE TABLE IF NOT EXISTS disputes (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    task_id UUID REFERENCES tasks(id) ON DELETE CASCADE,
+    task_id UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
     poster_id UUID REFERENCES users(id) ON DELETE SET NULL,
     hustler_id UUID REFERENCES users(id) ON DELETE SET NULL,
-    escrow_id UUID REFERENCES escrow(id) ON DELETE SET NULL,
-    status VARCHAR(50) NOT NULL DEFAULT 'open',
-    poster_reason TEXT NOT NULL,
+    escrow_id TEXT REFERENCES escrow_holds(id) ON DELETE SET NULL,
+    status VARCHAR(50) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'under_review', 'refunded', 'upheld')),
+    reason TEXT NOT NULL,
+    description TEXT,
+    poster_response TEXT,
     hustler_response TEXT,
     resolution_note TEXT,
     resolution_amount_hustler DECIMAL(10,2),
     resolution_amount_poster DECIMAL(10,2),
+    final_refund_amount DECIMAL(10,2),
+    locked_at TIMESTAMP WITH TIME ZONE,
     resolved_by UUID REFERENCES users(id) ON DELETE SET NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    CONSTRAINT dispute_status_check CHECK (status IN ('open', 'under_review', 'resolved_refund', 'resolved_payout', 'resolved_split', 'closed'))
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
   )`,
+
+  // Admin Locks - Denylist Persistence
+  // Use firebase_uid to match DisputeService usage
+  `CREATE TABLE IF NOT EXISTS admin_locks (
+    id SERIAL PRIMARY KEY,
+    firebase_uid TEXT,
+    reason TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+  )`,
+
+  // FIX: Ensure firebase_uid exists if table matched old definition
+  `ALTER TABLE admin_locks ADD COLUMN IF NOT EXISTS firebase_uid TEXT`,
 
   // User strikes table - tracks violations
   `CREATE TABLE IF NOT EXISTS user_strikes (
@@ -305,6 +320,13 @@ const SCHEMA_STATEMENTS = [
   `CREATE INDEX IF NOT EXISTS idx_xp_events_user ON xp_events(user_id)`,
   `CREATE INDEX IF NOT EXISTS idx_quests_user ON quests(user_id)`,
   `CREATE INDEX IF NOT EXISTS idx_ai_events_created ON ai_events(created_at)`,
+
+  // Indexes for Stage 2
+  `CREATE INDEX IF NOT EXISTS idx_escrow_holds_task ON escrow_holds(task_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_escrow_holds_pi ON escrow_holds(payment_intent_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_hustler_payouts_task ON hustler_payouts(task_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_hustler_payouts_transfer ON hustler_payouts(transfer_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_admin_locks_user ON admin_locks(firebase_uid)`,
 
   // Indexes for new tables
   `CREATE INDEX IF NOT EXISTS idx_badges_user ON badges(user_id)`,
@@ -340,6 +362,80 @@ const SCHEMA_STATEMENTS = [
   `CREATE INDEX IF NOT EXISTS idx_user_strikes_severity ON user_strikes(severity)`,
   `CREATE INDEX IF NOT EXISTS idx_moderation_logs_type ON moderation_logs(type)`,
   `CREATE INDEX IF NOT EXISTS idx_moderation_logs_severity ON moderation_logs(severity)`,
+
+  // ============================================
+  // Phase 5A — Audit Tables (Append-Only, Immutable)
+  // ============================================
+
+  // money_events_audit - Tracks every financial state transition
+  `CREATE TABLE IF NOT EXISTS money_events_audit (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    event_id UUID NOT NULL,
+    task_id UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    actor_uid TEXT,
+    event_type TEXT NOT NULL,
+    previous_state TEXT,
+    new_state TEXT,
+    stripe_payment_intent_id TEXT,
+    stripe_charge_id TEXT,
+    stripe_transfer_id TEXT,
+    raw_context JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )`,
+
+  // dispute_actions_audit - Tracks dispute message history + admin decisions
+  `CREATE TABLE IF NOT EXISTS dispute_actions_audit (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    dispute_id UUID NOT NULL REFERENCES disputes(id) ON DELETE CASCADE,
+    actor_uid TEXT,
+    action TEXT NOT NULL,
+    message TEXT,
+    raw_context JSONB,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )`,
+
+  // admin_actions - Tracks all privileged actions
+  // Drop first to handle schema drift from prior runs
+  `DROP TABLE IF EXISTS admin_actions CASCADE`,
+  `CREATE TABLE admin_actions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    admin_uid TEXT NOT NULL,
+    action TEXT NOT NULL,
+    target_uid TEXT,
+    task_id UUID,
+    dispute_id UUID,
+    raw_context JSONB,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )`,
+
+  // FK Constraints for disputes (Phase 5A Hardening)
+  `ALTER TABLE disputes 
+    DROP CONSTRAINT IF EXISTS fk_disputes_task`,
+  `ALTER TABLE disputes 
+    ADD CONSTRAINT fk_disputes_task 
+    FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE`,
+
+  // FK Constraints for escrow_holds
+  `ALTER TABLE escrow_holds 
+    DROP CONSTRAINT IF EXISTS fk_escrow_holds_task`,
+  `ALTER TABLE escrow_holds 
+    ADD CONSTRAINT fk_escrow_holds_task 
+    FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE`,
+
+  // FK Constraints for hustler_payouts
+  `ALTER TABLE hustler_payouts 
+    DROP CONSTRAINT IF EXISTS fk_hustler_payouts_task`,
+  `ALTER TABLE hustler_payouts 
+    ADD CONSTRAINT fk_hustler_payouts_task 
+    FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE`,
+
+  // Indexes for audit tables
+  `CREATE INDEX IF NOT EXISTS idx_money_events_audit_task ON money_events_audit(task_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_money_events_audit_event ON money_events_audit(event_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_money_events_audit_created ON money_events_audit(created_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_dispute_actions_audit_dispute ON dispute_actions_audit(dispute_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_admin_actions_admin ON admin_actions(admin_uid)`,
+  `CREATE INDEX IF NOT EXISTS idx_admin_actions_action ON admin_actions(action)`,
 
   // ============================================
   // Phase D — Analytics Tables
@@ -547,17 +643,8 @@ const SCHEMA_STATEMENTS = [
     CONSTRAINT invite_role_check CHECK (role IN ('hustler', 'poster', 'both'))
   )`,
 
-  // Admin actions log
-  `CREATE TABLE IF NOT EXISTS admin_actions (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    admin_id UUID REFERENCES users(id) ON DELETE SET NULL,
-    action_type VARCHAR(100) NOT NULL,
-    target_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
-    target_task_id UUID REFERENCES tasks(id) ON DELETE SET NULL,
-    target_dispute_id UUID REFERENCES disputes(id) ON DELETE SET NULL,
-    details JSONB DEFAULT '{}',
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-  )`,
+  // Admin actions log - MOVED TO PHASE 5A AUDIT TABLES (lines 397-409)
+  // Legacy definition removed to prevent schema drift.
 
   // Indexes for Phase F tables
   `CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id)`,
@@ -566,8 +653,7 @@ const SCHEMA_STATEMENTS = [
   `CREATE INDEX IF NOT EXISTS idx_notifications_created ON notifications(created_at)`,
   `CREATE INDEX IF NOT EXISTS idx_beta_invites_code ON beta_invites(code)`,
   `CREATE INDEX IF NOT EXISTS idx_beta_invites_city ON beta_invites(city_id)`,
-  `CREATE INDEX IF NOT EXISTS idx_admin_actions_admin ON admin_actions(admin_id)`,
-  `CREATE INDEX IF NOT EXISTS idx_admin_actions_type ON admin_actions(action_type)`,
+  // Legacy admin_actions indexes removed - Phase 5A indexes now at lines 435-436
 
   // ============================================
   // Stage 2 — Refund Architecture Tables (Option 3 Strict)
