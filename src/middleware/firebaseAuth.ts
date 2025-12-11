@@ -85,6 +85,9 @@ export async function requireAuth(
         // In development without Firebase, allow requests through with mock user
         if (process.env.NODE_ENV === 'development') {
             logger.warn('Firebase not configured - using development bypass');
+            const testRole = (request.headers['x-test-role'] as UserRole) || 'poster';
+            logger.warn({ testRole }, 'Using development auth bypass with role');
+
             request.user = {
                 uid: 'dev-user',
                 email: 'dev@local.test',
@@ -93,7 +96,7 @@ export async function requireAuth(
                 signInProvider: 'development',
                 authTime: new Date(),
                 tokenExpiry: new Date(Date.now() + 3600000),
-                role: 'poster',
+                role: testRole,
             };
             return;
         }

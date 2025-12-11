@@ -2012,7 +2012,7 @@ fastify.get('/api/escrow/:taskId', { preHandler: [requireAuth] }, async (request
     }
 
     const { taskId } = request.params as { taskId: string };
-    const escrow = StripeService.getEscrow(taskId);
+    const escrow = await StripeService.getEscrow(taskId);
 
     if (!escrow) {
         reply.status(404);
@@ -2028,8 +2028,8 @@ fastify.get('/api/escrow/:taskId', { preHandler: [requireAuth] }, async (request
     return escrow;
 });
 
-// Refund escrow (task cancelled) - POSTER ONLY
-fastify.post('/api/escrow/:taskId/refund', { preHandler: [requireRole('poster')] }, async (request, reply) => {
+// Refund escrow (task cancelled) - POSTER (held) or ADMIN (any)
+fastify.post('/api/escrow/:taskId/refund', { preHandler: [requireAuth] }, async (request, reply) => {
     if (!request.user) {
         reply.status(401);
         return { error: 'Authentication required' };
@@ -2038,26 +2038,32 @@ fastify.post('/api/escrow/:taskId/refund', { preHandler: [requireRole('poster')]
     const { taskId } = request.params as { taskId: string };
     const body = request.body as { reason?: string };
 
-    // Verify caller owns the escrow
-    const escrow = StripeService.getEscrow(taskId);
+    // Load Escrow safely
+    const escrow = await StripeService.getEscrow(taskId);
     if (!escrow) {
         reply.status(404);
         return { error: 'No escrow found for this task' };
     }
 
-    if (escrow.posterId !== request.user.uid) {
+    // Determine Role
+    const isAdmin = request.user.role === 'admin';
+    const isPoster = escrow.posterId === request.user.uid;
+
+    if (!isPoster && !isAdmin) {
         reply.status(403);
-        return { error: 'Only task poster can refund escrow' };
+        return { error: 'Not authorized to refund this escrow' };
     }
 
-    const success = await StripeService.refundEscrow(taskId, body.reason);
+    // Call Hardened Logic
+    // If Admin, pass true flag. If Poster, pass false (service validates restricted status)
+    const result = await StripeService.refundEscrow(taskId, isAdmin);
 
-    if (!success) {
-        reply.status(400);
-        return { error: 'Failed to refund escrow' };
+    if (!result.success) {
+        reply.status(400); // Or 409 Conflict if "Already refunded" - but 400 is safer generic
+        return { error: result.message };
     }
 
-    return { success: true, message: 'Escrow refunded' };
+    return { success: true, message: result.message };
 });
 
 // ============================================
@@ -2083,7 +2089,7 @@ fastify.post('/api/tasks/:taskId/approve', { preHandler: [requireRole('poster')]
         const body = ApproveTaskSchema.parse(request.body);
 
         // 1. Verify escrow exists and is held
-        const escrow = StripeService.getEscrow(taskId);
+        const escrow = await StripeService.getEscrow(taskId);
         if (!escrow) {
             reply.status(404);
             return { error: 'No escrow found for this task' };
@@ -2111,8 +2117,8 @@ fastify.post('/api/tasks/:taskId/approve', { preHandler: [requireRole('poster')]
 
             if (!payout) {
                 // Determine why it failed
-                const escrow = StripeService.getEscrow(taskId);
-                const accountId = StripeService.getConnectAccountId(escrow?.hustlerId || '');
+                const escrow = await StripeService.getEscrow(taskId);
+                const accountId = await StripeService.getConnectAccountId(escrow?.hustlerId || '');
 
                 reply.status(500);
                 return {
@@ -2181,7 +2187,7 @@ fastify.post('/api/tasks/:taskId/reject', { preHandler: [requireRole('poster')] 
         const body = RejectTaskSchema.parse(request.body);
 
         // 1. Verify escrow exists
-        const escrow = StripeService.getEscrow(taskId);
+        const escrow = await StripeService.getEscrow(taskId);
         if (!escrow) {
             reply.status(404);
             return { error: 'No escrow found for this task' };
@@ -2201,8 +2207,10 @@ fastify.post('/api/tasks/:taskId/reject', { preHandler: [requireRole('poster')] 
         // 3. Handle based on requested action
         if (body.requestedAction === 'refund') {
             // Full refund
-            const success = await StripeService.refundEscrow(taskId, body.reason);
-            if (!success) {
+            // Full refund
+            logger.info({ taskId, reason: body.reason }, 'Poster rejecting task - initiating refund');
+            const result = await StripeService.refundEscrow(taskId, false); // false = not admin override
+            if (!result.success) {
                 reply.status(500);
                 return { error: 'Failed to process refund' };
             }
@@ -2254,7 +2262,7 @@ fastify.get('/api/payouts/:hustlerId', { preHandler: [requireAuth] }, async (req
         return { error: 'Not authorized to view these payouts' };
     }
 
-    const payouts = StripeService.getPayoutHistory(hustlerId);
+    const payouts = await StripeService.getPayoutHistory(hustlerId);
     return {
         payouts,
         count: payouts.length,
@@ -2272,7 +2280,7 @@ fastify.get('/api/payouts/detail/:payoutId', { preHandler: [requireAuth] }, asyn
     }
 
     const { payoutId } = request.params as { payoutId: string };
-    const payout = StripeService.getPayout(payoutId);
+    const payout = await StripeService.getPayout(payoutId);
 
     if (!payout) {
         reply.status(404);
