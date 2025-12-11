@@ -360,7 +360,18 @@ class StripeServiceClass {
             if (!escrow) { serviceLogger.error({ taskId }, 'Escrow not found'); return null; }
             if (escrow.status !== 'held') { serviceLogger.error({ taskId, status: escrow.status }, 'Escrow not held'); return null; }
 
-            const hustlerAccountId = connectAccounts.get(escrow.hustler_id);
+            let hustlerAccountId = connectAccounts.get(escrow.hustler_id);
+
+            // Fallback: Check DB if not in memory
+            if (!hustlerAccountId && sql) {
+                const userRes = await sql`SELECT stripe_account_id FROM users WHERE id = ${escrow.hustler_id}`;
+                if (userRes.length > 0 && userRes[0].stripe_account_id) {
+                    const dbId = userRes[0].stripe_account_id as string;
+                    hustlerAccountId = dbId;
+                    connectAccounts.set(escrow.hustler_id, dbId); // Re-cache
+                }
+            }
+
             if (!hustlerAccountId) { serviceLogger.error({ taskId }, 'No Connect Account'); return null; }
 
             // 2. Capture PI
