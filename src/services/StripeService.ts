@@ -364,7 +364,7 @@ class StripeServiceClass {
 
             // Fallback: Check DB if not in memory
             if (!hustlerAccountId && sql) {
-                const userRes = await sql`SELECT stripe_account_id FROM users WHERE id = ${escrow.hustler_id}`;
+                const userRes = await sql`SELECT stripe_account_id FROM users WHERE firebase_uid = ${escrow.hustler_id}`;
                 if (userRes.length > 0 && userRes[0].stripe_account_id) {
                     const dbId = userRes[0].stripe_account_id as string;
                     hustlerAccountId = dbId;
