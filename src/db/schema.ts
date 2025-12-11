@@ -568,6 +568,66 @@ const SCHEMA_STATEMENTS = [
   `CREATE INDEX IF NOT EXISTS idx_beta_invites_city ON beta_invites(city_id)`,
   `CREATE INDEX IF NOT EXISTS idx_admin_actions_admin ON admin_actions(admin_id)`,
   `CREATE INDEX IF NOT EXISTS idx_admin_actions_type ON admin_actions(action_type)`,
+
+  // ============================================
+  // Stage 2 — Refund Architecture Tables (Option 3 Strict)
+  // ============================================
+
+  // Escrow Holds - Persistent Ledger (Saga Lock)
+  `CREATE TABLE IF NOT EXISTS escrow_holds (
+    id TEXT PRIMARY KEY, -- "escrow_timestamp" format to match user spec
+    task_id TEXT UNIQUE NOT NULL,
+    poster_id TEXT,
+    hustler_id TEXT,
+    payment_intent_id TEXT UNIQUE,
+    gross_amount_cents INTEGER NOT NULL,
+    platform_fee_cents INTEGER NOT NULL,
+    net_payout_cents INTEGER NOT NULL,
+    status TEXT CHECK (status IN ('held','released','cancelled','refunded')) NOT NULL,
+    refund_status TEXT CHECK (refund_status IN ('pending','refunded','failed')),
+    refund_id TEXT,
+    reversal_id TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    refund_completed_at TIMESTAMP WITH TIME ZONE
+  )`,
+
+  // Hustler Payouts - Linkage to Transfers
+  `CREATE TABLE IF NOT EXISTS hustler_payouts (
+    id SERIAL PRIMARY KEY,
+    task_id TEXT,
+    hustler_id TEXT,
+    transfer_id TEXT NOT NULL,
+    charge_id TEXT NOT NULL,
+    amount_cents INTEGER NOT NULL,
+    status TEXT DEFAULT 'processing',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+  )`,
+
+  // Balance Snapshots - Fraud Evidence
+  `CREATE TABLE IF NOT EXISTS balance_snapshots (
+    id SERIAL PRIMARY KEY,
+    hustler_id TEXT NOT NULL,
+    transfer_id TEXT NOT NULL,
+    balance_available_before JSONB NOT NULL,
+    balance_pending_before JSONB NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+  )`,
+
+  // Admin Locks - Denylist Persistence
+  `CREATE TABLE IF NOT EXISTS admin_locks (
+    id SERIAL PRIMARY KEY,
+    hustler_id TEXT,
+    reason TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+  )`,
+
+  // Indexes for Stage 2
+  `CREATE INDEX IF NOT EXISTS idx_escrow_holds_task ON escrow_holds(task_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_escrow_holds_pi ON escrow_holds(payment_intent_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_hustler_payouts_task ON hustler_payouts(task_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_hustler_payouts_transfer ON hustler_payouts(transfer_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_admin_locks_hustler ON admin_locks(hustler_id)`,
 ];
 
 /**
