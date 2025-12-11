@@ -416,18 +416,19 @@ class StripeServiceClass {
             `;
 
             // 5. Persist Linkage
-            const payoutId = `payout_${Date.now()}`;
-            await sql`
+            const payoutRows = await sql`
                 INSERT INTO hustler_payouts (
-                    id, task_id, escrow_id, hustler_id, hustler_stripe_account_id,
+                    task_id, escrow_id, hustler_id, hustler_stripe_account_id,
                     transfer_id, charge_id, gross_amount_cents, fee_cents, net_amount_cents,
                     type, status
                 ) VALUES (
-                    ${payoutId}, ${taskId}, ${escrow.id}, ${escrow.hustler_id}, ${hustlerAccountId},
+                    ${taskId}, ${escrow.id}, ${escrow.hustler_id}, ${hustlerAccountId},
                     ${transfer.id}, ${chargeId}, ${escrow.net_payout_cents}, ${fee}, ${payoutAmountCents},
                     ${type}, 'processing'
                 )
+                RETURNING id
             `;
+            const payoutId = String(payoutRows[0].id);
 
             // Instant Payout logic (Optimistic - fire and forget from backend perspective for now/or simplified)
             let stripePayoutId: string | undefined;
