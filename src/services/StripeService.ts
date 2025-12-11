@@ -472,7 +472,7 @@ class StripeServiceClass {
 
         } catch (error) {
             serviceLogger.error({ error, taskId }, 'Failed to release escrow');
-            return null;
+            throw error;
         }
     }
 
