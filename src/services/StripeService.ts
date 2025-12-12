@@ -11,6 +11,7 @@
 import Stripe from 'stripe';
 import { serviceLogger } from '../utils/logger.js';
 import { sql, isDatabaseAvailable } from '../db/index.js';
+import { StripeMoneyEngine } from './StripeMoneyEngine.js';
 
 // ============================================
 // Configuration
@@ -792,7 +793,48 @@ class StripeServiceClass {
             }
 
             default:
-                serviceLogger.debug({ type: event.type, eventId: event.id }, 'Unhandled webhook event');
+                // ============================================
+                // Phase 5C: Handle transfer.paid (not in Stripe types)
+                // Triggers WEBHOOK_PAYOUT_PAID in StripeMoneyEngine
+                // Transitions: released → completed
+                // ============================================
+                if ((event.type as string) === 'transfer.paid') {
+                    const transfer = (event as any).data.object as Stripe.Transfer;
+                    const taskId = transfer.metadata?.taskId;
+
+                    if (!taskId) {
+                        serviceLogger.warn({ transferId: transfer.id, eventId: event.id },
+                            'Transfer.paid received without taskId in metadata - cannot finalize');
+                        break;
+                    }
+
+                    try {
+                        const ctx = {
+                            eventId: event.id,
+                            transferId: transfer.id,
+                            actorUid: 'stripe_webhook',
+                            amount: transfer.amount,
+                        };
+
+                        const result = await StripeMoneyEngine.handle(taskId, 'WEBHOOK_PAYOUT_PAID', ctx);
+
+                        serviceLogger.info({
+                            taskId,
+                            transferId: transfer.id,
+                            newState: result.state,
+                            eventId: event.id
+                        }, 'Transfer completed - task finalized via Money Engine');
+                    } catch (err: any) {
+                        serviceLogger.warn({
+                            taskId,
+                            transferId: transfer.id,
+                            error: err.message,
+                            eventId: event.id
+                        }, 'Transfer.paid handler error (may be idempotent duplicate)');
+                    }
+                } else {
+                    serviceLogger.debug({ type: event.type, eventId: event.id }, 'Unhandled webhook event');
+                }
         }
     }
 

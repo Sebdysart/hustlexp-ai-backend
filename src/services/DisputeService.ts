@@ -216,7 +216,9 @@ export class DisputeServiceClass {
                 eventId: crypto.randomUUID(),
                 taskId: dispute.task_id,
                 refundAmountCents: Math.round(task.recommendedPrice * 100), // Default full refund
-                reason: 'requested_by_customer' // Valid Stripe reason
+                reason: 'requested_by_customer', // Valid Stripe reason
+                adminUid: adminId, // Phase 5D: Required for admin validation
+                disputeId: disputeId, // Phase 5D: For audit trail
             };
 
             try {
@@ -282,7 +284,9 @@ export class DisputeServiceClass {
                 eventId: crypto.randomUUID(),
                 taskId: dispute.task_id,
                 payoutAmountCents: Math.round(task.hustlerPayout * 100),
-                hustlerStripeAccountId
+                hustlerStripeAccountId,
+                adminUid: adminId, // Phase 5D: Required for admin validation
+                disputeId: disputeId, // Phase 5D: For audit trail
             };
 
             // Call Money Engine

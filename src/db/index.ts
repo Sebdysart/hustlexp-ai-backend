@@ -26,7 +26,9 @@ export async function transaction<T>(
 
     const client = await pool.connect();
     try {
-        await client.query('BEGIN');
+        // PHASE 6.1: Use SERIALIZABLE isolation for financial transactions
+        // Prevents race conditions in concurrent payout attempts
+        await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
         // Create a compatibility wrapper for `tx` so it looks like `sql` tag function
         // because existing code uses `await tx`...`
         // Actually, existing code in StripeMoneyEngine uses `await tx`...` tag syntax.

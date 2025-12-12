@@ -48,6 +48,32 @@ export const apiRateLimiter = redis
     : null;
 
 /**
+ * PHASE 6.1: Rate limiter for admin endpoints
+ * 10 requests per minute per admin (stricter)
+ */
+export const adminRateLimiter = redis
+    ? new Ratelimit({
+        redis,
+        limiter: Ratelimit.slidingWindow(10, '60 s'),
+        analytics: true,
+        prefix: 'ratelimit:admin',
+    })
+    : null;
+
+/**
+ * PHASE 6.1: Rate limiter for financial endpoints
+ * 5 requests per minute per user (very strict for payouts)
+ */
+export const financialRateLimiter = redis
+    ? new Ratelimit({
+        redis,
+        limiter: Ratelimit.slidingWindow(5, '60 s'),
+        analytics: true,
+        prefix: 'ratelimit:financial',
+    })
+    : null;
+
+/**
  * Check if rate limiting is available
  */
 export function isRateLimitingEnabled(): boolean {
