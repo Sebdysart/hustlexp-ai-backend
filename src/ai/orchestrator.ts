@@ -39,13 +39,49 @@ export async function orchestrate(input: OrchestrateInput): Promise<OrchestrateR
         const userBrain = UserBrainService.getUserBrain(input.userId);
         const screen: ScreenContext = input.context?.screen || 'chat';
 
+        // IDENTITY-AWARE: Get identity context for personalized AI
+        const { AIIdentityContextService } = await import('../services/AIIdentityContextService.js');
+        const identityContext = await AIIdentityContextService.getOnboardingContext(input.userId);
+        const identityPromptContext = identityContext
+            ? await AIIdentityContextService.generateAIPromptContext(input.userId)
+            : null;
+
         aiLogger.info({
             userId: input.userId,
             mode: input.mode,
             messageLength: input.message.length,
             screen,
             learningScore: userBrain.learningScore,
-        }, 'Orchestration started (context-aware)');
+            trustTier: identityContext?.trustTier || 'unknown',
+            riskLevel: identityContext?.riskLevel || 'unknown',
+        }, 'Orchestration started (identity-aware)');
+
+        // Inject identity context into input for handlers
+        const enrichedInput: OrchestrateInput = {
+            ...input,
+            context: {
+                screen,
+                recentActions: input.context?.recentActions || [],
+                profileSnapshot: input.context?.profileSnapshot || {
+                    role: 'hustler' as const,
+                    level: 1,
+                    xp: 0,
+                    streakDays: 0,
+                    topCategories: [],
+                    earningsLast7d: 0,
+                },
+                aiHistorySummary: input.context?.aiHistorySummary,
+                identityContext: identityContext ? {
+                    trustScore: identityContext.trustScore,
+                    trustTier: identityContext.trustTier,
+                    riskLevel: identityContext.riskLevel,
+                    shouldChallenge: identityContext.shouldChallenge,
+                    skipRedundantQuestions: identityContext.skipRedundantQuestions,
+                    isFullyVerified: identityContext.identityVerified && identityContext.isReturningUser,
+                } : null,
+                identityPromptContext,
+            },
+        };
 
         // NEW: Track this message as an action
         ActionTrackerService.trackAction(input.userId, {

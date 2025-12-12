@@ -255,6 +255,16 @@ const SCHEMA_STATEMENTS = [
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS suspended_until TIMESTAMP WITH TIME ZONE`,
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS suspension_reason TEXT`,
 
+  // IVS Integration: Identity Verification Columns
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN DEFAULT false`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_verified BOOLEAN DEFAULT false`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified_at TIMESTAMPTZ`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_verified_at TIMESTAMPTZ`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS fully_verified_at TIMESTAMPTZ`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_status VARCHAR(50) DEFAULT 'unverified'`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS trust_score INTEGER DEFAULT 0`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarding_unlocked BOOLEAN DEFAULT false`,
+
   // Disputes table - handles poster/hustler conflicts
   `CREATE TABLE IF NOT EXISTS disputes (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -460,6 +470,7 @@ const SCHEMA_STATEMENTS = [
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
   )`,
+  `ALTER TABLE identity_verification ADD COLUMN IF NOT EXISTS device_fingerprint TEXT`,
 
   // Verification attempts - for rate limiting and audit
   `CREATE TABLE IF NOT EXISTS verification_attempts (
