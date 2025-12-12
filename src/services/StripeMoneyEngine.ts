@@ -406,6 +406,67 @@ export async function handle(taskId: string, eventType: string, context: any) {
         // END PHASE 5B GUARDS
         // ============================================
 
+        // ============================================
+        // PHASE 5D: ADMIN VALIDATION HARDENING
+        // Prevents admin fraud, conflict of interest, and forged actions.
+        // ============================================
+
+        const ADMIN_EVENTS = ['RESOLVE_REFUND', 'RESOLVE_UPHOLD', 'FORCE_REFUND'];
+
+        if (ADMIN_EVENTS.includes(eventType)) {
+            // GUARD 5: Admin identity MUST be provided
+            if (!context.adminUid) {
+                throw new Error(`BLOCKED: Admin event ${eventType} requires adminUid in context`);
+            }
+
+            // GUARD 6: Fetch task ownership for conflict check
+            const [task] = await tx`
+                SELECT t.client_id, t.assigned_hustler_id, u1.firebase_uid as poster_uid, u2.firebase_uid as hustler_uid
+                FROM tasks t
+                LEFT JOIN users u1 ON t.client_id = u1.id
+                LEFT JOIN users u2 ON t.assigned_hustler_id = u2.id
+                WHERE t.id = ${taskId}
+            `;
+
+            if (!task) {
+                throw new Error(`BLOCKED: Task ${taskId} not found for admin validation`);
+            }
+
+            // GUARD 7: Admin cannot be poster or hustler (conflict of interest)
+            if (context.adminUid === task.poster_uid || context.adminUid === task.hustler_uid) {
+                throw new Error(`BLOCKED: Admin ${context.adminUid} is a party to this task - conflict of interest`);
+            }
+
+            // AUDIT: Log admin action BEFORE executing (pre-audit)
+            await tx`
+                INSERT INTO admin_actions (
+                    admin_uid, action, target_uid, task_id, dispute_id, raw_context
+                ) VALUES (
+                    ${context.adminUid},
+                    ${eventType},
+                    ${task.hustler_uid ?? task.poster_uid},
+                    ${taskId},
+                    ${context.disputeId ?? null},
+                    ${JSON.stringify({
+                previous_state: lock.current_state,
+                triggered_at: new Date().toISOString(),
+                reason: context.reason ?? 'Not provided'
+            })}
+                )
+            `;
+
+            logger.info({
+                adminUid: context.adminUid,
+                eventType,
+                taskId,
+                previousState: lock.current_state,
+            }, 'Admin action validated and logged');
+        }
+
+        // ============================================
+        // END PHASE 5D GUARDS
+        // ============================================
+
         // DETERMINE NEXT STATE
         const newState = getNextState(lock.current_state, eventType);
         const nextEvents = getNextAllowed(newState);

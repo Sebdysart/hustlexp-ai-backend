@@ -14,9 +14,11 @@ interface EnvConfig {
 
 const ENV_CONFIG: EnvConfig = {
     required: [
-        // At least one AI provider must be configured
+        // Critical for financial operations - MUST be present
+        'STRIPE_SECRET_KEY',
     ],
     optional: [
+        'STRIPE_WEBHOOK_SECRET', // Required for webhook verification
         'OPENAI_API_KEY',
         'DEEPSEEK_API_KEY',
         'GROQ_API_KEY',

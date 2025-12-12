@@ -37,7 +37,29 @@ export function getModelForTask(taskType: ModelTaskType): ModelProvider {
 }
 
 /**
+ * PHASE 6.3: Timeout wrapper for AI calls
+ */
+const AI_TIMEOUT_MS = 30000; // 30 seconds
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, errorMessage: string): Promise<T> {
+    let timeoutId: NodeJS.Timeout;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error(errorMessage)), timeoutMs);
+    });
+
+    try {
+        const result = await Promise.race([promise, timeoutPromise]);
+        clearTimeout(timeoutId!);
+        return result;
+    } catch (error) {
+        clearTimeout(timeoutId!);
+        throw error;
+    }
+}
+
+/**
  * Route a generation request to the appropriate model based on task type
+ * PHASE 6.3: Now includes 30-second timeout
  */
 export async function routedGenerate(
     taskType: ModelTaskType,
@@ -47,16 +69,28 @@ export async function routedGenerate(
 
     aiLogger.debug({ taskType, provider }, 'Routing AI request');
 
+    let aiCall: Promise<GenerateResult>;
+
     switch (provider) {
         case 'openai':
-            return openaiClient.generate(options);
+            aiCall = openaiClient.generate(options);
+            break;
         case 'deepseek':
-            return deepseekClient.generate(options);
+            aiCall = deepseekClient.generate(options);
+            break;
         case 'qwen':
-            return qwenGroqClient.generate(options);
+            aiCall = qwenGroqClient.generate(options);
+            break;
         default:
             throw new Error(`Unknown provider: ${provider}`);
     }
+
+    // Wrap with timeout
+    return withTimeout(
+        aiCall,
+        AI_TIMEOUT_MS,
+        `AI request to ${provider} timed out after ${AI_TIMEOUT_MS / 1000}s`
+    );
 }
 
 /**

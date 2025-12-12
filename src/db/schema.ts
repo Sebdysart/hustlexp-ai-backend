@@ -353,6 +353,9 @@ const SCHEMA_STATEMENTS = [
   `CREATE INDEX IF NOT EXISTS idx_streaks_user ON streaks(user_id)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_streaks_user_type ON streaks(user_id, streak_type)`,
 
+  // PHASE 6.1: XP idempotency - prevent duplicate XP awards for same task
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_xp_events_user_task ON xp_events(user_id, task_id) WHERE task_id IS NOT NULL`,
+
   // Indexes for disputes and strikes
   `CREATE INDEX IF NOT EXISTS idx_disputes_task ON disputes(task_id)`,
   `CREATE INDEX IF NOT EXISTS idx_disputes_status ON disputes(status)`,
@@ -436,6 +439,52 @@ const SCHEMA_STATEMENTS = [
   `CREATE INDEX IF NOT EXISTS idx_dispute_actions_audit_dispute ON dispute_actions_audit(dispute_id)`,
   `CREATE INDEX IF NOT EXISTS idx_admin_actions_admin ON admin_actions(admin_uid)`,
   `CREATE INDEX IF NOT EXISTS idx_admin_actions_action ON admin_actions(action)`,
+
+  // ============================================
+  // HIVS — Identity Verification System
+  // Email + Phone verification BEFORE AI onboarding
+  // ============================================
+
+  // Identity verification status per user
+  `CREATE TABLE IF NOT EXISTS identity_verification (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+    email TEXT NOT NULL,
+    phone TEXT,
+    email_verified BOOLEAN DEFAULT false,
+    phone_verified BOOLEAN DEFAULT false,
+    email_verified_at TIMESTAMPTZ,
+    phone_verified_at TIMESTAMPTZ,
+    failed_attempts INTEGER DEFAULT 0,
+    locked_until TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+  )`,
+
+  // Verification attempts - for rate limiting and audit
+  `CREATE TABLE IF NOT EXISTS verification_attempts (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    channel TEXT NOT NULL CHECK (channel IN ('email', 'sms')),
+    target TEXT NOT NULL,
+    code_hash TEXT NOT NULL,
+    sent_at TIMESTAMPTZ DEFAULT NOW(),
+    expires_at TIMESTAMPTZ NOT NULL,
+    verified_at TIMESTAMPTZ,
+    attempt_count INTEGER DEFAULT 0,
+    last_attempt_at TIMESTAMPTZ,
+    ip_address TEXT,
+    device_fingerprint TEXT,
+    success BOOLEAN DEFAULT false,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+  )`,
+
+  // Indexes for verification
+  `CREATE INDEX IF NOT EXISTS idx_identity_verification_user ON identity_verification(user_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_identity_verification_email ON identity_verification(email)`,
+  `CREATE INDEX IF NOT EXISTS idx_verification_attempts_user ON verification_attempts(user_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_verification_attempts_target ON verification_attempts(target)`,
+  `CREATE INDEX IF NOT EXISTS idx_verification_attempts_expires ON verification_attempts(expires_at)`,
 
   // ============================================
   // Phase D — Analytics Tables

@@ -2,10 +2,12 @@ import { v4 as uuidv4 } from 'uuid';
 import type { Quest, XPEvent } from '../types/index.js';
 import { serviceLogger } from '../utils/logger.js';
 import { routedGenerate } from '../ai/router.js';
+import { sql, isDatabaseAvailable } from '../db/index.js';
 
-// In-memory stores
-const xpEvents: XPEvent[] = [];
-const quests: Map<string, Quest[]> = new Map();
+// PHASE 6.2: Removed in-memory storage - using database now
+// Fallback arrays only used when DB unavailable
+const xpEventsFallback: XPEvent[] = [];
+const questsFallback: Map<string, Quest[]> = new Map();
 
 // XP amounts for different actions
 const XP_AMOUNTS = {
@@ -44,6 +46,9 @@ class GamificationServiceClass {
         };
     }
 
+    /**
+     * PHASE 6.2: Persist XP to database with idempotency
+     */
     async awardXP(userId: string, amount: number, reason: string, taskId?: string): Promise<XPEvent> {
         const event: XPEvent = {
             userId,
@@ -53,8 +58,25 @@ class GamificationServiceClass {
             timestamp: new Date(),
         };
 
-        xpEvents.push(event);
-        serviceLogger.info({ userId, amount, reason }, 'XP awarded');
+        // Persist to database if available
+        if (isDatabaseAvailable() && sql) {
+            try {
+                // Use ON CONFLICT to enforce idempotency for task-based XP
+                await sql`
+                    INSERT INTO xp_events (user_id, amount, reason, task_id)
+                    VALUES (${userId}::uuid, ${amount}, ${reason}, ${taskId ? taskId : null}::uuid)
+                    ON CONFLICT (user_id, task_id) WHERE task_id IS NOT NULL DO NOTHING
+                `;
+                serviceLogger.info({ userId, amount, reason, taskId }, 'XP awarded (DB)');
+            } catch (error) {
+                serviceLogger.error({ error, userId, reason }, 'Failed to persist XP to DB, using fallback');
+                xpEventsFallback.push(event);
+            }
+        } else {
+            // Fallback to in-memory when DB unavailable
+            xpEventsFallback.push(event);
+            serviceLogger.info({ userId, amount, reason }, 'XP awarded (fallback)');
+        }
 
         return event;
     }
@@ -92,15 +114,53 @@ class GamificationServiceClass {
         return bonus;
     }
 
+    /**
+     * PHASE 6.2: Get XP events from database with fallback
+     */
     async getUserXPEvents(userId: string, limit = 20): Promise<XPEvent[]> {
-        return xpEvents
-            .filter(e => e.userId === userId)
+        if (isDatabaseAvailable() && sql) {
+            try {
+                const rows = await sql`
+                    SELECT user_id as "userId", amount, reason, task_id as "taskId", created_at as timestamp
+                    FROM xp_events
+                    WHERE user_id = ${userId}::uuid
+                    ORDER BY created_at DESC
+                    LIMIT ${limit}
+                `;
+                return rows as XPEvent[];
+            } catch (error) {
+                serviceLogger.error({ error, userId }, 'Failed to fetch XP events from DB');
+            }
+        }
+        // Fallback to in-memory
+        return xpEventsFallback
+            .filter((e: XPEvent) => e.userId === userId)
             .slice(-limit)
             .reverse();
     }
 
+    /**
+     * PHASE 6.2: Get active quests from database with fallback
+     */
     async getActiveQuests(userId: string): Promise<Quest[]> {
-        return quests.get(userId)?.filter(q => !q.isCompleted && q.expiresAt > new Date()) || [];
+        if (isDatabaseAvailable() && sql) {
+            try {
+                const rows = await sql`
+                    SELECT id, user_id as "userId", title, description, goal_condition as "goalCondition",
+                           xp_reward as "xpReward", progress, target, is_completed as "isCompleted",
+                           expires_at as "expiresAt", created_at as "createdAt"
+                    FROM quests
+                    WHERE user_id = ${userId}::uuid
+                      AND is_completed = false
+                      AND expires_at > NOW()
+                `;
+                return rows as Quest[];
+            } catch (error) {
+                serviceLogger.error({ error, userId }, 'Failed to fetch quests from DB');
+            }
+        }
+        // Fallback to in-memory
+        return questsFallback.get(userId)?.filter((q: Quest) => !q.isCompleted && q.expiresAt > new Date()) || [];
     }
 
     async generateQuestForUser(userId: string, userStats: { recentCategories: string[]; streak: number }): Promise<Quest | null> {
@@ -148,10 +208,24 @@ Return JSON:
                 createdAt: new Date(),
             };
 
-            // Store quest
-            const userQuests = quests.get(userId) || [];
-            userQuests.push(quest);
-            quests.set(userId, userQuests);
+            // PHASE 6.2: Store quest in database with fallback
+            if (isDatabaseAvailable() && sql) {
+                try {
+                    await sql`
+                        INSERT INTO quests (id, user_id, title, description, goal_condition, xp_reward, progress, target, is_completed, expires_at)
+                        VALUES (${quest.id}::uuid, ${userId}::uuid, ${quest.title}, ${quest.description}, ${quest.goalCondition}, ${quest.xpReward}, ${quest.progress}, ${quest.target}, ${quest.isCompleted}, ${quest.expiresAt})
+                    `;
+                } catch (error) {
+                    serviceLogger.error({ error, userId }, 'Failed to persist quest to DB, using fallback');
+                    const userQuests = questsFallback.get(userId) || [];
+                    userQuests.push(quest);
+                    questsFallback.set(userId, userQuests);
+                }
+            } else {
+                const userQuests = questsFallback.get(userId) || [];
+                userQuests.push(quest);
+                questsFallback.set(userId, userQuests);
+            }
 
             serviceLogger.info({ userId, questId: quest.id, title: quest.title }, 'Quest generated');
             return quest;

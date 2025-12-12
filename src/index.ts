@@ -43,6 +43,10 @@ import { runHealthCheck, quickHealthCheck } from './utils/healthCheck.js';
 import { requireAuth, optionalAuth, isAuthEnabled } from './middleware/firebaseAuth.js';
 import disputeRoutes from './routes/disputes.js';
 import type { OrchestrateMode, TaskDraft, TaskCategory, AIContextBlock } from './types/index.js';
+// PHASE 6: Hardening middleware
+import { addRequestId, returnRequestId, createGlobalErrorHandler, logRequest } from './middleware/requestId.js';
+import { requireIdempotencyKey, cacheIdempotentResponse, isIdempotencyEnabled } from './middleware/idempotency.js';
+import { adminRateLimiter, financialRateLimiter } from './middleware/rateLimiter.js';
 
 const fastify = Fastify({
     logger: false, // We use our own pino logger
@@ -52,6 +56,15 @@ const fastify = Fastify({
 await fastify.register(cors, {
     origin: true,
 });
+
+// ============================================
+// PHASE 6: MIDDLEWARE STACK (CORRECT ORDER)
+// ============================================
+
+// 1. REQUEST ID — MUST BE FIRST
+// Tags every request for log correlation and Stripe tracing
+fastify.addHook('onRequest', addRequestId);
+fastify.addHook('onResponse', returnRequestId);
 
 // ============================================
 // Global Authentication Hook
@@ -98,6 +111,53 @@ fastify.addHook('onRequest', async (request, reply) => {
 
     // Require authentication for all other routes
     await requireAuth(request, reply);
+});
+
+// 2. IDEMPOTENCY KEY — After auth, before routes
+// Prevents duplicate POSTs for state-changing operations
+fastify.addHook('onRequest', async (request, reply) => {
+    // Only apply to financial endpoints
+    const path = request.url.split('?')[0];
+    const FINANCIAL_PATHS = ['/api/escrow', '/api/tasks', '/api/disputes', '/api/admin'];
+
+    if (FINANCIAL_PATHS.some(fp => path.startsWith(fp)) && ['POST', 'PUT', 'PATCH'].includes(request.method)) {
+        await requireIdempotencyKey(request, reply);
+    }
+});
+
+// 3. RATE LIMITERS — After idempotency check
+// Throttle financial and admin endpoints
+fastify.addHook('onRequest', async (request, reply) => {
+    const path = request.url.split('?')[0];
+
+    // Admin rate limit (10/min)
+    if (path.startsWith('/api/admin') && adminRateLimiter) {
+        const result = await adminRateLimiter.limit(request.user?.uid || request.ip);
+        if (!result.success) {
+            reply.status(429).send({ error: 'Admin rate limit exceeded', code: 'RATE_LIMITED' });
+            return;
+        }
+    }
+
+    // Financial rate limit (5/min) for payouts
+    if ((path.includes('/approve') || path.includes('/release') || path.includes('/payout')) && financialRateLimiter) {
+        const result = await financialRateLimiter.limit(request.user?.uid || request.ip);
+        if (!result.success) {
+            reply.status(429).send({ error: 'Financial rate limit exceeded', code: 'RATE_LIMITED' });
+            return;
+        }
+    }
+});
+
+// 4. RESPONSE LOGGING
+fastify.addHook('onResponse', logRequest);
+
+// 5. IDEMPOTENCY RESPONSE CACHING
+fastify.addHook('onSend', async (request, reply, payload) => {
+    if (typeof payload === 'string') {
+        await cacheIdempotentResponse(request, reply, payload);
+    }
+    return payload;
 });
 
 // ============================================
@@ -428,6 +488,20 @@ fastify.post('/api/onboarding/:userId/start', { preHandler: [requireAuth] }, asy
         if (userId !== request.user.uid) {
             reply.status(403);
             return { error: 'Cannot start onboarding for another user' };
+        }
+
+        // HIVS GATE: Verify identity before AI onboarding
+        const { VerificationService } = await import('./services/VerificationService.js');
+        const verificationCheck = await VerificationService.canStartOnboarding(userId);
+
+        if (!verificationCheck.allowed) {
+            reply.status(403);
+            return {
+                error: 'IDENTITY_UNVERIFIED',
+                message: 'Identity verification required before onboarding',
+                nextRequired: verificationCheck.nextRequired,
+                verificationUrl: `/api/verify/${verificationCheck.nextRequired}/send`,
+            };
         }
 
         const body = request.body as { referralCode?: string } | undefined;
@@ -3110,11 +3184,19 @@ async function start() {
         // Register API Routes
         await fastify.register(disputeRoutes, { prefix: '/api/disputes' });
 
+        // HIVS: Identity Verification Routes (Email + Phone before AI onboarding)
+        const verificationRoutes = (await import('./routes/verification.js')).default;
+        await fastify.register(verificationRoutes, { prefix: '/api/verify' });
+
         // Validated public routes
 
 
         // Start server
         await fastify.listen({ port: PORT, host: '0.0.0.0' });
+
+        // 6. GLOBAL ERROR HANDLER — MUST BE LAST
+        // Sanitizes stack traces and provides consistent error responses
+        fastify.setErrorHandler(createGlobalErrorHandler());
 
         const dbStatus = isDatabaseAvailable() ? '✓ Connected' : '✗ Memory mode';
 
