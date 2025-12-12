@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 /**
  * Quick Database Health Check
- * 
+ *
  * Checks if database is properly set up with all required tables
  * Run: bun run scripts/check-database.ts
  */
@@ -34,9 +34,9 @@ async function checkDatabase() {
     console.log('🔍 Checking database health...\n');
 
     const result = await pool.query(`
-      SELECT table_name 
-      FROM information_schema.tables 
-      WHERE table_schema = 'public' 
+      SELECT table_name
+      FROM information_schema.tables
+      WHERE table_schema = 'public'
       ORDER BY table_name;
     `);
 
@@ -56,17 +56,17 @@ async function checkDatabase() {
 
     if (allPresent) {
       console.log('✅ All required tables exist!');
-      
+
       const userCount = await pool.query('SELECT COUNT(*) as count FROM users');
       const taskCount = await pool.query('SELECT COUNT(*) as count FROM tasks');
-      
+
       console.log('\n📊 Database Statistics:');
       console.log(`  👤 Users: ${userCount.rows[0].count}`);
       console.log(`  📋 Tasks: ${taskCount.rows[0].count}`);
     } else {
       console.log('❌ Some tables are missing!');
       console.log('\n🔧 To fix this, run:');
-      console.log('   bun run scripts/setup-database.ts');
+      console.log('   bun run db:setup');
     }
 
     process.exit(allPresent ? 0 : 1);
@@ -76,7 +76,7 @@ async function checkDatabase() {
       console.error('Error details:', error.message);
     }
     console.log('\n🔧 To set up the database, run:');
-    console.log('   bun run scripts/setup-database.ts');
+    console.log('   bun run db:setup');
     process.exit(1);
   } finally {
     await pool.end();

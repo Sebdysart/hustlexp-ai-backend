@@ -1,11 +1,11 @@
 #!/usr/bin/env bun
 /**
  * Database Setup Script
- * 
+ *
  * This script creates all necessary database tables by executing schema.sql
  * Run this once after setting up your database connection
- * 
- * Usage: bun run scripts/setup-database.ts
+ *
+ * Usage: bun run db:setup
  */
 
 import { Pool } from '@neondatabase/serverless';
@@ -16,7 +16,7 @@ const DATABASE_URL = process.env.DATABASE_URL;
 
 if (!DATABASE_URL) {
   console.error('❌ DATABASE_URL not found in environment variables');
-  console.error('Please set DATABASE_URL in env.backend file');
+  console.error('Please set DATABASE_URL in your environment');
   process.exit(1);
 }
 
@@ -31,7 +31,7 @@ async function setupDatabase() {
     const schema = readFileSync(schemaPath, 'utf-8');
 
     console.log('📄 Executing schema.sql...');
-    
+
     await pool.query(schema);
 
     console.log('✅ Database schema created successfully!');
@@ -47,9 +47,9 @@ async function setupDatabase() {
     console.log('  - proactive_preferences');
 
     const result = await pool.query(`
-      SELECT table_name 
-      FROM information_schema.tables 
-      WHERE table_schema = 'public' 
+      SELECT table_name
+      FROM information_schema.tables
+      WHERE table_schema = 'public'
       ORDER BY table_name;
     `);
 
