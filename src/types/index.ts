@@ -192,6 +192,17 @@ export interface AIContextBlock {
     recentActions: RecentAction[];
     profileSnapshot: ProfileSnapshot;
     aiHistorySummary?: string;
+
+    // Identity-aware AI context (Phase 4A)
+    identityContext?: {
+        trustScore: number;
+        trustTier: 'new' | 'low' | 'medium' | 'high' | 'verified';
+        riskLevel: 'low' | 'medium' | 'high' | 'critical';
+        shouldChallenge: boolean;
+        skipRedundantQuestions: boolean;
+        isFullyVerified: boolean;
+    } | null;
+    identityPromptContext?: string | null;
 }
 
 export interface OrchestrateInput {

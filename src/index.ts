@@ -98,6 +98,7 @@ const PUBLIC_ROUTES = [
     '/api/actions',
     '/api/brain',
     '/api/memory',
+    '/webhooks/identity',
 ];
 
 // Add global auth hook - protects ALL routes except public ones
@@ -3188,15 +3189,23 @@ async function start() {
         const verificationRoutes = (await import('./routes/verification.js')).default;
         await fastify.register(verificationRoutes, { prefix: '/api/verify' });
 
+        // IVS Webhook: Receives identity verification events from IVS microservice
+        const ivsWebhookRoutes = (await import('./routes/ivsWebhook.js')).default;
+        await fastify.register(ivsWebhookRoutes);
+
+        // Identity Context: AI onboarding personalization endpoints
+        const identityContextRoutes = (await import('./routes/identityContext.js')).default;
+        await fastify.register(identityContextRoutes, { prefix: '/api/onboarding' });
+
         // Validated public routes
 
 
-        // Start server
-        await fastify.listen({ port: PORT, host: '0.0.0.0' });
-
-        // 6. GLOBAL ERROR HANDLER — MUST BE LAST
+        // 6. GLOBAL ERROR HANDLER — MUST BE LAST (but before listen)
         // Sanitizes stack traces and provides consistent error responses
         fastify.setErrorHandler(createGlobalErrorHandler());
+
+        // Start server
+        await fastify.listen({ port: PORT, host: '0.0.0.0' });
 
         const dbStatus = isDatabaseAvailable() ? '✓ Connected' : '✗ Memory mode';
 

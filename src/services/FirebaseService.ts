@@ -14,9 +14,9 @@ import * as jose from 'jose';
 // Only need project ID for token verification
 const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID;
 
-// SECURITY GUARD: Kill server IMMEDIATELY if private key is detected
+// SECURITY GUARD: Kill server IMMEDIATELY if private key is detected in PRODUCTION
 // This prevents any regression - admin keys must NEVER be in production
-if (process.env.FIREBASE_PRIVATE_KEY) {
+if (process.env.FIREBASE_PRIVATE_KEY && process.env.NODE_ENV !== 'development') {
     console.error('\n');
     console.error('═══════════════════════════════════════════════════════════════');
     console.error('  FATAL SECURITY VIOLATION: FIREBASE_PRIVATE_KEY DETECTED');
@@ -25,6 +25,8 @@ if (process.env.FIREBASE_PRIVATE_KEY) {
     console.error('═══════════════════════════════════════════════════════════════');
     console.error('\n');
     process.exit(1);
+} else if (process.env.FIREBASE_PRIVATE_KEY) {
+    logger.warn('FIREBASE_PRIVATE_KEY present - allowed in DEVELOPMENT mode only.');
 }
 
 if (process.env.FIREBASE_CLIENT_EMAIL) {
