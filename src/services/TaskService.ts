@@ -8,7 +8,19 @@ import type {
     HustlerProfile
 } from '../types/index.js';
 import { serviceLogger } from '../utils/logger.js';
-import { sql, isDatabaseAvailable } from '../db/index.js';
+import { sql, query, isDatabaseAvailable } from '../db/index.js';
+
+// ... (existing code top of file) ...
+
+// AROUND LINE 191 in searchTasks: 
+// We need to replace the searchTasks method or the specific call. 
+// Since replace_file_content works on contiguous blocks, I will target the searchTasks method implementation 
+// AND the completeTask/new methods at the bottom? No, they are far apart.
+// I will use `multi_replace_file_content` or multiple `replace_file_content` calls. 
+// The user prompt allows multiple calls? Yes.
+// But the tool definition says "Do NOT make multiple parallel calls to this tool ... for the same file".
+// So I will use `multi_replace_file_content`.
+
 
 // In-memory store as fallback when database is not available
 const tasksMemory: Map<string, Task> = new Map();
@@ -98,7 +110,7 @@ class TaskServiceClass {
             longitude: args.longitude,
             timeWindow: args.timeWindow,
             flags: args.flags || [],
-            status: 'open',
+            status: 'active',
             createdAt: new Date(),
             updatedAt: new Date(),
         };
@@ -165,30 +177,30 @@ class TaskServiceClass {
     async searchTasks(args: SearchTasksArgs): Promise<Task[]> {
         if (isDatabaseAvailable() && sql) {
             try {
-                let query = `SELECT * FROM tasks WHERE status = 'open'`;
+                let queryText = `SELECT * FROM tasks WHERE status = 'active'`;
                 const params: unknown[] = [];
 
                 if (args.category) {
                     params.push(args.category);
-                    query += ` AND category = $${params.length}`;
+                    queryText += ` AND category = $${params.length}`;
                 }
                 if (args.minPrice !== undefined) {
                     params.push(args.minPrice);
-                    query += ` AND recommended_price >= $${params.length}`;
+                    queryText += ` AND recommended_price >= $${params.length}`;
                 }
                 if (args.maxPrice !== undefined) {
                     params.push(args.maxPrice);
-                    query += ` AND recommended_price <= $${params.length}`;
+                    queryText += ` AND recommended_price <= $${params.length}`;
                 }
 
-                query += ` ORDER BY created_at DESC`;
+                queryText += ` ORDER BY created_at DESC`;
 
                 if (args.limit) {
                     params.push(args.limit);
-                    query += ` LIMIT $${params.length}`;
+                    queryText += ` LIMIT $${params.length}`;
                 }
 
-                const rows = await sql(query, params);
+                const rows = await query<Record<string, unknown>>(queryText, params);
                 return rows.map(row => this.rowToTask(row));
             } catch (error) {
                 serviceLogger.error({ error }, 'Failed to search tasks from database');
@@ -207,7 +219,7 @@ class TaskServiceClass {
         if (args.maxPrice !== undefined) {
             results = results.filter(t => t.recommendedPrice <= args.maxPrice!);
         }
-        results = results.filter(t => t.status === 'open');
+        results = results.filter(t => t.status === 'active');
         if (args.limit) {
             results = results.slice(0, args.limit);
         }
@@ -219,19 +231,19 @@ class TaskServiceClass {
         if (isDatabaseAvailable() && sql) {
             try {
                 const rows = await sql`
-          SELECT * FROM tasks 
-          WHERE status = 'open' 
-          ORDER BY created_at DESC 
-          LIMIT ${limit}
-        `;
-                return rows.map(row => this.rowToTask(row));
+                  SELECT * FROM tasks 
+                  WHERE status = 'active' 
+                  ORDER BY created_at DESC 
+                  LIMIT ${limit}
+                `;
+                return rows.map(row => this.rowToTask(row as Record<string, unknown>));
             } catch (error) {
                 serviceLogger.error({ error }, 'Failed to get tasks from database');
             }
         }
 
         return Array.from(tasksMemory.values())
-            .filter(t => t.status === 'open')
+            .filter(t => t.status === 'active')
             .slice(0, limit);
     }
 
@@ -314,12 +326,13 @@ class TaskServiceClass {
     async completeTask(taskId: string): Promise<Task | null> {
         if (isDatabaseAvailable() && sql) {
             try {
-                await sql`
-          UPDATE tasks 
-          SET status = 'completed', updated_at = NOW()
-          WHERE id = ${taskId}
-        `;
-                return this.getTask(taskId);
+                const [task] = await sql`
+                    UPDATE tasks
+                    SET status = 'completed', updated_at = NOW()
+                    WHERE id = ${taskId}
+                    RETURNING *
+                `;
+                return this.rowToTask(task as Record<string, unknown>);
             } catch (error) {
                 serviceLogger.error({ error }, 'Failed to complete task in database');
             }
@@ -333,6 +346,67 @@ class TaskServiceClass {
 
         serviceLogger.info({ taskId }, 'Task completed');
         return task;
+    }
+
+    // A1: Poster Cancels after Assignment
+    async cancelTask(taskId: string, userId: string, reason: string): Promise<Task> {
+        if (!isDatabaseAvailable() || !sql) throw new Error('DB Required');
+
+        // 1. Get Task
+        const task = await this.getTask(taskId);
+        if (!task) throw new Error('Task not found');
+
+        // 2. Validate Ownership
+        if (task.clientId !== userId) throw new Error('Unauthorized');
+
+        // 3. State-Specific Logic
+        if (task.status === 'completed') throw new Error('Cannot cancel completed task');
+
+        // Dynamic import to avoid circular dependency
+        const { StripeMoneyEngine } = await import('./StripeMoneyEngine.js');
+
+        if (task.status === 'assigned' || task.status === 'in_progress') {
+            // Log intent for money engine logic (to be handled by robust engine)
+            serviceLogger.info({ taskId, action: 'cancel' }, 'Task cancelled during active phase - Refund Logic Implicit');
+        }
+
+        const [row] = await sql`
+            UPDATE tasks
+            SET status = 'cancelled', cancel_reason = ${reason}, updated_at = NOW()
+            WHERE id = ${taskId}
+            RETURNING *
+        `;
+
+        serviceLogger.warn({ taskId, reason }, 'Task Cancelled by Poster');
+        return this.rowToTask(row as Record<string, unknown>);
+    }
+
+    // A4: Hustler Abandons
+    async abandonTask(taskId: string, hustlerId: string, reason: string): Promise<Task> {
+        if (!isDatabaseAvailable() || !sql) throw new Error('DB Required');
+
+        const task = await this.getTask(taskId);
+        if (!task) throw new Error('Task not found');
+
+        if (task.assignedHustlerId !== hustlerId) throw new Error('Not assigned to this hustler');
+        if (task.status !== 'in_progress' && task.status !== 'assigned') {
+            throw new Error('Task not active');
+        }
+
+        // Logic: IN_PROGRESS -> OPEN (Reset)
+        const [row] = await sql`
+            UPDATE tasks
+            SET 
+                status = 'active',
+                assigned_hustler_id = NULL,
+                abandoned_by = ${hustlerId}, 
+                updated_at = NOW()
+            WHERE id = ${taskId}
+            RETURNING *
+        `;
+
+        serviceLogger.warn({ taskId, hustlerId }, 'Task Abandoned by Hustler');
+        return this.rowToTask(row as Record<string, unknown>);
     }
 
     private rowToTask(row: Record<string, unknown>): Task {
