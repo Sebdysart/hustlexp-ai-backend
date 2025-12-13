@@ -5,7 +5,8 @@
  * Uses DeepSeek for reasoning, Groq for fast operations, and GPT-4o for safety.
  */
 
-import 'dotenv/config';
+import { env } from './config/env.js';
+import 'dotenv/config'; // Fallback for other files still using process.env
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import { z } from 'zod';
@@ -42,6 +43,7 @@ import { validateEnv, logEnvStatus } from './utils/envValidator.js';
 import { runHealthCheck, quickHealthCheck } from './utils/healthCheck.js';
 import { requireAuth, optionalAuth, isAuthEnabled } from './middleware/firebaseAuth.js';
 import disputeRoutes from './routes/disputes.js';
+import identityRoutes from './identity/routes/identity.js';
 import type { OrchestrateMode, TaskDraft, TaskCategory, AIContextBlock } from './types/index.js';
 // PHASE 6: Hardening middleware
 import { addRequestId, returnRequestId, createGlobalErrorHandler, logRequest } from './middleware/requestId.js';
@@ -98,6 +100,7 @@ const PUBLIC_ROUTES = [
     '/api/actions',
     '/api/brain',
     '/api/memory',
+    '/identity', // Merged Identity Routes
     '/webhooks/identity',
 ];
 
@@ -133,19 +136,23 @@ fastify.addHook('onRequest', async (request, reply) => {
 
     // Admin rate limit (10/min)
     if (path.startsWith('/api/admin') && adminRateLimiter) {
-        const result = await adminRateLimiter.limit(request.user?.uid || request.ip);
-        if (!result.success) {
-            reply.status(429).send({ error: 'Admin rate limit exceeded', code: 'RATE_LIMITED' });
-            return;
+        if (process.env.NODE_ENV !== 'development') {
+            const result = await adminRateLimiter.limit(request.user?.uid || request.ip);
+            if (!result.success) {
+                reply.status(429).send({ error: 'Admin rate limit exceeded', code: 'RATE_LIMITED' });
+                return;
+            }
         }
     }
 
     // Financial rate limit (5/min) for payouts
     if ((path.includes('/approve') || path.includes('/release') || path.includes('/payout')) && financialRateLimiter) {
-        const result = await financialRateLimiter.limit(request.user?.uid || request.ip);
-        if (!result.success) {
-            reply.status(429).send({ error: 'Financial rate limit exceeded', code: 'RATE_LIMITED' });
-            return;
+        if (process.env.NODE_ENV !== 'development') {
+            const result = await financialRateLimiter.limit(request.user?.uid || request.ip);
+            if (!result.success) {
+                reply.status(429).send({ error: 'Financial rate limit exceeded', code: 'RATE_LIMITED' });
+                return;
+            }
         }
     }
 });
@@ -247,8 +254,15 @@ fastify.post('/ai/confirm-task', async (request, reply) => {
     try {
         const body = ConfirmTaskSchema.parse(request.body);
 
+        // FIX: Resolve internal User ID from Firebase UID
+        const dbUser = await UserService.getByFirebaseUid(body.userId);
+        if (!dbUser) {
+            reply.status(404);
+            return { error: 'User not found' };
+        }
+
         const task = await TaskService.createTaskFromDraft(
-            body.userId,
+            dbUser.id,
             body.taskDraft as TaskDraft
         );
 
@@ -1808,6 +1822,11 @@ fastify.get('/api/proof/instructions/:category', async (request) => {
 fastify.post('/api/proof/:taskId/submit', async (request, reply) => {
     try {
         const { taskId } = request.params as { taskId: string };
+        if (!request.dbUser) {
+            reply.status(401).send({ error: 'Database record required for financial operations', code: 'NO_DB_USER' });
+            return;
+        }
+
         const { userId, phase, photoUrl, caption } = request.body as {
             userId: string;
             phase: 'before' | 'during' | 'after';
@@ -2265,7 +2284,15 @@ fastify.post('/api/tasks/:taskId/approve', { preHandler: [requireRole('poster')]
         const task = await TaskService.getTaskWithEscrow(taskId);
 
         // 2. Verify caller
-        if (task.posterId !== request.user.uid) {
+        // FIX: Strict check using Internal UUID (dbUser.id)
+        if (!request.dbUser) {
+            reply.status(401);
+            return { error: 'Database record required for approval' };
+        }
+
+        const callerId = request.dbUser.id;
+
+        if (task.posterId !== callerId) {
             reply.status(403);
             return { error: 'Only the task poster can approve completion' };
         }
@@ -3135,23 +3162,27 @@ fastify.post('/webhooks/stripe', async (request, reply) => {
             // Retrieve metadata
             const taskId = event.data?.object?.metadata?.taskId;
             if (taskId) {
-                await StripeMoneyEngine.handle(taskId, 'WEBHOOK_PAYOUT_PAID', { eventId: event.id });
-                logger.info({ taskId, eventId: event.id }, 'Processed payout.paid webhook');
+                // Wrap Engine call to prevent crash propagation
+                try {
+                    await StripeMoneyEngine.handle(taskId, 'WEBHOOK_PAYOUT_PAID', { eventId: event.id });
+                    logger.info({ taskId, eventId: event.id }, 'Processed payout.paid webhook');
+                } catch (engineError: any) {
+                    logger.error({ err: engineError, taskId }, 'StripeMoneyEngine Failed in Webhook');
+                    // We catch engine error but still acknowledge receipt to Stripe (200 OK)
+                    // unless we want retry. Payout.paid is final state usually.
+                    // Let's return 200 to prevent endless retry loop for logical errors.
+                }
             } else {
                 logger.warn({ eventId: event.id }, 'Received payout.paid webhook without taskId');
             }
         }
-    } catch (err: any) {
-        logger.error({ err }, 'Webhook processing failed');
-        // Do not fail the webhook response unless we want Stripe to retry
-        // If it's a MoneyEngine determinism error, duplicate? ignore.
-        // If it's real error, 500 triggers retry.
-        // MoneyEngine handles idempotency, so retries are safe.
-        reply.status(500).send(err.message);
-        return;
-    }
 
-    return { received: true };
+        return reply.send({ received: true });
+
+    } catch (err: any) {
+        logger.error({ err }, 'Webhook processing failed (Global Catch)');
+        return reply.status(500).send(err.message);
+    }
 });
 
 // ============================================
@@ -3190,8 +3221,8 @@ async function start() {
         await fastify.register(verificationRoutes, { prefix: '/api/verify' });
 
         // IVS Webhook: Receives identity verification events from IVS microservice
-        const ivsWebhookRoutes = (await import('./routes/ivsWebhook.js')).default;
-        await fastify.register(ivsWebhookRoutes);
+        // IDENTITY ROUTES (Merged IVS)
+        await fastify.register(identityRoutes, { prefix: '/identity' });
 
         // Identity Context: AI onboarding personalization endpoints
         const identityContextRoutes = (await import('./routes/identityContext.js')).default;

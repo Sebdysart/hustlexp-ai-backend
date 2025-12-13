@@ -80,36 +80,51 @@ export async function requireAuth(
     request: FastifyRequest,
     reply: FastifyReply
 ): Promise<void> {
+    // DEVELOPMENT BYPASS: Allow requests through with mock user if in development mode
+    // This allows testing against staging config without needing real Firebase tokens
+    if (process.env.NODE_ENV === 'development') {
+        // Only warn once per request type
+        // logger.warn('Using development auth bypass'); 
+
+        const testRole = (request.headers['x-test-role'] as UserRole) || 'poster';
+
+        // Static UUIDs for testing consistency - MUST MATCH gate2-prep.ts
+        const DEV_POSTER_ID = '11111111-1111-1111-1111-111111111111';
+        const DEV_HUSTLER_ID = '22222222-2222-2222-2222-222222222222';
+        const DEV_ADMIN_ID = '33333333-3333-3333-3333-333333333333';
+
+        let uid = DEV_POSTER_ID;
+        if (testRole === 'hustler') uid = DEV_HUSTLER_ID;
+        if (testRole === 'admin') uid = DEV_ADMIN_ID;
+
+        const testDbUid = (request.headers['x-test-db-uid'] as string);
+
+        request.user = {
+            uid: uid,
+            email: 'dev@local.test',
+            emailVerified: true,
+            name: 'Development User',
+            signInProvider: 'development',
+            authTime: new Date(),
+            tokenExpiry: new Date(Date.now() + 3600000),
+            role: testRole,
+        };
+
+        if (testDbUid) {
+            request.dbUser = {
+                id: testDbUid,
+                firebase_uid: uid,
+                email: 'dev@local.test',
+                role: testRole,
+                created_at: new Date(),
+                updated_at: new Date()
+            };
+        }
+        return;
+    }
+
     // Check if Firebase is configured
     if (!FirebaseService.isAvailable()) {
-        // In development without Firebase, allow requests through with mock user
-        if (process.env.NODE_ENV === 'development') {
-            logger.warn('Firebase not configured - using development bypass');
-            const testRole = (request.headers['x-test-role'] as UserRole) || 'poster';
-            logger.warn({ testRole }, 'Using development auth bypass with role');
-
-            // Static UUIDs for testing consistency
-            const DEV_POSTER_ID = '11111111-1111-1111-1111-111111111111';
-            const DEV_HUSTLER_ID = '22222222-2222-2222-2222-222222222222';
-            const DEV_ADMIN_ID = '33333333-3333-3333-3333-333333333333';
-
-            let uid = DEV_POSTER_ID;
-            if (testRole === 'hustler') uid = DEV_HUSTLER_ID;
-            if (testRole === 'admin') uid = DEV_ADMIN_ID;
-
-            request.user = {
-                uid: uid,
-                email: 'dev@local.test',
-                emailVerified: true,
-                name: 'Development User',
-                signInProvider: 'development',
-                authTime: new Date(),
-                tokenExpiry: new Date(Date.now() + 3600000),
-                role: testRole,
-            };
-            return;
-        }
-
         reply.status(503).send({
             error: 'Authentication service unavailable',
             code: 'AUTH_SERVICE_UNAVAILABLE',
@@ -153,7 +168,8 @@ export async function requireAuth(
         user.role = dbUser.role;
         request.dbUser = dbUser;
     } else {
-        // Default to poster if can't get from DB
+        // Log warning for missing DB record (Ghost User)
+        logger.warn({ uid: decodedToken.uid }, 'Authenticated user missing database record (Ghost User)');
         user.role = 'poster';
     }
 
@@ -259,27 +275,27 @@ export async function requireAdminFromJWT(
     request: FastifyRequest,
     reply: FastifyReply
 ): Promise<void> {
+    // DEVELOPMENT BYPASS: Allow admin requests in development mode
+    if (process.env.NODE_ENV === 'development') {
+        const testRole = (request.headers['x-test-role'] as UserRole);
+        if (testRole === 'admin') {
+            // logger.warn('Using development admin bypass');
+            request.user = {
+                uid: '33333333-3333-3333-3333-333333333333',
+                email: 'admin@dev.local',
+                role: 'admin',
+                emailVerified: true,
+                name: 'Dev Admin',
+                signInProvider: 'dev',
+                authTime: new Date(),
+                tokenExpiry: new Date()
+            };
+            return;
+        }
+    }
+
     // Check if Firebase is configured
     if (!FirebaseService.isAvailable()) {
-        // In development without Firebase, allow requests through with mock user
-        if (process.env.NODE_ENV === 'development') {
-            const testRole = (request.headers['x-test-role'] as UserRole);
-            if (testRole === 'admin') {
-                logger.warn('Using development admin bypass');
-                request.user = {
-                    uid: '33333333-3333-3333-3333-333333333333',
-                    email: 'admin@dev.local',
-                    role: 'admin',
-                    emailVerified: true,
-                    name: 'Dev Admin',
-                    signInProvider: 'dev',
-                    authTime: new Date(),
-                    tokenExpiry: new Date()
-                };
-                return;
-            }
-        }
-
         reply.status(503).send({
             error: 'Authentication service unavailable',
             code: 'AUTH_SERVICE_UNAVAILABLE',
