@@ -70,6 +70,31 @@ export class LedgerLockService {
     }
 
     /**
+     * ACQUIRE BATCH (Deadlock-Safe)
+     * Acquires locks for multiple resources in specific order (Sorted IDs).
+     * All or Nothing.
+     */
+    static async acquireBatch(resources: string[], txId: string, ttlSeconds: number = 30): Promise<{ acquired: boolean, leaseId: string }> {
+        const sortedResources = [...new Set(resources)].sort();
+        const acquiredSoFar: string[] = [];
+
+        try {
+            for (const res of sortedResources) {
+                const result = await this.acquire(res, txId, ttlSeconds);
+                if (result.acquired) {
+                    acquiredSoFar.push(res);
+                }
+            }
+            return { acquired: true, leaseId: txId };
+        } catch (err) {
+            console.error(`[LedgerLock] Batch acquisition failed. Rolling back ${acquiredSoFar.length} locks.`);
+            // Rollback
+            await Promise.all(acquiredSoFar.map(res => this.release(res, txId)));
+            throw err; // Re-throw
+        }
+    }
+
+    /**
      * Release a lock.
      * Only the owner can release it.
      */

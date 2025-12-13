@@ -14,6 +14,7 @@ export const TASK_CATEGORIES = [
     'yard_work',
     'tech_help',
     'event_help',
+    'general',
     'other'
 ] as const;
 
@@ -49,8 +50,10 @@ export interface Task {
         end: Date;
     };
     flags: TaskFlag[];
-    status: 'draft' | 'open' | 'assigned' | 'in_progress' | 'completed' | 'cancelled';
+    status: 'draft' | 'active' | 'assigned' | 'in_progress' | 'completed' | 'cancelled';
     assignedHustlerId?: string;
+    cancelReason?: string;
+    abandonedBy?: string;
     createdAt: Date;
     updatedAt: Date;
 }

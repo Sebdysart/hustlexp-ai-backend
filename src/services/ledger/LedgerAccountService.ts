@@ -13,6 +13,7 @@ export type LedgerAccountTemplate =
     | 'platform_escrow'
     | 'platform_revenue'
     | 'platform_stripe_fees'
+    | 'platform_dispute_hold'
     | 'receivable'
     | 'payable'
     | 'user_escrow'
@@ -30,6 +31,7 @@ const TEMPLATE_DEFINITIONS: Record<LedgerAccountTemplate, AccountDefinition> = {
     'platform_escrow': { type: 'liability', prefix: 'Platform Escrow', scope: 'platform' },
     'platform_revenue': { type: 'equity', prefix: 'Platform Revenue', scope: 'platform' },
     'platform_stripe_fees': { type: 'expense', prefix: 'Platform Stripe Fees', scope: 'platform' },
+    'platform_dispute_hold': { type: 'liability', prefix: 'Platform Dispute Hold', scope: 'platform' },
 
     // User
     'receivable': { type: 'asset', prefix: 'User Receivable', scope: 'user' },

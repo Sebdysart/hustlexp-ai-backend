@@ -7,7 +7,7 @@ import {
     CreateLedgerTransactionInput,
     LedgerSnapshot,
     LedgerTransactionStatus
-} from './types';
+} from './types.js';
 
 /**
  * LedgerGuardService: THE FIREWALL OF TRUTH

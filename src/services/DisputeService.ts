@@ -4,6 +4,7 @@ import { StripeMoneyEngine } from './StripeMoneyEngine.js';
 import { TaskService } from './TaskService.js';
 import { UserService } from './UserService.js';
 import crypto from 'crypto';
+import { ulid } from 'ulidx';
 import { serviceLogger as logger } from '../utils/logger.js';
 
 export interface CreateDisputeDTO {
@@ -60,7 +61,7 @@ export class DisputeServiceClass {
                 SELECT t.id, u.id as poster_id
                 FROM tasks t
                 JOIN users u ON t.client_id = u.id
-                WHERE t.id = ${taskId} AND(u.firebase_uid = ${posterUid} OR u.id = ${posterUid})
+                WHERE t.id = ${taskId} AND u.firebase_uid = ${posterUid}
                 `;
 
             if (ownershipCheck.length === 0) {
@@ -108,10 +109,18 @@ export class DisputeServiceClass {
             // 4. Update Escrow Status via Money Engine
             // Transitions task/escrow to disputed.
             try {
+                // Fetch Task Price for Hold Amount
+                const [moneyData] = await sql`SELECT price FROM tasks WHERE id = ${taskId}`;
+                const amountCents = Math.round(Number(moneyData.price) * 100);
+
                 await StripeMoneyEngine.handle(taskId, 'DISPUTE_OPEN', {
-                    eventId: crypto.randomUUID(),
-                    taskId
-                });
+                    taskId,
+                    amountCents // R2: Required for Ledger Logic
+                }, { eventId: ulid() });
+
+                // 5. Update Task Status
+                await sql`UPDATE tasks SET status = 'disputed', updated_at = NOW() WHERE id = ${taskId}`;
+
             } catch (err) {
                 logger.error({ err, taskId }, 'Failed to transition Money Engine state to DISPUTE_OPEN');
                 // Should we rollback dispute creation? Ideally yes. 

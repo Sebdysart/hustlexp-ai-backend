@@ -3,6 +3,8 @@ import { sql } from '../../db';
 import { ulid } from 'ulidx';
 import { LedgerGuardService } from './LedgerGuardService';
 import { LedgerLockService } from './LedgerLockService';
+import { KillSwitch } from '../../infra/KillSwitch';
+import { PrometheusMetrics } from '../../infra/metrics/Prometheus';
 import {
     LedgerTransaction,
     LedgerEntry,
@@ -34,7 +36,22 @@ export class LedgerService {
         input: CreateLedgerTransactionInput,
         client: any // Transaction Client (Mandatory for Ring 2)
     ): Promise<LedgerTransaction> {
+        // PHASE 8B: KILLSWITCH GLOBAL FREEZE
+        if (await KillSwitch.isActive()) {
+            throw new Error('KILLSWITCH ENGAGED: Ledger Frozen.');
+        }
+
         const txUlid = ulid();
+        // PHASE 8B: PREPARE STREAM AUDIT (Impossible State Forensics)
+        // Log intent BEFORE execution.
+        await client<any[]>`
+            INSERT INTO ledger_prepares (
+                ulid, idempotency_key, type, metadata, entries_snapshot
+            ) VALUES (
+                ${txUlid}, ${input.idempotency_key}, ${input.type}, ${input.metadata || {}}, ${JSON.stringify(input.entries)}
+            )
+        `;
+
         const logger = serviceLogger.child({ txId: txUlid, type: 'LedgerPrepare' });
 
         logger.info(`Preparing ledger transaction: ${input.type}`);
@@ -97,6 +114,29 @@ export class LedgerService {
                 // Should be impossible unless concurrent delete?
                 throw new Error('Idempotency Error: Key collision but row missing.');
             }
+
+            // PHASE 8B: DEEP IDEMPOTENCY CHECK
+            // We must verify that the REPLAYED request matches the ORIGINAL request perfectly.
+            const existingEntries = await client<LedgerEntry[]>`
+                SELECT * FROM ledger_entries WHERE transaction_id = ${existing.id}
+            `;
+
+            const isMatch = input.entries.every(inputEntry => {
+                return existingEntries.some(dbEntry =>
+                    dbEntry.account_id === inputEntry.account_id &&
+                    dbEntry.direction === inputEntry.direction &&
+                    Number(dbEntry.amount) === inputEntry.amount // DB returns string for numeric
+                );
+            }) && existingEntries.length === input.entries.length;
+
+            if (!isMatch) {
+                const errorMsg = `CRITICAL: Idempotency Mismatch! Key ${input.idempotency_key} exists but entries differ.`;
+                logger.fatal({ input: input.entries, existing: existingEntries }, errorMsg);
+                // In a real scenario, this should trigger KillSwitch.
+                throw new Error(errorMsg);
+            }
+
+            return existing;
 
             // Consistency Check
             if (existing.type !== input.type) {
@@ -167,6 +207,12 @@ export class LedgerService {
                 WHERE le.account_id = ledger_accounts.id 
                 AND le.transaction_id = ${txId}
             `;
+
+            // PHASE 8A: IN-TRANSACTION INVARIANT VERIFICATION (Zero-Sum + Isolation)
+            // This runs INSIDE the SQL transaction. If it fails, the entire commit rolls back.
+            await client`SELECT verify_transaction_invariants(${txId})`;
+
+            PrometheusMetrics.increment('ledger_transactions_committed', { type: 'unknown' });
 
             logger.info('Transaction COMMITTED & Balances UPDATED');
 

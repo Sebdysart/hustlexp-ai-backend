@@ -1,3 +1,4 @@
+
 import { neon, Pool } from '@neondatabase/serverless';
 import { logger } from '../utils/logger.js';
 
@@ -29,16 +30,6 @@ export async function transaction<T>(
         // PHASE 6.1: Use SERIALIZABLE isolation for financial transactions
         // Prevents race conditions in concurrent payout attempts
         await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
-        // Create a compatibility wrapper for `tx` so it looks like `sql` tag function
-        // because existing code uses `await tx`...`
-        // Actually, existing code in StripeMoneyEngine uses `await tx`...` tag syntax.
-        // We need to provide a `tx` object that is callable as a tag function OR has `query`.
-        // The user code: `await tx`SELECT ...``.
-        // To support this, we need to bind the neon-like interface to the pool client?
-        // Or simply expose the client and change StripeMoneyEngine to use `await tx.query(...)`.
-        // User code in StripeMoneyEngine: `const [lock] = await tx`SELECT...``
-        // This implies `tx` IS a tagged template function.
-        // We can simulate this or change StripeMoneyEngine.
 
         // Simulating tagged template on top of pg client:
         const txTag = async (strings: TemplateStringsArray, ...values: any[]) => {
@@ -73,10 +64,15 @@ export async function query<T>(
     }
 
     try {
-        const result = await sql(queryText, params);
+        // Fix: Use .query() for parameterized calls as strictly enforced by newer neon driver
+        const result = await (sql as any).query(queryText, params);
         return result as T[];
     } catch (error) {
-        logger.error({ error, query: queryText.slice(0, 100) }, 'Database query failed');
+        if (error instanceof Error) {
+            logger.error({ message: error.message, stack: error.stack, query: queryText.slice(0, 100) }, 'Database query failed');
+        } else {
+            logger.error({ error, query: queryText.slice(0, 100) }, 'Database query failed');
+        }
         throw error;
     }
 }

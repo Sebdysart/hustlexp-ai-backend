@@ -12,6 +12,11 @@ async function prep() {
     try {
         // 1. WIPE DB
         console.log('[1/5] Wiping Database...');
+
+        if (!sql) {
+            throw new Error("Database client not initialized");
+        }
+
         // Truncate users (cascades to tasks, profiles, etc) and standalone tables
         await sql`TRUNCATE TABLE users, processed_stripe_events, notifications, beta_invites RESTART IDENTITY CASCADE`;
         console.log('PASS: DB Wiped');
@@ -51,7 +56,7 @@ async function prep() {
             clientId: poster!.id, // Use Internal UUID
             title: 'Gate 2 Test Task',
             description: 'This task exists to be destroyed.',
-            category: 'General',
+            category: 'general', // Lowercase to match type
             recommendedPrice: 5000, // $50.00
             locationText: 'Seattle, WA',
             latitude: 47.6062,
@@ -69,24 +74,18 @@ async function prep() {
             console.warn('WARN: Not in Stripe Test Mode! Skipping Connect creation to avoid pollution.');
         } else {
             // Create a fake connect account for the Hustler to enable payouts
-            // We can't easily "inject" this into the DB without knowing schema for user_stripe table
-            // But we can check if StripeService works.
             try {
                 const account = await StripeService.createConnectAccount(HUSTLER.uid, HUSTLER.email);
-                console.log(`PASS: Stripe Connect Account Created (${account.id})`);
+                console.log(`PASS: Stripe Connect Account Created (${account.accountId})`);
             } catch (stripeError: any) {
                 console.warn(`WARN: Stripe Connect Failed: ${stripeError.message}`);
             }
-
-            // Link to hustler
-            // Assuming table is 'user_stripe_accounts' or similar, verifying via StripeService usually sufficient
-            // But let's verify DB persistence if possible.
         }
 
         // 5. READY CHECK
         console.log('[5/5] Backend Health...');
         // We are inside the backend process context essentially, so we assume code is loadable.
-        // If this script runs, the DB connection works.
+        // If this script runs, the DB connection works (checked above).
         console.log('PASS: Logic Loaded.');
 
         console.log('\n--- READY FOR DETONATION ---');
