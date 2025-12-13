@@ -3,12 +3,14 @@ import type { GenerateOptions, GenerateResult } from '../../types/index.js';
 import { logAIEvent } from '../../utils/aiEventLogger.js';
 import { aiLogger } from '../../utils/logger.js';
 
+import { env } from '../../config/env.js';
+
 // Lazy initialization - only create client when needed
 let client: Groq | null = null;
 
 function getClient(): Groq {
     if (!client) {
-        const apiKey = process.env.GROQ_API_KEY;
+        const apiKey = env.GROQ_API_KEY;
         if (!apiKey) {
             throw new Error('GROQ_API_KEY is not configured');
         }
@@ -20,8 +22,11 @@ function getClient(): Groq {
 /**
  * Check if Groq is configured
  */
+/**
+ * Check if Groq is configured
+ */
 export function isConfigured(): boolean {
-    return !!process.env.GROQ_API_KEY;
+    return !!env.GROQ_API_KEY;
 }
 
 /**

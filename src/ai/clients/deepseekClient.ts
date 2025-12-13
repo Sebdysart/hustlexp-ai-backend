@@ -3,12 +3,14 @@ import type { GenerateOptions, GenerateResult } from '../../types/index.js';
 import { logAIEvent } from '../../utils/aiEventLogger.js';
 import { aiLogger } from '../../utils/logger.js';
 
+import { env } from '../../config/env.js';
+
 // Lazy initialization - only create client when needed
 let client: OpenAI | null = null;
 
 function getClient(): OpenAI {
     if (!client) {
-        const apiKey = process.env.DEEPSEEK_API_KEY;
+        const apiKey = env.DEEPSEEK_API_KEY;
         if (!apiKey) {
             throw new Error('DEEPSEEK_API_KEY is not configured');
         }
@@ -23,8 +25,11 @@ function getClient(): OpenAI {
 /**
  * Check if DeepSeek is configured
  */
+/**
+ * Check if DeepSeek is configured
+ */
 export function isConfigured(): boolean {
-    return !!process.env.DEEPSEEK_API_KEY;
+    return !!env.DEEPSEEK_API_KEY;
 }
 
 /**

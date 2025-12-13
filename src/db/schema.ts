@@ -44,6 +44,7 @@ const SCHEMA_STATEMENTS = [
     min_price DECIMAL(10,2),
     recommended_price DECIMAL(10,2) NOT NULL,
     max_price DECIMAL(10,2),
+    budget DECIMAL(10,2),
     location_text VARCHAR(500),
     latitude DECIMAL(10,7),
     longitude DECIMAL(10,7),
@@ -51,6 +52,7 @@ const SCHEMA_STATEMENTS = [
     time_window_end TIMESTAMP WITH TIME ZONE,
     flags TEXT[] DEFAULT '{}',
     status VARCHAR(50) DEFAULT 'draft',
+    payment_status VARCHAR(50) DEFAULT 'none',
     assigned_hustler_id UUID REFERENCES users(id),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
@@ -265,6 +267,25 @@ const SCHEMA_STATEMENTS = [
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS trust_score INTEGER DEFAULT 0`,
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarding_unlocked BOOLEAN DEFAULT false`,
 
+  // Escrow Holds - Persistent Ledger (Saga Lock)
+  `CREATE TABLE IF NOT EXISTS escrow_holds (
+    id TEXT PRIMARY KEY, -- "escrow_timestamp" format to match user spec
+    task_id UUID UNIQUE NOT NULL,
+    poster_id TEXT,
+    hustler_id TEXT,
+    payment_intent_id TEXT UNIQUE,
+    gross_amount_cents INTEGER NOT NULL,
+    platform_fee_cents INTEGER NOT NULL,
+    net_payout_cents INTEGER NOT NULL,
+    status TEXT CHECK (status IN ('held','released','cancelled','refunded')) NOT NULL,
+    refund_status TEXT CHECK (refund_status IN ('pending','refunded','failed')),
+    refund_id TEXT,
+    reversal_id TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    refund_completed_at TIMESTAMP WITH TIME ZONE
+  )`,
+
   // Disputes table - handles poster/hustler conflicts
   `CREATE TABLE IF NOT EXISTS disputes (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -292,6 +313,7 @@ const SCHEMA_STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS admin_locks (
     id SERIAL PRIMARY KEY,
     firebase_uid TEXT,
+    hustler_id TEXT,
     reason TEXT,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
   )`,
@@ -334,8 +356,6 @@ const SCHEMA_STATEMENTS = [
   // Indexes for Stage 2
   `CREATE INDEX IF NOT EXISTS idx_escrow_holds_task ON escrow_holds(task_id)`,
   `CREATE INDEX IF NOT EXISTS idx_escrow_holds_pi ON escrow_holds(payment_intent_id)`,
-  `CREATE INDEX IF NOT EXISTS idx_hustler_payouts_task ON hustler_payouts(task_id)`,
-  `CREATE INDEX IF NOT EXISTS idx_hustler_payouts_transfer ON hustler_payouts(transfer_id)`,
   `CREATE INDEX IF NOT EXISTS idx_admin_locks_user ON admin_locks(firebase_uid)`,
 
   // Indexes for new tables
@@ -383,7 +403,7 @@ const SCHEMA_STATEMENTS = [
   // money_events_audit - Tracks every financial state transition
   `CREATE TABLE IF NOT EXISTS money_events_audit (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    event_id UUID NOT NULL,
+    event_id TEXT NOT NULL,
     task_id UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
     actor_uid TEXT,
     event_type TEXT NOT NULL,
@@ -435,6 +455,18 @@ const SCHEMA_STATEMENTS = [
     ADD CONSTRAINT fk_escrow_holds_task 
     FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE`,
 
+  // Hustler Payouts - Linkage to Transfers
+  `CREATE TABLE IF NOT EXISTS hustler_payouts (
+    id SERIAL PRIMARY KEY,
+    task_id UUID,
+    hustler_id TEXT,
+    transfer_id TEXT NOT NULL,
+    charge_id TEXT NOT NULL,
+    amount_cents INTEGER NOT NULL,
+    status TEXT DEFAULT 'processing',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+  )`,
+
   // FK Constraints for hustler_payouts
   `ALTER TABLE hustler_payouts 
     DROP CONSTRAINT IF EXISTS fk_hustler_payouts_task`,
@@ -444,9 +476,29 @@ const SCHEMA_STATEMENTS = [
 
   // Indexes for audit tables
   `CREATE INDEX IF NOT EXISTS idx_money_events_audit_task ON money_events_audit(task_id)`,
+  // Idempotency (Ring 3)
+  `CREATE TABLE IF NOT EXISTS money_events_processed (
+    event_id TEXT PRIMARY KEY,
+    task_id UUID NOT NULL,
+    event_type TEXT NOT NULL,
+    processed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+  )`,
   `CREATE INDEX IF NOT EXISTS idx_money_events_audit_event ON money_events_audit(event_id)`,
   `CREATE INDEX IF NOT EXISTS idx_money_events_audit_created ON money_events_audit(created_at)`,
   `CREATE INDEX IF NOT EXISTS idx_dispute_actions_audit_dispute ON dispute_actions_audit(dispute_id)`,
+
+  // Money State Lock (Saga Pattern)
+  `CREATE TABLE IF NOT EXISTS money_state_lock (
+    task_id UUID PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+    current_state TEXT NOT NULL,
+    next_allowed_event TEXT[], 
+    stripe_payment_intent_id TEXT,
+    stripe_charge_id TEXT,
+    stripe_transfer_id TEXT,
+    stripe_refund_id TEXT,
+    version INTEGER DEFAULT 0,
+    last_transition_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+  )`,
   `CREATE INDEX IF NOT EXISTS idx_admin_actions_admin ON admin_actions(admin_uid)`,
   `CREATE INDEX IF NOT EXISTS idx_admin_actions_action ON admin_actions(action)`,
 
@@ -719,36 +771,7 @@ const SCHEMA_STATEMENTS = [
   // Stage 2 — Refund Architecture Tables (Option 3 Strict)
   // ============================================
 
-  // Escrow Holds - Persistent Ledger (Saga Lock)
-  `CREATE TABLE IF NOT EXISTS escrow_holds (
-    id TEXT PRIMARY KEY, -- "escrow_timestamp" format to match user spec
-    task_id TEXT UNIQUE NOT NULL,
-    poster_id TEXT,
-    hustler_id TEXT,
-    payment_intent_id TEXT UNIQUE,
-    gross_amount_cents INTEGER NOT NULL,
-    platform_fee_cents INTEGER NOT NULL,
-    net_payout_cents INTEGER NOT NULL,
-    status TEXT CHECK (status IN ('held','released','cancelled','refunded')) NOT NULL,
-    refund_status TEXT CHECK (refund_status IN ('pending','refunded','failed')),
-    refund_id TEXT,
-    reversal_id TEXT,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    refund_completed_at TIMESTAMP WITH TIME ZONE
-  )`,
 
-  // Hustler Payouts - Linkage to Transfers
-  `CREATE TABLE IF NOT EXISTS hustler_payouts (
-    id SERIAL PRIMARY KEY,
-    task_id TEXT,
-    hustler_id TEXT,
-    transfer_id TEXT NOT NULL,
-    charge_id TEXT NOT NULL,
-    amount_cents INTEGER NOT NULL,
-    status TEXT DEFAULT 'processing',
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-  )`,
 
   // Balance Snapshots - Fraud Evidence
   `CREATE TABLE IF NOT EXISTS balance_snapshots (
