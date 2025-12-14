@@ -497,8 +497,14 @@ const SCHEMA_STATEMENTS = [
     stripe_transfer_id TEXT,
     stripe_refund_id TEXT,
     version INTEGER DEFAULT 0,
-    last_transition_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    last_transition_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    recovery_attempts INTEGER DEFAULT 0,
+    last_recovery_at TIMESTAMP WITH TIME ZONE
   )`,
+
+  // Ω-OPS: Ensure recovery columns exist on existing table
+  `ALTER TABLE money_state_lock ADD COLUMN IF NOT EXISTS recovery_attempts INTEGER DEFAULT 0`,
+  `ALTER TABLE money_state_lock ADD COLUMN IF NOT EXISTS last_recovery_at TIMESTAMP WITH TIME ZONE`,
   `CREATE INDEX IF NOT EXISTS idx_admin_actions_admin ON admin_actions(admin_uid)`,
   `CREATE INDEX IF NOT EXISTS idx_admin_actions_action ON admin_actions(action)`,
 

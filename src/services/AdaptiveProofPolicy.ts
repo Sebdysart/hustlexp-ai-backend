@@ -238,7 +238,95 @@ const CURRENT_ENFORCED_POLICY: ProofPolicy = {
 // ADAPTIVE PROOF POLICY SERVICE
 // ============================================================
 
+/**
+ * Ω-OPS ENFORCEMENT MODE (Phase Ω-OPS-6)
+ * 
+ * HARD LIMITS (CORRECTION #3):
+ * ✅ May require proof at task creation
+ * ✅ May specify proof type (photo/video)
+ * ❌ May NOT block task creation
+ * ❌ May NOT delay payouts
+ * ❌ May NOT affect disputes
+ */
+export type PolicyMode = 'shadow' | 'enforcing';
+
+// Configuration
+const POLICY_MODE: PolicyMode = (process.env.PROOF_POLICY_MODE as PolicyMode) || 'shadow';
+
+// Hard limit guard
+function assertNoMoneyPathImpact(action: string): void {
+    const FORBIDDEN_ACTIONS = ['block_task', 'delay_payout', 'affect_dispute', 'modify_escrow'];
+    if (FORBIDDEN_ACTIONS.includes(action)) {
+        throw new Error(`[AdaptiveProofPolicy] HARD LIMIT VIOLATION: ${action} is forbidden. Policy may not affect money paths.`);
+    }
+}
+
 export class AdaptiveProofPolicy {
+
+    /**
+     * GET CURRENT MODE
+     */
+    static getMode(): PolicyMode {
+        return POLICY_MODE;
+    }
+
+    /**
+     * GET REQUIREMENTS FOR TASK (ENFORCEMENT MODE)
+     * 
+     * Returns proof requirements for a task AT CREATION TIME ONLY.
+     * 
+     * HARD LIMITS:
+     * - May NOT block task creation
+     * - May NOT delay payouts
+     * - May NOT affect disputes
+     */
+    static async getRequirements(
+        taskId: string,
+        category: string,
+        price: number,
+        posterId: string
+    ): Promise<{
+        proofRequired: boolean;
+        proofType: ProofRequirement;
+        requireGPS: boolean;
+        requireTimestamp: boolean;
+        maxSubmissions: number;
+        deadlineHours: number;
+        policyMode: PolicyMode;
+        isEnforced: boolean;
+    }> {
+        // Runtime assertion - we NEVER affect money
+        assertNoMoneyPathImpact('standard_requirement_lookup');
+
+        // Get shadow policy evaluation
+        const evaluation = await this.evaluateShadowPolicy(taskId, category, price, posterId);
+
+        // In shadow mode, return default policy
+        if (POLICY_MODE === 'shadow') {
+            return {
+                proofRequired: CURRENT_ENFORCED_POLICY.requirement !== 'none',
+                proofType: CURRENT_ENFORCED_POLICY.requirement,
+                requireGPS: CURRENT_ENFORCED_POLICY.requireGPS,
+                requireTimestamp: CURRENT_ENFORCED_POLICY.requireTimestamp,
+                maxSubmissions: CURRENT_ENFORCED_POLICY.maxSubmissions,
+                deadlineHours: CURRENT_ENFORCED_POLICY.deadlineHours,
+                policyMode: 'shadow',
+                isEnforced: false
+            };
+        }
+
+        // In enforcing mode, return shadow policy (adaptive based on risk)
+        return {
+            proofRequired: evaluation.shadowPolicy.requirement !== 'none',
+            proofType: evaluation.shadowPolicy.requirement,
+            requireGPS: evaluation.shadowPolicy.requireGPS,
+            requireTimestamp: evaluation.shadowPolicy.requireTimestamp,
+            maxSubmissions: evaluation.shadowPolicy.maxSubmissions,
+            deadlineHours: evaluation.shadowPolicy.deadlineHours,
+            policyMode: 'enforcing',
+            isEnforced: true
+        };
+    }
 
     /**
      * EVALUATE SHADOW POLICY

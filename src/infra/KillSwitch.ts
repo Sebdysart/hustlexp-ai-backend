@@ -112,8 +112,17 @@ export class KillSwitch {
             }
         }
 
-        // TODO: Broadcast System Alert (Email/Slack/PagerDuty)
-        // this.broadcastAlert(reason);
+        // Ω-OPS: Fire alert on KillSwitch activation
+        try {
+            const { AlertService } = await import('../services/AlertService.js');
+            await AlertService.fire(
+                'KILLSWITCH_ACTIVATED',
+                `KillSwitch triggered: ${reason}`,
+                { reason, ...metadata }
+            );
+        } catch (alertErr) {
+            logger.error({ alertErr }, 'Failed to send KillSwitch alert - CHECK ALERT CONFIGURATION');
+        }
     }
 
     /**
