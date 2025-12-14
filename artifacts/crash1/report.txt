@@ -1,0 +1,58 @@
+CRASH CONSISTENCY TEST #1 REPORT
+=================================
+Date: 2025-12-14T03:54:00Z
+
+## OBJECTIVE
+Prove no money is lost if process crashes AFTER PREPARE but BEFORE STRIPE EXECUTE.
+
+## CRASH WINDOW TARGETED
+PREPARE (DB Write) -> [CRASH HERE] -> EXECUTE (Stripe API) -> COMMIT
+
+## BASELINE (Before Crash)
+- ledger_transactions: 5
+- ledger_entries: 10
+- stripe_outbound_log: 10
+
+## CRASH EXECUTED
+- Process exit code: 137 (SIGKILL)
+- Prepared Ledger TX: 01KCDFSZPWNWD9TKPYQ5YEY46N
+- Task ID: f9f87f44-b80d-406d-aa78-f45e0e0ce055
+
+## POST-CRASH STATE
+- Transaction 01KCDFSZPWNWD9TKPYQ5YEY46N: STATUS = 'pending'
+- Entries created: 2 (debit 1000, credit 1000)
+- Stripe API: NOT CALLED (crash happened before network call)
+- stripe_outbound_log: UNCHANGED (10 records)
+
+## CORRUPTION CHECK
+- Partial transactions: ✅ NONE
+- Non-zero sum transactions: ✅ NONE
+- Duplicate prepares: ✅ NONE
+- Money lost/duplicated: ✅ NO
+
+## FINAL STATE AFTER RECOVERY
+- Pending transactions: 1 (the crashed one)
+- This is EXPECTED for this crash window
+
+## ANALYSIS
+
+The system correctly:
+1. Did NOT send money to Stripe (crash occurred before network call)
+2. Did NOT corrupt any ledger entries (all entries are balanced)
+3. Left the transaction in 'pending' state as a marker
+
+What's missing:
+- Recovery mechanism to ABORT stuck pending transactions
+- Since Stripe was never called, this transaction should be marked FAILED
+
+## REMEDIATION REQUIRED
+Add logic to scan for 'pending' transactions older than X minutes with no
+corresponding stripe_outbound_log entry, and mark them as 'failed'.
+
+## VERDICT
+⚠️ PARTIAL PASS
+
+The core invariant holds: NO MONEY WAS LOST OR DUPLICATED.
+But the pending transaction cleanup mechanism is incomplete.
+
+This is recoverable with a simple background job addition.

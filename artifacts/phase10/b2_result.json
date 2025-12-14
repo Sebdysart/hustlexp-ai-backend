@@ -1,0 +1,34 @@
+{
+  "test": "B2_ADMIN_FORCE_PAYOUT",
+  "timestamp": "2025-12-14T06:55:37.934Z",
+  "taskId": "bcb4eaeb-6078-4e56-aeed-b2281d1719d3",
+  "payoutTxId": "01KCDT9CWH3CQ4BNA9NMAKDXMP",
+  "stripeTransferId": "tr_admin_force_1765695337361",
+  "balancesAfter": [
+    {
+      "owner_id": "bcb4eaeb-6078-4e56-aeed-b2281d1719d3",
+      "name": "task_escrow",
+      "balance": "0"
+    },
+    {
+      "owner_id": "a961689b-69d1-47f6-a9a6-32e066818949",
+      "name": "receivable",
+      "balance": "1000"
+    }
+  ],
+  "stripeTransfersCount": 1,
+  "adminAudit": {
+    "id": "c95a6931-6db2-4d6b-b858-0ee1dcb03653",
+    "admin_uid": "d0037746-072c-49cb-bf58-8f4f845a834d",
+    "action_type": "FORCE_PAYOUT",
+    "target_type": "task",
+    "target_id": "bcb4eaeb-6078-4e56-aeed-b2281d1719d3",
+    "details": {
+      "amount": 1000,
+      "ledger_tx": "01KCDT9CWH3CQ4BNA9NMAKDXMP",
+      "stripe_transfer": "tr_admin_force_1765695337361"
+    },
+    "created_at": "2025-12-14T06:55:37.785Z"
+  },
+  "verdict": "PASS"
+}

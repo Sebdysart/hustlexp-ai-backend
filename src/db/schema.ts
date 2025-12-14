@@ -812,7 +812,7 @@ export async function runMigrations(): Promise<void> {
     logger.info('Running database migrations...');
 
     for (const statement of SCHEMA_STATEMENTS) {
-      await sql(statement);
+      await sql.unsafe(statement);
     }
 
     logger.info('Database migrations completed successfully');

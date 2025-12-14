@@ -1,0 +1,8 @@
+
+BASELINE SNAPSHOT
+=================
+Timestamp: 2025-12-14T03:43:40.277Z
+
+ledger_transactions: 3
+ledger_entries: 6
+stripe_outbound_log: 10
