@@ -6,6 +6,7 @@ import { UserService } from './UserService.js';
 import crypto from 'crypto';
 import { ulid } from 'ulidx';
 import { serviceLogger as logger } from '../utils/logger.js';
+import { BetaMetricsService } from './BetaMetricsService.js';
 
 export interface CreateDisputeDTO {
     taskId: string;
@@ -129,6 +130,10 @@ export class DisputeServiceClass {
             }
 
             logger.info({ disputeId: newDispute[0].id, taskId }, 'Dispute created and Money Engine notified');
+
+            // Emit metric
+            BetaMetricsService.disputeOpened();
+
             return { success: true, message: 'Dispute opened', disputeId: newDispute[0].id, status: 'pending' };
 
         } catch (error) {
@@ -249,6 +254,10 @@ export class DisputeServiceClass {
             `;
 
             logger.info({ disputeId, adminId }, 'Dispute resolved: REFUNDED');
+
+            // Emit metric
+            BetaMetricsService.disputeResolved('refunded');
+
             return { success: true, message: 'Dispute resolved and refunded' };
 
         } catch (error) {
@@ -310,6 +319,10 @@ export class DisputeServiceClass {
             `;
 
             logger.info({ disputeId, adminId }, 'Dispute resolved: UPHELD');
+
+            // Emit metric
+            BetaMetricsService.disputeResolved('upheld');
+
             return { success: true, message: 'Dispute upheld and funds released' };
 
         } catch (error) {

@@ -1,7 +1,8 @@
 
 import { Redis } from '@upstash/redis';
-import { serviceLogger } from '../utils/logger';
-import { env } from '../config/env';
+import { serviceLogger } from '../utils/logger.js';
+import { env } from '../config/env.js';
+import { BetaMetricsService } from '../services/BetaMetricsService.js';
 
 /**
  * KILL SWITCH (OMEGA PROTOCOL)
@@ -97,6 +98,9 @@ export class KillSwitch {
 
         this.localState = true;
         this.reason = reason;
+
+        // Emit metric
+        BetaMetricsService.killswitchActivated(reason);
 
         if (this.redis) {
             try {
