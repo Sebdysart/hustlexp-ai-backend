@@ -1,0 +1,10 @@
+{
+  "test": "C3_PAUSE_SAFETY",
+  "timestamp": "2025-12-14T06:58:23.799Z",
+  "pendingTransactions": 0,
+  "dlqPending": 0,
+  "unreconciledStripe": 9,
+  "killswitchOff": true,
+  "safeToUnpause": true,
+  "verdict": "PASS"
+}

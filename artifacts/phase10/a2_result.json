@@ -1,0 +1,17 @@
+{
+  "test": "A2_CANCEL_ACCEPT_THRASH",
+  "timestamp": "2025-12-14T05:04:48.736Z",
+  "taskId": "cd66f894-4c94-40ef-95c4-b2c0c0a682f3",
+  "durationMs": 10000,
+  "accepts": 89,
+  "cancels": 89,
+  "errors": 0,
+  "finalState": {
+    "id": "cd66f894-4c94-40ef-95c4-b2c0c0a682f3",
+    "status": "active",
+    "assigned_to": null
+  },
+  "eventsBaseline": 3,
+  "eventsFinal": 3,
+  "verdict": "PASS"
+}

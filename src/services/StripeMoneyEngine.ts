@@ -401,6 +401,15 @@ export async function handle(
         preparedLedgerTxId = prepResult.ledgerTxId;
         preparationPayload = { ...prepResult.lockData, ...prepResult.prepData };
 
+        // ============================================================
+        // CRASH TEST #1: After PREPARE, before EXECUTE STRIPE
+        // ============================================================
+        if (process.env.CRASH_AFTER_PREPARE === '1') {
+            console.error('[CRASH TEST] Crashing after PREPARE');
+            console.error('[CRASH TEST] Prepared Ledger TX:', preparedLedgerTxId);
+            process.exit(137);
+        }
+
         // -------------------------------------------------
         // 2. PHASE 2: EXECUTE (Network Call)
         // -------------------------------------------------
@@ -414,6 +423,17 @@ export async function handle(
             stripeClient,
             preparationPayload
         );
+
+        // ============================================================
+        // CRASH TEST INJECTION POINT (REMOVE AFTER TESTING)
+        // This is the exact worst moment: Stripe succeeded, ledger not committed
+        // ============================================================
+        if (process.env.CRASH_TEST === 'AFTER_STRIPE_BEFORE_LEDGER') {
+            console.error('[CRASH TEST] Simulated crash after Stripe success');
+            console.error('[CRASH TEST] Stripe effects:', JSON.stringify(effects));
+            console.error('[CRASH TEST] Ledger TX ID:', preparedLedgerTxId);
+            process.exit(137);
+        }
 
         // -------------------------------------------------
         // 3. PHASE 3: COMMIT (DB Transaction 2)

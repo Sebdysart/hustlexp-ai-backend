@@ -1,0 +1,11 @@
+{
+  "test": "C1_MONEY_TRUTH_CHECK",
+  "timestamp": "2025-12-14T06:57:28.133Z",
+  "totalDebits": 24000,
+  "totalCredits": 24000,
+  "driftCents": 0,
+  "driftDollars": "0.00",
+  "nonZeroSumCount": 0,
+  "balanceMismatches": 14,
+  "verdict": "PASS"
+}

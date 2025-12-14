@@ -1,6 +1,7 @@
 
 import { DLQProcessor } from './DLQProcessor';
 import { BackfillService } from './BackfillService';
+import { PendingTransactionReaper } from './PendingReaper';
 import { serviceLogger } from '../../utils/logger';
 import { KillSwitch } from '../KillSwitch';
 
@@ -24,6 +25,18 @@ export class RecoveryEngine {
         logger.info('--- Recovery Engine Cycle Start ---');
 
         try {
+            // 0. Reap orphaned pending transactions (CRASH PRE-EXECUTE)
+            const reaperResult = await PendingTransactionReaper.reap();
+            if (reaperResult.reaped > 0) {
+                logger.warn({ reaped: reaperResult.reaped }, 'Pending transactions reaped');
+            }
+
+            // 0b. Recover pending transactions WITH Stripe success (CRASH POST-EXECUTE)
+            const recoverResult = await PendingTransactionReaper.recoverStripeCommitted();
+            if (recoverResult.recovered > 0) {
+                logger.warn({ recovered: recoverResult.recovered }, 'Stripe-succeeded transactions recovered');
+            }
+
             // 1. Process Dead Letters (Retry Pendings)
             await DLQProcessor.processQueue();
 
