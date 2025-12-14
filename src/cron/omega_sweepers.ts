@@ -35,8 +35,28 @@ export class OmegaSweepers {
         // 2. Reality Mirror Backfill (Every 6 hours)
         setInterval(this.backfillRealityMirror, 6 * 60 * 60 * 1000);
 
+        // 3. Control Plane: Hourly Snapshot (Every 1 hour)
+        setInterval(() => this.generateSnapshot('hourly'), 60 * 60 * 1000);
+
+        // 4. Control Plane: Daily Snapshot (Every 24 hours)
+        setInterval(() => this.generateSnapshot('daily'), 24 * 60 * 60 * 1000);
+
         // Run once on boot
         this.sweepStuckSagas().catch(e => logger.error(e, 'Boot Sweep Failed'));
+    }
+
+    /**
+     * CONTROL PLANE: Generate Analysis Snapshot
+     * Creates immutable snapshot for offline AI analysis
+     */
+    static async generateSnapshot(type: 'hourly' | 'daily' | 'manual') {
+        try {
+            const { AnalysisSnapshotService } = await import('../control-plane/AnalysisSnapshotService.js');
+            const snapshot = await AnalysisSnapshotService.generateSnapshot(type);
+            logger.info({ snapshotId: snapshot.id, type }, 'Analysis snapshot generated');
+        } catch (err) {
+            logger.error({ err, type }, 'Failed to generate analysis snapshot');
+        }
     }
 
     /**

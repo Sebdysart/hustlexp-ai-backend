@@ -7,6 +7,7 @@ import { v4 as uuid } from 'uuid';
 import { serviceLogger as logger } from '../utils/logger.js';
 import { TemporalGuard } from '../infra/ordering/TemporalGuard.js';
 import { LedgerService } from './ledger/LedgerService.js';
+import { PayoutEligibilityResolver, PayoutDecision, AdminOverride } from './PayoutEligibilityResolver.js';
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || '', {
     apiVersion: '2025-11-17.clover', // Update to match types
@@ -223,7 +224,15 @@ async function executeStripeEffects(
     return result;
 }
 
-async function validateGuards(tx: any, taskId: string, eventType: string, context: any, lock: any, eventId: string) {
+async function validateGuards(
+    tx: any,
+    taskId: string,
+    eventType: string,
+    context: any,
+    lock: any,
+    eventId: string,
+    adminOverride?: AdminOverride
+) {
     // 1. Invariant Checks
     if (!lock && eventType !== 'HOLD_ESCROW') throw new Error(`money_state_lock missing for task ${taskId}`);
     if (lock && !lock.next_allowed_event.includes(eventType)) throw new Error(`Invalid event ${eventType} for state ${lock.current_state}`);
@@ -234,9 +243,43 @@ async function validateGuards(tx: any, taskId: string, eventType: string, contex
         throw new Error(`Temporal Guard Blocked: Event ${eventId} is older than last committed state.`);
     }
 
-    if (eventType === 'RELEASE_PAYOUT') {
-        const [dispute] = await tx`SELECT id FROM disputes WHERE task_id = ${taskId} AND status NOT IN('refunded', 'upheld') LIMIT 1`;
-        if (dispute) throw new Error(`BLOCKED: Cannot release payout - active dispute`);
+    // ============================================================
+    // 3. PAYOUT ELIGIBILITY RESOLVER (Phase 12C)
+    // For payout operations, must pass eligibility check
+    // ============================================================
+    if (eventType === 'RELEASE_PAYOUT' || eventType === 'RESOLVE_UPHOLD') {
+        const eligibility = await PayoutEligibilityResolver.resolve(taskId, { adminOverride });
+
+        logger.info({
+            taskId,
+            eventType,
+            decision: eligibility.decision,
+            blockReason: eligibility.blockReason,
+            evaluationId: eligibility.evaluationId
+        }, 'Payout eligibility evaluated');
+
+        if (eligibility.decision === PayoutDecision.BLOCK) {
+            throw new Error(
+                `PAYOUT BLOCKED [${eligibility.blockReason}]: ${eligibility.reason}`
+            );
+        }
+
+        if (eligibility.decision === PayoutDecision.ESCALATE) {
+            // Escalation without admin override = block
+            if (!adminOverride?.enabled) {
+                throw new Error(
+                    `PAYOUT REQUIRES ADMIN REVIEW [${eligibility.blockReason}]: ${eligibility.reason}`
+                );
+            }
+            // Admin override present - log and continue
+            logger.warn({
+                taskId,
+                eventType,
+                adminId: adminOverride.adminId,
+                overrideReason: adminOverride.reason,
+                originalBlockReason: eligibility.blockReason
+            }, 'Admin override: Proceeding with payout despite escalation');
+        }
     }
 }
 
@@ -256,6 +299,7 @@ export async function handle(
         disableRetries?: boolean;
         stripeClient?: any;
         eventId?: string; // Move eventId here or generate
+        adminOverride?: AdminOverride; // Phase 12C: Admin override for payout eligibility
     }
 ) {
     // PHASE 8B: KILLSWITCH GLOBAL FREEZE
@@ -266,6 +310,7 @@ export async function handle(
     const eventId = options?.eventId ?? uuid();
     const providedTx = options?.tx;
     const stripeClient = options?.stripeClient;
+    const adminOverride = options?.adminOverride;
 
     // SAGA 3.0: APP LOCK (Batch)
     const resourcesToLock = [`task:${taskId}`];
@@ -292,8 +337,9 @@ export async function handle(
             // B. Lock Row & Get State
             const [lock] = await tx`SELECT * FROM money_state_lock WHERE task_id = ${taskId} FOR UPDATE`;
 
-            // C. Validate Guards
-            await validateGuards(tx, taskId, eventType, context, lock, eventId);
+            // C. Validate Guards (Phase 12C: includes Payout Eligibility Resolver)
+            await validateGuards(tx, taskId, eventType, context, lock, eventId, adminOverride);
+
 
             // D. Prepare Ledger Transaction
             let ledgerTxId: string | null = null;

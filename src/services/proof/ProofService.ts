@@ -16,9 +16,10 @@ import {
     type ProofSubmission,
     type ForensicsResult
 } from './types.js';
-import { createLogger } from '../../utils/logger.js';
+import { serviceLogger } from '../../utils/logger.js';
+import { BetaMetricsService } from '../BetaMetricsService.js';
 
-const logger = createLogger('ProofService');
+const logger = serviceLogger.child({ module: 'ProofService' });
 
 let sql: ReturnType<typeof neon> | null = null;
 
@@ -67,6 +68,10 @@ export class ProofService {
             });
 
             logger.info({ requestId: request.id, taskId: params.taskId }, 'Proof request created');
+
+            // Emit metric
+            BetaMetricsService.proofRequested();
+
             return { success: true, requestId: request.id };
         } catch (err: any) {
             logger.error({ error: err.message }, 'Failed to create proof request');
@@ -162,6 +167,13 @@ export class ProofService {
             });
 
             logger.info({ submissionId: submission.id, requestId: params.requestId, escalated }, 'Proof submitted');
+
+            // Emit metrics
+            BetaMetricsService.proofSubmitted();
+            if (escalated) {
+                BetaMetricsService.proofEscalated();
+            }
+
             return { success: true, submissionId: submission.id, escalated };
         } catch (err: any) {
             logger.error({ error: err.message }, 'Failed to submit proof');
@@ -260,6 +272,16 @@ export class ProofService {
             });
 
             logger.info({ submissionId, decision, actor }, 'Proof finalized');
+
+            // Emit metrics based on decision
+            if (decision === 'verified') {
+                BetaMetricsService.proofVerified();
+            } else if (decision === 'rejected') {
+                BetaMetricsService.proofRejected(reason || 'unknown');
+            } else if (decision === 'escalated') {
+                BetaMetricsService.proofEscalated();
+            }
+
             return { success: true };
         } catch (err: any) {
             return { success: false, error: err.message };
