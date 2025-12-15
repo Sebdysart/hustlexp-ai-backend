@@ -1,13 +1,13 @@
 
 import '../../config/env.js'; // Ensure DotEnv runs first
-import { serviceLogger } from '../../utils/logger';
+import { serviceLogger } from '../../utils/logger.js';
 
 /**
  * ORDERING GUARD (Forensic Auditor)
  */
 export class OrderingGuard {
     static async scanForAnomalies() {
-        const { sql } = await import('../../db'); // Dynamic Import
+        const { safeSql: sql } = await import('../../db/index.js'); // Dynamic Import
         const logger = serviceLogger.child({ module: 'OrderingGuard' });
         logger.info('Starting Ordering Guard Scan...');
 

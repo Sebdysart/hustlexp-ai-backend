@@ -1,6 +1,6 @@
 
 import '../config/env.js'; // Ensure env loaded
-import { sql } from '../db/index.js';
+import { safeSql as sql } from '../db/index.js';
 import { serviceLogger } from '../utils/logger.js';
 import Stripe from 'stripe';
 import { KillSwitch } from '../infra/KillSwitch.js';
@@ -23,7 +23,7 @@ const logger = serviceLogger.child({ module: 'StripeReconciler' });
 export async function reconcileStripeLedger() {
     logger.info('Starting 3-Way Reconciliation...');
 
-    const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2024-06-20' });
+    const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2024-11-20.acacia' as any });
 
     try {
         // =========================================================================

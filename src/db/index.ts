@@ -104,3 +104,16 @@ export async function testConnection(): Promise<boolean> {
 }
 
 export const db = { sql, query, isDatabaseAvailable, testConnection };
+
+// Non-null sql accessor - throws if not configured
+// Use this in files that require database access
+export function getSql() {
+    if (!sql) {
+        throw new Error('Database not configured - set DATABASE_URL');
+    }
+    return sql;
+}
+
+// Type assertion helper - for files that check null themselves
+export const safeSql = sql!;
+

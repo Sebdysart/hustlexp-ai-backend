@@ -42,13 +42,13 @@ export async function runKillSwitchTest() {
         await transaction(async (tx) => {
             // Check Pre-condition (Simulating Service Logic)
             await LedgerService.prepareTransaction({
-                taskId: 'test_task',
-                type: 'HOLD_ESCROW', // @ts-ignore - Test type
-                id: txId, // Pass ID if supported, or rely on internal generation (check types if needed)
-                amount: 100,
-                currency: 'USD',
-                posterId: 'test_poster',
-                hustlerId: 'test_hustler'
+                type: 'HOLD_ESCROW',
+                idempotency_key: `test_${txId}`,
+                metadata: { taskId: 'test_task', posterId: 'test_poster', hustlerId: 'test_hustler' },
+                entries: [
+                    { account_id: 'test_account_1', direction: 'debit', amount: 100 },
+                    { account_id: 'test_account_2', direction: 'credit', amount: 100 }
+                ]
             }, tx);
         });
 

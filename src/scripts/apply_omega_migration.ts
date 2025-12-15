@@ -2,7 +2,7 @@
 import { Pool } from '@neondatabase/serverless';
 import fs from 'fs';
 import path from 'path';
-import { serviceLogger } from '../utils/logger';
+import { serviceLogger } from '../utils/logger.js';
 import '../config/env'; // Ensure env vars loaded
 
 const logger = serviceLogger.child({ module: 'MigrationRunner' });

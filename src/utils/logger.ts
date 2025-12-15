@@ -18,3 +18,8 @@ export const logger = pino({
 
 export const aiLogger = logger.child({ module: 'ai' });
 export const serviceLogger = logger.child({ module: 'service' });
+
+// Helper function for creating module-specific loggers
+export function createLogger(moduleName: string) {
+    return logger.child({ module: moduleName });
+}

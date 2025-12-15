@@ -58,7 +58,7 @@ export class ProofVerificationService {
                 JOIN proof_requests pr ON pr.id = ps.request_id
                 JOIN tasks t ON t.id = ps.task_id
                 WHERE ps.id = ${submissionId}::uuid
-            `;
+            ` as any[];
 
             if (!submission) {
                 return { success: false, error: 'Submission not found' };
@@ -67,7 +67,7 @@ export class ProofVerificationService {
             // 2. Get task timeline
             const [taskAssignment] = await db`
                 SELECT created_at FROM tasks WHERE id = ${submission.task_id}::uuid
-            `;
+            ` as any[];
 
             const timeline = {
                 created: new Date(taskAssignment.created_at),
@@ -235,6 +235,6 @@ export class ProofVerificationService {
             ORDER BY ps.created_at ASC
         `;
 
-        return submissions;
+        return submissions as any[];
     }
 }

@@ -229,7 +229,7 @@ export class EscrowTimeoutSweeper {
             // Get task status
             const [task] = await db`
                 SELECT status FROM tasks WHERE id = ${taskId}::uuid
-            `;
+            ` as any[];
 
             // Check for active dispute
             const [dispute] = await db`
@@ -237,7 +237,7 @@ export class EscrowTimeoutSweeper {
                 WHERE task_id = ${taskId}::uuid 
                 AND status IN ('pending', 'under_review')
                 LIMIT 1
-            `;
+            ` as any[];
 
             // Check proof status
             const [proof] = await db`
@@ -246,7 +246,7 @@ export class EscrowTimeoutSweeper {
                 AND photo_type = 'after'
                 ORDER BY created_at DESC
                 LIMIT 1
-            `;
+            ` as any[];
 
             // Determine if proof is required (for now, assume required for all)
             // TODO: Connect to AdaptiveProofPolicy when enforcement mode is on

@@ -1,7 +1,7 @@
 
-import { sql } from '../../db';
-import { serviceLogger } from '../../utils/logger';
-import { KillSwitch } from '../KillSwitch';
+import { safeSql as sql } from '../../db/index.js';
+import { serviceLogger } from '../../utils/logger.js';
+import { KillSwitch } from '../KillSwitch.js';
 
 /**
  * DLQ PROCESSOR (Dead Letter Queue)
@@ -41,19 +41,19 @@ export class DLQProcessor {
         logger.info('Scanning DLQ for pending actions...');
 
         // 1. Fetch Due Items
-        const items = await sql<PendingAction[]>`
+        const items = await sql`
             SELECT * FROM ledger_pending_actions
             WHERE status IN ('pending', 'failed')
             AND next_retry_at <= NOW()
             ORDER BY next_retry_at ASC
             LIMIT 50
-        `;
+        ` as any[];
 
         if (items.length === 0) return;
 
         logger.info({ count: items.length }, 'Processing DLQ Items');
 
-        for (const item of items) {
+        for (const item of items as PendingAction[]) {
             await this.processItem(item);
         }
     }
@@ -123,7 +123,7 @@ export class DLQProcessor {
             case 'COMMIT_TX':
                 // Call LedgerService.commitTransaction(id, payload.stripeMeta)
                 // We need to import dynamically to avoid circular deps if any
-                const { LedgerService } = await import('../../services/ledger/LedgerService');
+                const { LedgerService } = await import('../../services/ledger/LedgerService.js');
                 await LedgerService.commitTransaction(item.transaction_id, item.payload.stripe_metadata, sql);
                 break;
 

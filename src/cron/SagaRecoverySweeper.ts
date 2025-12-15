@@ -225,7 +225,7 @@ export class SagaRecoverySweeper {
                 AND event_type LIKE '%executing%'
                 ORDER BY created_at DESC
                 LIMIT 1
-            `;
+            ` as any[];
             return row || null;
         } catch (error) {
             logger.error({ error, taskId }, 'Failed to get outbound intent');

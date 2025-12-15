@@ -1,5 +1,5 @@
 
-import { query } from '../../db';
+import { query } from '../../db/index.js';
 
 /**
  * LEDGER LOCK SERVICE (Ring 1)

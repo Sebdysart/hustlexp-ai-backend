@@ -134,6 +134,7 @@ const CATEGORY_ICONS: Record<TaskCategory, string> = {
     tech_help: '💻',
     yard_work: '🌿',
     event_help: '🎉',
+    general: '✨',
     other: '✨',
 };
 

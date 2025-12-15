@@ -110,6 +110,9 @@ const CATEGORY_PROOFS: Record<TaskCategory, Omit<ProofRequirement, 'id'>[]> = {
         { type: 'before', title: 'Setup Start', prompt: "Photo of venue/setup area when you arrive.", xpReward: 15, required: true, order: 1, triggerAt: 'start' },
         { type: 'after', title: 'Event Ready', prompt: "Everything set? Final photo shows your work! 🎉", xpReward: 35, required: true, order: 2, triggerAt: 'end' },
     ],
+    general: [
+        { type: 'result', title: 'Task Complete', prompt: "Photo proof of completed task!", xpReward: 30, required: true, order: 1, triggerAt: 'end' },
+    ],
     other: [
         { type: 'result', title: 'Task Complete', prompt: "Photo proof of completed task!", xpReward: 30, required: true, order: 1, triggerAt: 'end' },
     ],

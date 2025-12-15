@@ -115,6 +115,7 @@ export async function requireAuth(
                 id: testDbUid,
                 firebase_uid: uid,
                 email: 'dev@local.test',
+                name: 'Development User',
                 role: testRole,
                 created_at: new Date(),
                 updated_at: new Date()

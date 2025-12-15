@@ -208,7 +208,7 @@ export class CityGridService {
             // Get real data for zone if available
             const zoneData = await this.getZoneData(zone);
 
-            for (const microZone of microZones) {
+            for (const microZone of microZones as string[]) {
                 const cell = this.buildCell(city, zone, microZone, zoneData);
                 cells.push(cell);
             }

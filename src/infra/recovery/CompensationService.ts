@@ -1,8 +1,8 @@
 
-import { sql } from '../../db';
-import { serviceLogger } from '../../utils/logger';
+import { safeSql as sql, transaction } from '../../db/index.js';
+import { serviceLogger } from '../../utils/logger.js';
 import { ulid } from 'ulidx';
-import { KillSwitch } from '../KillSwitch';
+import { KillSwitch } from '../KillSwitch.js';
 
 /**
  * COMPENSATION SERVICE
@@ -80,9 +80,9 @@ export class CompensationService {
         const absAmount = Math.abs(driftAmount);
 
         // Execute Compensation
-        await sql.begin(async sql => {
+        await transaction(async (tx: any) => {
             // 1. Create Tx
-            await sql`
+            await tx`
                 INSERT INTO ledger_transactions (id, type, idempotency_key, status, description, metadata)
                 VALUES (
                     ${txId}, 'COMPENSATION', ${`comp_${Date.now()}_${accountId}`}, 'committed', 
@@ -91,13 +91,13 @@ export class CompensationService {
             `;
 
             // 2. Entry for Target Account
-            await sql`
+            await tx`
                 INSERT INTO ledger_entries (transaction_id, account_id, direction, amount)
                 VALUES (${txId}, ${accountId}, ${direction}, ${absAmount})
             `;
 
             // 3. Entry for Drift Account (Balancing Leg)
-            await sql`
+            await tx`
                 INSERT INTO ledger_entries (transaction_id, account_id, direction, amount)
                 VALUES (${txId}, ${driftAccountId}, ${offsetDirection}, ${absAmount})
             `;
@@ -113,7 +113,7 @@ export class CompensationService {
             // But we are in `infra`. Circular dependency risk.
             // We will do direct SQL updates to be "Metal Level".
 
-            await sql`
+            await tx`
                 UPDATE ledger_accounts
                 SET balance = balance + ${direction === 'debit' ? absAmount : -absAmount}, updated_at = NOW()
                 WHERE id = ${accountId} OR id = ${driftAccountId}
