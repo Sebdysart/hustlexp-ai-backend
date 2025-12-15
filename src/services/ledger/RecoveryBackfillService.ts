@@ -1,9 +1,9 @@
 
-import { StripeService } from '../StripeService';
-import { sql } from '../../db';
-import { serviceLogger } from '../../utils/logger';
+import { StripeService } from '../StripeService.js';
+import { sql } from '../../db/index.js';
+import { serviceLogger } from '../../utils/logger.js';
 import Stripe from 'stripe';
-import { env } from '../../config/env';
+import { env } from '../../config/env.js';
 
 const stripe = new Stripe(env.STRIPE_SECRET_KEY!, { typescript: true });
 

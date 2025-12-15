@@ -391,7 +391,7 @@ export class BetaMetricsService {
     // INTERNAL HELPERS
     // -----------------------------------------------------------
 
-    private static recordEvent(type: string, metadata?: any): void {
+    static recordEvent(type: string, metadata?: any): void {
         recentEvents.push({ type, timestamp: new Date(), metadata });
 
         // Trim to window size

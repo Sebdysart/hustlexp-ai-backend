@@ -28,11 +28,14 @@ export type AlertSeverity = 'critical' | 'warning' | 'info';
 export type AlertType =
     | 'KILLSWITCH_ACTIVATED'
     | 'SAGA_STUCK'
+    | 'STUCK_SAGA'
     | 'ESCROW_TIMEOUT_ACTION'
     | 'STRIPE_WEBHOOK_FAILURE_SPIKE'
     | 'LEDGER_DRIFT_DETECTED'
     | 'SAGA_RECOVERY_EXHAUSTED'
-    | 'PAYOUT_FAILED';
+    | 'PAYOUT_FAILED'
+    | 'SAFEMODE_ACTIVATED'
+    | 'CORRECTION_SYSTEM_SAFEMODE';
 
 interface AlertPayload {
     type: AlertType;
@@ -60,21 +63,27 @@ interface AlertResult {
 const SEVERITY_MAP: Record<AlertType, AlertSeverity> = {
     'KILLSWITCH_ACTIVATED': 'critical',
     'SAGA_STUCK': 'critical',
+    'STUCK_SAGA': 'critical',
     'SAGA_RECOVERY_EXHAUSTED': 'critical',
     'LEDGER_DRIFT_DETECTED': 'critical',
     'STRIPE_WEBHOOK_FAILURE_SPIKE': 'critical',
     'PAYOUT_FAILED': 'warning',
-    'ESCROW_TIMEOUT_ACTION': 'warning'
+    'ESCROW_TIMEOUT_ACTION': 'warning',
+    'SAFEMODE_ACTIVATED': 'warning',
+    'CORRECTION_SYSTEM_SAFEMODE': 'warning'
 };
 
 const TITLE_MAP: Record<AlertType, string> = {
     'KILLSWITCH_ACTIVATED': '🚨 KILLSWITCH ACTIVATED - ALL MONEY MOVEMENT STOPPED',
     'SAGA_STUCK': '🔴 SAGA STUCK IN EXECUTING STATE',
+    'STUCK_SAGA': '🔴 SAGA STUCK IN EXECUTING STATE',
     'SAGA_RECOVERY_EXHAUSTED': '🔴 SAGA RECOVERY EXHAUSTED - KILLSWITCH TRIGGERED',
     'LEDGER_DRIFT_DETECTED': '🔴 LEDGER DRIFT DETECTED - RECONCILIATION FAILED',
     'STRIPE_WEBHOOK_FAILURE_SPIKE': '🔴 STRIPE WEBHOOK FAILURE SPIKE',
     'PAYOUT_FAILED': '⚠️ PAYOUT FAILED',
-    'ESCROW_TIMEOUT_ACTION': '⚠️ ESCROW TIMEOUT ACTION TAKEN'
+    'ESCROW_TIMEOUT_ACTION': '⚠️ ESCROW TIMEOUT ACTION TAKEN',
+    'SAFEMODE_ACTIVATED': '⚠️ SAFEMODE ACTIVATED - CORRECTIONS DISABLED',
+    'CORRECTION_SYSTEM_SAFEMODE': '⚠️ CORRECTION SYSTEM SAFEMODE - CORRECTIONS DISABLED'
 };
 
 // ============================================================

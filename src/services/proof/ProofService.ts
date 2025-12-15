@@ -55,7 +55,7 @@ export class ProofService {
                 VALUES (${params.taskId}::uuid, ${params.proofType}, ${params.reason}, ${params.requestedBy}, 
                         ${params.instructions}, ${deadline}, ${ProofState.REQUESTED})
                 RETURNING id
-            `;
+            ` as any[];
 
             // Log event
             await this.logEvent({
@@ -99,7 +99,7 @@ export class ProofService {
             // Get request
             const [request] = await db`
                 SELECT id, task_id, state FROM proof_requests WHERE id = ${params.requestId}::uuid
-            `;
+            ` as any[];
 
             if (!request) {
                 return { success: false, error: 'Proof request not found' };
@@ -114,7 +114,7 @@ export class ProofService {
                 SELECT task_id FROM proof_hash_bindings 
                 WHERE file_hash = ${params.fileHash} 
                 AND task_id != ${request.task_id}::uuid
-            `;
+            ` as any[];
 
             let escalated = false;
             if (existingHash) {
@@ -142,7 +142,7 @@ export class ProofService {
                         ${params.fileUrl}, ${params.fileHash}, ${params.mimeType}, ${params.fileSize},
                         ${JSON.stringify(params.metadata)}, ${initialState})
                 RETURNING id
-            `;
+            ` as any[];
 
             // Update request state
             await db`
@@ -197,7 +197,7 @@ export class ProofService {
                 SET forensics_result = ${JSON.stringify(result)}, state = ${ProofState.ANALYZING}
                 WHERE id = ${submissionId}::uuid
                 RETURNING id, request_id, task_id
-            `;
+            ` as any[];
 
             if (!submission) {
                 return { success: false, error: 'Submission not found' };
@@ -245,7 +245,7 @@ export class ProofService {
                 UPDATE proof_submissions SET state = ${newState}
                 WHERE id = ${submissionId}::uuid
                 RETURNING id, request_id, task_id, state
-            `;
+            ` as any[];
 
             if (!submission) {
                 return { success: false, error: 'Submission not found' };
@@ -301,7 +301,7 @@ export class ProofService {
                 SET state = ${ProofState.LOCKED}, locked_at = NOW()
                 WHERE id = ${submissionId}::uuid AND state = ${ProofState.VERIFIED}
                 RETURNING id, request_id, task_id
-            `;
+            ` as any[];
 
             if (!submission) {
                 return { success: false, error: 'Cannot lock - submission not in VERIFIED state' };
@@ -346,13 +346,13 @@ export class ProofService {
 
         const submissions = await db`
             SELECT * FROM proof_submissions WHERE task_id = ${taskId}::uuid ORDER BY created_at DESC
-        `;
+        ` as any[];
 
         // Determine current state from most recent
-        const latestRequest = requests[0];
+        const latestRequest = (requests as any[])[0];
         const currentState = latestRequest?.state || ProofState.NONE;
 
-        return { requests, submissions, currentState };
+        return { requests: requests as any[], submissions: submissions as any[], currentState };
     }
 
     /**

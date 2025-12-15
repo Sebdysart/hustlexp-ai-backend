@@ -97,6 +97,9 @@ const CATEGORY_PROOF_REQUIREMENTS: Record<TaskCategory, ProofRequirement[]> = {
         { phase: 'during', description: 'Event in progress', required: false, exampleCaption: 'Event setup complete' },
         { phase: 'after', description: 'Event completion/cleanup', required: true, exampleCaption: 'Venue cleaned after event' },
     ],
+    general: [
+        { phase: 'after', description: 'Proof of task completion', required: true, exampleCaption: 'Task completed as requested' },
+    ],
     other: [
         { phase: 'after', description: 'Proof of task completion', required: true, exampleCaption: 'Task completed as requested' },
     ],

@@ -15,7 +15,7 @@ async function check() {
     }
 
     try {
-        const stripe = new Stripe(key, { apiVersion: '2020-08-27' }); // Using a generally compatible version for check
+        const stripe = new Stripe(key, { apiVersion: '2024-11-20.acacia' as any }); // Using a generally compatible version for check
 
         // 1. Verify Platform Account
         const account = await stripe.accounts.retrieve();

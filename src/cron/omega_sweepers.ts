@@ -1,4 +1,4 @@
-import { sql } from '../db/index.js';
+import { safeSql as sql } from '../db/index.js';
 import { serviceLogger } from '../utils/logger.js';
 import Stripe from 'stripe';
 import { env } from '../config/env.js';
@@ -18,7 +18,7 @@ export class OmegaSweepers {
 
     static init() {
         if (!this.stripe) {
-            this.stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2024-06-20' } as any);
+            this.stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2024-11-20.acacia' as any } as any);
         }
     }
 

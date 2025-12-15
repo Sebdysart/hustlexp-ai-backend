@@ -1,19 +1,19 @@
 
-import { sql } from '../../db';
+import { sql } from '../../db/index.js';
 import { ulid } from 'ulidx';
-import { LedgerGuardService } from './LedgerGuardService';
-import { LedgerLockService } from './LedgerLockService';
-import { KillSwitch } from '../../infra/KillSwitch';
-import { PrometheusMetrics } from '../../infra/metrics/Prometheus';
+import { LedgerGuardService } from './LedgerGuardService.js';
+import { LedgerLockService } from './LedgerLockService.js';
+import { KillSwitch } from '../../infra/KillSwitch.js';
+import { PrometheusMetrics } from '../../infra/metrics/Prometheus.js';
 import {
     LedgerTransaction,
     LedgerEntry,
     LedgerAccount,
     CreateLedgerTransactionInput,
     LedgerTransactionStatus
-} from './types';
-import { serviceLogger } from '../../utils/logger';
-import { LedgerAccountService } from './LedgerAccountService';
+} from './types.js';
+import { serviceLogger } from '../../utils/logger.js';
+import { LedgerAccountService } from './LedgerAccountService.js';
 
 /**
  * LEDGER SERVICE (The Iron Pipeline)
@@ -66,10 +66,10 @@ export class LedgerService {
             const accountsRaw = await client<LedgerAccount[]>`
                 SELECT * FROM ledger_accounts WHERE id = ANY(${accountIds})
             `;
-            const accountMap = new Map(accountsRaw.map(a => [a.id, a]));
+            const accountMap = new Map((accountsRaw as any[]).map((a: any) => [a.id, a]));
 
             // 2. Execute Firewall Logic
-            LedgerGuardService.validateTransactionProposal(input, accountMap);
+            LedgerGuardService.validateTransactionProposal(input, accountMap as Map<string, LedgerAccount>);
 
             // ---------------------------------------------------------
             // RING 2: WRITE PENDING (IDEMPOTENT)
@@ -122,12 +122,12 @@ export class LedgerService {
             `;
 
             const isMatch = input.entries.every(inputEntry => {
-                return existingEntries.some(dbEntry =>
+                return (existingEntries as any[]).some((dbEntry: any) =>
                     dbEntry.account_id === inputEntry.account_id &&
                     dbEntry.direction === inputEntry.direction &&
                     Number(dbEntry.amount) === inputEntry.amount // DB returns string for numeric
                 );
-            }) && existingEntries.length === input.entries.length;
+            }) && (existingEntries as any[]).length === input.entries.length;
 
             if (!isMatch) {
                 const errorMsg = `CRITICAL: Idempotency Mismatch! Key ${input.idempotency_key} exists but entries differ.`;

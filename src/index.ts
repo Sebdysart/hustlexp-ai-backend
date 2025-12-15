@@ -2800,7 +2800,6 @@ fastify.get('/api/stripe/connect/:userId/status', { preHandler: [requireAuth] },
 fastify.get('/api/stripe/status', async () => {
     return {
         available: StripeService.isAvailable(),
-        escrowBalance: StripeService.getEscrowBalance(),
     };
 });
 

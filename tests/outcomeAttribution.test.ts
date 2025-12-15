@@ -111,7 +111,7 @@ describe('NEGATIVE OUTCOME - Correction causes regression', () => {
         // Critical regression: disputes increased >2%
         const hasCriticalRegression = deltas.disputeRate > 0.02;
         expect(hasCriticalRegression).toBe(true);
-        expect(deltas.disputeRate).toBe(0.08);
+        expect(deltas.disputeRate).toBeCloseTo(0.08, 5);
 
         const netEffect: NetEffect = hasCriticalRegression ? 'negative' : 'neutral';
         expect(netEffect).toBe('negative');
@@ -148,7 +148,7 @@ describe('NEGATIVE OUTCOME - Correction causes regression', () => {
         // Critical regression: fill rate dropped >5%
         const hasCriticalRegression = deltas.taskFillRate < -0.05;
         expect(hasCriticalRegression).toBe(true);
-        expect(deltas.taskFillRate).toBe(-0.15);
+        expect(deltas.taskFillRate).toBeCloseTo(-0.15, 5);
 
         const netEffect: NetEffect = hasCriticalRegression ? 'negative' : 'neutral';
         expect(netEffect).toBe('negative');

@@ -46,7 +46,7 @@ export class ProofRequestService {
             const [task] = await db`
                 SELECT id, category, status, price, created_by, assigned_to
                 FROM tasks WHERE id = ${params.taskId}::uuid
-            `;
+            ` as any[];
 
             if (!task) {
                 return { success: false, error: 'Task not found' };
@@ -63,7 +63,7 @@ export class ProofRequestService {
             if (task.assigned_to) {
                 const [user] = await db`
                     SELECT id, level as trust_tier FROM users WHERE id = ${task.assigned_to}::uuid
-                `;
+                ` as any[];
                 if (user) {
                     userContext.trustTier = Math.min(5, Math.max(1, user.trust_tier || 3));
                 }
@@ -72,7 +72,7 @@ export class ProofRequestService {
             // 3. Get existing proof count
             const [proofCount] = await db`
                 SELECT COUNT(*) as cnt FROM proof_requests WHERE task_id = ${params.taskId}::uuid
-            `;
+            ` as any[];
             const existingProofCount = Number(proofCount.cnt);
 
             // 4. Determine proof type
@@ -134,7 +134,7 @@ export class ProofRequestService {
             const [task] = await db`
                 SELECT id, category, status, price, assigned_to
                 FROM tasks WHERE id = ${taskId}::uuid
-            `;
+            ` as any[];
 
             if (!task || !task.assigned_to) {
                 return { required: false };
@@ -143,7 +143,7 @@ export class ProofRequestService {
             // Get hustler context
             const [user] = await db`
                 SELECT id, level as trust_tier FROM users WHERE id = ${task.assigned_to}::uuid
-            `;
+            ` as any[];
 
             const hustlerContext = {
                 id: task.assigned_to,
@@ -210,8 +210,8 @@ export class ProofRequestService {
             WHERE task_id = ${taskId}::uuid 
             AND state = ${ProofState.REQUESTED}
             ORDER BY created_at DESC
-        `;
+        ` as any[];
 
-        return requests;
+        return requests as any[];
     }
 }

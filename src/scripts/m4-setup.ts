@@ -3,7 +3,7 @@ import 'dotenv/config';
 import { Pool } from '@neondatabase/serverless';
 import fs from 'fs';
 import path from 'path';
-import { logger } from '../utils/logger';
+import { logger } from '../utils/logger.js';
 
 async function main() {
     const m4Url = process.env.DATABASE_URL_M4;
@@ -27,7 +27,7 @@ async function main() {
     }
 
     // 1. Run App Schema Migrations (Dynamic import to pick up new DATABASE_URL)
-    const { runMigrations } = await import('../db/schema');
+    const { runMigrations } = await import('../db/schema.js');
     await runMigrations();
 
     // 2. Run Ledger Schema

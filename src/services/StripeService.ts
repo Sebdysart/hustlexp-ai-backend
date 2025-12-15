@@ -12,7 +12,7 @@ import { env } from '../config/env.js';
 import { assertPayoutsEnabled } from '../config/safety.js';
 import Stripe from 'stripe';
 import { serviceLogger } from '../utils/logger.js';
-import { sql, isDatabaseAvailable } from '../db/index.js';
+import { sql, isDatabaseAvailable, transaction, safeSql } from '../db/index.js';
 import { StripeMoneyEngine } from './StripeMoneyEngine.js';
 
 // ============================================
@@ -266,7 +266,7 @@ class StripeServiceClass {
         // Delegate to Engine
         try {
             // Fetch context needed
-            const [escrow] = await sql`SELECT * FROM escrow_holds WHERE task_id = ${taskId}`;
+            const [escrow] = await safeSql`SELECT * FROM escrow_holds WHERE task_id = ${taskId}`;
             const ctx = {
                 amountCents: escrow?.gross_amount_cents,
                 refundAmountCents: escrow?.net_payout_cents, // For reversal
@@ -293,10 +293,10 @@ class StripeServiceClass {
         const hustlerId = pi.metadata.hustlerId;
         const amountCents = pi.amount;
 
-        await sql.begin(async sql => {
+        await transaction(async (tx: any) => {
             // 1. Create Escrow Hold Record
             const platformFee = Math.round(amountCents * SEATTLE_PLATFORM_FEE_PERCENT);
-            await sql`
+            await tx`
                 INSERT INTO escrow_holds (
                     id, task_id, poster_id, hustler_id, payment_intent_id,
                     gross_amount_cents, platform_fee_cents, net_payout_cents,
@@ -309,7 +309,7 @@ class StripeServiceClass {
              `;
 
             // 2. Create/Update Lock
-            await sql`
+            await tx`
                 INSERT INTO money_state_lock (task_id, current_state, next_allowed_event, stripe_payment_intent_id, version)
                 VALUES (${taskId}, 'held', ${['RELEASE_PAYOUT', 'REFUND_ESCROW']}, ${pi.id}, 1)
                 ON CONFLICT (task_id) DO UPDATE 
@@ -320,7 +320,7 @@ class StripeServiceClass {
              `;
 
             // 3. Update Task Status
-            await sql`UPDATE tasks SET status='in_progress', assigned_hustler_id=${hustlerId} WHERE id=${taskId}`;
+            await tx`UPDATE tasks SET status='in_progress', assigned_hustler_id=${hustlerId} WHERE id=${taskId}`;
         });
         serviceLogger.info({ taskId }, '[RECOVERY] Hold Escrow Recovered');
     }
@@ -331,16 +331,16 @@ class StripeServiceClass {
         if (!sql) return;
         serviceLogger.info({ taskId, transferId: transfer.id }, '[RECOVERY] Executing recoverReleaseEscrow');
 
-        await sql.begin(async sql => {
+        await transaction(async (tx: any) => {
             // 1. Update Escrow
-            await sql`
+            await tx`
                 UPDATE escrow_holds 
                 SET status = 'released', stripe_transfer_id = ${transfer.id}, released_at = NOW(), updated_at = NOW()
                 WHERE task_id = ${taskId}
              `;
 
             // 2. Update Lock
-            await sql`
+            await tx`
                  UPDATE money_state_lock
                  SET current_state = 'released',
                      next_allowed_event = ${['FORCE_REFUND']},
@@ -351,7 +351,7 @@ class StripeServiceClass {
 
             // 3. Create Payout Record (if missing)
             // We estimate fee/net from transfer amount
-            await sql`
+            await tx`
                 INSERT INTO hustler_payouts (
                     task_id, escrow_id, hustler_id, transfer_id, 
                     gross_amount_cents, net_amount_cents, status, type
@@ -436,6 +436,101 @@ class StripeServiceClass {
         } catch (err) {
             // RULE 3: NEVER THROW
             serviceLogger.error({ err, eventId: event.id }, 'Webhook Recovery Logic Failed - Returning 200 OK anyway');
+        }
+    }
+
+    // ============================================
+    // GETTERS (Legacy API Compatability)
+    // ============================================
+
+    async getEscrowBalance(taskId: string): Promise<{ amount: number; status: string } | null> {
+        if (!sql) return null;
+        try {
+            const [escrow] = await sql`SELECT * FROM escrow_holds WHERE task_id = ${taskId}`;
+            if (!escrow) return null;
+            return {
+                amount: escrow.gross_amount_cents / 100,
+                status: escrow.status
+            };
+        } catch (error) {
+            return null;
+        }
+    }
+
+    async getEscrow(taskId: string): Promise<EscrowRecord | null> {
+        if (!sql) {
+            return escrowLedger.get(taskId) || null;
+        }
+        try {
+            const [escrow] = await sql`SELECT * FROM escrow_holds WHERE task_id = ${taskId}`;
+            if (!escrow) return null;
+            return {
+                id: escrow.id,
+                taskId: escrow.task_id,
+                posterId: escrow.poster_id,
+                hustlerId: escrow.hustler_id,
+                amount: escrow.gross_amount_cents / 100,
+                platformFee: escrow.platform_fee_cents / 100,
+                hustlerPayout: escrow.net_payout_cents / 100,
+                paymentIntentId: escrow.payment_intent_id,
+                status: escrow.status,
+                createdAt: new Date(escrow.created_at),
+                releasedAt: escrow.released_at ? new Date(escrow.released_at) : undefined,
+                stripeTransferId: escrow.stripe_transfer_id
+            };
+        } catch (error) {
+            return null;
+        }
+    }
+
+    async getPayoutHistory(hustlerId: string): Promise<PayoutRecord[]> {
+        if (!sql) {
+            return Array.from(payoutLedger.values()).filter(p => p.hustlerId === hustlerId);
+        }
+        try {
+            const payouts = await sql`SELECT * FROM hustler_payouts WHERE hustler_id = ${hustlerId} ORDER BY created_at DESC LIMIT 50`;
+            return (payouts as any[]).map((p: any) => ({
+                id: p.id,
+                escrowId: p.escrow_id,
+                hustlerId: p.hustler_id,
+                hustlerStripeAccountId: p.stripe_account_id || '',
+                amount: p.gross_amount_cents / 100,
+                fee: (p.gross_amount_cents - p.net_amount_cents) / 100,
+                netAmount: p.net_amount_cents / 100,
+                type: p.type || 'standard',
+                status: p.status,
+                stripeTransferId: p.transfer_id,
+                createdAt: new Date(p.created_at),
+                completedAt: p.completed_at ? new Date(p.completed_at) : undefined
+            }));
+        } catch (error) {
+            return [];
+        }
+    }
+
+    async getPayout(payoutId: string): Promise<PayoutRecord | null> {
+        if (!sql) {
+            return payoutLedger.get(payoutId) || null;
+        }
+        try {
+            const [p] = await sql`SELECT * FROM hustler_payouts WHERE id = ${payoutId}` as any[];
+            if (!p) return null;
+            return {
+                id: p.id,
+                escrowId: p.escrow_id,
+                hustlerId: p.hustler_id,
+                hustlerStripeAccountId: p.stripe_account_id || '',
+                amount: p.gross_amount_cents / 100,
+                fee: (p.gross_amount_cents - p.net_amount_cents) / 100,
+                netAmount: p.net_amount_cents / 100,
+                type: p.type || 'standard',
+                status: p.status,
+                stripeTransferId: p.transfer_id,
+                createdAt: new Date(p.created_at),
+                completedAt: p.completed_at ? new Date(p.completed_at) : undefined
+            };
+        } catch (error) {
+            return null;
         }
     }
 }

@@ -1,9 +1,9 @@
 
-import { DLQProcessor } from './DLQProcessor';
-import { BackfillService } from './BackfillService';
-import { PendingTransactionReaper } from './PendingReaper';
-import { serviceLogger } from '../../utils/logger';
-import { KillSwitch } from '../KillSwitch';
+import { DLQProcessor } from './DLQProcessor.js';
+import { BackfillService } from './BackfillService.js';
+import { PendingTransactionReaper } from './PendingReaper.js';
+import { serviceLogger } from '../../utils/logger.js';
+import { KillSwitch } from '../KillSwitch.js';
 
 /**
  * RECOVERY ENGINE (OMEGA PROTOCOL)

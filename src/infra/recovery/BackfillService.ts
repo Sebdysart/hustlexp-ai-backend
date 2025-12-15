@@ -1,7 +1,7 @@
 
-import { sql } from '../../db';
-import { serviceLogger } from '../../utils/logger';
-import { CompensationService } from './CompensationService';
+import { safeSql as sql } from '../../db/index.js';
+import { serviceLogger } from '../../utils/logger.js';
+import { CompensationService } from './CompensationService.js';
 // import { LedgerService } from '../../services/ledger/LedgerService'; // Avoid Circular
 
 /**

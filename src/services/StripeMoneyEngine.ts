@@ -1,7 +1,7 @@
 import { KillSwitch } from '../infra/KillSwitch.js';
 import { LedgerAccountService } from './ledger/LedgerAccountService.js';
 import { LedgerLockService } from './ledger/LedgerLockService.js';
-import { transaction, sql } from '../db/index.js';
+import { transaction, safeSql as sql } from '../db/index.js';
 import Stripe from 'stripe';
 import { v4 as uuid } from 'uuid';
 import { serviceLogger as logger } from '../utils/logger.js';
@@ -444,7 +444,7 @@ export async function handle(
         if (prepResult.type === 'ALREADY_DONE') return { success: true, status: 'duplicate_ignored' };
 
         // CAPTURE STATE FOR COMPENSATION
-        preparedLedgerTxId = prepResult.ledgerTxId;
+        preparedLedgerTxId = prepResult.ledgerTxId ?? null;
         preparationPayload = { ...prepResult.lockData, ...prepResult.prepData };
 
         // ============================================================
