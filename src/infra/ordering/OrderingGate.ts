@@ -1,11 +1,11 @@
 
-import { SourceGuard } from './SourceGuard';
-import { ReplayGuard } from './ReplayGuard';
-import { SettlementGuard } from './SettlementGuard';
-import { MoneyPathGuard } from './MoneyPathGuard';
-import { TemporalGuard } from './TemporalGuard';
-import { serviceLogger } from '../../utils/logger';
-import { KillSwitch } from '../KillSwitch';
+import { SourceGuard } from './SourceGuard.js';
+import { ReplayGuard } from './ReplayGuard.js';
+import { SettlementGuard } from './SettlementGuard.js';
+import { MoneyPathGuard } from './MoneyPathGuard.js';
+import { TemporalGuard } from './TemporalGuard.js';
+import { serviceLogger } from '../../utils/logger.js';
+import { KillSwitch } from '../KillSwitch.js';
 import Stripe from 'stripe';
 
 /**

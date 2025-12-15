@@ -1,7 +1,8 @@
 
-import { sql } from '../../db';
-import { serviceLogger } from '../../utils/logger';
+import { sql } from '../../db/index.js';
+import { serviceLogger } from '../../utils/logger.js';
 import { decodeTime } from 'ulidx';
+
 
 /**
  * TEMPORAL GUARD (OMEGA PHASE 5)
@@ -40,6 +41,11 @@ export class TemporalGuard {
         // The `eventId` passed here MUST be the ULID assigned to this webhook processing attempt.
 
         try {
+            if (!sql) {
+                logger.warn({ targetId }, 'Temporal Guard: Database not available - allowing');
+                return true;
+            }
+
             const eventTime = decodeTime(eventId);
 
             // Get Last Commited Transaction for this Task (Owner)

@@ -1,5 +1,6 @@
 
-import { serviceLogger } from '../../utils/logger';
+import { serviceLogger } from '../../utils/logger.js';
+
 
 /**
  * MONEY PATH GUARD (OMEGA PHASE 5)
