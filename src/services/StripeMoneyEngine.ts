@@ -3,7 +3,7 @@ import { LedgerAccountService } from './ledger/LedgerAccountService.js';
 import { LedgerLockService } from './ledger/LedgerLockService.js';
 import { transaction, safeSql as sql } from '../db/index.js';
 import Stripe from 'stripe';
-import { v4 as uuid } from 'uuid';
+import { ulid } from 'ulidx';
 import { serviceLogger as logger } from '../utils/logger.js';
 import { TemporalGuard } from '../infra/ordering/TemporalGuard.js';
 import { LedgerService } from './ledger/LedgerService.js';
@@ -212,7 +212,7 @@ async function executeStripeEffects(
         case 'RESOLVE_REFUND':
         case 'FORCE_REFUND':
             result = await effectRefund(context, eventId, client, lockData);
-            await logOutbound(eventId, result.refundId!, 'refund', {});
+            await logOutbound(eventId, result.refundId || result.piId!, 'refund', {});
             break;
         case 'DISPUTE_OPEN':
             result = {};
@@ -307,7 +307,7 @@ export async function handle(
         throw new Error('KILLSWITCH ENGAGED: Money Engine Frozen.');
     }
 
-    const eventId = options?.eventId ?? uuid();
+    const eventId = options?.eventId ?? ulid();
     const providedTx = options?.tx;
     const stripeClient = options?.stripeClient;
     const adminOverride = options?.adminOverride;

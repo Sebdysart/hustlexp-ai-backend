@@ -78,13 +78,14 @@ export class SagaRecoverySweeper {
      * 
      * Called by cron. Finds and recovers stuck sagas.
      */
-    static async run(): Promise<RecoveryResult[]> {
+    static async run(options?: { stripeClient?: any }): Promise<RecoveryResult[]> {
         const db = getDb();
         if (!db) {
             logger.warn('Database not available, skipping sweep');
             return [];
         }
 
+        const stripeClient = options?.stripeClient;
         logger.info('Starting saga recovery sweep');
 
         // 1. Find stuck sagas
@@ -100,7 +101,7 @@ export class SagaRecoverySweeper {
         // 2. Recover each
         const results: RecoveryResult[] = [];
         for (const saga of stuckSagas) {
-            const result = await this.recoverSaga(db, saga);
+            const result = await this.recoverSaga(db, saga, stripeClient);
             results.push(result);
         }
 
@@ -114,6 +115,8 @@ export class SagaRecoverySweeper {
      */
     private static async findStuckSagas(db: ReturnType<typeof neon>): Promise<StuckSaga[]> {
         try {
+            const cutoff = new Date(Date.now() - this.STUCK_THRESHOLD_MINUTES * 60 * 1000);
+
             const rows = await db`
                 SELECT 
                     task_id,
@@ -125,7 +128,7 @@ export class SagaRecoverySweeper {
                     COALESCE(recovery_attempts, 0) as recovery_attempts
                 FROM money_state_lock
                 WHERE current_state LIKE '%executing%'
-                AND last_transition_at < NOW() - INTERVAL '${this.STUCK_THRESHOLD_MINUTES} minutes'
+                AND last_transition_at < ${cutoff}
                 ORDER BY last_transition_at ASC
                 LIMIT 50
             `;
@@ -140,6 +143,7 @@ export class SagaRecoverySweeper {
                 recoveryAttempts: parseInt(row.recovery_attempts) || 0
             }));
         } catch (error) {
+            console.error('Failed to find stuck sagas:', error);
             logger.error({ error }, 'Failed to find stuck sagas');
             return [];
         }
@@ -155,7 +159,8 @@ export class SagaRecoverySweeper {
      */
     private static async recoverSaga(
         db: ReturnType<typeof neon>,
-        saga: StuckSaga
+        saga: StuckSaga,
+        stripeClient?: any
     ): Promise<RecoveryResult> {
         const { taskId, currentState, recoveryAttempts } = saga;
 
@@ -194,7 +199,7 @@ export class SagaRecoverySweeper {
         }
 
         // 2. Query Stripe ONLY because outbound intent exists
-        const stripeStatus = await this.queryStripe(saga);
+        const stripeStatus = await this.queryStripe(saga, stripeClient);
 
         if (stripeStatus === 'succeeded') {
             // Stripe confirms success - commit
@@ -236,8 +241,8 @@ export class SagaRecoverySweeper {
     /**
      * QUERY STRIPE STATUS
      */
-    private static async queryStripe(saga: StuckSaga): Promise<'succeeded' | 'failed' | 'unknown'> {
-        const stripeClient = getStripe();
+    private static async queryStripe(saga: StuckSaga, injectedClient?: any): Promise<'succeeded' | 'failed' | 'unknown'> {
+        const stripeClient = injectedClient || getStripe();
         if (!stripeClient) {
             logger.warn('Stripe not configured, cannot verify status');
             return 'unknown';
