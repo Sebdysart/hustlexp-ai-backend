@@ -1,7 +1,8 @@
 
-import { serviceLogger } from '../../utils/logger';
-import { getEnv } from '../../config/env';
+import { serviceLogger } from '../../utils/logger.js';
+import { env } from '../../config/env.js';
 import Stripe from 'stripe';
+
 
 /**
  * SOURCE GUARD (OMEGA PHASE 5)
@@ -21,8 +22,7 @@ export class SourceGuard {
     private static stripe: Stripe;
 
     static init() {
-        const env = getEnv();
-        this.stripe = new Stripe(env.STRIPE_SECRET_KEY, { apiVersion: '2024-06-20' });
+        this.stripe = new Stripe(env.STRIPE_SECRET_KEY, { apiVersion: '2024-11-20.acacia' as any });
     }
 
     /**
@@ -33,20 +33,17 @@ export class SourceGuard {
         if (!this.stripe) this.init();
 
         try {
-            const env = getEnv();
             const event = this.stripe.webhooks.constructEvent(
                 rawBody,
                 signature,
-                env.STRIPE_WEBHOOK_SECRET
+                env.STRIPE_WEBHOOK_SECRET || ''
             );
 
             // MODE CHECK
-            const isLiveEnv = env.RAILWAY_ENVIRONMENT_NAME === 'production';
+            const isLiveEnv = env.isProduction;
             if (event.livemode !== isLiveEnv) {
                 // In strict mode, we reject mismatched env events.
-                // But typically test clocks might send test events?
-                // Omega Rule: "Strict Mode Match".
-                if (env.STRICT_MODE) {
+                if (env.isIdentityStrictMode) {
                     logger.warn({ eventId: event.id, livemode: event.livemode, env: isLiveEnv }, 'Source Guard: Environment Mode Mismatch');
                     throw new Error('Environment Mode Mismatch');
                 }
@@ -71,3 +68,4 @@ export class SourceGuard {
         return true;
     }
 }
+

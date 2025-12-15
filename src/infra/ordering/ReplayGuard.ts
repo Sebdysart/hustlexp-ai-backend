@@ -1,6 +1,7 @@
 
-import { sql } from '../../db';
-import { serviceLogger } from '../../utils/logger';
+import { sql } from '../../db/index.js';
+import { serviceLogger } from '../../utils/logger.js';
+
 
 /**
  * REPLAY GUARD (OMEGA PHASE 5)
@@ -23,6 +24,11 @@ export class ReplayGuard {
      * Returns FALSE if this is new (safe to process).
      */
     static async isDuplicate(eventId: string, stripeId?: string): Promise<boolean> {
+        if (!sql) {
+            logger.warn({ eventId }, 'Replay Guard: Database not available - allowing');
+            return false;
+        }
+
         // 1. Check Primary Event ID (Internal ULID)
         const [internalDup] = await sql`
             SELECT 1 FROM money_events_processed WHERE event_id = ${eventId}
