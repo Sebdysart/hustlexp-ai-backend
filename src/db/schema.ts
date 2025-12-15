@@ -803,6 +803,86 @@ const SCHEMA_STATEMENTS = [
   `CREATE INDEX IF NOT EXISTS idx_hustler_payouts_task ON hustler_payouts(task_id)`,
   `CREATE INDEX IF NOT EXISTS idx_hustler_payouts_transfer ON hustler_payouts(transfer_id)`,
   `CREATE INDEX IF NOT EXISTS idx_admin_locks_hustler ON admin_locks(hustler_id)`,
+
+  // ============================================
+  // Ω-ACT — Bounded Autonomous Corrections
+  // ============================================
+
+  // Correction Log - All autonomous adjustments
+  `CREATE TABLE IF NOT EXISTS correction_log (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    correction_type VARCHAR(50) NOT NULL,
+    target_entity VARCHAR(100) NOT NULL,
+    target_id TEXT NOT NULL,
+    adjustment JSONB NOT NULL,
+    reason_code VARCHAR(50) NOT NULL,
+    reason_summary TEXT NOT NULL,
+    reason_evidence TEXT[],
+    triggered_by VARCHAR(100) NOT NULL,
+    applied_at TIMESTAMPTZ DEFAULT NOW(),
+    expires_at TIMESTAMPTZ NOT NULL,
+    reversed BOOLEAN DEFAULT FALSE,
+    reversed_at TIMESTAMPTZ,
+    reversal_reason TEXT
+  )`,
+
+  // Correction Budget Usage - Global throttle tracking
+  `CREATE TABLE IF NOT EXISTS correction_budget_usage (
+    scope VARCHAR(50) NOT NULL,
+    scope_id TEXT NOT NULL,
+    window_start TIMESTAMPTZ NOT NULL,
+    count INTEGER DEFAULT 0,
+    PRIMARY KEY (scope, scope_id, window_start)
+  )`,
+
+  // Indexes for Ω-ACT
+  `CREATE INDEX IF NOT EXISTS idx_correction_log_type ON correction_log(correction_type)`,
+  `CREATE INDEX IF NOT EXISTS idx_correction_log_target ON correction_log(target_entity, target_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_correction_log_expires ON correction_log(expires_at) WHERE NOT reversed`,
+  `CREATE INDEX IF NOT EXISTS idx_correction_budget_window ON correction_budget_usage(scope, window_start)`,
+
+  // ============================================
+  // Ω-ACT-2 — Outcome Attribution
+  // ============================================
+
+  // Correction Outcomes - Immutable, append-only
+  `CREATE TABLE IF NOT EXISTS correction_outcomes (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    correction_id UUID NOT NULL REFERENCES correction_log(id),
+    baseline_metrics JSONB NOT NULL,
+    post_metrics JSONB NOT NULL,
+    deltas JSONB NOT NULL,
+    net_effect VARCHAR(20) NOT NULL CHECK (net_effect IN ('positive', 'neutral', 'negative')),
+    confidence DECIMAL(3,2) NOT NULL,
+    analyzed_at TIMESTAMPTZ DEFAULT NOW()
+  )`,
+
+  // Indexes for outcome analysis
+  `CREATE INDEX IF NOT EXISTS idx_correction_outcomes_correction ON correction_outcomes(correction_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_correction_outcomes_effect ON correction_outcomes(net_effect)`,
+  `CREATE INDEX IF NOT EXISTS idx_correction_outcomes_analyzed ON correction_outcomes(analyzed_at)`,
+
+  // ============================================
+  // Ω-ACT-3 — Causal Validation (Control Groups)
+  // ============================================
+
+  // Causal Outcomes - Multiple analyses allowed, immutable
+  `CREATE TABLE IF NOT EXISTS causal_outcomes (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    correction_id UUID NOT NULL REFERENCES correction_log(id),
+    treated_metrics JSONB NOT NULL,
+    control_metrics JSONB NOT NULL,
+    net_lift JSONB NOT NULL,
+    causal_verdict VARCHAR(20) NOT NULL CHECK (causal_verdict IN ('causal', 'inconclusive', 'non_causal')),
+    confidence DECIMAL(3,2) NOT NULL,
+    control_group_info JSONB,
+    analyzed_at TIMESTAMPTZ DEFAULT NOW()
+  )`,
+
+  // Indexes for causal analysis
+  `CREATE INDEX IF NOT EXISTS idx_causal_outcomes_correction ON causal_outcomes(correction_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_causal_outcomes_verdict ON causal_outcomes(causal_verdict)`,
+  `CREATE INDEX IF NOT EXISTS idx_causal_outcomes_analyzed ON causal_outcomes(analyzed_at)`,
 ];
 
 /**
