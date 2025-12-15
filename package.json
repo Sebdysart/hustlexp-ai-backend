@@ -11,7 +11,8 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "db:check": "tsx scripts/check-database.ts",
-    "db:setup": "tsx scripts/setup-database.ts"
+    "db:setup": "tsx scripts/setup-database.ts",
+    "db:setup:ledger": "tsx src/scripts/m4-setup.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.947.0",

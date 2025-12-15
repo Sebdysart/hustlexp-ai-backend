@@ -37,6 +37,8 @@ const CURRENT_MODE = detectMode();
 
 if (CURRENT_MODE === EnvMode.LOCAL) {
     dotenv.config({ path: path.resolve(process.cwd(), '.env.local') });
+    // Fallback to .env.dev (for agent/dev usage)
+    dotenv.config({ path: path.resolve(process.cwd(), '.env.dev') });
     // Fallback to .env if .env.local missing
     dotenv.config({ path: path.resolve(process.cwd(), '.env') });
 } else if (CURRENT_MODE === EnvMode.TEST) {

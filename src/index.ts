@@ -1,6 +1,6 @@
 /**
  * HustleXP AI Backend - Main Entry Point
- * 
+ *
  * A multi-model AI orchestration system for the HustleXP gig marketplace.
  * Uses DeepSeek for reasoning, Groq for fast operations, and GPT-4o for safety.
  */
@@ -167,6 +167,10 @@ fastify.addHook('onSend', async (request, reply, payload) => {
     }
     return payload;
 });
+
+// 6. ROUTE REGISTRATION - IDENTITY & DISPUTES
+// ===========================================
+// (Moved to start() function)
 
 // ============================================
 // Request Validation Schemas
@@ -2945,7 +2949,7 @@ fastify.post('/api/escrow/:taskId/refund', { preHandler: [requireAuth] }, async 
 
     // Phase 3 Hardened Logic
     // If isPoster and task not held, error (Posters can't refund if released/completed generally, only admins)
-    // Note: 'held' state in money_state_lock matches. 
+    // Note: 'held' state in money_state_lock matches.
     // We delegate state check to MoneyEngine mainly, but authorization check usually requires knowing state.
     // StripeMoneyEngine.handle() checks state transition.
     // Poster can only trigger REFUND_ESCROW from 'held'.
@@ -2956,7 +2960,7 @@ fastify.post('/api/escrow/:taskId/refund', { preHandler: [requireAuth] }, async 
     // We should rely on Money Engine state, but fetch it from DB or try/catch the handle call?
     // TaskService.getTaskWithEscrow doesn't return money state.
     // Whatever, let's try calling handle. If it fails due to state, it throws.
-    // BUT User Prompt explicitly added: 
+    // BUT User Prompt explicitly added:
     // `if (isPoster && task.state !== 'held') ...`
     // Task status `open` or `assigned` -> Money `held`?
     // Money state is separate.
@@ -2968,7 +2972,7 @@ fastify.post('/api/escrow/:taskId/refund', { preHandler: [requireAuth] }, async 
     // Use REFUND_ESCROW. If Admin needs FORCE_REFUND (post-payout), handle that?
     // User prompt used 'REFUND_ESCROW' in the example.
     // But my implementation of `effectRefund` handles both states?
-    // My `executeStripeEffects` map: 
+    // My `executeStripeEffects` map:
     // case 'REFUND_ESCROW': case 'RESOLVE_REFUND': case 'FORCE_REFUND': -> effectRefund
     // So 'REFUND_ESCROW' works for both paths IF the transition table allows it.
     // Transition Table:
