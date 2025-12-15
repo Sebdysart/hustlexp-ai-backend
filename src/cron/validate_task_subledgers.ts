@@ -1,12 +1,12 @@
 
 import '../config/env.js';
-import { serviceLogger } from '../utils/logger';
+import { serviceLogger } from '../utils/logger.js';
 
 /**
  * TASK SUBLEDGER VALIDATOR
  */
 export async function validateTaskSubledgers() {
-    const { sql } = await import('../db');
+    const { sql } = await import('../db/index.js');
 
     const logger = serviceLogger.child({ module: 'SubledgerValidator' });
     logger.info('Starting Task Subledger Validation...');

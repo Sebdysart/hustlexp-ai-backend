@@ -1,10 +1,10 @@
 
 import '../config/env.js'; // Ensure env loaded
-import { sql } from '../db';
-import { serviceLogger } from '../utils/logger';
+import { sql } from '../db/index.js';
+import { serviceLogger } from '../utils/logger.js';
 import Stripe from 'stripe';
-import { KillSwitch } from '../infra/KillSwitch';
-import { getEnv } from '../config/env';
+import { KillSwitch } from '../infra/KillSwitch.js';
+import { env } from '../config/env.js';
 
 /**
  * STRIPE REALITY MIRROR & 3-WAY RECONCILIATION ENGINE

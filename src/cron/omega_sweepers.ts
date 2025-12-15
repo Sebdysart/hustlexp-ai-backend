@@ -1,7 +1,7 @@
-import { sql } from '../db';
-import { serviceLogger } from '../utils/logger';
+import { sql } from '../db/index.js';
+import { serviceLogger } from '../utils/logger.js';
 import Stripe from 'stripe';
-import { env } from '../config/env';
+import { env } from '../config/env.js';
 
 const logger = serviceLogger.child({ module: 'OmegaSweepers' });
 
