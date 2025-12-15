@@ -3,9 +3,12 @@ node_modules/
 dist/
 
 # Environment
+
+# Environment
 .env
 .env.local
 .env.*.local
+env.backend
 
 # IDE
 .vscode/
