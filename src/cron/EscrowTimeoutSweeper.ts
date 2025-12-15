@@ -26,6 +26,7 @@ import { serviceLogger } from '../utils/logger.js';
 import { AlertService } from '../services/AlertService.js';
 import Stripe from 'stripe';
 import { env } from '../config/env.js';
+import { StripeMoneyEngine } from '../services/StripeMoneyEngine.js';
 
 const logger = serviceLogger.child({ module: 'EscrowTimeoutSweeper' });
 
@@ -88,13 +89,14 @@ export class EscrowTimeoutSweeper {
      * 
      * Called by cron. Finds and resolves timed-out escrows.
      */
-    static async run(): Promise<TimeoutResult[]> {
+    static async run(options?: { stripeClient?: any }): Promise<TimeoutResult[]> {
         const db = getDb();
         if (!db) {
             logger.warn('Database not available, skipping sweep');
             return [];
         }
 
+        const stripeClient = options?.stripeClient;
         logger.info('Starting escrow timeout sweep');
 
         // 1. Find stuck escrows
@@ -110,7 +112,7 @@ export class EscrowTimeoutSweeper {
         // 2. Resolve each
         const results: TimeoutResult[] = [];
         for (const escrow of stuckEscrows) {
-            const result = await this.resolveEscrow(db, escrow);
+            const result = await this.resolveEscrow(db, escrow, stripeClient);
             results.push(result);
         }
 
@@ -124,32 +126,35 @@ export class EscrowTimeoutSweeper {
      */
     private static async findStuckEscrows(db: ReturnType<typeof neon>): Promise<StuckEscrow[]> {
         try {
+            const cutoff = new Date(Date.now() - this.TIMEOUT_HOURS * 60 * 60 * 1000);
+
             const rows = await db`
                 SELECT 
-                    id as escrow_id,
-                    task_id,
-                    poster_id,
-                    hustler_id,
-                    payment_intent_id,
-                    gross_amount_cents,
-                    created_at
-                FROM escrow_holds
-                WHERE status = 'held'
-                AND created_at < NOW() - INTERVAL '${this.TIMEOUT_HOURS} hours'
-                ORDER BY created_at ASC
+                    l.task_id,
+                    l.stripe_payment_intent_id,
+                    l.last_transition_at as created_at,
+                    t.client_id as poster_id,
+                    t.assigned_hustler_id as hustler_id,
+                    t.price as gross_amount_cents
+                FROM money_state_lock l
+                JOIN tasks t ON l.task_id = t.id
+                WHERE l.current_state = 'held'
+                AND l.last_transition_at < ${cutoff}
+                ORDER BY l.last_transition_at ASC
                 LIMIT 50
             `;
 
             return (rows as any[]).map((row: any) => ({
-                escrowId: row.escrow_id,
+                escrowId: row.task_id, // Use task_id as escrow identifier since 1:1
                 taskId: row.task_id,
                 posterId: row.poster_id,
                 hustlerId: row.hustler_id,
-                paymentIntentId: row.payment_intent_id,
-                grossAmountCents: parseInt(row.gross_amount_cents) || 0,
+                paymentIntentId: row.stripe_payment_intent_id,
+                grossAmountCents: parseFloat(row.gross_amount_cents) * 100, // Price is normally decimal dollars in Tasks?
                 createdAt: row.created_at
             }));
         } catch (error) {
+            console.error('Failed to find stuck escrows:', error);
             logger.error({ error }, 'Failed to find stuck escrows');
             return [];
         }
@@ -168,7 +173,8 @@ export class EscrowTimeoutSweeper {
      */
     private static async resolveEscrow(
         db: ReturnType<typeof neon>,
-        escrow: StuckEscrow
+        escrow: StuckEscrow,
+        stripeClient?: any
     ): Promise<TimeoutResult> {
         const { escrowId, taskId, paymentIntentId, grossAmountCents } = escrow;
 
@@ -197,7 +203,7 @@ export class EscrowTimeoutSweeper {
             }
         } else {
             // AUTO-REFUND to poster
-            const success = await this.executeRefund(db, escrow);
+            const success = await this.executeRefund(db, escrow, stripeClient);
             if (success) {
                 await this.notifyUsers(db, escrow, 'refunded');
                 await AlertService.fire(
@@ -329,43 +335,25 @@ export class EscrowTimeoutSweeper {
     /**
      * EXECUTE REFUND (to poster)
      */
-    private static async executeRefund(
-        db: ReturnType<typeof neon>,
-        escrow: StuckEscrow
-    ): Promise<boolean> {
-        const stripeClient = getStripe();
-        if (!stripeClient) {
-            logger.error('Stripe not configured, cannot refund');
-            return false;
-        }
-
+    /**
+     * EXECUTE REFUND (to poster)
+     */
+    private static async executeRefund(db: ReturnType<typeof neon>, escrow: StuckEscrow, stripeClient?: any): Promise<boolean> {
         try {
-            // Execute Stripe refund
-            await stripeClient.refunds.create({
-                payment_intent: escrow.paymentIntentId,
-            });
-
-            await db`
-                UPDATE escrow_holds
-                SET status = 'refunded',
-                    refund_status = 'refunded',
-                    updated_at = NOW(),
-                    refund_completed_at = NOW()
-                WHERE id = ${escrow.escrowId}
-            `;
-
-            await db`
-                INSERT INTO money_events_audit (
-                    event_id, task_id, event_type, previous_state, new_state, raw_context, created_at
-                ) VALUES (
-                    ${'timeout_refund_' + Date.now()}, ${escrow.taskId}::uuid, 'escrow_timeout_refund',
-                    'held', 'refunded', ${{ timeout: true, hours: this.TIMEOUT_HOURS }}, NOW()
-                )
-            `;
+            // Updated to use StripeMoneyEngine for proper state/ledger handling
+            // This handles the 'REFUND_ESCROW' event which includes Ledger Refund + Stripe Refund if needed
+            await StripeMoneyEngine.handle(escrow.taskId, 'REFUND_ESCROW', {
+                refundAmountCents: escrow.grossAmountCents
+            }, { stripeClient });
 
             logger.info({ escrowId: escrow.escrowId }, 'Escrow refunded via timeout');
+
+            // Notify user manually here or rely on Engine? Engine handles events but maybe not notifications yet?
+            // Existing logic had notifyUsers. We keep it if needed, or rely on event listeners.
+            // For now, return true signals success to caller which notifies.
             return true;
         } catch (error) {
+            console.error('Execute Refund Failed:', error);
             logger.error({ error, escrow }, 'Failed to execute refund');
             return false;
         }

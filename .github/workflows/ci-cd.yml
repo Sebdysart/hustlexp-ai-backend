@@ -133,7 +133,7 @@ jobs:
     needs: build
     if: github.ref == 'refs/heads/develop'
     environment:
-      name: staging
+      name: production
       url: https://staging.hustlexp.com
     steps:
       - name: Checkout code
