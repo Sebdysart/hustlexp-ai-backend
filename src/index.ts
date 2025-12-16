@@ -43,6 +43,7 @@ import { validateEnv, logEnvStatus } from './utils/envValidator.js';
 import { runHealthCheck, quickHealthCheck } from './utils/healthCheck.js';
 import { requireAuth, optionalAuth, isAuthEnabled } from './middleware/firebaseAuth.js';
 import disputeRoutes from './routes/disputes.js';
+import debugRoutes from './routes/debug.js';
 import identityRoutes from './identity/routes/identity.js';
 import type { OrchestrateMode, TaskDraft, TaskCategory, AIContextBlock } from './types/index.js';
 // PHASE 6: Hardening middleware
@@ -171,6 +172,11 @@ fastify.addHook('onSend', async (request, reply, payload) => {
 // 6. ROUTE REGISTRATION - IDENTITY & DISPUTES
 // ===========================================
 // (Moved to start() function)
+// But we need to register them.
+// Let's look for where other routes are registered. They seem to be imported but not registered in the visible snippet.
+// Ah, line 173 says "(Moved to start() function)".
+// I need to find the `start()` function or where `fastify.register` is called for routes.
+
 
 // ============================================
 // Request Validation Schemas
@@ -3975,6 +3981,7 @@ async function start() {
         }
 
         // Register API Routes
+        await fastify.register(debugRoutes, { prefix: '/api' });
         await fastify.register(disputeRoutes, { prefix: '/api/disputes' });
 
         // HIVS: Identity Verification Routes (Email + Phone before AI onboarding)

@@ -6,11 +6,19 @@ import { logger } from '../utils/logger.js';
 const DATABASE_URL = process.env.DATABASE_URL;
 
 if (!DATABASE_URL) {
-    logger.warn('DATABASE_URL not set - using in-memory storage');
+    // logger.warn('DATABASE_URL not set'); // Handled below
 }
 
 // Create SQL query function (uses HTTP by default which works everywhere)
 export const sql = DATABASE_URL ? neon(DATABASE_URL) : null;
+
+if (DATABASE_URL) {
+    // Mask the secret parts for logging
+    const maskedUrl = DATABASE_URL.replace(/:[^:@]+@/, ':***@');
+    logger.info({ url: maskedUrl }, 'Initializing Neon Database Connection');
+} else {
+    logger.error('CRITICAL: DATABASE_URL is not set. Database features will fail.');
+}
 
 // Create Pool for transactions (requires WebSocket)
 const pool = DATABASE_URL ? new Pool({ connectionString: DATABASE_URL }) : null;
