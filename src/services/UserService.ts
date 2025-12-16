@@ -1,6 +1,6 @@
 /**
  * User Service - Database-backed user management
- * 
+ *
  * Handles user CRUD and role management via Neon database.
  * Roles are stored here, NOT in Firebase custom claims.
  */
@@ -115,9 +115,12 @@ class UserServiceClass {
 
         if (isDatabaseAvailable() && sql) {
             try {
+                // Generate a username from email if not provided (fallback)
+                const username = email.split('@')[0] + '-' + Math.floor(Math.random() * 10000);
+
                 const result = await sql`
-                    INSERT INTO users (firebase_uid, email, name, role)
-                    VALUES (${firebaseUid}, ${email}, ${displayName}, ${defaultRole})
+                    INSERT INTO users (firebase_uid, email, name, role, username)
+                    VALUES (${firebaseUid}, ${email}, ${displayName}, ${defaultRole}, ${username})
                     ON CONFLICT (firebase_uid) DO UPDATE SET
                         email = EXCLUDED.email,
                         name = COALESCE(EXCLUDED.name, users.name),
@@ -261,7 +264,7 @@ class UserServiceClass {
         if (isDatabaseAvailable() && sql) {
             try {
                 const rows = await sql`
-                    SELECT stripe_account_id FROM users 
+                    SELECT stripe_account_id FROM users
                     WHERE id = ${internalUserId}
                 `;
                 if (rows.length > 0 && rows[0].stripe_account_id) {

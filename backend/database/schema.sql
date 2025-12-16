@@ -6,12 +6,18 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 -- ================================
 -- USERS
 -- ================================
+-- ================================
+-- USERS
+-- ================================
 CREATE TABLE users (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
 
   firebase_uid TEXT UNIQUE NOT NULL,        -- <-- IMPORTANT: links Firebase Auth → HustleXP user
-  username TEXT UNIQUE NOT NULL,
+  username TEXT UNIQUE,                     -- Made nullable or handling logic in code
   email TEXT UNIQUE NOT NULL,
+  name TEXT,                                -- Added to match code
+  role TEXT NOT NULL DEFAULT 'poster',      -- Added to match code
+
   zip_code TEXT,
 
   city TEXT,
@@ -34,6 +40,49 @@ CREATE TABLE users (
 CREATE INDEX idx_users_firebase_uid ON users(firebase_uid);
 CREATE INDEX idx_users_email ON users(email);
 CREATE INDEX idx_users_username ON users(username);
+
+-- ================================
+-- IDENTITY SERVICE TABLES
+-- ================================
+CREATE TABLE users_identity (
+    user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    email TEXT,
+    phone TEXT,
+    email_verified BOOLEAN DEFAULT FALSE,
+    phone_verified BOOLEAN DEFAULT FALSE,
+    email_verified_at TIMESTAMPTZ,
+    phone_verified_at TIMESTAMPTZ,
+    status TEXT DEFAULT 'unverified',
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE verification_attempts (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    channel TEXT NOT NULL, -- 'email' or 'sms'
+    target TEXT NOT NULL,
+    code_hash TEXT NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    success BOOLEAN DEFAULT FALSE,
+    attempt_count INTEGER DEFAULT 0,
+    last_attempt_at TIMESTAMPTZ,
+    verified_at TIMESTAMPTZ,
+    ip_address TEXT,
+    provider_sid TEXT,
+    is_voip BOOLEAN,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE identity_events (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    event_type TEXT NOT NULL,
+    channel TEXT,
+    metadata JSONB,
+    ip_address TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
 
 
 -- ================================
