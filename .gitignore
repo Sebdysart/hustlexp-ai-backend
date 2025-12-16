@@ -9,7 +9,6 @@ dist/
 .env.local
 .env.*.local
 env.backend
-logins.md
 
 # IDE
 .vscode/
