@@ -85,12 +85,35 @@ export async function routedGenerate(
             throw new Error(`Unknown provider: ${provider}`);
     }
 
-    // Wrap with timeout
-    return withTimeout(
-        aiCall,
-        AI_TIMEOUT_MS,
-        `AI request to ${provider} timed out after ${AI_TIMEOUT_MS / 1000}s`
-    );
+    // Wrap with timeout and fallback logic
+    try {
+        return await withTimeout(
+            aiCall,
+            AI_TIMEOUT_MS,
+            `AI request to ${provider} timed out after ${AI_TIMEOUT_MS / 1000}s`
+        );
+    } catch (error) {
+        aiLogger.warn({ error, taskType, provider }, 'Primary AI provider failed - Initiating Fallback');
+
+        // Fallback Strategy
+        let fallbackProvider: ModelProvider = 'openai'; // Default safe fallback
+
+        // Use faster fallback for low-latency tasks if possible (future optimization)
+        if (['intent', 'categorization'].includes(taskType)) {
+            // Could use gpt-4o-mini here via openai client if configured
+        }
+
+        try {
+            return await withTimeout(
+                openaiClient.generate(options), // Fallback to OpenAI
+                AI_TIMEOUT_MS,
+                `Fallback AI request to ${fallbackProvider} timed out`
+            );
+        } catch (fallbackError) {
+            aiLogger.error({ fallbackError, originalError: error }, 'AI Critical Failure: Both Primary and Fallback failed');
+            throw fallbackError; // Re-throw if even fallback dies
+        }
+    }
 }
 
 /**

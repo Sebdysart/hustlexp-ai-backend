@@ -8,7 +8,6 @@ dist/
 .env
 .env.local
 .env.*.local
-env.backend
 
 # IDE
 .vscode/

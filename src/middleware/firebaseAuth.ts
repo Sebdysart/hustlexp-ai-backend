@@ -80,9 +80,8 @@ export async function requireAuth(
     request: FastifyRequest,
     reply: FastifyReply
 ): Promise<void> {
-    // DEVELOPMENT BYPASS: Allow requests through with mock user if in development mode
-    // This allows testing against staging config without needing real Firebase tokens
-    if (process.env.NODE_ENV === 'development') {
+    // DEVELOPMENT BYPASS: explicit guard required
+    if (process.env.NODE_ENV === 'development' && process.env.ALLOW_DEV_AUTH_BYPASS === 'true') {
         // Only warn once per request type
         // logger.warn('Using development auth bypass'); 
 
@@ -276,8 +275,8 @@ export async function requireAdminFromJWT(
     request: FastifyRequest,
     reply: FastifyReply
 ): Promise<void> {
-    // DEVELOPMENT BYPASS: Allow admin requests in development mode
-    if (process.env.NODE_ENV === 'development') {
+    // DEVELOPMENT BYPASS: explicit guard required
+    if (process.env.NODE_ENV === 'development' && process.env.ALLOW_DEV_AUTH_BYPASS === 'true') {
         const testRole = (request.headers['x-test-role'] as UserRole);
         if (testRole === 'admin') {
             // logger.warn('Using development admin bypass');
