@@ -94,10 +94,19 @@ let stripeKey = process.env.STRIPE_SECRET_KEY || '';
 let stripeMode: 'live' | 'test' = 'test';
 
 if (isProduction) {
-    ensurePrefix('STRIPE_SECRET_KEY', 'sk_live_', 'PRODUCTION');
+    const key = requireVar('STRIPE_SECRET_KEY');
+    if (key.startsWith('sk_live_')) {
+        stripeMode = 'live';
+        stripeKey = key;
+    } else if (key.startsWith('sk_test_')) {
+        serviceLogger.warn('[SECURITY] USING STRIPE TEST KEY IN PRODUCTION');
+        stripeMode = 'test';
+        stripeKey = key;
+    } else {
+        throw new Error('[SECURITY] STRIPE_SECRET_KEY must start with "sk_live_" or "sk_test_"');
+    }
+
     ensurePrefix('STRIPE_WEBHOOK_SECRET', 'whsec_', 'PRODUCTION');
-    stripeMode = 'live';
-    stripeKey = requireVar('STRIPE_SECRET_KEY');
 } else if (isStaging) {
     ensurePrefix('STRIPE_SECRET_KEY', 'sk_test_', 'STAGING');
     ensurePrefix('STRIPE_WEBHOOK_SECRET', 'whsec_', 'STAGING');

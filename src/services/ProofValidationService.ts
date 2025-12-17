@@ -84,16 +84,50 @@ export interface ApprovalResult {
 // ============================================
 
 class ProofValidationServiceClass {
+    // Seattle Bounding Box (Rough Match for Beta)
+    // North: 47.734, South: 47.495, West: -122.435, East: -122.235
+    private readonly SEATTLE_BOUNDS = {
+        north: 47.734,
+        south: 47.495,
+        west: -122.435,
+        east: -122.235
+    };
+
     isWithinSeattle(lat: number, lng: number): boolean {
-        return true; // Stub: always true
+        return (
+            lat >= this.SEATTLE_BOUNDS.south &&
+            lat <= this.SEATTLE_BOUNDS.north &&
+            lng >= this.SEATTLE_BOUNDS.west &&
+            lng <= this.SEATTLE_BOUNDS.east
+        );
     }
 
     getNeighborhood(lat: number, lng: number): string {
-        return 'Stub Neighborhood';
+        // Simple grid-based neighborhood approximation for Beta
+        if (lat > 47.65) return 'North Seattle';
+        if (lat < 47.55) return 'South Seattle';
+        if (lng < -122.35) return 'West Seattle/Ballard';
+        if (lng > -122.30) return 'Capitol Hill/Central';
+        return 'Downtown/Belltown';
     }
 
     validateGPS(gps: GPSLocation): { valid: boolean; reason?: string; neighborhood: string } {
-        return { valid: true, neighborhood: 'Stubbed Neighborhood' };
+        if (!gps || !gps.latitude || !gps.longitude) {
+            return { valid: false, neighborhood: 'Unknown', reason: 'Missing GPS data' };
+        }
+
+        const inCity = this.isWithinSeattle(gps.latitude, gps.longitude);
+        const neighborhood = this.getNeighborhood(gps.latitude, gps.longitude);
+
+        if (!inCity) {
+            return {
+                valid: false,
+                neighborhood,
+                reason: `Location (${gps.latitude.toFixed(4)}, ${gps.longitude.toFixed(4)}) is outside Seattle Beta zone.`
+            };
+        }
+
+        return { valid: true, neighborhood };
     }
 
     async uploadPhoto(photoData: any, taskId: string, hustlerId: string, photoType: string): Promise<any> {
