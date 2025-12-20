@@ -106,21 +106,33 @@ app.post("/api/auth/signup", async (c) => {
     }
 
     const body = await c.req.json();
+    const rawName = typeof body.name === 'string' ? body.name.trim() : '';
+    const displayName =
+      rawName ||
+      (authUser.name ? authUser.name.trim() : '') ||
+      (authUser.email ? authUser.email.split('@')[0] : 'user');
     const username =
-      body.username || authUser.email?.split("@")[0] || `user_${Date.now()}`;
+      body.username ||
+      (authUser.email ? authUser.email.split("@")[0] : displayName) ||
+      `user_${Date.now()}`;
 
+    const role = 'user';
     const zip = body.zipCode || "00000";
 
-    console.log('[Hono] Creating new user:', { username, email: authUser.email, zip });
+    console.log('[Hono] Creating new user:', { username, email: authUser.email, name: displayName, role, zip });
 
     const created = await db.query(
-      `INSERT INTO users (firebase_uid, username, email, zip_code, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, NOW(), NOW())
-       RETURNING id, username, email`,
-      [authUser.uid, username, authUser.email, zip]
+      `INSERT INTO users (firebase_uid, username, email, name, role, zip_code, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
+       RETURNING id, username, email, name, role`,
+      [authUser.uid, username, authUser.email, displayName, role, zip]
     );
 
-    console.log('[Hono] ✅ User created successfully:', created.rows[0].id);
+    console.log('[Hono] ✅ User created successfully', {
+      userId: created.rows[0].id,
+      firebaseUid: authUser.uid,
+      email: authUser.email,
+    });
 
     return c.json({
       success: true,
@@ -166,17 +178,30 @@ app.post("/api/ai/orchestrate", async (c) => {
       const username = authUser.email?.split('@')[0] || `user_${Date.now()}`;
 
       try {
+        const displayName =
+          (authUser.name ? authUser.name.trim() : '') ||
+          (authUser.email ? authUser.email.split('@')[0] : 'user');
+        const role = 'user';
+
         const created = await db.query(
-          `INSERT INTO users (firebase_uid, username, email, zip_code, created_at, updated_at)
-           VALUES ($1, $2, $3, $4, NOW(), NOW())
-           RETURNING id, username, email`,
-          [authUser.uid, username, authUser.email, '00000']
+          `INSERT INTO users (firebase_uid, username, email, name, role, zip_code, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
+           RETURNING id, username, email, name, role`,
+          [authUser.uid, username, authUser.email, displayName, role, '00000']
         );
 
         userResult = created;
-        console.log('[Hono] User created:', created.rows[0].id);
+        console.log('[Hono] User created', {
+          userId: created.rows[0].id,
+          firebaseUid: authUser.uid,
+          email: authUser.email,
+        });
       } catch (dbError) {
-        console.error('[Hono] Failed to create user:', dbError);
+        console.error('[Hono] Failed to create user:', {
+          firebaseUid: authUser.uid,
+          email: authUser.email,
+          error: dbError instanceof Error ? dbError.message : dbError,
+        });
         return c.json({
           error: "Database error",
           messages: [{ role: 'assistant', content: "Sorry, I couldn't set up your account. Please try signing in again." }],
