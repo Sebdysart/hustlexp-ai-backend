@@ -7,6 +7,7 @@
  */
 
 import { Pool } from '@neondatabase/serverless';
+import 'dotenv/config';
 
 const DATABASE_URL = process.env.DATABASE_URL;
 

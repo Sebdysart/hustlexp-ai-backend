@@ -72,14 +72,14 @@ const HIGH_RISK_PATTERNS = [
     // Violence
     /\b(kill|murder|weapon|gun for sale|bomb)\b/i,
     // Scams
-    /\b(wire transfer|western union|bitcoin payment|crypto only|gift card payment)\b/i,
+    /\b(wire transfer|western union|bitcoin payment|crypto only|gift card payment|cash only)\b/i,
 ];
 
 const MEDIUM_RISK_PATTERNS = [
     // Suspicious pricing
     /\$\d{4,}/i, // Very high amounts
     /\bfree\s+money\b/i,
-    /\b(cash only|no receipt|under the table)\b/i,
+    /\b(no receipt|under the table)\b/i,
     // Personal info requests
     /\b(ssn|social security|bank account|credit card)\b/i,
     // Meeting strangers
