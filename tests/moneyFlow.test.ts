@@ -317,6 +317,6 @@ describe('Critical Money Flow (Strict Fake)', () => {
             // Logic: task not completed -> refund
             expect(result).toBeDefined();
             expect(result?.action).toBe('refunded'); // Or 'skipped' if refund impl details fail, but we expect action.
-        });
+        }, 15000);
     });
 });

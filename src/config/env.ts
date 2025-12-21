@@ -81,8 +81,8 @@ const PORT = parseInt(process.env.PORT || '3000', 10);
 const DATABASE_URL = requireVar('DATABASE_URL');
 const UPSTASH_REDIS_REST_URL = requireVar('UPSTASH_REDIS_REST_URL');
 const FIREBASE_PROJECT_ID = requireVar('FIREBASE_PROJECT_ID');
-const FIREBASE_PRIVATE_KEY = requireVar('FIREBASE_PRIVATE_KEY');
-const FIREBASE_CLIENT_EMAIL = requireVar('FIREBASE_CLIENT_EMAIL');
+const FIREBASE_PRIVATE_KEY = process.env.FIREBASE_PRIVATE_KEY;
+const FIREBASE_CLIENT_EMAIL = process.env.FIREBASE_CLIENT_EMAIL;
 
 // AI Keys (Required everywhere)
 const OPENAI_API_KEY = requireVar('OPENAI_API_KEY');
