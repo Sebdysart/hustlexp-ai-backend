@@ -9,6 +9,7 @@ import { env } from './config/env.js';
 import 'dotenv/config'; // Fallback for other files still using process.env
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
+import rawBody from 'fastify-raw-body';
 import { z } from 'zod';
 
 import { orchestrate } from './ai/orchestrator.js';
@@ -58,6 +59,14 @@ const fastify = Fastify({
 // Register CORS
 await fastify.register(cors, {
     origin: true,
+});
+
+// Register raw-body plugin for Stripe webhook signature verification
+await fastify.register(rawBody, {
+    field: 'rawBody', // Make raw body available as request.rawBody
+    global: false,    // Only apply to routes that specify rawBody: true
+    encoding: 'utf8',
+    runFirst: true,   // Run before other parsers
 });
 
 // ============================================
@@ -3241,7 +3250,7 @@ fastify.post('/api/stripe/webhook', {
     }
 
     const event = StripeService.verifyWebhook(
-        request.body as string | Buffer,
+        (request as any).rawBody as string | Buffer,
         signature
     );
 
