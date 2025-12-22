@@ -103,6 +103,8 @@ const PUBLIC_ROUTES = [
     '/api/memory',
     '/identity', // Merged Identity Routes
     '/webhooks/identity',
+    // Stripe webhook (uses Stripe signature verification, not Firebase auth)
+    '/api/stripe/webhook',
 ];
 
 // Add global auth hook - protects ALL routes except public ones
@@ -4004,7 +4006,8 @@ async function start() {
         fastify.setErrorHandler(createGlobalErrorHandler());
 
         // Start server
-        await fastify.listen({ port: PORT, host: '0.0.0.0' });
+        const address = await fastify.listen({ port: PORT, host: '0.0.0.0' });
+        logger.info(`Server listening explicitly at: ${address}`);
 
         const dbStatus = isDatabaseAvailable() ? '✓ Connected' : '✗ Memory mode';
 
