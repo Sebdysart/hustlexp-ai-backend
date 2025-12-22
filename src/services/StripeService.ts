@@ -377,27 +377,33 @@ class StripeServiceClass {
     }
 
     async handleWebhookEvent(event: Stripe.Event): Promise<void> {
-        // RULE 1: IDEMPOTENCY (Global Shield)
-        if (processedEvents.has(event.id)) return;
-
-        if (isDatabaseAvailable() && sql) {
-            const [exists] = await sql`
-                INSERT INTO processed_stripe_events (event_id, event_type)
-                VALUES (${event.id}, ${event.type})
-                ON CONFLICT (event_id) DO NOTHING
-                RETURNING event_id
-             `;
-            if (!exists) {
-                processedEvents.add(event.id);
-                return; // Already processed
-            }
-        }
-        processedEvents.add(event.id);
-
-        // RULE 2: TYPE SWITCH & RECOVERY LOGIC
-        // We do NOT map payouts. We only recover crashes.
-
+        // RULE 3: NEVER THROW - Wrap entire function in try-catch
         try {
+            // RULE 1: IDEMPOTENCY (Global Shield)
+            if (processedEvents.has(event.id)) return;
+
+            if (isDatabaseAvailable() && sql) {
+                try {
+                    const [exists] = await sql`
+                        INSERT INTO processed_stripe_events (event_id, event_type)
+                        VALUES (${event.id}, ${event.type})
+                        ON CONFLICT (event_id) DO NOTHING
+                        RETURNING event_id
+                     `;
+                    if (!exists) {
+                        processedEvents.add(event.id);
+                        return; // Already processed
+                    }
+                } catch (dbErr) {
+                    // Idempotency table may not exist - continue anyway
+                    serviceLogger.warn({ dbErr, eventId: event.id }, 'Idempotency check failed - continuing');
+                }
+            }
+            processedEvents.add(event.id);
+
+            // RULE 2: TYPE SWITCH & RECOVERY LOGIC
+            // We do NOT map payouts. We only recover crashes.
+
             if (event.type === 'payment_intent.succeeded') {
                 const pi = event.data.object as Stripe.PaymentIntent;
                 const taskId = pi.metadata?.taskId;
@@ -433,9 +439,11 @@ class StripeServiceClass {
             }
             // Add other ignored types explicitly if noisy
 
+            serviceLogger.info({ eventType: event.type, eventId: event.id }, 'Webhook processed successfully');
+
         } catch (err) {
-            // RULE 3: NEVER THROW
-            serviceLogger.error({ err, eventId: event.id }, 'Webhook Recovery Logic Failed - Returning 200 OK anyway');
+            // RULE 3: NEVER THROW - Log and return OK anyway
+            serviceLogger.error({ err, eventId: event.id }, 'Webhook handler failed - Returning 200 OK anyway');
         }
     }
 
