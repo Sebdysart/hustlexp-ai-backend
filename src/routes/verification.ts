@@ -169,10 +169,17 @@ export default async function verificationRoutes(fastify: FastifyInstance) {
                     error: result.error,
                     code: result.code,
                     retryAfterMs: result.retryAfterMs,
+                    // Include debug info for developers
+                    _debug: result._debug,
                 };
             }
 
-            return { status: 'sent', message: 'Verification code sent to your phone' };
+            return {
+                status: 'sent',
+                message: 'Verification code sent to your phone',
+                // Include debug info for developers
+                _debug: result._debug,
+            };
         } catch (error) {
             if (error instanceof z.ZodError) {
                 reply.status(400);
