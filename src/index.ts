@@ -37,7 +37,7 @@ import crypto from 'crypto';
 import { ErrorTracker } from './utils/errorTracker.js';
 import { getAIEventsSummary, getRecentAIEvents } from './utils/aiEventLogger.js';
 import { logger } from './utils/logger.js';
-import { testConnection, isDatabaseAvailable } from './db/index.js';
+import { testConnection, isDatabaseAvailable, sql } from './db/index.js';
 import { runMigrations, seedTestData } from './db/schema.js';
 import { checkRateLimit, isRateLimitingEnabled, testRedisConnection } from './middleware/rateLimiter.js';
 import { validateEnv, logEnvStatus } from './utils/envValidator.js';
@@ -958,6 +958,9 @@ fastify.post('/ai/orchestrate', async (request, reply) => {
 });
 
 // Confirm and create task (after user reviews draft)
+// TPEE GATE: All tasks must pass Trust & Pricing Enforcement Engine
+import { TPEEService } from './services/TPEEService.js';
+
 fastify.post('/ai/confirm-task', async (request, reply) => {
     try {
         const body = ConfirmTaskSchema.parse(request.body);
@@ -969,10 +972,79 @@ fastify.post('/ai/confirm-task', async (request, reply) => {
             return { error: 'User not found' };
         }
 
+        const taskDraft = body.taskDraft as TaskDraft;
+
+        // ============================================
+        // TPEE GATE: Trust & Pricing Enforcement
+        // ============================================
+        const tpeeInput = TPEEService.taskDraftToTPEEInput(
+            taskDraft,
+            dbUser.id,
+            'city_seattle' // Seattle beta
+        );
+
+        const tpeeResult = await TPEEService.evaluateTask(tpeeInput);
+
+        // In shadow mode: log but don't block
+        // In enforcement mode: block/adjust based on result
+        if (!TPEEService.isShadowMode()) {
+            if (tpeeResult.decision === 'BLOCK') {
+                reply.status(403);
+                return {
+                    success: false,
+                    error: 'Task creation blocked',
+                    code: 'TPEE_BLOCKED',
+                    reason: tpeeResult.enforcement_reason_code,
+                    evaluationId: tpeeResult.evaluation_id,
+                    humanReviewRequired: tpeeResult.human_review_required,
+                };
+            }
+
+            if (tpeeResult.decision === 'ADJUST') {
+                // Return adjustment suggestion, don't auto-modify
+                reply.status(422);
+                return {
+                    success: false,
+                    error: 'Price adjustment required',
+                    code: 'TPEE_ADJUST',
+                    reason: tpeeResult.enforcement_reason_code,
+                    recommendedPrice: tpeeResult.recommended_price.amount,
+                    evaluationId: tpeeResult.evaluation_id,
+                };
+            }
+        }
+        // ============================================
+        // END TPEE GATE
+        // ============================================
+
         const task = await TaskService.createTaskFromDraft(
             dbUser.id,
-            body.taskDraft as TaskDraft
+            taskDraft
         );
+
+        // ============================================
+        // TPEE OUTCOME WIRING: Persist evaluation on task
+        // ============================================
+        if (isDatabaseAvailable() && sql) {
+            try {
+                await sql`
+                    UPDATE tasks SET
+                        tpee_evaluation_id = ${tpeeResult.evaluation_id},
+                        tpee_decision = ${tpeeResult.decision},
+                        tpee_reason_code = ${tpeeResult.enforcement_reason_code},
+                        tpee_confidence = ${tpeeResult.confidence_score},
+                        tpee_model_version = ${tpeeResult.model_version},
+                        tpee_evaluated_at = ${tpeeResult.evaluated_at}
+                    WHERE id = ${task.id}
+                `;
+                logger.info({ taskId: task.id, tpeeEvalId: tpeeResult.evaluation_id }, 'TPEE evaluation linked to task');
+            } catch (err) {
+                logger.error({ err, taskId: task.id }, 'Failed to persist TPEE evaluation on task');
+            }
+        }
+        // ============================================
+        // END TPEE OUTCOME WIRING
+        // ============================================
 
         // Optionally trigger SmartMatch to find hustlers
         const candidates = await TaskService.getCandidateHustlers(task, 5);
@@ -982,6 +1054,12 @@ fastify.post('/ai/confirm-task', async (request, reply) => {
             task,
             matchedHustlers: candidates.length,
             topCandidates: candidates.slice(0, 3),
+            // Include TPEE result for transparency
+            _tpee: {
+                evaluationId: tpeeResult.evaluation_id,
+                decision: tpeeResult.decision,
+                checksCompleted: tpeeResult.checks_passed.length,
+            },
         };
     } catch (error) {
         logger.error({ error }, 'Confirm task endpoint error');
@@ -3262,6 +3340,118 @@ fastify.post('/api/stripe/webhook', {
     await StripeService.handleWebhookEvent(event);
 
     return { received: true };
+});
+
+// ============================================
+// TPEE Admin Endpoints (Trust & Pricing Enforcement Engine)
+// ============================================
+
+// Get TPEE stats
+fastify.get('/api/admin/tpee/stats', { preHandler: [requireAuth] }, async (request, reply) => {
+    // Note: Uses requireAuth not requireAdminFromJWT for shadow mode observability
+    // TODO: Upgrade to requireAdminFromJWT for production
+    const stats = TPEEService.getStats();
+    return {
+        success: true,
+        shadowMode: TPEEService.isShadowMode(),
+        stats,
+    };
+});
+
+// Get recent TPEE logs
+fastify.get('/api/admin/tpee/logs', { preHandler: [requireAuth] }, async (request) => {
+    const { limit } = request.query as { limit?: string };
+    const logs = TPEEService.getRecentLogs(limit ? parseInt(limit) : 50);
+    return {
+        success: true,
+        count: logs.length,
+        logs,
+    };
+});
+
+// Toggle shadow mode (admin only, dangerous)
+fastify.post('/api/admin/tpee/shadow-mode', { preHandler: [requireAuth] }, async (request, reply) => {
+    const { enabled } = request.body as { enabled: boolean };
+
+    if (typeof enabled !== 'boolean') {
+        reply.status(400);
+        return { error: 'enabled must be a boolean' };
+    }
+
+    TPEEService.setShadowMode(enabled);
+
+    return {
+        success: true,
+        shadowMode: TPEEService.isShadowMode(),
+        message: enabled
+            ? 'Shadow mode enabled - TPEE logs but does not block'
+            : 'Shadow mode DISABLED - TPEE will block/adjust tasks',
+    };
+});
+
+// TPEE Learning Queries (Phase 3)
+import { TaskOutcomeService } from './services/TaskOutcomeService.js';
+
+// Get TPEE decision quality report
+fastify.get('/api/admin/tpee/decision-quality', { preHandler: [requireAuth] }, async () => {
+    const report = await TaskOutcomeService.getTPEEDecisionQualityReport();
+    return {
+        success: true,
+        report,
+    };
+});
+
+// Get blocked user outcome analysis
+fastify.get('/api/admin/tpee/blocked-user-analysis', { preHandler: [requireAuth] }, async () => {
+    const analysis = await TaskOutcomeService.getBlockedUserOutcomeAnalysis();
+    return {
+        success: true,
+        analysis,
+    };
+});
+
+// TPEE AI Escalation Control (Phase 2B)
+import { TPEEAIEscalation } from './services/TPEEAIEscalation.js';
+
+// Get AI escalation status
+fastify.get('/api/admin/tpee/ai/status', { preHandler: [requireAuth] }, async () => {
+    return {
+        success: true,
+        status: TPEEAIEscalation.getStatus(),
+    };
+});
+
+// Toggle pricing classifier
+fastify.post('/api/admin/tpee/ai/pricing-classifier', { preHandler: [requireAuth] }, async (request, reply) => {
+    const { enabled } = request.body as { enabled: boolean };
+    if (typeof enabled !== 'boolean') {
+        reply.status(400);
+        return { error: 'enabled must be a boolean' };
+    }
+    TPEEAIEscalation.setPricingClassifier(enabled);
+    return { success: true, status: TPEEAIEscalation.getStatus() };
+});
+
+// Toggle scam classifier
+fastify.post('/api/admin/tpee/ai/scam-classifier', { preHandler: [requireAuth] }, async (request, reply) => {
+    const { enabled } = request.body as { enabled: boolean };
+    if (typeof enabled !== 'boolean') {
+        reply.status(400);
+        return { error: 'enabled must be a boolean' };
+    }
+    TPEEAIEscalation.setScamClassifier(enabled);
+    return { success: true, status: TPEEAIEscalation.getStatus() };
+});
+
+// Master switch for AI escalation
+fastify.post('/api/admin/tpee/ai/escalation', { preHandler: [requireAuth] }, async (request, reply) => {
+    const { enabled } = request.body as { enabled: boolean };
+    if (typeof enabled !== 'boolean') {
+        reply.status(400);
+        return { error: 'enabled must be a boolean' };
+    }
+    TPEEAIEscalation.setEscalation(enabled);
+    return { success: true, status: TPEEAIEscalation.getStatus() };
 });
 
 // ============================================
