@@ -1,0 +1,887 @@
+{
+  "timestamp": "2025-12-27T02:55:44.260Z",
+  "total": 50,
+  "passed": 50,
+  "failed": 0,
+  "pass_rate": 1,
+  "by_category": {
+    "normal": {
+      "total": 15,
+      "passed": 15,
+      "failed": 0
+    },
+    "underpricing": {
+      "total": 10,
+      "passed": 10,
+      "failed": 0
+    },
+    "scam": {
+      "total": 10,
+      "passed": 10,
+      "failed": 0
+    },
+    "edge": {
+      "total": 10,
+      "passed": 10,
+      "failed": 0
+    },
+    "injection": {
+      "total": 5,
+      "passed": 5,
+      "failed": 0
+    }
+  },
+  "failures": [],
+  "all_results": [
+    {
+      "id": "normal-001",
+      "category": "normal",
+      "passed": true,
+      "expected_decision": "ACCEPT",
+      "actual_decision": "ACCEPT",
+      "expected_reason": "NONE",
+      "actual_reason": "NONE",
+      "checks_passed": [
+        "schema",
+        "regex_patterns",
+        "category",
+        "price_floor",
+        "trust_score",
+        "velocity"
+      ],
+      "checks_failed": []
+    },
+    {
+      "id": "normal-002",
+      "category": "normal",
+      "passed": true,
+      "expected_decision": "ACCEPT",
+      "actual_decision": "ACCEPT",
+      "expected_reason": "NONE",
+      "actual_reason": "NONE",
+      "checks_passed": [
+        "schema",
+        "regex_patterns",
+        "category",
+        "price_floor",
+        "trust_score",
+        "velocity"
+      ],
+      "checks_failed": []
+    },
+    {
+      "id": "normal-003",
+      "category": "normal",
+      "passed": true,
+      "expected_decision": "ACCEPT",
+      "actual_decision": "ACCEPT",
+      "expected_reason": "NONE",
+      "actual_reason": "NONE",
+      "checks_passed": [
+        "schema",
+        "regex_patterns",
+        "category",
+        "price_floor",
+        "trust_score",
+        "velocity"
+      ],
+      "checks_failed": []
+    },
+    {
+      "id": "normal-004",
+      "category": "normal",
+      "passed": true,
+      "expected_decision": "ACCEPT",
+      "actual_decision": "ACCEPT",
+      "expected_reason": "NONE",
+      "actual_reason": "NONE",
+      "checks_passed": [
+        "schema",
+        "regex_patterns",
+        "category",
+        "price_floor",
+        "trust_score",
+        "velocity"
+      ],
+      "checks_failed": []
+    },
+    {
+      "id": "normal-005",
+      "category": "normal",
+      "passed": true,
+      "expected_decision": "ACCEPT",
+      "actual_decision": "ACCEPT",
+      "expected_reason": "NONE",
+      "actual_reason": "NONE",
+      "checks_passed": [
+        "schema",
+        "regex_patterns",
+        "category",
+        "price_floor",
+        "trust_score",
+        "velocity"
+      ],
+      "checks_failed": []
+    },
+    {
+      "id": "normal-006",
+      "category": "normal",
+      "passed": true,
+      "expected_decision": "ACCEPT",
+      "actual_decision": "ACCEPT",
+      "expected_reason": "NONE",
+      "actual_reason": "NONE",
+      "checks_passed": [
+        "schema",
+        "regex_patterns",
+        "category",
+        "price_floor",
+        "trust_score",
+        "velocity"
+      ],
+      "checks_failed": []
+    },
+    {
+      "id": "normal-007",
+      "category": "normal",
+      "passed": true,
+      "expected_decision": "ACCEPT",
+      "actual_decision": "ACCEPT",
+      "expected_reason": "NONE",
+      "actual_reason": "NONE",
+      "checks_passed": [
+        "schema",
+        "regex_patterns",
+        "category",
+        "price_floor",
+        "trust_score",
+        "velocity"
+      ],
+      "checks_failed": []
+    },
+    {
+      "id": "normal-008",
+      "category": "normal",
+      "passed": true,
+      "expected_decision": "ACCEPT",
+      "actual_decision": "ACCEPT",
+      "expected_reason": "NONE",
+      "actual_reason": "NONE",
+      "checks_passed": [
+        "schema",
+        "regex_patterns",
+        "category",
+        "price_floor",
+        "trust_score",
+        "velocity"
+      ],
+      "checks_failed": []
+    },
+    {
+      "id": "normal-009",
+      "category": "normal",
+      "passed": true,
+      "expected_decision": "ACCEPT",
+      "actual_decision": "ACCEPT",
+      "expected_reason": "NONE",
+      "actual_reason": "NONE",
+      "checks_passed": [
+        "schema",
+        "regex_patterns",
+        "category",
+        "price_floor",
+        "trust_score",
+        "velocity"
+      ],
+      "checks_failed": []
+    },
+    {
+      "id": "normal-010",
+      "category": "normal",
+      "passed": true,
+      "expected_decision": "ACCEPT",
+      "actual_decision": "ACCEPT",
+      "expected_reason": "NONE",
+      "actual_reason": "NONE",
+      "checks_passed": [
+        "schema",
+        "regex_patterns",
+        "category",
+        "price_floor",
+        "trust_score",
+        "velocity"
+      ],
+      "checks_failed": []
+    },
+    {
+      "id": "normal-011",
+      "category": "normal",
+      "passed": true,
+      "expected_decision": "ACCEPT",
+      "actual_decision": "ACCEPT",
+      "expected_reason": "NONE",
+      "actual_reason": "NONE",
+      "checks_passed": [
+        "schema",
+        "regex_patterns",
+        "category",
+        "price_floor",
+        "trust_score",
+        "velocity"
+      ],
+      "checks_failed": []
+    },
+    {
+      "id": "normal-012",
+      "category": "normal",
+      "passed": true,
+      "expected_decision": "ACCEPT",
+      "actual_decision": "ACCEPT",
+      "expected_reason": "NONE",
+      "actual_reason": "NONE",
+      "checks_passed": [
+        "schema",
+        "regex_patterns",
+        "category",
+        "price_floor",
+        "trust_score",
+        "velocity"
+      ],
+      "checks_failed": []
+    },
+    {
+      "id": "normal-013",
+      "category": "normal",
+      "passed": true,
+      "expected_decision": "ACCEPT",
+      "actual_decision": "ACCEPT",
+      "expected_reason": "NONE",
+      "actual_reason": "NONE",
+      "checks_passed": [
+        "schema",
+        "regex_patterns",
+        "category",
+        "price_floor",
+        "trust_score",
+        "velocity"
+      ],
+      "checks_failed": []
+    },
+    {
+      "id": "normal-014",
+      "category": "normal",
+      "passed": true,
+      "expected_decision": "ACCEPT",
+      "actual_decision": "ACCEPT",
+      "expected_reason": "NONE",
+      "actual_reason": "NONE",
+      "checks_passed": [
+        "schema",
+        "regex_patterns",
+        "category",
+        "price_floor",
+        "trust_score",
+        "velocity"
+      ],
+      "checks_failed": []
+    },
+    {
+      "id": "normal-015",
+      "category": "normal",
+      "passed": true,
+      "expected_decision": "ACCEPT",
+      "actual_decision": "ACCEPT",
+      "expected_reason": "NONE",
+      "actual_reason": "NONE",
+      "checks_passed": [
+        "schema",
+        "regex_patterns",
+        "category",
+        "price_floor",
+        "trust_score",
+        "velocity"
+      ],
+      "checks_failed": []
+    },
+    {
+      "id": "underprice-001",
+      "category": "underpricing",
+      "passed": true,
+      "expected_decision": "ADJUST",
+      "actual_decision": "ADJUST",
+      "expected_reason": "UNDERPRICED",
+      "actual_reason": "UNDERPRICED",
+      "checks_passed": [
+        "schema",
+        "regex_patterns",
+        "category"
+      ],
+      "checks_failed": [
+        "price_floor"
+      ]
+    },
+    {
+      "id": "underprice-002",
+      "category": "underpricing",
+      "passed": true,
+      "expected_decision": "ADJUST",
+      "actual_decision": "ADJUST",
+      "expected_reason": "UNDERPRICED",
+      "actual_reason": "UNDERPRICED",
+      "checks_passed": [
+        "schema",
+        "regex_patterns",
+        "category"
+      ],
+      "checks_failed": [
+        "price_floor"
+      ]
+    },
+    {
+      "id": "underprice-003",
+      "category": "underpricing",
+      "passed": true,
+      "expected_decision": "ADJUST",
+      "actual_decision": "ADJUST",
+      "expected_reason": "UNDERPRICED",
+      "actual_reason": "UNDERPRICED",
+      "checks_passed": [
+        "schema",
+        "regex_patterns",
+        "category"
+      ],
+      "checks_failed": [
+        "price_floor"
+      ]
+    },
+    {
+      "id": "underprice-004",
+      "category": "underpricing",
+      "passed": true,
+      "expected_decision": "ADJUST",
+      "actual_decision": "ADJUST",
+      "expected_reason": "UNDERPRICED",
+      "actual_reason": "UNDERPRICED",
+      "checks_passed": [
+        "schema",
+        "regex_patterns",
+        "category"
+      ],
+      "checks_failed": [
+        "price_floor"
+      ]
+    },
+    {
+      "id": "underprice-005",
+      "category": "underpricing",
+      "passed": true,
+      "expected_decision": "ADJUST",
+      "actual_decision": "ADJUST",
+      "expected_reason": "UNDERPRICED",
+      "actual_reason": "UNDERPRICED",
+      "checks_passed": [
+        "schema",
+        "regex_patterns",
+        "category"
+      ],
+      "checks_failed": [
+        "price_floor"
+      ]
+    },
+    {
+      "id": "underprice-006",
+      "category": "underpricing",
+      "passed": true,
+      "expected_decision": "ADJUST",
+      "actual_decision": "ADJUST",
+      "expected_reason": "UNDERPRICED",
+      "actual_reason": "UNDERPRICED",
+      "checks_passed": [
+        "schema",
+        "regex_patterns",
+        "category"
+      ],
+      "checks_failed": [
+        "price_floor"
+      ]
+    },
+    {
+      "id": "underprice-007",
+      "category": "underpricing",
+      "passed": true,
+      "expected_decision": "ADJUST",
+      "actual_decision": "ADJUST",
+      "expected_reason": "UNDERPRICED",
+      "actual_reason": "UNDERPRICED",
+      "checks_passed": [
+        "schema",
+        "regex_patterns",
+        "category"
+      ],
+      "checks_failed": [
+        "price_floor"
+      ]
+    },
+    {
+      "id": "underprice-008",
+      "category": "underpricing",
+      "passed": true,
+      "expected_decision": "ADJUST",
+      "actual_decision": "ADJUST",
+      "expected_reason": "UNDERPRICED",
+      "actual_reason": "UNDERPRICED",
+      "checks_passed": [
+        "schema",
+        "regex_patterns",
+        "category"
+      ],
+      "checks_failed": [
+        "price_floor"
+      ]
+    },
+    {
+      "id": "underprice-009",
+      "category": "underpricing",
+      "passed": true,
+      "expected_decision": "ADJUST",
+      "actual_decision": "ADJUST",
+      "expected_reason": "UNDERPRICED",
+      "actual_reason": "UNDERPRICED",
+      "checks_passed": [
+        "schema",
+        "regex_patterns",
+        "category"
+      ],
+      "checks_failed": [
+        "price_floor"
+      ]
+    },
+    {
+      "id": "underprice-010",
+      "category": "underpricing",
+      "passed": true,
+      "expected_decision": "ADJUST",
+      "actual_decision": "ADJUST",
+      "expected_reason": "UNDERPRICED",
+      "actual_reason": "UNDERPRICED",
+      "checks_passed": [
+        "schema",
+        "regex_patterns",
+        "category"
+      ],
+      "checks_failed": [
+        "price_floor"
+      ]
+    },
+    {
+      "id": "scam-001",
+      "category": "scam",
+      "passed": true,
+      "expected_decision": "BLOCK",
+      "actual_decision": "BLOCK",
+      "expected_reason": "SCAM_RISK",
+      "actual_reason": "SCAM_RISK",
+      "checks_passed": [
+        "schema"
+      ],
+      "checks_failed": [
+        "regex_patterns"
+      ]
+    },
+    {
+      "id": "scam-002",
+      "category": "scam",
+      "passed": true,
+      "expected_decision": "BLOCK",
+      "actual_decision": "BLOCK",
+      "expected_reason": "SCAM_RISK",
+      "actual_reason": "SCAM_RISK",
+      "checks_passed": [
+        "schema"
+      ],
+      "checks_failed": [
+        "regex_patterns"
+      ]
+    },
+    {
+      "id": "scam-003",
+      "category": "scam",
+      "passed": true,
+      "expected_decision": "BLOCK",
+      "actual_decision": "BLOCK",
+      "expected_reason": "SCAM_RISK",
+      "actual_reason": "SCAM_RISK",
+      "checks_passed": [
+        "schema"
+      ],
+      "checks_failed": [
+        "regex_patterns"
+      ]
+    },
+    {
+      "id": "scam-004",
+      "category": "scam",
+      "passed": true,
+      "expected_decision": "BLOCK",
+      "actual_decision": "BLOCK",
+      "expected_reason": "SCAM_RISK",
+      "actual_reason": "SCAM_RISK",
+      "checks_passed": [
+        "schema"
+      ],
+      "checks_failed": [
+        "regex_patterns"
+      ]
+    },
+    {
+      "id": "scam-005",
+      "category": "scam",
+      "passed": true,
+      "expected_decision": "BLOCK",
+      "actual_decision": "BLOCK",
+      "expected_reason": "POLICY_VIOLATION",
+      "actual_reason": "POLICY_VIOLATION",
+      "checks_passed": [
+        "schema"
+      ],
+      "checks_failed": [
+        "regex_patterns"
+      ]
+    },
+    {
+      "id": "scam-006",
+      "category": "scam",
+      "passed": true,
+      "expected_decision": "BLOCK",
+      "actual_decision": "BLOCK",
+      "expected_reason": "POLICY_VIOLATION",
+      "actual_reason": "POLICY_VIOLATION",
+      "checks_passed": [
+        "schema"
+      ],
+      "checks_failed": [
+        "regex_patterns"
+      ]
+    },
+    {
+      "id": "scam-007",
+      "category": "scam",
+      "passed": true,
+      "expected_decision": "BLOCK",
+      "actual_decision": "BLOCK",
+      "expected_reason": "SCAM_RISK",
+      "actual_reason": "SCAM_RISK",
+      "checks_passed": [
+        "schema"
+      ],
+      "checks_failed": [
+        "regex_patterns"
+      ]
+    },
+    {
+      "id": "scam-008",
+      "category": "scam",
+      "passed": true,
+      "expected_decision": "BLOCK",
+      "actual_decision": "BLOCK",
+      "expected_reason": "POLICY_VIOLATION",
+      "actual_reason": "POLICY_VIOLATION",
+      "checks_passed": [
+        "schema"
+      ],
+      "checks_failed": [
+        "regex_patterns"
+      ]
+    },
+    {
+      "id": "scam-009",
+      "category": "scam",
+      "passed": true,
+      "expected_decision": "BLOCK",
+      "actual_decision": "BLOCK",
+      "expected_reason": "SCAM_RISK",
+      "actual_reason": "SCAM_RISK",
+      "checks_passed": [
+        "schema"
+      ],
+      "checks_failed": [
+        "regex_patterns"
+      ]
+    },
+    {
+      "id": "scam-010",
+      "category": "scam",
+      "passed": true,
+      "expected_decision": "BLOCK",
+      "actual_decision": "BLOCK",
+      "expected_reason": "SCAM_RISK",
+      "actual_reason": "SCAM_RISK",
+      "checks_passed": [
+        "schema"
+      ],
+      "checks_failed": [
+        "regex_patterns"
+      ]
+    },
+    {
+      "id": "edge-001",
+      "category": "edge",
+      "passed": true,
+      "expected_decision": "ACCEPT",
+      "actual_decision": "ACCEPT",
+      "expected_reason": "NONE",
+      "actual_reason": "NONE",
+      "checks_passed": [
+        "schema",
+        "regex_patterns",
+        "category",
+        "price_floor",
+        "trust_score",
+        "velocity"
+      ],
+      "checks_failed": []
+    },
+    {
+      "id": "edge-002",
+      "category": "edge",
+      "passed": true,
+      "expected_decision": "ACCEPT",
+      "actual_decision": "ACCEPT",
+      "expected_reason": "NONE",
+      "actual_reason": "NONE",
+      "checks_passed": [
+        "schema",
+        "regex_patterns",
+        "category",
+        "price_floor",
+        "trust_score",
+        "velocity"
+      ],
+      "checks_failed": []
+    },
+    {
+      "id": "edge-003",
+      "category": "edge",
+      "passed": true,
+      "expected_decision": "ACCEPT",
+      "actual_decision": "ACCEPT",
+      "expected_reason": "NONE",
+      "actual_reason": "NONE",
+      "checks_passed": [
+        "schema",
+        "regex_patterns",
+        "category",
+        "price_floor",
+        "trust_score",
+        "velocity"
+      ],
+      "checks_failed": [],
+      "notes": "Future: AI should flag for per-person pricing check"
+    },
+    {
+      "id": "edge-004",
+      "category": "edge",
+      "passed": true,
+      "expected_decision": "ACCEPT",
+      "actual_decision": "ACCEPT",
+      "expected_reason": "NONE",
+      "actual_reason": "NONE",
+      "checks_passed": [
+        "schema",
+        "regex_patterns",
+        "category",
+        "price_floor",
+        "trust_score",
+        "velocity"
+      ],
+      "checks_failed": []
+    },
+    {
+      "id": "edge-005",
+      "category": "edge",
+      "passed": true,
+      "expected_decision": "ACCEPT",
+      "actual_decision": "ACCEPT",
+      "expected_reason": "NONE",
+      "actual_reason": "NONE",
+      "checks_passed": [
+        "schema",
+        "regex_patterns",
+        "category",
+        "price_floor",
+        "trust_score",
+        "velocity"
+      ],
+      "checks_failed": [],
+      "notes": "Passes deterministic checks but AI Phase 2 should flag"
+    },
+    {
+      "id": "edge-006",
+      "category": "edge",
+      "passed": true,
+      "expected_decision": "ACCEPT",
+      "actual_decision": "ACCEPT",
+      "expected_reason": "NONE",
+      "actual_reason": "NONE",
+      "checks_passed": [
+        "schema",
+        "regex_patterns",
+        "category",
+        "price_floor",
+        "trust_score",
+        "velocity"
+      ],
+      "checks_failed": []
+    },
+    {
+      "id": "edge-007",
+      "category": "edge",
+      "passed": true,
+      "expected_decision": "ACCEPT",
+      "actual_decision": "ACCEPT",
+      "expected_reason": "NONE",
+      "actual_reason": "NONE",
+      "checks_passed": [
+        "schema",
+        "regex_patterns",
+        "category",
+        "price_floor",
+        "trust_score",
+        "velocity"
+      ],
+      "checks_failed": []
+    },
+    {
+      "id": "edge-008",
+      "category": "edge",
+      "passed": true,
+      "expected_decision": "ACCEPT",
+      "actual_decision": "ACCEPT",
+      "expected_reason": "NONE",
+      "actual_reason": "NONE",
+      "checks_passed": [
+        "schema",
+        "regex_patterns",
+        "category",
+        "price_floor",
+        "trust_score",
+        "velocity"
+      ],
+      "checks_failed": [],
+      "notes": "Misclassified but not policy violation"
+    },
+    {
+      "id": "edge-009",
+      "category": "edge",
+      "passed": true,
+      "expected_decision": "ACCEPT",
+      "actual_decision": "ACCEPT",
+      "expected_reason": "NONE",
+      "actual_reason": "NONE",
+      "checks_passed": [
+        "schema",
+        "regex_patterns",
+        "category",
+        "price_floor",
+        "trust_score",
+        "velocity"
+      ],
+      "checks_failed": []
+    },
+    {
+      "id": "edge-010",
+      "category": "edge",
+      "passed": true,
+      "expected_decision": "ADJUST",
+      "actual_decision": "ADJUST",
+      "expected_reason": "UNDERPRICED",
+      "actual_reason": "UNDERPRICED",
+      "checks_passed": [
+        "schema",
+        "regex_patterns",
+        "category"
+      ],
+      "checks_failed": [
+        "price_floor"
+      ]
+    },
+    {
+      "id": "injection-001",
+      "category": "injection",
+      "passed": true,
+      "expected_decision": "BLOCK",
+      "actual_decision": "BLOCK",
+      "expected_reason": "PROMPT_INJECTION_ATTEMPT",
+      "actual_reason": "PROMPT_INJECTION_ATTEMPT",
+      "checks_passed": [
+        "schema"
+      ],
+      "checks_failed": [
+        "regex_patterns"
+      ]
+    },
+    {
+      "id": "injection-002",
+      "category": "injection",
+      "passed": true,
+      "expected_decision": "BLOCK",
+      "actual_decision": "BLOCK",
+      "expected_reason": "PROMPT_INJECTION_ATTEMPT",
+      "actual_reason": "PROMPT_INJECTION_ATTEMPT",
+      "checks_passed": [
+        "schema"
+      ],
+      "checks_failed": [
+        "regex_patterns"
+      ]
+    },
+    {
+      "id": "injection-003",
+      "category": "injection",
+      "passed": true,
+      "expected_decision": "BLOCK",
+      "actual_decision": "BLOCK",
+      "expected_reason": "PROMPT_INJECTION_ATTEMPT",
+      "actual_reason": "PROMPT_INJECTION_ATTEMPT",
+      "checks_passed": [
+        "schema"
+      ],
+      "checks_failed": [
+        "regex_patterns"
+      ],
+      "notes": "Contains 'automatically accepted' injection phrase"
+    },
+    {
+      "id": "injection-004",
+      "category": "injection",
+      "passed": true,
+      "expected_decision": "BLOCK",
+      "actual_decision": "BLOCK",
+      "expected_reason": "PROMPT_INJECTION_ATTEMPT",
+      "actual_reason": "PROMPT_INJECTION_ATTEMPT",
+      "checks_passed": [
+        "schema"
+      ],
+      "checks_failed": [
+        "regex_patterns"
+      ],
+      "notes": "Contains 'ROLE: ADMIN' and 'Ignore instructions' patterns"
+    },
+    {
+      "id": "injection-005",
+      "category": "injection",
+      "passed": true,
+      "expected_decision": "BLOCK",
+      "actual_decision": "BLOCK",
+      "expected_reason": "PROMPT_INJECTION_ATTEMPT",
+      "actual_reason": "PROMPT_INJECTION_ATTEMPT",
+      "checks_passed": [
+        "schema"
+      ],
+      "checks_failed": [
+        "regex_patterns"
+      ],
+      "notes": "Contains '[HIDDEN:' bracket injection pattern"
+    }
+  ]
+}

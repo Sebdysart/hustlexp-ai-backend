@@ -883,6 +883,100 @@ const SCHEMA_STATEMENTS = [
   `CREATE INDEX IF NOT EXISTS idx_causal_outcomes_correction ON causal_outcomes(correction_id)`,
   `CREATE INDEX IF NOT EXISTS idx_causal_outcomes_verdict ON causal_outcomes(causal_verdict)`,
   `CREATE INDEX IF NOT EXISTS idx_causal_outcomes_analyzed ON causal_outcomes(analyzed_at)`,
+
+  // ============================================
+  // TPEE — Trust & Pricing Enforcement Engine (Phase 3)
+  // Decision tracking on tasks for learning feedback loop
+  // ============================================
+
+  // Add TPEE decision columns to tasks table
+  `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS tpee_evaluation_id UUID`,
+  `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS tpee_decision VARCHAR(20)`,
+  `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS tpee_reason_code VARCHAR(50)`,
+  `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS tpee_confidence DECIMAL(3,2)`,
+  `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS tpee_model_version VARCHAR(50)`,
+  `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS tpee_evaluated_at TIMESTAMPTZ`,
+
+  // Task Outcomes - Immutable, append-only ground truth for AI learning
+  // Every outcome links back to TPEE evaluation for decision quality analysis
+  `CREATE TABLE IF NOT EXISTS task_outcomes (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    task_id UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    tpee_evaluation_id UUID,
+    outcome_type VARCHAR(50) NOT NULL CHECK (outcome_type IN (
+      'completed',
+      'canceled_by_poster',
+      'canceled_by_hustler',
+      'disputed',
+      'refunded',
+      'expired_unaccepted',
+      'expired_incomplete'
+    )),
+    completion_time_minutes INTEGER,
+    dispute_reason TEXT,
+    refund_amount DECIMAL(10,2),
+    hustler_rating INTEGER CHECK (hustler_rating >= 1 AND hustler_rating <= 5),
+    poster_rating INTEGER CHECK (poster_rating >= 1 AND poster_rating <= 5),
+    earnings_actual DECIMAL(10,2),
+    metadata JSONB DEFAULT '{}',
+    created_at TIMESTAMPTZ DEFAULT NOW()
+  )`,
+
+  // Indexes for TPEE learning queries
+  `CREATE INDEX IF NOT EXISTS idx_tasks_tpee_eval ON tasks(tpee_evaluation_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_tasks_tpee_decision ON tasks(tpee_decision)`,
+  `CREATE INDEX IF NOT EXISTS idx_tasks_tpee_reason ON tasks(tpee_reason_code)`,
+  `CREATE INDEX IF NOT EXISTS idx_task_outcomes_task ON task_outcomes(task_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_task_outcomes_tpee_eval ON task_outcomes(tpee_evaluation_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_task_outcomes_type ON task_outcomes(outcome_type)`,
+  `CREATE INDEX IF NOT EXISTS idx_task_outcomes_created ON task_outcomes(created_at)`,
+
+  // Unique constraint: one outcome per task (immutable once recorded)
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_task_outcomes_task_unique ON task_outcomes(task_id)`,
+
+  // ============================================
+  // TPEE Phase 2C — Policy Snapshots
+  // Versioned, scoped policies for A/B testing and counterfactual analysis
+  // ============================================
+
+  // Policy snapshots table
+  `CREATE TABLE IF NOT EXISTS policy_snapshots (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    version VARCHAR(50) NOT NULL,
+    config_hash VARCHAR(64) NOT NULL,
+    
+    -- Scope (null = global)
+    city_id UUID REFERENCES cities(id) ON DELETE CASCADE,
+    category VARCHAR(50),
+    trust_bucket VARCHAR(20) CHECK (trust_bucket IN ('new', 'low', 'medium', 'high')),
+    
+    -- Parameters
+    pricing_confidence_enforce DECIMAL(3,2) NOT NULL,
+    pricing_confidence_review DECIMAL(3,2) NOT NULL,
+    scam_high_confidence DECIMAL(3,2) NOT NULL,
+    trust_block_threshold INTEGER NOT NULL,
+    trust_warn_threshold INTEGER NOT NULL,
+    max_tasks_per_hour INTEGER NOT NULL,
+    max_tasks_per_day INTEGER NOT NULL,
+    min_task_price DECIMAL(10,2) NOT NULL,
+    
+    -- Lifecycle
+    is_active BOOLEAN NOT NULL DEFAULT false,
+    allocation_percent INTEGER NOT NULL DEFAULT 100,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    activated_at TIMESTAMPTZ,
+    deactivated_at TIMESTAMPTZ
+  )`,
+
+  // Add policy reference to tasks (sticky assignment)
+  `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS policy_snapshot_id UUID REFERENCES policy_snapshots(id)`,
+  `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS policy_config_hash VARCHAR(64)`,
+
+  // Indexes for policy lookups
+  `CREATE INDEX IF NOT EXISTS idx_policy_snapshots_active ON policy_snapshots(is_active)`,
+  `CREATE INDEX IF NOT EXISTS idx_policy_snapshots_scope ON policy_snapshots(city_id, category, trust_bucket)`,
+  `CREATE INDEX IF NOT EXISTS idx_policy_snapshots_hash ON policy_snapshots(config_hash)`,
+  `CREATE INDEX IF NOT EXISTS idx_tasks_policy ON tasks(policy_snapshot_id)`,
 ];
 
 /**
