@@ -363,6 +363,7 @@ const SCHEMA_STATEMENTS = [
   `CREATE INDEX IF NOT EXISTS idx_badges_badge_id ON badges(badge_id)`,
   `CREATE INDEX IF NOT EXISTS idx_completions_hustler ON completions(hustler_id)`,
   `CREATE INDEX IF NOT EXISTS idx_completions_task ON completions(task_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_completions_client ON completions(client_id)`,
   `CREATE INDEX IF NOT EXISTS idx_completions_completed ON completions(completed_at)`,
   `CREATE INDEX IF NOT EXISTS idx_growth_plans_user ON growth_plans(user_id)`,
   `CREATE INDEX IF NOT EXISTS idx_growth_plans_active ON growth_plans(is_active)`,

@@ -46,6 +46,7 @@ import { requireAuth, optionalAuth, isAuthEnabled } from './middleware/firebaseA
 import disputeRoutes from './routes/disputes.js';
 import debugRoutes from './routes/debug.js';
 import identityRoutes from './identity/routes/identity.js';
+import trustRoutes from './routes/trust.js';
 import type { OrchestrateMode, TaskDraft, TaskCategory, AIContextBlock } from './types/index.js';
 // PHASE 6: Hardening middleware
 import { addRequestId, returnRequestId, createGlobalErrorHandler, logRequest } from './middleware/requestId.js';
@@ -100,6 +101,7 @@ const PUBLIC_ROUTES = [
     '/api/quests',
     '/api/tips',
     '/api/profile',
+    '/api/trust',
     '/api/cards',
     '/api/match',
     '/api/cost',
@@ -4184,6 +4186,7 @@ async function start() {
         // Register API Routes
         await fastify.register(debugRoutes, { prefix: '/api' });
         await fastify.register(disputeRoutes, { prefix: '/api/disputes' });
+        await fastify.register(trustRoutes, { prefix: '/api/trust' });
 
         // HIVS: Identity Verification Routes (Email + Phone before AI onboarding)
         const verificationRoutes = (await import('./routes/verification.js')).default;
