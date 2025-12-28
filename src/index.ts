@@ -1019,13 +1019,72 @@ fastify.post('/ai/confirm-task', async (request, reply) => {
         // END TPEE GATE
         // ============================================
 
+        // ============================================
+        // AI ESCALATION (Phase 2B) - Advisory only
+        // Only runs if deterministic decision is ACCEPT
+        // ============================================
+        if (tpeeResult.decision === 'ACCEPT') {
+            try {
+                const { TPEEAIEscalation } = await import('./services/TPEEAIEscalation.js');
+                const escalation = await TPEEAIEscalation.escalate(
+                    tpeeResult,
+                    tpeeInput,
+                    taskDraft.recommendedPrice, // median price fallback
+                    60, // default median duration
+                    'PRE_AI'
+                );
+
+                // AI can only escalate severity, never downgrade
+                if (!TPEEService.isShadowMode()) {
+                    if (escalation.should_adjust && escalation.recommended_price) {
+                        reply.status(422);
+                        return {
+                            success: false,
+                            error: 'Price adjustment recommended by AI',
+                            code: 'TPEE_AI_ADJUST',
+                            reason: 'AI_PRICING_REALISM',
+                            recommendedPrice: escalation.recommended_price,
+                            evaluationId: tpeeResult.evaluation_id,
+                        };
+                    }
+                    if (escalation.should_review) {
+                        tpeeResult.human_review_required = true;
+                    }
+                }
+            } catch (aiErr) {
+                // AI failure → log but don't block (safe degradation)
+                logger.warn({ aiErr }, 'AI escalation failed - continuing with deterministic result');
+            }
+        }
+        // ============================================
+        // END AI ESCALATION
+        // ============================================
+
         const task = await TaskService.createTaskFromDraft(
             dbUser.id,
             taskDraft
         );
 
         // ============================================
-        // TPEE OUTCOME WIRING: Persist evaluation on task
+        // POLICY SNAPSHOT ASSIGNMENT (Phase 2C)
+        // Sticky: assigned once, never changes
+        // ============================================
+        let policyAssignment: { policy_snapshot_id: string; config_hash: string } | null = null;
+        try {
+            const { PolicySnapshotService } = await import('./services/PolicySnapshotService.js');
+            policyAssignment = await PolicySnapshotService.assignPolicyToTask(
+                task.id,
+                { city_id: 'city_seattle', category: taskDraft.category }
+            );
+        } catch (policyErr) {
+            logger.warn({ policyErr }, 'Policy assignment failed - using default');
+        }
+        // ============================================
+        // END POLICY SNAPSHOT ASSIGNMENT
+        // ============================================
+
+        // ============================================
+        // TPEE OUTCOME WIRING: Persist evaluation + policy on task
         // ============================================
         if (isDatabaseAvailable() && sql) {
             try {
@@ -1036,12 +1095,14 @@ fastify.post('/ai/confirm-task', async (request, reply) => {
                         tpee_reason_code = ${tpeeResult.enforcement_reason_code},
                         tpee_confidence = ${tpeeResult.confidence_score},
                         tpee_model_version = ${tpeeResult.model_version},
-                        tpee_evaluated_at = ${tpeeResult.evaluated_at}
+                        tpee_evaluated_at = ${tpeeResult.evaluated_at},
+                        policy_snapshot_id = ${policyAssignment?.policy_snapshot_id || null},
+                        policy_config_hash = ${policyAssignment?.config_hash || null}
                     WHERE id = ${task.id}
                 `;
-                logger.info({ taskId: task.id, tpeeEvalId: tpeeResult.evaluation_id }, 'TPEE evaluation linked to task');
+                logger.info({ taskId: task.id, tpeeEvalId: tpeeResult.evaluation_id, policyId: policyAssignment?.policy_snapshot_id }, 'TPEE + policy linked to task');
             } catch (err) {
-                logger.error({ err, taskId: task.id }, 'Failed to persist TPEE evaluation on task');
+                logger.error({ err, taskId: task.id }, 'Failed to persist TPEE/policy on task');
             }
         }
         // ============================================
@@ -3349,9 +3410,7 @@ fastify.post('/api/stripe/webhook', {
 // ============================================
 
 // Get TPEE stats
-fastify.get('/api/admin/tpee/stats', { preHandler: [requireAuth] }, async (request, reply) => {
-    // Note: Uses requireAuth not requireAdminFromJWT for shadow mode observability
-    // TODO: Upgrade to requireAdminFromJWT for production
+fastify.get('/api/admin/tpee/stats', { preHandler: [requireAdminFromJWT] }, async (request, reply) => {
     const stats = TPEEService.getStats();
     return {
         success: true,
@@ -3361,7 +3420,7 @@ fastify.get('/api/admin/tpee/stats', { preHandler: [requireAuth] }, async (reque
 });
 
 // Get recent TPEE logs
-fastify.get('/api/admin/tpee/logs', { preHandler: [requireAuth] }, async (request) => {
+fastify.get('/api/admin/tpee/logs', { preHandler: [requireAdminFromJWT] }, async (request) => {
     const { limit } = request.query as { limit?: string };
     const logs = TPEEService.getRecentLogs(limit ? parseInt(limit) : 50);
     return {
@@ -3372,7 +3431,7 @@ fastify.get('/api/admin/tpee/logs', { preHandler: [requireAuth] }, async (reques
 });
 
 // Toggle shadow mode (admin only, dangerous)
-fastify.post('/api/admin/tpee/shadow-mode', { preHandler: [requireAuth] }, async (request, reply) => {
+fastify.post('/api/admin/tpee/shadow-mode', { preHandler: [requireAdminFromJWT] }, async (request, reply) => {
     const { enabled } = request.body as { enabled: boolean };
 
     if (typeof enabled !== 'boolean') {
@@ -3395,7 +3454,7 @@ fastify.post('/api/admin/tpee/shadow-mode', { preHandler: [requireAuth] }, async
 import { TaskOutcomeService } from './services/TaskOutcomeService.js';
 
 // Get TPEE decision quality report
-fastify.get('/api/admin/tpee/decision-quality', { preHandler: [requireAuth] }, async () => {
+fastify.get('/api/admin/tpee/decision-quality', { preHandler: [requireAdminFromJWT] }, async () => {
     const report = await TaskOutcomeService.getTPEEDecisionQualityReport();
     return {
         success: true,
@@ -3404,7 +3463,7 @@ fastify.get('/api/admin/tpee/decision-quality', { preHandler: [requireAuth] }, a
 });
 
 // Get blocked user outcome analysis
-fastify.get('/api/admin/tpee/blocked-user-analysis', { preHandler: [requireAuth] }, async () => {
+fastify.get('/api/admin/tpee/blocked-user-analysis', { preHandler: [requireAdminFromJWT] }, async () => {
     const analysis = await TaskOutcomeService.getBlockedUserOutcomeAnalysis();
     return {
         success: true,
@@ -3416,7 +3475,7 @@ fastify.get('/api/admin/tpee/blocked-user-analysis', { preHandler: [requireAuth]
 import { TPEEAIEscalation } from './services/TPEEAIEscalation.js';
 
 // Get AI escalation status
-fastify.get('/api/admin/tpee/ai/status', { preHandler: [requireAuth] }, async () => {
+fastify.get('/api/admin/tpee/ai/status', { preHandler: [requireAdminFromJWT] }, async () => {
     return {
         success: true,
         status: TPEEAIEscalation.getStatus(),
@@ -3424,7 +3483,7 @@ fastify.get('/api/admin/tpee/ai/status', { preHandler: [requireAuth] }, async ()
 });
 
 // Toggle pricing classifier
-fastify.post('/api/admin/tpee/ai/pricing-classifier', { preHandler: [requireAuth] }, async (request, reply) => {
+fastify.post('/api/admin/tpee/ai/pricing-classifier', { preHandler: [requireAdminFromJWT] }, async (request, reply) => {
     const { enabled } = request.body as { enabled: boolean };
     if (typeof enabled !== 'boolean') {
         reply.status(400);
@@ -3435,7 +3494,7 @@ fastify.post('/api/admin/tpee/ai/pricing-classifier', { preHandler: [requireAuth
 });
 
 // Toggle scam classifier
-fastify.post('/api/admin/tpee/ai/scam-classifier', { preHandler: [requireAuth] }, async (request, reply) => {
+fastify.post('/api/admin/tpee/ai/scam-classifier', { preHandler: [requireAdminFromJWT] }, async (request, reply) => {
     const { enabled } = request.body as { enabled: boolean };
     if (typeof enabled !== 'boolean') {
         reply.status(400);
@@ -3446,7 +3505,7 @@ fastify.post('/api/admin/tpee/ai/scam-classifier', { preHandler: [requireAuth] }
 });
 
 // Master switch for AI escalation
-fastify.post('/api/admin/tpee/ai/escalation', { preHandler: [requireAuth] }, async (request, reply) => {
+fastify.post('/api/admin/tpee/ai/escalation', { preHandler: [requireAdminFromJWT] }, async (request, reply) => {
     const { enabled } = request.body as { enabled: boolean };
     if (typeof enabled !== 'boolean') {
         reply.status(400);

@@ -43,8 +43,16 @@ interface VerificationStatus {
 interface SendCodeResult {
     success: boolean;
     error?: string;
-    code?: 'RATE_LIMITED' | 'LOCKED' | 'ALREADY_VERIFIED' | 'SEND_FAILED';
+    code?: 'RATE_LIMITED' | 'LOCKED' | 'ALREADY_VERIFIED' | 'SEND_FAILED' | 'EMAIL_NOT_VERIFIED';
     retryAfterMs?: number;
+    // Debug info for developers
+    _debug?: {
+        reason: string;
+        environment: string;
+        smsMode: 'real' | 'fake' | 'disabled';
+        twilioConfigured: boolean;
+        emailVerified?: boolean;
+    };
 }
 
 interface VerifyCodeResult {
@@ -283,17 +291,43 @@ class VerificationServiceClass {
 
     /**
      * Send SMS verification code
+     * Returns explicit debug info to help diagnose delivery issues
      */
     async sendSmsCode(userId: string, phone: string, ip?: string): Promise<SendCodeResult> {
         const normalizedPhone = normalizePhone(phone);
 
+        // Import environment detection
+        const { env } = await import('../config/env.js');
+        const { canSendRealSms } = await import('../config/safety.js');
+        const { TwilioVerifyService } = await import('./TwilioVerifyService.js');
+
+        const twilioConfigured = TwilioVerifyService.isConfigured();
+        const smsAllowed = canSendRealSms();
+        const currentEnv = env.mode;
+
+        // Determine SMS mode for debug output
+        let smsMode: 'real' | 'fake' | 'disabled' = 'disabled';
+        if (twilioConfigured && smsAllowed) {
+            smsMode = 'real';
+        } else if (twilioConfigured || currentEnv !== 'production') {
+            smsMode = 'fake';
+        }
+
         // Check email is verified first
         const status = await this.getStatus(userId);
         if (!status?.emailVerified) {
+            serviceLogger.warn({ userId, phone: normalizedPhone }, 'SMS blocked: email not verified');
             return {
                 success: false,
-                error: 'Email must be verified first',
-                code: 'RATE_LIMITED',
+                error: 'Email must be verified before phone verification',
+                code: 'EMAIL_NOT_VERIFIED',
+                _debug: {
+                    reason: 'Email verification required first. Complete email verification, then retry phone.',
+                    environment: currentEnv,
+                    smsMode,
+                    twilioConfigured,
+                    emailVerified: false,
+                },
             };
         }
 
@@ -305,41 +339,67 @@ class VerificationServiceClass {
                 error: 'Please wait before requesting another code',
                 code: 'RATE_LIMITED',
                 retryAfterMs: canSend.retryAfterMs,
+                _debug: {
+                    reason: `Rate limited. Retry in ${Math.ceil((canSend.retryAfterMs || 0) / 1000)}s`,
+                    environment: currentEnv,
+                    smsMode,
+                    twilioConfigured,
+                    emailVerified: true,
+                },
             };
         }
 
         // Check if already verified
         if (status?.phoneVerified) {
-            return { success: false, error: 'Phone already verified', code: 'ALREADY_VERIFIED' };
+            return {
+                success: false,
+                error: 'Phone already verified',
+                code: 'ALREADY_VERIFIED',
+                _debug: {
+                    reason: 'Phone already verified for this user. No action needed.',
+                    environment: currentEnv,
+                    smsMode,
+                    twilioConfigured,
+                    emailVerified: true,
+                },
+            };
         }
 
-        // Generate code
-        const code = generateCode();
-        const codeHash = hashCode(code);
         const expiresAt = new Date(Date.now() + CONFIG.codeTtlMs);
 
         try {
             if (!sql) throw new Error('Database unavailable');
 
-            // Use Twilio Verify to send the code
-            const { TwilioVerifyService } = await import('./TwilioVerifyService.js');
-
-            if (TwilioVerifyService.isConfigured()) {
-                // PRODUCTION: Use Twilio Verify
+            // Determine delivery method based on environment + config
+            if (twilioConfigured && smsAllowed) {
+                // PRODUCTION: Real SMS via Twilio Verify
                 const twilioResult = await TwilioVerifyService.sendVerification(normalizedPhone, 'sms');
 
                 if (!twilioResult.success) {
                     serviceLogger.error({ error: twilioResult.error, userId }, 'Twilio send failed');
-                    return { success: false, error: twilioResult.error || 'SMS send failed', code: 'SEND_FAILED' };
+                    return {
+                        success: false,
+                        error: twilioResult.error || 'SMS send failed',
+                        code: 'SEND_FAILED',
+                        _debug: {
+                            reason: `Twilio delivery failed: ${twilioResult.error}`,
+                            environment: currentEnv,
+                            smsMode: 'real',
+                            twilioConfigured: true,
+                            emailVerified: true,
+                        },
+                    };
                 }
 
-                // Log attempt (no code stored - Twilio manages it)
+                // Log attempt (Twilio manages the code)
                 await sql`
                     INSERT INTO verification_attempts (user_id, channel, target, code_hash, expires_at, ip_address)
                     VALUES (${userId}::uuid, 'sms', ${normalizedPhone}, 'twilio-managed', ${expiresAt}, ${ip || null})
                 `;
+
+                serviceLogger.info({ userId, phone: normalizedPhone }, 'Real SMS sent via Twilio');
             } else {
-                // DEVELOPMENT: Generate and log code
+                // DEVELOPMENT/STAGING: Fake SMS - log the code
                 const code = generateCode();
                 const codeHash = hashCode(code);
 
@@ -348,7 +408,10 @@ class VerificationServiceClass {
                     VALUES (${userId}::uuid, 'sms', ${normalizedPhone}, ${codeHash}, ${expiresAt}, ${ip || null})
                 `;
 
-                serviceLogger.info({ userId, phone: normalizedPhone, code }, 'SMS VERIFICATION CODE (DEV)');
+                serviceLogger.info(
+                    { userId, phone: normalizedPhone, code },
+                    `📱 SMS VERIFICATION CODE (${currentEnv.toUpperCase()}): ${code}`
+                );
             }
 
             // Update phone in verification record
@@ -357,7 +420,18 @@ class VerificationServiceClass {
                 WHERE user_id = ${userId}::uuid
             `;
 
-            return { success: true };
+            return {
+                success: true,
+                _debug: {
+                    reason: smsMode === 'real'
+                        ? 'Real SMS sent via Twilio Verify'
+                        : `Fake SMS - code logged to server console (${currentEnv} environment)`,
+                    environment: currentEnv,
+                    smsMode,
+                    twilioConfigured,
+                    emailVerified: true,
+                },
+            };
         } catch (error) {
             serviceLogger.error({ error, userId }, 'Failed to send SMS code');
             return { success: false, error: 'Failed to send code', code: 'SEND_FAILED' };
