@@ -1196,6 +1196,72 @@ fastify.get<{
     return { task };
 });
 
+// Direct task creation (B5.1) - non-AI path for simple task creation
+const CreateTaskSchema = z.object({
+    title: z.string().min(3, 'Title must be at least 3 characters'),
+    description: z.string().min(10, 'Description must be at least 10 characters'),
+    category: z.string(),
+    xp_reward: z.number().optional(),
+    price: z.number().min(5, 'Minimum price is $5').max(10000, 'Maximum price is $10,000'),
+    location: z.string().optional(),
+});
+
+fastify.post('/api/tasks', async (request, reply) => {
+    try {
+        const body = CreateTaskSchema.parse(request.body);
+
+        // Get user from auth token if available, otherwise use anonymous poster
+        let posterId = 'anonymous';
+        const authHeader = request.headers.authorization;
+        if (authHeader?.startsWith('Bearer ')) {
+            const token = authHeader.slice(7);
+            try {
+                const decodedToken = await admin.auth().verifyIdToken(token);
+                const dbUser = await UserService.getByFirebaseUid(decodedToken.uid);
+                if (dbUser) {
+                    posterId = dbUser.id;
+                }
+            } catch (authErr) {
+                logger.warn({ authErr }, 'Auth failed for task creation, using anonymous');
+            }
+        }
+
+        // Create task directly via TaskService
+        const task = await TaskService.createTask({
+            posterId,
+            title: body.title,
+            description: body.description,
+            category: body.category as any,
+            price: body.price,
+            xpReward: body.xp_reward || Math.floor(body.price * 0.1),
+            location: body.location ? { address: body.location, lat: 47.6062, lng: -122.3321 } : undefined,
+        });
+
+        reply.code(201);
+        return {
+            id: task.id,
+            title: task.title,
+            description: task.description,
+            category: task.category,
+            xp_reward: task.xp_reward,
+            price: task.price,
+            status: task.status,
+            location: body.location || 'Seattle, WA',
+            creator_id: posterId,
+            created_at: task.created_at,
+        };
+    } catch (error) {
+        if (error instanceof z.ZodError) {
+            reply.code(400);
+            return { error: 'Validation failed', details: error.errors };
+        }
+
+        logger.error({ error }, 'Failed to create task');
+        reply.code(500);
+        return { error: 'Failed to create task' };
+    }
+});
+
 // AI analytics endpoint (for monitoring)
 fastify.get('/api/ai/analytics', async () => {
     const summary = getAIEventsSummary();
