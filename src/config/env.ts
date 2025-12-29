@@ -127,7 +127,7 @@ if (isProduction && FIREBASE_PROJECT_ID.endsWith('-staging')) {
 // Feature Flags
 const payoutsEnabled = isProduction; // Hard-disabled in staging/local
 const emailRealDelivery = isProduction; // Block real email in staging
-const smsRealDelivery = isProduction; // Block real SMS in staging
+const smsRealDelivery = isProduction || isStaging; // Enable SMS in staging for beta testing
 const identityStrictMode = isProduction || isStaging; // Enforce verification checks in cloud envs
 
 // ===================================
