@@ -1201,40 +1201,28 @@ const CreateTaskSchema = z.object({
     title: z.string().min(3, 'Title must be at least 3 characters'),
     description: z.string().min(10, 'Description must be at least 10 characters'),
     category: z.string(),
-    xp_reward: z.number().optional(),
     price: z.number().min(5, 'Minimum price is $5').max(10000, 'Maximum price is $10,000'),
     location: z.string().optional(),
 });
 
-fastify.post('/api/tasks', async (request, reply) => {
+fastify.post('/api/tasks', { preHandler: [optionalAuth] }, async (request, reply) => {
     try {
         const body = CreateTaskSchema.parse(request.body);
 
-        // Get user from auth token if available, otherwise use anonymous poster
-        let posterId = 'anonymous';
-        const authHeader = request.headers.authorization;
-        if (authHeader?.startsWith('Bearer ')) {
-            const token = authHeader.slice(7);
-            try {
-                const decodedToken = await admin.auth().verifyIdToken(token);
-                const dbUser = await UserService.getByFirebaseUid(decodedToken.uid);
-                if (dbUser) {
-                    posterId = dbUser.id;
-                }
-            } catch (authErr) {
-                logger.warn({ authErr }, 'Auth failed for task creation, using anonymous');
-            }
-        }
+        // Get user from auth context or use anonymous
+        const clientId = (request as any).user?.uid || 'anonymous';
 
         // Create task directly via TaskService
         const task = await TaskService.createTask({
-            posterId,
+            clientId,
             title: body.title,
             description: body.description,
             category: body.category as any,
-            price: body.price,
-            xpReward: body.xp_reward || Math.floor(body.price * 0.1),
-            location: body.location ? { address: body.location, lat: 47.6062, lng: -122.3321 } : undefined,
+            recommendedPrice: body.price,
+            minPrice: body.price * 0.8,
+            maxPrice: body.price * 1.2,
+            locationText: body.location || 'Seattle, WA',
+            flags: [],
         });
 
         reply.code(201);
@@ -1243,12 +1231,12 @@ fastify.post('/api/tasks', async (request, reply) => {
             title: task.title,
             description: task.description,
             category: task.category,
-            xp_reward: task.xp_reward,
-            price: task.price,
+            xp_reward: Math.floor(task.recommendedPrice * 0.1),
+            price: task.recommendedPrice,
             status: task.status,
-            location: body.location || 'Seattle, WA',
-            creator_id: posterId,
-            created_at: task.created_at,
+            location: task.locationText || 'Seattle, WA',
+            creator_id: clientId,
+            created_at: task.createdAt.toISOString(),
         };
     } catch (error) {
         if (error instanceof z.ZodError) {
@@ -1260,6 +1248,48 @@ fastify.post('/api/tasks', async (request, reply) => {
         reply.code(500);
         return { error: 'Failed to create task' };
     }
+});
+
+// Accept task (B6.1) - Hustler accepts an open task
+fastify.post<{
+    Params: { taskId: string };
+}>('/api/tasks/:taskId/accept', { preHandler: [requireAuth] }, async (request, reply) => {
+    const { taskId } = request.params;
+
+    // Get hustler from auth context
+    const hustlerId = (request as any).user?.uid || 'unknown';
+
+    // Check task exists and is active (available)
+    const task = await TaskService.getTask(taskId);
+    if (!task) {
+        reply.code(404);
+        return { error: 'Task not found' };
+    }
+
+    if (task.status !== 'active') {
+        reply.code(400);
+        return { error: 'Task is not available for acceptance', currentStatus: task.status };
+    }
+
+    // Assign hustler to task
+    const updatedTask = await TaskService.assignHustler(taskId, hustlerId);
+    if (!updatedTask) {
+        reply.code(500);
+        return { error: 'Failed to accept task' };
+    }
+
+    logger.info({ taskId, hustlerId }, 'Task accepted by hustler');
+
+    return {
+        success: true,
+        task: {
+            id: updatedTask.id,
+            title: updatedTask.title,
+            status: updatedTask.status,
+            assignedHustlerId: updatedTask.assignedHustlerId,
+        },
+        message: 'Task accepted successfully'
+    };
 });
 
 // AI analytics endpoint (for monitoring)
