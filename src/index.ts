@@ -47,6 +47,7 @@ import disputeRoutes from './routes/disputes.js';
 import debugRoutes from './routes/debug.js';
 import identityRoutes from './identity/routes/identity.js';
 import trustRoutes from './routes/trust.js';
+import authRoutes from './routes/auth.js';
 import type { OrchestrateMode, TaskDraft, TaskCategory, AIContextBlock } from './types/index.js';
 // PHASE 6: Hardening middleware
 import { addRequestId, returnRequestId, createGlobalErrorHandler, logRequest } from './middleware/requestId.js';
@@ -4243,6 +4244,7 @@ async function start() {
         }
 
         // Register API Routes
+        await fastify.register(authRoutes, { prefix: '/api' });
         await fastify.register(debugRoutes, { prefix: '/api' });
         await fastify.register(disputeRoutes, { prefix: '/api/disputes' });
         await fastify.register(trustRoutes, { prefix: '/api/trust' });
