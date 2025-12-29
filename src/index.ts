@@ -1138,6 +1138,21 @@ fastify.post('/ai/confirm-task', async (request, reply) => {
     }
 });
 
+// Get user profile (C5)
+fastify.get<{
+    Params: { userId: string };
+}>('/api/users/:userId', async (request, reply) => {
+    const { userId } = request.params;
+    const user = await UserService.getUser(userId);
+
+    if (!user) {
+        reply.code(404);
+        return { error: 'User not found', code: 'USER_NOT_FOUND' };
+    }
+
+    return { user };
+});
+
 // Get user stats
 fastify.get('/api/users/:userId/stats', async (request, reply) => {
     const { userId } = request.params as { userId: string };
@@ -1164,6 +1179,21 @@ fastify.get('/api/tasks', async (request) => {
     });
 
     return { tasks, count: tasks.length };
+});
+
+// Get single task by ID (C3)
+fastify.get<{
+    Params: { taskId: string };
+}>('/api/tasks/:taskId', async (request, reply) => {
+    const { taskId } = request.params;
+    const task = await TaskService.getTask(taskId);
+
+    if (!task) {
+        reply.code(404);
+        return { error: 'Task not found', code: 'TASK_NOT_FOUND' };
+    }
+
+    return { task };
 });
 
 // AI analytics endpoint (for monitoring)
