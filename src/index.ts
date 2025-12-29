@@ -1320,13 +1320,51 @@ fastify.get('/api/tasks/:taskId/eligibility', async (request, reply) => {
     return eligibility;
 });
 
-// Smart complete a task (full reward flow)
-fastify.post('/api/tasks/:taskId/complete', async (request, reply) => {
+// Smart complete a task (full reward flow) - HARDENED
+// Security: requireAuth + task state + hustler identity validation
+fastify.post<{
+    Params: { taskId: string };
+}>('/api/tasks/:taskId/complete', { preHandler: [requireAuth] }, async (request, reply) => {
     try {
-        const { taskId } = request.params as { taskId: string };
-        const body = CompleteTaskSchema.parse(request.body);
+        const { taskId } = request.params;
+        const hustlerId = request.user?.uid;
 
-        const result = await TaskCompletionService.smartComplete(taskId, body.hustlerId, {
+        if (!hustlerId) {
+            reply.status(401);
+            return { error: 'Authentication required', code: 'NO_AUTH' };
+        }
+
+        // Get task and validate state + hustler identity
+        const task = await TaskService.getTask(taskId);
+        if (!task) {
+            reply.status(404);
+            return { error: 'Task not found', code: 'TASK_NOT_FOUND' };
+        }
+
+        // Only assigned tasks can be completed
+        if (task.status !== 'assigned') {
+            reply.status(400);
+            return {
+                error: 'Task cannot be completed in current state',
+                code: 'INVALID_STATE',
+                currentStatus: task.status,
+                requiredStatus: 'assigned'
+            };
+        }
+
+        // Only the assigned hustler can complete
+        if (task.assignedHustlerId !== hustlerId) {
+            reply.status(403);
+            return {
+                error: 'Only the assigned hustler can complete this task',
+                code: 'NOT_ASSIGNED_HUSTLER'
+            };
+        }
+
+        // Parse optional body fields
+        const body = request.body as { rating?: number; skipProofCheck?: boolean } || {};
+
+        const result = await TaskCompletionService.smartComplete(taskId, hustlerId, {
             rating: body.rating,
             skipProofCheck: body.skipProofCheck,
         });
@@ -1336,6 +1374,7 @@ fastify.post('/api/tasks/:taskId/complete', async (request, reply) => {
             return { error: result.message };
         }
 
+        logger.info({ taskId, hustlerId }, 'Task completed by hustler');
         return result;
     } catch (error) {
         logger.error({ error }, 'Task completion error');
@@ -2865,24 +2904,63 @@ fastify.get('/api/proof/instructions/:category', async (request) => {
     return instructions;
 });
 
-// Submit a proof photo
-fastify.post('/api/proof/:taskId/submit', async (request, reply) => {
+// Submit a proof photo - HARDENED
+// Security: requireAuth + task state + hustler identity validation
+fastify.post<{
+    Params: { taskId: string };
+}>('/api/proof/:taskId/submit', { preHandler: [requireAuth] }, async (request, reply) => {
     try {
-        const { taskId } = request.params as { taskId: string };
-        if (!request.dbUser) {
-            reply.status(401).send({ error: 'Database record required for financial operations', code: 'NO_DB_USER' });
-            return;
+        const { taskId } = request.params;
+        const hustlerId = request.user?.uid;
+
+        if (!hustlerId) {
+            reply.status(401);
+            return { error: 'Authentication required', code: 'NO_AUTH' };
         }
 
-        const { userId, phase, photoUrl, caption } = request.body as {
-            userId: string;
+        // Get task and validate state + hustler identity
+        const task = await TaskService.getTask(taskId);
+        if (!task) {
+            reply.status(404);
+            return { error: 'Task not found', code: 'TASK_NOT_FOUND' };
+        }
+
+        // Only assigned tasks can have proof submitted
+        if (task.status !== 'assigned') {
+            reply.status(400);
+            return {
+                error: 'Cannot submit proof for task in current state',
+                code: 'INVALID_STATE',
+                currentStatus: task.status,
+                requiredStatus: 'assigned'
+            };
+        }
+
+        // Only the assigned hustler can submit proof
+        if (task.assignedHustlerId !== hustlerId) {
+            reply.status(403);
+            return {
+                error: 'Only the assigned hustler can submit proof',
+                code: 'NOT_ASSIGNED_HUSTLER'
+            };
+        }
+
+        const { phase, photoUrl, caption } = request.body as {
             phase: 'before' | 'during' | 'after';
             photoUrl: string;
             caption?: string;
         };
-        const submission = await EnhancedAIProofService.submitPhoto(taskId, userId, phase, photoUrl, caption);
+
+        if (!phase || !photoUrl) {
+            reply.status(400);
+            return { error: 'Missing required fields: phase, photoUrl', code: 'VALIDATION_ERROR' };
+        }
+
+        const submission = await EnhancedAIProofService.submitPhoto(taskId, hustlerId, phase, photoUrl, caption);
+        logger.info({ taskId, hustlerId, phase }, 'Proof photo submitted');
         return submission;
     } catch (error) {
+        logger.error({ error }, 'Proof submission error');
         reply.status(400);
         return { error: (error as Error).message };
     }
