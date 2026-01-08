@@ -48,6 +48,7 @@ import debugRoutes from './routes/debug.js';
 import identityRoutes from './identity/routes/identity.js';
 import trustRoutes from './routes/trust.js';
 import authRoutes from './routes/auth.js';
+import frontendRoutes from './routes/frontend.js';  // BUILD_GUIDE frontend API routes
 import type { OrchestrateMode, TaskDraft, TaskCategory, AIContextBlock } from './types/index.js';
 // PHASE 6: Hardening middleware
 import { addRequestId, returnRequestId, createGlobalErrorHandler, logRequest } from './middleware/requestId.js';
@@ -4452,6 +4453,7 @@ async function start() {
         await fastify.register(debugRoutes, { prefix: '/api' });
         await fastify.register(disputeRoutes, { prefix: '/api/disputes' });
         await fastify.register(trustRoutes, { prefix: '/api/trust' });
+        await fastify.register(frontendRoutes);  // BUILD_GUIDE frontend routes (xp-progress, escrow-status, etc.)
 
         // HIVS: Identity Verification Routes (Email + Phone before AI onboarding)
         const verificationRoutes = (await import('./routes/verification.js')).default;
