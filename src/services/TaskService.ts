@@ -9,6 +9,7 @@ import type {
 } from '../types/index.js';
 import { serviceLogger } from '../utils/logger.js';
 import { sql, query, isDatabaseAvailable } from '../db/index.js';
+import { shouldAllowFallback, createDatabaseUnavailableError } from '../utils/dbGate.js';
 
 // ... (existing code top of file) ...
 
@@ -96,6 +97,7 @@ export interface SearchTasksArgs {
 
 class TaskServiceClass {
     async createTask(args: CreateTaskArgs): Promise<Task> {
+        const allowFallback = shouldAllowFallback();
         const task: Task = {
             id: uuidv4(),
             clientId: args.clientId,
@@ -133,10 +135,16 @@ class TaskServiceClass {
         `;
                 serviceLogger.info({ taskId: task.id, category: task.category, db: true }, 'Task created in database');
             } catch (error) {
-                serviceLogger.error({ error }, 'Failed to create task in database, using memory');
+                serviceLogger.error({ error }, 'Failed to create task in database');
+                if (!allowFallback) {
+                    throw createDatabaseUnavailableError();
+                }
                 tasksMemory.set(task.id, task);
             }
         } else {
+            if (!allowFallback) {
+                throw createDatabaseUnavailableError();
+            }
             tasksMemory.set(task.id, task);
             serviceLogger.info({ taskId: task.id, category: task.category, db: false }, 'Task created in memory');
         }
@@ -169,7 +177,13 @@ class TaskServiceClass {
                 return this.rowToTask(rows[0]);
             } catch (error) {
                 serviceLogger.error({ error }, 'Failed to get task from database');
+                if (!shouldAllowFallback()) {
+                    throw createDatabaseUnavailableError();
+                }
             }
+        }
+        if (!shouldAllowFallback()) {
+            throw createDatabaseUnavailableError();
         }
         return tasksMemory.get(taskId) || null;
     }
@@ -204,10 +218,16 @@ class TaskServiceClass {
                 return rows.map(row => this.rowToTask(row));
             } catch (error) {
                 serviceLogger.error({ error }, 'Failed to search tasks from database');
+                if (!shouldAllowFallback()) {
+                    throw createDatabaseUnavailableError();
+                }
             }
         }
 
         // Fallback to memory
+        if (!shouldAllowFallback()) {
+            throw createDatabaseUnavailableError();
+        }
         let results = Array.from(tasksMemory.values());
 
         if (args.category) {
@@ -239,9 +259,15 @@ class TaskServiceClass {
                 return rows.map(row => this.rowToTask(row as Record<string, unknown>));
             } catch (error) {
                 serviceLogger.error({ error }, 'Failed to get tasks from database');
+                if (!shouldAllowFallback()) {
+                    throw createDatabaseUnavailableError();
+                }
             }
         }
 
+        if (!shouldAllowFallback()) {
+            throw createDatabaseUnavailableError();
+        }
         return Array.from(tasksMemory.values())
             .filter(t => t.status === 'active')
             .slice(0, limit);
@@ -262,9 +288,15 @@ class TaskServiceClass {
                 hustlers = rows.map(row => this.rowToHustlerProfile(row));
             } catch (error) {
                 serviceLogger.error({ error }, 'Failed to get hustlers from database');
+                if (!shouldAllowFallback()) {
+                    throw createDatabaseUnavailableError();
+                }
                 hustlers = mockHustlers.filter(h => h.isActive && h.skills.includes(task.category));
             }
         } else {
+            if (!shouldAllowFallback()) {
+                throw createDatabaseUnavailableError();
+            }
             hustlers = mockHustlers.filter(h => h.isActive && h.skills.includes(task.category));
         }
 
@@ -309,9 +341,15 @@ class TaskServiceClass {
                 return this.getTask(taskId);
             } catch (error) {
                 serviceLogger.error({ error }, 'Failed to assign hustler in database');
+                if (!shouldAllowFallback()) {
+                    throw createDatabaseUnavailableError();
+                }
             }
         }
 
+        if (!shouldAllowFallback()) {
+            throw createDatabaseUnavailableError();
+        }
         const task = tasksMemory.get(taskId);
         if (!task) return null;
 
@@ -335,9 +373,15 @@ class TaskServiceClass {
                 return this.rowToTask(task as Record<string, unknown>);
             } catch (error) {
                 serviceLogger.error({ error }, 'Failed to complete task in database');
+                if (!shouldAllowFallback()) {
+                    throw createDatabaseUnavailableError();
+                }
             }
         }
 
+        if (!shouldAllowFallback()) {
+            throw createDatabaseUnavailableError();
+        }
         const task = tasksMemory.get(taskId);
         if (!task) return null;
 
@@ -503,4 +547,3 @@ class TaskServiceClass {
 }
 
 export const TaskService = new TaskServiceClass();
-

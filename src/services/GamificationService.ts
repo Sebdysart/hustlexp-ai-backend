@@ -3,6 +3,7 @@ import type { Quest, XPEvent } from '../types/index.js';
 import { serviceLogger } from '../utils/logger.js';
 import { routedGenerate } from '../ai/router.js';
 import { sql, isDatabaseAvailable } from '../db/index.js';
+import { shouldAllowFallback, createDatabaseUnavailableError } from '../utils/dbGate.js';
 
 // PHASE 6.2: Removed in-memory storage - using database now
 // Fallback arrays only used when DB unavailable
@@ -50,6 +51,7 @@ class GamificationServiceClass {
      * PHASE 6.2: Persist XP to database with idempotency
      */
     async awardXP(userId: string, amount: number, reason: string, taskId?: string): Promise<XPEvent> {
+        const allowFallback = shouldAllowFallback();
         const event: XPEvent = {
             userId,
             amount,
@@ -69,11 +71,17 @@ class GamificationServiceClass {
                 `;
                 serviceLogger.info({ userId, amount, reason, taskId }, 'XP awarded (DB)');
             } catch (error) {
-                serviceLogger.error({ error, userId, reason }, 'Failed to persist XP to DB, using fallback');
+                serviceLogger.error({ error, userId, reason }, 'Failed to persist XP to DB');
+                if (!allowFallback) {
+                    throw createDatabaseUnavailableError();
+                }
                 xpEventsFallback.push(event);
             }
         } else {
             // Fallback to in-memory when DB unavailable
+            if (!allowFallback) {
+                throw createDatabaseUnavailableError();
+            }
             xpEventsFallback.push(event);
             serviceLogger.info({ userId, amount, reason }, 'XP awarded (fallback)');
         }
@@ -130,9 +138,15 @@ class GamificationServiceClass {
                 return rows as XPEvent[];
             } catch (error) {
                 serviceLogger.error({ error, userId }, 'Failed to fetch XP events from DB');
+                if (!shouldAllowFallback()) {
+                    throw createDatabaseUnavailableError();
+                }
             }
         }
         // Fallback to in-memory
+        if (!shouldAllowFallback()) {
+            throw createDatabaseUnavailableError();
+        }
         return xpEventsFallback
             .filter((e: XPEvent) => e.userId === userId)
             .slice(-limit)
@@ -157,9 +171,15 @@ class GamificationServiceClass {
                 return rows as Quest[];
             } catch (error) {
                 serviceLogger.error({ error, userId }, 'Failed to fetch quests from DB');
+                if (!shouldAllowFallback()) {
+                    throw createDatabaseUnavailableError();
+                }
             }
         }
         // Fallback to in-memory
+        if (!shouldAllowFallback()) {
+            throw createDatabaseUnavailableError();
+        }
         return questsFallback.get(userId)?.filter((q: Quest) => !q.isCompleted && q.expiresAt > new Date()) || [];
     }
 
