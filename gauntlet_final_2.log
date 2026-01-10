@@ -1,0 +1,100 @@
+
+==================================================
+   SEATTLE BETA GAUNTLET (OMEGA PROTOCOL v9D)
+==================================================
+SCENARIO | RESULT   | STATE        | LEDGER     | NOTES
+---------|----------|--------------|------------|------------------------
+[ENV] Loading Environment: LOCAL
+[08:01:37] [32mINFO[39m: [36mRunning Enterprise Environment Loader[39m
+    module: "service"
+    mode: "local"
+    stripeMode: "test"
+    payoutsEnabled: false
+    identityStrict: false
+| A1   | PASS     | cancelled    | VERIFY     | Cancellation accepted
+| A3   | FAIL     | ERROR        | UNK        | Internal error creating dispute
+[08:01:39] [32mINFO[39m: [36mTask cancelled during active phase - Refund Logic Implicit[39m
+    module: "service"
+    taskId: "448c26fe-a552-482a-9797-c9db2d10e201"
+    action: "cancel"
+[08:01:39] [33mWARN[39m: [36mTask Cancelled by Poster[39m
+    module: "service"
+    taskId: "448c26fe-a552-482a-9797-c9db2d10e201"
+    reason: "Changed mind"
+[08:01:39] [31mERROR[39m: [36mFailed to create dispute[39m
+    module: "service"
+    taskId: "b172aea7-a258-4dce-a283-c7f3d77a4440"
+    error: {
+      "name": "NeonDbError",
+      "severity": "ERROR",
+      "code": "42P01",
+      "position": "33",
+      "file": "parse_relation.c",
+      "line": "1449",
+      "routine": "parserOpenTable"
+    }
+[08:01:40] [33mWARN[39m: [36mTask Abandoned by Hustler[39m
+    module: "service"
+    taskId: "59f06dbf-1f6b-4adf-83fa-d769e3a8b073"
+    hustlerId: "9a7500f2-6c91-4c0c-a9b8-83d2151f3e95"
+| A4   | FAIL     | active       | UNK        | Task not reset
+| B6   | FAIL     | ERROR        | UNK        | Temporal Guard Blocked: Event ba61a16b-e6b2-4861-82dc-1e8855eba42c is older than last committed state.
+[08:01:40] [31mERROR[39m: [36mTemporal Guard Check Failed - Failing Closed (Reject)[39m
+    module: "TemporalGuard"
+    targetId: "2564295a-6d55-4282-8e15-1fb522ec833b"
+    error: {
+      "name": "Layerr"
+    }
+[08:01:40] [31mERROR[39m: [36mSaga Failed - Initiating Compensation Flow[39m
+    module: "service"
+    taskId: "2564295a-6d55-4282-8e15-1fb522ec833b"
+    eventType: "HOLD_ESCROW"
+    err: {
+      "type": "Error",
+      "message": "Temporal Guard Blocked: Event ba61a16b-e6b2-4861-82dc-1e8855eba42c is older than last committed state.",
+      "stack":
+          Error: Temporal Guard Blocked: Event ba61a16b-e6b2-4861-82dc-1e8855eba42c is older than last committed state.
+              at validateGuards (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/services/StripeMoneyEngine.ts:234:15)
+              at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+              at async <anonymous> (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/services/StripeMoneyEngine.ts:296:13)
+              at async transaction (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/db/index.ts:44:24)
+              at async Object.handle (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/services/StripeMoneyEngine.ts:287:28)
+              at async runB6 (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/tests/omega/seattle-gauntlet.ts:333:9)
+              at async runGauntlet (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/tests/omega/seattle-gauntlet.ts:414:9)
+    }
+[08:01:41] [41mFATAL[49m: [36m⚠️ KILL SWITCH TRIGGERED - SYSTEM FREEZING ⚠️[39m
+    module: "KillSwitch"
+    reason: "TEST_SIMULATION"
+    metadata: {
+      "desc": "Gauntlet Test"
+    }
+| C9   | PASS     | blocked      | SAFE       | KillSwitch blocked execution
+[08:01:41] [32mINFO[39m: [36mKillSwitch Resolved - Resuming Operations[39m
+    module: "KillSwitch"
+[08:01:41] [33mWARN[39m: [36mADMIN OVERRIDE INITIATED[39m
+    module: "service"
+    input: {
+      "adminId": "admin_8c46780b-fef7-40e3-993a-ae3910af3abc",
+      "taskId": "2285b59e-0ae0-4c06-a29e-5722c3f0009b",
+      "action": "force_cancel",
+      "reason": "Gauntlet Override"
+    }
+[08:01:41] [31mERROR[39m: [36mAdmin Override Failed[39m
+    module: "service"
+    taskId: "2285b59e-0ae0-4c06-a29e-5722c3f0009b"
+    error: {
+      "length": 154,
+      "name": "error",
+      "severity": "ERROR",
+      "code": "42703",
+      "position": "141",
+      "file": "parse_target.c",
+      "line": "1065",
+      "routine": "checkInsertTargets"
+    }
+| D12  | FAIL     | ERROR        | UNK        | column "previous_task_status" of relation "admin_override_audit" does not exist
+
+==================================================
+   EXECUTION COMPLETE
+==================================================
+

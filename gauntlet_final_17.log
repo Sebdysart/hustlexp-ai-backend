@@ -1,0 +1,121 @@
+
+==================================================
+   SEATTLE BETA GAUNTLET (OMEGA PROTOCOL v9D)
+==================================================
+SCENARIO | RESULT   | STATE        | LEDGER     | NOTES
+---------|----------|--------------|------------|------------------------
+[ENV] Loading Environment: LOCAL
+[08:25:10] [32mINFO[39m: [36mRunning Enterprise Environment Loader[39m
+    module: "service"
+    mode: "local"
+    stripeMode: "test"
+    payoutsEnabled: false
+    identityStrict: false
+| A1   | PASS     | cancelled    | VERIFY     | Cancellation accepted
+[08:25:13] [32mINFO[39m: [36mTask cancelled during active phase - Refund Logic Implicit[39m
+    module: "service"
+    taskId: "760e9f3a-ba9b-4b65-9c4d-4372de77a161"
+    action: "cancel"
+[08:25:13] [33mWARN[39m: [36mTask Cancelled by Poster[39m
+    module: "service"
+    taskId: "760e9f3a-ba9b-4b65-9c4d-4372de77a161"
+    reason: "Changed mind"
+[08:25:14] [32mINFO[39m: [36mPreparing ledger transaction: ESCROW_HOLD[39m
+    module: "service"
+    txId: "01KCBD0S58TVK080W2A4RSD0BM"
+    type: "LedgerPrepare"
+[08:25:14] [32mINFO[39m: [36mTransaction PREPARED (Pending)[39m
+    module: "service"
+    txId: "01KCBD0S58TVK080W2A4RSD0BM"
+    type: "LedgerPrepare"
+[08:25:15] [32mINFO[39m: [36mTransaction COMMITTED & Balances UPDATED[39m
+    module: "service"
+    txId: "01KCBD0S58TVK080W2A4RSD0BM"
+    type: "LedgerCommit"
+[08:25:15] [32mINFO[39m: [36mPreparing ledger transaction: DISPUTE_HOLD[39m
+    module: "service"
+    txId: "01KCBD0TBMFYN9H145HAKTM4QX"
+    type: "LedgerPrepare"
+[08:25:16] [32mINFO[39m: [36mTransaction PREPARED (Pending)[39m
+    module: "service"
+    txId: "01KCBD0TBMFYN9H145HAKTM4QX"
+    type: "LedgerPrepare"
+[08:25:16] [32mINFO[39m: [36mTransaction COMMITTED & Balances UPDATED[39m
+    module: "service"
+    txId: "01KCBD0TBMFYN9H145HAKTM4QX"
+    type: "LedgerCommit"
+| A3   | FAIL     | completed    | UNK        | State not disputed
+[08:25:16] [31mERROR[39m: [36mFailed to transition Money Engine state to DISPUTE_OPEN[39m
+    module: "service"
+    taskId: "9632452a-7fe9-431a-b16b-9371a8545a7a"
+    err: {
+      "type": "NeonDbError",
+      "message": "new row for relation \"tasks\" violates check constraint \"tasks_status_check\"",
+      "stack":
+          NeonDbError: new row for relation "tasks" violates check constraint "tasks_status_check"
+              at dr.execute (file:///Users/sebastiandysart/HustleXP/hustlexp-ai-backend/node_modules/@neondatabase/serverless/index.mjs:1298:10)
+              at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+              at async DisputeServiceClass.createDispute (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/services/DisputeService.ts:122:17)
+              at async runA3 (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/tests/omega/seattle-gauntlet.ts:408:24)
+              at async runGauntlet (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/tests/omega/seattle-gauntlet.ts:543:9)
+      "name": "NeonDbError",
+      "severity": "ERROR",
+      "code": "23514",
+      "detail": "Failing row contains (9632452a-7fe9-431a-b16b-9371a8545a7a, ad27c52f-a15e-4e56-98f1-135ed95325bf, Gauntlet Task, Testing Chaos, moving, 100, 100.00, disputed, Seattle, null, null, null, null, null, medium, {}, null, 2025-12-13 08:25:13.83025+00, 2025-12-13 08:25:16.496126+00, null, ad27c52f-a15e-4e56-98f1-135ed95325bf, 839d26dc-ecd5-450b-9950-23dcd6969006, null, null).",
+      "schema": "public",
+      "table": "tasks",
+      "constraint": "tasks_status_check",
+      "file": "execMain.c",
+      "line": "2084",
+      "routine": "ExecConstraints"
+    }
+[08:25:16] [32mINFO[39m: [36mDispute created and Money Engine notified[39m
+    module: "service"
+    disputeId: "505e01f2-fd85-4a36-b59a-c0b856cba80f"
+    taskId: "9632452a-7fe9-431a-b16b-9371a8545a7a"
+[08:25:16] [33mWARN[39m: [36mTask Abandoned by Hustler[39m
+    module: "service"
+    taskId: "a87f8e81-a94f-4173-a588-e5ecfc202678"
+    hustlerId: "839d26dc-ecd5-450b-9950-23dcd6969006"
+| A4   | PASS     | active       | N/A        | Task reset to active
+B6 EventID: 01KCBD0VBXJYH1FB5WAGSS20TD
+[08:25:17] [32mINFO[39m: [36mPreparing ledger transaction: ESCROW_HOLD[39m
+    module: "service"
+    txId: "01KCBD0VSPGB44SWJST3A2V7WN"
+    type: "LedgerPrepare"
+[08:25:17] [32mINFO[39m: [36mTransaction PREPARED (Pending)[39m
+    module: "service"
+    txId: "01KCBD0VSPGB44SWJST3A2V7WN"
+    type: "LedgerPrepare"
+[08:25:17] [32mINFO[39m: [36mTransaction COMMITTED & Balances UPDATED[39m
+    module: "service"
+    txId: "01KCBD0VSPGB44SWJST3A2V7WN"
+    type: "LedgerCommit"
+| B6   | PASS     | idempotent   | SAFE       | Duplicate request ignored
+[08:25:18] [41mFATAL[49m: [36m⚠️ KILL SWITCH TRIGGERED - SYSTEM FREEZING ⚠️[39m
+    module: "KillSwitch"
+    reason: "TEST_SIMULATION"
+    metadata: {
+      "desc": "Gauntlet Test"
+    }
+| C9   | PASS     | blocked      | SAFE       | KillSwitch blocked execution
+[08:25:18] [32mINFO[39m: [36mKillSwitch Resolved - Resuming Operations[39m
+    module: "KillSwitch"
+[08:25:18] [33mWARN[39m: [36mADMIN OVERRIDE INITIATED[39m
+    module: "service"
+    input: {
+      "adminId": "admin_8ad043c2-55ec-4826-b61e-af7f01764b75",
+      "taskId": "eab11f79-3d66-42dd-8219-dcda0388531b",
+      "action": "force_cancel",
+      "reason": "Gauntlet Override"
+    }
+[08:25:18] [32mINFO[39m: [36mAdmin Override Complete[39m
+    module: "service"
+    taskId: "eab11f79-3d66-42dd-8219-dcda0388531b"
+    action: "force_cancel"
+| D12  | PASS     | cancelled    | REFUNDED   | Admin forced cancel
+
+==================================================
+   EXECUTION COMPLETE
+==================================================
+

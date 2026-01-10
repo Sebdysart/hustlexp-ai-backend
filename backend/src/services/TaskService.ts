@@ -34,6 +34,9 @@ interface CreateTaskParams {
   category?: string;
   deadline?: Date;
   requiresProof?: boolean;
+  // Live Mode (PRODUCT_SPEC §3.5)
+  mode?: 'STANDARD' | 'LIVE';
+  liveBroadcastRadiusMiles?: number;
 }
 
 interface AcceptTaskParams {
@@ -204,6 +207,8 @@ export const TaskService = {
       category,
       deadline,
       requiresProof = true,
+      mode = 'STANDARD',
+      liveBroadcastRadiusMiles,
     } = params;
     
     // Validate price is positive integer (cents)
@@ -217,19 +222,40 @@ export const TaskService = {
       };
     }
     
+    // LIVE-2: Live tasks require $15.00 minimum (database trigger will also enforce)
+    if (mode === 'LIVE' && price < 1500) {
+      return {
+        success: false,
+        error: {
+          code: ErrorCodes.LIVE_2_VIOLATION,
+          message: 'Live tasks require minimum price of $15.00 (1500 cents)',
+        },
+      };
+    }
+    
     try {
       const result = await db.query<Task>(
         `INSERT INTO tasks (
           poster_id, title, description, price, 
-          requirements, location, category, deadline, requires_proof, state
+          requirements, location, category, deadline, requires_proof, 
+          mode, live_broadcast_radius_miles, state
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'OPEN')
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'OPEN')
         RETURNING *`,
-        [posterId, title, description, price, requirements, location, category, deadline, requiresProof]
+        [posterId, title, description, price, requirements, location, category, deadline, requiresProof, mode, liveBroadcastRadiusMiles]
       );
       
       return { success: true, data: result.rows[0] };
     } catch (error) {
+      if (isInvariantViolation(error)) {
+        return {
+          success: false,
+          error: {
+            code: error.code || 'INVARIANT_VIOLATION',
+            message: getErrorMessage(error.code || ''),
+          },
+        };
+      }
       return {
         success: false,
         error: {

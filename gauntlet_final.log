@@ -1,0 +1,101 @@
+
+==================================================
+   SEATTLE BETA GAUNTLET (OMEGA PROTOCOL v9D)
+==================================================
+SCENARIO | RESULT   | STATE        | LEDGER     | NOTES
+---------|----------|--------------|------------|------------------------
+[ENV] Loading Environment: LOCAL
+[08:00:11] [32mINFO[39m: [36mRunning Enterprise Environment Loader[39m
+    module: "service"
+    mode: "local"
+    stripeMode: "test"
+    payoutsEnabled: false
+    identityStrict: false
+| A1   | PASS     | cancelled    | VERIFY     | Cancellation accepted
+| A3   | FAIL     | ERROR        | UNK        | Internal error creating dispute
+| A4   | FAIL     | ERROR        | UNK        | new row for relation "tasks" violates check constraint "tasks_status_check"
+[08:00:13] [32mINFO[39m: [36mTask cancelled during active phase - Refund Logic Implicit[39m
+    module: "service"
+    taskId: "999c1dce-b48b-4b0d-95f5-d8d860cfa041"
+    action: "cancel"
+[08:00:13] [33mWARN[39m: [36mTask Cancelled by Poster[39m
+    module: "service"
+    taskId: "999c1dce-b48b-4b0d-95f5-d8d860cfa041"
+    reason: "Changed mind"
+[08:00:13] [31mERROR[39m: [36mFailed to create dispute[39m
+    module: "service"
+    taskId: "4fd59747-061d-4163-9b8c-fb1a3645a7d5"
+    error: {
+      "name": "NeonDbError",
+      "severity": "ERROR",
+      "code": "22P02",
+      "where": "unnamed portal parameter $3 = '...'",
+      "file": "uuid.c",
+      "line": "138",
+      "routine": "string_to_uuid"
+    }
+| B6   | FAIL     | ERROR        | UNK        | relation "money_events_processed" does not exist
+[08:00:14] [31mERROR[39m: [36mSaga Failed - Initiating Compensation Flow[39m
+    module: "service"
+    taskId: "1957f41d-a954-4675-bc5f-4511c53281ad"
+    eventType: "HOLD_ESCROW"
+    err: {
+      "type": "DatabaseError",
+      "message": "relation \"money_events_processed\" does not exist",
+      "stack":
+          error: relation "money_events_processed" does not exist
+              at bn.parseErrorMessage (file:///Users/sebastiandysart/HustleXP/hustlexp-ai-backend/node_modules/@neondatabase/serverless/index.mjs:955:41)
+              at bn.handlePacket (file:///Users/sebastiandysart/HustleXP/hustlexp-ai-backend/node_modules/@neondatabase/serverless/index.mjs:923:75)
+              at bn.parse (file:///Users/sebastiandysart/HustleXP/hustlexp-ai-backend/node_modules/@neondatabase/serverless/index.mjs:911:36)
+              at S.<anonymous> (file:///Users/sebastiandysart/HustleXP/hustlexp-ai-backend/node_modules/@neondatabase/serverless/index.mjs:962:16)
+              at S.emit (file:///Users/sebastiandysart/HustleXP/hustlexp-ai-backend/node_modules/@neondatabase/serverless/index.mjs:317:79)
+              at WebSocket.<anonymous> (file:///Users/sebastiandysart/HustleXP/hustlexp-ai-backend/node_modules/@neondatabase/serverless/index.mjs:403:19)
+              at [nodejs.internal.kHybridDispatch] (node:internal/event_target:827:20)
+              at WebSocket.dispatchEvent (node:internal/event_target:762:26)
+              at fireEvent (node:internal/deps/undici/undici:11663:14)
+              at websocketMessageReceived (node:internal/deps/undici/undici:11685:7)
+      "length": 121,
+      "name": "error",
+      "severity": "ERROR",
+      "code": "42P01",
+      "position": "15",
+      "file": "parse_relation.c",
+      "line": "1449",
+      "routine": "parserOpenTable"
+    }
+[08:00:14] [41mFATAL[49m: [36m⚠️ KILL SWITCH TRIGGERED - SYSTEM FREEZING ⚠️[39m
+    module: "KillSwitch"
+    reason: "TEST_SIMULATION"
+    metadata: {
+      "desc": "Gauntlet Test"
+    }
+| C9   | PASS     | blocked      | SAFE       | KillSwitch blocked execution
+[08:00:15] [32mINFO[39m: [36mKillSwitch Resolved - Resuming Operations[39m
+    module: "KillSwitch"
+[08:00:15] [33mWARN[39m: [36mADMIN OVERRIDE INITIATED[39m
+    module: "service"
+    input: {
+      "adminId": "admin_ff9a2835-18ed-4e24-9e69-ee8ea675279b",
+      "taskId": "c69a6214-aa05-4b8f-b714-0fac7183db57",
+      "action": "force_cancel",
+      "reason": "Gauntlet Override"
+    }
+[08:00:15] [31mERROR[39m: [36mAdmin Override Failed[39m
+    module: "service"
+    taskId: "c69a6214-aa05-4b8f-b714-0fac7183db57"
+    error: {
+      "length": 119,
+      "name": "error",
+      "severity": "ERROR",
+      "code": "42P01",
+      "position": "34",
+      "file": "parse_relation.c",
+      "line": "1449",
+      "routine": "parserOpenTable"
+    }
+| D12  | FAIL     | ERROR        | UNK        | relation "admin_override_audit" does not exist
+
+==================================================
+   EXECUTION COMPLETE
+==================================================
+

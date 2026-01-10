@@ -164,6 +164,39 @@ export const userRouter = router({
     }),
   
   /**
+   * Get onboarding status
+   * Returns onboarding completion status and first task completion status
+   */
+  getOnboardingStatus: protectedProcedure
+    .query(async ({ ctx }) => {
+      const result = await db.query<{
+        onboarding_completed_at: Date | null;
+        default_mode: string;
+        xp_first_celebration_shown_at: Date | null;
+      }>(
+        `SELECT onboarding_completed_at, default_mode, xp_first_celebration_shown_at
+         FROM users WHERE id = $1`,
+        [ctx.user.id]
+      );
+      
+      if (result.rows.length === 0) {
+        throw new TRPCError({
+          code: 'NOT_FOUND',
+          message: 'User not found',
+        });
+      }
+      
+      const user = result.rows[0];
+      
+      return {
+        onboardingComplete: user.onboarding_completed_at !== null,
+        role: user.default_mode as 'worker' | 'poster',
+        xpFirstCelebrationShownAt: user.xp_first_celebration_shown_at?.toISOString() || null,
+        hasCompletedFirstTask: user.xp_first_celebration_shown_at !== null,
+      };
+    }),
+  
+  /**
    * Complete onboarding
    */
   completeOnboarding: protectedProcedure

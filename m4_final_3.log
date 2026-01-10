@@ -1,0 +1,272 @@
+=========================================
+   M4 SURGICAL TEST RUNNER (NEON/SER)    
+=========================================
+Environment: SERIALIZABLE Enforced.
+
+>> RUNNING: Race Release (Option A: 500 Manual Clients - No Pool)
+[13:27:28] [32mINFO[39m: [36m>>> STARTING M4 RACE RELEASE (OPTION A - STRICT) <<<[39m
+    module: "service"
+DEBUG: handle options keys: [ 'tx', 'disableRetries', 'stripeClient' ]
+DEBUG: stripeClient present: true
+DEBUG: handle options keys: [ 'tx', 'disableRetries', 'stripeClient' ]
+DEBUG: stripeClient present: true
+DEBUG: handle options keys: [ 'tx', 'disableRetries', 'stripeClient' ]
+DEBUG: stripeClient present: true
+DEBUG: handle options keys: [ 'tx', 'disableRetries', 'stripeClient' ]
+DEBUG: stripeClient present: true
+DEBUG: handle options keys: [ 'tx', 'disableRetries', 'stripeClient' ]
+DEBUG: stripeClient present: true
+DEBUG: handle options keys: [ 'tx', 'disableRetries', 'stripeClient' ]
+DEBUG: stripeClient present: true
+DEBUG: handle options keys: [ 'tx', 'disableRetries', 'stripeClient' ]
+DEBUG: stripeClient present: true
+DEBUG: handle options keys: [ 'tx', 'disableRetries', 'stripeClient' ]
+DEBUG: stripeClient present: true
+DEBUG: handle options keys: [ 'tx', 'disableRetries', 'stripeClient' ]
+DEBUG: stripeClient present: true
+DEBUG: handle options keys: [ 'tx', 'disableRetries', 'stripeClient' ]
+DEBUG: stripeClient present: true
+[13:27:29] [32mINFO[39m: [36mPreparing ledger transaction: PAYOUT_RELEASE[39m
+    module: "service"
+    txId: "01KC9BXFK87A7R5RJPPS7GXCTN"
+    type: "LedgerPrepare"
+[13:27:29] [32mINFO[39m: [36mTransaction PREPARED (Pending)[39m
+    module: "service"
+    txId: "01KC9BXFK87A7R5RJPPS7GXCTN"
+    type: "LedgerPrepare"
+[13:27:29] [31mERROR[39m: [36mCommit Failed[39m
+    module: "service"
+    txId: "01KC9BXFK87A7R5RJPPS7GXCTN"
+    type: "LedgerCommit"
+    error: {
+      "length": 189,
+      "name": "error",
+      "severity": "ERROR",
+      "code": "P0001",
+      "where": "PL/pgSQL function prevent_ledger_update() line 3 at RAISE",
+      "file": "pl_exec.c",
+      "line": "3911",
+      "routine": "exec_stmt_raise"
+    }
+[13:27:29] [32mINFO[39m: [36mPreparing ledger transaction: PAYOUT_RELEASE[39m
+    module: "service"
+    txId: "01KC9BXG4FD60YHG392EQRF2CP"
+    type: "LedgerPrepare"
+[13:27:29] [32mINFO[39m: [36mTransaction PREPARED (Pending)[39m
+    module: "service"
+    txId: "01KC9BXG4FD60YHG392EQRF2CP"
+    type: "LedgerPrepare"
+[13:27:29] [31mERROR[39m: [36mCommit Failed[39m
+    module: "service"
+    txId: "01KC9BXG4FD60YHG392EQRF2CP"
+    type: "LedgerCommit"
+    error: {
+      "length": 189,
+      "name": "error",
+      "severity": "ERROR",
+      "code": "P0001",
+      "where": "PL/pgSQL function prevent_ledger_update() line 3 at RAISE",
+      "file": "pl_exec.c",
+      "line": "3911",
+      "routine": "exec_stmt_raise"
+    }
+[13:27:30] [32mINFO[39m: [36mPreparing ledger transaction: PAYOUT_RELEASE[39m
+    module: "service"
+    txId: "01KC9BXGK00T5XR9B3SKR1N78M"
+    type: "LedgerPrepare"
+[13:27:30] [32mINFO[39m: [36mTransaction PREPARED (Pending)[39m
+    module: "service"
+    txId: "01KC9BXGK00T5XR9B3SKR1N78M"
+    type: "LedgerPrepare"
+[13:27:30] [31mERROR[39m: [36mCommit Failed[39m
+    module: "service"
+    txId: "01KC9BXGK00T5XR9B3SKR1N78M"
+    type: "LedgerCommit"
+    error: {
+      "length": 189,
+      "name": "error",
+      "severity": "ERROR",
+      "code": "P0001",
+      "where": "PL/pgSQL function prevent_ledger_update() line 3 at RAISE",
+      "file": "pl_exec.c",
+      "line": "3911",
+      "routine": "exec_stmt_raise"
+    }
+[13:27:30] [32mINFO[39m: [36mPreparing ledger transaction: PAYOUT_RELEASE[39m
+    module: "service"
+    txId: "01KC9BXH2NW5CGFDMGH37J00S1"
+    type: "LedgerPrepare"
+[13:27:30] [32mINFO[39m: [36mTransaction PREPARED (Pending)[39m
+    module: "service"
+    txId: "01KC9BXH2NW5CGFDMGH37J00S1"
+    type: "LedgerPrepare"
+[13:27:30] [31mERROR[39m: [36mCommit Failed[39m
+    module: "service"
+    txId: "01KC9BXH2NW5CGFDMGH37J00S1"
+    type: "LedgerCommit"
+    error: {
+      "length": 189,
+      "name": "error",
+      "severity": "ERROR",
+      "code": "P0001",
+      "where": "PL/pgSQL function prevent_ledger_update() line 3 at RAISE",
+      "file": "pl_exec.c",
+      "line": "3911",
+      "routine": "exec_stmt_raise"
+    }
+[13:27:31] [32mINFO[39m: [36mPreparing ledger transaction: PAYOUT_RELEASE[39m
+    module: "service"
+    txId: "01KC9BXHGHGNN4SK9KDPR1WCXD"
+    type: "LedgerPrepare"
+[13:27:31] [32mINFO[39m: [36mTransaction PREPARED (Pending)[39m
+    module: "service"
+    txId: "01KC9BXHGHGNN4SK9KDPR1WCXD"
+    type: "LedgerPrepare"
+[13:27:31] [31mERROR[39m: [36mCommit Failed[39m
+    module: "service"
+    txId: "01KC9BXHGHGNN4SK9KDPR1WCXD"
+    type: "LedgerCommit"
+    error: {
+      "length": 189,
+      "name": "error",
+      "severity": "ERROR",
+      "code": "P0001",
+      "where": "PL/pgSQL function prevent_ledger_update() line 3 at RAISE",
+      "file": "pl_exec.c",
+      "line": "3911",
+      "routine": "exec_stmt_raise"
+    }
+[13:27:31] [32mINFO[39m: [36mPreparing ledger transaction: PAYOUT_RELEASE[39m
+    module: "service"
+    txId: "01KC9BXHZE217F8JEW3EA01PPW"
+    type: "LedgerPrepare"
+[13:27:31] [32mINFO[39m: [36mTransaction PREPARED (Pending)[39m
+    module: "service"
+    txId: "01KC9BXHZE217F8JEW3EA01PPW"
+    type: "LedgerPrepare"
+[13:27:31] [31mERROR[39m: [36mCommit Failed[39m
+    module: "service"
+    txId: "01KC9BXHZE217F8JEW3EA01PPW"
+    type: "LedgerCommit"
+    error: {
+      "length": 189,
+      "name": "error",
+      "severity": "ERROR",
+      "code": "P0001",
+      "where": "PL/pgSQL function prevent_ledger_update() line 3 at RAISE",
+      "file": "pl_exec.c",
+      "line": "3911",
+      "routine": "exec_stmt_raise"
+    }
+[13:27:32] [32mINFO[39m: [36mPreparing ledger transaction: PAYOUT_RELEASE[39m
+    module: "service"
+    txId: "01KC9BXJEHH6CK1XVRV5YKM681"
+    type: "LedgerPrepare"
+[13:27:32] [32mINFO[39m: [36mTransaction PREPARED (Pending)[39m
+    module: "service"
+    txId: "01KC9BXJEHH6CK1XVRV5YKM681"
+    type: "LedgerPrepare"
+[13:27:32] [31mERROR[39m: [36mCommit Failed[39m
+    module: "service"
+    txId: "01KC9BXJEHH6CK1XVRV5YKM681"
+    type: "LedgerCommit"
+    error: {
+      "length": 189,
+      "name": "error",
+      "severity": "ERROR",
+      "code": "P0001",
+      "where": "PL/pgSQL function prevent_ledger_update() line 3 at RAISE",
+      "file": "pl_exec.c",
+      "line": "3911",
+      "routine": "exec_stmt_raise"
+    }
+[13:27:32] [32mINFO[39m: [36mPreparing ledger transaction: PAYOUT_RELEASE[39m
+    module: "service"
+    txId: "01KC9BXJYD3P961J010YBDFX3Q"
+    type: "LedgerPrepare"
+[13:27:32] [32mINFO[39m: [36mTransaction PREPARED (Pending)[39m
+    module: "service"
+    txId: "01KC9BXJYD3P961J010YBDFX3Q"
+    type: "LedgerPrepare"
+[13:27:32] [31mERROR[39m: [36mCommit Failed[39m
+    module: "service"
+    txId: "01KC9BXJYD3P961J010YBDFX3Q"
+    type: "LedgerCommit"
+    error: {
+      "length": 189,
+      "name": "error",
+      "severity": "ERROR",
+      "code": "P0001",
+      "where": "PL/pgSQL function prevent_ledger_update() line 3 at RAISE",
+      "file": "pl_exec.c",
+      "line": "3911",
+      "routine": "exec_stmt_raise"
+    }
+[13:27:33] [32mINFO[39m: [36mPreparing ledger transaction: PAYOUT_RELEASE[39m
+    module: "service"
+    txId: "01KC9BXKDK16YHGDKZPVCEKXP6"
+    type: "LedgerPrepare"
+[13:27:33] [32mINFO[39m: [36mTransaction PREPARED (Pending)[39m
+    module: "service"
+    txId: "01KC9BXKDK16YHGDKZPVCEKXP6"
+    type: "LedgerPrepare"
+[13:27:33] [31mERROR[39m: [36mCommit Failed[39m
+    module: "service"
+    txId: "01KC9BXKDK16YHGDKZPVCEKXP6"
+    type: "LedgerCommit"
+    error: {
+      "length": 189,
+      "name": "error",
+      "severity": "ERROR",
+      "code": "P0001",
+      "where": "PL/pgSQL function prevent_ledger_update() line 3 at RAISE",
+      "file": "pl_exec.c",
+      "line": "3911",
+      "routine": "exec_stmt_raise"
+    }
+[13:27:33] [32mINFO[39m: [36mPreparing ledger transaction: PAYOUT_RELEASE[39m
+    module: "service"
+    txId: "01KC9BXKWCQJ8646XW6PC4NX2R"
+    type: "LedgerPrepare"
+[13:27:33] [32mINFO[39m: [36mTransaction PREPARED (Pending)[39m
+    module: "service"
+    txId: "01KC9BXKWCQJ8646XW6PC4NX2R"
+    type: "LedgerPrepare"
+[13:27:33] [31mERROR[39m: [36mCommit Failed[39m
+    module: "service"
+    txId: "01KC9BXKWCQJ8646XW6PC4NX2R"
+    type: "LedgerCommit"
+    error: {
+      "length": 189,
+      "name": "error",
+      "severity": "ERROR",
+      "code": "P0001",
+      "where": "PL/pgSQL function prevent_ledger_update() line 3 at RAISE",
+      "file": "pl_exec.c",
+      "line": "3911",
+      "routine": "exec_stmt_raise"
+    }
+   [FAIL] 5400ms - Idempotency Failed: 0 processed events. First Error: Ledger tables are immutable using DELETE/UPDATE. Insert limits only.
+
+>> RUNNING: Saga Fault Injection (Stripe Down)
+[13:27:33] [32mINFO[39m: [36m>>> STARTING M4 SAGA FAULTS (STRIPE DOWN) <<<[39m
+    module: "service"
+DEBUG: handle options keys: [ 'stripeClient' ]
+DEBUG: stripeClient present: true
+   [FAIL] 373ms - Unexpected error: money_state_lock missing for task b42ed17b-bd69-40e0-9b01-8287a433b4c4
+
+>> RUNNING: Ledger Consistency & Integrity
+   [PASS] 99ms
+
+=========================================
+   M4 FINAL REPORT                       
+=========================================
+┌─────────┬─────────────────────────────────────────────────────────┬────────┬──────────┬──────────────────────────────────────────────────────────────────────────────────┬─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ (index) │ Case                                                    │ Status │ Time     │ Stats                                                                            │ Error                                                                                                                       │
+├─────────┼─────────────────────────────────────────────────────────┼────────┼──────────┼──────────────────────────────────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ 0       │ 'Race Release (Option A: 500 Manual Clients - No Pool)' │ 'FAIL' │ '5400ms' │ '{"successes":0,"failures":10,"processedCount":0,"finalVersion":1,"workers":10}' │ 'Idempotency Failed: 0 processed events. First Error: Ledger tables are immutable using DELETE/UPDATE. Insert limits only.' │
+│ 1       │ 'Saga Fault Injection (Stripe Down)'                    │ 'FAIL' │ '373ms'  │ ''                                                                               │ 'Unexpected error: money_state_lock missing for task b42ed17b-bd69-40e0-9b01-8287a433b4c4'                                  │
+│ 2       │ 'Ledger Consistency & Integrity'                        │ 'PASS' │ '99ms'   │ '{"checkedTransactions":"ALL"}'                                                  │ ''                                                                                                                          │
+└─────────┴─────────────────────────────────────────────────────────┴────────┴──────────┴──────────────────────────────────────────────────────────────────────────────────┴─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+Status: BUSTED. Fix the Engine.

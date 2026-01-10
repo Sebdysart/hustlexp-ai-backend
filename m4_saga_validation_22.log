@@ -1,0 +1,68 @@
+=========================================
+   M4 SURGICAL TEST RUNNER (NEON/SER)    
+=========================================
+Environment: DATABASE_URL aligned to M4 Target (Dynamic Import Mode).
+Environment: SERIALIZABLE Enforced.
+
+>> RUNNING: Race Release (Option A: 500 Manual Clients - No Pool)
+[04:19:07] [32mINFO[39m: [36m>>> STARTING M4 RACE RELEASE (OPTION A - STRICT) <<<[39m
+    module: "service"
+   [PASS] 1072ms
+
+>> RUNNING: Saga Fault Injection (Stripe Down)
+[04:19:08] [32mINFO[39m: [36mPreparing ledger transaction: PAYOUT_RELEASE[39m
+    module: "service"
+    txId: "01KCAYY4QE7G1NXYVDHGP0YSQX"
+    type: "LedgerPrepare"
+[04:19:08] [32mINFO[39m: [36mTransaction PREPARED (Pending)[39m
+    module: "service"
+    txId: "01KCAYY4QE7G1NXYVDHGP0YSQX"
+    type: "LedgerPrepare"
+[04:19:08] [32mINFO[39m: [36mTransaction COMMITTED[39m
+    module: "service"
+    txId: "01KCAYY4QE7G1NXYVDHGP0YSQX"
+    type: "LedgerCommit"
+[04:19:08] [32mINFO[39m: [36m>>> STARTING M4 SAGA FAULTS (STRIPE DOWN) <<<[39m
+    module: "service"
+[04:19:09] [32mINFO[39m: [36mPreparing ledger transaction: PAYOUT_RELEASE[39m
+    module: "service"
+    txId: "01KCAYY5YA6CGPVD46VJAT1HBV"
+    type: "LedgerPrepare"
+[04:19:09] [33mWARN[39m: [36mDuplicate transaction detected (Idempotency). Returning existing.[39m
+    module: "service"
+    txId: "01KCAYY5YA6CGPVD46VJAT1HBV"
+    type: "LedgerPrepare"
+[04:19:09] [31mERROR[39m: [36mSaga Failed from Engine[39m
+    module: "service"
+    taskId: "b225909b-3b13-442b-a5b6-76e04b2aa9bd"
+    eventType: "RELEASE_PAYOUT"
+    err: {
+      "type": "Error",
+      "message": "stripe_server_error",
+      "stack":
+          Error: stripe_server_error
+              at Object.capture (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/tests/m4/cases/saga-faults.ts:83:46)
+              at effectReleasePayout (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/services/StripeMoneyEngine.ts:134:44)
+              at executeStripeEffects (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/services/StripeMoneyEngine.ts:81:26)
+              at Object.handle (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/services/StripeMoneyEngine.ts:318:31)
+              at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+              at async Object.run (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/tests/m4/cases/saga-faults.ts:92:13)
+              at async main (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/tests/m4/m4-runner.ts:73:28)
+    }
+   [PASS] 1133ms
+
+>> RUNNING: Ledger Consistency & Integrity
+   [PASS] 109ms
+
+=========================================
+   M4 FINAL REPORT                       
+=========================================
+┌─────────┬─────────────────────────────────────────────────────────┬────────┬──────────┬─────────────────────────────────────────────────────────────────────────────────┬───────┐
+│ (index) │ Case                                                    │ Status │ Time     │ Stats                                                                           │ Error │
+├─────────┼─────────────────────────────────────────────────────────┼────────┼──────────┼─────────────────────────────────────────────────────────────────────────────────┼───────┤
+│ 0       │ 'Race Release (Option A: 500 Manual Clients - No Pool)' │ 'PASS' │ '1072ms' │ '{"successes":1,"failures":9,"processedCount":1,"finalVersion":2,"workers":10}' │ ''    │
+│ 1       │ 'Saga Fault Injection (Stripe Down)'                    │ 'PASS' │ '1133ms' │ '{"status":"Correctly Rolled Back"}'                                            │ ''    │
+│ 2       │ 'Ledger Consistency & Integrity'                        │ 'PASS' │ '109ms'  │ '{"checkedTransactions":"ALL"}'                                                 │ ''    │
+└─────────┴─────────────────────────────────────────────────────────┴────────┴──────────┴─────────────────────────────────────────────────────────────────────────────────┴───────┘
+
+Status: CERTIFIED (M4).

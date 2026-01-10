@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS schema_versions (
     notes TEXT
 );
 
+-- Initialize schema versions (if not exists)
 INSERT INTO schema_versions (version, applied_by, checksum, notes)
 VALUES ('1.0.0', 'system', 'INITIAL', 'Constitutional schema - INV-1 through INV-5, terminal state triggers, AI tables')
 ON CONFLICT (version) DO NOTHING;

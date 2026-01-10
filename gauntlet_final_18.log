@@ -1,0 +1,97 @@
+
+==================================================
+   SEATTLE BETA GAUNTLET (OMEGA PROTOCOL v9D)
+==================================================
+SCENARIO | RESULT   | STATE        | LEDGER     | NOTES
+---------|----------|--------------|------------|------------------------
+[ENV] Loading Environment: LOCAL
+[08:27:05] [32mINFO[39m: [36mRunning Enterprise Environment Loader[39m
+    module: "service"
+    mode: "local"
+    stripeMode: "test"
+    payoutsEnabled: false
+    identityStrict: false
+| A1   | PASS     | cancelled    | VERIFY     | Cancellation accepted
+[08:27:07] [32mINFO[39m: [36mTask cancelled during active phase - Refund Logic Implicit[39m
+    module: "service"
+    taskId: "f249ecfc-8550-4fd4-aabe-f319b4d3b7c6"
+    action: "cancel"
+[08:27:07] [33mWARN[39m: [36mTask Cancelled by Poster[39m
+    module: "service"
+    taskId: "f249ecfc-8550-4fd4-aabe-f319b4d3b7c6"
+    reason: "Changed mind"
+[08:27:08] [32mINFO[39m: [36mPreparing ledger transaction: ESCROW_HOLD[39m
+    module: "service"
+    txId: "01KCBD48JMFZZV5HSNHCRVF387"
+    type: "LedgerPrepare"
+[08:27:08] [32mINFO[39m: [36mTransaction PREPARED (Pending)[39m
+    module: "service"
+    txId: "01KCBD48JMFZZV5HSNHCRVF387"
+    type: "LedgerPrepare"
+[08:27:09] [32mINFO[39m: [36mTransaction COMMITTED & Balances UPDATED[39m
+    module: "service"
+    txId: "01KCBD48JMFZZV5HSNHCRVF387"
+    type: "LedgerCommit"
+[08:27:09] [32mINFO[39m: [36mPreparing ledger transaction: DISPUTE_HOLD[39m
+    module: "service"
+    txId: "01KCBD49QNN0KXBYMPYGNZCZFR"
+    type: "LedgerPrepare"
+[08:27:10] [32mINFO[39m: [36mTransaction PREPARED (Pending)[39m
+    module: "service"
+    txId: "01KCBD49QNN0KXBYMPYGNZCZFR"
+    type: "LedgerPrepare"
+[08:27:10] [32mINFO[39m: [36mTransaction COMMITTED & Balances UPDATED[39m
+    module: "service"
+    txId: "01KCBD49QNN0KXBYMPYGNZCZFR"
+    type: "LedgerCommit"
+| A3   | PASS     | disputed     | HOLD       | Dispute created
+[08:27:10] [32mINFO[39m: [36mDispute created and Money Engine notified[39m
+    module: "service"
+    disputeId: "41203d13-e8c9-4e97-a39c-d0b5d57dc791"
+    taskId: "41165549-1158-424c-9118-9c37c6e5de1a"
+| A4   | PASS     | active       | N/A        | Task reset to active
+[08:27:11] [33mWARN[39m: [36mTask Abandoned by Hustler[39m
+    module: "service"
+    taskId: "fbfc0734-08e0-430a-a5b2-90ebded27230"
+    hustlerId: "220546ea-66b7-4bb7-8bcc-22bbe132e0ce"
+B6 EventID: 01KCBD4B1V66FWWD2SG3MYEA42
+[08:27:11] [32mINFO[39m: [36mPreparing ledger transaction: ESCROW_HOLD[39m
+    module: "service"
+    txId: "01KCBD4BKMG1JZ7RV3FTR5E8SB"
+    type: "LedgerPrepare"
+[08:27:12] [32mINFO[39m: [36mTransaction PREPARED (Pending)[39m
+    module: "service"
+    txId: "01KCBD4BKMG1JZ7RV3FTR5E8SB"
+    type: "LedgerPrepare"
+[08:27:12] [32mINFO[39m: [36mTransaction COMMITTED & Balances UPDATED[39m
+    module: "service"
+    txId: "01KCBD4BKMG1JZ7RV3FTR5E8SB"
+    type: "LedgerCommit"
+| B6   | PASS     | idempotent   | SAFE       | Duplicate request ignored
+[08:27:13] [41mFATAL[49m: [36m⚠️ KILL SWITCH TRIGGERED - SYSTEM FREEZING ⚠️[39m
+    module: "KillSwitch"
+    reason: "TEST_SIMULATION"
+    metadata: {
+      "desc": "Gauntlet Test"
+    }
+| C9   | PASS     | blocked      | SAFE       | KillSwitch blocked execution
+[08:27:13] [32mINFO[39m: [36mKillSwitch Resolved - Resuming Operations[39m
+    module: "KillSwitch"
+[08:27:13] [33mWARN[39m: [36mADMIN OVERRIDE INITIATED[39m
+    module: "service"
+    input: {
+      "adminId": "admin_0b277910-a9f1-4999-94ee-9514fe8e6738",
+      "taskId": "1f2effd7-6400-41b8-915d-57d3d7f5ec03",
+      "action": "force_cancel",
+      "reason": "Gauntlet Override"
+    }
+| D12  | PASS     | cancelled    | REFUNDED   | Admin forced cancel
+
+==================================================
+   EXECUTION COMPLETE
+==================================================
+
+[08:27:14] [32mINFO[39m: [36mAdmin Override Complete[39m
+    module: "service"
+    taskId: "1f2effd7-6400-41b8-915d-57d3d7f5ec03"
+    action: "force_cancel"

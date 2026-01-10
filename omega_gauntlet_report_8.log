@@ -1,0 +1,30 @@
+[ENV] Loading Environment: LOCAL
+[05:24:08] [32mINFO[39m: [36mRunning Enterprise Environment Loader[39m
+    module: "service"
+    mode: "local"
+    stripeMode: "test"
+    payoutsEnabled: false
+    identityStrict: false
+[05:24:08] [32mINFO[39m: [36m==================================================[39m
+    module: "service"
+[05:24:08] [32mINFO[39m: [36m   OMEGA PHASE 7: HYPER-STRESS GAUNTLET           [39m
+    module: "service"
+[05:24:08] [32mINFO[39m: [36m==================================================[39m
+    module: "service"
+[05:24:08] [32mINFO[39m: [36m>>> STARTING M5: 5000 WORKERS SIMULATION <<<[39m
+    module: "M5-Stress"
+[05:24:08] [41mFATAL[49m: [36mOMEGA PHASE 7: FAILED[39m
+    module: "service"
+    error: {
+      "length": 283,
+      "name": "error",
+      "severity": "ERROR",
+      "code": "23503",
+      "detail": "Key (client_id)=(b90d09f9-9ec1-4aca-b210-11d72367db8a) is not present in table \"users\".",
+      "schema": "public",
+      "table": "tasks",
+      "constraint": "tasks_client_id_fkey",
+      "file": "ri_triggers.c",
+      "line": "2599",
+      "routine": "ri_ReportViolation"
+    }

@@ -1,0 +1,79 @@
+
+==================================================
+   SEATTLE BETA GAUNTLET (OMEGA PROTOCOL v9D)
+==================================================
+SCENARIO | RESULT   | STATE        | LEDGER     | NOTES
+---------|----------|--------------|------------|------------------------
+[ENV] Loading Environment: LOCAL
+[08:13:10] [32mINFO[39m: [36mRunning Enterprise Environment Loader[39m
+    module: "service"
+    mode: "local"
+    stripeMode: "test"
+    payoutsEnabled: false
+    identityStrict: false
+| A1   | PASS     | cancelled    | VERIFY     | Cancellation accepted
+[08:13:12] [32mINFO[39m: [36mTask cancelled during active phase - Refund Logic Implicit[39m
+    module: "service"
+    taskId: "0dadefbc-6c1c-4079-9e27-9cb46da67aeb"
+    action: "cancel"
+[08:13:12] [33mWARN[39m: [36mTask Cancelled by Poster[39m
+    module: "service"
+    taskId: "0dadefbc-6c1c-4079-9e27-9cb46da67aeb"
+    reason: "Changed mind"
+Gauntlet Crashed: error: invalid input syntax for type uuid: "01KCBCAR85HAD7S8GAKNNWV03F"
+    at bn.parseErrorMessage (file:///Users/sebastiandysart/HustleXP/hustlexp-ai-backend/node_modules/@neondatabase/serverless/index.mjs:955:41)
+    at bn.handlePacket (file:///Users/sebastiandysart/HustleXP/hustlexp-ai-backend/node_modules/@neondatabase/serverless/index.mjs:923:75)
+    at bn.parse (file:///Users/sebastiandysart/HustleXP/hustlexp-ai-backend/node_modules/@neondatabase/serverless/index.mjs:911:36)
+    at S.<anonymous> (file:///Users/sebastiandysart/HustleXP/hustlexp-ai-backend/node_modules/@neondatabase/serverless/index.mjs:962:16)
+    at S.emit (file:///Users/sebastiandysart/HustleXP/hustlexp-ai-backend/node_modules/@neondatabase/serverless/index.mjs:317:79)
+    at WebSocket.<anonymous> (file:///Users/sebastiandysart/HustleXP/hustlexp-ai-backend/node_modules/@neondatabase/serverless/index.mjs:403:19)
+    at [nodejs.internal.kHybridDispatch] (node:internal/event_target:827:20)
+    at WebSocket.dispatchEvent (node:internal/event_target:762:26)
+    at fireEvent (node:internal/deps/undici/undici:11663:14)
+    at websocketMessageReceived (node:internal/deps/undici/undici:11685:7) {
+  length: 158,
+  severity: 'ERROR',
+  code: '22P02',
+  detail: undefined,
+  hint: undefined,
+  position: undefined,
+  internalPosition: undefined,
+  internalQuery: undefined,
+  where: "unnamed portal parameter $1 = '...'",
+  schema: undefined,
+  table: undefined,
+  column: undefined,
+  dataType: undefined,
+  constraint: undefined,
+  file: 'uuid.c',
+  line: '138',
+  routine: 'string_to_uuid'
+}
+[08:13:13] [31mERROR[39m: [36mSaga Failed - Initiating Compensation Flow[39m
+    module: "service"
+    taskId: "551a8449-4e53-4b1e-85ed-ae846497ed81"
+    eventType: "HOLD_ESCROW"
+    err: {
+      "type": "DatabaseError",
+      "message": "invalid input syntax for type uuid: \"01KCBCAR85HAD7S8GAKNNWV03F\"",
+      "stack":
+          error: invalid input syntax for type uuid: "01KCBCAR85HAD7S8GAKNNWV03F"
+              at bn.parseErrorMessage (file:///Users/sebastiandysart/HustleXP/hustlexp-ai-backend/node_modules/@neondatabase/serverless/index.mjs:955:41)
+              at bn.handlePacket (file:///Users/sebastiandysart/HustleXP/hustlexp-ai-backend/node_modules/@neondatabase/serverless/index.mjs:923:75)
+              at bn.parse (file:///Users/sebastiandysart/HustleXP/hustlexp-ai-backend/node_modules/@neondatabase/serverless/index.mjs:911:36)
+              at S.<anonymous> (file:///Users/sebastiandysart/HustleXP/hustlexp-ai-backend/node_modules/@neondatabase/serverless/index.mjs:962:16)
+              at S.emit (file:///Users/sebastiandysart/HustleXP/hustlexp-ai-backend/node_modules/@neondatabase/serverless/index.mjs:317:79)
+              at WebSocket.<anonymous> (file:///Users/sebastiandysart/HustleXP/hustlexp-ai-backend/node_modules/@neondatabase/serverless/index.mjs:403:19)
+              at [nodejs.internal.kHybridDispatch] (node:internal/event_target:827:20)
+              at WebSocket.dispatchEvent (node:internal/event_target:762:26)
+              at fireEvent (node:internal/deps/undici/undici:11663:14)
+              at websocketMessageReceived (node:internal/deps/undici/undici:11685:7)
+      "length": 158,
+      "name": "error",
+      "severity": "ERROR",
+      "code": "22P02",
+      "where": "unnamed portal parameter $1 = '...'",
+      "file": "uuid.c",
+      "line": "138",
+      "routine": "string_to_uuid"
+    }

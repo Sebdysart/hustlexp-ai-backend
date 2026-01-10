@@ -31,23 +31,35 @@ export type EscrowState =
 
 export type ProofState =
   | 'PENDING'
+  | 'SUBMITTED'
   | 'ACCEPTED'
   | 'REJECTED'
-  | 'NEEDS_MORE';
+  | 'EXPIRED';
 
 export type DisputeState =
   | 'OPEN'
   | 'EVIDENCE_REQUESTED'
-  | 'UNDER_REVIEW'
-  | 'RESOLVED_WORKER'
-  | 'RESOLVED_POSTER'
-  | 'RESOLVED_SPLIT';
+  | 'RESOLVED'
+  | 'ESCALATED';
 
 export type UserMode = 'worker' | 'poster';
 
 export type CertaintyTier = 'STRONG' | 'MODERATE' | 'WEAK';
 
-export type AIJobStatus = 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED' | 'TIMEOUT';
+export type AIJobStatus = 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED' | 'TIMED_OUT' | 'KILLED';
+
+// Live Mode types (PRODUCT_SPEC §3.5)
+export type LiveModeState = 'OFF' | 'ACTIVE' | 'COOLDOWN' | 'PAUSED';
+export type TaskMode = 'STANDARD' | 'LIVE';
+
+// Account status (PRODUCT_SPEC §11)
+export type AccountStatus = 'ACTIVE' | 'PAUSED' | 'SUSPENDED';
+
+// Evidence access scope (AI_INFRASTRUCTURE §9)
+export type EvidenceAccessScope = 'uploader_only' | 'restricted' | 'dispute_reviewers' | 'admin_only';
+
+// Evidence moderation status
+export type EvidenceModerationStatus = 'pending' | 'approved' | 'flagged' | 'quarantined';
 
 // ============================================================================
 // TERMINAL STATE CONSTANTS
@@ -66,12 +78,11 @@ export interface User {
   phone?: string;
   full_name: string;
   avatar_url?: string;
-  firebase_uid?: string;
   
-  // Role
+  // Role (from onboarding)
   default_mode: UserMode;
   
-  // Onboarding
+  // Onboarding (ONBOARDING_SPEC §7, §11)
   onboarding_version?: string;
   onboarding_completed_at?: Date;
   role_confidence_worker?: number;
@@ -86,10 +97,12 @@ export interface User {
   authority_expectation?: number;
   price_sensitivity?: number;
   
-  // Trust & XP
-  trust_tier: number;
+  // Trust (PRODUCT_SPEC §8.2)
+  trust_tier: number; // 1-4
+  
+  // XP (PRODUCT_SPEC §5)
   xp_total: number;
-  current_level: number;
+  current_level: number; // 1-10
   current_streak: number;
   last_task_completed_at?: Date;
   streak_grace_expires_at?: Date;
@@ -102,6 +115,33 @@ export interface User {
   // Stripe
   stripe_customer_id?: string;
   stripe_connect_id?: string;
+  
+  // UI preferences (ONBOARDING_SPEC §6)
+  xp_visibility_rules?: string;
+  trust_ui_density?: string;
+  copy_tone_variant?: string;
+  
+  // Gamification unlock tracking
+  xp_first_celebration_shown_at?: Date;
+  
+  // Live Mode (PRODUCT_SPEC §3.5)
+  live_mode_state: LiveModeState;
+  live_mode_session_started_at?: Date;
+  live_mode_banned_until?: Date;
+  live_mode_total_tasks: number;
+  live_mode_completion_rate?: number;
+  
+  // Fatigue tracking (PRODUCT_SPEC §3.7)
+  daily_active_minutes: number;
+  last_activity_date?: Date;
+  consecutive_active_days: number;
+  last_mandatory_break_at?: Date;
+  
+  // Account pause state (PRODUCT_SPEC §11)
+  account_status: AccountStatus;
+  paused_at?: Date;
+  pause_streak_snapshot?: number;
+  pause_trust_tier_snapshot?: number;
   
   // Timestamps
   created_at: Date;
@@ -125,6 +165,12 @@ export interface Task {
   
   state: TaskState;
   
+  // Live Mode (PRODUCT_SPEC §3.5)
+  mode: TaskMode;
+  live_broadcast_started_at?: Date;
+  live_broadcast_expired_at?: Date;
+  live_broadcast_radius_miles?: number;
+  
   // Timestamps
   deadline?: Date;
   accepted_at?: Date;
@@ -133,7 +179,9 @@ export interface Task {
   cancelled_at?: Date;
   expired_at?: Date;
   
+  // Proof requirement
   requires_proof: boolean;
+  proof_instructions?: string;
   
   created_at: Date;
   updated_at: Date;
@@ -143,20 +191,24 @@ export interface Escrow {
   id: string;
   task_id: string;
   
-  // Amount in USD cents (INTEGER - no floats!)
+  // Amount in USD cents (INTEGER - no floats!) - INV-4: immutable after creation
   amount: number;
   
   state: EscrowState;
   
-  // Stripe
+  // Partial refund tracking (for REFUND_PARTIAL state)
+  refund_amount?: number;
+  release_amount?: number;
+  
+  // Stripe references
   stripe_payment_intent_id?: string;
   stripe_transfer_id?: string;
+  stripe_refund_id?: string;
   
   // Timestamps
   funded_at?: Date;
   released_at?: Date;
   refunded_at?: Date;
-  
   created_at: Date;
   updated_at: Date;
 }
@@ -168,16 +220,15 @@ export interface Proof {
   
   state: ProofState;
   
-  notes?: string;
+  description?: string;
+  
+  // Review
+  reviewed_by?: string;
+  reviewed_at?: Date;
   rejection_reason?: string;
   
-  // AI analysis
-  ai_job_id?: string;
-  ai_confidence?: number;
-  
-  submitted_at: Date;
-  reviewed_at?: Date;
-  
+  // Timestamps
+  submitted_at?: Date;
   created_at: Date;
   updated_at: Date;
 }
@@ -225,7 +276,12 @@ export interface TrustLedgerEntry {
   new_tier: number;
   
   reason: string;
-  evidence?: Record<string, unknown>;
+  reason_details?: Record<string, unknown>;
+  
+  task_id?: string;
+  dispute_id?: string;
+  
+  changed_by: string; // 'system', 'admin:usr_xxx'
   
   changed_at: Date;
 }
@@ -234,10 +290,14 @@ export interface Badge {
   id: string;
   user_id: string;
   badge_type: string;
-  tier: number;
+  badge_tier: number; // 1-4
   
-  unlocked_at: Date;
   animation_shown_at?: Date;
+  
+  awarded_for?: string;
+  task_id?: string;
+  
+  awarded_at: Date;
 }
 
 export interface Dispute {
@@ -245,22 +305,30 @@ export interface Dispute {
   task_id: string;
   escrow_id: string;
   
-  initiator_id: string;
-  initiator_role: 'worker' | 'poster';
+  // Participants
+  initiated_by: string;
+  poster_id: string;
+  worker_id: string;
   
-  reason: string;
   state: DisputeState;
   
-  admin_id?: string;
-  resolution_notes?: string;
+  // Reason
+  reason: string;
+  description: string;
   
-  // Split resolution
-  worker_percent?: number;
-  poster_percent?: number;
+  // Resolution
+  resolution?: string;
+  resolution_notes?: string;
+  resolved_by?: string;
+  resolved_at?: Date;
+  
+  // Outcome
+  outcome_escrow_action?: 'RELEASE' | 'REFUND' | 'SPLIT';
+  outcome_worker_penalty: boolean;
+  outcome_poster_penalty: boolean;
   
   created_at: Date;
   updated_at: Date;
-  resolved_at?: Date;
 }
 
 // ============================================================================
@@ -291,16 +359,20 @@ export interface AIJob {
   
   status: AIJobStatus;
   
+  // Model info
+  model_provider?: string;
   model_id?: string;
-  prompt_hash?: string;
+  prompt_version?: string;
   
+  // Timing
   started_at?: Date;
   completed_at?: Date;
-  duration_ms?: number;
+  timeout_ms: number;
   
-  error_code?: string;
-  error_message?: string;
-  retry_count: number;
+  // Retry tracking
+  attempt_count: number;
+  max_attempts: number;
+  last_error?: string;
   
   created_at: Date;
   updated_at: Date;
@@ -311,11 +383,14 @@ export interface AIProposal {
   job_id: string;
   
   proposal_type: string;
-  proposal_data: Record<string, unknown>;
-  confidence: number;
+  proposal: Record<string, unknown>;
+  proposal_hash: string;
   
-  raw_response?: Record<string, unknown>;
-  token_count?: number;
+  confidence?: number;
+  certainty_tier?: CertaintyTier;
+  anomaly_flags?: string[];
+  
+  schema_version: string;
   
   created_at: Date;
 }
@@ -324,13 +399,137 @@ export interface AIDecision {
   id: string;
   proposal_id: string;
   
-  decision: 'ACCEPTED' | 'REJECTED' | 'MODIFIED' | 'DEFERRED';
-  decision_reason?: string;
+  accepted: boolean;
+  reason_codes: string[];
   
-  validator_version: string;
-  applied_at?: Date;
+  // What was written (if accepted)
+  writes?: Record<string, unknown>;
+  
+  // Authority
+  final_author: string; // 'system', 'admin:usr_xxx', 'user:usr_xxx'
+  
+  decided_at: Date;
+}
+
+// Evidence (AI_INFRASTRUCTURE §9)
+export interface Evidence {
+  id: string;
+  task_id?: string;
+  dispute_id?: string;
+  proof_id?: string;
+  
+  uploader_user_id: string;
+  
+  // Request context
+  requested_by: 'system' | 'poster' | 'admin';
+  request_reason_codes: string[];
+  ai_request_proposal_id?: string;
+  
+  // File info
+  storage_key: string;
+  content_type: string;
+  file_size_bytes: number;
+  checksum_sha256: string;
+  
+  // Capture metadata
+  capture_time?: Date;
+  device_metadata?: Record<string, unknown>;
+  
+  // Access control
+  access_scope: EvidenceAccessScope;
+  
+  // Retention
+  retention_deadline: Date;
+  legal_hold: boolean;
+  deleted_at?: Date;
+  
+  // Moderation
+  moderation_status: EvidenceModerationStatus;
+  moderation_flags?: string[];
   
   created_at: Date;
+  updated_at: Date;
+}
+
+// Live Mode types
+export interface LiveSession {
+  id: string;
+  user_id: string;
+  
+  started_at: Date;
+  ended_at?: Date;
+  end_reason?: 'MANUAL' | 'COOLDOWN' | 'FATIGUE' | 'FORCED';
+  
+  tasks_accepted: number;
+  tasks_declined: number;
+  tasks_completed: number;
+  earnings_cents: number;
+  
+  created_at: Date;
+}
+
+export interface LiveBroadcast {
+  id: string;
+  task_id: string;
+  
+  started_at: Date;
+  expired_at?: Date;
+  accepted_at?: Date;
+  accepted_by?: string;
+  
+  initial_radius_miles: number;
+  final_radius_miles?: number;
+  hustlers_notified: number;
+  hustlers_viewed: number;
+  
+  created_at: Date;
+}
+
+// Poster reputation (PRODUCT_SPEC §8.4)
+export interface PosterRating {
+  id: string;
+  task_id: string;
+  poster_id: string;
+  rated_by: string;
+  
+  rating: 'GREAT' | 'OKAY' | 'DIFFICULT';
+  feedback_flags?: string[];
+  
+  created_at: Date;
+}
+
+// Session forecast (AI_INFRASTRUCTURE §21)
+export interface SessionForecast {
+  id: string;
+  user_id: string;
+  
+  earnings_low_cents: number;
+  earnings_high_cents: number;
+  confidence: 'LOW' | 'MEDIUM' | 'HIGH';
+  conditions: 'POOR' | 'FAIR' | 'GOOD' | 'EXCELLENT';
+  best_categories?: string[];
+  nearby_demand?: number;
+  
+  actual_earnings_cents?: number;
+  
+  inputs_hash?: string;
+  expires_at: Date;
+  
+  created_at: Date;
+}
+
+// Money timeline (UI_SPEC §14)
+export interface MoneyTimelineEntry {
+  id: string;
+  worker_id: string;
+  amount_cents: number;
+  escrow_state: EscrowState;
+  released_at?: Date;
+  task_id: string;
+  task_title: string;
+  task_state: TaskState;
+  timeline_category: 'TODAY' | 'AVAILABLE' | 'COMING_SOON' | 'BLOCKED' | 'PENDING';
+  status_context?: string;
 }
 
 // ============================================================================
@@ -347,23 +546,51 @@ export interface ServiceError {
   details?: Record<string, unknown>;
 }
 
-// Error codes (match trigger ERRCODE values)
+// Error codes (match trigger ERRCODE values from PRODUCT_SPEC §10)
 export const ErrorCodes = {
-  // Invariant violations
-  INV_1_VIOLATION: 'HX101',  // XP requires RELEASED escrow
-  INV_2_VIOLATION: 'HX201',  // RELEASED requires COMPLETED task
-  INV_3_VIOLATION: 'HX301',  // COMPLETED requires ACCEPTED proof
-  INV_4_VIOLATION: 'HX401',  // Escrow amount immutable
-  INV_5_VIOLATION: '23505',  // Unique constraint (XP idempotency)
-  
   // Terminal state violations
-  TASK_TERMINAL: 'HX002',
-  ESCROW_TERMINAL: 'HX002',
+  TASK_TERMINAL: 'HX001',  // Task terminal state violation
+  ESCROW_TERMINAL: 'HX002',  // Escrow terminal state violation
+  
+  // INV-4: Escrow amount immutable
+  INV_4_VIOLATION: 'HX004',  // Escrow amount modification
+  
+  // INV-1: XP requires RELEASED escrow
+  INV_1_VIOLATION: 'HX101',  // XP without released escrow
+  XP_LEDGER_DELETE: 'HX102',  // XP ledger deletion attempt
+  
+  // INV-2: RELEASED requires COMPLETED task
+  INV_2_VIOLATION: 'HX201',  // Release without completed task
+  
+  // INV-3: COMPLETED requires ACCEPTED proof
+  INV_3_VIOLATION: 'HX301',  // Complete without accepted proof
+  
+  // Badge system
+  BADGE_DELETE: 'HX401',  // Badge deletion attempt
+  
+  // Admin actions
+  ADMIN_ACTION_DELETE: 'HX801',  // Admin action audit violation
+  
+  // Live Mode (HX9XX)
+  LIVE_1_VIOLATION: 'HX901',  // Live broadcast without funded escrow
+  LIVE_2_VIOLATION: 'HX902',  // Live task below price floor
+  LIVE_NOT_ACTIVE: 'HX903',  // Hustler not in ACTIVE state
+  LIVE_TOGGLE_COOLDOWN: 'HX904',  // Live Mode toggle cooldown
+  LIVE_BANNED: 'HX905',  // Live Mode banned
+  
+  // Human Systems (HX6XX) - Reserved
+  FATIGUE_BYPASS: 'HX601',  // Fatigue mandatory break bypass
+  PAUSE_VIOLATION: 'HX602',  // Pause state violation
+  POSTER_REP_ACCESS: 'HX603',  // Poster reputation access by poster
+  PERCENTILE_EXPOSURE: 'HX604',  // Percentile public exposure
+  
+  // INV-5: XP idempotent per escrow (PostgreSQL unique violation)
+  INV_5_VIOLATION: '23505',  // Unique constraint violation
   
   // General errors
-  NOT_FOUND: 'HX404',
-  INVALID_STATE: 'HX400',
-  INVALID_TRANSITION: 'HX400',
-  UNAUTHORIZED: 'HX401',
-  FORBIDDEN: 'HX403',
+  NOT_FOUND: 'NOT_FOUND',
+  INVALID_STATE: 'INVALID_STATE',
+  INVALID_TRANSITION: 'INVALID_TRANSITION',
+  UNAUTHORIZED: 'UNAUTHORIZED',
+  FORBIDDEN: 'FORBIDDEN',
 } as const;

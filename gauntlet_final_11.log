@@ -1,0 +1,103 @@
+
+==================================================
+   SEATTLE BETA GAUNTLET (OMEGA PROTOCOL v9D)
+==================================================
+SCENARIO | RESULT   | STATE        | LEDGER     | NOTES
+---------|----------|--------------|------------|------------------------
+[ENV] Loading Environment: LOCAL
+[08:17:18] [32mINFO[39m: [36mRunning Enterprise Environment Loader[39m
+    module: "service"
+    mode: "local"
+    stripeMode: "test"
+    payoutsEnabled: false
+    identityStrict: false
+| A1   | PASS     | cancelled    | VERIFY     | Cancellation accepted
+[08:17:20] [32mINFO[39m: [36mTask cancelled during active phase - Refund Logic Implicit[39m
+    module: "service"
+    taskId: "0ad2ff18-b280-4ea6-a66e-70852b09d553"
+    action: "cancel"
+[08:17:20] [33mWARN[39m: [36mTask Cancelled by Poster[39m
+    module: "service"
+    taskId: "0ad2ff18-b280-4ea6-a66e-70852b09d553"
+    reason: "Changed mind"
+[08:17:21] [32mINFO[39m: [36mPreparing ledger transaction: ESCROW_HOLD[39m
+    module: "service"
+    txId: "01KCBCJB5BKPBM7XK0REZJCTC7"
+    type: "LedgerPrepare"
+[08:17:21] [31mERROR[39m: [36mPrepare Failed[39m
+    module: "service"
+    txId: "01KCBCJB5BKPBM7XK0REZJCTC7"
+    type: "LedgerPrepare"
+    error: {
+      "length": 320,
+      "name": "error",
+      "severity": "ERROR",
+      "code": "23502",
+      "detail": "Failing row contains (null, 01KCBCJB5BKPBM7XK0REZJCTC7, 281b7fc0-9394-dc3b-3313-b87085a0e208, debit, 1000, null, 2025-12-13 08:17:21.325033+00).",
+      "schema": "public",
+      "table": "ledger_entries",
+      "column": "id",
+      "file": "execMain.c",
+      "line": "2032",
+      "routine": "ExecConstraints"
+    }
+[08:17:21] [31mERROR[39m: [36mSaga Failed - Initiating Compensation Flow[39m
+    module: "service"
+    taskId: "db12ac56-2855-4a27-9afa-96cc708ae47d"
+    eventType: "HOLD_ESCROW"
+    err: {
+      "type": "DatabaseError",
+      "message": "null value in column \"id\" of relation \"ledger_entries\" violates not-null constraint",
+      "stack":
+          error: null value in column "id" of relation "ledger_entries" violates not-null constraint
+              at bn.parseErrorMessage (file:///Users/sebastiandysart/HustleXP/hustlexp-ai-backend/node_modules/@neondatabase/serverless/index.mjs:955:41)
+              at bn.handlePacket (file:///Users/sebastiandysart/HustleXP/hustlexp-ai-backend/node_modules/@neondatabase/serverless/index.mjs:923:75)
+              at bn.parse (file:///Users/sebastiandysart/HustleXP/hustlexp-ai-backend/node_modules/@neondatabase/serverless/index.mjs:911:36)
+              at S.<anonymous> (file:///Users/sebastiandysart/HustleXP/hustlexp-ai-backend/node_modules/@neondatabase/serverless/index.mjs:962:16)
+              at S.emit (file:///Users/sebastiandysart/HustleXP/hustlexp-ai-backend/node_modules/@neondatabase/serverless/index.mjs:317:79)
+              at WebSocket.<anonymous> (file:///Users/sebastiandysart/HustleXP/hustlexp-ai-backend/node_modules/@neondatabase/serverless/index.mjs:403:19)
+              at [nodejs.internal.kHybridDispatch] (node:internal/event_target:827:20)
+              at WebSocket.dispatchEvent (node:internal/event_target:762:26)
+              at fireEvent (node:internal/deps/undici/undici:11663:14)
+              at websocketMessageReceived (node:internal/deps/undici/undici:11685:7)
+      "length": 320,
+      "name": "error",
+      "severity": "ERROR",
+      "code": "23502",
+      "detail": "Failing row contains (null, 01KCBCJB5BKPBM7XK0REZJCTC7, 281b7fc0-9394-dc3b-3313-b87085a0e208, debit, 1000, null, 2025-12-13 08:17:21.325033+00).",
+      "schema": "public",
+      "table": "ledger_entries",
+      "column": "id",
+      "file": "execMain.c",
+      "line": "2032",
+      "routine": "ExecConstraints"
+    }
+Gauntlet Crashed: error: null value in column "id" of relation "ledger_entries" violates not-null constraint
+    at bn.parseErrorMessage (file:///Users/sebastiandysart/HustleXP/hustlexp-ai-backend/node_modules/@neondatabase/serverless/index.mjs:955:41)
+    at bn.handlePacket (file:///Users/sebastiandysart/HustleXP/hustlexp-ai-backend/node_modules/@neondatabase/serverless/index.mjs:923:75)
+    at bn.parse (file:///Users/sebastiandysart/HustleXP/hustlexp-ai-backend/node_modules/@neondatabase/serverless/index.mjs:911:36)
+    at S.<anonymous> (file:///Users/sebastiandysart/HustleXP/hustlexp-ai-backend/node_modules/@neondatabase/serverless/index.mjs:962:16)
+    at S.emit (file:///Users/sebastiandysart/HustleXP/hustlexp-ai-backend/node_modules/@neondatabase/serverless/index.mjs:317:79)
+    at WebSocket.<anonymous> (file:///Users/sebastiandysart/HustleXP/hustlexp-ai-backend/node_modules/@neondatabase/serverless/index.mjs:403:19)
+    at [nodejs.internal.kHybridDispatch] (node:internal/event_target:827:20)
+    at WebSocket.dispatchEvent (node:internal/event_target:762:26)
+    at fireEvent (node:internal/deps/undici/undici:11663:14)
+    at websocketMessageReceived (node:internal/deps/undici/undici:11685:7) {
+  length: 320,
+  severity: 'ERROR',
+  code: '23502',
+  detail: 'Failing row contains (null, 01KCBCJB5BKPBM7XK0REZJCTC7, 281b7fc0-9394-dc3b-3313-b87085a0e208, debit, 1000, null, 2025-12-13 08:17:21.325033+00).',
+  hint: undefined,
+  position: undefined,
+  internalPosition: undefined,
+  internalQuery: undefined,
+  where: undefined,
+  schema: 'public',
+  table: 'ledger_entries',
+  column: 'id',
+  dataType: undefined,
+  constraint: undefined,
+  file: 'execMain.c',
+  line: '2032',
+  routine: 'ExecConstraints'
+}

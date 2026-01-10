@@ -40,6 +40,30 @@ export const escrowRouter = router({
     }),
   
   /**
+   * Get server-authoritative escrow state
+   * Used for state confirmation (UI_SPEC §9.1)
+   */
+  getState: protectedProcedure
+    .input(z.object({ escrowId: z.string().uuid() }))
+    .query(async ({ input }) => {
+      const result = await db.query<{ state: string }>(
+        `SELECT state FROM escrows WHERE id = $1`,
+        [input.escrowId]
+      );
+      
+      if (result.rows.length === 0) {
+        throw new TRPCError({
+          code: 'NOT_FOUND',
+          message: 'Escrow not found',
+        });
+      }
+      
+      return {
+        state: result.rows[0].state,
+      };
+    }),
+  
+  /**
    * Get escrow by task ID
    */
   getByTaskId: protectedProcedure
