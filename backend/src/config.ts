@@ -23,7 +23,8 @@ export const config = {
   stripe: {
     secretKey: process.env.STRIPE_SECRET_KEY || '',
     webhookSecret: process.env.STRIPE_WEBHOOK_SECRET || '',
-    platformFeePercent: 2.5,
+    platformFeePercent: 15, // PRODUCT_SPEC §9: 15% platform fee
+    minimumTaskValueCents: 500, // PRODUCT_SPEC §9: $5.00 minimum
   },
   
   // Authentication (Firebase)

@@ -1,0 +1,68 @@
+=========================================
+   M4 SURGICAL TEST RUNNER (NEON/SER)    
+=========================================
+Environment: DATABASE_URL aligned to M4 Target (Dynamic Import Mode).
+Environment: SERIALIZABLE Enforced.
+
+>> RUNNING: Race Release (Option A: 500 Manual Clients - No Pool)
+[04:05:32] [32mINFO[39m: [36m>>> STARTING M4 RACE RELEASE (OPTION A - STRICT) <<<[39m
+    module: "service"
+[04:05:32] [32mINFO[39m: [36mPreparing ledger transaction: PAYOUT_RELEASE[39m
+    module: "service"
+    txId: "01KCAY58J2P5TXHWP8NFCNP1ZR"
+    type: "LedgerPrepare"
+[04:05:32] [32mINFO[39m: [36mTransaction PREPARED (Pending)[39m
+    module: "service"
+    txId: "01KCAY58J2P5TXHWP8NFCNP1ZR"
+    type: "LedgerPrepare"
+[04:05:33] [32mINFO[39m: [36mTransaction COMMITTED[39m
+    module: "service"
+    txId: "01KCAY58J2P5TXHWP8NFCNP1ZR"
+    type: "LedgerCommit"
+   [PASS] 964ms
+
+>> RUNNING: Saga Fault Injection (Stripe Down)
+[04:05:33] [32mINFO[39m: [36m>>> STARTING M4 SAGA FAULTS (STRIPE DOWN) <<<[39m
+    module: "service"
+   [PASS] 906ms
+
+>> RUNNING: Ledger Consistency & Integrity
+   [PASS] 115ms
+
+=========================================
+   M4 FINAL REPORT                       
+=========================================
+┌─────────┬─────────────────────────────────────────────────────────┬────────┬─────────┬─────────────────────────────────────────────────────────────────────────────────┬───────┐
+│ (index) │ Case                                                    │ Status │ Time    │ Stats                                                                           │ Error │
+├─────────┼─────────────────────────────────────────────────────────┼────────┼─────────┼─────────────────────────────────────────────────────────────────────────────────┼───────┤
+│ 0       │ 'Race Release (Option A: 500 Manual Clients - No Pool)' │ 'PASS' │ '964ms' │ '{"successes":1,"failures":9,"processedCount":1,"finalVersion":2,"workers":10}' │ ''    │
+│ 1       │ 'Saga Fault Injection (Stripe Down)'                    │ 'PASS' │ '906ms' │ '{"status":"Correctly Rolled Back"}'                                            │ ''    │
+│ 2       │ 'Ledger Consistency & Integrity'                        │ 'PASS' │ '115ms' │ '{"checkedTransactions":"ALL"}'                                                 │ ''    │
+└─────────┴─────────────────────────────────────────────────────────┴────────┴─────────┴─────────────────────────────────────────────────────────────────────────────────┴───────┘
+
+Status: CERTIFIED (M4).
+[04:05:33] [32mINFO[39m: [36mPreparing ledger transaction: PAYOUT_RELEASE[39m
+    module: "service"
+    txId: "01KCAY59MEQTASXN486HMR0JCG"
+    type: "LedgerPrepare"
+[04:05:34] [33mWARN[39m: [36mDuplicate transaction detected (Idempotency). Returning existing.[39m
+    module: "service"
+    txId: "01KCAY59MEQTASXN486HMR0JCG"
+    type: "LedgerPrepare"
+[04:05:34] [31mERROR[39m: [36mSaga Failed from Engine[39m
+    module: "service"
+    taskId: "acb8250e-18b4-4af0-8fbe-ea253c020c0e"
+    eventType: "RELEASE_PAYOUT"
+    err: {
+      "type": "Error",
+      "message": "stripe_server_error",
+      "stack":
+          Error: stripe_server_error
+              at Object.capture (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/tests/m4/cases/saga-faults.ts:83:46)
+              at effectReleasePayout (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/services/StripeMoneyEngine.ts:136:44)
+              at executeStripeEffects (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/services/StripeMoneyEngine.ts:82:26)
+              at Object.handle (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/services/StripeMoneyEngine.ts:320:31)
+              at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+              at async Object.run (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/tests/m4/cases/saga-faults.ts:92:13)
+              at async main (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/tests/m4/m4-runner.ts:73:28)
+    }

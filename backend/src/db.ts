@@ -47,14 +47,21 @@ console.log('✅ Neon database pool initialized');
 /**
  * HustleXP-specific error codes raised by database triggers.
  * These map to invariant violations.
+ * 
+ * @see PRODUCT_SPEC.md §10 (Error Codes)
+ * @see schema.sql (Error code reference)
  */
 export const HX_ERROR_CODES = {
   // Terminal state violations
-  HX002: 'Cannot modify record in terminal state',
+  HX001: 'Task terminal state violation - Cannot modify task in COMPLETED/CANCELLED/EXPIRED state',
+  HX002: 'Escrow terminal state violation - Cannot modify escrow in RELEASED/REFUNDED/REFUND_PARTIAL state',
+  
+  // INV-4: Escrow amount immutable
+  HX004: 'INV-4 VIOLATION: Escrow amount cannot be modified after creation',
   
   // INV-1: XP requires RELEASED escrow
   HX101: 'INV-1 VIOLATION: Cannot award XP - escrow not in RELEASED state',
-  HX102: 'XP ledger entries cannot be deleted',
+  HX102: 'XP ledger immutability violation - XP ledger entries cannot be deleted',
   
   // INV-2: RELEASED requires COMPLETED task
   HX201: 'INV-2 VIOLATION: Cannot release escrow - task not in COMPLETED state',
@@ -62,18 +69,24 @@ export const HX_ERROR_CODES = {
   // INV-3: COMPLETED requires ACCEPTED proof
   HX301: 'INV-3 VIOLATION: Cannot complete task - proof not in ACCEPTED state',
   
-  // INV-4: Escrow amount immutable
-  HX401: 'INV-4 VIOLATION: Escrow amount cannot be modified after creation',
-  
-  // Badge ledger
-  HX501: 'Badge entries cannot be deleted',
+  // Badge system
+  HX401: 'INV-BADGE-2 VIOLATION: Badge delete attempt - Badges are append-only',
   
   // Admin actions
-  HX601: 'Admin action entries cannot be deleted',
+  HX801: 'Admin action audit immutability - Admin action entries cannot be deleted',
   
-  // Trust tier
-  HX701: 'Trust tier change must be audited',
-  HX801: 'Trust tier out of valid range',
+  // Live Mode (HX9XX)
+  HX901: 'LIVE-1 VIOLATION: Live broadcast without funded escrow',
+  HX902: 'LIVE-2 VIOLATION: Live task below price floor ($15.00 minimum)',
+  HX903: 'Hustler not in ACTIVE live mode state',
+  HX904: 'Live Mode toggle cooldown violation',
+  HX905: 'Live Mode banned - Cannot enable while banned',
+  
+  // Human Systems (HX6XX) - Reserved for future enforcement
+  HX601: 'Fatigue mandatory break bypass attempt',
+  HX602: 'Pause state violation',
+  HX603: 'Poster reputation access by poster (POSTER-1 violation)',
+  HX604: 'Percentile public exposure attempt (PERC-1 violation)',
 } as const;
 
 export type HXErrorCode = keyof typeof HX_ERROR_CODES;
@@ -93,11 +106,78 @@ export interface DatabaseError extends Error {
 
 /**
  * Check if error is a HustleXP invariant violation
+ * PostgreSQL custom error codes are set via ERRCODE in triggers
  */
 export function isInvariantViolation(error: unknown): error is DatabaseError {
   if (!(error instanceof Error)) return false;
   const dbError = error as DatabaseError;
-  return dbError.code !== undefined && dbError.code in HX_ERROR_CODES;
+  if (!dbError.code) return false;
+  
+  // Check if it's an HX error code (HX001, HX002, etc.)
+  const hxCodePattern = /^HX\d{3}$/;
+  if (hxCodePattern.test(dbError.code)) {
+    return dbError.code in HX_ERROR_CODES;
+  }
+  
+  return false;
+}
+
+/**
+ * Get the HX error code from an error, if present
+ */
+export function getHXErrorCode(error: unknown): HXErrorCode | null {
+  if (!isInvariantViolation(error)) return null;
+  return error.code as HXErrorCode;
+}
+
+/**
+ * Helper: Check if error is INV-1 violation (XP requires RELEASED escrow)
+ */
+export function isInv1Violation(error: unknown): boolean {
+  return getHXErrorCode(error) === 'HX101';
+}
+
+/**
+ * Helper: Check if error is INV-2 violation (RELEASED requires COMPLETED task)
+ */
+export function isInv2Violation(error: unknown): boolean {
+  return getHXErrorCode(error) === 'HX201';
+}
+
+/**
+ * Helper: Check if error is INV-3 violation (COMPLETED requires ACCEPTED proof)
+ */
+export function isInv3Violation(error: unknown): boolean {
+  return getHXErrorCode(error) === 'HX301';
+}
+
+/**
+ * Helper: Check if error is INV-4 violation (Escrow amount immutable)
+ */
+export function isInv4Violation(error: unknown): boolean {
+  return getHXErrorCode(error) === 'HX004';
+}
+
+/**
+ * Helper: Check if error is terminal state violation (task)
+ */
+export function isTaskTerminalViolation(error: unknown): boolean {
+  return getHXErrorCode(error) === 'HX001';
+}
+
+/**
+ * Helper: Check if error is terminal state violation (escrow)
+ */
+export function isEscrowTerminalViolation(error: unknown): boolean {
+  return getHXErrorCode(error) === 'HX002';
+}
+
+/**
+ * Helper: Check if error is Live Mode violation
+ */
+export function isLiveModeViolation(error: unknown): boolean {
+  const code = getHXErrorCode(error);
+  return code !== null && ['HX901', 'HX902', 'HX903', 'HX904', 'HX905'].includes(code);
 }
 
 /**

@@ -36,6 +36,30 @@ export const taskRouter = router({
     }),
   
   /**
+   * Get server-authoritative task state
+   * Used for state confirmation (UI_SPEC §9.1)
+   */
+  getState: protectedProcedure
+    .input(z.object({ taskId: Schemas.uuid }))
+    .query(async ({ input }) => {
+      const result = await db.query<{ state: string }>(
+        `SELECT state FROM tasks WHERE id = $1`,
+        [input.taskId]
+      );
+      
+      if (result.rows.length === 0) {
+        throw new TRPCError({
+          code: 'NOT_FOUND',
+          message: 'Task not found',
+        });
+      }
+      
+      return {
+        state: result.rows[0].state,
+      };
+    }),
+  
+  /**
    * List tasks by poster
    */
   listByPoster: protectedProcedure
@@ -101,13 +125,26 @@ export const taskRouter = router({
     .mutation(async ({ ctx, input }) => {
       const result = await TaskService.create({
         posterId: ctx.user.id,
-        ...input,
+        title: input.title,
+        description: input.description,
+        price: input.price,
+        requirements: input.requirements,
+        location: input.location,
+        category: input.category,
         deadline: input.deadline ? new Date(input.deadline) : undefined,
+        requiresProof: input.requiresProof,
+        mode: input.mode,
+        liveBroadcastRadiusMiles: input.liveBroadcastRadiusMiles,
       });
       
       if (!result.success) {
+        // Map HX error codes to tRPC error codes
+        let code: 'BAD_REQUEST' | 'PRECONDITION_FAILED' = 'BAD_REQUEST';
+        if (result.error.code === 'HX902' || result.error.code === 'HX901') {
+          code = 'PRECONDITION_FAILED';
+        }
         throw new TRPCError({
-          code: 'BAD_REQUEST',
+          code,
           message: result.error.message,
         });
       }

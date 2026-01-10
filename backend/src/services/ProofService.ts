@@ -20,32 +20,8 @@ import { ErrorCodes } from '../types';
 // TYPES
 // ============================================================================
 
-export type ProofState = 'PENDING' | 'ACCEPTED' | 'REJECTED' | 'NEEDS_MORE';
+import type { Proof, ProofState, ProofPhoto } from '../types';
 
-export interface Proof {
-  id: string;
-  task_id: string;
-  submitter_id: string;
-  state: ProofState;
-  description?: string;
-  reviewed_by?: string;
-  reviewed_at?: Date;
-  rejection_reason?: string;
-  created_at: Date;
-  updated_at: Date;
-}
-
-export interface ProofPhoto {
-  id: string;
-  proof_id: string;
-  storage_key: string;
-  content_type: string;
-  file_size_bytes: number;
-  checksum_sha256: string;
-  capture_time?: Date;
-  sequence_number: number;
-  created_at: Date;
-}
 
 interface SubmitProofParams {
   taskId: string;
@@ -66,7 +42,7 @@ interface AddPhotoParams {
 interface ReviewProofParams {
   proofId: string;
   reviewerId: string;
-  decision: 'ACCEPTED' | 'REJECTED' | 'NEEDS_MORE';
+  decision: 'ACCEPTED' | 'REJECTED';
   reason?: string;
 }
 
@@ -75,10 +51,11 @@ interface ReviewProofParams {
 // ============================================================================
 
 const VALID_TRANSITIONS: Record<ProofState, ProofState[]> = {
-  PENDING: ['ACCEPTED', 'REJECTED', 'NEEDS_MORE'],
-  NEEDS_MORE: ['ACCEPTED', 'REJECTED', 'PENDING'], // PENDING = resubmitted
-  ACCEPTED: [],  // TERMINAL for proof
-  REJECTED: [],  // TERMINAL for proof
+  PENDING: ['SUBMITTED'],
+  SUBMITTED: ['ACCEPTED', 'REJECTED', 'EXPIRED'],
+  ACCEPTED: [],  // TERMINAL
+  REJECTED: [],  // TERMINAL
+  EXPIRED: [],   // TERMINAL
 };
 
 function isValidTransition(from: ProofState, to: ProofState): boolean {
@@ -176,20 +153,42 @@ export const ProofService = {
 
   /**
    * Submit proof for a task
+   * Creates proof in PENDING state, then transitions to SUBMITTED
    */
   submit: async (params: SubmitProofParams): Promise<ServiceResult<Proof>> => {
     const { taskId, submitterId, description } = params;
     
     try {
-      const result = await db.query<Proof>(
+      // Create proof in PENDING state
+      const createResult = await db.query<Proof>(
         `INSERT INTO proofs (task_id, submitter_id, state, description)
          VALUES ($1, $2, 'PENDING', $3)
          RETURNING *`,
         [taskId, submitterId, description]
       );
       
-      return { success: true, data: result.rows[0] };
+      const proof = createResult.rows[0];
+      
+      // Transition to SUBMITTED
+      const submitResult = await db.query<Proof>(
+        `UPDATE proofs
+         SET state = 'SUBMITTED', submitted_at = NOW()
+         WHERE id = $1
+         RETURNING *`,
+        [proof.id]
+      );
+      
+      return { success: true, data: submitResult.rows[0] };
     } catch (error) {
+      if (isInvariantViolation(error)) {
+        return {
+          success: false,
+          error: {
+            code: error.code || 'INVARIANT_VIOLATION',
+            message: getErrorMessage(error.code || ''),
+          },
+        };
+      }
       return {
         success: false,
         error: {
@@ -273,7 +272,7 @@ export const ProofService = {
       
       const current = currentResult.rows[0];
       
-      // Validate transition
+      // Validate transition (database will also enforce, but we check first for better error messages)
       if (!isValidTransition(current.state, decision)) {
         return {
           success: false,
@@ -284,7 +283,7 @@ export const ProofService = {
         };
       }
       
-      // Update proof
+      // Update proof (database triggers will enforce INV-3 when task tries to complete)
       const result = await db.query<Proof>(
         `UPDATE proofs
          SET state = $1, reviewed_by = $2, reviewed_at = NOW(), rejection_reason = $3
@@ -295,6 +294,15 @@ export const ProofService = {
       
       return { success: true, data: result.rows[0] };
     } catch (error) {
+      if (isInvariantViolation(error)) {
+        return {
+          success: false,
+          error: {
+            code: error.code || 'INVARIANT_VIOLATION',
+            message: getErrorMessage(error.code || ''),
+          },
+        };
+      }
       return {
         success: false,
         error: {

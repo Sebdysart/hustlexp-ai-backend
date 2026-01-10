@@ -1,0 +1,110 @@
+=========================================
+   M4 SURGICAL TEST RUNNER (NEON/SER)    
+=========================================
+Environment: SERIALIZABLE Enforced.
+
+>> RUNNING: Race Release (Option A: 500 Manual Clients - No Pool)
+[13:24:46] [32mINFO[39m: [36m>>> STARTING M4 RACE RELEASE (OPTION A - STRICT) <<<[39m
+    module: "service"
+[13:24:47] [32mINFO[39m: [36mPreparing ledger transaction: PAYOUT_RELEASE[39m
+    module: "service"
+    txId: "01KC9BRJ27RJR46RVFRRFWC2NS"
+    type: "LedgerPrepare"
+[13:24:47] [32mINFO[39m: [36mTransaction PREPARED (Pending)[39m
+    module: "service"
+    txId: "01KC9BRJ27RJR46RVFRRFWC2NS"
+    type: "LedgerPrepare"
+[13:24:48] [32mINFO[39m: [36mPreparing ledger transaction: PAYOUT_RELEASE[39m
+    module: "service"
+    txId: "01KC9BRJNNFYKYZ6QT1TGDEFJM"
+    type: "LedgerPrepare"
+[13:24:48] [32mINFO[39m: [36mTransaction PREPARED (Pending)[39m
+    module: "service"
+    txId: "01KC9BRJNNFYKYZ6QT1TGDEFJM"
+    type: "LedgerPrepare"
+[13:24:48] [32mINFO[39m: [36mPreparing ledger transaction: PAYOUT_RELEASE[39m
+    module: "service"
+    txId: "01KC9BRK444N56T8BFM8YTNA9Q"
+    type: "LedgerPrepare"
+[13:24:49] [32mINFO[39m: [36mTransaction PREPARED (Pending)[39m
+    module: "service"
+    txId: "01KC9BRK444N56T8BFM8YTNA9Q"
+    type: "LedgerPrepare"
+[13:24:49] [32mINFO[39m: [36mPreparing ledger transaction: PAYOUT_RELEASE[39m
+    module: "service"
+    txId: "01KC9BRKK42HV24P3TCKH0WXKN"
+    type: "LedgerPrepare"
+[13:24:49] [32mINFO[39m: [36mTransaction PREPARED (Pending)[39m
+    module: "service"
+    txId: "01KC9BRKK42HV24P3TCKH0WXKN"
+    type: "LedgerPrepare"
+[13:24:49] [32mINFO[39m: [36mPreparing ledger transaction: PAYOUT_RELEASE[39m
+    module: "service"
+    txId: "01KC9BRM2R0RDMYBDPMP9YKCE1"
+    type: "LedgerPrepare"
+[13:24:49] [32mINFO[39m: [36mTransaction PREPARED (Pending)[39m
+    module: "service"
+    txId: "01KC9BRM2R0RDMYBDPMP9YKCE1"
+    type: "LedgerPrepare"
+[13:24:50] [32mINFO[39m: [36mPreparing ledger transaction: PAYOUT_RELEASE[39m
+    module: "service"
+    txId: "01KC9BRMH6PCGQQW8WGFM32X4V"
+    type: "LedgerPrepare"
+[13:24:50] [32mINFO[39m: [36mTransaction PREPARED (Pending)[39m
+    module: "service"
+    txId: "01KC9BRMH6PCGQQW8WGFM32X4V"
+    type: "LedgerPrepare"
+[13:24:50] [32mINFO[39m: [36mPreparing ledger transaction: PAYOUT_RELEASE[39m
+    module: "service"
+    txId: "01KC9BRN2HHKYKQR1TCGEQT3QY"
+    type: "LedgerPrepare"
+[13:24:51] [32mINFO[39m: [36mTransaction PREPARED (Pending)[39m
+    module: "service"
+    txId: "01KC9BRN2HHKYKQR1TCGEQT3QY"
+    type: "LedgerPrepare"
+[13:24:51] [32mINFO[39m: [36mPreparing ledger transaction: PAYOUT_RELEASE[39m
+    module: "service"
+    txId: "01KC9BRNJMVPGF99616Q10ZSYX"
+    type: "LedgerPrepare"
+[13:24:51] [32mINFO[39m: [36mTransaction PREPARED (Pending)[39m
+    module: "service"
+    txId: "01KC9BRNJMVPGF99616Q10ZSYX"
+    type: "LedgerPrepare"
+[13:24:51] [32mINFO[39m: [36mPreparing ledger transaction: PAYOUT_RELEASE[39m
+    module: "service"
+    txId: "01KC9BRP342A1WXVT4VPJ8XCM0"
+    type: "LedgerPrepare"
+[13:24:52] [32mINFO[39m: [36mTransaction PREPARED (Pending)[39m
+    module: "service"
+    txId: "01KC9BRP342A1WXVT4VPJ8XCM0"
+    type: "LedgerPrepare"
+[13:24:52] [32mINFO[39m: [36mPreparing ledger transaction: PAYOUT_RELEASE[39m
+    module: "service"
+    txId: "01KC9BRPMEX14X7CBB4S2K6HV2"
+    type: "LedgerPrepare"
+[13:24:52] [32mINFO[39m: [36mTransaction PREPARED (Pending)[39m
+    module: "service"
+    txId: "01KC9BRPMEX14X7CBB4S2K6HV2"
+    type: "LedgerPrepare"
+   [FAIL] 6256ms - Idempotency Failed: 0 processed events. First Error: Invalid API Key provided: sk_test_*****************************only
+
+>> RUNNING: Saga Fault Injection (Stripe Down)
+[13:24:52] [32mINFO[39m: [36m>>> STARTING M4 SAGA FAULTS (STRIPE DOWN) <<<[39m
+    module: "service"
+   [FAIL] 390ms - Unexpected error: money_state_lock missing for task 4d500ef2-487d-422b-a9a6-50a925c2e27b
+
+>> RUNNING: Ledger Consistency & Integrity
+   [PASS] 98ms
+
+=========================================
+   M4 FINAL REPORT                       
+=========================================
+┌─────────┬─────────────────────────────────────────────────────────┬────────┬──────────┬──────────────────────────────────────────────────────────────────────────────────┬────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ (index) │ Case                                                    │ Status │ Time     │ Stats                                                                            │ Error                                                                                                                      │
+├─────────┼─────────────────────────────────────────────────────────┼────────┼──────────┼──────────────────────────────────────────────────────────────────────────────────┼────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ 0       │ 'Race Release (Option A: 500 Manual Clients - No Pool)' │ 'FAIL' │ '6256ms' │ '{"successes":0,"failures":10,"processedCount":0,"finalVersion":1,"workers":10}' │ 'Idempotency Failed: 0 processed events. First Error: Invalid API Key provided: sk_test_*****************************only' │
+│ 1       │ 'Saga Fault Injection (Stripe Down)'                    │ 'FAIL' │ '390ms'  │ ''                                                                               │ 'Unexpected error: money_state_lock missing for task 4d500ef2-487d-422b-a9a6-50a925c2e27b'                                 │
+│ 2       │ 'Ledger Consistency & Integrity'                        │ 'PASS' │ '98ms'   │ '{"checkedTransactions":"ALL"}'                                                  │ ''                                                                                                                         │
+└─────────┴─────────────────────────────────────────────────────────┴────────┴──────────┴──────────────────────────────────────────────────────────────────────────────────┴────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+Status: BUSTED. Fix the Engine.

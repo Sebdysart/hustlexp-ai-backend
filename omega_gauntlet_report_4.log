@@ -1,0 +1,30 @@
+[ENV] Loading Environment: LOCAL
+[05:22:36] [32mINFO[39m: [36mRunning Enterprise Environment Loader[39m
+    module: "service"
+    mode: "local"
+    stripeMode: "test"
+    payoutsEnabled: false
+    identityStrict: false
+[05:22:36] [32mINFO[39m: [36m==================================================[39m
+    module: "service"
+[05:22:36] [32mINFO[39m: [36m   OMEGA PHASE 7: HYPER-STRESS GAUNTLET           [39m
+    module: "service"
+[05:22:36] [32mINFO[39m: [36m==================================================[39m
+    module: "service"
+[05:22:36] [32mINFO[39m: [36m>>> STARTING M5: 5000 WORKERS SIMULATION <<<[39m
+    module: "M5-Stress"
+[05:22:37] [41mFATAL[49m: [36mOMEGA PHASE 7: FAILED[39m
+    module: "service"
+    error: {
+      "length": 472,
+      "name": "error",
+      "severity": "ERROR",
+      "code": "23502",
+      "detail": "Failing row contains (cb8bccac-0b9f-45a8-bf96-233b13ebbbea, 4aeb9f77-bfab-438e-864b-e322a64e1274, M5 Stress, null, null, null, null, null, 50.00, null, null, null, null, null, {}, held, escrow_secured, 882dd864-4cbf-4f4b-99c7-f7aec56281e9, 2025-12-13 05:22:37.550907+00, 2025-12-13 05:22:37.550907+00).",
+      "schema": "public",
+      "table": "tasks",
+      "column": "category",
+      "file": "execMain.c",
+      "line": "2032",
+      "routine": "ExecConstraints"
+    }

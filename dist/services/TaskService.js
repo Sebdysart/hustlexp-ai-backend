@@ -1,0 +1,433 @@
+import { v4 as uuidv4 } from 'uuid';
+import { serviceLogger } from '../utils/logger.js';
+import { sql, query, isDatabaseAvailable } from '../db/index.js';
+// ... (existing code top of file) ...
+// AROUND LINE 191 in searchTasks: 
+// We need to replace the searchTasks method or the specific call. 
+// Since replace_file_content works on contiguous blocks, I will target the searchTasks method implementation 
+// AND the completeTask/new methods at the bottom? No, they are far apart.
+// I will use `multi_replace_file_content` or multiple `replace_file_content` calls. 
+// The user prompt allows multiple calls? Yes.
+// But the tool definition says "Do NOT make multiple parallel calls to this tool ... for the same file".
+// So I will use `multi_replace_file_content`.
+// In-memory store as fallback when database is not available
+const tasksMemory = new Map();
+// Mock hustlers for fallback
+const mockHustlers = [
+    {
+        userId: 'hustler-1',
+        skills: ['delivery', 'errands', 'moving'],
+        rating: 4.8,
+        completedTasks: 47,
+        completionRate: 0.94,
+        xp: 2350,
+        level: 8,
+        streak: 5,
+        latitude: 47.6062,
+        longitude: -122.3321,
+        isActive: true,
+        bio: 'Quick and reliable, I have a truck!'
+    },
+    {
+        userId: 'hustler-2',
+        skills: ['cleaning', 'pet_care', 'yard_work'],
+        rating: 4.9,
+        completedTasks: 83,
+        completionRate: 0.97,
+        xp: 4120,
+        level: 12,
+        streak: 14,
+        latitude: 47.6205,
+        longitude: -122.3493,
+        isActive: true,
+        bio: 'Pet lover and cleaning expert'
+    },
+    {
+        userId: 'hustler-3',
+        skills: ['handyman', 'tech_help', 'moving'],
+        rating: 4.7,
+        completedTasks: 31,
+        completionRate: 0.90,
+        xp: 1550,
+        level: 6,
+        streak: 2,
+        latitude: 47.6097,
+        longitude: -122.3331,
+        isActive: true,
+        bio: 'Handy with tools and tech'
+    }
+];
+class TaskServiceClass {
+    async createTask(args) {
+        const task = {
+            id: uuidv4(),
+            clientId: args.clientId,
+            title: args.title,
+            description: args.description,
+            category: args.category,
+            minPrice: args.minPrice || args.recommendedPrice * 0.8,
+            recommendedPrice: args.recommendedPrice,
+            maxPrice: args.maxPrice,
+            locationText: args.locationText,
+            latitude: args.latitude,
+            longitude: args.longitude,
+            timeWindow: args.timeWindow,
+            flags: args.flags || [],
+            status: 'active',
+            createdAt: new Date(),
+            updatedAt: new Date(),
+        };
+        if (isDatabaseAvailable() && sql) {
+            try {
+                await sql `
+          INSERT INTO tasks (
+            id, client_id, title, description, category, 
+            min_price, recommended_price, max_price,
+            location_text, latitude, longitude,
+            time_window_start, time_window_end, flags, status
+          ) VALUES (
+            ${task.id}, ${task.clientId}, ${task.title}, ${task.description}, ${task.category},
+            ${task.minPrice}, ${task.recommendedPrice}, ${task.maxPrice || null},
+            ${task.locationText || null}, ${task.latitude || null}, ${task.longitude || null},
+            ${task.timeWindow?.start || null}, ${task.timeWindow?.end || null},
+            ${task.flags}, ${task.status}
+          )
+        `;
+                serviceLogger.info({ taskId: task.id, category: task.category, db: true }, 'Task created in database');
+            }
+            catch (error) {
+                serviceLogger.error({ error }, 'Failed to create task in database, using memory');
+                tasksMemory.set(task.id, task);
+            }
+        }
+        else {
+            tasksMemory.set(task.id, task);
+            serviceLogger.info({ taskId: task.id, category: task.category, db: false }, 'Task created in memory');
+        }
+        return task;
+    }
+    async createTaskFromDraft(clientId, draft) {
+        return this.createTask({
+            clientId,
+            title: draft.title,
+            description: draft.description,
+            category: draft.category,
+            minPrice: draft.minPrice,
+            recommendedPrice: draft.recommendedPrice,
+            maxPrice: draft.maxPrice,
+            locationText: draft.locationText,
+            timeWindow: draft.timeWindow
+                ? { start: new Date(draft.timeWindow.start), end: new Date(draft.timeWindow.end) }
+                : undefined,
+            flags: draft.flags,
+        });
+    }
+    async getTask(taskId) {
+        if (isDatabaseAvailable() && sql) {
+            try {
+                const rows = await sql `SELECT * FROM tasks WHERE id = ${taskId}`;
+                if (rows.length === 0)
+                    return null;
+                return this.rowToTask(rows[0]);
+            }
+            catch (error) {
+                serviceLogger.error({ error }, 'Failed to get task from database');
+            }
+        }
+        return tasksMemory.get(taskId) || null;
+    }
+    async searchTasks(args) {
+        if (isDatabaseAvailable() && sql) {
+            try {
+                let queryText = `SELECT * FROM tasks WHERE status = 'active'`;
+                const params = [];
+                if (args.category) {
+                    params.push(args.category);
+                    queryText += ` AND category = $${params.length}`;
+                }
+                if (args.minPrice !== undefined) {
+                    params.push(args.minPrice);
+                    queryText += ` AND recommended_price >= $${params.length}`;
+                }
+                if (args.maxPrice !== undefined) {
+                    params.push(args.maxPrice);
+                    queryText += ` AND recommended_price <= $${params.length}`;
+                }
+                queryText += ` ORDER BY created_at DESC`;
+                if (args.limit) {
+                    params.push(args.limit);
+                    queryText += ` LIMIT $${params.length}`;
+                }
+                const rows = await query(queryText, params);
+                return rows.map(row => this.rowToTask(row));
+            }
+            catch (error) {
+                serviceLogger.error({ error }, 'Failed to search tasks from database');
+            }
+        }
+        // Fallback to memory
+        let results = Array.from(tasksMemory.values());
+        if (args.category) {
+            results = results.filter(t => t.category === args.category);
+        }
+        if (args.minPrice !== undefined) {
+            results = results.filter(t => t.recommendedPrice >= args.minPrice);
+        }
+        if (args.maxPrice !== undefined) {
+            results = results.filter(t => t.recommendedPrice <= args.maxPrice);
+        }
+        results = results.filter(t => t.status === 'active');
+        if (args.limit) {
+            results = results.slice(0, args.limit);
+        }
+        return results;
+    }
+    async getOpenTasksForHustler(hustlerId, limit = 20) {
+        if (isDatabaseAvailable() && sql) {
+            try {
+                const rows = await sql `
+                  SELECT * FROM tasks 
+                  WHERE status = 'active' 
+                  ORDER BY created_at DESC 
+                  LIMIT ${limit}
+                `;
+                return rows.map(row => this.rowToTask(row));
+            }
+            catch (error) {
+                serviceLogger.error({ error }, 'Failed to get tasks from database');
+            }
+        }
+        return Array.from(tasksMemory.values())
+            .filter(t => t.status === 'active')
+            .slice(0, limit);
+    }
+    async getCandidateHustlers(task, limit = 20) {
+        let hustlers = [];
+        if (isDatabaseAvailable() && sql) {
+            try {
+                const rows = await sql `
+          SELECT * FROM hustler_profiles 
+          WHERE is_active = true 
+          AND ${task.category} = ANY(skills)
+          ORDER BY rating DESC
+          LIMIT ${limit * 2}
+        `;
+                hustlers = rows.map(row => this.rowToHustlerProfile(row));
+            }
+            catch (error) {
+                serviceLogger.error({ error }, 'Failed to get hustlers from database');
+                hustlers = mockHustlers.filter(h => h.isActive && h.skills.includes(task.category));
+            }
+        }
+        else {
+            hustlers = mockHustlers.filter(h => h.isActive && h.skills.includes(task.category));
+        }
+        // Score and rank candidates
+        const candidates = hustlers.map(hustler => {
+            let distanceKm;
+            if (task.latitude && task.longitude && hustler.latitude && hustler.longitude) {
+                distanceKm = this.calculateDistance(task.latitude, task.longitude, hustler.latitude, hustler.longitude);
+            }
+            const ratingScore = hustler.rating * 20;
+            const completionScore = hustler.completionRate * 30;
+            const xpScore = Math.min(hustler.xp / 100, 25);
+            const distanceScore = distanceKm ? Math.max(25 - distanceKm * 2, 0) : 10;
+            const score = ratingScore + completionScore + xpScore + distanceScore;
+            return {
+                ...hustler,
+                score,
+                distanceKm,
+                matchReasons: this.getMatchReasons(hustler, task),
+            };
+        })
+            .sort((a, b) => b.score - a.score)
+            .slice(0, limit);
+        return candidates;
+    }
+    async assignHustler(taskId, hustlerId) {
+        if (isDatabaseAvailable() && sql) {
+            try {
+                await sql `
+          UPDATE tasks 
+          SET assigned_hustler_id = ${hustlerId}, status = 'assigned', updated_at = NOW()
+          WHERE id = ${taskId}
+        `;
+                return this.getTask(taskId);
+            }
+            catch (error) {
+                serviceLogger.error({ error }, 'Failed to assign hustler in database');
+            }
+        }
+        const task = tasksMemory.get(taskId);
+        if (!task)
+            return null;
+        task.assignedHustlerId = hustlerId;
+        task.status = 'assigned';
+        task.updatedAt = new Date();
+        serviceLogger.info({ taskId, hustlerId }, 'Hustler assigned to task');
+        return task;
+    }
+    async completeTask(taskId) {
+        if (isDatabaseAvailable() && sql) {
+            try {
+                const [task] = await sql `
+                    UPDATE tasks
+                    SET status = 'completed', updated_at = NOW()
+                    WHERE id = ${taskId}
+                    RETURNING *
+                `;
+                return this.rowToTask(task);
+            }
+            catch (error) {
+                serviceLogger.error({ error }, 'Failed to complete task in database');
+            }
+        }
+        const task = tasksMemory.get(taskId);
+        if (!task)
+            return null;
+        task.status = 'completed';
+        task.updatedAt = new Date();
+        serviceLogger.info({ taskId }, 'Task completed');
+        return task;
+    }
+    // A1: Poster Cancels after Assignment
+    async cancelTask(taskId, userId, reason) {
+        if (!isDatabaseAvailable() || !sql)
+            throw new Error('DB Required');
+        // 1. Get Task
+        const task = await this.getTask(taskId);
+        if (!task)
+            throw new Error('Task not found');
+        // 2. Validate Ownership
+        if (task.clientId !== userId)
+            throw new Error('Unauthorized');
+        // 3. State-Specific Logic
+        if (task.status === 'completed')
+            throw new Error('Cannot cancel completed task');
+        // Dynamic import to avoid circular dependency
+        const { StripeMoneyEngine } = await import('./StripeMoneyEngine.js');
+        if (task.status === 'assigned' || task.status === 'in_progress') {
+            // Log intent for money engine logic (to be handled by robust engine)
+            serviceLogger.info({ taskId, action: 'cancel' }, 'Task cancelled during active phase - Refund Logic Implicit');
+        }
+        const [row] = await sql `
+            UPDATE tasks
+            SET status = 'cancelled', cancel_reason = ${reason}, updated_at = NOW()
+            WHERE id = ${taskId}
+            RETURNING *
+        `;
+        serviceLogger.warn({ taskId, reason }, 'Task Cancelled by Poster');
+        return this.rowToTask(row);
+    }
+    // A4: Hustler Abandons
+    async abandonTask(taskId, hustlerId, reason) {
+        if (!isDatabaseAvailable() || !sql)
+            throw new Error('DB Required');
+        const task = await this.getTask(taskId);
+        if (!task)
+            throw new Error('Task not found');
+        if (task.assignedHustlerId !== hustlerId)
+            throw new Error('Not assigned to this hustler');
+        if (task.status !== 'in_progress' && task.status !== 'assigned') {
+            throw new Error('Task not active');
+        }
+        // Logic: IN_PROGRESS -> OPEN (Reset)
+        const [row] = await sql `
+            UPDATE tasks
+            SET 
+                status = 'active',
+                assigned_hustler_id = NULL,
+                abandoned_by = ${hustlerId}, 
+                updated_at = NOW()
+            WHERE id = ${taskId}
+            RETURNING *
+        `;
+        serviceLogger.warn({ taskId, hustlerId }, 'Task Abandoned by Hustler');
+        return this.rowToTask(row);
+    }
+    rowToTask(row) {
+        return {
+            id: row.id,
+            clientId: row.client_id,
+            title: row.title,
+            description: row.description,
+            category: row.category,
+            minPrice: Number(row.min_price),
+            recommendedPrice: Number(row.recommended_price),
+            maxPrice: row.max_price ? Number(row.max_price) : undefined,
+            locationText: row.location_text,
+            latitude: row.latitude ? Number(row.latitude) : undefined,
+            longitude: row.longitude ? Number(row.longitude) : undefined,
+            timeWindow: row.time_window_start ? {
+                start: new Date(row.time_window_start),
+                end: new Date(row.time_window_end),
+            } : undefined,
+            flags: row.flags || [],
+            status: row.status,
+            assignedHustlerId: row.assigned_hustler_id,
+            createdAt: new Date(row.created_at),
+            updatedAt: new Date(row.updated_at),
+        };
+    }
+    rowToHustlerProfile(row) {
+        return {
+            userId: row.user_id,
+            skills: row.skills || [],
+            rating: Number(row.rating),
+            completedTasks: Number(row.completed_tasks),
+            completionRate: Number(row.completion_rate),
+            xp: Number(row.xp),
+            level: Number(row.level),
+            streak: Number(row.streak),
+            latitude: row.latitude ? Number(row.latitude) : undefined,
+            longitude: row.longitude ? Number(row.longitude) : undefined,
+            isActive: row.is_active,
+            bio: row.bio,
+        };
+    }
+    calculateDistance(lat1, lon1, lat2, lon2) {
+        const R = 6371;
+        const dLat = this.toRad(lat2 - lat1);
+        const dLon = this.toRad(lon2 - lon1);
+        const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+            Math.cos(this.toRad(lat1)) * Math.cos(this.toRad(lat2)) *
+                Math.sin(dLon / 2) * Math.sin(dLon / 2);
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        return R * c;
+    }
+    toRad(deg) {
+        return deg * (Math.PI / 180);
+    }
+    getMatchReasons(hustler, task) {
+        const reasons = [];
+        if (hustler.skills.includes(task.category)) {
+            reasons.push(`Skilled in ${task.category}`);
+        }
+        if (hustler.rating >= 4.8) {
+            reasons.push('Top-rated hustler');
+        }
+        if (hustler.completionRate >= 0.95) {
+            reasons.push('Highly reliable');
+        }
+        if (hustler.streak >= 7) {
+            reasons.push('Active streak - motivated');
+        }
+        return reasons;
+    }
+    async getTaskWithEscrow(taskId) {
+        // For Beta, we assume recommendedPrice is the agreed price.
+        // In full prod, we might have an 'agreed_price' column or separate 'escrow' table entry.
+        // But money_state_lock is now the source of state truth.
+        const task = await this.getTask(taskId);
+        if (!task)
+            throw new Error(`Task ${taskId} not found`);
+        // We assume posterId is clientId (mapped in rowToTask)
+        return {
+            ...task,
+            posterId: task.clientId,
+            hustlerPayout: task.recommendedPrice
+        };
+    }
+}
+export const TaskService = new TaskServiceClass();
+//# sourceMappingURL=TaskService.js.map

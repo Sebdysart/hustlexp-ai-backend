@@ -1,0 +1,65 @@
+
+==================================================
+   SEATTLE BETA GAUNTLET (OMEGA PROTOCOL v9D)
+==================================================
+SCENARIO | RESULT   | STATE        | LEDGER     | NOTES
+---------|----------|--------------|------------|------------------------
+[ENV] Loading Environment: LOCAL
+[08:18:15] [32mINFO[39m: [36mRunning Enterprise Environment Loader[39m
+    module: "service"
+    mode: "local"
+    stripeMode: "test"
+    payoutsEnabled: false
+    identityStrict: false
+| A1   | PASS     | cancelled    | VERIFY     | Cancellation accepted
+[08:18:17] [32mINFO[39m: [36mTask cancelled during active phase - Refund Logic Implicit[39m
+    module: "service"
+    taskId: "5245cd02-b2f4-45ee-9423-138aa8859074"
+    action: "cancel"
+[08:18:17] [33mWARN[39m: [36mTask Cancelled by Poster[39m
+    module: "service"
+    taskId: "5245cd02-b2f4-45ee-9423-138aa8859074"
+    reason: "Changed mind"
+[08:18:18] [32mINFO[39m: [36mPreparing ledger transaction: ESCROW_HOLD[39m
+    module: "service"
+    txId: "01KCBCM2YBRN5SGK0NWWJD1HSN"
+    type: "LedgerPrepare"
+[08:18:18] [32mINFO[39m: [36mTransaction PREPARED (Pending)[39m
+    module: "service"
+    txId: "01KCBCM2YBRN5SGK0NWWJD1HSN"
+    type: "LedgerPrepare"
+[08:18:18] [31mERROR[39m: [36mSaga Failed - Initiating Compensation Flow[39m
+    module: "service"
+    taskId: "40677870-5155-4094-aa4a-a13843450f85"
+    eventType: "HOLD_ESCROW"
+    err: {
+      "type": "Error",
+      "message": "HoldEscrow: Missing amount or payment method",
+      "stack":
+          Error: HoldEscrow: Missing amount or payment method
+              at effectHoldEscrow (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/services/StripeMoneyEngine.ts:82:49)
+              at executeStripeEffects (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/services/StripeMoneyEngine.ts:202:28)
+              at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+              at async Object.handle (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/services/StripeMoneyEngine.ts:410:25)
+              at async runA3 (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/tests/omega/seattle-gauntlet.ts:360:5)
+              at async runGauntlet (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/tests/omega/seattle-gauntlet.ts:500:9)
+    }
+[08:18:19] [41mFATAL[49m: [36mCRITICAL: Compensation Flow Failed![39m
+    module: "service"
+    compError: {
+      "name": "NeonDbError",
+      "severity": "ERROR",
+      "code": "42P01",
+      "position": "34",
+      "file": "parse_relation.c",
+      "line": "1449",
+      "routine": "parserOpenTable"
+    }
+    originalError: {}
+Gauntlet Crashed: Error: HoldEscrow: Missing amount or payment method
+    at effectHoldEscrow (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/services/StripeMoneyEngine.ts:82:49)
+    at executeStripeEffects (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/services/StripeMoneyEngine.ts:202:28)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async Object.handle (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/services/StripeMoneyEngine.ts:410:25)
+    at async runA3 (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/tests/omega/seattle-gauntlet.ts:360:5)
+    at async runGauntlet (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/tests/omega/seattle-gauntlet.ts:500:9)

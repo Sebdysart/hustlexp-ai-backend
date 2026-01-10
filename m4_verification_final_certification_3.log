@@ -1,0 +1,65 @@
+=========================================
+   M4 VERIFICATION SUITE (TRUTH LAYER)   
+=========================================
+Environment: Switched to M4 Target (Mock Staging).
+
+>> 1. SUBLEDGER VALIDATION (Zero-Sum)
+[ENV] Loading Environment: STAGING
+[04:37:02] [32mINFO[39m: [36mRunning Enterprise Environment Loader[39m
+    module: "service"
+    mode: "staging"
+    stripeMode: "test"
+    payoutsEnabled: false
+    identityStrict: true
+[04:37:02] [32mINFO[39m: [36mStarting Task Subledger Validation...[39m
+    module: "SubledgerValidator"
+[04:37:02] [32mINFO[39m: [36mStarting Task Subledger Validation...[39m
+    module: "SubledgerValidator"
+[04:37:02] [31mERROR[39m: [36mCRITICAL: Account Balance Drift Detected![39m
+    module: "SubledgerValidator"
+    count: 2
+    sample: [
+      {
+        "id": "8bb38eed-e371-2aa0-5319-645e42dcf0b6",
+        "name": "User Receivable [7de5c8a4]",
+        "balance": "0",
+        "calculated_balance": "-5000"
+      },
+      {
+        "id": "b10eedeb-c0e6-2942-41a9-364176c9d25d",
+        "name": "Task Escrow [5d310232]",
+        "balance": "0",
+        "calculated_balance": "-5000"
+      }
+    ]
+[04:37:02] [31mERROR[39m: [36mCRITICAL: Account Balance Drift Detected![39m
+    module: "SubledgerValidator"
+    count: 2
+    sample: [
+      {
+        "id": "8bb38eed-e371-2aa0-5319-645e42dcf0b6",
+        "name": "User Receivable [7de5c8a4]",
+        "balance": "0",
+        "calculated_balance": "-5000"
+      },
+      {
+        "id": "b10eedeb-c0e6-2942-41a9-364176c9d25d",
+        "name": "Task Escrow [5d310232]",
+        "balance": "0",
+        "calculated_balance": "-5000"
+      }
+    ]
+
+>> 2. ORDERING GUARD (Drift Detection)
+[04:37:02] [32mINFO[39m: [36mPASS: All Released Tasks have 0 Escrow Balance.[39m
+    module: "SubledgerValidator"
+[04:37:02] [32mINFO[39m: [36mStarting Ordering Guard Scan...[39m
+    module: "OrderingGuard"
+[04:37:02] [32mINFO[39m: [36mStarting Ordering Guard Scan...[39m
+    module: "OrderingGuard"
+[04:37:02] [32mINFO[39m: [36mPASS: No Time Travel detected.[39m
+    module: "OrderingGuard"
+[04:37:02] [32mINFO[39m: [36mPASS: No Time Travel detected.[39m
+    module: "OrderingGuard"
+[04:37:02] [32mINFO[39m: [36mPASS: All Released Tasks have 0 Escrow Balance.[39m
+    module: "SubledgerValidator"

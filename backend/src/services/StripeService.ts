@@ -143,8 +143,19 @@ export const StripeService = {
 
     const { taskId, posterId, amount, description } = params;
 
+    // PRODUCT_SPEC §9: Minimum task value $5.00 (500 cents)
+    if (amount < config.stripe.minimumTaskValueCents) {
+      return {
+        success: false,
+        error: {
+          code: 'INVALID_AMOUNT',
+          message: `Task value must be at least $${config.stripe.minimumTaskValueCents / 100}.00 (${config.stripe.minimumTaskValueCents} cents)`,
+        },
+      };
+    }
+
     try {
-      // Calculate platform fee (PRODUCT_SPEC §4.3)
+      // Calculate platform fee (PRODUCT_SPEC §9: 15% platform fee)
       const platformFee = Math.floor(amount * (config.stripe.platformFeePercent / 100));
 
       const paymentIntent = await stripe.paymentIntents.create({

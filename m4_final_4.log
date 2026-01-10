@@ -1,0 +1,172 @@
+=========================================
+   M4 SURGICAL TEST RUNNER (NEON/SER)    
+=========================================
+Environment: SERIALIZABLE Enforced.
+
+>> RUNNING: Race Release (Option A: 500 Manual Clients - No Pool)
+[13:29:02] [32mINFO[39m: [36m>>> STARTING M4 RACE RELEASE (OPTION A - STRICT) <<<[39m
+    module: "service"
+DEBUG: handle options keys: [ 'tx', 'disableRetries', 'stripeClient' ]
+DEBUG: stripeClient present: true
+DEBUG: handle options keys: [ 'tx', 'disableRetries', 'stripeClient' ]
+DEBUG: stripeClient present: true
+DEBUG: handle options keys: [ 'tx', 'disableRetries', 'stripeClient' ]
+DEBUG: stripeClient present: true
+DEBUG: handle options keys: [ 'tx', 'disableRetries', 'stripeClient' ]
+DEBUG: stripeClient present: true
+DEBUG: handle options keys: [ 'tx', 'disableRetries', 'stripeClient' ]
+DEBUG: stripeClient present: true
+DEBUG: handle options keys: [ 'tx', 'disableRetries', 'stripeClient' ]
+DEBUG: stripeClient present: true
+DEBUG: handle options keys: [ 'tx', 'disableRetries', 'stripeClient' ]
+DEBUG: stripeClient present: true
+DEBUG: handle options keys: [ 'tx', 'disableRetries', 'stripeClient' ]
+DEBUG: stripeClient present: true
+DEBUG: handle options keys: [ 'tx', 'disableRetries', 'stripeClient' ]
+DEBUG: stripeClient present: true
+DEBUG: handle options keys: [ 'tx', 'disableRetries', 'stripeClient' ]
+DEBUG: stripeClient present: true
+[13:29:03] [32mINFO[39m: [36mPreparing ledger transaction: PAYOUT_RELEASE[39m
+    module: "service"
+    txId: "01KC9C0BQWBP987YCJ4F8QAEDF"
+    type: "LedgerPrepare"
+[13:29:03] [32mINFO[39m: [36mTransaction PREPARED (Pending)[39m
+    module: "service"
+    txId: "01KC9C0BQWBP987YCJ4F8QAEDF"
+    type: "LedgerPrepare"
+[13:29:03] [32mINFO[39m: [36mTransaction COMMITTED[39m
+    module: "service"
+    txId: "01KC9C0BQWBP987YCJ4F8QAEDF"
+    type: "LedgerCommit"
+[13:29:04] [32mINFO[39m: [36mPreparing ledger transaction: PAYOUT_RELEASE[39m
+    module: "service"
+    txId: "01KC9C0C92HEKSYZCCJD9CTQKX"
+    type: "LedgerPrepare"
+[13:29:04] [32mINFO[39m: [36mTransaction PREPARED (Pending)[39m
+    module: "service"
+    txId: "01KC9C0C92HEKSYZCCJD9CTQKX"
+    type: "LedgerPrepare"
+[13:29:04] [32mINFO[39m: [36mTransaction COMMITTED[39m
+    module: "service"
+    txId: "01KC9C0C92HEKSYZCCJD9CTQKX"
+    type: "LedgerCommit"
+[13:29:04] [32mINFO[39m: [36mPreparing ledger transaction: PAYOUT_RELEASE[39m
+    module: "service"
+    txId: "01KC9C0CSRERN8C5M483ZE0CVS"
+    type: "LedgerPrepare"
+[13:29:04] [32mINFO[39m: [36mTransaction PREPARED (Pending)[39m
+    module: "service"
+    txId: "01KC9C0CSRERN8C5M483ZE0CVS"
+    type: "LedgerPrepare"
+[13:29:04] [32mINFO[39m: [36mTransaction COMMITTED[39m
+    module: "service"
+    txId: "01KC9C0CSRERN8C5M483ZE0CVS"
+    type: "LedgerCommit"
+[13:29:05] [32mINFO[39m: [36mPreparing ledger transaction: PAYOUT_RELEASE[39m
+    module: "service"
+    txId: "01KC9C0DC9M1DNV9RB1RWERXDG"
+    type: "LedgerPrepare"
+[13:29:05] [32mINFO[39m: [36mTransaction PREPARED (Pending)[39m
+    module: "service"
+    txId: "01KC9C0DC9M1DNV9RB1RWERXDG"
+    type: "LedgerPrepare"
+[13:29:05] [32mINFO[39m: [36mTransaction COMMITTED[39m
+    module: "service"
+    txId: "01KC9C0DC9M1DNV9RB1RWERXDG"
+    type: "LedgerCommit"
+[13:29:05] [32mINFO[39m: [36mPreparing ledger transaction: PAYOUT_RELEASE[39m
+    module: "service"
+    txId: "01KC9C0DX9QT7WHQGYCTDBDEFF"
+    type: "LedgerPrepare"
+[13:29:05] [32mINFO[39m: [36mTransaction PREPARED (Pending)[39m
+    module: "service"
+    txId: "01KC9C0DX9QT7WHQGYCTDBDEFF"
+    type: "LedgerPrepare"
+[13:29:05] [32mINFO[39m: [36mTransaction COMMITTED[39m
+    module: "service"
+    txId: "01KC9C0DX9QT7WHQGYCTDBDEFF"
+    type: "LedgerCommit"
+[13:29:06] [32mINFO[39m: [36mPreparing ledger transaction: PAYOUT_RELEASE[39m
+    module: "service"
+    txId: "01KC9C0EEA34X49EFNB8G3PYE5"
+    type: "LedgerPrepare"
+[13:29:06] [32mINFO[39m: [36mTransaction PREPARED (Pending)[39m
+    module: "service"
+    txId: "01KC9C0EEA34X49EFNB8G3PYE5"
+    type: "LedgerPrepare"
+[13:29:06] [32mINFO[39m: [36mTransaction COMMITTED[39m
+    module: "service"
+    txId: "01KC9C0EEA34X49EFNB8G3PYE5"
+    type: "LedgerCommit"
+[13:29:06] [32mINFO[39m: [36mPreparing ledger transaction: PAYOUT_RELEASE[39m
+    module: "service"
+    txId: "01KC9C0EZ3BTC4DF7G51YYSNHX"
+    type: "LedgerPrepare"
+[13:29:06] [32mINFO[39m: [36mTransaction PREPARED (Pending)[39m
+    module: "service"
+    txId: "01KC9C0EZ3BTC4DF7G51YYSNHX"
+    type: "LedgerPrepare"
+[13:29:06] [32mINFO[39m: [36mTransaction COMMITTED[39m
+    module: "service"
+    txId: "01KC9C0EZ3BTC4DF7G51YYSNHX"
+    type: "LedgerCommit"
+[13:29:07] [32mINFO[39m: [36mPreparing ledger transaction: PAYOUT_RELEASE[39m
+    module: "service"
+    txId: "01KC9C0FGKFA9JT2N9Y2J2FE42"
+    type: "LedgerPrepare"
+[13:29:07] [32mINFO[39m: [36mTransaction PREPARED (Pending)[39m
+    module: "service"
+    txId: "01KC9C0FGKFA9JT2N9Y2J2FE42"
+    type: "LedgerPrepare"
+[13:29:07] [32mINFO[39m: [36mTransaction COMMITTED[39m
+    module: "service"
+    txId: "01KC9C0FGKFA9JT2N9Y2J2FE42"
+    type: "LedgerCommit"
+[13:29:08] [32mINFO[39m: [36mPreparing ledger transaction: PAYOUT_RELEASE[39m
+    module: "service"
+    txId: "01KC9C0G9X473EHS7T146XVK9R"
+    type: "LedgerPrepare"
+[13:29:08] [32mINFO[39m: [36mTransaction PREPARED (Pending)[39m
+    module: "service"
+    txId: "01KC9C0G9X473EHS7T146XVK9R"
+    type: "LedgerPrepare"
+[13:29:08] [32mINFO[39m: [36mTransaction COMMITTED[39m
+    module: "service"
+    txId: "01KC9C0G9X473EHS7T146XVK9R"
+    type: "LedgerCommit"
+[13:29:08] [32mINFO[39m: [36mPreparing ledger transaction: PAYOUT_RELEASE[39m
+    module: "service"
+    txId: "01KC9C0GTXMEQQE78P1T7Q0AP2"
+    type: "LedgerPrepare"
+[13:29:08] [32mINFO[39m: [36mTransaction PREPARED (Pending)[39m
+    module: "service"
+    txId: "01KC9C0GTXMEQQE78P1T7Q0AP2"
+    type: "LedgerPrepare"
+[13:29:08] [32mINFO[39m: [36mTransaction COMMITTED[39m
+    module: "service"
+    txId: "01KC9C0GTXMEQQE78P1T7Q0AP2"
+    type: "LedgerCommit"
+   [FAIL] 6308ms - Idempotency Failed: 0 processed events. First Error: invalid input syntax for type uuid: "ev_release_a52d66fe-a639-400a-bb8b-db6c69a0277f"
+
+>> RUNNING: Saga Fault Injection (Stripe Down)
+[13:29:09] [32mINFO[39m: [36m>>> STARTING M4 SAGA FAULTS (STRIPE DOWN) <<<[39m
+    module: "service"
+DEBUG: handle options keys: [ 'stripeClient' ]
+DEBUG: stripeClient present: true
+   [FAIL] 390ms - Unexpected error: money_state_lock missing for task 409654fc-bca3-4455-96c7-4ee93e646ea7
+
+>> RUNNING: Ledger Consistency & Integrity
+   [PASS] 104ms
+
+=========================================
+   M4 FINAL REPORT                       
+=========================================
+┌─────────┬─────────────────────────────────────────────────────────┬────────┬──────────┬──────────────────────────────────────────────────────────────────────────────────┬──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ (index) │ Case                                                    │ Status │ Time     │ Stats                                                                            │ Error                                                                                                                                        │
+├─────────┼─────────────────────────────────────────────────────────┼────────┼──────────┼──────────────────────────────────────────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ 0       │ 'Race Release (Option A: 500 Manual Clients - No Pool)' │ 'FAIL' │ '6308ms' │ '{"successes":0,"failures":10,"processedCount":0,"finalVersion":1,"workers":10}' │ 'Idempotency Failed: 0 processed events. First Error: invalid input syntax for type uuid: "ev_release_a52d66fe-a639-400a-bb8b-db6c69a0277f"' │
+│ 1       │ 'Saga Fault Injection (Stripe Down)'                    │ 'FAIL' │ '390ms'  │ ''                                                                               │ 'Unexpected error: money_state_lock missing for task 409654fc-bca3-4455-96c7-4ee93e646ea7'                                                   │
+│ 2       │ 'Ledger Consistency & Integrity'                        │ 'PASS' │ '104ms'  │ '{"checkedTransactions":"ALL"}'                                                  │ ''                                                                                                                                           │
+└─────────┴─────────────────────────────────────────────────────────┴────────┴──────────┴──────────────────────────────────────────────────────────────────────────────────┴──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+Status: BUSTED. Fix the Engine.

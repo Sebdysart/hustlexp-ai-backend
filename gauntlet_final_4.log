@@ -1,0 +1,133 @@
+
+==================================================
+   SEATTLE BETA GAUNTLET (OMEGA PROTOCOL v9D)
+==================================================
+SCENARIO | RESULT   | STATE        | LEDGER     | NOTES
+---------|----------|--------------|------------|------------------------
+[ENV] Loading Environment: LOCAL
+[08:03:52] [32mINFO[39m: [36mRunning Enterprise Environment Loader[39m
+    module: "service"
+    mode: "local"
+    stripeMode: "test"
+    payoutsEnabled: false
+    identityStrict: false
+| A1   | PASS     | cancelled    | VERIFY     | Cancellation accepted
+[08:03:53] [32mINFO[39m: [36mTask cancelled during active phase - Refund Logic Implicit[39m
+    module: "service"
+    taskId: "3582d173-0620-4c07-b497-d47ba6bbe218"
+    action: "cancel"
+[08:03:53] [33mWARN[39m: [36mTask Cancelled by Poster[39m
+    module: "service"
+    taskId: "3582d173-0620-4c07-b497-d47ba6bbe218"
+    reason: "Changed mind"
+| A3   | FAIL     | completed    | UNK        | State not disputed
+[08:03:54] [31mERROR[39m: [36mTemporal Guard Check Failed - Failing Closed (Reject)[39m
+    module: "TemporalGuard"
+    targetId: "525874a3-c34b-4eb0-a6ed-7f2347c73900"
+    error: {
+      "name": "Layerr"
+    }
+[08:03:54] [31mERROR[39m: [36mSaga Failed - Initiating Compensation Flow[39m
+    module: "service"
+    taskId: "525874a3-c34b-4eb0-a6ed-7f2347c73900"
+    eventType: "DISPUTE_OPEN"
+    err: {
+      "type": "Error",
+      "message": "Temporal Guard Blocked: Event 7178ffa6-ac36-45fa-bbc2-163ae6fedaed is older than last committed state.",
+      "stack":
+          Error: Temporal Guard Blocked: Event 7178ffa6-ac36-45fa-bbc2-163ae6fedaed is older than last committed state.
+              at validateGuards (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/services/StripeMoneyEngine.ts:234:15)
+              at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+              at async <anonymous> (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/services/StripeMoneyEngine.ts:296:13)
+              at async transaction (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/db/index.ts:44:24)
+              at async Object.handle (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/services/StripeMoneyEngine.ts:287:28)
+              at async DisputeServiceClass.createDispute (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/services/DisputeService.ts:115:17)
+              at async runA3 (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/tests/omega/seattle-gauntlet.ts:296:21)
+              at async runGauntlet (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/tests/omega/seattle-gauntlet.ts:437:9)
+    }
+[08:03:54] [31mERROR[39m: [36mFailed to transition Money Engine state to DISPUTE_OPEN[39m
+    module: "service"
+    taskId: "525874a3-c34b-4eb0-a6ed-7f2347c73900"
+    err: {
+      "type": "Error",
+      "message": "Temporal Guard Blocked: Event 7178ffa6-ac36-45fa-bbc2-163ae6fedaed is older than last committed state.",
+      "stack":
+          Error: Temporal Guard Blocked: Event 7178ffa6-ac36-45fa-bbc2-163ae6fedaed is older than last committed state.
+              at validateGuards (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/services/StripeMoneyEngine.ts:234:15)
+              at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+              at async <anonymous> (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/services/StripeMoneyEngine.ts:296:13)
+              at async transaction (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/db/index.ts:44:24)
+              at async Object.handle (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/services/StripeMoneyEngine.ts:287:28)
+              at async DisputeServiceClass.createDispute (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/services/DisputeService.ts:115:17)
+              at async runA3 (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/tests/omega/seattle-gauntlet.ts:296:21)
+              at async runGauntlet (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/tests/omega/seattle-gauntlet.ts:437:9)
+    }
+[08:03:54] [32mINFO[39m: [36mDispute created and Money Engine notified[39m
+    module: "service"
+    disputeId: "95b6378e-77b3-46c3-8e61-4ad285d699df"
+    taskId: "525874a3-c34b-4eb0-a6ed-7f2347c73900"
+[08:03:54] [33mWARN[39m: [36mTask Abandoned by Hustler[39m
+    module: "service"
+    taskId: "a7828d62-8b82-4a32-9e1b-c815a35a6a13"
+    hustlerId: "e2464137-144e-4039-b083-5fc543882557"
+| A4   | FAIL     | active       | UNK        | Task not reset
+| B6   | FAIL     | ERROR        | UNK        | Temporal Guard Blocked: Event f5a56aa0-e1bb-454c-bfd9-f04eb2292c3a is older than last committed state.
+[08:03:55] [31mERROR[39m: [36mTemporal Guard Check Failed - Failing Closed (Reject)[39m
+    module: "TemporalGuard"
+    targetId: "69674e66-a314-4c7d-9f1a-4e4f82ed1636"
+    error: {
+      "name": "Layerr"
+    }
+[08:03:55] [31mERROR[39m: [36mSaga Failed - Initiating Compensation Flow[39m
+    module: "service"
+    taskId: "69674e66-a314-4c7d-9f1a-4e4f82ed1636"
+    eventType: "HOLD_ESCROW"
+    err: {
+      "type": "Error",
+      "message": "Temporal Guard Blocked: Event f5a56aa0-e1bb-454c-bfd9-f04eb2292c3a is older than last committed state.",
+      "stack":
+          Error: Temporal Guard Blocked: Event f5a56aa0-e1bb-454c-bfd9-f04eb2292c3a is older than last committed state.
+              at validateGuards (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/services/StripeMoneyEngine.ts:234:15)
+              at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+              at async <anonymous> (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/services/StripeMoneyEngine.ts:296:13)
+              at async transaction (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/db/index.ts:44:24)
+              at async Object.handle (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/services/StripeMoneyEngine.ts:287:28)
+              at async runB6 (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/tests/omega/seattle-gauntlet.ts:358:9)
+              at async runGauntlet (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/tests/omega/seattle-gauntlet.ts:439:9)
+    }
+[08:03:55] [41mFATAL[49m: [36m⚠️ KILL SWITCH TRIGGERED - SYSTEM FREEZING ⚠️[39m
+    module: "KillSwitch"
+    reason: "TEST_SIMULATION"
+    metadata: {
+      "desc": "Gauntlet Test"
+    }
+| C9   | PASS     | blocked      | SAFE       | KillSwitch blocked execution
+[08:03:55] [32mINFO[39m: [36mKillSwitch Resolved - Resuming Operations[39m
+    module: "KillSwitch"
+[08:03:55] [33mWARN[39m: [36mADMIN OVERRIDE INITIATED[39m
+    module: "service"
+    input: {
+      "adminId": "admin_1dd46530-5a54-4de3-9ece-19ff2f252ed2",
+      "taskId": "0e4825a4-e4e6-474d-bd1c-fed86038c833",
+      "action": "force_cancel",
+      "reason": "Gauntlet Override"
+    }
+[08:03:56] [31mERROR[39m: [36mAdmin Override Failed[39m
+    module: "service"
+    taskId: "0e4825a4-e4e6-474d-bd1c-fed86038c833"
+    error: {
+      "length": 154,
+      "name": "error",
+      "severity": "ERROR",
+      "code": "42703",
+      "position": "141",
+      "file": "parse_target.c",
+      "line": "1065",
+      "routine": "checkInsertTargets"
+    }
+| D12  | FAIL     | ERROR        | UNK        | column "previous_task_status" of relation "admin_override_audit" does not exist
+
+==================================================
+   EXECUTION COMPLETE
+==================================================
+

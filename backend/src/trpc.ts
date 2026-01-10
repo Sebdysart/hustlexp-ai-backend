@@ -128,6 +128,9 @@ export const Schemas = {
     category: z.string().optional(),
     deadline: z.string().datetime().optional(),
     requiresProof: z.boolean().default(true),
+    // Live Mode (PRODUCT_SPEC §3.5)
+    mode: z.enum(['STANDARD', 'LIVE']).default('STANDARD'),
+    liveBroadcastRadiusMiles: z.number().positive().optional(),
   }),
   
   // Escrow
@@ -149,7 +152,7 @@ export const Schemas = {
   
   reviewProof: z.object({
     proofId: z.string().uuid(),
-    decision: z.enum(['ACCEPTED', 'REJECTED', 'NEEDS_MORE']),
+    decision: z.enum(['ACCEPTED', 'REJECTED']),
     reason: z.string().optional(),
   }),
   
@@ -164,6 +167,17 @@ export const Schemas = {
   pagination: z.object({
     limit: z.number().int().min(1).max(100).default(20),
     offset: z.number().int().min(0).default(0),
+  }),
+  
+  // Onboarding AI
+  submitCalibration: z.object({
+    calibrationPrompt: z.string().min(1),
+    onboardingVersion: z.string().default('1.0.0'),
+  }),
+  
+  confirmRole: z.object({
+    confirmedMode: z.enum(['worker', 'poster']),
+    overrideAI: z.boolean().default(false),
   }),
 };
 

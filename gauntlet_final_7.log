@@ -1,0 +1,53 @@
+
+==================================================
+   SEATTLE BETA GAUNTLET (OMEGA PROTOCOL v9D)
+==================================================
+SCENARIO | RESULT   | STATE        | LEDGER     | NOTES
+---------|----------|--------------|------------|------------------------
+[ENV] Loading Environment: LOCAL
+[08:07:59] [32mINFO[39m: [36mRunning Enterprise Environment Loader[39m
+    module: "service"
+    mode: "local"
+    stripeMode: "test"
+    payoutsEnabled: false
+    identityStrict: false
+| A1   | PASS     | cancelled    | VERIFY     | Cancellation accepted
+[08:08:00] [32mINFO[39m: [36mTask cancelled during active phase - Refund Logic Implicit[39m
+    module: "service"
+    taskId: "34fa2dc3-acbe-44fa-b053-8fec11daed75"
+    action: "cancel"
+[08:08:00] [33mWARN[39m: [36mTask Cancelled by Poster[39m
+    module: "service"
+    taskId: "34fa2dc3-acbe-44fa-b053-8fec11daed75"
+    reason: "Changed mind"
+[08:08:01] [31mERROR[39m: [36mTemporal Guard Check Failed - Failing Closed (Reject)[39m
+    module: "TemporalGuard"
+    targetId: "b971bdd9-a36b-48b4-9a2d-e53badf3ce0d"
+    error: {
+      "name": "Layerr"
+    }
+[08:08:01] [31mERROR[39m: [36mSaga Failed - Initiating Compensation Flow[39m
+    module: "service"
+    taskId: "b971bdd9-a36b-48b4-9a2d-e53badf3ce0d"
+    eventType: "HOLD_ESCROW"
+    err: {
+      "type": "Error",
+      "message": "Temporal Guard Blocked: Event cc7f29ec-6142-4750-9f3b-63aff2537d1a is older than last committed state.",
+      "stack":
+          Error: Temporal Guard Blocked: Event cc7f29ec-6142-4750-9f3b-63aff2537d1a is older than last committed state.
+              at validateGuards (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/services/StripeMoneyEngine.ts:234:15)
+              at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+              at async <anonymous> (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/services/StripeMoneyEngine.ts:296:13)
+              at async transaction (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/db/index.ts:44:24)
+              at async Object.handle (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/services/StripeMoneyEngine.ts:287:28)
+              at async runA3 (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/tests/omega/seattle-gauntlet.ts:289:5)
+              at async runGauntlet (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/tests/omega/seattle-gauntlet.ts:443:9)
+    }
+Gauntlet Crashed: Error: Temporal Guard Blocked: Event cc7f29ec-6142-4750-9f3b-63aff2537d1a is older than last committed state.
+    at validateGuards (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/services/StripeMoneyEngine.ts:234:15)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async <anonymous> (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/services/StripeMoneyEngine.ts:296:13)
+    at async transaction (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/db/index.ts:44:24)
+    at async Object.handle (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/services/StripeMoneyEngine.ts:287:28)
+    at async runA3 (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/tests/omega/seattle-gauntlet.ts:289:5)
+    at async runGauntlet (/Users/sebastiandysart/HustleXP/hustlexp-ai-backend/src/tests/omega/seattle-gauntlet.ts:443:9)

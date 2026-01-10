@@ -1,0 +1,42 @@
+=========================================
+   M4 SURGICAL TEST RUNNER (NEON/SER)    
+=========================================
+Environment: SERIALIZABLE Enforced.
+
+>> RUNNING: Race Release (Option A: 500 Manual Clients - No Pool)
+[03:54:40] [32mINFO[39m: [36m>>> STARTING M4 RACE RELEASE (OPTION A - STRICT) <<<[39m
+    module: "service"
+[03:54:41] [32mINFO[39m: [36mPreparing ledger transaction: PAYOUT_RELEASE[39m
+    module: "service"
+    txId: "01KCAXHCA19DZHAXKJM1T207VT"
+    type: "LedgerPrepare"
+[03:54:41] [32mINFO[39m: [36mTransaction PREPARED (Pending)[39m
+    module: "service"
+    txId: "01KCAXHCA19DZHAXKJM1T207VT"
+    type: "LedgerPrepare"
+[03:54:41] [32mINFO[39m: [36mTransaction COMMITTED[39m
+    module: "service"
+    txId: "01KCAXHCA19DZHAXKJM1T207VT"
+    type: "LedgerCommit"
+   [PASS] 915ms
+
+>> RUNNING: Saga Fault Injection (Stripe Down)
+[03:54:41] [32mINFO[39m: [36m>>> STARTING M4 SAGA FAULTS (STRIPE DOWN) <<<[39m
+    module: "service"
+   [FAIL] 408ms - Unexpected error: relation "ledger_locks" does not exist
+
+>> RUNNING: Ledger Consistency & Integrity
+   [PASS] 82ms
+
+=========================================
+   M4 FINAL REPORT                       
+=========================================
+┌─────────┬─────────────────────────────────────────────────────────┬────────┬─────────┬─────────────────────────────────────────────────────────────────────────────────┬────────────────────────────────────────────────────────────┐
+│ (index) │ Case                                                    │ Status │ Time    │ Stats                                                                           │ Error                                                      │
+├─────────┼─────────────────────────────────────────────────────────┼────────┼─────────┼─────────────────────────────────────────────────────────────────────────────────┼────────────────────────────────────────────────────────────┤
+│ 0       │ 'Race Release (Option A: 500 Manual Clients - No Pool)' │ 'PASS' │ '915ms' │ '{"successes":1,"failures":9,"processedCount":1,"finalVersion":2,"workers":10}' │ ''                                                         │
+│ 1       │ 'Saga Fault Injection (Stripe Down)'                    │ 'FAIL' │ '408ms' │ ''                                                                              │ 'Unexpected error: relation "ledger_locks" does not exist' │
+│ 2       │ 'Ledger Consistency & Integrity'                        │ 'PASS' │ '82ms'  │ '{"checkedTransactions":"ALL"}'                                                 │ ''                                                         │
+└─────────┴─────────────────────────────────────────────────────────┴────────┴─────────┴─────────────────────────────────────────────────────────────────────────────────┴────────────────────────────────────────────────────────────┘
+
+Status: BUSTED. Fix the Engine.

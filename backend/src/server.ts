@@ -134,6 +134,229 @@ app.use('/trpc/*', trpcServer({
 }));
 
 // ============================================================================
+// REST API WRAPPERS (Frontend Compatibility)
+// ============================================================================
+// These routes provide REST endpoints for the React Native frontend
+// They internally call tRPC endpoints for type safety
+
+import { firebaseAuth } from './auth/firebase';
+import { db } from './db';
+import type { User } from './types';
+
+// Helper to get authenticated user from Bearer token
+async function getAuthUser(c: any): Promise<User | null> {
+  const authHeader = c.req.header('authorization');
+  if (!authHeader?.startsWith('Bearer ')) {
+    return null;
+  }
+  
+  const token = authHeader.slice(7);
+  try {
+    const decoded = await firebaseAuth.verifyIdToken(token);
+    const result = await db.query<User>(
+      'SELECT * FROM users WHERE firebase_uid = $1',
+      [decoded.uid]
+    );
+    return result.rows[0] || null;
+  } catch {
+    return null;
+  }
+}
+
+// Animation Tracking Endpoints
+
+app.get('/api/users/:userId/xp-celebration-status', async (c) => {
+  const user = await getAuthUser(c);
+  if (!user || user.id !== c.req.param('userId')) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
+  
+  const result = await db.query<{ xp_first_celebration_shown_at: Date | null }>(
+    `SELECT xp_first_celebration_shown_at FROM users WHERE id = $1`,
+    [user.id]
+  );
+  
+  const shouldShow = result.rows[0]?.xp_first_celebration_shown_at === null;
+  
+  return c.json({
+    shouldShow,
+    xpFirstCelebrationShownAt: result.rows[0]?.xp_first_celebration_shown_at?.toISOString() || null,
+  });
+});
+
+app.post('/api/users/:userId/xp-celebration-shown', async (c) => {
+  const user = await getAuthUser(c);
+  if (!user || user.id !== c.req.param('userId')) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
+  
+  const body = await c.req.json().catch(() => ({}));
+  
+  const result = await db.query(
+    `UPDATE users 
+     SET xp_first_celebration_shown_at = COALESCE($2::timestamptz, NOW())
+     WHERE id = $1 AND xp_first_celebration_shown_at IS NULL
+     RETURNING xp_first_celebration_shown_at`,
+    [user.id, body.timestamp ? new Date(body.timestamp) : null]
+  );
+  
+  return c.json({
+    success: true,
+    xpFirstCelebrationShownAt: result.rows[0]?.xp_first_celebration_shown_at?.toISOString() || null,
+  });
+});
+
+app.get('/api/users/:userId/badges/:badgeId/animation-status', async (c) => {
+  const user = await getAuthUser(c);
+  if (!user || user.id !== c.req.param('userId')) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
+  
+  const badgeId = c.req.param('badgeId');
+  const result = await db.query<{ animation_shown_at: Date | null }>(
+    `SELECT animation_shown_at FROM badges WHERE id = $1 AND user_id = $2`,
+    [badgeId, user.id]
+  );
+  
+  if (result.rows.length === 0) {
+    return c.json({ error: 'Badge not found' }, 404);
+  }
+  
+  const shouldShow = result.rows[0].animation_shown_at === null;
+  
+  return c.json({
+    shouldShow,
+    animationShownAt: result.rows[0].animation_shown_at?.toISOString() || null,
+  });
+});
+
+app.post('/api/users/:userId/badges/:badgeId/animation-shown', async (c) => {
+  const user = await getAuthUser(c);
+  if (!user || user.id !== c.req.param('userId')) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
+  
+  const badgeId = c.req.param('badgeId');
+  const body = await c.req.json().catch(() => ({}));
+  
+  const result = await db.query(
+    `UPDATE badges 
+     SET animation_shown_at = COALESCE($3::timestamptz, NOW())
+     WHERE id = $1 AND user_id = $2 AND animation_shown_at IS NULL
+     RETURNING animation_shown_at`,
+    [badgeId, user.id, body.timestamp ? new Date(body.timestamp) : null]
+  );
+  
+  return c.json({
+    success: true,
+    animationShownAt: result.rows[0]?.animation_shown_at?.toISOString() || null,
+  });
+});
+
+// State Confirmation Endpoints
+
+app.get('/api/tasks/:taskId/state', async (c) => {
+  const user = await getAuthUser(c);
+  if (!user) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
+  
+  const taskId = c.req.param('taskId');
+  const result = await db.query<{ state: string }>(
+    `SELECT state FROM tasks WHERE id = $1`,
+    [taskId]
+  );
+  
+  if (result.rows.length === 0) {
+    return c.json({ error: 'Task not found' }, 404);
+  }
+  
+  return c.json({ state: result.rows[0].state });
+});
+
+app.get('/api/escrows/:escrowId/state', async (c) => {
+  const user = await getAuthUser(c);
+  if (!user) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
+  
+  const escrowId = c.req.param('escrowId');
+  const result = await db.query<{ state: string }>(
+    `SELECT state FROM escrows WHERE id = $1`,
+    [escrowId]
+  );
+  
+  if (result.rows.length === 0) {
+    return c.json({ error: 'Escrow not found' }, 404);
+  }
+  
+  return c.json({ state: result.rows[0].state });
+});
+
+// Violation Reporting
+
+app.post('/api/ui/violations', async (c) => {
+  const user = await getAuthUser(c);
+  if (!user) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
+  
+  const body = await c.req.json();
+  
+  await db.query(
+    `INSERT INTO admin_actions (admin_user_id, action_type, details, created_at)
+     VALUES ($1, 'UI_VIOLATION', $2, NOW())`,
+    [
+      user.id,
+      JSON.stringify({
+        violationType: body.type,
+        rule: body.rule,
+        component: body.component,
+        context: body.context,
+        severity: body.severity || 'ERROR',
+      }),
+    ]
+  );
+  
+  return c.json({
+    success: true,
+    loggedAt: new Date().toISOString(),
+  });
+});
+
+// User Onboarding Status
+
+app.get('/api/users/:userId/onboarding-status', async (c) => {
+  const user = await getAuthUser(c);
+  if (!user || user.id !== c.req.param('userId')) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
+  
+  const result = await db.query<{
+    onboarding_completed_at: Date | null;
+    default_mode: string;
+    xp_first_celebration_shown_at: Date | null;
+  }>(
+    `SELECT onboarding_completed_at, default_mode, xp_first_celebration_shown_at
+     FROM users WHERE id = $1`,
+    [user.id]
+  );
+  
+  if (result.rows.length === 0) {
+    return c.json({ error: 'User not found' }, 404);
+  }
+  
+  const userData = result.rows[0];
+  
+  return c.json({
+    onboardingComplete: userData.onboarding_completed_at !== null,
+    role: userData.default_mode,
+    xpFirstCelebrationShownAt: userData.xp_first_celebration_shown_at?.toISOString() || null,
+    hasCompletedFirstTask: userData.xp_first_celebration_shown_at !== null,
+  });
+});
+
+// ============================================================================
 // STRIPE WEBHOOKS (Raw body needed)
 // ============================================================================
 
@@ -236,10 +459,20 @@ async function startServer() {
   console.log(`Port:        ${config.app.port}`);
   console.log('');
   console.log('Endpoints:');
-  console.log('  GET  /health          - Basic health check');
-  console.log('  GET  /health/detailed - Detailed health check');
-  console.log('  POST /trpc/*          - tRPC API endpoints');
-  console.log('  POST /webhooks/stripe - Stripe webhooks');
+  console.log('  GET  /health                              - Basic health check');
+  console.log('  GET  /health/detailed                     - Detailed health check');
+  console.log('  POST /trpc/*                              - tRPC API endpoints');
+  console.log('  POST /webhooks/stripe                     - Stripe webhooks');
+  console.log('');
+  console.log('REST API (Frontend Integration):');
+  console.log('  GET  /api/users/:userId/xp-celebration-status      - Animation tracking');
+  console.log('  POST /api/users/:userId/xp-celebration-shown       - Animation tracking');
+  console.log('  GET  /api/users/:userId/badges/:badgeId/animation-status - Animation tracking');
+  console.log('  POST /api/users/:userId/badges/:badgeId/animation-shown   - Animation tracking');
+  console.log('  GET  /api/tasks/:taskId/state                       - State confirmation');
+  console.log('  GET  /api/escrows/:escrowId/state                   - State confirmation');
+  console.log('  POST /api/ui/violations                             - Violation reporting');
+  console.log('  GET  /api/users/:userId/onboarding-status           - Onboarding status');
   console.log('');
   console.log('═══════════════════════════════════════════════════════════');
   console.log(`  Server listening on http://localhost:${config.app.port}`);
