@@ -15,8 +15,15 @@ export const config = {
   
   // Cache (Upstash Redis)
   redis: {
-    url: process.env.UPSTASH_REDIS_REST_URL || '',
-    token: process.env.UPSTASH_REDIS_REST_TOKEN || '',
+    // REST API (for @upstash/redis client - caching, rate limiting)
+    restUrl: process.env.UPSTASH_REDIS_REST_URL || '',
+    restToken: process.env.UPSTASH_REDIS_REST_TOKEN || '',
+    // Direct TCP (for BullMQ/ioredis - job queues)
+    // Upstash provides both REST and direct TCP endpoints
+    // Use UPSTASH_REDIS_URL (direct TCP connection string) for BullMQ
+    // Format: redis://default:{password}@{endpoint}:6379
+    // OR use separate Redis instance: REDIS_URL=redis://localhost:6379
+    url: process.env.UPSTASH_REDIS_URL || process.env.REDIS_URL || '',  // Direct TCP connection string
   },
   
   // Payments (Stripe)
@@ -118,7 +125,22 @@ export function validateConfig(): { valid: boolean; errors: string[] } {
     if (!config.stripe.secretKey || config.stripe.secretKey.includes('placeholder')) {
       errors.push('STRIPE_SECRET_KEY is required (not placeholder)');
     }
-    if (!config.redis.url) errors.push('UPSTASH_REDIS_REST_URL is required');
+    // REST API required for caching/rate limiting
+    if (!config.redis.restUrl) {
+      errors.push('UPSTASH_REDIS_REST_URL is required for caching/rate limiting');
+    }
+    // Direct TCP required for BullMQ job queues
+    if (!config.redis.url) {
+      errors.push('UPSTASH_REDIS_URL or REDIS_URL is required for BullMQ job queues');
+    }
+    // R2 Storage (optional but recommended for exports)
+    if (!config.cloudflare.r2.accountId || !config.cloudflare.r2.accessKeyId || !config.cloudflare.r2.secretAccessKey) {
+      console.warn('⚠️  R2 storage not configured (R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY) - exports will fail');
+    }
+    // SendGrid (optional but recommended for email notifications)
+    if (!config.identity.sendgrid.apiKey) {
+      console.warn('⚠️  SendGrid not configured (SENDGRID_API_KEY) - email notifications will fail');
+    }
   }
   
   if (errors.length > 0) {

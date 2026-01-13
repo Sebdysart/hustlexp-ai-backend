@@ -125,6 +125,13 @@ app.get('/health/detailed', async (c) => {
 });
 
 // ============================================================================
+// REALTIME STREAM (Pillar A - Realtime Tracking)
+// ============================================================================
+
+// SSE endpoint for task progress updates
+app.get('/realtime/stream', sseHandler);
+
+// ============================================================================
 // tRPC HANDLER
 // ============================================================================
 
@@ -142,6 +149,7 @@ app.use('/trpc/*', trpcServer({
 import { firebaseAuth } from './auth/firebase';
 import { db } from './db';
 import type { User } from './types';
+import { sseHandler } from './realtime/sse-handler';
 
 // Helper to get authenticated user from Bearer token
 async function getAuthUser(c: any): Promise<User | null> {
@@ -368,12 +376,28 @@ app.post('/webhooks/stripe', async (c) => {
     return c.json({ error: 'Missing stripe-signature header' }, 400);
   }
   
-  // TODO: Implement Stripe webhook handling
-  // const { StripeService } = await import('./services/StripeService');
-  // const result = await StripeService.handleWebhook(rawBody, sig);
+  // Phase D: Pure webhook ingestion (store-only, no business logic)
+  const { StripeWebhookService } = await import('./services/StripeWebhookService');
+  const result = await StripeWebhookService.processWebhook(rawBody, sig);
   
-  console.log('[Stripe Webhook] Received event (handling not yet implemented)');
-  return c.json({ received: true });
+  if (!result.success) {
+    // Return 400 for verification errors (malicious or misconfigured)
+    if (result.error.code === 'WEBHOOK_VERIFICATION_FAILED' || 
+        result.error.code === 'WEBHOOK_SECRET_MISSING' ||
+        result.error.code === 'STRIPE_NOT_CONFIGURED') {
+      return c.json({ error: result.error.message }, 400);
+    }
+    // Return 500 for storage errors (retryable)
+    return c.json({ error: result.error.message }, 500);
+  }
+  
+  // Always return 200 for successful ingestion (even if duplicate/replay)
+  // Stripe expects 200 to stop retrying
+  return c.json({ 
+    received: true, 
+    eventId: result.data.eventId,
+    stored: result.data.stored 
+  }, 200);
 });
 
 // ============================================================================

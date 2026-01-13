@@ -14,6 +14,15 @@ import { aiRouter } from './ai';
 import { liveRouter } from './live';
 import { healthRouter } from './health';
 import { uiRouter } from './ui';
+// Phase 3: Critical gap routers
+import { taskDiscoveryRouter } from './taskDiscovery';
+import { messagingRouter } from './messaging';
+import { notificationRouter } from './notification';
+import { ratingRouter } from './rating';
+import { gdprRouter } from './gdpr';
+import { analyticsRouter } from './analytics';
+import { fraudRouter } from './fraud';
+import { moderationRouter } from './moderation';
 
 export const appRouter = router({
   task: taskRouter,
@@ -23,6 +32,15 @@ export const appRouter = router({
   live: liveRouter,
   health: healthRouter,
   ui: uiRouter,
+  // Phase 3: Critical gap routers
+  taskDiscovery: taskDiscoveryRouter,
+  messaging: messagingRouter,
+  notification: notificationRouter,
+  rating: ratingRouter,
+  gdpr: gdprRouter,
+  analytics: analyticsRouter,
+  fraud: fraudRouter,
+  moderation: moderationRouter,
 });
 
 export type AppRouter = typeof appRouter;

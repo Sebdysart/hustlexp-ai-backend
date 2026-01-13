@@ -1,9 +1,15 @@
 /**
- * Schema Verification Script
+ * Schema Verification Script v1.1.0
  * 
- * Verifies that the database schema matches the constitutional schema exactly.
+ * Verifies that the database schema matches the constitutional schema v1.1.0 exactly.
+ * Checks for all 32 domain tables + schema_versions (33 total) and 4 views.
  * 
  * Usage: tsx backend/database/verify-schema.ts
+ * 
+ * Expected:
+ * - 33 tables (1 schema_versions + 32 domain tables including 14 critical gap tables)
+ * - 4 views (poster_reputation, money_timeline, user_rating_summary, + 1 more if exists)
+ * - Schema version 1.0.0 or 1.1.0
  */
 
 import { Pool, neonConfig } from '@neondatabase/serverless';
@@ -23,9 +29,11 @@ if (!DATABASE_URL) {
 
 const pool = new Pool({ connectionString: DATABASE_URL });
 
-// Expected tables from constitutional schema
+// Expected tables from constitutional schema v1.1.0 (32 domain tables + schema_versions)
 const EXPECTED_TABLES = [
+  // Schema version tracking
   'schema_versions',
+  // Core domain tables (18)
   'users',
   'tasks',
   'escrows',
@@ -47,6 +55,21 @@ const EXPECTED_TABLES = [
   'live_broadcasts',
   'poster_ratings',
   'session_forecasts',
+  // Critical gap tables (14) - Phase 0 additions
+  'task_matching_scores',
+  'saved_searches',
+  'task_messages',
+  'notifications',
+  'notification_preferences',
+  'task_ratings',
+  'analytics_events',
+  'fraud_risk_scores',
+  'fraud_patterns',
+  'content_moderation_queue',
+  'content_reports',
+  'content_appeals',
+  'gdpr_data_requests',
+  'user_consents',
 ];
 
 // Expected triggers
@@ -92,10 +115,11 @@ const EXPECTED_FUNCTIONS = [
   'calculate_streak_multiplier',
 ];
 
-// Expected views
+// Expected views from constitutional schema v1.1.0 (3 views found in schema)
 const EXPECTED_VIEWS = [
-  'poster_reputation',
-  'money_timeline',
+  'poster_reputation',      // Section 10.7.4 - Poster reputation view
+  'money_timeline',         // Section 10.7.6 - Money timeline view
+  'user_rating_summary',    // Section 11.5 - User rating summary view (added in Phase 0)
 ];
 
 interface VerificationResult {
@@ -210,13 +234,21 @@ async function verifySchemaVersion(): Promise<VerificationResult> {
   const result: VerificationResult = { passed: true, errors: [], warnings: [] };
   
   try {
+    // Check for schema version 1.1.0 (current) or 1.0.0 (previous)
     const versionResult = await pool.query<{ version: string }>(
-      `SELECT version FROM schema_versions WHERE version = '1.0.0'`
+      `SELECT version FROM schema_versions WHERE version IN ('1.0.0', '1.1.0') ORDER BY version DESC LIMIT 1`
     );
     
     if (versionResult.rows.length === 0) {
       result.passed = false;
-      result.errors.push('Schema version 1.0.0 not found in schema_versions table');
+      result.errors.push('Schema version 1.0.0 or 1.1.0 not found in schema_versions table');
+    } else {
+      const version = versionResult.rows[0].version;
+      if (version === '1.1.0') {
+        console.log(`✅ Schema version: 1.1.0 (latest)`);
+      } else if (version === '1.0.0') {
+        result.warnings.push('Schema version is 1.0.0 (expected 1.1.0 for critical gap tables)');
+      }
     }
   } catch (error) {
     result.passed = false;
@@ -250,10 +282,11 @@ async function main() {
   }
   
   console.log('Results:');
-  console.log(`  Tables: ${results.tables.passed ? '✅' : '❌'} (${EXPECTED_TABLES.length} expected)`);
+  console.log(`  Tables: ${results.tables.passed ? '✅' : '❌'} (${EXPECTED_TABLES.length} expected: 33 total = 1 schema_versions + 32 domain tables)`);
+  console.log(`  Domain Tables: ${EXPECTED_TABLES.length - 1} (excluding schema_versions)`);
+  console.log(`  Views: ${results.views.passed ? '✅' : '❌'} (${EXPECTED_VIEWS.length} expected)`);
   console.log(`  Triggers: ${results.triggers.passed ? '✅' : '❌'} (${EXPECTED_TRIGGERS.length} expected)`);
   console.log(`  Functions: ${results.functions.passed ? '✅' : '❌'} (${EXPECTED_FUNCTIONS.length} expected)`);
-  console.log(`  Views: ${results.views.passed ? '✅' : '❌'} (${EXPECTED_VIEWS.length} expected)`);
   console.log(`  Schema Version: ${results.schemaVersion.passed ? '✅' : '❌'}`);
   
   if (allWarnings.length > 0) {
