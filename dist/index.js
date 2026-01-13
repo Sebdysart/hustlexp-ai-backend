@@ -38,11 +38,13 @@ import { runMigrations, seedTestData } from './db/schema.js';
 import { checkRateLimit } from './middleware/rateLimiter.js';
 import { validateEnv, logEnvStatus } from './utils/envValidator.js';
 import { runHealthCheck, quickHealthCheck } from './utils/healthCheck.js';
-import { requireAuth, isAuthEnabled } from './middleware/firebaseAuth.js';
+import { requireAuth, optionalAuth, isAuthEnabled } from './middleware/firebaseAuth.js';
 import disputeRoutes from './routes/disputes.js';
 import debugRoutes from './routes/debug.js';
 import identityRoutes from './identity/routes/identity.js';
 import trustRoutes from './routes/trust.js';
+import authRoutes from './routes/auth.js';
+import frontendRoutes from './routes/frontend.js'; // BUILD_GUIDE frontend API routes
 // PHASE 6: Hardening middleware
 import { addRequestId, returnRequestId, createGlobalErrorHandler, logRequest } from './middleware/requestId.js';
 import { requireIdempotencyKey, cacheIdempotentResponse } from './middleware/idempotency.js';
@@ -849,6 +851,16 @@ fastify.post('/ai/confirm-task', async (request, reply) => {
         return { error: 'Internal server error' };
     }
 });
+// Get user profile (C5)
+fastify.get('/api/users/:userId', async (request, reply) => {
+    const { userId } = request.params;
+    const user = await UserService.getUser(userId);
+    if (!user) {
+        reply.code(404);
+        return { error: 'User not found', code: 'USER_NOT_FOUND' };
+    }
+    return { user };
+});
 // Get user stats
 fastify.get('/api/users/:userId/stats', async (request, reply) => {
     const { userId } = request.params;
@@ -867,6 +879,98 @@ fastify.get('/api/tasks', async (request) => {
         limit: limit ? parseInt(limit) : 20,
     });
     return { tasks, count: tasks.length };
+});
+// Get single task by ID (C3)
+fastify.get('/api/tasks/:taskId', async (request, reply) => {
+    const { taskId } = request.params;
+    const task = await TaskService.getTask(taskId);
+    if (!task) {
+        reply.code(404);
+        return { error: 'Task not found', code: 'TASK_NOT_FOUND' };
+    }
+    return { task };
+});
+// Direct task creation (B5.1) - non-AI path for simple task creation
+const CreateTaskSchema = z.object({
+    title: z.string().min(3, 'Title must be at least 3 characters'),
+    description: z.string().min(10, 'Description must be at least 10 characters'),
+    category: z.string(),
+    price: z.number().min(5, 'Minimum price is $5').max(10000, 'Maximum price is $10,000'),
+    location: z.string().optional(),
+});
+fastify.post('/api/tasks', { preHandler: [optionalAuth] }, async (request, reply) => {
+    try {
+        const body = CreateTaskSchema.parse(request.body);
+        // Get user from auth context or use anonymous
+        const clientId = request.user?.uid || 'anonymous';
+        // Create task directly via TaskService
+        const task = await TaskService.createTask({
+            clientId,
+            title: body.title,
+            description: body.description,
+            category: body.category,
+            recommendedPrice: body.price,
+            minPrice: body.price * 0.8,
+            maxPrice: body.price * 1.2,
+            locationText: body.location || 'Seattle, WA',
+            flags: [],
+        });
+        reply.code(201);
+        return {
+            id: task.id,
+            title: task.title,
+            description: task.description,
+            category: task.category,
+            xp_reward: Math.floor(task.recommendedPrice * 0.1),
+            price: task.recommendedPrice,
+            status: task.status,
+            location: task.locationText || 'Seattle, WA',
+            creator_id: clientId,
+            created_at: task.createdAt.toISOString(),
+        };
+    }
+    catch (error) {
+        if (error instanceof z.ZodError) {
+            reply.code(400);
+            return { error: 'Validation failed', details: error.errors };
+        }
+        logger.error({ error }, 'Failed to create task');
+        reply.code(500);
+        return { error: 'Failed to create task' };
+    }
+});
+// Accept task (B6.1) - Hustler accepts an open task
+fastify.post('/api/tasks/:taskId/accept', { preHandler: [requireAuth] }, async (request, reply) => {
+    const { taskId } = request.params;
+    // Get hustler from auth context
+    const hustlerId = request.user?.uid || 'unknown';
+    // Check task exists and is active (available)
+    const task = await TaskService.getTask(taskId);
+    if (!task) {
+        reply.code(404);
+        return { error: 'Task not found' };
+    }
+    if (task.status !== 'active') {
+        reply.code(400);
+        return { error: 'Task is not available for acceptance', currentStatus: task.status };
+    }
+    // Assign hustler to task
+    const updatedTask = await TaskService.assignHustler(taskId, hustlerId);
+    if (!updatedTask) {
+        reply.code(500);
+        return { error: 'Failed to accept task' };
+    }
+    logger.info({ taskId, hustlerId }, 'Task accepted by hustler');
+    return {
+        success: true,
+        task: {
+            id: updatedTask.id,
+            title: updatedTask.title,
+            status: updatedTask.status,
+            assignedHustlerId: updatedTask.assignedHustlerId,
+        },
+        message: 'Task accepted successfully'
+    };
 });
 // AI analytics endpoint (for monitoring)
 fastify.get('/api/ai/analytics', async () => {
@@ -891,12 +995,43 @@ fastify.get('/api/tasks/:taskId/eligibility', async (request, reply) => {
     const eligibility = await TaskCompletionService.getCompletionEligibility(taskId);
     return eligibility;
 });
-// Smart complete a task (full reward flow)
-fastify.post('/api/tasks/:taskId/complete', async (request, reply) => {
+// Smart complete a task (full reward flow) - HARDENED
+// Security: requireAuth + task state + hustler identity validation
+fastify.post('/api/tasks/:taskId/complete', { preHandler: [requireAuth] }, async (request, reply) => {
     try {
         const { taskId } = request.params;
-        const body = CompleteTaskSchema.parse(request.body);
-        const result = await TaskCompletionService.smartComplete(taskId, body.hustlerId, {
+        const hustlerId = request.user?.uid;
+        if (!hustlerId) {
+            reply.status(401);
+            return { error: 'Authentication required', code: 'NO_AUTH' };
+        }
+        // Get task and validate state + hustler identity
+        const task = await TaskService.getTask(taskId);
+        if (!task) {
+            reply.status(404);
+            return { error: 'Task not found', code: 'TASK_NOT_FOUND' };
+        }
+        // Only assigned tasks can be completed
+        if (task.status !== 'assigned') {
+            reply.status(400);
+            return {
+                error: 'Task cannot be completed in current state',
+                code: 'INVALID_STATE',
+                currentStatus: task.status,
+                requiredStatus: 'assigned'
+            };
+        }
+        // Only the assigned hustler can complete
+        if (task.assignedHustlerId !== hustlerId) {
+            reply.status(403);
+            return {
+                error: 'Only the assigned hustler can complete this task',
+                code: 'NOT_ASSIGNED_HUSTLER'
+            };
+        }
+        // Parse optional body fields
+        const body = request.body || {};
+        const result = await TaskCompletionService.smartComplete(taskId, hustlerId, {
             rating: body.rating,
             skipProofCheck: body.skipProofCheck,
         });
@@ -904,6 +1039,7 @@ fastify.post('/api/tasks/:taskId/complete', async (request, reply) => {
             reply.status(400);
             return { error: result.message };
         }
+        logger.info({ taskId, hustlerId }, 'Task completed by hustler');
         return result;
     }
     catch (error) {
@@ -2224,19 +2360,51 @@ fastify.get('/api/proof/instructions/:category', async (request) => {
     const instructions = EnhancedAIProofService.getProofInstructions(category);
     return instructions;
 });
-// Submit a proof photo
-fastify.post('/api/proof/:taskId/submit', async (request, reply) => {
+// Submit a proof photo - HARDENED
+// Security: requireAuth + task state + hustler identity validation
+fastify.post('/api/proof/:taskId/submit', { preHandler: [requireAuth] }, async (request, reply) => {
     try {
         const { taskId } = request.params;
-        if (!request.dbUser) {
-            reply.status(401).send({ error: 'Database record required for financial operations', code: 'NO_DB_USER' });
-            return;
+        const hustlerId = request.user?.uid;
+        if (!hustlerId) {
+            reply.status(401);
+            return { error: 'Authentication required', code: 'NO_AUTH' };
         }
-        const { userId, phase, photoUrl, caption } = request.body;
-        const submission = await EnhancedAIProofService.submitPhoto(taskId, userId, phase, photoUrl, caption);
+        // Get task and validate state + hustler identity
+        const task = await TaskService.getTask(taskId);
+        if (!task) {
+            reply.status(404);
+            return { error: 'Task not found', code: 'TASK_NOT_FOUND' };
+        }
+        // Only assigned tasks can have proof submitted
+        if (task.status !== 'assigned') {
+            reply.status(400);
+            return {
+                error: 'Cannot submit proof for task in current state',
+                code: 'INVALID_STATE',
+                currentStatus: task.status,
+                requiredStatus: 'assigned'
+            };
+        }
+        // Only the assigned hustler can submit proof
+        if (task.assignedHustlerId !== hustlerId) {
+            reply.status(403);
+            return {
+                error: 'Only the assigned hustler can submit proof',
+                code: 'NOT_ASSIGNED_HUSTLER'
+            };
+        }
+        const { phase, photoUrl, caption } = request.body;
+        if (!phase || !photoUrl) {
+            reply.status(400);
+            return { error: 'Missing required fields: phase, photoUrl', code: 'VALIDATION_ERROR' };
+        }
+        const submission = await EnhancedAIProofService.submitPhoto(taskId, hustlerId, phase, photoUrl, caption);
+        logger.info({ taskId, hustlerId, phase }, 'Proof photo submitted');
         return submission;
     }
     catch (error) {
+        logger.error({ error }, 'Proof submission error');
         reply.status(400);
         return { error: error.message };
     }
@@ -3438,9 +3606,11 @@ async function start() {
             logger.warn('Firebase Authentication DISABLED (Development Mode)');
         }
         // Register API Routes
+        await fastify.register(authRoutes, { prefix: '/api' });
         await fastify.register(debugRoutes, { prefix: '/api' });
         await fastify.register(disputeRoutes, { prefix: '/api/disputes' });
         await fastify.register(trustRoutes, { prefix: '/api/trust' });
+        await fastify.register(frontendRoutes); // BUILD_GUIDE frontend routes (xp-progress, escrow-status, etc.)
         // HIVS: Identity Verification Routes (Email + Phone before AI onboarding)
         const verificationRoutes = (await import('./routes/verification.js')).default;
         await fastify.register(verificationRoutes, { prefix: '/api/verify' });

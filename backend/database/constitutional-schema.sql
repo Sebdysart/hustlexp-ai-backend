@@ -65,6 +65,11 @@ CREATE TABLE IF NOT EXISTS users (
     trust_tier INTEGER DEFAULT 1 NOT NULL 
         CHECK (trust_tier >= 1 AND trust_tier <= 4),
     
+    -- Trust hold (gating enforcement)
+    trust_hold BOOLEAN DEFAULT FALSE NOT NULL,
+    trust_hold_reason VARCHAR(100),
+    trust_hold_until TIMESTAMPTZ,
+    
     -- XP (PRODUCT_SPEC §5)
     xp_total INTEGER DEFAULT 0 NOT NULL 
         CHECK (xp_total >= 0),
@@ -123,6 +128,7 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 CREATE INDEX IF NOT EXISTS idx_users_stripe_customer ON users(stripe_customer_id);
 CREATE INDEX IF NOT EXISTS idx_users_trust_tier ON users(trust_tier);
+CREATE INDEX IF NOT EXISTS idx_users_trust_hold ON users(trust_hold);
 CREATE INDEX IF NOT EXISTS idx_users_default_mode ON users(default_mode);
 
 -- ----------------------------------------------------------------------------
@@ -148,6 +154,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     
     -- Pricing (in USD cents — PRODUCT_SPEC §4.3)
     price INTEGER NOT NULL CHECK (price > 0),
+    
+    -- Risk level (gating enforcement)
+    risk_level VARCHAR(20) NOT NULL DEFAULT 'LOW'
+        CHECK (risk_level IN ('LOW', 'MEDIUM', 'HIGH', 'IN_HOME')),
     
     -- Scope hash for immutability
     scope_hash VARCHAR(64),
@@ -191,6 +201,8 @@ CREATE TABLE IF NOT EXISTS tasks (
 CREATE INDEX IF NOT EXISTS idx_tasks_poster ON tasks(poster_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_worker ON tasks(worker_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_state ON tasks(state);
+CREATE INDEX IF NOT EXISTS idx_tasks_progress_state ON tasks(progress_state);
+CREATE INDEX IF NOT EXISTS idx_tasks_risk_level ON tasks(risk_level);
 CREATE INDEX IF NOT EXISTS idx_tasks_created ON tasks(created_at DESC);
 
 -- ----------------------------------------------------------------------------
@@ -266,10 +278,13 @@ CREATE TABLE IF NOT EXISTS escrows (
     refund_amount INTEGER CHECK (refund_amount >= 0),
     release_amount INTEGER CHECK (release_amount >= 0),
     
-    -- Stripe references
+    -- Stripe references (UNIQUE constraints prevent double funding/release/refund)
     stripe_payment_intent_id VARCHAR(255),
     stripe_transfer_id VARCHAR(255),
     stripe_refund_id VARCHAR(255),
+    
+    -- Optimistic concurrency control (CRITICAL for Phase D)
+    version INTEGER NOT NULL DEFAULT 1,
     
     -- Timestamps
     funded_at TIMESTAMPTZ,
@@ -291,6 +306,15 @@ CREATE INDEX IF NOT EXISTS idx_escrows_task ON escrows(task_id);
 CREATE INDEX IF NOT EXISTS idx_escrows_state ON escrows(state);
 CREATE INDEX IF NOT EXISTS idx_escrows_stripe_pi ON escrows(stripe_payment_intent_id);
 
+-- UNIQUE constraints on Stripe IDs (prevents double funding/release/refund)
+-- CRITICAL: These prevent catastrophic failures even if code logic fails
+CREATE UNIQUE INDEX IF NOT EXISTS idx_escrows_stripe_payment_intent_unique 
+    ON escrows(stripe_payment_intent_id) WHERE stripe_payment_intent_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_escrows_stripe_transfer_unique 
+    ON escrows(stripe_transfer_id) WHERE stripe_transfer_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_escrows_stripe_refund_unique 
+    ON escrows(stripe_refund_id) WHERE stripe_refund_id IS NOT NULL;
+
 -- ----------------------------------------------------------------------------
 -- 1.3.1 ESCROW TERMINAL STATE TRIGGER (AUDIT-4)
 -- ----------------------------------------------------------------------------
@@ -298,20 +322,14 @@ CREATE INDEX IF NOT EXISTS idx_escrows_stripe_pi ON escrows(stripe_payment_inten
 CREATE OR REPLACE FUNCTION prevent_escrow_terminal_mutation()
 RETURNS TRIGGER AS $$
 BEGIN
-    IF OLD.state IN ('RELEASED', 'REFUNDED', 'REFUND_PARTIAL') THEN
-        IF NEW.state != OLD.state OR
-           NEW.amount != OLD.amount OR
-           NEW.task_id != OLD.task_id THEN
-            RAISE EXCEPTION 'TERMINAL_STATE_VIOLATION: Cannot modify escrow % in terminal state %', OLD.id, OLD.state
-                USING ERRCODE = 'HX002';
-        END IF;
+    -- Phase D: Prevent state transitions from terminal states (RELEASED, REFUNDED, REFUND_PARTIAL)
+    -- This prevents entire classes of bugs (double refund, release after refund, etc.)
+    IF OLD.state IN ('RELEASED', 'REFUNDED', 'REFUND_PARTIAL')
+       AND NEW.state <> OLD.state THEN
+        RAISE EXCEPTION 'HX301: Cannot transition terminal escrow state % (escrow % is terminal and immutable)', 
+            OLD.state, OLD.id
+            USING ERRCODE = 'HX301';
     END IF;
-    
-    IF OLD.state IN ('RELEASED', 'REFUNDED', 'REFUND_PARTIAL') AND NEW.state != OLD.state THEN
-        RAISE EXCEPTION 'TERMINAL_STATE_VIOLATION: Cannot transition escrow % from terminal state %', OLD.id, OLD.state
-            USING ERRCODE = 'HX002';
-    END IF;
-    
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
@@ -548,35 +566,32 @@ CREATE TABLE IF NOT EXISTS trust_ledger (
     -- Actor
     changed_by VARCHAR(100) NOT NULL, -- 'system', 'admin:usr_xxx'
     
+    -- Idempotency (MVP)
+    idempotency_key VARCHAR(255) UNIQUE NOT NULL,
+    event_source VARCHAR(50) NOT NULL, -- 'dispute', 'task', 'admin', 'system'
+    source_event_id VARCHAR(255), -- outbox_event_id or stripe_event_id
+    
     -- Timestamps
     changed_at TIMESTAMPTZ DEFAULT NOW() NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_trust_ledger_user ON trust_ledger(user_id);
 CREATE INDEX IF NOT EXISTS idx_trust_ledger_changed ON trust_ledger(changed_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_trust_ledger_idempotency ON trust_ledger(idempotency_key);
 
 -- ----------------------------------------------------------------------------
 -- 3.1.1 TRUST CHANGE AUDIT TRIGGER
 -- ----------------------------------------------------------------------------
--- Automatically log trust tier changes to trust_ledger
+-- NOTE: Trust tier changes are now handled by trust-worker.ts via outbox events.
+-- The automatic audit trigger is disabled in favor of explicit trust_ledger inserts
+-- from the trust worker (which includes idempotency_key).
+-- 
+-- If you need direct tier updates (admin overrides), use TrustService.updateTier()
+-- which will write to trust_ledger with proper idempotency.
 -- ----------------------------------------------------------------------------
 
-CREATE OR REPLACE FUNCTION audit_trust_tier_change()
-RETURNS TRIGGER AS $$
-BEGIN
-    IF OLD.trust_tier != NEW.trust_tier THEN
-        INSERT INTO trust_ledger (user_id, old_tier, new_tier, reason, changed_by)
-        VALUES (NEW.id, OLD.trust_tier, NEW.trust_tier, 'direct_update', 'system');
-    END IF;
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-DROP TRIGGER IF EXISTS trust_tier_audit ON users;
-CREATE TRIGGER trust_tier_audit
-    AFTER UPDATE OF trust_tier ON users
-    FOR EACH ROW
-    EXECUTE FUNCTION audit_trust_tier_change();
+-- Trigger is disabled - trust-worker handles logging
+-- DROP TRIGGER IF EXISTS trust_tier_audit ON users;
 
 -- ============================================================================
 -- SECTION 4: BADGE SYSTEM (ARCHITECTURE §2.3)
@@ -680,34 +695,86 @@ CREATE TABLE IF NOT EXISTS disputes (
     outcome_worker_penalty BOOLEAN DEFAULT FALSE,
     outcome_poster_penalty BOOLEAN DEFAULT FALSE,
     
+    -- Split amounts (for SPLIT resolution)
+    outcome_refund_amount INTEGER,
+    outcome_release_amount INTEGER,
+    
+    -- Optimistic locking
+    version INTEGER NOT NULL DEFAULT 1,
+    
     -- Timestamps
     created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
-    updated_at TIMESTAMPTZ DEFAULT NOW() NOT NULL
+    updated_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
+    
+    -- Constraints
+    CONSTRAINT disputes_split_amounts_check
+        CHECK (
+          outcome_escrow_action != 'SPLIT'
+          OR (
+            outcome_refund_amount IS NOT NULL
+            AND outcome_release_amount IS NOT NULL
+            AND outcome_refund_amount >= 0
+            AND outcome_release_amount >= 0
+          )
+        )
 );
 
 CREATE INDEX IF NOT EXISTS idx_disputes_task ON disputes(task_id);
 CREATE INDEX IF NOT EXISTS idx_disputes_state ON disputes(state);
 CREATE INDEX IF NOT EXISTS idx_disputes_initiated ON disputes(initiated_by);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_disputes_escrow_unique ON disputes(escrow_id);
+
+-- ----------------------------------------------------------------------------
+-- 5.2 DISPUTE EVIDENCE TABLE
+-- ----------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS dispute_evidence (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  dispute_id UUID NOT NULL REFERENCES disputes(id) ON DELETE CASCADE,
+  uploaded_by UUID NOT NULL REFERENCES users(id),
+  kind VARCHAR(20) NOT NULL CHECK (kind IN ('IMAGE','VIDEO','TEXT','LINK')),
+  object_key TEXT,
+  text_body TEXT,
+  url TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_dispute_evidence_dispute
+ON dispute_evidence(dispute_id, created_at);
 
 -- ============================================================================
 -- SECTION 6: STRIPE INTEGRATION
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
--- 6.1 PROCESSED STRIPE EVENTS (Idempotency)
+-- 6.1 STRIPE EVENTS (Idempotency + Replay Safety)
 -- ----------------------------------------------------------------------------
 -- Authority: ARCHITECTURE §2.4 (INV-STRIPE-1)
+-- Phase D: Full payload storage for event replay and debugging
 -- ----------------------------------------------------------------------------
 
-CREATE TABLE IF NOT EXISTS processed_stripe_events (
-    event_id VARCHAR(255) PRIMARY KEY,
-    event_type VARCHAR(100) NOT NULL,
-    processed_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
-    result VARCHAR(50) NOT NULL,
-    error_message TEXT
+CREATE TABLE IF NOT EXISTS stripe_events (
+    stripe_event_id VARCHAR(255) PRIMARY KEY,  -- Stripe event ID (e.g., 'evt_1234...')
+    type VARCHAR(100) NOT NULL,                -- Event type (e.g., 'payment_intent.succeeded')
+    created TIMESTAMPTZ NOT NULL,              -- Stripe event creation timestamp
+    payload_json JSONB NOT NULL,               -- Full event payload (CRITICAL for replay)
+    claimed_at TIMESTAMPTZ,                    -- NULL until claimed by worker (processing started)
+    processed_at TIMESTAMPTZ,                  -- NULL until finalized by worker (terminal: success/failed/skipped)
+    result VARCHAR(50),                        -- 'processing', 'success', 'failed', 'skipped'
+    error_message TEXT,                        -- Error details if processing failed
+    created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
+    CONSTRAINT stripe_events_result_check
+        CHECK (result IS NULL OR result IN ('processing', 'success', 'failed', 'skipped'))
 );
 
-CREATE INDEX IF NOT EXISTS idx_stripe_events_processed ON processed_stripe_events(processed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_stripe_events_processed ON stripe_events(processed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_stripe_events_type ON stripe_events(type, processed_at);
+CREATE INDEX IF NOT EXISTS idx_stripe_events_unprocessed ON stripe_events(created) WHERE processed_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_stripe_events_unclaimed ON stripe_events(created) WHERE claimed_at IS NULL AND processed_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_stripe_events_stuck_processing ON stripe_events(claimed_at) WHERE result = 'processing' AND processed_at IS NULL;
+
+-- Drop old table (migration note: data migration not included here)
+-- DROP TABLE IF EXISTS processed_stripe_events;
 
 -- ============================================================================
 -- SECTION 7: AI INFRASTRUCTURE (AI_INFRASTRUCTURE.md §6)
@@ -1933,4 +2000,232 @@ ON CONFLICT (version) DO NOTHING;
 
 -- ============================================================================
 -- END OF CONSTITUTIONAL SCHEMA v1.1.0
+-- ============================================================================-- ============================================================================
+-- SYSTEM GUARANTEES SCHEMA (v1.2.0)
 -- ============================================================================
+-- STATUS: CONSTITUTIONAL — DO NOT MODIFY WITHOUT VERSION BUMP
+-- AUTHORITY: ARCHITECTURE §2.4 (Outbox pattern, job queues, file storage, email)
+-- 
+-- Purpose: Implements system guarantees (idempotency, auditability, backpressure)
+-- via outbox pattern, exports state machine, and email outbox.
+-- 
+-- Three Invariants:
+-- 1. Idempotency: Same event can be processed twice without double-charging/XP/email
+-- 2. Auditability: Every side effect ties back to an immutable event
+-- 3. Backpressure: Surges don't melt core API
+-- ============================================================================
+
+-- ----------------------------------------------------------------------------
+-- OUTBOX PATTERN (System Guarantee: Idempotency + Auditability)
+-- ----------------------------------------------------------------------------
+-- Authority: ARCHITECTURE §2.4 (Outbox pattern for reliable job queue integration)
+-- Purpose: Ensures domain events are persisted in same transaction, then enqueued to BullMQ
+-- 
+-- Pattern: API writes domain event + outbox row → worker reads outbox → enqueues BullMQ job
+-- This ensures at-least-once delivery without losing events.
+-- ----------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS outbox_events (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    
+    -- Event identity (for idempotency)
+    event_type VARCHAR(100) NOT NULL,
+    aggregate_type VARCHAR(50) NOT NULL,  -- 'task', 'escrow', 'user', 'export', 'notification'
+    aggregate_id UUID NOT NULL,
+    event_version INTEGER NOT NULL DEFAULT 1,  -- For optimistic locking
+    idempotency_key VARCHAR(255) UNIQUE NOT NULL,  -- Format: {event_type}:{aggregate_id}:{version}
+    
+    -- Event payload
+    payload JSONB NOT NULL,
+    
+    -- Queue routing
+    queue_name VARCHAR(50) NOT NULL CHECK (queue_name IN (
+        'critical_payments',
+        'critical_trust',
+        'user_notifications',
+        'exports',
+        'maintenance'
+    )),
+    
+    -- Status
+    status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'enqueued', 'processed', 'failed')),
+    enqueued_at TIMESTAMPTZ,
+    processed_at TIMESTAMPTZ,
+    error_message TEXT,
+    attempts INTEGER DEFAULT 0,
+    
+    -- BullMQ job tracking (for idempotency and debugging)
+    bullmq_job_id VARCHAR(255),  -- Store BullMQ job ID after enqueueing (for tracking and idempotency)
+    
+    -- Timestamps
+    created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_outbox_status ON outbox_events(status, created_at) WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS idx_outbox_queue ON outbox_events(queue_name, status, created_at);
+CREATE INDEX IF NOT EXISTS idx_outbox_idempotency ON outbox_events(idempotency_key);
+CREATE INDEX IF NOT EXISTS idx_outbox_aggregate ON outbox_events(aggregate_type, aggregate_id, event_version);
+
+-- ----------------------------------------------------------------------------
+-- EXPORTS TABLE (GDPR Export State Machine)
+-- ----------------------------------------------------------------------------
+-- Authority: GDPR_COMPLIANCE_SPEC.md §2 (Data export pipeline)
+-- Purpose: Track export generation lifecycle with immutable state transitions
+-- 
+-- State machine: queued → generating → ready → failed → expired
+-- Hard rule: Every export must have DB row + immutable object key + checksum
+-- ----------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS exports (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    
+    -- Reference
+    gdpr_request_id UUID NOT NULL REFERENCES gdpr_data_requests(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    
+    -- Export metadata
+    export_format VARCHAR(10) NOT NULL CHECK (export_format IN ('json', 'csv', 'pdf')),
+    content_type VARCHAR(100) NOT NULL,  -- 'application/json', 'text/csv', 'application/pdf'
+    
+    -- State machine
+    status VARCHAR(20) NOT NULL DEFAULT 'queued' CHECK (status IN (
+        'queued',      -- Job enqueued, waiting for worker
+        'generating',  -- Worker is generating file
+        'ready',       -- File uploaded, signed URL available
+        'failed',      -- Generation/upload failed
+        'expired'      -- Signed URL expired (file still in R2)
+    )),
+    
+    -- Storage (R2)
+    object_key VARCHAR(500),  -- Format: exports/{user_id}/{export_id}/{yyyy-mm-dd}/{filename}
+    bucket_name VARCHAR(100) NOT NULL DEFAULT 'hustlexp-exports',
+    file_size_bytes BIGINT,
+    sha256_checksum VARCHAR(64),  -- For integrity verification
+    
+    -- Signed URL (expires in 15 minutes)
+    signed_url TEXT,
+    signed_url_expires_at TIMESTAMPTZ,
+    
+    -- Lifecycle
+    generated_at TIMESTAMPTZ,
+    uploaded_at TIMESTAMPTZ,
+    expires_at TIMESTAMPTZ NOT NULL,  -- 30 days from generation
+    
+    -- Error tracking
+    error_message TEXT,
+    generation_attempts INTEGER DEFAULT 0,
+    
+    -- Timestamps
+    created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
+    updated_at TIMESTAMPTZ DEFAULT NOW() NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_exports_gdpr_request ON exports(gdpr_request_id);
+CREATE INDEX IF NOT EXISTS idx_exports_user ON exports(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_exports_status ON exports(status, created_at) WHERE status IN ('queued', 'generating');
+CREATE INDEX IF NOT EXISTS idx_exports_expires ON exports(expires_at) WHERE status = 'ready';
+CREATE INDEX IF NOT EXISTS idx_exports_url_expires ON exports(signed_url_expires_at) WHERE signed_url IS NOT NULL;
+
+-- UNIQUE constraint: Prevent duplicate exports for same GDPR request + format
+-- This ensures idempotency at the request level (same request can't generate multiple exports)
+CREATE UNIQUE INDEX IF NOT EXISTS idx_exports_gdpr_format ON exports(gdpr_request_id, export_format) 
+  WHERE status != 'failed';  -- Allow multiple failed attempts, but only one successful export per format
+
+-- UNIQUE constraint: Ensure object_key uniqueness (prevents duplicate storage keys)
+-- CRITICAL: This ensures deterministic object keys don't collide across exports
+CREATE UNIQUE INDEX IF NOT EXISTS idx_exports_object_key ON exports(object_key) 
+  WHERE object_key IS NOT NULL;
+
+-- ----------------------------------------------------------------------------
+-- EMAIL OUTBOX TABLE (Async Email Delivery)
+-- ----------------------------------------------------------------------------
+-- Authority: NOTIFICATION_SPEC.md §2.4 (Multi-channel delivery)
+-- Purpose: Async email delivery with retries, backoff, suppression handling
+-- 
+-- Hard rule: Email send is never inline on request paths. Always async.
+-- Pattern: Service writes to email_outbox → worker sends → updates row
+-- ----------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS email_outbox (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    
+    -- Recipient
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    to_email VARCHAR(255) NOT NULL,
+    
+    -- Template
+    template VARCHAR(100) NOT NULL,  -- 'export_ready', 'task_status_changed', 'gdpr_deletion_complete', etc.
+    params_json JSONB NOT NULL DEFAULT '{}',
+    
+    -- Email content (if no template, use direct)
+    subject VARCHAR(500),
+    html_body TEXT,
+    text_body TEXT,
+    
+    -- Priority
+    priority VARCHAR(10) NOT NULL DEFAULT 'MEDIUM' CHECK (priority IN ('LOW', 'MEDIUM', 'HIGH', 'CRITICAL')),
+    
+    -- Idempotency (CRITICAL: Prevents duplicate sends)
+    idempotency_key VARCHAR(255) UNIQUE NOT NULL,  -- Format: email.send_requested:{template}:{to_email}:{aggregate_id}:{version}
+    
+    -- Status
+    status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'sending', 'sent', 'failed', 'suppressed')),
+    attempts INTEGER DEFAULT 0,
+    max_attempts INTEGER DEFAULT 3,
+    last_error TEXT,
+    
+    -- Provider tracking
+    provider_name VARCHAR(50) DEFAULT 'sendgrid',  -- 'sendgrid' or 'ses' (future)
+    provider_msg_id VARCHAR(255),  -- Provider's message ID for tracking
+    
+    -- Suppression handling
+    suppressed_reason VARCHAR(100),  -- 'bounce', 'complaint', 'unsubscribe'
+    suppressed_at TIMESTAMPTZ,
+    
+    -- Timestamps
+    created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
+    sent_at TIMESTAMPTZ,
+    delivered_at TIMESTAMPTZ,  -- Provider webhook confirmation
+    next_retry_at TIMESTAMPTZ  -- Exponential backoff
+);
+
+CREATE INDEX IF NOT EXISTS idx_email_outbox_status ON email_outbox(status, created_at) WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS idx_email_outbox_retry ON email_outbox(next_retry_at) WHERE status = 'failed' AND attempts < max_attempts;
+CREATE INDEX IF NOT EXISTS idx_email_outbox_user ON email_outbox(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_email_outbox_template ON email_outbox(template, status);
+CREATE INDEX IF NOT EXISTS idx_email_outbox_suppressed ON email_outbox(to_email, suppressed_at) WHERE status = 'suppressed';
+
+-- UNIQUE constraint: Ensure idempotency key uniqueness (prevents duplicate email sends)
+-- CRITICAL: This ensures deterministic idempotency keys don't allow duplicate sends
+CREATE UNIQUE INDEX IF NOT EXISTS idx_email_outbox_idempotency ON email_outbox(idempotency_key);
+
+-- ----------------------------------------------------------------------------
+-- TRIGGERS
+-- ----------------------------------------------------------------------------
+
+-- Auto-update updated_at timestamps (reuse existing function if exists)
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'update_updated_at_column') THEN
+    CREATE FUNCTION update_updated_at_column()
+    RETURNS TRIGGER AS $$
+    BEGIN
+      NEW.updated_at = NOW();
+      RETURN NEW;
+    END;
+    $$ LANGUAGE plpgsql;
+  END IF;
+END $$;
+
+CREATE TRIGGER IF NOT EXISTS exports_updated_at
+  BEFORE UPDATE ON exports
+  FOR EACH ROW
+  EXECUTE FUNCTION update_updated_at_column();
+
+-- ----------------------------------------------------------------------------
+-- SCHEMA VERSION UPDATE (v1.2.0)
+-- ----------------------------------------------------------------------------
+
+INSERT INTO schema_versions (version, applied_by, checksum, notes)
+VALUES ('1.2.0', 'system', 'SYSTEM_GUARANTEES', 'Added outbox pattern (outbox_events), exports state machine (exports), email outbox (email_outbox) for idempotency, auditability, and backpressure')
+ON CONFLICT (version) DO NOTHING;

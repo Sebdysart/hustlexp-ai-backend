@@ -61,12 +61,35 @@ export type EvidenceAccessScope = 'uploader_only' | 'restricted' | 'dispute_revi
 // Evidence moderation status
 export type EvidenceModerationStatus = 'pending' | 'approved' | 'flagged' | 'quarantined';
 
+// Task Progress State (Pillar A - Realtime Tracking)
+// Authority: task.progress_state is the source of truth
+// Enforced: Monotonic transitions only (no skips, no reversals)
+export type TaskProgressState =
+  | 'POSTED'
+  | 'ACCEPTED'
+  | 'TRAVELING'
+  | 'WORKING'
+  | 'COMPLETED'
+  | 'CLOSED';
+
 // ============================================================================
 // TERMINAL STATE CONSTANTS
 // ============================================================================
 
 export const TERMINAL_TASK_STATES: TaskState[] = ['COMPLETED', 'CANCELLED', 'EXPIRED'];
 export const TERMINAL_ESCROW_STATES: EscrowState[] = ['RELEASED', 'REFUNDED', 'REFUND_PARTIAL'];
+
+// Task Progress State Machine (Pillar A - Realtime Tracking)
+// Valid transitions (hard-coded map)
+// No skips. No reversals. No conditional branches.
+export const VALID_PROGRESS_TRANSITIONS: Record<TaskProgressState, readonly TaskProgressState[]> = {
+  POSTED: ['ACCEPTED'],
+  ACCEPTED: ['TRAVELING'],
+  TRAVELING: ['WORKING'],
+  WORKING: ['COMPLETED'],
+  COMPLETED: ['CLOSED'],
+  CLOSED: [],
+} as const;
 
 // ============================================================================
 // CORE DOMAIN TYPES
@@ -99,6 +122,9 @@ export interface User {
   
   // Trust (PRODUCT_SPEC §8.2)
   trust_tier: number; // 1-4
+  trust_hold: boolean;
+  trust_hold_reason?: string;
+  trust_hold_until?: Date;
   
   // XP (PRODUCT_SPEC §5)
   xp_total: number;
@@ -115,6 +141,11 @@ export interface User {
   // Stripe
   stripe_customer_id?: string;
   stripe_connect_id?: string;
+  
+  // Plan (Step 9-C - Monetization Hooks)
+  plan: 'free' | 'premium' | 'pro';
+  plan_subscribed_at?: Date;
+  plan_expires_at?: Date;
   
   // UI preferences (ONBOARDING_SPEC §6)
   xp_visibility_rules?: string;
@@ -161,9 +192,15 @@ export interface Task {
   
   // Price in USD cents (INTEGER - no floats!)
   price: number;
+  risk_level: RiskLevel;
   scope_hash?: string;
   
   state: TaskState;
+  
+  // Progress Tracking (Pillar A - Realtime Tracking)
+  progress_state: TaskProgressState;
+  progress_updated_at: Date;
+  progress_by?: string; // UUID of user who advanced progress (null for system)
   
   // Live Mode (PRODUCT_SPEC §3.5)
   mode: TaskMode;
@@ -283,6 +320,11 @@ export interface TrustLedgerEntry {
   
   changed_by: string; // 'system', 'admin:usr_xxx'
   
+  // Idempotency (MVP)
+  idempotency_key: string;
+  event_source: string; // 'dispute', 'task', 'admin', 'system'
+  source_event_id?: string;
+  
   changed_at: Date;
 }
 
@@ -326,6 +368,11 @@ export interface Dispute {
   outcome_escrow_action?: 'RELEASE' | 'REFUND' | 'SPLIT';
   outcome_worker_penalty: boolean;
   outcome_poster_penalty: boolean;
+  outcome_refund_amount?: number;
+  outcome_release_amount?: number;
+  
+  // Optimistic locking
+  version: number;
   
   created_at: Date;
   updated_at: Date;
@@ -591,6 +638,10 @@ export const ErrorCodes = {
   NOT_FOUND: 'NOT_FOUND',
   INVALID_STATE: 'INVALID_STATE',
   INVALID_TRANSITION: 'INVALID_TRANSITION',
+  INVALID_INPUT: 'INVALID_INPUT',
   UNAUTHORIZED: 'UNAUTHORIZED',
   FORBIDDEN: 'FORBIDDEN',
+  RATE_LIMIT_EXCEEDED: 'RATE_LIMIT_EXCEEDED',
+  PREFERENCE_DISABLED: 'PREFERENCE_DISABLED',
+  INVARIANT_VIOLATION: 'INVARIANT_VIOLATION',
 } as const;

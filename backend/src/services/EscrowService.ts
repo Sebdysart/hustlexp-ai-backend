@@ -59,7 +59,7 @@ interface PartialRefundParams {
 const VALID_TRANSITIONS: Record<EscrowState, EscrowState[]> = {
   PENDING: ['FUNDED', 'REFUNDED'],
   FUNDED: ['RELEASED', 'REFUNDED', 'LOCKED_DISPUTE'],
-  LOCKED_DISPUTE: ['RELEASED', 'REFUNDED', 'REFUND_PARTIAL'],
+  LOCKED_DISPUTE: ['REFUNDED', 'REFUND_PARTIAL'], // P0: Policy 1 - LOCKED_DISPUTE blocks RELEASED until dispute resolution
   RELEASED: [],      // TERMINAL
   REFUNDED: [],      // TERMINAL
   REFUND_PARTIAL: [], // TERMINAL

@@ -53,7 +53,8 @@ interface CreatePaymentIntentResult {
 }
 
 interface CreateTransferParams {
-  escrowId: string;
+  escrowId: string; // P0: Required for metadata correlation
+  taskId: string; // P0: Required for metadata correlation
   workerId: string;
   workerStripeAccountId: string;
   amount: number; // USD cents
@@ -67,6 +68,7 @@ interface CreateTransferResult {
 
 interface CreateRefundParams {
   paymentIntentId: string;
+  escrowId: string; // P0: Required for metadata correlation
   amount?: number; // USD cents, optional for partial refund
   reason?: 'duplicate' | 'fraudulent' | 'requested_by_customer';
 }
@@ -195,6 +197,20 @@ export const StripeService = {
   createTransfer: async (
     params: CreateTransferParams
   ): Promise<ServiceResult<CreateTransferResult>> => {
+    const { escrowId, workerId, workerStripeAccountId, amount, description } = params;
+
+    // Stripe stubbing for tests (Evil Test A)
+    if (process.env.HX_STRIPE_STUB === '1') {
+      const crypto = await import('crypto');
+      return {
+        success: true,
+        data: {
+          transferId: `tr_test_${crypto.randomUUID().slice(0, 8)}`,
+          amount,
+        },
+      };
+    }
+
     if (!stripe) {
       return {
         success: false,
@@ -204,8 +220,6 @@ export const StripeService = {
         },
       };
     }
-
-    const { escrowId, workerId, workerStripeAccountId, amount, description } = params;
 
     try {
       const transfer = await stripe.transfers.create({
@@ -243,6 +257,21 @@ export const StripeService = {
   createRefund: async (
     params: CreateRefundParams
   ): Promise<ServiceResult<CreateRefundResult>> => {
+    const { paymentIntentId, escrowId, amount, reason } = params;
+
+    // Stripe stubbing for tests (Evil Test A)
+    if (process.env.HX_STRIPE_STUB === '1') {
+      const crypto = await import('crypto');
+      return {
+        success: true,
+        data: {
+          refundId: `re_test_${crypto.randomUUID().slice(0, 8)}`,
+          amount: amount || 0,
+          status: 'succeeded',
+        },
+      };
+    }
+
     if (!stripe) {
       return {
         success: false,
@@ -253,13 +282,15 @@ export const StripeService = {
       };
     }
 
-    const { paymentIntentId, amount, reason } = params;
-
     try {
       const refund = await stripe.refunds.create({
         payment_intent: paymentIntentId,
         amount, // undefined = full refund
         reason,
+        metadata: {
+          escrow_id: escrowId,
+          payment_intent_id: paymentIntentId,
+        },
       });
 
       return {
