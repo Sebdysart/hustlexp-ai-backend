@@ -6,6 +6,7 @@
  */
 
 import { sql, isDatabaseAvailable } from '../db/index.js';
+import { shouldAllowFallback, createDatabaseUnavailableError } from '../utils/dbGate.js';
 import { serviceLogger } from '../utils/logger.js';
 import type { User, HustlerProfile } from '../types/index.js';
 
@@ -87,10 +88,16 @@ class UserServiceClass {
                 }
             } catch (error) {
                 serviceLogger.warn({ error, firebaseUid }, 'DB lookup failed, using fallback');
+                if (!shouldAllowFallback()) {
+                    throw createDatabaseUnavailableError();
+                }
             }
         }
 
         // Fallback to in-memory (for development/testing)
+        if (!shouldAllowFallback()) {
+            throw createDatabaseUnavailableError();
+        }
         const fallback = fallbackUsers.get(firebaseUid);
         if (fallback) {
             serviceLogger.debug({ firebaseUid }, 'Using fallback user');
@@ -134,10 +141,16 @@ class UserServiceClass {
                 return user;
             } catch (error) {
                 serviceLogger.error({ error, firebaseUid, email }, 'Failed to create user');
+                if (!shouldAllowFallback()) {
+                    throw createDatabaseUnavailableError();
+                }
             }
         }
 
         // Create in fallback
+        if (!shouldAllowFallback()) {
+            throw createDatabaseUnavailableError();
+        }
         const newUser: DbUser = {
             id: `user-${Date.now()}`,
             firebase_uid: firebaseUid,
@@ -171,10 +184,16 @@ class UserServiceClass {
                 return true;
             } catch (error) {
                 serviceLogger.error({ error, firebaseUid, newRole }, 'Failed to update role in DB');
+                if (!shouldAllowFallback()) {
+                    throw createDatabaseUnavailableError();
+                }
             }
         }
 
         // Update fallback
+        if (!shouldAllowFallback()) {
+            throw createDatabaseUnavailableError();
+        }
         const fallback = fallbackUsers.get(firebaseUid);
         if (fallback) {
             fallback.role = newRole;
@@ -208,11 +227,17 @@ class UserServiceClass {
     }
 
     async getHustlerProfile(userId: string): Promise<HustlerProfile | null> {
+        if (!shouldAllowFallback()) {
+            throw createDatabaseUnavailableError();
+        }
         return hustlerProfiles.get(userId) || null;
     }
 
     // Legacy compatibility method
     async getUserStats(userId: string): Promise<{ xp: number; level: number; streak: number; tasksCompleted: number; rating: number; totalEarnings: number } | null> {
+        if (!shouldAllowFallback()) {
+            throw createDatabaseUnavailableError();
+        }
         const profile = await this.getHustlerProfile(userId);
         if (!profile) return null;
 
@@ -280,4 +305,3 @@ class UserServiceClass {
 }
 
 export const UserService = new UserServiceClass();
-
