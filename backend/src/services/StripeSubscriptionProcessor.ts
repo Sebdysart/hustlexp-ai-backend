@@ -41,6 +41,13 @@ interface SubscriptionPayload {
   status: string;
 }
 
+interface StripeEventEnvelope {
+  id: string;
+  data?: {
+    object?: SubscriptionPayload;
+  };
+}
+
 // ============================================================================
 // PROCESSOR
 // ============================================================================
@@ -62,7 +69,8 @@ export async function processSubscriptionEvent(
   payload: unknown,
   stripeEventId: string
 ): Promise<void> {
-  const subscription = payload as SubscriptionPayload;
+  const event = payload as StripeEventEnvelope;
+  const subscription = (event?.data?.object ?? payload) as SubscriptionPayload;
 
   const userId = subscription.metadata?.user_id;
   const plan = subscription.items.data[0]?.price?.metadata?.plan;

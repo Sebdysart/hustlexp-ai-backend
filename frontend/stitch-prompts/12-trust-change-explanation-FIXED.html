@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Task Impact Summary - HustleXP</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script>
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            colors: {
+              "primary": "#34C759",
+              "background-dark": "#000000",
+              "glass-bg": "rgba(28, 28, 30, 0.6)",
+            },
+            fontFamily: {
+              "display": ["Space Grotesk", "sans-serif"]
+            },
+          },
+        },
+      }
+    </script>
+<style>
+        .glass-card {
+            background: rgba(28, 28, 30, 0.6);
+            backdrop-filter: blur(24px);
+            -webkit-backdrop-filter: blur(24px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+        }
+    </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="bg-background-dark text-white font-display antialiased min-h-screen">
+<div class="relative z-10 flex min-h-screen w-full flex-col pb-32">
+<div class="pt-14 px-6 pb-2">
+<button class="h-10 w-10 flex items-center justify-center rounded-full bg-white/5">
+<span class="material-symbols-outlined text-white/70">arrow_back_ios_new</span>
+</button>
+</div>
+<div class="flex flex-col items-center justify-center pt-6 pb-8 px-6 text-center">
+<h1 class="text-3xl font-bold tracking-tight text-white mb-2">Task Impact Summary</h1>
+<p class="text-white/50 text-base">How this task affected system trust and matching</p>
+</div>
+<div class="flex flex-col gap-4 px-5">
+<!-- Task Summary -->
+<div class="glass-card rounded-2xl p-5">
+<p class="text-white/50 text-xs uppercase tracking-wider mb-2">Task Summary</p>
+<h3 class="text-xl font-bold text-white">Site Survey: Sector 4</h3>
+<p class="text-white/40 text-xs font-mono uppercase tracking-wider mt-2">Contract ID: #820-A4</p>
+<p class="text-white/50 text-xs mt-2">Completed on Oct 24, 2024</p>
+</div>
+<!-- What Changed -->
+<div class="glass-card rounded-2xl p-5">
+<p class="text-white/50 text-xs uppercase tracking-wider mb-4">System Updates</p>
+<div class="flex flex-col gap-4">
+<!-- XP Gained -->
+<div class="flex items-start gap-3">
+<span class="material-symbols-outlined text-primary text-xl">trophy</span>
+<div class="flex-1">
+<p class="text-white font-semibold">XP Gained</p>
+<p class="text-primary text-2xl font-bold">+342 XP</p>
+<p class="text-white/50 text-xs mt-1">Base: 300 XP • Instant: +1.5× • Speed: +1.2×</p>
+</div>
+</div>
+<!-- FIX #1: Reliability Status (Task-Scoped) -->
+<div class="flex items-start gap-3">
+<span class="material-symbols-outlined text-primary text-xl">shield</span>
+<div class="flex-1">
+<p class="text-white font-semibold">Reliability Status for This Task</p>
+<p class="text-primary text-lg font-bold">Passed</p>
+<p class="text-white/50 text-[11px] mt-1">Account Reliability (unchanged)</p>
+</div>
+</div>
+<!-- Trust Tier -->
+<div class="flex items-start gap-3">
+<span class="material-symbols-outlined text-white/50 text-xl">shield</span>
+<div class="flex-1">
+<p class="text-white font-semibold">Trust Tier</p>
+<p class="text-white/50 text-lg font-semibold">Unchanged</p>
+<p class="text-white/50 text-xs mt-1">Current tier: Trusted (Tier C). You are 3 completed tasks away from Tier D promotion.</p>
+</div>
+</div>
+</div>
+</div>
+<!-- FIX #2: System Impact (Explicit Delta) -->
+<div class="glass-card rounded-2xl p-5">
+<p class="text-white/50 text-xs uppercase tracking-wider mb-4">System Impact</p>
+<div class="flex items-start gap-3 mb-3">
+<span class="material-symbols-outlined text-white/50 text-xl">shield</span>
+<div class="flex-1">
+<p class="text-white/80 text-sm font-medium mb-2">Impact from this task:</p>
+<ul class="space-y-2 text-white/70 text-sm">
+<li>• Priority matching weight increased for Instant tasks</li>
+<li>• No penalties applied</li>
+<li>• No restrictions added</li>
+</ul>
+<p class="text-white/50 text-xs italic mt-3">High-trust status unlocks priority matching for future tasks.</p>
+</div>
+</div>
+</div>
+<!-- What Did NOT Change -->
+<div class="glass-card rounded-2xl p-4 opacity-60">
+<p class="text-white/50 text-xs uppercase tracking-wider mb-2">No Penalties</p>
+<p class="text-white/70 text-sm">Task completed successfully. No trust penalties or restrictions applied.</p>
+</div>
+<!-- What Happens Next -->
+<div class="glass-card rounded-2xl p-4 opacity-60">
+<p class="text-white/50 text-xs uppercase tracking-wider mb-2">Next Steps</p>
+<p class="text-white/70 text-sm">Your updated trust tier and XP will be reflected in future task matching and eligibility.</p>
+</div>
+<!-- Primary Action -->
+<div class="pt-6">
+<button class="w-full bg-primary hover:bg-[#2AB04A] active:scale-[0.98] transition-all text-white font-bold text-lg h-14 rounded-xl">
+                    Continue
+                </button>
+</div>
+</div>
+</div>
+</body></html>

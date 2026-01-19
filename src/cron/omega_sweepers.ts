@@ -15,6 +15,10 @@ const MIRROR_WINDOW_DAYS = 30;
 export class OmegaSweepers {
 
     private static stripe: Stripe;
+    private static sagaTimer?: NodeJS.Timer;
+    private static mirrorTimer?: NodeJS.Timer;
+    private static hourlyTimer?: NodeJS.Timer;
+    private static dailyTimer?: NodeJS.Timer;
 
     static init() {
         if (!this.stripe) {
@@ -27,22 +31,48 @@ export class OmegaSweepers {
      */
     static start() {
         this.init();
+        
+        // Clean up any existing timers before starting new ones
+        this.stop();
+        
         logger.info('Starting Omega Sweepers...');
 
         // 1. Saga Timeout Sweeper (Every 1 min)
-        setInterval(this.sweepStuckSagas, 60 * 1000);
+        this.sagaTimer = setInterval(() => this.sweepStuckSagas(), 60 * 1000);
 
         // 2. Reality Mirror Backfill (Every 6 hours)
-        setInterval(this.backfillRealityMirror, 6 * 60 * 60 * 1000);
+        this.mirrorTimer = setInterval(() => this.backfillRealityMirror(), 6 * 60 * 60 * 1000);
 
         // 3. Control Plane: Hourly Snapshot (Every 1 hour)
-        setInterval(() => this.generateSnapshot('hourly'), 60 * 60 * 1000);
+        this.hourlyTimer = setInterval(() => this.generateSnapshot('hourly'), 60 * 60 * 1000);
 
         // 4. Control Plane: Daily Snapshot (Every 24 hours)
-        setInterval(() => this.generateSnapshot('daily'), 24 * 60 * 60 * 1000);
+        this.dailyTimer = setInterval(() => this.generateSnapshot('daily'), 24 * 60 * 60 * 1000);
 
         // Run once on boot
         this.sweepStuckSagas().catch(e => logger.error(e, 'Boot Sweep Failed'));
+    }
+
+    /**
+     * Stop all background sweepers and clean up timers.
+     */
+    static stop(): void {
+        if (this.sagaTimer) {
+            clearInterval(this.sagaTimer);
+            this.sagaTimer = undefined;
+        }
+        if (this.mirrorTimer) {
+            clearInterval(this.mirrorTimer);
+            this.mirrorTimer = undefined;
+        }
+        if (this.hourlyTimer) {
+            clearInterval(this.hourlyTimer);
+            this.hourlyTimer = undefined;
+        }
+        if (this.dailyTimer) {
+            clearInterval(this.dailyTimer);
+            this.dailyTimer = undefined;
+        }
     }
 
     /**

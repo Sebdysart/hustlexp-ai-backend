@@ -5,7 +5,13 @@ import { tasksListProcedure } from "./routes/tasks/list/route";
 import { tasksGetProcedure } from "./routes/tasks/get/route";
 import { tasksCreateProcedure } from "./routes/tasks/create/route";
 import { tasksAcceptProcedure } from "./routes/tasks/accept/route";
+import { tasksArrivedProcedure } from "./routes/tasks/arrived/route";
 import { tasksCompleteProcedure } from "./routes/tasks/complete/route";
+import { tasksListHistoryProcedure } from "./routes/tasks/listHistory/route";
+import { tasksGetStateProcedure } from "./routes/tasks/getState/route";
+import { tasksMessagesListProcedure } from "./routes/tasks/messages/list";
+import { tasksMessagesSendProcedure } from "./routes/tasks/messages/send";
+import { tasksMessagesGetConversationProcedure } from "./routes/tasks/messages/conversation";
 
 import { usersMeProcedure, usersUpdateProcedure, usersOnboardProcedure } from "./routes/users/route";
 
@@ -38,6 +44,15 @@ import {
   proactiveRegisterDeviceProcedure,
 } from "./routes/proactive/route";
 
+import { capabilityGetProfileProcedure } from "./routes/capability/getProfile/route";
+
+import { verificationSubmitLicenseProcedure } from "./routes/verification/submitLicense/route";
+import { verificationSubmitInsuranceProcedure } from "./routes/verification/submitInsurance/route";
+import { verificationInitiateBackgroundCheckProcedure } from "./routes/verification/initiateBackgroundCheck/route";
+import { verificationResolveLicenseProcedure } from "./routes/verification/resolveLicense/route";
+import { verificationResolveInsuranceProcedure } from "./routes/verification/resolveInsurance/route";
+import { verificationResolveBackgroundCheckProcedure } from "./routes/verification/resolveBackgroundCheck/route";
+
 export const appRouter = createTRPCRouter({
   example: createTRPCRouter({
     hi: hiRoute,
@@ -45,10 +60,18 @@ export const appRouter = createTRPCRouter({
   
   tasks: createTRPCRouter({
     list: tasksListProcedure,
+    listHistory: tasksListHistoryProcedure,
+    getState: tasksGetStateProcedure,
     get: tasksGetProcedure,
     create: tasksCreateProcedure,
     accept: tasksAcceptProcedure,
+    arrived: tasksArrivedProcedure,
     complete: tasksCompleteProcedure,
+    messages: createTRPCRouter({
+      list: tasksMessagesListProcedure,
+      send: tasksMessagesSendProcedure,
+      getConversation: tasksMessagesGetConversationProcedure,
+    }),
   }),
   
   users: createTRPCRouter({
@@ -96,6 +119,19 @@ export const appRouter = createTRPCRouter({
     getRecommendations: proactiveGetRecommendationsProcedure,
     scan: proactiveScanProcedure,
     registerDevice: proactiveRegisterDeviceProcedure,
+  }),
+  
+  capability: createTRPCRouter({
+    getProfile: capabilityGetProfileProcedure,
+  }),
+
+  verification: createTRPCRouter({
+    submitLicense: verificationSubmitLicenseProcedure,
+    submitInsurance: verificationSubmitInsuranceProcedure,
+    initiateBackgroundCheck: verificationInitiateBackgroundCheckProcedure,
+    resolveLicense: verificationResolveLicenseProcedure,
+    resolveInsurance: verificationResolveInsuranceProcedure,
+    resolveBackgroundCheck: verificationResolveBackgroundCheckProcedure,
   }),
 });
 

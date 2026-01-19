@@ -1,91 +1,78 @@
 /**
- * HustleXP App Entry Point
+ * HustleXP App Entry Point (MAX-TIER)
  * 
- * Phase C.0 - Mount E1 screen as smoke anchor
+ * ============================================================================
+ * AUTHORITY & SPEC COMPLIANCE
+ * ============================================================================
+ * 
+ * Phase N1: Navigation wiring with mock state.
+ * 
+ * Guards reference state, they do not compute it.
+ * App.tsx supplies mock state, guards read it.
+ * 
+ * ============================================================================
  */
 
 import React from 'react';
-import { StyleSheet, View, Text, Button, ScrollView } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
+import { RootNavigator } from './navigation/RootNavigator';
+import { NavigationState, defaultNavigationState } from './navigation/types';
 
-// Temporary E1 screen (simplified for smoke anchor)
-// Full E1 implementation will be integrated from frontend/screens
-function EdgeStateE1NoTasksAvailable() {
-  return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      <View style={styles.header}>
-        <Text style={styles.title}>No Tasks Available</Text>
-        <Text style={styles.subtitle}>
-          No tasks are available right now. New tasks typically appear within 24 hours.
-        </Text>
-      </View>
-      
-      <View style={styles.statusCard}>
-        <Text style={styles.statusTitle}>Current Settings</Text>
-        <Text style={styles.statusItem}>Instant Mode: OFF</Text>
-        <Text style={styles.statusItem}>Trust Tier: 0</Text>
-      </View>
+// ============================================================================
+// MOCK STATE (Phase N1)
+// ============================================================================
 
-      <Button
-        title="Return to Dashboard"
-        onPress={() => {
-          // Navigation will be wired later
-          console.log('Return to Dashboard pressed');
-        }}
-      />
-    </ScrollView>
-  );
-}
+/**
+ * Mock navigation state for Phase N1.
+ * 
+ * This will be replaced with real state in Phase N2.
+ * 
+ * Test different states by modifying these values:
+ */
+const mockNavigationState: NavigationState = {
+  // Authentication state
+  isAuthenticated: true,
+  
+  // Role (set after onboarding completes)
+  role: null,
+  
+  // Onboarding state - NEW USERS START HERE
+  // Users must complete both onboarding phases before accessing main app
+  onboarding: {
+    calibrationComplete: false,  // Start with calibration onboarding
+    capabilityComplete: false,   // Then capability onboarding
+  },
+  
+  // Task state (for task-state-gated routes)
+  currentTask: {
+    id: null,
+    status: null,
+  },
+};
 
+// ============================================================================
+// APP COMPONENT
+// ============================================================================
+
+/**
+ * HustleXP App
+ * 
+ * Root app component with navigation wiring.
+ * 
+ * Phase N1: Uses mock state for routing validation.
+ * Phase N2: Will integrate with backend state.
+ * 
+ * @returns React component
+ */
 export default function App() {
+  // Use mock state for Phase N1
+  const navigationState = mockNavigationState;
+
   return (
     <SafeAreaProvider>
       <StatusBar style="light" />
-      <EdgeStateE1NoTasksAvailable />
+      <RootNavigator navigationState={navigationState} />
     </SafeAreaProvider>
   );
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#000000',
-  },
-  content: {
-    padding: 16,
-    paddingTop: 24,
-  },
-  header: {
-    marginBottom: 24,
-  },
-  title: {
-    fontSize: 28,
-    fontWeight: 'bold',
-    color: '#FFFFFF',
-    marginBottom: 8,
-  },
-  subtitle: {
-    fontSize: 14,
-    color: '#8E8E93',
-    lineHeight: 20,
-  },
-  statusCard: {
-    backgroundColor: 'rgba(28, 28, 30, 0.6)',
-    padding: 16,
-    borderRadius: 12,
-    marginBottom: 24,
-  },
-  statusTitle: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#8E8E93',
-    marginBottom: 8,
-    textTransform: 'uppercase',
-  },
-  statusItem: {
-    fontSize: 14,
-    color: '#FFFFFF',
-    marginBottom: 4,
-  },
-});

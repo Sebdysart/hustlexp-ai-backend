@@ -31,13 +31,12 @@ import type { User, Task } from '../../src/types';
 
 async function createTestUser(plan: 'free' | 'premium' | 'pro' = 'free'): Promise<User> {
   const result = await db.query<User>(
-    `INSERT INTO users (email, full_name, firebase_uid, default_mode, role_was_overridden, plan)
-     VALUES ($1, $2, $3, $4, $5, $6)
+    `INSERT INTO users (email, full_name, default_mode, role_was_overridden, plan)
+     VALUES ($1, $2, $3, $4, $5)
      RETURNING *`,
     [
       `test_${Date.now()}_${Math.random()}@test.com`,
       'Test User',
-      `firebase_${Date.now()}_${Math.random()}`,
       'poster',
       false,
       plan,
@@ -49,14 +48,23 @@ async function createTestUser(plan: 'free' | 'premium' | 'pro' = 'free'): Promis
 async function insertStripeEvent(
   stripeEventId: string,
   type: string = 'checkout.session.completed',
-  payload: Record<string, unknown> = {}
+  payload: Record<string, unknown> = {},
+  allowConflict: boolean = false
 ): Promise<void> {
-  await db.query(
-    `INSERT INTO stripe_events (stripe_event_id, type, payload_json, created)
-     VALUES ($1, $2, $3, NOW())
-     ON CONFLICT (stripe_event_id) DO NOTHING`,
-    [stripeEventId, type, JSON.stringify(payload)]
-  );
+  if (allowConflict) {
+    await db.query(
+      `INSERT INTO stripe_events (stripe_event_id, type, payload_json, created)
+       VALUES ($1, $2, $3, NOW())
+       ON CONFLICT (stripe_event_id) DO NOTHING`,
+      [stripeEventId, type, JSON.stringify(payload)]
+    );
+  } else {
+    await db.query(
+      `INSERT INTO stripe_events (stripe_event_id, type, payload_json, created)
+       VALUES ($1, $2, $3, NOW())`,
+      [stripeEventId, type, JSON.stringify(payload)]
+    );
+  }
 }
 
 async function insertEntitlement(params: {
@@ -88,9 +96,9 @@ async function updateUserPlan(
 ): Promise<void> {
   await db.query(
     `UPDATE users 
-     SET plan = $1, 
-         plan_subscribed_at = CASE WHEN $1 != 'free' THEN NOW() ELSE plan_subscribed_at END,
-         plan_expires_at = CASE WHEN $1 != 'free' THEN NOW() + INTERVAL '30 days' ELSE NULL END
+     SET plan = $1::VARCHAR(20), 
+         plan_subscribed_at = CASE WHEN $1::VARCHAR(20) != 'free' THEN NOW() ELSE plan_subscribed_at END,
+         plan_expires_at = CASE WHEN $1::VARCHAR(20) != 'free' THEN NOW() + INTERVAL '30 days' ELSE NULL END
      WHERE id = $2`,
     [plan, userId]
   );
@@ -110,7 +118,7 @@ describe('Invariant S-1: Stripe Event Idempotency', () => {
 
     // Second insert with same event_id should fail (PRIMARY KEY violation)
     await expect(
-      insertStripeEvent(eventId, 'checkout.session.completed', payload)
+      insertStripeEvent(eventId, 'checkout.session.completed', payload, false)
     ).rejects.toThrow();
 
     // Verify exactly one row exists
@@ -221,10 +229,10 @@ describe('Invariant S-3: Per-Task Entitlements Are Idempotent', () => {
     const user = await createTestUser('free');
     userId = user.id;
 
-    // Create a test task
+    // Create a test task (canonical schema doesn't have risk_level or progress_state columns)
     const taskResult = await db.query<Task>(
-      `INSERT INTO tasks (poster_id, title, description, price, state, risk_level, progress_state, progress_updated_at)
-       VALUES ($1, 'Test Task', 'Test', 1000, 'OPEN', 'LOW', 'POSTED', NOW())
+      `INSERT INTO tasks (poster_id, title, description, price, state)
+       VALUES ($1, 'Test Task', 'Test', 1000, 'OPEN')
        RETURNING *`,
       [userId]
     );
@@ -311,8 +319,8 @@ describe('Invariant S-4: Entitlements Never Outlive Validity', () => {
     userId = user.id;
 
     const taskResult = await db.query<Task>(
-      `INSERT INTO tasks (poster_id, title, description, price, state, risk_level, progress_state, progress_updated_at)
-       VALUES ($1, 'Test Task', 'Test', 1000, 'OPEN', 'LOW', 'POSTED', NOW())
+      `INSERT INTO tasks (poster_id, title, description, price, state)
+       VALUES ($1, 'Test Task', 'Test', 1000, 'OPEN')
        RETURNING *`,
       [userId]
     );
@@ -416,8 +424,8 @@ describe('Invariant S-5: Entitlements Must Reference a Valid Stripe Event', () =
     userId = user.id;
 
     const taskResult = await db.query<Task>(
-      `INSERT INTO tasks (poster_id, title, description, price, state, risk_level, progress_state, progress_updated_at)
-       VALUES ($1, 'Test Task', 'Test', 1000, 'OPEN', 'LOW', 'POSTED', NOW())
+      `INSERT INTO tasks (poster_id, title, description, price, state)
+       VALUES ($1, 'Test Task', 'Test', 1000, 'OPEN')
        RETURNING *`,
       [userId]
     );

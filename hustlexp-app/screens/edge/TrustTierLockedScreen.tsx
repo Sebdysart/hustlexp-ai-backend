@@ -115,7 +115,7 @@ export default function TrustTierLockedScreen({
               </View>
             ))}
           </View>
-        </View>
+        </GlassCard>
 
         {/* What This Affects */}
         <GlassCard variant="secondary">
@@ -127,7 +127,7 @@ export default function TrustTierLockedScreen({
               </Text>
             ))}
           </View>
-        </View>
+        </GlassCard>
 
         {/* Bottom Spacer */}
         <View style={styles.bottomSpacer} />

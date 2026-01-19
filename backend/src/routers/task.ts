@@ -135,6 +135,7 @@ export const taskRouter = router({
         requiresProof: input.requiresProof,
         mode: input.mode,
         liveBroadcastRadiusMiles: input.liveBroadcastRadiusMiles,
+        instantMode: input.instantMode,
       });
       
       if (!result.success) {

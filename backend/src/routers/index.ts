@@ -14,6 +14,7 @@ import { aiRouter } from './ai';
 import { liveRouter } from './live';
 import { healthRouter } from './health';
 import { uiRouter } from './ui';
+import { instantRouter } from './instant';
 // Phase 3: Critical gap routers
 import { taskDiscoveryRouter } from './taskDiscovery';
 import { messagingRouter } from './messaging';
@@ -23,6 +24,7 @@ import { gdprRouter } from './gdpr';
 import { analyticsRouter } from './analytics';
 import { fraudRouter } from './fraud';
 import { moderationRouter } from './moderation';
+import { alphaTelemetryRouter } from './alpha-telemetry';
 
 export const appRouter = router({
   task: taskRouter,
@@ -32,6 +34,7 @@ export const appRouter = router({
   live: liveRouter,
   health: healthRouter,
   ui: uiRouter,
+  instant: instantRouter,
   // Phase 3: Critical gap routers
   taskDiscovery: taskDiscoveryRouter,
   messaging: messagingRouter,
@@ -41,6 +44,8 @@ export const appRouter = router({
   analytics: analyticsRouter,
   fraud: fraudRouter,
   moderation: moderationRouter,
+  // Alpha Instrumentation
+  alphaTelemetry: alphaTelemetryRouter,
 });
 
 export type AppRouter = typeof appRouter;

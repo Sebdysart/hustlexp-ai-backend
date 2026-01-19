@@ -16,6 +16,7 @@
 import { db, isInvariantViolation, isUniqueViolation, getErrorMessage } from '../db';
 import type { ServiceResult } from '../types';
 import { ErrorCodes } from '../types';
+import { AlphaInstrumentation } from './AlphaInstrumentation';
 
 // ============================================================================
 // TYPES
@@ -184,8 +185,10 @@ export const XPService = {
   awardXP: async (params: AwardXPParams): Promise<ServiceResult<XPLedgerEntry>> => {
     const { userId, taskId, escrowId, baseXP } = params;
     
+    let effectiveXPAwarded = 0;
+    
     try {
-      return await db.serializableTransaction(async (query) => {
+      const result = await db.serializableTransaction(async (query) => {
         // Get user's current state
         const userResult = await query<{
           xp_total: number;
@@ -215,6 +218,9 @@ export const XPService = {
         
         const newXPTotal = user.xp_total + effectiveXP;
         const newLevel = calculateLevel(newXPTotal);
+        
+        // Store effectiveXP for instrumentation (outside transaction)
+        effectiveXPAwarded = effectiveXP;
         
         // Insert XP ledger entry
         // INV-1: Trigger will check escrow is RELEASED
@@ -247,8 +253,45 @@ export const XPService = {
           [newXPTotal, newLevel, userId]
         );
         
+        // INSERT...RETURNING should always return a row, but verify for safety
+        if (!ledgerResult.rows[0]) {
+          throw new Error('Failed to create XP ledger entry - no row returned');
+        }
+        
         return { success: true, data: ledgerResult.rows[0] };
       });
+      
+      // Alpha Instrumentation: Emit trust delta applied for XP
+      // Note: This happens outside the transaction to avoid blocking XP award
+      // The try-catch ensures silent failure
+      if (result.success && effectiveXPAwarded > 0) {
+        try {
+          // Determine role from user's default_mode (worker = hustler, poster = poster)
+          const userRoleResult = await db.query<{ default_mode: string }>(
+            'SELECT default_mode FROM users WHERE id = $1',
+            [userId]
+          );
+          const role = userRoleResult.rows[0]?.default_mode === 'poster' ? 'poster' : 'hustler';
+
+          await AlphaInstrumentation.emitTrustDeltaApplied({
+            user_id: userId,
+            role,
+            delta_type: 'xp',
+            delta_amount: effectiveXPAwarded,
+            reason_code: 'task_completion',
+            task_id: taskId,
+            timestamp: new Date(),
+          });
+
+          // If streak changed, emit separate streak delta (outside transaction for consistency)
+          // Note: We don't track streak changes in XPService currently, but we can add this later
+        } catch (error) {
+          // Silent fail - instrumentation should not break core flow
+          console.warn('[XPService] Failed to emit trust_delta_applied for XP award:', error);
+        }
+      }
+      
+      return result;
     } catch (error) {
       // Check for INV-1 violation
       if (isInvariantViolation(error)) {

@@ -136,9 +136,7 @@ export class LedgerService {
                 throw new Error(errorMsg);
             }
 
-            return existing;
-
-            // Consistency Check
+            // Consistency Check - MUST be before return
             if (existing.type !== input.type) {
                 logger.error({ existingType: existing.type, inputType: input.type }, 'Idempotency Conflict: Types do not match');
                 throw new Error('Idempotency Conflict: Mismatched transaction type');

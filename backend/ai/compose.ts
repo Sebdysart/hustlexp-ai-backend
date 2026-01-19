@@ -118,7 +118,14 @@ Preferred budget: ${request.budget ?? "not provided"}`;
 
     const response = await routeModel("reason", prompt);
     const cleaned = sanitizeJson(response.text);
-    const parsed = JSON.parse(cleaned);
+    
+    let parsed: any;
+    try {
+      parsed = JSON.parse(cleaned);
+    } catch (parseError) {
+      console.warn('[AI Compose] JSON parse failed, using fallback:', parseError);
+      return buildFallbackResponse(request);
+    }
 
     const category = CATEGORY_FALLBACK_ORDER.includes((parsed.category || "").toLowerCase())
       ? parsed.category.toLowerCase()

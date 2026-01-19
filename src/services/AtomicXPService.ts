@@ -248,12 +248,78 @@ export async function awardXPForTask(taskId: string, hustlerId: string): Promise
         throw new Error(`INV-XP-2: Cannot award XP for money state: ${moneyState.current_state}. Must be 'released'.`);
       }
       
-      // 3. Get task price for base XP calculation
+      // 3. Get task details for base XP calculation and Instant Mode multipliers
       const [task] = await tx`
-        SELECT id, price FROM tasks WHERE id = ${taskId}
+        SELECT 
+          id, 
+          price, 
+          instant_mode, 
+          matched_at, 
+          accepted_at, 
+          state,
+          completed_at,
+          surge_level
+        FROM tasks 
+        WHERE id = ${taskId}
       `;
       
+      if (!task) {
+        throw new Error(`Task not found: ${taskId}`);
+      }
+      
       const taskPriceCents = task?.price ? Math.round(Number(task.price) * 100) : 1000;
+      
+      // 3b. XP Progression Leverage v1: Check Instant Mode eligibility and calculate multipliers
+      let instantMultiplier = new Decimal(1.0);
+      let speedMultiplier = new Decimal(1.0);
+      let reliabilityGatePassed = true;
+      
+      if (task.instant_mode && task.completed_at) {
+        // Reliability Gate: Check for disputes, complaints, timeouts
+        const disputeCheck = await tx`
+          SELECT id FROM disputes WHERE task_id = ${taskId} LIMIT 1
+        `;
+        
+        // Check if task was completed successfully (not cancelled, expired, or disputed)
+        const taskCompletedSuccessfully = 
+          task.state === 'COMPLETED' && 
+          !disputeCheck.length; // No disputes
+        
+        if (taskCompletedSuccessfully) {
+          // Instant Acceptance Bonus: 1.5x multiplier
+          instantMultiplier = new Decimal(1.5);
+          
+          // Speed Multiplier: Based on time-to-accept
+          if (task.matched_at && task.accepted_at) {
+            const matchedAt = new Date(task.matched_at);
+            const acceptedAt = new Date(task.accepted_at);
+            const timeToAcceptSeconds = (acceptedAt.getTime() - matchedAt.getTime()) / 1000;
+            
+            if (timeToAcceptSeconds <= 30) {
+              speedMultiplier = new Decimal(1.2);
+            } else if (timeToAcceptSeconds <= 60) {
+              speedMultiplier = new Decimal(1.1);
+            }
+            
+            // Log metrics (dev-only)
+            logger.info({
+              taskId,
+              hustlerId,
+              timeToAcceptSeconds: Math.round(timeToAcceptSeconds),
+              speedMultiplier: speedMultiplier.toString(),
+              instantMultiplier: instantMultiplier.toString(),
+            }, 'Instant Mode XP multipliers calculated');
+          }
+        } else {
+          // Reliability gate failed - no bonuses
+          reliabilityGatePassed = false;
+          logger.info({
+            taskId,
+            hustlerId,
+            reason: task.state === 'COMPLETED' ? 'dispute_found' : `task_state_${task.state}`,
+          }, 'Instant Mode XP bonuses blocked by reliability gate');
+        }
+      }
       
       // 4. Get hustler's current XP and streak
       const [user] = await tx`
@@ -275,12 +341,63 @@ export async function awardXPForTask(taskId: string, hustlerId: string): Promise
       // 5. Calculate XP (BUILD_GUIDE formulas)
       const baseXP = calculateBaseXP(taskPriceCents);
       const decayFactor = calculateDecayFactor(currentXP);
-      const effectiveXP = calculateEffectiveXP(baseXP, currentXP);
+      let effectiveXP = calculateEffectiveXP(baseXP, currentXP);
+      
+      // 5b. Apply Instant Mode multipliers (before streak multiplier)
+      if (reliabilityGatePassed && task.instant_mode) {
+        // Apply Instant multiplier (1.5x) and speed multiplier (1.1x or 1.2x)
+        let combinedMultiplier = instantMultiplier.mul(speedMultiplier);
+        
+        // Surge Level 2: XP boost - increase to 2.0x cap
+        if (task.surge_level >= 2) {
+          combinedMultiplier = new Decimal(2.0);
+          logger.info({
+            taskId,
+            hustlerId,
+            surgeLevel: task.surge_level,
+          }, 'Surge Level 2: XP multiplier set to 2.0x cap');
+        }
+        
+        // Cap total multiplier at 2x (v1 limit)
+        const cappedMultiplier = Decimal.min(combinedMultiplier, new Decimal(2.0));
+        
+        effectiveXP = new Decimal(effectiveXP)
+          .mul(cappedMultiplier)
+          .floor()
+          .toNumber();
+        
+        logger.info({
+          taskId,
+          hustlerId,
+          baseEffectiveXP: calculateEffectiveXP(baseXP, currentXP),
+          instantMultiplier: instantMultiplier.toString(),
+          speedMultiplier: speedMultiplier.toString(),
+          surgeLevel: task.surge_level || 0,
+          cappedMultiplier: cappedMultiplier.toString(),
+          finalEffectiveXP: effectiveXP,
+        }, 'Instant Mode XP multipliers applied');
+      }
+      
       const newStreak = calculateNewStreak(currentStreak, lastActiveAt);
       const streakMultiplier = getStreakMultiplier(newStreak);
       const finalXP = new Decimal(effectiveXP).mul(streakMultiplier).floor().toNumber();
       
       // 6. INV-5: Insert XP event (UNIQUE constraint on money_state_lock_task_id prevents duplicates)
+      // Build reason string with Instant Mode info for tracking
+      let reason = 'Task completion (money released)';
+      if (task.instant_mode && reliabilityGatePassed) {
+        const multiplierParts: string[] = [];
+        if (instantMultiplier.gt(1.0)) {
+          multiplierParts.push(`Instant ${instantMultiplier.toString()}x`);
+        }
+        if (speedMultiplier.gt(1.0)) {
+          multiplierParts.push(`Speed ${speedMultiplier.toString()}x`);
+        }
+        if (multiplierParts.length > 0) {
+          reason = `Instant task completion: ${multiplierParts.join(', ')}`;
+        }
+      }
+      
       try {
         await tx`
           INSERT INTO xp_ledger (
@@ -302,7 +419,7 @@ export async function awardXPForTask(taskId: string, hustlerId: string): Promise
             ${effectiveXP},
             ${streakMultiplier.toFixed(2)},
             ${finalXP},
-            ${'Task completion (money released)'}
+            ${reason}
           )
         `;
       } catch (e: any) {
@@ -379,6 +496,27 @@ export async function awardXPForTask(taskId: string, hustlerId: string): Promise
     
   } catch (error: any) {
     logger.error({ error, taskId, hustlerId }, 'Failed to award XP');
+    
+    // Launch Hardening v1: Observability - log XP failures for Instant tasks
+    try {
+      const sql = getSql();
+      const [task] = await sql`
+        SELECT instant_mode FROM tasks WHERE id = ${taskId} LIMIT 1
+      `;
+      
+      if (task?.instant_mode) {
+        const { InstantObservability } = await import('../../backend/src/services/InstantObservability');
+        InstantObservability.logXPFailure(
+          taskId,
+          hustlerId,
+          error instanceof Error ? error.message : String(error)
+        );
+      }
+    } catch (obsError) {
+      // Don't fail XP award if observability logging fails
+      logger.warn({ obsError }, 'Failed to log XP failure to observability');
+    }
+    
     return {
       success: false,
       xpAwarded: 0,

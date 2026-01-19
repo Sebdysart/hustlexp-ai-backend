@@ -397,10 +397,58 @@ export async function orchestrate(request: OrchestratorContext): Promise<Orchest
           authorityLevel,
         });
         
-        const actionFn = AIFunctions[step.action];
-        if (actionFn) {
+        // Type-safe check: Verify action exists in AIFunctions registry
+        const actionName = step.action as AIActionName;
+        const actionFn = AIFunctions[actionName];
+        
+        if (!actionFn) {
+          // BUG FIX: Action passed authority validation but function is missing from registry
+          // This can happen due to typos, missing implementations, or registry mismatches
+          const availableActions = Object.keys(AIFunctions) as AIActionName[];
+          const errorMessage = `Action "${actionName}" passed authority validation but is not implemented in AIFunctions registry. Available actions: ${availableActions.join(', ')}. This may indicate a missing implementation, typo in action name, or registry mismatch.`;
+          
+          console.error('[Orchestrator] Action function not found in registry:', {
+            action: actionName,
+            subsystem,
+            authorityLevel,
+            availableActions,
+            requestedAction: step.action,
+            actionType: typeof step.action,
+          });
+          
+          // Ensure we return a properly typed error result
+          actionResults.push({
+            name: actionName, // Use the asserted type, but log the original for debugging
+            status: 'error' as const,
+            error: errorMessage,
+          });
+          
+          // Continue to next step - don't silently skip
+          continue;
+        }
+        
+        // Execute the action function
+        try {
           const result = await actionFn({ userId: request.userId, ...step.params });
           actionResults.push(result);
+        } catch (executionError) {
+          // Catch any execution errors and record them
+          const errorMessage = executionError instanceof Error 
+            ? executionError.message 
+            : 'Unknown error during action execution';
+          
+          console.error('[Orchestrator] Action execution error:', {
+            action: actionName,
+            subsystem,
+            error: errorMessage,
+            stack: executionError instanceof Error ? executionError.stack : undefined,
+          });
+          
+          actionResults.push({
+            name: actionName,
+            status: 'error' as const,
+            error: `Action "${actionName}" failed during execution: ${errorMessage}`,
+          });
         }
       }
     }

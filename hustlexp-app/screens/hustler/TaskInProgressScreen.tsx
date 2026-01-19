@@ -7,7 +7,7 @@
  * Tokens (required): colors.json, spacing.json, typography.json
  */
 
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -17,6 +17,11 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
+import { useNavigation } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import type { HustlerMainStackParamList } from '../../navigation/types';
+import MapView, { Marker } from 'react-native-maps';
+import * as Location from 'expo-location';
 import { GlassCard } from '../../ui/GlassCard';
 import { PrimaryActionButton } from '../../ui/PrimaryActionButton';
 import { SectionHeader } from '../../ui/SectionHeader';
@@ -49,6 +54,8 @@ interface TaskInProgressScreenProps {
   onReportIssue?: () => void;
 }
 
+type NavigationProp = NativeStackNavigationProp<HustlerMainStackParamList>;
+
 export default function TaskInProgressScreen({
   taskTitle,
   taskId,
@@ -66,7 +73,43 @@ export default function TaskInProgressScreen({
   onCaptureProof,
   onReportIssue,
 }: TaskInProgressScreenProps) {
+  const navigation = useNavigation<NavigationProp>();
   const amberColor = '#FF9500';
+  
+  // Map state (only used when status === 'EN_ROUTE')
+  const [currentLocation, setCurrentLocation] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [destinationLocation, setDestinationLocation] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [eta, setEta] = useState<string>('Calculating...');
+  
+  // Mock destination for V1.3
+  const MOCK_DESTINATION = { latitude: 47.6062, longitude: -122.3321 };
+
+  useEffect(() => {
+    if (status === 'EN_ROUTE') {
+      // Request location permission and get current location
+      Location.requestForegroundPermissionsAsync().then(({ status }) => {
+        if (status === 'granted') {
+          Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced })
+            .then((location) => {
+              setCurrentLocation({
+                latitude: location.coords.latitude,
+                longitude: location.coords.longitude,
+              });
+            })
+            .catch(() => {
+              // Fallback to mock location
+              setCurrentLocation({ latitude: 47.6097, longitude: -122.3331 });
+            });
+        } else {
+          // Fallback to mock location
+          setCurrentLocation({ latitude: 47.6097, longitude: -122.3331 });
+        }
+      });
+      
+      setDestinationLocation(MOCK_DESTINATION);
+      setEta('~12 minutes'); // Mock ETA for V1.3
+    }
+  }, [status]);
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -94,6 +137,49 @@ export default function TaskInProgressScreen({
             </Text>
           </View>
         </View>
+
+        {/* Map Section (EN_ROUTE only) */}
+        {status === 'EN_ROUTE' && (
+          <View style={styles.mapSection}>
+            <SectionHeader title="Route to Task Location" />
+            <View style={styles.mapContainer}>
+              {currentLocation && destinationLocation ? (
+                <MapView
+                  style={styles.map}
+                  initialRegion={{
+                    latitude: (currentLocation.latitude + destinationLocation.latitude) / 2,
+                    longitude: (currentLocation.longitude + destinationLocation.longitude) / 2,
+                    latitudeDelta: 0.05,
+                    longitudeDelta: 0.05,
+                  }}
+                  showsUserLocation={true}
+                  showsMyLocationButton={false}
+                  mapType="standard"
+                >
+                  <Marker
+                    coordinate={currentLocation}
+                    title="Your Location"
+                    pinColor="#007AFF"
+                  />
+                  <Marker
+                    coordinate={destinationLocation}
+                    title="Task Location"
+                    pinColor="#FF3B30"
+                  />
+                </MapView>
+              ) : (
+                <View style={styles.mapPlaceholder}>
+                  <MaterialIcons name="map" size={48} color={colors.muted} />
+                  <Text style={styles.mapPlaceholderText}>Loading map...</Text>
+                </View>
+              )}
+            </View>
+            <View style={styles.etaBanner}>
+              <MaterialIcons name="access-time" size={16} color={amberColor} />
+              <Text style={styles.etaBannerText}>ETA: {eta}</Text>
+            </View>
+          </View>
+        )}
 
         {/* Time Authority Bar */}
         <View style={styles.timeSection}>
@@ -269,6 +355,13 @@ export default function TaskInProgressScreen({
 
       {/* Support Footer */}
       <View style={styles.footer}>
+        <TouchableOpacity
+          style={styles.messageButton}
+          onPress={() => navigation.navigate('TaskConversation', { taskId })}
+        >
+          <MaterialIcons name="chat" size={14} color={colors.muted} />
+          <Text style={styles.messageText}>Message Poster</Text>
+        </TouchableOpacity>
         <TouchableOpacity
           style={styles.reportButton}
           onPress={onReportIssue}
@@ -608,9 +701,26 @@ const styles = StyleSheet.create({
     bottom: 0,
     left: 0,
     right: 0,
+    flexDirection: 'row',
+    justifyContent: 'center',
     alignItems: 'center',
+    gap: 16,
     paddingBottom: 24,
     backgroundColor: colors.background,
+  },
+  messageButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+  },
+  messageText: {
+    fontSize: 12,
+    fontWeight: '500',
+    color: colors.muted,
+    textTransform: 'uppercase',
+    letterSpacing: 1,
   },
   reportButton: {
     flexDirection: 'row',
@@ -625,5 +735,46 @@ const styles = StyleSheet.create({
     color: colors.muted,
     textTransform: 'uppercase',
     letterSpacing: 1,
+  },
+  mapSection: {
+    marginBottom: spacing.section,
+  },
+  mapContainer: {
+    height: 200,
+    borderRadius: 12,
+    overflow: 'hidden',
+    backgroundColor: colors.glassSecondary,
+    marginTop: 12,
+  },
+  map: {
+    flex: 1,
+  },
+  mapPlaceholder: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: colors.glassSecondary,
+  },
+  mapPlaceholderText: {
+    marginTop: 8,
+    fontSize: 14,
+    color: colors.textSecondary,
+  },
+  etaBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: colors.glassPrimary,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.glassBorderSecondary,
+  },
+  etaBannerText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.textPrimary,
   },
 });
