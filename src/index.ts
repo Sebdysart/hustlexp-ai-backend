@@ -1244,6 +1244,10 @@ fastify.post('/api/tasks', { preHandler: [optionalAuth] }, async (request, reply
             reply.code(400);
             return { error: 'Validation failed', details: error.errors };
         }
+        if ((error as { code?: string }).code === 'DB_REQUIRED') {
+            reply.code(503);
+            return { error: 'Database unavailable', code: 'DB_REQUIRED' };
+        }
 
         logger.error({ error }, 'Failed to create task');
         reply.code(500);
@@ -1365,6 +1369,16 @@ fastify.post<{
         // Parse optional body fields
         const body = request.body as { rating?: number; skipProofCheck?: boolean } || {};
 
+        if (body.skipProofCheck) {
+            const allowDemoSkip = process.env.ALLOW_DEMO_SKIP_PROOF === 'true';
+            const isAdmin = request.user?.role === 'admin';
+            const isDev = process.env.NODE_ENV === 'development';
+            if (!allowDemoSkip && !isAdmin && !isDev) {
+                reply.status(403);
+                return { error: 'skipProofCheck not allowed', code: 'SKIP_PROOF_FORBIDDEN' };
+            }
+        }
+
         const result = await TaskCompletionService.smartComplete(taskId, hustlerId, {
             rating: body.rating,
             skipProofCheck: body.skipProofCheck,
@@ -1382,6 +1396,10 @@ fastify.post<{
         if (error instanceof z.ZodError) {
             reply.status(400);
             return { error: 'Invalid request', details: error.errors };
+        }
+        if ((error as { code?: string }).code === 'DB_REQUIRED') {
+            reply.status(503);
+            return { error: 'Database unavailable', code: 'DB_REQUIRED' };
         }
         reply.status(500);
         return { error: 'Failed to complete task' };
