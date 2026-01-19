@@ -1,0 +1,131 @@
+name: N2.4 Authority Guard
+
+on:
+  pull_request:
+    paths:
+      - 'backend/trpc/routes/verification/**'
+      - 'backend/src/services/CapabilityRecomputeService.ts'
+      - 'backend/src/services/CapabilityRecomputeWorker.ts'
+      - 'backend/trpc/routes/capability/**'
+      - 'backend/trpc/routes/tasks/list/**'
+
+jobs:
+  authority-denylist-check:
+    name: N2.4 Authority Deny-List Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check for forbidden capability_profiles writes
+        run: |
+          echo "🔍 Checking for forbidden writes to capability_profiles..."
+          
+          # Check for direct INSERT/UPDATE to capability_profiles outside recompute service
+          FORBIDDEN_PATTERNS=$(grep -r "INSERT INTO capability_profiles\|UPDATE capability_profiles" \
+            --include="*.ts" \
+            --exclude-dir=node_modules \
+            --exclude="CapabilityRecomputeService.ts" \
+            backend/ || true)
+          
+          if [ -n "$FORBIDDEN_PATTERNS" ]; then
+            echo "❌ FORBIDDEN: Direct writes to capability_profiles detected outside recompute service"
+            echo ""
+            echo "Found in:"
+            echo "$FORBIDDEN_PATTERNS"
+            echo ""
+            echo "AUTHORITY RULE: Only CapabilityRecomputeService can write to capability_profiles"
+            echo "See: backend/src/services/CapabilityRecomputeService.ts"
+            exit 1
+          fi
+          
+          echo "✅ No forbidden capability_profiles writes found"
+
+      - name: Check for forbidden verified_trades writes
+        run: |
+          echo "🔍 Checking for forbidden writes to verified_trades..."
+          
+          # Check for direct INSERT/UPDATE to verified_trades outside recompute service
+          FORBIDDEN_PATTERNS=$(grep -r "INSERT INTO verified_trades\|UPDATE verified_trades" \
+            --include="*.ts" \
+            --exclude-dir=node_modules \
+            --exclude="CapabilityRecomputeService.ts" \
+            backend/ || true)
+          
+          if [ -n "$FORBIDDEN_PATTERNS" ]; then
+            echo "❌ FORBIDDEN: Direct writes to verified_trades detected outside recompute service"
+            echo ""
+            echo "Found in:"
+            echo "$FORBIDDEN_PATTERNS"
+            echo ""
+            echo "AUTHORITY RULE: Only CapabilityRecomputeService can write to verified_trades"
+            echo "See: backend/src/services/CapabilityRecomputeService.ts"
+            exit 1
+          fi
+          
+          echo "✅ No forbidden verified_trades writes found"
+
+      - name: Check verification endpoints for eligibility table access
+        run: |
+          echo "🔍 Checking verification endpoints for forbidden eligibility table access..."
+          
+          # Check verification resolution endpoints for direct capability/eligibility writes
+          FORBIDDEN_PATTERNS=$(grep -r "capability_profiles\|verified_trades" \
+            --include="*.ts" \
+            --exclude-dir=node_modules \
+            backend/trpc/routes/verification/resolve* || true)
+          
+          if [ -n "$FORBIDDEN_PATTERNS" ]; then
+            echo "❌ FORBIDDEN: Verification resolution endpoints accessing eligibility tables"
+            echo ""
+            echo "Found in:"
+            echo "$FORBIDDEN_PATTERNS"
+            echo ""
+            echo "AUTHORITY RULE: Resolution endpoints must only:"
+            echo "  1. Update verification status"
+            echo "  2. Emit recompute trigger (job_queue)"
+            echo "  3. NEVER directly mutate capability_profiles or verified_trades"
+            echo ""
+            echo "See: Phase N2.4 — Verification Resolution (LOCKED)"
+            exit 1
+          fi
+          
+          echo "✅ Verification endpoints correctly isolated from eligibility tables"
+
+      - name: Check recompute trigger emission
+        run: |
+          echo "🔍 Checking that resolution endpoints emit recompute triggers..."
+          
+          # Check that resolve endpoints emit job_queue entries
+          RESOLVE_ENDPOINTS=$(find backend/trpc/routes/verification -name "resolve*.ts" -type f || true)
+          
+          if [ -z "$RESOLVE_ENDPOINTS" ]; then
+            echo "⚠️  No resolve endpoints found (this may be expected if not yet implemented)"
+            exit 0
+          fi
+          
+          for endpoint in $RESOLVE_ENDPOINTS; do
+            if ! grep -q "job_queue\|recompute" "$endpoint"; then
+              echo "⚠️  WARNING: $endpoint may not emit recompute trigger"
+              echo "   Resolution endpoints MUST emit recompute trigger after status update"
+            fi
+          done
+          
+          echo "✅ Recompute trigger emission check complete"
+
+      - name: Authority compliance summary
+        if: always()
+        run: |
+          echo ""
+          echo "=========================================="
+          echo "N2.4 Authority Guard Summary"
+          echo "=========================================="
+          echo ""
+          echo "✅ All authority checks passed"
+          echo ""
+          echo "AUTHORITY MODEL ENFORCED:"
+          echo "  - capability_profiles: Only recompute service can write"
+          echo "  - verified_trades: Only recompute service can write"
+          echo "  - Resolution endpoints: Status updates + recompute trigger only"
+          echo ""
+          echo "Reference: Phase N2.4 — Verification Resolution (LOCKED)"

@@ -20,10 +20,11 @@ export class LedgerLockService {
         // Use `query` (Pool) to match M4 Runner connection style
 
         try {
+            const safeTtl = Math.max(1, ttlSeconds);
             await query(`
                 INSERT INTO ledger_locks (resource_id, owner_ulid, expires_at)
-                VALUES ($1, $2, now() + ($3 || ' seconds')::interval)
-            `, [resourceId, txId, ttlSeconds]);
+                VALUES ($1, $2, now() + make_interval(seconds => $3))
+            `, [resourceId, txId, safeTtl]);
 
             return { acquired: true, leaseId: txId };
         } catch (err: any) {
@@ -48,12 +49,13 @@ export class LedgerLockService {
                 }
 
                 if (new Date(lock.expires_at) < now) {
+                    const safeTtl = Math.max(1, ttlSeconds);
                     const result = await query<any>(`
                         UPDATE ledger_locks 
-                        SET owner_ulid = $1, expires_at = now() + ($2 || ' seconds')::interval
+                        SET owner_ulid = $1, expires_at = now() + make_interval(seconds => $2)
                         WHERE resource_id = $3 AND owner_ulid = $4
                         RETURNING resource_id
-                    `, [txId, ttlSeconds, resourceId, lock.owner_ulid]);
+                    `, [txId, safeTtl, resourceId, lock.owner_ulid]);
 
                     if (!result || result.length === 0) {
                         throw new Error(`[LedgerLock] Failed to steal expired lock for ${resourceId}. Race condition.`);
