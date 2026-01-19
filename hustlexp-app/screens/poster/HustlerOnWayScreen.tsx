@@ -7,7 +7,7 @@
  * Tokens (required): colors.json, spacing.json, typography.json
  */
 
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -17,6 +17,10 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
+import { useNavigation, useRoute } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import type { PosterMainStackParamList } from '../../navigation/types';
+import MapView, { Marker } from 'react-native-maps';
 import { GlassCard } from '../../ui/GlassCard';
 import { PrimaryActionButton } from '../../ui/PrimaryActionButton';
 import { colors } from '../../ui/colors';
@@ -61,9 +65,23 @@ export default function HustlerOnWayScreen({
   ],
   onContact,
 }: HustlerOnWayScreenProps) {
+  const navigation = useNavigation<NativeStackNavigationProp<PosterMainStackParamList>>();
+  const route = useRoute();
+  const taskId = (route.params as any)?.taskId || 'mock-task-id'; // TODO: Get from route params in Phase N2
   const successColor = '#34C759';
   const amberColor = '#FF9500';
   const tierColor = '#007AFF';
+
+  // Map state for tracking hustler location
+  const [hustlerLocation, setHustlerLocation] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [destinationLocation, setDestinationLocation] = useState<{ latitude: number; longitude: number } | null>(null);
+  
+  // Mock locations for V1.3
+  useEffect(() => {
+    // TODO: Phase N2 — Get hustler location from tasks.getState or location service
+    setHustlerLocation({ latitude: 47.6097, longitude: -122.3331 }); // Mock hustler location
+    setDestinationLocation({ latitude: 47.6062, longitude: -122.3321 }); // Mock task destination
+  }, []);
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -146,6 +164,38 @@ export default function HustlerOnWayScreen({
           <Text style={styles.etaSubtext}>{etaSubtext}</Text>
         </View>
 
+        {/* Map Section - Hustler Tracking */}
+        {hustlerLocation && destinationLocation && (
+          <View style={styles.mapSection}>
+            <Text style={styles.mapSectionTitle}>Hustler Location</Text>
+            <View style={styles.mapContainer}>
+              <MapView
+                style={styles.map}
+                initialRegion={{
+                  latitude: (hustlerLocation.latitude + destinationLocation.latitude) / 2,
+                  longitude: (hustlerLocation.longitude + destinationLocation.longitude) / 2,
+                  latitudeDelta: 0.05,
+                  longitudeDelta: 0.05,
+                }}
+                showsUserLocation={false}
+                showsMyLocationButton={false}
+                mapType="standard"
+              >
+                <Marker
+                  coordinate={hustlerLocation}
+                  title="Hustler Location"
+                  pinColor="#007AFF"
+                />
+                <Marker
+                  coordinate={destinationLocation}
+                  title="Task Location"
+                  pinColor="#FF3B30"
+                />
+              </MapView>
+            </View>
+          </View>
+        )}
+
         {/* Task Details */}
         <GlassCard style={styles.taskDetailsCard}>
           <Text style={styles.taskDetailsLabel}>Task: {taskTitle}</Text>
@@ -164,8 +214,8 @@ export default function HustlerOnWayScreen({
       {/* Contact Button */}
       <View style={styles.footer}>
         <PrimaryActionButton
-          label="Contact via HustleXP"
-          onPress={onContact || (() => {})}
+          label="Message Hustler"
+          onPress={() => navigation.navigate('TaskConversation', { taskId })}
         />
       </View>
     </SafeAreaView>
@@ -390,5 +440,23 @@ const styles = StyleSheet.create({
     padding: spacing.section,
     paddingBottom: 32,
     backgroundColor: colors.background,
+  },
+  mapSection: {
+    marginBottom: spacing.section,
+  },
+  mapSectionTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: colors.textPrimary,
+    marginBottom: 12,
+  },
+  mapContainer: {
+    height: 200,
+    borderRadius: 12,
+    overflow: 'hidden',
+    backgroundColor: colors.glassSecondary,
+  },
+  map: {
+    flex: 1,
   },
 });

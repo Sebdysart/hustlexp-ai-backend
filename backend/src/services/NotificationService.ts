@@ -27,7 +27,7 @@ export type NotificationCategory =
   | 'dispute_opened' | 'dispute_resolved'
   | 'trust_tier_upgraded' | 'badge_earned'
   | 'message_received' | 'unread_messages'
-  | 'new_matching_task' | 'live_mode_task'
+  | 'new_matching_task' | 'live_mode_task' | 'instant_task_available'
   | 'account_suspended' | 'security_alert' | 'password_changed'
   | 'welcome' | 'weekly_recap';
 
@@ -100,12 +100,13 @@ export interface UpdatePreferencesParams {
 
 // Priority tiers that bypass quiet hours (NOTIFICATION_SPEC.md §2.1)
 const DND_BYPASS_PRIORITIES: NotificationPriority[] = ['HIGH', 'CRITICAL'];
-const DND_BYPASS_CATEGORIES: NotificationCategory[] = ['task_accepted', 'payment_released', 'security_alert'];
+const DND_BYPASS_CATEGORIES: NotificationCategory[] = ['task_accepted', 'payment_released', 'security_alert', 'instant_task_available'];
 
 // Frequency limits per category (NOTIFICATION_SPEC.md §2.2)
 const FREQUENCY_LIMITS: Record<NotificationCategory, { perHour: number; perDay: number }> = {
   new_matching_task: { perHour: 5, perDay: 20 },
   live_mode_task: { perHour: 10, perDay: 50 },
+  instant_task_available: { perHour: Infinity, perDay: Infinity }, // One-interrupt-at-a-time enforced separately
   message_received: { perHour: Infinity, perDay: Infinity }, // Unlimited (rate-limited by messaging)
   unread_messages: { perHour: Infinity, perDay: Infinity },
   task_accepted: { perHour: Infinity, perDay: Infinity },

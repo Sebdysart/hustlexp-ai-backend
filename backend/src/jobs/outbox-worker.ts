@@ -185,6 +185,26 @@ export function startOutboxWorker(intervalMs: number = 5000): NodeJS.Timeout {
   });
   
   // Set up polling interval
+  // Start periodic surge evaluator (every 10 seconds)
+  const surgeEvaluatorInterval = setInterval(async () => {
+    try {
+      const { evaluateInstantSurges } = await import('./instant-surge-evaluator');
+      await evaluateInstantSurges();
+    } catch (error) {
+      console.error('❌ Surge evaluator error:', error);
+    }
+  }, 10 * 1000); // Every 10 seconds
+
+  // Pre-Alpha Prerequisite: Trust tier promotion worker (hourly)
+  const trustPromotionInterval = setInterval(async () => {
+    try {
+      const { processTrustTierPromotionJob } = await import('./trust-tier-promotion-worker');
+      await processTrustTierPromotionJob();
+    } catch (error) {
+      console.error('❌ Trust tier promotion error:', error);
+    }
+  }, 60 * 60 * 1000); // Every hour
+
   const interval = setInterval(async () => {
     try {
       const result = await processOutboxEvents(100);

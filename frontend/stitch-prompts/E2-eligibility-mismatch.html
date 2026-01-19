@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>HustleXP - Eligibility Explanation</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        "primary": "#8E8E93",
+                        "background-dark": "#000000",
+                        "glass-surface": "rgba(28, 28, 30, 0.6)",
+                        "glass-surface-secondary": "rgba(28, 28, 30, 0.4)",
+                        "glass-border": "rgba(255, 255, 255, 0.08)",
+                        "text-secondary": "#8E8E93",
+                    },
+                    fontFamily: {
+                        "display": ["Inter", "sans-serif"]
+                    },
+                    borderRadius: { "DEFAULT": "0.5rem", "lg": "0.75rem", "xl": "1rem", "2xl": "1.5rem", "full": "9999px" },
+                },
+            },
+        }
+    </script>
+<style>
+        .glass-card {
+            background-color: rgba(28, 28, 30, 0.6);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+        }
+        .glass-card-secondary {
+            background-color: rgba(28, 28, 30, 0.4);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+    </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+</head>
+<body class="bg-background-dark font-display antialiased min-h-screen flex flex-col overflow-x-hidden">
+<!-- Header -->
+<header class="sticky top-0 z-50 flex items-center justify-between p-4 bg-background-dark/80 backdrop-blur-md border-b border-white/5">
+<button class="flex items-center justify-center w-10 h-10 rounded-full bg-white/5 active:bg-white/10 text-white transition-colors">
+<span class="material-symbols-outlined" style="font-size: 24px;">arrow_back</span>
+</button>
+<div class="w-10"></div>
+</header>
+<!-- Main Content -->
+<main class="flex-1 flex flex-col w-full max-w-md mx-auto px-6 pt-6 pb-24 space-y-6">
+<!-- Header Section -->
+<section class="flex flex-col items-center text-center space-y-3 pt-4">
+<div class="w-16 h-16 rounded-full bg-white/5 flex items-center justify-center mb-2">
+<span class="material-symbols-outlined text-text-secondary text-3xl">filter_alt</span>
+<span class="material-symbols-outlined text-text-secondary text-2xl -ml-4">shield</span>
+</div>
+<h1 class="text-[28px] font-bold leading-tight tracking-tight text-white">
+                Tasks available — eligibility required
+            </h1>
+<p class="text-text-secondary text-[14px] leading-relaxed max-w-[280px]">
+                Some active tasks are currently outside your eligibility parameters.
+            </p>
+</section>
+<!-- Core System Card (Primary) -->
+<section class="glass-card rounded-2xl p-5 space-y-4">
+<div class="flex items-center gap-3 mb-2">
+<span class="text-xs font-semibold tracking-widest uppercase text-text-secondary">Eligibility Status</span>
+</div>
+<ul class="flex flex-col gap-4">
+<li class="flex items-start gap-3">
+<span class="text-[14px] font-medium text-white/90">Your account is active and in good standing</span>
+</li>
+<li class="flex items-start gap-3">
+<span class="text-[14px] font-medium text-white/90">Matching is functioning normally</span>
+</li>
+<li class="flex items-start gap-3">
+<span class="text-[14px] font-medium text-white/90">Some tasks require additional eligibility</span>
+</li>
+</ul>
+</section>
+<!-- Eligibility Mismatch Breakdown (Collapsed by default) -->
+<section class="glass-card-secondary rounded-xl p-4">
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-3">
+<span class="material-symbols-outlined text-text-secondary" style="font-size: 20px;">info</span>
+<span class="text-white font-medium text-[15px]">Why you may not see some tasks</span>
+</div>
+<span class="text-text-secondary text-xs italic">▾ Tap to expand</span>
+</div>
+<!-- Expanded content would show here when opened (hidden by default) -->
+</section>
+<!-- Explicit "What This Is NOT" Section (Critical) -->
+<section class="glass-card-secondary rounded-xl p-4">
+<h3 class="text-xs font-semibold tracking-widest uppercase text-text-secondary mb-3">What this does NOT mean</h3>
+<ul class="space-y-2 list-disc list-inside">
+<li class="text-[14px] text-white/90 leading-relaxed">You are not restricted or penalized</li>
+<li class="text-[14px] text-white/90 leading-relaxed">Your trust score has not changed</li>
+<li class="text-[14px] text-white/90 leading-relaxed">No action is required from you</li>
+</ul>
+</section>
+<!-- Current Settings Snapshot (Secondary card, read-only) -->
+<section class="glass-card-secondary rounded-xl p-4 space-y-3">
+<h3 class="text-xs font-semibold tracking-widest uppercase text-text-secondary">Current Settings</h3>
+<div class="flex flex-wrap gap-2">
+<div class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 border border-white/5">
+<span class="text-xs font-medium text-white">📍 UW Campus + 2mi</span>
+</div>
+<div class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 border border-white/5">
+<span class="text-xs font-medium text-white">🛡️ Tier B — Trusted</span>
+</div>
+<div class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#42bcf0]/20 border border-[#42bcf0]/30">
+<span class="text-xs font-medium text-[#42bcf0]">⚡ Instant Mode: ON</span>
+</div>
+</div>
+</section>
+</main>
+<!-- Primary Action (Single, neutral gray) -->
+<div class="fixed bottom-0 left-0 w-full p-4 bg-background-dark/90 backdrop-blur-xl border-t border-white/10 z-40 pb-8">
+<div class="max-w-md mx-auto">
+<button class="w-full bg-primary hover:bg-[#7E7E82] active:bg-[#6E6E72] text-white font-bold h-[52px] rounded-xl text-[16px] transition-colors shadow-[0_0_20px_rgba(142,142,147,0.4)]">
+                Return to Dashboard
+            </button>
+</div>
+</div>
+<!-- Safe Area Spacer -->
+<div class="w-full h-6 shrink-0"></div>
+</body></html>

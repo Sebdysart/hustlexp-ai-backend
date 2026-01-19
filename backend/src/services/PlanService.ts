@@ -39,6 +39,29 @@ export interface PlanCheckResult {
 // ============================================================================
 
 export const PlanService = {
+  /**
+   * Check if user has an active entitlement for a risk level
+   *
+   * Note: Entitlements are time-bound and enforced at read time (S-4).
+   */
+  hasActiveEntitlement: async (
+    userId: string,
+    riskLevel: TaskRiskLevel
+  ): Promise<boolean> => {
+    const result = await db.query(
+      `
+      SELECT 1
+      FROM plan_entitlements
+      WHERE user_id = $1
+        AND risk_level = $2
+        AND expires_at > NOW()
+      LIMIT 1
+      `,
+      [userId, riskLevel]
+    );
+
+    return result.rowCount > 0;
+  },
   // --------------------------------------------------------------------------
   // READ OPERATIONS
   // --------------------------------------------------------------------------
@@ -93,18 +116,26 @@ export const PlanService = {
       return { allowed: true };
     }
 
-    // MEDIUM risk: Premium or per-task fee (we allow creation, payment happens separately)
+    // MEDIUM risk: Premium or active entitlement
     if (riskLevel === 'MEDIUM') {
       if (plan === 'premium') {
+        return { allowed: true };
+      }
+      const hasEntitlement = await PlanService.hasActiveEntitlement(userId, 'MEDIUM');
+      if (hasEntitlement) {
         return { allowed: true };
       }
       // Free users can create but must pay per-task fee (handled by Stripe)
       return { allowed: true, requiredPlan: 'premium' };
     }
 
-    // HIGH/IN_HOME: Premium required
+    // HIGH/IN_HOME: Premium or active entitlement required
     if (riskLevel === 'HIGH' || riskLevel === 'IN_HOME') {
       if (plan === 'premium') {
+        return { allowed: true };
+      }
+      const hasEntitlement = await PlanService.hasActiveEntitlement(userId, riskLevel);
+      if (hasEntitlement) {
         return { allowed: true };
       }
       return {
@@ -158,7 +189,8 @@ export const PlanService = {
 
     // HIGH/IN_HOME: Pro workers only (trust tier 3+ required)
     if (riskLevel === 'HIGH' || riskLevel === 'IN_HOME') {
-      if (user.plan === 'pro' && user.trust_tier >= 3 && !user.trust_hold) {
+      const hasEntitlement = await PlanService.hasActiveEntitlement(userId, riskLevel);
+      if ((user.plan === 'pro' || hasEntitlement) && user.trust_tier >= 3 && !user.trust_hold) {
         return { allowed: true };
       }
       return {
@@ -184,7 +216,7 @@ export const PlanService = {
   canReceiveProgressEvent: async (
     userId: string,
     progressState: TaskProgressState
-  ): Promise<boolean> {
+  ): Promise<boolean> => {
     const plan = await PlanService.getUserPlan(userId);
 
     // Premium users get all events

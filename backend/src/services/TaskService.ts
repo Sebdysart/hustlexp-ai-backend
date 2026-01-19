@@ -15,6 +15,7 @@
 import { db, isInvariantViolation, getErrorMessage } from '../db';
 import { writeToOutbox } from '../jobs/outbox-helpers';
 import { PlanService } from './PlanService';
+import { MIN_INSTANT_TIER, MIN_SENSITIVE_INSTANT_TIER } from './InstantTrustConfig';
 import type { 
   Task, 
   TaskState,
@@ -44,6 +45,9 @@ interface CreateTaskParams {
   // Live Mode (PRODUCT_SPEC §3.5)
   mode?: 'STANDARD' | 'LIVE';
   liveBroadcastRadiusMiles?: number;
+  // Instant Execution Mode (IEM v1)
+  instantMode?: boolean;
+  sensitive?: boolean; // Sensitive tasks require higher trust tier (Tier ≥ 3)
 }
 
 interface AcceptTaskParams {
@@ -63,6 +67,7 @@ interface AdvanceProgressParams {
 
 const VALID_TRANSITIONS: Record<TaskState, TaskState[]> = {
   OPEN: ['ACCEPTED', 'CANCELLED', 'EXPIRED'],
+  MATCHING: ['ACCEPTED', 'CANCELLED', 'EXPIRED'], // Instant mode: first accept wins
   ACCEPTED: ['PROOF_SUBMITTED', 'CANCELLED', 'EXPIRED'],
   PROOF_SUBMITTED: ['COMPLETED', 'DISPUTED', 'ACCEPTED'], // ACCEPTED = proof rejected
   DISPUTED: ['COMPLETED', 'CANCELLED'],
@@ -222,6 +227,8 @@ export const TaskService = {
       requiresProof = true,
       mode = 'STANDARD',
       liveBroadcastRadiusMiles,
+      instantMode = false,
+      sensitive = false,
     } = params;
     
     // Validate price is positive integer (cents)
@@ -262,20 +269,114 @@ export const TaskService = {
         },
       };
     }
+
+    // Launch Hardening v1: Kill switch check
+    if (instantMode) {
+      const { InstantModeKillSwitch } = await import('./InstantModeKillSwitch');
+      const flags = InstantModeKillSwitch.checkFlags({ taskId: undefined, operation: 'create' });
+      
+      if (!flags.instantModeEnabled) {
+        console.log(`🚫 Instant Mode disabled by kill switch - falling back to OPEN state`, {
+          posterId,
+          taskTitle: title,
+        });
+        // Safe fallback: create as non-instant task
+        instantMode = false;
+      }
+    }
+
+    // Launch Hardening v1: Rate limiting for Instant posts
+    if (instantMode) {
+      const { InstantRateLimiter } = await import('./InstantRateLimiter');
+      const rateLimitCheck = await InstantRateLimiter.checkPostLimit(posterId);
+      
+      if (!rateLimitCheck.allowed) {
+        return {
+          success: false,
+          error: {
+            code: ErrorCodes.RATE_LIMIT_EXCEEDED,
+            message: rateLimitCheck.reason || 'Rate limit exceeded for Instant posts',
+            details: {
+              retryAfter: rateLimitCheck.retryAfter,
+            },
+          },
+        };
+      }
+    }
+
+    // IEM v1: AI Task Completeness Gate (Option B)
+    // Enforce gate server-side - even if UI allows Instant Mode, backend validates
+    if (instantMode) {
+      const { InstantTaskGate } = await import('./InstantTaskGate');
+      const gateResult = await InstantTaskGate.check({
+        title,
+        description,
+        location,
+        requirements,
+        deadline,
+        category,
+      });
+
+      if (!gateResult.instantEligible) {
+        return {
+          success: false,
+          error: {
+            code: ErrorCodes.INSTANT_TASK_INCOMPLETE,
+            message: 'Instant Mode requires a few more details',
+            details: {
+              blockReason: gateResult.blockReason,
+              questions: gateResult.questions,
+            },
+          },
+        };
+      }
+    }
     
     try {
+      // Instant mode: start in MATCHING state, not OPEN
+      const initialState = instantMode ? 'MATCHING' : 'OPEN';
+      
       const result = await db.query<Task>(
         `INSERT INTO tasks (
           poster_id, title, description, price, 
           requirements, location, category, deadline, requires_proof, 
-          risk_level, mode, live_broadcast_radius_miles, state
+          risk_level, mode, live_broadcast_radius_miles, instant_mode, sensitive, state
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'OPEN')
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
         RETURNING *`,
-        [posterId, title, description, price, requirements, location, category, deadline, requiresProof, riskLevel, mode, liveBroadcastRadiusMiles]
+        [posterId, title, description, price, requirements, location, category, deadline, requiresProof, riskLevel, mode, liveBroadcastRadiusMiles, instantMode, sensitive, initialState]
       );
       
-      return { success: true, data: result.rows[0] };
+      let createdTask = result.rows[0];
+      
+      // If instant mode, trigger matching broadcast (async, non-blocking)
+      if (instantMode) {
+        // Set matched_at timestamp immediately (authority: DB NOW())
+        await db.query(
+          `UPDATE tasks SET matched_at = NOW() WHERE id = $1`,
+          [createdTask.id]
+        );
+        
+        // Reload task to get matched_at
+        const reloaded = await db.query<Task>(
+          `SELECT * FROM tasks WHERE id = $1`,
+          [createdTask.id]
+        );
+        createdTask = reloaded.rows[0];
+        
+        // Enqueue matching broadcast job (non-blocking)
+        await writeToOutbox({
+          eventType: 'task.instant_matching_started',
+          aggregateType: 'task',
+          aggregateId: createdTask.id,
+          eventVersion: 1,
+          idempotencyKey: `task.instant_matching_started:${createdTask.id}`,
+          payload: { taskId: createdTask.id, location, riskLevel },
+          queueName: 'critical_payments', // Use critical queue for instant tasks
+        });
+      }
+      
+      return { success: true, data: createdTask };
     } catch (error) {
       if (isInvariantViolation(error)) {
         return {
@@ -304,8 +405,13 @@ export const TaskService = {
     
     try {
       // Step 9-C: Check worker plan eligibility for task risk level
-      const taskResult = await db.query<{ risk_level: TaskRiskLevel }>(
-        `SELECT risk_level FROM tasks WHERE id = $1`,
+      // Trust-Tier Tightening: Check trust tier for Instant tasks
+      const taskResult = await db.query<{ 
+        risk_level: TaskRiskLevel;
+        instant_mode: boolean;
+        sensitive: boolean | null;
+      }>(
+        `SELECT risk_level, instant_mode, sensitive FROM tasks WHERE id = $1`,
         [taskId]
       );
 
@@ -320,6 +426,102 @@ export const TaskService = {
       }
 
       const task = taskResult.rows[0];
+
+      // Pre-Alpha Prerequisite: Eligibility Guard (centralized enforcement)
+      const { EligibilityGuard } = await import('./EligibilityGuard');
+      const eligibilityResult = await EligibilityGuard.assertEligibility({
+        userId: workerId,
+        taskId,
+        isInstant: task.instant_mode || false,
+      });
+
+      if (!eligibilityResult.allowed) {
+        return {
+          success: false,
+          error: {
+            code: eligibilityResult.code as any,
+            message: eligibilityResult.details?.reason || 'Eligibility check failed',
+            details: eligibilityResult.details,
+          },
+        };
+      }
+
+      // Trust-Tier Tightening: Enforce minimum trust tier for Instant tasks
+      if (task.instant_mode) {
+        // Launch Hardening v1: Kill switch check
+        const { InstantModeKillSwitch } = await import('./InstantModeKillSwitch');
+        const flags = InstantModeKillSwitch.checkFlags({ taskId, operation: 'accept' });
+        
+        if (!flags.instantModeEnabled) {
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.INVALID_STATE,
+              message: 'Instant Mode is currently disabled',
+            },
+          };
+        }
+
+        // Launch Hardening v1: Rate limiting for Instant accepts
+        const { InstantRateLimiter } = await import('./InstantRateLimiter');
+        const rateLimitCheck = await InstantRateLimiter.checkAcceptLimit(workerId);
+        
+        if (!rateLimitCheck.allowed) {
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.RATE_LIMIT_EXCEEDED,
+              message: rateLimitCheck.reason || 'Rate limit exceeded for Instant accepts',
+              details: {
+                retryAfter: rateLimitCheck.retryAfter,
+              },
+            },
+          };
+        }
+
+        const workerResult = await db.query<{ trust_tier: number; trust_hold: boolean }>(
+          `SELECT trust_tier, trust_hold FROM users WHERE id = $1`,
+          [workerId]
+        );
+
+        if (workerResult.rowCount === 0) {
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.NOT_FOUND,
+              message: `Worker ${workerId} not found`,
+            },
+          };
+        }
+
+        const worker = workerResult.rows[0];
+
+        // Check trust hold first
+        if (worker.trust_hold) {
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.INSTANT_TASK_TRUST_INSUFFICIENT,
+              message: 'Your account is currently on hold',
+            },
+          };
+        }
+
+        // Determine minimum trust tier (sensitive tasks require higher tier)
+        const minTrustTier = task.sensitive ? MIN_SENSITIVE_INSTANT_TIER : MIN_INSTANT_TIER;
+
+        // Enforce trust tier requirement
+        if (worker.trust_tier < minTrustTier) {
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.INSTANT_TASK_TRUST_INSUFFICIENT,
+              message: 'This task requires a higher trust tier',
+            },
+          };
+        }
+      }
+
       const planCheck = await PlanService.canAcceptTaskWithRisk(workerId, task.risk_level);
       if (!planCheck.allowed) {
         return {
@@ -335,13 +537,15 @@ export const TaskService = {
         };
       }
 
+      // Instant mode: accept from MATCHING state; Standard: accept from OPEN state
       const result = await db.query<Task>(
         `UPDATE tasks 
          SET state = 'ACCEPTED',
              worker_id = $2,
              accepted_at = NOW()
          WHERE id = $1 
-           AND state = 'OPEN'
+           AND state IN ('OPEN', 'MATCHING')
+           AND worker_id IS NULL
          RETURNING *`,
         [taskId, workerId]
       );
@@ -352,11 +556,17 @@ export const TaskService = {
           return existing;
         }
         
+        // Launch Hardening v1: Observability - log accept race condition
+        if (task.instant_mode && existing.data.state === 'ACCEPTED') {
+          const { InstantObservability } = await import('./InstantObservability');
+          InstantObservability.logAcceptRace(taskId, workerId, 'Task already accepted by another hustler');
+        }
+        
         return {
           success: false,
           error: {
             code: ErrorCodes.INVALID_STATE,
-            message: `Cannot accept task: current state is ${existing.data.state}, expected OPEN`,
+            message: `Cannot accept task: current state is ${existing.data.state}, expected ${task.instant_mode ? 'MATCHING' : 'OPEN'}`,
           },
         };
       }

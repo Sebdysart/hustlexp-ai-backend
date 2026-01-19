@@ -19,9 +19,11 @@ async function main() {
   console.log('=' .repeat(60));
   console.log('Database:', DATABASE_URL.replace(/:[^:@]+@/, ':***@'));
   
+  // Determine if this is a local Postgres (no SSL needed) or Neon (SSL required)
+  const isLocal = DATABASE_URL.includes('localhost') || DATABASE_URL.includes('127.0.0.1');
   const pool = new Pool({ 
     connectionString: DATABASE_URL,
-    ssl: { rejectUnauthorized: false }
+    ...(isLocal ? {} : { ssl: { rejectUnauthorized: false } })
   });
   
   const client = await pool.connect();
@@ -44,13 +46,17 @@ async function main() {
     console.log('\n🗑️  Step 2: Dropping existing schema...');
     await client.query('DROP SCHEMA IF EXISTS public CASCADE');
     await client.query('CREATE SCHEMA public');
-    await client.query('GRANT ALL ON SCHEMA public TO neondb_owner');
+    // Grant to current user (works for both Neon and local Postgres)
+    const currentUserResult = await client.query('SELECT current_user');
+    const currentUser = currentUserResult.rows[0].current_user;
+    await client.query(`GRANT ALL ON SCHEMA public TO ${currentUser}`);
     await client.query('GRANT ALL ON SCHEMA public TO public');
-    console.log('   ✅ Schema dropped and recreated');
+    console.log(`   ✅ Schema dropped and recreated (granted to ${currentUser})`);
     
     // Step 3: Read and apply schema
     console.log('\n📜 Step 3: Reading constitutional schema...');
-    const schemaPath = join(__dirname, '../HustleXP-Fresh/schema.sql');
+    // Use constitutional-schema.sql (canonical schema)
+    const schemaPath = join(__dirname, '../backend/database/constitutional-schema.sql');
     const schemaSQL = readFileSync(schemaPath, 'utf-8');
     console.log(`   Schema size: ${schemaSQL.length} characters`);
     

@@ -18,6 +18,7 @@
 
 import { db } from '../db';
 import { processSubscriptionEvent } from '../services/StripeSubscriptionProcessor';
+import { processEntitlementPurchase } from '../services/StripeEntitlementProcessor';
 import type { Job } from 'bullmq';
 
 // ============================================================================
@@ -27,6 +28,13 @@ import type { Job } from 'bullmq';
 interface StripeEventJobData {
   stripeEventId: string;
   type: string;
+}
+
+interface StripeEventEnvelope {
+  id: string;
+  data?: {
+    object?: Record<string, unknown>;
+  };
 }
 
 // ============================================================================
@@ -72,6 +80,7 @@ export async function processStripeEventJob(job: Job<StripeEventJobData>): Promi
   }
 
   const { payload_json, type } = claim.rows[0];
+  const event = payload_json as StripeEventEnvelope;
 
   try {
     // Dispatch by type (SKELETON ONLY - no business logic here)
@@ -83,27 +92,18 @@ export async function processStripeEventJob(job: Job<StripeEventJobData>): Promi
         break;
 
       case 'checkout.session.completed':
-        // SKELETON: Handler not implemented - pending approval
-        throw new Error(
-          `Stripe event ${type} received, but handler not implemented. ` +
-          'Implementation pending approval.'
-        );
+        await handleCheckoutSessionCompleted(event, stripeEventId);
+        break;
 
       case 'payment_intent.succeeded':
-        // SKELETON: Handler not implemented - pending approval
         // Note: Phase D handles escrow funding for payment_intent.succeeded
         // This handler is for per-task entitlements (Step 9-D) - separate concern
-        throw new Error(
-          `Stripe event ${type} received, but entitlement handler not implemented. ` +
-          'Implementation pending approval.'
-        );
+        await processEntitlementPurchase(event, stripeEventId);
+        break;
 
       case 'invoice.payment_failed':
-        // SKELETON: Handler not implemented - pending approval
-        throw new Error(
-          `Stripe event ${type} received, but handler not implemented. ` +
-          'Implementation pending approval.'
-        );
+        await handleInvoicePaymentFailed(event);
+        break;
 
       default:
         // Unknown events are explicitly skipped (not an error)
@@ -151,4 +151,59 @@ export async function processStripeEventJob(job: Job<StripeEventJobData>): Promi
     console.error(`❌ Stripe event failed: ${type} (${stripeEventId}): ${errorMessage}`);
     throw error; // Re-throw for BullMQ retry logic
   }
+}
+
+function getEventObject<T = Record<string, unknown>>(event: StripeEventEnvelope): T | null {
+  return (event?.data?.object as T) || null;
+}
+
+async function handleCheckoutSessionCompleted(
+  event: StripeEventEnvelope,
+  stripeEventId: string
+): Promise<void> {
+  const session = getEventObject<Record<string, any>>(event);
+
+  if (!session) {
+    throw new Error('checkout.session.completed missing session object');
+  }
+
+  // If subscription is expanded in the session payload, process it directly.
+  const subscription = session.subscription;
+  if (subscription && typeof subscription === 'object') {
+    await processSubscriptionEvent(subscription, stripeEventId);
+    return;
+  }
+
+  // No subscription object available; rely on customer.subscription.* events.
+  console.log(
+    `ℹ️  checkout.session.completed received without expanded subscription; ` +
+    `waiting for customer.subscription.* events (event: ${stripeEventId})`
+  );
+}
+
+async function handleInvoicePaymentFailed(event: StripeEventEnvelope): Promise<void> {
+  const invoice = getEventObject<Record<string, any>>(event);
+
+  if (!invoice) {
+    throw new Error('invoice.payment_failed missing invoice object');
+  }
+
+  const userId = invoice.metadata?.user_id;
+  if (!userId) {
+    throw new Error('invoice.payment_failed missing user_id metadata');
+  }
+
+  // Soft-expire: set plan_expires_at with 24h grace, but never shorten existing expiry.
+  await db.query(
+    `
+    UPDATE users
+    SET plan_expires_at = GREATEST(
+      COALESCE(plan_expires_at, NOW()),
+      NOW() + INTERVAL '24 hours'
+    )
+    WHERE id = $1
+      AND plan IN ('premium', 'pro')
+    `,
+    [userId]
+  );
 }

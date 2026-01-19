@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Hustler Home Dashboard</title>
+<!-- Fonts -->
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@200..800&amp;display=swap" rel="stylesheet"/>
+<!-- Material Icons -->
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<!-- Tailwind CSS -->
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        "primary": "#1fad7e",
+                        "background-light": "#f2f2f3",
+                        "background-dark": "#000000",
+                        "glass-surface": "rgba(28, 28, 30, 0.6)",
+                        "glass-border": "rgba(255, 255, 255, 0.1)",
+                    },
+                    fontFamily: {
+                        "display": ["Manrope", "sans-serif"]
+                    },
+                    borderRadius: {
+                        "DEFAULT": "0.5rem",
+                        "lg": "1rem",
+                        "xl": "1.5rem",
+                        "2xl": "2rem",
+                        "full": "9999px"
+                    },
+                },
+            },
+        }
+    </script>
+<style type="text/tailwindcss">
+        @layer utilities {
+            .glass-panel {
+                @apply bg-glass-surface backdrop-blur-xl border border-glass-border shadow-lg;
+            }
+            .text-glow {
+                text-shadow: 0 0 20px rgba(31, 173, 126, 0.5);
+            }
+        }
+        
+        /* Custom Ring Animation */
+        @keyframes progress {
+            from { stroke-dashoffset: 283; }
+            to { stroke-dashoffset: 70; } /* 75% full */
+        }
+        
+        .animate-ring {
+            animation: progress 1.5s ease-out forwards;
+        }
+
+        /* Hide Scrollbar */
+        .no-scrollbar::-webkit-scrollbar {
+            display: none;
+        }
+        .no-scrollbar {
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+    </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="bg-background-light dark:bg-background-dark font-display text-slate-900 dark:text-white min-h-screen selection:bg-primary selection:text-white overflow-x-hidden">
+<!-- Mobile Wrapper -->
+<div class="mx-auto w-full max-w-md min-h-screen relative flex flex-col pb-28">
+<!-- Top App Bar -->
+<header class="flex items-center justify-between p-6 pt-8 z-10">
+<div class="flex items-center gap-3">
+<div class="relative group cursor-pointer">
+<div class="size-10 rounded-full bg-cover bg-center border border-white/10" data-alt="User profile portrait showing a confident young man" style='background-image: url("https://lh3.googleusercontent.com/aida-public/AB6AXuAXaKO-nJvf_tQ_f9DI86F4Rgjnl2fDKT68vsnHzCOwdAWqH5oPsKjUF-DM1AcZAFQgS6XiSgRraMm22JTX3Q5Cb_gW7G-YSRgqaFSQnzAFGlNMcLrEag023Z59xsGo6Enib2AU8ogFiSuNWwXfQwtqMSSdj1z9YznvHkDPf4j1byZZfTOJzWatsqCNmL2A0HQfhQPyyTpLMnyCiCu_E5dVqQvCM8ARqHtCbCz_r5CoDN_AQgBKDjwbMurhB3QYVx4M3HFJamtkpQbk");'></div>
+<div class="absolute -bottom-1 -right-1 size-3 bg-primary rounded-full border-2 border-black"></div>
+</div>
+<div class="flex flex-col">
+<!-- REFINEMENT: Reduce "WELCOME BACK" visual weight (opacity: 0.7, font-weight: 500) -->
+<span class="text-xs text-zinc-400 font-medium tracking-wide" style="opacity: 0.7; font-weight: 500;">WELCOME BACK</span>
+<h1 class="text-sm font-bold text-white tracking-wide">Alex_Hustles</h1>
+</div>
+</div>
+<button class="glass-panel size-10 flex items-center justify-center rounded-full hover:bg-white/10 transition-colors relative">
+<span class="material-symbols-outlined text-white text-[20px]">notifications</span>
+<span class="absolute top-2.5 right-3 size-2 bg-red-500 rounded-full animate-pulse"></span>
+</button>
+</header>
+<!-- Status Header Widget -->
+<section class="px-5 mb-6">
+<div class="glass-panel rounded-2xl p-5 flex items-center justify-between relative overflow-hidden">
+<!-- Decorative background glow -->
+<div class="absolute -right-10 -top-10 size-32 bg-primary/20 rounded-full blur-[50px] pointer-events-none"></div>
+<div class="flex items-center gap-6 z-10">
+<!-- XP Ring -->
+<div class="relative size-24 flex-shrink-0">
+<svg class="size-full -rotate-90 transform" viewbox="0 0 100 100">
+<!-- Track -->
+<circle cx="50" cy="50" fill="none" r="45" stroke="#2a2a2c" stroke-width="8"></circle>
+<!-- Progress -->
+<circle class="animate-ring" cx="50" cy="50" fill="none" r="45" stroke="#1fad7e" stroke-dasharray="283" stroke-dashoffset="283" stroke-linecap="round" stroke-width="8"></circle>
+</svg>
+<div class="absolute inset-0 flex flex-col items-center justify-center">
+<span class="text-[10px] text-zinc-400 font-semibold uppercase tracking-wider">Level</span>
+<span class="text-2xl font-bold text-white leading-none">12</span>
+</div>
+</div>
+<!-- Stats -->
+<div class="flex flex-col gap-3">
+<div class="flex items-center gap-2">
+<div class="bg-primary/20 border border-primary/30 px-3 py-1 rounded-full flex items-center gap-1.5">
+<span class="material-symbols-outlined text-primary text-[16px] fill">verified_user</span>
+<span class="text-primary text-xs font-bold tracking-wide uppercase">Trusted Tier</span>
+</div>
+</div>
+<div class="flex items-center gap-2 pl-1">
+<span class="material-symbols-outlined text-orange-500 text-[20px]">local_fire_department</span>
+<span class="text-white text-sm font-semibold">7-day streak</span>
+</div>
+<div class="h-1 w-24 bg-zinc-800 rounded-full mt-1 overflow-hidden">
+<div class="h-full bg-orange-500 w-full rounded-full"></div>
+</div>
+</div>
+</div>
+</div>
+</section>
+<!-- Today Snapshot -->
+<section class="px-5 mb-6">
+<h3 class="text-zinc-500 text-xs font-semibold uppercase tracking-wider mb-3 px-1">Today's Snapshot</h3>
+<div class="glass-panel rounded-2xl p-6 flex flex-col gap-4 relative overflow-hidden group">
+<!-- Subtle hover effect gradient -->
+<div class="absolute inset-0 bg-gradient-to-br from-white/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500 pointer-events-none"></div>
+<div class="flex items-start justify-between">
+<div>
+<p class="text-zinc-400 text-sm font-medium mb-1">Total Earnings</p>
+<h2 class="text-5xl font-extrabold text-white tracking-tight leading-none">$142<span class="text-2xl text-zinc-500">.00</span></h2>
+</div>
+<div class="bg-[#1fad7e]/10 p-2 rounded-xl">
+<span class="material-symbols-outlined text-primary text-[24px]">payments</span>
+</div>
+</div>
+<div class="h-px w-full bg-white/5"></div>
+<div class="flex items-center justify-between text-sm">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-primary text-[18px]">bolt</span>
+<span class="text-zinc-300 font-medium">+450 XP Gained</span>
+</div>
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-zinc-500 text-[18px]">check_circle</span>
+<span class="text-zinc-400">3 Tasks Done</span>
+</div>
+</div>
+</div>
+</section>
+<!-- Instant Mode -->
+<section class="px-5 mb-6">
+<label class="glass-panel rounded-xl p-1 pr-4 flex items-center justify-between cursor-pointer group transition-all hover:bg-white/5 border-primary/20">
+<div class="flex items-center gap-4 flex-1">
+<div class="bg-primary/20 h-14 w-14 rounded-lg flex items-center justify-center flex-shrink-0">
+<span class="material-symbols-outlined text-primary text-[28px] animate-pulse">broadcast_on_personal</span>
+</div>
+<div class="flex flex-col">
+<span class="text-primary text-base font-bold flex items-center gap-2">
+                            Instant Mode: ON
+                            <span class="flex size-2 relative">
+<span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary opacity-75"></span>
+<span class="relative inline-flex rounded-full size-2 bg-primary"></span>
+</span>
+</span>
+<span class="text-xs text-zinc-400 leading-tight mt-0.5">High-priority tasks active</span>
+</div>
+</div>
+<div class="relative">
+<input checked="" class="sr-only peer" type="checkbox"/>
+<div class="w-11 h-6 bg-zinc-700 peer-focus:outline-none rounded-full peer dark:bg-zinc-800 peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-primary"></div>
+</div>
+</label>
+</section>
+<!-- Progression Preview -->
+<section class="px-5 mb-4">
+<div class="flex items-center justify-between mb-3 px-1">
+<h3 class="text-zinc-500 text-xs font-semibold uppercase tracking-wider">Career Progression</h3>
+<button class="text-primary text-xs font-bold hover:underline">View Roadmap</button>
+</div>
+<div class="glass-panel rounded-2xl p-5 mb-3 border-l-4 border-l-primary relative overflow-hidden">
+<div class="flex items-start justify-between mb-4">
+<div>
+<p class="text-xs text-primary font-bold uppercase tracking-wider mb-1">Current Goal</p>
+<h4 class="text-white text-lg font-bold">In-Home Cleared</h4>
+</div>
+<span class="material-symbols-outlined text-zinc-600 text-[24px]">lock_open</span>
+</div>
+<div class="space-y-4">
+<!-- Requirement 1 -->
+<div>
+<div class="flex justify-between text-xs mb-1.5">
+<span class="text-zinc-300">Tasks Completed</span>
+<span class="text-white font-medium">18/25</span>
+</div>
+<div class="h-2 w-full bg-zinc-800 rounded-full overflow-hidden">
+<div class="h-full bg-gradient-to-r from-primary to-emerald-400 w-[72%] rounded-full"></div>
+</div>
+</div>
+<!-- Requirement 2 -->
+<div>
+<div class="flex justify-between text-xs mb-1.5">
+<span class="text-zinc-300">Days Active</span>
+<span class="text-white font-medium">22/30</span>
+</div>
+<div class="h-2 w-full bg-zinc-800 rounded-full overflow-hidden">
+<div class="h-full bg-gradient-to-r from-primary to-emerald-400 w-[73%] rounded-full"></div>
+</div>
+</div>
+</div>
+</div>
+<!-- Locked Next Tier -->
+<div class="glass-panel rounded-xl p-4 opacity-50 flex items-center justify-between grayscale">
+<div class="flex flex-col">
+<span class="text-xs text-zinc-400 font-bold uppercase tracking-wider">Next Tier</span>
+<span class="text-white font-bold">Commercial Licensed</span>
+</div>
+<span class="material-symbols-outlined text-zinc-500">lock</span>
+</div>
+</section>
+<!-- Bottom Navigation -->
+<!-- REFINEMENT: Slightly tighten bottom nav contrast (increase icon contrast by ~6%) -->
+<nav class="fixed bottom-0 left-0 w-full z-50 px-4 pb-4 pt-0 pointer-events-none flex justify-center">
+<div class="pointer-events-auto bg-[#1c1c1e]/90 backdrop-blur-2xl border border-white/10 rounded-3xl w-full max-w-md shadow-2xl shadow-black/50 flex justify-between items-center px-6 py-4">
+<button class="flex flex-col items-center gap-1 group">
+<span class="material-symbols-outlined text-primary text-[24px] group-hover:scale-110 transition-transform" style="opacity: 1.06;">home</span>
+<span class="text-[10px] font-medium text-white opacity-100 transition-opacity">Home</span>
+</button>
+<button class="flex flex-col items-center gap-1 group">
+<span class="material-symbols-outlined text-zinc-500 text-[24px] group-hover:text-white transition-colors group-hover:scale-110 transition-transform" style="opacity: 0.56;">assignment</span>
+<span class="text-[10px] font-medium text-zinc-500 group-hover:text-white transition-colors">Tasks</span>
+</button>
+<!-- Floating Action Button effect -->
+<button class="relative -top-8 bg-primary text-black rounded-full p-4 shadow-[0_0_20px_rgba(31,173,126,0.4)] border-4 border-[#000000] hover:scale-105 transition-transform active:scale-95">
+<span class="material-symbols-outlined text-[28px] font-bold">add</span>
+</button>
+<button class="flex flex-col items-center gap-1 group">
+<span class="material-symbols-outlined text-zinc-500 text-[24px] group-hover:text-white transition-colors group-hover:scale-110 transition-transform" style="opacity: 0.56;">account_balance_wallet</span>
+<span class="text-[10px] font-medium text-zinc-500 group-hover:text-white transition-colors">Wallet</span>
+</button>
+<button class="flex flex-col items-center gap-1 group">
+<span class="material-symbols-outlined text-zinc-500 text-[24px] group-hover:text-white transition-colors group-hover:scale-110 transition-transform" style="opacity: 0.56;">person</span>
+<span class="text-[10px] font-medium text-zinc-500 group-hover:text-white transition-colors">Profile</span>
+</button>
+</div>
+</nav>
+</div>
+</body></html>

@@ -14,6 +14,7 @@
 
 export type TaskState = 
   | 'OPEN'
+  | 'MATCHING'       // Instant mode: searching for hustler
   | 'ACCEPTED'
   | 'PROOF_SUBMITTED'
   | 'DISPUTED'
@@ -208,8 +209,13 @@ export interface Task {
   live_broadcast_expired_at?: Date;
   live_broadcast_radius_miles?: number;
   
+  // Instant Execution Mode (IEM v1)
+  instant_mode: boolean;
+  surge_level?: number; // 0 = no surge, 1 = visibility boost, 2 = XP boost, 3 = failed
+  
   // Timestamps
   deadline?: Date;
+  matched_at?: Date; // Instant mode: when matching broadcast started
   accepted_at?: Date;
   proof_submitted_at?: Date;
   completed_at?: Date;
@@ -595,6 +601,8 @@ export interface ServiceError {
 
 // Error codes (match trigger ERRCODE values from PRODUCT_SPEC §10)
 export const ErrorCodes = {
+  INSTANT_TASK_INCOMPLETE: 'INSTANT_TASK_INCOMPLETE',
+  INSTANT_TASK_TRUST_INSUFFICIENT: 'INSTANT_TASK_TRUST_INSUFFICIENT',
   // Terminal state violations
   TASK_TERMINAL: 'HX001',  // Task terminal state violation
   ESCROW_TERMINAL: 'HX002',  // Escrow terminal state violation

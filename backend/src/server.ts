@@ -395,8 +395,8 @@ app.post('/webhooks/stripe', async (c) => {
   // Stripe expects 200 to stop retrying
   return c.json({ 
     received: true, 
-    eventId: result.data.eventId,
-    stored: result.data.stored 
+    eventId: result.stripeEventId,
+    stored: result.stripeEventId !== undefined
   }, 200);
 });
 

@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>XP Breakdown &amp; Rewards</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script>
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        "primary": "#f1a727",
+                        "accent-green": "#26EB6F",
+                        "accent-red": "#EB2626",
+                        "glass-border": "rgba(255, 255, 255, 0.08)",
+                        "glass-bg": "rgba(28, 28, 30, 0.6)",
+                    },
+                    fontFamily: {
+                        "display": ["Space Grotesk", "sans-serif"]
+                    },
+                    backgroundImage: {
+                        'gradient-radial': 'radial-gradient(var(--tw-gradient-stops))',
+                    }
+                },
+            },
+        }
+    </script>
+<style>
+        .no-scrollbar::-webkit-scrollbar {
+            display: none;
+        }
+        .no-scrollbar {
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+        .glass-card {
+            background: rgba(255, 255, 255, 0.03);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            box-shadow: 0 4px 30px rgba(0, 0, 0, 0.1);
+        }
+    </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="bg-black text-white font-display antialiased min-h-screen relative overflow-x-hidden selection:bg-primary/30">
+<!-- Background Ambient Glow -->
+<div class="fixed top-[-10%] left-[-10%] w-[50%] h-[50%] bg-primary/10 rounded-full blur-[120px] pointer-events-none z-0"></div>
+<div class="fixed bottom-[-10%] right-[-10%] w-[60%] h-[60%] bg-blue-900/10 rounded-full blur-[120px] pointer-events-none z-0"></div>
+<!-- Header -->
+<header class="relative z-10 sticky top-0 bg-black/80 backdrop-blur-md pt-12 pb-4 px-6 border-b border-white/5 flex justify-between items-end">
+<div class="flex flex-col">
+<h1 class="text-[28px] font-bold tracking-tight leading-none text-white">XP Breakdown</h1>
+</div>
+<div class="text-[#8E8E93] text-sm font-medium tracking-wide mb-1">
+            Today, Oct 24
+        </div>
+</header>
+<main class="relative z-10 flex flex-col gap-6 p-6 pb-32">
+<!-- Hero Summary Card -->
+<div class="glass-card rounded-3xl p-8 flex flex-col items-center justify-center relative overflow-hidden group">
+<div class="absolute inset-0 bg-gradient-to-b from-primary/5 to-transparent opacity-50"></div>
+<p class="text-[#8E8E93] text-sm uppercase tracking-widest font-medium mb-2 z-10">Total Earned</p>
+<div class="flex items-baseline gap-1 z-10">
+<span class="text-[56px] font-bold text-primary leading-none tracking-tight">342</span>
+<span class="text-xl font-medium text-primary/80">XP</span>
+</div>
+<!-- Subtle progress indicator -->
+<div class="w-full bg-white/10 h-1 mt-6 rounded-full overflow-hidden">
+<div class="bg-primary h-full w-[65%] rounded-full shadow-[0_0_10px_rgba(241,167,39,0.5)]"></div>
+</div>
+<div class="flex justify-between w-full mt-2 text-xs text-[#8E8E93]">
+<span>Daily Goal: 500 XP</span>
+<span>68%</span>
+</div>
+</div>
+<!-- Real-Time Bonuses Section -->
+<div>
+<h2 class="text-lg font-bold text-white mb-4 px-1 flex items-center gap-2">
+<span class="material-symbols-outlined text-primary text-xl">bolt</span>
+                REAL-TIME BONUSES
+            </h2>
+<div class="flex flex-col gap-3">
+<!-- Instant Mode -->
+<div class="glass-card rounded-2xl p-4 flex items-center justify-between">
+<div class="flex items-center gap-4">
+<div class="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center border border-primary/20">
+<span class="material-symbols-outlined text-primary text-xl">flash_on</span>
+</div>
+<div>
+<div class="flex items-center gap-2">
+<h3 class="font-bold text-white">Instant Mode</h3>
+<span class="bg-primary/20 text-primary text-[10px] font-bold px-1.5 py-0.5 rounded border border-primary/20">1.5x</span>
+</div>
+<p class="text-xs text-[#8E8E93]">Acceptance within 30s</p>
+</div>
+</div>
+<div class="text-accent-green font-bold text-lg">+68 XP</div>
+</div>
+<!-- Speed Bonus -->
+<div class="glass-card rounded-2xl p-4 flex items-center justify-between">
+<div class="flex items-center gap-4">
+<div class="w-10 h-10 rounded-full bg-accent-green/10 flex items-center justify-center border border-accent-green/20">
+<span class="material-symbols-outlined text-accent-green text-xl">timer</span>
+</div>
+<div>
+<div class="flex items-center gap-2">
+<h3 class="font-bold text-white">Speed Bonus</h3>
+<span class="bg-accent-green/20 text-accent-green text-[10px] font-bold px-1.5 py-0.5 rounded border border-accent-green/20">1.2x</span>
+</div>
+<p class="text-xs text-[#8E8E93]">Completed &lt; 2 hrs</p>
+</div>
+</div>
+<div class="text-accent-green font-bold text-lg">+24 XP</div>
+</div>
+<!-- Surge Bonus -->
+<!-- REFINEMENT: Slightly de-emphasize Surge XP amount (opacity: 0.9) and add "(limited window)" -->
+<div class="glass-card rounded-2xl p-4 flex items-center justify-between relative overflow-hidden">
+<div class="absolute right-0 top-0 w-24 h-24 bg-primary/10 blur-2xl rounded-full -mr-10 -mt-10 pointer-events-none"></div>
+<div class="flex items-center gap-4 relative z-10">
+<div class="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center border border-primary/20">
+<span class="material-symbols-outlined text-primary text-xl">trending_up</span>
+</div>
+<div>
+<div class="flex items-center gap-2">
+<h3 class="font-bold text-white">Surge Bonus</h3>
+<span class="bg-primary/20 text-primary text-[10px] font-bold px-1.5 py-0.5 rounded border border-primary/20">2.0x</span>
+</div>
+<p class="text-xs text-[#8E8E93]">High demand window <span style="opacity: 0.7;">(limited window)</span></p>
+</div>
+</div>
+<div class="text-accent-green font-bold text-lg relative z-10" style="opacity: 0.9;">+120 XP</div>
+</div>
+</div>
+</div>
+<!-- Consistency Bonus -->
+<div>
+<h2 class="text-lg font-bold text-white mb-4 px-1 flex items-center gap-2">
+<span class="material-symbols-outlined text-accent-red text-xl">local_fire_department</span>
+                CONSISTENCY
+            </h2>
+<div class="glass-card rounded-2xl p-4 flex items-center justify-between border-accent-red/20 relative overflow-hidden">
+<!-- Subtle red glow -->
+<div class="absolute left-0 bottom-0 w-full h-1 bg-accent-red/50"></div>
+<div class="flex items-center gap-4">
+<div class="w-10 h-10 rounded-full bg-accent-red/10 flex items-center justify-center border border-accent-red/20">
+<span class="text-accent-red font-bold text-sm">7D</span>
+</div>
+<div>
+<div class="flex items-center gap-2">
+<h3 class="font-bold text-white">7-Day Streak</h3>
+<span class="bg-accent-red/20 text-accent-red text-[10px] font-bold px-1.5 py-0.5 rounded border border-accent-red/20">1.1x</span>
+</div>
+<p class="text-xs text-[#8E8E93]">Keep it up tomorrow!</p>
+</div>
+</div>
+<div class="text-accent-green font-bold text-lg">+30 XP</div>
+</div>
+</div>
+<!-- Base XP Breakdown -->
+<div>
+<h2 class="text-lg font-bold text-white mb-4 px-1">Base XP Breakdown</h2>
+<div class="glass-card rounded-2xl p-1 divide-y divide-white/5">
+<div class="flex justify-between items-center p-4">
+<div class="flex flex-col">
+<span class="font-medium text-white">Logo Design Task</span>
+<span class="text-xs text-[#8E8E93]">Completed at 10:42 AM</span>
+</div>
+<span class="font-mono text-white/80">150 XP</span>
+</div>
+<div class="flex justify-between items-center p-4">
+<div class="flex flex-col">
+<span class="font-medium text-white">Feedback Response</span>
+<span class="text-xs text-[#8E8E93]">Completed at 11:15 AM</span>
+</div>
+<span class="font-mono text-white/80">150 XP</span>
+</div>
+</div>
+</div>
+<!-- Logic Footer -->
+<!-- REFINEMENT: Renamed "Calculation Logic" to "XP Resolution" (authoritative and final, not academic) -->
+<div class="mt-4 mb-8">
+<div class="border border-dashed border-white/20 bg-white/5 rounded-xl p-5">
+<div class="flex items-center gap-2 mb-3">
+<span class="material-symbols-outlined text-[#8E8E93] text-sm">calculate</span>
+<h3 class="text-xs font-bold uppercase tracking-widest text-[#8E8E93]">XP Resolution</h3>
+</div>
+<div class="font-mono text-lg md:text-xl text-white mb-2 flex flex-wrap items-center gap-x-2">
+<span class="text-white/60">300</span>
+<span class="text-primary text-sm">base</span>
+<span class="text-white/40">×</span>
+<span class="text-white">1.5</span>
+<span class="text-white/40">×</span>
+<span class="text-white">1.2</span>
+<span class="text-white/40">×</span>
+<span class="text-white">1.1</span>
+<span class="text-white/40">=</span>
+<span class="text-primary font-bold">594 XP</span>
+</div>
+<div class="text-[11px] text-[#8E8E93] leading-relaxed mt-3 border-t border-white/10 pt-3">
+<p class="mb-1"><strong class="text-white">Note:</strong> The above calculation demonstrates potential max earnings. Your current realized gain (342 XP) is based on completed quality gates.</p>
+<p>Multipliers are capped at 2.0x max per individual session event.</p>
+</div>
+</div>
+</div>
+</main>
+</body></html>

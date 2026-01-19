@@ -31,11 +31,21 @@ if (!DATABASE_URL) {
 // CONNECTION POOL
 // ============================================================================
 
+// Disable prepared statements in test environment to avoid stale plan cache
+// when schema changes during test execution
+const isTestEnv = process.env.NODE_ENV === 'test' || process.env.VITEST === 'true';
+
 const pool = new Pool({
   connectionString: DATABASE_URL,
   max: 10,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 10000,
+  // Disable prepared statements in tests to prevent stale plan cache
+  // when schema changes occur during test execution
+  ...(isTestEnv && { 
+    // Force re-planning by using a query that invalidates prepared statements
+    // Neon serverless may not support prepareThreshold, so we'll handle it in query execution
+  }),
 });
 
 console.log('✅ Neon database pool initialized');
@@ -215,6 +225,17 @@ export const db = {
   ): Promise<QueryResult<T>> => {
     const client = await pool.connect();
     try {
+      // In test environment, clear prepared statement cache before each query
+      // This prevents stale plans when schema changes during test execution
+      if (isTestEnv) {
+        // Clear all prepared statements on this connection
+        // This ensures fresh planning for each query in tests
+        try {
+          await client.query('DEALLOCATE ALL');
+        } catch {
+          // Ignore errors - connection may not have prepared statements yet
+        }
+      }
       const result = await client.query(sql, params);
       return {
         rows: result.rows as T[],
@@ -250,7 +271,14 @@ export const db = {
       await client.query('COMMIT');
       return result;
     } catch (error) {
-      await client.query('ROLLBACK');
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackError) {
+        console.error('[DB] ROLLBACK failed - original error may be lost', {
+          originalError: error,
+          rollbackError,
+        });
+      }
       throw error;
     } finally {
       client.release();
@@ -283,7 +311,14 @@ export const db = {
       await client.query('COMMIT');
       return result;
     } catch (error) {
-      await client.query('ROLLBACK');
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackError) {
+        console.error('[DB] ROLLBACK failed - original error may be lost', {
+          originalError: error,
+          rollbackError,
+        });
+      }
       throw error;
     } finally {
       client.release();

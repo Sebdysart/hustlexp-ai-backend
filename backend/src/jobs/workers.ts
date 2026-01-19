@@ -91,9 +91,21 @@ function registerWorkers(): void {
         // Route Stripe webhook events to StripeEventWorker (Step 9-D)
         const { processStripeEventJob } = await import('./stripe-event-worker');
         await processStripeEventJob(job);
+      } else if (eventType === 'task.instant_matching_started') {
+        // Route instant matching to InstantMatchingWorker (IEM v1)
+        const { processInstantMatchingJob } = await import('./instant-matching-worker');
+        await processInstantMatchingJob(job);
+      } else if (eventType === 'task.instant_available') {
+        // Route instant notifications to InstantNotificationWorker (Notification Urgency Design v1)
+        const { processInstantNotificationJob } = await import('./instant-notification-worker');
+        await processInstantNotificationJob(job);
+      } else if (eventType === 'task.instant_surge_evaluate') {
+        // Route instant surge evaluation to InstantSurgeWorker (Instant Surge Incentives v1)
+        const { processInstantSurgeJob } = await import('./instant-surge-worker');
+        await processInstantSurgeJob(job);
       } else {
         // Unknown event type: reject to prevent processing invalid jobs
-        const error = new Error(`Unknown event type in critical_payments queue: ${eventType}. Expected escrow.*_requested, payment.*, or stripe.event_received`);
+        const error = new Error(`Unknown event type in critical_payments queue: ${eventType}. Expected escrow.*_requested, payment.*, stripe.event_received, task.instant_matching_started, task.instant_available, or task.instant_surge_evaluate`);
         console.error(`❌ ${error.message}`);
         throw error; // BullMQ will mark job as failed
       }

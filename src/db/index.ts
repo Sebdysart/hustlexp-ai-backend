@@ -34,10 +34,16 @@ export async function transaction<T>(
     }
 
     const client = await pool.connect();
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/60a3436b-9cd6-40ea-918b-82324577294f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'src/db/index.ts:36',message:'Transaction started - client connected',data:{hasPool:!!pool},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
+    // #endregion
     try {
         // PHASE 6.1: Use SERIALIZABLE isolation for financial transactions
         // Prevents race conditions in concurrent payout attempts
         await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/60a3436b-9cd6-40ea-918b-82324577294f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'src/db/index.ts:42',message:'BEGIN transaction executed',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+        // #endregion
 
         // Simulating tagged template on top of pg client:
         const txTag = async (strings: TemplateStringsArray, ...values: any[]) => {
@@ -50,12 +56,34 @@ export async function transaction<T>(
         };
 
         const result = await callback(txTag);
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/60a3436b-9cd6-40ea-918b-82324577294f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'src/db/index.ts:53',message:'Callback completed, attempting COMMIT',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+        // #endregion
         await client.query('COMMIT');
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/60a3436b-9cd6-40ea-918b-82324577294f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'src/db/index.ts:54',message:'COMMIT succeeded',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+        // #endregion
         return result;
     } catch (e) {
-        await client.query('ROLLBACK');
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/60a3436b-9cd6-40ea-918b-82324577294f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'src/db/index.ts:57',message:'Error caught in transaction',data:{errorMessage:e instanceof Error?e.message:String(e),errorType:e?.constructor?.name},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+        // #endregion
+        try {
+            await client.query('ROLLBACK');
+            // #region agent log
+            fetch('http://127.0.0.1:7242/ingest/60a3436b-9cd6-40ea-918b-82324577294f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'src/db/index.ts:59',message:'ROLLBACK succeeded',data:{originalError:e instanceof Error?e.message:String(e)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+            // #endregion
+        } catch (rollbackError) {
+            // #region agent log
+            fetch('http://127.0.0.1:7242/ingest/60a3436b-9cd6-40ea-918b-82324577294f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'src/db/index.ts:62',message:'ROLLBACK FAILED - original error may be lost',data:{originalError:e instanceof Error?e.message:String(e),rollbackError:rollbackError instanceof Error?rollbackError.message:String(rollbackError)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+            // #endregion
+            logger.error({ originalError: e, rollbackError }, 'ROLLBACK failed - original error may be lost');
+        }
         throw e;
     } finally {
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/60a3436b-9cd6-40ea-918b-82324577294f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'src/db/index.ts:69',message:'Releasing client connection',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
+        // #endregion
         client.release();
     }
 }

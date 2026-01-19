@@ -131,6 +131,8 @@ export const Schemas = {
     // Live Mode (PRODUCT_SPEC §3.5)
     mode: z.enum(['STANDARD', 'LIVE']).default('STANDARD'),
     liveBroadcastRadiusMiles: z.number().positive().optional(),
+    // Instant Execution Mode (IEM v1)
+    instantMode: z.boolean().default(false),
   }),
   
   // Escrow
