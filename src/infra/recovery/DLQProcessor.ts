@@ -99,12 +99,14 @@ export class DLQProcessor {
 
             // Exponential Backoff (1m, 5m, 25m, 2h, 10h)
             const delayMinutes = Math.pow(5, nextRetry - 1);
+            // Ensure delayMinutes is always a positive number (should be, but safety check)
+            const safeDelayMinutes = Math.max(1, delayMinutes);
 
             await sql`
                 UPDATE ledger_pending_actions
                 SET 
                     retry_count = ${nextRetry},
-                    next_retry_at = NOW() + (${delayMinutes} || ' minutes')::interval,
+                    next_retry_at = NOW() + INTERVAL '${safeDelayMinutes} minutes',
                     error_log = ${error.message},
                     status = 'failed'
                 WHERE id = ${item.id}

@@ -339,6 +339,11 @@ export async function handle(
 
             // C. Validate Guards (Phase 12C: includes Payout Eligibility Resolver)
             await validateGuards(tx, taskId, eventType, context, lock, eventId, adminOverride);
+            
+            // Safety check: lock must exist for all events except HOLD_ESCROW
+            if (!lock && eventType !== 'HOLD_ESCROW') {
+                throw new Error(`money_state_lock not found for task ${taskId} - required for event ${eventType}`);
+            }
 
 
             // D. Prepare Ledger Transaction
@@ -362,6 +367,7 @@ export async function handle(
             }
             else if (eventType === 'RELEASE_PAYOUT') {
                 if (!context.hustlerId) throw new Error("Missing hustlerId in context");
+                if (!lock) throw new Error(`money_state_lock required for RELEASE_PAYOUT on task ${taskId}`);
                 const taskEscrow = await LedgerAccountService.getAccount(taskId, 'task_escrow', tx);
                 const hustlerReceivable = await LedgerAccountService.getAccount(context.hustlerId, 'receivable', tx);
                 const lTx = await LedgerService.prepareTransaction({
@@ -381,8 +387,9 @@ export async function handle(
                 };
             }
             else if (['REFUND_ESCROW', 'FORCE_REFUND', 'RESOLVE_REFUND'].includes(eventType)) {
+                if (!lock) throw new Error(`money_state_lock required for ${eventType} on task ${taskId}`);
                 const taskEscrow = await LedgerAccountService.getAccount(taskId, 'task_escrow', tx);
-                const posterReceivable = await LedgerAccountService.getAccount(context.posterId || lock?.poster_uid, 'receivable', tx);
+                const posterReceivable = await LedgerAccountService.getAccount(context.posterId || lock.poster_uid, 'receivable', tx);
                 const lTx = await LedgerService.prepareTransaction({
                     type: 'ESCROW_REFUND',
                     idempotency_key: `ledger_${eventId}`,
@@ -423,7 +430,7 @@ export async function handle(
                 }, tx);
                 ledgerTxId = lTx.id;
                 prepData = {
-                    currentState: lock.current_state,
+                    currentState: lock?.current_state || 'unknown',
                     holdAmount: context.amountCents
                 };
             }
@@ -565,8 +572,22 @@ export async function handle(
         throw err;
     } finally {
         // Release ALL locks using batch release logic (iteration)
+        // Use allSettled to ensure all releases are attempted even if one fails
         if (resourcesToLock && lease?.leaseId) {
-            await Promise.all(resourcesToLock.map(res => LedgerLockService.release(res, lease.leaseId)));
+            const releaseResults = await Promise.allSettled(
+                resourcesToLock.map(res => LedgerLockService.release(res, lease.leaseId))
+            );
+            
+            // Log any release failures but don't throw (finally blocks shouldn't throw)
+            const failures = releaseResults.filter(r => r.status === 'rejected');
+            if (failures.length > 0) {
+                logger.warn({
+                    taskId,
+                    failedReleases: failures.length,
+                    totalReleases: resourcesToLock.length,
+                    errors: failures.map((f: any) => f.reason?.message || String(f.reason))
+                }, 'Some lock releases failed in finally block');
+            }
         }
     }
 }

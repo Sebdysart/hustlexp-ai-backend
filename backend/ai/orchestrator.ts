@@ -1,7 +1,25 @@
+/**
+ * AI Orchestrator - Constitutional Alignment
+ * 
+ * CONSTITUTIONAL: This orchestrator enforces AI authority levels from HUSTLEXP-DOCS/AI_INFRASTRUCTURE.md
+ * 
+ * Authority Model:
+ * - A0: Forbidden (XP, trust, payments, bans)
+ * - A1: Read-Only (summaries, display)
+ * - A2: Proposal-Only (validated by deterministic rules)
+ * - A3: Restricted Execution (reversible actions with consent)
+ * 
+ * Reference: /Users/sebastiandysart/HustleXP/HUSTLEXP-DOCS/AI_INFRASTRUCTURE.md
+ * 
+ * @see AI_INFRASTRUCTURE.md §3.1-3.2 (Authority Model)
+ * @see AI_INFRASTRUCTURE.md §4 (Canonical AI Execution Flow)
+ */
+
 import { AIFunctions, type AIActionName, type ActionResult } from './functions';
 import { generateSystemResponse } from './router';
 import { handleOnboardingFlow } from './onboarding';
 import { translateText, detectLanguage } from './translation';
+import { validateAuthority, getAuthorityLevel, isAIAllowed, CONSTITUTIONAL_REFERENCES } from './authority';
 
 export type OrchestratorContext = {
   userId: string; // Database user.id (numeric, converted to string)
@@ -279,8 +297,29 @@ function extractTitleFromInput(input: string): string {
   return first50.length < input.length ? first50 + '...' : first50;
 }
 
+/**
+ * Map AI action to subsystem for authority checking
+ * 
+ * CONSTITUTIONAL: Maps actions to subsystems defined in AI_INFRASTRUCTURE.md §3.2
+ */
+function mapActionToSubsystem(action: AIActionName | 'ask_question'): string {
+  // Map actions to subsystems from AI_INFRASTRUCTURE.md authority allocation table
+  const actionMap: Record<string, string> = {
+    'createTask': 'task.classification',
+    'findTasks': 'task.matching_ranking',
+    'getUserProfile': 'support.drafting', // A1 - read-only
+    'getWalletSummary': 'support.drafting', // A1 - read-only
+    'getLeaderboard': 'support.drafting', // A1 - read-only
+    'translateMessage': 'support.drafting', // A1 - read-only
+    'navigateTo': 'support.drafting', // A1 - read-only
+  };
+  
+  return actionMap[action] || 'unknown';
+}
+
 export async function orchestrate(request: OrchestratorContext): Promise<OrchestratorResponse> {
   console.log('[Orchestrator] Processing request:', { userId: request.userId, input: request.input.substring(0, 100) });
+  console.log('[Orchestrator] Constitutional alignment: HUSTLEXP-DOCS at', CONSTITUTIONAL_REFERENCES.AI_INFRASTRUCTURE);
   
   try {
     const detectedLanguage = await detectLanguage(request.input);
@@ -331,10 +370,85 @@ export async function orchestrate(request: OrchestratorContext): Promise<Orchest
       if (step.action === 'ask_question') {
         finalMessage = step.question || '';
       } else {
-        const actionFn = AIFunctions[step.action];
-        if (actionFn) {
+        // CONSTITUTIONAL: Validate authority before executing action
+        const subsystem = mapActionToSubsystem(step.action);
+        const authorityCheck = validateAuthority(step.action, subsystem);
+        
+        if (!authorityCheck.allowed) {
+          console.error('[Orchestrator] Authority violation blocked:', {
+            action: step.action,
+            subsystem,
+            reason: authorityCheck.reason,
+            requiredLevel: authorityCheck.requiredLevel,
+          });
+          
+          actionResults.push({
+            name: step.action,
+            status: 'error',
+            error: authorityCheck.reason || 'Action forbidden by constitutional authority model',
+          });
+          continue;
+        }
+        
+        const authorityLevel = getAuthorityLevel(subsystem);
+        console.log('[Orchestrator] Executing action with authority:', {
+          action: step.action,
+          subsystem,
+          authorityLevel,
+        });
+        
+        // Type-safe check: Verify action exists in AIFunctions registry
+        const actionName = step.action as AIActionName;
+        const actionFn = AIFunctions[actionName];
+        
+        if (!actionFn) {
+          // BUG FIX: Action passed authority validation but function is missing from registry
+          // This can happen due to typos, missing implementations, or registry mismatches
+          const availableActions = Object.keys(AIFunctions) as AIActionName[];
+          const errorMessage = `Action "${actionName}" passed authority validation but is not implemented in AIFunctions registry. Available actions: ${availableActions.join(', ')}. This may indicate a missing implementation, typo in action name, or registry mismatch.`;
+          
+          console.error('[Orchestrator] Action function not found in registry:', {
+            action: actionName,
+            subsystem,
+            authorityLevel,
+            availableActions,
+            requestedAction: step.action,
+            actionType: typeof step.action,
+          });
+          
+          // Ensure we return a properly typed error result
+          actionResults.push({
+            name: actionName, // Use the asserted type, but log the original for debugging
+            status: 'error' as const,
+            error: errorMessage,
+          });
+          
+          // Continue to next step - don't silently skip
+          continue;
+        }
+        
+        // Execute the action function
+        try {
           const result = await actionFn({ userId: request.userId, ...step.params });
           actionResults.push(result);
+        } catch (executionError) {
+          // Catch any execution errors and record them
+          const errorMessage = executionError instanceof Error 
+            ? executionError.message 
+            : 'Unknown error during action execution';
+          
+          console.error('[Orchestrator] Action execution error:', {
+            action: actionName,
+            subsystem,
+            error: errorMessage,
+            stack: executionError instanceof Error ? executionError.stack : undefined,
+          });
+          
+          actionResults.push({
+            name: actionName,
+            status: 'error' as const,
+            error: `Action "${actionName}" failed during execution: ${errorMessage}`,
+          });
         }
       }
     }

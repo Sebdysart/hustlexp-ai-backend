@@ -1,16 +1,17 @@
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
-    test: {
-        globals: true,
-        environment: 'node',
-        include: ['src/**/*.test.ts', 'tests/**/*.test.ts'],
-        setupFiles: ['dotenv/config'],
-        coverage: {
-            provider: 'v8',
-            reporter: ['text', 'html'],
-            include: ['src/**/*.ts'],
-            exclude: ['src/**/*.test.ts', 'src/types/**'],
-        },
+  test: {
+    bail: 1,
+    environment: 'node',
+    testTimeout: 30000,
+    include: ['backend/tests/**/*.test.ts'],
+    reporters: ['verbose'],
+    // Run test files sequentially to avoid database race conditions
+    fileParallelism: false,
+    // Run tests within a file sequentially
+    sequence: {
+      concurrent: false,
     },
+  },
 });

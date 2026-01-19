@@ -43,11 +43,13 @@ async function callAIModel(
     return generateFallbackResponse(messages[messages.length - 1]?.content || '');
   }
 
+  const controller = new AbortController();
+  let timeoutId: NodeJS.Timeout | undefined = undefined;
+  
   try {
     console.log(`[AI Router] Calling ${route.provider}/${route.name}`);
 
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000);
+    timeoutId = setTimeout(() => controller.abort(), 10000);
 
     const geminiMessages = messages.map(msg => ({
       role: msg.role === 'assistant' ? 'model' : 'user',
@@ -75,7 +77,11 @@ async function callAIModel(
       signal: controller.signal,
     });
 
-    clearTimeout(timeoutId);
+    // Clear timeout after fetch completes (success or failure)
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+      timeoutId = undefined;
+    }
 
     if (!response.ok) {
       const error = await response.text();
@@ -89,6 +95,10 @@ async function callAIModel(
     console.log(`[AI Router] ✅ Got response from ${route.provider}`);
     return content;
   } catch (error) {
+    // Clear timeout in error case too
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
     console.error(`[AI Router] Error calling ${route.provider}:`, error);
     if (error instanceof Error && error.name === 'AbortError') {
       console.error(`[AI Router] Request to ${route.provider} timed out`);
