@@ -29,7 +29,8 @@ export interface XPLedgerEntry {
   escrow_id: string;
   base_xp: number;
   streak_multiplier: number;
-  decay_factor: number;
+  trust_multiplier: number;      // SPEC ALIGNMENT: replaced decay_factor
+  live_mode_multiplier: number;  // SPEC ALIGNMENT: 1.25× for Live tasks
   effective_xp: number;
   reason: string;
   user_xp_before: number;
@@ -50,7 +51,8 @@ interface AwardXPParams {
 interface XPCalculation {
   baseXP: number;
   streakMultiplier: number;
-  decayFactor: number;
+  trustMultiplier: number;       // SPEC ALIGNMENT: replaced decayFactor
+  liveModeMultiplier: number;    // SPEC ALIGNMENT: 1.25× for Live tasks
   effectiveXP: number;
 }
 
@@ -75,36 +77,58 @@ const LEVEL_THRESHOLDS = [
 ];
 
 /**
- * Streak multipliers (PRODUCT_SPEC §5.4)
+ * Streak multipliers (PRODUCT_SPEC §5.2)
+ *
+ * SPEC FORMULA: 1.0 + (streak_days × 0.05) capped at 2.0
  */
 function getStreakMultiplier(streak: number): number {
-  if (streak >= 30) return 1.5;
-  if (streak >= 14) return 1.3;
-  if (streak >= 7) return 1.2;
-  if (streak >= 3) return 1.1;
-  return 1.0;
+  const multiplier = 1.0 + (streak * 0.05);
+  return Math.min(multiplier, 2.0); // Cap at 2.0
 }
 
 /**
- * XP decay formula (PRODUCT_SPEC §5.2)
- * effectiveXP = baseXP × (1 / (1 + log₁₀(1 + totalXP / 1000)))
+ * Trust multipliers (PRODUCT_SPEC §5.2)
+ *
+ * SPEC ALIGNMENT:
+ * | Trust Tier | Multiplier |
+ * |------------|------------|
+ * | ROOKIE (1) | 1.0×       |
+ * | VERIFIED (2) | 1.5×     |
+ * | TRUSTED (3) | 2.0×      |
+ * | ELITE (4) | 2.0×        |
  */
-function calculateDecayFactor(totalXP: number): number {
-  // Fixed-point 4 decimal places
-  const raw = 1 / (1 + Math.log10(1 + totalXP / 1000));
-  return Math.floor(raw * 10000) / 10000;
+function getTrustMultiplier(trustTier: number): number {
+  switch (trustTier) {
+    case 1: return 1.0;  // ROOKIE
+    case 2: return 1.5;  // VERIFIED
+    case 3: return 2.0;  // TRUSTED
+    case 4: return 2.0;  // ELITE (same as TRUSTED)
+    default: return 1.0; // Default to ROOKIE multiplier
+  }
 }
 
 /**
- * Calculate effective XP (PRODUCT_SPEC §5.3)
+ * Live Mode XP multiplier (PRODUCT_SPEC §3.6)
+ *
+ * SPEC: Live tasks award 1.25× XP
+ */
+function getLiveModeMultiplier(isLiveMode: boolean): number {
+  return isLiveMode ? 1.25 : 1.0;
+}
+
+/**
+ * Calculate effective XP (PRODUCT_SPEC §5.2)
+ *
+ * SPEC FORMULA: effective_xp = base_xp × streak_multiplier × trust_multiplier
  * Rounding: truncate toward zero
  */
 function calculateEffectiveXP(
   baseXP: number,
   streakMultiplier: number,
-  decayFactor: number
+  trustMultiplier: number,
+  liveModeMultiplier: number = 1.0
 ): number {
-  return Math.floor(baseXP * streakMultiplier * decayFactor);
+  return Math.floor(baseXP * streakMultiplier * trustMultiplier * liveModeMultiplier);
 }
 
 /**
@@ -126,21 +150,25 @@ function calculateLevel(totalXP: number): number {
 export const XPService = {
   /**
    * Calculate XP award (without saving)
+   *
+   * SPEC ALIGNMENT (PRODUCT_SPEC §5.2):
+   * effective_xp = base_xp × streak_multiplier × trust_multiplier × live_mode_multiplier
    */
   calculateAward: async (
     userId: string,
-    baseXP: number
+    baseXP: number,
+    taskId?: string
   ): Promise<ServiceResult<XPCalculation>> => {
     try {
-      // Get user's current XP and streak
+      // Get user's current streak and trust tier
       const userResult = await db.query<{
-        xp_total: number;
         current_streak: number;
+        trust_tier: number;
       }>(
-        'SELECT xp_total, current_streak FROM users WHERE id = $1',
+        'SELECT current_streak, trust_tier FROM users WHERE id = $1',
         [userId]
       );
-      
+
       if (userResult.rows.length === 0) {
         return {
           success: false,
@@ -150,18 +178,32 @@ export const XPService = {
           },
         };
       }
-      
+
       const user = userResult.rows[0];
+
+      // Check if task is Live Mode (for 1.25× multiplier)
+      let isLiveMode = false;
+      if (taskId) {
+        const taskResult = await db.query<{ mode: string }>(
+          'SELECT mode FROM tasks WHERE id = $1',
+          [taskId]
+        );
+        isLiveMode = taskResult.rows[0]?.mode === 'LIVE';
+      }
+
+      // SPEC FORMULA: effective_xp = base_xp × streak_multiplier × trust_multiplier
       const streakMultiplier = getStreakMultiplier(user.current_streak);
-      const decayFactor = calculateDecayFactor(user.xp_total);
-      const effectiveXP = calculateEffectiveXP(baseXP, streakMultiplier, decayFactor);
-      
+      const trustMultiplier = getTrustMultiplier(user.trust_tier);
+      const liveModeMultiplier = getLiveModeMultiplier(isLiveMode);
+      const effectiveXP = calculateEffectiveXP(baseXP, streakMultiplier, trustMultiplier, liveModeMultiplier);
+
       return {
         success: true,
         data: {
           baseXP,
           streakMultiplier,
-          decayFactor,
+          trustMultiplier,
+          liveModeMultiplier,
           effectiveXP,
         },
       };
@@ -178,27 +220,31 @@ export const XPService = {
 
   /**
    * Award XP for task completion
-   * 
+   *
+   * SPEC ALIGNMENT (PRODUCT_SPEC §5.2):
+   * effective_xp = base_xp × streak_multiplier × trust_multiplier × live_mode_multiplier
+   *
    * INV-1: Will fail if escrow is not RELEASED (HX101)
    * INV-5: Will fail if XP already awarded for this escrow (23505)
    */
   awardXP: async (params: AwardXPParams): Promise<ServiceResult<XPLedgerEntry>> => {
     const { userId, taskId, escrowId, baseXP } = params;
-    
+
     let effectiveXPAwarded = 0;
-    
+
     try {
       const result = await db.serializableTransaction(async (query) => {
-        // Get user's current state
+        // Get user's current state including trust tier
         const userResult = await query<{
           xp_total: number;
           current_level: number;
           current_streak: number;
+          trust_tier: number;
         }>(
-          'SELECT xp_total, current_level, current_streak FROM users WHERE id = $1 FOR UPDATE',
+          'SELECT xp_total, current_level, current_streak, trust_tier FROM users WHERE id = $1 FOR UPDATE',
           [userId]
         );
-        
+
         if (userResult.rows.length === 0) {
           return {
             success: false,
@@ -208,56 +254,64 @@ export const XPService = {
             },
           };
         }
-        
+
         const user = userResult.rows[0];
-        
-        // Calculate XP
+
+        // Check if task is Live Mode (for 1.25× multiplier)
+        const taskResult = await query<{ mode: string }>(
+          'SELECT mode FROM tasks WHERE id = $1',
+          [taskId]
+        );
+        const isLiveMode = taskResult.rows[0]?.mode === 'LIVE';
+
+        // SPEC FORMULA: effective_xp = base_xp × streak_multiplier × trust_multiplier × live_mode_multiplier
         const streakMultiplier = getStreakMultiplier(user.current_streak);
-        const decayFactor = calculateDecayFactor(user.xp_total);
-        const effectiveXP = calculateEffectiveXP(baseXP, streakMultiplier, decayFactor);
-        
+        const trustMultiplier = getTrustMultiplier(user.trust_tier);
+        const liveModeMultiplier = getLiveModeMultiplier(isLiveMode);
+        const effectiveXP = calculateEffectiveXP(baseXP, streakMultiplier, trustMultiplier, liveModeMultiplier);
+
         const newXPTotal = user.xp_total + effectiveXP;
         const newLevel = calculateLevel(newXPTotal);
-        
+
         // Store effectiveXP for instrumentation (outside transaction)
         effectiveXPAwarded = effectiveXP;
-        
+
         // Insert XP ledger entry
         // INV-1: Trigger will check escrow is RELEASED
         // INV-5: UNIQUE constraint will prevent duplicates
         const ledgerResult = await query<XPLedgerEntry>(
           `INSERT INTO xp_ledger (
             user_id, task_id, escrow_id,
-            base_xp, streak_multiplier, decay_factor, effective_xp,
+            base_xp, streak_multiplier, trust_multiplier, live_mode_multiplier, effective_xp,
             reason,
             user_xp_before, user_xp_after,
             user_level_before, user_level_after,
             user_streak_at_award
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
           RETURNING *`,
           [
             userId, taskId, escrowId,
-            baseXP, streakMultiplier, decayFactor, effectiveXP,
+            baseXP, streakMultiplier, trustMultiplier, liveModeMultiplier, effectiveXP,
             'task_completion',
             user.xp_total, newXPTotal,
             user.current_level, newLevel,
             user.current_streak,
           ]
         );
-        
+
         // Update user's XP total and level
         await query(
-          `UPDATE users 
+          `UPDATE users
            SET xp_total = $1, current_level = $2, updated_at = NOW()
            WHERE id = $3`,
           [newXPTotal, newLevel, userId]
         );
-        
+
         // INSERT...RETURNING should always return a row, but verify for safety
         if (!ledgerResult.rows[0]) {
           throw new Error('Failed to create XP ledger entry - no row returned');
         }
-        
+
         return { success: true, data: ledgerResult.rows[0] };
       });
       

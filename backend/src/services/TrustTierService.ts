@@ -18,12 +18,23 @@ import { AlphaInstrumentation } from './AlphaInstrumentation';
 // TRUST TIER ENUM (Authoritative)
 // ============================================================================
 
+/**
+ * Trust Tier Enum (PRODUCT_SPEC §8.2)
+ *
+ * SPEC ALIGNMENT:
+ * | Tier | Name     | Requirements                           |
+ * |------|----------|----------------------------------------|
+ * | 1    | ROOKIE   | New user                               |
+ * | 2    | VERIFIED | 5 completed tasks, ID verified         |
+ * | 3    | TRUSTED  | 20 tasks, 95%+ approval, priority      |
+ * | 4    | ELITE    | 100+ tasks, <1% dispute, 4.8+ rating   |
+ */
 export enum TrustTier {
-  UNVERIFIED = 0, // internal only, never eligible
-  VERIFIED   = 1, // Tier A
-  TRUSTED    = 2, // Tier B
-  IN_HOME    = 3, // Tier C
-  BANNED     = 9  // terminal
+  ROOKIE   = 1, // New user, low risk only
+  VERIFIED = 2, // 5 tasks + ID verified, low/medium risk
+  TRUSTED  = 3, // 20 tasks + 95% approval, low/medium risk
+  ELITE    = 4, // 100+ tasks + <1% dispute, all risk levels
+  BANNED   = 9  // terminal, no task access
 }
 
 // ============================================================================
@@ -55,14 +66,13 @@ export const TrustTierService = {
     }
 
     const tier = result.rows[0].trust_tier;
-    
-    // Map legacy tiers (1-4) to new enum if needed
-    // For alpha, we assume schema uses 0-3,9
+
+    // SPEC ALIGNMENT: Trust tiers are 1-4 per PRODUCT_SPEC §8.2
     if (tier === 9) return TrustTier.BANNED;
-    if (tier >= 3) return TrustTier.IN_HOME;
-    if (tier >= 2) return TrustTier.TRUSTED;
-    if (tier >= 1) return TrustTier.VERIFIED;
-    return TrustTier.UNVERIFIED;
+    if (tier >= 4) return TrustTier.ELITE;
+    if (tier >= 3) return TrustTier.TRUSTED;
+    if (tier >= 2) return TrustTier.VERIFIED;
+    return TrustTier.ROOKIE; // Default for new users (tier 1)
   },
 
   /**
@@ -79,8 +89,8 @@ export const TrustTierService = {
       };
     }
 
-    // Already at max tier (for alpha)
-    if (currentTier >= TrustTier.IN_HOME) {
+    // Already at max tier (ELITE = 4)
+    if (currentTier >= TrustTier.ELITE) {
       return {
         eligible: false,
         reasons: ['Already at maximum tier'],
@@ -90,8 +100,8 @@ export const TrustTierService = {
     const reasons: string[] = [];
     let targetTier: TrustTier | undefined;
 
-    // Evaluate VERIFIED (UNVERIFIED → VERIFIED)
-    if (currentTier === TrustTier.UNVERIFIED) {
+    // Evaluate VERIFIED (ROOKIE → VERIFIED) - PRODUCT_SPEC §8.2: 5 tasks + ID verified
+    if (currentTier === TrustTier.ROOKIE) {
       // Check verification requirements
       const userResult = await db.query<{
         is_verified: boolean;
@@ -129,7 +139,7 @@ export const TrustTierService = {
       }
     }
 
-    // Evaluate TRUSTED (VERIFIED → TRUSTED)
+    // Evaluate TRUSTED (VERIFIED → TRUSTED) - PRODUCT_SPEC §8.2: 20 tasks, 95%+ approval
     else if (currentTier === TrustTier.VERIFIED) {
       // Get user account age
       const userAgeResult = await db.query<{ account_age_days: number }>(
@@ -178,8 +188,9 @@ export const TrustTierService = {
       );
       const highRiskCount = parseInt(riskCheckResult.rows[0]?.count || '0', 10);
 
-      if (completedCount < 10) {
-        reasons.push(`Need ${10 - completedCount} more completed tasks (have ${completedCount}, need 10)`);
+      // SPEC ALIGNMENT: TRUSTED requires 20 tasks per PRODUCT_SPEC §8.2
+      if (completedCount < 20) {
+        reasons.push(`Need ${20 - completedCount} more completed tasks (have ${completedCount}, need 20)`);
       }
       if (disputeCount > 0) {
         reasons.push(`Cannot have disputes (have ${disputeCount})`);
@@ -202,7 +213,7 @@ export const TrustTierService = {
       }
     }
 
-    // Evaluate IN_HOME (TRUSTED → IN_HOME)
+    // Evaluate ELITE (TRUSTED → ELITE) - PRODUCT_SPEC §8.2: 100+ tasks, <1% dispute, 4.8+ rating
     else if (currentTier === TrustTier.TRUSTED) {
       // Get user account age
       const userAgeResult = await db.query<{ account_age_days: number }>(
@@ -269,23 +280,53 @@ export const TrustTierService = {
       );
       const hasDeposit = depositResult.rows[0]?.has_deposit || false;
 
-      if (completedCount < 25) {
-        reasons.push(`Need ${25 - completedCount} more completed tasks (have ${completedCount}, need 25)`);
+      // SPEC ALIGNMENT: ELITE requires 100+ tasks per PRODUCT_SPEC §8.2
+      if (completedCount < 100) {
+        reasons.push(`Need ${100 - completedCount} more completed tasks (have ${completedCount}, need 100)`);
       }
-      if (distinctPosters < 5) {
-        reasons.push(`Need ${5 - distinctPosters} more distinct poster reviews (have ${distinctPosters}, need 5)`);
+
+      // Get dispute rate for ELITE (must be <1%)
+      const disputeStatsResult = await db.query<{
+        total_tasks: string;
+        dispute_count: string;
+      }>(
+        `SELECT
+           COUNT(*) as total_tasks,
+           COUNT(*) FILTER (WHERE EXISTS (
+             SELECT 1 FROM disputes d WHERE d.task_id = t.id
+           )) as dispute_count
+         FROM tasks t
+         WHERE t.worker_id = $1 AND t.state = 'COMPLETED'`,
+        [userId]
+      );
+      const totalTasks = parseInt(disputeStatsResult.rows[0]?.total_tasks || '0', 10);
+      const disputeCount = parseInt(disputeStatsResult.rows[0]?.dispute_count || '0', 10);
+      const disputeRate = totalTasks > 0 ? disputeCount / totalTasks : 0;
+
+      if (disputeRate >= 0.01) {
+        reasons.push(`Dispute rate must be <1% (have ${(disputeRate * 100).toFixed(2)}%)`);
       }
+
+      // Get average rating for ELITE (must be 4.8+)
+      const ratingResult = await db.query<{ avg_rating: string }>(
+        `SELECT AVG(r.score)::text as avg_rating
+         FROM ratings r
+         JOIN tasks t ON r.task_id = t.id
+         WHERE t.worker_id = $1`,
+        [userId]
+      );
+      const avgRating = parseFloat(ratingResult.rows[0]?.avg_rating || '0');
+
+      if (avgRating < 4.8) {
+        reasons.push(`Average rating must be ≥4.8 (have ${avgRating.toFixed(2)})`);
+      }
+
       if (accountAgeDays < 30) {
         reasons.push(`Account age must be ≥30 days (have ${accountAgeDays} days)`);
       }
-      if (!hasDeposit) {
-        reasons.push('Security deposit must be locked in escrow');
-      }
-      // Note: Liability agreement would be stored in a separate table
-      // For alpha, we'll assume it's accepted if user reaches this point
 
       if (reasons.length === 0) {
-        targetTier = TrustTier.IN_HOME;
+        targetTier = TrustTier.ELITE;
       }
     }
 

@@ -56,10 +56,16 @@ interface PartialRefundParams {
 // STATE MACHINE
 // ============================================================================
 
+/**
+ * Escrow State Transitions (PRODUCT_SPEC §4.2, §4.3)
+ *
+ * SPEC ALIGNMENT: LOCKED_DISPUTE can transition to RELEASED when dispute
+ * is resolved in worker's favor. This was previously blocked.
+ */
 const VALID_TRANSITIONS: Record<EscrowState, EscrowState[]> = {
   PENDING: ['FUNDED', 'REFUNDED'],
   FUNDED: ['RELEASED', 'REFUNDED', 'LOCKED_DISPUTE'],
-  LOCKED_DISPUTE: ['REFUNDED', 'REFUND_PARTIAL'], // P0: Policy 1 - LOCKED_DISPUTE blocks RELEASED until dispute resolution
+  LOCKED_DISPUTE: ['RELEASED', 'REFUNDED', 'REFUND_PARTIAL'], // SPEC FIX: Added RELEASED for worker dispute wins
   RELEASED: [],      // TERMINAL
   REFUNDED: [],      // TERMINAL
   REFUND_PARTIAL: [], // TERMINAL
@@ -244,32 +250,37 @@ export const EscrowService = {
   },
 
   /**
-   * Release escrow: FUNDED → RELEASED
-   * 
+   * Release escrow: FUNDED|LOCKED_DISPUTE → RELEASED
+   *
+   * SPEC ALIGNMENT (PRODUCT_SPEC §4.3):
+   * - FUNDED → RELEASED: Normal task completion
+   * - LOCKED_DISPUTE → RELEASED: Dispute resolved in worker's favor
+   *
    * INV-2: RELEASED requires COMPLETED task
    * The database trigger enforces this — we catch the error.
    */
   release: async (params: ReleaseEscrowParams): Promise<ServiceResult<Escrow>> => {
     const { escrowId, stripeTransferId } = params;
-    
+
     try {
+      // SPEC FIX: Allow release from both FUNDED and LOCKED_DISPUTE states
       const result = await db.query<Escrow>(
-        `UPDATE escrows 
+        `UPDATE escrows
          SET state = 'RELEASED',
              stripe_transfer_id = $2,
              released_at = NOW()
-         WHERE id = $1 
-           AND state = 'FUNDED'
+         WHERE id = $1
+           AND state IN ('FUNDED', 'LOCKED_DISPUTE')
          RETURNING *`,
         [escrowId, stripeTransferId ?? null]
       );
-      
+
       if (result.rowCount === 0) {
         const existing = await EscrowService.getById(escrowId);
         if (!existing.success) {
           return existing;
         }
-        
+
         if (isTerminalState(existing.data.state)) {
           return {
             success: false,
@@ -279,16 +290,16 @@ export const EscrowService = {
             },
           };
         }
-        
+
         return {
           success: false,
           error: {
             code: ErrorCodes.INVALID_STATE,
-            message: `Cannot release escrow: current state is ${existing.data.state}, expected FUNDED`,
+            message: `Cannot release escrow: current state is ${existing.data.state}, expected FUNDED or LOCKED_DISPUTE`,
           },
         };
       }
-      
+
       return { success: true, data: result.rows[0] };
     } catch (error) {
       // Check for INV-2 violation from trigger
@@ -305,7 +316,7 @@ export const EscrowService = {
           };
         }
       }
-      
+
       return {
         success: false,
         error: {
