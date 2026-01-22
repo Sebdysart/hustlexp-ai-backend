@@ -241,8 +241,22 @@ export const TaskService = {
         },
       };
     }
-    
-    // LIVE-2: Live tasks require $15.00 minimum (database trigger will also enforce)
+
+    // SPEC ALIGNMENT (PRODUCT_SPEC §3.5): Minimum price enforcement
+    // | Mode     | Minimum Price |
+    // |----------|---------------|
+    // | STANDARD | $5.00 (500)   |
+    // | LIVE     | $15.00 (1500) |
+    if (mode === 'STANDARD' && price < 500) {
+      return {
+        success: false,
+        error: {
+          code: 'PRICE_TOO_LOW',
+          message: 'Standard tasks require minimum price of $5.00 (500 cents)',
+        },
+      };
+    }
+
     if (mode === 'LIVE' && price < 1500) {
       return {
         success: false,
