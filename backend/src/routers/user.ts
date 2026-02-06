@@ -10,6 +10,7 @@ import { TRPCError } from '@trpc/server';
 import { router, publicProcedure, protectedProcedure, Schemas } from '../trpc';
 import { db } from '../db';
 import { XPService } from '../services/XPService';
+import { EarnedVerificationUnlockService } from '../services/EarnedVerificationUnlockService';
 import type { User } from '../types';
 import { z } from 'zod';
 
@@ -230,6 +231,70 @@ export const userRouter = router({
       );
       
       return result.rows[0];
+    }),
+
+  // --------------------------------------------------------------------------
+  // VERIFICATION UNLOCK (v1.8.0)
+  // --------------------------------------------------------------------------
+
+  /**
+   * Get verification unlock status and progress
+   * Shows earnings toward $40 threshold
+   */
+  getVerificationUnlockStatus: protectedProcedure.query(async ({ ctx }) => {
+    const result = await EarnedVerificationUnlockService.getUnlockProgress(ctx.user.id);
+
+    if (!result.success) {
+      throw new TRPCError({
+        code: 'INTERNAL_SERVER_ERROR',
+        message: result.error?.message || 'Failed to get verification status'
+      });
+    }
+
+    return result.data;
+  }),
+
+  /**
+   * Check if user has unlocked verification (boolean)
+   */
+  checkVerificationEligibility: protectedProcedure.query(async ({ ctx }) => {
+    const result = await EarnedVerificationUnlockService.checkUnlockEligibility(ctx.user.id);
+
+    if (!result.success) {
+      throw new TRPCError({
+        code: 'INTERNAL_SERVER_ERROR',
+        message: result.error?.message || 'Failed to check eligibility'
+      });
+    }
+
+    return { unlocked: result.data };
+  }),
+
+  /**
+   * Get earnings ledger (audit trail)
+   */
+  getVerificationEarningsLedger: protectedProcedure
+    .input(
+      z
+        .object({
+          limit: z.number().min(1).max(100).optional().default(20)
+        })
+        .optional()
+    )
+    .query(async ({ ctx, input }) => {
+      const result = await EarnedVerificationUnlockService.getEarningsLedger(
+        ctx.user.id,
+        input?.limit
+      );
+
+      if (!result.success) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: result.error?.message || 'Failed to get earnings ledger'
+        });
+      }
+
+      return result.data;
     }),
 });
 

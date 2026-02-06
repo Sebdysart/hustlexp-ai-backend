@@ -25,6 +25,10 @@ import { analyticsRouter } from './analytics';
 import { fraudRouter } from './fraud';
 import { moderationRouter } from './moderation';
 import { alphaTelemetryRouter } from './alpha-telemetry';
+// v1.8.0: Gamification routers
+import { xpTaxRouter } from './xpTax';
+import { insuranceRouter } from './insurance';
+import { biometricRouter } from './biometric';
 
 export const appRouter = router({
   task: taskRouter,
@@ -46,6 +50,10 @@ export const appRouter = router({
   moderation: moderationRouter,
   // Alpha Instrumentation
   alphaTelemetry: alphaTelemetryRouter,
+  // v1.8.0: Gamification routers
+  xpTax: xpTaxRouter,
+  insurance: insuranceRouter,
+  biometric: biometricRouter,
 });
 
 export type AppRouter = typeof appRouter;
