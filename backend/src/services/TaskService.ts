@@ -15,12 +15,13 @@
 import { db, isInvariantViolation, getErrorMessage } from '../db';
 import { writeToOutbox } from '../jobs/outbox-helpers';
 import { PlanService } from './PlanService';
+import { ScoperAIService } from './ScoperAIService';
 import { MIN_INSTANT_TIER, MIN_SENSITIVE_INSTANT_TIER } from './InstantTrustConfig';
-import type { 
-  Task, 
+import type {
+  Task,
   TaskState,
   TaskProgressState,
-  ServiceResult 
+  ServiceResult
 } from '../types';
 import { TERMINAL_TASK_STATES, VALID_PROGRESS_TRANSITIONS, ErrorCodes } from '../types';
 
@@ -213,6 +214,8 @@ export const TaskService = {
 
   /**
    * Create task in OPEN state
+   *
+   * v1.8.0 Gamification: Scoper AI integration for task pricing/XP proposals
    */
   create: async (params: CreateTaskParams): Promise<ServiceResult<Task>> => {
     const {
@@ -230,9 +233,36 @@ export const TaskService = {
       instantMode = false,
       sensitive = false,
     } = params;
-    
+
+    // v1.8.0: Scoper AI integration (optional, for AI-suggested pricing)
+    // If price is not provided or is placeholder (e.g., 0), call Scoper AI for proposal
+    let finalPrice = price;
+    let xpReward: number | undefined;
+
+    if (!price || price === 0) {
+      const scopeResult = await ScoperAIService.analyzeTaskScope(description, category);
+      if (scopeResult.success && scopeResult.data) {
+        const proposal = scopeResult.data;
+        // Use mid-point of suggested price range
+        finalPrice = Math.round((proposal.price_range_min_cents + proposal.price_range_max_cents) / 2);
+        xpReward = proposal.xp_suggestion;
+
+        console.log(
+          `[TaskService] Scoper AI proposal: price=$${finalPrice / 100}, xp=${xpReward}, difficulty=${proposal.difficulty}`
+        );
+      } else {
+        // Fallback to minimum price if Scoper AI fails
+        finalPrice = mode === 'LIVE' ? 1500 : 500;
+      }
+    }
+
+    // Calculate XP reward if not set by Scoper AI (formula: price / 10)
+    if (!xpReward) {
+      xpReward = Math.round(finalPrice / 10);
+    }
+
     // Validate price is positive integer (cents)
-    if (!Number.isInteger(price) || price <= 0) {
+    if (!Number.isInteger(finalPrice) || finalPrice <= 0) {
       return {
         success: false,
         error: {
@@ -247,7 +277,7 @@ export const TaskService = {
     // |----------|---------------|
     // | STANDARD | $5.00 (500)   |
     // | LIVE     | $15.00 (1500) |
-    if (mode === 'STANDARD' && price < 500) {
+    if (mode === 'STANDARD' && finalPrice < 500) {
       return {
         success: false,
         error: {
@@ -257,7 +287,7 @@ export const TaskService = {
       };
     }
 
-    if (mode === 'LIVE' && price < 1500) {
+    if (mode === 'LIVE' && finalPrice < 1500) {
       return {
         success: false,
         error: {
@@ -352,13 +382,13 @@ export const TaskService = {
       
       const result = await db.query<Task>(
         `INSERT INTO tasks (
-          poster_id, title, description, price, 
-          requirements, location, category, deadline, requires_proof, 
+          poster_id, title, description, price, xp_reward,
+          requirements, location, category, deadline, requires_proof,
           risk_level, mode, live_broadcast_radius_miles, instant_mode, sensitive, state
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
         RETURNING *`,
-        [posterId, title, description, price, requirements, location, category, deadline, requiresProof, riskLevel, mode, liveBroadcastRadiusMiles, instantMode, sensitive, initialState]
+        [posterId, title, description, finalPrice, xpReward, requirements, location, category, deadline, requiresProof, riskLevel, mode, liveBroadcastRadiusMiles, instantMode, sensitive, initialState]
       );
       
       let createdTask = result.rows[0];

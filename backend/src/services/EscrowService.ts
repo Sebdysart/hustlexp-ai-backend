@@ -15,11 +15,14 @@
  */
 
 import { db, isInvariantViolation, isUniqueViolation, getErrorMessage } from '../db';
-import type { 
-  Escrow, 
-  EscrowState, 
+import { EarnedVerificationUnlockService } from './EarnedVerificationUnlockService';
+import { XPTaxService } from './XPTaxService';
+import { XPService } from './XPService';
+import type {
+  Escrow,
+  EscrowState,
   ServiceResult,
-  ServiceError 
+  ServiceError
 } from '../types';
 import { TERMINAL_ESCROW_STATES, ErrorCodes } from '../types';
 
@@ -258,12 +261,69 @@ export const EscrowService = {
    *
    * INV-2: RELEASED requires COMPLETED task
    * The database trigger enforces this — we catch the error.
+   *
+   * v1.8.0 Gamification Integration:
+   * - Records earnings for verification unlock tracking ($40 threshold)
+   * - Records offline payment tax if applicable (10% on cash/Venmo)
+   * - Attempts XP award (may be blocked by tax trigger HX201)
    */
   release: async (params: ReleaseEscrowParams): Promise<ServiceResult<Escrow>> => {
     const { escrowId, stripeTransferId } = params;
 
     try {
-      // SPEC FIX: Allow release from both FUNDED and LOCKED_DISPUTE states
+      // 1. Get escrow and task details for payment method and worker
+      const escrowResult = await db.query<{
+        id: string;
+        task_id: string;
+        amount: number;
+        state: string;
+      }>(
+        `SELECT id, task_id, amount, state FROM escrows WHERE id = $1`,
+        [escrowId]
+      );
+
+      if (escrowResult.rows.length === 0) {
+        return {
+          success: false,
+          error: {
+            code: ErrorCodes.NOT_FOUND,
+            message: `Escrow ${escrowId} not found`,
+          },
+        };
+      }
+
+      const escrow = escrowResult.rows[0];
+
+      // Get task details for worker_id, payment_method, price
+      const taskResult = await db.query<{
+        worker_id: string | null;
+        price: number;
+        payment_method: string | null;
+      }>(
+        `SELECT worker_id, price, payment_method FROM tasks WHERE id = $1`,
+        [escrow.task_id]
+      );
+
+      if (taskResult.rows.length === 0 || !taskResult.rows[0].worker_id) {
+        return {
+          success: false,
+          error: {
+            code: ErrorCodes.INVALID_STATE,
+            message: `Task ${escrow.task_id} has no assigned worker`,
+          },
+        };
+      }
+
+      const task = taskResult.rows[0];
+      const workerId = task.worker_id!;
+      const paymentMethod = task.payment_method || 'escrow'; // Default to escrow
+      const grossPayoutCents = task.price;
+
+      // Calculate platform fee (20%)
+      const platformFeeCents = Math.round(grossPayoutCents * 0.20);
+      const netPayoutCents = grossPayoutCents - platformFeeCents;
+
+      // 2. Release escrow (SPEC FIX: Allow release from both FUNDED and LOCKED_DISPUTE states)
       const result = await db.query<Escrow>(
         `UPDATE escrows
          SET state = 'RELEASED',
@@ -298,6 +358,43 @@ export const EscrowService = {
             message: `Cannot release escrow: current state is ${existing.data.state}, expected FUNDED or LOCKED_DISPUTE`,
           },
         };
+      }
+
+      // 3. v1.8.0: Record earnings for verification unlock tracking
+      // This is idempotent via UNIQUE constraint on escrow_id
+      await EarnedVerificationUnlockService.recordEarnings(
+        workerId,
+        escrow.task_id,
+        escrowId,
+        netPayoutCents
+      );
+
+      // 4. v1.8.0: Handle offline payment tax if applicable
+      if (paymentMethod === 'offline_cash' || paymentMethod === 'offline_venmo' || paymentMethod === 'offline_cashapp') {
+        await XPTaxService.recordOfflinePayment(
+          workerId,
+          escrow.task_id,
+          paymentMethod as 'offline_cash' | 'offline_venmo' | 'offline_cashapp',
+          grossPayoutCents
+        );
+      }
+
+      // 5. v1.8.0: Attempt to award XP (may be blocked by tax trigger)
+      // XP award formula: price / 10 (e.g., $50 task = 500 XP)
+      const xpAmount = Math.round(grossPayoutCents / 10);
+      try {
+        await XPService.awardXP(workerId, escrow.task_id, xpAmount);
+      } catch (xpError) {
+        // Check if XP was blocked by tax trigger (HX201)
+        if (xpError instanceof Error && xpError.message.includes('XP-TAX-BLOCK')) {
+          console.warn(
+            `[EscrowService] XP blocked by tax trigger for user ${workerId}: ${xpError.message}`
+          );
+          // Continue - escrow is released, but XP is held back until tax paid
+        } else {
+          // Unexpected XP error - log but don't fail escrow release
+          console.error(`[EscrowService] Failed to award XP for user ${workerId}:`, xpError);
+        }
       }
 
       return { success: true, data: result.rows[0] };
