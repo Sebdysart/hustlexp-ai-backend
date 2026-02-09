@@ -23,19 +23,28 @@ export const escrowRouter = router({
   
   /**
    * Get escrow by ID
+   * SECURITY: Only poster or worker of the associated task can view
    */
   getById: protectedProcedure
     .input(z.object({ escrowId: Schemas.uuid }))
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       const result = await EscrowService.getById(input.escrowId);
-      
+
       if (!result.success) {
         throw new TRPCError({
           code: 'NOT_FOUND',
           message: result.error.message,
         });
       }
-      
+
+      // Authorization: only poster or worker can view escrow details
+      if (result.data.poster_id !== ctx.user.id && result.data.worker_id !== ctx.user.id) {
+        throw new TRPCError({
+          code: 'FORBIDDEN',
+          message: 'You do not have access to this escrow',
+        });
+      }
+
       return result.data;
     }),
   
@@ -119,37 +128,57 @@ export const escrowRouter = router({
   
   /**
    * Confirm escrow funding (after Stripe payment succeeds)
+   * SECURITY: Only the poster who created the escrow can confirm funding
    */
   confirmFunding: protectedProcedure
     .input(Schemas.fundEscrow)
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
+      // Authorization: verify caller is the poster
+      const escrow = await EscrowService.getById(input.escrowId);
+      if (!escrow.success) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Escrow not found' });
+      }
+      if (escrow.data.poster_id !== ctx.user.id) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'Only the escrow creator can confirm funding' });
+      }
+
       const result = await EscrowService.fund({
         escrowId: input.escrowId,
         stripePaymentIntentId: input.stripePaymentIntentId,
       });
-      
+
       if (!result.success) {
         throw new TRPCError({
           code: 'BAD_REQUEST',
           message: result.error.message,
         });
       }
-      
+
       return result.data;
     }),
   
   /**
    * Release escrow to worker
    * INV-2: Will fail if task is not COMPLETED
+   * SECURITY: Only the poster who created the escrow can release funds
    */
   release: protectedProcedure
     .input(Schemas.releaseEscrow)
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
+      // Authorization: only poster can release escrow
+      const escrow = await EscrowService.getById(input.escrowId);
+      if (!escrow.success) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Escrow not found' });
+      }
+      if (escrow.data.poster_id !== ctx.user.id) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'Only the escrow creator can release funds' });
+      }
+
       const result = await EscrowService.release({
         escrowId: input.escrowId,
         stripeTransferId: input.stripeTransferId,
       });
-      
+
       if (!result.success) {
         const code = result.error.code === 'HX201' ? 'PRECONDITION_FAILED' : 'BAD_REQUEST';
         throw new TRPCError({
@@ -157,27 +186,37 @@ export const escrowRouter = router({
           message: result.error.message,
         });
       }
-      
+
       return result.data;
     }),
   
   /**
    * Refund escrow to poster
+   * SECURITY: Only the poster who created the escrow can request a refund
    */
   refund: protectedProcedure
     .input(z.object({ escrowId: Schemas.uuid }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
+      // Authorization: only poster can request refund
+      const escrow = await EscrowService.getById(input.escrowId);
+      if (!escrow.success) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Escrow not found' });
+      }
+      if (escrow.data.poster_id !== ctx.user.id) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'Only the escrow creator can request a refund' });
+      }
+
       const result = await EscrowService.refund({
         escrowId: input.escrowId,
       });
-      
+
       if (!result.success) {
         throw new TRPCError({
           code: 'BAD_REQUEST',
           message: result.error.message,
         });
       }
-      
+
       return result.data;
     }),
   

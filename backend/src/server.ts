@@ -21,6 +21,7 @@ import { appRouter } from './routers';
 import { createContext } from './trpc';
 import { config } from './config';
 import { db } from './db';
+import { securityHeaders, rateLimitMiddleware } from './middleware/security';
 
 // ============================================================================
 // APP INITIALIZATION
@@ -32,18 +33,30 @@ const app = new Hono();
 // MIDDLEWARE
 // ============================================================================
 
+// Security headers (X-Frame-Options, X-Content-Type-Options, etc.)
+app.use('*', securityHeaders);
+
 // Logging
 app.use('*', logger());
 
-// CORS
+// CORS — restrict origins in production
 app.use('*', cors({
-  origin: config.app.isDevelopment 
-    ? '*' 
-    : config.app.allowedOrigins,
+  origin: config.app.isDevelopment
+    ? '*'
+    : (config.app.allowedOrigins.length > 0
+        ? config.app.allowedOrigins
+        : ['https://app.hustlexp.com']),
   allowMethods: ['GET', 'POST', 'OPTIONS'],
   allowHeaders: ['Content-Type', 'Authorization'],
   credentials: true,
+  maxAge: 86400, // Cache preflight for 24h
 }));
+
+// Rate limiting per route category
+app.use('/trpc/ai.*', rateLimitMiddleware('ai'));
+app.use('/trpc/escrow.*', rateLimitMiddleware('escrow'));
+app.use('/trpc/task.*', rateLimitMiddleware('task'));
+app.use('/api/*', rateLimitMiddleware('general'));
 
 // ============================================================================
 // HEALTH CHECK
@@ -417,11 +430,21 @@ app.notFound((c) => {
 // ============================================================================
 
 app.onError((err, c) => {
-  console.error('[Server Error]', err);
-  
+  // Log full error internally
+  console.error('[Server Error]', {
+    message: err.message,
+    stack: err.stack,
+    path: c.req.path,
+    method: c.req.method,
+  });
+
+  // Never leak stack traces or internal details to clients
   return c.json({
     error: 'Internal Server Error',
-    message: config.app.isDevelopment ? err.message : 'An unexpected error occurred',
+    message: config.app.isDevelopment
+      ? err.message
+      : 'An unexpected error occurred. Please try again later.',
+    ...(config.app.isDevelopment && { stack: err.stack }),
   }, 500);
 });
 

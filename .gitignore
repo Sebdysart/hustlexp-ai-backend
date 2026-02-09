@@ -1,4 +1,55 @@
-# Agent coordination files (if they contain sensitive data)
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+
+# Environment variables - NEVER commit these
+.env
+.env.local
+.env.development
+.env.staging
+.env.production
+.env.*.local
+
+# Agent coordination files
 .env.agent-coordinator
 agent-reviews/*.json
 docs/github/*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Runtime data
+pids/
+*.pid
+*.seed
+*.pid.lock

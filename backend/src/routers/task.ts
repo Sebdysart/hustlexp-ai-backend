@@ -61,37 +61,55 @@ export const taskRouter = router({
   
   /**
    * List tasks by poster
+   * SECURITY: Users can only list their own tasks
    */
   listByPoster: protectedProcedure
     .input(z.object({ posterId: Schemas.uuid }))
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
+      // Authorization: users can only list their own posted tasks
+      if (input.posterId !== ctx.user.id) {
+        throw new TRPCError({
+          code: 'FORBIDDEN',
+          message: 'You can only view your own posted tasks',
+        });
+      }
+
       const result = await TaskService.getByPoster(input.posterId);
-      
+
       if (!result.success) {
         throw new TRPCError({
           code: 'INTERNAL_SERVER_ERROR',
           message: result.error.message,
         });
       }
-      
+
       return result.data;
     }),
-  
+
   /**
    * List tasks by worker
+   * SECURITY: Users can only list their own accepted tasks
    */
   listByWorker: protectedProcedure
     .input(z.object({ workerId: Schemas.uuid }))
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
+      // Authorization: users can only list their own worker tasks
+      if (input.workerId !== ctx.user.id) {
+        throw new TRPCError({
+          code: 'FORBIDDEN',
+          message: 'You can only view your own accepted tasks',
+        });
+      }
+
       const result = await TaskService.getByWorker(input.workerId);
-      
+
       if (!result.success) {
         throw new TRPCError({
           code: 'INTERNAL_SERVER_ERROR',
           message: result.error.message,
         });
       }
-      
+
       return result.data;
     }),
   
@@ -266,12 +284,22 @@ export const taskRouter = router({
   /**
    * Complete task (after proof accepted)
    * INV-3: Will fail if proof is not ACCEPTED
+   * SECURITY: Only the poster can mark a task as complete
    */
   complete: protectedProcedure
     .input(z.object({ taskId: Schemas.uuid }))
     .mutation(async ({ ctx, input }) => {
+      // Authorization: only the poster can complete a task
+      const taskResult = await TaskService.getById(input.taskId);
+      if (!taskResult.success) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
+      }
+      if (taskResult.data.poster_id !== ctx.user.id) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'Only the task poster can mark it complete' });
+      }
+
       const result = await TaskService.complete(input.taskId);
-      
+
       if (!result.success) {
         const code = result.error.code === 'HX301' ? 'PRECONDITION_FAILED' : 'BAD_REQUEST';
         throw new TRPCError({
@@ -279,7 +307,7 @@ export const taskRouter = router({
           message: result.error.message,
         });
       }
-      
+
       return result.data;
     }),
   
