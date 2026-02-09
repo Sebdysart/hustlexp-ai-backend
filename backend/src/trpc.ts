@@ -11,7 +11,7 @@
 
 import { initTRPC, TRPCError } from '@trpc/server';
 import { z } from 'zod';
-import { firebaseAuth } from '../auth/firebase';
+import { firebaseAuth } from './auth/firebase';
 import { db } from './db';
 import type { User } from './types';
 
