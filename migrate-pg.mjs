@@ -11,19 +11,24 @@ import { fileURLToPath } from 'url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const { Pool } = pg;
 
-const DATABASE_URL = process.env.DATABASE_URL || 
-  'postgresql://neondb_owner:REDACTED_NEON_PASSWORD_1@REDACTED_NEON_HOST_1.c-2.us-west-2.aws.neon.tech/neondb?sslmode=require';
+const DATABASE_URL = process.env.DATABASE_URL;
+if (!DATABASE_URL) {
+  console.error('❌ DATABASE_URL environment variable is required');
+  process.exit(1);
+}
 
 async function main() {
   console.log('🚀 HustleXP Schema Migration (pg Pool)');
   console.log('=' .repeat(60));
   console.log('Database:', DATABASE_URL.replace(/:[^:@]+@/, ':***@'));
   
-  // Determine if this is a local Postgres (no SSL needed) or Neon (SSL required)
-  const isLocal = DATABASE_URL.includes('localhost') || DATABASE_URL.includes('127.0.0.1');
-  const pool = new Pool({ 
+  // Railway internal and localhost don't need SSL; external DBs (Neon, Supabase) do
+  const needsSSL = !DATABASE_URL.includes('localhost') &&
+                   !DATABASE_URL.includes('127.0.0.1') &&
+                   !DATABASE_URL.includes('.railway.internal');
+  const pool = new Pool({
     connectionString: DATABASE_URL,
-    ...(isLocal ? {} : { ssl: { rejectUnauthorized: false } })
+    ...(needsSSL ? { ssl: { rejectUnauthorized: false } } : {})
   });
   
   const client = await pool.connect();
@@ -56,7 +61,7 @@ async function main() {
     // Step 3: Read and apply schema
     console.log('\n📜 Step 3: Reading constitutional schema...');
     // Use constitutional-schema.sql (canonical schema)
-    const schemaPath = join(__dirname, '../backend/database/constitutional-schema.sql');
+    const schemaPath = join(__dirname, 'backend/database/constitutional-schema.sql');
     const schemaSQL = readFileSync(schemaPath, 'utf-8');
     console.log(`   Schema size: ${schemaSQL.length} characters`);
     
