@@ -86,6 +86,20 @@ export const EarnedVerificationUnlockService = {
       );
 
       // Trigger handles updating verification_earnings_tracking
+      // Gap 12: Check if threshold just crossed → send $1 upgrade push notification
+      if (cumulativeBefore < 4000 && cumulativeAfter >= 4000) {
+        console.log(`[EarnedVerificationUnlock] User ${userId} crossed $40 threshold! Triggering $1 verification offer.`);
+        // Fire-and-forget notification (don't block earnings recording)
+        db.query(
+          `INSERT INTO notifications (user_id, type, title, body, data, created_at)
+           VALUES ($1, 'EARNED_VERIFICATION_UNLOCKED',
+                   '🎉 Free Verification Unlocked!',
+                   'You''ve earned enough to unlock identity verification for just $1. Tap to upgrade and access premium tasks!',
+                   $2, NOW())`,
+          [userId, JSON.stringify({ action: 'OPEN_VERIFICATION', fee_cents: 100 })]
+        ).catch(err => console.error('[EarnedVerificationUnlock] Notification insert failed:', err));
+      }
+
       return { success: true, data: undefined };
     } catch (error) {
       console.error('[EarnedVerificationUnlockService.recordEarnings] Error:', error);

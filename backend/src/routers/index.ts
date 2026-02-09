@@ -29,6 +29,14 @@ import { alphaTelemetryRouter } from './alpha-telemetry';
 import { xpTaxRouter } from './xpTax';
 import { insuranceRouter } from './insurance';
 import { biometricRouter } from './biometric';
+// v2.0.0: Business model gap-fill routers
+import { skillsRouter } from './skills';
+import { pricingRouter } from './pricing';
+import { geofenceRouter } from './geofence';
+import { heatmapRouter } from './heatmap';
+import { batchQuestRouter } from './batchQuest';
+import { tutorialRouter } from './tutorial';
+import { juryRouter } from './jury';
 
 export const appRouter = router({
   task: taskRouter,
@@ -54,6 +62,14 @@ export const appRouter = router({
   xpTax: xpTaxRouter,
   insurance: insuranceRouter,
   biometric: biometricRouter,
+  // v2.0.0: Business model gap-fill routers
+  skills: skillsRouter,
+  pricing: pricingRouter,
+  geofence: geofenceRouter,
+  heatmap: heatmapRouter,
+  batchQuest: batchQuestRouter,
+  tutorial: tutorialRouter,
+  jury: juryRouter,
 });
 
 export type AppRouter = typeof appRouter;

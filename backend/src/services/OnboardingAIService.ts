@@ -88,13 +88,56 @@ export const OnboardingAIService = {
       // 3. Start job processing
       await AIJobService.start(jobResult.data.id);
       
-      // TODO: Actually call AI model here to get inference
-      // For now, return mock result - this should be replaced with actual AI call
-      const mockInference: InferenceResult = {
-        roleConfidenceWorker: 0.7,
-        roleConfidencePoster: 0.3,
-        certaintyTier: 'MODERATE',
+      // Real implementation: Call Anthropic Claude for role inference
+      let inference: InferenceResult = {
+        roleConfidenceWorker: 0.5,
+        roleConfidencePoster: 0.5,
+        certaintyTier: 'WEAK' as CertaintyTier,
       };
+
+      const anthropicKey = process.env.ANTHROPIC_API_KEY;
+      if (anthropicKey) {
+        try {
+          const aiResponse = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-api-key': anthropicKey,
+              'anthropic-version': '2023-06-01',
+            },
+            body: JSON.stringify({
+              model: 'claude-3-5-haiku-20241022',
+              max_tokens: 200,
+              messages: [{
+                role: 'user',
+                content: `You are a role inference engine for a gig marketplace app.
+Based on this user's onboarding response, determine if they want to be a Worker (do tasks for money) or a Poster (pay others to do tasks).
+User response: "${calibrationPrompt}"
+Respond with JSON only: {"worker": 0.0-1.0, "poster": 0.0-1.0, "certainty": "STRONG"|"MODERATE"|"WEAK"}`,
+              }],
+            }),
+          });
+
+          if (aiResponse.ok) {
+            const aiData = await aiResponse.json();
+            const content = aiData.content?.[0]?.text || '';
+            const jsonMatch = content.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+              const parsed = JSON.parse(jsonMatch[0]);
+              inference = {
+                roleConfidenceWorker: parsed.worker ?? 0.5,
+                roleConfidencePoster: parsed.poster ?? 0.5,
+                certaintyTier: (parsed.certainty || 'MODERATE') as CertaintyTier,
+              };
+            }
+          }
+        } catch (aiError) {
+          console.error('[OnboardingAIService] Anthropic API error:', aiError);
+          // Fallback to balanced inference
+        }
+      }
+
+      const mockInference = inference;
       
       // 4. Create proposal
       const proposalResult = await AIProposalService.create({

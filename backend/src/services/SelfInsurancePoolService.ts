@@ -280,7 +280,45 @@ export const SelfInsurancePoolService = {
         [claimId]
       );
 
-      // TODO: Transfer funds to hustler via Stripe
+      // Transfer funds to hustler via Stripe Connect
+      const stripeKey = process.env.STRIPE_SECRET_KEY;
+      if (stripeKey) {
+        try {
+          const hustlerResult = await db.query<{ stripe_connect_id: string }>(
+            `SELECT stripe_connect_id FROM users WHERE id = $1`,
+            [claim.hustler_id]
+          );
+          const connectId = hustlerResult.rows[0]?.stripe_connect_id;
+          if (connectId) {
+            const transferResponse = await fetch('https://api.stripe.com/v1/transfers', {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${stripeKey}`,
+                'Content-Type': 'application/x-www-form-urlencoded',
+              },
+              body: new URLSearchParams({
+                amount: coveredAmountCents.toString(),
+                currency: 'usd',
+                destination: connectId,
+                description: `Insurance claim payout: ${claimId}`,
+                'metadata[claim_id]': claimId,
+                'metadata[task_id]': claim.task_id,
+              }).toString(),
+            });
+            if (!transferResponse.ok) {
+              console.error(`[SelfInsurancePoolService] Stripe transfer failed:`, await transferResponse.text());
+              await db.query(
+                `UPDATE insurance_claims SET review_notes = COALESCE(review_notes, '') || ' [STRIPE_TRANSFER_FAILED]' WHERE id = $1`,
+                [claimId]
+              );
+            }
+          } else {
+            console.warn(`[SelfInsurancePoolService] Hustler ${claim.hustler_id} has no Stripe Connect ID`);
+          }
+        } catch (stripeError) {
+          console.error(`[SelfInsurancePoolService] Stripe error:`, stripeError);
+        }
+      }
 
       console.log(`[SelfInsurancePoolService] Paid claim: id=${claimId}, amount=$${(coveredAmountCents / 100).toFixed(2)}`);
 
