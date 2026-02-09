@@ -10,6 +10,7 @@ import { TRPCError } from '@trpc/server';
 import { router, protectedProcedure, Schemas } from '../trpc';
 import { TaskService } from '../services/TaskService';
 import { ProofService } from '../services/ProofService';
+import { db } from '../db';
 import { z } from 'zod';
 
 export const taskRouter = router({
@@ -61,20 +62,24 @@ export const taskRouter = router({
   
   /**
    * List tasks by poster
-   * SECURITY: Users can only list their own tasks
+   * SECURITY: Uses auth context — users always get their own tasks
+   * Accepts optional state filter for frontend convenience
    */
   listByPoster: protectedProcedure
-    .input(z.object({ posterId: Schemas.uuid }))
+    .input(z.object({
+      posterId: Schemas.uuid.optional(),
+      state: z.string().optional(),
+    }).optional())
     .query(async ({ ctx, input }) => {
-      // Authorization: users can only list their own posted tasks
-      if (input.posterId !== ctx.user.id) {
+      const posterId = input?.posterId || ctx.user.id;
+      if (posterId !== ctx.user.id) {
         throw new TRPCError({
           code: 'FORBIDDEN',
           message: 'You can only view your own posted tasks',
         });
       }
 
-      const result = await TaskService.getByPoster(input.posterId);
+      const result = await TaskService.getByPoster(posterId);
 
       if (!result.success) {
         throw new TRPCError({
@@ -88,20 +93,24 @@ export const taskRouter = router({
 
   /**
    * List tasks by worker
-   * SECURITY: Users can only list their own accepted tasks
+   * SECURITY: Uses auth context — users always get their own tasks
+   * Accepts optional state filter for frontend convenience
    */
   listByWorker: protectedProcedure
-    .input(z.object({ workerId: Schemas.uuid }))
+    .input(z.object({
+      workerId: Schemas.uuid.optional(),
+      state: z.string().optional(),
+    }).optional())
     .query(async ({ ctx, input }) => {
-      // Authorization: users can only list their own worker tasks
-      if (input.workerId !== ctx.user.id) {
+      const workerId = input?.workerId || ctx.user.id;
+      if (workerId !== ctx.user.id) {
         throw new TRPCError({
           code: 'FORBIDDEN',
           message: 'You can only view your own accepted tasks',
         });
       }
 
-      const result = await TaskService.getByWorker(input.workerId);
+      const result = await TaskService.getByWorker(workerId);
 
       if (!result.success) {
         throw new TRPCError({
@@ -194,16 +203,80 @@ export const taskRouter = router({
     }),
   
   /**
+   * Start working on an accepted task (ACCEPTED → IN_PROGRESS)
+   * Frontend calls this when worker begins task
+   */
+  start: protectedProcedure
+    .input(z.object({ taskId: Schemas.uuid }))
+    .mutation(async ({ ctx, input }) => {
+      // Verify worker is the one who accepted
+      const taskResult = await TaskService.getById(input.taskId);
+      if (!taskResult.success) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
+      }
+      if (taskResult.data.worker_id !== ctx.user.id) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'Only the assigned worker can start this task' });
+      }
+      if (taskResult.data.state !== 'ACCEPTED') {
+        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: `Task must be ACCEPTED to start, current state: ${taskResult.data.state}` });
+      }
+
+      // Transition to IN_PROGRESS (update state directly — accept already validated eligibility)
+      const result = await db.query(
+        `UPDATE tasks SET state = 'IN_PROGRESS', started_at = NOW(), updated_at = NOW() WHERE id = $1 RETURNING *`,
+        [input.taskId]
+      );
+
+      return result.rows[0];
+    }),
+
+  /**
    * Submit proof for task
    */
+  /**
+   * Get proof submission for a task
+   */
+  getProof: protectedProcedure
+    .input(z.object({ taskId: z.string().uuid() }))
+    .query(async ({ ctx, input }) => {
+      const result = await db.query(
+        `SELECT p.* FROM proofs p
+         JOIN tasks t ON t.id = p.task_id
+         WHERE p.task_id = $1
+           AND (t.poster_id = $2 OR t.worker_id = $2)
+         ORDER BY p.created_at DESC
+         LIMIT 1`,
+        [input.taskId, ctx.user.id]
+      );
+
+      if (result.rows.length === 0) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'No proof found for this task' });
+      }
+
+      return result.rows[0];
+    }),
+
   submitProof: protectedProcedure
-    .input(Schemas.submitProof)
+    .input(z.object({
+      taskId: z.string().uuid(),
+      description: z.string().optional(),
+      // Extended fields from iOS frontend
+      photoUrls: z.array(z.string()).optional(),
+      notes: z.string().optional(),
+      gpsLatitude: z.number().optional(),
+      gpsLongitude: z.number().optional(),
+      biometricHash: z.string().optional(),
+    }))
     .mutation(async ({ ctx, input }) => {
-      // Create proof
+      // Create proof (pass extended fields as description fallback)
       const proofResult = await ProofService.submit({
         taskId: input.taskId,
         submitterId: ctx.user.id,
-        description: input.description,
+        description: input.description || input.notes,
+        photoUrls: input.photoUrls,
+        gpsLatitude: input.gpsLatitude,
+        gpsLongitude: input.gpsLongitude,
+        biometricHash: input.biometricHash,
       });
       
       if (!proofResult.success) {
@@ -236,17 +309,50 @@ export const taskRouter = router({
    * Review proof (accept/reject)
    */
   reviewProof: protectedProcedure
-    .input(Schemas.reviewProof)
+    .input(z.object({
+      // Original schema fields
+      proofId: z.string().uuid().optional(),
+      decision: z.enum(['ACCEPTED', 'REJECTED']).optional(),
+      reason: z.string().optional(),
+      // iOS frontend fields
+      taskId: z.string().uuid().optional(),
+      approved: z.boolean().optional(),
+      feedback: z.string().optional(),
+    }))
     .mutation(async ({ ctx, input }) => {
+      // Resolve proofId: either from input directly or by looking up via taskId
+      let proofId = input.proofId;
+      if (!proofId && input.taskId) {
+        // Look up latest proof for this task
+        const proofLookup = await db.query(
+          `SELECT id FROM proofs WHERE task_id = $1 ORDER BY created_at DESC LIMIT 1`,
+          [input.taskId]
+        );
+        if (proofLookup.rows.length === 0) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: 'No proof found for this task' });
+        }
+        proofId = proofLookup.rows[0].id;
+      }
+      if (!proofId) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'proofId or taskId is required' });
+      }
+
+      // Resolve decision: from original field or from iOS boolean
+      const decision = input.decision || (input.approved === true ? 'ACCEPTED' : input.approved === false ? 'REJECTED' : undefined);
+      if (!decision) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'decision or approved is required' });
+      }
+      const reason = input.reason || input.feedback;
+
       // Get proof to find task
-      const proofResult = await ProofService.getById(input.proofId);
+      const proofResult = await ProofService.getById(proofId);
       if (!proofResult.success) {
         throw new TRPCError({
           code: 'NOT_FOUND',
           message: proofResult.error.message,
         });
       }
-      
+
       // Verify reviewer is the poster
       const taskResult = await TaskService.getById(proofResult.data.task_id);
       if (!taskResult.success) {
@@ -255,20 +361,20 @@ export const taskRouter = router({
           message: 'Task not found',
         });
       }
-      
+
       if (taskResult.data.poster_id !== ctx.user.id) {
         throw new TRPCError({
           code: 'FORBIDDEN',
           message: 'Only the task poster can review proof',
         });
       }
-      
+
       // Review proof
       const reviewResult = await ProofService.review({
-        proofId: input.proofId,
+        proofId,
         reviewerId: ctx.user.id,
-        decision: input.decision,
-        reason: input.reason,
+        decision,
+        reason,
       });
       
       if (!reviewResult.success) {

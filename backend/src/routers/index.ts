@@ -37,6 +37,7 @@ import { heatmapRouter } from './heatmap';
 import { batchQuestRouter } from './batchQuest';
 import { tutorialRouter } from './tutorial';
 import { juryRouter } from './jury';
+import { uploadRouter } from './upload';
 
 export const appRouter = router({
   task: taskRouter,
@@ -70,6 +71,7 @@ export const appRouter = router({
   batchQuest: batchQuestRouter,
   tutorial: tutorialRouter,
   jury: juryRouter,
+  upload: uploadRouter,
 });
 
 export type AppRouter = typeof appRouter;

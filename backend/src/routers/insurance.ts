@@ -63,19 +63,29 @@ export const insuranceRouter = router({
   fileClaim: protectedProcedure
     .input(
       z.object({
-        task_id: Schemas.uuid,
-        claim_amount_cents: z.number().min(1).max(500000), // Max $5000
-        reason: z.string().min(10).max(1000),
-        evidence_urls: z.array(z.string().url()).min(1).max(10)
+        // Accept both naming conventions for frontend compat
+        task_id: Schemas.uuid.optional(),
+        taskId: z.string().uuid().optional(),
+        claim_amount_cents: z.number().min(1).max(500000).optional(),
+        requestedAmountCents: z.number().min(1).max(500000).optional(),
+        reason: z.string().min(10).max(1000).optional(),
+        incidentDescription: z.string().min(10).max(1000).optional(),
+        evidence_urls: z.array(z.string().url()).min(1).max(10).optional(),
       })
     )
     .mutation(async ({ ctx, input }) => {
+      const taskId = input.task_id || input.taskId;
+      const amount = input.claim_amount_cents || input.requestedAmountCents;
+      const reason = input.reason || input.incidentDescription;
+      if (!taskId || !amount || !reason) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'taskId, amount, and reason are required' });
+      }
       const result = await SelfInsurancePoolService.fileClaim(
-        input.task_id,
+        taskId,
         ctx.user.id,
-        input.claim_amount_cents,
-        input.reason,
-        input.evidence_urls
+        amount,
+        reason,
+        input.evidence_urls || []
       );
 
       if (!result.success) {

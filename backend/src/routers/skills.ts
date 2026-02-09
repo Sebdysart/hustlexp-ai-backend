@@ -8,6 +8,7 @@
 import { z } from 'zod';
 import { router, publicProcedure, protectedProcedure } from '../trpc';
 import { WorkerSkillService } from '../services/WorkerSkillService';
+import { db } from '../db';
 
 export const skillsRouter = router({
   // Public: Browse skill catalog
@@ -41,17 +42,39 @@ export const skillsRouter = router({
   submitLicense: protectedProcedure
     .input(z.object({
       skillId: z.string().uuid(),
-      licenseUrl: z.string().url(),
+      // Accept both field naming conventions for frontend compat
+      licenseUrl: z.string().url().optional(),
+      photoUrl: z.string().url().optional(),
+      licenseType: z.string().optional(),
+      licenseNumber: z.string().optional(),
       licenseExpiry: z.string().datetime().optional(),
     }))
     .mutation(async ({ ctx, input }) => {
+      const url = input.licenseUrl || input.photoUrl;
+      if (!url) {
+        throw new Error('licenseUrl or photoUrl is required');
+      }
       return WorkerSkillService.submitLicense(
         ctx.user.id,
         input.skillId,
-        input.licenseUrl,
+        url,
         input.licenseExpiry ? new Date(input.licenseExpiry) : undefined
       );
     }),
+
+  getLicenseSubmissions: protectedProcedure.query(async ({ ctx }) => {
+    const result = await db.query(
+      `SELECT ws.id, ws.skill_id as "skillId", s.name as "skillName",
+              ws.license_url as "photoUrl", ws.verified as "licenseVerified",
+              ws.verified_at as "reviewedAt", ws.created_at as "submittedAt"
+       FROM worker_skills ws
+       JOIN skills s ON s.id = ws.skill_id
+       WHERE ws.worker_id = $1 AND ws.license_url IS NOT NULL
+       ORDER BY ws.created_at DESC`,
+      [ctx.user.id]
+    );
+    return result.rows;
+  }),
 
   checkTaskEligibility: protectedProcedure
     .input(z.object({ taskId: z.string().uuid() }))

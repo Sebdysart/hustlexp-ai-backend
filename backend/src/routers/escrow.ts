@@ -14,6 +14,7 @@ import { router, protectedProcedure, Schemas } from '../trpc';
 import { EscrowService } from '../services/EscrowService';
 import { StripeService } from '../services/StripeService';
 import { XPService } from '../services/XPService';
+import { db } from '../db';
 import { z } from 'zod';
 
 export const escrowRouter = router({
@@ -96,11 +97,12 @@ export const escrowRouter = router({
   
   /**
    * Create payment intent for escrow funding
+   * Amount is optional — if omitted, derived from task price
    */
   createPaymentIntent: protectedProcedure
     .input(z.object({
       taskId: Schemas.uuid,
-      amount: z.number().int().positive(),
+      amount: z.number().int().positive().optional(),
     }))
     .mutation(async ({ ctx, input }) => {
       if (!StripeService.isConfigured()) {
@@ -110,10 +112,21 @@ export const escrowRouter = router({
         });
       }
       
+      // If amount not provided, look up from task
+      let amount = input.amount;
+      if (!amount) {
+        const taskResult = await EscrowService.getByTaskId(input.taskId);
+        if (taskResult.success) {
+          amount = taskResult.data.amount_cents;
+        } else {
+          throw new TRPCError({ code: 'NOT_FOUND', message: 'Could not determine amount for task' });
+        }
+      }
+
       const result = await StripeService.createPaymentIntent({
         taskId: input.taskId,
         posterId: ctx.user.id,
-        amount: input.amount,
+        amount,
       });
       
       if (!result.success) {
@@ -238,6 +251,25 @@ export const escrowRouter = router({
       return result.data;
     }),
   
+  /**
+   * Get payment/escrow history for current user
+   */
+  getHistory: protectedProcedure
+    .input(z.object({
+      limit: z.number().int().min(1).max(100).default(50),
+    }).optional())
+    .query(async ({ ctx, input }) => {
+      const result = await db.query(
+        `SELECT * FROM escrows
+         WHERE poster_id = $1 OR worker_id = $1
+         ORDER BY created_at DESC
+         LIMIT $2`,
+        [ctx.user.id, input?.limit || 50]
+      );
+
+      return result.rows;
+    }),
+
   // --------------------------------------------------------------------------
   // XP OPERATIONS (linked to escrow release)
   // --------------------------------------------------------------------------

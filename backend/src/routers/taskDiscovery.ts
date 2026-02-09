@@ -27,6 +27,7 @@ export const taskDiscoveryRouter = router({
     .input(z.object({
       limit: z.number().int().min(1).max(100).default(20),
       offset: z.number().int().min(0).default(0),
+      // Structured filters (original)
       filters: z.object({
         category: z.string().optional(),
         min_price: z.number().int().nonnegative().optional(),
@@ -35,6 +36,11 @@ export const taskDiscoveryRouter = router({
         min_matching_score: z.number().min(0).max(1).optional(),
         sort_by: z.enum(['relevance', 'price', 'distance', 'deadline']).optional(),
       }).optional(),
+      // Flat params from iOS frontend (merged into filters)
+      latitude: z.number().optional(),
+      longitude: z.number().optional(),
+      radiusMeters: z.number().positive().optional(),
+      skills: z.array(z.string()).optional(),
     }))
     .query(async ({ input, ctx }) => {
       if (!ctx.user) {
@@ -43,10 +49,17 @@ export const taskDiscoveryRouter = router({
           message: 'Authentication required',
         });
       }
-      
+
+      // Merge flat iOS params into filters object
+      const filters = {
+        ...input.filters,
+        ...(input.radiusMeters ? { max_distance_miles: input.radiusMeters / 1609.34 } : {}),
+        ...(input.skills ? { skills: input.skills } : {}),
+      };
+
       const result = await TaskDiscoveryService.getFeed(
         ctx.user.id,
-        input.filters || {},
+        filters,
         input.limit,
         input.offset
       );
@@ -177,6 +190,12 @@ export const taskDiscoveryRouter = router({
         min_matching_score: z.number().min(0).max(1).optional(),
         sort_by: z.enum(['relevance', 'price', 'distance', 'deadline']).optional(),
       }).optional(),
+      // Flat params from iOS frontend (merged into filters)
+      latitude: z.number().optional(),
+      longitude: z.number().optional(),
+      category: z.string().optional(),
+      minPaymentCents: z.number().int().nonnegative().optional(),
+      maxPaymentCents: z.number().int().positive().optional(),
     }))
     .query(async ({ input, ctx }) => {
       if (!ctx.user) {
@@ -185,10 +204,14 @@ export const taskDiscoveryRouter = router({
           message: 'Authentication required',
         });
       }
-      
+
       const searchFilters: any = {
         ...input.filters,
         query: input.query,
+        // Merge flat iOS params
+        ...(input.category && !input.filters?.category ? { category: input.category } : {}),
+        ...(input.minPaymentCents && !input.filters?.min_price ? { min_price: input.minPaymentCents } : {}),
+        ...(input.maxPaymentCents && !input.filters?.max_price ? { max_price: input.maxPaymentCents } : {}),
       };
       
       const result = await TaskDiscoveryService.search(

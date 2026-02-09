@@ -12,6 +12,7 @@ import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { router, protectedProcedure, Schemas } from '../trpc';
 import { MessagingService } from '../services/MessagingService';
+import { db } from '../db';
 
 export const messagingRouter = router({
   // --------------------------------------------------------------------------
@@ -243,6 +244,48 @@ export const messagingRouter = router({
         });
       }
       
-      return { unreadCount: result.data };
+      // Return both field names for frontend compat
+      return { unreadCount: result.data, count: result.data };
+    }),
+
+  /**
+   * Get conversation summaries for current user
+   * Returns one entry per task with latest message and unread count
+   */
+  getConversations: protectedProcedure
+    .query(async ({ ctx }) => {
+      if (!ctx.user) {
+        throw new TRPCError({ code: 'UNAUTHORIZED', message: 'Authentication required' });
+      }
+
+      const result = await db.query(
+        `SELECT DISTINCT ON (t.id)
+          t.id as "taskId",
+          t.id as id,
+          t.title as "taskTitle",
+          CASE WHEN t.poster_id = $1 THEN t.worker_id ELSE t.poster_id END as "otherUserId",
+          CASE WHEN t.poster_id = $1 THEN wu.display_name ELSE pu.display_name END as "otherUserName",
+          CASE WHEN t.poster_id = $1 THEN 'worker' ELSE 'poster' END as "otherUserRole",
+          m.content as "lastMessage",
+          m.created_at as "lastMessageAt",
+          COALESCE(unread.cnt, 0)::int as "unreadCount"
+        FROM tasks t
+        LEFT JOIN users wu ON wu.id = t.worker_id
+        LEFT JOIN users pu ON pu.id = t.poster_id
+        LEFT JOIN LATERAL (
+          SELECT content, created_at FROM task_messages
+          WHERE task_id = t.id ORDER BY created_at DESC LIMIT 1
+        ) m ON true
+        LEFT JOIN LATERAL (
+          SELECT COUNT(*)::int as cnt FROM task_messages
+          WHERE task_id = t.id AND sender_id != $1 AND read_at IS NULL
+        ) unread ON true
+        WHERE (t.poster_id = $1 OR t.worker_id = $1)
+          AND t.state IN ('ACCEPTED', 'IN_PROGRESS', 'PROOF_SUBMITTED', 'DISPUTED')
+        ORDER BY t.id, m.created_at DESC NULLS LAST`,
+        [ctx.user.id]
+      );
+
+      return result.rows;
     }),
 });
