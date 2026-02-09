@@ -1492,7 +1492,7 @@ CREATE TABLE IF NOT EXISTS task_matching_scores (
 
 CREATE INDEX IF NOT EXISTS idx_matching_scores_hustler ON task_matching_scores(hustler_id, relevance_score DESC);
 CREATE INDEX IF NOT EXISTS idx_matching_scores_task ON task_matching_scores(task_id, matching_score DESC);
-CREATE INDEX IF NOT EXISTS idx_matching_scores_expires ON task_matching_scores(expires_at) WHERE expires_at < NOW();
+CREATE INDEX IF NOT EXISTS idx_matching_scores_expires ON task_matching_scores(expires_at);
 
 -- Saved searches (optional, post-launch)
 CREATE TABLE IF NOT EXISTS saved_searches (
