@@ -480,32 +480,48 @@ async function startServer() {
     // Test basic connectivity first
     await db.query('SELECT 1 as ping');
     console.log('Database:    ✅ Connected');
+  } catch (connErr) {
+    console.error('Database:    ❌ Connection failed:', connErr instanceof Error ? connErr.message : 'Unknown');
+  }
 
-    // Check if schema exists
-    const tableCheck = await db.query(`
-      SELECT EXISTS (
-        SELECT FROM information_schema.tables
-        WHERE table_schema = 'public' AND table_name = 'schema_versions'
-      ) as exists
-    `);
-
-    if (!tableCheck.rows[0]?.exists) {
-      console.log('Schema:      ⚠️  No tables found — running auto-migration...');
+  // Auto-migrate if schema_versions table is missing
+  try {
+    await db.query('SELECT 1 FROM schema_versions LIMIT 1');
+  } catch (schemaErr: any) {
+    if (schemaErr?.message?.includes('schema_versions') || schemaErr?.code === '42P01') {
+      console.log('Schema:      ⚠️  Tables missing — running auto-migration...');
       try {
-        const { readFileSync } = await import('fs');
-        const { join, dirname } = await import('path');
-        const { fileURLToPath } = await import('url');
-        const __dirname = dirname(fileURLToPath(import.meta.url));
-        const schemaPath = join(__dirname, '../../backend/database/constitutional-schema.sql');
-        const schemaSQL = readFileSync(schemaPath, 'utf-8');
-        await db.query(schemaSQL);
-        console.log('Schema:      ✅ Auto-migration complete');
+        const fs = await import('fs');
+        const path = await import('path');
+        // Try multiple possible paths (local dev vs Railway container)
+        const candidates = [
+          path.join(process.cwd(), 'backend/database/constitutional-schema.sql'),
+          path.join(process.cwd(), '../backend/database/constitutional-schema.sql'),
+          '/app/backend/database/constitutional-schema.sql',
+        ];
+        let schemaSQL = '';
+        for (const p of candidates) {
+          try {
+            schemaSQL = fs.readFileSync(p, 'utf-8');
+            console.log(`Schema:      📂 Found schema at ${p}`);
+            break;
+          } catch { /* try next */ }
+        }
+        if (!schemaSQL) {
+          console.error('Schema:      ❌ Could not find constitutional-schema.sql in any path');
+          console.error('Schema:      Tried:', candidates.join(', '));
+        } else {
+          await db.query(schemaSQL);
+          console.log('Schema:      ✅ Auto-migration complete');
+        }
       } catch (migErr) {
         console.error('Schema:      ❌ Auto-migration failed:', migErr instanceof Error ? migErr.message : 'Unknown');
       }
     }
+  }
 
-    // Now check schema version
+  // Report schema version
+  try {
     const result = await db.query('SELECT version, applied_at FROM schema_versions ORDER BY applied_at DESC LIMIT 1');
     if (result.rows.length > 0) {
       console.log(`Schema:      ✅ v${result.rows[0].version} (applied ${new Date(result.rows[0].applied_at).toISOString()})`);
@@ -527,7 +543,7 @@ async function startServer() {
     `);
     console.log(`Triggers:    ✅ ${triggers.rows.length}/5 invariant triggers active`);
   } catch (error) {
-    console.error('Database:    ❌ Connection failed:', error instanceof Error ? error.message : 'Unknown');
+    console.error('Schema:      ❌', error instanceof Error ? error.message : 'Unknown');
   }
   
   console.log('');
