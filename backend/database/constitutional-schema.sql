@@ -201,7 +201,6 @@ CREATE TABLE IF NOT EXISTS tasks (
 CREATE INDEX IF NOT EXISTS idx_tasks_poster ON tasks(poster_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_worker ON tasks(worker_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_state ON tasks(state);
-CREATE INDEX IF NOT EXISTS idx_tasks_progress_state ON tasks(progress_state);
 CREATE INDEX IF NOT EXISTS idx_tasks_risk_level ON tasks(risk_level);
 CREATE INDEX IF NOT EXISTS idx_tasks_created ON tasks(created_at DESC);
 
