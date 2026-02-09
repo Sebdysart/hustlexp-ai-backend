@@ -1,20 +1,17 @@
 /**
  * HustleXP Database Client v1.0.0
- * 
+ *
  * CONSTITUTIONAL: Layer 0 - Highest Authority
- * 
- * Uses Neon PostgreSQL serverless driver.
+ *
+ * Uses standard pg driver (compatible with Railway Postgres, Neon, Supabase, etc.)
  * Handles HustleXP-specific error codes from triggers.
- * 
+ *
  * @see schema.sql v1.0.0
  * @see ARCHITECTURE.md §1
  */
 
-import { Pool, neonConfig } from '@neondatabase/serverless';
-import ws from 'ws';
-
-// Enable WebSocket for Neon serverless
-neonConfig.webSocketConstructor = ws;
+import pg from 'pg';
+const { Pool } = pg;
 
 // ============================================================================
 // CONFIGURATION
@@ -40,15 +37,9 @@ const pool = new Pool({
   max: 10,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 10000,
-  // Disable prepared statements in tests to prevent stale plan cache
-  // when schema changes occur during test execution
-  ...(isTestEnv && { 
-    // Force re-planning by using a query that invalidates prepared statements
-    // Neon serverless may not support prepareThreshold, so we'll handle it in query execution
-  }),
 });
 
-console.log('✅ Neon database pool initialized');
+console.log('✅ Database pool initialized');
 
 // ============================================================================
 // HUSTLEXP ERROR CODES
