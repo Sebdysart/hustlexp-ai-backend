@@ -475,19 +475,48 @@ async function startServer() {
   console.log(`  Redis:     ${configStatus.redis ? '✅' : '⚠️'} ${configStatus.redis ? 'Configured' : 'Missing'}`);
   console.log('');
   
-  // Check database connection and schema
+  // Check database connection and auto-migrate if needed
   try {
+    // Test basic connectivity first
+    await db.query('SELECT 1 as ping');
+    console.log('Database:    ✅ Connected');
+
+    // Check if schema exists
+    const tableCheck = await db.query(`
+      SELECT EXISTS (
+        SELECT FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_name = 'schema_versions'
+      ) as exists
+    `);
+
+    if (!tableCheck.rows[0]?.exists) {
+      console.log('Schema:      ⚠️  No tables found — running auto-migration...');
+      try {
+        const { readFileSync } = await import('fs');
+        const { join, dirname } = await import('path');
+        const { fileURLToPath } = await import('url');
+        const __dirname = dirname(fileURLToPath(import.meta.url));
+        const schemaPath = join(__dirname, '../../backend/database/constitutional-schema.sql');
+        const schemaSQL = readFileSync(schemaPath, 'utf-8');
+        await db.query(schemaSQL);
+        console.log('Schema:      ✅ Auto-migration complete');
+      } catch (migErr) {
+        console.error('Schema:      ❌ Auto-migration failed:', migErr instanceof Error ? migErr.message : 'Unknown');
+      }
+    }
+
+    // Now check schema version
     const result = await db.query('SELECT version, applied_at FROM schema_versions ORDER BY applied_at DESC LIMIT 1');
     if (result.rows.length > 0) {
       console.log(`Schema:      ✅ v${result.rows[0].version} (applied ${new Date(result.rows[0].applied_at).toISOString()})`);
     } else {
       console.log('Schema:      ⚠️ No version found');
     }
-    
+
     // Verify critical triggers exist
     const triggers = await db.query(`
-      SELECT trigger_name FROM information_schema.triggers 
-      WHERE trigger_schema = 'public' 
+      SELECT trigger_name FROM information_schema.triggers
+      WHERE trigger_schema = 'public'
       AND trigger_name IN (
         'xp_requires_released_escrow',
         'escrow_released_requires_completed_task',

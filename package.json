@@ -7,7 +7,7 @@
     "dev": "tsx --watch backend/src/server.ts",
     "dev:old": "tsx backend/server.ts",
     "dev:workers": "tsx --watch backend/src/jobs/workers.ts",
-    "build": "node migrate-pg.mjs",
+    "build": "echo 'tsx runtime — no tsc build step'",
     "start": "tsx backend/src/server.ts",
     "start:workers": "node dist/backend/src/jobs/workers.js",
     "test": "vitest run",
