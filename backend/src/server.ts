@@ -487,36 +487,64 @@ async function startServer() {
   // Auto-migrate if schema_versions table is missing
   try {
     await db.query('SELECT 1 FROM schema_versions LIMIT 1');
+    console.log('Schema:      ✅ Tables exist');
   } catch (schemaErr: any) {
-    if (schemaErr?.message?.includes('schema_versions') || schemaErr?.code === '42P01') {
+    console.log(`Schema:      🔍 Check failed — code=${schemaErr?.code}, message=${schemaErr?.message?.substring(0, 120)}`);
+    if (schemaErr?.message?.includes('schema_versions') || schemaErr?.message?.includes('does not exist') || schemaErr?.code === '42P01') {
       console.log('Schema:      ⚠️  Tables missing — running auto-migration...');
       try {
         const fs = await import('fs');
         const path = await import('path');
+        const cwd = process.cwd();
+        console.log(`Schema:      📁 CWD = ${cwd}`);
         // Try multiple possible paths (local dev vs Railway container)
         const candidates = [
-          path.join(process.cwd(), 'backend/database/constitutional-schema.sql'),
-          path.join(process.cwd(), '../backend/database/constitutional-schema.sql'),
+          path.join(cwd, 'backend/database/constitutional-schema.sql'),
+          path.join(cwd, 'backend', 'database', 'constitutional-schema.sql'),
           '/app/backend/database/constitutional-schema.sql',
+          path.join(cwd, '../backend/database/constitutional-schema.sql'),
         ];
         let schemaSQL = '';
+        let foundPath = '';
         for (const p of candidates) {
           try {
             schemaSQL = fs.readFileSync(p, 'utf-8');
-            console.log(`Schema:      📂 Found schema at ${p}`);
+            foundPath = p;
+            console.log(`Schema:      📂 Found schema at ${p} (${schemaSQL.length} chars)`);
             break;
-          } catch { /* try next */ }
+          } catch (readErr: any) {
+            console.log(`Schema:      ❌ Not at ${p}: ${readErr?.code || readErr?.message}`);
+          }
         }
         if (!schemaSQL) {
-          console.error('Schema:      ❌ Could not find constitutional-schema.sql in any path');
-          console.error('Schema:      Tried:', candidates.join(', '));
+          console.error('Schema:      ❌ Could not find constitutional-schema.sql in any candidate path');
+          // List directory to debug
+          try {
+            const dirContents = fs.readdirSync(cwd);
+            console.log(`Schema:      📁 CWD contents: ${dirContents.slice(0, 20).join(', ')}`);
+          } catch { /* ignore */ }
         } else {
-          await db.query(schemaSQL);
-          console.log('Schema:      ✅ Auto-migration complete');
+          console.log(`Schema:      ⏳ Executing ${schemaSQL.length} chars of SQL from ${foundPath}...`);
+          const pool = db.getPool();
+          const client = await pool.connect();
+          try {
+            await client.query(schemaSQL);
+            console.log('Schema:      ✅ Auto-migration complete');
+          } finally {
+            client.release();
+          }
         }
-      } catch (migErr) {
-        console.error('Schema:      ❌ Auto-migration failed:', migErr instanceof Error ? migErr.message : 'Unknown');
+      } catch (migErr: any) {
+        console.error('Schema:      ❌ Auto-migration failed:', migErr?.message || 'Unknown');
+        if (migErr?.position) {
+          console.error(`Schema:      ❌ SQL error at position ${migErr.position}`);
+        }
+        if (migErr?.detail) {
+          console.error(`Schema:      ❌ Detail: ${migErr.detail}`);
+        }
       }
+    } else {
+      console.error('Schema:      ❌ Unexpected error:', schemaErr?.message || 'Unknown');
     }
   }
 

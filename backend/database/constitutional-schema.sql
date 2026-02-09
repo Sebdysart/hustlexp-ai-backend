@@ -1968,22 +1968,26 @@ BEGIN
   END IF;
 END $$;
 
-CREATE TRIGGER IF NOT EXISTS task_messages_updated_at
+DROP TRIGGER IF EXISTS task_messages_updated_at ON task_messages;
+CREATE TRIGGER task_messages_updated_at
   BEFORE UPDATE ON task_messages
   FOR EACH ROW
   EXECUTE FUNCTION update_updated_at_column();
 
-CREATE TRIGGER IF NOT EXISTS task_ratings_updated_at
+DROP TRIGGER IF EXISTS task_ratings_updated_at ON task_ratings;
+CREATE TRIGGER task_ratings_updated_at
   BEFORE UPDATE ON task_ratings
   FOR EACH ROW
   EXECUTE FUNCTION update_updated_at_column();
 
-CREATE TRIGGER IF NOT EXISTS notification_preferences_updated_at
+DROP TRIGGER IF EXISTS notification_preferences_updated_at ON notification_preferences;
+CREATE TRIGGER notification_preferences_updated_at
   BEFORE UPDATE ON notification_preferences
   FOR EACH ROW
   EXECUTE FUNCTION update_updated_at_column();
 
-CREATE TRIGGER IF NOT EXISTS user_consents_updated_at
+DROP TRIGGER IF EXISTS user_consents_updated_at ON user_consents;
+CREATE TRIGGER user_consents_updated_at
   BEFORE UPDATE ON user_consents
   FOR EACH ROW
   EXECUTE FUNCTION update_updated_at_column();
@@ -2217,7 +2221,8 @@ BEGIN
   END IF;
 END $$;
 
-CREATE TRIGGER IF NOT EXISTS exports_updated_at
+DROP TRIGGER IF EXISTS exports_updated_at ON exports;
+CREATE TRIGGER exports_updated_at
   BEFORE UPDATE ON exports
   FOR EACH ROW
   EXECUTE FUNCTION update_updated_at_column();
