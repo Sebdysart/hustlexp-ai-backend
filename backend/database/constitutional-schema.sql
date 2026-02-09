@@ -1955,7 +1955,7 @@ CREATE INDEX IF NOT EXISTS idx_user_consents_granted ON user_consents(granted, c
 -- ----------------------------------------------------------------------------
 
 -- Auto-update updated_at timestamps (reuse existing function if exists)
-DO $$
+DO $do$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'update_updated_at_column') THEN
     CREATE FUNCTION update_updated_at_column()
@@ -1966,7 +1966,7 @@ BEGIN
     END;
     $$ LANGUAGE plpgsql;
   END IF;
-END $$;
+END $do$;
 
 DROP TRIGGER IF EXISTS task_messages_updated_at ON task_messages;
 CREATE TRIGGER task_messages_updated_at
@@ -2208,7 +2208,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_email_outbox_idempotency ON email_outbox(i
 -- ----------------------------------------------------------------------------
 
 -- Auto-update updated_at timestamps (reuse existing function if exists)
-DO $$
+DO $do$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'update_updated_at_column') THEN
     CREATE FUNCTION update_updated_at_column()
@@ -2219,7 +2219,7 @@ BEGIN
     END;
     $$ LANGUAGE plpgsql;
   END IF;
-END $$;
+END $do$;
 
 DROP TRIGGER IF EXISTS exports_updated_at ON exports;
 CREATE TRIGGER exports_updated_at
