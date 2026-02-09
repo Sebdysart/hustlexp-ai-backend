@@ -1,43 +1,45 @@
 {
     "compilerOptions": {
         "target": "ES2022",
-        "module": "NodeNext",
-        "moduleResolution": "NodeNext",
+        "module": "ES2022",
+        "moduleResolution": "Bundler",
         "lib": [
             "ES2022"
         ],
         "types": ["node"],
         "outDir": "./dist",
-        "rootDir": "./src",
-        "strict": true,
+        "rootDir": ".",
+        "strict": false,
         "esModuleInterop": true,
         "skipLibCheck": true,
         "forceConsistentCasingInFileNames": true,
-        "declaration": true,
-        "declarationMap": true,
+        "declaration": false,
         "sourceMap": true,
         "resolveJsonModule": true,
+        "allowImportingTsExtensions": false,
+        "noEmit": false,
         "baseUrl": ".",
         "paths": {
             "@ai/*": [
-                "src/ai/*"
+                "backend/src/ai/*"
             ],
             "@services/*": [
-                "src/services/*"
+                "backend/src/services/*"
             ],
             "@types/*": [
-                "src/types/*"
+                "backend/src/types/*"
             ],
             "@utils/*": [
-                "src/utils/*"
+                "backend/src/utils/*"
             ]
         }
     },
     "include": [
-        "src/**/*"
+        "backend/src/**/*"
     ],
     "exclude": [
         "node_modules",
-        "dist"
+        "dist",
+        "backend/src/jobs"
     ]
 }
