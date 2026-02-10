@@ -21,9 +21,32 @@ import { z } from 'zod';
 // This keeps the DB schema canonical while letting the mobile client decode
 // directly into its HXUser model.
 
-function toMobileUser(user: User) {
+async function toMobileUser(user: User) {
   // Map backend default_mode to frontend role label
   const roleMap: Record<string, string> = { worker: 'hustler', poster: 'poster' };
+
+  // Compute aggregated stats from DB
+  const statsResult = await db.query<{
+    avg_rating: string | null;
+    total_ratings: string;
+    tasks_completed: string;
+    tasks_posted: string;
+    total_earnings: string;
+    total_spent: string;
+  }>(
+    `SELECT
+       COALESCE(AVG(tr.rating), 5.0) as avg_rating,
+       COUNT(tr.id)::text as total_ratings,
+       (SELECT COUNT(*) FROM tasks WHERE worker_id = $1 AND state = 'COMPLETED')::text as tasks_completed,
+       (SELECT COUNT(*) FROM tasks WHERE poster_id = $1)::text as tasks_posted,
+       COALESCE((SELECT SUM(amount_cents) FROM escrows WHERE worker_id = $1 AND state = 'RELEASED'), 0)::text as total_earnings,
+       COALESCE((SELECT SUM(amount_cents) FROM escrows WHERE poster_id = $1 AND state IN ('RELEASED', 'FUNDED')), 0)::text as total_spent
+     FROM task_ratings tr
+     WHERE tr.rated_user_id = $1`,
+    [user.id]
+  );
+
+  const stats = statsResult.rows[0];
 
   return {
     id: user.id,
@@ -34,13 +57,13 @@ function toMobileUser(user: User) {
     avatarURL: user.avatar_url ?? null,
     role: roleMap[user.default_mode] ?? user.default_mode,
     trustTier: user.trust_tier,
-    rating: 5.0,               // TODO: compute from task_ratings aggregate
-    totalRatings: 0,           // TODO: compute from task_ratings count
+    rating: stats ? parseFloat(stats.avg_rating || '5.0') : 5.0,
+    totalRatings: stats ? parseInt(stats.total_ratings || '0', 10) : 0,
     xp: user.xp_total,
-    tasksCompleted: 0,         // TODO: compute from tasks WHERE worker_id AND state='COMPLETED'
-    tasksPosted: 0,            // TODO: compute from tasks WHERE poster_id
-    totalEarnings: 0,          // TODO: compute from escrows WHERE worker_id AND state='RELEASED'
-    totalSpent: 0,             // TODO: compute from escrows WHERE poster_id AND state IN ('RELEASED','FUNDED')
+    tasksCompleted: stats ? parseInt(stats.tasks_completed || '0', 10) : 0,
+    tasksPosted: stats ? parseInt(stats.tasks_posted || '0', 10) : 0,
+    totalEarnings: stats ? parseInt(stats.total_earnings || '0', 10) : 0,
+    totalSpent: stats ? parseInt(stats.total_spent || '0', 10) : 0,
     isVerified: user.is_verified,
     createdAt: user.created_at,
     // Extra fields the app may need
@@ -68,7 +91,7 @@ export const userRouter = router({
    */
   me: protectedProcedure
     .query(async ({ ctx }) => {
-      return toMobileUser(ctx.user!);
+      return await toMobileUser(ctx.user!);
     }),
   
   /**
@@ -89,7 +112,7 @@ export const userRouter = router({
         });
       }
 
-      return toMobileUser(result.rows[0]);
+      return await toMobileUser(result.rows[0]);
     }),
   
   /**
@@ -153,7 +176,7 @@ export const userRouter = router({
           'SELECT * FROM users WHERE firebase_uid = $1 OR email = $2',
           [input.firebaseUid, input.email]
         );
-        return toMobileUser(existingUser.rows[0]);
+        return await toMobileUser(existingUser.rows[0]);
       }
 
       const result = await db.query<User>(
@@ -163,7 +186,7 @@ export const userRouter = router({
         [input.firebaseUid, input.email, input.fullName, dbMode]
       );
 
-      return toMobileUser(result.rows[0]);
+      return await toMobileUser(result.rows[0]);
     }),
   
   // --------------------------------------------------------------------------
@@ -210,7 +233,7 @@ export const userRouter = router({
       }
 
       if (updates.length === 0) {
-        return toMobileUser(ctx.user!);
+        return await toMobileUser(ctx.user!);
       }
 
       updates.push(`updated_at = NOW()`);
@@ -221,7 +244,7 @@ export const userRouter = router({
         values
       );
 
-      return toMobileUser(result.rows[0]);
+      return await toMobileUser(result.rows[0]);
     }),
   
   /**
@@ -293,7 +316,7 @@ export const userRouter = router({
         ]
       );
 
-      return toMobileUser(result.rows[0]);
+      return await toMobileUser(result.rows[0]);
     }),
 
   // --------------------------------------------------------------------------

@@ -12,7 +12,7 @@
  */
 
 import { TRPCError } from '@trpc/server';
-import { router, protectedProcedure, Schemas } from '../trpc';
+import { router, protectedProcedure, adminProcedure, Schemas } from '../trpc';
 import { SelfInsurancePoolService } from '../services/SelfInsurancePoolService';
 import { z } from 'zod';
 
@@ -109,7 +109,7 @@ export const insuranceRouter = router({
   /**
    * Review a claim (admin only)
    */
-  reviewClaim: protectedProcedure
+  reviewClaim: adminProcedure
     .input(
       z.object({
         claim_id: Schemas.uuid,
@@ -118,10 +118,6 @@ export const insuranceRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      // TODO: Check if user is admin
-      // if (!ctx.user.is_admin) {
-      //   throw new TRPCError({ code: 'FORBIDDEN', message: 'Admin access required' });
-      // }
 
       const result = await SelfInsurancePoolService.reviewClaim(
         input.claim_id,
@@ -146,17 +142,13 @@ export const insuranceRouter = router({
   /**
    * Pay an approved claim (admin only)
    */
-  payClaim: protectedProcedure
+  payClaim: adminProcedure
     .input(
       z.object({
         claim_id: Schemas.uuid
       })
     )
     .mutation(async ({ ctx, input }) => {
-      // TODO: Check if user is admin
-      // if (!ctx.user.is_admin) {
-      //   throw new TRPCError({ code: 'FORBIDDEN', message: 'Admin access required' });
-      // }
 
       const result = await SelfInsurancePoolService.payClaim(input.claim_id);
 

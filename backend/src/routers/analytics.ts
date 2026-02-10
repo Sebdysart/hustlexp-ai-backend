@@ -45,9 +45,16 @@ export const analyticsRouter = router({
       eventTimestamp: z.string().datetime().optional(), // Optional - defaults to NOW()
     }))
     .mutation(async ({ input, ctx }) => {
-      // If userId provided and user is authenticated, use authenticated user
-      const userId = input.userId || ctx.user?.id || undefined;
-      
+      // Security: If authenticated, always use the authenticated user's ID
+      // Prevent userId spoofing by ignoring input.userId when user is authenticated
+      const userId = ctx.user?.id || input.userId || undefined;
+      if (ctx.user && input.userId && input.userId !== ctx.user.id) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: 'Cannot track events for a different user',
+        });
+      }
+
       const result = await AnalyticsService.trackEvent({
         eventType: input.eventType,
         eventCategory: input.eventCategory,
@@ -98,10 +105,21 @@ export const analyticsRouter = router({
       })).min(1).max(100), // Batch limit
     }))
     .mutation(async ({ input, ctx }) => {
+      // Security: Prevent userId spoofing in batch events
+      if (ctx.user) {
+        const spoofedEvent = input.events.find(e => e.userId && e.userId !== ctx.user!.id);
+        if (spoofedEvent) {
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message: 'Cannot track events for a different user',
+          });
+        }
+      }
+
       const events = input.events.map(event => ({
         eventType: event.eventType,
         eventCategory: event.eventCategory,
-        userId: event.userId || ctx.user?.id || undefined,
+        userId: ctx.user?.id || event.userId || undefined,
         sessionId: event.sessionId,
         deviceId: event.deviceId,
         taskId: event.taskId,

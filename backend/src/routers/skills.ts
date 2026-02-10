@@ -6,6 +6,7 @@
  */
 
 import { z } from 'zod';
+import { TRPCError } from '@trpc/server';
 import { router, publicProcedure, protectedProcedure } from '../trpc';
 import { WorkerSkillService } from '../services/WorkerSkillService';
 import { db } from '../db';
@@ -52,7 +53,7 @@ export const skillsRouter = router({
     .mutation(async ({ ctx, input }) => {
       const url = input.licenseUrl || input.photoUrl;
       if (!url) {
-        throw new Error('licenseUrl or photoUrl is required');
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'licenseUrl or photoUrl is required' });
       }
       return WorkerSkillService.submitLicense(
         ctx.user.id,
