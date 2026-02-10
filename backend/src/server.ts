@@ -548,6 +548,16 @@ async function startServer() {
     }
   }
 
+  // Ensure firebase_uid and bio columns exist (safe for existing databases)
+  try {
+    await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS firebase_uid TEXT UNIQUE`);
+    await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS bio TEXT`);
+    await db.query(`CREATE INDEX IF NOT EXISTS idx_users_firebase_uid ON users(firebase_uid)`);
+    console.log('Schema:      ✅ firebase_uid + bio columns ensured');
+  } catch (colErr: any) {
+    console.warn('Schema:      ⚠️  Column migration note:', colErr?.message?.substring(0, 120));
+  }
+
   // Report schema version
   try {
     const result = await db.query('SELECT version, applied_at FROM schema_versions ORDER BY applied_at DESC LIMIT 1');
