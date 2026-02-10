@@ -35,11 +35,13 @@ ON CONFLICT (version) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS users (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    
+
     -- Identity
+    firebase_uid TEXT UNIQUE,
     email VARCHAR(255) UNIQUE NOT NULL,
     phone VARCHAR(20) UNIQUE,
     full_name VARCHAR(255) NOT NULL,
+    bio TEXT,
     avatar_url VARCHAR(500),
     
     -- Role (from onboarding)
@@ -125,6 +127,7 @@ CREATE TABLE IF NOT EXISTS users (
     updated_at TIMESTAMPTZ DEFAULT NOW() NOT NULL
 );
 
+CREATE INDEX IF NOT EXISTS idx_users_firebase_uid ON users(firebase_uid);
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 CREATE INDEX IF NOT EXISTS idx_users_stripe_customer ON users(stripe_customer_id);
 CREATE INDEX IF NOT EXISTS idx_users_trust_tier ON users(trust_tier);

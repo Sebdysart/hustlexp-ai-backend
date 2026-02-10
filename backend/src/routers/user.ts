@@ -14,17 +14,61 @@ import { EarnedVerificationUnlockService } from '../services/EarnedVerificationU
 import type { User } from '../types';
 import { z } from 'zod';
 
+// --------------------------------------------------------------------------
+// Helper: Transform DB user row → iOS-compatible JSON
+// --------------------------------------------------------------------------
+// The iOS app expects camelCase keys and some field name differences.
+// This keeps the DB schema canonical while letting the mobile client decode
+// directly into its HXUser model.
+
+function toMobileUser(user: User) {
+  // Map backend default_mode to frontend role label
+  const roleMap: Record<string, string> = { worker: 'hustler', poster: 'poster' };
+
+  return {
+    id: user.id,
+    name: user.full_name,
+    email: user.email,
+    phone: user.phone ?? null,
+    bio: user.bio ?? null,
+    avatarURL: user.avatar_url ?? null,
+    role: roleMap[user.default_mode] ?? user.default_mode,
+    trustTier: user.trust_tier,
+    rating: 5.0,               // TODO: compute from task_ratings aggregate
+    totalRatings: 0,           // TODO: compute from task_ratings count
+    xp: user.xp_total,
+    tasksCompleted: 0,         // TODO: compute from tasks WHERE worker_id AND state='COMPLETED'
+    tasksPosted: 0,            // TODO: compute from tasks WHERE poster_id
+    totalEarnings: 0,          // TODO: compute from escrows WHERE worker_id AND state='RELEASED'
+    totalSpent: 0,             // TODO: compute from escrows WHERE poster_id AND state IN ('RELEASED','FUNDED')
+    isVerified: user.is_verified,
+    createdAt: user.created_at,
+    // Extra fields the app may need
+    hasCompletedOnboarding: user.onboarding_completed_at != null,
+    defaultMode: user.default_mode,
+  };
+}
+
+// Helper: Normalize iOS role value to DB value
+// Frontend sends "hustler" but DB stores "worker"
+function normalizeRole(role: string): 'worker' | 'poster' {
+  if (role === 'hustler' || role === 'worker') return 'worker';
+  if (role === 'poster') return 'poster';
+  return 'worker'; // fallback
+}
+
 export const userRouter = router({
   // --------------------------------------------------------------------------
   // READ OPERATIONS
   // --------------------------------------------------------------------------
-  
+
   /**
    * Get current user profile
+   * Returns mobile-compatible JSON shape (camelCase, mapped field names)
    */
   me: protectedProcedure
     .query(async ({ ctx }) => {
-      return ctx.user;
+      return toMobileUser(ctx.user!);
     }),
   
   /**
@@ -34,20 +78,18 @@ export const userRouter = router({
     .input(z.object({ userId: Schemas.uuid }))
     .query(async ({ input }) => {
       const result = await db.query<User>(
-        `SELECT id, full_name, avatar_url, trust_tier, xp_total, current_level, 
-                current_streak, is_verified, created_at
-         FROM users WHERE id = $1`,
+        `SELECT * FROM users WHERE id = $1`,
         [input.userId]
       );
-      
+
       if (result.rows.length === 0) {
         throw new TRPCError({
           code: 'NOT_FOUND',
           message: 'User not found',
         });
       }
-      
-      return result.rows[0];
+
+      return toMobileUser(result.rows[0]);
     }),
   
   /**
@@ -92,30 +134,36 @@ export const userRouter = router({
       firebaseUid: z.string(),
       email: z.string().email(),
       fullName: z.string().min(1).max(255),
-      defaultMode: z.enum(['worker', 'poster']).default('worker'),
+      // Accept "hustler", "worker", or "poster" from frontend
+      defaultMode: z.string().default('worker'),
     }))
     .mutation(async ({ input }) => {
+      // Normalize role: iOS sends "hustler" but DB stores "worker"
+      const dbMode = normalizeRole(input.defaultMode);
+
       // Check if user already exists
       const existing = await db.query<User>(
         'SELECT id FROM users WHERE firebase_uid = $1 OR email = $2',
         [input.firebaseUid, input.email]
       );
-      
+
       if (existing.rows.length > 0) {
-        throw new TRPCError({
-          code: 'CONFLICT',
-          message: 'User already exists',
-        });
+        // Return existing user instead of error (handles re-registration from social auth)
+        const existingUser = await db.query<User>(
+          'SELECT * FROM users WHERE firebase_uid = $1 OR email = $2',
+          [input.firebaseUid, input.email]
+        );
+        return toMobileUser(existingUser.rows[0]);
       }
-      
+
       const result = await db.query<User>(
         `INSERT INTO users (firebase_uid, email, full_name, default_mode)
          VALUES ($1, $2, $3, $4)
          RETURNING *`,
-        [input.firebaseUid, input.email, input.fullName, input.defaultMode]
+        [input.firebaseUid, input.email, input.fullName, dbMode]
       );
-      
-      return result.rows[0];
+
+      return toMobileUser(result.rows[0]);
     }),
   
   // --------------------------------------------------------------------------
@@ -128,40 +176,52 @@ export const userRouter = router({
   updateProfile: protectedProcedure
     .input(z.object({
       fullName: z.string().min(1).max(255).optional(),
+      bio: z.string().max(500).optional(),
       avatarUrl: z.string().url().optional(),
-      defaultMode: z.enum(['worker', 'poster']).optional(),
+      phone: z.string().max(20).optional(),
+      // Accept "hustler", "worker", or "poster" from frontend
+      defaultMode: z.string().optional(),
     }))
     .mutation(async ({ ctx, input }) => {
       const updates: string[] = [];
       const values: unknown[] = [];
       let paramIndex = 1;
-      
+
       if (input.fullName !== undefined) {
         updates.push(`full_name = $${paramIndex++}`);
         values.push(input.fullName);
+      }
+      if (input.bio !== undefined) {
+        updates.push(`bio = $${paramIndex++}`);
+        values.push(input.bio);
       }
       if (input.avatarUrl !== undefined) {
         updates.push(`avatar_url = $${paramIndex++}`);
         values.push(input.avatarUrl);
       }
+      if (input.phone !== undefined) {
+        updates.push(`phone = $${paramIndex++}`);
+        values.push(input.phone);
+      }
       if (input.defaultMode !== undefined) {
         updates.push(`default_mode = $${paramIndex++}`);
-        values.push(input.defaultMode);
+        // Normalize: iOS sends "hustler" but DB stores "worker"
+        values.push(normalizeRole(input.defaultMode));
       }
-      
+
       if (updates.length === 0) {
-        return ctx.user;
+        return toMobileUser(ctx.user!);
       }
-      
+
       updates.push(`updated_at = NOW()`);
       values.push(ctx.user.id);
-      
+
       const result = await db.query<User>(
         `UPDATE users SET ${updates.join(', ')} WHERE id = $${paramIndex} RETURNING *`,
         values
       );
-      
-      return result.rows[0];
+
+      return toMobileUser(result.rows[0]);
     }),
   
   /**
@@ -189,9 +249,12 @@ export const userRouter = router({
       
       const user = result.rows[0];
       
+      // Map DB role to frontend role: "worker" → "hustler"
+      const roleMap: Record<string, string> = { worker: 'hustler', poster: 'poster' };
+
       return {
         onboardingComplete: user.onboarding_completed_at !== null,
-        role: user.default_mode as 'worker' | 'poster',
+        role: roleMap[user.default_mode] ?? user.default_mode,
         xpFirstCelebrationShownAt: user.xp_first_celebration_shown_at?.toISOString() || null,
         hasCompletedFirstTask: user.xp_first_celebration_shown_at !== null,
       };
@@ -229,8 +292,8 @@ export const userRouter = router({
           ctx.user.id,
         ]
       );
-      
-      return result.rows[0];
+
+      return toMobileUser(result.rows[0]);
     }),
 
   // --------------------------------------------------------------------------

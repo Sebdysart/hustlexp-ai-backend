@@ -98,9 +98,11 @@ export const VALID_PROGRESS_TRANSITIONS: Record<TaskProgressState, readonly Task
 
 export interface User {
   id: string;
+  firebase_uid?: string;
   email: string;
   phone?: string;
   full_name: string;
+  bio?: string;
   avatar_url?: string;
   
   // Role (from onboarding)
