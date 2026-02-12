@@ -25,14 +25,17 @@ export interface Context {
 }
 
 export async function createContext(opts: {
-  req: { headers: { authorization?: string } };
+  req: Request;
+  resHeaders: Headers;
 }): Promise<Context> {
-  const authHeader = opts.req.headers.authorization;
-  
+  // @hono/trpc-server passes a Web API Request object, NOT a plain object.
+  // Request.headers is a Headers instance — use .get(), not property access.
+  const authHeader = opts.req.headers.get('authorization');
+
   if (!authHeader?.startsWith('Bearer ')) {
     return { user: null, firebaseUid: null };
   }
-  
+
   const token = authHeader.slice(7);
   
   try {
