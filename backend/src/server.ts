@@ -560,48 +560,52 @@ async function startServer() {
 
   // Run pending migrations from database/migrations/
   try {
-    const fs = await import('fs');
-    const path = await import('path');
+    const { existsSync, readdirSync, readFileSync } = await import('node:fs');
+    const { join, resolve } = await import('node:path');
     const cwd = process.cwd();
+    console.log(`Migrations:  📁 CWD = ${cwd}`);
+
     const migrationPaths = [
-      path.join(cwd, 'backend/database/migrations'),
-      path.join(cwd, 'backend', 'database', 'migrations'),
+      join(cwd, 'backend/database/migrations'),
+      join(cwd, 'backend', 'database', 'migrations'),
       '/app/backend/database/migrations',
+      resolve(cwd, 'database/migrations'),
     ];
 
     let migrationsDir = '';
     for (const mp of migrationPaths) {
-      try {
-        if (fs.existsSync(mp)) {
-          migrationsDir = mp;
-          break;
-        }
-      } catch { /* ignore */ }
+      const exists = existsSync(mp);
+      console.log(`Migrations:  📂 ${mp} → ${exists ? 'EXISTS' : 'not found'}`);
+      if (exists && !migrationsDir) {
+        migrationsDir = mp;
+      }
     }
 
     if (migrationsDir) {
-      const files = fs.readdirSync(migrationsDir)
+      const files = readdirSync(migrationsDir)
         .filter((f: string) => f.endsWith('.sql'))
         .sort();
+      console.log(`Migrations:  📄 Found ${files.length} SQL files: ${files.join(', ')}`);
+
+      // Ensure tracking table exists
+      await db.query(`CREATE TABLE IF NOT EXISTS applied_migrations (
+        name TEXT PRIMARY KEY,
+        applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )`);
 
       for (const file of files) {
-        // Check if migration already applied (use a simple tracking table)
         try {
-          await db.query(`CREATE TABLE IF NOT EXISTS applied_migrations (
-            name TEXT PRIMARY KEY,
-            applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-          )`);
-
           const already = await db.query(
             'SELECT 1 FROM applied_migrations WHERE name = $1',
             [file]
           );
 
           if (already.rows.length > 0) {
-            continue; // Already applied
+            console.log(`Migrations:  ⏭️  ${file} already applied`);
+            continue;
           }
 
-          const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf-8');
+          const sql = readFileSync(join(migrationsDir, file), 'utf-8');
           console.log(`Migrations:  ⏳ Running ${file} (${sql.length} chars)...`);
 
           const pool = db.getPool();
@@ -612,14 +616,17 @@ async function startServer() {
               'INSERT INTO applied_migrations (name) VALUES ($1)',
               [file]
             );
-            console.log(`Migrations:  ✅ ${file} applied`);
+            console.log(`Migrations:  ✅ ${file} applied successfully`);
           } finally {
             client.release();
           }
         } catch (migErr: any) {
           console.error(`Migrations:  ❌ ${file} failed:`, migErr?.message?.substring(0, 200));
+          if (migErr?.position) console.error(`Migrations:  ❌ Position: ${migErr.position}`);
         }
       }
+    } else {
+      console.warn('Migrations:  ⚠️  No migrations directory found in any candidate path');
     }
   } catch (migRunErr: any) {
     console.warn('Migrations:  ⚠️  Migration runner error:', migRunErr?.message?.substring(0, 120));
