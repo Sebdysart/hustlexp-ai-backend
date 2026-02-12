@@ -378,7 +378,7 @@ async function handlePartialRefundRequest(
      WHERE id = $5 
        AND version = $6
        AND ($3 = 0 OR $1 IS NOT NULL)  -- If refundAmount > 0, refundId must exist
-       AND ($4 = 0 OR $2 IS NOT NULL)`, -- If releaseAmount > 0, transferId must exist
+       AND ($4 = 0 OR $2 IS NOT NULL)`, // If releaseAmount > 0, transferId must exist
     [refundId, transferId, refundAmount, releaseAmount, escrow.id, escrow.version]
   );
 

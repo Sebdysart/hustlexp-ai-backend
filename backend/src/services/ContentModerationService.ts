@@ -19,6 +19,7 @@ import { db, isInvariantViolation, getErrorMessage } from '../db';
 import type { ServiceResult } from '../types';
 import { ErrorCodes } from '../types';
 import { NotificationService } from './NotificationService';
+import { AIClient } from './AIClient';
 
 // ============================================================================
 // TYPES
@@ -154,9 +155,8 @@ export const ContentModerationService = {
       contentUrl,
       flaggedBy,
       reporterUserId,
-      aiConfidence,
-      aiRecommendation,
     } = params;
+    let { aiConfidence, aiRecommendation } = params;
     
     try {
       // Determine severity based on AI confidence or default to MEDIUM
@@ -173,39 +173,78 @@ export const ContentModerationService = {
         }
       }
       
-      // Determine moderation category based on AI analysis or pattern detection
-      // TODO: Enhance with full AI analysis for richer category detection
+      // Determine moderation category using AI classification with regex fallback
       let moderationCategory: string = 'profanity'; // Default fallback
-      
-      // Basic category detection based on content patterns (pre-AI analysis)
-      if (contentText) {
+
+      // Try AI-based content classification first (fast route for low latency)
+      if (contentText && AIClient.isConfigured()) {
+        try {
+          const aiMod = await AIClient.callJSON<{
+            category: string;
+            confidence: number;
+            recommendation: 'approve' | 'flag' | 'block';
+          }>({
+            route: 'fast',
+            temperature: 0,
+            timeoutMs: 5000,
+            maxTokens: 256,
+            systemPrompt: `You are a content moderation classifier for HustleXP (task marketplace).
+Classify the content into one category and provide a recommendation.
+Return JSON with:
+- category: one of "profanity", "harassment", "spam", "inappropriate", "personal_info", "phishing", "misleading", "safe"
+- confidence: number 0.0-1.0
+- recommendation: "approve" (safe content), "flag" (needs review), "block" (clearly violating)`,
+            prompt: `Classify this ${contentType} content:\n\n${contentText.slice(0, 500)}`,
+          });
+
+          if (aiMod.data.category !== 'safe') {
+            moderationCategory = aiMod.data.category;
+            // Use AI confidence/recommendation if not already set by caller
+            if (aiConfidence === undefined) {
+              aiConfidence = aiMod.data.confidence;
+              aiRecommendation = aiMod.data.recommendation;
+              // Recalculate severity from AI confidence
+              if (aiConfidence >= AUTO_BLOCK_THRESHOLD) severity = 'CRITICAL';
+              else if (aiConfidence >= FLAG_THRESHOLD) severity = 'HIGH';
+              else if (aiConfidence >= 0.5) severity = 'MEDIUM';
+              else severity = 'LOW';
+            }
+          } else if (aiMod.data.recommendation === 'approve' && aiMod.data.confidence > 0.8) {
+            // AI says content is safe with high confidence — approve directly
+            return { success: true, data: { approved: true } };
+          }
+        } catch (aiError) {
+          console.warn('[ContentModeration] AI classification failed, falling back to regex:', aiError);
+          // Fall through to regex patterns below
+        }
+      }
+
+      // Regex-based fallback/supplementary detection
+      if (contentText && moderationCategory === 'profanity') {
         const lowerText = contentText.toLowerCase();
-        
+
         // Detect personal information (phone, email)
-        if (/\b\d{3}[-.\s]?\d{3}[-.\s]?\d{4}\b/.test(contentText) || 
+        if (/\b\d{3}[-.\s]?\d{3}[-.\s]?\d{4}\b/.test(contentText) ||
             /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/.test(contentText)) {
           moderationCategory = 'personal_info';
         }
         // Detect links/URLs (potential phishing/spam)
         else if (/https?:\/\/|www\./i.test(contentText)) {
-          moderationCategory = 'phishing'; // Could be phishing or spam
+          moderationCategory = 'phishing';
         }
-        // Detect profanity (basic pattern - full AI analysis will be more accurate)
+        // Detect profanity
         else if (/\b(fuck|shit|damn|bitch|asshole)\b/i.test(lowerText)) {
           moderationCategory = 'profanity';
         }
-        // Detect harassment (repetitive negative content - basic heuristic)
+        // Detect harassment
         else if (/(hate|kill|die|stupid).{0,10}(you|u|ur|your)/i.test(lowerText)) {
           moderationCategory = 'harassment';
         }
-        // Detect spam (repetitive content, excessive caps, etc.)
+        // Detect spam
         else if (/[A-Z]{10,}|(buy|click|free|limited).{0,5}(now|today|offer)/i.test(lowerText)) {
           moderationCategory = 'spam';
         }
       }
-      
-      // If AI recommendation is provided, prioritize AI category analysis (future enhancement)
-      // For now, use pattern-based detection above
       
       // If AI confidence < 0.5, approve without queueing
       if (aiConfidence !== undefined && aiConfidence < 0.5 && aiRecommendation === 'approve') {
@@ -249,7 +288,7 @@ export const ContentModerationService = {
         });
         
         // Notify user that their content was automatically flagged
-        await NotificationService.create({
+        await NotificationService.createNotification({
           userId,
           category: 'security_alert',
           title: 'Content Flagged',
@@ -259,7 +298,7 @@ export const ContentModerationService = {
           metadata: { contentType, contentId, moderationCategory, severity },
           channels: ['in_app', 'push'],
           priority: severity === 'CRITICAL' ? 'HIGH' : 'MEDIUM',
-        }).catch(error => {
+        }).catch((error: unknown) => {
           // Log error but don't fail moderation process
           console.error(`Failed to send moderation notification to user ${userId}:`, error);
         });
@@ -301,7 +340,7 @@ export const ContentModerationService = {
         success: true,
         data: { approved: false, queueItemId: result.rows[0].id },
       };
-    } catch (error) {
+    } catch (error: unknown) {
       if (isInvariantViolation(error)) {
         return {
           success: false,
@@ -359,7 +398,7 @@ export const ContentModerationService = {
         success: true,
         data: result.rows,
       };
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         success: false,
         error: {
@@ -396,7 +435,7 @@ export const ContentModerationService = {
         success: true,
         data: result.rows[0],
       };
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         success: false,
         error: {
@@ -470,7 +509,7 @@ export const ContentModerationService = {
         });
         
         // Notify user that their content was rejected
-        await NotificationService.create({
+        await NotificationService.createNotification({
           userId: queueItem.user_id,
           category: 'security_alert',
           title: 'Content Removed',
@@ -480,7 +519,7 @@ export const ContentModerationService = {
           metadata: { queueItemId: queueItem.id, decision, reviewNotes },
           channels: ['in_app', 'push', 'email'],
           priority: 'HIGH',
-        }).catch(error => {
+        }).catch((error: unknown) => {
           // Log error but don't fail review process
           console.error(`Failed to send rejection notification to user ${queueItem.user_id}:`, error);
         });
@@ -497,7 +536,7 @@ export const ContentModerationService = {
         success: true,
         data: queueItem,
       };
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         success: false,
         error: {
@@ -578,7 +617,7 @@ export const ContentModerationService = {
         success: true,
         data: result.rows[0],
       };
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         success: false,
         error: {
@@ -615,7 +654,7 @@ export const ContentModerationService = {
         success: true,
         data: result.rows,
       };
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         success: false,
         error: {
@@ -671,7 +710,7 @@ export const ContentModerationService = {
         success: true,
         data: result.rows[0],
       };
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         success: false,
         error: {
@@ -712,7 +751,7 @@ export const ContentModerationService = {
         success: true,
         data: result.rows[0],
       };
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         success: false,
         error: {
@@ -749,7 +788,7 @@ export const ContentModerationService = {
         success: true,
         data: result.rows,
       };
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         success: false,
         error: {
@@ -826,7 +865,7 @@ export const ContentModerationService = {
         }
         
         // Notify user that their appeal was successful
-        await NotificationService.create({
+        await NotificationService.createNotification({
           userId: appeal.user_id,
           category: 'security_alert',
           title: 'Appeal Successful',
@@ -835,7 +874,7 @@ export const ContentModerationService = {
           metadata: { appealId: appeal.id, originalDecision: appeal.original_decision },
           channels: ['in_app', 'push', 'email'],
           priority: 'MEDIUM',
-        }).catch(error => {
+        }).catch((error: unknown) => {
           // Log error but don't fail appeal process
           console.error(`Failed to send appeal success notification to user ${appeal.user_id}:`, error);
         });
@@ -845,7 +884,7 @@ export const ContentModerationService = {
         success: true,
         data: appeal,
       };
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         success: false,
         error: {
@@ -875,7 +914,7 @@ export const ContentModerationService = {
         success: true,
         data: result.rows,
       };
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         success: false,
         error: {
@@ -981,7 +1020,7 @@ async function applyModerationAction(params: {
       }
       // Note: Tasks and ratings should not be deleted, only hidden/quarantined
     }
-  } catch (error) {
+  } catch (error: unknown) {
     // Log error but don't throw - moderation action failure shouldn't break review process
     console.error(`Failed to apply moderation action ${action} to ${contentType} ${contentId}:`, error);
   }

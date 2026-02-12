@@ -51,7 +51,12 @@ export const config = {
       bucketName: process.env.R2_BUCKET_NAME || 'hustlexp-storage',
     },
   },
-  
+
+  // Maps & Geocoding (Google Maps Platform)
+  googleMaps: {
+    apiKey: process.env.GOOGLE_MAPS_API_KEY || '',
+  },
+
   // AI Services (Multi-model)
   ai: {
     openai: {

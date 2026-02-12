@@ -16,6 +16,7 @@
 import { db, isInvariantViolation, getErrorMessage } from '../db';
 import type { ServiceResult } from '../types';
 import { ErrorCodes } from '../types';
+import { GeocodingService } from './GeocodingService';
 
 // ============================================================================
 // TYPES
@@ -329,9 +330,31 @@ export const TaskDiscoveryService = {
         categoryExperience[row.category || ''] = parseInt(row.count as any, 10);
       });
       
-      // Calculate distance (placeholder - requires location parsing)
-      // TODO: Parse task.location and hustler.zip_code to get coordinates
-      const distanceMiles = 0; // Placeholder - need geocoding service
+      // Calculate distance using GeocodingService
+      let distanceMiles = 0;
+      try {
+        // Geocode the task location (string -> coordinates, cached in Redis)
+        const taskCoords = task.location
+          ? await GeocodingService.geocodeAddress(task.location)
+          : null;
+
+        // Geocode the hustler's zip code (string -> coordinates, cached in Redis)
+        const hustlerCoords = hustler.zip_code
+          ? await GeocodingService.geocodeAddress(hustler.zip_code)
+          : null;
+
+        if (taskCoords && hustlerCoords) {
+          distanceMiles = GeocodingService.calculateDistanceMiles(
+            taskCoords.lat,
+            taskCoords.lng,
+            hustlerCoords.lat,
+            hustlerCoords.lng
+          );
+        }
+        // If either geocode fails, distanceMiles stays 0 (same as previous fallback)
+      } catch {
+        // Geocoding failure is non-critical; fall back to 0 distance
+      }
       
       // Calculate components
       const trustMultiplier = calculateTrustMultiplier(

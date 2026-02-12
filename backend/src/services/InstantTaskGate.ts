@@ -10,6 +10,7 @@
  */
 
 import { db } from '../db';
+import { AIClient } from './AIClient';
 
 // ============================================================================
 // TYPES
@@ -337,19 +338,60 @@ export async function checkInstantEligibility(
 
 /**
  * Call AI model to check instant eligibility
- * 
- * TODO: Replace heuristic with actual AI call
  * Temperature = 0 for determinism
- * Returns structured JSON only
+ * Falls back to heuristic if AI unavailable
  */
 async function callAIGate(task: TaskDraft): Promise<InstantGateResult> {
-  // Placeholder: Use heuristic for now
-  // In production, this would call OpenAI/DeepSeek with:
-  // - Temperature: 0
-  // - Structured output: JSON schema
-  // - Prompt: "Check if task has all execution-critical fields"
-  
-  return await checkInstantEligibility(task);
+  // Always run heuristic first (it's fast and catches hard blockers)
+  const heuristicResult = await checkInstantEligibility(task);
+
+  // If heuristic blocks it, trust the heuristic — no need for AI
+  if (!heuristicResult.instantEligible) {
+    return heuristicResult;
+  }
+
+  // If heuristic passes, optionally validate with AI for edge cases
+  if (AIClient.isConfigured()) {
+    try {
+      const aiResult = await AIClient.callJSON<InstantGateResult>({
+        route: 'primary',
+        temperature: 0,
+        timeoutMs: 10000,
+        maxTokens: 512,
+        systemPrompt: `You are HustleXP's Instant Task Gate (A2 authority).
+Determine if a task has ALL execution-critical fields for Instant Mode.
+A task is Instant-eligible UNLESS a missing detail would force a worker to ask a question before starting.
+
+Return JSON with EXACTLY these fields:
+- instantEligible: boolean
+- blockReason: string | null (one of: "missing_location", "vague_location", "missing_access", "missing_success_criteria", "semantic_ambiguity", or null)
+- questions: string[] (clarifying questions the worker would need to ask, empty if eligible)`,
+        prompt: `Check if this task is ready for Instant Execution Mode:
+
+Title: ${task.title}
+Description: ${task.description}
+Location: ${task.location || 'Not provided'}
+Requirements: ${task.requirements || 'None specified'}
+Category: ${task.category || 'Not specified'}
+Deadline: ${task.deadline || 'Not specified'}`,
+      });
+
+      const aiGateResult = aiResult.data;
+
+      // If AI disagrees with heuristic, log for monitoring but trust AI
+      if (!aiGateResult.instantEligible && heuristicResult.instantEligible) {
+        console.log(`[InstantGate] AI blocked task that heuristic passed. Reason: ${aiGateResult.blockReason}. Questions: ${aiGateResult.questions.join('; ')}`);
+        return aiGateResult;
+      }
+
+      return aiGateResult;
+    } catch (aiError) {
+      console.warn('[InstantGate] AI call failed, using heuristic result:', aiError);
+    }
+  }
+
+  // Fallback: trust heuristic result
+  return heuristicResult;
 }
 
 // Export for use in TaskService

@@ -12,6 +12,7 @@
 
 import { db } from '../db';
 import type { ServiceResult } from '../types';
+import { AIClient } from './AIClient';
 
 // ============================================================================
 // TYPES
@@ -74,12 +75,57 @@ export const ScoperAIService = {
    */
   analyzeTaskScope: async (input: ScoperInput): Promise<ServiceResult<ScoperProposal>> => {
     try {
-      // TODO: Call LLM (GPT-4o, Claude 3.5) with prompt from SCOPER_AGENT_SPEC_LOCKED.md
-      // For now, use heuristic-based estimation
+      let proposal: ScoperProposal;
 
-      const proposal = ScoperAIService._generateProposal(input);
+      // Try AI-based analysis first, fall back to heuristics
+      if (AIClient.isConfigured()) {
+        try {
+          const aiResult = await AIClient.callJSON<ScoperProposal>({
+            route: 'primary',
+            temperature: 0.3,
+            timeoutMs: 15000,
+            systemPrompt: `You are HustleXP's Scoper Agent (A2 authority - proposal only).
+Analyze task descriptions and propose pricing, XP rewards, and difficulty.
+Your proposals are validated by deterministic constitutional rules — you cannot override them.
 
-      // Validate proposal against constitutional rules
+CONSTITUTIONAL BOUNDS:
+- Price: $15-$500 (1500-50000 cents)
+- XP: price_cents / 10 (±20% tolerance)
+- Difficulty tiers: easy ($15-$50), medium ($50-$150), hard ($150-$500)
+- Confidence threshold: >= 0.60 (below requires human review)
+
+Return JSON with EXACTLY these fields:
+- suggested_price_cents: number (1500-50000)
+- price_reasoning: string (minimum 20 chars explaining why)
+- suggested_xp: number (approximately price_cents / 10)
+- xp_reasoning: string
+- difficulty: "easy" | "medium" | "hard"
+- difficulty_reasoning: string
+- confidence_score: number (0.0-1.0)
+- flags: string[] (e.g., "urgent", "heavy_lifting", "specialized_skill")
+- estimated_duration_minutes: number (optional)
+- required_capabilities: string[] (optional, e.g., "vehicle", "tools")`,
+            prompt: `Analyze this task and propose pricing/difficulty:
+
+Description: ${input.description}
+${input.category ? `Category: ${input.category}` : ''}
+${input.budget_hint_cents ? `Budget hint: $${(input.budget_hint_cents / 100).toFixed(2)}` : ''}
+${input.location ? `Location: ${input.location.city}, ${input.location.state}` : ''}`,
+          });
+
+          proposal = aiResult.data;
+          console.log(`[ScoperAI] AI proposal: $${(proposal.suggested_price_cents / 100).toFixed(2)}, ${proposal.difficulty}, confidence=${proposal.confidence_score} (via ${aiResult.provider})`);
+        } catch (aiError) {
+          console.warn('[ScoperAI] AI call failed, using heuristic fallback:', aiError);
+          proposal = ScoperAIService._generateProposal(input);
+        }
+      } else {
+        // No AI configured - use heuristic fallback
+        proposal = ScoperAIService._generateProposal(input);
+      }
+
+      // CONSTITUTIONAL: Always validate proposal against deterministic rules
+      // AI proposes, validator accepts/rejects — this is non-negotiable
       const validation = ScoperAIService._validateProposal(proposal);
       if (!validation.valid) {
         return {
@@ -107,9 +153,23 @@ export const ScoperAIService = {
   /**
    * Refine task description (remove slop, standardize format)
    */
-  refineTaskDescription: (rawDescription: string): string => {
-    // TODO: Use LLM to clean and structure description
-    // For now, basic cleanup
+  refineTaskDescription: async (rawDescription: string): Promise<string> => {
+    // Try AI-based refinement (fast route for low latency), fall back to basic cleanup
+    if (AIClient.isConfigured() && rawDescription.length > 10) {
+      try {
+        const result = await AIClient.call({
+          route: 'fast',
+          temperature: 0.3,
+          timeoutMs: 5000,
+          maxTokens: 300,
+          systemPrompt: 'Clean and structure the following task description. Fix grammar, remove filler words, and standardize format. Keep it concise (max 300 chars). Return ONLY the cleaned description, no extra commentary.',
+          prompt: rawDescription,
+        });
+        return result.content.trim().slice(0, 500);
+      } catch {
+        // Fall through to basic cleanup
+      }
+    }
     return rawDescription.trim().replace(/\s+/g, ' ').slice(0, 500);
   },
 
@@ -162,8 +222,7 @@ export const ScoperAIService = {
   },
 
   /**
-   * Private: Generate proposal using heuristics
-   * TODO: Replace with LLM-based generation
+   * Private: Generate proposal using heuristics (fallback when AI is unavailable)
    */
   _generateProposal: (input: ScoperInput): ScoperProposal => {
     const description = input.description.toLowerCase();

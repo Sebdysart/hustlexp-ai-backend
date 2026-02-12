@@ -56,6 +56,14 @@ function registerWorkers(): void {
       if (eventType === 'email.send_requested' || (job.data.payload && job.data.payload.emailId)) {
         // Email delivery
         await processEmailJob(job);
+      } else if (eventType === 'push.send_requested' || (job.data.payload && job.data.payload.notificationId && !job.data.payload.emailId && !job.data.payload.smsId)) {
+        // Push notification delivery (FCM)
+        const { processPushJob } = await import('./push-worker');
+        await processPushJob(job);
+      } else if (eventType === 'sms.send_requested' || (job.data.payload && job.data.payload.smsId)) {
+        // SMS delivery (Twilio)
+        const { processSMSJob } = await import('./sms-worker');
+        await processSMSJob(job);
       } else if (eventType === 'task.progress_updated') {
         // Realtime task progress updates (Step 10 - Pillar A)
         const { processRealtimeJob } = await import('./realtime-worker');

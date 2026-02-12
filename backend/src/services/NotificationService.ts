@@ -1072,13 +1072,20 @@ async function queueNotificationChannels(
           })
         );
       } else if (channel === 'push') {
-        // Push notification: Queue via outbox pattern (TODO: implement push_outbox table)
-        // For now, log intent (push worker not yet implemented)
-        console.log(`[Push] Would queue push notification ${notification.id} for user ${notification.user_id}`);
+        // Push notification: Queue via outbox pattern (push-worker handles delivery)
+        queuePromises.push(
+          queuePushNotification(notification).catch(error => {
+            console.error(`Failed to queue push notification ${notification.id}:`, error);
+          })
+        );
       } else if (channel === 'sms') {
-        // SMS notification: Queue via outbox pattern (TODO: implement sms_outbox table)
-        // For now, log intent (SMS worker not yet implemented)
-        console.log(`[SMS] Would queue SMS notification ${notification.id} for user ${notification.user_id}`);
+        // SMS notification: Queue via sms_outbox + outbox pattern
+        // CRITICAL: No inline send - SMS worker handles delivery
+        queuePromises.push(
+          queueSMSNotification(notification).catch(error => {
+            console.error(`Failed to queue SMS notification ${notification.id}:`, error);
+          })
+        );
       }
     }
     
@@ -1221,4 +1228,158 @@ async function queueEmailNotification(notification: Notification): Promise<void>
   
   // Email queued successfully (will be processed by email worker)
   console.log(`✅ Email notification ${notification.id} queued for user ${notification.user_id} (template: ${template})`);
+}
+
+/**
+ * Queue push notification via outbox pattern
+ * PHASE C: Write-only method - creates outbox_event for push-worker to process
+ *
+ * Hard rule: NO INLINE SENDS - push worker is the ONLY sender
+ *
+ * @param notification Notification to push
+ */
+async function queuePushNotification(notification: Notification): Promise<void> {
+  // Build data payload from notification metadata
+  const data: Record<string, string> = {
+    notificationId: notification.id,
+    category: notification.category,
+    deepLink: notification.deep_link,
+  };
+
+  if (notification.task_id) {
+    data.taskId = notification.task_id;
+  }
+
+  // Generate deterministic idempotency key
+  const aggregateId = notification.task_id || notification.id;
+  const idempotencyKey = `push.send_requested:${notification.category}:${notification.user_id}:${aggregateId}:1`;
+
+  // Check for duplicate (idempotency)
+  const existingOutbox = await db.query(
+    `SELECT id FROM outbox_events WHERE idempotency_key = $1`,
+    [idempotencyKey]
+  );
+
+  if (existingOutbox.rows.length > 0) {
+    // Already queued - skip (idempotent)
+    return;
+  }
+
+  // Write outbox_event (push.send_requested)
+  await db.query(
+    `INSERT INTO outbox_events (
+      event_type, aggregate_type, aggregate_id, event_version,
+      idempotency_key, payload, queue_name, status
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending')`,
+    [
+      'push.send_requested',
+      'push',
+      notification.id,
+      1,
+      idempotencyKey,
+      JSON.stringify({
+        notificationId: notification.id,
+        userId: notification.user_id,
+        title: notification.title,
+        body: notification.body,
+        data,
+      }),
+      'user_notifications',
+    ]
+  );
+
+  // Push queued successfully (will be processed by push worker)
+  console.log(`✅ Push notification ${notification.id} queued for user ${notification.user_id}`);
+}
+
+/**
+ * Queue SMS notification via sms_outbox + outbox pattern
+ * Write-only method - creates sms_outbox row + outbox_event in same transaction
+ *
+ * Hard rule: NO INLINE SENDS - SMS worker is the ONLY sender
+ *
+ * @param notification Notification to SMS
+ */
+async function queueSMSNotification(notification: Notification): Promise<void> {
+  // Get user's phone number (required for sms_outbox)
+  const userResult = await db.query<{ phone: string }>(
+    `SELECT phone FROM users WHERE id = $1`,
+    [notification.user_id]
+  );
+
+  if (userResult.rows.length === 0) {
+    throw new Error(`User ${notification.user_id} not found`);
+  }
+
+  const userPhone = userResult.rows[0].phone;
+
+  if (!userPhone) {
+    console.warn(`[SMS] User ${notification.user_id} has no phone number - skipping SMS notification ${notification.id}`);
+    return;
+  }
+
+  // Build SMS body from notification
+  const smsBody = `${notification.title}: ${notification.body}`;
+
+  // Generate deterministic idempotency key
+  // Format: sms.send_requested:{category}:{to_phone}:{aggregate_id}:{version}
+  const aggregateId = notification.task_id || notification.id; // Use task_id if available, otherwise notification_id
+  const idempotencyKey = `sms.send_requested:${notification.category}:${userPhone}:${aggregateId}:1`;
+
+  // Create sms_outbox row + outbox_event in same transaction
+  await db.transaction(async (query) => {
+    // Create sms_outbox row (status='pending')
+    const smsResult = await query<{ id: string }>(
+      `INSERT INTO sms_outbox (
+        user_id, to_phone, body, priority, status, idempotency_key
+      ) VALUES ($1, $2, $3, $4, 'pending', $5)
+      ON CONFLICT (idempotency_key) DO UPDATE SET
+        updated_at = NOW()
+      RETURNING id`,
+      [
+        notification.user_id,
+        userPhone,
+        smsBody,
+        notification.priority,
+        idempotencyKey,
+      ]
+    );
+
+    const smsId = smsResult.rows[0].id;
+
+    // Write outbox_event (sms.send_requested) in same transaction
+    // Check for duplicate (idempotency key must be unique)
+    const existingOutbox = await query(
+      `SELECT id FROM outbox_events WHERE idempotency_key = $1`,
+      [idempotencyKey]
+    );
+
+    if (existingOutbox.rows.length === 0) {
+      await query(
+        `INSERT INTO outbox_events (
+          event_type, aggregate_type, aggregate_id, event_version,
+          idempotency_key, payload, queue_name, status
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending')`,
+        [
+          'sms.send_requested',
+          'sms',
+          smsId,
+          1,
+          idempotencyKey,
+          JSON.stringify({
+            smsId,
+            userId: notification.user_id,
+            toPhone: userPhone,
+            body: smsBody,
+          }),
+          'user_notifications',
+        ]
+      );
+    }
+
+    // Transaction commits automatically
+  });
+
+  // SMS queued successfully (will be processed by SMS worker)
+  console.log(`✅ SMS notification ${notification.id} queued for user ${notification.user_id} (phone: ${userPhone.slice(0, 4)}****)`);
 }

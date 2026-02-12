@@ -68,7 +68,7 @@ export async function processOutboxEvents(batchSize: number = 100): Promise<{
        WHERE status = 'pending'
        ORDER BY created_at ASC
        LIMIT $1
-       FOR UPDATE SKIP LOCKED`,  -- Skip locked rows (parallel worker safety)
+       FOR UPDATE SKIP LOCKED`, // Skip locked rows (parallel worker safety)
       [batchSize]
     );
     
@@ -101,7 +101,7 @@ export async function processOutboxEvents(batchSize: number = 100): Promise<{
                bullmq_job_id = $1,
                attempts = attempts + 1
            WHERE id = $2
-             AND status = 'pending'`,  -- CRITICAL: Only update if still pending (prevents double-enqueue)
+             AND status = 'pending'`, // CRITICAL: Only update if still pending (prevents double-enqueue)
           [job.id || event.idempotency_key, event.id]
         );
         

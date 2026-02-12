@@ -139,7 +139,7 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
       `SELECT id, user_id, to_email, template, params_json, status, attempts, max_attempts, suppressed_reason, idempotency_key, provider_msg_id
        FROM email_outbox
        WHERE id = $1
-       FOR UPDATE`,  -- Lock row for update (prevents concurrent processing)
+       FOR UPDATE`, // Lock row for update (prevents concurrent processing)
       [emailId]
     );
     
@@ -243,8 +243,8 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
            attempts = attempts + 1,
            updated_at = NOW()
        WHERE id = $1
-         AND status IN ('pending', 'failed')  -- Only claim if in claimable state
-       RETURNING id, status, attempts`,  -- RETURNING confirms we got the lock
+         AND status IN ('pending', 'failed')
+       RETURNING id, status, attempts`,
       [emailId]
     );
     

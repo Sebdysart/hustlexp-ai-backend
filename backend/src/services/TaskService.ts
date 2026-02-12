@@ -230,9 +230,9 @@ export const TaskService = {
       requiresProof = true,
       mode = 'STANDARD',
       liveBroadcastRadiusMiles,
-      instantMode = false,
       sensitive = false,
     } = params;
+    let { instantMode = false } = params;
 
     // v1.8.0: Scoper AI integration (optional, for AI-suggested pricing)
     // If price is not provided or is placeholder (e.g., 0), call Scoper AI for proposal
@@ -240,12 +240,12 @@ export const TaskService = {
     let xpReward: number | undefined;
 
     if (!price || price === 0) {
-      const scopeResult = await ScoperAIService.analyzeTaskScope(description, category);
+      const scopeResult = await ScoperAIService.analyzeTaskScope({ description, category });
       if (scopeResult.success && scopeResult.data) {
         const proposal = scopeResult.data;
-        // Use mid-point of suggested price range
-        finalPrice = Math.round((proposal.price_range_min_cents + proposal.price_range_max_cents) / 2);
-        xpReward = proposal.xp_suggestion;
+        // Use Scoper AI suggested price
+        finalPrice = proposal.suggested_price_cents;
+        xpReward = proposal.suggested_xp;
 
         console.log(
           `[TaskService] Scoper AI proposal: price=$${finalPrice / 100}, xp=${xpReward}, difficulty=${proposal.difficulty}`

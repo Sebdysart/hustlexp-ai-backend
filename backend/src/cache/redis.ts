@@ -1,23 +1,13 @@
-/**
- * Redis Cache & Rate Limiting via Upstash
- *
- * Uses @upstash/redis REST client for caching and rate limiting.
- * Falls back to no-op stubs when Redis is not configured (dev mode).
- *
- * @see config.ts for UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN
- */
-
+import { config } from '../config';
 import { Redis } from '@upstash/redis';
 import { Ratelimit } from '@upstash/ratelimit';
-import { config } from '../config';
 
-// ============================================================================
-// CLIENT INITIALIZATION
-// ============================================================================
+export type RedisClient = Redis | null;
 
+// ─── Singleton Redis Client ────────────────────────────────────────────────
 let redisClient: Redis | null = null;
 
-export function getRedisClient(): Redis | null {
+function getClient(): Redis | null {
   if (redisClient) return redisClient;
 
   if (config.redis.restUrl && config.redis.restToken) {
@@ -26,25 +16,37 @@ export function getRedisClient(): Redis | null {
         url: config.redis.restUrl,
         token: config.redis.restToken,
       });
-      console.log('✅ Redis client connected (Upstash REST)');
-    } catch (err) {
-      console.error('❌ Redis client initialization failed:', err);
+      console.log('✅ Upstash Redis REST client initialized');
+    } catch (error) {
+      console.error('❌ Failed to initialize Upstash Redis client:', error);
       redisClient = null;
     }
   } else {
-    console.warn('⚠️  Redis not configured — caching and rate limiting disabled');
+    console.warn('⚠️  Redis REST not configured (UPSTASH_REDIS_REST_URL/TOKEN missing) - using stub fallbacks');
   }
 
   return redisClient;
 }
 
-// Initialize on import
-getRedisClient();
+// ─── Rate Limiter (lazy singleton) ─────────────────────────────────────────
+const rateLimiters = new Map<string, Ratelimit>();
 
-// ============================================================================
-// CACHE KEYS & TTL
-// ============================================================================
+function getRateLimiter(windowMs: number, limit: number): Ratelimit | null {
+  const client = getClient();
+  if (!client) return null;
 
+  const key = `${windowMs}:${limit}`;
+  if (!rateLimiters.has(key)) {
+    rateLimiters.set(key, new Ratelimit({
+      redis: client,
+      limiter: Ratelimit.slidingWindow(limit, `${windowMs} ms`),
+      analytics: false,
+    }));
+  }
+  return rateLimiters.get(key)!;
+}
+
+// ─── Cache Key Patterns ────────────────────────────────────────────────────
 export const CACHE_KEYS = {
   taskFeed: (userId: string) => `task:feed:${userId}`,
   leaderboardWeekly: () => 'leaderboard:weekly',
@@ -68,107 +70,119 @@ export const CACHE_TTL = {
   rateLimit: 60,
 } as const;
 
-// ============================================================================
-// CACHE OPERATIONS (with fallback for unconfigured Redis)
-// ============================================================================
+// ─── Redis Operations ──────────────────────────────────────────────────────
+
+export async function createRedisClient(): Promise<RedisClient> {
+  return getClient();
+}
 
 export async function get<T = string>(key: string): Promise<T | null> {
-  const client = getRedisClient();
+  const client = getClient();
   if (!client) return null;
+
   try {
-    return await client.get<T>(key);
-  } catch (err) {
-    console.error(`Redis GET error [${key}]:`, err);
+    const value = await client.get<T>(key);
+    return value;
+  } catch (error) {
+    console.error(`Redis GET error for key ${key}:`, error);
     return null;
   }
 }
 
 export async function set(
   key: string,
-  value: string,
-  ttl?: number,
+  value: string | number | object,
+  ttl?: number
 ): Promise<void> {
-  const client = getRedisClient();
+  const client = getClient();
   if (!client) return;
+
   try {
     if (ttl) {
       await client.set(key, value, { ex: ttl });
     } else {
       await client.set(key, value);
     }
-  } catch (err) {
-    console.error(`Redis SET error [${key}]:`, err);
+  } catch (error) {
+    console.error(`Redis SET error for key ${key}:`, error);
   }
 }
 
 export async function del(key: string): Promise<void> {
-  const client = getRedisClient();
+  const client = getClient();
   if (!client) return;
+
   try {
     await client.del(key);
-  } catch (err) {
-    console.error(`Redis DEL error [${key}]:`, err);
+  } catch (error) {
+    console.error(`Redis DEL error for key ${key}:`, error);
   }
 }
 
 export async function exists(key: string): Promise<boolean> {
-  const client = getRedisClient();
+  const client = getClient();
   if (!client) return false;
+
   try {
     const result = await client.exists(key);
     return result === 1;
-  } catch (err) {
-    console.error(`Redis EXISTS error [${key}]:`, err);
+  } catch (error) {
+    console.error(`Redis EXISTS error for key ${key}:`, error);
     return false;
   }
 }
 
 export async function incr(key: string): Promise<number> {
-  const client = getRedisClient();
+  const client = getClient();
   if (!client) return 1;
+
   try {
     return await client.incr(key);
-  } catch (err) {
-    console.error(`Redis INCR error [${key}]:`, err);
+  } catch (error) {
+    console.error(`Redis INCR error for key ${key}:`, error);
     return 1;
   }
 }
 
 export async function expire(key: string, ttl: number): Promise<void> {
-  const client = getRedisClient();
+  const client = getClient();
   if (!client) return;
+
   try {
     await client.expire(key, ttl);
-  } catch (err) {
-    console.error(`Redis EXPIRE error [${key}]:`, err);
+  } catch (error) {
+    console.error(`Redis EXPIRE error for key ${key}:`, error);
   }
 }
 
 export async function zadd(
   key: string,
   score: number,
-  member: string,
+  member: string
 ): Promise<void> {
-  const client = getRedisClient();
+  const client = getClient();
   if (!client) return;
+
   try {
     await client.zadd(key, { score, member });
-  } catch (err) {
-    console.error(`Redis ZADD error [${key}]:`, err);
+  } catch (error) {
+    console.error(`Redis ZADD error for key ${key}:`, error);
   }
 }
 
 export async function zrange(
   key: string,
   start: number,
-  stop: number,
+  stop: number
 ): Promise<string[]> {
-  const client = getRedisClient();
+  const client = getClient();
   if (!client) return [];
+
   try {
-    return (await client.zrange(key, start, stop)) as string[];
-  } catch (err) {
-    console.error(`Redis ZRANGE error [${key}]:`, err);
+    const result = await client.zrange<string[]>(key, start, stop);
+    return result;
+  } catch (error) {
+    console.error(`Redis ZRANGE error for key ${key}:`, error);
     return [];
   }
 }
@@ -176,89 +190,46 @@ export async function zrange(
 export async function zrevrange(
   key: string,
   start: number,
-  stop: number,
+  stop: number
 ): Promise<string[]> {
-  const client = getRedisClient();
+  const client = getClient();
   if (!client) return [];
+
   try {
-    return (await client.zrange(key, start, stop, { rev: true })) as string[];
-  } catch (err) {
-    console.error(`Redis ZREVRANGE error [${key}]:`, err);
+    const result = await client.zrange<string[]>(key, start, stop, { rev: true });
+    return result;
+  } catch (error) {
+    console.error(`Redis ZREVRANGE error for key ${key}:`, error);
     return [];
   }
 }
 
-// ============================================================================
-// RATE LIMITING (Upstash Ratelimit)
-// ============================================================================
-
-const rateLimiters = new Map<string, Ratelimit>();
-
-function getRateLimiter(
-  action: string,
-  limit: number,
-  windowSeconds: number,
-): Ratelimit | null {
-  const client = getRedisClient();
-  if (!client) return null;
-
-  const cacheKey = `${action}:${limit}:${windowSeconds}`;
-  if (rateLimiters.has(cacheKey)) {
-    return rateLimiters.get(cacheKey)!;
-  }
-
-  const limiter = new Ratelimit({
-    redis: client,
-    limiter: Ratelimit.slidingWindow(limit, `${windowSeconds} s`),
-    prefix: `ratelimit:${action}`,
-  });
-
-  rateLimiters.set(cacheKey, limiter);
-  return limiter;
-}
-
-/**
- * Check rate limit for a user + action combination.
- *
- * When Redis is unconfigured the call is DENIED in production (fail-closed)
- * and ALLOWED in development (fail-open) for convenience.
- */
 export async function checkRateLimit(
   userId: string,
   action: string,
   limit: number,
-  windowSeconds: number,
-): Promise<{ allowed: boolean; remaining: number; resetAt?: number }> {
-  const limiter = getRateLimiter(action, limit, windowSeconds);
-
+  window: number
+): Promise<{ allowed: boolean; remaining: number }> {
+  const limiter = getRateLimiter(window * 1000, limit);
   if (!limiter) {
-    if (config.app.isProduction) {
-      console.warn(`Rate limit DENIED (Redis unconfigured, production): ${userId}:${action}`);
-      return { allowed: false, remaining: 0 };
-    }
+    // Graceful fallback: allow everything if Redis not configured
     return { allowed: true, remaining: limit };
   }
 
   try {
-    const result = await limiter.limit(userId);
+    const identifier = CACHE_KEYS.rateLimit(userId, action);
+    const result = await limiter.limit(identifier);
     return {
       allowed: result.success,
       remaining: result.remaining,
-      resetAt: result.reset,
     };
-  } catch (err) {
-    console.error(`Rate limit check error [${userId}:${action}]:`, err);
-    if (config.app.isProduction) {
-      return { allowed: false, remaining: 0 };
-    }
+  } catch (error) {
+    console.error(`Rate limit check error for ${userId}/${action}:`, error);
     return { allowed: true, remaining: limit };
   }
 }
 
-// ============================================================================
-// CONVENIENCE EXPORT
-// ============================================================================
-
+// ─── Exported Redis Object ─────────────────────────────────────────────────
 export const redis = {
   get,
   set,

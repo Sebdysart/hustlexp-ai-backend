@@ -1,5 +1,6 @@
 import { getApps, initializeApp, cert } from "firebase-admin/app";
 import { getAuth, DecodedIdToken } from "firebase-admin/auth";
+import { getMessaging, Messaging } from 'firebase-admin/messaging';
 import { config } from "../config";
 
 let app = getApps()[0];
@@ -18,6 +19,7 @@ if (!app && config.firebase.projectId && config.firebase.clientEmail && config.f
 }
 
 const auth = app ? getAuth(app) : null;
+const messaging: Messaging | null = app ? getMessaging(app) : null;
 
 export async function verifyIdToken(token: string): Promise<DecodedIdToken> {
   if (!auth) {
@@ -27,5 +29,6 @@ export async function verifyIdToken(token: string): Promise<DecodedIdToken> {
   return auth.verifyIdToken(token);
 }
 
+export { messaging };
 export const adminAuth = { verifyIdToken };
 export const firebaseAuth = adminAuth;

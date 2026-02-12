@@ -73,7 +73,7 @@ export async function processExportJob(job: Job<ExportJobData>): Promise<void> {
       `SELECT id, user_id, export_format, content_type, status, created_at, updated_at, object_key
        FROM exports
        WHERE id = $1
-       FOR UPDATE`,  -- Lock row for update (prevents concurrent processing)
+       FOR UPDATE`, // Lock row for update (prevents concurrent processing)
       [exportId]
     );
     
@@ -119,7 +119,7 @@ export async function processExportJob(job: Job<ExportJobData>): Promise<void> {
            updated_at = NOW()
        WHERE id = $1
          AND (status = 'queued' 
-              OR (status = 'generating' AND updated_at < NOW() - INTERVAL '10 minutes'))`,  -- Recovery: allow retry if stuck >10 min
+              OR (status = 'generating' AND updated_at < NOW() - INTERVAL '10 minutes'))`, // Recovery: allow retry if stuck >10 min
       [exportId]
     );
     
@@ -214,7 +214,7 @@ export async function processExportJob(job: Job<ExportJobData>): Promise<void> {
            uploaded_at = NOW(),
            updated_at = NOW()
        WHERE id = $6
-         AND status = 'generating'`,  -- Only update if still generating (prevents race condition)
+         AND status = 'generating'`, // Only update if still generating (prevents race condition)
       [
         objectKey,
         uploadResult.size,
