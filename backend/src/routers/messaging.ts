@@ -264,7 +264,7 @@ export const messagingRouter = router({
           t.id as id,
           t.title as "taskTitle",
           CASE WHEN t.poster_id = $1 THEN t.worker_id ELSE t.poster_id END as "otherUserId",
-          CASE WHEN t.poster_id = $1 THEN wu.display_name ELSE pu.display_name END as "otherUserName",
+          CASE WHEN t.poster_id = $1 THEN wu.full_name ELSE pu.full_name END as "otherUserName",
           CASE WHEN t.poster_id = $1 THEN 'worker' ELSE 'poster' END as "otherUserRole",
           m.content as "lastMessage",
           m.created_at as "lastMessageAt",
