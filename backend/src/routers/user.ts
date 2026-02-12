@@ -35,14 +35,14 @@ async function toMobileUser(user: User) {
     total_spent: string;
   }>(
     `SELECT
-       COALESCE(AVG(tr.rating), 5.0) as avg_rating,
+       COALESCE(AVG(tr.stars), 5.0) as avg_rating,
        COUNT(tr.id)::text as total_ratings,
        (SELECT COUNT(*) FROM tasks WHERE worker_id = $1 AND state = 'COMPLETED')::text as tasks_completed,
        (SELECT COUNT(*) FROM tasks WHERE poster_id = $1)::text as tasks_posted,
        COALESCE((SELECT SUM(amount_cents) FROM escrows WHERE worker_id = $1 AND state = 'RELEASED'), 0)::text as total_earnings,
        COALESCE((SELECT SUM(amount_cents) FROM escrows WHERE poster_id = $1 AND state IN ('RELEASED', 'FUNDED')), 0)::text as total_spent
      FROM task_ratings tr
-     WHERE tr.rated_user_id = $1`,
+     WHERE tr.ratee_id = $1`,
     [user.id]
   );
 

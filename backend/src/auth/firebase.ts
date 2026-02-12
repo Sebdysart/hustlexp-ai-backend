@@ -23,7 +23,8 @@ const messaging: Messaging | null = app ? getMessaging(app) : null;
 
 export async function verifyIdToken(token: string): Promise<DecodedIdToken> {
   if (!auth) {
-    throw new Error("Firebase Admin is not configured");
+    console.error("❌ Firebase Admin is not configured — check FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, FIREBASE_PRIVATE_KEY env vars");
+    throw new Error("Firebase Admin is not configured — missing credentials");
   }
 
   return auth.verifyIdToken(token);

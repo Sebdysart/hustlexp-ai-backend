@@ -49,6 +49,7 @@ export async function createContext(opts: {
       firebaseUid: decoded.uid,
     };
   } catch (error) {
+    console.error('❌ Firebase token verification failed:', (error as Error).message);
     return { user: null, firebaseUid: null };
   }
 }
