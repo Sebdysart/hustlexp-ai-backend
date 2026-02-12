@@ -1,7 +1,8 @@
 /**
  * Instant Execution Mode Router (v0 - Minimal)
- * 
+ *
  * Temporary endpoints for testing instant mode.
+ * Uses tasks with mode='LIVE' and state='OPEN' as instant-available tasks.
  * Not production-ready UI.
  */
 
@@ -15,6 +16,7 @@ export const instantRouter = router({
   /**
    * List available instant tasks (for hustlers)
    * v0: Simple list, no filtering
+   * Uses mode='LIVE' + state='OPEN' as proxy for instant tasks
    */
   listAvailable: protectedProcedure.query(async ({ ctx }) => {
     const result = await db.query<{
@@ -24,12 +26,11 @@ export const instantRouter = router({
       price: number;
       location: string | null;
       created_at: Date;
-      matched_at: Date | null;
     }>(
-      `SELECT id, title, description, price, location, created_at, matched_at
+      `SELECT id, title, description, price, location, created_at
        FROM tasks
-       WHERE instant_mode = TRUE
-         AND state = 'MATCHING'
+       WHERE mode = 'LIVE'
+         AND state = 'OPEN'
          AND worker_id IS NULL
        ORDER BY created_at DESC
        LIMIT 20`
@@ -42,11 +43,8 @@ export const instantRouter = router({
       price: task.price,
       location: task.location,
       createdAt: task.created_at,
-      matchedAt: task.matched_at,
       // Calculate time waiting (for display)
-      waitingSeconds: task.matched_at 
-        ? Math.floor((Date.now() - task.matched_at.getTime()) / 1000)
-        : 0,
+      waitingSeconds: Math.floor((Date.now() - task.created_at.getTime()) / 1000),
     }));
   }),
 
@@ -69,13 +67,13 @@ export const instantRouter = router({
         });
       }
 
-      // Calculate time-to-accept
+      // Calculate time-to-accept using created_at → accepted_at
       const task = result.data;
       let timeToAcceptSeconds: number | null = null;
-      
-      if (task.matched_at && task.accepted_at) {
+
+      if (task.created_at && task.accepted_at) {
         timeToAcceptSeconds = Math.floor(
-          (task.accepted_at.getTime() - task.matched_at.getTime()) / 1000
+          (task.accepted_at.getTime() - task.created_at.getTime()) / 1000
         );
       }
 
@@ -124,15 +122,14 @@ export const instantRouter = router({
    * Notification Urgency Design v1: Includes notification-to-accept latency
    */
   metrics: protectedProcedure.query(async () => {
-    // Time-to-accept (matched_at → accepted_at)
+    // Time-to-accept (created_at → accepted_at for LIVE mode tasks)
     const timeToAcceptResult = await db.query<{
-      matched_at: Date | null;
+      created_at: Date;
       accepted_at: Date | null;
     }>(
-      `SELECT matched_at, accepted_at
+      `SELECT created_at, accepted_at
        FROM tasks
-       WHERE instant_mode = TRUE
-         AND matched_at IS NOT NULL
+       WHERE mode = 'LIVE'
          AND accepted_at IS NOT NULL
        ORDER BY accepted_at DESC
        LIMIT 100`
@@ -140,16 +137,15 @@ export const instantRouter = router({
 
     const timeToAccept = timeToAcceptResult.rows
       .map(row => {
-        if (!row.matched_at || !row.accepted_at) return null;
+        if (!row.created_at || !row.accepted_at) return null;
         return Math.floor(
-          (row.accepted_at.getTime() - row.matched_at.getTime()) / 1000
+          (row.accepted_at.getTime() - row.created_at.getTime()) / 1000
         );
       })
       .filter((t): t is number => t !== null)
       .sort((a, b) => a - b);
 
     // Notification-to-accept latency (notification created → task accepted)
-    // Match notifications where the user who received the notification is the one who accepted
     const notificationLatencyResult = await db.query<{
       notification_created_at: Date;
       task_accepted_at: Date;
@@ -158,7 +154,7 @@ export const instantRouter = router({
        FROM notifications n
        JOIN tasks t ON n.task_id = t.id
        WHERE n.category = 'instant_task_available'
-         AND t.instant_mode = TRUE
+         AND t.mode = 'LIVE'
          AND t.accepted_at IS NOT NULL
          AND t.worker_id = n.user_id
        ORDER BY t.accepted_at DESC
@@ -180,7 +176,7 @@ export const instantRouter = router({
       total: string;
       dismissed: string;
     }>(
-      `SELECT 
+      `SELECT
          COUNT(*) as total,
          COUNT(*) FILTER (WHERE read_at IS NOT NULL AND metadata->>'dismissed' = 'true') as dismissed
        FROM notifications
@@ -215,7 +211,7 @@ export const instantRouter = router({
         ...calculateStats(notificationLatency),
         all: notificationLatency,
       },
-      dismissRate: Math.round(dismissRate * 100) / 100, // Round to 2 decimal places
+      dismissRate: Math.round(dismissRate * 100) / 100,
       dismissStats: {
         total,
         dismissed,

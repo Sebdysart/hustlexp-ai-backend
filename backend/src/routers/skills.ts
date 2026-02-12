@@ -70,7 +70,7 @@ export const skillsRouter = router({
               ws.verified_at as "reviewedAt", ws.created_at as "submittedAt"
        FROM worker_skills ws
        JOIN skills s ON s.id = ws.skill_id
-       WHERE ws.worker_id = $1 AND ws.license_url IS NOT NULL
+       WHERE ws.user_id = $1 AND ws.license_url IS NOT NULL
        ORDER BY ws.created_at DESC`,
       [ctx.user.id]
     );

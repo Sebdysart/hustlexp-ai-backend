@@ -97,7 +97,10 @@ export const EscrowService = {
   getById: async (escrowId: string): Promise<ServiceResult<Escrow>> => {
     try {
       const result = await db.query<Escrow>(
-        'SELECT * FROM escrows WHERE id = $1',
+        `SELECT e.*, t.poster_id, t.worker_id
+         FROM escrows e
+         JOIN tasks t ON t.id = e.task_id
+         WHERE e.id = $1`,
         [escrowId]
       );
       
@@ -294,13 +297,12 @@ export const EscrowService = {
 
       const escrow = escrowResult.rows[0];
 
-      // Get task details for worker_id, payment_method, price
+      // Get task details for worker_id and price
       const taskResult = await db.query<{
         worker_id: string | null;
         price: number;
-        payment_method: string | null;
       }>(
-        `SELECT worker_id, price, payment_method FROM tasks WHERE id = $1`,
+        `SELECT worker_id, price FROM tasks WHERE id = $1`,
         [escrow.task_id]
       );
 
@@ -316,7 +318,7 @@ export const EscrowService = {
 
       const task = taskResult.rows[0];
       const workerId = task.worker_id!;
-      const paymentMethod = task.payment_method || 'escrow'; // Default to escrow
+      const paymentMethod = 'escrow'; // All tasks use escrow payment flow
       const grossPayoutCents = task.price;
 
       // Calculate platform fee (20%)

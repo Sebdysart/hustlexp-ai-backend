@@ -128,7 +128,7 @@ export const taskRouter = router({
   listOpen: protectedProcedure
     .input(Schemas.pagination)
     .query(async ({ input }) => {
-      const result = await TaskService.getOpenTasks(input.limit, input.offset);
+      const result = await TaskService.listOpen({ limit: input.limit, offset: input.offset });
       
       if (!result.success) {
         throw new TRPCError({
@@ -221,9 +221,10 @@ export const taskRouter = router({
         throw new TRPCError({ code: 'PRECONDITION_FAILED', message: `Task must be ACCEPTED to start, current state: ${taskResult.data.state}` });
       }
 
-      // Transition to IN_PROGRESS (update state directly — accept already validated eligibility)
+      // Task is ACCEPTED — the worker has started. No separate IN_PROGRESS state exists in the schema.
+      // The ACCEPTED state already means the worker is working. Return the current task data.
       const result = await db.query(
-        `UPDATE tasks SET state = 'IN_PROGRESS', started_at = NOW(), updated_at = NOW() WHERE id = $1 RETURNING *`,
+        `SELECT * FROM tasks WHERE id = $1`,
         [input.taskId]
       );
 
@@ -287,10 +288,7 @@ export const taskRouter = router({
       }
       
       // Transition task to PROOF_SUBMITTED
-      const taskResult = await TaskService.submitProof({
-        taskId: input.taskId,
-        proofId: proofResult.data.id,
-      });
+      const taskResult = await TaskService.submitProof(input.taskId);
       
       if (!taskResult.success) {
         throw new TRPCError({
@@ -442,7 +440,7 @@ export const taskRouter = router({
         });
       }
       
-      const result = await TaskService.cancel(input.taskId, input.reason);
+      const result = await TaskService.cancel(input.taskId);
       
       if (!result.success) {
         throw new TRPCError({

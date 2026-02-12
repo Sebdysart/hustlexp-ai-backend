@@ -117,7 +117,7 @@ export const escrowRouter = router({
       if (!amount) {
         const taskResult = await EscrowService.getByTaskId(input.taskId);
         if (taskResult.success) {
-          amount = taskResult.data.amount_cents;
+          amount = taskResult.data.amount;
         } else {
           throw new TRPCError({ code: 'NOT_FOUND', message: 'Could not determine amount for task' });
         }
@@ -260,9 +260,11 @@ export const escrowRouter = router({
     }).optional())
     .query(async ({ ctx, input }) => {
       const result = await db.query(
-        `SELECT * FROM escrows
-         WHERE poster_id = $1 OR worker_id = $1
-         ORDER BY created_at DESC
+        `SELECT e.*, t.poster_id, t.worker_id
+         FROM escrows e
+         JOIN tasks t ON t.id = e.task_id
+         WHERE t.poster_id = $1 OR t.worker_id = $1
+         ORDER BY e.created_at DESC
          LIMIT $2`,
         [ctx.user.id, input?.limit || 50]
       );

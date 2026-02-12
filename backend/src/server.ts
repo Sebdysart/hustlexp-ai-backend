@@ -325,8 +325,8 @@ app.post('/api/ui/violations', async (c) => {
   const body = await c.req.json();
   
   await db.query(
-    `INSERT INTO admin_actions (admin_user_id, action_type, details, created_at)
-     VALUES ($1, 'UI_VIOLATION', $2, NOW())`,
+    `INSERT INTO admin_actions (admin_user_id, admin_role, action_type, action_details, result)
+     VALUES ($1, 'user', 'UI_VIOLATION', $2, 'logged')`,
     [
       user.id,
       JSON.stringify({
