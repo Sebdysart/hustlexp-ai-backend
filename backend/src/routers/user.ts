@@ -39,8 +39,8 @@ async function toMobileUser(user: User) {
        COUNT(tr.id)::text as total_ratings,
        (SELECT COUNT(*) FROM tasks WHERE worker_id = $1 AND state = 'COMPLETED')::text as tasks_completed,
        (SELECT COUNT(*) FROM tasks WHERE poster_id = $1)::text as tasks_posted,
-       COALESCE((SELECT SUM(amount_cents) FROM escrows WHERE worker_id = $1 AND state = 'RELEASED'), 0)::text as total_earnings,
-       COALESCE((SELECT SUM(amount_cents) FROM escrows WHERE poster_id = $1 AND state IN ('RELEASED', 'FUNDED')), 0)::text as total_spent
+       COALESCE((SELECT SUM(e.amount) FROM escrows e JOIN tasks t ON e.task_id = t.id WHERE t.worker_id = $1 AND e.state = 'RELEASED'), 0)::text as total_earnings,
+       COALESCE((SELECT SUM(e.amount) FROM escrows e JOIN tasks t ON e.task_id = t.id WHERE t.poster_id = $1 AND e.state IN ('RELEASED', 'FUNDED')), 0)::text as total_spent
      FROM task_ratings tr
      WHERE tr.ratee_id = $1`,
     [user.id]
