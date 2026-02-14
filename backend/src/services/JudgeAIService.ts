@@ -45,12 +45,17 @@ export interface PhotoVerificationSignals {
   change_detected: boolean;
 }
 
+/**
+ * JudgeInput supports partial signals — any domain can be null/undefined
+ * if that verification subsystem was unavailable or returned an error.
+ * Weights renormalize over available components automatically.
+ */
 export interface JudgeInput {
   proof_id: string;
   task_id: string;
-  biometric: BiometricSignals;
-  logistics: LogisticsSignals;
-  photo_verification: PhotoVerificationSignals;
+  biometric: BiometricSignals | null;
+  logistics: LogisticsSignals | null;
+  photo_verification: PhotoVerificationSignals | null;
 }
 
 export interface JudgeVerdict {
@@ -159,24 +164,54 @@ function scorePhotoVerification(signals: PhotoVerificationSignals): { score: num
 
 /**
  * Deterministic fallback when AI is unavailable.
- * Uses weighted scoring across all three signal domains.
+ * Renormalizes weights over available signal domains —
+ * if a component is null (subsystem unavailable), its weight
+ * is redistributed proportionally to the remaining components.
  */
 function deterministicVerdict(input: JudgeInput): JudgeVerdict {
-  const biometric = scoreBiometric(input.biometric);
-  const logistics = scoreLogistics(input.logistics);
-  const photo = scorePhotoVerification(input.photo_verification);
+  // Score each available component
+  const biometric = input.biometric ? scoreBiometric(input.biometric) : null;
+  const logistics = input.logistics ? scoreLogistics(input.logistics) : null;
+  const photo = input.photo_verification ? scorePhotoVerification(input.photo_verification) : null;
 
-  const weightedScore =
-    biometric.score * BIOMETRIC_WEIGHT +
-    logistics.score * LOGISTICS_WEIGHT +
-    photo.score * PHOTO_WEIGHT;
+  // Renormalize weights over available components
+  const components: { score: number; flags: string[]; weight: number; label: string }[] = [];
+  if (biometric) components.push({ ...biometric, weight: BIOMETRIC_WEIGHT, label: 'Biometric' });
+  if (logistics) components.push({ ...logistics, weight: LOGISTICS_WEIGHT, label: 'Logistics' });
+  if (photo) components.push({ ...photo, weight: PHOTO_WEIGHT, label: 'Photo' });
 
-  const allFlags = [...biometric.flags, ...logistics.flags, ...photo.flags];
+  const allFlags: string[] = [];
+  let weightedScore: number;
+
+  if (components.length === 0) {
+    // No signals at all — force manual review
+    weightedScore = 0.50;
+    allFlags.push('no_verification_signals');
+  } else {
+    // Renormalize: divide each weight by sum of available weights
+    const totalWeight = components.reduce((sum, c) => sum + c.weight, 0);
+    weightedScore = components.reduce(
+      (sum, c) => sum + c.score * (c.weight / totalWeight),
+      0
+    );
+    for (const c of components) allFlags.push(...c.flags);
+
+    // Flag if any component was missing
+    if (!biometric) allFlags.push('biometric_unavailable');
+    if (!logistics) allFlags.push('logistics_unavailable');
+    if (!photo) allFlags.push('photo_unavailable');
+  }
 
   let verdict: 'APPROVE' | 'MANUAL_REVIEW' | 'REJECT';
   let recommendedAction: string;
 
-  if (weightedScore < APPROVE_THRESHOLD) {
+  if (components.length < 2) {
+    // With fewer than 2 signal domains, never auto-approve — always manual review
+    verdict = weightedScore > REJECT_THRESHOLD ? 'REJECT' : 'MANUAL_REVIEW';
+    recommendedAction = verdict === 'REJECT'
+      ? 'Reject proof submission. Flag for fraud review if repeated.'
+      : 'Insufficient verification signals — route to human reviewer.';
+  } else if (weightedScore < APPROVE_THRESHOLD) {
     verdict = 'APPROVE';
     recommendedAction = 'Auto-approve proof and release escrow.';
   } else if (weightedScore > REJECT_THRESHOLD) {
@@ -187,19 +222,25 @@ function deterministicVerdict(input: JudgeInput): JudgeVerdict {
     recommendedAction = 'Route to human reviewer for manual inspection.';
   }
 
-  const reasoning = allFlags.length === 0
-    ? `All verification signals passed. Weighted risk score: ${(weightedScore * 100).toFixed(0)}%. Biometric: ${(biometric.score * 100).toFixed(0)}%, Logistics: ${(logistics.score * 100).toFixed(0)}%, Photo: ${(photo.score * 100).toFixed(0)}%.`
-    : `Flags detected: ${allFlags.join(', ')}. Weighted risk score: ${(weightedScore * 100).toFixed(0)}%. Biometric: ${(biometric.score * 100).toFixed(0)}%, Logistics: ${(logistics.score * 100).toFixed(0)}%, Photo: ${(photo.score * 100).toFixed(0)}%.`;
+  const componentBreakdown = [
+    biometric ? `Biometric: ${(biometric.score * 100).toFixed(0)}%` : 'Biometric: N/A',
+    logistics ? `Logistics: ${(logistics.score * 100).toFixed(0)}%` : 'Logistics: N/A',
+    photo ? `Photo: ${(photo.score * 100).toFixed(0)}%` : 'Photo: N/A',
+  ].join(', ');
+
+  const reasoning = allFlags.filter(f => !f.endsWith('_unavailable')).length === 0
+    ? `All available verification signals passed (${components.length}/3 domains). Weighted risk score: ${(weightedScore * 100).toFixed(0)}%. ${componentBreakdown}.`
+    : `Flags detected: ${allFlags.filter(f => !f.endsWith('_unavailable')).join(', ')}. Weighted risk score (${components.length}/3 domains): ${(weightedScore * 100).toFixed(0)}%. ${componentBreakdown}.`;
 
   return {
     verdict,
-    confidence: 1.0 - weightedScore,
+    confidence: components.length >= 2 ? 1.0 - weightedScore : Math.max(0.3, 1.0 - weightedScore),
     reasoning,
     risk_score: weightedScore,
     component_scores: {
-      biometric: biometric.score,
-      logistics: logistics.score,
-      photo_verification: photo.score,
+      biometric: biometric?.score ?? -1,
+      logistics: logistics?.score ?? -1,
+      photo_verification: photo?.score ?? -1,
     },
     fraud_flags: allFlags,
     recommended_action: recommendedAction,
@@ -245,26 +286,32 @@ RULES:
 - If all signals are clean → APPROVE with high confidence
 - If any CRITICAL flags (deepfake > 0.85, impossible travel, GPS far out of range) → lean REJECT
 - Ambiguous signals → MANUAL_REVIEW
+- If a signal domain is UNAVAILABLE, renormalize weights over available domains
+- With fewer than 2 available domains, prefer MANUAL_REVIEW unless clear REJECT signals exist
+- Set component_scores to -1 for unavailable domains
 - Always explain which signals drove the decision`,
           prompt: `Synthesize a verdict for this proof submission:
 
 PROOF: ${input.proof_id} (Task: ${input.task_id})
 
-BIOMETRIC SIGNALS:
+BIOMETRIC SIGNALS:${input.biometric ? `
 - Liveness score: ${input.biometric.liveness_score}
 - Deepfake score: ${input.biometric.deepfake_score}
-- Risk level: ${input.biometric.risk_level}
+- Risk level: ${input.biometric.risk_level}` : '\n- UNAVAILABLE (biometric subsystem did not return signals)'}
 
-LOGISTICS SIGNALS:
+LOGISTICS SIGNALS:${input.logistics ? `
 - GPS proximity: ${input.logistics.gps_proximity.passed ? 'PASSED' : 'FAILED'}${input.logistics.gps_proximity.distance_meters != null ? ` (${input.logistics.gps_proximity.distance_meters.toFixed(0)}m)` : ''}
 - Impossible travel: ${input.logistics.impossible_travel.passed ? 'PASSED' : 'FAILED'}${input.logistics.impossible_travel.speed_kmh != null ? ` (${input.logistics.impossible_travel.speed_kmh.toFixed(0)} km/h)` : ''}
 - Time lock: ${input.logistics.time_lock.passed ? 'PASSED' : 'FAILED'}${input.logistics.time_lock.time_delta_seconds != null ? ` (${input.logistics.time_lock.time_delta_seconds}s delta)` : ''}
-- GPS accuracy: ${input.logistics.gps_accuracy.passed ? 'PASSED' : 'FAILED'} (${input.logistics.gps_accuracy.accuracy_meters}m)
+- GPS accuracy: ${input.logistics.gps_accuracy.passed ? 'PASSED' : 'FAILED'} (${input.logistics.gps_accuracy.accuracy_meters}m)` : '\n- UNAVAILABLE (logistics subsystem did not return signals)'}
 
-PHOTO VERIFICATION SIGNALS:
+PHOTO VERIFICATION SIGNALS:${input.photo_verification ? `
 - Similarity score: ${input.photo_verification.similarity_score}
 - Completion score: ${input.photo_verification.completion_score}
-- Change detected: ${input.photo_verification.change_detected}
+- Change detected: ${input.photo_verification.change_detected}` : '\n- UNAVAILABLE (photo verification subsystem did not return signals)'}
+
+NOTE: ${[input.biometric, input.logistics, input.photo_verification].filter(Boolean).length}/3 signal domains available.${[input.biometric, input.logistics, input.photo_verification].filter(Boolean).length < 2 ? ' With fewer than 2 domains, lean toward MANUAL_REVIEW unless there are clear REJECT signals.' : ''}
+Renormalize weights over available components only.
 
 Produce your verdict.`,
         });
