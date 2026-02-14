@@ -89,11 +89,16 @@ export const config = {
       apiKey: process.env.ALIBABA_API_KEY || '',
       model: 'qwen-max',
     },
+    anthropic: {
+      apiKey: process.env.ANTHROPIC_API_KEY || '',
+      model: 'claude-sonnet-4-20250514',
+    },
     // Model routing weights
     routing: {
       primary: 'openai',      // Default for most tasks
       fast: 'groq',           // Low latency tasks
       reasoning: 'deepseek',  // Complex reasoning
+      safety: 'anthropic',    // High-stakes decisions (disputes, trust, verification)
       backup: 'alibaba',      // Fallback
     },
     cacheTTL: 24 * 60 * 60,

@@ -1,13 +1,14 @@
 /**
- * AIClient v1.0.0
+ * AIClient v1.1.0
  *
  * Shared AI client with multi-model routing, timeout, fallback, and caching.
  *
  * Routes:
- *   primary  → OpenAI gpt-4o        (default for most tasks)
- *   fast     → Groq llama-3.3-70b   (low latency)
- *   reasoning → DeepSeek deepseek-r1 (complex reasoning, via OpenAI-compat API)
- *   backup   → Alibaba qwen-max     (fallback, via OpenAI-compat API)
+ *   primary   → OpenAI gpt-4o          (default for most tasks)
+ *   fast      → Groq llama-3.3-70b     (low latency)
+ *   reasoning → DeepSeek deepseek-r1   (complex reasoning, via OpenAI-compat API)
+ *   safety    → Anthropic Claude Sonnet (high-stakes: disputes, trust, verification)
+ *   backup    → Alibaba qwen-max       (fallback, via OpenAI-compat API)
  *
  * @see config.ts §ai
  */
@@ -20,7 +21,7 @@ import crypto from 'crypto';
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
-export type AIRoute = 'primary' | 'fast' | 'reasoning' | 'backup';
+export type AIRoute = 'primary' | 'fast' | 'reasoning' | 'safety' | 'backup';
 
 export interface AICallOptions {
   route: AIRoute;
@@ -47,6 +48,7 @@ export interface AICallResult {
 let openaiClient: OpenAI | null = null;
 let groqClient: Groq | null = null;
 let deepseekClient: OpenAI | null = null;  // OpenAI-compatible API
+let anthropicClient: OpenAI | null = null; // OpenAI-compatible API (Anthropic Messages → OpenAI compat)
 let alibabaClient: OpenAI | null = null;   // OpenAI-compatible API
 
 function getOpenAIClient(): OpenAI | null {
@@ -71,6 +73,17 @@ function getDeepSeekClient(): OpenAI | null {
     baseURL: 'https://api.deepseek.com/v1',
   });
   return deepseekClient;
+}
+
+function getAnthropicClient(): OpenAI | null {
+  if (anthropicClient) return anthropicClient;
+  if (!config.ai.anthropic.apiKey) return null;
+  anthropicClient = new OpenAI({
+    apiKey: config.ai.anthropic.apiKey,
+    baseURL: 'https://api.anthropic.com/v1/',
+    defaultHeaders: { 'anthropic-version': '2023-06-01' },
+  });
+  return anthropicClient;
 }
 
 function getAlibabaClient(): OpenAI | null {
@@ -107,6 +120,11 @@ const ROUTE_CONFIG: Record<AIRoute, ProviderConfig> = {
     model: config.ai.deepseek.model,
     name: 'deepseek',
   },
+  safety: {
+    getClient: getAnthropicClient,
+    model: config.ai.anthropic.model,
+    name: 'anthropic',
+  },
   backup: {
     getClient: getAlibabaClient,
     model: config.ai.alibaba.model,
@@ -116,9 +134,10 @@ const ROUTE_CONFIG: Record<AIRoute, ProviderConfig> = {
 
 // Default fallback chains per route
 const FALLBACK_CHAINS: Record<AIRoute, AIRoute[]> = {
-  primary: ['fast', 'backup'],
+  primary: ['fast', 'safety', 'backup'],
   fast: ['primary', 'backup'],
-  reasoning: ['primary', 'fast'],
+  reasoning: ['primary', 'safety', 'fast'],
+  safety: ['reasoning', 'primary', 'fast'],
   backup: ['primary', 'fast'],
 };
 
@@ -270,6 +289,7 @@ export function isConfigured(): boolean {
     config.ai.openai.apiKey ||
     config.ai.groq.apiKey ||
     config.ai.deepseek.apiKey ||
+    config.ai.anthropic.apiKey ||
     config.ai.alibaba.apiKey
   );
 }
