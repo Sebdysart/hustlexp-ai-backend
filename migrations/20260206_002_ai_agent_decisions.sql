@@ -6,7 +6,7 @@
 -- AI agent decision tracking for multi-agent system
 CREATE TABLE IF NOT EXISTS ai_agent_decisions (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  agent_type TEXT NOT NULL CHECK (agent_type IN ('scoper', 'logistics', 'judge')),
+  agent_type TEXT NOT NULL CHECK (agent_type IN ('scoper', 'logistics', 'judge', 'dispute', 'reputation')),
   task_id UUID REFERENCES tasks(id) ON DELETE CASCADE,
   proof_id UUID REFERENCES proofs(id) ON DELETE CASCADE,
 

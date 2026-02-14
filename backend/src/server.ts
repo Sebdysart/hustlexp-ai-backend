@@ -711,7 +711,7 @@ async function startServer() {
           CREATE INDEX IF NOT EXISTS idx_alpha_telemetry_timestamp ON alpha_telemetry(timestamp);
           CREATE TABLE IF NOT EXISTS ai_agent_decisions (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            agent_type TEXT NOT NULL CHECK (agent_type IN ('scoper','logistics')),
+            agent_type TEXT NOT NULL CHECK (agent_type IN ('scoper','logistics','dispute','reputation')),
             task_id UUID, proof_id UUID,
             proposal JSONB NOT NULL DEFAULT '{}',
             confidence_score NUMERIC(4,3) NOT NULL DEFAULT 0.0,
