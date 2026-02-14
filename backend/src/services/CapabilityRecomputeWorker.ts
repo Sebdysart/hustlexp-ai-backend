@@ -23,7 +23,7 @@
  * Reference: Phase N2.4 — Verification Resolution (LOCKED)
  */
 
-import { db } from '@/backend/database/client';
+import { db } from '../db';
 import { recomputeCapabilityProfile } from './CapabilityRecomputeService';
 
 interface JobRow {

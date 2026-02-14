@@ -318,7 +318,7 @@ export const EscrowService = {
 
       const task = taskResult.rows[0];
       const workerId = task.worker_id!;
-      const paymentMethod = 'escrow'; // All tasks use escrow payment flow
+      const paymentMethod: string = 'escrow'; // All tasks use escrow payment flow
       const grossPayoutCents = task.price;
 
       // Calculate platform fee (20%)
@@ -385,7 +385,7 @@ export const EscrowService = {
       // XP award formula: price / 10 (e.g., $50 task = 500 XP)
       const xpAmount = Math.round(grossPayoutCents / 10);
       try {
-        await XPService.awardXP(workerId, escrow.task_id, xpAmount);
+        await XPService.awardXP({ userId: workerId, taskId: escrow.task_id, escrowId, baseXP: xpAmount });
       } catch (xpError) {
         // Check if XP was blocked by tax trigger (HX201)
         if (xpError instanceof Error && xpError.message.includes('XP-TAX-BLOCK')) {

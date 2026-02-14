@@ -196,7 +196,7 @@ export const NotificationService = {
       }
       
       // Get user preferences
-      const preferencesResult = await this.getPreferences(userId);
+      const preferencesResult = await NotificationService.getPreferences(userId);
       const preferences = preferencesResult.success ? preferencesResult.data : null;
       
       // Check quiet hours (NOTIFICATION_SPEC.md §2.1)
@@ -216,8 +216,8 @@ export const NotificationService = {
       const categoryLimits = FREQUENCY_LIMITS[category];
       const limits = categoryLimits || { perHour: Infinity, perDay: Infinity };
       if (limits.perHour !== Infinity || limits.perDay !== Infinity) {
-        const recentCount = await this.getRecentNotificationCount(userId, category, 60); // Last hour
-        const dailyCount = await this.getRecentNotificationCount(userId, category, 24 * 60); // Last 24 hours
+        const recentCount = await NotificationService.getRecentNotificationCount(userId, category, 60); // Last hour
+        const dailyCount = await NotificationService.getRecentNotificationCount(userId, category, 24 * 60); // Last 24 hours
         
         if (recentCount >= limits.perHour) {
           // Exceeded hourly limit - batch with existing notifications
@@ -669,7 +669,7 @@ export const NotificationService = {
     
     try {
       // Check if preferences exist
-      const existingResult = await this.getPreferences(userId);
+      const existingResult = await NotificationService.getPreferences(userId);
       
       if (!existingResult.success || !existingResult.data.id) {
         // Create new preferences

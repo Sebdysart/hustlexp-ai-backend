@@ -471,13 +471,12 @@ export const FraudDetectionService = {
           );
           
           // Create high-priority risk score for suspended user
-          await FraudDetectionService.createRiskScore({
+          await FraudDetectionService.calculateRiskScore({
             entityType: 'user',
             entityId: userId,
             riskScore: 0.95, // CRITICAL risk
             componentScores: {
               pattern_detection: 0.95,
-              pattern_type: patternType,
             },
             flags: [`fraud_pattern_${patternType}`, 'auto_suspended'],
           });
@@ -490,7 +489,7 @@ export const FraudDetectionService = {
         
         // Notify affected users of account suspension
         for (const userId of userIds) {
-          await NotificationService.create({
+          await NotificationService.createNotification({
             userId,
             category: 'account_suspended',
             title: 'Account Suspended',
@@ -515,13 +514,12 @@ export const FraudDetectionService = {
           );
           
           // Create high-priority risk score for flagged user
-          await FraudDetectionService.createRiskScore({
+          await FraudDetectionService.calculateRiskScore({
             entityType: 'user',
             entityId: userId,
             riskScore: 0.75, // HIGH risk
             componentScores: {
               pattern_detection: 0.75,
-              pattern_type: patternType,
             },
             flags: [`fraud_pattern_${patternType}`, 'requires_review'],
           });
@@ -534,13 +532,12 @@ export const FraudDetectionService = {
       } else {
         // MEDIUM/LOW risk patterns: Flag for monitoring, no immediate action
         for (const userId of userIds) {
-          await FraudDetectionService.createRiskScore({
+          await FraudDetectionService.calculateRiskScore({
             entityType: 'user',
             entityId: userId,
             riskScore: riskLevel === 'MEDIUM' ? 0.5 : 0.3,
             componentScores: {
               pattern_detection: riskLevel === 'MEDIUM' ? 0.5 : 0.3,
-              pattern_type: patternType,
             },
             flags: [`fraud_pattern_${patternType}`, 'monitoring'],
           });

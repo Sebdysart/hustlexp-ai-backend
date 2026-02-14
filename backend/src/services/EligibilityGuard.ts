@@ -43,7 +43,7 @@ export enum EligibilityErrorCode {
 const REQUIRED_TIER_BY_RISK: Record<TaskRisk, TrustTier | 'BLOCKED_IN_ALPHA'> = {
   [TaskRisk.TIER_0]: TrustTier.VERIFIED,
   [TaskRisk.TIER_1]: TrustTier.VERIFIED,
-  [TaskRisk.TIER_2]: TrustTier.IN_HOME,
+  [TaskRisk.TIER_2]: TrustTier.TRUSTED,
   [TaskRisk.TIER_3]: 'BLOCKED_IN_ALPHA',
 };
 

@@ -32,6 +32,20 @@ export const config = {
     webhookSecret: process.env.STRIPE_WEBHOOK_SECRET || '',
     platformFeePercent: 15, // PRODUCT_SPEC §9: 15% platform fee
     minimumTaskValueCents: 500, // PRODUCT_SPEC §9: $5.00 minimum
+    plans: {
+      premium: {
+        monthlyPriceCents: 1499,
+        yearlyPriceCents: 14999,
+        priceIdMonthly: process.env.STRIPE_PREMIUM_MONTHLY_PRICE_ID || '',
+        priceIdYearly: process.env.STRIPE_PREMIUM_YEARLY_PRICE_ID || '',
+      },
+      pro: {
+        monthlyPriceCents: 2999,
+        yearlyPriceCents: 29999,
+        priceIdMonthly: process.env.STRIPE_PRO_MONTHLY_PRICE_ID || '',
+        priceIdYearly: process.env.STRIPE_PRO_YEARLY_PRICE_ID || '',
+      },
+    },
   },
   
   // Authentication (Firebase)
@@ -98,6 +112,33 @@ export const config = {
     },
   },
   
+  // Seattle Beta Configuration
+  beta: {
+    enabled: process.env.BETA_ENABLED === 'true',
+    regionName: 'Seattle Metro',
+    bounds: {
+      south: 47.4,
+      west: -122.5,
+      north: 47.8,
+      east: -122.2,
+    },
+    center: {
+      lat: 47.6062,
+      lng: -122.3321,
+    },
+    radiusMiles: 15,
+    startDate: process.env.BETA_START_DATE || '2026-02-22',
+    endDate: process.env.BETA_END_DATE || '2026-03-24',
+    maxUsers: 100,
+    maxTasks: 200,
+    maxGmvCents: 1_000_000, // $10,000
+    plans: {
+      free: { priceId: process.env.STRIPE_FREE_PRICE_ID || '', name: 'Free' },
+      premium: { priceId: process.env.STRIPE_PREMIUM_PRICE_ID || '', name: 'Premium' },
+      pro: { priceId: process.env.STRIPE_PRO_PRICE_ID || '', name: 'Pro' },
+    },
+  },
+
   // Application
   app: {
     port: parseInt(process.env.PORT || '3000', 10),

@@ -19,6 +19,21 @@ import { TaskService } from './TaskService';
 import { EscrowService } from './EscrowService';
 
 // ============================================================================
+// HELPERS
+// ============================================================================
+
+/**
+ * Check if a user has admin permission to resolve disputes
+ */
+async function canResolveDisputes(userId: string): Promise<boolean> {
+  const result = await db.query<{ can_resolve_disputes: boolean }>(
+    `SELECT can_resolve_disputes FROM admin_roles WHERE user_id = $1 AND can_resolve_disputes = true LIMIT 1`,
+    [userId]
+  );
+  return result.rows.length > 0;
+}
+
+// ============================================================================
 // TYPES
 // ============================================================================
 
@@ -549,7 +564,6 @@ export const DisputeService = {
           eventType: escrowEventType,
           aggregateType: 'escrow',
           aggregateId: escrow.id,
-          eventVersion: escrow.version,
           payload: {
             escrow_id: escrow.id,
             task_id: dispute.task_id,

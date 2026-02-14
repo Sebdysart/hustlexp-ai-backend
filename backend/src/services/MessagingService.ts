@@ -190,7 +190,7 @@ export const MessagingService = {
   sendMessage: async (
     params: CreateMessageParams
   ): Promise<ServiceResult<TaskMessage>> => {
-    const { taskId, senderId, messageType, content, autoMessageType } = params;
+    const { taskId, senderId, messageType, content, autoMessageTemplate } = params;
     
     try {
       // Verify task exists and get participants
@@ -369,14 +369,12 @@ export const MessagingService = {
       }
       
       // Send notification to recipient
-      await NotificationService.create({
+      await NotificationService.createNotification({
         userId: recipientId,
         category: 'message_received',
         title: 'New Message',
         body: messageType === 'TEXT' && content 
           ? (content.length > 50 ? content.substring(0, 50) + '...' : content)
-          : messageType === 'PHOTO' 
-          ? `You received ${photoUrls?.length || 0} photo(s)${caption ? `: ${caption}` : ''}`
           : 'You received a new message',
         deepLink: `app://task/${taskId}/messages`,
         taskId,

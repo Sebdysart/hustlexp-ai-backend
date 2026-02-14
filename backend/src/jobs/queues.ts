@@ -75,7 +75,7 @@ export type QueueName =
 interface QueueConfig {
   name: QueueName;
   defaultJobOptions: QueueOptions['defaultJobOptions'];
-  settings: QueueOptions['settings'];
+  workerOptions?: Partial<WorkerOptions>; // Worker-level settings (e.g., maxStalledCount, lockDuration)
 }
 
 /**
@@ -98,12 +98,11 @@ export const QUEUE_CONFIGS: Record<QueueName, QueueConfig> = {
         age: 7 * 24 * 60 * 60, // Keep failed jobs for 7 days
       },
     },
-    settings: {
-      retryProcessDelay: 5000, // 5s delay between retries
+    workerOptions: {
       maxStalledCount: 1, // Fail after 1 stall (strict monitoring)
     },
   },
-  
+
   critical_trust: {
     name: 'critical_trust',
     defaultJobOptions: {
@@ -120,12 +119,11 @@ export const QUEUE_CONFIGS: Record<QueueName, QueueConfig> = {
         age: 3 * 24 * 60 * 60, // Keep failed jobs for 3 days
       },
     },
-    settings: {
-      retryProcessDelay: 10000, // 10s delay
+    workerOptions: {
       maxStalledCount: 2,
     },
   },
-  
+
   user_notifications: {
     name: 'user_notifications',
     defaultJobOptions: {
@@ -142,14 +140,13 @@ export const QUEUE_CONFIGS: Record<QueueName, QueueConfig> = {
         age: 1 * 24 * 60 * 60, // Keep failed jobs for 1 day
       },
     },
-    settings: {
-      retryProcessDelay: 5000,
+    workerOptions: {
       maxStalledCount: 3,
       // Rate limiting (per user)
       // TODO: Configure rate limits via BullMQ rate limiter
     },
   },
-  
+
   exports: {
     name: 'exports',
     defaultJobOptions: {
@@ -165,14 +162,14 @@ export const QUEUE_CONFIGS: Record<QueueName, QueueConfig> = {
       removeOnFail: {
         age: 1 * 24 * 60 * 60, // Keep failed jobs for 1 day
       },
-      timeout: 10 * 60 * 1000, // 10 minute timeout for file generation
+      // Note: timeout moved to worker-level lockDuration config
     },
-    settings: {
-      retryProcessDelay: 10000,
+    workerOptions: {
       maxStalledCount: 2,
+      lockDuration: 10 * 60 * 1000, // 10 minute lock for file generation
     },
   },
-  
+
   maintenance: {
     name: 'maintenance',
     defaultJobOptions: {
@@ -189,8 +186,7 @@ export const QUEUE_CONFIGS: Record<QueueName, QueueConfig> = {
         age: 7 * 24 * 60 * 60, // Keep failed jobs for 7 days
       },
     },
-    settings: {
-      retryProcessDelay: 60000,
+    workerOptions: {
       maxStalledCount: 1,
     },
   },
@@ -215,9 +211,8 @@ export function getQueue(queueName: QueueName): Queue {
   const connection = createRedisConnection();
   
   const queue = new Queue(queueName, {
-    connection,
+    connection: connection as any,
     defaultJobOptions: config.defaultJobOptions,
-    settings: config.settings,
   });
   
   queueInstances.set(queueName, queue);
@@ -281,8 +276,8 @@ export function createWorker(
     queueName,
     processor,
     {
-      connection,
-      ...config.settings,
+      connection: connection as any,
+      ...config.workerOptions,
       ...options,
     }
   );

@@ -1077,7 +1077,7 @@ export const TaskService = {
             type: actor.type,
             userId: actor.userId || null,
           },
-          occurredAt: result.progressUpdatedAt.toISOString(),
+          occurredAt: result.progressUpdatedAt?.toISOString() ?? new Date().toISOString(),
         },
         // NOTE: user_notifications currently serves as the realtime delivery channel.
         // This may be split into a dedicated realtime queue in the future.

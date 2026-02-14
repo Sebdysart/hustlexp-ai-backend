@@ -62,6 +62,9 @@ export type EvidenceAccessScope = 'uploader_only' | 'restricted' | 'dispute_revi
 // Evidence moderation status
 export type EvidenceModerationStatus = 'pending' | 'approved' | 'flagged' | 'quarantined';
 
+// Risk level for tasks
+export type RiskLevel = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+
 // Task Progress State (Pillar A - Realtime Tracking)
 // Authority: task.progress_state is the source of truth
 // Enforced: Monotonic transitions only (no skips, no reversals)
@@ -235,21 +238,25 @@ export interface Task {
 export interface Escrow {
   id: string;
   task_id: string;
-  
+
   // Amount in USD cents (INTEGER - no floats!) - INV-4: immutable after creation
   amount: number;
-  
+
   state: EscrowState;
-  
+
   // Partial refund tracking (for REFUND_PARTIAL state)
   refund_amount?: number;
   release_amount?: number;
-  
+
   // Stripe references
   stripe_payment_intent_id?: string;
   stripe_transfer_id?: string;
   stripe_refund_id?: string;
-  
+
+  // Joined from tasks table (EscrowService.getById JOINs tasks)
+  poster_id?: string;
+  worker_id?: string;
+
   // Timestamps
   funded_at?: Date;
   released_at?: Date;

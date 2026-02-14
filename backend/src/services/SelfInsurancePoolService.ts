@@ -129,7 +129,7 @@ export const SelfInsurancePoolService = {
   ): Promise<ServiceResult<string>> => {
     try {
       // Validate claim amount against max
-      const poolStatus = await this.getPoolStatus();
+      const poolStatus = await SelfInsurancePoolService.getPoolStatus();
       if (!poolStatus.success || !poolStatus.data) {
         throw new Error('Failed to get pool status');
       }
@@ -242,7 +242,7 @@ export const SelfInsurancePoolService = {
       }
 
       // Get pool status
-      const poolStatus = await this.getPoolStatus();
+      const poolStatus = await SelfInsurancePoolService.getPoolStatus();
       if (!poolStatus.success || !poolStatus.data) {
         throw new Error('Failed to get pool status');
       }

@@ -246,13 +246,13 @@ export const LogisticsAIService = {
       // Collect results
       const validationChecks = {
         gps_proximity: {
-          passed: gpsProximityResult.success && gpsProximityResult.data!.passed,
-          distance_meters: gpsProximityResult.data?.distance_meters,
+          passed: gpsProximityResult.success && gpsProximityResult.data.passed,
+          distance_meters: gpsProximityResult.success ? gpsProximityResult.data.distance_meters : undefined,
           threshold_meters: GPS_PROXIMITY_THRESHOLD_METERS
         },
         impossible_travel: {
-          passed: impossibleTravelResult.success && impossibleTravelResult.data!.passed,
-          speed_kmh: impossibleTravelResult.data?.speed_kmh,
+          passed: impossibleTravelResult.success && impossibleTravelResult.data.passed,
+          speed_kmh: impossibleTravelResult.success ? impossibleTravelResult.data.speed_kmh : undefined,
           max_allowed_kmh: MAX_GROUND_SPEED_KMH
         },
         time_lock: {

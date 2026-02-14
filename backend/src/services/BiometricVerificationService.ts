@@ -78,7 +78,7 @@ export const BiometricVerificationService = {
             }
           );
           if (visionResponse.ok) {
-            const visionData = await visionResponse.json();
+            const visionData = await visionResponse.json() as Record<string, any>;
             const faces = visionData.responses?.[0]?.faceAnnotations || [];
             if (faces.length > 0) {
               const face = faces[0];

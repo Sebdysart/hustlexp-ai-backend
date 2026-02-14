@@ -56,8 +56,8 @@ export const uiRouter = router({
       timestamp: z.string().optional(), // Optional, defaults to NOW()
     }))
     .mutation(async ({ ctx, input }) => {
-      const result = await db.query(
-        `UPDATE users 
+      const result = await db.query<{ xp_first_celebration_shown_at: Date }>(
+        `UPDATE users
          SET xp_first_celebration_shown_at = COALESCE($2::timestamptz, NOW())
          WHERE id = $1 AND xp_first_celebration_shown_at IS NULL
          RETURNING xp_first_celebration_shown_at`,
@@ -66,7 +66,7 @@ export const uiRouter = router({
           input.timestamp ? new Date(input.timestamp) : null,
         ]
       );
-      
+
       if (result.rows.length === 0) {
         // Already marked as shown, return current value
         const current = await db.query<{ xp_first_celebration_shown_at: Date | null }>(
@@ -128,8 +128,8 @@ export const uiRouter = router({
       timestamp: z.string().optional(),
     }))
     .mutation(async ({ ctx, input }) => {
-      const result = await db.query(
-        `UPDATE badges 
+      const result = await db.query<{ animation_shown_at: Date }>(
+        `UPDATE badges
          SET animation_shown_at = COALESCE($3::timestamptz, NOW())
          WHERE id = $1 AND user_id = $2 AND animation_shown_at IS NULL
          RETURNING animation_shown_at`,

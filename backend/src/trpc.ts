@@ -19,7 +19,7 @@ import type { User } from './types';
 // CONTEXT
 // ============================================================================
 
-export interface Context {
+export interface Context extends Record<string, unknown> {
   user: User | null;
   firebaseUid: string | null;
 }

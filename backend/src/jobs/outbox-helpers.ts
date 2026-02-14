@@ -61,7 +61,7 @@ export async function writeToOutbox(input: OutboxEventInput): Promise<{
   
   // P1: Use INSERT ON CONFLICT DO NOTHING for atomic idempotency
   // This replaces SELECT+INSERT pattern with single atomic operation
-  const result = await queryFn<{ id: string }>(
+  const result = await db.query<{ id: string }>(
     `INSERT INTO outbox_events (
       event_type,
       aggregate_type,

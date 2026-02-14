@@ -59,8 +59,10 @@ export const gdprRouter = router({
       
       if (!result.success) {
         throw new TRPCError({
-          code: result.error.code === 'NOT_FOUND' || result.error.code === 'BAD_REQUEST' || result.error.code === 'INVALID_STATE'
+          code: result.error.code === 'NOT_FOUND' || result.error.code === 'BAD_REQUEST'
             ? result.error.code
+            : result.error.code === 'INVALID_STATE'
+            ? 'BAD_REQUEST'
             : 'INTERNAL_SERVER_ERROR',
           message: result.error.message,
         });
@@ -142,8 +144,10 @@ export const gdprRouter = router({
       
       if (!result.success) {
         throw new TRPCError({
-          code: result.error.code === 'NOT_FOUND' || result.error.code === 'FORBIDDEN' || result.error.code === 'INVALID_STATE'
+          code: result.error.code === 'NOT_FOUND' || result.error.code === 'FORBIDDEN'
             ? result.error.code
+            : result.error.code === 'INVALID_STATE'
+            ? 'BAD_REQUEST'
             : 'INTERNAL_SERVER_ERROR',
           message: result.error.message,
         });

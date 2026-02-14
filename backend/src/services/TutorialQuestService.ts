@@ -231,7 +231,7 @@ Map items to these skill names: lawn_mowing, furniture_assembly, painting_interi
         throw new Error(`OpenAI API error: ${response.status}`);
       }
 
-      const data = await response.json();
+      const data = await response.json() as Record<string, any>;
       const content = data.choices?.[0]?.message?.content;
       const jsonMatch = content.match(/\{[\s\S]*\}/);
       const parsed = JSON.parse(jsonMatch?.[0] || '{}');

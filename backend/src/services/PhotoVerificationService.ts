@@ -209,7 +209,7 @@ Respond with JSON only: {"similarity_score": 0-1, "completion_score": 0-1, "chan
         throw new Error(`OpenAI API error: ${response.status}`);
       }
 
-      const data = await response.json();
+      const data = await response.json() as Record<string, any>;
       const content = data.choices?.[0]?.message?.content;
 
       // Parse AI response

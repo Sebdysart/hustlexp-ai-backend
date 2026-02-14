@@ -57,7 +57,7 @@ function getStripeClient(): Stripe {
       throw new Error('Stripe not configured');
     }
     stripe = new Stripe(config.stripe.secretKey, {
-      apiVersion: '2024-12-18.acacia',
+      apiVersion: '2025-12-15.clover',
     });
   }
   return stripe;
@@ -133,7 +133,7 @@ async function handleStripeWebhook(event: Stripe.Event): Promise<WebhookResult> 
     // Transaction: Store Stripe event exactly once
     const result = await db.transaction(async (tx) => {
       // Insert Stripe event (idempotent - S-1)
-      const insert = await tx.query<{ stripe_event_id: string }>(
+      const insert = await tx<{ stripe_event_id: string }>(
         `
         INSERT INTO stripe_events (
           stripe_event_id,

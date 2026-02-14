@@ -103,7 +103,7 @@ export const alphaTelemetryRouter = router({
       const endDate = input.end_date || new Date();
       
       // Get total task completions in period
-      const taskCount = await db.query(`
+      const taskCount = await db.query<{ total_tasks: string }>(`
         SELECT COUNT(*) as total_tasks
         FROM tasks
         WHERE state = 'COMPLETED'
@@ -114,7 +114,7 @@ export const alphaTelemetryRouter = router({
       const totalTasks = parseInt(taskCount.rows[0]?.total_tasks || '0');
 
       // Get dispute attempts in period
-      const disputeAttempts = await db.query(`
+      const disputeAttempts = await db.query<{ total_attempts: string }>(`
         SELECT COUNT(*) as total_attempts
         FROM alpha_telemetry
         WHERE event_group = 'dispute_entry_attempt'
@@ -143,7 +143,7 @@ export const alphaTelemetryRouter = router({
       const endDate = input.end_date || new Date();
       
       // Get proof failures (attempt_number = 2 and verification_result = 'fail')
-      const failures = await db.query(`
+      const failures = await db.query<{ total_failures: string }>(`
         SELECT COUNT(*) as total_failures
         FROM alpha_telemetry
         WHERE event_group = 'proof_submission'
@@ -156,7 +156,7 @@ export const alphaTelemetryRouter = router({
       const totalFailures = parseInt(failures.rows[0]?.total_failures || '0');
 
       // Get corrections that resolved
-      const resolved = await db.query(`
+      const resolved = await db.query<{ total_resolved: string }>(`
         SELECT COUNT(*) as total_resolved
         FROM alpha_telemetry
         WHERE event_group = 'proof_correction_outcome'

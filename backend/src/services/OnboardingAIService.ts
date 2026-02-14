@@ -119,7 +119,7 @@ Respond with JSON only: {"worker": 0.0-1.0, "poster": 0.0-1.0, "certainty": "STR
           });
 
           if (aiResponse.ok) {
-            const aiData = await aiResponse.json();
+            const aiData = await aiResponse.json() as Record<string, any>;
             const content = aiData.content?.[0]?.text || '';
             const jsonMatch = content.match(/\{[\s\S]*\}/);
             if (jsonMatch) {
@@ -143,7 +143,7 @@ Respond with JSON only: {"worker": 0.0-1.0, "poster": 0.0-1.0, "certainty": "STR
       const proposalResult = await AIProposalService.create({
         jobId: jobResult.data.id,
         proposalType: 'role_inference',
-        proposal: mockInference,
+        proposal: mockInference as unknown as Record<string, unknown>,
         confidence: Math.max(mockInference.roleConfidenceWorker, mockInference.roleConfidencePoster),
         certaintyTier: mockInference.certaintyTier,
         schemaVersion: '1.0.0',

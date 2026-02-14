@@ -379,7 +379,7 @@ export const RatingService = {
       
       // RATE-5: One rating per pair per task (DB UNIQUE constraint will enforce)
       // Check if rating already exists
-      const existingResult = await this.hasRated(taskId, raterId, rateeId);
+      const existingResult = await RatingService.hasRated(taskId, raterId, rateeId);
       if (existingResult.success && existingResult.data) {
         return {
           success: false,
@@ -566,7 +566,7 @@ export const RatingService = {
   ): Promise<ServiceResult<RatingStats>> => {
     try {
       // Get summary from view
-      const summaryResult = await this.getRatingSummary(userId);
+      const summaryResult = await RatingService.getRatingSummary(userId);
       if (!summaryResult.success) {
         return summaryResult;
       }
@@ -574,7 +574,7 @@ export const RatingService = {
       const summary = summaryResult.data;
       
       // Get recent ratings
-      const recentResult = await this.getRatingsForUser(userId, 10, 0);
+      const recentResult = await RatingService.getRatingsForUser(userId, 10, 0);
       if (!recentResult.success) {
         return recentResult;
       }

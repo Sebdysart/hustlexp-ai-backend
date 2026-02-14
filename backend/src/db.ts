@@ -206,7 +206,31 @@ export interface QueryResult<T = Record<string, unknown>> {
   rowCount: number;
 }
 
-export const db = {
+/**
+ * Database query function signature.
+ * Extracted as a named type to break circular reference in the db object
+ * and ensure TypeScript properly infers generic type arguments on all callers.
+ */
+export type QueryFn = <T = Record<string, unknown>>(
+  sql: string,
+  params?: unknown[]
+) => Promise<QueryResult<T>>;
+
+/**
+ * Database client interface.
+ * Explicit interface prevents TypeScript from losing generic type information
+ * when the db object self-references (e.g., healthCheck calling db.query).
+ */
+export interface Database {
+  query: QueryFn;
+  transaction: <T>(fn: (query: QueryFn) => Promise<T>) => Promise<T>;
+  serializableTransaction: <T>(fn: (query: QueryFn) => Promise<T>) => Promise<T>;
+  healthCheck: () => Promise<{ connected: boolean; schemaVersion: string | null; latencyMs: number }>;
+  getPool: () => pg.Pool;
+  close: () => Promise<void>;
+}
+
+export const db: Database = {
   /**
    * Execute a SQL query
    */
@@ -241,7 +265,7 @@ export const db = {
    * Execute queries within a transaction
    */
   transaction: async <T>(
-    fn: (query: typeof db.query) => Promise<T>
+    fn: (query: QueryFn) => Promise<T>
   ): Promise<T> => {
     const client = await pool.connect();
     try {
@@ -281,7 +305,7 @@ export const db = {
    * Use for critical invariant operations
    */
   serializableTransaction: async <T>(
-    fn: (query: typeof db.query) => Promise<T>
+    fn: (query: QueryFn) => Promise<T>
   ): Promise<T> => {
     const client = await pool.connect();
     try {

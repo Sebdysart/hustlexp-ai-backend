@@ -74,7 +74,7 @@ export const xpTaxRouter = router({
       if (!status.success || !status.data) {
         throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: 'Failed to get tax status' });
       }
-      const amountCents = status.data.unpaid_balance_cents || 0;
+      const amountCents = status.data.unpaid_tax_cents || 0;
       if (amountCents <= 0) {
         throw new TRPCError({ code: 'BAD_REQUEST', message: 'No tax balance to pay' });
       }

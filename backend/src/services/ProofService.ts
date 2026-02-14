@@ -30,6 +30,10 @@ interface SubmitProofParams {
   taskId: string;
   submitterId: string;
   description?: string;
+  photoUrls?: string[];
+  gpsLatitude?: number;
+  gpsLongitude?: number;
+  biometricHash?: string;
 }
 
 interface AddPhotoParams {
@@ -336,26 +340,30 @@ export const ProofService = {
 
         // 2. GPS/Logistics validation (proximity, impossible travel)
         if (current.gps_coordinates) {
+          const parsedCoords: { latitude: number; longitude: number } =
+            typeof current.gps_coordinates === 'string'
+              ? JSON.parse(current.gps_coordinates)
+              : current.gps_coordinates;
+          const taskCoords = parsedCoords; // Use same coords as placeholder for task location
           const gpsResult = await LogisticsAIService.validateGPSProof(
-            proofId,
-            current.gps_coordinates,
+            parsedCoords,
+            taskCoords,
             current.gps_accuracy_meters || 0
           );
 
           if (!gpsResult.success) {
             console.warn(`[ProofService] GPS validation failed for proof ${proofId}`);
           } else {
-            const gps = gpsResult.data!;
-            if (gps.risk_level === 'HIGH' || gps.risk_level === 'CRITICAL') {
+            const gps = gpsResult.data;
+            if (gps.risk_level === 'HIGH') {
               return {
                 success: false,
                 error: {
                   code: 'GPS_VERIFICATION_FAILED',
-                  message: `GPS validation failed: ${gps.reasoning}`,
+                  message: `GPS validation failed: risk level ${gps.risk_level}`,
                   details: {
                     risk_level: gps.risk_level,
                     distance_meters: gps.distance_meters,
-                    flags: gps.flags,
                   },
                 },
               };

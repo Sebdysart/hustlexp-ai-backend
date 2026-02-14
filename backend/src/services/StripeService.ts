@@ -28,7 +28,7 @@ let stripe: Stripe | null = null;
 
 if (config.stripe.secretKey && !config.stripe.secretKey.includes('placeholder')) {
   stripe = new Stripe(config.stripe.secretKey, {
-    apiVersion: '2024-12-18.acacia',
+    apiVersion: '2025-12-15.clover',
   });
   console.log('✅ Stripe initialized');
 } else {
@@ -298,7 +298,7 @@ export const StripeService = {
         data: {
           refundId: refund.id,
           amount: refund.amount,
-          status: refund.status,
+          status: refund.status ?? '',
         },
       };
     } catch (error) {

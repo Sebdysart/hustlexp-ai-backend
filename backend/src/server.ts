@@ -20,7 +20,6 @@ import { trpcServer } from '@hono/trpc-server';
 import { appRouter } from './routers';
 import { createContext } from './trpc';
 import { config } from './config';
-import { db } from './db';
 import { securityHeaders, rateLimitMiddleware } from './middleware/security';
 
 // ============================================================================
@@ -162,6 +161,7 @@ app.use('/trpc/*', trpcServer({
 import { firebaseAuth } from './auth/firebase';
 import { db } from './db';
 import type { User } from './types';
+import type { WebhookResult } from './services/StripeWebhookService';
 import { sseHandler } from './realtime/sse-handler';
 
 // Helper to get authenticated user from Bearer token
@@ -213,14 +213,14 @@ app.post('/api/users/:userId/xp-celebration-shown', async (c) => {
   
   const body = await c.req.json().catch(() => ({}));
   
-  const result = await db.query(
-    `UPDATE users 
+  const result = await db.query<{ xp_first_celebration_shown_at: Date | null }>(
+    `UPDATE users
      SET xp_first_celebration_shown_at = COALESCE($2::timestamptz, NOW())
      WHERE id = $1 AND xp_first_celebration_shown_at IS NULL
      RETURNING xp_first_celebration_shown_at`,
     [user.id, body.timestamp ? new Date(body.timestamp) : null]
   );
-  
+
   return c.json({
     success: true,
     xpFirstCelebrationShownAt: result.rows[0]?.xp_first_celebration_shown_at?.toISOString() || null,
@@ -260,14 +260,14 @@ app.post('/api/users/:userId/badges/:badgeId/animation-shown', async (c) => {
   const badgeId = c.req.param('badgeId');
   const body = await c.req.json().catch(() => ({}));
   
-  const result = await db.query(
-    `UPDATE badges 
+  const result = await db.query<{ animation_shown_at: Date | null }>(
+    `UPDATE badges
      SET animation_shown_at = COALESCE($3::timestamptz, NOW())
      WHERE id = $1 AND user_id = $2 AND animation_shown_at IS NULL
      RETURNING animation_shown_at`,
     [badgeId, user.id, body.timestamp ? new Date(body.timestamp) : null]
   );
-  
+
   return c.json({
     success: true,
     animationShownAt: result.rows[0]?.animation_shown_at?.toISOString() || null,
@@ -395,13 +395,13 @@ app.post('/webhooks/stripe', async (c) => {
   
   if (!result.success) {
     // Return 400 for verification errors (malicious or misconfigured)
-    if (result.error.code === 'WEBHOOK_VERIFICATION_FAILED' || 
-        result.error.code === 'WEBHOOK_SECRET_MISSING' ||
-        result.error.code === 'STRIPE_NOT_CONFIGURED') {
+    if (result.error?.code === 'WEBHOOK_VERIFICATION_FAILED' ||
+        result.error?.code === 'WEBHOOK_SECRET_MISSING' ||
+        result.error?.code === 'STRIPE_NOT_CONFIGURED') {
       return c.json({ error: result.error.message }, 400);
     }
     // Return 500 for storage errors (retryable)
-    return c.json({ error: result.error.message }, 500);
+    return c.json({ error: result.error?.message ?? 'Unknown webhook error' }, 500);
   }
   
   // Always return 200 for successful ingestion (even if duplicate/replay)
@@ -765,7 +765,7 @@ async function startServer() {
 
   // Report schema version
   try {
-    const result = await db.query('SELECT version, applied_at FROM schema_versions ORDER BY applied_at DESC LIMIT 1');
+    const result = await db.query<{ version: string; applied_at: string }>('SELECT version, applied_at FROM schema_versions ORDER BY applied_at DESC LIMIT 1');
     if (result.rows.length > 0) {
       console.log(`Schema:      ✅ v${result.rows[0].version} (applied ${new Date(result.rows[0].applied_at).toISOString()})`);
     } else {

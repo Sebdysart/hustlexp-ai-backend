@@ -678,7 +678,7 @@ export const GDPRService = {
   updateConsent: async (
     params: CreateConsentParams
   ): Promise<ServiceResult<UserConsent>> => {
-    const { userId, consentType, status, ipAddress, userAgent } = params;
+    const { userId, consentType, ipAddress, userAgent } = params;
     
     try {
       // Schema has UNIQUE(user_id, consent_type) constraint, so use UPSERT

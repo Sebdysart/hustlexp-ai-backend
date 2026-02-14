@@ -247,7 +247,7 @@ export const XPService = {
 
         if (userResult.rows.length === 0) {
           return {
-            success: false,
+            success: false as const,
             error: {
               code: ErrorCodes.NOT_FOUND,
               message: `User ${userId} not found`,
@@ -312,7 +312,7 @@ export const XPService = {
           throw new Error('Failed to create XP ledger entry - no row returned');
         }
 
-        return { success: true, data: ledgerResult.rows[0] };
+        return { success: true as const, data: ledgerResult.rows[0] };
       });
       
       // Alpha Instrumentation: Emit trust delta applied for XP

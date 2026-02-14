@@ -209,7 +209,7 @@ export async function checkRateLimit(
   action: string,
   limit: number,
   window: number
-): Promise<{ allowed: boolean; remaining: number }> {
+): Promise<{ allowed: boolean; remaining: number; resetAt?: number }> {
   const limiter = getRateLimiter(window * 1000, limit);
   if (!limiter) {
     // Graceful fallback: allow everything if Redis not configured
@@ -222,6 +222,7 @@ export async function checkRateLimit(
     return {
       allowed: result.success,
       remaining: result.remaining,
+      resetAt: result.reset,
     };
   } catch (error) {
     console.error(`Rate limit check error for ${userId}/${action}:`, error);

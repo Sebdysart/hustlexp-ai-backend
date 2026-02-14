@@ -322,7 +322,7 @@ export const taskRouter = router({
       let proofId = input.proofId;
       if (!proofId && input.taskId) {
         // Look up latest proof for this task
-        const proofLookup = await db.query(
+        const proofLookup = await db.query<{ id: string }>(
           `SELECT id FROM proofs WHERE task_id = $1 ORDER BY created_at DESC LIMIT 1`,
           [input.taskId]
         );
