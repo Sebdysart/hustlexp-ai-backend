@@ -335,7 +335,15 @@ export const ProofService = {
             typeof current.gps_coordinates === 'string'
               ? JSON.parse(current.gps_coordinates)
               : current.gps_coordinates;
-          const taskCoords = parsedCoords; // TODO: fetch actual task location from tasks table
+
+          // Fetch actual task location from tasks table
+          const taskLocResult = await db.query<{ location_lat: number; location_lng: number }>(
+            'SELECT location_lat, location_lng FROM tasks WHERE id = $1 AND location_lat IS NOT NULL',
+            [current.task_id]
+          );
+          const taskCoords = taskLocResult.rows.length > 0
+            ? { latitude: Number(taskLocResult.rows[0].location_lat), longitude: Number(taskLocResult.rows[0].location_lng) }
+            : parsedCoords; // Fallback to proof GPS if task has no location set
           const accuracyMeters = current.gps_accuracy_meters || 0;
 
           const gpsResult = await LogisticsAIService.validateGPSProof(

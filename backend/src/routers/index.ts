@@ -38,6 +38,18 @@ import { batchQuestRouter } from './batchQuest';
 import { tutorialRouter } from './tutorial';
 import { juryRouter } from './jury';
 import { uploadRouter } from './upload';
+// v2.1.0: AI agent routers
+import { matchmakerRouter } from './matchmaker';
+import { disputeAIRouter } from './disputeAI';
+import { reputationRouter } from './reputation';
+// v2.1.0: Business feature routers
+import { betaDashboardRouter } from './betaDashboard';
+import { challengesRouter } from './challenges';
+import { expertiseSupplyRouter } from './expertiseSupply';
+import { featuredRouter } from './featured';
+import { referralRouter } from './referral';
+import { subscriptionRouter } from './subscription';
+import { tippingRouter } from './tipping';
 
 export const appRouter = router({
   task: taskRouter,
@@ -72,6 +84,18 @@ export const appRouter = router({
   tutorial: tutorialRouter,
   jury: juryRouter,
   upload: uploadRouter,
+  // v2.1.0: AI agent routers
+  matchmaker: matchmakerRouter,
+  disputeAI: disputeAIRouter,
+  reputation: reputationRouter,
+  // v2.1.0: Business feature routers
+  betaDashboard: betaDashboardRouter,
+  challenges: challengesRouter,
+  expertiseSupply: expertiseSupplyRouter,
+  featured: featuredRouter,
+  referral: referralRouter,
+  subscription: subscriptionRouter,
+  tipping: tippingRouter,
 });
 
 export type AppRouter = typeof appRouter;
