@@ -3,6 +3,7 @@
  */
 
 import { z } from 'zod';
+import { TRPCError } from '@trpc/server';
 import { router, protectedProcedure } from '../trpc';
 import { db } from '../db';
 
@@ -89,7 +90,7 @@ export const challengesRouter = router({
       );
 
       if (challenge.rows.length === 0) {
-        return { success: false, error: 'Challenge not found' };
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Challenge not found' });
       }
 
       const isCompleted = input.progress >= challenge.rows[0].target_value;

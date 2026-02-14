@@ -4,9 +4,9 @@
  */
 
 import { z } from 'zod';
+import { TRPCError } from '@trpc/server';
 import { router, protectedProcedure } from '../trpc';
 import { db } from '../db';
-import type { ServiceResult } from '../types';
 
 // Generate a random referral code
 function generateReferralCode(): string {
@@ -78,7 +78,7 @@ export const referralRouter = router({
         [referredId]
       );
       if (alreadyReferred.rows.length > 0) {
-        return { success: false, message: 'Already used a referral code' };
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'Already used a referral code' });
       }
 
       // Find the referral code
@@ -88,14 +88,14 @@ export const referralRouter = router({
       );
 
       if (codeResult.rows.length === 0) {
-        return { success: false, message: 'Invalid referral code' };
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Invalid referral code' });
       }
 
       const referralCode = codeResult.rows[0];
 
       // Can't refer yourself
       if (referralCode.user_id === referredId) {
-        return { success: false, message: 'Cannot use your own referral code' };
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'Cannot use your own referral code' });
       }
 
       // Create redemption (rewards given after first task completion)

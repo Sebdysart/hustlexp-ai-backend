@@ -35,7 +35,7 @@ export const featuredRouter = router({
       const pricing = FEATURE_PRICING[input.featureType];
 
       if (!pricing) {
-        return { success: false, error: 'Invalid feature type' };
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'Invalid feature type' });
       }
 
       // Verify task ownership
@@ -45,7 +45,7 @@ export const featuredRouter = router({
       );
 
       if (task.rows.length === 0 || task.rows[0].poster_id !== userId) {
-        return { success: false, error: 'Task not found or not owned by user' };
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found or not owned by user' });
       }
 
       // Check for existing active promotion
@@ -56,7 +56,7 @@ export const featuredRouter = router({
       );
 
       if (existing.rows.length > 0) {
-        return { success: false, error: 'Task already has an active promotion' };
+        throw new TRPCError({ code: 'CONFLICT', message: 'Task already has an active promotion' });
       }
 
       // Create Stripe payment
