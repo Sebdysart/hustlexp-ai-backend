@@ -144,6 +144,32 @@ app.get('/health/detailed', async (c) => {
 app.get('/realtime/stream', sseHandler);
 
 // ============================================================================
+// STATIC PAGES (Legal — Privacy Policy, Terms of Service)
+// ============================================================================
+
+import { readFileSync, existsSync } from 'fs';
+import { join } from 'path';
+
+const publicDir = join(import.meta.dirname || __dirname, '..', '..', 'public');
+
+function serveStatic(path: string, contentType = 'text/html') {
+  return (c: any) => {
+    const filePath = join(publicDir, path);
+    if (existsSync(filePath)) {
+      const content = readFileSync(filePath, 'utf-8');
+      return c.html(content);
+    }
+    return c.text('Not found', 404);
+  };
+}
+
+app.get('/privacy-policy', serveStatic('privacy-policy.html'));
+app.get('/privacy', serveStatic('privacy-policy.html'));
+app.get('/terms-of-service', serveStatic('terms-of-service.html'));
+app.get('/terms', serveStatic('terms-of-service.html'));
+app.get('/legal', serveStatic('index.html'));
+
+// ============================================================================
 // tRPC HANDLER
 // ============================================================================
 
