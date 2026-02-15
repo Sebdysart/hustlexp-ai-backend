@@ -62,11 +62,12 @@ export async function createContext(opts: {
 // ============================================================================
 
 const t = initTRPC.context<Context>().create({
-  errorFormatter: ({ shape, error }) => ({
+  errorFormatter: ({ shape }) => ({
     ...shape,
     data: {
       ...shape.data,
-      code: error.code,
+      // Strip stack traces in production to prevent information leakage
+      stack: undefined,
     },
   }),
 });
