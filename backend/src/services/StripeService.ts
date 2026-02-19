@@ -192,6 +192,96 @@ export const StripeService = {
   },
 
   /**
+   * Create payment intent for XP tax payments.
+   * Unlike escrow funding, tax payments have no minimum task value
+   * (Stripe minimum is 50 cents).
+   */
+  createTaxPaymentIntent: async (
+    userId: string,
+    amountCents: number,
+  ): Promise<ServiceResult<CreatePaymentIntentResult>> => {
+    if (!stripe) {
+      return {
+        success: false,
+        error: { code: 'STRIPE_NOT_CONFIGURED', message: 'Stripe is not configured' },
+      };
+    }
+
+    // Stripe minimum is 50 cents
+    if (amountCents < 50) {
+      return {
+        success: false,
+        error: { code: 'INVALID_AMOUNT', message: 'Tax amount must be at least $0.50' },
+      };
+    }
+
+    try {
+      const paymentIntent = await stripe.paymentIntents.create({
+        amount: amountCents,
+        currency: 'usd',
+        automatic_payment_methods: { enabled: true },
+        metadata: {
+          type: 'xp_tax',
+          user_id: userId,
+        },
+        description: `HustleXP XP Tax Payment`,
+      });
+
+      return {
+        success: true,
+        data: {
+          paymentIntentId: paymentIntent.id,
+          clientSecret: paymentIntent.client_secret!,
+          amount: amountCents,
+        },
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: {
+          code: 'STRIPE_ERROR',
+          message: error instanceof Error ? error.message : 'Unknown Stripe error',
+        },
+      };
+    }
+  },
+
+  /**
+   * Verify a PaymentIntent has succeeded and return its amount.
+   * Used by XPTaxService to verify tax payment before releasing XP.
+   */
+  verifyPaymentIntent: async (
+    paymentIntentId: string,
+  ): Promise<ServiceResult<{ status: string; amountCents: number; metadata: Record<string, string> }>> => {
+    if (!stripe) {
+      return {
+        success: false,
+        error: { code: 'STRIPE_NOT_CONFIGURED', message: 'Stripe is not configured' },
+      };
+    }
+
+    try {
+      const pi = await stripe.paymentIntents.retrieve(paymentIntentId);
+      return {
+        success: true,
+        data: {
+          status: pi.status,
+          amountCents: pi.amount,
+          metadata: (pi.metadata || {}) as Record<string, string>,
+        },
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: {
+          code: 'STRIPE_ERROR',
+          message: error instanceof Error ? error.message : 'Unknown Stripe error',
+        },
+      };
+    }
+  },
+
+  /**
    * Create transfer to worker (escrow release)
    */
   createTransfer: async (

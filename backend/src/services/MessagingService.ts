@@ -190,7 +190,8 @@ export const MessagingService = {
   sendMessage: async (
     params: CreateMessageParams
   ): Promise<ServiceResult<TaskMessage>> => {
-    const { taskId, senderId, messageType, content, autoMessageTemplate } = params;
+    const { taskId, senderId, messageType, autoMessageTemplate } = params;
+    let { content } = params;
     
     try {
       // Verify task exists and get participants
@@ -297,12 +298,14 @@ export const MessagingService = {
           };
         }
         
-        // Use template as content (can be customized)
+        // Use template as fallback content, or allow user-provided custom content
         const templateContent = AUTO_MESSAGE_TEMPLATES[autoMessageTemplate];
-        // Use template content if no custom content provided
         if (!content) {
-          // TODO: Allow customization of auto-messages - for now use template as-is
+          // No custom content provided — use default template text
+          content = templateContent;
         }
+        // If content IS provided by the user, it overrides the template text
+        // (the auto_message_template field still records which template was selected)
       }
       
       // Create message (moderation_status defaults to 'pending' in schema)
@@ -504,7 +507,18 @@ export const MessagingService = {
       // MESSAGING_SPEC.md §2.3: Maximum 3 photos per message, 5MB per photo
       // Since this service receives photoUrls (already uploaded), validation must occur
       // in the upload handler (e.g., in the router or upload service)
-      // TODO: Store photos in evidence table (MESSAGING_SPEC.md §2.3) - requires storage_key mapping
+
+      // Store photos in evidence table for audit/dispute trail (MESSAGING_SPEC.md §2.3)
+      for (const photoUrl of photoUrls) {
+        // Extract storage key from URL (R2 URL format: https://.../{bucket}/{key})
+        const storageKey = photoUrl.includes('/') ? photoUrl.split('/').slice(-2).join('/') : photoUrl;
+        db.query(
+          `INSERT INTO evidence (task_id, uploader_user_id, storage_key, content_type, access_scope)
+           VALUES ($1, $2, $3, 'image', 'messaging')
+           ON CONFLICT DO NOTHING`,
+          [taskId, senderId, storageKey]
+        ).catch(err => console.error('[MessagingService] Failed to store photo evidence (non-blocking):', err));
+      }
       
       // Create photo message (moderation_status defaults to 'pending' in schema)
       const messageResult = await db.query<TaskMessage>(

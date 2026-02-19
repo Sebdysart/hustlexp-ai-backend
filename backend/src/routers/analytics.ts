@@ -330,6 +330,7 @@ export const analyticsRouter = router({
       conversionEvent: z.string().optional(), // Optional conversion event to track
       sessionId: z.string().uuid().optional(), // Optional: Should be provided by client
       deviceId: z.string().uuid().optional(), // Optional: Should be provided by client
+      platform: z.enum(['ios', 'android', 'web']).optional(), // Client platform
     }))
     .mutation(async ({ input, ctx }) => {
       if (!ctx.user) {
@@ -339,10 +340,9 @@ export const analyticsRouter = router({
         });
       }
       
-      // Note: sessionId and deviceId should ideally come from request headers/context
-      // For now, accept them as optional input. If not provided, the service will generate
-      // placeholder values (not ideal for cross-device tracking).
-      // TODO: Add sessionId/deviceId to tRPC context via middleware/extensions
+      // Note: sessionId, deviceId, and platform are provided by the client.
+      // iOS client sends these from device info. Web clients can use fingerprinting.
+      // Future: Add these to tRPC context via middleware for automatic injection.
       const result = await AnalyticsService.trackABTest(
         ctx.user.id,
         input.testName,
@@ -350,7 +350,7 @@ export const analyticsRouter = router({
         input.conversionEvent as EventType | undefined,
         input.sessionId,
         input.deviceId,
-        'web' // TODO: Extract platform from context/headers
+        input.platform || 'ios' // Default to iOS since primary client is native app
       );
       
       if (!result.success) {

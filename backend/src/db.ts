@@ -37,6 +37,9 @@ const pool = new Pool({
   max: 10,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 10000,
+  // Query timeout: kill any query taking longer than 30 seconds
+  // Prevents runaway queries from holding connections and DOSing the pool
+  statement_timeout: 30000,
 });
 
 console.log('✅ Database pool initialized');

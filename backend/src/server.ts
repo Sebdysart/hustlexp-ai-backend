@@ -13,14 +13,16 @@
  * @see ARCHITECTURE.md §1
  */
 
+// Sentry must be imported first to capture all errors
+import { Sentry } from './sentry';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
-import { logger } from 'hono/logger';
 import { trpcServer } from '@hono/trpc-server';
 import { appRouter } from './routers';
 import { createContext } from './trpc';
 import { config } from './config';
 import { securityHeaders, rateLimitMiddleware } from './middleware/security';
+import { logger as pinoLogger } from './logger';
 
 // ============================================================================
 // APP INITIALIZATION
@@ -35,16 +37,35 @@ const app = new Hono();
 // Security headers (X-Frame-Options, X-Content-Type-Options, etc.)
 app.use('*', securityHeaders);
 
-// Logging
-app.use('*', logger());
+// Structured request logging (Pino)
+app.use('*', async (c, next) => {
+  const start = Date.now();
+  await next();
+  const duration = Date.now() - start;
+  const status = c.res.status;
+  const level = status >= 500 ? 'error' : status >= 400 ? 'warn' : 'info';
+  pinoLogger[level]({
+    method: c.req.method,
+    path: c.req.path,
+    status,
+    duration,
+    ip: c.req.header('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown',
+  }, `${c.req.method} ${c.req.path} → ${status} (${duration}ms)`);
+});
 
-// CORS — restrict origins in production
+// CORS — explicit origins only (no wildcard with credentials)
+const allowedOrigins = config.app.isDevelopment
+  ? ['http://localhost:3000', 'http://localhost:5173', 'http://localhost:8081']
+  : (config.app.allowedOrigins.length > 0
+      ? config.app.allowedOrigins
+      : ['https://app.hustlexp.com', 'https://www.hustlexp.com']);
+
 app.use('*', cors({
-  origin: config.app.isDevelopment
-    ? '*'
-    : (config.app.allowedOrigins.length > 0
-        ? config.app.allowedOrigins
-        : ['https://app.hustlexp.com']),
+  origin: (requestOrigin) => {
+    // iOS apps send no Origin header — allow them through
+    if (!requestOrigin) return allowedOrigins[0];
+    return allowedOrigins.includes(requestOrigin) ? requestOrigin : null;
+  },
   allowMethods: ['GET', 'POST', 'OPTIONS'],
   allowHeaders: ['Content-Type', 'Authorization'],
   credentials: true,
@@ -456,12 +477,19 @@ app.notFound((c) => {
 // ============================================================================
 
 app.onError((err, c) => {
-  // Log full error internally
-  console.error('[Server Error]', {
-    message: err.message,
-    stack: err.stack,
+  // Log full error with structured context
+  pinoLogger.error({
+    err,
     path: c.req.path,
     method: c.req.method,
+  }, 'Unhandled server error');
+
+  // Report to Sentry with request context
+  Sentry.captureException(err, {
+    extra: {
+      path: c.req.path,
+      method: c.req.method,
+    },
   });
 
   // Never leak stack traces or internal details to clients
@@ -787,6 +815,55 @@ async function startServer() {
   } catch (migRunErr: any) {
     console.error('Migrations:  ❌ Migration error:', migRunErr?.message?.substring(0, 200));
     if (migRunErr?.position) console.error(`Migrations:  ❌ Position: ${migRunErr.position}`);
+  }
+
+  // Performance indexes migration (007)
+  try {
+    const idxMig = 'performance_indexes_v1';
+    const idxAlready = await db.query('SELECT 1 FROM applied_migrations WHERE name = $1', [idxMig]);
+    if (idxAlready.rows.length > 0) {
+      console.log(`Migrations:  ⏭️  ${idxMig} already applied`);
+    } else {
+      console.log(`Migrations:  ⏳ Running ${idxMig}...`);
+      await db.query(`
+        -- Task feed compound indexes
+        CREATE INDEX IF NOT EXISTS idx_matching_scores_hustler_feed
+          ON task_matching_scores(hustler_id, expires_at DESC, relevance_score DESC);
+        CREATE INDEX IF NOT EXISTS idx_matching_scores_hustler_distance
+          ON task_matching_scores(hustler_id, expires_at DESC, distance_miles ASC);
+        CREATE INDEX IF NOT EXISTS idx_tasks_state_category
+          ON tasks(state, category, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_tasks_state_price
+          ON tasks(state, price DESC, created_at DESC);
+        -- Escrow lookups
+        CREATE INDEX IF NOT EXISTS idx_escrows_task_state
+          ON escrows(task_id, state);
+        -- Messaging
+        CREATE INDEX IF NOT EXISTS idx_task_messages_task_created
+          ON task_messages(task_id, created_at DESC);
+        -- XP ledger
+        CREATE INDEX IF NOT EXISTS idx_xp_ledger_user_created
+          ON xp_ledger(user_id, created_at DESC);
+        -- Ratings
+        CREATE INDEX IF NOT EXISTS idx_task_ratings_ratee
+          ON task_ratings(ratee_id);
+        -- Notifications
+        CREATE INDEX IF NOT EXISTS idx_notifications_user_created
+          ON notifications(user_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_notifications_user_unread
+          ON notifications(user_id, is_read) WHERE is_read = false;
+        -- Outbox poller
+        CREATE INDEX IF NOT EXISTS idx_outbox_events_unprocessed
+          ON outbox_events(processed_at, created_at ASC) WHERE processed_at IS NULL;
+        -- Proofs
+        CREATE INDEX IF NOT EXISTS idx_proofs_task_state
+          ON proofs(task_id, state);
+      `);
+      await db.query('INSERT INTO applied_migrations (name) VALUES ($1)', [idxMig]);
+      console.log(`Migrations:  ✅ ${idxMig} — 12 performance indexes created`);
+    }
+  } catch (idxErr: any) {
+    console.error('Migrations:  ⚠️  Performance indexes:', idxErr?.message?.substring(0, 200));
   }
 
   // Report schema version

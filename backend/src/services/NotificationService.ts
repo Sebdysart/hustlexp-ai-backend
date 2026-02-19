@@ -20,16 +20,16 @@ import { ErrorCodes } from '../types';
 // TYPES
 // ============================================================================
 
-export type NotificationCategory = 
+export type NotificationCategory =
   | 'task_accepted' | 'task_completed' | 'task_cancelled' | 'task_expired'
   | 'proof_submitted' | 'proof_approved' | 'proof_rejected'
-  | 'escrow_funded' | 'payment_released' | 'refund_issued'
+  | 'escrow_funded' | 'payment_released' | 'payment_due' | 'refund_issued'
   | 'dispute_opened' | 'dispute_resolved'
   | 'trust_tier_upgraded' | 'badge_earned'
   | 'message_received' | 'unread_messages'
   | 'new_matching_task' | 'live_mode_task' | 'instant_task_available'
   | 'account_suspended' | 'security_alert' | 'password_changed'
-  | 'welcome' | 'weekly_recap';
+  | 'welcome' | 'weekly_recap' | 'export_ready';
 
 export type NotificationPriority = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
 export type NotificationChannel = 'push' | 'email' | 'sms' | 'in_app';
@@ -118,6 +118,7 @@ const FREQUENCY_LIMITS: Record<NotificationCategory, { perHour: number; perDay: 
   task_expired: { perHour: Infinity, perDay: Infinity },
   escrow_funded: { perHour: Infinity, perDay: Infinity },
   payment_released: { perHour: Infinity, perDay: Infinity },
+  payment_due: { perHour: 1, perDay: 1 }, // Max 1 tax reminder per day
   refund_issued: { perHour: Infinity, perDay: Infinity },
   dispute_opened: { perHour: Infinity, perDay: Infinity },
   dispute_resolved: { perHour: Infinity, perDay: Infinity },
@@ -128,6 +129,7 @@ const FREQUENCY_LIMITS: Record<NotificationCategory, { perHour: number; perDay: 
   password_changed: { perHour: 5, perDay: 20 },
   welcome: { perHour: 1, perDay: 1 },
   weekly_recap: { perHour: 1, perDay: 1 },
+  export_ready: { perHour: Infinity, perDay: Infinity },
 };
 
 // ============================================================================
@@ -1143,15 +1145,28 @@ async function queueEmailNotification(notification: Notification): Promise<void>
   }
   
   // Map notification category to email template
-  // TODO: Implement proper template mapping based on notification category
   const templateMap: Record<string, string> = {
     'task_accepted': 'task_status_changed',
     'task_completed': 'task_status_changed',
     'task_cancelled': 'task_status_changed',
-    'payment_released': 'task_status_changed',
-    'export_ready': 'export_ready', // From export worker
+    'task_expired': 'task_status_changed',
+    'proof_submitted': 'task_status_changed',
+    'proof_approved': 'task_status_changed',
+    'proof_rejected': 'task_status_changed',
+    'payment_released': 'payment_released',
+    'payment_due': 'notification',
+    'refund_issued': 'task_status_changed',
+    'escrow_funded': 'task_status_changed',
+    'dispute_opened': 'task_status_changed',
+    'dispute_resolved': 'task_status_changed',
+    'account_suspended': 'security_alert',
+    'security_alert': 'security_alert',
+    'password_changed': 'security_alert',
+    'export_ready': 'export_ready',
     'welcome': 'welcome',
-    // Add more mappings as needed
+    'weekly_recap': 'notification',
+    'trust_tier_upgraded': 'notification',
+    'badge_earned': 'notification',
   };
   
   const template = templateMap[notification.category] || 'notification'; // Default template

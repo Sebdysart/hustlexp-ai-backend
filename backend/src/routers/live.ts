@@ -153,9 +153,10 @@ export const liveRouter = router({
           [input.radiusMiles]
         );
         
-        // TODO: Add geo-bounded filtering once tasks table has latitude/longitude columns
-        // For now, filter by initial_radius_miles which is stored on broadcast
-        // Full implementation would use Haversine formula or PostgreSQL earthdistance extension
+        // NOTE: Geo-bounded filtering (Haversine / earthdistance) requires adding
+        // latitude/longitude columns to the tasks table. Current schema only has
+        // location VARCHAR(255). For now, we filter by initial_radius_miles on broadcast.
+        // See ARCHITECTURE.md §3.4 for future geo-query plan.
         
         return result.rows.map(broadcast => ({
           id: broadcast.id,

@@ -21,12 +21,16 @@ interface InstantMatchingJobData {
 /**
  * Process instant matching job
  * 
- * Eligibility criteria:
- * - User is online (TODO: implement online status tracking)
- * - Location radius match (TODO: implement location matching)
- * - Trust tier ≥ task requirement
- * - No active Instant task
- * - Not cooldown-restricted (TODO: implement cooldown)
+ * Eligibility criteria (implemented):
+ * - Trust tier ≥ task risk-level requirement
+ * - No active Instant task already in progress
+ * - Plan tier allows the task's risk level
+ * - Not on trust hold
+ *
+ * Nice-to-have (post-launch):
+ * - Online status tracking (requires WebSocket presence)
+ * - Location radius matching (requires lat/lng on tasks table)
+ * - Cooldown restriction between instant accepts
  * 
  * Launch Hardening v1: Error containment, kill switch checks, idempotency
  */
@@ -77,7 +81,7 @@ export async function processInstantMatchingJob(
   // Find eligible hustlers
   // Pre-Alpha Prerequisite: Eligibility Guard filters by risk tier requirements
   // Trust tier enforcement: only hustlers with trust_tier >= minTrustTier can accept Instant tasks
-  // TODO: Add online status, location radius, active task checks
+  // v1: Broadcast to all eligible hustlers. v2 will add location-based filtering.
   
   // Get task risk level for eligibility filtering
   const taskRiskResult = await db.query<{ risk_level: string }>(

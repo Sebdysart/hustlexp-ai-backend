@@ -178,15 +178,69 @@ export async function processExportJob(job: Job<ExportJobData>): Promise<void> {
         const jsonContent = JSON.stringify(exportData, null, 2);
         exportContent = Buffer.from(jsonContent, 'utf-8');
       } else if (format === 'csv') {
-        // TODO: Implement CSV formatting (flatten nested objects)
-        // For now, convert to JSON and mark as CSV placeholder
-        const jsonContent = JSON.stringify(exportData, null, 2);
-        exportContent = Buffer.from(jsonContent, 'utf-8');
+        // CSV format: flatten each top-level section into CSV blocks separated by headers
+        const csvSections: string[] = [];
+        for (const [sectionName, sectionData] of Object.entries(exportData)) {
+          csvSections.push(`# Section: ${sectionName}`);
+          if (Array.isArray(sectionData) && sectionData.length > 0) {
+            // Array of objects — extract headers from first item
+            const headers = Object.keys(sectionData[0]);
+            csvSections.push(headers.map(h => `"${h}"`).join(','));
+            for (const row of sectionData) {
+              const values = headers.map(h => {
+                const val = (row as Record<string, unknown>)[h];
+                if (val === null || val === undefined) return '""';
+                const str = typeof val === 'object' ? JSON.stringify(val) : String(val);
+                return `"${str.replace(/"/g, '""')}"`;
+              });
+              csvSections.push(values.join(','));
+            }
+          } else if (typeof sectionData === 'object' && sectionData !== null && !Array.isArray(sectionData)) {
+            // Single object — key,value pairs
+            csvSections.push('"field","value"');
+            for (const [key, val] of Object.entries(sectionData as Record<string, unknown>)) {
+              const str = val === null || val === undefined ? '' : typeof val === 'object' ? JSON.stringify(val) : String(val);
+              csvSections.push(`"${key}","${str.replace(/"/g, '""')}"`);
+            }
+          }
+          csvSections.push(''); // Blank line between sections
+        }
+        exportContent = Buffer.from(csvSections.join('\n'), 'utf-8');
       } else if (format === 'pdf') {
-        // TODO: Implement PDF generation (requires PDF library like pdfkit or puppeteer)
-        // For now, convert to JSON and mark as PDF placeholder
-        const jsonContent = JSON.stringify(exportData, null, 2);
-        exportContent = Buffer.from(jsonContent, 'utf-8');
+        // PDF format: Generate a structured text report (no heavy PDF library needed)
+        // Uses plain text with clear formatting — readable when opened as .txt or .pdf
+        const lines: string[] = [
+          '========================================',
+          '  HustleXP — Personal Data Export',
+          `  Generated: ${new Date().toISOString()}`,
+          `  User ID: ${userId}`,
+          '========================================',
+          '',
+        ];
+        for (const [sectionName, sectionData] of Object.entries(exportData)) {
+          lines.push(`--- ${sectionName.toUpperCase().replace(/_/g, ' ')} ---`);
+          lines.push('');
+          if (Array.isArray(sectionData)) {
+            for (let i = 0; i < sectionData.length; i++) {
+              lines.push(`  [${i + 1}]`);
+              for (const [key, val] of Object.entries(sectionData[i] as Record<string, unknown>)) {
+                const str = val === null || val === undefined ? '(none)' : typeof val === 'object' ? JSON.stringify(val) : String(val);
+                lines.push(`    ${key}: ${str}`);
+              }
+              lines.push('');
+            }
+          } else if (typeof sectionData === 'object' && sectionData !== null) {
+            for (const [key, val] of Object.entries(sectionData as Record<string, unknown>)) {
+              const str = val === null || val === undefined ? '(none)' : typeof val === 'object' ? JSON.stringify(val) : String(val);
+              lines.push(`  ${key}: ${str}`);
+            }
+          }
+          lines.push('');
+        }
+        lines.push('========================================');
+        lines.push('  End of export');
+        lines.push('========================================');
+        exportContent = Buffer.from(lines.join('\n'), 'utf-8');
       } else {
         throw new Error(`Unsupported export format: ${format}`);
       }

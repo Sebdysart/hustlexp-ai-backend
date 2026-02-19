@@ -18,7 +18,7 @@
  * @see ARCHITECTURE.md §2.4 (Outbox pattern)
  */
 
-import { db } from '../db';
+import { db, type QueryFn } from '../db';
 import { generateIdempotencyKey, type QueueName } from './queues';
 
 // ============================================================================
@@ -46,22 +46,26 @@ export interface OutboxEventInput {
  * Hard rule: Must be called in the same transaction as domain state change
  * 
  * @param input Event data
+ * @param queryFn Optional query function for transaction safety. If provided, uses this
+ *               instead of db.query to ensure the outbox write is part of the same transaction.
  * @returns Outbox event ID and idempotency key
  */
-export async function writeToOutbox(input: OutboxEventInput): Promise<{
+export async function writeToOutbox(input: OutboxEventInput, queryFn?: QueryFn): Promise<{
   id: string;
   idempotencyKey: string;
 }> {
+  const query = queryFn || db.query;
+
   // Generate idempotency key if not provided
   const idempotencyKey = input.idempotencyKey || generateIdempotencyKey(
     input.eventType,
     input.aggregateId,
     input.eventVersion || 1
   );
-  
+
   // P1: Use INSERT ON CONFLICT DO NOTHING for atomic idempotency
   // This replaces SELECT+INSERT pattern with single atomic operation
-  const result = await db.query<{ id: string }>(
+  const result = await query<{ id: string }>(
     `INSERT INTO outbox_events (
       event_type,
       aggregate_type,
@@ -87,21 +91,21 @@ export async function writeToOutbox(input: OutboxEventInput): Promise<{
   
   // If conflict (no row returned), fetch existing row
   if (result.rowCount === 0) {
-    const existing = await db.query<{ id: string }>(
+    const existing = await query<{ id: string }>(
       `SELECT id FROM outbox_events WHERE idempotency_key = $1`,
       [idempotencyKey]
     );
-    
+
     if (existing.rows.length === 0) {
       throw new Error(`Failed to insert outbox event and could not find existing row (idempotency_key: ${idempotencyKey})`);
     }
-    
+
     return {
       id: existing.rows[0].id,
       idempotencyKey,
     };
   }
-  
+
   return {
     id: result.rows[0].id,
     idempotencyKey,
@@ -115,13 +119,17 @@ export async function writeToOutbox(input: OutboxEventInput): Promise<{
  * Hard rule: Must be called in the same transaction as domain state changes
  * 
  * @param inputs Array of event data
+ * @param queryFn Optional query function for transaction safety. If provided, uses this
+ *               instead of db.query to ensure the outbox writes are part of the same transaction.
  * @returns Array of outbox event IDs and idempotency keys
  */
 export async function writeBatchToOutbox(
-  inputs: OutboxEventInput[]
+  inputs: OutboxEventInput[],
+  queryFn?: QueryFn
 ): Promise<Array<{ id: string; idempotencyKey: string }>> {
+  const query = queryFn || db.query;
   const results: Array<{ id: string; idempotencyKey: string }> = [];
-  
+
   // Process each event (use INSERT ON CONFLICT for atomic idempotency)
   for (const input of inputs) {
     const idempotencyKey = input.idempotencyKey || generateIdempotencyKey(
@@ -131,7 +139,7 @@ export async function writeBatchToOutbox(
     );
     
     // P1: Use INSERT ON CONFLICT DO NOTHING for atomic idempotency
-    const result = await db.query<{ id: string }>(
+    const result = await query<{ id: string }>(
       `INSERT INTO outbox_events (
         event_type,
         aggregate_type,
@@ -154,10 +162,10 @@ export async function writeBatchToOutbox(
         input.queueName,
       ]
     );
-    
+
     // If conflict (no row returned), fetch existing row
     if (result.rowCount === 0) {
-      const existing = await db.query<{ id: string }>(
+      const existing = await query<{ id: string }>(
         `SELECT id FROM outbox_events WHERE idempotency_key = $1`,
         [idempotencyKey]
       );
@@ -205,19 +213,17 @@ export async function executeWithOutbox<T>(
   outboxResult: { id: string; idempotencyKey: string } | Array<{ id: string; idempotencyKey: string }>;
 }> {
   // Use db.transaction to ensure atomicity
+  // Pass the transaction query function to writeToOutbox/writeBatchToOutbox
+  // so all writes (domain + outbox) use the same database connection
   return await db.transaction(async (query) => {
     // Execute domain operation
     const domainResult = await domainOperation();
-    
-    // Write to outbox (same transaction)
-    // Note: writeToOutbox and writeBatchToOutbox use db.query directly,
-    // which will work correctly within db.transaction due to connection pooling
-    // However, for true transaction safety, they should accept a query parameter
-    // TODO: Refactor to accept query parameter for true transaction safety
+
+    // Write to outbox (same transaction — query param ensures same connection)
     const outboxResult = Array.isArray(outboxInput)
-      ? await writeBatchToOutbox(outboxInput)
-      : await writeToOutbox(outboxInput);
-    
+      ? await writeBatchToOutbox(outboxInput, query)
+      : await writeToOutbox(outboxInput, query);
+
     return {
       domainResult,
       outboxResult,

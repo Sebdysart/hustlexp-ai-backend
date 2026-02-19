@@ -12,6 +12,7 @@
 
 import { TRPCError } from '@trpc/server';
 import { router, protectedProcedure, Schemas } from '../trpc';
+import { db } from '../db';
 import { BiometricVerificationService } from '../services/BiometricVerificationService';
 import { LogisticsAIService } from '../services/LogisticsAIService';
 import { z } from 'zod';
@@ -77,10 +78,27 @@ export const biometricRouter = router({
         }
 
         // Run impossible travel check (if user has prior location)
-        // TODO: Get last known location from database
+        // Fetch last known GPS location from proof_submissions or impossible_travel_log
+        const lastLocationResult = await db.query<{
+          latitude: number;
+          longitude: number;
+          timestamp: string;
+        }>(
+          `SELECT latitude, longitude, logged_at::text as timestamp
+           FROM impossible_travel_log
+           WHERE user_id = $1
+           ORDER BY logged_at DESC
+           LIMIT 1`,
+          [ctx.user.id]
+        );
+        const lastKnownLocation = lastLocationResult.rows.length > 0
+          ? lastLocationResult.rows[0]
+          : undefined;
+
         const impossibleTravelResult = await LogisticsAIService.detectImpossibleTravel(
           ctx.user.id,
-          { ...input.gps_coordinates, timestamp: input.gps_timestamp }
+          { ...input.gps_coordinates, timestamp: input.gps_timestamp },
+          lastKnownLocation
         );
 
         if (!impossibleTravelResult.success) {
@@ -182,5 +200,52 @@ export const biometricRouter = router({
       }
 
       return result.data;
-    })
+    }),
+
+  // --------------------------------------------------------------------------
+  // AWS REKOGNITION FACE LIVENESS (iBeta Level 2, ~$0.015/check)
+  // --------------------------------------------------------------------------
+
+  /**
+   * Create a Face Liveness session
+   *
+   * Returns sessionId for the iOS FaceLivenessDetector (AWS Amplify SDK).
+   * Client calls this first, runs the liveness challenge, then calls getLivenessResult.
+   */
+  createLivenessSession: protectedProcedure
+    .mutation(async () => {
+      const result = await BiometricVerificationService.createLivenessSession();
+
+      if (!result.success) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: result.error?.message || 'Failed to create liveness session',
+        });
+      }
+
+      return result.data;
+    }),
+
+  /**
+   * Get Face Liveness session result
+   *
+   * Called after the iOS client finishes the FaceLivenessDetector challenge.
+   * Returns confidence score (0-100).
+   */
+  getLivenessResult: protectedProcedure
+    .input(z.object({
+      sessionId: z.string().min(1),
+    }))
+    .query(async ({ input }) => {
+      const result = await BiometricVerificationService.getLivenessSessionResult(input.sessionId);
+
+      if (!result.success) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: result.error?.message || 'Failed to get liveness result',
+        });
+      }
+
+      return result.data;
+    }),
 });

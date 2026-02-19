@@ -137,15 +137,15 @@ Respond with JSON only: {"worker": 0.0-1.0, "poster": 0.0-1.0, "certainty": "STR
         }
       }
 
-      const mockInference = inference;
+      const finalInference = inference;
       
       // 4. Create proposal
       const proposalResult = await AIProposalService.create({
         jobId: jobResult.data.id,
         proposalType: 'role_inference',
-        proposal: mockInference as unknown as Record<string, unknown>,
-        confidence: Math.max(mockInference.roleConfidenceWorker, mockInference.roleConfidencePoster),
-        certaintyTier: mockInference.certaintyTier,
+        proposal: finalInference as unknown as Record<string, unknown>,
+        confidence: Math.max(finalInference.roleConfidenceWorker, finalInference.roleConfidencePoster),
+        certaintyTier: finalInference.certaintyTier,
         schemaVersion: '1.0.0',
       });
       
@@ -180,10 +180,10 @@ Respond with JSON only: {"worker": 0.0-1.0, "poster": 0.0-1.0, "certainty": "STR
          WHERE id = $5
          RETURNING *`,
         [
-          mockInference.roleConfidenceWorker,
-          mockInference.roleConfidencePoster,
-          mockInference.certaintyTier,
-          mockInference.inconsistencyFlags || [],
+          finalInference.roleConfidenceWorker,
+          finalInference.roleConfidencePoster,
+          finalInference.certaintyTier,
+          finalInference.inconsistencyFlags || [],
           userId,
         ]
       );
@@ -198,7 +198,7 @@ Respond with JSON only: {"worker": 0.0-1.0, "poster": 0.0-1.0, "certainty": "STR
         };
       }
       
-      return { success: true, data: mockInference };
+      return { success: true, data: finalInference };
     } catch (error) {
       if (isInvariantViolation(error)) {
         return {

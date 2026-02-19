@@ -63,6 +63,64 @@ export async function recoverStuckStripeEvents(job: Job<RecoveryStuckStripeEvent
 }
 
 /**
+ * Clean up expired exports (files older than 30 days)
+ *
+ * - Deletes export DB records with status='ready' older than 30 days
+ * - R2 object lifecycle rules handle the actual file deletion (set via bucket config)
+ * - Also cleans up orphaned 'queued'/'generating' exports stuck for > 24 hours
+ */
+async function cleanupExpiredExports(): Promise<void> {
+  // Clean up old completed exports (30+ days)
+  const oldExports = await db.query<{ id: string }>(
+    `DELETE FROM exports
+     WHERE (status = 'ready' AND created_at < NOW() - INTERVAL '30 days')
+        OR (status IN ('queued', 'generating') AND created_at < NOW() - INTERVAL '24 hours')
+     RETURNING id`,
+  );
+
+  if (oldExports.rowCount > 0) {
+    console.log(`🗑️  Cleaned up ${oldExports.rowCount} expired/stuck exports`);
+  } else {
+    console.log('ℹ️  No expired exports to clean up');
+  }
+}
+
+/**
+ * Clean up expired notifications (older than 30 days)
+ *
+ * - Deletes read notifications older than 30 days
+ * - Deletes unread notifications that have expired (expires_at < NOW())
+ */
+async function cleanupExpiredNotifications(): Promise<void> {
+  // Delete read notifications older than 30 days
+  const readResult = await db.query<{ count: string }>(
+    `WITH deleted AS (
+       DELETE FROM notifications
+       WHERE read_at IS NOT NULL AND created_at < NOW() - INTERVAL '30 days'
+       RETURNING 1
+     ) SELECT COUNT(*)::text as count FROM deleted`,
+  );
+
+  // Delete expired notifications (unread but past expiry)
+  const expiredResult = await db.query<{ count: string }>(
+    `WITH deleted AS (
+       DELETE FROM notifications
+       WHERE expires_at IS NOT NULL AND expires_at < NOW()
+       RETURNING 1
+     ) SELECT COUNT(*)::text as count FROM deleted`,
+  );
+
+  const readCount = parseInt(readResult.rows[0]?.count || '0', 10);
+  const expiredCount = parseInt(expiredResult.rows[0]?.count || '0', 10);
+
+  if (readCount + expiredCount > 0) {
+    console.log(`🗑️  Cleaned up ${readCount} old read + ${expiredCount} expired notifications`);
+  } else {
+    console.log('ℹ️  No expired notifications to clean up');
+  }
+}
+
+/**
  * Process maintenance job
  */
 export async function processMaintenanceJob(job: Job): Promise<void> {
@@ -74,9 +132,12 @@ export async function processMaintenanceJob(job: Job): Promise<void> {
       break;
     
     case 'cleanup_expired_exports':
-      // TODO: Implement cleanup_expired_exports
-      console.warn(`Maintenance job 'cleanup_expired_exports' not yet implemented`);
-      throw new Error('Maintenance job not yet implemented: cleanup_expired_exports');
+      await cleanupExpiredExports();
+      break;
+
+    case 'cleanup_expired_notifications':
+      await cleanupExpiredNotifications();
+      break;
     
     default:
       throw new Error(`Unknown maintenance job type: ${jobType}`);

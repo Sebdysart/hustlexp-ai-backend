@@ -21,13 +21,13 @@ if (!app && config.firebase.projectId && config.firebase.clientEmail && config.f
 const auth = app ? getAuth(app) : null;
 const messaging: Messaging | null = app ? getMessaging(app) : null;
 
-export async function verifyIdToken(token: string): Promise<DecodedIdToken> {
+export async function verifyIdToken(token: string, checkRevoked?: boolean): Promise<DecodedIdToken> {
   if (!auth) {
     console.error("❌ Firebase Admin is not configured — check FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, FIREBASE_PRIVATE_KEY env vars");
     throw new Error("Firebase Admin is not configured — missing credentials");
   }
 
-  return auth.verifyIdToken(token);
+  return auth.verifyIdToken(token, checkRevoked);
 }
 
 export { messaging };

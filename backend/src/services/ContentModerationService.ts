@@ -19,6 +19,7 @@ import { db, isInvariantViolation, getErrorMessage } from '../db';
 import type { ServiceResult } from '../types';
 import { ErrorCodes } from '../types';
 import { NotificationService } from './NotificationService';
+import { notifyAdmins } from './AdminNotificationHelper';
 import { AIClient } from './AIClient';
 
 // ============================================================================
@@ -527,9 +528,14 @@ Return JSON with:
         // Escalate to higher authority (admin review)
         // Content remains in current state until escalated review
         // Notify admin team for escalated review
-        // TODO: Get admin user IDs from admin_roles table
-        // For now, escalate content remains in queue for admin review via admin dashboard
         console.log(`[Escalated Review] Content ${queueItem.content_type} ${queueItem.content_id} escalated for admin review`);
+        await notifyAdmins({
+          title: '📋 Content Escalated for Admin Review',
+          body: `${queueItem.content_type} (ID: ${queueItem.content_id}) by user ${queueItem.user_id} has been escalated for admin review.${reviewNotes ? ` Notes: ${reviewNotes}` : ''}`,
+          deepLink: `app://admin/moderation/${queueItem.id}`,
+          priority: 'HIGH',
+          metadata: { queueItemId: queueItem.id, contentType: queueItem.content_type, contentId: queueItem.content_id, reviewNotes },
+        }).catch(err => console.error('[ContentModeration] Failed to notify admins of escalation:', err));
       }
       
       return {

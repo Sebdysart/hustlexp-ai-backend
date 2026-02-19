@@ -18,6 +18,7 @@
 
 import { db } from '../db';
 import { BiometricVerificationService } from '../services/BiometricVerificationService';
+import { notifyAdmins } from '../services/AdminNotificationHelper';
 import type { Job } from 'bullmq';
 
 // ============================================================================
@@ -84,7 +85,32 @@ export const processBiometricAnalysisJob = async (job: Job<BiometricAnalysisJobD
         `[BiometricAnalyzerWorker] FLAGGED proof ${proof_id}: ${analysis.recommendation} - ${analysis.reasoning}`
       );
 
-      // TODO: Notify admin/send to manual review queue
+      // Flag in DB for manual review queue
+      await db.query(
+        `UPDATE proof_submissions
+         SET metadata = jsonb_set(
+           COALESCE(metadata, '{}'::jsonb),
+           '{manual_review_required}',
+           'true'::jsonb
+         )
+         WHERE id = $1`,
+        [proof_id]
+      );
+
+      // Notify admins of flagged proof
+      await notifyAdmins({
+        title: `🔬 Biometric Review: ${analysis.recommendation === 'reject' ? 'REJECT' : 'Manual Review'}`,
+        body: `Proof ${proof_id} flagged for ${analysis.recommendation}. Risk: ${analysis.scores.risk_level}. Flags: ${analysis.flags.join(', ')}. ${analysis.reasoning}`,
+        deepLink: `app://admin/proof-review/${proof_id}`,
+        priority: analysis.recommendation === 'reject' ? 'CRITICAL' : 'HIGH',
+        metadata: {
+          proofId: proof_id,
+          recommendation: analysis.recommendation,
+          riskLevel: analysis.scores.risk_level,
+          flags: analysis.flags,
+          reasoning: analysis.reasoning,
+        },
+      }).catch(err => console.error('[BiometricAnalyzerWorker] Failed to notify admins:', err));
     }
 
     console.log(`[BiometricAnalyzerWorker] ✓ Completed proof ${proof_id}: ${analysis.recommendation}`);

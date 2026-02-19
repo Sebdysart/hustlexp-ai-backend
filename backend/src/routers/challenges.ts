@@ -33,16 +33,20 @@ export const challengesRouter = router({
         [today]
       );
 
-      // Auto-create default challenges if none exist
+      // Auto-create default challenges if none exist (batch insert)
       if (challenges.rows.length === 0) {
-        for (const dc of DEFAULT_CHALLENGES) {
-          await db.query(
-            `INSERT INTO daily_challenges (challenge_date, title, description, challenge_type, target_value, xp_reward)
-             VALUES ($1, $2, $3, $4, $5, $6)
-             ON CONFLICT DO NOTHING`,
-            [today, dc.title, dc.description, dc.challenge_type, dc.target_value, dc.xp_reward]
-          );
-        }
+        const placeholders = DEFAULT_CHALLENGES.map((_, i) =>
+          `($${i * 6 + 1}, $${i * 6 + 2}, $${i * 6 + 3}, $${i * 6 + 4}, $${i * 6 + 5}, $${i * 6 + 6})`
+        ).join(', ');
+        const params = DEFAULT_CHALLENGES.flatMap(dc => [
+          today, dc.title, dc.description, dc.challenge_type, dc.target_value, dc.xp_reward
+        ]);
+        await db.query(
+          `INSERT INTO daily_challenges (challenge_date, title, description, challenge_type, target_value, xp_reward)
+           VALUES ${placeholders}
+           ON CONFLICT DO NOTHING`,
+          params
+        );
         challenges = await db.query(
           'SELECT * FROM daily_challenges WHERE challenge_date = $1 AND active = TRUE',
           [today]

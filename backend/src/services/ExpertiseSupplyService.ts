@@ -29,6 +29,7 @@
 import { db } from '../db';
 import type { QueryFn } from '../db';
 import type { ServiceResult } from '../types';
+import { NotificationService } from './NotificationService';
 
 // ============================================================================
 // TYPES
@@ -1379,8 +1380,22 @@ export const ExpertiseSupplyService = {
       remaining -= requestedWeight;
       sent++;
 
-      // TODO: Send push notification via NotificationService
-      // NotificationService.sendPush(waiter.user_id, 'expertise_invite', { ... })
+      // Send push notification for expertise invitation
+      NotificationService.createNotification({
+        userId: waiter.user_id,
+        category: 'new_matching_task',
+        title: '🎯 Expertise Slot Available!',
+        body: `A slot has opened up for "${expertiseId}" in your area. Accept within ${WAITLIST_INVITE_EXPIRY_HOURS} hours before it expires.`,
+        deepLink: `app://expertise/invite/${waiter.id}`,
+        channels: ['in_app', 'push'],
+        priority: 'HIGH',
+        metadata: {
+          waitlistId: waiter.id,
+          expertiseId,
+          geoZone,
+          expiresAt: expiresAt.toISOString(),
+        },
+      }).catch(err => console.error(`[ExpertiseSupply] Failed to notify user ${waiter.user_id} of invite:`, err));
     }
 
     return sent;

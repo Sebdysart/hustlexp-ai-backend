@@ -29,6 +29,23 @@ export async function securityHeaders(c: Context, next: Next) {
   c.header('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
   // Remove server identification
   c.header('X-Powered-By', '');
+
+  // HSTS — enforce HTTPS for 1 year, include subdomains
+  if (!config.app.isDevelopment) {
+    c.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
+  }
+
+  // Content Security Policy — API-only server, block everything except JSON responses
+  c.header(
+    'Content-Security-Policy',
+    "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+  );
+
+  // Prevent cross-site scripting via cache sniffing
+  c.header('X-XSS-Protection', '0'); // Modern CSP replaces this; 0 avoids XSS-Auditor bugs
+  // Cross-Origin policies
+  c.header('Cross-Origin-Opener-Policy', 'same-origin');
+  c.header('Cross-Origin-Resource-Policy', 'same-origin');
 }
 
 // ============================================================================

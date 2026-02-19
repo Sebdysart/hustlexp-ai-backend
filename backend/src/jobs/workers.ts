@@ -22,7 +22,11 @@ import { createWorker } from './queues';
 import { startOutboxWorker } from './outbox-worker';
 import { processExportJob } from './export-worker';
 import { processEmailJob } from './email-worker';
-import type { Job } from 'bullmq';
+import { workerLogger as log } from '../logger';
+import type { Job, Worker } from 'bullmq';
+
+// Track all registered workers for graceful shutdown
+const activeWorkers: Worker[] = [];
 
 // ============================================================================
 // WORKER REGISTRATION
@@ -34,7 +38,7 @@ import type { Job } from 'bullmq';
  */
 function registerWorkers(): void {
   // Export worker - processes export generation jobs
-  createWorker(
+  activeWorkers.push(createWorker(
     'exports',
     async (job: Job) => {
       await processExportJob(job);
@@ -44,10 +48,10 @@ function registerWorkers(): void {
       removeOnComplete: { count: 100, age: 3600 }, // Keep completed jobs for 1 hour
       removeOnFail: { age: 86400 }, // Keep failed jobs for 24 hours
     }
-  );
-  
+  ));
+
   // User notifications worker - processes email and realtime delivery jobs
-  createWorker(
+  activeWorkers.push(createWorker(
     'user_notifications',
     async (job: Job) => {
       const eventType = job.name;
@@ -78,10 +82,10 @@ function registerWorkers(): void {
       removeOnComplete: { count: 1000, age: 3600 }, // Keep completed jobs for 1 hour
       removeOnFail: { age: 86400 }, // Keep failed jobs for 24 hours
     }
-  );
-  
+  ));
+
   // Critical payments worker - processes Stripe webhooks, escrow state, XP awards, escrow actions
-  createWorker(
+  activeWorkers.push(createWorker(
     'critical_payments',
     async (job: Job) => {
       const eventType = job.name;
@@ -123,10 +127,10 @@ function registerWorkers(): void {
       removeOnComplete: { count: 1000, age: 86400 }, // Keep completed jobs for 24 hours
       removeOnFail: { age: 7 * 86400 }, // Keep failed jobs for 7 days
     }
-  );
-  
+  ));
+
   // Critical trust worker - processes trust tier recalculations, fraud signals
-  createWorker(
+  activeWorkers.push(createWorker(
     'critical_trust',
     async (job: Job) => {
       const eventType = job.name;
@@ -148,10 +152,10 @@ function registerWorkers(): void {
       removeOnComplete: { count: 500, age: 43200 }, // Keep completed jobs for 12 hours
       removeOnFail: { age: 3 * 86400 }, // Keep failed jobs for 3 days
     }
-  );
-  
+  ));
+
   // Maintenance worker - processes cleanup, TTL expiry, backfills, recovery
-  createWorker(
+  activeWorkers.push(createWorker(
     'maintenance',
     async (job: Job) => {
       const { processMaintenanceJob } = await import('./maintenance-worker');
@@ -162,8 +166,8 @@ function registerWorkers(): void {
       removeOnComplete: { count: 100, age: 86400 }, // Keep completed jobs for 24 hours
       removeOnFail: { age: 7 * 86400 }, // Keep failed jobs for 7 days
     }
-  );
-  
+  ));
+
   console.log('✅ All BullMQ workers registered');
 }
 
@@ -216,10 +220,31 @@ async function gracefulShutdown(signal: string): Promise<void> {
   
   shutdownInProgress = true;
   console.log(`\n🛑 Received ${signal}, shutting down gracefully...`);
-  
-  // TODO: Close worker connections gracefully
-  // Workers will complete current jobs before shutting down
-  
+
+  // Close all BullMQ workers — each .close() waits for the current job to finish
+  const closePromises = activeWorkers.map(async (worker, index) => {
+    try {
+      console.log(`  Closing worker ${index + 1}/${activeWorkers.length}: ${worker.name}...`);
+      await worker.close();
+      console.log(`  ✅ Worker ${worker.name} closed`);
+    } catch (err) {
+      console.error(`  ⚠️  Error closing worker ${worker.name}:`, err);
+    }
+  });
+
+  // Wait for all workers to finish (with 30s timeout)
+  const timeout = new Promise<void>((resolve) => {
+    setTimeout(() => {
+      console.log('⚠️  Shutdown timeout reached (30s), forcing exit...');
+      resolve();
+    }, 30000);
+  });
+
+  await Promise.race([
+    Promise.allSettled(closePromises),
+    timeout,
+  ]);
+
   console.log('✅ Worker runtime shutdown complete');
   process.exit(0);
 }

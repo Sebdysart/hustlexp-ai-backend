@@ -25,6 +25,7 @@
     "health": "curl http://localhost:3000/health"
   },
   "dependencies": {
+    "@aws-sdk/client-rekognition": "^3.994.0",
     "@aws-sdk/client-s3": "^3.966.0",
     "@aws-sdk/s3-request-presigner": "^3.966.0",
     "@fastify/cors": "^9.0.1",
@@ -32,6 +33,7 @@
     "@hono/trpc-server": "^0.4.0",
     "@neondatabase/serverless": "^1.0.2",
     "@sendgrid/mail": "^8.1.6",
+    "@sentry/node": "^10.39.0",
     "@trpc/server": "^11.7.1",
     "@types/bcrypt": "^6.0.0",
     "@types/twilio": "^3.19.2",
@@ -54,12 +56,12 @@
     "pino-pretty": "^11.2.2",
     "stripe": "^20.0.0",
     "superjson": "^2.2.1",
+    "tsx": "^4.19.1",
     "twilio": "^5.10.7",
+    "typescript": "^5.6.3",
     "ulidx": "^2.4.1",
     "uuid": "^10.0.0",
     "ws": "^8.19.0",
-    "tsx": "^4.19.1",
-    "typescript": "^5.6.3",
     "zod": "^3.23.8"
   },
   "devDependencies": {

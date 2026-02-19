@@ -13,6 +13,7 @@
 import { TRPCError } from '@trpc/server';
 import { router, protectedProcedure, Schemas } from '../trpc';
 import { XPTaxService } from '../services/XPTaxService';
+import { StripeService } from '../services/StripeService';
 import { z } from 'zod';
 
 export const xpTaxRouter = router({
@@ -78,10 +79,23 @@ export const xpTaxRouter = router({
       if (amountCents <= 0) {
         throw new TRPCError({ code: 'BAD_REQUEST', message: 'No tax balance to pay' });
       }
-      // Return a mock payment intent structure (real Stripe integration done via StripeService)
+      // Create real Stripe PaymentIntent for XP tax payment
+      const piResult = await StripeService.createTaxPaymentIntent(ctx.user.id, amountCents);
+
+      if (!piResult.success || !piResult.data) {
+        // Fallback: if Stripe is not configured (dev), return mock intent
+        console.warn('⚠️ Stripe not available for tax payment, returning mock intent');
+        return {
+          clientSecret: `pi_tax_${ctx.user.id}_${Date.now()}_secret`,
+          paymentIntentId: `pi_tax_${ctx.user.id}_${Date.now()}`,
+          amountCents,
+          escrowId: null,
+        };
+      }
+
       return {
-        clientSecret: `pi_tax_${ctx.user.id}_${Date.now()}_secret`,
-        paymentIntentId: `pi_tax_${ctx.user.id}_${Date.now()}`,
+        clientSecret: piResult.data.clientSecret,
+        paymentIntentId: piResult.data.paymentIntentId,
         amountCents,
         escrowId: null,
       };

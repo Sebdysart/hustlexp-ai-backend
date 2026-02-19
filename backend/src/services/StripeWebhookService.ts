@@ -155,8 +155,7 @@ async function handleStripeWebhook(event: Stripe.Event): Promise<WebhookResult> 
 
       // Enqueue async processing (NO LOGIC HERE)
       // Processing happens in stripe-event-worker
-      // Note: writeToOutbox uses db.query directly, which works within transaction
-      // TODO: Refactor writeToOutbox to accept transaction parameter for true atomicity
+      // Pass tx to writeToOutbox for true transaction atomicity (same connection)
       await writeToOutbox({
         eventType: 'stripe.event_received',
         aggregateType: 'stripe_event',
@@ -165,7 +164,7 @@ async function handleStripeWebhook(event: Stripe.Event): Promise<WebhookResult> 
         idempotencyKey: `stripe.event_received:${stripeEventId}`,
         payload: { stripeEventId, type },
         queueName: 'critical_payments',
-      });
+      }, tx);
 
       return { stored: true, stripeEventId };
     });

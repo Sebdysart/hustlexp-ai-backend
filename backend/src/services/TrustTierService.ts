@@ -430,9 +430,11 @@ export const TrustTierService = {
 
   /**
    * Ban user (terminal, irreversible)
-   * 
-   * TODO: Any future tier mutation (demotion, decay, dispute adjustment) MUST emit trust_delta_applied.
-   * This includes any code path that calls UPDATE users SET trust_tier = ... outside of applyPromotion/banUser.
+   *
+   * IMPORTANT: Any future tier mutation (demotion, decay, dispute adjustment) MUST emit trust_delta_applied
+   * via AlphaInstrumentation.emitTrustDeltaApplied(). This includes any code path that calls
+   * UPDATE users SET trust_tier = ... outside of applyPromotion/banUser.
+   * Currently, both applyPromotion and banUser already emit this event correctly.
    */
   banUser: async (userId: string, reason: string): Promise<void> => {
     const currentTier = await TrustTierService.getTrustTier(userId);

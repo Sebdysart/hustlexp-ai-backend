@@ -713,21 +713,86 @@ export const TaskDiscoveryService = {
     hustlerId: string
   ): Promise<ServiceResult<string>> => {
     try {
-      // For now, return a simple explanation based on matching score
-      // TODO: Integrate with AI service for richer explanations
+      // Calculate matching score and fetch task + hustler details for explanation
       const scoreResult = await TaskDiscoveryService.calculateMatchingScore(taskId, hustlerId);
-      
+
       if (!scoreResult.success) {
         return scoreResult;
       }
-      
-      const explanation = generateExplanation({
+
+      // Fetch task details
+      const taskResult = await db.query<{ title: string; category: string; price: number; description: string }>(
+        `SELECT COALESCE(title, '') as title, COALESCE(category, '') as category,
+                COALESCE(price, 0) as price, COALESCE(description, '') as description
+         FROM tasks WHERE id = $1`,
+        [taskId]
+      );
+      const taskData = taskResult.rows[0];
+
+      // Fetch hustler expertise for personalization
+      const expertiseResult = await db.query<{ expertise_id: string }>(
+        `SELECT expertise_id FROM user_expertise WHERE user_id = $1 AND status = 'active' LIMIT 3`,
+        [hustlerId]
+      );
+      const expertise = expertiseResult.rows.map(r => r.expertise_id);
+
+      const context = {
         matching_score: scoreResult.data.matchingScore,
         distance_miles: scoreResult.data.distanceMiles,
-        category: '', // TODO: Get from task
-        price: 0, // TODO: Get from task
-      });
-      
+        category: taskData?.category || '',
+        price: taskData?.price || 0,
+      };
+
+      // Try AI-powered explanation first, fallback to template
+      let explanation: string;
+      const anthropicKey = process.env.ANTHROPIC_API_KEY;
+
+      if (anthropicKey && taskData) {
+        try {
+          const aiResponse = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-api-key': anthropicKey,
+              'anthropic-version': '2023-06-01',
+            },
+            body: JSON.stringify({
+              model: 'claude-3-5-haiku-20241022',
+              max_tokens: 120,
+              messages: [{
+                role: 'user',
+                content: `You are a task matching assistant for a gig marketplace. Generate a brief, encouraging 1-2 sentence explanation of why this task is a good match for this hustler.
+
+Task: "${taskData.title}" (${taskData.category}, $${taskData.price})
+Match score: ${(context.matching_score * 100).toFixed(0)}%
+Distance: ${context.distance_miles.toFixed(1)} miles
+Hustler expertise: ${expertise.length > 0 ? expertise.join(', ') : 'general'}
+
+Be concise, specific, and motivating. No markdown. No filler.`,
+              }],
+            }),
+            signal: AbortSignal.timeout(3000), // 3s timeout
+          });
+
+          if (aiResponse.ok) {
+            const aiData = await aiResponse.json() as Record<string, any>;
+            const aiText = aiData.content?.[0]?.text;
+            if (aiText && typeof aiText === 'string' && aiText.length > 10) {
+              explanation = aiText.trim();
+            } else {
+              explanation = generateExplanation(context);
+            }
+          } else {
+            explanation = generateExplanation(context);
+          }
+        } catch {
+          // AI timeout or error — use deterministic fallback
+          explanation = generateExplanation(context);
+        }
+      } else {
+        explanation = generateExplanation(context);
+      }
+
       return {
         success: true,
         data: explanation,

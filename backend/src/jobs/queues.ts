@@ -142,8 +142,11 @@ export const QUEUE_CONFIGS: Record<QueueName, QueueConfig> = {
     },
     workerOptions: {
       maxStalledCount: 3,
-      // Rate limiting (per user)
-      // TODO: Configure rate limits via BullMQ rate limiter
+      // Rate limiting: Max 50 notifications per second to avoid overwhelming push/email providers
+      limiter: {
+        max: 50,
+        duration: 1000,
+      },
     },
   },
 

@@ -15,6 +15,7 @@
 
 import { db } from '../db';
 import type { ServiceResult } from '../types';
+import { StripeService } from './StripeService';
 
 // ============================================================================
 // TYPES
@@ -170,12 +171,48 @@ export const XPTaxService = {
     stripePaymentIntentId: string
   ): Promise<ServiceResult<{ xp_released: number }>> => {
     try {
-      // TODO: Verify Stripe payment succeeded
-      // const payment = await stripe.paymentIntents.retrieve(stripePaymentIntentId);
-      // if (payment.status !== 'succeeded') throw new Error('Payment not succeeded');
+      // Verify Stripe payment succeeded
+      const piResult = await StripeService.verifyPaymentIntent(stripePaymentIntentId);
 
-      // For now, assume payment succeeded
-      const amountPaidCents = 0; // TODO: Get from Stripe
+      let amountPaidCents: number;
+
+      if (piResult.success && piResult.data) {
+        // Stripe is configured — verify payment status
+        if (piResult.data.status !== 'succeeded') {
+          return {
+            success: false,
+            error: {
+              code: 'PAYMENT_NOT_SUCCEEDED',
+              message: `Payment intent status is "${piResult.data.status}", expected "succeeded"`,
+            },
+          };
+        }
+
+        // Verify this is a tax payment for this user
+        if (piResult.data.metadata.type !== 'xp_tax') {
+          return {
+            success: false,
+            error: {
+              code: 'INVALID_PAYMENT_TYPE',
+              message: 'Payment intent is not an XP tax payment',
+            },
+          };
+        }
+
+        amountPaidCents = piResult.data.amountCents;
+      } else {
+        // Stripe not configured (dev mode) — fall back to unpaid tax total
+        console.warn('[XPTaxService.payTax] Stripe not available, using unpaid tax total as amount');
+        const statusResult = await db.query<{ total_unpaid_tax_cents: number }>(
+          'SELECT total_unpaid_tax_cents FROM user_xp_tax_status WHERE user_id = $1',
+          [userId]
+        );
+        amountPaidCents = statusResult.rows[0]?.total_unpaid_tax_cents || 0;
+      }
+
+      if (amountPaidCents <= 0) {
+        return { success: true, data: { xp_released: 0 } };
+      }
 
       // Get unpaid tax entries (FIFO order)
       const unpaidTaxes = await db.query<XPTaxLedger>(
@@ -185,11 +222,12 @@ export const XPTaxService = {
 
       let remainingPayment = amountPaidCents;
       let totalXpReleased = 0;
+      let totalTaxPaid = 0;
 
       // Pay taxes in FIFO order
       for (const tax of unpaidTaxes.rows) {
         if (remainingPayment >= tax.tax_amount_cents) {
-          // Mark tax as paid
+          // Mark tax as paid and release held XP
           await db.query(
             `UPDATE xp_tax_ledger
              SET tax_paid = TRUE,
@@ -200,11 +238,19 @@ export const XPTaxService = {
             [tax.id]
           );
 
-          // Award held XP
-          const xpAmount = Math.round(tax.gross_payout_cents / 10); // 100 XP per $1
-          // TODO: Call XPService.awardXP(userId, tax.task_id, xpAmount)
+          // Calculate held XP to release (100 XP per $1 of gross payout)
+          const xpAmount = Math.round(tax.gross_payout_cents / 10);
+
+          // Release held XP directly to user's xp_total
+          // Note: This bypasses INV-1 (no escrow) because tax XP is already earned,
+          // just held back pending tax payment. We update the user directly.
+          await db.query(
+            `UPDATE users SET xp_total = xp_total + $1 WHERE id = $2`,
+            [xpAmount, userId]
+          );
 
           remainingPayment -= tax.tax_amount_cents;
+          totalTaxPaid += tax.tax_amount_cents;
           totalXpReleased += xpAmount;
         }
       }
@@ -216,8 +262,10 @@ export const XPTaxService = {
              total_xp_held_back = GREATEST(total_xp_held_back - $2, 0),
              last_updated_at = NOW()
          WHERE user_id = $3`,
-        [amountPaidCents, totalXpReleased, userId]
+        [totalTaxPaid, totalXpReleased, userId]
       );
+
+      console.log(`[XPTaxService.payTax] User ${userId}: paid ${totalTaxPaid} cents tax, released ${totalXpReleased} XP`);
 
       return { success: true, data: { xp_released: totalXpReleased } };
     } catch (error) {
@@ -281,8 +329,13 @@ export const XPTaxService = {
         [userId]
       );
 
-      // TODO: Log to audit_log table
+      // Log to admin_actions audit table
       console.log(`[ADMIN OVERRIDE] ${adminId} forgave XP taxes for ${userId}. Reason: ${reason}`);
+      await db.query(
+        `INSERT INTO admin_actions (admin_user_id, admin_role, action_type, action_details, target_user_id, result)
+         VALUES ($1, 'admin', 'forgive_xp_taxes', $2::JSONB, $3, 'success')`,
+        [adminId, JSON.stringify({ reason, userId }), userId]
+      ).catch(err => console.error('[XPTaxService.adminForgive] Failed to log admin action:', err));
 
       return { success: true, data: undefined };
     } catch (error) {

@@ -54,52 +54,112 @@ interface EmailJobData {
 // ============================================================================
 
 /**
- * Email template renderer (placeholder - should be replaced with proper templating engine)
- * 
- * TODO: Replace with proper templating engine (e.g., Handlebars, Mustache, or template service)
+ * Email template renderer
+ *
+ * Uses a simple inline template system. Each template produces subject, html, and
+ * plain text versions. Unknown templates fall back to a generic notification layout.
+ *
+ * Upgrade path: swap this for Handlebars/Mustache/React Email when design polish is needed.
  */
 function renderEmailTemplate(
   template: string,
   params: Record<string, unknown>
 ): { subject: string; html: string; text: string } {
-  // Placeholder: Basic template rendering
-  // In production, use proper templating engine or template service
-  
-  const templates: Record<string, (params: Record<string, unknown>) => { subject: string; html: string; text: string }> = {
-    'export_ready': (p) => ({
-      subject: 'Your data export is ready',
-      html: `<h1>Your data export is ready</h1><p>Download your export <a href="${p.downloadUrl}">here</a>. This link expires on ${p.expiresAt}.</p>`,
-      text: `Your data export is ready. Download it at ${p.downloadUrl}. This link expires on ${p.expiresAt}.`,
-    }),
-    'task_status_changed': (p) => ({
-      subject: `Task status updated: ${p.taskTitle}`,
-      html: `<h1>Task status updated</h1><p>Your task "${p.taskTitle}" status has changed to ${p.status}.</p>`,
-      text: `Task "${p.taskTitle}" status has changed to ${p.status}.`,
-    }),
-    'deletion_confirmed': (p) => ({
-      subject: 'Your account deletion has been completed',
-      html: `<h1>Account deletion confirmed</h1><p>Your account and all associated data have been permanently deleted.</p>`,
-      text: 'Your account and all associated data have been permanently deleted.',
-    }),
-    'verification_code': (p) => ({
-      subject: 'Your verification code',
-      html: `<h1>Verification code</h1><p>Your verification code is: <strong>${p.code}</strong></p>`,
-      text: `Your verification code is: ${p.code}`,
-    }),
-    // Add more templates as needed
+  const p = params; // alias for brevity
+
+  // Shared header/footer for branded emails
+  const header = `<div style="font-family:Inter,sans-serif;max-width:600px;margin:0 auto;padding:24px;background:#0D0D0D;color:#F5F5F5;">
+    <div style="text-align:center;margin-bottom:24px;">
+      <span style="font-size:24px;font-weight:700;color:#A855F7;">⚡ HustleXP</span>
+    </div>`;
+  const footer = `<hr style="border:none;border-top:1px solid #2A2A2A;margin:24px 0;"/>
+    <p style="font-size:12px;color:#888;">This email was sent by HustleXP. If you didn't expect this, please contact support.</p>
+  </div>`;
+
+  const wrap = (subject: string, body: string, text: string) => ({
+    subject,
+    html: `${header}${body}${footer}`,
+    text,
+  });
+
+  const templates: Record<string, () => { subject: string; html: string; text: string }> = {
+    // --- Data Export ---
+    'export_ready': () => wrap(
+      'Your data export is ready',
+      `<h2 style="color:#F5F5F5;">Your data export is ready</h2>
+       <p>Download your export using the link below. It will expire on ${p.expiresAt}.</p>
+       <a href="${p.downloadUrl}" style="display:inline-block;padding:12px 24px;background:#A855F7;color:#fff;border-radius:8px;text-decoration:none;font-weight:600;">Download Export</a>`,
+      `Your data export is ready. Download it at ${p.downloadUrl}. This link expires on ${p.expiresAt}.`,
+    ),
+
+    // --- Task Status Changes ---
+    'task_status_changed': () => wrap(
+      `Task update: ${p.title || p.taskTitle || 'Your task'}`,
+      `<h2 style="color:#F5F5F5;">Task Status Updated</h2>
+       <p>Your task <strong>"${p.title || p.taskTitle}"</strong> has changed to <strong>${p.status || p.body}</strong>.</p>`,
+      `Task "${p.title || p.taskTitle}" status changed to ${p.status || p.body}.`,
+    ),
+
+    // --- Account Deletion ---
+    'deletion_confirmed': () => wrap(
+      'Account deletion completed',
+      `<h2 style="color:#F5F5F5;">Account Deleted</h2>
+       <p>Your HustleXP account and all associated personal data have been permanently deleted per your GDPR request. This action cannot be undone.</p>`,
+      'Your HustleXP account and all associated data have been permanently deleted.',
+    ),
+
+    // --- Verification Code ---
+    'verification_code': () => wrap(
+      'Your verification code',
+      `<h2 style="color:#F5F5F5;">Verification Code</h2>
+       <p>Your code is:</p>
+       <p style="font-size:32px;font-weight:700;letter-spacing:4px;color:#A855F7;text-align:center;">${p.code}</p>
+       <p style="color:#888;">This code expires in 10 minutes.</p>`,
+      `Your verification code is: ${p.code}`,
+    ),
+
+    // --- Welcome ---
+    'welcome': () => wrap(
+      'Welcome to HustleXP!',
+      `<h2 style="color:#F5F5F5;">Welcome to HustleXP! ⚡</h2>
+       <p>You're all set to start earning XP. Whether you're posting tasks or hustling, every task completed earns reputation.</p>
+       <p>Open the app to get started.</p>`,
+      'Welcome to HustleXP! Open the app to get started.',
+    ),
+
+    // --- Security Alerts (fraud, suspension, moderation) ---
+    'security_alert': () => wrap(
+      `Security Alert: ${p.title || 'Important Update'}`,
+      `<h2 style="color:#EF4444;">⚠️ Security Alert</h2>
+       <p><strong>${p.title}</strong></p>
+       <p>${p.body}</p>`,
+      `Security Alert: ${p.title}. ${p.body}`,
+    ),
+
+    // --- Payment Released ---
+    'payment_released': () => wrap(
+      'Payment released for your task',
+      `<h2 style="color:#F5F5F5;">💰 Payment Released</h2>
+       <p>Payment has been released for task <strong>"${p.title || p.taskTitle}"</strong>.</p>`,
+      `Payment released for task "${p.title || p.taskTitle}".`,
+    ),
+
+    // --- Generic Notification (catch-all for mapped categories) ---
+    'notification': () => wrap(
+      `${p.title || 'Notification from HustleXP'}`,
+      `<h2 style="color:#F5F5F5;">${p.title || 'Notification'}</h2>
+       <p>${p.body || ''}</p>`,
+      `${p.title || 'Notification'}: ${p.body || ''}`,
+    ),
   };
-  
+
   const templateFn = templates[template];
   if (!templateFn) {
-    // Fallback template
-    return {
-      subject: 'Notification from HustleXP',
-      html: `<p>${JSON.stringify(params)}</p>`,
-      text: JSON.stringify(params),
-    };
+    // Fallback: use 'notification' template with params
+    return templates['notification']();
   }
-  
-  return templateFn(params);
+
+  return templateFn();
 }
 
 // ============================================================================

@@ -50,6 +50,8 @@ import { featuredRouter } from './featured';
 import { referralRouter } from './referral';
 import { subscriptionRouter } from './subscription';
 import { tippingRouter } from './tipping';
+// v2.4.0: Squads Mode
+import { squadRouter } from './squad';
 
 export const appRouter = router({
   task: taskRouter,
@@ -96,6 +98,8 @@ export const appRouter = router({
   referral: referralRouter,
   subscription: subscriptionRouter,
   tipping: tippingRouter,
+  // v2.4.0: Squads Mode
+  squad: squadRouter,
 });
 
 export type AppRouter = typeof appRouter;

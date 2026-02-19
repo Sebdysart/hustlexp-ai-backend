@@ -16,6 +16,7 @@
  */
 
 import { db } from '../db';
+import { NotificationService } from '../services/NotificationService';
 import type { Job } from 'bullmq';
 
 // ============================================================================
@@ -74,17 +75,22 @@ export const processXPTaxReminderJob = async (job: Job): Promise<void> => {
 
       // Send notification
       try {
-        // TODO: Call NotificationService.send()
-        // await NotificationService.send({
-        //   user_id: user.user_id,
-        //   type: 'xp_tax_reminder',
-        //   title: 'XP Tax Payment Due',
-        //   message: `You have $${(user.total_unpaid_tax_cents / 100).toFixed(2)} in unpaid XP taxes. ${user.total_xp_held_back} XP is held back until payment.`,
-        //   action_url: '/settings/xp-tax',
-        //   priority: 'medium'
-        // });
+        const taxAmount = (user.total_unpaid_tax_cents / 100).toFixed(2);
+        await NotificationService.createNotification({
+          userId: user.user_id,
+          category: 'payment_due',
+          title: 'XP Tax Payment Due',
+          body: `You have $${taxAmount} in unpaid XP taxes. ${user.total_xp_held_back} XP is being held back until payment. Pay now to unlock your XP!`,
+          deepLink: 'app://settings/xp-tax',
+          channels: ['in_app', 'push', 'email'],
+          priority: 'MEDIUM',
+          metadata: {
+            unpaidTaxCents: user.total_unpaid_tax_cents,
+            xpHeldBack: user.total_xp_held_back,
+          },
+        });
 
-        // Log notification (mock for now)
+        // Log notification for dedup (7-day window check above)
         await db.query(
           `INSERT INTO notification_log (user_id, notification_type, sent_at)
            VALUES ($1, $2, NOW())

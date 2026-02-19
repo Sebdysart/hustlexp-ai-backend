@@ -144,6 +144,13 @@ export const config = {
     },
   },
 
+  // Error Tracking (Sentry)
+  sentry: {
+    dsn: process.env.SENTRY_DSN || '',
+    environment: process.env.NODE_ENV || 'development',
+    tracesSampleRate: parseFloat(process.env.SENTRY_TRACES_SAMPLE_RATE || '0.1'),
+  },
+
   // Application
   app: {
     port: parseInt(process.env.PORT || '3000', 10),

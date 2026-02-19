@@ -17,6 +17,7 @@ import { randomUUID } from 'crypto';
 import { db, isInvariantViolation, getErrorMessage } from '../db';
 import type { ServiceResult } from '../types';
 import { ErrorCodes } from '../types';
+import { NotificationService } from './NotificationService';
 
 // ============================================================================
 // TYPES
@@ -149,16 +150,22 @@ export const GDPRService = {
         [userId, requestType, JSON.stringify(requestDetails), deadline]
       );
       
-      // Queue background job to process request
-      // TODO: Integrate with background job queue (e.g., BullMQ, pg-boss, etc.)
-      // For now, requests are created in 'pending' status and must be processed manually or via cron
-      // 
-      // When job queue is available:
-      // - EXPORT: Queue job to call GDPRService.generateExport(requestId)
-      // - DELETION: Schedule job for executeDeletion after grace period (deadline)
-      // - ACCESS: Queue job to generate access report (similar to export)
-      // - RECTIFICATION: Allow user to correct data via UI/API
-      
+      // Queue background job to process request via BullMQ outbox pattern
+      const requestId = result.rows[0].id;
+
+      if (requestType === 'export') {
+        // Immediately trigger export generation (writes outbox event → BullMQ)
+        GDPRService.generateExport(requestId).catch(err => {
+          console.error(`[GDPRService.createRequest] Failed to trigger export for ${requestId}:`, err);
+        });
+      } else if (requestType === 'deletion') {
+        // Deletion has a grace period — schedule via outbox for deadline processing
+        // For now, deletion requests remain 'pending' until grace period expires
+        // Admin or cron job will call executeDeletion after deadline
+        console.log(`[GDPRService] Deletion request ${requestId} created with grace period until ${deadline.toISOString()}`);
+      }
+      // rectification requests are handled via UI/API — no background job needed
+
       return {
         success: true,
         data: result.rows[0],
@@ -628,18 +635,20 @@ export const GDPRService = {
         [completedAt, requestId]
       );
       
-      // TODO: Send final confirmation email to user
-      // Requires: Email service (SendGrid, AWS SES, etc.)
-      // NotificationService.create can be used once email channel is configured:
-      // await NotificationService.create({
-      //   userId: request.user_id,
-      //   category: 'security_alert',
-      //   title: 'Account deletion completed',
-      //   body: `Your account and personal data have been permanently deleted per your GDPR request.`,
-      //   deepLink: 'app://support',
-      //   channels: ['email'],
-      //   priority: 'HIGH',
-      // });
+      // Send final confirmation email to user via NotificationService (outbox pattern)
+      await NotificationService.createNotification({
+        userId: request.user_id,
+        category: 'security_alert',
+        title: 'Account Deletion Completed',
+        body: 'Your account and personal data have been permanently deleted per your GDPR request. This action cannot be undone.',
+        deepLink: 'app://support',
+        channels: ['in_app', 'email'],
+        priority: 'HIGH',
+        metadata: { requestId, deletedAt: deletedAt.toISOString() },
+      }).catch(err => {
+        // Log but don't fail — user data is already deleted, notification is best-effort
+        console.error(`[GDPRService] Failed to send deletion confirmation to user ${request.user_id}:`, err);
+      });
       
       return {
         success: true,

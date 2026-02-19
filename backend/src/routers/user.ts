@@ -95,13 +95,31 @@ export const userRouter = router({
     }),
   
   /**
-   * Get user by ID (public profile)
+   * Get user by ID
+   * Returns full profile for own user, public profile for others (IDOR protection)
    */
   getById: protectedProcedure
     .input(z.object({ userId: Schemas.uuid }))
-    .query(async ({ input }) => {
-      const result = await db.query<User>(
-        `SELECT * FROM users WHERE id = $1`,
+    .query(async ({ ctx, input }) => {
+      // Own profile — return everything
+      if (ctx.user.id === input.userId) {
+        return await toMobileUser(ctx.user!);
+      }
+
+      // Other user — return public fields only (no email, phone, earnings)
+      const result = await db.query<{
+        id: string;
+        full_name: string;
+        avatar_url: string | null;
+        bio: string | null;
+        trust_tier: string;
+        xp_total: number;
+        is_verified: boolean;
+        default_mode: string;
+        created_at: Date;
+      }>(
+        `SELECT id, full_name, avatar_url, bio, trust_tier, xp_total, is_verified, default_mode, created_at
+         FROM users WHERE id = $1`,
         [input.userId]
       );
 
@@ -112,7 +130,40 @@ export const userRouter = router({
         });
       }
 
-      return await toMobileUser(result.rows[0]);
+      const user = result.rows[0];
+      const roleMap: Record<string, string> = { worker: 'hustler', poster: 'poster' };
+
+      // Compute public stats (tasks completed, rating — no financial data)
+      const statsResult = await db.query<{
+        avg_rating: string | null;
+        total_ratings: string;
+        tasks_completed: string;
+      }>(
+        `SELECT
+           COALESCE(AVG(tr.stars), 5.0) as avg_rating,
+           COUNT(tr.id)::text as total_ratings,
+           (SELECT COUNT(*) FROM tasks WHERE worker_id = $1 AND state = 'COMPLETED')::text as tasks_completed
+         FROM task_ratings tr
+         WHERE tr.ratee_id = $1`,
+        [input.userId]
+      );
+
+      const stats = statsResult.rows[0];
+
+      return {
+        id: user.id,
+        name: user.full_name,
+        avatarURL: user.avatar_url,
+        bio: user.bio,
+        role: roleMap[user.default_mode] ?? user.default_mode,
+        trustTier: user.trust_tier,
+        xp: user.xp_total,
+        isVerified: user.is_verified,
+        rating: stats ? parseFloat(stats.avg_rating || '5.0') : 5.0,
+        totalRatings: stats ? parseInt(stats.total_ratings || '0', 10) : 0,
+        tasksCompleted: stats ? parseInt(stats.tasks_completed || '0', 10) : 0,
+        createdAt: user.created_at,
+      };
     }),
   
   /**

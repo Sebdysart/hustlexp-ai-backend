@@ -506,38 +506,41 @@ export const RatingService = {
         []
       );
       
-      let autoRated = 0;
-      
-      for (const task of incompleteTasksResult.rows) {
-        if (!task.worker_id) {
-          continue;
-        }
-        
-        try {
-          // Auto-rate poster → worker (5 stars)
-          await db.query(
-            `INSERT INTO task_ratings (
-              task_id, rater_id, ratee_id, stars, comment, tags, is_public, is_blind, is_auto_rated
-            )
-            VALUES ($1, $2, $3, 5, 'No rating submitted (auto-rated)', ARRAY[]::TEXT[], true, false, true)`,
-            [task.id, task.poster_id, task.worker_id]
-          );
-          
-          // Auto-rate worker → poster (5 stars)
-          await db.query(
-            `INSERT INTO task_ratings (
-              task_id, rater_id, ratee_id, stars, comment, tags, is_public, is_blind, is_auto_rated
-            )
-            VALUES ($1, $2, $3, 5, 'No rating submitted (auto-rated)', ARRAY[]::TEXT[], true, false, true)`,
-            [task.id, task.worker_id, task.poster_id]
-          );
-          
-          autoRated += 2; // 2 ratings per task (bidirectional)
-        } catch (error) {
-          // Skip if auto-rating fails (e.g., duplicate constraint)
-          continue;
-        }
+      // Filter out tasks without workers
+      const validTasks = incompleteTasksResult.rows.filter(t => t.worker_id);
+
+      if (validTasks.length === 0) {
+        return { success: true, data: { autoRated: 0 } };
       }
+
+      // Batch insert all auto-ratings in a single query (eliminates N+1)
+      // Generate both directions: poster→worker and worker→poster
+      const values: unknown[] = [];
+      const placeholders: string[] = [];
+      let paramIdx = 1;
+
+      for (const task of validTasks) {
+        // Poster → Worker
+        placeholders.push(`($${paramIdx}, $${paramIdx + 1}, $${paramIdx + 2}, 5, 'No rating submitted (auto-rated)', ARRAY[]::TEXT[], true, false, true)`);
+        values.push(task.id, task.poster_id, task.worker_id);
+        paramIdx += 3;
+
+        // Worker → Poster
+        placeholders.push(`($${paramIdx}, $${paramIdx + 1}, $${paramIdx + 2}, 5, 'No rating submitted (auto-rated)', ARRAY[]::TEXT[], true, false, true)`);
+        values.push(task.id, task.worker_id, task.poster_id);
+        paramIdx += 3;
+      }
+
+      const batchResult = await db.query(
+        `INSERT INTO task_ratings (
+          task_id, rater_id, ratee_id, stars, comment, tags, is_public, is_blind, is_auto_rated
+        )
+        VALUES ${placeholders.join(', ')}
+        ON CONFLICT DO NOTHING`,
+        values
+      );
+
+      const autoRated = batchResult.rowCount;
       
       return {
         success: true,

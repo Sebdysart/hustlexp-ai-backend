@@ -240,7 +240,19 @@ export const EarnedVerificationUnlockService = {
         [userId]
       );
 
-      // TODO: Log to audit_log table
+      // Log to admin_actions audit table
+      await db.query(
+        `INSERT INTO admin_actions (admin_user_id, action_type, target_type, target_id, reason, metadata)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [
+          adminId,
+          'verification_unlock_granted',
+          'user',
+          userId,
+          reason,
+          JSON.stringify({ action: 'admin_grant_verification_unlock', timestamp: new Date().toISOString() }),
+        ]
+      );
       console.log(`[ADMIN OVERRIDE] ${adminId} granted verification unlock to ${userId}. Reason: ${reason}`);
 
       return { success: true, data: undefined };
