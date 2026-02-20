@@ -13,6 +13,8 @@
 import { Job } from 'bullmq';
 import { db } from '../db';
 import { NotificationService } from '../services/NotificationService';
+import { workerLogger } from '../logger';
+const log = workerLogger.child({ worker: 'instant-notification' });
 
 interface InstantNotificationJobData {
   taskId: string;
@@ -44,7 +46,7 @@ export async function processInstantNotificationJob(
     const flags = InstantModeKillSwitch.checkFlags({ taskId, operation: 'notification_delivery' });
     
     if (!flags.interruptsEnabled) {
-      console.log(`🚫 Instant notification skipped - kill switch active`, { taskId, hustlerId });
+      log.info({ taskId, hustlerId }, 'Instant notification skipped - kill switch active');
       return; // Safe exit - no state mutation
     }
 
@@ -68,7 +70,7 @@ export async function processInstantNotificationJob(
 
   if (!task.instant_mode || task.state !== 'MATCHING') {
     // Task already accepted or cancelled - don't send notification
-    console.log(`ℹ️  Task ${taskId} no longer in MATCHING state (state: ${task.state}) - skipping notification`);
+    log.info({ taskId, state: task.state }, 'Task no longer in MATCHING state - skipping notification');
     return;
   }
 
@@ -126,24 +128,11 @@ export async function processInstantNotificationJob(
     }
 
     const latency = Date.now() - startTime;
-    console.log(`✅ Instant notification sent to hustler ${hustlerId} for task ${taskId}`, {
-      taskId,
-      hustlerId,
-      surgeLevel: job.data.surgeLevel || 0,
-      latency,
-      stage: 'notification_delivery',
-    });
+    log.info({ taskId, hustlerId, surgeLevel: job.data.surgeLevel || 0, latency, stage: 'notification_delivery' }, 'Instant notification sent');
   } catch (error) {
     // Launch Hardening v1: Error containment - never crash the process
     const latency = Date.now() - startTime;
-    console.error(`❌ Instant notification failed for task ${taskId}`, {
-      taskId,
-      hustlerId,
-      error: error instanceof Error ? error.message : String(error),
-      stack: error instanceof Error ? error.stack : undefined,
-      latency,
-      stage: 'notification_delivery',
-    });
+    log.error({ taskId, hustlerId, err: error instanceof Error ? error.message : String(error), stack: error instanceof Error ? error.stack : undefined, latency, stage: 'notification_delivery' }, 'Instant notification failed');
     
     // Re-throw to let BullMQ handle retry (bounded retries configured at queue level)
     throw error;

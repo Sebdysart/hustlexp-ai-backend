@@ -23,8 +23,11 @@
 import { db } from '../db';
 import { writeToOutbox } from './outbox-helpers';
 import { TaskService } from '../services/TaskService';
+import { workerLogger } from '../logger';
 import type { Job } from 'bullmq';
 import type Stripe from 'stripe';
+
+const log = workerLogger.child({ worker: 'payment' });
 
 // ============================================================================
 // TYPES
@@ -83,7 +86,7 @@ export async function processPaymentJob(job: Job<PaymentJobData>): Promise<void>
 
       // Already claimed or already processed: expected under duplicate jobs / concurrency.
       // No-op (no exception for normal concurrency).
-      console.log(`ℹ️  Stripe event ${stripeEventId} already claimed/processed (result=${existingResult.rows[0].result}), skipping`);
+      log.info({ stripeEventId, result: existingResult.rows[0].result }, 'Stripe event already claimed/processed, skipping');
       return;
     }
 
@@ -117,7 +120,7 @@ export async function processPaymentJob(job: Job<PaymentJobData>): Promise<void>
            WHERE stripe_event_id = $2`,
           [`Unknown event type: ${eventType}`, stripeEventId]
         );
-        console.log(`⚠️  Stripe event ${stripeEventId} skipped (unknown type: ${eventType})`);
+        log.warn({ stripeEventId, eventType }, 'Stripe event skipped (unknown type)');
         return;
     }
 
@@ -130,7 +133,7 @@ export async function processPaymentJob(job: Job<PaymentJobData>): Promise<void>
       [stripeEventId]
     );
 
-    console.log(`✅ Stripe event ${stripeEventId} processed successfully (type: ${eventType})`);
+    log.info({ stripeEventId, eventType }, 'Stripe event processed successfully');
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     
@@ -145,7 +148,7 @@ export async function processPaymentJob(job: Job<PaymentJobData>): Promise<void>
       [errorMessage, stripeEventId]
     );
     
-    console.error(`❌ Stripe event ${stripeEventId} processing failed: ${errorMessage}`);
+    log.error({ stripeEventId, eventType, err: errorMessage }, 'Stripe event processing failed');
     
     // Re-throw for BullMQ retry logic
     throw error;
@@ -192,7 +195,7 @@ async function handlePaymentIntentSucceeded(paymentIntent: Stripe.PaymentIntent,
        WHERE stripe_event_id = $2`,
       [`Escrow ${escrow.id} already terminal (${escrow.state})`, stripeEventId]
     );
-    console.log(`⚠️  Stripe event skipped: escrow ${escrow.id} already terminal (${escrow.state})`);
+    log.warn({ escrowId: escrow.id, state: escrow.state, stripeEventId }, 'Stripe event skipped: escrow already terminal');
     return;
   }
 
@@ -246,7 +249,7 @@ async function handlePaymentIntentSucceeded(paymentIntent: Stripe.PaymentIntent,
     idempotencyKey: `escrow.funded:${escrow.id}:${updatedEscrow.version}`,
   });
 
-  console.log(`✅ Escrow ${escrow.id} funded (PENDING → FUNDED, version: ${updatedEscrow.version})`);
+  log.info({ escrowId: escrow.id, version: updatedEscrow.version }, 'Escrow funded (PENDING → FUNDED)');
 }
 
 /**
@@ -293,13 +296,13 @@ async function handleTransferCreated(transfer: Stripe.Transfer, stripeEventId: s
        WHERE stripe_event_id = $2`,
       [`Escrow ${escrowId} already terminal (${escrow.state})`, stripeEventId]
     );
-    console.log(`⚠️  Stripe event skipped: escrow ${escrowId} already terminal (${escrow.state})`);
+    log.warn({ escrowId, state: escrow.state, stripeEventId }, 'Stripe event skipped: escrow already terminal');
     return;
   }
 
   // Idempotency check: If already released with this transfer_id, skip
   if (escrow.state === 'RELEASED' && escrow.stripe_transfer_id === transferId) {
-    console.log(`✅ Escrow ${escrowId} already released with transfer ${transferId}, skipping - idempotent replay`);
+    log.info({ escrowId, transferId }, 'Escrow already released with this transfer, idempotent replay');
     return;
   }
 
@@ -358,7 +361,7 @@ async function handleTransferCreated(transfer: Stripe.Transfer, stripeEventId: s
     idempotencyKey: `escrow.released:${escrowId}:${updatedEscrow.version}`,
   });
 
-  console.log(`✅ Escrow ${escrowId} released (${escrow.state} → RELEASED, version: ${updatedEscrow.version})`);
+  log.info({ escrowId, prevState: escrow.state, version: updatedEscrow.version }, 'Escrow released (→ RELEASED)');
 }
 
 /**
@@ -431,7 +434,7 @@ async function handleChargeRefunded(charge: Stripe.Charge, stripeEventId: string
        WHERE stripe_event_id = $2`,
       [`Escrow ${escrow.id} already terminal (${escrow.state})`, stripeEventId]
     );
-    console.log(`⚠️  Stripe event skipped: escrow ${escrow.id} already terminal (${escrow.state})`);
+    log.warn({ escrowId: escrow.id, state: escrow.state, stripeEventId }, 'Stripe event skipped: escrow already terminal');
     return;
   }
 
@@ -448,7 +451,7 @@ async function handleChargeRefunded(charge: Stripe.Charge, stripeEventId: string
 
   // Idempotency check: If already refunded with this refund_id, skip
   if (escrow.state === 'REFUNDED' && escrow.stripe_refund_id === refundId) {
-    console.log(`✅ Escrow ${escrow.id} already refunded with refund ${refundId}, skipping - idempotent replay`);
+    log.info({ escrowId: escrow.id, refundId }, 'Escrow already refunded, idempotent replay');
     return;
   }
 
@@ -500,5 +503,5 @@ async function handleChargeRefunded(charge: Stripe.Charge, stripeEventId: string
     idempotencyKey: `escrow.refunded:${escrow.id}:${updatedEscrow.version}`,
   });
 
-  console.log(`✅ Escrow ${escrow.id} refunded (${escrow.state} → REFUNDED, version: ${updatedEscrow.version})`);
+  log.info({ escrowId: escrow.id, prevState: escrow.state, version: updatedEscrow.version }, 'Escrow refunded (→ REFUNDED)');
 }

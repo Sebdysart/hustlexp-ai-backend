@@ -21,8 +21,11 @@ import { db } from '../db';
 import { config } from '../config';
 import sgMail from '@sendgrid/mail';
 import { markOutboxEventProcessed, markOutboxEventFailed } from './outbox-worker';
+import { workerLogger } from '../logger';
 import type { Job } from 'bullmq';
 import { sendgridBreaker } from '../middleware/circuit-breaker';
+
+const log = workerLogger.child({ worker: 'email' });
 
 // ============================================================================
 // SENDGRID SETUP
@@ -211,25 +214,11 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
     const emailRecord = emailResult.rows[0];
     
     // Structured log: job started
-    console.log(JSON.stringify({
-      event: 'email_job_started',
-      email_id: emailId,
-      job_id: job.id,
-      idempotency_key: emailRecord.idempotency_key,
-      current_status: emailRecord.status,
-      attempt: emailRecord.attempts,
-    }));
+    log.info({ emailId, jobId: job.id, idempotencyKey: emailRecord.idempotency_key, currentStatus: emailRecord.status, attempt: emailRecord.attempts }, 'Email job started');
     
     // Idempotency check: If already sent, skip processing (idempotent replay)
     if (emailRecord.status === 'sent') {
-      console.log(JSON.stringify({
-        event: 'email_already_sent_replay',
-        email_id: emailId,
-        job_id: job.id,
-        idempotency_key: emailRecord.idempotency_key,
-        status: emailRecord.status,
-        provider_msg_id: emailRecord.provider_msg_id || null,
-      }));
+      log.info({ emailId, jobId: job.id, idempotencyKey: emailRecord.idempotency_key, status: emailRecord.status, providerMsgId: emailRecord.provider_msg_id }, 'Email already sent, replay skipped');
       // Mark outbox event as processed (if processing from outbox)
       const outboxKey = emailRecord.idempotency_key || jobIdempotencyKey;
       if (outboxKey) {
@@ -250,14 +239,7 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
         [emailId]
       );
       
-      console.log(JSON.stringify({
-        event: 'email_crash_recovery',
-        email_id: emailId,
-        job_id: job.id,
-        idempotency_key: emailRecord.idempotency_key,
-        provider_msg_id: emailRecord.provider_msg_id,
-        reason: 'provider_msg_id_exists_but_status_not_sent',
-      }));
+      log.warn({ emailId, jobId: job.id, idempotencyKey: emailRecord.idempotency_key, providerMsgId: emailRecord.provider_msg_id }, 'Email crash recovery: provider_msg_id exists but status not sent');
       
       const outboxKey = emailRecord.idempotency_key || jobIdempotencyKey;
       if (outboxKey) {
@@ -268,26 +250,13 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
     
     // Check if email is suppressed
     if (emailRecord.status === 'suppressed' || emailRecord.suppressed_reason) {
-      console.log(JSON.stringify({
-        event: 'email_suppressed_check',
-        email_id: emailId,
-        job_id: job.id,
-        idempotency_key: emailRecord.idempotency_key,
-        suppressed_reason: emailRecord.suppressed_reason || 'status_suppressed',
-      }));
+      log.warn({ emailId, jobId: job.id, idempotencyKey: emailRecord.idempotency_key, suppressedReason: emailRecord.suppressed_reason || 'status_suppressed' }, 'Email suppressed, skipping');
       throw new Error(`Email is suppressed: ${emailRecord.suppressed_reason || 'suppressed'}`);
     }
     
     // Check if max attempts exceeded (poison message)
     if (emailRecord.attempts >= emailRecord.max_attempts) {
-      console.log(JSON.stringify({
-        event: 'email_max_attempts_exceeded',
-        email_id: emailId,
-        job_id: job.id,
-        idempotency_key: emailRecord.idempotency_key,
-        attempts: emailRecord.attempts,
-        max_attempts: emailRecord.max_attempts,
-      }));
+      log.warn({ emailId, jobId: job.id, idempotencyKey: emailRecord.idempotency_key, attempts: emailRecord.attempts, maxAttempts: emailRecord.max_attempts }, 'Email max attempts exceeded');
       throw new Error(`Max attempts (${emailRecord.max_attempts}) exceeded for email ${emailId}`);
     }
     
@@ -312,28 +281,14 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
     // If no row returned, another worker already claimed this email (or status changed)
     if (claimResult.rowCount === 0) {
       // Structured log for verification
-      console.error(JSON.stringify({
-        event: 'email_claim_failed',
-        email_id: emailId,
-        job_id: job.id,
-        idempotency_key: emailRecord.idempotency_key,
-        reason: 'already_claimed_or_invalid_status',
-        current_status: emailRecord.status,
-      }));
+      log.warn({ emailId, jobId: job.id, idempotencyKey: emailRecord.idempotency_key, currentStatus: emailRecord.status }, 'Email claim failed: already claimed or invalid status');
       return; // Another worker claimed it or status changed - exit gracefully
     }
     
     const claimedEmail = claimResult.rows[0];
     
     // Structured log: claim successful
-    console.log(JSON.stringify({
-      event: 'email_claimed',
-      email_id: emailId,
-      job_id: job.id,
-      idempotency_key: emailRecord.idempotency_key,
-      status_transition: `${emailRecord.status} -> sending`,
-      attempt: claimedEmail.attempts,
-    }));
+    log.info({ emailId, jobId: job.id, idempotencyKey: emailRecord.idempotency_key, statusTransition: `${emailRecord.status} -> sending`, attempt: claimedEmail.attempts }, 'Email claimed');
     
     // Check if user is suppressed BEFORE sending (additional safety check)
     if (userId || emailRecord.user_id) {
@@ -354,14 +309,7 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
           [emailId]
         );
         
-        console.log(JSON.stringify({
-          event: 'email_suppressed',
-          email_id: emailId,
-          job_id: job.id,
-          idempotency_key: emailRecord.idempotency_key,
-          reason: 'user_do_not_email',
-          user_id: userId || emailRecord.user_id,
-        }));
+        log.info({ emailId, jobId: job.id, idempotencyKey: emailRecord.idempotency_key, userId: userId || emailRecord.user_id }, 'Email suppressed: user do_not_email flag');
         
         return; // Exit without sending
       }
@@ -390,15 +338,7 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
     };
     
     // Structured log: sending attempt
-    console.log(JSON.stringify({
-      event: 'email_sending',
-      email_id: emailId,
-      job_id: job.id,
-      idempotency_key: emailRecord.idempotency_key,
-      attempt: claimedEmail.attempts,
-      to_email: toEmail || emailRecord.to_email,
-      template,
-    }));
+    log.info({ emailId, jobId: job.id, idempotencyKey: emailRecord.idempotency_key, attempt: claimedEmail.attempts, toEmail: toEmail || emailRecord.to_email, template }, 'Email sending');
     
     const [response] = await sendgridBreaker.execute(() => sgMail.send(msg));
     
@@ -436,14 +376,7 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
     
     // If update affected 0 rows, another worker already marked this as sent
     if (finalUpdateResult.rowCount === 0) {
-      console.log(JSON.stringify({
-        event: 'email_already_sent',
-        email_id: emailId,
-        job_id: job.id,
-        idempotency_key: emailRecord.idempotency_key,
-        reason: 'another_worker_completed',
-        provider_msg_id: providerMsgId,
-      }));
+      log.info({ emailId, jobId: job.id, idempotencyKey: emailRecord.idempotency_key, providerMsgId }, 'Email already sent by another worker');
       return; // Already processed, exit gracefully
     }
     
@@ -457,18 +390,7 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
     }
     
     // Structured log: email sent successfully
-    console.log(JSON.stringify({
-      event: 'email_sent',
-      email_id: emailId,
-      job_id: job.id,
-      idempotency_key: emailRecord.idempotency_key,
-      outbox_event_id: outboxKey,
-      status_transition: 'sending -> sent',
-      attempt: claimedEmail.attempts,
-      provider_msg_id: finalEmail.provider_msg_id || providerMsgId,
-      to_email: toEmail || emailRecord.to_email,
-      template,
-    }));
+    log.info({ emailId, jobId: job.id, idempotencyKey: emailRecord.idempotency_key, outboxEventId: outboxKey, attempt: claimedEmail.attempts, providerMsgId: finalEmail.provider_msg_id || providerMsgId, toEmail: toEmail || emailRecord.to_email, template }, 'Email sent successfully');
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     
@@ -502,14 +424,7 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
     }
     
     // Structured log: error occurred
-    console.error(JSON.stringify({
-      event: 'email_send_error',
-      email_id: emailId,
-      job_id: job.id,
-      idempotency_key: outboxKey,
-      error: errorMessage,
-      attempt: currentAttempts,
-    }));
+    log.error({ emailId, jobId: job.id, idempotencyKey: outboxKey, err: errorMessage, attempt: currentAttempts }, 'Email send error');
     
     // Handle SendGrid suppression errors (bounces, complaints, unsubscribes)
     const isSuppressionError = errorMessage.includes('suppressed') ||
@@ -526,11 +441,7 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
          WHERE id = $1`,
         [userId]
       ).catch(dbError => {
-        console.error(JSON.stringify({
-          event: 'suppression_user_update_failed',
-          user_id: userId,
-          error: dbError instanceof Error ? dbError.message : 'Unknown error',
-        }));
+        log.error({ userId, err: dbError instanceof Error ? dbError.message : 'Unknown error' }, 'Suppression user update failed');
       });
       
       // Update email_outbox with suppression reason
@@ -544,14 +455,7 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
         [errorMessage, emailId]
       );
       
-      console.log(JSON.stringify({
-        event: 'email_suppressed',
-        email_id: emailId,
-        job_id: job.id,
-        idempotency_key: outboxKey,
-        suppressed_reason: errorMessage,
-        user_id: userId,
-      }));
+      log.info({ emailId, jobId: job.id, idempotencyKey: outboxKey, suppressedReason: errorMessage, userId }, 'Email suppressed due to bounce/complaint');
     } else {
       // Update email_outbox with error (for retry)
       // Check current attempts to determine if we should mark as failed (poison message)
@@ -567,15 +471,7 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
       );
       
       if (shouldMarkFailed) {
-        console.log(JSON.stringify({
-          event: 'email_poison_message',
-          email_id: emailId,
-          job_id: job.id,
-          idempotency_key: outboxKey,
-          attempts: currentAttempts,
-          max_attempts: maxAttempts,
-          error: errorMessage,
-        }));
+        log.error({ emailId, jobId: job.id, idempotencyKey: outboxKey, attempts: currentAttempts, maxAttempts, err: errorMessage }, 'Email poison message: max attempts exceeded');
       }
     }
     

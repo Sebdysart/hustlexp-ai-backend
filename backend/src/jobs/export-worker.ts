@@ -25,6 +25,8 @@ import { writeToOutbox } from './outbox-helpers';
 import { markOutboxEventProcessed, markOutboxEventFailed } from './outbox-worker';
 import type { Job } from 'bullmq';
 import { collectUserDataForExport } from '../services/GDPRService';
+import { workerLogger } from '../logger';
+const log = workerLogger.child({ worker: 'export' });
 
 // ============================================================================
 // TYPES
@@ -85,7 +87,7 @@ export async function processExportJob(job: Job<ExportJobData>): Promise<void> {
     
     // Idempotency check: If already ready, skip processing (idempotent replay)
     if (exportRecord.status === 'ready') {
-      console.log(`✅ Export ${exportId} already processed (status: ready), skipping - idempotent replay`);
+      log.info({ exportId }, 'Export already processed (status: ready), skipping - idempotent replay');
       // Mark outbox event as processed (if processing from outbox)
       if (idempotencyKey) {
         await markOutboxEventProcessed(idempotencyKey);
@@ -103,11 +105,11 @@ export async function processExportJob(job: Job<ExportJobData>): Promise<void> {
       const stuckThreshold = new Date(Date.now() - 10 * 60 * 1000); // 10 minutes ago
       if (exportRecord.updated_at && new Date(exportRecord.updated_at) > stuckThreshold) {
         // Still actively generating (updated within last 10 minutes), skip
-        console.log(`⚠️  Export ${exportId} is still generating (updated ${exportRecord.updated_at}), skipping retry`);
+        log.info({ exportId, updatedAt: exportRecord.updated_at }, 'Export is still generating, skipping retry');
         return;
       } else {
         // Stuck in generating state (>10 minutes old), treat as retryable
-        console.log(`🔄 Export ${exportId} stuck in generating state (updated ${exportRecord.updated_at}), treating as retryable`);
+        log.warn({ exportId, updatedAt: exportRecord.updated_at }, 'Export stuck in generating state, treating as retryable');
       }
     }
     
@@ -125,7 +127,7 @@ export async function processExportJob(job: Job<ExportJobData>): Promise<void> {
     
     // If update affected 0 rows, another worker already claimed this export
     if (updateResult.rowCount === 0) {
-      console.log(`⚠️  Export ${exportId} already claimed by another worker, skipping`);
+      log.info({ exportId }, 'Export already claimed by another worker, skipping');
       return;
     }
     
@@ -158,7 +160,7 @@ export async function processExportJob(job: Job<ExportJobData>): Promise<void> {
     if (existingFile.exists) {
       // File already exists in R2 - use existing file (idempotent replay)
       // This handles the case where upload succeeded but DB update to 'ready' failed
-      console.log(`✅ Export ${exportId} object already exists in R2 (${objectKey}), using existing file (idempotent replay)`);
+      log.info({ exportId, objectKey }, 'Export object already exists in R2, using existing file (idempotent replay)');
       uploadResult = {
         key: objectKey,
         size: existingFile.size || 0,
@@ -281,7 +283,7 @@ export async function processExportJob(job: Job<ExportJobData>): Promise<void> {
     
     // If update affected 0 rows, another worker already marked this as ready
     if (finalUpdateResult.rowCount === 0) {
-      console.log(`⚠️  Export ${exportId} already marked as ready by another worker, skipping final update`);
+      log.info({ exportId }, 'Export already marked as ready by another worker, skipping final update');
       return; // Already processed, exit gracefully
     }
     
@@ -326,10 +328,10 @@ export async function processExportJob(job: Job<ExportJobData>): Promise<void> {
     }
     
     // Job completed successfully
-    console.log(`✅ Export ${exportId} generated and uploaded to R2: ${objectKey}`);
+    log.info({ exportId, objectKey }, 'Export generated and uploaded to R2');
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    console.error(`❌ Export ${exportId} processing failed:`, errorMessage);
+    log.error({ exportId, err: errorMessage }, 'Export processing failed');
     
     // Update export status to failed
     await db.query(
@@ -339,13 +341,13 @@ export async function processExportJob(job: Job<ExportJobData>): Promise<void> {
        WHERE id = $1`,
       [exportId]
     ).catch(dbError => {
-      console.error(`Failed to update export ${exportId} status:`, dbError);
+      log.error({ exportId, err: dbError }, 'Failed to update export status');
     });
     
     // Mark outbox event as failed (if processing from outbox)
     if (idempotencyKey) {
       await markOutboxEventFailed(idempotencyKey, errorMessage).catch(markError => {
-        console.error(`Failed to mark outbox event ${idempotencyKey} as failed:`, markError);
+        log.error({ idempotencyKey, err: markError }, 'Failed to mark outbox event as failed');
       });
     }
     

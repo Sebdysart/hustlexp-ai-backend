@@ -20,6 +20,8 @@ import { db } from '../db';
 import { processSubscriptionEvent } from '../services/StripeSubscriptionProcessor';
 import { processEntitlementPurchase } from '../services/StripeEntitlementProcessor';
 import type { Job } from 'bullmq';
+import { workerLogger } from '../logger';
+const log = workerLogger.child({ worker: 'stripe-event' });
 
 // ============================================================================
 // TYPES
@@ -75,7 +77,7 @@ export async function processStripeEventJob(job: Job<StripeEventJobData>): Promi
 
   // Already claimed or processed → NO-OP (S-1)
   if (claim.rowCount === 0) {
-    console.log(`ℹ️  Stripe event ${stripeEventId} already processed, skipping`);
+    log.info({ stripeEventId }, 'Stripe event already processed, skipping');
     return;
   }
 
@@ -117,7 +119,7 @@ export async function processStripeEventJob(job: Job<StripeEventJobData>): Promi
           `,
           [stripeEventId]
         );
-        console.log(`ℹ️  Unhandled Stripe event type: ${type}`);
+        log.warn({ type }, 'Unhandled Stripe event type');
         return;
     }
 
@@ -132,7 +134,7 @@ export async function processStripeEventJob(job: Job<StripeEventJobData>): Promi
       [stripeEventId]
     );
 
-    console.log(`✅ Stripe event processed: ${type} (${stripeEventId})`);
+    log.info({ type, stripeEventId }, 'Stripe event processed');
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
 
@@ -148,7 +150,7 @@ export async function processStripeEventJob(job: Job<StripeEventJobData>): Promi
       [stripeEventId, errorMessage]
     );
 
-    console.error(`❌ Stripe event failed: ${type} (${stripeEventId}): ${errorMessage}`);
+    log.error({ type, stripeEventId, err: errorMessage }, 'Stripe event failed');
     throw error; // Re-throw for BullMQ retry logic
   }
 }
@@ -175,10 +177,7 @@ async function handleCheckoutSessionCompleted(
   }
 
   // No subscription object available; rely on customer.subscription.* events.
-  console.log(
-    `ℹ️  checkout.session.completed received without expanded subscription; ` +
-    `waiting for customer.subscription.* events (event: ${stripeEventId})`
-  );
+  log.info({ stripeEventId }, 'checkout.session.completed without expanded subscription, waiting for customer.subscription.* events');
 }
 
 async function handleInvoicePaymentFailed(event: StripeEventEnvelope): Promise<void> {

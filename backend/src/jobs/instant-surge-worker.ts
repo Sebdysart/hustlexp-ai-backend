@@ -14,6 +14,8 @@ import { db } from '../db';
 import { writeToOutbox } from './outbox-helpers';
 import { PlanService } from '../services/PlanService';
 import { MIN_INSTANT_TIER, MIN_SENSITIVE_INSTANT_TIER } from '../services/InstantTrustConfig';
+import { workerLogger } from '../logger';
+const log = workerLogger.child({ worker: 'instant-surge' });
 
 interface InstantSurgeJobData {
   taskId: string;
@@ -41,7 +43,7 @@ export async function processInstantSurgeJob(
     const flags = InstantModeKillSwitch.checkFlags({ taskId, operation: 'surge_evaluation' });
     
     if (!flags.surgeEnabled) {
-      console.log(`🚫 Instant surge skipped - kill switch active`, { taskId });
+      log.info({ taskId }, 'Instant surge skipped - kill switch active');
       return; // Safe exit - no state mutation
     }
 
@@ -69,18 +71,18 @@ export async function processInstantSurgeJob(
 
   // Only process Instant tasks in MATCHING state
   if (!task.instant_mode || task.state !== 'MATCHING') {
-    console.log(`ℹ️  Task ${taskId} not in MATCHING state (state: ${task.state}) - skipping surge evaluation`);
+    log.info({ taskId, state: task.state }, 'Task not in MATCHING state - skipping surge evaluation');
     return;
   }
 
   // If already accepted, no surge needed
   if (task.accepted_at) {
-    console.log(`ℹ️  Task ${taskId} already accepted - skipping surge evaluation`);
+    log.info({ taskId }, 'Task already accepted - skipping surge evaluation');
     return;
   }
 
   if (!task.matched_at) {
-    console.log(`⚠️  Task ${taskId} in MATCHING state but matched_at is NULL - skipping surge evaluation`);
+    log.warn({ taskId }, 'Task in MATCHING state but matched_at is NULL - skipping surge evaluation');
     return;
   }
 
@@ -89,7 +91,7 @@ export async function processInstantSurgeJob(
   const now = new Date();
   const elapsedSeconds = Math.floor((now.getTime() - matchedAt.getTime()) / 1000);
 
-  console.log(`⏱️  Task ${taskId} elapsed time: ${elapsedSeconds}s (current surge_level: ${task.surge_level})`);
+  log.info({ taskId, elapsedSeconds, currentSurgeLevel: task.surge_level }, 'Task elapsed time evaluated');
 
   // Determine target surge level based on elapsed time
   let targetSurgeLevel = 0;
@@ -103,7 +105,7 @@ export async function processInstantSurgeJob(
 
   // Only escalate if target level is higher than current
   if (targetSurgeLevel <= task.surge_level) {
-    console.log(`ℹ️  Task ${taskId} already at surge_level ${task.surge_level}, target is ${targetSurgeLevel} - no escalation needed`);
+    log.info({ taskId, currentSurgeLevel: task.surge_level, targetSurgeLevel }, 'No surge escalation needed');
     return;
   }
 
@@ -113,7 +115,7 @@ export async function processInstantSurgeJob(
     [targetSurgeLevel, taskId]
   );
 
-  console.log(`📈 Task ${taskId} escalated to surge_level ${targetSurgeLevel}`);
+  log.info({ taskId, targetSurgeLevel }, 'Task escalated to surge level');
 
   // Handle surge level actions
   if (targetSurgeLevel === 1) {
@@ -128,22 +130,11 @@ export async function processInstantSurgeJob(
   }
 
     const latency = Date.now() - startTime;
-    console.log(`✅ Instant surge evaluation completed for task ${taskId}`, {
-      taskId,
-      targetSurgeLevel,
-      latency,
-      stage: 'surge_evaluation',
-    });
+    log.info({ taskId, targetSurgeLevel, latency, stage: 'surge_evaluation' }, 'Instant surge evaluation completed');
   } catch (error) {
     // Launch Hardening v1: Error containment - never crash the process
     const latency = Date.now() - startTime;
-    console.error(`❌ Instant surge evaluation failed for task ${taskId}`, {
-      taskId,
-      error: error instanceof Error ? error.message : String(error),
-      stack: error instanceof Error ? error.stack : undefined,
-      latency,
-      stage: 'surge_evaluation',
-    });
+    log.error({ taskId, err: error instanceof Error ? error.message : String(error), stack: error instanceof Error ? error.stack : undefined, latency, stage: 'surge_evaluation' }, 'Instant surge evaluation failed');
     
     // Re-throw to let BullMQ handle retry (bounded retries configured at queue level)
     throw error;
@@ -163,7 +154,7 @@ async function handleSurgeLevel1(
   const minTrustTier = sensitive ? MIN_SENSITIVE_INSTANT_TIER : MIN_INSTANT_TIER;
   const expandedTier = Math.max(1, minTrustTier - 1); // Allow one tier lower
 
-  console.log(`🔍 Surge Level 1: Expanding visibility to tier ${expandedTier} (from ${minTrustTier})`);
+  log.info({ taskId, expandedTier, minTrustTier }, 'Surge Level 1: Expanding visibility to lower tier');
 
   // Find eligible hustlers (including lower tier)
   const eligibleHustlers = await db.query<{ id: string; trust_tier: number }>(
@@ -182,7 +173,7 @@ async function handleSurgeLevel1(
     [expandedTier]
   );
 
-  console.log(`📢 Surge Level 1: Rebroadcasting to ${eligibleHustlers.rowCount} eligible hustlers (tier ${expandedTier}+)`);
+  log.info({ taskId, eligibleCount: eligibleHustlers.rowCount, expandedTier }, 'Surge Level 1: Rebroadcasting to eligible hustlers');
 
   // Send notifications with urgency copy
   for (const hustler of eligibleHustlers.rows) {
@@ -226,7 +217,7 @@ async function handleSurgeLevel2(
   const minTrustTier = sensitive ? MIN_SENSITIVE_INSTANT_TIER : MIN_INSTANT_TIER;
   const expandedTier = Math.max(1, minTrustTier - 1);
 
-  console.log(`⚡ Surge Level 2: XP boost active, rebroadcasting with high-priority copy`);
+  log.info({ taskId }, 'Surge Level 2: XP boost active, rebroadcasting with high-priority copy');
 
   // Find eligible hustlers
   const eligibleHustlers = await db.query<{ id: string; trust_tier: number }>(
@@ -278,7 +269,7 @@ async function handleSurgeLevel2(
  * Transition task from MATCHING to OPEN (non-instant)
  */
 async function handleSurgeLevel3(taskId: string): Promise<void> {
-  console.log(`❌ Surge Level 3: Failing gracefully - transitioning to OPEN`);
+  log.info({ taskId }, 'Surge Level 3: Failing gracefully - transitioning to OPEN');
 
   // Get elapsed time for observability
   const taskResult = await db.query<{ matched_at: Date }>(
@@ -306,11 +297,11 @@ async function handleSurgeLevel3(taskId: string): Promise<void> {
   );
 
   if (result.rowCount === 0) {
-    console.log(`⚠️  Task ${taskId} could not be transitioned (may have been accepted or cancelled)`);
+    log.warn({ taskId }, 'Task could not be transitioned (may have been accepted or cancelled)');
     return;
   }
 
-  console.log(`✅ Task ${taskId} transitioned to OPEN (Instant Mode failed)`);
+  log.info({ taskId }, 'Task transitioned to OPEN (Instant Mode failed)');
 
   // Launch Hardening v1: Observability - log surge fallback
   const { InstantObservability } = await import('../services/InstantObservability');

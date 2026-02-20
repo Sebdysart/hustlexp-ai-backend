@@ -21,36 +21,26 @@
 
 import type { Job } from 'bullmq';
 import { ExpertiseSupplyService } from '../services/ExpertiseSupplyService';
+import { workerLogger } from '../logger';
+
+const log = workerLogger.child({ worker: 'expertise-recalc' });
 
 export const processExpertiseRecalcJob = async (job: Job): Promise<void> => {
   const startTime = Date.now();
-  console.log('[ExpertiseRecalcWorker] Starting daily supply recalculation...');
+  log.info('Starting daily supply recalculation');
 
   try {
     const result = await ExpertiseSupplyService.recalculateAllCapacity();
 
     if (!result.success) {
-      console.error('[ExpertiseRecalcWorker] ✗ Recalculation failed:', result.error.message);
+      log.error({ err: result.error.message }, 'Expertise recalculation failed');
       throw new Error(result.error.message);
     }
 
     const duration = Date.now() - startTime;
-    console.log(JSON.stringify({
-      event: 'expertise_recalc_complete',
-      processed: result.data.processed,
-      expanded: result.data.expanded,
-      invitesSent: result.data.invitesSent,
-      durationMs: duration,
-    }));
-
-    console.log(
-      `[ExpertiseRecalcWorker] ✓ Done in ${duration}ms — ` +
-      `${result.data.processed} expertise processed, ` +
-      `${result.data.expanded} auto-expanded, ` +
-      `${result.data.invitesSent} waitlist invites sent`
-    );
+    log.info({ processed: result.data.processed, expanded: result.data.expanded, invitesSent: result.data.invitesSent, durationMs: duration }, 'Expertise recalculation complete');
   } catch (error) {
-    console.error('[ExpertiseRecalcWorker] ✗ Job failed:', error);
+    log.error({ err: error }, 'Expertise recalc job failed');
     throw error; // BullMQ will retry
   }
 };

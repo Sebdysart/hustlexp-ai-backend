@@ -12,6 +12,8 @@
 import { db } from '../db';
 import { writeToOutbox } from './outbox-helpers';
 import { InstantObservability } from '../services/InstantObservability';
+import { workerLogger } from '../logger';
+const log = workerLogger.child({ worker: 'instant-surge-evaluator' });
 
 /**
  * Evaluate all Instant tasks in MATCHING state and enqueue surge jobs
@@ -95,16 +97,11 @@ export async function evaluateInstantSurges(): Promise<void> {
   }
 
     if (evaluatedCount > 0) {
-      console.log(`📊 Evaluated ${evaluatedCount} Instant tasks for surge escalation`);
+      log.info({ evaluatedCount }, 'Evaluated Instant tasks for surge escalation');
     }
   } catch (error) {
     // Launch Hardening v1: Error containment - never crash the process
-    console.error(`❌ Instant surge evaluator failed`, {
-      error: error instanceof Error ? error.message : String(error),
-      stack: error instanceof Error ? error.stack : undefined,
-      stage: 'surge_evaluator',
-      timestamp: new Date().toISOString(),
-    });
+    log.error({ err: error instanceof Error ? error.message : String(error), stack: error instanceof Error ? error.stack : undefined, stage: 'surge_evaluator' }, 'Instant surge evaluator failed');
     // Don't re-throw - evaluator runs on interval, will retry next cycle
   }
 }

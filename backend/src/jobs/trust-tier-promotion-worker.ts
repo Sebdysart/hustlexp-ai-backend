@@ -14,6 +14,9 @@
 
 import { db } from '../db';
 import { TrustTierService, TrustTier } from '../services/TrustTierService';
+import { workerLogger } from '../logger';
+
+const log = workerLogger.child({ worker: 'trust-tier-promotion' });
 
 /**
  * Process trust tier promotion job
@@ -41,7 +44,7 @@ export async function processTrustTierPromotionJob(): Promise<void> {
     );
 
     if (candidatesResult.rowCount === 0) {
-      console.log('📊 No trust tier promotion candidates found');
+      log.info('No trust tier promotion candidates found');
       return;
     }
 
@@ -58,11 +61,7 @@ export async function processTrustTierPromotionJob(): Promise<void> {
         if (!eligibility.eligible || !eligibility.targetTier) {
           // Not eligible - log reasons for debugging
           if (eligibility.reasons.length > 0) {
-            console.log(`ℹ️  User ${candidate.id} not eligible for promotion`, {
-              userId: candidate.id,
-              currentTier: candidate.trust_tier,
-              reasons: eligibility.reasons,
-            });
+            log.info({ userId: candidate.id, currentTier: candidate.trust_tier, reasons: eligibility.reasons }, 'User not eligible for trust tier promotion');
           }
           continue;
         }
@@ -76,39 +75,23 @@ export async function processTrustTierPromotionJob(): Promise<void> {
 
         promotedCount++;
 
-        console.log(`✅ Trust tier promotion: ${candidate.id} → ${TrustTier[eligibility.targetTier]}`, {
-          userId: candidate.id,
-          oldTier: candidate.trust_tier,
-          newTier: eligibility.targetTier,
-        });
+        log.info({ userId: candidate.id, oldTier: candidate.trust_tier, newTier: eligibility.targetTier, tierName: TrustTier[eligibility.targetTier] }, 'Trust tier promotion applied');
 
         // One tier per run max (safety)
         // Break after first promotion to avoid double-promotion in same run
         break;
       } catch (error) {
         // Log error but continue with other candidates
-        console.error(`❌ Failed to promote user ${candidate.id}`, {
-          userId: candidate.id,
-          error: error instanceof Error ? error.message : String(error),
-        });
+        log.error({ userId: candidate.id, err: error instanceof Error ? error.message : String(error) }, 'Failed to promote user trust tier');
       }
     }
 
     const latency = Date.now() - startTime;
-    console.log(`📊 Trust tier promotion job completed`, {
-      evaluated: evaluatedCount,
-      promoted: promotedCount,
-      latency,
-    });
+    log.info({ evaluated: evaluatedCount, promoted: promotedCount, latencyMs: latency }, 'Trust tier promotion job completed');
   } catch (error) {
     // Launch Hardening v1: Error containment - never crash the process
     const latency = Date.now() - startTime;
-    console.error(`❌ Trust tier promotion job failed`, {
-      error: error instanceof Error ? error.message : String(error),
-      stack: error instanceof Error ? error.stack : undefined,
-      latency,
-      stage: 'trust_tier_promotion',
-    });
+    log.error({ err: error instanceof Error ? error.message : String(error), stack: error instanceof Error ? error.stack : undefined, latencyMs: latency }, 'Trust tier promotion job failed');
     
     // Don't re-throw - job runs on interval, will retry next cycle
   }

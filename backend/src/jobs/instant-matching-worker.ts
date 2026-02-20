@@ -11,6 +11,8 @@ import { db } from '../db';
 import { writeToOutbox } from './outbox-helpers';
 import { PlanService } from '../services/PlanService';
 import { MIN_INSTANT_TIER, MIN_SENSITIVE_INSTANT_TIER } from '../services/InstantTrustConfig';
+import { workerLogger } from '../logger';
+const log = workerLogger.child({ worker: 'instant-matching' });
 
 interface InstantMatchingJobData {
   taskId: string;
@@ -46,7 +48,7 @@ export async function processInstantMatchingJob(
     const flags = InstantModeKillSwitch.checkFlags({ taskId, operation: 'matching_broadcast' });
     
     if (!flags.instantModeEnabled) {
-      console.log(`🚫 Instant matching skipped - kill switch active`, { taskId });
+      log.info({ taskId }, 'Instant matching skipped - kill switch active');
       return; // Safe exit - no state mutation
     }
 
@@ -70,7 +72,7 @@ export async function processInstantMatchingJob(
 
   if (!task.instant_mode || task.state !== 'MATCHING') {
     // Task already accepted or cancelled
-    console.log(`ℹ️  Task ${taskId} no longer in MATCHING state (state: ${task.state})`);
+    log.info({ taskId, state: task.state }, 'Task no longer in MATCHING state');
     return;
   }
 
@@ -97,7 +99,7 @@ export async function processInstantMatchingJob(
     requiredTrustTierForRisk = 3; // IN_HOME
   } else if (taskRiskLevel === 'IN_HOME') {
     // TIER_3 tasks are blocked in alpha - should not reach here
-    console.warn(`⚠️  Task ${taskId} has IN_HOME risk level (blocked in alpha)`);
+    log.warn({ taskId }, 'Task has IN_HOME risk level (blocked in alpha)');
     return;
   }
   
@@ -120,7 +122,7 @@ export async function processInstantMatchingJob(
     [effectiveMinTier]
   );
 
-  console.log(`📢 Broadcasting instant task ${taskId} to ${eligibleHustlers.rowCount} eligible hustlers`);
+  log.info({ taskId, eligibleCount: eligibleHustlers.rowCount }, 'Broadcasting instant task to eligible hustlers');
 
   // For each eligible hustler, check plan eligibility and send notification
   for (const hustler of eligibleHustlers.rows) {
@@ -155,21 +157,11 @@ export async function processInstantMatchingJob(
     );
 
     const latency = Date.now() - startTime;
-    console.log(`✅ Instant matching completed for task ${taskId}`, {
-      taskId,
-      latency,
-      stage: 'matching_broadcast',
-    });
+    log.info({ taskId, latency, stage: 'matching_broadcast' }, 'Instant matching completed');
   } catch (error) {
     // Launch Hardening v1: Error containment - never crash the process
     const latency = Date.now() - startTime;
-    console.error(`❌ Instant matching failed for task ${taskId}`, {
-      taskId,
-      error: error instanceof Error ? error.message : String(error),
-      stack: error instanceof Error ? error.stack : undefined,
-      latency,
-      stage: 'matching_broadcast',
-    });
+    log.error({ taskId, err: error instanceof Error ? error.message : String(error), stack: error instanceof Error ? error.stack : undefined, latency, stage: 'matching_broadcast' }, 'Instant matching failed');
     
     // Re-throw to let BullMQ handle retry (bounded retries configured at queue level)
     throw error;

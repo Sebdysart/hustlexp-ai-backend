@@ -19,7 +19,10 @@
 import { db } from '../db';
 import { BiometricVerificationService } from '../services/BiometricVerificationService';
 import { notifyAdmins } from '../services/AdminNotificationHelper';
+import { workerLogger } from '../logger';
 import type { Job } from 'bullmq';
+
+const log = workerLogger.child({ worker: 'biometric-analyzer' });
 
 // ============================================================================
 // TYPES
@@ -43,7 +46,7 @@ export const processBiometricAnalysisJob = async (job: Job<BiometricAnalysisJobD
   const { proof_id, photo_url, lidar_depth_map_url } = job.data;
 
   try {
-    console.log(`[BiometricAnalyzerWorker] Processing proof ${proof_id}`);
+    log.info({ proofId: proof_id }, 'Processing biometric analysis');
 
     // Run biometric analysis
     const result = await BiometricVerificationService.analyzeProofSubmission(
@@ -81,9 +84,7 @@ export const processBiometricAnalysisJob = async (job: Job<BiometricAnalysisJobD
 
     // If HIGH/CRITICAL risk, flag for manual review
     if (analysis.recommendation === 'reject' || analysis.recommendation === 'manual_review') {
-      console.warn(
-        `[BiometricAnalyzerWorker] FLAGGED proof ${proof_id}: ${analysis.recommendation} - ${analysis.reasoning}`
-      );
+      log.warn({ proofId: proof_id, recommendation: analysis.recommendation, reasoning: analysis.reasoning, riskLevel: analysis.scores.risk_level, flags: analysis.flags }, 'Biometric proof flagged for review');
 
       // Flag in DB for manual review queue
       await db.query(
@@ -110,12 +111,12 @@ export const processBiometricAnalysisJob = async (job: Job<BiometricAnalysisJobD
           flags: analysis.flags,
           reasoning: analysis.reasoning,
         },
-      }).catch(err => console.error('[BiometricAnalyzerWorker] Failed to notify admins:', err));
+      }).catch(err => log.error({ proofId: proof_id, err }, 'Failed to notify admins of biometric flag'));
     }
 
-    console.log(`[BiometricAnalyzerWorker] ✓ Completed proof ${proof_id}: ${analysis.recommendation}`);
+    log.info({ proofId: proof_id, recommendation: analysis.recommendation }, 'Biometric analysis completed');
   } catch (error) {
-    console.error(`[BiometricAnalyzerWorker] ✗ Failed proof ${proof_id}:`, error);
+    log.error({ proofId: proof_id, err: error }, 'Biometric analysis failed');
     throw error; // BullMQ will retry
   }
 };

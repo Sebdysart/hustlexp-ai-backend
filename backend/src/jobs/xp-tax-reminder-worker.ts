@@ -17,7 +17,10 @@
 
 import { db } from '../db';
 import { NotificationService } from '../services/NotificationService';
+import { workerLogger } from '../logger';
 import type { Job } from 'bullmq';
+
+const log = workerLogger.child({ worker: 'xp-tax-reminder' });
 
 // ============================================================================
 // TYPES
@@ -39,7 +42,7 @@ interface UserWithUnpaidTax {
  */
 export const processXPTaxReminderJob = async (job: Job): Promise<void> => {
   try {
-    console.log('[XPTaxReminderWorker] Starting daily reminder run...');
+    log.info('Starting daily XP tax reminder run');
 
     // Get users with unpaid taxes (>$1)
     const result = await db.query<UserWithUnpaidTax>(
@@ -50,7 +53,7 @@ export const processXPTaxReminderJob = async (job: Job): Promise<void> => {
     );
 
     if (result.rows.length === 0) {
-      console.log('[XPTaxReminderWorker] No users with unpaid taxes');
+      log.info('No users with unpaid taxes');
       return;
     }
 
@@ -100,20 +103,16 @@ export const processXPTaxReminderJob = async (job: Job): Promise<void> => {
 
         sentCount++;
 
-        console.log(
-          `[XPTaxReminderWorker] 📧 Reminder sent: user=${user.user_id}, tax=$${(user.total_unpaid_tax_cents / 100).toFixed(2)}`
-        );
+        log.info({ userId: user.user_id, taxAmount: (user.total_unpaid_tax_cents / 100).toFixed(2) }, 'XP tax reminder sent');
       } catch (error) {
-        console.error(`[XPTaxReminderWorker] Failed to send reminder to ${user.user_id}:`, error);
+        log.error({ userId: user.user_id, err: error }, 'Failed to send XP tax reminder');
         // Continue with other users
       }
     }
 
-    console.log(
-      `[XPTaxReminderWorker] ✓ Complete. ${sentCount} reminders sent to ${result.rows.length} users with unpaid taxes`
-    );
+    log.info({ sentCount, totalUsersWithUnpaidTax: result.rows.length }, 'XP tax reminder run complete');
   } catch (error) {
-    console.error('[XPTaxReminderWorker] ✗ Job failed:', error);
+    log.error({ err: error }, 'XP tax reminder job failed');
     throw error; // BullMQ will retry
   }
 };

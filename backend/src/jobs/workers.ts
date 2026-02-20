@@ -74,7 +74,7 @@ function registerWorkers(): void {
         await processRealtimeJob(job);
       } else {
         // Unknown notification type - log and skip (don't throw)
-        console.log(`ℹ️  Notification type '${eventType}' not yet implemented (will be handled by NotificationService)`);
+        log.info({ eventType }, 'Notification type not yet implemented');
       }
     },
     {
@@ -118,7 +118,7 @@ function registerWorkers(): void {
       } else {
         // Unknown event type: reject to prevent processing invalid jobs
         const error = new Error(`Unknown event type in critical_payments queue: ${eventType}. Expected escrow.*_requested, payment.*, stripe.event_received, task.instant_matching_started, task.instant_available, or task.instant_surge_evaluate`);
-        console.error(`❌ ${error.message}`);
+        log.error({ eventType, err: error.message }, 'Unknown event type in critical_payments queue');
         throw error; // BullMQ will mark job as failed
       }
     },
@@ -143,7 +143,7 @@ function registerWorkers(): void {
       } else {
         // Unknown event type: reject to prevent processing invalid jobs
         const error = new Error(`Unknown event type in critical_trust queue: ${eventType}. Expected trust.dispute_resolved.worker or trust.dispute_resolved.poster`);
-        console.error(`❌ ${error.message}`);
+        log.error({ eventType, err: error.message }, 'Unknown event type in critical_trust queue');
         throw error; // BullMQ will mark job as failed
       }
     },
@@ -168,7 +168,7 @@ function registerWorkers(): void {
     }
   ));
 
-  console.log('✅ All BullMQ workers registered');
+  log.info('All BullMQ workers registered');
 }
 
 // ============================================================================
@@ -185,23 +185,21 @@ function registerWorkers(): void {
  * This is the entry point for the dedicated worker process
  */
 async function startWorkers(): Promise<void> {
-  console.log('🚀 Starting HustleXP Worker Runtime...');
-  
+  log.info('Starting HustleXP Worker Runtime...');
+
   try {
     // Register all BullMQ workers
     registerWorkers();
-    
+
     // Start outbox poller loop (continuously reads outbox_events → enqueues BullMQ jobs)
     startOutboxWorker(5000); // Poll every 5 seconds
-    
-    console.log('✅ Worker runtime started successfully');
-    console.log('📝 Workers are now processing jobs...');
-    console.log('   - Press Ctrl+C to stop gracefully');
-    
+
+    log.info('Worker runtime started successfully — processing jobs');
+
     // Keep process alive
     // Workers run in background, outbox poller runs on interval
   } catch (error) {
-    console.error('❌ Failed to start worker runtime:', error);
+    log.fatal({ err: error }, 'Failed to start worker runtime');
     process.exit(1);
   }
 }
@@ -214,28 +212,28 @@ let shutdownInProgress = false;
 
 async function gracefulShutdown(signal: string): Promise<void> {
   if (shutdownInProgress) {
-    console.log('⚠️  Shutdown already in progress, forcing exit...');
+    log.warn('Shutdown already in progress, forcing exit');
     process.exit(1);
   }
-  
+
   shutdownInProgress = true;
-  console.log(`\n🛑 Received ${signal}, shutting down gracefully...`);
+  log.info({ signal }, 'Received signal, shutting down gracefully...');
 
   // Close all BullMQ workers — each .close() waits for the current job to finish
   const closePromises = activeWorkers.map(async (worker, index) => {
     try {
-      console.log(`  Closing worker ${index + 1}/${activeWorkers.length}: ${worker.name}...`);
+      log.info({ workerName: worker.name, index: index + 1, total: activeWorkers.length }, 'Closing worker...');
       await worker.close();
-      console.log(`  ✅ Worker ${worker.name} closed`);
+      log.info({ workerName: worker.name }, 'Worker closed');
     } catch (err) {
-      console.error(`  ⚠️  Error closing worker ${worker.name}:`, err);
+      log.error({ workerName: worker.name, err }, 'Error closing worker');
     }
   });
 
   // Wait for all workers to finish (with 30s timeout)
   const timeout = new Promise<void>((resolve) => {
     setTimeout(() => {
-      console.log('⚠️  Shutdown timeout reached (30s), forcing exit...');
+      log.warn('Shutdown timeout reached (30s), forcing exit');
       resolve();
     }, 30000);
   });
@@ -245,7 +243,7 @@ async function gracefulShutdown(signal: string): Promise<void> {
     timeout,
   ]);
 
-  console.log('✅ Worker runtime shutdown complete');
+  log.info('Worker runtime shutdown complete');
   process.exit(0);
 }
 
@@ -259,7 +257,7 @@ process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 // Start workers if this file is run directly
 if (require.main === module) {
   startWorkers().catch(error => {
-    console.error('❌ Fatal error starting workers:', error);
+    log.fatal({ err: error }, 'Fatal error starting workers');
     process.exit(1);
   });
 }

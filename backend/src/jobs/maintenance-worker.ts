@@ -10,6 +10,8 @@
 
 import { db } from '../db';
 import type { Job } from 'bullmq';
+import { workerLogger } from '../logger';
+const log = workerLogger.child({ worker: 'maintenance' });
 
 // ============================================================================
 // TYPES
@@ -53,12 +55,12 @@ export async function recoverStuckStripeEvents(job: Job<RecoveryStuckStripeEvent
   );
   
   if (result.rowCount > 0) {
-    console.log(`✅ Recovered ${result.rowCount} stuck stripe events (timeout: ${timeoutMinutes} minutes)`);
+    log.info({ recoveredCount: result.rowCount, timeoutMinutes }, 'Recovered stuck stripe events');
     result.rows.forEach(row => {
-      console.log(`   - Recovered: ${row.stripe_event_id} (was stuck since ${row.claimed_at})`);
+      log.info({ stripeEventId: row.stripe_event_id, stuckSince: row.claimed_at }, 'Recovered stuck stripe event');
     });
   } else {
-    console.log(`ℹ️  No stuck stripe events found (timeout: ${timeoutMinutes} minutes)`);
+    log.info({ timeoutMinutes }, 'No stuck stripe events found');
   }
 }
 
@@ -79,9 +81,9 @@ async function cleanupExpiredExports(): Promise<void> {
   );
 
   if (oldExports.rowCount > 0) {
-    console.log(`🗑️  Cleaned up ${oldExports.rowCount} expired/stuck exports`);
+    log.info({ cleanedCount: oldExports.rowCount }, 'Cleaned up expired/stuck exports');
   } else {
-    console.log('ℹ️  No expired exports to clean up');
+    log.info('No expired exports to clean up');
   }
 }
 
@@ -114,9 +116,9 @@ async function cleanupExpiredNotifications(): Promise<void> {
   const expiredCount = parseInt(expiredResult.rows[0]?.count || '0', 10);
 
   if (readCount + expiredCount > 0) {
-    console.log(`🗑️  Cleaned up ${readCount} old read + ${expiredCount} expired notifications`);
+    log.info({ readCount, expiredCount }, 'Cleaned up old read and expired notifications');
   } else {
-    console.log('ℹ️  No expired notifications to clean up');
+    log.info('No expired notifications to clean up');
   }
 }
 

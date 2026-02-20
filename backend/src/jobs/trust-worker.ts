@@ -21,7 +21,10 @@
  */
 
 import { db } from '../db';
+import { workerLogger } from '../logger';
 import type { Job } from 'bullmq';
+
+const log = workerLogger.child({ worker: 'trust' });
 
 // ============================================================================
 // TYPES
@@ -86,7 +89,7 @@ export async function processTrustJob(job: Job<TrustJobData>): Promise<void> {
 
       // If no penalty, no-op (don't log to ledger for MVP)
       if (!penalty) {
-        console.log(`✅ Trust event ${eventType} for user ${userId}: no penalty, skipping`);
+        log.info({ eventType, userId }, 'Trust event: no penalty, skipping');
         return;
       }
 
@@ -202,9 +205,7 @@ export async function processTrustJob(job: Job<TrustJobData>): Promise<void> {
           ]
         );
 
-        console.log(
-          `✅ Trust updated for user ${userId}: tier ${oldTier} → ${newTier}, hold=${trustHold}, reason=${trustHoldReason}`
-        );
+        log.info({ userId, oldTier, newTier, trustHold, trustHoldReason }, 'Trust updated for user');
       } else {
         // Tier didn't change and hold didn't change (edge case: penalty but tier already 1 and no hold condition)
         // Still log to ledger for audit (but use ON CONFLICT to handle idempotency)
@@ -249,14 +250,14 @@ export async function processTrustJob(job: Job<TrustJobData>): Promise<void> {
           ]
         );
 
-        console.log(`✅ Trust event ${eventType} for user ${userId}: penalty but no tier/hold change (already at floor)`);
+        log.info({ eventType, userId, tier: oldTier }, 'Trust event: penalty but no tier/hold change (already at floor)');
       }
     });
 
-    console.log(`✅ Trust event ${eventType} processed for user ${userId}`);
+    log.info({ eventType, userId }, 'Trust event processed');
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    console.error(`❌ Trust event ${eventType} processing failed for user ${userId}: ${errorMessage}`);
+    log.error({ eventType, userId, err: errorMessage }, 'Trust event processing failed');
     throw error; // Re-throw for BullMQ retry logic
   }
 }

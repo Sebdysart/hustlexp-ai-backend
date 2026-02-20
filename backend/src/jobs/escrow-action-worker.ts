@@ -22,7 +22,10 @@
 import { db } from '../db';
 import { StripeService } from '../services/StripeService';
 import { TaskService } from '../services/TaskService';
+import { workerLogger } from '../logger';
 import type { Job } from 'bullmq';
+
+const log = workerLogger.child({ worker: 'escrow-action' });
 
 // ============================================================================
 // TYPES
@@ -97,10 +100,10 @@ export async function processEscrowActionJob(job: Job<EscrowActionJobData>): Pro
         throw new Error(`Unknown escrow action event type: ${eventType}`);
     }
 
-    console.log(`✅ Escrow action ${eventType} processed for escrow ${escrow_id}`);
+    log.info({ eventType, escrowId: escrow_id }, 'Escrow action processed');
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    console.error(`❌ Escrow action ${eventType} processing failed for escrow ${escrow_id}: ${errorMessage}`);
+    log.error({ eventType, escrowId: escrow_id, err: errorMessage }, 'Escrow action processing failed');
     throw error; // Re-throw for BullMQ retry logic
   }
 }
@@ -120,7 +123,7 @@ async function handleReleaseRequest(
 ): Promise<void> {
   // Idempotency: If transfer_id already exists, skip
   if (escrow.stripe_transfer_id) {
-    console.log(`ℹ️  Escrow ${escrow.id} already has transfer_id ${escrow.stripe_transfer_id}, skipping - idempotent replay`);
+    log.info({ escrowId: escrow.id, transferId: escrow.stripe_transfer_id }, 'Escrow already has transfer_id, idempotent replay');
     return;
   }
 
@@ -193,7 +196,7 @@ async function handleReleaseRequest(
     [transferId, escrow.id, escrow.version]
   );
 
-  console.log(`✅ Transfer ${transferId} created for escrow ${escrow.id}`);
+  log.info({ escrowId: escrow.id, transferId }, 'Transfer created for escrow');
 }
 
 /**
@@ -206,7 +209,7 @@ async function handleRefundRequest(
 ): Promise<void> {
   // Idempotency: If refund_id already exists, skip
   if (escrow.stripe_refund_id) {
-    console.log(`ℹ️  Escrow ${escrow.id} already has refund_id ${escrow.stripe_refund_id}, skipping - idempotent replay`);
+    log.info({ escrowId: escrow.id, refundId: escrow.stripe_refund_id }, 'Escrow already has refund_id, idempotent replay');
     return;
   }
 
@@ -249,7 +252,7 @@ async function handleRefundRequest(
     [refundId, escrow.id, escrow.version]
   );
 
-  console.log(`✅ Refund ${refundId} created for escrow ${escrow.id}`);
+  log.info({ escrowId: escrow.id, refundId }, 'Refund created for escrow');
 }
 
 /**
@@ -304,7 +307,7 @@ async function handlePartialRefundRequest(
       }
 
       refundId = refundResult.data.refundId;
-      console.log(`✅ Refund ${refundId} created for escrow ${escrow.id} (amount: ${refundAmount})`);
+      log.info({ escrowId: escrow.id, refundId, amount: refundAmount }, 'Partial refund created for escrow');
     }
   }
 
@@ -351,7 +354,7 @@ async function handlePartialRefundRequest(
       }
 
       transferId = transferResult.data.transferId;
-      console.log(`✅ Transfer ${transferId} created for escrow ${escrow.id} (amount: ${releaseAmount})`);
+      log.info({ escrowId: escrow.id, transferId, amount: releaseAmount }, 'Partial transfer created for escrow');
     }
   }
 
@@ -390,11 +393,11 @@ async function handlePartialRefundRequest(
       [escrow.id]
     );
     if (checkResult.rows.length > 0 && checkResult.rows[0].state === 'REFUND_PARTIAL') {
-      console.log(`✅ Escrow ${escrow.id} already in REFUND_PARTIAL (idempotent replay), skipping`);
+      log.info({ escrowId: escrow.id }, 'Escrow already in REFUND_PARTIAL, idempotent replay');
       return; // No-op: already terminal
     }
     // Version mismatch: another process updated, treat as no-op
-    console.log(`⚠️  Escrow ${escrow.id} version mismatch (expected ${escrow.version}), treating as no-op`);
+    log.warn({ escrowId: escrow.id, expectedVersion: escrow.version }, 'Escrow version mismatch, treating as no-op');
     return;
   }
 
@@ -406,5 +409,5 @@ async function handlePartialRefundRequest(
     actor: { type: 'system' },
   });
 
-  console.log(`✅ Escrow ${escrow.id} set to REFUND_PARTIAL (refund: ${refundAmount}, release: ${releaseAmount})`);
+  log.info({ escrowId: escrow.id, refundAmount, releaseAmount }, 'Escrow set to REFUND_PARTIAL');
 }

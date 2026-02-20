@@ -19,6 +19,8 @@
 import { db } from '../db';
 import { LogisticsAIService } from '../services/LogisticsAIService';
 import type { Job } from 'bullmq';
+import { workerLogger } from '../logger';
+const log = workerLogger.child({ worker: 'fraud-detection' });
 
 // ============================================================================
 // TYPES
@@ -40,7 +42,7 @@ interface ProofLocation {
  */
 export const processFraudDetectionJob = async (job: Job): Promise<void> => {
   try {
-    console.log('[FraudDetectionWorker] Starting fraud scan...');
+    log.info('Starting fraud scan');
 
     // Get recent proof submissions with GPS data (last 10 minutes)
     const result = await db.query<{
@@ -61,7 +63,7 @@ export const processFraudDetectionJob = async (job: Job): Promise<void> => {
     );
 
     if (result.rows.length === 0) {
-      console.log('[FraudDetectionWorker] No recent proofs to scan');
+      log.info('No recent proofs to scan');
       return;
     }
 
@@ -102,9 +104,7 @@ export const processFraudDetectionJob = async (job: Job): Promise<void> => {
 
         if (travelResult.success && travelResult.data!.flagged) {
           flaggedCount++;
-          console.warn(
-            `[FraudDetectionWorker] ⚠️  IMPOSSIBLE TRAVEL: user=${userId}, speed=${travelResult.data!.speed_kmh.toFixed(0)} km/h`
-          );
+          log.warn({ userId, speedKmh: travelResult.data!.speed_kmh }, 'IMPOSSIBLE TRAVEL detected');
 
           // Event already created by LogisticsAIService.detectImpossibleTravel()
           // Optionally send admin notification here
@@ -112,11 +112,9 @@ export const processFraudDetectionJob = async (job: Job): Promise<void> => {
       }
     }
 
-    console.log(
-      `[FraudDetectionWorker] ✓ Scan complete. Scanned ${result.rows.length} proofs, flagged ${flaggedCount} violations`
-    );
+    log.info({ scannedCount: result.rows.length, flaggedCount }, 'Fraud scan complete');
   } catch (error) {
-    console.error('[FraudDetectionWorker] ✗ Scan failed:', error);
+    log.error({ err: error }, 'Fraud scan failed');
     throw error; // BullMQ will retry
   }
 };

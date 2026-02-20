@@ -20,7 +20,10 @@
 import { db } from '../db';
 import { sendPushNotification } from '../services/PushNotificationService';
 import { markOutboxEventProcessed, markOutboxEventFailed } from './outbox-worker';
+import { workerLogger } from '../logger';
 import type { Job } from 'bullmq';
+
+const log = workerLogger.child({ worker: 'push' });
 
 // ============================================================================
 // TYPES
@@ -55,13 +58,7 @@ export async function processPushJob(job: Job<PushJobData>): Promise<void> {
 
   try {
     // Structured log: job started
-    console.log(JSON.stringify({
-      event: 'push_job_started',
-      notification_id: notificationId,
-      job_id: job.id,
-      idempotency_key: idempotencyKey,
-      user_id: userId,
-    }));
+    log.info({ notificationId, jobId: job.id, idempotencyKey, userId }, 'Push job started');
 
     // Check if this outbox event was already processed (idempotency)
     const outboxCheck = await db.query<{ status: string }>(
@@ -70,12 +67,7 @@ export async function processPushJob(job: Job<PushJobData>): Promise<void> {
     );
 
     if (outboxCheck.rows.length > 0 && outboxCheck.rows[0].status === 'processed') {
-      console.log(JSON.stringify({
-        event: 'push_job_already_processed',
-        notification_id: notificationId,
-        job_id: job.id,
-        idempotency_key: idempotencyKey,
-      }));
+      log.info({ notificationId, jobId: job.id, idempotencyKey }, 'Push job already processed, skipping');
       return;
     }
 
@@ -83,16 +75,7 @@ export async function processPushJob(job: Job<PushJobData>): Promise<void> {
     const result = await sendPushNotification(userId, title, body, data);
 
     // Structured log: push result
-    console.log(JSON.stringify({
-      event: 'push_job_completed',
-      notification_id: notificationId,
-      job_id: job.id,
-      idempotency_key: idempotencyKey,
-      user_id: userId,
-      sent: result.sent,
-      failed: result.failed,
-      success: result.success,
-    }));
+    log.info({ notificationId, jobId: job.id, idempotencyKey, userId, sent: result.sent, failed: result.failed, success: result.success }, 'Push job completed');
 
     // Mark outbox event as processed
     await markOutboxEventProcessed(idempotencyKey);
@@ -100,14 +83,7 @@ export async function processPushJob(job: Job<PushJobData>): Promise<void> {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
 
     // Structured log: error occurred
-    console.error(JSON.stringify({
-      event: 'push_job_error',
-      notification_id: notificationId,
-      job_id: job.id,
-      idempotency_key: idempotencyKey,
-      user_id: userId,
-      error: errorMessage,
-    }));
+    log.error({ notificationId, jobId: job.id, idempotencyKey, userId, err: errorMessage }, 'Push job error');
 
     // Mark outbox event as failed
     await markOutboxEventFailed(idempotencyKey, errorMessage);

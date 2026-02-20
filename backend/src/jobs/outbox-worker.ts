@@ -19,6 +19,8 @@
 
 import { db } from '../db';
 import { getQueue, generateIdempotencyKey, type QueueName } from './queues';
+import { workerLogger } from '../logger';
+const log = workerLogger.child({ worker: 'outbox' });
 
 // ============================================================================
 // TYPES
@@ -107,7 +109,7 @@ export async function processOutboxEvents(batchSize: number = 100): Promise<{
         
         // If update affected 0 rows, another worker already processed this event
         if (updateResult.rowCount === 0) {
-          console.log(`⚠️  Outbox event ${event.id} already processed by another worker, skipping enqueue`);
+          log.warn({ eventId: event.id }, 'Outbox event already processed by another worker, skipping');
           continue; // Skip to next event
         }
         
@@ -131,7 +133,7 @@ export async function processOutboxEvents(batchSize: number = 100): Promise<{
     
     return { processed, failed, errors };
   } catch (error) {
-    console.error('Outbox worker fatal error:', error);
+    log.error({ err: error }, 'Outbox worker fatal error');
     return { processed, failed, errors };
   }
 }
@@ -177,11 +179,11 @@ export async function markOutboxEventFailed(
  * @param intervalMs Polling interval in milliseconds (default: 5000ms)
  */
 export function startOutboxWorker(intervalMs: number = 5000): NodeJS.Timeout {
-  console.log(`🔄 Starting outbox worker loop (interval: ${intervalMs}ms)`);
+  log.info({ intervalMs }, 'Starting outbox worker loop');
   
   // Initial poll (immediate)
   processOutboxEvents(100).catch(error => {
-    console.error('❌ Outbox worker initial poll error:', error);
+    log.error({ err: error }, 'Outbox worker initial poll error');
   });
   
   // Set up polling interval
@@ -191,7 +193,7 @@ export function startOutboxWorker(intervalMs: number = 5000): NodeJS.Timeout {
       const { evaluateInstantSurges } = await import('./instant-surge-evaluator');
       await evaluateInstantSurges();
     } catch (error) {
-      console.error('❌ Surge evaluator error:', error);
+      log.error({ err: error }, 'Surge evaluator error');
     }
   }, 10 * 1000); // Every 10 seconds
 
@@ -201,7 +203,7 @@ export function startOutboxWorker(intervalMs: number = 5000): NodeJS.Timeout {
       const { processTrustTierPromotionJob } = await import('./trust-tier-promotion-worker');
       await processTrustTierPromotionJob();
     } catch (error) {
-      console.error('❌ Trust tier promotion error:', error);
+      log.error({ err: error }, 'Trust tier promotion error');
     }
   }, 60 * 60 * 1000); // Every hour
 
@@ -209,13 +211,13 @@ export function startOutboxWorker(intervalMs: number = 5000): NodeJS.Timeout {
     try {
       const result = await processOutboxEvents(100);
       if (result.processed > 0 || result.failed > 0) {
-        console.log(`📦 Outbox poll: processed=${result.processed}, failed=${result.failed}`);
+        log.info({ processed: result.processed, failed: result.failed }, 'Outbox poll complete');
       }
       if (result.errors.length > 0) {
-        console.error('❌ Outbox poll errors:', result.errors);
+        log.error({ errors: result.errors }, 'Outbox poll errors');
       }
     } catch (error) {
-      console.error('❌ Outbox worker fatal error:', error);
+      log.error({ err: error }, 'Outbox worker fatal error');
     }
   }, intervalMs);
   
