@@ -31,6 +31,7 @@
 
 import { db } from '../db';
 import type { ServiceResult } from '../types';
+import { awsRekognitionBreaker, gcpVisionBreaker } from '../middleware/circuit-breaker';
 
 // ============================================================================
 // AWS REKOGNITION CLIENT (lazy init)
@@ -118,7 +119,7 @@ export const BiometricVerificationService = {
 
       const { CreateFaceLivenessSessionCommand } = await import('@aws-sdk/client-rekognition');
       const command = new CreateFaceLivenessSessionCommand({});
-      const response = await client.send(command);
+      const response = await awsRekognitionBreaker.execute(() => client.send(command));
 
       if (!response.SessionId) {
         return {
@@ -160,7 +161,7 @@ export const BiometricVerificationService = {
 
       const { GetFaceLivenessSessionResultsCommand } = await import('@aws-sdk/client-rekognition');
       const command = new GetFaceLivenessSessionResultsCommand({ SessionId: sessionId });
-      const response = await client.send(command);
+      const response = await awsRekognitionBreaker.execute(() => client.send(command));
 
       const confidence = response.Confidence ?? 0;
       const status = response.Status as LivenessSessionResult['status'] || 'FAILED';
@@ -217,7 +218,7 @@ export const BiometricVerificationService = {
               Attributes: ['ALL'],
             });
 
-            const response = await client.send(command);
+            const response = await awsRekognitionBreaker.execute(() => client.send(command));
             const faces = response.FaceDetails || [];
 
             if (faces.length > 0) {
@@ -261,7 +262,7 @@ export const BiometricVerificationService = {
         const gcpApiKey = process.env.GOOGLE_CLOUD_VISION_API_KEY;
         if (gcpApiKey) {
           try {
-            const visionResponse = await fetch(
+            const visionResponse = await gcpVisionBreaker.execute(() => fetch(
               `https://vision.googleapis.com/v1/images:annotate?key=${gcpApiKey}`,
               {
                 method: 'POST',
@@ -276,7 +277,7 @@ export const BiometricVerificationService = {
                   }],
                 }),
               },
-            );
+            ));
             if (visionResponse.ok) {
               const visionData = (await visionResponse.json()) as Record<string, any>;
               const faces = visionData.responses?.[0]?.faceAnnotations || [];
@@ -353,7 +354,7 @@ export const BiometricVerificationService = {
               Attributes: ['ALL'],
             });
 
-            const response = await client.send(command);
+            const response = await awsRekognitionBreaker.execute(() => client.send(command));
             const faces = response.FaceDetails || [];
 
             if (faces.length === 0) {

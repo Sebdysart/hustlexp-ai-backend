@@ -18,6 +18,12 @@ import Groq from 'groq-sdk';
 import { config } from '../config';
 import { redis, CACHE_KEYS, CACHE_TTL } from '../cache/redis';
 import crypto from 'crypto';
+import {
+  openaiBreaker,
+  groqBreaker,
+  deepseekBreaker,
+  anthropicBreaker,
+} from '../middleware/circuit-breaker';
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -148,6 +154,18 @@ function hashPrompt(systemPrompt: string | undefined, prompt: string, model: str
   return crypto.createHash('sha256').update(input).digest('hex').slice(0, 16);
 }
 
+// ─── Circuit Breaker Mapping ─────────────────────────────────────────────
+
+import type { CircuitBreaker } from '../middleware/circuit-breaker';
+
+const PROVIDER_BREAKERS: Record<string, CircuitBreaker> = {
+  openai: openaiBreaker,
+  groq: groqBreaker,
+  deepseek: deepseekBreaker,
+  anthropic: anthropicBreaker,
+  alibaba: openaiBreaker, // Alibaba shares OpenAI-compat; reuse primary breaker
+};
+
 // ─── Core Call Function ────────────────────────────────────────────────────
 
 async function callProvider(
@@ -166,11 +184,11 @@ async function callProvider(
   messages.push({ role: 'user', content: options.prompt });
 
   const timeout = options.timeoutMs || 30000;
+  const breaker = PROVIDER_BREAKERS[providerConfig.name];
 
-  // Both OpenAI and Groq SDKs share a compatible API
-  const chatClient = client as any;
-  const response = await Promise.race([
-    chatClient.chat.completions.create({
+  // Wrap the API call with circuit breaker protection
+  const apiCall = () => Promise.race([
+    (client as any).chat.completions.create({
       model: providerConfig.model,
       messages,
       temperature: options.temperature ?? 0.7,
@@ -181,6 +199,8 @@ async function callProvider(
       setTimeout(() => reject(new Error(`${providerConfig.name} timeout after ${timeout}ms`)), timeout)
     ),
   ]);
+
+  const response = breaker ? await breaker.execute(apiCall) : await apiCall();
 
   const content = response.choices?.[0]?.message?.content;
   if (!content) {

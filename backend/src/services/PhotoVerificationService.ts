@@ -13,6 +13,7 @@
 
 import { db } from '../db';
 import type { ServiceResult } from '../types';
+import { openaiBreaker } from '../middleware/circuit-breaker';
 
 // ============================================================================
 // TYPES
@@ -171,7 +172,7 @@ export const PhotoVerificationService = {
         };
       }
 
-      const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      const response = await openaiBreaker.execute(() => fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -203,7 +204,7 @@ Respond with JSON only: {"similarity_score": 0-1, "completion_score": 0-1, "chan
           max_tokens: 500,
           temperature: 0.1, // Low temperature for consistent scoring
         }),
-      });
+      }));
 
       if (!response.ok) {
         throw new Error(`OpenAI API error: ${response.status}`);

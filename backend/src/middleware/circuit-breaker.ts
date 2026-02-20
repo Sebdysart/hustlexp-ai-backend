@@ -239,3 +239,9 @@ export const twilioBreaker = new CircuitBreaker('twilio', {
   failureThreshold: 5,
   resetTimeoutMs: 30_000,
 });
+
+/** Google Maps Geocoding breaker — 5 failures = 30s cooldown */
+export const googleMapsBreaker = new CircuitBreaker('google-maps', {
+  failureThreshold: 5,
+  resetTimeoutMs: 30_000,
+});

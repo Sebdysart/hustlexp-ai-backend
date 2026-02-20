@@ -22,6 +22,7 @@ import { config } from '../config';
 import sgMail from '@sendgrid/mail';
 import { markOutboxEventProcessed, markOutboxEventFailed } from './outbox-worker';
 import type { Job } from 'bullmq';
+import { sendgridBreaker } from '../middleware/circuit-breaker';
 
 // ============================================================================
 // SENDGRID SETUP
@@ -399,7 +400,7 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
       template,
     }));
     
-    const [response] = await sgMail.send(msg);
+    const [response] = await sendgridBreaker.execute(() => sgMail.send(msg));
     
     // Extract SendGrid message ID from response
     const providerMsgId = response.headers['x-message-id'] || '';

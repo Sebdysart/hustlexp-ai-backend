@@ -14,6 +14,7 @@
 
 import twilio from 'twilio';
 import { config } from '../config';
+import { twilioBreaker } from '../middleware/circuit-breaker';
 
 // ============================================================================
 // LAZY SINGLETON CLIENT
@@ -71,11 +72,11 @@ export async function sendSMS(
   }
 
   try {
-    const message = await client.messages.create({
+    const message = await twilioBreaker.execute(() => client.messages.create({
       to,
       from: fromPhone,
       body,
-    });
+    }));
 
     console.log(JSON.stringify({
       event: 'sms_sent',
@@ -127,12 +128,12 @@ export async function sendVerification(
   }
 
   try {
-    const verification = await client.verify.v2
+    const verification = await twilioBreaker.execute(() => client.verify.v2
       .services(verifyServiceSid)
       .verifications.create({
         to,
         channel,
-      });
+      }));
 
     console.log(JSON.stringify({
       event: 'verification_sent',
@@ -182,12 +183,12 @@ export async function checkVerification(
   }
 
   try {
-    const verificationCheck = await client.verify.v2
+    const verificationCheck = await twilioBreaker.execute(() => client.verify.v2
       .services(verifyServiceSid)
       .verificationChecks.create({
         to,
         code,
-      });
+      }));
 
     const isValid = verificationCheck.status === 'approved';
 

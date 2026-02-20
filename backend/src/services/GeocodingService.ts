@@ -12,6 +12,7 @@
 
 import { config } from '../config';
 import { redis } from '../cache/redis';
+import { googleMapsBreaker } from '../middleware/circuit-breaker';
 
 // Cache TTL: 30 days (geocoded addresses rarely change)
 const GEOCODE_CACHE_TTL = 30 * 24 * 60 * 60;
@@ -61,7 +62,7 @@ export async function geocodeAddress(
   // Call Google Maps Geocoding API
   try {
     const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(address)}&key=${apiKey}`;
-    const response = await fetch(url);
+    const response = await googleMapsBreaker.execute(() => fetch(url));
 
     if (!response.ok) {
       console.error(`GeocodingService: Geocode API returned HTTP ${response.status}`);
@@ -130,7 +131,7 @@ export async function reverseGeocode(
   // Call Google Maps Geocoding API (reverse)
   try {
     const url = `https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lng}&key=${apiKey}`;
-    const response = await fetch(url);
+    const response = await googleMapsBreaker.execute(() => fetch(url));
 
     if (!response.ok) {
       console.error(`GeocodingService: Reverse geocode API returned HTTP ${response.status}`);

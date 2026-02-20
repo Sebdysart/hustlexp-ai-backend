@@ -174,12 +174,22 @@ app.get('/health/detailed', async (c) => {
   };
 
   // Circuit breaker states
-  const { openaiBreaker, anthropicBreaker, groqBreaker, stripeBreaker } = await import('./middleware/circuit-breaker');
+  const {
+    openaiBreaker, anthropicBreaker, groqBreaker, deepseekBreaker,
+    stripeBreaker, sendgridBreaker, twilioBreaker, awsRekognitionBreaker,
+    gcpVisionBreaker, googleMapsBreaker,
+  } = await import('./middleware/circuit-breaker');
   const circuitBreakers = {
     openai: openaiBreaker.getState(),
     anthropic: anthropicBreaker.getState(),
     groq: groqBreaker.getState(),
+    deepseek: deepseekBreaker.getState(),
     stripe: stripeBreaker.getState(),
+    sendgrid: sendgridBreaker.getState(),
+    twilio: twilioBreaker.getState(),
+    awsRekognition: awsRekognitionBreaker.getState(),
+    gcpVision: gcpVisionBreaker.getState(),
+    googleMaps: googleMapsBreaker.getState(),
   };
 
   const allHealthy = Object.values(checks).every(c => c.status === 'ok' || c.status === 'configured');

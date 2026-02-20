@@ -19,6 +19,7 @@ import { config } from '../config';
 import { db } from '../db';
 import type { ServiceResult } from '../types';
 import { ErrorCodes } from '../types';
+import { stripeBreaker } from '../middleware/circuit-breaker';
 
 // ============================================================================
 // INITIALIZATION
@@ -160,7 +161,7 @@ export const StripeService = {
       // Calculate platform fee (PRODUCT_SPEC §9: 15% platform fee)
       const platformFee = Math.floor(amount * (config.stripe.platformFeePercent / 100));
 
-      const paymentIntent = await stripe.paymentIntents.create({
+      const paymentIntent = await stripeBreaker.execute(() => stripe!.paymentIntents.create({
         amount,
         currency: 'usd',
         automatic_payment_methods: { enabled: true },
@@ -170,7 +171,7 @@ export const StripeService = {
           platform_fee: platformFee.toString(),
         },
         description: description || `HustleXP Task ${taskId}`,
-      });
+      }));
 
       return {
         success: true,
@@ -216,7 +217,7 @@ export const StripeService = {
     }
 
     try {
-      const paymentIntent = await stripe.paymentIntents.create({
+      const paymentIntent = await stripeBreaker.execute(() => stripe!.paymentIntents.create({
         amount: amountCents,
         currency: 'usd',
         automatic_payment_methods: { enabled: true },
@@ -225,7 +226,7 @@ export const StripeService = {
           user_id: userId,
         },
         description: `HustleXP XP Tax Payment`,
-      });
+      }));
 
       return {
         success: true,
@@ -261,7 +262,7 @@ export const StripeService = {
     }
 
     try {
-      const pi = await stripe.paymentIntents.retrieve(paymentIntentId);
+      const pi = await stripeBreaker.execute(() => stripe!.paymentIntents.retrieve(paymentIntentId));
       return {
         success: true,
         data: {
@@ -312,7 +313,7 @@ export const StripeService = {
     }
 
     try {
-      const transfer = await stripe.transfers.create({
+      const transfer = await stripeBreaker.execute(() => stripe!.transfers.create({
         amount,
         currency: 'usd',
         destination: workerStripeAccountId,
@@ -321,7 +322,7 @@ export const StripeService = {
           worker_id: workerId,
         },
         description: description || `HustleXP Payout ${escrowId}`,
-      });
+      }));
 
       return {
         success: true,
@@ -373,7 +374,7 @@ export const StripeService = {
     }
 
     try {
-      const refund = await stripe.refunds.create({
+      const refund = await stripeBreaker.execute(() => stripe!.refunds.create({
         payment_intent: paymentIntentId,
         amount, // undefined = full refund
         reason,
@@ -381,7 +382,7 @@ export const StripeService = {
           escrow_id: escrowId,
           payment_intent_id: paymentIntentId,
         },
-      });
+      }));
 
       return {
         success: true,
