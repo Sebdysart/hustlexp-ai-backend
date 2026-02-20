@@ -129,6 +129,26 @@ app.get('/health', async (c) => {
   }
 });
 
+// Readiness probe — for Kubernetes/Railway to determine if app can accept traffic
+// Returns 200 only if database is reachable (critical dependency)
+app.get('/health/readiness', async (c) => {
+  try {
+    const start = Date.now();
+    await db.query('SELECT 1');
+    return c.json({
+      ready: true,
+      dbLatencyMs: Date.now() - start,
+    });
+  } catch {
+    return c.json({ ready: false }, 503);
+  }
+});
+
+// Liveness probe — lightweight "am I alive?" check (no DB)
+app.get('/health/liveness', (c) => {
+  return c.json({ alive: true, uptime: process.uptime() });
+});
+
 // Detailed health for monitoring
 app.get('/health/detailed', async (c) => {
   const checks: Record<string, { status: string; latency?: number; error?: string }> = {};
@@ -535,6 +555,24 @@ app.notFound((c) => {
 
 app.onError((err, c) => {
   const requestId = c.get('requestId');
+
+  // Handle circuit breaker open errors — return 503 with Retry-After
+  if (err.name === 'CircuitOpenError' && 'retryAfterMs' in err) {
+    const retryAfterSec = Math.ceil((err as any).retryAfterMs / 1000);
+    c.header('Retry-After', String(retryAfterSec));
+    pinoLogger.warn({
+      requestId,
+      service: err.message,
+      retryAfterSec,
+    }, 'Circuit breaker open — service unavailable');
+    return c.json({
+      error: 'Service Unavailable',
+      code: 'CIRCUIT_OPEN',
+      requestId,
+      retryAfter: retryAfterSec,
+      message: 'An external service is temporarily unavailable. Please retry.',
+    }, 503);
+  }
 
   // Log full error with structured context
   pinoLogger.error({
