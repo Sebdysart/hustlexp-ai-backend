@@ -12,6 +12,9 @@
  */
 
 import { db } from '../db';
+import { logger } from '../logger';
+
+const log = logger.child({ service: 'InstantObservability' });
 
 export const InstantObservability = {
   /**
@@ -28,16 +31,15 @@ export const InstantObservability = {
     error?: string;
     metadata?: Record<string, unknown>;
   }): void => {
-    console.log(`[Instant] ${event.event}`, {
+    log.info({
       taskId: event.taskId,
       state: event.state,
       surgeLevel: event.surgeLevel,
       trustTier: event.trustTier,
       latency: event.latency,
-      error: event.error,
+      err: event.error,
       ...event.metadata,
-      timestamp: new Date().toISOString(),
-    });
+    }, event.event);
   },
 
   /**
@@ -76,10 +78,7 @@ export const InstantObservability = {
     }));
 
     if (stuckTasks.length > 0) {
-      console.error(`🚨 ALERT: ${stuckTasks.length} Instant tasks stuck > 180s`, {
-        stuckTasks,
-        alert: 'INSTANT_TASKS_STUCK',
-      });
+      log.error({ stuckTasks, alert: 'INSTANT_TASKS_STUCK' }, `${stuckTasks.length} Instant tasks stuck > 180s`);
     }
 
     return {
@@ -93,13 +92,7 @@ export const InstantObservability = {
    * This indicates high contention
    */
   logAcceptRace: (taskId: string, workerId: string, reason: string): void => {
-    console.warn(`⚠️  Accept race condition detected`, {
-      taskId,
-      workerId,
-      reason,
-      alert: 'INSTANT_ACCEPT_RACE',
-      timestamp: new Date().toISOString(),
-    });
+    log.warn({ taskId, workerId, reason, alert: 'INSTANT_ACCEPT_RACE' }, 'Accept race condition detected');
   },
 
   /**
@@ -107,24 +100,13 @@ export const InstantObservability = {
    * High fallback rate indicates liquidity issues
    */
   logSurgeFallback: (taskId: string, elapsedSeconds: number): void => {
-    console.warn(`📉 Surge fallback to OPEN`, {
-      taskId,
-      elapsedSeconds,
-      alert: 'INSTANT_SURGE_FALLBACK',
-      timestamp: new Date().toISOString(),
-    });
+    log.warn({ taskId, elapsedSeconds, alert: 'INSTANT_SURGE_FALLBACK' }, 'Surge fallback to OPEN');
   },
 
   /**
    * Track XP award failures for Instant tasks
    */
   logXPFailure: (taskId: string, hustlerId: string, error: string): void => {
-    console.error(`❌ XP award failed for Instant task`, {
-      taskId,
-      hustlerId,
-      error,
-      alert: 'INSTANT_XP_AWARD_FAILED',
-      timestamp: new Date().toISOString(),
-    });
+    log.error({ taskId, hustlerId, err: error, alert: 'INSTANT_XP_AWARD_FAILED' }, 'XP award failed for Instant task');
   },
 };

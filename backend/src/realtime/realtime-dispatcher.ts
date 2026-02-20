@@ -19,6 +19,9 @@
 import { db } from '../db';
 import { getConnections, type SSEConnection } from './connection-registry';
 import { PlanService } from '../services/PlanService';
+import { logger } from '../logger';
+
+const log = logger.child({ module: 'realtime-dispatcher' });
 
 // ============================================================================
 // TYPES
@@ -73,7 +76,7 @@ export async function dispatchTaskProgress(event: OutboxEvent): Promise<void> {
   );
 
   if (taskResult.rows.length === 0) {
-    console.warn(`⚠️  Task ${taskId} not found for realtime dispatch, skipping`);
+    log.warn({ taskId }, 'Task not found for realtime dispatch, skipping');
     return;
   }
 
@@ -115,14 +118,14 @@ export async function dispatchTaskProgress(event: OutboxEvent): Promise<void> {
         fanoutCount++;
       } catch (error) {
         // Write failure → mark connection as closed (client will reconnect)
-        console.error(`❌ Failed to write to SSE connection for user ${userId}:`, error);
+        log.error({ err: error instanceof Error ? error.message : String(error), userId }, 'Failed to write to SSE connection');
         conn.closed = true;
       }
     }
   }
 
   if (fanoutCount > 0) {
-    console.log(`📡 task.progress_updated fanout: taskId=${taskId}, recipients=${recipients.size}, connections=${fanoutCount}`);
+    log.info({ taskId, recipientCount: recipients.size, connectionCount: fanoutCount }, 'task.progress_updated fanout complete');
   }
 }
 

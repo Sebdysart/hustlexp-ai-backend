@@ -13,6 +13,9 @@
 import { db } from '../db';
 import type { ServiceResult } from '../types';
 import { AIClient } from './AIClient';
+import { aiLogger } from '../logger';
+
+const log = aiLogger.child({ service: 'ScoperAIService' });
 
 // ============================================================================
 // TYPES
@@ -114,9 +117,9 @@ ${input.location ? `Location: ${input.location.city}, ${input.location.state}` :
           });
 
           proposal = aiResult.data;
-          console.log(`[ScoperAI] AI proposal: $${(proposal.suggested_price_cents / 100).toFixed(2)}, ${proposal.difficulty}, confidence=${proposal.confidence_score} (via ${aiResult.provider})`);
+          log.info({ suggestedPriceCents: proposal.suggested_price_cents, difficulty: proposal.difficulty, confidence: proposal.confidence_score, provider: aiResult.provider }, 'AI scope proposal generated');
         } catch (aiError) {
-          console.warn('[ScoperAI] AI call failed, using heuristic fallback:', aiError);
+          log.warn({ err: aiError instanceof Error ? (aiError as Error).message : String(aiError) }, 'AI scope call failed, using heuristic fallback');
           proposal = ScoperAIService._generateProposal(input);
         }
       } else {
@@ -139,7 +142,7 @@ ${input.location ? `Location: ${input.location.city}, ${input.location.state}` :
 
       return { success: true, data: proposal };
     } catch (error) {
-      console.error('[ScoperAIService.analyzeTaskScope] Error:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error) }, 'Failed to analyze task scope');
       return {
         success: false,
         error: {
@@ -210,7 +213,7 @@ ${input.location ? `Location: ${input.location.city}, ${input.location.state}` :
 
       return { success: true, data: undefined };
     } catch (error) {
-      console.error('[ScoperAIService.logDecision] Error:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error), taskId }, 'Failed to log scoper decision');
       return {
         success: false,
         error: {

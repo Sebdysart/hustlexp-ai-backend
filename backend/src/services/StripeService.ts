@@ -20,6 +20,7 @@ import { db } from '../db';
 import type { ServiceResult } from '../types';
 import { ErrorCodes } from '../types';
 import { stripeBreaker } from '../middleware/circuit-breaker';
+import { stripeLogger } from '../logger';
 
 // ============================================================================
 // INITIALIZATION
@@ -31,9 +32,9 @@ if (config.stripe.secretKey && !config.stripe.secretKey.includes('placeholder'))
   stripe = new Stripe(config.stripe.secretKey, {
     apiVersion: '2025-12-15.clover',
   });
-  console.log('✅ Stripe initialized');
+  stripeLogger.info('Stripe initialized');
 } else {
-  console.warn('⚠️ Stripe not configured (placeholder or missing key)');
+  stripeLogger.warn('Stripe not configured (placeholder or missing key)');
 }
 
 // ============================================================================

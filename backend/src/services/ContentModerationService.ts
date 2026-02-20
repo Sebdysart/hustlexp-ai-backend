@@ -21,6 +21,9 @@ import { ErrorCodes } from '../types';
 import { NotificationService } from './NotificationService';
 import { notifyAdmins } from './AdminNotificationHelper';
 import { AIClient } from './AIClient';
+import { logger } from '../logger';
+
+const log = logger.child({ service: 'ContentModerationService' });
 
 // ============================================================================
 // TYPES
@@ -215,7 +218,7 @@ Return JSON with:
             return { success: true, data: { approved: true } };
           }
         } catch (aiError) {
-          console.warn('[ContentModeration] AI classification failed, falling back to regex:', aiError);
+          log.warn({ err: aiError instanceof Error ? aiError.message : String(aiError) }, 'AI classification failed, falling back to regex');
           // Fall through to regex patterns below
         }
       }
@@ -301,7 +304,7 @@ Return JSON with:
           priority: severity === 'CRITICAL' ? 'HIGH' : 'MEDIUM',
         }).catch((error: unknown) => {
           // Log error but don't fail moderation process
-          console.error(`Failed to send moderation notification to user ${userId}:`, error);
+          log.error({ err: error instanceof Error ? error.message : String(error), userId, contentId }, 'Failed to send moderation notification');
         });
         
         return {
@@ -522,20 +525,20 @@ Return JSON with:
           priority: 'HIGH',
         }).catch((error: unknown) => {
           // Log error but don't fail review process
-          console.error(`Failed to send rejection notification to user ${queueItem.user_id}:`, error);
+          log.error({ err: error instanceof Error ? error.message : String(error), userId: queueItem.user_id, queueItemId }, 'Failed to send rejection notification');
         });
       } else if (decision === 'escalate') {
         // Escalate to higher authority (admin review)
         // Content remains in current state until escalated review
         // Notify admin team for escalated review
-        console.log(`[Escalated Review] Content ${queueItem.content_type} ${queueItem.content_id} escalated for admin review`);
+        log.info({ contentType: queueItem.content_type, contentId: queueItem.content_id, queueItemId: queueItem.id }, 'Content escalated for admin review');
         await notifyAdmins({
           title: '📋 Content Escalated for Admin Review',
           body: `${queueItem.content_type} (ID: ${queueItem.content_id}) by user ${queueItem.user_id} has been escalated for admin review.${reviewNotes ? ` Notes: ${reviewNotes}` : ''}`,
           deepLink: `app://admin/moderation/${queueItem.id}`,
           priority: 'HIGH',
           metadata: { queueItemId: queueItem.id, contentType: queueItem.content_type, contentId: queueItem.content_id, reviewNotes },
-        }).catch(err => console.error('[ContentModeration] Failed to notify admins of escalation:', err));
+        }).catch(err => log.error({ err: err instanceof Error ? err.message : String(err), queueItemId: queueItem.id }, 'Failed to notify admins of escalation'));
       }
       
       return {
@@ -882,7 +885,7 @@ Return JSON with:
           priority: 'MEDIUM',
         }).catch((error: unknown) => {
           // Log error but don't fail appeal process
-          console.error(`Failed to send appeal success notification to user ${appeal.user_id}:`, error);
+          log.error({ err: error instanceof Error ? error.message : String(error), userId: appeal.user_id, appealId }, 'Failed to send appeal success notification');
         });
       }
       
@@ -1028,6 +1031,6 @@ async function applyModerationAction(params: {
     }
   } catch (error: unknown) {
     // Log error but don't throw - moderation action failure shouldn't break review process
-    console.error(`Failed to apply moderation action ${action} to ${contentType} ${contentId}:`, error);
+    log.error({ err: error instanceof Error ? error.message : String(error), action, contentType, contentId }, 'Failed to apply moderation action');
   }
 }

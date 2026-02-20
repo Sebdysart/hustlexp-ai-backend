@@ -21,6 +21,9 @@
 import { db } from '../db';
 import type { ServiceResult, Dispute, Task, Escrow, Evidence } from '../types';
 import { AIClient } from './AIClient';
+import { aiLogger } from '../logger';
+
+const log = aiLogger.child({ service: 'DisputeAIService' });
 
 // ============================================================================
 // TYPES
@@ -208,7 +211,7 @@ async function logDisputeProposal(
   } catch (error) {
     // Non-fatal: log failure should not break the analysis flow
     // The CHECK constraint may not include 'dispute' yet — warn but continue
-    console.warn('[DisputeAI] Failed to log proposal to ai_agent_decisions:', error instanceof Error ? error.message : error);
+    log.warn({ err: error instanceof Error ? error.message : String(error), taskId, disputeId }, 'Failed to log proposal to ai_agent_decisions');
   }
 }
 
@@ -470,7 +473,7 @@ USER HISTORIES:
             + analysis.fault_assessment.worker_fault_score
             + analysis.fault_assessment.unclear_score;
           if (Math.abs(faultSum - 1.0) > 0.05) {
-            console.warn(`[DisputeAI] Fault scores sum to ${faultSum}, normalizing...`);
+            log.warn({ faultSum, disputeId }, 'Fault scores do not sum to 1.0, normalizing');
             analysis.fault_assessment.poster_fault_score /= faultSum;
             analysis.fault_assessment.worker_fault_score /= faultSum;
             analysis.fault_assessment.unclear_score /= faultSum;
@@ -492,9 +495,9 @@ USER HISTORIES:
           // Clamp confidence
           analysis.confidence = Math.max(0, Math.min(1, analysis.confidence));
 
-          console.log(`[DisputeAI] AI analysis: action=${analysis.recommended_action}, confidence=${analysis.confidence.toFixed(2)}, escalate=${analysis.escalation_recommended} (via ${aiResult.provider})`);
+          log.info({ action: analysis.recommended_action, confidence: analysis.confidence, escalate: analysis.escalation_recommended, provider: aiResult.provider, disputeId }, 'AI dispute analysis complete');
         } catch (aiError) {
-          console.warn('[DisputeAI] AI analysis failed, using deterministic fallback:', aiError);
+          log.warn({ err: aiError instanceof Error ? (aiError as Error).message : String(aiError), disputeId }, 'AI analysis failed, using deterministic fallback');
           analysis = deterministicAnalysis(ctx);
         }
       } else {
@@ -512,7 +515,7 @@ USER HISTORIES:
 
       return { success: true, data: analysis };
     } catch (error) {
-      console.error('[DisputeAIService.analyzeDispute] Error:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error), disputeId }, 'Failed to analyze dispute');
       return {
         success: false,
         error: {
@@ -574,9 +577,9 @@ Evidence already submitted: ${ctx.evidence.length} items`,
             throw new Error('AI returned empty worker_questions');
           }
 
-          console.log(`[DisputeAI] Generated ${evidenceRequest.poster_questions.length} poster + ${evidenceRequest.worker_questions.length} worker questions (via ${aiResult.provider})`);
+          log.info({ posterQuestionCount: evidenceRequest.poster_questions.length, workerQuestionCount: evidenceRequest.worker_questions.length, provider: aiResult.provider, disputeId }, 'Generated evidence request questions');
         } catch (aiError) {
-          console.warn('[DisputeAI] AI evidence request failed, using deterministic fallback:', aiError);
+          log.warn({ err: aiError instanceof Error ? (aiError as Error).message : String(aiError), disputeId }, 'AI evidence request failed, using deterministic fallback');
           evidenceRequest = deterministicEvidenceRequest(ctx);
         }
       } else {
@@ -594,7 +597,7 @@ Evidence already submitted: ${ctx.evidence.length} items`,
 
       return { success: true, data: evidenceRequest };
     } catch (error) {
-      console.error('[DisputeAIService.generateEvidenceRequest] Error:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error), disputeId }, 'Failed to generate evidence request');
       return {
         success: false,
         error: {
@@ -628,11 +631,11 @@ Evidence already submitted: ${ctx.evidence.length} items`,
         assessment.reason,
       );
 
-      console.log(`[DisputeAI] Escalation assessment: escalate=${assessment.shouldEscalate}, urgency=${assessment.urgency}`);
+      log.info({ escalate: assessment.shouldEscalate, urgency: assessment.urgency, disputeId }, 'Escalation assessment complete');
 
       return { success: true, data: assessment };
     } catch (error) {
-      console.error('[DisputeAIService.assessEscalation] Error:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error), disputeId }, 'Failed to assess escalation');
       return {
         success: false,
         error: {

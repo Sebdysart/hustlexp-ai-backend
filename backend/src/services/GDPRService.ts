@@ -18,6 +18,9 @@ import { db, isInvariantViolation, getErrorMessage } from '../db';
 import type { ServiceResult } from '../types';
 import { ErrorCodes } from '../types';
 import { NotificationService } from './NotificationService';
+import { logger } from '../logger';
+
+const log = logger.child({ service: 'GDPRService' });
 
 // ============================================================================
 // TYPES
@@ -156,13 +159,13 @@ export const GDPRService = {
       if (requestType === 'export') {
         // Immediately trigger export generation (writes outbox event → BullMQ)
         GDPRService.generateExport(requestId).catch(err => {
-          console.error(`[GDPRService.createRequest] Failed to trigger export for ${requestId}:`, err);
+          log.error({ err: err instanceof Error ? err.message : String(err), requestId }, 'Failed to trigger export');
         });
       } else if (requestType === 'deletion') {
         // Deletion has a grace period — schedule via outbox for deadline processing
         // For now, deletion requests remain 'pending' until grace period expires
         // Admin or cron job will call executeDeletion after deadline
-        console.log(`[GDPRService] Deletion request ${requestId} created with grace period until ${deadline.toISOString()}`);
+        log.info({ requestId, deadline: deadline.toISOString() }, 'Deletion request created with grace period');
       }
       // rectification requests are handled via UI/API — no background job needed
 
@@ -495,7 +498,7 @@ export const GDPRService = {
           );
         } else {
           // Event already exists - idempotent write (shouldn't happen, but handle gracefully)
-          console.log(`Outbox event already exists for export ${exportId} (idempotency key: ${idempotencyKey})`);
+          log.info({ exportId, idempotencyKey }, 'Outbox event already exists for export');
         }
         
         return { exportId };
@@ -517,7 +520,7 @@ export const GDPRService = {
          WHERE id = $1`,
         [requestId]
       ).catch(dbError => {
-        console.error(`Failed to update GDPR request ${requestId} status:`, dbError);
+        log.error({ err: dbError instanceof Error ? dbError.message : String(dbError), requestId }, 'Failed to update GDPR request status');
       });
       
       return {
@@ -647,7 +650,7 @@ export const GDPRService = {
         metadata: { requestId, deletedAt: deletedAt.toISOString() },
       }).catch(err => {
         // Log but don't fail — user data is already deleted, notification is best-effort
-        console.error(`[GDPRService] Failed to send deletion confirmation to user ${request.user_id}:`, err);
+        log.error({ err: err instanceof Error ? err.message : String(err), userId: request.user_id, requestId }, 'Failed to send deletion confirmation');
       });
       
       return {
@@ -935,7 +938,7 @@ export async function collectUserDataForExport(userId: string): Promise<Record<s
     
     return exportData;
   } catch (error) {
-    console.error(`Failed to collect user data for export (userId: ${userId}):`, error);
+    log.error({ err: error instanceof Error ? error.message : String(error), userId }, 'Failed to collect user data for export');
     throw error;
   }
 }
@@ -1103,7 +1106,7 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
       data: { deletedAt },
     };
   } catch (error) {
-    console.error(`Failed to delete/anonymize user data (userId: ${userId}):`, error);
+    log.error({ err: error instanceof Error ? error.message : String(error), userId }, 'Failed to delete/anonymize user data');
     return {
       success: false,
       error: {

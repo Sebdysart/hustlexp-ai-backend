@@ -25,6 +25,7 @@ import type {
   ServiceError
 } from '../types';
 import { TERMINAL_ESCROW_STATES, ErrorCodes } from '../types';
+import { escrowLogger } from '../logger';
 
 // ============================================================================
 // TYPES
@@ -389,13 +390,17 @@ export const EscrowService = {
       } catch (xpError) {
         // Check if XP was blocked by tax trigger (HX201)
         if (xpError instanceof Error && xpError.message.includes('XP-TAX-BLOCK')) {
-          console.warn(
-            `[EscrowService] XP blocked by tax trigger for user ${workerId}: ${xpError.message}`
+          escrowLogger.warn(
+            { workerId, err: xpError.message, escrowId },
+            'XP blocked by tax trigger'
           );
           // Continue - escrow is released, but XP is held back until tax paid
         } else {
           // Unexpected XP error - log but don't fail escrow release
-          console.error(`[EscrowService] Failed to award XP for user ${workerId}:`, xpError);
+          escrowLogger.error(
+            { err: xpError instanceof Error ? xpError.message : String(xpError), workerId, escrowId },
+            'Failed to award XP'
+          );
         }
       }
 

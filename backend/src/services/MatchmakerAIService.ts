@@ -18,6 +18,9 @@
 import { db } from '../db';
 import type { ServiceResult } from '../types';
 import { AIClient } from './AIClient';
+import { aiLogger } from '../logger';
+
+const log = aiLogger.child({ service: 'MatchmakerAIService' });
 
 // ============================================================================
 // TYPES
@@ -198,9 +201,9 @@ ${JSON.stringify(candidateSummaries, null, 2)}`,
               },
             }));
 
-          console.log(`[MatchmakerAI] AI ranked ${ranked.length} candidates for task ${task.id} (via ${aiResult.provider})`);
+          log.info({ rankedCount: ranked.length, taskId: task.id, provider: aiResult.provider }, 'AI ranked candidates for task');
         } catch (aiError) {
-          console.warn('[MatchmakerAI] AI call failed, using deterministic fallback:', aiError);
+          log.warn({ err: aiError instanceof Error ? (aiError as Error).message : String(aiError), taskId: task.id }, 'AI ranking call failed, using deterministic fallback');
           ranked = MatchmakerAIService._rankDeterministic(task, candidates);
         }
       } else {
@@ -217,7 +220,7 @@ ${JSON.stringify(candidateSummaries, null, 2)}`,
 
       return { success: true, data: ranked };
     } catch (error) {
-      console.error('[MatchmakerAIService.rankCandidates] Error:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error), taskId: task.id }, 'Failed to rank candidates');
       return {
         success: false,
         error: {
@@ -284,9 +287,9 @@ Worker profile:
             estimatedDuration: aiResult.data.estimatedDuration,
           };
 
-          console.log(`[MatchmakerAI] Generated explanation for task ${task.id} -> worker ${worker.userId} (via ${aiResult.provider})`);
+          log.info({ taskId: task.id, workerId: worker.userId, provider: aiResult.provider }, 'Generated match explanation');
         } catch (aiError) {
-          console.warn('[MatchmakerAI] AI explain failed, using deterministic fallback:', aiError);
+          log.warn({ err: aiError instanceof Error ? (aiError as Error).message : String(aiError), taskId: task.id, workerId: worker.userId }, 'AI explain failed, using deterministic fallback');
           explanation = MatchmakerAIService._explainDeterministic(task, worker);
         }
       } else {
@@ -303,7 +306,7 @@ Worker profile:
 
       return { success: true, data: explanation };
     } catch (error) {
-      console.error('[MatchmakerAIService.explainMatch] Error:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error), taskId: task.id, workerId: worker.userId }, 'Failed to explain match');
       return {
         success: false,
         error: {
@@ -387,7 +390,7 @@ Location: ${location || 'not specified'}`,
             confidence: Math.max(0, Math.min(1, aiResult.data.confidence)),
           };
 
-          console.log(`[MatchmakerAI] AI price suggestion: $${(suggestion.suggested_price_cents / 100).toFixed(2)} (via ${aiResult.provider})`);
+          log.info({ suggestedPriceCents: suggestion.suggested_price_cents, provider: aiResult.provider, category }, 'AI price suggestion generated');
 
           // Log decision
           await MatchmakerAIService._logDecision(
@@ -399,7 +402,7 @@ Location: ${location || 'not specified'}`,
 
           return { success: true, data: suggestion };
         } catch (aiError) {
-          console.warn('[MatchmakerAI] AI price suggestion failed, returning heuristic:', aiError);
+          log.warn({ err: aiError instanceof Error ? (aiError as Error).message : String(aiError), category }, 'AI price suggestion failed, returning heuristic');
         }
       }
 
@@ -413,7 +416,7 @@ Location: ${location || 'not specified'}`,
 
       return { success: true, data: heuristic };
     } catch (error) {
-      console.error('[MatchmakerAIService.suggestPrice] Error:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error), category }, 'Failed to suggest price');
       return {
         success: false,
         error: {
@@ -628,7 +631,7 @@ Location: ${location || 'not specified'}`,
       );
     } catch (error) {
       // Non-fatal: logging failure should not break matchmaking
-      console.warn('[MatchmakerAI] Failed to log decision (CHECK constraint migration may be needed):', error);
+      log.warn({ err: error instanceof Error ? error.message : String(error), taskId }, 'Failed to log matchmaker decision (CHECK constraint migration may be needed)');
     }
   },
 };

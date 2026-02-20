@@ -20,6 +20,9 @@ import { PhotoVerificationService } from './PhotoVerificationService';
 import type { ServiceResult } from '../types';
 import type { BiometricSignals, LogisticsSignals, PhotoVerificationSignals } from './JudgeAIService';
 import { ErrorCodes } from '../types';
+import { logger } from '../logger';
+
+const log = logger.child({ service: 'ProofService' });
 
 // ============================================================================
 // TYPES
@@ -323,7 +326,7 @@ export const ProofService = {
           if (biometricResult.success) {
             biometricSignals = biometricResult.data!.scores;
           } else {
-            console.warn(`[ProofService] Biometric subsystem error for proof ${proofId}, proceeding without`);
+            log.warn({ proofId }, 'Biometric subsystem error, proceeding without');
           }
         }
 
@@ -360,7 +363,7 @@ export const ProofService = {
               gps_accuracy: { passed: accuracyMeters <= 50, accuracy_meters: accuracyMeters },
             };
           } else {
-            console.warn(`[ProofService] Logistics subsystem error for proof ${proofId}, proceeding without`);
+            log.warn({ proofId }, 'Logistics subsystem error, proceeding without');
           }
         }
 
@@ -388,7 +391,7 @@ export const ProofService = {
               change_detected: photoResult.data.change_detected,
             };
           } else {
-            console.warn(`[ProofService] Photo verification error for proof ${proofId}, proceeding without`);
+            log.warn({ proofId }, 'Photo verification error, proceeding without');
           }
         }
 
@@ -406,7 +409,7 @@ export const ProofService = {
 
           // Log verdict to audit trail (non-blocking)
           JudgeAIService.logVerdict(proofId, current.task_id, verdict).catch(err =>
-            console.error('[ProofService] Failed to log Judge verdict:', err)
+            log.error({ err: err instanceof Error ? err.message : String(err), proofId, taskId: current.task_id }, 'Failed to log Judge verdict')
           );
 
           // Enforce verdict
@@ -427,9 +430,9 @@ export const ProofService = {
           }
 
           if (verdict.verdict === 'MANUAL_REVIEW') {
-            console.warn(
-              `[ProofService] JudgeAI flagged proof ${proofId} for MANUAL_REVIEW (risk=${verdict.risk_score.toFixed(2)}, flags=${verdict.fraud_flags.join(',')}). ` +
-              `Human reviewer (${reviewerId}) is overriding to ACCEPTED.`
+            log.warn(
+              { proofId, riskScore: verdict.risk_score, fraudFlags: verdict.fraud_flags, reviewerId },
+              'JudgeAI flagged proof for MANUAL_REVIEW - human reviewer overriding to ACCEPTED'
             );
             // Human reviewer's ACCEPTED decision overrides MANUAL_REVIEW — this is by design.
             // The verdict + flags are still logged to the audit trail above.
@@ -438,7 +441,7 @@ export const ProofService = {
           // verdict === 'APPROVE' → continue to accept below
         } else {
           // JudgeAI itself failed — log warning but don't block acceptance
-          console.error(`[ProofService] JudgeAI synthesis failed for proof ${proofId}: ${judgeResult.error?.message}`);
+          log.error({ err: judgeResult.error?.message, proofId }, 'JudgeAI synthesis failed');
         }
       }
 

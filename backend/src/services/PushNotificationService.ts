@@ -19,6 +19,9 @@
 
 import { messaging } from '../auth/firebase';
 import { db } from '../db';
+import { logger } from '../logger';
+
+const log = logger.child({ service: 'PushNotificationService' });
 
 // ============================================================================
 // TYPES
@@ -57,7 +60,7 @@ export async function sendPushNotification(
 ): Promise<PushResult> {
   // Guard: If Firebase messaging not initialized, return gracefully
   if (!messaging) {
-    console.warn('[Push] Firebase messaging not initialized - skipping push notification');
+    log.warn('Firebase messaging not initialized - skipping push notification');
     return { success: true, sent: 0, failed: 0 };
   }
 
@@ -101,18 +104,9 @@ export async function sendPushNotification(
                 `UPDATE device_tokens SET is_active = false, updated_at = NOW() WHERE fcm_token = $1`,
                 [token]
               ).then(() => {
-                console.log(JSON.stringify({
-                  event: 'push_token_deactivated',
-                  user_id: userId,
-                  error_code: errorCode,
-                  reason: 'invalid_or_unregistered',
-                }));
+                log.info({ userId, errorCode, reason: 'invalid_or_unregistered' }, 'push_token_deactivated');
               }).catch(dbError => {
-                console.error(JSON.stringify({
-                  event: 'push_token_deactivation_failed',
-                  user_id: userId,
-                  error: dbError instanceof Error ? dbError.message : 'Unknown error',
-                }));
+                log.error({ err: dbError instanceof Error ? dbError.message : String(dbError), userId }, 'push_token_deactivation_failed');
               })
             );
           }
@@ -123,23 +117,13 @@ export async function sendPushNotification(
       await Promise.allSettled(deactivationPromises);
     }
 
-    console.log(JSON.stringify({
-      event: 'push_notification_sent',
-      user_id: userId,
-      total_tokens: tokens.length,
-      sent,
-      failed,
-    }));
+    log.info({ userId, totalTokens: tokens.length, sent, failed }, 'push_notification_sent');
 
     return { success: true, sent, failed };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
 
-    console.error(JSON.stringify({
-      event: 'push_notification_error',
-      user_id: userId,
-      error: errorMessage,
-    }));
+    log.error({ err: errorMessage, userId }, 'push_notification_error');
 
     // Return gracefully - push failures should not break the caller
     return { success: false, sent: 0, failed: 0 };

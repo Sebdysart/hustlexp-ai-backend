@@ -11,7 +11,10 @@
  */
 
 import { db } from '../db';
+import { logger } from '../logger';
 import type { ServiceResult } from '../types';
+
+const log = logger.child({ service: 'StreakService' });
 
 export const StreakService = {
   /**
@@ -81,7 +84,7 @@ export const StreakService = {
 
       return { success: true, data: { streak: newStreak, streakChanged } };
     } catch (error) {
-      console.error('[StreakService.recordTaskCompletion] Error:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error), userId }, 'recordTaskCompletion failed');
       return {
         success: false,
         error: {
@@ -109,12 +112,12 @@ export const StreakService = {
 
       const resetCount = result.rowCount || 0;
       if (resetCount > 0) {
-        console.log(`[StreakService] Reset ${resetCount} expired streaks`);
+        log.info({ resetCount }, 'Reset expired streaks');
       }
 
       return { success: true, data: { resetCount } };
     } catch (error) {
-      console.error('[StreakService.resetExpiredStreaks] Error:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error) }, 'resetExpiredStreaks failed');
       return {
         success: false,
         error: {

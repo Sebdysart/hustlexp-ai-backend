@@ -14,6 +14,9 @@
 
 import { db } from '../db';
 import { NotificationService, type NotificationPriority } from './NotificationService';
+import { logger } from '../logger';
+
+const log = logger.child({ service: 'AdminNotificationHelper' });
 
 // Cache admin IDs for 5 minutes to avoid repeated DB lookups during burst events
 let cachedAdminIds: string[] | null = null;
@@ -41,7 +44,7 @@ export async function getAdminUserIds(): Promise<string[]> {
     cacheExpiry = now + CACHE_TTL_MS;
     return cachedAdminIds;
   } catch (error) {
-    console.error('[AdminNotificationHelper] Failed to fetch admin user IDs:', error);
+    log.error({ err: error instanceof Error ? error.message : String(error) }, 'Failed to fetch admin user IDs');
     return cachedAdminIds || []; // Return stale cache on error, or empty
   }
 }
@@ -68,7 +71,7 @@ export async function notifyAdmins(params: {
   const adminIds = await getAdminUserIds();
 
   if (adminIds.length === 0) {
-    console.warn('[AdminNotificationHelper] No admin users found — admin notification skipped');
+    log.warn('No admin users found - admin notification skipped');
     return { sent: 0, failed: 0 };
   }
 
@@ -101,13 +104,11 @@ export async function notifyAdmins(params: {
         result.status === 'rejected'
           ? result.reason
           : !result.value.success ? result.value.error?.message : 'unknown';
-      console.error('[AdminNotificationHelper] Failed to notify admin:', reason);
+      log.error({ err: reason instanceof Error ? reason.message : String(reason) }, 'Failed to notify admin');
     }
   }
 
-  console.log(
-    `[AdminNotificationHelper] Admin notification sent: ${sent}/${adminIds.length} (${failed} failed)`,
-  );
+  log.info({ sent, total: adminIds.length, failed }, 'Admin notification sent');
 
   return { sent, failed };
 }

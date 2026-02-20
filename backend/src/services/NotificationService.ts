@@ -15,6 +15,9 @@ import { randomUUID } from 'crypto';
 import { db, isInvariantViolation, getErrorMessage } from '../db';
 import type { ServiceResult } from '../types';
 import { ErrorCodes } from '../types';
+import { logger } from '../logger';
+
+const log = logger.child({ service: 'NotificationService' });
 
 // ============================================================================
 // TYPES
@@ -1070,14 +1073,14 @@ async function queueNotificationChannels(
         // CRITICAL: No inline send - email worker handles delivery
         queuePromises.push(
           queueEmailNotification(notification).catch(error => {
-            console.error(`Failed to queue email notification ${notification.id}:`, error);
+            log.error({ err: error instanceof Error ? error.message : String(error), notificationId: notification.id, channel: 'email' }, 'Failed to queue email notification');
           })
         );
       } else if (channel === 'push') {
         // Push notification: Queue via outbox pattern (push-worker handles delivery)
         queuePromises.push(
           queuePushNotification(notification).catch(error => {
-            console.error(`Failed to queue push notification ${notification.id}:`, error);
+            log.error({ err: error instanceof Error ? error.message : String(error), notificationId: notification.id, channel: 'push' }, 'Failed to queue push notification');
           })
         );
       } else if (channel === 'sms') {
@@ -1085,7 +1088,7 @@ async function queueNotificationChannels(
         // CRITICAL: No inline send - SMS worker handles delivery
         queuePromises.push(
           queueSMSNotification(notification).catch(error => {
-            console.error(`Failed to queue SMS notification ${notification.id}:`, error);
+            log.error({ err: error instanceof Error ? error.message : String(error), notificationId: notification.id, channel: 'sms' }, 'Failed to queue SMS notification');
           })
         );
       }
@@ -1104,7 +1107,7 @@ async function queueNotificationChannels(
     );
   } catch (error) {
     // Log error but don't fail notification creation
-    console.error(`Failed to queue notification ${notification.id} via channels:`, error);
+    log.error({ err: error instanceof Error ? error.message : String(error), notificationId: notification.id }, 'Failed to queue notification via channels');
     
     // Still mark as queued (attempted) - queue failures are logged separately
     await db.query(
@@ -1242,7 +1245,7 @@ async function queueEmailNotification(notification: Notification): Promise<void>
   });
   
   // Email queued successfully (will be processed by email worker)
-  console.log(`✅ Email notification ${notification.id} queued for user ${notification.user_id} (template: ${template})`);
+  log.info({ notificationId: notification.id, userId: notification.user_id, template, channel: 'email' }, 'Email notification queued');
 }
 
 /**
@@ -1304,7 +1307,7 @@ async function queuePushNotification(notification: Notification): Promise<void> 
   );
 
   // Push queued successfully (will be processed by push worker)
-  console.log(`✅ Push notification ${notification.id} queued for user ${notification.user_id}`);
+  log.info({ notificationId: notification.id, userId: notification.user_id, channel: 'push' }, 'Push notification queued');
 }
 
 /**
@@ -1329,7 +1332,7 @@ async function queueSMSNotification(notification: Notification): Promise<void> {
   const userPhone = userResult.rows[0].phone;
 
   if (!userPhone) {
-    console.warn(`[SMS] User ${notification.user_id} has no phone number - skipping SMS notification ${notification.id}`);
+    log.warn({ userId: notification.user_id, notificationId: notification.id, channel: 'sms' }, 'User has no phone number - skipping SMS notification');
     return;
   }
 
@@ -1396,5 +1399,5 @@ async function queueSMSNotification(notification: Notification): Promise<void> {
   });
 
   // SMS queued successfully (will be processed by SMS worker)
-  console.log(`✅ SMS notification ${notification.id} queued for user ${notification.user_id} (phone: ${userPhone.slice(0, 4)}****)`);
+  log.info({ notificationId: notification.id, userId: notification.user_id, phone: userPhone.slice(0, 4) + '****', channel: 'sms' }, 'SMS notification queued');
 }

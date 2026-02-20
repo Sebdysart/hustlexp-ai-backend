@@ -19,6 +19,9 @@ import type { ServiceResult } from '../types';
 import { ErrorCodes } from '../types';
 import { NotificationService } from './NotificationService';
 import { notifyAdmins } from './AdminNotificationHelper';
+import { logger } from '../logger';
+
+const log = logger.child({ service: 'FraudDetectionService' });
 
 // ============================================================================
 // TYPES
@@ -484,14 +487,14 @@ export const FraudDetectionService = {
         }
         
         // Alert admins (send notification to admin team)
-        console.error(`[CRITICAL FRAUD] Pattern ${patternType} detected for users: ${userIds.join(', ')}. Accounts auto-suspended.`);
+        log.error({ patternType, userIds, riskLevel: 'CRITICAL' }, 'CRITICAL fraud pattern detected - accounts auto-suspended');
         await notifyAdmins({
           title: '🚨 CRITICAL Fraud Pattern Detected',
           body: `Pattern "${patternType}" detected for ${userIds.length} user(s): ${userIds.join(', ')}. Accounts have been auto-suspended. Review in admin dashboard.`,
           deepLink: 'app://admin/fraud',
           priority: 'CRITICAL',
           metadata: { patternType, userIds, riskLevel, patternId: result.rows[0]?.id },
-        }).catch(err => console.error('[FraudDetection] Failed to notify admins of CRITICAL fraud:', err));
+        }).catch(err => log.error({ err: err instanceof Error ? err.message : String(err), patternType }, 'Failed to notify admins of CRITICAL fraud'));
         
         // Notify affected users of account suspension
         for (const userId of userIds) {
@@ -505,7 +508,7 @@ export const FraudDetectionService = {
             channels: ['in_app', 'email'],
             priority: 'CRITICAL',
           }).catch(error => {
-            console.error(`Failed to send suspension notification to user ${userId}:`, error);
+            log.error({ err: error instanceof Error ? error.message : String(error), userId, patternType }, 'Failed to send suspension notification');
           });
         }
       } else if (riskLevel === 'HIGH') {
@@ -532,14 +535,14 @@ export const FraudDetectionService = {
         }
         
         // Flag for admin review (add to review queue)
-        console.log(`[HIGH RISK FRAUD] Pattern ${patternType} detected for users: ${userIds.join(', ')}. Requires manual review.`);
+        log.warn({ patternType, userIds, riskLevel: 'HIGH' }, 'HIGH risk fraud pattern detected - requires manual review');
         await notifyAdmins({
           title: '⚠️ HIGH Risk Fraud Pattern',
           body: `Pattern "${patternType}" detected for ${userIds.length} user(s): ${userIds.join(', ')}. Accounts flagged — manual review required.`,
           deepLink: 'app://admin/fraud',
           priority: 'HIGH',
           metadata: { patternType, userIds, riskLevel, patternId: result.rows[0]?.id },
-        }).catch(err => console.error('[FraudDetection] Failed to notify admins of HIGH risk fraud:', err));
+        }).catch(err => log.error({ err: err instanceof Error ? err.message : String(err), patternType }, 'Failed to notify admins of HIGH risk fraud'));
       } else {
         // MEDIUM/LOW risk patterns: Flag for monitoring, no immediate action
         for (const userId of userIds) {

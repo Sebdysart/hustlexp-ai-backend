@@ -17,6 +17,9 @@
 
 import { db } from '../db';
 import type { ServiceResult } from '../types';
+import { logger } from '../logger';
+
+const log = logger.child({ service: 'RevenueService' });
 
 // ============================================================================
 // TYPES
@@ -144,7 +147,7 @@ export const RevenueService = {
 
       return { success: true, data: { id: result.rows[0].id } };
     } catch (error) {
-      console.error('[RevenueService] Failed to log event:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error), eventType: params.eventType }, 'Failed to log event');
       return {
         success: false,
         error: {
@@ -173,7 +176,7 @@ export const RevenueService = {
 
       return { success: true, data: result.rows };
     } catch (error) {
-      console.error('[RevenueService] Failed to get summary:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error), days }, 'Failed to get revenue summary');
       return {
         success: false,
         error: {
@@ -201,7 +204,7 @@ export const RevenueService = {
 
       return { success: true, data: result.rows };
     } catch (error) {
-      console.error('[RevenueService] Failed to get monthly P&L:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error), months }, 'Failed to get monthly P&L');
       return {
         success: false,
         error: {
@@ -262,7 +265,7 @@ export const RevenueService = {
         },
       };
     } catch (error) {
-      console.error('[RevenueService] Integrity check failed:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error) }, 'Ledger integrity check failed');
       return {
         success: false,
         error: {

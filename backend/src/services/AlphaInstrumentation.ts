@@ -15,6 +15,9 @@
  */
 
 import { db } from '../db';
+import { logger } from '../logger';
+
+const log = logger.child({ service: 'AlphaInstrumentation' });
 
 // ============================================================================
 // Event Types
@@ -147,7 +150,7 @@ export class AlphaInstrumentation {
       ]);
     } catch (error) {
       // Silent fail - instrumentation should not break core flow
-      console.error('[AlphaInstrumentation] Failed to emit edge_state_impression:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error) }, 'Failed to emit edge_state_impression');
     }
   }
 
@@ -179,7 +182,7 @@ export class AlphaInstrumentation {
         payload.timestamp
       ]);
     } catch (error) {
-      console.error('[AlphaInstrumentation] Failed to emit edge_state_exit:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error) }, 'Failed to emit edge_state_exit');
     }
   }
 
@@ -213,7 +216,7 @@ export class AlphaInstrumentation {
         payload.timestamp
       ]);
     } catch (error) {
-      console.error('[AlphaInstrumentation] Failed to emit dispute_entry_attempt:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error) }, 'Failed to emit dispute_entry_attempt');
     }
   }
 
@@ -246,7 +249,7 @@ export class AlphaInstrumentation {
         payload.timestamp
       ]);
     } catch (error) {
-      console.error('[AlphaInstrumentation] Failed to emit dispute_submission_result:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error) }, 'Failed to emit dispute_submission_result');
     }
   }
 
@@ -283,7 +286,7 @@ export class AlphaInstrumentation {
         payload.timestamp
       ]);
     } catch (error) {
-      console.error('[AlphaInstrumentation] Failed to emit proof_submission:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error) }, 'Failed to emit proof_submission');
     }
   }
 
@@ -316,7 +319,7 @@ export class AlphaInstrumentation {
         payload.timestamp
       ]);
     } catch (error) {
-      console.error('[AlphaInstrumentation] Failed to emit proof_correction_outcome:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error) }, 'Failed to emit proof_correction_outcome');
     }
   }
 
@@ -350,7 +353,7 @@ export class AlphaInstrumentation {
         payload.timestamp
       ]);
     } catch (error) {
-      console.error('[AlphaInstrumentation] Failed to emit trust_delta_applied:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error) }, 'Failed to emit trust_delta_applied');
     }
   }
 }

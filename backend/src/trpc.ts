@@ -14,6 +14,9 @@ import { z } from 'zod';
 import { firebaseAuth } from './auth/firebase';
 import { db } from './db';
 import type { User } from './types';
+import { logger } from './logger';
+
+const log = logger.child({ module: 'trpc' });
 
 // ============================================================================
 // CONTEXT
@@ -52,7 +55,7 @@ export async function createContext(opts: {
       firebaseUid: decoded.uid,
     };
   } catch (error) {
-    console.error('❌ Firebase token verification failed:', (error as Error).message);
+    log.error({ err: (error as Error).message }, 'Firebase token verification failed');
     return { user: null, firebaseUid: null };
   }
 }

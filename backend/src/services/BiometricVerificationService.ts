@@ -32,6 +32,9 @@
 import { db } from '../db';
 import type { ServiceResult } from '../types';
 import { awsRekognitionBreaker, gcpVisionBreaker } from '../middleware/circuit-breaker';
+import { logger } from '../logger';
+
+const log = logger.child({ service: 'BiometricVerificationService' });
 
 // ============================================================================
 // AWS REKOGNITION CLIENT (lazy init)
@@ -44,7 +47,7 @@ async function getRekognitionClient(): Promise<import('@aws-sdk/client-rekogniti
 
   const region = process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION;
   if (!region) {
-    console.warn('[BiometricVerificationService] AWS_REGION not set, Rekognition disabled');
+    log.warn('AWS_REGION not set, Rekognition disabled');
     return null;
   }
 
@@ -53,7 +56,7 @@ async function getRekognitionClient(): Promise<import('@aws-sdk/client-rekogniti
     rekognitionClient = new RekognitionClient({ region });
     return rekognitionClient;
   } catch (error) {
-    console.error('[BiometricVerificationService] Failed to initialize Rekognition client:', error);
+    log.error({ err: error instanceof Error ? error.message : String(error) }, 'Failed to initialize Rekognition client');
     return null;
   }
 }
@@ -130,7 +133,7 @@ export const BiometricVerificationService = {
 
       return { success: true, data: { sessionId: response.SessionId } };
     } catch (error) {
-      console.error('[BiometricVerificationService.createLivenessSession] Error:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error) }, 'createLivenessSession error');
       return {
         success: false,
         error: {
@@ -177,7 +180,7 @@ export const BiometricVerificationService = {
         },
       };
     } catch (error) {
-      console.error('[BiometricVerificationService.getLivenessSessionResult] Error:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error), sessionId }, 'getLivenessSessionResult error');
       return {
         success: false,
         error: {
@@ -252,7 +255,7 @@ export const BiometricVerificationService = {
             }
           }
         } catch (apiError) {
-          console.error('[BiometricVerificationService] AWS Rekognition DetectFaces error:', apiError);
+          log.error({ err: apiError instanceof Error ? apiError.message : String(apiError) }, 'AWS Rekognition DetectFaces error');
           // Fall through to GCP fallback or defaults
         }
       }
@@ -297,7 +300,7 @@ export const BiometricVerificationService = {
               }
             }
           } catch (apiError) {
-            console.error('[BiometricVerificationService] GCP Vision API error:', apiError);
+            log.error({ err: apiError instanceof Error ? apiError.message : String(apiError) }, 'GCP Vision API error');
             livenessScore = 0.6;
             deepfakeScore = 0.3;
           }
@@ -319,7 +322,7 @@ export const BiometricVerificationService = {
         },
       };
     } catch (error) {
-      console.error('[BiometricVerificationService.analyzeFacePhoto] Error:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error) }, 'analyzeFacePhoto error');
       return {
         success: false,
         error: {
@@ -376,14 +379,14 @@ export const BiometricVerificationService = {
             return { success: true, data: Math.max(0, Math.min(1, deepfakeScore)) };
           }
         } catch (apiError) {
-          console.error('[BiometricVerificationService] Rekognition deepfake check error:', apiError);
+          log.error({ err: apiError instanceof Error ? apiError.message : String(apiError) }, 'Rekognition deepfake check error');
         }
       }
 
       // Fallback: conservative low-risk score
       return { success: true, data: 0.08 };
     } catch (error) {
-      console.error('[BiometricVerificationService.detectDeepfake] Error:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error) }, 'detectDeepfake error');
       return {
         success: false,
         error: {
@@ -492,7 +495,7 @@ export const BiometricVerificationService = {
         },
       };
     } catch (error) {
-      console.error('[BiometricVerificationService.validateLiDARDepthMap] Error:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error) }, 'validateLiDARDepthMap error');
       return {
         success: false,
         error: {
@@ -609,7 +612,7 @@ export const BiometricVerificationService = {
         },
       };
     } catch (error) {
-      console.error('[BiometricVerificationService.analyzeProofSubmission] Error:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error), proofId }, 'analyzeProofSubmission error');
       return {
         success: false,
         error: {

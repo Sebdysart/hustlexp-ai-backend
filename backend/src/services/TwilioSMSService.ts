@@ -15,6 +15,9 @@
 import twilio from 'twilio';
 import { config } from '../config';
 import { twilioBreaker } from '../middleware/circuit-breaker';
+import { logger } from '../logger';
+
+const log = logger.child({ service: 'TwilioSMSService' });
 
 // ============================================================================
 // LAZY SINGLETON CLIENT
@@ -34,12 +37,12 @@ function getClient(): ReturnType<typeof twilio> | null {
   const { accountSid, authToken } = config.identity.twilio;
 
   if (!accountSid || !authToken) {
-    console.warn('[TwilioSMSService] Twilio credentials not configured (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN required)');
+    log.warn('Twilio credentials not configured (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN required)');
     return null;
   }
 
   twilioClient = twilio(accountSid, authToken);
-  console.log('[TwilioSMSService] Twilio client initialized');
+  log.info('Twilio client initialized');
   return twilioClient;
 }
 
@@ -61,13 +64,13 @@ export async function sendSMS(
   const client = getClient();
 
   if (!client) {
-    console.warn('[TwilioSMSService] Cannot send SMS - Twilio client not configured');
+    log.warn('Cannot send SMS - Twilio client not configured');
     return { success: false, error: 'Twilio client not configured' };
   }
 
   const fromPhone = process.env.TWILIO_FROM_PHONE;
   if (!fromPhone) {
-    console.warn('[TwilioSMSService] Cannot send SMS - TWILIO_FROM_PHONE not configured');
+    log.warn('Cannot send SMS - TWILIO_FROM_PHONE not configured');
     return { success: false, error: 'TWILIO_FROM_PHONE not configured' };
   }
 
@@ -78,22 +81,13 @@ export async function sendSMS(
       body,
     }));
 
-    console.log(JSON.stringify({
-      event: 'sms_sent',
-      to,
-      sid: message.sid,
-      status: message.status,
-    }));
+    log.info({ to, sid: message.sid, status: message.status }, 'sms_sent');
 
     return { success: true, sid: message.sid };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
 
-    console.error(JSON.stringify({
-      event: 'sms_send_error',
-      to,
-      error: errorMessage,
-    }));
+    log.error({ err: errorMessage, to }, 'sms_send_error');
 
     return { success: false, error: errorMessage };
   }
@@ -117,13 +111,13 @@ export async function sendVerification(
   const client = getClient();
 
   if (!client) {
-    console.warn('[TwilioSMSService] Cannot send verification - Twilio client not configured');
+    log.warn('Cannot send verification - Twilio client not configured');
     return { success: false, error: 'Twilio client not configured' };
   }
 
   const { verifyServiceSid } = config.identity.twilio;
   if (!verifyServiceSid) {
-    console.warn('[TwilioSMSService] Cannot send verification - TWILIO_VERIFY_SERVICE_SID not configured');
+    log.warn('Cannot send verification - TWILIO_VERIFY_SERVICE_SID not configured');
     return { success: false, error: 'TWILIO_VERIFY_SERVICE_SID not configured' };
   }
 
@@ -135,24 +129,13 @@ export async function sendVerification(
         channel,
       }));
 
-    console.log(JSON.stringify({
-      event: 'verification_sent',
-      to,
-      channel,
-      sid: verification.sid,
-      status: verification.status,
-    }));
+    log.info({ to, channel, sid: verification.sid, status: verification.status }, 'verification_sent');
 
     return { success: true, sid: verification.sid };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
 
-    console.error(JSON.stringify({
-      event: 'verification_send_error',
-      to,
-      channel,
-      error: errorMessage,
-    }));
+    log.error({ err: errorMessage, to, channel }, 'verification_send_error');
 
     return { success: false, error: errorMessage };
   }
@@ -172,13 +155,13 @@ export async function checkVerification(
   const client = getClient();
 
   if (!client) {
-    console.warn('[TwilioSMSService] Cannot check verification - Twilio client not configured');
+    log.warn('Cannot check verification - Twilio client not configured');
     return { success: false, valid: false, error: 'Twilio client not configured' };
   }
 
   const { verifyServiceSid } = config.identity.twilio;
   if (!verifyServiceSid) {
-    console.warn('[TwilioSMSService] Cannot check verification - TWILIO_VERIFY_SERVICE_SID not configured');
+    log.warn('Cannot check verification - TWILIO_VERIFY_SERVICE_SID not configured');
     return { success: false, valid: false, error: 'TWILIO_VERIFY_SERVICE_SID not configured' };
   }
 
@@ -192,22 +175,13 @@ export async function checkVerification(
 
     const isValid = verificationCheck.status === 'approved';
 
-    console.log(JSON.stringify({
-      event: 'verification_checked',
-      to,
-      valid: isValid,
-      status: verificationCheck.status,
-    }));
+    log.info({ to, valid: isValid, status: verificationCheck.status }, 'verification_checked');
 
     return { success: true, valid: isValid };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
 
-    console.error(JSON.stringify({
-      event: 'verification_check_error',
-      to,
-      error: errorMessage,
-    }));
+    log.error({ err: errorMessage, to }, 'verification_check_error');
 
     return { success: false, valid: false, error: errorMessage };
   }

@@ -6,8 +6,11 @@
  */
 
 import { db } from '../db';
+import { logger } from '../logger';
 import { BadgeService } from './BadgeService';
 import type { ServiceResult } from '../types';
+
+const log = logger.child({ service: 'BadgeEvaluationService' });
 
 // ============================================================================
 // BADGE DEFINITIONS
@@ -241,7 +244,7 @@ export const BadgeEvaluationService = {
 
       return { success: true, data: awarded };
     } catch (error) {
-      console.error('[BadgeEvaluationService.evaluateAfterTaskCompletion] Error:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error), userId, taskId }, 'evaluateAfterTaskCompletion failed');
       return { success: true, data: awarded }; // Return what we got so far
     }
   },

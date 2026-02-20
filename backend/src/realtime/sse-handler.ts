@@ -19,6 +19,9 @@ import { addConnection, removeConnection, type SSEConnection } from './connectio
 import { firebaseAuth } from '../auth/firebase';
 import { db } from '../db';
 import type { User } from '../types';
+import { logger } from '../logger';
+
+const log = logger.child({ module: 'sse-handler' });
 
 /**
  * Helper to get authenticated user from Bearer token (matches server.ts pattern)
@@ -54,7 +57,7 @@ export async function sseHandler(c: Context): Promise<Response> {
     return c.json({ error: 'Unauthorized' }, 401);
   }
 
-  console.log(`🔌 SSE connected: userId=${user.id}`);
+  log.info({ userId: user.id }, 'SSE connected');
 
   // Create connection object (controller will be set in stream start)
   let conn: SSEConnection | null = null;
@@ -90,7 +93,7 @@ export async function sseHandler(c: Context): Promise<Response> {
           if (conn) {
             conn.closed = true;
             removeConnection(user.id, conn);
-            console.log(`🔌 SSE disconnected: userId=${user.id}`);
+            log.info({ userId: user.id }, 'SSE disconnected');
             try {
               controller.close();
             } catch (error) {
@@ -105,7 +108,7 @@ export async function sseHandler(c: Context): Promise<Response> {
       if (conn) {
         conn.closed = true;
         removeConnection(user.id, conn);
-        console.log(`🔌 SSE stream cancelled: userId=${user.id}`);
+        log.info({ userId: user.id }, 'SSE stream cancelled');
       }
     },
   });

@@ -13,6 +13,9 @@
 import { config } from '../config';
 import { redis } from '../cache/redis';
 import { googleMapsBreaker } from '../middleware/circuit-breaker';
+import { logger } from '../logger';
+
+const log = logger.child({ service: 'GeocodingService' });
 
 // Cache TTL: 30 days (geocoded addresses rarely change)
 const GEOCODE_CACHE_TTL = 30 * 24 * 60 * 60;
@@ -40,7 +43,7 @@ export async function geocodeAddress(
 ): Promise<{ lat: number; lng: number } | null> {
   const apiKey = config.googleMaps.apiKey;
   if (!apiKey) {
-    console.warn('GeocodingService: GOOGLE_MAPS_API_KEY is not configured. Skipping geocode.');
+    log.warn('GOOGLE_MAPS_API_KEY is not configured, skipping geocode');
     return null;
   }
 
@@ -65,7 +68,7 @@ export async function geocodeAddress(
     const response = await googleMapsBreaker.execute(() => fetch(url));
 
     if (!response.ok) {
-      console.error(`GeocodingService: Geocode API returned HTTP ${response.status}`);
+      log.error({ httpStatus: response.status }, 'Geocode API returned error');
       return null;
     }
 
@@ -79,7 +82,7 @@ export async function geocodeAddress(
     };
 
     if (data.status !== 'OK' || !data.results || data.results.length === 0) {
-      console.warn(`GeocodingService: Geocode failed for "${address}" - status: ${data.status}`);
+      log.warn({ address, status: data.status }, 'Geocode failed for address');
       return null;
     }
 
@@ -95,7 +98,7 @@ export async function geocodeAddress(
 
     return result;
   } catch (error) {
-    console.error('GeocodingService: Geocode API call failed:', error);
+    log.error({ err: error instanceof Error ? error.message : String(error) }, 'Geocode API call failed');
     return null;
   }
 }
@@ -113,7 +116,7 @@ export async function reverseGeocode(
 ): Promise<string | null> {
   const apiKey = config.googleMaps.apiKey;
   if (!apiKey) {
-    console.warn('GeocodingService: GOOGLE_MAPS_API_KEY is not configured. Skipping reverse geocode.');
+    log.warn('GOOGLE_MAPS_API_KEY is not configured, skipping reverse geocode');
     return null;
   }
 
@@ -134,7 +137,7 @@ export async function reverseGeocode(
     const response = await googleMapsBreaker.execute(() => fetch(url));
 
     if (!response.ok) {
-      console.error(`GeocodingService: Reverse geocode API returned HTTP ${response.status}`);
+      log.error({ httpStatus: response.status }, 'Reverse geocode API returned error');
       return null;
     }
 
@@ -146,7 +149,7 @@ export async function reverseGeocode(
     };
 
     if (data.status !== 'OK' || !data.results || data.results.length === 0) {
-      console.warn(`GeocodingService: Reverse geocode failed for (${lat}, ${lng}) - status: ${data.status}`);
+      log.warn({ lat, lng, status: data.status }, 'Reverse geocode failed');
       return null;
     }
 
@@ -161,7 +164,7 @@ export async function reverseGeocode(
 
     return formattedAddress;
   } catch (error) {
-    console.error('GeocodingService: Reverse geocode API call failed:', error);
+    log.error({ err: error instanceof Error ? error.message : String(error) }, 'Reverse geocode API call failed');
     return null;
   }
 }

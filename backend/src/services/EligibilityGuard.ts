@@ -12,8 +12,11 @@
  */
 
 import { db } from '../db';
+import { logger } from '../logger';
 import { TrustTier, TrustTierService } from './TrustTierService';
 import { TaskRisk } from './TaskRiskClassifier';
+
+const log = logger.child({ service: 'EligibilityGuard' });
 
 // ============================================================================
 // TYPES
@@ -77,11 +80,7 @@ export const EligibilityGuard = {
 
     // Check if user is banned
     if (userTier === TrustTier.BANNED) {
-      console.log(`🚫 Eligibility denied: User ${userId} is banned`, {
-        userId,
-        taskId,
-        isInstant,
-      });
+      log.info({ userId, taskId, isInstant }, 'Eligibility denied: user is banned');
       return {
         allowed: false,
         code: EligibilityErrorCode.USER_BANNED,
@@ -131,12 +130,7 @@ export const EligibilityGuard = {
     // Check if task risk is blocked in alpha
     const requiredTier = REQUIRED_TIER_BY_RISK[taskRisk];
     if (requiredTier === 'BLOCKED_IN_ALPHA') {
-      console.log(`🚫 Eligibility denied: Task ${taskId} is Tier 3 (blocked in alpha)`, {
-        userId,
-        taskId,
-        taskRisk,
-        isInstant,
-      });
+      log.info({ userId, taskId, taskRisk, isInstant }, 'Eligibility denied: task is Tier 3 (blocked in alpha)');
       return {
         allowed: false,
         code: EligibilityErrorCode.TASK_RISK_BLOCKED_ALPHA,
@@ -146,14 +140,7 @@ export const EligibilityGuard = {
 
     // Check trust tier requirement
     if (userTier < requiredTier) {
-      console.log(`🚫 Eligibility denied: User ${userId} tier ${userTier} < required ${requiredTier}`, {
-        userId,
-        taskId,
-        userTier,
-        requiredTier,
-        taskRisk,
-        isInstant,
-      });
+      log.info({ userId, taskId, userTier, requiredTier, taskRisk, isInstant }, 'Eligibility denied: trust tier insufficient');
       return {
         allowed: false,
         code: EligibilityErrorCode.TRUST_TIER_INSUFFICIENT,
@@ -171,14 +158,7 @@ export const EligibilityGuard = {
     // This guard only enforces risk-based eligibility
 
     // All checks passed
-    console.log(`✅ Eligibility granted: User ${userId} can access task ${taskId}`, {
-      userId,
-      taskId,
-      userTier,
-      requiredTier,
-      taskRisk,
-      isInstant,
-    });
+    log.info({ userId, taskId, userTier, requiredTier, taskRisk, isInstant }, 'Eligibility granted');
 
     return { allowed: true };
   },

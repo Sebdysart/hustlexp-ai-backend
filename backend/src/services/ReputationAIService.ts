@@ -18,6 +18,9 @@
 import { db } from '../db';
 import type { ServiceResult } from '../types';
 import { AIClient } from './AIClient';
+import { aiLogger } from '../logger';
+
+const log = aiLogger.child({ service: 'ReputationAIService' });
 
 // ============================================================================
 // TYPES
@@ -269,11 +272,9 @@ SCORING GUIDELINES:
           // Override trend with our deterministic computation
           trustScore.trend = trend;
 
-          console.log(
-            `[ReputationAI] AI trust score: ${trustScore.trust_score}/100, tier=${trustScore.recommended_tier} (via ${aiResult.provider})`
-          );
+          log.info({ trustScore: trustScore.trust_score, recommendedTier: trustScore.recommended_tier, provider: aiResult.provider, userId }, 'AI trust score calculated');
         } catch (aiError) {
-          console.warn('[ReputationAI] AI call failed, using heuristic fallback:', aiError);
+          log.warn({ err: aiError instanceof Error ? (aiError as Error).message : String(aiError), userId }, 'AI trust score call failed, using heuristic fallback');
           trustScore = ReputationAIService._heuristicTrustScore(context, trend);
         }
       } else {
@@ -291,7 +292,7 @@ SCORING GUIDELINES:
 
       return { success: true, data: trustScore };
     } catch (error) {
-      console.error('[ReputationAIService.calculateTrustScore] Error:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error), userId }, 'Failed to calculate trust score');
       return {
         success: false,
         error: {
@@ -482,7 +483,7 @@ SCORING GUIDELINES:
 
       return { success: true, data: { anomalies } };
     } catch (error) {
-      console.error('[ReputationAIService.detectAnomalies] Error:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error), userId }, 'Failed to detect anomalies');
       return {
         success: false,
         error: {
@@ -603,7 +604,7 @@ Return JSON with a single field: { "summary": "..." }`,
 
           return { success: true, data: { summary } };
         } catch (aiError) {
-          console.warn('[ReputationAI] AI insight generation failed, using heuristic:', aiError);
+          log.warn({ err: aiError instanceof Error ? (aiError as Error).message : String(aiError), userId }, 'AI insight generation failed, using heuristic');
         }
       }
 
@@ -645,7 +646,7 @@ Return JSON with a single field: { "summary": "..." }`,
 
       return { success: true, data: { summary } };
     } catch (error) {
-      console.error('[ReputationAIService.generateUserInsight] Error:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error), userId }, 'Failed to generate user insight');
       return {
         success: false,
         error: {
@@ -770,7 +771,7 @@ Return JSON with a single field: { "summary": "..." }`,
         },
       };
     } catch (error) {
-      console.error('[ReputationAIService.shouldPromoteTier] Error:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error), userId }, 'Failed to check tier promotion');
       return {
         success: false,
         error: {
@@ -900,7 +901,7 @@ Return JSON with a single field: { "summary": "..." }`,
       );
     } catch (error) {
       // Non-fatal: log failure but don't break the main operation
-      console.error('[ReputationAI] Failed to log decision:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error), userId, actionType }, 'Failed to log reputation decision');
     }
   },
 };

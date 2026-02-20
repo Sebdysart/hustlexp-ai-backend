@@ -16,6 +16,9 @@ import type { ServiceResult, TaskState } from '../types';
 import { ErrorCodes } from '../types';
 import { ContentModerationService } from './ContentModerationService';
 import { NotificationService } from './NotificationService';
+import { logger } from '../logger';
+
+const log = logger.child({ service: 'MessagingService' });
 
 // ============================================================================
 // TYPES
@@ -366,7 +369,7 @@ export const MessagingService = {
             // No AI confidence/recommendation yet - will be determined by AI service
           }).catch(error => {
             // Log error but don't fail message creation
-            console.error('Content moderation error (non-blocking):', error);
+            log.error({ err: error instanceof Error ? error.message : String(error), messageId: message.id }, 'Content moderation error (non-blocking)');
           });
         }
       }
@@ -386,7 +389,7 @@ export const MessagingService = {
         priority: 'MEDIUM',
       }).catch(error => {
         // Log error but don't fail message creation
-        console.error(`Failed to send message notification to user ${recipientId}:`, error);
+        log.error({ err: error instanceof Error ? error.message : String(error), recipientId, taskId }, 'Failed to send message notification');
       });
       
       return {
@@ -517,7 +520,7 @@ export const MessagingService = {
            VALUES ($1, $2, $3, 'image', 'messaging')
            ON CONFLICT DO NOTHING`,
           [taskId, senderId, storageKey]
-        ).catch(err => console.error('[MessagingService] Failed to store photo evidence (non-blocking):', err));
+        ).catch(err => log.error({ err: err instanceof Error ? err.message : String(err), taskId, senderId }, 'Failed to store photo evidence (non-blocking)'));
       }
       
       // Create photo message (moderation_status defaults to 'pending' in schema)
@@ -549,7 +552,7 @@ export const MessagingService = {
           // AI will analyze photo content and determine confidence/recommendation
         }).catch(error => {
           // Log error but don't fail message creation
-          console.error('Photo moderation error (non-blocking):', error);
+          log.error({ err: error instanceof Error ? error.message : String(error), messageId: message.id }, 'Photo moderation error (non-blocking)');
         });
       }
       

@@ -18,6 +18,9 @@ import { AIEventService } from './AIEventService';
 import { AIJobService } from './AIJobService';
 import { AIProposalService } from './AIProposalService';
 import { AIDecisionService } from './AIDecisionService';
+import { aiLogger } from '../logger';
+
+const log = aiLogger.child({ service: 'OnboardingAIService' });
 
 // ============================================================================
 // TYPES
@@ -132,7 +135,7 @@ Respond with JSON only: {"worker": 0.0-1.0, "poster": 0.0-1.0, "certainty": "STR
             }
           }
         } catch (aiError) {
-          console.error('[OnboardingAIService] Anthropic API error:', aiError);
+          log.error({ err: aiError instanceof Error ? aiError.message : String(aiError), userId }, 'Anthropic API error during role inference');
           // Fallback to balanced inference
         }
       }

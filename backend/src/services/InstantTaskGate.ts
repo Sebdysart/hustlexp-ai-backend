@@ -11,6 +11,9 @@
 
 import { db } from '../db';
 import { AIClient } from './AIClient';
+import { logger } from '../logger';
+
+const log = logger.child({ service: 'InstantTaskGate' });
 
 // ============================================================================
 // TYPES
@@ -380,13 +383,13 @@ Deadline: ${task.deadline || 'Not specified'}`,
 
       // If AI disagrees with heuristic, log for monitoring but trust AI
       if (!aiGateResult.instantEligible && heuristicResult.instantEligible) {
-        console.log(`[InstantGate] AI blocked task that heuristic passed. Reason: ${aiGateResult.blockReason}. Questions: ${aiGateResult.questions.join('; ')}`);
+        log.info({ blockReason: aiGateResult.blockReason, questions: aiGateResult.questions }, 'AI blocked task that heuristic passed');
         return aiGateResult;
       }
 
       return aiGateResult;
     } catch (aiError) {
-      console.warn('[InstantGate] AI call failed, using heuristic result:', aiError);
+      log.warn({ err: aiError instanceof Error ? aiError.message : String(aiError) }, 'AI call failed, using heuristic result');
     }
   }
 

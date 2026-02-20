@@ -15,6 +15,9 @@ import { router, protectedProcedure, Schemas } from '../trpc';
 import { XPTaxService } from '../services/XPTaxService';
 import { StripeService } from '../services/StripeService';
 import { z } from 'zod';
+import { logger } from '../logger';
+
+const log = logger.child({ router: 'xpTax' });
 
 export const xpTaxRouter = router({
   // --------------------------------------------------------------------------
@@ -84,7 +87,7 @@ export const xpTaxRouter = router({
 
       if (!piResult.success || !piResult.data) {
         // Fallback: if Stripe is not configured (dev), return mock intent
-        console.warn('⚠️ Stripe not available for tax payment, returning mock intent');
+        log.warn('Stripe not available for tax payment, returning mock intent');
         return {
           clientSecret: `pi_tax_${ctx.user.id}_${Date.now()}_secret`,
           paymentIntentId: `pi_tax_${ctx.user.id}_${Date.now()}`,

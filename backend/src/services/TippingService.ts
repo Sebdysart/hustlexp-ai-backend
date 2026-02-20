@@ -17,6 +17,9 @@ import Stripe from 'stripe';
 import { config } from '../config';
 import { db } from '../db';
 import type { ServiceResult } from '../types';
+import { logger } from '../logger';
+
+const log = logger.child({ service: 'TippingService' });
 
 interface Tip {
   id: string;
@@ -141,7 +144,7 @@ export const TippingService = {
         }
       };
     } catch (error) {
-      console.error('[TippingService.createTip] Error:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error) }, 'Failed to create tip');
       return {
         success: false,
         error: {
@@ -196,7 +199,7 @@ export const TippingService = {
 
       return { success: true, data: tip };
     } catch (error) {
-      console.error('[TippingService.confirmTip] Error:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error) }, 'Failed to confirm tip');
       return {
         success: false,
         error: {

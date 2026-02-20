@@ -21,6 +21,9 @@
 import { db } from '../db';
 import type { ServiceResult } from '../types';
 import { AIClient } from './AIClient';
+import { aiLogger } from '../logger';
+
+const log = aiLogger.child({ service: 'JudgeAIService' });
 
 // ============================================================================
 // TYPES
@@ -330,27 +333,23 @@ Produce your verdict.`,
           Array.isArray(aiVerdict.fraud_flags) &&
           typeof aiVerdict.recommended_action === 'string'
         ) {
-          console.log(
-            `[JudgeAI] AI verdict: ${aiVerdict.verdict}, confidence=${aiVerdict.confidence.toFixed(2)}, risk=${aiVerdict.risk_score.toFixed(2)} (via ${aiResult.provider})`
-          );
+          log.info({ verdict: aiVerdict.verdict, confidence: aiVerdict.confidence, riskScore: aiVerdict.risk_score, provider: aiResult.provider, proofId: input.proof_id }, 'AI verdict produced');
           return { success: true, data: aiVerdict };
         }
 
         // AI returned malformed response — fall through to deterministic
-        console.warn('[JudgeAI] AI returned malformed verdict, using deterministic fallback');
+        log.warn({ proofId: input.proof_id }, 'AI returned malformed verdict, using deterministic fallback');
       } catch (aiError) {
-        console.warn('[JudgeAI] AI synthesis failed, using deterministic fallback:', aiError);
+        log.warn({ err: aiError instanceof Error ? (aiError as Error).message : String(aiError), proofId: input.proof_id }, 'AI synthesis failed, using deterministic fallback');
       }
     }
 
     // Deterministic fallback
     const fallbackVerdict = deterministicVerdict(input);
-    console.log(
-      `[JudgeAI] Deterministic verdict: ${fallbackVerdict.verdict}, risk=${fallbackVerdict.risk_score.toFixed(2)}`
-    );
+    log.info({ verdict: fallbackVerdict.verdict, riskScore: fallbackVerdict.risk_score, method: 'deterministic', proofId: input.proof_id }, 'Deterministic verdict produced');
     return { success: true, data: fallbackVerdict };
   } catch (error) {
-    console.error('[JudgeAIService.synthesizeVerdict] Error:', error);
+    log.error({ err: error instanceof Error ? error.message : String(error), proofId: input.proof_id, taskId: input.task_id }, 'Failed to synthesize verdict');
     return {
       success: false,
       error: {
@@ -395,7 +394,7 @@ async function logVerdict(
 
     return { success: true, data: undefined };
   } catch (error) {
-    console.error('[JudgeAIService.logVerdict] Error:', error);
+    log.error({ err: error instanceof Error ? error.message : String(error), proofId, taskId }, 'Failed to log verdict');
     return {
       success: false,
       error: {

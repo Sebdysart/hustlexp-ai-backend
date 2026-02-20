@@ -17,6 +17,9 @@ import { writeToOutbox } from '../jobs/outbox-helpers';
 import { PlanService } from './PlanService';
 import { ScoperAIService } from './ScoperAIService';
 import { MIN_INSTANT_TIER, MIN_SENSITIVE_INSTANT_TIER } from './InstantTrustConfig';
+import { taskLogger } from '../logger';
+
+const log = taskLogger.child({ service: 'TaskService' });
 import type {
   Task,
   TaskState,
@@ -247,8 +250,9 @@ export const TaskService = {
         finalPrice = proposal.suggested_price_cents;
         xpReward = proposal.suggested_xp;
 
-        console.log(
-          `[TaskService] Scoper AI proposal: price=$${finalPrice / 100}, xp=${xpReward}, difficulty=${proposal.difficulty}`
+        log.info(
+          { priceCents: finalPrice, xp: xpReward, difficulty: proposal.difficulty },
+          'Scoper AI proposal accepted'
         );
       } else {
         // Fallback to minimum price if Scoper AI fails
@@ -320,10 +324,7 @@ export const TaskService = {
       const flags = InstantModeKillSwitch.checkFlags({ taskId: undefined, operation: 'create' });
       
       if (!flags.instantModeEnabled) {
-        console.log(`🚫 Instant Mode disabled by kill switch - falling back to OPEN state`, {
-          posterId,
-          taskTitle: title,
-        });
+        log.info({ posterId, taskTitle: title }, 'Instant Mode disabled by kill switch - falling back to OPEN state');
         // Safe fallback: create as non-instant task
         instantMode = false;
       }

@@ -12,7 +12,10 @@
  */
 
 import { db } from '../db';
+import { logger } from '../logger';
 import { AlphaInstrumentation } from './AlphaInstrumentation';
+
+const log = logger.child({ service: 'TrustTierService' });
 
 // ============================================================================
 // TRUST TIER ENUM (Authoritative)
@@ -239,7 +242,7 @@ export const TrustTierService = {
             WHERE table_name = 'tasks' AND column_name = 'worker_id'
           ) as worker_id_exists`
       );
-      console.warn('IN_HOME evaluation query context:', queryContext.rows[0]);
+      log.warn({ queryContext: queryContext.rows[0] }, 'IN_HOME evaluation query context');
       
       const statsResult = await db.query<{
         completed_count: string;
@@ -394,15 +397,10 @@ export const TrustTierService = {
       }
     } catch (error) {
       // trust_ledger may not exist in alpha - log but don't fail
-      console.warn('Failed to log trust tier transition', { userId, currentTier, targetTier, error });
+      log.warn({ err: error instanceof Error ? error.message : String(error), userId, currentTier, targetTier }, 'Failed to log trust tier transition');
     }
 
-    console.log(`✅ Trust tier promotion: ${userId} ${TrustTier[currentTier]} → ${TrustTier[targetTier]}`, {
-      userId,
-      oldTier: currentTier,
-      newTier: targetTier,
-      source,
-    });
+    log.info({ userId, oldTier: currentTier, newTier: targetTier, oldTierName: TrustTier[currentTier], newTierName: TrustTier[targetTier], source }, 'Trust tier promotion applied');
 
     // Alpha Instrumentation: Emit trust delta applied
     try {
@@ -424,7 +422,7 @@ export const TrustTierService = {
       });
     } catch (error) {
       // Silent fail - instrumentation should not break core flow
-      console.warn('[TrustTierService] Failed to emit trust_delta_applied for promotion:', error);
+      log.warn({ err: error instanceof Error ? error.message : String(error), userId, targetTier }, 'Failed to emit trust_delta_applied for promotion');
     }
   },
 
@@ -469,21 +467,13 @@ export const TrustTierService = {
         // Note: BANNED (9) cannot be inserted into trust_ledger due to constraint
         // We'll log the transition to a special value or skip logging for bans
         // For alpha, we'll skip trust_ledger logging for bans
-        console.warn('Ban transition not logged to trust_ledger (BANNED tier not in 1-4 range)', {
-          userId,
-          oldTier: currentTier,
-          reason,
-        });
+        log.warn({ userId, oldTier: currentTier, reason }, 'Ban transition not logged to trust_ledger (BANNED tier not in 1-4 range)');
       }
     } catch (error) {
-      console.warn('Failed to log trust tier ban', { userId, reason, error });
+      log.warn({ err: error instanceof Error ? error.message : String(error), userId, reason }, 'Failed to log trust tier ban');
     }
 
-    console.log(`🚫 User banned: ${userId}`, {
-      userId,
-      oldTier: currentTier,
-      reason,
-    });
+    log.info({ userId, oldTier: currentTier, reason }, 'User banned');
 
     // Alpha Instrumentation: Emit trust delta applied
     try {
@@ -505,7 +495,7 @@ export const TrustTierService = {
       });
     } catch (error) {
       // Silent fail - instrumentation should not break core flow
-      console.warn('[TrustTierService] Failed to emit trust_delta_applied for ban:', error);
+      log.warn({ err: error instanceof Error ? error.message : String(error), userId }, 'Failed to emit trust_delta_applied for ban');
     }
   },
 };

@@ -36,7 +36,10 @@
  */
 
 import { db } from '../db';
+import { logger } from '../logger';
 import { TRPCError } from '@trpc/server';
+
+const log = logger.child({ service: 'CapabilityRecomputeService' });
 
 interface UserRow {
   id: string;
@@ -296,12 +299,5 @@ export async function recomputeCapabilityProfile(
     }
   }
 
-  console.log('[Capability Recompute] Completed for user:', {
-    userId,
-    verifiedTradesCount: verifiedTrades.length,
-    riskClearance,
-    insuranceValid,
-    backgroundCheckValid,
-    reason: reasonMeta?.reason,
-  });
+  log.info({ userId, verifiedTradesCount: verifiedTrades.length, riskClearance, insuranceValid, backgroundCheckValid, reason: reasonMeta?.reason }, 'Capability recompute completed');
 }

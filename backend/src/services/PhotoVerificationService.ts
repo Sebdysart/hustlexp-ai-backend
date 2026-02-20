@@ -14,6 +14,9 @@
 import { db } from '../db';
 import type { ServiceResult } from '../types';
 import { openaiBreaker } from '../middleware/circuit-breaker';
+import { logger } from '../logger';
+
+const log = logger.child({ service: 'PhotoVerificationService' });
 
 // ============================================================================
 // TYPES
@@ -158,7 +161,7 @@ export const PhotoVerificationService = {
       // Call OpenAI Vision API for comparison
       const apiKey = process.env.OPENAI_API_KEY;
       if (!apiKey) {
-        console.warn('[PhotoVerificationService] OPENAI_API_KEY not set, using fallback scoring');
+        log.warn('OPENAI_API_KEY not set, using fallback scoring');
         return {
           success: true,
           data: {
@@ -220,7 +223,7 @@ Respond with JSON only: {"similarity_score": 0-1, "completion_score": 0-1, "chan
         const jsonMatch = content.match(/\{[\s\S]*\}/);
         parsed = JSON.parse(jsonMatch?.[0] || content);
       } catch {
-        console.error('[PhotoVerificationService] Failed to parse AI response:', content);
+        log.error({ content }, 'Failed to parse AI response');
         return {
           success: true,
           data: {
@@ -256,7 +259,7 @@ Respond with JSON only: {"similarity_score": 0-1, "completion_score": 0-1, "chan
         },
       };
     } catch (error) {
-      console.error('[PhotoVerificationService.compareBeforeAfter] Error:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error) }, 'compareBeforeAfter error');
       return {
         success: true,
         data: {

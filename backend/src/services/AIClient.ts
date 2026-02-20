@@ -18,6 +18,9 @@ import Groq from 'groq-sdk';
 import { config } from '../config';
 import { redis, CACHE_KEYS, CACHE_TTL } from '../cache/redis';
 import crypto from 'crypto';
+import { aiLogger } from '../logger';
+
+const log = aiLogger.child({ service: 'AIClient' });
 import {
   openaiBreaker,
   groqBreaker,
@@ -270,7 +273,7 @@ export async function call(options: AICallOptions): Promise<AICallResult> {
       };
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
-      console.warn(`[AIClient] ${cfg.name}/${cfg.model} failed: ${lastError.message}. Trying next...`);
+      log.warn({ err: lastError.message, provider: cfg.name, model: cfg.model, route }, 'Provider failed, trying next in fallback chain');
     }
   }
 

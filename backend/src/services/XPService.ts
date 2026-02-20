@@ -14,9 +14,12 @@
  */
 
 import { db, isInvariantViolation, isUniqueViolation, getErrorMessage } from '../db';
+import { logger } from '../logger';
 import type { ServiceResult } from '../types';
 import { ErrorCodes } from '../types';
 import { AlphaInstrumentation } from './AlphaInstrumentation';
+
+const log = logger.child({ service: 'XPService' });
 
 // ============================================================================
 // TYPES
@@ -341,7 +344,7 @@ export const XPService = {
           // Note: We don't track streak changes in XPService currently, but we can add this later
         } catch (error) {
           // Silent fail - instrumentation should not break core flow
-          console.warn('[XPService] Failed to emit trust_delta_applied for XP award:', error);
+          log.warn({ err: error instanceof Error ? error.message : String(error), userId, taskId }, 'Failed to emit trust_delta_applied for XP award');
         }
       }
       

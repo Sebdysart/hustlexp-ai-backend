@@ -12,6 +12,9 @@
 
 import { db } from '../db';
 import type { ServiceResult } from '../types';
+import { aiLogger } from '../logger';
+
+const log = aiLogger.child({ service: 'LogisticsAIService' });
 
 // ============================================================================
 // TYPES
@@ -95,7 +98,7 @@ export const LogisticsAIService = {
         data: { passed, distance_meters: distanceMeters, risk_level: riskLevel }
       };
     } catch (error) {
-      console.error('[LogisticsAIService.validateGPSProof] Error:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error) }, 'Failed to validate GPS proof');
       return {
         success: false,
         error: {
@@ -173,7 +176,7 @@ export const LogisticsAIService = {
           ]
         );
 
-        console.warn(`[FRAUD ALERT] Impossible travel detected: user=${userId}, speed=${speedKmh.toFixed(0)} km/h`);
+        log.warn({ userId, speedKmh, distanceMeters, timeDeltaSeconds }, 'FRAUD ALERT: Impossible travel detected');
       }
 
       return {
@@ -187,7 +190,7 @@ export const LogisticsAIService = {
         }
       };
     } catch (error) {
-      console.error('[LogisticsAIService.detectImpossibleTravel] Error:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error), userId }, 'Failed to detect impossible travel');
       return {
         success: false,
         error: {
@@ -348,7 +351,7 @@ export const LogisticsAIService = {
         }
       };
     } catch (error) {
-      console.error('[LogisticsAIService.assessLogisticsRisk] Error:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error), proofId, userId }, 'Failed to assess logistics risk');
       return {
         success: false,
         error: {

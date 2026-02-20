@@ -27,9 +27,12 @@
  */
 
 import { db } from '../db';
+import { logger } from '../logger';
 import type { QueryFn } from '../db';
 import type { ServiceResult } from '../types';
 import { NotificationService } from './NotificationService';
+
+const log = logger.child({ service: 'ExpertiseSupplyService' });
 
 // ============================================================================
 // TYPES
@@ -1240,14 +1243,7 @@ export const ExpertiseSupplyService = {
           expires.setDate(expires.getDate() + AUTO_EXPAND_DURATION_DAYS);
           autoExpandExpiresAt = expires.toISOString();
           expanded++;
-          console.log(JSON.stringify({
-            event: 'expertise_auto_expansion',
-            expertiseId,
-            geoZone,
-            p95Hours: Math.round(p95Hours * 10) / 10,
-            sampleCount: p95SampleCount,
-            expandPct: autoExpandPct,
-          }));
+          log.info({ expertiseId, geoZone, p95Hours: Math.round(p95Hours * 10) / 10, sampleCount: p95SampleCount, expandPct: autoExpandPct }, 'expertise_auto_expansion');
         }
 
         // 7. Write back computed values
@@ -1395,7 +1391,7 @@ export const ExpertiseSupplyService = {
           geoZone,
           expiresAt: expiresAt.toISOString(),
         },
-      }).catch(err => console.error(`[ExpertiseSupply] Failed to notify user ${waiter.user_id} of invite:`, err));
+      }).catch(err => log.error({ err: err instanceof Error ? err.message : String(err), userId: waiter.user_id, expertiseId, geoZone }, 'Failed to notify user of waitlist invite'));
     }
 
     return sent;
@@ -1430,7 +1426,7 @@ export const ExpertiseSupplyService = {
       );
     } catch {
       // Non-fatal — log to console but never throw
-      console.warn(`[ExpertiseSupply] Failed to log gate event: ${event} for user ${userId}`);
+      log.warn({ userId, expertiseId, geoZone, event }, 'Failed to log gate event');
     }
   },
 

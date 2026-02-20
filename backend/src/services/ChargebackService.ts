@@ -19,6 +19,9 @@
 import { db } from '../db';
 import { RevenueService } from './RevenueService';
 import type { ServiceResult } from '../types';
+import { stripeLogger } from '../logger';
+
+const log = stripeLogger.child({ service: 'ChargebackService' });
 
 // ============================================================================
 // TYPES
@@ -315,14 +318,14 @@ export const ChargebackService = {
         );
       }
 
-      console.log(
-        `🔴 Chargeback processed: ${stripeDisputeId} | $${(amountCents / 100).toFixed(2)} | ` +
-        `user=${userId || 'unknown'} | escrow=${escrowId || 'none'}`
+      log.info(
+        { stripeDisputeId, amountCents, userId: userId || 'unknown', escrowId: escrowId || 'none', paymentDisputeId },
+        'Chargeback processed'
       );
 
       return { success: true, data: { paymentDisputeId } };
     } catch (error) {
-      console.error('[ChargebackService] handleDisputeCreated failed:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error), stripeDisputeId }, 'handleDisputeCreated failed');
       return {
         success: false,
         error: {
@@ -359,16 +362,17 @@ export const ChargebackService = {
       );
 
       if (result.rowCount === 0) {
-        console.log(
-          `ℹ️  Dispute update skipped: ${stripeDisputeId} (not found or already terminal)`
+        log.info(
+          { stripeDisputeId },
+          'Dispute update skipped (not found or already terminal)'
         );
         return { success: true, data: { updated: false } };
       }
 
-      console.log(`🟡 Dispute updated: ${stripeDisputeId} → ${mappedStatus}`);
+      log.info({ stripeDisputeId, status: mappedStatus }, 'Dispute updated');
       return { success: true, data: { updated: true } };
     } catch (error) {
-      console.error('[ChargebackService] handleDisputeUpdated failed:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error), stripeDisputeId }, 'handleDisputeUpdated failed');
       return {
         success: false,
         error: {
@@ -409,7 +413,7 @@ export const ChargebackService = {
       );
 
       if (disputeResult.rows.length === 0) {
-        console.log(`ℹ️  Dispute close skipped: ${stripeDisputeId} not found`);
+        log.info({ stripeDisputeId }, 'Dispute close skipped (not found)');
         return { success: true, data: { resolved: false } };
       }
 
@@ -468,7 +472,7 @@ export const ChargebackService = {
           }
         }
 
-        console.log(`🟢 Dispute WON: ${stripeDisputeId} | $${(dispute.amount_cents / 100).toFixed(2)} recovered`);
+        log.info({ stripeDisputeId, amountCents: dispute.amount_cents, resolution: 'won' }, 'Dispute won - funds recovered');
       } else {
         // === DISPUTE LOST: Money is gone ===
 
@@ -503,7 +507,7 @@ export const ChargebackService = {
           }
         }
 
-        console.log(`🔴 Dispute LOST: ${stripeDisputeId} | $${(dispute.amount_cents / 100).toFixed(2)} lost permanently`);
+        log.warn({ stripeDisputeId, amountCents: dispute.amount_cents, resolution: 'lost' }, 'Dispute lost - funds lost permanently');
       }
 
       // 4. Mark dispute as resolved
@@ -519,7 +523,7 @@ export const ChargebackService = {
 
       return { success: true, data: { resolved: true } };
     } catch (error) {
-      console.error('[ChargebackService] handleDisputeClosed failed:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error), stripeDisputeId }, 'handleDisputeClosed failed');
       return {
         success: false,
         error: {

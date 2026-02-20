@@ -23,6 +23,8 @@ import { createContext } from './trpc';
 import { config } from './config';
 import { securityHeaders, rateLimitMiddleware } from './middleware/security';
 import { requestIdMiddleware, serverTimingMiddleware } from './middleware/request-id';
+import { httpMetricsMiddleware } from './monitoring/http-metrics';
+import { createMetricsEndpoint } from './monitoring/metrics';
 
 // Hono context variable type augmentation
 type AppVariables = {
@@ -97,11 +99,20 @@ app.use('*', cors({
   maxAge: 86400, // Cache preflight for 24h
 }));
 
+// Prometheus HTTP metrics collection
+app.use('*', httpMetricsMiddleware());
+
 // Rate limiting per route category
 app.use('/trpc/ai.*', rateLimitMiddleware('ai'));
 app.use('/trpc/escrow.*', rateLimitMiddleware('escrow'));
 app.use('/trpc/task.*', rateLimitMiddleware('task'));
 app.use('/api/*', rateLimitMiddleware('general'));
+
+// ============================================================================
+// PROMETHEUS METRICS ENDPOINT
+// ============================================================================
+
+createMetricsEndpoint(app);
 
 // ============================================================================
 // HEALTH CHECK

@@ -11,7 +11,10 @@
  */
 
 import { db } from '../db';
+import { logger } from '../logger';
 import type { ServiceResult } from '../types';
+
+const log = logger.child({ service: 'EarnedVerificationUnlockService' });
 
 // ============================================================================
 // TYPES
@@ -88,7 +91,7 @@ export const EarnedVerificationUnlockService = {
       // Trigger handles updating verification_earnings_tracking
       // Gap 12: Check if threshold just crossed → send $1 upgrade push notification
       if (cumulativeBefore < 4000 && cumulativeAfter >= 4000) {
-        console.log(`[EarnedVerificationUnlock] User ${userId} crossed $40 threshold! Triggering $1 verification offer.`);
+        log.info({ userId, cumulativeBefore, cumulativeAfter }, 'User crossed $40 threshold, triggering $1 verification offer');
         // Fire-and-forget notification (don't block earnings recording)
         db.query(
           `INSERT INTO notifications (user_id, type, title, body, data, created_at)
@@ -97,12 +100,12 @@ export const EarnedVerificationUnlockService = {
                    'You''ve earned enough to unlock identity verification for just $1. Tap to upgrade and access premium tasks!',
                    $2, NOW())`,
           [userId, JSON.stringify({ action: 'OPEN_VERIFICATION', fee_cents: 100 })]
-        ).catch(err => console.error('[EarnedVerificationUnlock] Notification insert failed:', err));
+        ).catch(err => log.error({ err: err instanceof Error ? err.message : String(err), userId }, 'Notification insert failed'));
       }
 
       return { success: true, data: undefined };
     } catch (error) {
-      console.error('[EarnedVerificationUnlockService.recordEarnings] Error:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error), userId, taskId, escrowId }, 'recordEarnings failed');
       return {
         success: false,
         error: {
@@ -126,7 +129,7 @@ export const EarnedVerificationUnlockService = {
       const unlocked = result.rows[0]?.earned_unlock_achieved || false;
       return { success: true, data: unlocked };
     } catch (error) {
-      console.error('[EarnedVerificationUnlockService.checkUnlockEligibility] Error:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error), userId }, 'checkUnlockEligibility failed');
       return {
         success: false,
         error: {
@@ -190,7 +193,7 @@ export const EarnedVerificationUnlockService = {
         }
       };
     } catch (error) {
-      console.error('[EarnedVerificationUnlockService.getUnlockProgress] Error:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error), userId }, 'getUnlockProgress failed');
       return {
         success: false,
         error: {
@@ -216,7 +219,7 @@ export const EarnedVerificationUnlockService = {
 
       return { success: true, data: result.rows };
     } catch (error) {
-      console.error('[EarnedVerificationUnlockService.getEarningsLedger] Error:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error), userId }, 'getEarningsLedger failed');
       return {
         success: false,
         error: {
@@ -253,11 +256,11 @@ export const EarnedVerificationUnlockService = {
           JSON.stringify({ action: 'admin_grant_verification_unlock', timestamp: new Date().toISOString() }),
         ]
       );
-      console.log(`[ADMIN OVERRIDE] ${adminId} granted verification unlock to ${userId}. Reason: ${reason}`);
+      log.info({ adminId, userId, reason }, 'Admin granted verification unlock');
 
       return { success: true, data: undefined };
     } catch (error) {
-      console.error('[EarnedVerificationUnlockService.adminGrantUnlock] Error:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error), adminId, userId }, 'adminGrantUnlock failed');
       return {
         success: false,
         error: {

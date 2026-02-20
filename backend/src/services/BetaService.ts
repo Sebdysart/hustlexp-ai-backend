@@ -21,6 +21,9 @@
 import { db } from '../db';
 import { config } from '../config';
 import type { ServiceResult } from '../types';
+import { logger } from '../logger';
+
+const log = logger.child({ service: 'BetaService' });
 
 // ============================================================================
 // TYPES
@@ -504,7 +507,7 @@ export const BetaService = {
       );
     } catch (error) {
       // Audit log failure is non-fatal but should be visible
-      console.error('⚠️  Failed to log beta state change:', error instanceof Error ? error.message : error);
+      log.error({ err: error instanceof Error ? error.message : String(error) }, 'Failed to log beta state change');
     }
   },
 
@@ -521,7 +524,7 @@ export const BetaService = {
         serverStartedAt: new Date().toISOString(),
         nodeEnv: process.env.NODE_ENV || 'development',
       });
-      console.log(`📍 Beta state logged: enabled=${config.beta.enabled}, region=${config.beta.regionName}`);
+      log.info({ enabled: config.beta.enabled, region: config.beta.regionName }, 'Beta state logged');
     } catch {
       // Silent on startup — admin_actions table may not exist yet
     }

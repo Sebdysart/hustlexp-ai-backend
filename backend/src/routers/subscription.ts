@@ -17,6 +17,9 @@ import { db } from '../db';
 import Stripe from 'stripe';
 import { config } from '../config';
 import { RevenueService } from '../services/RevenueService';
+import { logger } from '../logger';
+
+const log = logger.child({ router: 'subscription' });
 
 // ============================================================================
 // CONSTANTS
@@ -224,7 +227,7 @@ export const subscriptionRouter = router({
         try {
           await stripe.subscriptions.cancel(stripeSubId);
         } catch (err) {
-          console.error('[Subscription] Failed to cancel Stripe subscription:', err);
+          log.error({ err: err instanceof Error ? err.message : String(err) }, 'Failed to cancel Stripe subscription');
           // Continue with local downgrade even if Stripe cancel fails
         }
       }

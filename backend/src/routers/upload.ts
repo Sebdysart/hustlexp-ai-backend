@@ -16,6 +16,9 @@ import { router, protectedProcedure } from '../trpc';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { config } from '../config';
+import { logger } from '../logger';
+
+const log = logger.child({ router: 'upload' });
 
 // Allowed upload content types and size limits
 const ALLOWED_CONTENT_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/heic'] as const;
@@ -87,7 +90,7 @@ export const uploadRouter = router({
       }
 
       // Fallback: mock URLs for local development
-      console.warn('⚠️ R2 not configured — returning mock presigned URL');
+      log.warn('R2 not configured, returning mock presigned URL');
       return {
         uploadUrl: `${baseUrl}/upload/${key}?X-Amz-Signature=mock`,
         publicUrl: `${baseUrl}/${key}`,

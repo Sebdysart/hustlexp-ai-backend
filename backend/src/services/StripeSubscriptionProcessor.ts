@@ -17,6 +17,9 @@
  */
 
 import { db } from '../db';
+import { stripeLogger } from '../logger';
+
+const log = stripeLogger.child({ service: 'SubscriptionProcessor' });
 
 // ============================================================================
 // TYPES
@@ -126,5 +129,5 @@ export async function processSubscriptionEvent(
     );
   }
 
-  console.log(`✅ Subscription processed: ${plan} for user ${userId} (event: ${stripeEventId})`);
+  log.info({ plan, userId, stripeEventId }, 'Subscription processed');
 }

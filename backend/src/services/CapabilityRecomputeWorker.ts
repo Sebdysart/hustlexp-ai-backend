@@ -24,7 +24,10 @@
  */
 
 import { db } from '../db';
+import { logger } from '../logger';
 import { recomputeCapabilityProfile } from './CapabilityRecomputeService';
+
+const log = logger.child({ service: 'CapabilityRecomputeWorker' });
 
 interface JobRow {
   id: string;
@@ -102,7 +105,7 @@ export async function processCapabilityRecomputeJobs(limit: number = 10): Promis
       );
 
       processed++;
-      console.log('[Capability Recompute Worker] Processed job:', job.id);
+      log.info({ jobId: job.id }, 'Processed recompute job');
 
     } catch (error: any) {
       // Mark as failed or dead
@@ -117,11 +120,7 @@ export async function processCapabilityRecomputeJobs(limit: number = 10): Promis
         [newStatus, error.message, job.id]
       );
 
-      console.error('[Capability Recompute Worker] Job failed:', {
-        jobId: job.id,
-        error: error.message,
-        attempts: job.attempts + 1,
-      });
+      log.error({ err: error.message, jobId: job.id, attempts: job.attempts + 1 }, 'Recompute job failed');
     }
   }
 

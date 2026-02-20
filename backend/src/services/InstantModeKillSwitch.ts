@@ -11,6 +11,9 @@
  */
 
 import { db } from '../db';
+import { logger } from '../logger';
+
+const log = logger.child({ service: 'InstantModeKillSwitch' });
 
 // Default to SAFE (disabled) if env vars not set
 const getEnvFlag = (key: string, defaultValue: boolean = false): boolean => {
@@ -59,10 +62,10 @@ export const InstantModeKillSwitch = {
     const allEnabled = instantModeEnabled && surgeEnabled && interruptsEnabled;
 
     if (!allEnabled) {
-      console.log(`🚫 Instant Mode kill switch active: instantMode=${instantModeEnabled}, surge=${surgeEnabled}, interrupts=${interruptsEnabled}`, {
-        taskId: context.taskId,
-        operation: context.operation,
-      });
+      log.info(
+        { instantModeEnabled, surgeEnabled, interruptsEnabled, taskId: context.taskId, operation: context.operation },
+        'Instant Mode kill switch active'
+      );
     }
 
     return {

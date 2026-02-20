@@ -12,6 +12,9 @@
 
 import { db } from '../db';
 import type { ServiceResult } from '../types';
+import { logger } from '../logger';
+
+const log = logger.child({ service: 'SelfInsurancePoolService' });
 
 // ============================================================================
 // TYPES
@@ -102,11 +105,11 @@ export const SelfInsurancePoolService = {
         [contributionCents]
       );
 
-      console.log(`[SelfInsurancePoolService] Recorded contribution: task=${taskId}, hustler=${hustlerId}, amount=$${(contributionCents / 100).toFixed(2)}`);
+      log.info({ taskId, hustlerId, amountCents: contributionCents }, 'Recorded contribution');
 
       return { success: true, data: undefined };
     } catch (error) {
-      console.error('[SelfInsurancePoolService.recordContribution] Error:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error), taskId, hustlerId }, 'Failed to record contribution');
       return {
         success: false,
         error: {
@@ -154,11 +157,11 @@ export const SelfInsurancePoolService = {
       );
 
       const claimId = result.rows[0].id;
-      console.log(`[SelfInsurancePoolService] Filed claim: id=${claimId}, task=${taskId}, amount=$${(claimAmountCents / 100).toFixed(2)}`);
+      log.info({ claimId, taskId, amountCents: claimAmountCents }, 'Filed claim');
 
       return { success: true, data: claimId };
     } catch (error) {
-      console.error('[SelfInsurancePoolService.fileClaim] Error:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error), taskId, hustlerId }, 'Failed to file claim');
       return {
         success: false,
         error: {
@@ -192,11 +195,11 @@ export const SelfInsurancePoolService = {
         [newStatus, reviewerId, reviewNotes, claimId]
       );
 
-      console.log(`[SelfInsurancePoolService] Reviewed claim: id=${claimId}, approved=${approved}`);
+      log.info({ claimId, approved }, 'Reviewed claim');
 
       return { success: true, data: undefined };
     } catch (error) {
-      console.error('[SelfInsurancePoolService.reviewClaim] Error:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error), claimId }, 'Failed to review claim');
       return {
         success: false,
         error: {
@@ -306,25 +309,25 @@ export const SelfInsurancePoolService = {
               }).toString(),
             });
             if (!transferResponse.ok) {
-              console.error(`[SelfInsurancePoolService] Stripe transfer failed:`, await transferResponse.text());
+              log.error({ claimId, taskId: claim.task_id, statusCode: transferResponse.status }, 'Stripe transfer failed for claim payout');
               await db.query(
                 `UPDATE insurance_claims SET review_notes = COALESCE(review_notes, '') || ' [STRIPE_TRANSFER_FAILED]' WHERE id = $1`,
                 [claimId]
               );
             }
           } else {
-            console.warn(`[SelfInsurancePoolService] Hustler ${claim.hustler_id} has no Stripe Connect ID`);
+            log.warn({ hustlerId: claim.hustler_id, claimId }, 'Hustler has no Stripe Connect ID');
           }
         } catch (stripeError) {
-          console.error(`[SelfInsurancePoolService] Stripe error:`, stripeError);
+          log.error({ err: stripeError instanceof Error ? stripeError.message : String(stripeError), claimId }, 'Stripe error during claim payout');
         }
       }
 
-      console.log(`[SelfInsurancePoolService] Paid claim: id=${claimId}, amount=$${(coveredAmountCents / 100).toFixed(2)}`);
+      log.info({ claimId, coveredAmountCents }, 'Paid claim');
 
       return { success: true, data: undefined };
     } catch (error) {
-      console.error('[SelfInsurancePoolService.payClaim] Error:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error), claimId }, 'Failed to pay claim');
       return {
         success: false,
         error: {
@@ -370,7 +373,7 @@ export const SelfInsurancePoolService = {
         }
       };
     } catch (error) {
-      console.error('[SelfInsurancePoolService.getPoolStatus] Error:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error) }, 'Failed to get pool status');
       return {
         success: false,
         error: {
@@ -395,7 +398,7 @@ export const SelfInsurancePoolService = {
 
       return { success: true, data: result.rows };
     } catch (error) {
-      console.error('[SelfInsurancePoolService.getMyClaims] Error:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error), hustlerId }, 'Failed to get claims');
       return {
         success: false,
         error: {

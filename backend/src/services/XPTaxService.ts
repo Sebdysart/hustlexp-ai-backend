@@ -14,8 +14,11 @@
  */
 
 import { db } from '../db';
+import { logger } from '../logger';
 import type { ServiceResult } from '../types';
 import { StripeService } from './StripeService';
+
+const log = logger.child({ service: 'XPTaxService' });
 
 // ============================================================================
 // TYPES
@@ -106,11 +109,11 @@ export const XPTaxService = {
         [userId, taxAmountCents]
       );
 
-      console.log(`[XPTaxService] Recorded offline payment: user=${userId}, task=${taskId}, tax=$${(taxAmountCents / 100).toFixed(2)}`);
+      log.info({ userId, taskId, taxAmountCents }, 'Recorded offline payment');
 
       return { success: true, data: undefined };
     } catch (error) {
-      console.error('[XPTaxService.recordOfflinePayment] Error:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error) }, 'recordOfflinePayment failed');
       return {
         success: false,
         error: {
@@ -151,7 +154,7 @@ export const XPTaxService = {
         }
       };
     } catch (error) {
-      console.error('[XPTaxService.checkTaxStatus] Error:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error) }, 'checkTaxStatus failed');
       return {
         success: false,
         error: {
@@ -202,7 +205,7 @@ export const XPTaxService = {
         amountPaidCents = piResult.data.amountCents;
       } else {
         // Stripe not configured (dev mode) — fall back to unpaid tax total
-        console.warn('[XPTaxService.payTax] Stripe not available, using unpaid tax total as amount');
+        log.warn({ userId }, 'Stripe not available, using unpaid tax total as amount');
         const statusResult = await db.query<{ total_unpaid_tax_cents: number }>(
           'SELECT total_unpaid_tax_cents FROM user_xp_tax_status WHERE user_id = $1',
           [userId]
@@ -265,11 +268,11 @@ export const XPTaxService = {
         [totalTaxPaid, totalXpReleased, userId]
       );
 
-      console.log(`[XPTaxService.payTax] User ${userId}: paid ${totalTaxPaid} cents tax, released ${totalXpReleased} XP`);
+      log.info({ userId, totalTaxPaidCents: totalTaxPaid, xpReleased: totalXpReleased }, 'Tax payment processed');
 
       return { success: true, data: { xp_released: totalXpReleased } };
     } catch (error) {
-      console.error('[XPTaxService.payTax] Error:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error), userId }, 'payTax failed');
       return {
         success: false,
         error: {
@@ -295,7 +298,7 @@ export const XPTaxService = {
 
       return { success: true, data: result.rows };
     } catch (error) {
-      console.error('[XPTaxService.getTaxHistory] Error:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error), userId }, 'getTaxHistory failed');
       return {
         success: false,
         error: {
@@ -330,16 +333,16 @@ export const XPTaxService = {
       );
 
       // Log to admin_actions audit table
-      console.log(`[ADMIN OVERRIDE] ${adminId} forgave XP taxes for ${userId}. Reason: ${reason}`);
+      log.info({ adminId, userId, reason }, 'Admin forgave XP taxes');
       await db.query(
         `INSERT INTO admin_actions (admin_user_id, admin_role, action_type, action_details, target_user_id, result)
          VALUES ($1, 'admin', 'forgive_xp_taxes', $2::JSONB, $3, 'success')`,
         [adminId, JSON.stringify({ reason, userId }), userId]
-      ).catch(err => console.error('[XPTaxService.adminForgive] Failed to log admin action:', err));
+      ).catch(err => log.error({ err: err instanceof Error ? err.message : String(err), adminId, userId }, 'Failed to log admin forgive action'));
 
       return { success: true, data: undefined };
     } catch (error) {
-      console.error('[XPTaxService.adminForgiveTax] Error:', error);
+      log.error({ err: error instanceof Error ? error.message : String(error), adminId, userId }, 'adminForgiveTax failed');
       return {
         success: false,
         error: {
