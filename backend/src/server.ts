@@ -22,22 +22,38 @@ import { appRouter } from './routers';
 import { createContext } from './trpc';
 import { config } from './config';
 import { securityHeaders, rateLimitMiddleware } from './middleware/security';
+import { requestIdMiddleware, serverTimingMiddleware } from './middleware/request-id';
+
+// Hono context variable type augmentation
+type AppVariables = {
+  requestId: string;
+};
+import { compress } from 'hono/compress';
 import { logger as pinoLogger } from './logger';
 
 // ============================================================================
 // APP INITIALIZATION
 // ============================================================================
 
-const app = new Hono();
+const app = new Hono<{ Variables: AppVariables }>();
 
 // ============================================================================
 // MIDDLEWARE
 // ============================================================================
 
+// Request ID — unique ID per request for distributed tracing
+app.use('*', requestIdMiddleware);
+
+// Server Timing — performance metrics in response headers
+app.use('*', serverTimingMiddleware);
+
+// Response compression (gzip/deflate)
+app.use('*', compress());
+
 // Security headers (X-Frame-Options, X-Content-Type-Options, etc.)
 app.use('*', securityHeaders);
 
-// Structured request logging (Pino)
+// Structured request logging (Pino) — includes requestId
 app.use('*', async (c, next) => {
   const start = Date.now();
   await next();
@@ -45,6 +61,7 @@ app.use('*', async (c, next) => {
   const status = c.res.status;
   const level = status >= 500 ? 'error' : status >= 400 ? 'warn' : 'info';
   pinoLogger[level]({
+    requestId: c.get('requestId'),
     method: c.req.method,
     path: c.req.path,
     status,
@@ -143,17 +160,38 @@ app.get('/health/detailed', async (c) => {
   
   // Stripe check
   checks.stripe = {
-    status: config.stripe.secretKey && !config.stripe.secretKey.includes('placeholder') 
-      ? 'configured' 
+    status: config.stripe.secretKey && !config.stripe.secretKey.includes('placeholder')
+      ? 'configured'
       : 'placeholder',
   };
-  
+
+  // Database pool metrics
+  const pool = db.getPool();
+  const poolMetrics = {
+    totalConnections: pool.totalCount,
+    idleConnections: pool.idleCount,
+    waitingClients: pool.waitingCount,
+  };
+
+  // Circuit breaker states
+  const { openaiBreaker, anthropicBreaker, groqBreaker, stripeBreaker } = await import('./middleware/circuit-breaker');
+  const circuitBreakers = {
+    openai: openaiBreaker.getState(),
+    anthropic: anthropicBreaker.getState(),
+    groq: groqBreaker.getState(),
+    stripe: stripeBreaker.getState(),
+  };
+
   const allHealthy = Object.values(checks).every(c => c.status === 'ok' || c.status === 'configured');
-  
+
   return c.json({
     status: allHealthy ? 'healthy' : 'degraded',
     timestamp: new Date().toISOString(),
     checks,
+    pool: poolMetrics,
+    circuitBreakers,
+    uptime: process.uptime(),
+    memory: process.memoryUsage(),
   }, allHealthy ? 200 : 503);
 });
 
@@ -469,6 +507,7 @@ app.notFound((c) => {
     error: 'Not Found',
     path: c.req.path,
     method: c.req.method,
+    requestId: c.get('requestId'),
   }, 404);
 });
 
@@ -477,9 +516,12 @@ app.notFound((c) => {
 // ============================================================================
 
 app.onError((err, c) => {
+  const requestId = c.get('requestId');
+
   // Log full error with structured context
   pinoLogger.error({
     err,
+    requestId,
     path: c.req.path,
     method: c.req.method,
   }, 'Unhandled server error');
@@ -487,6 +529,7 @@ app.onError((err, c) => {
   // Report to Sentry with request context
   Sentry.captureException(err, {
     extra: {
+      requestId,
       path: c.req.path,
       method: c.req.method,
     },
@@ -495,6 +538,7 @@ app.onError((err, c) => {
   // Never leak stack traces or internal details to clients
   return c.json({
     error: 'Internal Server Error',
+    requestId,
     message: config.app.isDevelopment
       ? err.message
       : 'An unexpected error occurred. Please try again later.',
@@ -929,9 +973,67 @@ export default {
 
 // For Node.js deployment
 import { serve } from '@hono/node-server';
-serve({
+const server = serve({
   fetch: app.fetch,
   port: config.app.port,
+});
+
+// ============================================================================
+// GRACEFUL SHUTDOWN
+// ============================================================================
+
+let shutdownInProgress = false;
+
+async function gracefulShutdown(signal: string): Promise<void> {
+  if (shutdownInProgress) {
+    pinoLogger.warn('Shutdown already in progress, forcing exit...');
+    process.exit(1);
+  }
+
+  shutdownInProgress = true;
+  pinoLogger.info({ signal }, `Received ${signal}, shutting down gracefully...`);
+
+  // 1. Stop accepting new connections
+  server.close((err) => {
+    if (err) {
+      pinoLogger.error({ err }, 'Error closing HTTP server');
+    } else {
+      pinoLogger.info('HTTP server closed — no new connections');
+    }
+  });
+
+  // 2. Allow in-flight requests to complete (10s grace period)
+  const drainTimeout = setTimeout(() => {
+    pinoLogger.warn('Drain timeout reached (10s), forcing shutdown...');
+  }, 10000);
+
+  // 3. Close database pool
+  try {
+    await db.close();
+    pinoLogger.info('Database pool closed');
+  } catch (err) {
+    pinoLogger.error({ err }, 'Error closing database pool');
+  }
+
+  clearTimeout(drainTimeout);
+  pinoLogger.info('Graceful shutdown complete');
+  process.exit(0);
+}
+
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+
+// Catch unhandled rejections in production
+process.on('unhandledRejection', (reason) => {
+  pinoLogger.error({ reason }, 'Unhandled promise rejection');
+  Sentry.captureException(reason);
+});
+
+process.on('uncaughtException', (error) => {
+  pinoLogger.fatal({ err: error }, 'Uncaught exception — shutting down');
+  Sentry.captureException(error);
+  // Give Sentry time to flush, then exit
+  setTimeout(() => process.exit(1), 2000);
 });
 
 export { app };

@@ -1,0 +1,45 @@
+# Dependencies
+node_modules
+
+# Build artifacts
+dist
+
+# Version control
+.git
+.gitignore
+
+# Environment files (secrets must come from env vars, not files)
+.env
+.env.*
+!.env.example
+
+# IDE/Editor
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test and development files
+coverage
+*.test.ts
+*.spec.ts
+backend/tests
+backend/src/tests
+vitest.config.ts
+
+# Documentation
+*.md
+!README.md
+LICENSE
+
+# Scripts (dev only)
+scripts
+
+# Migrations (run separately, not in container)
+migrations
+migrate-pg.mjs
