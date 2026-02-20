@@ -608,50 +608,70 @@ export interface ServiceError {
   details?: Record<string, unknown>;
 }
 
-// Error codes (match trigger ERRCODE values from PRODUCT_SPEC §10)
+// ============================================================================
+// ERROR CODES CATALOG
+//
+// All error codes in the system with HTTP status mappings and descriptions.
+// Frontend uses code for programmatic handling, message for user display.
+//
+// Ranges:
+//   HX0XX — State machine / terminal state violations
+//   HX1XX — XP / ledger invariants
+//   HX2XX — Escrow invariants
+//   HX3XX — Proof invariants
+//   HX4XX — Badge / gamification
+//   HX6XX — Human systems (fatigue, reputation)
+//   HX8XX — Admin audit
+//   HX9XX — Live Mode
+//   General — HTTP-aligned general errors
+//   External — Third-party service errors (Stripe, AI, etc.)
+// ============================================================================
+
 export const ErrorCodes = {
+  // --- Instant Mode --------------------------------------------------------
   INSTANT_TASK_INCOMPLETE: 'INSTANT_TASK_INCOMPLETE',
   INSTANT_TASK_TRUST_INSUFFICIENT: 'INSTANT_TASK_TRUST_INSUFFICIENT',
-  // Terminal state violations
-  TASK_TERMINAL: 'HX001',  // Task terminal state violation
-  ESCROW_TERMINAL: 'HX002',  // Escrow terminal state violation
-  
-  // INV-4: Escrow amount immutable
-  INV_4_VIOLATION: 'HX004',  // Escrow amount modification
-  
-  // INV-1: XP requires RELEASED escrow
-  INV_1_VIOLATION: 'HX101',  // XP without released escrow
-  XP_LEDGER_DELETE: 'HX102',  // XP ledger deletion attempt
-  
-  // INV-2: RELEASED requires COMPLETED task
-  INV_2_VIOLATION: 'HX201',  // Release without completed task
-  
-  // INV-3: COMPLETED requires ACCEPTED proof
-  INV_3_VIOLATION: 'HX301',  // Complete without accepted proof
-  
-  // Badge system
-  BADGE_DELETE: 'HX401',  // Badge deletion attempt
-  
-  // Admin actions
-  ADMIN_ACTION_DELETE: 'HX801',  // Admin action audit violation
-  
-  // Live Mode (HX9XX)
-  LIVE_1_VIOLATION: 'HX901',  // Live broadcast without funded escrow
-  LIVE_2_VIOLATION: 'HX902',  // Live task below price floor
-  LIVE_NOT_ACTIVE: 'HX903',  // Hustler not in ACTIVE state
-  LIVE_TOGGLE_COOLDOWN: 'HX904',  // Live Mode toggle cooldown
-  LIVE_BANNED: 'HX905',  // Live Mode banned
-  
-  // Human Systems (HX6XX) - Reserved
-  FATIGUE_BYPASS: 'HX601',  // Fatigue mandatory break bypass
-  PAUSE_VIOLATION: 'HX602',  // Pause state violation
-  POSTER_REP_ACCESS: 'HX603',  // Poster reputation access by poster
-  PERCENTILE_EXPOSURE: 'HX604',  // Percentile public exposure
-  
-  // INV-5: XP idempotent per escrow (PostgreSQL unique violation)
-  INV_5_VIOLATION: '23505',  // Unique constraint violation
-  
-  // General errors
+
+  // --- Terminal state violations (HX0XX) -----------------------------------
+  TASK_TERMINAL: 'HX001',       // Task already in terminal state
+  ESCROW_TERMINAL: 'HX002',     // Escrow already in terminal state
+
+  // --- INV-4: Escrow amount immutable (HX0XX) -----------------------------
+  INV_4_VIOLATION: 'HX004',     // Escrow amount modification blocked
+
+  // --- INV-1: XP requires RELEASED escrow (HX1XX) -------------------------
+  INV_1_VIOLATION: 'HX101',     // XP award without released escrow
+  XP_LEDGER_DELETE: 'HX102',    // XP ledger deletion blocked (append-only)
+
+  // --- INV-2: RELEASED requires COMPLETED task (HX2XX) --------------------
+  INV_2_VIOLATION: 'HX201',     // Escrow release without completed task
+
+  // --- INV-3: COMPLETED requires ACCEPTED proof (HX3XX) -------------------
+  INV_3_VIOLATION: 'HX301',     // Task complete without accepted proof
+
+  // --- Badge system (HX4XX) -----------------------------------------------
+  BADGE_DELETE: 'HX401',        // Badge deletion blocked (append-only)
+
+  // --- Human Systems (HX6XX) ----------------------------------------------
+  FATIGUE_BYPASS: 'HX601',      // Fatigue mandatory break bypass attempt
+  PAUSE_VIOLATION: 'HX602',     // Pause state violation
+  POSTER_REP_ACCESS: 'HX603',   // Poster reputation access by poster
+  PERCENTILE_EXPOSURE: 'HX604', // Percentile public exposure blocked
+
+  // --- Admin actions (HX8XX) ----------------------------------------------
+  ADMIN_ACTION_DELETE: 'HX801', // Admin action audit deletion blocked
+
+  // --- Live Mode (HX9XX) --------------------------------------------------
+  LIVE_1_VIOLATION: 'HX901',    // Live broadcast without funded escrow
+  LIVE_2_VIOLATION: 'HX902',    // Live task below price floor
+  LIVE_NOT_ACTIVE: 'HX903',     // Hustler not in ACTIVE state
+  LIVE_TOGGLE_COOLDOWN: 'HX904',// Live Mode toggle cooldown active
+  LIVE_BANNED: 'HX905',         // Live Mode banned
+
+  // --- INV-5: XP idempotent per escrow (PostgreSQL unique violation) ------
+  INV_5_VIOLATION: '23505',     // Unique constraint (one XP per escrow)
+
+  // --- General errors (HTTP-aligned) --------------------------------------
   NOT_FOUND: 'NOT_FOUND',
   INVALID_STATE: 'INVALID_STATE',
   INVALID_TRANSITION: 'INVALID_TRANSITION',
@@ -661,4 +681,49 @@ export const ErrorCodes = {
   RATE_LIMIT_EXCEEDED: 'RATE_LIMIT_EXCEEDED',
   PREFERENCE_DISABLED: 'PREFERENCE_DISABLED',
   INVARIANT_VIOLATION: 'INVARIANT_VIOLATION',
+  CONFLICT: 'CONFLICT',
+  INTERNAL_ERROR: 'INTERNAL_ERROR',
+  SERVICE_UNAVAILABLE: 'SERVICE_UNAVAILABLE',
+
+  // --- External service errors (circuit breaker aware) --------------------
+  STRIPE_NOT_CONFIGURED: 'STRIPE_NOT_CONFIGURED',
+  STRIPE_ERROR: 'STRIPE_ERROR',
+  AI_UNAVAILABLE: 'AI_UNAVAILABLE',
+  AI_ALL_PROVIDERS_FAILED: 'AI_ALL_PROVIDERS_FAILED',
+  REKOGNITION_NOT_CONFIGURED: 'REKOGNITION_NOT_CONFIGURED',
+  BIOMETRIC_ANALYSIS_FAILED: 'BIOMETRIC_ANALYSIS_FAILED',
+  SENDGRID_ERROR: 'SENDGRID_ERROR',
+  TWILIO_ERROR: 'TWILIO_ERROR',
+  GEOCODING_ERROR: 'GEOCODING_ERROR',
+  CIRCUIT_OPEN: 'CIRCUIT_OPEN',
 } as const;
+
+/** Map error codes → HTTP status codes for consistent API responses */
+export const ErrorCodeHttpStatus: Record<string, number> = {
+  [ErrorCodes.NOT_FOUND]: 404,
+  [ErrorCodes.UNAUTHORIZED]: 401,
+  [ErrorCodes.FORBIDDEN]: 403,
+  [ErrorCodes.INVALID_INPUT]: 400,
+  [ErrorCodes.INVALID_STATE]: 409,
+  [ErrorCodes.INVALID_TRANSITION]: 409,
+  [ErrorCodes.CONFLICT]: 409,
+  [ErrorCodes.RATE_LIMIT_EXCEEDED]: 429,
+  [ErrorCodes.SERVICE_UNAVAILABLE]: 503,
+  [ErrorCodes.CIRCUIT_OPEN]: 503,
+  [ErrorCodes.INTERNAL_ERROR]: 500,
+  // Invariant violations are always 409 Conflict
+  [ErrorCodes.TASK_TERMINAL]: 409,
+  [ErrorCodes.ESCROW_TERMINAL]: 409,
+  [ErrorCodes.INV_1_VIOLATION]: 409,
+  [ErrorCodes.INV_2_VIOLATION]: 409,
+  [ErrorCodes.INV_3_VIOLATION]: 409,
+  [ErrorCodes.INV_4_VIOLATION]: 409,
+  [ErrorCodes.INV_5_VIOLATION]: 409,
+  // External services
+  [ErrorCodes.STRIPE_NOT_CONFIGURED]: 503,
+  [ErrorCodes.STRIPE_ERROR]: 502,
+  [ErrorCodes.AI_UNAVAILABLE]: 503,
+  [ErrorCodes.AI_ALL_PROVIDERS_FAILED]: 502,
+  [ErrorCodes.SENDGRID_ERROR]: 502,
+  [ErrorCodes.TWILIO_ERROR]: 502,
+};

@@ -53,6 +53,14 @@ app.use('*', compress());
 // Security headers (X-Frame-Options, X-Content-Type-Options, etc.)
 app.use('*', securityHeaders);
 
+// API versioning headers
+app.use('*', async (c, next) => {
+  await next();
+  c.header('X-API-Version', '2024-02-19');
+  c.header('X-HustleXP-Version', '2.4.0');
+  c.header('Deprecation', 'false');
+});
+
 // Structured request logging (Pino) — includes requestId
 app.use('*', async (c, next) => {
   const start = Date.now();
