@@ -54,9 +54,11 @@ if (dsn) {
     ],
   });
 
-  console.log('✅ Sentry error tracking initialized');
+  // Note: Can't use pino logger here — sentry.ts must load before logger.ts
+  // These are one-time startup messages; structured logging covers everything after init
+  process.stdout.write('[sentry] Sentry error tracking initialized\n');
 } else {
-  console.log('⚠️  Sentry DSN not configured — error tracking disabled');
+  process.stdout.write('[sentry] Sentry DSN not configured — error tracking disabled\n');
 }
 
 export { Sentry };

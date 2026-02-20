@@ -18,35 +18,40 @@ export const instantRouter = router({
    * v0: Simple list, no filtering
    * Uses mode='LIVE' + state='OPEN' as proxy for instant tasks
    */
-  listAvailable: protectedProcedure.query(async ({ ctx }) => {
-    const result = await db.query<{
-      id: string;
-      title: string;
-      description: string;
-      price: number;
-      location: string | null;
-      created_at: Date;
-    }>(
-      `SELECT id, title, description, price, location, created_at
-       FROM tasks
-       WHERE mode = 'LIVE'
-         AND state = 'OPEN'
-         AND worker_id IS NULL
-       ORDER BY created_at DESC
-       LIMIT 20`
-    );
+  listAvailable: protectedProcedure
+    .input(z.object({
+      limit: z.number().int().min(1).max(50).default(20),
+    }).optional())
+    .query(async ({ ctx, input }) => {
+      const limit = input?.limit ?? 20;
+      const result = await db.query<{
+        id: string;
+        title: string;
+        description: string;
+        price: number;
+        location: string | null;
+        created_at: Date;
+      }>(
+        `SELECT id, title, description, price, location, created_at
+         FROM tasks
+         WHERE mode = 'LIVE'
+           AND state = 'OPEN'
+           AND worker_id IS NULL
+         ORDER BY created_at DESC
+         LIMIT $1`,
+        [limit]
+      );
 
-    return result.rows.map(task => ({
-      id: task.id,
-      title: task.title,
-      description: task.description,
-      price: task.price,
-      location: task.location,
-      createdAt: task.created_at,
-      // Calculate time waiting (for display)
-      waitingSeconds: Math.floor((Date.now() - task.created_at.getTime()) / 1000),
-    }));
-  }),
+      return result.rows.map(task => ({
+        id: task.id,
+        title: task.title,
+        description: task.description,
+        price: task.price,
+        location: task.location,
+        createdAt: task.created_at,
+        waitingSeconds: Math.floor((Date.now() - task.created_at.getTime()) / 1000),
+      }));
+    }),
 
   /**
    * Accept instant task (one-tap)

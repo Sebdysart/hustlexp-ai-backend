@@ -12,6 +12,8 @@
 
 import pg from 'pg';
 const { Pool } = pg;
+import { logger } from './logger';
+const dbLog = logger.child({ module: 'db' });
 
 // ============================================================================
 // CONFIGURATION
@@ -20,7 +22,7 @@ const { Pool } = pg;
 const DATABASE_URL = process.env.DATABASE_URL;
 
 if (!DATABASE_URL) {
-  console.error('❌ DATABASE_URL is required');
+  dbLog.fatal('DATABASE_URL is required');
   throw new Error('DATABASE_URL environment variable is not set');
 }
 
@@ -42,7 +44,7 @@ const pool = new Pool({
   statement_timeout: 30000,
 });
 
-console.log('✅ Database pool initialized');
+dbLog.info('Database pool initialized');
 
 // ============================================================================
 // HUSTLEXP ERROR CODES
@@ -292,10 +294,7 @@ export const db: Database = {
       try {
         await client.query('ROLLBACK');
       } catch (rollbackError) {
-        console.error('[DB] ROLLBACK failed - original error may be lost', {
-          originalError: error,
-          rollbackError,
-        });
+        dbLog.error({ originalError: error, rollbackError }, 'ROLLBACK failed — original error may be lost');
       }
       throw error;
     } finally {
@@ -332,10 +331,7 @@ export const db: Database = {
       try {
         await client.query('ROLLBACK');
       } catch (rollbackError) {
-        console.error('[DB] ROLLBACK failed - original error may be lost', {
-          originalError: error,
-          rollbackError,
-        });
+        dbLog.error({ originalError: error, rollbackError }, 'ROLLBACK failed — original error may be lost');
       }
       throw error;
     } finally {
@@ -380,7 +376,7 @@ export const db: Database = {
    */
   close: async () => {
     await pool.end();
-    console.log('✅ Database pool closed');
+    dbLog.info('Database pool closed');
   },
 };
 
@@ -413,7 +409,7 @@ export async function checkHealth(): Promise<{
       latencyMs: Date.now() - start,
     };
   } catch (error) {
-    console.error('[DB] Health check failed:', error);
+    dbLog.error({ err: error }, 'Health check failed');
     return {
       database: false,
       schemaVersion: null,

@@ -286,6 +286,7 @@ import { db } from './db';
 import type { User } from './types';
 import type { WebhookResult } from './services/StripeWebhookService';
 import { sseHandler } from './realtime/sse-handler';
+import { z } from 'zod';
 
 // Helper to get authenticated user from Bearer token
 async function getAuthUser(c: any): Promise<User | null> {
@@ -307,6 +308,10 @@ async function getAuthUser(c: any): Promise<User | null> {
   }
 }
 
+// Shared Zod schemas for REST param validation
+const uuidParam = z.string().uuid();
+const timestampBody = z.object({ timestamp: z.string().datetime().optional() }).optional();
+
 // Animation Tracking Endpoints
 
 app.get('/api/users/:userId/xp-celebration-status', async (c) => {
@@ -314,18 +319,21 @@ app.get('/api/users/:userId/xp-celebration-status', async (c) => {
   if (!user || user.id !== c.req.param('userId')) {
     return c.json({ error: 'Unauthorized' }, 401);
   }
-  
-  const result = await db.query<{ xp_first_celebration_shown_at: Date | null }>(
-    `SELECT xp_first_celebration_shown_at FROM users WHERE id = $1`,
-    [user.id]
-  );
-  
-  const shouldShow = result.rows[0]?.xp_first_celebration_shown_at === null;
-  
-  return c.json({
-    shouldShow,
-    xpFirstCelebrationShownAt: result.rows[0]?.xp_first_celebration_shown_at?.toISOString() || null,
-  });
+
+  try {
+    const result = await db.query<{ xp_first_celebration_shown_at: Date | null }>(
+      `SELECT xp_first_celebration_shown_at FROM users WHERE id = $1`,
+      [user.id]
+    );
+    const shouldShow = result.rows[0]?.xp_first_celebration_shown_at === null;
+    return c.json({
+      shouldShow,
+      xpFirstCelebrationShownAt: result.rows[0]?.xp_first_celebration_shown_at?.toISOString() || null,
+    });
+  } catch (err) {
+    pinoLogger.error({ err, userId: user.id }, 'Failed to fetch xp celebration status');
+    return c.json({ error: 'Internal server error' }, 500);
+  }
 });
 
 app.post('/api/users/:userId/xp-celebration-shown', async (c) => {
@@ -333,21 +341,27 @@ app.post('/api/users/:userId/xp-celebration-shown', async (c) => {
   if (!user || user.id !== c.req.param('userId')) {
     return c.json({ error: 'Unauthorized' }, 401);
   }
-  
-  const body = await c.req.json().catch(() => ({}));
-  
-  const result = await db.query<{ xp_first_celebration_shown_at: Date | null }>(
-    `UPDATE users
-     SET xp_first_celebration_shown_at = COALESCE($2::timestamptz, NOW())
-     WHERE id = $1 AND xp_first_celebration_shown_at IS NULL
-     RETURNING xp_first_celebration_shown_at`,
-    [user.id, body.timestamp ? new Date(body.timestamp) : null]
-  );
 
-  return c.json({
-    success: true,
-    xpFirstCelebrationShownAt: result.rows[0]?.xp_first_celebration_shown_at?.toISOString() || null,
-  });
+  const rawBody = await c.req.json().catch(() => ({}));
+  const parsed = timestampBody.safeParse(rawBody);
+  const ts = parsed.success && parsed.data?.timestamp ? new Date(parsed.data.timestamp) : null;
+
+  try {
+    const result = await db.query<{ xp_first_celebration_shown_at: Date | null }>(
+      `UPDATE users
+       SET xp_first_celebration_shown_at = COALESCE($2::timestamptz, NOW())
+       WHERE id = $1 AND xp_first_celebration_shown_at IS NULL
+       RETURNING xp_first_celebration_shown_at`,
+      [user.id, ts]
+    );
+    return c.json({
+      success: true,
+      xpFirstCelebrationShownAt: result.rows[0]?.xp_first_celebration_shown_at?.toISOString() || null,
+    });
+  } catch (err) {
+    pinoLogger.error({ err, userId: user.id }, 'Failed to mark xp celebration shown');
+    return c.json({ error: 'Internal server error' }, 500);
+  }
 });
 
 app.get('/api/users/:userId/badges/:badgeId/animation-status', async (c) => {
@@ -355,23 +369,29 @@ app.get('/api/users/:userId/badges/:badgeId/animation-status', async (c) => {
   if (!user || user.id !== c.req.param('userId')) {
     return c.json({ error: 'Unauthorized' }, 401);
   }
-  
+
   const badgeId = c.req.param('badgeId');
-  const result = await db.query<{ animation_shown_at: Date | null }>(
-    `SELECT animation_shown_at FROM badges WHERE id = $1 AND user_id = $2`,
-    [badgeId, user.id]
-  );
-  
-  if (result.rows.length === 0) {
-    return c.json({ error: 'Badge not found' }, 404);
+  if (!uuidParam.safeParse(badgeId).success) {
+    return c.json({ error: 'Invalid badgeId' }, 400);
   }
-  
-  const shouldShow = result.rows[0].animation_shown_at === null;
-  
-  return c.json({
-    shouldShow,
-    animationShownAt: result.rows[0].animation_shown_at?.toISOString() || null,
-  });
+
+  try {
+    const result = await db.query<{ animation_shown_at: Date | null }>(
+      `SELECT animation_shown_at FROM badges WHERE id = $1 AND user_id = $2`,
+      [badgeId, user.id]
+    );
+    if (result.rows.length === 0) {
+      return c.json({ error: 'Badge not found' }, 404);
+    }
+    const shouldShow = result.rows[0].animation_shown_at === null;
+    return c.json({
+      shouldShow,
+      animationShownAt: result.rows[0].animation_shown_at?.toISOString() || null,
+    });
+  } catch (err) {
+    pinoLogger.error({ err, badgeId, userId: user.id }, 'Failed to fetch badge animation status');
+    return c.json({ error: 'Internal server error' }, 500);
+  }
 });
 
 app.post('/api/users/:userId/badges/:badgeId/animation-shown', async (c) => {
@@ -379,22 +399,32 @@ app.post('/api/users/:userId/badges/:badgeId/animation-shown', async (c) => {
   if (!user || user.id !== c.req.param('userId')) {
     return c.json({ error: 'Unauthorized' }, 401);
   }
-  
-  const badgeId = c.req.param('badgeId');
-  const body = await c.req.json().catch(() => ({}));
-  
-  const result = await db.query<{ animation_shown_at: Date | null }>(
-    `UPDATE badges
-     SET animation_shown_at = COALESCE($3::timestamptz, NOW())
-     WHERE id = $1 AND user_id = $2 AND animation_shown_at IS NULL
-     RETURNING animation_shown_at`,
-    [badgeId, user.id, body.timestamp ? new Date(body.timestamp) : null]
-  );
 
-  return c.json({
-    success: true,
-    animationShownAt: result.rows[0]?.animation_shown_at?.toISOString() || null,
-  });
+  const badgeId = c.req.param('badgeId');
+  if (!uuidParam.safeParse(badgeId).success) {
+    return c.json({ error: 'Invalid badgeId' }, 400);
+  }
+
+  const rawBody = await c.req.json().catch(() => ({}));
+  const parsed = timestampBody.safeParse(rawBody);
+  const ts = parsed.success && parsed.data?.timestamp ? new Date(parsed.data.timestamp) : null;
+
+  try {
+    const result = await db.query<{ animation_shown_at: Date | null }>(
+      `UPDATE badges
+       SET animation_shown_at = COALESCE($3::timestamptz, NOW())
+       WHERE id = $1 AND user_id = $2 AND animation_shown_at IS NULL
+       RETURNING animation_shown_at`,
+      [badgeId, user.id, ts]
+    );
+    return c.json({
+      success: true,
+      animationShownAt: result.rows[0]?.animation_shown_at?.toISOString() || null,
+    });
+  } catch (err) {
+    pinoLogger.error({ err, badgeId, userId: user.id }, 'Failed to mark badge animation shown');
+    return c.json({ error: 'Internal server error' }, 500);
+  }
 });
 
 // State Confirmation Endpoints
@@ -404,18 +434,25 @@ app.get('/api/tasks/:taskId/state', async (c) => {
   if (!user) {
     return c.json({ error: 'Unauthorized' }, 401);
   }
-  
+
   const taskId = c.req.param('taskId');
-  const result = await db.query<{ state: string }>(
-    `SELECT state FROM tasks WHERE id = $1`,
-    [taskId]
-  );
-  
-  if (result.rows.length === 0) {
-    return c.json({ error: 'Task not found' }, 404);
+  if (!uuidParam.safeParse(taskId).success) {
+    return c.json({ error: 'Invalid taskId' }, 400);
   }
-  
-  return c.json({ state: result.rows[0].state });
+
+  try {
+    const result = await db.query<{ state: string }>(
+      `SELECT state FROM tasks WHERE id = $1`,
+      [taskId]
+    );
+    if (result.rows.length === 0) {
+      return c.json({ error: 'Task not found' }, 404);
+    }
+    return c.json({ state: result.rows[0].state });
+  } catch (err) {
+    pinoLogger.error({ err, taskId }, 'Failed to fetch task state');
+    return c.json({ error: 'Internal server error' }, 500);
+  }
 });
 
 app.get('/api/escrows/:escrowId/state', async (c) => {
@@ -423,45 +460,70 @@ app.get('/api/escrows/:escrowId/state', async (c) => {
   if (!user) {
     return c.json({ error: 'Unauthorized' }, 401);
   }
-  
+
   const escrowId = c.req.param('escrowId');
-  const result = await db.query<{ state: string }>(
-    `SELECT state FROM escrows WHERE id = $1`,
-    [escrowId]
-  );
-  
-  if (result.rows.length === 0) {
-    return c.json({ error: 'Escrow not found' }, 404);
+  if (!uuidParam.safeParse(escrowId).success) {
+    return c.json({ error: 'Invalid escrowId' }, 400);
   }
-  
-  return c.json({ state: result.rows[0].state });
+
+  try {
+    const result = await db.query<{ state: string }>(
+      `SELECT state FROM escrows WHERE id = $1`,
+      [escrowId]
+    );
+    if (result.rows.length === 0) {
+      return c.json({ error: 'Escrow not found' }, 404);
+    }
+    return c.json({ state: result.rows[0].state });
+  } catch (err) {
+    pinoLogger.error({ err, escrowId }, 'Failed to fetch escrow state');
+    return c.json({ error: 'Internal server error' }, 500);
+  }
 });
 
 // Violation Reporting
+
+const violationSchema = z.object({
+  type: z.string().min(1).max(100),
+  rule: z.string().min(1).max(200),
+  component: z.string().min(1).max(200).optional(),
+  context: z.record(z.unknown()).optional(),
+  severity: z.enum(['ERROR', 'WARNING', 'INFO']).default('ERROR'),
+});
 
 app.post('/api/ui/violations', async (c) => {
   const user = await getAuthUser(c);
   if (!user) {
     return c.json({ error: 'Unauthorized' }, 401);
   }
-  
-  const body = await c.req.json();
-  
-  await db.query(
-    `INSERT INTO admin_actions (admin_user_id, admin_role, action_type, action_details, result)
-     VALUES ($1, 'user', 'UI_VIOLATION', $2, 'logged')`,
-    [
-      user.id,
-      JSON.stringify({
-        violationType: body.type,
-        rule: body.rule,
-        component: body.component,
-        context: body.context,
-        severity: body.severity || 'ERROR',
-      }),
-    ]
-  );
-  
+
+  const rawBody = await c.req.json().catch(() => null);
+  const parsed = violationSchema.safeParse(rawBody);
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid request body', details: parsed.error.flatten() }, 400);
+  }
+  const body = parsed.data;
+
+  try {
+    await db.query(
+      `INSERT INTO admin_actions (admin_user_id, admin_role, action_type, action_details, result)
+       VALUES ($1, 'user', 'UI_VIOLATION', $2, 'logged')`,
+      [
+        user.id,
+        JSON.stringify({
+          violationType: body.type,
+          rule: body.rule,
+          component: body.component,
+          context: body.context,
+          severity: body.severity,
+        }),
+      ]
+    );
+  } catch (err) {
+    pinoLogger.error({ err, userId: user.id }, 'Failed to log UI violation');
+    return c.json({ error: 'Failed to log violation' }, 500);
+  }
+
   return c.json({
     success: true,
     loggedAt: new Date().toISOString(),
@@ -475,29 +537,31 @@ app.get('/api/users/:userId/onboarding-status', async (c) => {
   if (!user || user.id !== c.req.param('userId')) {
     return c.json({ error: 'Unauthorized' }, 401);
   }
-  
-  const result = await db.query<{
-    onboarding_completed_at: Date | null;
-    default_mode: string;
-    xp_first_celebration_shown_at: Date | null;
-  }>(
-    `SELECT onboarding_completed_at, default_mode, xp_first_celebration_shown_at
-     FROM users WHERE id = $1`,
-    [user.id]
-  );
-  
-  if (result.rows.length === 0) {
-    return c.json({ error: 'User not found' }, 404);
+
+  try {
+    const result = await db.query<{
+      onboarding_completed_at: Date | null;
+      default_mode: string;
+      xp_first_celebration_shown_at: Date | null;
+    }>(
+      `SELECT onboarding_completed_at, default_mode, xp_first_celebration_shown_at
+       FROM users WHERE id = $1`,
+      [user.id]
+    );
+    if (result.rows.length === 0) {
+      return c.json({ error: 'User not found' }, 404);
+    }
+    const userData = result.rows[0];
+    return c.json({
+      onboardingComplete: userData.onboarding_completed_at !== null,
+      role: userData.default_mode,
+      xpFirstCelebrationShownAt: userData.xp_first_celebration_shown_at?.toISOString() || null,
+      hasCompletedFirstTask: userData.xp_first_celebration_shown_at !== null,
+    });
+  } catch (err) {
+    pinoLogger.error({ err, userId: user.id }, 'Failed to fetch onboarding status');
+    return c.json({ error: 'Internal server error' }, 500);
   }
-  
-  const userData = result.rows[0];
-  
-  return c.json({
-    onboardingComplete: userData.onboarding_completed_at !== null,
-    role: userData.default_mode,
-    xpFirstCelebrationShownAt: userData.xp_first_celebration_shown_at?.toISOString() || null,
-    hasCompletedFirstTask: userData.xp_first_celebration_shown_at !== null,
-  });
 });
 
 // ============================================================================
@@ -607,13 +671,12 @@ app.onError((err, c) => {
 // ============================================================================
 
 async function startServer() {
-  console.log('');
-  console.log('═══════════════════════════════════════════════════════════');
-  console.log('  HustleXP Backend v1.0.0');
-  console.log('  CONSTITUTIONAL AUTHORITY');
-  console.log('═══════════════════════════════════════════════════════════');
-  console.log('');
-  
+  const startLog = pinoLogger.child({ module: 'startup' });
+
+  startLog.info('═══════════════════════════════════════════════════════════');
+  startLog.info('  HustleXP Backend v1.0.0 — CONSTITUTIONAL AUTHORITY');
+  startLog.info('═══════════════════════════════════════════════════════════');
+
   // Validate configuration
   const configStatus = {
     database: !!config.database.url,
@@ -621,37 +684,30 @@ async function startServer() {
     stripe: !!config.stripe.secretKey && !config.stripe.secretKey.includes('placeholder'),
     redis: !!config.redis.url,
   };
-  
-  console.log('Configuration:');
-  console.log(`  Database:  ${configStatus.database ? '✅' : '❌'} ${configStatus.database ? 'Connected' : 'Missing DATABASE_URL'}`);
-  console.log(`  Firebase:  ${configStatus.firebase ? '✅' : '⚠️'} ${configStatus.firebase ? 'Configured' : 'Missing'}`);
-  console.log(`  Stripe:    ${configStatus.stripe ? '✅' : '⚠️'} ${configStatus.stripe ? 'Configured' : 'Placeholder'}`);
-  console.log(`  Redis:     ${configStatus.redis ? '✅' : '⚠️'} ${configStatus.redis ? 'Configured' : 'Missing'}`);
-  console.log('');
-  
+
+  startLog.info({ configStatus }, 'Configuration check');
+
   // Check database connection and auto-migrate if needed
   try {
-    // Test basic connectivity first
     await db.query('SELECT 1 as ping');
-    console.log('Database:    ✅ Connected');
+    startLog.info('Database connected');
   } catch (connErr) {
-    console.error('Database:    ❌ Connection failed:', connErr instanceof Error ? connErr.message : 'Unknown');
+    startLog.error({ err: connErr }, 'Database connection failed');
   }
 
   // Auto-migrate if schema_versions table is missing
   try {
     await db.query('SELECT 1 FROM schema_versions LIMIT 1');
-    console.log('Schema:      ✅ Tables exist');
+    startLog.info('Schema tables exist');
   } catch (schemaErr: any) {
-    console.log(`Schema:      🔍 Check failed — code=${schemaErr?.code}, message=${schemaErr?.message?.substring(0, 120)}`);
+    startLog.warn({ code: schemaErr?.code, message: schemaErr?.message?.substring(0, 120) }, 'Schema check failed');
     if (schemaErr?.message?.includes('schema_versions') || schemaErr?.message?.includes('does not exist') || schemaErr?.code === '42P01') {
-      console.log('Schema:      ⚠️  Tables missing — running auto-migration...');
+      startLog.warn('Tables missing — running auto-migration');
       try {
         const fs = await import('fs');
         const path = await import('path');
         const cwd = process.cwd();
-        console.log(`Schema:      📁 CWD = ${cwd}`);
-        // Try multiple possible paths (local dev vs Railway container)
+        startLog.info({ cwd }, 'Searching for schema file');
         const candidates = [
           path.join(cwd, 'backend/database/constitutional-schema.sql'),
           path.join(cwd, 'backend', 'database', 'constitutional-schema.sql'),
@@ -664,41 +720,34 @@ async function startServer() {
           try {
             schemaSQL = fs.readFileSync(p, 'utf-8');
             foundPath = p;
-            console.log(`Schema:      📂 Found schema at ${p} (${schemaSQL.length} chars)`);
+            startLog.info({ path: p, chars: schemaSQL.length }, 'Found schema file');
             break;
           } catch (readErr: any) {
-            console.log(`Schema:      ❌ Not at ${p}: ${readErr?.code || readErr?.message}`);
+            startLog.debug({ path: p, code: readErr?.code }, 'Schema not at path');
           }
         }
         if (!schemaSQL) {
-          console.error('Schema:      ❌ Could not find constitutional-schema.sql in any candidate path');
-          // List directory to debug
+          startLog.error('Could not find constitutional-schema.sql in any candidate path');
           try {
             const dirContents = fs.readdirSync(cwd);
-            console.log(`Schema:      📁 CWD contents: ${dirContents.slice(0, 20).join(', ')}`);
+            startLog.debug({ contents: dirContents.slice(0, 20) }, 'CWD directory listing');
           } catch { /* ignore */ }
         } else {
-          console.log(`Schema:      ⏳ Executing ${schemaSQL.length} chars of SQL from ${foundPath}...`);
+          startLog.info({ chars: schemaSQL.length, path: foundPath }, 'Executing schema SQL');
           const pool = db.getPool();
           const client = await pool.connect();
           try {
             await client.query(schemaSQL);
-            console.log('Schema:      ✅ Auto-migration complete');
+            startLog.info('Auto-migration complete');
           } finally {
             client.release();
           }
         }
       } catch (migErr: any) {
-        console.error('Schema:      ❌ Auto-migration failed:', migErr?.message || 'Unknown');
-        if (migErr?.position) {
-          console.error(`Schema:      ❌ SQL error at position ${migErr.position}`);
-        }
-        if (migErr?.detail) {
-          console.error(`Schema:      ❌ Detail: ${migErr.detail}`);
-        }
+        startLog.error({ err: migErr, position: migErr?.position, detail: migErr?.detail }, 'Auto-migration failed');
       }
     } else {
-      console.error('Schema:      ❌ Unexpected error:', schemaErr?.message || 'Unknown');
+      startLog.error({ err: schemaErr }, 'Unexpected schema error');
     }
   }
 
@@ -707,9 +756,9 @@ async function startServer() {
     await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS firebase_uid TEXT UNIQUE`);
     await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS bio TEXT`);
     await db.query(`CREATE INDEX IF NOT EXISTS idx_users_firebase_uid ON users(firebase_uid)`);
-    console.log('Schema:      ✅ firebase_uid + bio columns ensured');
+    startLog.info('firebase_uid + bio columns ensured');
   } catch (colErr: any) {
-    console.warn('Schema:      ⚠️  Column migration note:', colErr?.message?.substring(0, 120));
+    startLog.warn({ message: colErr?.message?.substring(0, 120) }, 'Column migration note');
   }
 
   // Run inline migration v2: Create all missing tables required by routers/services
@@ -722,9 +771,9 @@ async function startServer() {
     const migName = 'add_missing_tables_v2';
     const already = await db.query('SELECT 1 FROM applied_migrations WHERE name = $1', [migName]);
     if (already.rows.length > 0) {
-      console.log(`Migrations:  ⏭️  ${migName} already applied`);
+      startLog.debug({ migration: migName }, 'Migration already applied');
     } else {
-      console.log(`Migrations:  ⏳ Running ${migName}...`);
+      startLog.info({ migration: migName }, 'Running table creation migration');
       const pool = db.getPool();
       const client = await pool.connect();
       try {
@@ -907,14 +956,13 @@ async function startServer() {
           ALTER TABLE users ADD COLUMN IF NOT EXISTS price_modifier_percent NUMERIC DEFAULT 0;
         `);
         await client.query('INSERT INTO applied_migrations (name) VALUES ($1)', [migName]);
-        console.log(`Migrations:  ✅ ${migName} — 16 tables created successfully`);
+        startLog.info({ migration: migName, tables: 16 }, 'Migration complete — 16 tables created');
       } finally {
         client.release();
       }
     }
   } catch (migRunErr: any) {
-    console.error('Migrations:  ❌ Migration error:', migRunErr?.message?.substring(0, 200));
-    if (migRunErr?.position) console.error(`Migrations:  ❌ Position: ${migRunErr.position}`);
+    startLog.error({ err: migRunErr, position: migRunErr?.position }, 'Migration error');
   }
 
   // Performance indexes migration (007)
@@ -922,9 +970,9 @@ async function startServer() {
     const idxMig = 'performance_indexes_v1';
     const idxAlready = await db.query('SELECT 1 FROM applied_migrations WHERE name = $1', [idxMig]);
     if (idxAlready.rows.length > 0) {
-      console.log(`Migrations:  ⏭️  ${idxMig} already applied`);
+      startLog.debug({ migration: idxMig }, 'Migration already applied');
     } else {
-      console.log(`Migrations:  ⏳ Running ${idxMig}...`);
+      startLog.info({ migration: idxMig }, 'Running performance indexes migration');
       await db.query(`
         -- Task feed compound indexes
         CREATE INDEX IF NOT EXISTS idx_matching_scores_hustler_feed
@@ -960,19 +1008,19 @@ async function startServer() {
           ON proofs(task_id, state);
       `);
       await db.query('INSERT INTO applied_migrations (name) VALUES ($1)', [idxMig]);
-      console.log(`Migrations:  ✅ ${idxMig} — 12 performance indexes created`);
+      startLog.info({ migration: idxMig, indexes: 12 }, 'Performance indexes created');
     }
   } catch (idxErr: any) {
-    console.error('Migrations:  ⚠️  Performance indexes:', idxErr?.message?.substring(0, 200));
+    startLog.warn({ err: idxErr }, 'Performance indexes migration warning');
   }
 
   // Report schema version
   try {
     const result = await db.query<{ version: string; applied_at: string }>('SELECT version, applied_at FROM schema_versions ORDER BY applied_at DESC LIMIT 1');
     if (result.rows.length > 0) {
-      console.log(`Schema:      ✅ v${result.rows[0].version} (applied ${new Date(result.rows[0].applied_at).toISOString()})`);
+      startLog.info({ schemaVersion: result.rows[0].version, appliedAt: result.rows[0].applied_at }, 'Schema version loaded');
     } else {
-      console.log('Schema:      ⚠️ No version found');
+      startLog.warn('No schema version found');
     }
 
     // Verify critical triggers exist
@@ -987,39 +1035,34 @@ async function startServer() {
         'escrow_terminal_guard'
       )
     `);
-    console.log(`Triggers:    ✅ ${triggers.rows.length}/5 invariant triggers active`);
+    startLog.info({ triggersActive: triggers.rows.length, expected: 5 }, 'Invariant triggers check');
   } catch (error) {
-    console.error('Schema:      ❌', error instanceof Error ? error.message : 'Unknown');
+    startLog.error({ err: error }, 'Schema version check failed');
   }
-  
-  console.log('');
-  console.log(`Environment: ${config.app.env}`);
-  console.log(`Port:        ${config.app.port}`);
-  console.log('');
-  console.log('Endpoints:');
-  console.log('  GET  /health                              - Basic health check');
-  console.log('  GET  /health/detailed                     - Detailed health check');
-  console.log('  POST /trpc/*                              - tRPC API endpoints');
-  console.log('  POST /webhooks/stripe                     - Stripe webhooks');
-  console.log('');
-  console.log('REST API (Frontend Integration):');
-  console.log('  GET  /api/users/:userId/xp-celebration-status      - Animation tracking');
-  console.log('  POST /api/users/:userId/xp-celebration-shown       - Animation tracking');
-  console.log('  GET  /api/users/:userId/badges/:badgeId/animation-status - Animation tracking');
-  console.log('  POST /api/users/:userId/badges/:badgeId/animation-shown   - Animation tracking');
-  console.log('  GET  /api/tasks/:taskId/state                       - State confirmation');
-  console.log('  GET  /api/escrows/:escrowId/state                   - State confirmation');
-  console.log('  POST /api/ui/violations                             - Violation reporting');
-  console.log('  GET  /api/users/:userId/onboarding-status           - Onboarding status');
-  console.log('');
-  console.log('═══════════════════════════════════════════════════════════');
-  console.log(`  Server listening on http://localhost:${config.app.port}`);
-  console.log('═══════════════════════════════════════════════════════════');
-  console.log('');
+
+  startLog.info({
+    environment: config.app.env,
+    port: config.app.port,
+    endpoints: {
+      health: ['/health', '/health/detailed', '/health/readiness', '/health/liveness'],
+      trpc: '/trpc/*',
+      webhooks: '/webhooks/stripe',
+      rest: [
+        '/api/users/:userId/xp-celebration-status',
+        '/api/users/:userId/xp-celebration-shown',
+        '/api/users/:userId/badges/:badgeId/animation-status',
+        '/api/users/:userId/badges/:badgeId/animation-shown',
+        '/api/tasks/:taskId/state',
+        '/api/escrows/:escrowId/state',
+        '/api/ui/violations',
+        '/api/users/:userId/onboarding-status',
+      ],
+    },
+  }, `HustleXP server listening on http://localhost:${config.app.port}`);
 }
 
 // Start server
-startServer().catch(console.error);
+startServer().catch((err) => pinoLogger.fatal({ err }, 'Failed to start server'));
 
 // For Bun/Edge deployment
 export default {

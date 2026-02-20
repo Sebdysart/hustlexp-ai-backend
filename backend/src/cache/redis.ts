@@ -1,6 +1,8 @@
 import { config } from '../config';
 import { Redis } from '@upstash/redis';
 import { Ratelimit } from '@upstash/ratelimit';
+import { logger } from '../logger';
+const redisLog = logger.child({ module: 'redis' });
 
 export type RedisClient = Redis | null;
 
@@ -16,13 +18,13 @@ function getClient(): Redis | null {
         url: config.redis.restUrl,
         token: config.redis.restToken,
       });
-      console.log('✅ Upstash Redis REST client initialized');
+      redisLog.info('Upstash Redis REST client initialized');
     } catch (error) {
-      console.error('❌ Failed to initialize Upstash Redis client:', error);
+      redisLog.error({ err: error }, 'Failed to initialize Upstash Redis client');
       redisClient = null;
     }
   } else {
-    console.warn('⚠️  Redis REST not configured (UPSTASH_REDIS_REST_URL/TOKEN missing) - using stub fallbacks');
+    redisLog.warn('Redis REST not configured (UPSTASH_REDIS_REST_URL/TOKEN missing) — using stub fallbacks');
   }
 
   return redisClient;
@@ -84,7 +86,7 @@ export async function get<T = string>(key: string): Promise<T | null> {
     const value = await client.get<T>(key);
     return value;
   } catch (error) {
-    console.error(`Redis GET error for key ${key}:`, error);
+    redisLog.error({ err: error, key }, 'Redis GET error');
     return null;
   }
 }
@@ -104,7 +106,7 @@ export async function set(
       await client.set(key, value);
     }
   } catch (error) {
-    console.error(`Redis SET error for key ${key}:`, error);
+    redisLog.error({ err: error, key }, 'Redis SET error');
   }
 }
 
@@ -115,7 +117,7 @@ export async function del(key: string): Promise<void> {
   try {
     await client.del(key);
   } catch (error) {
-    console.error(`Redis DEL error for key ${key}:`, error);
+    redisLog.error({ err: error, key }, 'Redis DEL error');
   }
 }
 
@@ -127,7 +129,7 @@ export async function exists(key: string): Promise<boolean> {
     const result = await client.exists(key);
     return result === 1;
   } catch (error) {
-    console.error(`Redis EXISTS error for key ${key}:`, error);
+    redisLog.error({ err: error, key }, 'Redis EXISTS error');
     return false;
   }
 }
@@ -139,7 +141,7 @@ export async function incr(key: string): Promise<number> {
   try {
     return await client.incr(key);
   } catch (error) {
-    console.error(`Redis INCR error for key ${key}:`, error);
+    redisLog.error({ err: error, key }, 'Redis INCR error');
     return 1;
   }
 }
@@ -151,7 +153,7 @@ export async function expire(key: string, ttl: number): Promise<void> {
   try {
     await client.expire(key, ttl);
   } catch (error) {
-    console.error(`Redis EXPIRE error for key ${key}:`, error);
+    redisLog.error({ err: error, key }, 'Redis EXPIRE error');
   }
 }
 
@@ -166,7 +168,7 @@ export async function zadd(
   try {
     await client.zadd(key, { score, member });
   } catch (error) {
-    console.error(`Redis ZADD error for key ${key}:`, error);
+    redisLog.error({ err: error, key }, 'Redis ZADD error');
   }
 }
 
@@ -182,7 +184,7 @@ export async function zrange(
     const result = await client.zrange<string[]>(key, start, stop);
     return result;
   } catch (error) {
-    console.error(`Redis ZRANGE error for key ${key}:`, error);
+    redisLog.error({ err: error, key }, 'Redis ZRANGE error');
     return [];
   }
 }
@@ -199,7 +201,7 @@ export async function zrevrange(
     const result = await client.zrange<string[]>(key, start, stop, { rev: true });
     return result;
   } catch (error) {
-    console.error(`Redis ZREVRANGE error for key ${key}:`, error);
+    redisLog.error({ err: error, key }, 'Redis ZREVRANGE error');
     return [];
   }
 }
@@ -225,7 +227,7 @@ export async function checkRateLimit(
       resetAt: result.reset,
     };
   } catch (error) {
-    console.error(`Rate limit check error for ${userId}/${action}:`, error);
+    redisLog.error({ err: error, userId, action }, 'Rate limit check error');
     return { allowed: true, remaining: limit };
   }
 }

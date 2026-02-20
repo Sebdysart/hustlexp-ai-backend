@@ -10,7 +10,7 @@ export const config = {
   // Database (Neon PostgreSQL)
   database: {
     url: process.env.DATABASE_URL || '',
-    maxConnections: 10,
+    maxConnections: parseInt(process.env.DB_MAX_CONNECTIONS || '10', 10),
   },
   
   // Cache (Upstash Redis)
@@ -30,8 +30,8 @@ export const config = {
   stripe: {
     secretKey: process.env.STRIPE_SECRET_KEY || '',
     webhookSecret: process.env.STRIPE_WEBHOOK_SECRET || '',
-    platformFeePercent: 15, // PRODUCT_SPEC §9: 15% platform fee
-    minimumTaskValueCents: 500, // PRODUCT_SPEC §9: $5.00 minimum
+    platformFeePercent: parseInt(process.env.PLATFORM_FEE_PERCENT || '15', 10), // PRODUCT_SPEC §9: 15% platform fee
+    minimumTaskValueCents: parseInt(process.env.MIN_TASK_VALUE_CENTS || '500', 10), // PRODUCT_SPEC §9: $5.00 minimum
     plans: {
       premium: {
         monthlyPriceCents: 1499,
@@ -75,33 +75,33 @@ export const config = {
   ai: {
     openai: {
       apiKey: process.env.OPENAI_API_KEY || '',
-      model: 'gpt-4o',
+      model: process.env.OPENAI_MODEL || 'gpt-4o',
     },
     deepseek: {
       apiKey: process.env.DEEPSEEK_API_KEY || '',
-      model: 'deepseek-r1',
+      model: process.env.DEEPSEEK_MODEL || 'deepseek-r1',
     },
     groq: {
       apiKey: process.env.GROQ_API_KEY || '',
-      model: 'llama-3.3-70b-versatile',
+      model: process.env.GROQ_MODEL || 'llama-3.3-70b-versatile',
     },
     alibaba: {
       apiKey: process.env.ALIBABA_API_KEY || '',
-      model: 'qwen-max',
+      model: process.env.ALIBABA_MODEL || 'qwen-max',
     },
     anthropic: {
       apiKey: process.env.ANTHROPIC_API_KEY || '',
-      model: 'claude-sonnet-4-20250514',
+      model: process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-20250514',
     },
-    // Model routing weights
+    // Model routing weights (configurable for A/B testing)
     routing: {
-      primary: 'openai',      // Default for most tasks
-      fast: 'groq',           // Low latency tasks
-      reasoning: 'deepseek',  // Complex reasoning
-      safety: 'anthropic',    // High-stakes decisions (disputes, trust, verification)
-      backup: 'alibaba',      // Fallback
+      primary: process.env.AI_ROUTE_PRIMARY || 'openai',
+      fast: process.env.AI_ROUTE_FAST || 'groq',
+      reasoning: process.env.AI_ROUTE_REASONING || 'deepseek',
+      safety: process.env.AI_ROUTE_SAFETY || 'anthropic',
+      backup: process.env.AI_ROUTE_BACKUP || 'alibaba',
     },
-    cacheTTL: 24 * 60 * 60,
+    cacheTTL: parseInt(process.env.AI_CACHE_TTL || String(24 * 60 * 60), 10),
   },
   
   // Identity Verification
@@ -162,19 +162,20 @@ export const config = {
       .map(origin => origin.trim())
       .filter(Boolean),
   },
-} as const;
+};
 
 /**
  * Validate required configuration for production
  */
-export function validateConfig(): { valid: boolean; errors: string[] } {
+export function validateConfig(): { valid: boolean; errors: string[]; warnings: string[] } {
   const errors: string[] = [];
-  
+  const warnings: string[] = [];
+
   // Always required
   if (!config.database.url) {
     errors.push('DATABASE_URL is required');
   }
-  
+
   // Required in production
   if (config.app.isProduction) {
     if (!config.firebase.projectId) errors.push('FIREBASE_PROJECT_ID is required');
@@ -183,32 +184,21 @@ export function validateConfig(): { valid: boolean; errors: string[] } {
     if (!config.stripe.secretKey || config.stripe.secretKey.includes('placeholder')) {
       errors.push('STRIPE_SECRET_KEY is required (not placeholder)');
     }
-    // REST API required for caching/rate limiting
     if (!config.redis.restUrl) {
       errors.push('UPSTASH_REDIS_REST_URL is required for caching/rate limiting');
     }
-    // Direct TCP required for BullMQ job queues
     if (!config.redis.url) {
       errors.push('UPSTASH_REDIS_URL or REDIS_URL is required for BullMQ job queues');
     }
-    // R2 Storage (optional but recommended for exports)
     if (!config.cloudflare.r2.accountId || !config.cloudflare.r2.accessKeyId || !config.cloudflare.r2.secretAccessKey) {
-      console.warn('⚠️  R2 storage not configured (R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY) - exports will fail');
+      warnings.push('R2 storage not configured — exports will fail');
     }
-    // SendGrid (optional but recommended for email notifications)
     if (!config.identity.sendgrid.apiKey) {
-      console.warn('⚠️  SendGrid not configured (SENDGRID_API_KEY) - email notifications will fail');
+      warnings.push('SendGrid not configured — email notifications will fail');
     }
   }
-  
-  if (errors.length > 0) {
-    console.error('❌ Configuration validation failed:');
-    errors.forEach(e => console.error(`   - ${e}`));
-  } else {
-    console.log('✅ Configuration validated');
-  }
-  
-  return { valid: errors.length === 0, errors };
+
+  return { valid: errors.length === 0, errors, warnings };
 }
 
 export default config;
