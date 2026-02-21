@@ -26,6 +26,41 @@ import { requestIdMiddleware, serverTimingMiddleware } from './middleware/reques
 import { httpMetricsMiddleware } from './monitoring/http-metrics';
 import { createMetricsEndpoint } from './monitoring/metrics';
 
+// ============================================================================
+// SECURITY VALIDATION (Fail-Fast in Production)
+// ============================================================================
+
+// CRITICAL: Fail-fast if CORS is misconfigured in production
+if (config.app.isProduction) {
+  const allowedOrigins = config.app.allowedOrigins;
+  
+  if (allowedOrigins.length === 0) {
+    console.error('❌ CRITICAL: ALLOWED_ORIGINS is not set in production');
+    console.error('   Set ALLOWED_ORIGINS to your frontend domain(s)');
+    console.error('   Example: ALLOWED_ORIGINS=https://app.hustlexp.com,https://admin.hustlexp.com');
+    process.exit(1);
+  }
+  
+  if (allowedOrigins.includes('*')) {
+    console.error('❌ CRITICAL: ALLOWED_ORIGINS contains "*" in production');
+    console.error('   This allows any website to access your API');
+    console.error('   Set specific origins like: ALLOWED_ORIGINS=https://app.hustlexp.com');
+    process.exit(1);
+  }
+  
+  // Validate all origins are HTTPS
+  const nonHttpsOrigins = allowedOrigins.filter(o => o.startsWith('http:'));
+  if (nonHttpsOrigins.length > 0) {
+    console.error('❌ CRITICAL: Non-HTTPS origins in production:');
+    nonHttpsOrigins.forEach(o => console.error(`   - ${o}`));
+    console.error('   All origins must use HTTPS in production');
+    process.exit(1);
+  }
+  
+  console.log('✅ CORS configured for production:');
+  allowedOrigins.forEach(origin => console.log(`   - ${origin}`));
+}
+
 // Hono context variable type augmentation
 type AppVariables = {
   requestId: string;
