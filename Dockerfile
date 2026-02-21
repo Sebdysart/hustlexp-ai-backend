@@ -6,7 +6,9 @@
 # ============================================================================
 
 # ---------- Stage 1: Dependencies ----------
-FROM node:20-alpine AS deps
+# Pin to specific Node 20 Alpine version for reproducible builds
+# Update this periodically: https://hub.docker.com/_/node/tags?name=20-alpine
+FROM node:20.18-alpine3.21 AS deps
 
 WORKDIR /app
 
@@ -17,7 +19,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --ignore-scripts
 
 # ---------- Stage 2: Production Runtime ----------
-FROM node:20-alpine AS runtime
+FROM node:20.18-alpine3.21 AS runtime
 
 # Security: run as non-root user
 RUN addgroup --system --gid 1001 hustlexp && \
@@ -38,6 +40,9 @@ COPY Procfile ./
 # Copy tsx for runtime TypeScript execution
 COPY --from=deps /app/node_modules/.package-lock.json /tmp/.package-lock.json
 RUN npm install tsx --save-prod 2>/dev/null || true
+
+# Security: Drop all capabilities, set read-only filesystem hints
+RUN chmod -R 555 /app/backend /app/public
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \

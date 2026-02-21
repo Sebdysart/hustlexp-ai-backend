@@ -1,0 +1,116 @@
+{
+  "__comment": "HustleXP Observability Dashboard — Grafana 10.x",
+  "__authority": "PRODUCT_SPEC.md §8 (Observability)",
+  "dashboard": {
+    "title": "HustleXP — Production Overview",
+    "uid": "hustlexp-prod-overview",
+    "tags": ["hustlexp", "production", "alpha"],
+    "timezone": "utc",
+    "refresh": "30s",
+    "panels": [
+      {
+        "title": "Request Rate (req/s)",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+        "targets": [
+          {
+            "expr": "rate(http_requests_total{app='hustlexp'}[5m])",
+            "legendFormat": "{{method}} {{route}} {{status}}"
+          }
+        ]
+      },
+      {
+        "title": "P99 Latency (ms)",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.99, rate(http_request_duration_seconds_bucket{app='hustlexp'}[5m]))",
+            "legendFormat": "p99 {{route}}"
+          }
+        ]
+      },
+      {
+        "title": "Error Rate (5xx)",
+        "type": "stat",
+        "gridPos": { "h": 4, "w": 6, "x": 0, "y": 8 },
+        "targets": [
+          {
+            "expr": "sum(rate(http_requests_total{app='hustlexp', status=~'5..'}[5m])) / sum(rate(http_requests_total{app='hustlexp'}[5m])) * 100",
+            "legendFormat": "Error %"
+          }
+        ],
+        "thresholds": {
+          "steps": [
+            { "color": "green", "value": 0 },
+            { "color": "yellow", "value": 1 },
+            { "color": "red", "value": 5 }
+          ]
+        }
+      },
+      {
+        "title": "Active DB Connections",
+        "type": "gauge",
+        "gridPos": { "h": 4, "w": 6, "x": 6, "y": 8 },
+        "targets": [
+          {
+            "expr": "pg_pool_active_connections{app='hustlexp'}",
+            "legendFormat": "Active"
+          }
+        ],
+        "max": 20
+      },
+      {
+        "title": "AI Cost (USD/day)",
+        "type": "stat",
+        "gridPos": { "h": 4, "w": 6, "x": 12, "y": 8 },
+        "targets": [
+          {
+            "expr": "sum(increase(ai_usage_cost_usd_total{app='hustlexp'}[24h]))",
+            "legendFormat": "Daily AI Spend"
+          }
+        ],
+        "thresholds": {
+          "steps": [
+            { "color": "green", "value": 0 },
+            { "color": "yellow", "value": 25 },
+            { "color": "red", "value": 50 }
+          ]
+        }
+      },
+      {
+        "title": "Escrow State Distribution",
+        "type": "piechart",
+        "gridPos": { "h": 4, "w": 6, "x": 18, "y": 8 },
+        "targets": [
+          {
+            "expr": "escrow_state_count{app='hustlexp'}",
+            "legendFormat": "{{state}}"
+          }
+        ]
+      },
+      {
+        "title": "Circuit Breaker States",
+        "type": "table",
+        "gridPos": { "h": 6, "w": 12, "x": 0, "y": 12 },
+        "targets": [
+          {
+            "expr": "circuit_breaker_state{app='hustlexp'}",
+            "legendFormat": "{{breaker}} = {{state}}"
+          }
+        ]
+      },
+      {
+        "title": "Task Creation Rate",
+        "type": "timeseries",
+        "gridPos": { "h": 6, "w": 12, "x": 12, "y": 12 },
+        "targets": [
+          {
+            "expr": "rate(tasks_created_total{app='hustlexp'}[5m])",
+            "legendFormat": "{{mode}}"
+          }
+        ]
+      }
+    ]
+  }
+}
