@@ -52,6 +52,8 @@ import { subscriptionRouter } from './subscription';
 import { tippingRouter } from './tipping';
 // v2.4.0: Squads Mode
 import { squadRouter } from './squad';
+// v2.5.0: Stripe Connect
+import { stripeConnectRouter } from './stripeConnect';
 
 export const appRouter = router({
   task: taskRouter,
@@ -100,6 +102,8 @@ export const appRouter = router({
   tipping: tippingRouter,
   // v2.4.0: Squads Mode
   squad: squadRouter,
+  // v2.5.0: Stripe Connect
+  stripeConnect: stripeConnectRouter,
 });
 
 export type AppRouter = typeof appRouter;
