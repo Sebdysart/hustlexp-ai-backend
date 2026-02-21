@@ -178,7 +178,8 @@ function renderEmailTemplate(
  */
 export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
   // Extract data from job payload (structured as outbox event)
-  const { emailId, userId, toEmail, template, params } = job.data.payload;
+  const { emailId, toEmail, template, params } = job.data.payload;
+  let userId = job.data.payload.userId;
   const idempotencyKey = job.id || `email:${emailId}`;
   
   if (!config.identity.sendgrid.apiKey) {
@@ -220,7 +221,7 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
     if (emailRecord.status === 'sent') {
       log.info({ emailId, jobId: job.id, idempotencyKey: emailRecord.idempotency_key, status: emailRecord.status, providerMsgId: emailRecord.provider_msg_id }, 'Email already sent, replay skipped');
       // Mark outbox event as processed (if processing from outbox)
-      const outboxKey = emailRecord.idempotency_key || jobIdempotencyKey;
+      const outboxKey = emailRecord.idempotency_key || idempotencyKey;
       if (outboxKey) {
         await markOutboxEventProcessed(outboxKey);
       }
@@ -241,7 +242,7 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
       
       log.warn({ emailId, jobId: job.id, idempotencyKey: emailRecord.idempotency_key, providerMsgId: emailRecord.provider_msg_id }, 'Email crash recovery: provider_msg_id exists but status not sent');
       
-      const outboxKey = emailRecord.idempotency_key || jobIdempotencyKey;
+      const outboxKey = emailRecord.idempotency_key || idempotencyKey;
       if (outboxKey) {
         await markOutboxEventProcessed(outboxKey);
       }
@@ -384,7 +385,7 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
     
     // Mark outbox event as processed (if processing from outbox)
     // Use idempotency_key from email_outbox record (deterministic)
-    const outboxKey = emailRecord.idempotency_key || jobIdempotencyKey;
+    const outboxKey = emailRecord.idempotency_key || idempotencyKey;
     if (outboxKey) {
       await markOutboxEventProcessed(outboxKey);
     }
@@ -395,8 +396,8 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     
     // Get email record idempotency key for logging (may be null if error before SELECT)
-    // Use jobIdempotencyKey as fallback
-    let outboxKey = jobIdempotencyKey;
+    // Use idempotencyKey as fallback
+    let outboxKey = idempotencyKey;
     let currentAttempts = 0;
     let maxAttempts = 3;
     
@@ -414,7 +415,7 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
       );
       
       if (currentState.rows.length > 0) {
-        outboxKey = currentState.rows[0].idempotency_key || jobIdempotencyKey;
+        outboxKey = currentState.rows[0].idempotency_key || idempotencyKey;
         currentAttempts = currentState.rows[0].attempts;
         maxAttempts = currentState.rows[0].max_attempts;
         userId = userId || currentState.rows[0].user_id || undefined;

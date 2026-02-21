@@ -82,7 +82,7 @@ export async function processStripeEventJob(job: Job<StripeEventJobData>): Promi
   }
 
   const { payload_json, type } = claim.rows[0];
-  const event = payload_json as StripeEventEnvelope;
+  const event = payload_json as unknown as StripeEventEnvelope;
 
   try {
     // Dispatch by type (SKELETON ONLY - no business logic here)

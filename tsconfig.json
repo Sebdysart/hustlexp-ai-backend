@@ -45,8 +45,6 @@
     ],
     "exclude": [
         "node_modules",
-        "dist",
-        "backend/src/jobs",
-        "backend/src/tests"
+        "dist"
     ]
 }

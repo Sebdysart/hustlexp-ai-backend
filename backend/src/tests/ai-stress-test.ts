@@ -411,7 +411,7 @@ async function testConstitutionalEnforcement() {
        WHERE event_object_table = 'tasks'`
     );
     // Should have at least one trigger for terminal state protection
-    const triggerNames = result.rows.map(r => r.trigger_name);
+    const triggerNames = result.rows.map((r: Record<string, unknown>) => r.trigger_name);
     assert(triggerNames.length > 0, 'No triggers on tasks table');
   });
 

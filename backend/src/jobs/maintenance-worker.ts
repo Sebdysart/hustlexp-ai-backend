@@ -36,7 +36,7 @@ interface RecoveryStuckStripeEventsPayload {
  * Resets them to unclaimed state so they can be retried.
  */
 export async function recoverStuckStripeEvents(job: Job<RecoveryStuckStripeEventsPayload>): Promise<void> {
-  const timeoutMinutes = job.data.payload?.timeoutMinutes || 10;
+  const timeoutMinutes = (job.data as Record<string, unknown>).timeoutMinutes as number || 10;
   
   // Use parameterized query for safety (INTERVAL requires string concatenation, but timeout is validated as number)
   const result = await db.query<{

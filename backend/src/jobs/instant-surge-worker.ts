@@ -308,13 +308,13 @@ async function handleSurgeLevel3(taskId: string): Promise<void> {
   InstantObservability.logSurgeFallback(taskId, elapsedSeconds);
 
   // Notify poster (via outbox)
-  const taskResult = await db.query<{ poster_id: string }>(
+  const posterResult = await db.query<{ poster_id: string }>(
     `SELECT poster_id FROM tasks WHERE id = $1`,
     [taskId]
   );
 
-  if (taskResult.rowCount > 0) {
-    const posterId = taskResult.rows[0].poster_id;
+  if (posterResult.rowCount && posterResult.rowCount > 0) {
+    const posterId = posterResult.rows[0].poster_id;
     await writeToOutbox({
       eventType: 'task.instant_failed',
       aggregateType: 'task',

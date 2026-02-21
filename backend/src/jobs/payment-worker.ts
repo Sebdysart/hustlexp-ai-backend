@@ -443,12 +443,6 @@ async function handleChargeRefunded(charge: Stripe.Charge, stripeEventId: string
     throw new Error(`Cannot refund escrow ${escrow.id}: current state is ${escrow.state}, expected PENDING, FUNDED, or LOCKED_DISPUTE`);
   }
 
-  // Extract refund ID from charge.refunds (first refund)
-  const refundId = charge.refunds?.data?.[0]?.id;
-  if (!refundId) {
-    throw new Error(`Charge ${charge.id} missing refund ID`);
-  }
-
   // Idempotency check: If already refunded with this refund_id, skip
   if (escrow.state === 'REFUNDED' && escrow.stripe_refund_id === refundId) {
     log.info({ escrowId: escrow.id, refundId }, 'Escrow already refunded, idempotent replay');
