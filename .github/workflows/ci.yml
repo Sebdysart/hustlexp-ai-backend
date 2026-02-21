@@ -53,9 +53,19 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
       - run: npm ci
-      - run: npx vitest run --reporter=verbose
-        name: Run Tests
+      - run: npx vitest run backend/tests/unit/ backend/tests/invariants/spec-alignment.test.ts backend/tests/invariants/transaction-error-handling.test.ts --reporter=verbose --coverage
+        name: Run Unit + Invariant Tests with Coverage Gate
         timeout-minutes: 10
+      - run: npx vitest run backend/tests/integration/ --reporter=verbose
+        name: Run Integration Tests (routers, money-path, stripe E2E)
+        timeout-minutes: 10
+      - name: Upload Coverage Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 14
 
   audit:
     name: Dependency Audit
