@@ -20,8 +20,19 @@ import { firebaseAuth } from '../auth/firebase';
 import { db } from '../db';
 import type { User } from '../types';
 import { logger } from '../logger';
+import { 
+  initializePubSub, 
+  subscribeToRoom, 
+  unsubscribeAllRooms,
+  getUserRoomKey 
+} from './redis-pubsub';
 
 const log = logger.child({ module: 'sse-handler' });
+
+// Initialize Redis pub/sub on module load
+initializePubSub().catch((err) => {
+  log.error({ err }, 'Failed to initialize Redis pub/sub');
+});
 
 /**
  * Helper to get authenticated user from Bearer token (matches server.ts pattern)
@@ -74,16 +85,25 @@ export async function sseHandler(c: Context): Promise<Response> {
 
       // Register connection
       addConnection(user.id, conn);
-
-      // Send initial connection message (optional - helps client know connection is live)
+      
+      // Subscribe to user's personal room (for direct messages)
+      subscribeToRoom(user.id, getUserRoomKey(user.id));
+      
+      // Send initial connection message with connection ID
       const encoder = new TextEncoder();
       try {
-        controller.enqueue(encoder.encode(': connected\n\n'));
+        const initMessage = JSON.stringify({
+          type: 'connected',
+          userId: user.id,
+          timestamp: new Date().toISOString(),
+        });
+        controller.enqueue(encoder.encode(`data: ${initMessage}\n\n`));
       } catch (error) {
         // Controller already closed or error
         if (conn) {
           conn.closed = true;
           removeConnection(user.id, conn);
+          unsubscribeAllRooms(user.id);
         }
       }
 
@@ -93,6 +113,8 @@ export async function sseHandler(c: Context): Promise<Response> {
           if (conn) {
             conn.closed = true;
             removeConnection(user.id, conn);
+            // Unsubscribe from all rooms on disconnect
+            unsubscribeAllRooms(user.id);
             log.info({ userId: user.id }, 'SSE disconnected');
             try {
               controller.close();
@@ -104,10 +126,11 @@ export async function sseHandler(c: Context): Promise<Response> {
       }
     },
     cancel() {
-      // Stream cancelled - remove connection
+      // Stream cancelled - remove connection and unsubscribe
       if (conn) {
         conn.closed = true;
         removeConnection(user.id, conn);
+        unsubscribeAllRooms(user.id);
         log.info({ userId: user.id }, 'SSE stream cancelled');
       }
     },
