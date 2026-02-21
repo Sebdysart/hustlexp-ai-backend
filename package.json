@@ -47,6 +47,7 @@
     "bullmq": "^5.66.4",
     "decimal.js": "^10.6.0",
     "dotenv": "^16.4.5",
+    "node-statsd": "^0.1.1",
     "firebase-admin": "^13.6.0",
     "groq-sdk": "^0.7.0",
     "hono": "^4.10.5",

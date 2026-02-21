@@ -151,6 +151,16 @@ export const config = {
     tracesSampleRate: parseFloat(process.env.SENTRY_TRACES_SAMPLE_RATE || '0.1'),
   },
 
+  // APM & Monitoring (Datadog)
+  datadog: {
+    enabled: process.env.DATADOG_ENABLED === 'true',
+    agentHost: process.env.DD_AGENT_HOST || 'localhost',
+    agentPort: parseInt(process.env.DD_AGENT_PORT || '8125', 10),
+    serviceName: process.env.DD_SERVICE || 'hustlexp-api',
+    env: process.env.DD_ENV || process.env.NODE_ENV || 'development',
+    version: process.env.DD_VERSION || process.env.npm_package_version || '1.0.0',
+  },
+
   // Application
   app: {
     port: parseInt(process.env.PORT || '3000', 10),
