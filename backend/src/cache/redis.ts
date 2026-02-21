@@ -214,7 +214,13 @@ export async function checkRateLimit(
 ): Promise<{ allowed: boolean; remaining: number; resetAt?: number }> {
   const limiter = getRateLimiter(window * 1000, limit);
   if (!limiter) {
-    // Graceful fallback: allow everything if Redis not configured
+    // FAIL CLOSED in production — deny if rate limiting is unavailable
+    if (config.app.isProduction) {
+      redisLog.error('Rate limiting unavailable (Redis not configured) — denying request');
+      return { allowed: false, remaining: 0, resetAt: Date.now() + window * 1000 };
+    }
+    // Allow in development with warning
+    redisLog.warn('Rate limiting disabled — Redis not configured (dev mode)');
     return { allowed: true, remaining: limit };
   }
 
@@ -228,6 +234,10 @@ export async function checkRateLimit(
     };
   } catch (error) {
     redisLog.error({ err: error, userId, action }, 'Rate limit check error');
+    // FAIL CLOSED in production on Redis errors too
+    if (config.app.isProduction) {
+      return { allowed: false, remaining: 0, resetAt: Date.now() + window * 1000 };
+    }
     return { allowed: true, remaining: limit };
   }
 }

@@ -13,5 +13,22 @@ export default defineConfig({
     sequence: {
       concurrent: false,
     },
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'json', 'html'],
+      include: ['backend/src/**/*.ts'],
+      exclude: [
+        'backend/src/**/*.d.ts',
+        'backend/src/**/index.ts',
+        'backend/src/types.ts',
+        'backend/src/jobs/**',
+      ],
+      thresholds: {
+        lines: 70,
+        functions: 70,
+        branches: 60,
+        statements: 70,
+      },
+    },
   },
 });

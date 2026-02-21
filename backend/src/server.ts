@@ -31,6 +31,7 @@ type AppVariables = {
   requestId: string;
 };
 import { compress } from 'hono/compress';
+import { bodyLimit } from 'hono/body-limit';
 import { logger as pinoLogger } from './logger';
 
 // ============================================================================
@@ -42,6 +43,14 @@ const app = new Hono<{ Variables: AppVariables }>();
 // ============================================================================
 // MIDDLEWARE
 // ============================================================================
+
+// Request body size limit — prevent abuse via oversized payloads
+app.use('*', bodyLimit({
+  maxSize: 10 * 1024 * 1024, // 10MB
+  onError: (c) => {
+    return c.json({ error: 'Request body too large', maxSize: '10MB' }, 413);
+  },
+}));
 
 // Request ID — unique ID per request for distributed tracing
 app.use('*', requestIdMiddleware);
@@ -89,14 +98,19 @@ const allowedOrigins = config.app.isDevelopment
 
 app.use('*', cors({
   origin: (requestOrigin) => {
-    // iOS apps send no Origin header — allow them through
-    if (!requestOrigin) return allowedOrigins[0];
+    // Reject null/missing origin in production (CSRF protection)
+    // iOS native apps should use X-HustleXP-Platform header instead
+    if (!requestOrigin) {
+      // In development, allow for testing convenience
+      if (config.app.isDevelopment) return allowedOrigins[0];
+      return null;
+    }
     return allowedOrigins.includes(requestOrigin) ? requestOrigin : null;
   },
   allowMethods: ['GET', 'POST', 'OPTIONS'],
-  allowHeaders: ['Content-Type', 'Authorization'],
+  allowHeaders: ['Content-Type', 'Authorization', 'X-HustleXP-Platform'],
   credentials: true,
-  maxAge: 86400, // Cache preflight for 24h
+  maxAge: 3600, // Cache preflight for 1h (was 24h — reduced for faster policy rotation)
 }));
 
 // Prometheus HTTP metrics collection

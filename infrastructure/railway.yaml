@@ -1,0 +1,216 @@
+# ============================================================================
+# Railway Production Configuration
+# Auto-scaling, health checks, multi-service deployment
+# ============================================================================
+
+version: 2
+
+# ============================================================================
+# Build Configuration
+# ============================================================================
+build:
+  builder: DOCKERFILE
+  dockerfilePath: Dockerfile
+  watchPatterns:
+    - backend/**
+    - package.json
+    - package-lock.json
+
+# ============================================================================
+# Services
+# ============================================================================
+services:
+  # ============================================================================
+  # API Web Service
+  # ============================================================================
+  web:
+    start: npx tsx backend/src/server.ts
+    
+    # Resource allocation
+    resources:
+      memory: 1Gi
+      cpu: 1
+    
+    # Environment variables
+    env:
+      - name: NODE_ENV
+        value: production
+      - name: PORT
+        value: "3000"
+      - name: DB_MAX_CONNECTIONS
+        value: "20"
+    
+    # Health checks
+    healthcheck:
+      path: /health
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      startInterval: 60s
+    
+    # Auto-scaling configuration
+    scaling:
+      # Minimum instances to maintain
+      min: 2
+      # Maximum instances allowed
+      max: 10
+      
+      # Scale based on CPU utilization
+      cpu:
+        target: 70
+        scaleUpDelay: 60
+        scaleDownDelay: 300
+      
+      # Scale based on memory utilization
+      memory:
+        target: 80
+        scaleUpDelay: 60
+        scaleDownDelay: 300
+      
+      # Scale based on concurrent requests
+      requests:
+        target: 100
+        window: 60
+    
+    # Deployment strategy
+    deployment:
+      strategy: rolling
+      maxUnavailable: 25%
+      maxSurge: 25%
+    
+    # Network configuration
+    network:
+      # Expose to internet
+      public: true
+      # Custom domain
+      domains:
+        - api.hustlexp.app
+    
+    # Volume mounts (for logs, uploads)
+    volumes:
+      - path: /app/logs
+        size: 1Gi
+
+  # ============================================================================
+  # Background Worker Service
+  # ============================================================================
+  worker:
+    start: npx tsx backend/src/jobs/workers.ts
+    
+    resources:
+      memory: 512Mi
+      cpu: 0.5
+    
+    env:
+      - name: NODE_ENV
+        value: production
+    
+    # Worker scaling based on queue depth
+    scaling:
+      min: 2
+      max: 20
+      
+      # Custom metric for BullMQ queue depth
+      custom:
+        metric: bullmq_queue_depth
+        target: 100
+        scaleUpDelay: 60
+        scaleDownDelay: 300
+    
+    deployment:
+      strategy: rolling
+      maxUnavailable: 50%
+    
+    # Workers don't need public access
+    network:
+      public: false
+
+  # ============================================================================
+  # PgBouncer - Connection Pooling
+  # ============================================================================
+  pgbouncer:
+    image: pgbouncer/pgbouncer:1.21.0
+    
+    env:
+      - name: DATABASES_HOST
+        value: ${DB_HOST}
+      - name: DATABASES_PORT
+        value: "5432"
+      - name: DATABASES_DATABASE
+        value: ${DB_NAME}
+      - name: DATABASES_USER
+        value: ${DB_USER}
+      - name: DATABASES_PASSWORD
+        value: ${DB_PASSWORD}
+      - name: POOL_MODE
+        value: transaction
+      - name: MAX_CLIENT_CONN
+        value: "1000"
+      - name: DEFAULT_POOL_SIZE
+        value: "25"
+      - name: MIN_POOL_SIZE
+        value: "5"
+      - name: RESERVE_POOL_SIZE
+        value: "5"
+      - name: SERVER_IDLE_TIMEOUT
+        value: "600"
+    
+    resources:
+      memory: 128Mi
+      cpu: 0.25
+    
+    healthcheck:
+      command: ["pg_isready", "-h", "localhost", "-p", "6432"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    
+    network:
+      public: false
+      serviceBindings:
+        - web
+        - worker
+
+# ============================================================================
+# Cron Jobs
+# ============================================================================
+cron:
+  # Database maintenance
+  - name: db-vacuum
+    schedule: "0 3 * * 0"  # Weekly on Sunday at 3 AM
+    command: psql ${DATABASE_URL} -c "VACUUM ANALYZE;"
+    resources:
+      memory: 256Mi
+  
+  # Queue monitoring
+  - name: queue-monitor
+    schedule: "*/5 * * * *"  # Every 5 minutes
+    command: npx tsx backend/src/jobs/monitor-queues.ts
+    resources:
+      memory: 256Mi
+  
+  # Cleanup old data
+  - name: data-cleanup
+    schedule: "0 2 * * *"  # Daily at 2 AM
+    command: npx tsx backend/src/jobs/cleanup-old-data.ts
+    resources:
+      memory: 512Mi
+
+# ============================================================================
+# Shared Environment Variables
+# ============================================================================
+env:
+  # Database (via PgBouncer)
+  DATABASE_URL: postgres://${DB_USER}:${DB_PASSWORD}@pgbouncer:6432/${DB_NAME}
+  
+  # Redis
+  UPSTASH_REDIS_REST_URL: ${UPSTASH_REDIS_REST_URL}
+  UPSTASH_REDIS_REST_TOKEN: ${UPSTASH_REDIS_REST_TOKEN}
+  UPSTASH_REDIS_URL: ${UPSTASH_REDIS_URL}
+  
+  # Monitoring
+  SENTRY_DSN: ${SENTRY_DSN}
+  
+  # Feature flags
+  ENABLE_METRICS: "true"
+  ENABLE_RATE_LIMITING: "true"

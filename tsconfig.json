@@ -9,8 +9,13 @@
         "types": ["node"],
         "outDir": "./dist",
         "rootDir": ".",
-        "strict": false,
+        "strict": true,
         "strictNullChecks": true,
+        "strictFunctionTypes": true,
+        "strictBindCallApply": true,
+        "noImplicitAny": true,
+        "noImplicitThis": true,
+        "alwaysStrict": true,
         "esModuleInterop": true,
         "skipLibCheck": true,
         "forceConsistentCasingInFileNames": true,
@@ -41,6 +46,7 @@
     "exclude": [
         "node_modules",
         "dist",
-        "backend/src/jobs"
+        "backend/src/jobs",
+        "backend/src/tests"
     ]
 }

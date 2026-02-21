@@ -36,7 +36,7 @@ export class GracefulShutdown {
         await handler();
         logger.info(`Shutdown handler completed: ${name}`);
       } catch (error) {
-        logger.error(`Shutdown handler failed: ${name}`, error);
+        logger.error({ err: error }, `Shutdown handler failed: ${name}`);
       }
     }
 

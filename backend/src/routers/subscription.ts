@@ -256,7 +256,7 @@ export const subscriptionRouter = router({
 
       // 5. Cancel all scheduled (not yet posted) occurrences
       if (pauseResult.rowCount && pauseResult.rowCount > 0) {
-        const seriesIds = pauseResult.rows.map((r: { id: string }) => r.id);
+        const seriesIds = pauseResult.rows.map((r: Record<string, unknown>) => (r as { id: string }).id);
         await db.query(
           `UPDATE recurring_task_occurrences
            SET status = 'cancelled'

@@ -9,6 +9,7 @@
  */
 
 import { Context, Next } from 'hono';
+import { createHash } from 'crypto';
 import { checkRateLimit } from '../cache/redis';
 import { config } from '../config';
 
@@ -79,7 +80,7 @@ export function rateLimitMiddleware(category: RateLimitCategory) {
     if (authHeader?.startsWith('Bearer ')) {
       // Use a hash of the token as identifier (avoid storing raw tokens)
       const token = authHeader.slice(7);
-      identifier = `user:${simpleHash(token)}`;
+      identifier = `user:${hashIdentifier(token)}`;
     } else {
       // Use forwarded IP or connecting IP
       identifier = `ip:${c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown'}`;
@@ -174,12 +175,13 @@ export function sanitizeInput(input: string, maxLength = 10000): string {
 // HELPERS
 // ============================================================================
 
-function simpleHash(str: string): string {
-  let hash = 0;
-  for (let i = 0; i < Math.min(str.length, 64); i++) {
-    const char = str.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
-    hash |= 0; // Convert to 32-bit integer
-  }
-  return Math.abs(hash).toString(36);
+/**
+ * SHA-256 hash for rate-limit identifiers.
+ * Replaces weak 32-bit integer hash with cryptographic hash.
+ */
+function hashIdentifier(str: string): string {
+  return createHash('sha256')
+    .update(str)
+    .digest('hex')
+    .slice(0, 32);
 }
