@@ -68,7 +68,7 @@ export const taskRouter = router({
   listByPoster: protectedProcedure
     .input(z.object({
       posterId: Schemas.uuid.optional(),
-      state: z.string().optional(),
+      state: z.string().max(50).optional(),
     }).optional())
     .query(async ({ ctx, input }) => {
       const posterId = input?.posterId || ctx.user.id;
@@ -99,7 +99,7 @@ export const taskRouter = router({
   listByWorker: protectedProcedure
     .input(z.object({
       workerId: Schemas.uuid.optional(),
-      state: z.string().optional(),
+      state: z.string().max(50).optional(),
     }).optional())
     .query(async ({ ctx, input }) => {
       const workerId = input?.workerId || ctx.user.id;
@@ -260,13 +260,13 @@ export const taskRouter = router({
   submitProof: protectedProcedure
     .input(z.object({
       taskId: z.string().uuid(),
-      description: z.string().optional(),
+      description: z.string().max(2000).optional(),
       // Extended fields from iOS frontend
-      photoUrls: z.array(z.string()).optional(),
-      notes: z.string().optional(),
-      gpsLatitude: z.number().optional(),
-      gpsLongitude: z.number().optional(),
-      biometricHash: z.string().optional(),
+      photoUrls: z.array(z.string().url().max(2048)).max(10).optional(),
+      notes: z.string().max(2000).optional(),
+      gpsLatitude: z.number().min(-90).max(90).optional(),
+      gpsLongitude: z.number().min(-180).max(180).optional(),
+      biometricHash: z.string().max(256).optional(),
     }))
     .mutation(async ({ ctx, input }) => {
       // Create proof (pass extended fields as description fallback)
@@ -311,11 +311,11 @@ export const taskRouter = router({
       // Original schema fields
       proofId: z.string().uuid().optional(),
       decision: z.enum(['ACCEPTED', 'REJECTED']).optional(),
-      reason: z.string().optional(),
+      reason: z.string().max(1000).optional(),
       // iOS frontend fields
       taskId: z.string().uuid().optional(),
       approved: z.boolean().optional(),
-      feedback: z.string().optional(),
+      feedback: z.string().max(1000).optional(),
     }))
     .mutation(async ({ ctx, input }) => {
       // Resolve proofId: either from input directly or by looking up via taskId
@@ -421,7 +421,7 @@ export const taskRouter = router({
   cancel: protectedProcedure
     .input(z.object({ 
       taskId: Schemas.uuid,
-      reason: z.string().optional(),
+      reason: z.string().max(1000).optional(),
     }))
     .mutation(async ({ ctx, input }) => {
       // Verify user is poster

@@ -102,7 +102,7 @@ export const escrowRouter = router({
   createPaymentIntent: protectedProcedure
     .input(z.object({
       taskId: Schemas.uuid,
-      amount: z.number().int().positive().optional(),
+      amount: z.number().int().positive().max(99999900).optional(), // max $999,999
     }))
     .mutation(async ({ ctx, input }) => {
       if (!StripeService.isConfigured()) {

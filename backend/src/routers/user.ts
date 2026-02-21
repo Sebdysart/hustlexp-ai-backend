@@ -205,11 +205,11 @@ export const userRouter = router({
    */
   register: publicProcedure
     .input(z.object({
-      firebaseUid: z.string(),
-      email: z.string().email(),
+      firebaseUid: z.string().max(128),
+      email: z.string().email().max(254),
       fullName: z.string().min(1).max(255),
       // Accept "hustler", "worker", or "poster" from frontend
-      defaultMode: z.string().default('worker'),
+      defaultMode: z.string().max(20).default('worker'),
     }))
     .mutation(async ({ input }) => {
       // Normalize role: iOS sends "hustler" but DB stores "worker"
@@ -251,10 +251,10 @@ export const userRouter = router({
     .input(z.object({
       fullName: z.string().min(1).max(255).optional(),
       bio: z.string().max(500).optional(),
-      avatarUrl: z.string().url().optional(),
+      avatarUrl: z.string().url().max(2048).optional(),
       phone: z.string().max(20).optional(),
       // Accept "hustler", "worker", or "poster" from frontend
-      defaultMode: z.string().optional(),
+      defaultMode: z.string().max(20).optional(),
     }))
     .mutation(async ({ ctx, input }) => {
       const updates: string[] = [];
@@ -339,11 +339,11 @@ export const userRouter = router({
    */
   completeOnboarding: protectedProcedure
     .input(z.object({
-      version: z.string(),
+      version: z.string().max(20),
       roleConfidenceWorker: z.number().min(0).max(1),
       roleConfidencePoster: z.number().min(0).max(1),
       roleCertaintyTier: z.enum(['STRONG', 'MODERATE', 'WEAK']),
-      inconsistencyFlags: z.array(z.string()).optional(),
+      inconsistencyFlags: z.array(z.string().max(100)).max(20).optional(),
     }))
     .mutation(async ({ ctx, input }) => {
       const result = await db.query<User>(

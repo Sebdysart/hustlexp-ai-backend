@@ -129,16 +129,16 @@ export const Schemas = {
   // Task
   createTask: z.object({
     title: z.string().min(1).max(255),
-    description: z.string().min(1),
-    price: z.number().int().positive(), // USD cents
-    requirements: z.string().optional(),
-    location: z.string().optional(),
-    category: z.string().optional(),
+    description: z.string().min(1).max(5000),
+    price: z.number().int().positive().max(99999900), // USD cents, max $999,999
+    requirements: z.string().max(2000).optional(),
+    location: z.string().max(500).optional(),
+    category: z.string().max(100).optional(),
     deadline: z.string().datetime().optional(),
     requiresProof: z.boolean().default(true),
     // Live Mode (PRODUCT_SPEC §3.5)
     mode: z.enum(['STANDARD', 'LIVE']).default('STANDARD'),
-    liveBroadcastRadiusMiles: z.number().positive().optional(),
+    liveBroadcastRadiusMiles: z.number().positive().max(100).optional(),
     // Instant Execution Mode (IEM v1)
     instantMode: z.boolean().default(false),
   }),
@@ -146,31 +146,31 @@ export const Schemas = {
   // Escrow
   fundEscrow: z.object({
     escrowId: z.string().uuid(),
-    stripePaymentIntentId: z.string(),
+    stripePaymentIntentId: z.string().max(255),
   }),
-  
+
   releaseEscrow: z.object({
     escrowId: z.string().uuid(),
-    stripeTransferId: z.string().optional(),
+    stripeTransferId: z.string().max(255).optional(),
   }),
   
   // Proof
   submitProof: z.object({
     taskId: z.string().uuid(),
-    description: z.string().optional(),
+    description: z.string().max(2000).optional(),
   }),
-  
+
   reviewProof: z.object({
     proofId: z.string().uuid(),
     decision: z.enum(['ACCEPTED', 'REJECTED']),
-    reason: z.string().optional(),
+    reason: z.string().max(1000).optional(),
   }),
   
   // XP
   awardXP: z.object({
     taskId: z.string().uuid(),
     escrowId: z.string().uuid(),
-    baseXP: z.number().int().positive(),
+    baseXP: z.number().int().positive().max(10000),
   }),
   
   // Pagination
@@ -181,8 +181,8 @@ export const Schemas = {
   
   // Onboarding AI
   submitCalibration: z.object({
-    calibrationPrompt: z.string().min(1),
-    onboardingVersion: z.string().default('1.0.0'),
+    calibrationPrompt: z.string().min(1).max(5000),
+    onboardingVersion: z.string().max(20).default('1.0.0'),
   }),
   
   confirmRole: z.object({
