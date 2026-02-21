@@ -61,35 +61,49 @@ describe('Transaction Error Handling - Structural Verification', () => {
 
   it('logs both errors when rollback fails', () => {
     // Verify error logging includes both original and rollback errors
-    const errorLogMatch = dbSource.match(/console\.error.*originalError.*rollbackError|console\.error.*rollbackError.*originalError/);
+    // Supports both console.error and structured logger (pino/dbLog.error)
+    const errorLogMatch = dbSource.match(
+      /(?:console\.error|\.error)\s*\(\s*\{[^}]*originalError[^}]*rollbackError[^}]*\}|(?:console\.error|\.error)\s*\(\s*\{[^}]*rollbackError[^}]*originalError[^}]*\}/
+    );
     expect(errorLogMatch).toBeTruthy();
   });
 
   it('always releases connection in finally block', () => {
-    // Verify finally block exists
-    const finallyIndex = dbSource.indexOf('finally');
-    expect(finallyIndex).toBeGreaterThan(-1);
-    
-    // Verify client.release() is in finally block
-    const releaseIndex = dbSource.indexOf('client.release()', finallyIndex);
-    expect(releaseIndex).toBeGreaterThan(finallyIndex);
-    
-    // Verify release happens after all error handling
-    const catchBlockIndex = dbSource.lastIndexOf('catch');
-    expect(releaseIndex).toBeGreaterThan(catchBlockIndex);
+    // Verify both transaction methods have finally blocks with client.release()
+    const transactionIndex = dbSource.indexOf('transaction:');
+    expect(transactionIndex).toBeGreaterThan(-1);
+
+    // Check first transaction method
+    const finally1 = dbSource.indexOf('finally', transactionIndex);
+    expect(finally1).toBeGreaterThan(-1);
+    const release1 = dbSource.indexOf('client.release()', finally1);
+    expect(release1).toBeGreaterThan(finally1);
+    // Verify release is close to finally (within the block, not in another function)
+    expect(release1 - finally1).toBeLessThan(50);
+
+    // Check serializableTransaction method
+    const serializableIndex = dbSource.indexOf('serializableTransaction:');
+    expect(serializableIndex).toBeGreaterThan(-1);
+    const finally2 = dbSource.indexOf('finally', serializableIndex);
+    expect(finally2).toBeGreaterThan(serializableIndex);
+    const release2 = dbSource.indexOf('client.release()', finally2);
+    expect(release2).toBeGreaterThan(finally2);
+    expect(release2 - finally2).toBeLessThan(50);
   });
 
   it('applies fix to both transaction and serializableTransaction', () => {
-    // Check transaction method
-    const transactionIndex = dbSource.indexOf('transaction:');
-    const transactionSection = dbSource.substring(transactionIndex, transactionIndex + 500);
+    // Check transaction method implementation (skip type declaration by looking for 'transaction: async')
+    const transactionIndex = dbSource.indexOf('transaction: async');
+    expect(transactionIndex).toBeGreaterThan(-1);
+    const transactionSection = dbSource.substring(transactionIndex, transactionIndex + 800);
     expect(transactionSection).toContain('try');
     expect(transactionSection).toContain('ROLLBACK');
     expect(transactionSection).toContain('catch (rollbackError');
 
-    // Check serializableTransaction method
-    const serializableIndex = dbSource.indexOf('serializableTransaction:');
-    const serializableSection = dbSource.substring(serializableIndex, serializableIndex + 500);
+    // Check serializableTransaction method implementation
+    const serializableIndex = dbSource.indexOf('serializableTransaction: async');
+    expect(serializableIndex).toBeGreaterThan(-1);
+    const serializableSection = dbSource.substring(serializableIndex, serializableIndex + 800);
     expect(serializableSection).toContain('try');
     expect(serializableSection).toContain('ROLLBACK');
     expect(serializableSection).toContain('catch (rollbackError');
