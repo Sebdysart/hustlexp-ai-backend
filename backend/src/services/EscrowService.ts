@@ -15,6 +15,7 @@
  */
 
 import { db, isInvariantViolation, isUniqueViolation, getErrorMessage } from '../db';
+import { config } from '../config';
 import { EarnedVerificationUnlockService } from './EarnedVerificationUnlockService';
 import { XPTaxService } from './XPTaxService';
 import { XPService } from './XPService';
@@ -322,8 +323,9 @@ export const EscrowService = {
       const paymentMethod: string = 'escrow'; // All tasks use escrow payment flow
       const grossPayoutCents = task.price;
 
-      // Calculate platform fee (20%)
-      const platformFeeCents = Math.round(grossPayoutCents * 0.20);
+      // Calculate platform fee (from config - default 15%)
+      const platformFeePercent = config.stripe.platformFeePercent || 15;
+      const platformFeeCents = Math.round(grossPayoutCents * (platformFeePercent / 100));
       const netPayoutCents = grossPayoutCents - platformFeeCents;
 
       // 2. Release escrow (SPEC FIX: Allow release from both FUNDED and LOCKED_DISPUTE states)
