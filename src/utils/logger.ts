@@ -1,0 +1,1 @@
+export const createLogger = () => ({ info: () => {}, warn: () => {}, error: () => {}, fatal: () => {}, debug: () => {}, child: () => ({}) }); export const serviceLogger = { info: () => {}, warn: () => {}, error: () => {}, fatal: () => {}, debug: () => {}, child: () => ({}) };
