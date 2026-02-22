@@ -8,9 +8,15 @@ import pg from 'pg';
 
 const { Pool } = pg;
 
-// Use environment variable or default Neon connection
-const DATABASE_URL = process.env.DATABASE_URL || 
-  'postgresql://neondb_owner:REDACTED_NEON_PASSWORD_1@REDACTED_NEON_HOST_1.c-2.us-west-2.aws.neon.tech/neondb?sslmode=require';
+// Use environment variable — DATABASE_URL must be set in .env or CI
+const DATABASE_URL = process.env.DATABASE_URL;
+
+if (!DATABASE_URL) {
+  throw new Error(
+    'DATABASE_URL is not set. Set it in .env or as an environment variable.\n' +
+    'Example: DATABASE_URL=postgresql://user:pass@host/db?sslmode=require'
+  );
+}
 
 export function createTestPool(): pg.Pool {
   return new Pool({
