@@ -15,6 +15,9 @@ import { serviceLogger } from '../utils/logger.js';
 import { sql, isDatabaseAvailable, transaction, safeSql } from '../db/index.js';
 import { StripeMoneyEngine } from './StripeMoneyEngine.js';
 
+// Import centralized config for platform fee (fixes discrepancy with backend/src/config.ts)
+import { config } from '../config.js';
+
 // ============================================
 // Configuration
 // ============================================
@@ -31,7 +34,9 @@ const stripe = isStripeConfigured
     ? new Stripe(STRIPE_SECRET_KEY, { typescript: true })
     : null;
 
-const SEATTLE_PLATFORM_FEE_PERCENT = 0.12;
+// Use centralized config for platform fee - PRODUCT_SPEC §9: 15% platform fee
+// Fixes audit issue: platform fee discrepancy between services
+const PLATFORM_FEE_PERCENT = config.stripe.platformFeePercent / 100;
 
 // ============================================
 // Types
@@ -204,7 +209,7 @@ class StripeServiceClass {
 
         try {
             const amountCents = Math.round(amount * 100);
-            const platformFeeCents = Math.round(amount * SEATTLE_PLATFORM_FEE_PERCENT * 100);
+            const platformFeeCents = Math.round(amount * PLATFORM_FEE_PERCENT * 100);
             const hustlerPayoutCents = amountCents - platformFeeCents;
 
             // 1. CREATE PI
@@ -330,7 +335,7 @@ class StripeServiceClass {
 
         await transaction(async (tx: any) => {
             // 1. Create Escrow Hold Record
-            const platformFee = Math.round(amountCents * SEATTLE_PLATFORM_FEE_PERCENT);
+            const platformFee = Math.round(amountCents * PLATFORM_FEE_PERCENT);
             await tx`
                 INSERT INTO escrow_holds (
                     id, task_id, poster_id, hustler_id, payment_intent_id,
