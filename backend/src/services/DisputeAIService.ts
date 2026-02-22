@@ -21,6 +21,7 @@
 import { db } from '../db';
 import type { ServiceResult, Dispute, Task, Escrow, Evidence } from '../types';
 import { AIClient } from './AIClient';
+import { DisputeAnalysisSchema, EvidenceRequestSchema } from '../lib/ai-response-schemas';
 import { aiLogger } from '../logger';
 
 const log = aiLogger.child({ service: 'DisputeAIService' });
@@ -412,6 +413,7 @@ export const DisputeAIService = {
 
           const aiResult = await AIClient.callJSON<DisputeAnalysis>({
             route: 'reasoning',
+            schema: DisputeAnalysisSchema,
             temperature: 0.2,
             timeoutMs: 45000,
             maxTokens: 2048,
@@ -542,6 +544,7 @@ USER HISTORIES:
         try {
           const aiResult = await AIClient.callJSON<EvidenceRequest>({
             route: 'fast',
+            schema: EvidenceRequestSchema,
             temperature: 0.3,
             timeoutMs: 10000,
             maxTokens: 1024,

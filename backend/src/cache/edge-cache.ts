@@ -3,6 +3,7 @@
 // CDN-friendly cache headers for API responses
 // ============================================================================
 
+import type { Context } from 'hono';
 import { MiddlewareHandler } from 'hono';
 import { logger } from '../logger';
 
@@ -223,7 +224,7 @@ export function edgeCache(config: CacheConfig): MiddlewareHandler {
 // ============================================================================
 interface ConditionalCacheConfig extends CacheConfig {
   /** Only apply cache if condition returns true */
-  condition?: (c: any) => boolean;
+  condition?: (c: Context) => boolean;
 }
 
 export function conditionalEdgeCache(config: ConditionalCacheConfig): MiddlewareHandler {
@@ -328,7 +329,7 @@ export async function purgeCloudflareCacheByTag(
 // ============================================================================
 // ETag Support
 // ============================================================================
-export function generateETag(data: any): string {
+export function generateETag(data: unknown): string {
   const crypto = require('crypto');
   const hash = crypto.createHash('md5');
   hash.update(JSON.stringify(data));

@@ -205,7 +205,7 @@ export const taskDiscoveryRouter = router({
         });
       }
 
-      const searchFilters: any = {
+      const searchFilters: Record<string, unknown> = {
         ...input.filters,
         query: input.query,
         // Merge flat iOS params

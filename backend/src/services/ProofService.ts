@@ -275,7 +275,7 @@ export const ProofService = {
       // Get current proof state with proof_submissions data
       const currentResult = await db.query<Proof & {
         photo_url?: string;
-        gps_coordinates?: any;
+        gps_coordinates?: { lat: number; lng: number } | null;
         gps_accuracy_meters?: number;
         lidar_depth_map_url?: string;
       }>(

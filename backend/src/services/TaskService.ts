@@ -484,8 +484,8 @@ export const TaskService = {
         return {
           success: false,
           error: {
-            code: eligibilityResult.code as any,
-            message: eligibilityResult.details?.reason || 'Eligibility check failed',
+            code: String(eligibilityResult.code),
+            message: (eligibilityResult.details?.reason as string) || 'Eligibility check failed',
             details: eligibilityResult.details,
           },
         };

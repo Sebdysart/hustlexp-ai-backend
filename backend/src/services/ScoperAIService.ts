@@ -13,6 +13,7 @@
 import { db } from '../db';
 import type { ServiceResult } from '../types';
 import { AIClient } from './AIClient';
+import { ScoperProposalSchema } from '../lib/ai-response-schemas';
 import { aiLogger } from '../logger';
 
 const log = aiLogger.child({ service: 'ScoperAIService' });
@@ -85,6 +86,7 @@ export const ScoperAIService = {
         try {
           const aiResult = await AIClient.callJSON<ScoperProposal>({
             route: 'primary',
+            schema: ScoperProposalSchema,
             temperature: 0.3,
             timeoutMs: 15000,
             systemPrompt: `You are HustleXP's Scoper Agent (A2 authority - proposal only).

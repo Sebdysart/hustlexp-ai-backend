@@ -15,7 +15,7 @@
 
 // Sentry must be imported first to capture all errors
 import { Sentry } from './sentry';
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { cors } from 'hono/cors';
 import { trpcServer } from '@hono/trpc-server';
 import { appRouter } from './routers';
@@ -310,7 +310,7 @@ import { join } from 'path';
 const publicDir = join(import.meta.dirname || __dirname, '..', '..', 'public');
 
 function serveStatic(path: string, contentType = 'text/html') {
-  return (c: any) => {
+  return (c: Context) => {
     const filePath = join(publicDir, path);
     if (existsSync(filePath)) {
       const content = readFileSync(filePath, 'utf-8');
@@ -349,7 +349,7 @@ import { sseHandler } from './realtime/sse-handler';
 import { z } from 'zod';
 
 // Helper to get authenticated user from Bearer token
-async function getAuthUser(c: any): Promise<User | null> {
+async function getAuthUser(c: Context): Promise<User | null> {
   const authHeader = c.req.header('authorization');
   if (!authHeader?.startsWith('Bearer ')) {
     return null;
@@ -682,7 +682,7 @@ app.onError((err, c) => {
 
   // Handle circuit breaker open errors — return 503 with Retry-After
   if (err.name === 'CircuitOpenError' && 'retryAfterMs' in err) {
-    const retryAfterSec = Math.ceil((err as any).retryAfterMs / 1000);
+    const retryAfterSec = Math.ceil((err as unknown as { retryAfterMs: number }).retryAfterMs / 1000);
     c.header('Retry-After', String(retryAfterSec));
     pinoLogger.warn({
       requestId,
@@ -759,9 +759,11 @@ async function startServer() {
   try {
     await db.query('SELECT 1 FROM schema_versions LIMIT 1');
     startLog.info('Schema tables exist');
-  } catch (schemaErr: any) {
-    startLog.warn({ code: schemaErr?.code, message: schemaErr?.message?.substring(0, 120) }, 'Schema check failed');
-    if (schemaErr?.message?.includes('schema_versions') || schemaErr?.message?.includes('does not exist') || schemaErr?.code === '42P01') {
+  } catch (schemaErr: unknown) {
+    const schemaError = schemaErr instanceof Error ? schemaErr : null;
+    const pgCode = (schemaErr as Record<string, unknown>)?.code;
+    startLog.warn({ code: pgCode, message: schemaError?.message?.substring(0, 120) }, 'Schema check failed');
+    if (schemaError?.message?.includes('schema_versions') || schemaError?.message?.includes('does not exist') || pgCode === '42P01') {
       startLog.warn('Tables missing — running auto-migration');
       try {
         const fs = await import('fs');
@@ -782,8 +784,8 @@ async function startServer() {
             foundPath = p;
             startLog.info({ path: p, chars: schemaSQL.length }, 'Found schema file');
             break;
-          } catch (readErr: any) {
-            startLog.debug({ path: p, code: readErr?.code }, 'Schema not at path');
+          } catch (readErr: unknown) {
+            startLog.debug({ path: p, code: (readErr as Record<string, unknown>)?.code }, 'Schema not at path');
           }
         }
         if (!schemaSQL) {
@@ -803,8 +805,9 @@ async function startServer() {
             client.release();
           }
         }
-      } catch (migErr: any) {
-        startLog.error({ err: migErr, position: migErr?.position, detail: migErr?.detail }, 'Auto-migration failed');
+      } catch (migErr: unknown) {
+        const migError = migErr as Record<string, unknown>;
+        startLog.error({ err: migErr, position: migError?.position, detail: migError?.detail }, 'Auto-migration failed');
       }
     } else {
       startLog.error({ err: schemaErr }, 'Unexpected schema error');
@@ -817,8 +820,8 @@ async function startServer() {
     await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS bio TEXT`);
     await db.query(`CREATE INDEX IF NOT EXISTS idx_users_firebase_uid ON users(firebase_uid)`);
     startLog.info('firebase_uid + bio columns ensured');
-  } catch (colErr: any) {
-    startLog.warn({ message: colErr?.message?.substring(0, 120) }, 'Column migration note');
+  } catch (colErr: unknown) {
+    startLog.warn({ message: colErr instanceof Error ? colErr.message.substring(0, 120) : String(colErr) }, 'Column migration note');
   }
 
   // Run inline migration v2: Create all missing tables required by routers/services
@@ -1021,8 +1024,8 @@ async function startServer() {
         client.release();
       }
     }
-  } catch (migRunErr: any) {
-    startLog.error({ err: migRunErr, position: migRunErr?.position }, 'Migration error');
+  } catch (migRunErr: unknown) {
+    startLog.error({ err: migRunErr, position: (migRunErr as Record<string, unknown>)?.position }, 'Migration error');
   }
 
   // Performance indexes migration (007)
@@ -1070,7 +1073,7 @@ async function startServer() {
       await db.query('INSERT INTO applied_migrations (name) VALUES ($1)', [idxMig]);
       startLog.info({ migration: idxMig, indexes: 12 }, 'Performance indexes created');
     }
-  } catch (idxErr: any) {
+  } catch (idxErr: unknown) {
     startLog.warn({ err: idxErr }, 'Performance indexes migration warning');
   }
 

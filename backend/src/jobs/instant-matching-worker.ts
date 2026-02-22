@@ -126,7 +126,7 @@ export async function processInstantMatchingJob(
 
   // For each eligible hustler, check plan eligibility and send notification
   for (const hustler of eligibleHustlers.rows) {
-    const planCheck = await PlanService.canAcceptTaskWithRisk(hustler.id, riskLevel as any);
+    const planCheck = await PlanService.canAcceptTaskWithRisk(hustler.id, riskLevel as 'LOW' | 'MEDIUM' | 'HIGH' | 'IN_HOME');
     
     if (!planCheck.allowed) {
       // Skip hustlers without required plan

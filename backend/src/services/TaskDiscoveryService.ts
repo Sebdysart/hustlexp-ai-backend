@@ -42,7 +42,7 @@ export interface MatchingScoreComponents {
 }
 
 export interface TaskFeedItem {
-  task: any; // Task type from types.ts
+  task: Record<string, unknown>; // Task row from DB query
   matching_score: number;
   relevance_score: number;
   distance_miles: number;
@@ -327,7 +327,7 @@ export const TaskDiscoveryService = {
       
       const categoryExperience: Record<string, number> = {};
       categoryExpResult.rows.forEach(row => {
-        categoryExperience[row.category || ''] = parseInt(row.count as any, 10);
+        categoryExperience[row.category || ''] = parseInt(String(row.count), 10);
       });
       
       // Calculate distance using GeocodingService
@@ -589,22 +589,22 @@ export const TaskDiscoveryService = {
       params.push(limit, offset);
       sql += ` LIMIT $${params.length - 1} OFFSET $${params.length}`;
       
-      const result = await db.query<any>(sql, params);
-      
+      const result = await db.query<Record<string, unknown>>(sql, params);
+
       // Generate "Why this task?" explanations (TASK_DISCOVERY_SPEC.md §4)
-      const feedItems: TaskFeedItem[] = result.rows.map((row: any) => {
+      const feedItems: TaskFeedItem[] = result.rows.map((row: Record<string, unknown>) => {
         const explanation = generateExplanation({
-          matching_score: row.matching_score,
-          distance_miles: row.distance_miles,
-          category: row.category,
-          price: row.price,
+          matching_score: row.matching_score as number,
+          distance_miles: row.distance_miles as number,
+          category: row.category as string,
+          price: row.price as number,
         });
-        
+
         return {
           task: row,
-          matching_score: row.matching_score,
-          relevance_score: row.relevance_score,
-          distance_miles: row.distance_miles,
+          matching_score: row.matching_score as number,
+          relevance_score: row.relevance_score as number,
+          distance_miles: row.distance_miles as number,
           explanation,
         };
       });
@@ -669,18 +669,18 @@ export const TaskDiscoveryService = {
         params.push(limit, offset);
         sql += ` LIMIT $${params.length - 1} OFFSET $${params.length}`;
         
-        const result = await db.query<any>(sql, params);
-        
-        const feedItems: TaskFeedItem[] = result.rows.map((row: any) => ({
+        const result = await db.query<Record<string, unknown>>(sql, params);
+
+        const feedItems: TaskFeedItem[] = result.rows.map((row: Record<string, unknown>) => ({
           task: row,
-          matching_score: row.matching_score,
-          relevance_score: row.relevance_score,
-          distance_miles: row.distance_miles,
+          matching_score: row.matching_score as number,
+          relevance_score: row.relevance_score as number,
+          distance_miles: row.distance_miles as number,
           explanation: generateExplanation({
-            matching_score: row.matching_score,
-            distance_miles: row.distance_miles,
-            category: row.category,
-            price: row.price,
+            matching_score: row.matching_score as number,
+            distance_miles: row.distance_miles as number,
+            category: row.category as string,
+            price: row.price as number,
           }),
         }));
         

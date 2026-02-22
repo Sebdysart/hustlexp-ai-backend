@@ -44,7 +44,8 @@ interface SubsystemResult {
 // ============================================================================
 // LOAD ENV + IMPORTS
 // ============================================================================
-let db: any;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- dynamic import for standalone test runner
+let db: Record<string, any>;
 
 async function loadEnv() {
   const envPath = path.resolve(import.meta.dirname || __dirname, '../../../.env');

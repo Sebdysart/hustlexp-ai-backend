@@ -40,7 +40,7 @@ function getRatelimit(agent: string): Ratelimit {
     const limitConfig = AGENT_RATE_LIMITS[agent] || AGENT_RATE_LIMITS.default;
     const ratelimit = new Ratelimit({
       redis: getRedis(),
-      limiter: Ratelimit.slidingWindow(limitConfig.requests, limitConfig.window as any),
+      limiter: Ratelimit.slidingWindow(limitConfig.requests, limitConfig.window as `${number} s` | `${number} ms` | `${number} m` | `${number} h` | `${number} d`),
       analytics: true,
       prefix: `ratelimit:ai:${agent}`,
     });

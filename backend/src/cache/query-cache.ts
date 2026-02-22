@@ -243,13 +243,13 @@ export async function getCacheStats(): Promise<{
 // ============================================================================
 export function Cached(options: CacheOptions = {}) {
   return function (
-    target: any,
+    target: object,
     propertyKey: string,
     descriptor: PropertyDescriptor
   ) {
     const originalMethod = descriptor.value;
-    
-    descriptor.value = async function (...args: any[]) {
+
+    descriptor.value = async function (...args: unknown[]) {
       // Generate cache key from method name and arguments
       const key = `${target.constructor.name}:${propertyKey}:${JSON.stringify(args)}`;
       

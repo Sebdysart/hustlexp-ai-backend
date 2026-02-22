@@ -15,6 +15,7 @@
 
 import OpenAI from 'openai';
 import Groq from 'groq-sdk';
+import type { ZodSchema } from 'zod';
 import { config } from '../config';
 import { redis, CACHE_KEYS, CACHE_TTL } from '../cache/redis';
 import crypto from 'crypto';
@@ -191,7 +192,7 @@ async function callProvider(
 
   // Wrap the API call with circuit breaker protection
   const apiCall = () => Promise.race([
-    (client as any).chat.completions.create({
+    (client as unknown as { chat: { completions: { create: (opts: Record<string, unknown>) => Promise<unknown> } } }).chat.completions.create({
       model: providerConfig.model,
       messages,
       temperature: options.temperature ?? 0.7,
@@ -203,7 +204,8 @@ async function callProvider(
     ),
   ]);
 
-  const response = breaker ? await breaker.execute(apiCall) : await apiCall();
+  const rawResponse = breaker ? await breaker.execute(apiCall) : await apiCall();
+  const response = rawResponse as { choices?: { message?: { content?: string } }[] };
 
   const content = response.choices?.[0]?.message?.content;
   if (!content) {
@@ -282,26 +284,41 @@ export async function call(options: AICallOptions): Promise<AICallResult> {
 
 /**
  * Call AI and parse JSON response. Throws if response is not valid JSON.
+ *
+ * If `schema` is provided, validates the parsed response with Zod at runtime.
+ * If not, uses legacy `as T` assertion (backward compatible).
  */
-export async function callJSON<T = any>(options: AICallOptions): Promise<{ data: T } & AICallResult> {
+export async function callJSON<T = unknown>(
+  options: AICallOptions & { schema?: ZodSchema<T> }
+): Promise<{ data: T } & AICallResult> {
+  const { schema, ...callOptions } = options;
   const result = await call({
-    ...options,
+    ...callOptions,
     responseFormat: 'json',
   });
 
+  let parsed: unknown;
   try {
     // Try direct JSON parse first
-    const data = JSON.parse(result.content) as T;
-    return { ...result, data };
+    parsed = JSON.parse(result.content);
   } catch {
     // Try extracting JSON from markdown code block
     const jsonMatch = result.content.match(/```(?:json)?\s*([\s\S]*?)```/);
     if (jsonMatch) {
-      const data = JSON.parse(jsonMatch[1].trim()) as T;
-      return { ...result, data };
+      parsed = JSON.parse(jsonMatch[1].trim());
+    } else {
+      throw new Error(`Failed to parse AI response as JSON: ${result.content.slice(0, 200)}`);
     }
-    throw new Error(`Failed to parse AI response as JSON: ${result.content.slice(0, 200)}`);
   }
+
+  // If schema provided, validate with Zod (runtime safety)
+  if (schema) {
+    const validated = schema.parse(parsed);
+    return { ...result, data: validated };
+  }
+
+  // Legacy path: no runtime validation (backward compatible)
+  return { ...result, data: parsed as T };
 }
 
 /**

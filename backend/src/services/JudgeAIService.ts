@@ -21,6 +21,7 @@
 import { db } from '../db';
 import type { ServiceResult } from '../types';
 import { AIClient } from './AIClient';
+import { JudgeVerdictSchema } from '../lib/ai-response-schemas';
 import { aiLogger } from '../logger';
 
 const log = aiLogger.child({ service: 'JudgeAIService' });
@@ -265,6 +266,7 @@ async function synthesizeVerdict(input: JudgeInput): Promise<ServiceResult<Judge
       try {
         const aiResult = await AIClient.callJSON<JudgeVerdict>({
           route: 'reasoning',
+          schema: JudgeVerdictSchema,
           temperature: 0.1,
           timeoutMs: 15000,
           enableCache: false,
@@ -320,25 +322,9 @@ Produce your verdict.`,
         });
 
         const aiVerdict = aiResult.data;
-
-        // Validate AI response has required fields and sane values
-        if (
-          aiVerdict &&
-          typeof aiVerdict.verdict === 'string' &&
-          ['APPROVE', 'MANUAL_REVIEW', 'REJECT'].includes(aiVerdict.verdict) &&
-          typeof aiVerdict.confidence === 'number' &&
-          typeof aiVerdict.risk_score === 'number' &&
-          typeof aiVerdict.reasoning === 'string' &&
-          aiVerdict.component_scores &&
-          Array.isArray(aiVerdict.fraud_flags) &&
-          typeof aiVerdict.recommended_action === 'string'
-        ) {
-          log.info({ verdict: aiVerdict.verdict, confidence: aiVerdict.confidence, riskScore: aiVerdict.risk_score, provider: aiResult.provider, proofId: input.proof_id }, 'AI verdict produced');
-          return { success: true, data: aiVerdict };
-        }
-
-        // AI returned malformed response — fall through to deterministic
-        log.warn({ proofId: input.proof_id }, 'AI returned malformed verdict, using deterministic fallback');
+        // Zod schema validated the response — safe to use
+        log.info({ verdict: aiVerdict.verdict, confidence: aiVerdict.confidence, riskScore: aiVerdict.risk_score, provider: aiResult.provider, proofId: input.proof_id }, 'AI verdict produced');
+        return { success: true, data: aiVerdict };
       } catch (aiError) {
         log.warn({ err: aiError instanceof Error ? (aiError as Error).message : String(aiError), proofId: input.proof_id }, 'AI synthesis failed, using deterministic fallback');
       }

@@ -14,8 +14,10 @@
  */
 
 // Config and db are loaded dynamically after env is set
-let config: any;
-let db: any;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- dynamic imports for standalone test runner
+let config: Record<string, any>;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- dynamic imports for standalone test runner
+let db: { query: (sql: string, params?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }> };
 
 // ============================================================================
 // TEST FRAMEWORK
@@ -237,35 +239,35 @@ async function testAuditTrail() {
     const result = await db.query(
       "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name = 'ai_events')"
     );
-    assert((result.rows[0] as any).exists, 'ai_events table not found');
+    assert(Boolean((result.rows[0] as Record<string, unknown>).exists), 'ai_events table not found');
   });
 
   await test('ai_jobs table exists in DB', async () => {
     const result = await db.query(
       "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name = 'ai_jobs')"
     );
-    assert((result.rows[0] as any).exists, 'ai_jobs table not found');
+    assert(Boolean((result.rows[0] as Record<string, unknown>).exists), 'ai_jobs table not found');
   });
 
   await test('ai_proposals table exists in DB', async () => {
     const result = await db.query(
       "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name = 'ai_proposals')"
     );
-    assert((result.rows[0] as any).exists, 'ai_proposals table not found');
+    assert(Boolean((result.rows[0] as Record<string, unknown>).exists), 'ai_proposals table not found');
   });
 
   await test('ai_decisions table exists in DB', async () => {
     const result = await db.query(
       "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name = 'ai_decisions')"
     );
-    assert((result.rows[0] as any).exists, 'ai_decisions table not found');
+    assert(Boolean((result.rows[0] as Record<string, unknown>).exists), 'ai_decisions table not found');
   });
 
   await test('ai_agent_decisions table exists in DB', async () => {
     const result = await db.query(
       "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name = 'ai_agent_decisions')"
     );
-    assert((result.rows[0] as any).exists, 'ai_agent_decisions table not found');
+    assert(Boolean((result.rows[0] as Record<string, unknown>).exists), 'ai_agent_decisions table not found');
   });
 
   await test('ai_agent_decisions has agent_type CHECK constraint', async () => {
@@ -419,7 +421,7 @@ async function testConstitutionalEnforcement() {
     const result = await db.query(
       "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name = 'escrow')"
     );
-    assert((result.rows[0] as any).exists, 'escrow table not found');
+    assert(Boolean((result.rows[0] as Record<string, unknown>).exists), 'escrow table not found');
     // Note: constitutional triggers on escrow are a P1 gap — migration needed
   });
 
@@ -451,6 +453,7 @@ async function testRouterWiring() {
 
   await test('appRouter has matchmaker route', async () => {
     const { appRouter } = await import('../routers/index');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- tRPC internal access for testing
     const procedures = Object.keys((appRouter as any)._def.procedures || {});
     // Check that matchmaker procedures are accessible
     assert(
@@ -461,6 +464,7 @@ async function testRouterWiring() {
 
   await test('appRouter has disputeAI route', async () => {
     const { appRouter } = await import('../routers/index');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- tRPC internal access for testing
     const procedures = Object.keys((appRouter as any)._def.procedures || {});
     assert(
       procedures.some(p => p.startsWith('disputeAI.')),
@@ -470,6 +474,7 @@ async function testRouterWiring() {
 
   await test('appRouter has reputation route', async () => {
     const { appRouter } = await import('../routers/index');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- tRPC internal access for testing
     const procedures = Object.keys((appRouter as any)._def.procedures || {});
     assert(
       procedures.some(p => p.startsWith('reputation.')),
@@ -479,6 +484,7 @@ async function testRouterWiring() {
 
   await test('appRouter total route count >= 38', async () => {
     const { appRouter } = await import('../routers/index');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- tRPC internal access for testing
     const routes = Object.keys((appRouter as any)._def.record || {});
     assert(routes.length >= 38, `Expected ≥38 routes, found ${routes.length}: ${routes.join(', ')}`);
   });
@@ -499,19 +505,19 @@ async function testDBHealth() {
 
   await test('Users table accessible', async () => {
     const result = await db.query('SELECT COUNT(*) as count FROM users');
-    const count = parseInt(result.rows[0].count, 10);
+    const count = parseInt(String(result.rows[0].count), 10);
     assert(count >= 0, `User count is negative: ${count}`);
   });
 
   await test('Tasks table accessible', async () => {
     const result = await db.query('SELECT COUNT(*) as count FROM tasks');
-    const count = parseInt(result.rows[0].count, 10);
+    const count = parseInt(String(result.rows[0].count), 10);
     assert(count >= 0, `Task count is negative: ${count}`);
   });
 
   await test('ai_agent_decisions table accessible', async () => {
     const result = await db.query('SELECT COUNT(*) as count FROM ai_agent_decisions');
-    const count = parseInt(result.rows[0].count, 10);
+    const count = parseInt(String(result.rows[0].count), 10);
     assert(count >= 0, `Count is negative: ${count}`);
   });
 }

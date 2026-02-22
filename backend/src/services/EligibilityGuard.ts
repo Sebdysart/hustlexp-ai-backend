@@ -30,7 +30,7 @@ export interface EligibilityContext {
 
 export type EligibilityResult =
   | { allowed: true }
-  | { allowed: false; code: EligibilityErrorCode; details?: any };
+  | { allowed: false; code: EligibilityErrorCode; details?: Record<string, unknown> };
 
 export enum EligibilityErrorCode {
   TRUST_TIER_INSUFFICIENT = 'TRUST_TIER_INSUFFICIENT',

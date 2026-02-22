@@ -20,6 +20,7 @@ const dbLog = logger.child({ module: 'db' });
 // ============================================================================
 
 const DATABASE_URL = process.env.DATABASE_URL;
+const POOL_MAX = parseInt(process.env.DB_POOL_MAX || '20', 10);
 
 if (!DATABASE_URL) {
   dbLog.fatal('DATABASE_URL is required');
@@ -36,7 +37,7 @@ const isTestEnv = process.env.NODE_ENV === 'test' || process.env.VITEST === 'tru
 
 const pool = new Pool({
   connectionString: DATABASE_URL,
-  max: 10,
+  max: POOL_MAX,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 10000,
   // Query timeout: kill any query taking longer than 30 seconds
@@ -75,8 +76,8 @@ export function getPoolStats() {
     totalConnections: pool.totalCount,
     idleConnections: pool.idleCount,
     waitingRequests: pool.waitingCount,
-    maxConnections: 10,
-    utilizationPercent: Math.round((pool.totalCount / 10) * 100),
+    maxConnections: POOL_MAX,
+    utilizationPercent: Math.round((pool.totalCount / POOL_MAX) * 100),
   };
 }
 

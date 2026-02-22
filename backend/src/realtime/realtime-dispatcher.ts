@@ -19,6 +19,7 @@
 import { db } from '../db';
 import { getConnections, type SSEConnection } from './connection-registry';
 import { PlanService } from '../services/PlanService';
+import type { TaskProgressState } from '../types';
 import { logger } from '../logger';
 
 const log = logger.child({ module: 'realtime-dispatcher' });
@@ -88,14 +89,14 @@ export async function dispatchTaskProgress(event: OutboxEvent): Promise<void> {
   const recipients = new Set<string>();
   
   // Check poster eligibility
-  const posterCanReceive = await PlanService.canReceiveProgressEvent(task.poster_id, to as any);
+  const posterCanReceive = await PlanService.canReceiveProgressEvent(task.poster_id, to as TaskProgressState);
   if (posterCanReceive) {
     recipients.add(task.poster_id);
   }
 
   // Check worker eligibility (if exists)
   if (task.worker_id) {
-    const workerCanReceive = await PlanService.canReceiveProgressEvent(task.worker_id, to as any);
+    const workerCanReceive = await PlanService.canReceiveProgressEvent(task.worker_id, to as TaskProgressState);
     if (workerCanReceive) {
       recipients.add(task.worker_id);
     }

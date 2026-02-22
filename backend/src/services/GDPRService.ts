@@ -31,7 +31,7 @@ export type GDPRRequestType = 'export' | 'deletion' | 'rectification' | 'restric
 // Schema uses lowercase for status: 'pending', 'processing', 'completed', 'rejected', 'cancelled'
 export type GDPRRequestStatus = 'pending' | 'processing' | 'completed' | 'rejected' | 'cancelled';
 // Schema uses lowercase for consent_type
-export type ConsentType = 'marketing' | 'analytics' | 'location' | 'notifications' | 'profiling' | 'account_creation' | 'email_notifications';
+export type ConsentType = 'marketing' | 'analytics' | 'location' | 'notifications' | 'profiling' | 'account_creation' | 'email_notifications' | 'biometric_data';
 // Schema uses boolean 'granted' (not status enum)
 export type ConsentStatus = 'GRANTED' | 'REVOKED'; // Internal type, maps to boolean granted
 
@@ -773,6 +773,33 @@ export const GDPRService = {
           message: error instanceof Error ? error.message : 'Unknown error',
         },
       };
+    }
+  },
+
+  // --------------------------------------------------------------------------
+  // BIPA COMPLIANCE (740 ILCS 14)
+  // --------------------------------------------------------------------------
+
+  /**
+   * Check if user has granted biometric data consent.
+   * BIPA requires written consent BEFORE biometric data collection.
+   *
+   * @returns true if user has an active biometric_data consent with granted=true
+   */
+  hasBiometricConsent: async (userId: string): Promise<boolean> => {
+    try {
+      const result = await db.query<{ granted: boolean }>(
+        `SELECT granted FROM user_consents
+         WHERE user_id = $1 AND consent_type = 'biometric_data'
+         AND granted = true
+         LIMIT 1`,
+        [userId]
+      );
+      return result.rows.length > 0;
+    } catch (error) {
+      log.error({ err: error instanceof Error ? error.message : String(error), userId }, 'Failed to check biometric consent');
+      // Fail closed: if we can't verify consent, deny access
+      return false;
     }
   },
 };

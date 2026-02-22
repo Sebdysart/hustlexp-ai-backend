@@ -16,7 +16,7 @@
  * @see ARCHITECTURE.md §2.4 (Outbox pattern)
  */
 
-import { Queue, QueueOptions, Worker, WorkerOptions } from 'bullmq';
+import { Queue, QueueOptions, Worker, WorkerOptions, Job } from 'bullmq';
 import Redis from 'ioredis';
 import { config } from '../config';
 
@@ -214,7 +214,7 @@ export function getQueue(queueName: QueueName): Queue {
   const connection = createRedisConnection();
   
   const queue = new Queue(queueName, {
-    connection: connection as any,
+    connection: connection as unknown as QueueOptions['connection'],
     defaultJobOptions: config.defaultJobOptions,
   });
   
@@ -269,7 +269,7 @@ export function parseIdempotencyKey(key: string): {
  */
 export function createWorker(
   queueName: QueueName,
-  processor: (job: any) => Promise<void>,
+  processor: (job: Job) => Promise<void>,
   options?: Partial<WorkerOptions>
 ): Worker {
   const config = QUEUE_CONFIGS[queueName];
@@ -279,7 +279,7 @@ export function createWorker(
     queueName,
     processor,
     {
-      connection: connection as any,
+      connection: connection as unknown as WorkerOptions['connection'],
       ...config.workerOptions,
       ...options,
     }

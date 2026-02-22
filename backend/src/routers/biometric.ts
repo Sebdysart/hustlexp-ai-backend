@@ -15,7 +15,17 @@ import { router, protectedProcedure, Schemas } from '../trpc';
 import { db } from '../db';
 import { BiometricVerificationService } from '../services/BiometricVerificationService';
 import { LogisticsAIService } from '../services/LogisticsAIService';
+import { GDPRService } from '../services/GDPRService';
+import { validateSafeUrl } from '../lib/url-safety';
 import { z } from 'zod';
+
+/**
+ * Zod refinement: reject URLs pointing to internal/private networks (SSRF protection)
+ */
+const safeUrlSchema = z.string().url().refine(
+  (url) => validateSafeUrl(url).safe,
+  { message: 'URL points to disallowed destination' }
+);
 
 export const biometricRouter = router({
   // --------------------------------------------------------------------------
@@ -31,7 +41,7 @@ export const biometricRouter = router({
       z.object({
         proof_id: Schemas.uuid,
         task_id: Schemas.uuid,
-        photo_url: z.string().url(),
+        photo_url: safeUrlSchema,
         gps_coordinates: z.object({
           latitude: z.number().min(-90).max(90),
           longitude: z.number().min(-180).max(180)
@@ -42,13 +52,22 @@ export const biometricRouter = router({
           latitude: z.number().min(-90).max(90),
           longitude: z.number().min(-180).max(180)
         }),
-        lidar_depth_map_url: z.string().url().optional(),
+        lidar_depth_map_url: safeUrlSchema.optional(),
         time_lock_hash: z.string().min(1),
         submission_timestamp: z.string().datetime()
       })
     )
     .mutation(async ({ ctx, input }) => {
       try {
+        // BIPA compliance: verify biometric data consent before collection
+        const hasConsent = await GDPRService.hasBiometricConsent(ctx.user.id);
+        if (!hasConsent) {
+          throw new TRPCError({
+            code: 'FORBIDDEN',
+            message: 'BIPA_CONSENT_REQUIRED: Biometric data consent required before collection (740 ILCS 14)',
+          });
+        }
+
         // Run biometric verification
         const biometricResult = await BiometricVerificationService.analyzeProofSubmission(
           input.proof_id,
@@ -186,10 +205,19 @@ export const biometricRouter = router({
   analyzeFacePhoto: protectedProcedure
     .input(
       z.object({
-        photo_url: z.string().url()
+        photo_url: safeUrlSchema
       })
     )
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
+      // BIPA compliance: verify biometric data consent before collection
+      const hasConsent = await GDPRService.hasBiometricConsent(ctx.user.id);
+      if (!hasConsent) {
+        throw new TRPCError({
+          code: 'FORBIDDEN',
+          message: 'BIPA_CONSENT_REQUIRED: Biometric data consent required before collection (740 ILCS 14)',
+        });
+      }
+
       const result = await BiometricVerificationService.analyzeFacePhoto(input.photo_url);
 
       if (!result.success) {

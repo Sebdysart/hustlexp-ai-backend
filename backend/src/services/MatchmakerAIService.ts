@@ -18,6 +18,7 @@
 import { db } from '../db';
 import type { ServiceResult } from '../types';
 import { AIClient } from './AIClient';
+import { MatchmakerRankingsSchema, MatchExplanationSchema, PriceSuggestionSchema } from '../lib/ai-response-schemas';
 import { aiLogger } from '../logger';
 
 const log = aiLogger.child({ service: 'MatchmakerAIService' });
@@ -139,21 +140,9 @@ export const MatchmakerAIService = {
             hasLocation: !!c.location,
           }));
 
-          const aiResult = await AIClient.callJSON<{
-            rankings: Array<{
-              index: number;
-              matchScore: number;
-              reasoning: string;
-              factors: {
-                skillMatch: number;
-                proximity: number;
-                reliability: number;
-                trustTier: number;
-                availability: number;
-              };
-            }>;
-          }>({
+          const aiResult = await AIClient.callJSON({
             route: 'fast',
+            schema: MatchmakerRankingsSchema,
             temperature: 0.3,
             timeoutMs: 10000,
             maxTokens: 2048,
@@ -246,13 +235,9 @@ ${JSON.stringify(candidateSummaries, null, 2)}`,
 
       if (AIClient.isConfigured()) {
         try {
-          const aiResult = await AIClient.callJSON<{
-            summary: string;
-            factors: string[];
-            estimatedEarnings: number;
-            estimatedDuration: string;
-          }>({
+          const aiResult = await AIClient.callJSON({
             route: 'fast',
+            schema: MatchExplanationSchema,
             temperature: 0.3,
             timeoutMs: 8000,
             maxTokens: 512,
@@ -350,14 +335,9 @@ Worker profile:
       // Step 3: Low confidence heuristic - try AI enhancement
       if (AIClient.isConfigured()) {
         try {
-          const aiResult = await AIClient.callJSON<{
-            suggested_price_cents: number;
-            range_low_cents: number;
-            range_high_cents: number;
-            reasoning: string;
-            confidence: number;
-          }>({
+          const aiResult = await AIClient.callJSON({
             route: 'fast',
+            schema: PriceSuggestionSchema,
             temperature: 0.3,
             timeoutMs: 5000,
             maxTokens: 256,

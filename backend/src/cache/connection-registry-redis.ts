@@ -301,7 +301,7 @@ export async function unsubscribeFromChannel(
  */
 export async function publishEvent(
   channel: string,
-  event: any
+  event: Record<string, unknown>
 ): Promise<void> {
   const message = JSON.stringify({
     channel,
@@ -319,7 +319,7 @@ export async function publishEvent(
  */
 export async function broadcastToUser(
   userId: string,
-  event: any
+  event: Record<string, unknown>
 ): Promise<number> {
   const connections = await getUserConnections(userId);
   
@@ -353,7 +353,7 @@ export async function broadcastToUser(
  */
 export async function broadcastToChannel(
   channel: string,
-  event: any
+  event: Record<string, unknown>
 ): Promise<void> {
   await publishEvent(channel, event);
   

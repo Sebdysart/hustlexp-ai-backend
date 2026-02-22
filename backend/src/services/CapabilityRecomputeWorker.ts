@@ -32,7 +32,7 @@ const log = logger.child({ service: 'CapabilityRecomputeWorker' });
 interface JobRow {
   id: string;
   type: string;
-  payload: any; // JSONB
+  payload: Record<string, unknown>; // JSONB
   status: string;
   attempts: number;
   max_attempts: number;
@@ -107,20 +107,21 @@ export async function processCapabilityRecomputeJobs(limit: number = 10): Promis
       processed++;
       log.info({ jobId: job.id }, 'Processed recompute job');
 
-    } catch (error: any) {
+    } catch (error: unknown) {
       // Mark as failed or dead
+      const errorMessage = error instanceof Error ? error.message : String(error);
       const newStatus = job.attempts + 1 >= job.max_attempts ? 'dead' : 'failed';
-      
+
       await db.query(
         `
         UPDATE job_queue
         SET status = $1, last_error = $2
         WHERE id = $3
         `,
-        [newStatus, error.message, job.id]
+        [newStatus, errorMessage, job.id]
       );
 
-      log.error({ err: error.message, jobId: job.id, attempts: job.attempts + 1 }, 'Recompute job failed');
+      log.error({ err: errorMessage, jobId: job.id, attempts: job.attempts + 1 }, 'Recompute job failed');
     }
   }
 

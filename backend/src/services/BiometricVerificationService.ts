@@ -32,6 +32,7 @@
 import { db } from '../db';
 import type { ServiceResult } from '../types';
 import { awsRekognitionBreaker, gcpVisionBreaker } from '../middleware/circuit-breaker';
+import { validateSafeUrl } from '../lib/url-safety';
 import { logger } from '../logger';
 
 const log = logger.child({ service: 'BiometricVerificationService' });
@@ -211,6 +212,13 @@ export const BiometricVerificationService = {
         try {
           const { DetectFacesCommand } = await import('@aws-sdk/client-rekognition');
 
+          // SSRF protection: validate URL before fetching
+          const urlCheck = validateSafeUrl(photoUrl);
+          if (!urlCheck.safe) {
+            log.warn({ photoUrl, reason: urlCheck.reason }, 'SSRF: blocked unsafe photo URL');
+            throw new Error(`Unsafe URL blocked: ${urlCheck.reason}`);
+          }
+
           // Fetch image bytes from URL
           const imageResponse = await fetch(photoUrl);
           if (imageResponse.ok) {
@@ -348,6 +356,14 @@ export const BiometricVerificationService = {
       if (client) {
         try {
           const { DetectFacesCommand } = await import('@aws-sdk/client-rekognition');
+
+          // SSRF protection: validate URL before fetching
+          const deepfakeUrlCheck = validateSafeUrl(photoUrl);
+          if (!deepfakeUrlCheck.safe) {
+            log.warn({ photoUrl, reason: deepfakeUrlCheck.reason }, 'SSRF: blocked unsafe photo URL in deepfake check');
+            throw new Error(`Unsafe URL blocked: ${deepfakeUrlCheck.reason}`);
+          }
+
           const imageResponse = await fetch(photoUrl);
 
           if (imageResponse.ok) {
@@ -416,6 +432,20 @@ export const BiometricVerificationService = {
       //   1. Depth variance (flat = likely a screen/photo, should have depth variation for a real face)
       //   2. Face region depth should be closer than background
       //   3. No spatial anomalies (sudden depth discontinuities at face edges = mask)
+
+      // SSRF protection: validate URL before fetching
+      const depthUrlCheck = validateSafeUrl(depthMapUrl);
+      if (!depthUrlCheck.safe) {
+        log.warn({ depthMapUrl, reason: depthUrlCheck.reason }, 'SSRF: blocked unsafe depth map URL');
+        return {
+          success: true,
+          data: {
+            depth_map_valid: false,
+            depth_consistency_score: 0.0,
+            spatial_anomalies: ['unsafe_url_blocked'],
+          },
+        };
+      }
 
       // For now, validate that the depth map exists and has reasonable properties
       // Full implementation would use TensorFlow.js or similar for depth analysis

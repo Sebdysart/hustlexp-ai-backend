@@ -473,7 +473,7 @@ export const StripeConnectService = {
           instantEligible,
           instantFees: instantEligible ? { percentage: 1.5, fixedCents: 0 } : null,
           standardSchedule: {
-            interval: (payoutSettings?.schedule?.interval as any) || 'daily',
+            interval: (payoutSettings?.schedule?.interval || 'daily') as 'daily' | 'weekly' | 'monthly' | 'manual',
             weeklyAnchor: payoutSettings?.schedule?.weekly_anchor || undefined,
             monthlyAnchor: payoutSettings?.schedule?.monthly_anchor || undefined,
           },
@@ -543,8 +543,8 @@ export const StripeConnectService = {
             settings: {
               payouts: {
                 schedule: {
-                  interval: interval as any,
-                  weekly_anchor: weeklyAnchor as any,
+                  interval: interval as 'daily' | 'weekly' | 'monthly' | 'manual',
+                  weekly_anchor: weeklyAnchor as 'monday' | 'tuesday' | 'wednesday' | 'thursday' | 'friday' | 'saturday' | 'sunday' | undefined,
                   monthly_anchor: monthlyAnchor,
                 },
               },
@@ -772,8 +772,8 @@ export const StripeConnectService = {
             requirementsDue: (requirements.currently_due?.length || 0) > 0,
           },
           capabilities: {
-            cardPayments: (account.capabilities?.card_payments as any) || 'inactive',
-            transfers: (account.capabilities?.transfers as any) || 'inactive',
+            cardPayments: (account.capabilities?.card_payments || 'inactive') as 'active' | 'inactive' | 'pending',
+            transfers: (account.capabilities?.transfers || 'inactive') as 'active' | 'inactive' | 'pending',
           },
           requirements: {
             currentlyDue: requirements.currently_due || [],
@@ -785,7 +785,7 @@ export const StripeConnectService = {
             payoutSchedule: account.settings?.payouts?.schedule?.interval || 'daily',
             debitCardPayoutsEnabled: false,
           },
-          createdAt: new Date((account as any).created * 1000),
+          createdAt: new Date((account as unknown as { created: number }).created * 1000),
         },
       };
     } catch (error) {

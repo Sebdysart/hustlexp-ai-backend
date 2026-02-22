@@ -67,9 +67,9 @@ export async function authenticateRequest(
     );
 
     return user;
-  } catch (err: any) {
+  } catch (err: unknown) {
     // Firebase throws specific error for revoked tokens
-    if (err?.code === "auth/id-token-revoked") {
+    if ((err as Record<string, unknown>)?.code === "auth/id-token-revoked") {
       authLogger.warn("Token has been revoked");
       return null;
     }
@@ -83,7 +83,7 @@ export async function requireAuth(c: Context): Promise<AuthenticatedUser> {
 
   if (!user) {
     // IMPORTANT: Throwing errors breaks Hono in prod — return proper response instead.
-    return c.json({ error: "Unauthorized" }, 401) as any;
+    return c.json({ error: "Unauthorized" }, 401) as unknown as AuthenticatedUser;
   }
 
   return user;
