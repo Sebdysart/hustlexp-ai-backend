@@ -19,6 +19,7 @@ import { db } from '../db';
 import type { ServiceResult } from '../types';
 import { AIClient } from './AIClient';
 import { MatchmakerRankingsSchema, MatchExplanationSchema, PriceSuggestionSchema } from '../lib/ai-response-schemas';
+import { scrubPII } from '../lib/pii-scrubber';
 import { aiLogger } from '../logger';
 
 const log = aiLogger.child({ service: 'MatchmakerAIService' });
@@ -163,7 +164,7 @@ RULES:
 - Each reasoning must be 1-2 sentences explaining the match
 
 Return JSON: { "rankings": [{ "index": number, "matchScore": number, "reasoning": string, "factors": { "skillMatch": number, "proximity": number, "reliability": number, "trustTier": number, "availability": number } }] }`,
-            prompt: `Task: "${task.title}"
+            prompt: scrubPII(`Task: "${task.title}"
 Description: ${task.description}
 Category: ${task.category || 'general'}
 Location: ${task.location || 'not specified'}
@@ -171,7 +172,7 @@ Price: $${(task.price / 100).toFixed(2)}
 Requirements: ${task.requirements || 'none specified'}
 
 Candidates:
-${JSON.stringify(candidateSummaries, null, 2)}`,
+${JSON.stringify(candidateSummaries, null, 2)}`),
           });
 
           ranked = aiResult.data.rankings

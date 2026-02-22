@@ -1,27 +1,124 @@
 /**
- * Task Discovery Router v1.0.0
- * 
+ * Task Discovery Router v1.1.0
+ *
  * CONSTITUTIONAL: PRODUCT_SPEC §9, TASK_DISCOVERY_SPEC.md
- * 
+ *
  * Endpoints for task discovery, matching, filtering, sorting, and search.
- * 
+ *
+ * PROGRESSIVE VERIFICATION (AUDIT FIX):
+ * - `browseTasks` (publicProcedure): Any authenticated user can browse ALL open
+ *   tasks in read-only mode, regardless of trust tier. Each task includes a
+ *   `canAccept` flag and `requiredTrustTier` so the frontend can show
+ *   "Verify to Accept" CTAs. This solves the marketplace cold-start problem.
+ * - `getFeed` (protectedProcedure): Personalized feed with matching scores.
+ *   Now includes `canAccept` based on user trust tier vs task requirements.
+ *
  * @see backend/src/services/TaskDiscoveryService.ts
  */
 
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
-import { router, protectedProcedure, Schemas } from '../trpc';
+import { router, protectedProcedure, publicProcedure, Schemas } from '../trpc';
 import { TaskDiscoveryService } from '../services/TaskDiscoveryService';
+import { db } from '../db';
+
+// --------------------------------------------------------------------------
+// TRUST TIER THRESHOLDS (Progressive Verification)
+// Level 0 (New): Browse only, can accept tasks < $20
+// Level 1 (Basic): Can accept tasks < $50 (phone + email verified)
+// Level 2 (Verified): Can accept tasks < $200 (ID verified)
+// Level 3 (Trusted): Can accept all tasks (background check)
+// Level 4 (Elite): Priority access (proven track record)
+// --------------------------------------------------------------------------
+const TIER_PRICE_LIMITS: Record<number, number> = {
+  0: 2000,    // $20 in cents
+  1: 5000,    // $50 in cents
+  2: 20000,   // $200 in cents
+  3: 9999900, // Effectively unlimited
+  4: 9999900, // Effectively unlimited
+};
+
+function canUserAcceptTask(userTrustTier: number, taskPrice: number): boolean {
+  const priceLimit = TIER_PRICE_LIMITS[userTrustTier] ?? TIER_PRICE_LIMITS[0];
+  return taskPrice <= priceLimit;
+}
+
+function getRequiredTierForTask(taskPrice: number): number {
+  if (taskPrice <= 2000) return 0;
+  if (taskPrice <= 5000) return 1;
+  if (taskPrice <= 20000) return 2;
+  return 3;
+}
 
 export const taskDiscoveryRouter = router({
   // --------------------------------------------------------------------------
+  // PROGRESSIVE VERIFICATION: PUBLIC TASK BROWSING (AUDIT FIX #1)
+  // --------------------------------------------------------------------------
+
+  /**
+   * Browse all open tasks (read-only, any authenticated user)
+   *
+   * CRITICAL: This endpoint solves the marketplace cold-start death spiral.
+   * Workers can see ALL tasks immediately after signup, even before verification.
+   * Each task includes `canAccept` (boolean) and `requiredTrustTier` so the
+   * frontend can display "Complete verification to accept this task" CTAs.
+   *
+   * Workers don't verify without visible tasks; this makes tasks visible FIRST.
+   */
+  browseTasks: publicProcedure
+    .input(z.object({
+      limit: z.number().int().min(1).max(100).default(20),
+      offset: z.number().int().min(0).default(0),
+      category: z.string().optional(),
+      min_price: z.number().int().nonnegative().optional(),
+      max_price: z.number().int().positive().optional(),
+      sort_by: z.enum(['newest', 'price_high', 'price_low', 'deadline']).default('newest'),
+    }))
+    .query(async ({ input, ctx }) => {
+      // User may or may not be authenticated
+      const userTrustTier = ctx.user?.trust_tier ?? 0;
+
+      const result = await TaskDiscoveryService.browsePublicFeed(
+        input,
+        input.limit,
+        input.offset
+      );
+
+      if (!result.success) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: result.error.message,
+        });
+      }
+
+      // Annotate each task with progressive verification info
+      const annotatedTasks = result.data.map((task) => ({
+        ...task,
+        canAccept: canUserAcceptTask(userTrustTier, task.price as number),
+        requiredTrustTier: getRequiredTierForTask(task.price as number),
+        userTrustTier,
+        verificationCTA: canUserAcceptTask(userTrustTier, task.price as number)
+          ? null
+          : `Complete Level ${getRequiredTierForTask(task.price as number)} verification to accept this task`,
+      }));
+
+      return {
+        tasks: annotatedTasks,
+        totalAvailable: result.data.length,
+        userTrustTier,
+        isReadOnly: !ctx.user,
+      };
+    }),
+
+  // --------------------------------------------------------------------------
   // TASK FEED (Matching & Relevance)
   // --------------------------------------------------------------------------
-  
+
   /**
    * Get task feed with matching scores (for hustler feed)
-   * 
+   *
    * PRODUCT_SPEC §9: Task Discovery & Matching Algorithm
+   * Now includes progressive verification: canAccept flag per task.
    */
   getFeed: protectedProcedure
     .input(z.object({
@@ -63,15 +160,26 @@ export const taskDiscoveryRouter = router({
         input.limit,
         input.offset
       );
-      
+
       if (!result.success) {
         throw new TRPCError({
           code: 'INTERNAL_SERVER_ERROR',
           message: result.error.message,
         });
       }
-      
-      return result.data;
+
+      // Annotate with progressive verification (canAccept per task)
+      const userTrustTier = ctx.user.trust_tier ?? 0;
+      const annotatedData = result.data.map((item) => ({
+        ...item,
+        canAccept: canUserAcceptTask(userTrustTier, item.task.price as number),
+        requiredTrustTier: getRequiredTierForTask(item.task.price as number),
+        verificationCTA: canUserAcceptTask(userTrustTier, item.task.price as number)
+          ? null
+          : `Complete Level ${getRequiredTierForTask(item.task.price as number)} verification to accept this task`,
+      }));
+
+      return annotatedData;
     }),
   
   /**

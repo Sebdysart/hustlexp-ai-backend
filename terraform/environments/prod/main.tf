@@ -265,6 +265,38 @@ module "ecs_primary" {
   }
 }
 
+# WAF Module (AUDIT FIX: DDoS, SQLi, XSS protection)
+module "waf" {
+  source = "../../modules/waf"
+
+  providers = {
+    aws = aws.primary
+  }
+
+  app_name    = local.app_name
+  environment = local.environment
+  alb_arn     = aws_lb.primary.arn
+  rate_limit  = 2000
+
+  tags = local.tags
+}
+
+# CDN Module (AUDIT FIX: CloudFront for static assets + API caching)
+module "cdn" {
+  source = "../../modules/cdn"
+
+  providers = {
+    aws = aws.primary
+  }
+
+  app_name            = local.app_name
+  environment         = local.environment
+  alb_dns_name        = aws_lb.primary.dns_name
+  domain_name         = "api.hustlexp.com"
+  acm_certificate_arn = var.acm_certificate_arn
+  web_acl_id          = module.waf.web_acl_arn
+}
+
 # Route 53 DNS (Multi-region failover)
 resource "aws_route53_record" "primary" {
   zone_id = var.route53_zone_id

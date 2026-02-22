@@ -20,7 +20,9 @@ const dbLog = logger.child({ module: 'db' });
 // ============================================================================
 
 const DATABASE_URL = process.env.DATABASE_URL;
+const DATABASE_REPLICA_URL = process.env.DATABASE_REPLICA_URL;
 const POOL_MAX = parseInt(process.env.DB_POOL_MAX || '20', 10);
+const REPLICA_POOL_MAX = parseInt(process.env.DB_REPLICA_POOL_MAX || '15', 10);
 
 if (!DATABASE_URL) {
   dbLog.fatal('DATABASE_URL is required');
@@ -45,7 +47,35 @@ const pool = new Pool({
   statement_timeout: 30000,
 });
 
-dbLog.info('Database pool initialized');
+dbLog.info('Database primary pool initialized');
+
+// ============================================================================
+// READ REPLICA POOL (AUDIT FIX: Read-Write Splitting)
+// ============================================================================
+
+/**
+ * Optional read replica pool for horizontal read scaling.
+ * Set DATABASE_REPLICA_URL to enable read-write splitting.
+ * Read-only queries (SELECT) can use `db.readQuery()` to hit replicas.
+ * Writes always go to the primary via `db.query()`.
+ */
+const replicaPool = DATABASE_REPLICA_URL
+  ? new Pool({
+      connectionString: DATABASE_REPLICA_URL,
+      max: REPLICA_POOL_MAX,
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 10000,
+      statement_timeout: 30000,
+    })
+  : null;
+
+if (replicaPool) {
+  dbLog.info({ replicaMax: REPLICA_POOL_MAX }, 'Database replica pool initialized');
+
+  replicaPool.on('error', (err) => {
+    dbLog.error({ err: err.message }, 'Replica pool: idle client error');
+  });
+}
 
 // ============================================================================
 // POOL MONITORING
@@ -78,6 +108,9 @@ export function getPoolStats() {
     waitingRequests: pool.waitingCount,
     maxConnections: POOL_MAX,
     utilizationPercent: Math.round((pool.totalCount / POOL_MAX) * 100),
+    replicaConnections: replicaPool ? replicaPool.totalCount : null,
+    replicaIdle: replicaPool ? replicaPool.idleCount : null,
+    replicaConfigured: !!replicaPool,
   };
 }
 
@@ -263,11 +296,13 @@ export type QueryFn = <T = Record<string, unknown>>(
  */
 export interface Database {
   query: QueryFn;
+  /** Route read-only queries to replica (falls back to primary if no replica configured) */
+  readQuery: QueryFn;
   transaction: <T>(fn: (query: QueryFn) => Promise<T>) => Promise<T>;
   serializableTransaction: <T>(fn: (query: QueryFn) => Promise<T>) => Promise<T>;
   healthCheck: () => Promise<{ connected: boolean; schemaVersion: string | null; latencyMs: number }>;
   getPool: () => pg.Pool;
-  getPoolStats: () => { totalConnections: number; idleConnections: number; waitingRequests: number; maxConnections: number; utilizationPercent: number };
+  getPoolStats: () => { totalConnections: number; idleConnections: number; waitingRequests: number; maxConnections: number; utilizationPercent: number; replicaConnections: number | null };
   close: () => Promise<void>;
 }
 
@@ -292,6 +327,30 @@ export const db: Database = {
           // Ignore errors - connection may not have prepared statements yet
         }
       }
+      const result = await client.query(sql, params);
+      return {
+        rows: result.rows as T[],
+        rowCount: result.rowCount ?? 0,
+      };
+    } finally {
+      client.release();
+    }
+  },
+
+  /**
+   * Execute a read-only query, routed to replica if available.
+   * Falls back to primary pool if no replica is configured.
+   * Use this for SELECT queries that don't need real-time consistency.
+   *
+   * AUDIT FIX: Read replica routing for horizontal read scaling.
+   */
+  readQuery: async <T = Record<string, unknown>>(
+    sql: string,
+    params?: unknown[]
+  ): Promise<QueryResult<T>> => {
+    const targetPool = replicaPool || pool;
+    const client = await targetPool.connect();
+    try {
       const result = await client.query(sql, params);
       return {
         rows: result.rows as T[],

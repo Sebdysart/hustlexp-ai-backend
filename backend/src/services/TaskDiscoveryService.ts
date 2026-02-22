@@ -17,6 +17,7 @@ import { db, isInvariantViolation, getErrorMessage } from '../db';
 import type { ServiceResult } from '../types';
 import { ErrorCodes } from '../types';
 import { GeocodingService } from './GeocodingService';
+import { scrubPII } from '../lib/pii-scrubber';
 
 // ============================================================================
 // TYPES
@@ -228,6 +229,94 @@ function calculateRelevanceScore(
 // ============================================================================
 
 export const TaskDiscoveryService = {
+  // --------------------------------------------------------------------------
+  // PUBLIC BROWSING (Progressive Verification - AUDIT FIX #1)
+  // --------------------------------------------------------------------------
+
+  /**
+   * Browse open tasks without matching scores (public/low-trust feed)
+   *
+   * CRITICAL FIX: Solves the marketplace cold-start death spiral.
+   * Returns ALL open tasks sorted by recency, price, or deadline.
+   * No trust tier filtering — every authenticated user sees every task.
+   * Acceptance is gated at the task-accept endpoint, not at discovery.
+   *
+   * @see PRODUCT_SPEC §3.4 (Progressive Verification)
+   */
+  browsePublicFeed: async (
+    filters: {
+      category?: string;
+      min_price?: number;
+      max_price?: number;
+      sort_by?: 'newest' | 'price_high' | 'price_low' | 'deadline';
+    },
+    limit: number = 20,
+    offset: number = 0
+  ): Promise<ServiceResult<Record<string, unknown>[]>> => {
+    try {
+      let sql = `
+        SELECT
+          id, title, description, category, price, location,
+          deadline, created_at, state, requires_proof,
+          mode, poster_id
+        FROM tasks
+        WHERE state = 'OPEN'
+      `;
+
+      const params: unknown[] = [];
+
+      if (filters.category) {
+        params.push(filters.category);
+        sql += ` AND category = $${params.length}`;
+      }
+      if (filters.min_price !== undefined) {
+        params.push(filters.min_price);
+        sql += ` AND price >= $${params.length}`;
+      }
+      if (filters.max_price !== undefined) {
+        params.push(filters.max_price);
+        sql += ` AND price <= $${params.length}`;
+      }
+
+      // Sorting
+      const sortBy = filters.sort_by || 'newest';
+      switch (sortBy) {
+        case 'newest':
+          sql += ` ORDER BY created_at DESC`;
+          break;
+        case 'price_high':
+          sql += ` ORDER BY price DESC`;
+          break;
+        case 'price_low':
+          sql += ` ORDER BY price ASC`;
+          break;
+        case 'deadline':
+          sql += ` ORDER BY deadline ASC NULLS LAST`;
+          break;
+        default:
+          sql += ` ORDER BY created_at DESC`;
+      }
+
+      params.push(limit, offset);
+      sql += ` LIMIT $${params.length - 1} OFFSET $${params.length}`;
+
+      const result = await db.query<Record<string, unknown>>(sql, params);
+
+      return {
+        success: true,
+        data: result.rows,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: {
+          code: 'DB_ERROR',
+          message: error instanceof Error ? error.message : 'Unknown error',
+        },
+      };
+    }
+  },
+
   // --------------------------------------------------------------------------
   // MATCHING SCORE CALCULATION
   // --------------------------------------------------------------------------
@@ -761,14 +850,14 @@ export const TaskDiscoveryService = {
               max_tokens: 120,
               messages: [{
                 role: 'user',
-                content: `You are a task matching assistant for a gig marketplace. Generate a brief, encouraging 1-2 sentence explanation of why this task is a good match for this hustler.
+                content: scrubPII(`You are a task matching assistant for a gig marketplace. Generate a brief, encouraging 1-2 sentence explanation of why this task is a good match for this hustler.
 
 Task: "${taskData.title}" (${taskData.category}, $${taskData.price})
 Match score: ${(context.matching_score * 100).toFixed(0)}%
 Distance: ${context.distance_miles.toFixed(1)} miles
 Hustler expertise: ${expertise.length > 0 ? expertise.join(', ') : 'general'}
 
-Be concise, specific, and motivating. No markdown. No filler.`,
+Be concise, specific, and motivating. No markdown. No filler.`),
               }],
             }),
             signal: AbortSignal.timeout(3000), // 3s timeout

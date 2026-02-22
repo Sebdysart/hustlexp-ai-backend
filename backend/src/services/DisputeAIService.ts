@@ -22,6 +22,7 @@ import { db } from '../db';
 import type { ServiceResult, Dispute, Task, Escrow, Evidence } from '../types';
 import { AIClient } from './AIClient';
 import { DisputeAnalysisSchema, EvidenceRequestSchema } from '../lib/ai-response-schemas';
+import { scrubPII, scrubObjectPII } from '../lib/pii-scrubber';
 import { aiLogger } from '../logger';
 
 const log = aiLogger.child({ service: 'DisputeAIService' });
@@ -439,7 +440,7 @@ Return JSON with EXACTLY these fields:
 - confidence: number (0.0-1.0)
 - precedent_signals: string[]
 - escalation_recommended: boolean`,
-            prompt: `Analyze this dispute and propose a resolution:
+            prompt: scrubPII(`Analyze this dispute and propose a resolution:
 
 DISPUTE:
 - ID: ${ctx.dispute.id}
@@ -465,7 +466,7 @@ ${evidenceSummary}
 
 USER HISTORIES:
 - Poster: ${ctx.posterHistory.total_tasks} tasks, ${ctx.posterHistory.total_disputes} disputes, trust tier ${ctx.posterHistory.trust_tier}
-- Worker: ${ctx.workerHistory.total_tasks} tasks, ${ctx.workerHistory.total_disputes} disputes, trust tier ${ctx.workerHistory.trust_tier}`,
+- Worker: ${ctx.workerHistory.total_tasks} tasks, ${ctx.workerHistory.total_disputes} disputes, trust tier ${ctx.workerHistory.trust_tier}`),
           });
 
           analysis = aiResult.data;
@@ -560,14 +561,14 @@ Questions should be:
 - Specific to the dispute reason and task type
 - Non-leading (don't assume fault)
 - Actionable (ask for concrete evidence: photos, timestamps, messages)`,
-            prompt: `Generate evidence request questions for this dispute:
+            prompt: scrubPII(`Generate evidence request questions for this dispute:
 
 Dispute reason: ${ctx.dispute.reason}
 Description: ${ctx.dispute.description}
 Task: "${ctx.task.title}" — ${ctx.task.description}
 Task price: $${(ctx.task.price / 100).toFixed(2)}
 Initiated by: ${ctx.dispute.initiated_by === ctx.dispute.poster_id ? 'POSTER' : 'WORKER'}
-Evidence already submitted: ${ctx.evidence.length} items`,
+Evidence already submitted: ${ctx.evidence.length} items`),
           });
 
           evidenceRequest = aiResult.data;

@@ -210,8 +210,36 @@ export const userRouter = router({
       fullName: z.string().min(1).max(255),
       // Accept "hustler", "worker", or "poster" from frontend
       defaultMode: z.string().max(20).default('worker'),
+      // COPPA compliance: date of birth for age verification (AUDIT FIX)
+      dateOfBirth: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Date of birth must be YYYY-MM-DD format'),
     }))
     .mutation(async ({ input }) => {
+      // --------------------------------------------------------------------------
+      // COPPA AGE VERIFICATION (AUDIT FIX)
+      // Users under 13 are blocked per Children's Online Privacy Protection Act.
+      // Users 13-17 are allowed but flagged as minors for consent tracking.
+      // --------------------------------------------------------------------------
+      const dob = new Date(input.dateOfBirth);
+      const now = new Date();
+      const ageDiff = now.getFullYear() - dob.getFullYear();
+      const monthDiff = now.getMonth() - dob.getMonth();
+      const dayDiff = now.getDate() - dob.getDate();
+      const age = monthDiff < 0 || (monthDiff === 0 && dayDiff < 0) ? ageDiff - 1 : ageDiff;
+
+      if (isNaN(dob.getTime()) || age < 0 || age > 150) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: 'Invalid date of birth',
+        });
+      }
+
+      if (age < 13) {
+        throw new TRPCError({
+          code: 'FORBIDDEN',
+          message: 'COPPA_AGE_RESTRICTION: Users must be at least 13 years old to create an account. This is required by the Children\'s Online Privacy Protection Act (COPPA).',
+        });
+      }
+
       // Normalize role: iOS sends "hustler" but DB stores "worker"
       const dbMode = normalizeRole(input.defaultMode);
 
@@ -231,10 +259,10 @@ export const userRouter = router({
       }
 
       const result = await db.query<User>(
-        `INSERT INTO users (firebase_uid, email, full_name, default_mode)
-         VALUES ($1, $2, $3, $4)
+        `INSERT INTO users (firebase_uid, email, full_name, default_mode, date_of_birth, is_minor)
+         VALUES ($1, $2, $3, $4, $5, $6)
          RETURNING *`,
-        [input.firebaseUid, input.email, input.fullName, dbMode]
+        [input.firebaseUid, input.email, input.fullName, dbMode, input.dateOfBirth, age < 18]
       );
 
       return await toMobileUser(result.rows[0]);

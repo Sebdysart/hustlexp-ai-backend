@@ -190,4 +190,138 @@ export async function getBudgetStatus(agent: string, userId: string): Promise<{ 
   return { agent, userId, spent: budget.spent, limit: budget.limit, remaining: Math.max(0, budget.limit - budget.spent), resetAt: tomorrow.toISOString() };
 }
 
-export default { callAI, getBudgetStatus };
+// ============================================================================
+// AI COST DASHBOARD & ALERTING (AUDIT FIX)
+// ============================================================================
+
+export interface CostSummary {
+  totalCostCents: number;
+  totalTokens: number;
+  callCount: number;
+  byAgent: Record<string, { costCents: number; tokens: number; calls: number }>;
+  byProvider: Record<string, { costCents: number; tokens: number; calls: number }>;
+  period: string;
+}
+
+/**
+ * Get aggregated AI cost summary for a time period (admin dashboard)
+ */
+export async function getCostDashboard(
+  periodDays: number = 30
+): Promise<CostSummary> {
+  const result = await db.query<{
+    agent_type: string;
+    provider: string;
+    total_cost: string;
+    total_tokens: string;
+    call_count: string;
+  }>(
+    `SELECT agent_type, provider,
+       SUM(estimated_cost_cents) as total_cost,
+       SUM(tokens_used) as total_tokens,
+       COUNT(*) as call_count
+     FROM ai_cost_logs
+     WHERE created_at > NOW() - INTERVAL '1 day' * $1
+     GROUP BY agent_type, provider
+     ORDER BY total_cost DESC`,
+    [periodDays]
+  );
+
+  const byAgent: Record<string, { costCents: number; tokens: number; calls: number }> = {};
+  const byProvider: Record<string, { costCents: number; tokens: number; calls: number }> = {};
+  let totalCostCents = 0;
+  let totalTokens = 0;
+  let callCount = 0;
+
+  for (const row of result.rows) {
+    const cost = parseInt(row.total_cost, 10) || 0;
+    const tokens = parseInt(row.total_tokens, 10) || 0;
+    const calls = parseInt(row.call_count, 10) || 0;
+
+    totalCostCents += cost;
+    totalTokens += tokens;
+    callCount += calls;
+
+    if (!byAgent[row.agent_type]) {
+      byAgent[row.agent_type] = { costCents: 0, tokens: 0, calls: 0 };
+    }
+    byAgent[row.agent_type].costCents += cost;
+    byAgent[row.agent_type].tokens += tokens;
+    byAgent[row.agent_type].calls += calls;
+
+    if (!byProvider[row.provider]) {
+      byProvider[row.provider] = { costCents: 0, tokens: 0, calls: 0 };
+    }
+    byProvider[row.provider].costCents += cost;
+    byProvider[row.provider].tokens += tokens;
+    byProvider[row.provider].calls += calls;
+  }
+
+  return {
+    totalCostCents,
+    totalTokens,
+    callCount,
+    byAgent,
+    byProvider,
+    period: `${periodDays} days`,
+  };
+}
+
+/**
+ * Check if any agent is approaching budget alerts and return warnings
+ */
+export async function checkCostAlerts(): Promise<{
+  alerts: Array<{
+    level: 'warning' | 'critical';
+    agent: string;
+    message: string;
+    dailyCostCents: number;
+    projectedMonthlyCents: number;
+  }>;
+}> {
+  const result = await db.query<{
+    agent_type: string;
+    daily_cost: string;
+  }>(
+    `SELECT agent_type, SUM(estimated_cost_cents) as daily_cost
+     FROM ai_cost_logs
+     WHERE created_at > NOW() - INTERVAL '24 hours'
+     GROUP BY agent_type`
+  );
+
+  const alerts: Array<{
+    level: 'warning' | 'critical';
+    agent: string;
+    message: string;
+    dailyCostCents: number;
+    projectedMonthlyCents: number;
+  }> = [];
+
+  for (const row of result.rows) {
+    const dailyCost = parseInt(row.daily_cost, 10) || 0;
+    const projectedMonthly = dailyCost * 30;
+
+    // Alert thresholds: warning at $50/day, critical at $150/day per agent
+    if (dailyCost > 15000) {
+      alerts.push({
+        level: 'critical',
+        agent: row.agent_type,
+        message: `Agent "${row.agent_type}" spending $${(dailyCost / 100).toFixed(2)}/day (projected $${(projectedMonthly / 100).toFixed(2)}/month). IMMEDIATE ATTENTION REQUIRED.`,
+        dailyCostCents: dailyCost,
+        projectedMonthlyCents: projectedMonthly,
+      });
+    } else if (dailyCost > 5000) {
+      alerts.push({
+        level: 'warning',
+        agent: row.agent_type,
+        message: `Agent "${row.agent_type}" spending $${(dailyCost / 100).toFixed(2)}/day (projected $${(projectedMonthly / 100).toFixed(2)}/month). Monitor closely.`,
+        dailyCostCents: dailyCost,
+        projectedMonthlyCents: projectedMonthly,
+      });
+    }
+  }
+
+  return { alerts };
+}
+
+export default { callAI, getBudgetStatus, getCostDashboard, checkCostAlerts };

@@ -22,6 +22,7 @@ import { db } from '../db';
 import type { ServiceResult } from '../types';
 import { AIClient } from './AIClient';
 import { JudgeVerdictSchema } from '../lib/ai-response-schemas';
+import { scrubPII } from '../lib/pii-scrubber';
 import { aiLogger } from '../logger';
 
 const log = aiLogger.child({ service: 'JudgeAIService' });
@@ -295,7 +296,7 @@ RULES:
 - With fewer than 2 available domains, prefer MANUAL_REVIEW unless clear REJECT signals exist
 - Set component_scores to -1 for unavailable domains
 - Always explain which signals drove the decision`,
-          prompt: `Synthesize a verdict for this proof submission:
+          prompt: scrubPII(`Synthesize a verdict for this proof submission:
 
 PROOF: ${input.proof_id} (Task: ${input.task_id})
 
