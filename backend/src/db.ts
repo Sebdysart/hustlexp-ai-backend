@@ -47,6 +47,40 @@ const pool = new Pool({
 dbLog.info('Database pool initialized');
 
 // ============================================================================
+// POOL MONITORING
+// ============================================================================
+
+/**
+ * Pool event listeners for operational visibility.
+ * Logs connection lifecycle events to help diagnose pool exhaustion.
+ */
+pool.on('connect', () => {
+  dbLog.info({ total: pool.totalCount, idle: pool.idleCount, waiting: pool.waitingCount }, 'Pool: client connected');
+});
+
+pool.on('error', (err) => {
+  dbLog.error({ err: err.message, total: pool.totalCount, idle: pool.idleCount, waiting: pool.waitingCount }, 'Pool: idle client error');
+});
+
+pool.on('remove', () => {
+  dbLog.info({ total: pool.totalCount, idle: pool.idleCount, waiting: pool.waitingCount }, 'Pool: client removed');
+});
+
+/**
+ * Get current pool utilization metrics.
+ * Consumed by the /health endpoint for operational monitoring.
+ */
+export function getPoolStats() {
+  return {
+    totalConnections: pool.totalCount,
+    idleConnections: pool.idleCount,
+    waitingRequests: pool.waitingCount,
+    maxConnections: 10,
+    utilizationPercent: Math.round((pool.totalCount / 10) * 100),
+  };
+}
+
+// ============================================================================
 // HUSTLEXP ERROR CODES
 // ============================================================================
 
@@ -232,6 +266,7 @@ export interface Database {
   serializableTransaction: <T>(fn: (query: QueryFn) => Promise<T>) => Promise<T>;
   healthCheck: () => Promise<{ connected: boolean; schemaVersion: string | null; latencyMs: number }>;
   getPool: () => pg.Pool;
+  getPoolStats: () => { totalConnections: number; idleConnections: number; waitingRequests: number; maxConnections: number; utilizationPercent: number };
   close: () => Promise<void>;
 }
 
@@ -370,6 +405,11 @@ export const db: Database = {
    * Get underlying pool for advanced usage
    */
   getPool: () => pool,
+
+  /**
+   * Get pool utilization metrics for health endpoint
+   */
+  getPoolStats,
 
   /**
    * Close all connections (for graceful shutdown)

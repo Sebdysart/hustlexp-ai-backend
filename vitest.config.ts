@@ -26,14 +26,15 @@ export default defineConfig({
       thresholds: {
         // Coverage gate ramp-up plan:
         // Phase 1 (baseline):  2% — no regression baseline
-        // Phase 2 (current):   5% — after encrypted-session, router, E2E tests
-        // Phase 3 (Sprint):   15% — after full service-layer coverage
-        // Phase 4 (GA):       40% — after router + middleware coverage
-        // Phase 5 (Mature):   70% — production target
-        lines: 4,
-        functions: 3,
-        branches: 2,
-        statements: 4,
+        // Phase 2 (prev):      4% — after encrypted-session, router, E2E tests
+        // Phase 3 (current):   7% — after 8 service/middleware unit test suites
+        // Phase 4 (Sprint):   15% — after full service-layer coverage
+        // Phase 5 (GA):       40% — after router + middleware coverage
+        // Phase 6 (Mature):   70% — production target
+        lines: 7,
+        functions: 6,
+        branches: 7,
+        statements: 7,
       },
     },
   },
