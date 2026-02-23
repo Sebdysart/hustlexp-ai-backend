@@ -64,13 +64,71 @@ jobs:
           if npx tsx scripts/query-docs-for-pr.ts 2>/dev/null; then
             echo "passed=true" >> $GITHUB_OUTPUT
           else
-            echo "passed=true" >> $GITHUB_OUTPUT
-            echo "Knowledge graph query failed (non-blocking)"
+            echo "passed=degraded" >> $GITHUB_OUTPUT
+            echo "Knowledge graph query failed — degraded mode"
           fi
           echo "affected_invariants=" >> $GITHUB_OUTPUT
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         continue-on-error: true
+
+  # ─────────────────────────────────────────────────────────
+  # Stage 1b: Migration Safety (parallel, only for migration PRs)
+  # ─────────────────────────────────────────────────────────
+  migration-safety:
+    name: Migration Safety Analysis
+    needs: [classify]
+    if: contains(needs.classify.outputs.pr_tier_name, 'ARCHITECTURAL') || contains(github.event.pull_request.title, 'migration')
+    runs-on: ubuntu-latest
+    outputs:
+      migration_safe: ${{ steps.analyze.outputs.safe }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - run: npm ci
+      - name: Check for migration files in PR
+        id: check-migrations
+        run: |
+          MIGRATION_FILES=$(git diff --name-only origin/main...HEAD | grep '^migrations/' || true)
+          if [ -z "$MIGRATION_FILES" ]; then
+            echo "has_migrations=false" >> $GITHUB_OUTPUT
+            echo "No migration files found — skipping safety analysis"
+          else
+            echo "has_migrations=true" >> $GITHUB_OUTPUT
+            echo "Found migration files: $MIGRATION_FILES"
+          fi
+      - name: Analyze migration safety
+        id: analyze
+        if: steps.check-migrations.outputs.has_migrations == 'true'
+        run: |
+          CHANGED_FILES=$(git diff --name-only origin/main...HEAD | tr '\n' ',')
+          export CHANGED_FILES
+          if npx tsx scripts/analyze-migration-safety.ts; then
+            echo "safe=true" >> $GITHUB_OUTPUT
+          else
+            echo "safe=false" >> $GITHUB_OUTPUT
+          fi
+      - name: Default safe when no migrations
+        if: steps.check-migrations.outputs.has_migrations != 'true'
+        run: echo "safe=true" >> $GITHUB_OUTPUT
+        id: default
+      - name: Generate schema diff
+        if: steps.check-migrations.outputs.has_migrations == 'true'
+        run: |
+          CHANGED_FILES=$(git diff --name-only origin/main...HEAD | tr '\n' ',')
+          export CHANGED_FILES
+          npx tsx scripts/generate-schema-diff.ts || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: migration-safety-report
+          path: migration-safety-*.json
+          retention-days: 14
 
   # ─────────────────────────────────────────────────────────
   # Stage 2: TDAD Gate (parallel)
@@ -156,7 +214,7 @@ jobs:
     name: Readiness Score
     runs-on: ubuntu-latest
     if: always()
-    needs: [classify, context, tdad, ci, invariants, holodeck]
+    needs: [classify, context, tdad, ci, invariants, holodeck, migration-safety]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -164,6 +222,18 @@ jobs:
           node-version: '20'
           cache: npm
       - run: npm ci
+
+      - name: Evaluate degradation contracts
+        id: degradation
+        run: npx tsx scripts/evaluate-degradation.ts
+        env:
+          GATE_KNOWLEDGE_GRAPH: ${{ needs.context.outputs.context_passed }}
+          GATE_TDAD: ${{ needs.tdad.outputs.tdad_passed }}
+          GATE_TYPECHECK: ${{ needs.ci.outputs.typecheck_result }}
+          GATE_LINT: ${{ needs.ci.outputs.lint_result }}
+          GATE_UNIT_TESTS: ${{ needs.ci.outputs.test_result }}
+          GATE_INVARIANT_TESTS: ${{ needs.invariants.outputs.invariants_passed }}
+          GATE_HOLODECK: ${{ needs.holodeck.result }}
 
       - name: Compute Readiness Score
         id: score
@@ -178,6 +248,9 @@ jobs:
           GATE_INVARIANTS: ${{ needs.invariants.outputs.invariants_passed }}
           GATE_HOLODECK: ${{ needs.holodeck.result }}
           GATE_PR_TIER: ${{ needs.classify.outputs.pr_tier }}
+          GATE_MIGRATION_SAFETY: ${{ needs.migration-safety.outputs.migration_safe }}
+          GATE_DEGRADATION_BLOCKED: ${{ steps.degradation.outputs.overrideBlocked }}
+          CHANGED_FILES: ${{ steps.degradation.outputs.changed_files }}
 
       - name: Post Readiness Score to PR
         uses: marocchino/sticky-pull-request-comment@v2

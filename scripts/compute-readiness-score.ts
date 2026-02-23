@@ -50,6 +50,24 @@ const TIER_NAMES: Record<number, string> = {
 const prTier = parseInt(process.env.GATE_PR_TIER ?? "1", 10);
 const prTierName = TIER_NAMES[prTier] ?? "UNKNOWN";
 
+// ── Degradation override ─────────────────────────────────────────────
+// If evaluate-degradation.ts flagged a critical service as blocked,
+// the entire score is overridden regardless of individual gates.
+const degradationBlocked = process.env.GATE_DEGRADATION_BLOCKED === "true";
+
+// ── Gate state helper (supports three-tier: true / degraded / false)
+function gateState(envKey: string): "passed" | "degraded" | "failed" {
+  const val = process.env[envKey] ?? "";
+  if (val === "true" || val === "success") return "passed";
+  if (val === "degraded") return "degraded";
+  return "failed";
+}
+
+// ── Migration safety: +15 bonus when present and safe, -30 penalty when unsafe
+const migrationState = gateState("GATE_MIGRATION_SAFETY");
+const migrationBonus =
+  migrationState === "passed" ? 15 : migrationState === "failed" ? -30 : 0;
+
 const gates: Gate[] = [
   {
     name: "Knowledge Graph Context",
@@ -97,13 +115,18 @@ const gates: Gate[] = [
 ];
 
 const totalPossible = gates.reduce((sum, g) => sum + g.points, 0);
-const earnedPoints = gates.reduce(
+const baseEarned = gates.reduce(
   (sum, g) => sum + (g.passed ? g.points : 0),
   0
 );
 
+// Apply migration safety bonus/penalty (clamped to 0..totalPossible)
+const earnedPoints = Math.max(0, Math.min(totalPossible, baseEarned + migrationBonus));
+
 const MERGE_THRESHOLD = TIER_THRESHOLDS[prTier] ?? 80;
-const canMerge = earnedPoints >= MERGE_THRESHOLD;
+
+// Degradation override: if a critical service is blocked, merge is denied
+const canMerge = degradationBlocked ? false : earnedPoints >= MERGE_THRESHOLD;
 
 // Build the status icon
 function icon(passed: boolean, mandatory: boolean): string {
@@ -118,7 +141,11 @@ const lines: string[] = [];
 lines.push("## Readiness Score");
 lines.push("");
 
-if (canMerge) {
+if (degradationBlocked) {
+  lines.push(
+    `**BLOCKED** — Critical service degradation detected. Merge denied.`
+  );
+} else if (canMerge) {
   lines.push(
     `**${earnedPoints} / ${totalPossible}** — Ready to merge`
   );
@@ -138,6 +165,18 @@ for (const gate of gates) {
   const status = icon(gate.passed, gate.mandatory);
   const mand = gate.mandatory ? "YES" : "No";
   lines.push(`| ${gate.name} | ${pts} / ${gate.points} | ${status} | ${mand} |`);
+}
+
+// Migration Safety row (bonus/penalty — not a standard gate)
+if (migrationState !== "passed" || migrationBonus !== 0) {
+  const migIcon = migrationState === "passed" ? "&#x2705;" : migrationState === "failed" ? "&#x1F6D1;" : "&#x2796;";
+  const migPts = migrationBonus > 0 ? `+${migrationBonus}` : `${migrationBonus}`;
+  lines.push(`| Migration Safety | ${migPts} | ${migIcon} | ${migrationState === "failed" ? "BLOCKING" : "Bonus"} |`);
+}
+
+// Degradation override row
+if (degradationBlocked) {
+  lines.push(`| Degradation Override | BLOCKED | &#x1F6D1; | CRITICAL |`);
 }
 
 lines.push("");
