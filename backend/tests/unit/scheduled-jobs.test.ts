@@ -153,10 +153,9 @@ describe('Scheduled Jobs Registration', () => {
 describe('Worker Routing', () => {
   it('workers.ts file routes fraud.scan_requested to fraud-detection-worker', async () => {
     const fs = await import('fs');
-    const workersSource = fs.readFileSync(
-      '/Users/sebastiandysart/Desktop/hustlexp-ai-backend/backend/src/jobs/workers.ts',
-      'utf-8'
-    );
+    const path = await import('path');
+    const workersPath = path.resolve(__dirname, '../../src/jobs/workers.ts');
+    const workersSource = fs.readFileSync(workersPath, 'utf-8');
 
     expect(workersSource).toContain("'fraud.scan_requested'");
     expect(workersSource).toContain('./fraud-detection-worker');
@@ -164,10 +163,9 @@ describe('Worker Routing', () => {
 
   it('workers.ts registers workers for all 6 queues', async () => {
     const fs = await import('fs');
-    const workersSource = fs.readFileSync(
-      '/Users/sebastiandysart/Desktop/hustlexp-ai-backend/backend/src/jobs/workers.ts',
-      'utf-8'
-    );
+    const path = await import('path');
+    const workersPath = path.resolve(__dirname, '../../src/jobs/workers.ts');
+    const workersSource = fs.readFileSync(workersPath, 'utf-8');
 
     expect(workersSource).toContain("'exports'");
     expect(workersSource).toContain("'user_notifications'");

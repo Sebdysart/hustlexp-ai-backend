@@ -273,18 +273,21 @@ describe('Tax Forms Persistence', () => {
   });
 
   describe('Migration SQL schema', () => {
+    const getMigrationPath = async () => {
+      const path = await import('path');
+      return path.resolve(__dirname, '../../../migrations/20260222_009_tax_forms.sql');
+    };
+
     it('migration file exists', async () => {
       const fs = await import('fs');
-      const path = '/Users/sebastiandysart/Desktop/hustlexp-ai-backend/migrations/20260222_009_tax_forms.sql';
-      expect(fs.existsSync(path)).toBe(true);
+      const migrationPath = await getMigrationPath();
+      expect(fs.existsSync(migrationPath)).toBe(true);
     });
 
     it('migration creates tax_forms table with required columns', async () => {
       const fs = await import('fs');
-      const sql = fs.readFileSync(
-        '/Users/sebastiandysart/Desktop/hustlexp-ai-backend/migrations/20260222_009_tax_forms.sql',
-        'utf-8'
-      );
+      const migrationPath = await getMigrationPath();
+      const sql = fs.readFileSync(migrationPath, 'utf-8');
 
       expect(sql).toContain('CREATE TABLE IF NOT EXISTS tax_forms');
       expect(sql).toContain('user_id UUID NOT NULL REFERENCES users(id)');
@@ -297,10 +300,8 @@ describe('Tax Forms Persistence', () => {
 
     it('migration enforces one active form per user via unique index', async () => {
       const fs = await import('fs');
-      const sql = fs.readFileSync(
-        '/Users/sebastiandysart/Desktop/hustlexp-ai-backend/migrations/20260222_009_tax_forms.sql',
-        'utf-8'
-      );
+      const migrationPath = await getMigrationPath();
+      const sql = fs.readFileSync(migrationPath, 'utf-8');
 
       expect(sql).toContain('CREATE UNIQUE INDEX idx_tax_forms_active_per_user');
       expect(sql).toContain("WHERE status IN ('pending', 'verified')");
