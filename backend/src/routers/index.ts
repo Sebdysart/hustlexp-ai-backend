@@ -58,6 +58,10 @@ import { stripeConnectRouter } from './stripeConnect';
 import { flagsRouter } from './flags';
 // v3.0.0: Admin Dashboard
 import { adminRouter } from './admin';
+// Phase 5: Incident Intelligence
+import { incidentsRouter } from './incidents';
+// Phase 6: Intent Bridge
+import { intentRouter } from './intent';
 
 export const appRouter = router({
   task: taskRouter,
@@ -112,6 +116,10 @@ export const appRouter = router({
   flags: flagsRouter,
   // v3.0.0: Admin Dashboard
   admin: adminRouter,
+  // Phase 5: Incident Intelligence
+  incidents: incidentsRouter,
+  // Phase 6: Intent Bridge
+  intent: intentRouter,
 });
 
 export type AppRouter = typeof appRouter;

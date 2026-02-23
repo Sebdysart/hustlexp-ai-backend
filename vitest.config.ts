@@ -28,14 +28,15 @@ export default defineConfig({
         // Phase 1 (baseline):  2% — no regression baseline
         // Phase 2 (prev):      4% — after encrypted-session, router, E2E tests
         // Phase 3 (prev):      7% — after 8 service/middleware unit test suites
-        // Phase 3b (current):  6% — after SSRF/BIPA/AI-schema security hardening (new src files expanded denominator)
-        // Phase 4 (Sprint):   15% — after full service-layer coverage
+        // Phase 3b (prev):     6% — after SSRF/BIPA/AI-schema security hardening (new src files expanded denominator)
+        // Phase 3c (prev):     8% — after production build plan + 5 gap fixes
+        // Phase 4 (current):  12% — after max-tier pipeline + TDAD enforcement
         // Phase 5 (GA):       40% — after router + middleware coverage
         // Phase 6 (Mature):   70% — production target
-        lines: 8,
-        functions: 7,
-        branches: 8,
-        statements: 8,
+        lines: 12,
+        functions: 10,
+        branches: 12,
+        statements: 12,
       },
     },
   },

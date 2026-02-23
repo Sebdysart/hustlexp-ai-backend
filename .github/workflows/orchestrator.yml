@@ -1,0 +1,186 @@
+name: Orchestrator — Readiness Score
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  pull-requests: write
+  issues: write
+  actions: read
+  contents: read
+
+jobs:
+  # ─────────────────────────────────────────────────────────
+  # Stage 0: Classify PR Changes (runs first)
+  # ─────────────────────────────────────────────────────────
+  classify:
+    name: Classify PR Changes
+    runs-on: ubuntu-latest
+    outputs:
+      pr_tier: ${{ steps.classify.outputs.tier }}
+      pr_tier_name: ${{ steps.classify.outputs.tierName }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - run: npm ci
+      - name: Classify PR changes
+        id: classify
+        run: |
+          CHANGED_FILES=$(git diff --name-only origin/main...HEAD | tr '\n' ',')
+          export CHANGED_FILES
+          npx tsx scripts/classify-pr-changes.ts
+
+  # ─────────────────────────────────────────────────────────
+  # Stage 1: Knowledge Graph Context (parallel)
+  # ─────────────────────────────────────────────────────────
+  context:
+    name: Knowledge Graph Context
+    needs: [classify]
+    if: needs.classify.outputs.pr_tier >= 1
+    runs-on: ubuntu-latest
+    outputs:
+      context_passed: ${{ steps.query.outputs.passed }}
+      affected_invariants: ${{ steps.query.outputs.affected_invariants }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - run: npm ci
+      - name: Query Knowledge Graph for PR context
+        id: query
+        run: |
+          CHANGED_FILES=$(git diff --name-only origin/main...HEAD | tr '\n' ',')
+          export CHANGED_FILES
+          if npx tsx scripts/query-docs-for-pr.ts 2>/dev/null; then
+            echo "passed=true" >> $GITHUB_OUTPUT
+          else
+            echo "passed=true" >> $GITHUB_OUTPUT
+            echo "Knowledge graph query failed (non-blocking)"
+          fi
+          echo "affected_invariants=" >> $GITHUB_OUTPUT
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        continue-on-error: true
+
+  # ─────────────────────────────────────────────────────────
+  # Stage 2: TDAD Gate (parallel)
+  # ─────────────────────────────────────────────────────────
+  tdad:
+    name: TDAD — Tests Accompany Code
+    needs: [classify]
+    if: needs.classify.outputs.pr_tier >= 1
+    runs-on: ubuntu-latest
+    outputs:
+      tdad_passed: ${{ steps.check.outputs.passed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check test coverage for changed files
+        id: check
+        run: |
+          if bash scripts/check-test-coverage-pr.sh; then
+            echo "passed=true" >> $GITHUB_OUTPUT
+          else
+            echo "passed=false" >> $GITHUB_OUTPUT
+          fi
+
+  # ─────────────────────────────────────────────────────────
+  # Stage 3: CI Pipeline (reuse ci.yml via workflow_call)
+  # ─────────────────────────────────────────────────────────
+  ci:
+    name: CI Pipeline
+    needs: [classify]
+    uses: ./.github/workflows/ci.yml
+    secrets: inherit
+
+  # ─────────────────────────────────────────────────────────
+  # Stage 4: Invariant Tests (separate check — mandatory gate)
+  # ─────────────────────────────────────────────────────────
+  invariants:
+    name: Constitutional Invariant Tests
+    runs-on: ubuntu-latest
+    needs: [classify, ci]
+    if: needs.classify.outputs.pr_tier >= 1
+    outputs:
+      invariants_passed: ${{ steps.run.outputs.passed }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - run: npm ci
+      - name: Run Invariant Kill Tests
+        id: run
+        run: |
+          if npx vitest run backend/tests/invariants/ --reporter=verbose 2>&1 | tee invariant-output.txt; then
+            echo "passed=true" >> $GITHUB_OUTPUT
+          else
+            echo "passed=false" >> $GITHUB_OUTPUT
+          fi
+        env:
+          NODE_ENV: test
+          DATABASE_URL: ${{ secrets.TEST_DATABASE_URL }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: invariant-output
+          path: invariant-output.txt
+          retention-days: 14
+
+  # ─────────────────────────────────────────────────────────
+  # Stage 5: Holodeck — Ephemeral Deploy (after CI passes)
+  # ─────────────────────────────────────────────────────────
+  holodeck:
+    name: Holodeck Deploy
+    needs: [classify, ci]
+    if: needs.classify.outputs.pr_tier >= 1
+    uses: ./.github/workflows/holodeck.yml
+    secrets: inherit
+
+  # ─────────────────────────────────────────────────────────
+  # Stage 6: Compute & Post Readiness Score
+  # ─────────────────────────────────────────────────────────
+  readiness-score:
+    name: Readiness Score
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [classify, context, tdad, ci, invariants, holodeck]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - run: npm ci
+
+      - name: Compute Readiness Score
+        id: score
+        run: |
+          npx tsx scripts/compute-readiness-score.ts
+        env:
+          GATE_CONTEXT: ${{ needs.context.outputs.context_passed }}
+          GATE_TDAD: ${{ needs.tdad.outputs.tdad_passed }}
+          GATE_TYPECHECK: ${{ needs.ci.outputs.typecheck_result }}
+          GATE_LINT: ${{ needs.ci.outputs.lint_result }}
+          GATE_TESTS: ${{ needs.ci.outputs.test_result }}
+          GATE_INVARIANTS: ${{ needs.invariants.outputs.invariants_passed }}
+          GATE_HOLODECK: ${{ needs.holodeck.result }}
+          GATE_PR_TIER: ${{ needs.classify.outputs.pr_tier }}
+
+      - name: Post Readiness Score to PR
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: readiness-score
+          path: readiness-score.md

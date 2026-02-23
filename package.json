@@ -30,7 +30,15 @@
     "lint": "eslint backend/src --ext .ts",
     "lint:fix": "eslint backend/src --ext .ts --fix",
     "format": "prettier --write \"backend/src/**/*.ts\"",
-    "format:check": "prettier --check \"backend/src/**/*.ts\""
+    "format:check": "prettier --check \"backend/src/**/*.ts\"",
+    "generate:test-stubs": "tsx scripts/generate-test-stubs.ts",
+    "check:tdad": "bash scripts/check-test-coverage-pr.sh",
+    "index-docs": "tsx scripts/index-docs.ts",
+    "query-docs": "tsx scripts/query-docs.ts",
+    "generate:type-manifest": "tsx scripts/generate-type-manifest.ts",
+    "compute:readiness-score": "tsx scripts/compute-readiness-score.ts",
+    "classify:pr": "tsx scripts/classify-pr-changes.ts",
+    "incident-report": "tsx scripts/generate-incident-report.ts"
   },
   "dependencies": {
     "@aws-sdk/client-rekognition": "^3.994.0",

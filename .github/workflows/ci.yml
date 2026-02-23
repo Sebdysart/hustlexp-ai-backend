@@ -5,6 +5,20 @@ on:
     branches: [main, staging, develop]
   pull_request:
     branches: [main, staging]
+  workflow_call:
+    outputs:
+      typecheck_result:
+        description: "TypeCheck job result"
+        value: ${{ jobs.typecheck.result }}
+      lint_result:
+        description: "Lint job result"
+        value: ${{ jobs.lint.result }}
+      test_result:
+        description: "Test job result"
+        value: ${{ jobs.test.result }}
+      build_result:
+        description: "Build job result"
+        value: ${{ jobs.build.result }}
 
 env:
   NODE_VERSION: 20
@@ -53,12 +67,19 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
       - run: npm ci
-      - run: npx vitest run backend/tests/unit/ backend/tests/invariants/spec-alignment.test.ts backend/tests/invariants/transaction-error-handling.test.ts --reporter=verbose --coverage
+      - run: npx vitest run backend/tests/unit/ backend/tests/invariants/spec-alignment.test.ts backend/tests/invariants/transaction-error-handling.test.ts --reporter=verbose --coverage 2>&1 | tee test-output.txt
         name: Run Unit + Invariant Tests with Coverage Gate
         timeout-minutes: 10
-      - run: npx vitest run backend/tests/integration/ --reporter=verbose
+      - run: npx vitest run backend/tests/integration/ --reporter=verbose 2>&1 | tee -a test-output.txt
         name: Run Integration Tests (routers, money-path, stripe E2E)
         timeout-minutes: 10
+      - name: Upload Test Output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-output
+          path: test-output.txt
+          retention-days: 14
       - name: Upload Coverage Report
         if: always()
         uses: actions/upload-artifact@v4
