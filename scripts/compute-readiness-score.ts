@@ -5,13 +5,14 @@
  * and computes a 100-point Readiness Score. Outputs a markdown table to
  * readiness-score.md for posting as a sticky PR comment.
  *
- * Scoring breakdown:
+ * Scoring breakdown (110 base + bonuses):
  *   Knowledge Graph Context:  10 pts
  *   TDAD (Tests First):       25 pts
  *   TypeCheck + Lint:         15 pts
  *   Unit Tests:               20 pts
  *   Invariant Tests:          20 pts  (MANDATORY — without these, max is 80)
  *   Holodeck Deploy:          10 pts
+ *   Greptile AI Review:       10 pts  (bonus — codebase-aware AI review)
  *
  * Merge threshold: 80/100
  */
@@ -68,6 +69,13 @@ const migrationState = gateState("GATE_MIGRATION_SAFETY");
 const migrationBonus =
   migrationState === "passed" ? 15 : migrationState === "failed" ? -30 : 0;
 
+// ── Greptile AI Review: +10 bonus when passed, -5 when critical issues found
+const greptileState = gateState("GATE_GREPTILE");
+const greptileScore = parseInt(process.env.GATE_GREPTILE_SCORE ?? "0", 10);
+const greptileCritical = parseInt(process.env.GATE_GREPTILE_CRITICAL ?? "0", 10);
+const greptileBonus =
+  greptileState === "passed" ? 10 : greptileCritical > 0 ? -5 : 0;
+
 const gates: Gate[] = [
   {
     name: "Knowledge Graph Context",
@@ -120,8 +128,8 @@ const baseEarned = gates.reduce(
   0
 );
 
-// Apply migration safety bonus/penalty (clamped to 0..totalPossible)
-const earnedPoints = Math.max(0, Math.min(totalPossible, baseEarned + migrationBonus));
+// Apply migration safety + Greptile bonuses/penalties (clamped to 0..totalPossible)
+const earnedPoints = Math.max(0, Math.min(totalPossible, baseEarned + migrationBonus + greptileBonus));
 
 const MERGE_THRESHOLD = TIER_THRESHOLDS[prTier] ?? 80;
 
@@ -172,6 +180,16 @@ if (migrationState !== "passed" || migrationBonus !== 0) {
   const migIcon = migrationState === "passed" ? "&#x2705;" : migrationState === "failed" ? "&#x1F6D1;" : "&#x2796;";
   const migPts = migrationBonus > 0 ? `+${migrationBonus}` : `${migrationBonus}`;
   lines.push(`| Migration Safety | ${migPts} | ${migIcon} | ${migrationState === "failed" ? "BLOCKING" : "Bonus"} |`);
+}
+
+// Greptile AI Review row (bonus/penalty)
+if (greptileState !== "failed" || greptileBonus !== 0) {
+  const greptileIcon = greptileState === "passed" ? "&#x2705;" : greptileCritical > 0 ? "&#x1F6D1;" : "&#x2796;";
+  const greptilePts = greptileBonus > 0 ? `+${greptileBonus}` : `${greptileBonus}`;
+  const greptileLabel = greptileCritical > 0
+    ? `${greptileCritical} critical`
+    : greptileScore > 0 ? `Score: ${greptileScore}/100` : "N/A";
+  lines.push(`| Greptile AI Review | ${greptilePts} | ${greptileIcon} | ${greptileLabel} |`);
 }
 
 // Degradation override row

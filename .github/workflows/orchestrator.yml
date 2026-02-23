@@ -142,6 +142,57 @@ jobs:
           retention-days: 14
 
   # ─────────────────────────────────────────────────────────
+  # Stage 1c: Greptile AI Review (parallel, codebase-aware)
+  # ─────────────────────────────────────────────────────────
+  greptile-review:
+    name: Greptile AI Review
+    needs: [classify]
+    if: needs.classify.outputs.pr_tier >= 1
+    runs-on: ubuntu-latest
+    outputs:
+      review_passed: ${{ steps.review.outputs.passed }}
+      review_score: ${{ steps.review.outputs.score }}
+      critical_count: ${{ steps.review.outputs.critical_count }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - run: npm ci
+      - name: Run Greptile AI Review
+        id: review
+        run: |
+          CHANGED_FILES=$(git diff --name-only origin/main...HEAD | tr '\n' ',')
+          export CHANGED_FILES
+          npx tsx scripts/greptile-pr-review.ts
+        env:
+          GREPTILE_API_KEY: ${{ secrets.GREPTILE_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_BRANCH: ${{ github.event.pull_request.head.ref }}
+          BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
+          REPO_FULL_NAME: ${{ github.repository }}
+          GATE_PR_TIER: ${{ needs.classify.outputs.pr_tier }}
+        continue-on-error: true
+      - name: Post Greptile Review to PR
+        if: always() && hashFiles('greptile-review.md') != ''
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: greptile-review
+          path: greptile-review.md
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: greptile-review
+          path: greptile-review.md
+          retention-days: 14
+
+  # ─────────────────────────────────────────────────────────
   # Stage 2: TDAD Gate (parallel)
   # ─────────────────────────────────────────────────────────
   tdad:
@@ -225,7 +276,7 @@ jobs:
     name: Readiness Score
     runs-on: ubuntu-latest
     if: always()
-    needs: [classify, context, tdad, ci, invariants, holodeck, migration-safety]
+    needs: [classify, context, tdad, ci, invariants, holodeck, migration-safety, greptile-review]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -261,6 +312,9 @@ jobs:
           GATE_PR_TIER: ${{ needs.classify.outputs.pr_tier }}
           GATE_MIGRATION_SAFETY: ${{ needs.migration-safety.outputs.migration_safe }}
           GATE_DEGRADATION_BLOCKED: ${{ steps.degradation.outputs.overrideBlocked }}
+          GATE_GREPTILE: ${{ needs.greptile-review.outputs.review_passed }}
+          GATE_GREPTILE_SCORE: ${{ needs.greptile-review.outputs.review_score }}
+          GATE_GREPTILE_CRITICAL: ${{ needs.greptile-review.outputs.critical_count }}
           CHANGED_FILES: ${{ steps.degradation.outputs.changed_files }}
 
       - name: Post Readiness Score to PR
