@@ -64,7 +64,7 @@ export async function getCapabilityProfile(userId: string): Promise<CapabilityPr
   await recomputeCapabilityProfile(userId, { reason: 'getCapabilityProfile' });
 
   // Load the profile
-  const profileResult = await db.query(
+  const profileResult = await db.query<Record<string, any>>(
     `
     SELECT 
       user_id, trust_tier, risk_clearance, location_state, location_city,
@@ -87,7 +87,7 @@ export async function getCapabilityProfile(userId: string): Promise<CapabilityPr
   const row = profileResult.rows[0];
 
   // Load verified trades
-  const tradesResult = await db.query(
+  const tradesResult = await db.query<Record<string, any>>(
     `
     SELECT trade, state, expires_at, license_verification_id
     FROM verified_trades
@@ -217,7 +217,7 @@ export async function recompute(userId: string, reason: string): Promise<void> {
 export async function initializeProfile(userId: string): Promise<void> {
   log.info({ userId }, 'Initializing capability profile');
   
-  await db.query(
+  await db.query<Record<string, any>>(
     `
     INSERT INTO capability_profiles (
       user_id, trust_tier, risk_clearance, location_state, location_city,
@@ -267,7 +267,7 @@ export async function findUsersWithCapability(
 ): Promise<string[]> {
   const now = new Date().toISOString();
   
-  const result = await db.query(
+  const result = await db.query<Record<string, any>>(
     `
     SELECT DISTINCT vt.user_id
     FROM verified_trades vt

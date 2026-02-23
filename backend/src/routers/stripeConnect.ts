@@ -17,6 +17,7 @@
 import { TRPCError } from '@trpc/server';
 import { router, protectedProcedure } from '../trpc';
 import { StripeConnectService } from '../services/StripeConnectService';
+import { TaxReportingService } from '../services/TaxReportingService';
 import { z } from 'zod';
 
 // ============================================================================
@@ -309,6 +310,34 @@ export const stripeConnectRouter = router({
           });
         }
 
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: result.error.message,
+        });
+      }
+
+      return result.data;
+    }),
+
+  // --------------------------------------------------------------------------
+  // 1099-NEC TAX FILING STATUS
+  // --------------------------------------------------------------------------
+
+  /**
+   * Get 1099-NEC filing status for current user
+   * Returns tax filing records for the given year (defaults to current year)
+   */
+  get1099Status: protectedProcedure
+    .input(z.object({
+      taxYear: z.number().int().min(2020).max(2100).optional(),
+    }).optional())
+    .query(async ({ ctx, input }) => {
+      const result = await TaxReportingService.get1099Status(
+        ctx.user.id,
+        input?.taxYear
+      );
+
+      if (!result.success) {
         throw new TRPCError({
           code: 'INTERNAL_SERVER_ERROR',
           message: result.error.message,

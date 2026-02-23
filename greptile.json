@@ -1,0 +1,41 @@
+{
+  "$schema": "https://app.greptile.com/schemas/greptile.json",
+  "version": 1,
+  "review": {
+    "enabled": true,
+    "auto_review": true,
+    "severity": "medium",
+    "pr_summary": true,
+    "confidence_scores": true,
+    "diagram": false,
+    "comment_types": {
+      "logic": true,
+      "syntax": true,
+      "style": false
+    },
+    "filters": {
+      "exclude_labels": ["skip-review", "bot"],
+      "exclude_branches": [],
+      "exclude_files": [
+        "*.md",
+        "*.json",
+        "*.lock",
+        "docs/**",
+        "artifacts/**",
+        ".github/**/*.md"
+      ]
+    }
+  },
+  "rules": [
+    "All financial operations (escrow, payments, XP) MUST go through database triggers — never bypass invariant enforcement",
+    "Escrow state transitions follow strict FSM: PENDING→FUNDED→RELEASED or PENDING→FUNDED→REFUNDED. No other paths allowed",
+    "XP can only be awarded after escrow is RELEASED — enforced by xp_requires_released_escrow trigger",
+    "Trust scores must be recalculated on every rating event — never cache stale trust data",
+    "All tRPC procedures handling money must use protectedProcedure with role validation",
+    "Circuit breakers must wrap all external service calls (Stripe, OpenAI, Twilio, etc.)",
+    "Error codes must use HX-series format (HX001-HX999) from error-code-registry.ts",
+    "Task state machine: open→assigned→in_progress→completed or open→assigned→cancelled. Proof required for completion",
+    "Never store raw PII in logs — use structured logging with field-level redaction",
+    "AI agent budgets are enforced per-user per-day — never bypass AIRouter cost governance"
+  ]
+}

@@ -319,7 +319,7 @@ PHOTO VERIFICATION SIGNALS:${input.photo_verification ? `
 NOTE: ${[input.biometric, input.logistics, input.photo_verification].filter(Boolean).length}/3 signal domains available.${[input.biometric, input.logistics, input.photo_verification].filter(Boolean).length < 2 ? ' With fewer than 2 domains, lean toward MANUAL_REVIEW unless there are clear REJECT signals.' : ''}
 Renormalize weights over available components only.
 
-Produce your verdict.`,
+Produce your verdict.`),
         });
 
         const aiVerdict = aiResult.data;

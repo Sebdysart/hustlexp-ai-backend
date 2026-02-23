@@ -129,3 +129,46 @@ export async function sendPushNotification(
     return { success: false, sent: 0, failed: 0 };
   }
 }
+
+/**
+ * Send push notification to multiple users in batch
+ *
+ * Sends the same notification to all specified users concurrently.
+ * Individual failures do not affect other users.
+ *
+ * @param userIds Array of target user IDs
+ * @param title Notification title
+ * @param body Notification body text
+ * @param data Optional key-value data payload
+ * @returns Aggregated delivery result
+ */
+export async function sendBatch(
+  userIds: string[],
+  title: string,
+  body: string,
+  data?: Record<string, string>
+): Promise<PushResult> {
+  if (userIds.length === 0) {
+    return { success: true, sent: 0, failed: 0 };
+  }
+
+  const results = await Promise.allSettled(
+    userIds.map(userId => sendPushNotification(userId, title, body, data))
+  );
+
+  let totalSent = 0;
+  let totalFailed = 0;
+
+  for (const result of results) {
+    if (result.status === 'fulfilled') {
+      totalSent += result.value.sent;
+      totalFailed += result.value.failed;
+    } else {
+      totalFailed++;
+    }
+  }
+
+  log.info({ userCount: userIds.length, totalSent, totalFailed }, 'push_batch_sent');
+
+  return { success: true, sent: totalSent, failed: totalFailed };
+}

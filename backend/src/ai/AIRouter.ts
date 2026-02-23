@@ -11,6 +11,7 @@ import { Redis } from '@upstash/redis';
 import { TRPCError } from '@trpc/server';
 import { config } from '../config';
 import { db } from '../db';
+import { checkUserBudget, trackUserCost, checkGlobalBudget, trackGlobalCost } from './UserAIBudget';
 
 interface AICallConfig {
   maxTokensPerCall: number;
@@ -35,6 +36,8 @@ const AGENT_BUDGETS: Record<string, AICallConfig> = {
   reputation: { maxTokensPerCall: 1500, dailyBudgetPerUser: 5, fallbackChain: ['groq', 'deepseek'], timeoutMs: 10000 },
   onboarding: { maxTokensPerCall: 1000, dailyBudgetPerUser: 5, fallbackChain: ['groq', 'openai'], timeoutMs: 10000 },
   moderation: { maxTokensPerCall: 2000, dailyBudgetPerUser: 10, fallbackChain: ['groq', 'openai'], timeoutMs: 15000 },
+  incident_diagnosis: { maxTokensPerCall: 4000, dailyBudgetPerUser: 20, fallbackChain: ['deepseek', 'groq', 'openai'], timeoutMs: 45000 },
+  intent_bridge: { maxTokensPerCall: 6000, dailyBudgetPerUser: 30, fallbackChain: ['deepseek', 'openai', 'groq'], timeoutMs: 60000 },
   default: { maxTokensPerCall: 2000, dailyBudgetPerUser: 25, fallbackChain: ['groq', 'openai', 'deepseek'], timeoutMs: 20000 },
 };
 
@@ -151,8 +154,28 @@ async function callAlibaba(prompt: string, maxTokens: number): Promise<AIRespons
   };
 }
 
+/** Retry a provider call with exponential backoff (1s base, max 3 retries, jitter) */
+async function retryWithBackoff<T>(fn: () => Promise<T>, maxRetries: number = 3, baseDelayMs: number = 1000): Promise<T> {
+  let lastError: Error | null = null;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+      if (attempt < maxRetries) {
+        const delay = baseDelayMs * Math.pow(2, attempt) + Math.random() * 500;
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+  throw lastError;
+}
+
 const PROVIDER_FUNCTIONS: Record<AIProvider, (prompt: string, maxTokens: number) => Promise<AIResponse>> = {
-  groq: callGroq, openai: callOpenAI, deepseek: callDeepSeek, alibaba: callAlibaba,
+  groq: (p, m) => retryWithBackoff(() => callGroq(p, m), 2),
+  openai: (p, m) => retryWithBackoff(() => callOpenAI(p, m), 2),
+  deepseek: (p, m) => retryWithBackoff(() => callDeepSeek(p, m), 2),
+  alibaba: (p, m) => retryWithBackoff(() => callAlibaba(p, m), 2),
 };
 
 export interface CallAIResult {
@@ -161,6 +184,14 @@ export interface CallAIResult {
 
 export async function callAI(agent: string, userId: string, prompt: string): Promise<CallAIResult> {
   const agentConfig = AGENT_BUDGETS[agent] || AGENT_BUDGETS.default;
+  const globalBudget = await checkGlobalBudget();
+  if (!globalBudget.allowed) {
+    throw new TRPCError({ code: 'TOO_MANY_REQUESTS', message: 'HX703: Platform AI daily budget exceeded. Retry after midnight UTC.' });
+  }
+  const userBudget = await checkUserBudget(userId);
+  if (!userBudget.allowed) {
+    throw new TRPCError({ code: 'TOO_MANY_REQUESTS', message: 'HX704: Personal AI daily budget exceeded ($5.00/day). Retry after midnight UTC.' });
+  }
   const budget = await checkBudget(agent, userId);
   if (!budget.allowed) {
     throw new TRPCError({ code: 'TOO_MANY_REQUESTS', message: `HX701: AI daily budget exceeded for ${agent}` });
@@ -171,6 +202,8 @@ export async function callAI(agent: string, userId: string, prompt: string): Pro
     try {
       const response = await PROVIDER_FUNCTIONS[provider](prompt, agentConfig.maxTokensPerCall);
       await trackCost(agent, userId, provider, response.usage.total_tokens);
+      await trackUserCost(userId, estimateCost(provider, response.usage.total_tokens));
+      await trackGlobalCost(estimateCost(provider, response.usage.total_tokens));
       return { text: response.text, provider: response.provider, model: response.model, tokensUsed: response.usage.total_tokens, estimatedCostCents: estimateCost(provider, response.usage.total_tokens), attempts: i + 1 };
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));

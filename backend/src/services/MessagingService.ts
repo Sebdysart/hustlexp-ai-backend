@@ -326,7 +326,22 @@ export const MessagingService = {
       );
       
       const message = messageResult.rows[0];
-      
+
+      // Publish to Redis pub/sub for realtime delivery
+      try {
+        const { Redis } = await import('@upstash/redis');
+        const { config } = await import('../config');
+        if (config.redis.restUrl && config.redis.restToken) {
+          const redis = new Redis({ url: config.redis.restUrl, token: config.redis.restToken });
+          await redis.publish(`realtime:user:${recipientId}`, JSON.stringify({
+            event: 'message.new',
+            data: { messageId: message.id, taskId, senderId, content: message.content, createdAt: message.created_at },
+          }));
+        }
+      } catch (pubError) {
+        log.warn({ err: pubError instanceof Error ? pubError.message : String(pubError) }, 'Failed to publish message to realtime');
+      }
+
       // Content moderation (MESSAGING_SPEC.md §2.1)
       // - Basic pattern detection (links, phone, email) → flag immediately
       // - Full AI moderation will happen asynchronously via ContentModerationService

@@ -30,9 +30,11 @@ import {
 const log = logger.child({ module: 'sse-handler' });
 
 // Initialize Redis pub/sub on module load
-initializePubSub().catch((err) => {
+try {
+  initializePubSub();
+} catch (err) {
   log.error({ err }, 'Failed to initialize Redis pub/sub');
-});
+}
 
 /**
  * Helper to get authenticated user from Bearer token (matches server.ts pattern)

@@ -89,7 +89,7 @@ export async function submitLicense(
   }
 
   // Check for existing verification
-  const existingResult = await db.query(
+  const existingResult = await db.query<Record<string, any>>(
     `
     SELECT id, status
     FROM license_verifications
@@ -120,7 +120,7 @@ export async function submitLicense(
   }
 
   // Create verification record
-  const result = await db.query(
+  const result = await db.query<Record<string, any>>(
     `
     INSERT INTO license_verifications (
       user_id, trade_type, issuing_state, license_number,
@@ -177,7 +177,7 @@ export async function approveLicense(
   adminUserId: string,
   notes?: string
 ): Promise<LicenseVerification> {
-  const result = await db.query(
+  const result = await db.query<Record<string, any>>(
     `
     UPDATE license_verifications
     SET status = 'APPROVED',
@@ -238,7 +238,7 @@ export async function rejectLicense(
   reason: string,
   notes?: string
 ): Promise<LicenseVerification> {
-  const result = await db.query(
+  const result = await db.query<Record<string, any>>(
     `
     UPDATE license_verifications
     SET status = 'REJECTED',
@@ -294,7 +294,7 @@ export async function rejectLicense(
  * Get license verifications for a user
  */
 export async function getUserLicenses(userId: string): Promise<LicenseVerification[]> {
-  const result = await db.query(
+  const result = await db.query<Record<string, any>>(
     `
     SELECT *
     FROM license_verifications
@@ -328,7 +328,7 @@ export async function getPendingVerifications(
   limit: number = 50,
   offset: number = 0
 ): Promise<LicenseVerification[]> {
-  const result = await db.query(
+  const result = await db.query<Record<string, any>>(
     `
     SELECT *
     FROM license_verifications
@@ -364,7 +364,7 @@ export async function hasValidLicense(
   tradeType: string,
   state: string
 ): Promise<boolean> {
-  const result = await db.query(
+  const result = await db.query<Record<string, any>>(
     `
     SELECT 1
     FROM license_verifications
@@ -388,7 +388,7 @@ export async function hasValidLicense(
     return false;
   }
 
-  const reciprocityResult = await db.query(
+  const reciprocityResult = await db.query<Record<string, any>>(
     `
     SELECT 1
     FROM license_verifications
@@ -414,7 +414,7 @@ export async function hasValidLicense(
  * Called by cron job
  */
 export async function markExpiredLicenses(): Promise<number> {
-  const result = await db.query(
+  const result = await db.query<Record<string, any>>(
     `
     UPDATE license_verifications
     SET status = 'EXPIRED'

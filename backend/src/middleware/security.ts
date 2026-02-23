@@ -10,7 +10,7 @@
 
 import { Context, Next } from 'hono';
 import { createHash } from 'crypto';
-import { checkRateLimit } from '../cache/redis';
+import { checkRateLimit, redis } from '../cache/redis';
 import { config } from '../config';
 
 // ============================================================================
@@ -192,10 +192,10 @@ export async function aiRateLimitMiddleware(provider: keyof typeof AI_RATE_LIMIT
     if (current > limits.requests) {
       c.header('X-RateLimit-Limit', limits.requests.toString());
       c.header('X-RateLimit-Remaining', '0');
-      c.header('X-RateLimit-Reset', (await redis.ttl(key)).toString());
-      return c.json({ 
+      c.header('X-RateLimit-Reset', (60).toString());
+      return c.json({
         error: 'AI rate limit exceeded',
-        retryAfter: await redis.ttl(key)
+        retryAfter: 60
       }, 429);
     }
     

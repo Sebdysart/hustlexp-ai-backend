@@ -58,7 +58,7 @@ export async function initiateBackgroundCheck(
   initiation: BackgroundCheckInitiation
 ): Promise<BackgroundCheck> {
   // Check for existing valid check
-  const existingResult = await db.query(
+  const existingResult = await db.query<Record<string, any>>(
     `
     SELECT id, status
     FROM background_checks
@@ -93,7 +93,7 @@ export async function initiateBackgroundCheck(
   const expiresAt = new Date();
   expiresAt.setFullYear(expiresAt.getFullYear() + 1); // 1 year validity
 
-  const result = await db.query(
+  const result = await db.query<Record<string, any>>(
     `
     INSERT INTO background_checks (
       user_id, provider, check_id, status,
@@ -157,7 +157,7 @@ export async function updateBackgroundCheckStatus(
   resultSummary?: string,
   details?: Record<string, unknown>
 ): Promise<BackgroundCheck> {
-  const result = await db.query(
+  const result = await db.query<Record<string, any>>(
     `
     UPDATE background_checks
     SET status = $2,
@@ -219,7 +219,7 @@ export async function reviewBackgroundCheck(
   decision: 'CLEAR' | 'FAILED',
   notes?: string
 ): Promise<BackgroundCheck> {
-  const result = await db.query(
+  const result = await db.query<Record<string, any>>(
     `
     UPDATE background_checks
     SET status = $3,
@@ -282,7 +282,7 @@ export async function reviewBackgroundCheck(
  * Get background check for a user
  */
 export async function getUserBackgroundCheck(userId: string): Promise<BackgroundCheck | null> {
-  const result = await db.query(
+  const result = await db.query<Record<string, any>>(
     `
     SELECT *
     FROM background_checks
@@ -319,7 +319,7 @@ export async function getUserBackgroundCheck(userId: string): Promise<Background
  * Check if user has valid background check
  */
 export async function hasValidBackgroundCheck(userId: string): Promise<boolean> {
-  const result = await db.query(
+  const result = await db.query<Record<string, any>>(
     `
     SELECT 1
     FROM background_checks
@@ -341,7 +341,7 @@ export async function getPendingReviews(
   limit: number = 50,
   offset: number = 0
 ): Promise<BackgroundCheck[]> {
-  const result = await db.query(
+  const result = await db.query<Record<string, any>>(
     `
     SELECT *
     FROM background_checks
@@ -376,7 +376,7 @@ export async function getChecksByStatus(
   status: BackgroundCheck['status'],
   limit: number = 50
 ): Promise<BackgroundCheck[]> {
-  const result = await db.query(
+  const result = await db.query<Record<string, any>>(
     `
     SELECT *
     FROM background_checks
@@ -413,7 +413,7 @@ export async function getChecksByStatus(
  * Called by cron job
  */
 export async function markExpiredChecks(): Promise<number> {
-  const result = await db.query(
+  const result = await db.query<Record<string, any>>(
     `
     UPDATE background_checks
     SET status = 'EXPIRED'
@@ -439,7 +439,7 @@ export async function markExpiredChecks(): Promise<number> {
 export async function getUpcomingExpirations(
   days: number = 30
 ): Promise<Array<{ userId: string; expiresAt: string }>> {
-  const result = await db.query(
+  const result = await db.query<Record<string, any>>(
     `
     SELECT DISTINCT ON (user_id) user_id, expires_at
     FROM background_checks

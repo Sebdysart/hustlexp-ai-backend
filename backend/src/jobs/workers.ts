@@ -18,7 +18,7 @@
  * @see ARCHITECTURE.md §2.4 (Outbox pattern)
  */
 
-import { createWorker } from './queues';
+import { createWorker, getQueue } from './queues';
 import { startOutboxWorker } from './outbox-worker';
 import { processExportJob } from './export-worker';
 import { processEmailJob } from './email-worker';
@@ -140,9 +140,13 @@ function registerWorkers(): void {
         // Route trust events to TrustWorker
         const { processTrustJob } = await import('./trust-worker');
         await processTrustJob(job);
+      } else if (eventType === 'fraud.scan_requested') {
+        // Route fraud detection scans to FraudDetectionWorker (scheduled every 5 min)
+        const { processFraudDetectionJob } = await import('./fraud-detection-worker');
+        await processFraudDetectionJob(job);
       } else {
         // Unknown event type: reject to prevent processing invalid jobs
-        const error = new Error(`Unknown event type in critical_trust queue: ${eventType}. Expected trust.dispute_resolved.worker or trust.dispute_resolved.poster`);
+        const error = new Error(`Unknown event type in critical_trust queue: ${eventType}. Expected trust.dispute_resolved.*, fraud.scan_requested`);
         log.error({ eventType, err: error.message }, 'Unknown event type in critical_trust queue');
         throw error; // BullMQ will mark job as failed
       }
@@ -168,13 +172,80 @@ function registerWorkers(): void {
     }
   ));
 
+  // Tax reporting worker - processes annual 1099-NEC form generation
+  activeWorkers.push(createWorker(
+    'tax_reporting',
+    async (job: Job) => {
+      const { processTaxReportingJob } = await import('./tax-reporting-worker');
+      await processTaxReportingJob(job);
+    },
+    {
+      concurrency: 1, // Process one tax job at a time (annual batch)
+      removeOnComplete: { count: 50, age: 7 * 86400 }, // Keep completed jobs for 7 days
+      removeOnFail: { age: 30 * 86400 }, // Keep failed jobs for 30 days
+    }
+  ));
+
   log.info('All BullMQ workers registered');
 }
 
 // ============================================================================
-// OUTBOX POLLER LOOP
+// SCHEDULED JOBS
 // ============================================================================
 
+/**
+ * Register repeatable BullMQ jobs for periodic tasks.
+ * These were previously defined but never activated.
+ *
+ * Jobs are idempotent — BullMQ deduplicates by repeat key.
+ * Safe to call on every worker restart.
+ */
+async function registerScheduledJobs(): Promise<void> {
+  const maintenanceQueue = getQueue('maintenance');
+  const criticalTrustQueue = getQueue('critical_trust');
+
+  // Recover stuck stripe events — every 10 minutes
+  await maintenanceQueue.add(
+    'recover_stuck_stripe_events',
+    { timeoutMinutes: 10 },
+    {
+      repeat: { pattern: '*/10 * * * *' },
+      jobId: 'scheduled:recover_stuck_stripe_events',
+    }
+  );
+
+  // Cleanup expired exports — every 6 hours
+  await maintenanceQueue.add(
+    'cleanup_expired_exports',
+    {},
+    {
+      repeat: { pattern: '0 */6 * * *' },
+      jobId: 'scheduled:cleanup_expired_exports',
+    }
+  );
+
+  // Cleanup expired notifications — every 6 hours (offset by 30 min)
+  await maintenanceQueue.add(
+    'cleanup_expired_notifications',
+    {},
+    {
+      repeat: { pattern: '30 */6 * * *' },
+      jobId: 'scheduled:cleanup_expired_notifications',
+    }
+  );
+
+  // Fraud detection scan — every 5 minutes
+  await criticalTrustQueue.add(
+    'fraud.scan_requested',
+    {},
+    {
+      repeat: { pattern: '*/5 * * * *' },
+      jobId: 'scheduled:fraud_detection',
+    }
+  );
+
+  log.info('Scheduled repeatable jobs registered');
+}
 
 // ============================================================================
 // MAIN WORKER PROCESS
@@ -190,6 +261,9 @@ async function startWorkers(): Promise<void> {
   try {
     // Register all BullMQ workers
     registerWorkers();
+
+    // Register repeatable scheduled jobs (maintenance, fraud detection)
+    await registerScheduledJobs();
 
     // Start outbox poller loop (continuously reads outbox_events → enqueues BullMQ jobs)
     startOutboxWorker(5000); // Poll every 5 seconds

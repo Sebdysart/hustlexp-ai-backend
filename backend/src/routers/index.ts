@@ -54,8 +54,16 @@ import { tippingRouter } from './tipping';
 import { squadRouter } from './squad';
 // v2.5.0: Stripe Connect
 import { stripeConnectRouter } from './stripeConnect';
+// v2.6.0: Feature Flags
+import { flagsRouter } from './flags';
 // v3.0.0: Core capability services (audit fix)
 import { capabilityRouter } from './capability';
+// v3.0.0: Admin Dashboard
+import { adminRouter } from './admin';
+// Phase 5: Incident Intelligence
+import { incidentsRouter } from './incidents';
+// Phase 6: Intent Bridge
+import { intentRouter } from './intent';
 
 export const appRouter = router({
   task: taskRouter,
@@ -106,8 +114,16 @@ export const appRouter = router({
   squad: squadRouter,
   // v2.5.0: Stripe Connect
   stripeConnect: stripeConnectRouter,
+  // v2.6.0: Feature Flags
+  flags: flagsRouter,
   // v3.0.0: Core capability services (audit fix)
   capability: capabilityRouter,
+  // v3.0.0: Admin Dashboard
+  admin: adminRouter,
+  // Phase 5: Incident Intelligence
+  incidents: incidentsRouter,
+  // Phase 6: Intent Bridge
+  intent: intentRouter,
 });
 
 export type AppRouter = typeof appRouter;

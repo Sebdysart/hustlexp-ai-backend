@@ -64,6 +64,13 @@ export function getConnections(userId: string): Set<SSEConnection> | undefined {
 }
 
 /**
+ * Get the full connections map (for broadcast operations)
+ */
+export function getAllConnections(): Map<string, Set<SSEConnection>> {
+  return connections;
+}
+
+/**
  * Get connection count (for observability)
  */
 export function getConnectionCount(userId?: string): number {

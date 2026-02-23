@@ -88,6 +88,18 @@ function isValidTransition(from: EscrowState, to: EscrowState): boolean {
 // SERVICE
 // ============================================================================
 
+async function logEscrowEvent(escrowId: string, fromState: string, toState: string, actorId?: string, actorType: string = 'system', metadata: Record<string, unknown> = {}): Promise<void> {
+  try {
+    await db.query(
+      `INSERT INTO escrow_events (escrow_id, from_state, to_state, actor_id, actor_type, metadata)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [escrowId, fromState, toState, actorId || null, actorType, JSON.stringify(metadata)]
+    );
+  } catch (error) {
+    escrowLogger.error({ err: error instanceof Error ? error.message : String(error), escrowId }, 'Failed to log escrow event');
+  }
+}
+
 export const EscrowService = {
   // --------------------------------------------------------------------------
   // READ OPERATIONS
@@ -244,7 +256,9 @@ export const EscrowService = {
           },
         };
       }
-      
+
+      await logEscrowEvent(escrowId, 'PENDING', 'FUNDED');
+
       return { success: true, data: result.rows[0] };
     } catch (error) {
       return {
@@ -323,6 +337,49 @@ export const EscrowService = {
       const paymentMethod: string = 'escrow'; // All tasks use escrow payment flow
       const grossPayoutCents = task.price;
 
+      // KYC GATE: Verify worker has completed Stripe Connect onboarding
+      // before releasing funds (FinCEN/BSA compliance)
+      const workerKycResult = await db.query<{
+        payouts_enabled: boolean;
+        stripe_connect_id: string | null;
+        stripe_connect_status: string | null;
+      }>(
+        `SELECT payouts_enabled, stripe_connect_id, stripe_connect_status FROM users WHERE id = $1`,
+        [workerId]
+      );
+
+      if (workerKycResult.rows.length === 0) {
+        return {
+          success: false,
+          error: {
+            code: ErrorCodes.NOT_FOUND,
+            message: `Worker ${workerId} not found`,
+          },
+        };
+      }
+
+      const workerKyc = workerKycResult.rows[0];
+
+      if (!workerKyc.stripe_connect_id) {
+        return {
+          success: false,
+          error: {
+            code: ErrorCodes.INVALID_STATE,
+            message: `Worker has not set up Stripe Connect — cannot release payout`,
+          },
+        };
+      }
+
+      if (!workerKyc.payouts_enabled) {
+        return {
+          success: false,
+          error: {
+            code: ErrorCodes.INVALID_STATE,
+            message: `Worker KYC incomplete — payouts not enabled (status: ${workerKyc.stripe_connect_status ?? 'unknown'})`,
+          },
+        };
+      }
+
       // Calculate platform fee (from config - default 15%)
       const platformFeePercent = config.stripe.platformFeePercent || 15;
       const platformFeeCents = Math.round(grossPayoutCents * (platformFeePercent / 100));
@@ -364,6 +421,8 @@ export const EscrowService = {
           },
         };
       }
+
+      await logEscrowEvent(escrowId, escrow.state, 'RELEASED');
 
       // 3. v1.8.0: Record earnings for verification unlock tracking
       // This is idempotent via UNIQUE constraint on escrow_id
@@ -474,7 +533,9 @@ export const EscrowService = {
           },
         };
       }
-      
+
+      await logEscrowEvent(escrowId, 'FUNDED', 'REFUNDED');
+
       return { success: true, data: result.rows[0] };
     } catch (error) {
       return {
@@ -515,7 +576,9 @@ export const EscrowService = {
           },
         };
       }
-      
+
+      await logEscrowEvent(escrowId, 'FUNDED', 'LOCKED_DISPUTE');
+
       return { success: true, data: result.rows[0] };
     } catch (error) {
       return {
@@ -570,7 +633,9 @@ export const EscrowService = {
           },
         };
       }
-      
+
+      await logEscrowEvent(escrowId, 'LOCKED_DISPUTE', 'REFUND_PARTIAL');
+
       return { success: true, data: result.rows[0] };
     } catch (error) {
       return {

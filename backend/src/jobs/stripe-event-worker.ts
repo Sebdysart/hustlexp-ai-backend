@@ -107,6 +107,10 @@ export async function processStripeEventJob(job: Job<StripeEventJobData>): Promi
         await handleInvoicePaymentFailed(event);
         break;
 
+      case 'account.updated':
+        await handleAccountUpdated(event);
+        break;
+
       default:
         // Unknown events are explicitly skipped (not an error)
         await db.query(
@@ -205,4 +209,66 @@ async function handleInvoicePaymentFailed(event: StripeEventEnvelope): Promise<v
     `,
     [userId]
   );
+}
+
+async function handleAccountUpdated(event: StripeEventEnvelope): Promise<void> {
+  const account = getEventObject<Record<string, any>>(event);
+  if (!account) throw new Error('account.updated missing account object');
+
+  const accountId = account.id as string;
+  if (!accountId) throw new Error('account.updated missing account.id');
+
+  // Look up user by stripe_connect_account_id
+  const userResult = await db.query<{ id: string }>(
+    'SELECT id FROM users WHERE stripe_connect_account_id = $1',
+    [accountId]
+  );
+
+  if (userResult.rows.length === 0) {
+    log.warn({ accountId }, 'No user found for Stripe Connect account');
+    return;
+  }
+
+  const userId = userResult.rows[0].id;
+  const detailsSubmitted = account.details_submitted as boolean;
+  const payoutsEnabled = account.payouts_enabled as boolean;
+  const chargesEnabled = account.charges_enabled as boolean;
+
+  // Determine connect status
+  let connectStatus = 'not_started';
+  if (detailsSubmitted && payoutsEnabled && chargesEnabled) {
+    connectStatus = 'active';
+  } else if (detailsSubmitted) {
+    connectStatus = 'pending_verification';
+  } else {
+    connectStatus = 'onboarding';
+  }
+
+  // Sync status to DB
+  await db.query(
+    `UPDATE users SET
+       stripe_connect_status = $1,
+       payouts_enabled = $2,
+       charges_enabled = $3,
+       updated_at = NOW()
+     WHERE id = $4`,
+    [connectStatus, payoutsEnabled, chargesEnabled, userId]
+  );
+
+  // Check if requirements became past_due
+  const requirements = account.requirements as Record<string, any> | undefined;
+  if (requirements?.currently_due?.length > 0) {
+    const { NotificationService } = await import('../services/NotificationService');
+    await NotificationService.createNotification({
+      userId,
+      category: 'security_alert',
+      title: 'Action Required: Stripe Connect',
+      body: 'Your Stripe Connect account requires additional information. Please update your details to continue receiving payments.',
+      deepLink: 'app://settings/payments',
+      channels: ['in_app', 'push'],
+      priority: 'HIGH',
+    }).catch(err => log.error({ err: err instanceof Error ? err.message : String(err), userId }, 'Failed to send Stripe requirements notification'));
+  }
+
+  log.info({ userId, accountId, connectStatus, payoutsEnabled, chargesEnabled }, 'Stripe Connect status synced');
 }

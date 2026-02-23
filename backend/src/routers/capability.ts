@@ -9,12 +9,12 @@
 import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
 import { router, protectedProcedure } from '../trpc';
-import { CapabilityProfileService } from '../services/CapabilityProfileService';
-import { EligibilityResolverService } from '../services/EligibilityResolverService';
-import { FeedQueryService } from '../services/FeedQueryService';
-import { LicenseVerificationService } from '../services/LicenseVerificationService';
-import { InsuranceVerificationService } from '../services/InsuranceVerificationService';
-import { BackgroundCheckService } from '../services/BackgroundCheckService';
+import * as CapabilityProfileService from '../services/CapabilityProfileService';
+import * as EligibilityResolverService from '../services/EligibilityResolverService';
+import * as FeedQueryService from '../services/FeedQueryService';
+import * as LicenseVerificationService from '../services/LicenseVerificationService';
+import * as InsuranceVerificationService from '../services/InsuranceVerificationService';
+import * as BackgroundCheckService from '../services/BackgroundCheckService';
 
 export const capabilityRouter = router({
   // ==========================================================================
@@ -78,7 +78,7 @@ export const capabilityRouter = router({
     .query(async ({ ctx, input }) => {
       // Get task requirements
       const { db } = await import('../db');
-      const taskResult = await db.query(
+      const taskResult = await db.query<Record<string, any>>(
         `SELECT trade_type, location_state, location_city, risk_level, 
                 insurance_required, background_check_required
          FROM tasks WHERE id = $1`,

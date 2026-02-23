@@ -18,8 +18,20 @@ import { logger } from '../logger';
 import type { ServiceResult } from '../types';
 import { ErrorCodes } from '../types';
 import { AlphaInstrumentation } from './AlphaInstrumentation';
+import { Redis } from '@upstash/redis';
+import { config } from '../config';
 
 const log = logger.child({ service: 'XPService' });
+
+let xpRedis: Redis | null = null;
+function getXPRedis(): Redis | null {
+  if (!xpRedis && config.redis.restUrl && config.redis.restToken) {
+    xpRedis = new Redis({ url: config.redis.restUrl, token: config.redis.restToken });
+  }
+  return xpRedis;
+}
+
+const DAILY_XP_CAP = 10000;
 
 // ============================================================================
 // TYPES
@@ -233,6 +245,24 @@ export const XPService = {
   awardXP: async (params: AwardXPParams): Promise<ServiceResult<XPLedgerEntry>> => {
     const { userId, taskId, escrowId, baseXP } = params;
 
+    // Anti-farming: Check daily XP cap
+    const capCheck = await XPService.checkDailyXPCap(userId);
+    if (!capCheck.allowed) {
+      return {
+        success: false,
+        error: {
+          code: 'XP_DAILY_CAP',
+          message: `Daily XP cap reached (${capCheck.cap} XP). Try again tomorrow.`,
+        },
+      };
+    }
+
+    // Anti-farming: Check velocity
+    const velocityCheck = await XPService.checkVelocity(userId);
+    if (velocityCheck.suspicious) {
+      log.warn({ userId, recentEvents: velocityCheck.recentEvents }, 'XP velocity suspicious - allowing but flagging');
+    }
+
     let effectiveXPAwarded = 0;
 
     try {
@@ -347,7 +377,12 @@ export const XPService = {
           log.warn({ err: error instanceof Error ? error.message : String(error), userId, taskId }, 'Failed to emit trust_delta_applied for XP award');
         }
       }
-      
+
+      // Track daily XP for cap enforcement
+      if (result.success && result.data) {
+        await XPService.trackDailyXP(userId, result.data.effective_xp);
+      }
+
       return result;
     } catch (error) {
       // Check for INV-1 violation
@@ -414,7 +449,7 @@ export const XPService = {
         'SELECT * FROM xp_ledger WHERE task_id = $1',
         [taskId]
       );
-      
+
       return { success: true, data: result.rows[0] || null };
     } catch (error) {
       return {
@@ -424,6 +459,88 @@ export const XPService = {
           message: error instanceof Error ? error.message : 'Unknown error',
         },
       };
+    }
+  },
+
+  /**
+   * Check daily XP cap for anti-farming
+   */
+  checkDailyXPCap: async (userId: string): Promise<{ allowed: boolean; earned: number; cap: number }> => {
+    const redis = getXPRedis();
+    if (!redis) return { allowed: true, earned: 0, cap: DAILY_XP_CAP };
+
+    const dateKey = new Date().toISOString().split('T')[0];
+    const key = `xp:daily:${userId}:${dateKey}`;
+    try {
+      const earned = Number(await redis.get(key) ?? 0);
+      return { allowed: earned < DAILY_XP_CAP, earned, cap: DAILY_XP_CAP };
+    } catch {
+      return { allowed: true, earned: 0, cap: DAILY_XP_CAP };
+    }
+  },
+
+  /**
+   * Track daily XP earned
+   */
+  trackDailyXP: async (userId: string, xpAmount: number): Promise<void> => {
+    const redis = getXPRedis();
+    if (!redis) return;
+
+    const dateKey = new Date().toISOString().split('T')[0];
+    const key = `xp:daily:${userId}:${dateKey}`;
+    try {
+      await redis.incrby(key, xpAmount);
+      await redis.expire(key, 86400);
+    } catch {
+      // Non-fatal
+    }
+  },
+
+  /**
+   * Check XP velocity (anti-farming: flag if >5 events in 1 hour)
+   */
+  checkVelocity: async (userId: string): Promise<{ suspicious: boolean; recentEvents: number }> => {
+    try {
+      const result = await db.query<{ count: string }>(
+        `SELECT COUNT(*) as count FROM xp_ledger
+         WHERE user_id = $1 AND awarded_at > NOW() - INTERVAL '1 hour'`,
+        [userId]
+      );
+      const recentEvents = parseInt(result.rows[0]?.count || '0', 10);
+      return { suspicious: recentEvents > 5, recentEvents };
+    } catch {
+      return { suspicious: false, recentEvents: 0 };
+    }
+  },
+
+  /**
+   * Get daily XP leaderboard
+   */
+  getDailyLeaderboard: async (limit: number = 25): Promise<ServiceResult<Array<{ userId: string; name: string; xpEarned: number; rank: number }>>> => {
+    try {
+      const today = new Date().toISOString().split('T')[0];
+      const result = await db.query<{ user_id: string; name: string; xp_earned: string }>(
+        `SELECT xl.user_id, u.full_name as name, SUM(xl.effective_xp)::INTEGER as xp_earned
+         FROM xp_ledger xl
+         JOIN users u ON u.id = xl.user_id
+         WHERE xl.awarded_at::DATE = $1::DATE
+         GROUP BY xl.user_id, u.full_name
+         ORDER BY xp_earned DESC
+         LIMIT $2`,
+        [today, limit]
+      );
+
+      return {
+        success: true,
+        data: result.rows.map((row, idx) => ({
+          userId: row.user_id,
+          name: row.name || 'Anonymous',
+          xpEarned: parseInt(row.xp_earned, 10),
+          rank: idx + 1,
+        })),
+      };
+    } catch (error) {
+      return { success: false, error: { code: 'DB_ERROR', message: error instanceof Error ? error.message : 'Unknown error' } };
     }
   },
 };

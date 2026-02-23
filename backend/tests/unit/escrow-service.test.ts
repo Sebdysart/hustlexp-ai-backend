@@ -170,19 +170,21 @@ describe('EscrowService', () => {
     it('releases escrow from FUNDED state (happy path)', async () => {
       const escrowRow = { id: 'esc-1', task_id: 'task-1', amount: 5000, state: 'FUNDED' };
       const taskRow = { worker_id: 'worker-1', price: 5000 };
+      const workerKycRow = { payouts_enabled: true, stripe_connect_id: 'acct_test', stripe_connect_status: 'complete' };
       const released = makeEscrow({ state: 'RELEASED' });
 
       mockDb.query
         .mockResolvedValueOnce({ rows: [escrowRow], rowCount: 1 } as never) // SELECT escrow
         .mockResolvedValueOnce({ rows: [taskRow], rowCount: 1 } as never)   // SELECT task
+        .mockResolvedValueOnce({ rows: [workerKycRow], rowCount: 1 } as never) // KYC check
         .mockResolvedValueOnce({ rows: [released], rowCount: 1 } as never); // UPDATE
 
       const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_123' });
       expect(result.success).toBe(true);
 
-      // Verify gamification: recordEarnings called with net payout (80%)
+      // Verify gamification: recordEarnings called with net payout (85% after 15% platform fee)
       expect(EarnedVerificationUnlockService.recordEarnings).toHaveBeenCalledWith(
-        'worker-1', 'task-1', 'esc-1', 4000
+        'worker-1', 'task-1', 'esc-1', 4250
       );
 
       // Verify XP award: price / 10
@@ -194,10 +196,12 @@ describe('EscrowService', () => {
     it('returns INV_2_VIOLATION when trigger fires HX201', async () => {
       const escrowRow = { id: 'esc-1', task_id: 'task-1', amount: 5000, state: 'FUNDED' };
       const taskRow = { worker_id: 'worker-1', price: 5000 };
+      const workerKycRow = { payouts_enabled: true, stripe_connect_id: 'acct_test', stripe_connect_status: 'complete' };
 
       mockDb.query
         .mockResolvedValueOnce({ rows: [escrowRow], rowCount: 1 } as never)
         .mockResolvedValueOnce({ rows: [taskRow], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [workerKycRow], rowCount: 1 } as never) // KYC check
         .mockRejectedValueOnce(Object.assign(new Error('INV-2'), { code: 'HX201' }));
 
       mockIsInvariantViolation.mockReturnValueOnce(true);
@@ -211,10 +215,12 @@ describe('EscrowService', () => {
     it('returns ESCROW_TERMINAL when already released', async () => {
       const escrowRow = { id: 'esc-1', task_id: 'task-1', amount: 5000, state: 'FUNDED' };
       const taskRow = { worker_id: 'worker-1', price: 5000 };
+      const workerKycRow = { payouts_enabled: true, stripe_connect_id: 'acct_test', stripe_connect_status: 'complete' };
 
       mockDb.query
         .mockResolvedValueOnce({ rows: [escrowRow], rowCount: 1 } as never)
         .mockResolvedValueOnce({ rows: [taskRow], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [workerKycRow], rowCount: 1 } as never) // KYC check
         .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // UPDATE returns 0
         .mockResolvedValueOnce({ rows: [makeEscrow({ state: 'RELEASED' })], rowCount: 1 } as never); // getById
 
@@ -245,11 +251,13 @@ describe('EscrowService', () => {
     it('continues release even if XP award fails', async () => {
       const escrowRow = { id: 'esc-1', task_id: 'task-1', amount: 5000, state: 'FUNDED' };
       const taskRow = { worker_id: 'worker-1', price: 5000 };
+      const workerKycRow = { payouts_enabled: true, stripe_connect_id: 'acct_test', stripe_connect_status: 'complete' };
       const released = makeEscrow({ state: 'RELEASED' });
 
       mockDb.query
         .mockResolvedValueOnce({ rows: [escrowRow], rowCount: 1 } as never)
         .mockResolvedValueOnce({ rows: [taskRow], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [workerKycRow], rowCount: 1 } as never) // KYC check
         .mockResolvedValueOnce({ rows: [released], rowCount: 1 } as never);
 
       vi.mocked(XPService.awardXP).mockRejectedValueOnce(new Error('XP failure'));

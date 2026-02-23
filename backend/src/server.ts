@@ -661,6 +661,39 @@ app.post('/webhooks/stripe', async (c) => {
 });
 
 // ============================================================================
+// CHECKR WEBHOOKS (Background Checks)
+// ============================================================================
+
+app.post('/webhooks/checkr', async (c) => {
+  const rawBody = await c.req.json().catch(() => null);
+
+  if (!rawBody || !rawBody.type) {
+    return c.json({ error: 'Invalid webhook payload' }, 400);
+  }
+
+  const { updateBackgroundCheckStatus } = await import('./services/BackgroundCheckService');
+
+  try {
+    const { type, data } = rawBody;
+    const reportId = data?.object?.id;
+
+    if (type === 'report.completed' || type === 'report.suspended' || type === 'report.disputed') {
+      const statusMap: Record<string, 'IN_PROGRESS' | 'CLEAR' | 'CONSIDER' | 'FAILED'> = {
+        'report.completed': 'CLEAR',
+        'report.suspended': 'CONSIDER',
+        'report.disputed': 'CONSIDER',
+      };
+      await updateBackgroundCheckStatus(reportId, statusMap[type] ?? 'CONSIDER', data?.object?.result);
+    }
+
+    return c.json({ received: true, processed: true }, 200);
+  } catch (error) {
+    pinoLogger.error({ error: error instanceof Error ? error.message : String(error) }, 'Checkr webhook processing failed');
+    return c.json({ error: 'Webhook processing failed' }, 500);
+  }
+});
+
+// ============================================================================
 // 404 HANDLER
 // ============================================================================
 
@@ -1109,7 +1142,7 @@ async function startServer() {
     endpoints: {
       health: ['/health', '/health/detailed', '/health/readiness', '/health/liveness'],
       trpc: '/trpc/*',
-      webhooks: '/webhooks/stripe',
+      webhooks: ['/webhooks/stripe', '/webhooks/checkr'],
       rest: [
         '/api/users/:userId/xp-celebration-status',
         '/api/users/:userId/xp-celebration-shown',

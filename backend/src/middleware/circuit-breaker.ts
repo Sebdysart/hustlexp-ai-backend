@@ -183,6 +183,27 @@ export class CircuitOpenError extends Error {
 }
 
 // ============================================================================
+// INCIDENT EVENT CALLBACK (creates incident_events on CLOSED→OPEN)
+// ============================================================================
+
+function onCircuitStateChange(name: string, from: CircuitState, to: CircuitState): void {
+  if (from === 'CLOSED' && to === 'OPEN') {
+    // Lazy import to avoid circular dependencies — fire-and-forget
+    import('../db').then(({ db }) => {
+      db.query(
+        `INSERT INTO incident_events (event_type, severity, service, details)
+         VALUES ('circuit_breaker_open', 'warning', $1, $2)`,
+        [name, JSON.stringify({ transition: `${from} → ${to}`, timestamp: new Date().toISOString() })]
+      ).catch((err: unknown) => {
+        logger.warn({ err, service: name }, 'Failed to record circuit breaker incident event');
+      });
+    }).catch(() => {
+      // db module not available (e.g., in tests) — ignore
+    });
+  }
+}
+
+// ============================================================================
 // PRE-BUILT BREAKERS FOR EXTERNAL SERVICES
 // ============================================================================
 
@@ -190,58 +211,68 @@ export class CircuitOpenError extends Error {
 export const openaiBreaker = new CircuitBreaker('openai', {
   failureThreshold: 5,
   resetTimeoutMs: 30_000,
+  onStateChange: onCircuitStateChange,
 });
 
 /** Anthropic / Claude breaker — 5 failures = 30s cooldown */
 export const anthropicBreaker = new CircuitBreaker('anthropic', {
   failureThreshold: 5,
   resetTimeoutMs: 30_000,
+  onStateChange: onCircuitStateChange,
 });
 
 /** Groq / LLaMA breaker — 3 failures = 15s cooldown (faster recovery) */
 export const groqBreaker = new CircuitBreaker('groq', {
   failureThreshold: 3,
   resetTimeoutMs: 15_000,
+  onStateChange: onCircuitStateChange,
 });
 
 /** DeepSeek breaker — 5 failures = 60s cooldown (slower API) */
 export const deepseekBreaker = new CircuitBreaker('deepseek', {
   failureThreshold: 5,
   resetTimeoutMs: 60_000,
+  onStateChange: onCircuitStateChange,
 });
 
 /** Google Cloud Vision breaker */
 export const gcpVisionBreaker = new CircuitBreaker('gcp-vision', {
   failureThreshold: 5,
   resetTimeoutMs: 30_000,
+  onStateChange: onCircuitStateChange,
 });
 
 /** AWS Rekognition breaker */
 export const awsRekognitionBreaker = new CircuitBreaker('aws-rekognition', {
   failureThreshold: 5,
   resetTimeoutMs: 30_000,
+  onStateChange: onCircuitStateChange,
 });
 
 /** Stripe breaker — 3 failures = 10s cooldown (critical path) */
 export const stripeBreaker = new CircuitBreaker('stripe', {
   failureThreshold: 3,
   resetTimeoutMs: 10_000,
+  onStateChange: onCircuitStateChange,
 });
 
 /** SendGrid breaker — 5 failures = 60s cooldown */
 export const sendgridBreaker = new CircuitBreaker('sendgrid', {
   failureThreshold: 5,
   resetTimeoutMs: 60_000,
+  onStateChange: onCircuitStateChange,
 });
 
 /** Twilio breaker — 5 failures = 30s cooldown */
 export const twilioBreaker = new CircuitBreaker('twilio', {
   failureThreshold: 5,
   resetTimeoutMs: 30_000,
+  onStateChange: onCircuitStateChange,
 });
 
 /** Google Maps Geocoding breaker — 5 failures = 30s cooldown */
 export const googleMapsBreaker = new CircuitBreaker('google-maps', {
   failureThreshold: 5,
   resetTimeoutMs: 30_000,
+  onStateChange: onCircuitStateChange,
 });

@@ -213,7 +213,7 @@ export async function queryFeed(query: FeedQuery): Promise<FeedResult> {
   params.push(query.pagination.limit);
 
   // Execute query
-  const result = await db.query(sql, params);
+  const result = await db.query<Record<string, any>>(sql, params);
 
   log.debug({ 
     userId: query.userId, 
@@ -365,7 +365,7 @@ export async function getNearbyTasks(
   radiusMiles: number,
   limit: number = 20
 ): Promise<Array<{ id: string; title: string; lat: number; lng: number; payoutCents: number }>> {
-  const result = await db.query(
+  const result = await db.query<{ id: string; title: string; lat: number; lng: number; payoutCents: number }>(
     `
     SELECT 
       id, title, location_lat as lat, location_lng as lng, payout_cents
@@ -397,7 +397,7 @@ export async function getTasksByTrade(
   state: string,
   limit: number = 20
 ): Promise<FeedTask[]> {
-  const result = await db.query(
+  const result = await db.query<Record<string, any>>(
     `
     SELECT 
       t.id, t.title, t.description, t.trade_type, t.location_address,

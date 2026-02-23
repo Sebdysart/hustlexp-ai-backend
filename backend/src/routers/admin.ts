@@ -1,0 +1,346 @@
+/**
+ * Admin Dashboard Router v1.0.0
+ *
+ * CONSTITUTIONAL: Admin-only endpoints for platform management.
+ *
+ * All procedures use adminProcedure (requires admin_roles table entry).
+ *
+ * Handles:
+ * - User management (list, ban/unban)
+ * - Task & dispute listing
+ * - Revenue breakdown
+ * - AI cost summary
+ * - Escrow override
+ *
+ * @see ARCHITECTURE.md §1
+ */
+
+import { TRPCError } from '@trpc/server';
+import { router, adminProcedure, Schemas } from '../trpc';
+import { db } from '../db';
+import { z } from 'zod';
+
+// ============================================================================
+// ROUTER
+// ============================================================================
+
+export const adminRouter = router({
+  // --------------------------------------------------------------------------
+  // USER MANAGEMENT
+  // --------------------------------------------------------------------------
+
+  /**
+   * List users with pagination and optional filters
+   */
+  listUsers: adminProcedure
+    .input(z.object({
+      limit: z.number().int().min(1).max(100).default(20),
+      offset: z.number().int().min(0).default(0),
+      search: z.string().max(255).optional(),
+      trustTier: z.string().max(20).optional(),
+      isBanned: z.boolean().optional(),
+    }))
+    .query(async ({ input }) => {
+      const conditions: string[] = ['1=1'];
+      const params: unknown[] = [];
+      let paramIndex = 1;
+
+      if (input.search) {
+        conditions.push(`(u.full_name ILIKE $${paramIndex} OR u.email ILIKE $${paramIndex})`);
+        params.push(`%${input.search}%`);
+        paramIndex++;
+      }
+
+      if (input.trustTier) {
+        conditions.push(`u.trust_tier = $${paramIndex}`);
+        params.push(input.trustTier);
+        paramIndex++;
+      }
+
+      if (input.isBanned !== undefined) {
+        conditions.push(`u.is_banned = $${paramIndex}`);
+        params.push(input.isBanned);
+        paramIndex++;
+      }
+
+      params.push(input.limit, input.offset);
+
+      const result = await db.query<{
+        id: string;
+        full_name: string;
+        email: string;
+        trust_tier: string;
+        xp_total: number;
+        is_verified: boolean;
+        is_banned: boolean;
+        default_mode: string;
+        created_at: Date;
+      }>(
+        `SELECT u.id, u.full_name, u.email, u.trust_tier, u.xp_total,
+                u.is_verified, COALESCE(u.is_banned, false) as is_banned, u.default_mode, u.created_at
+         FROM users u
+         WHERE ${conditions.join(' AND ')}
+         ORDER BY u.created_at DESC
+         LIMIT $${paramIndex++} OFFSET $${paramIndex}`,
+        params
+      );
+
+      const countResult = await db.query<{ count: string }>(
+        `SELECT COUNT(*)::text as count FROM users u WHERE ${conditions.join(' AND ')}`,
+        params.slice(0, -2) // exclude limit/offset
+      );
+
+      return {
+        users: result.rows,
+        total: parseInt(countResult.rows[0]?.count || '0', 10),
+      };
+    }),
+
+  /**
+   * Ban or unban a user
+   */
+  setUserBan: adminProcedure
+    .input(z.object({
+      userId: Schemas.uuid,
+      banned: z.boolean(),
+      reason: z.string().max(500).optional(),
+    }))
+    .mutation(async ({ input }) => {
+      const result = await db.query<{ id: string; is_banned: boolean }>(
+        `UPDATE users SET is_banned = $1, updated_at = NOW() WHERE id = $2 RETURNING id, is_banned`,
+        [input.banned, input.userId]
+      );
+
+      if (result.rows.length === 0) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'User not found' });
+      }
+
+      return result.rows[0];
+    }),
+
+  // --------------------------------------------------------------------------
+  // TASK & DISPUTE LISTING
+  // --------------------------------------------------------------------------
+
+  /**
+   * List tasks with pagination and optional filters
+   */
+  listTasks: adminProcedure
+    .input(z.object({
+      limit: z.number().int().min(1).max(100).default(20),
+      offset: z.number().int().min(0).default(0),
+      state: z.string().max(30).optional(),
+    }))
+    .query(async ({ input }) => {
+      const conditions: string[] = ['1=1'];
+      const params: unknown[] = [];
+      let paramIndex = 1;
+
+      if (input.state) {
+        conditions.push(`t.state = $${paramIndex}`);
+        params.push(input.state);
+        paramIndex++;
+      }
+
+      params.push(input.limit, input.offset);
+
+      const result = await db.query(
+        `SELECT t.id, t.title, t.state, t.price, t.poster_id, t.worker_id, t.created_at,
+                p.full_name as poster_name, w.full_name as worker_name
+         FROM tasks t
+         LEFT JOIN users p ON p.id = t.poster_id
+         LEFT JOIN users w ON w.id = t.worker_id
+         WHERE ${conditions.join(' AND ')}
+         ORDER BY t.created_at DESC
+         LIMIT $${paramIndex++} OFFSET $${paramIndex}`,
+        params
+      );
+
+      const countResult = await db.query<{ count: string }>(
+        `SELECT COUNT(*)::text as count FROM tasks t WHERE ${conditions.join(' AND ')}`,
+        params.slice(0, -2)
+      );
+
+      return {
+        tasks: result.rows,
+        total: parseInt(countResult.rows[0]?.count || '0', 10),
+      };
+    }),
+
+  /**
+   * List disputes with pagination
+   */
+  listDisputes: adminProcedure
+    .input(z.object({
+      limit: z.number().int().min(1).max(100).default(20),
+      offset: z.number().int().min(0).default(0),
+      status: z.string().max(30).optional(),
+    }))
+    .query(async ({ input }) => {
+      const conditions: string[] = ['1=1'];
+      const params: unknown[] = [];
+      let paramIndex = 1;
+
+      if (input.status) {
+        conditions.push(`d.status = $${paramIndex}`);
+        params.push(input.status);
+        paramIndex++;
+      }
+
+      params.push(input.limit, input.offset);
+
+      const result = await db.query(
+        `SELECT d.id, d.task_id, d.status, d.reason, d.created_at,
+                t.title as task_title
+         FROM disputes d
+         JOIN tasks t ON t.id = d.task_id
+         WHERE ${conditions.join(' AND ')}
+         ORDER BY d.created_at DESC
+         LIMIT $${paramIndex++} OFFSET $${paramIndex}`,
+        params
+      );
+
+      const countResult = await db.query<{ count: string }>(
+        `SELECT COUNT(*)::text as count FROM disputes d WHERE ${conditions.join(' AND ')}`,
+        params.slice(0, -2)
+      );
+
+      return {
+        disputes: result.rows,
+        total: parseInt(countResult.rows[0]?.count || '0', 10),
+      };
+    }),
+
+  // --------------------------------------------------------------------------
+  // REVENUE & COSTS
+  // --------------------------------------------------------------------------
+
+  /**
+   * Revenue breakdown by time period
+   */
+  revenueBreakdown: adminProcedure
+    .input(z.object({
+      days: z.number().int().min(1).max(365).default(30),
+    }))
+    .query(async ({ input }) => {
+      const result = await db.query<{
+        total_escrow_funded: string;
+        total_escrow_released: string;
+        total_platform_fees: string;
+        task_count: string;
+      }>(
+        `SELECT
+           COALESCE(SUM(CASE WHEN e.state IN ('FUNDED','RELEASED') THEN e.amount ELSE 0 END), 0)::text as total_escrow_funded,
+           COALESCE(SUM(CASE WHEN e.state = 'RELEASED' THEN e.amount ELSE 0 END), 0)::text as total_escrow_released,
+           COALESCE(SUM(CASE WHEN e.state = 'RELEASED' THEN e.platform_fee ELSE 0 END), 0)::text as total_platform_fees,
+           COUNT(DISTINCT e.task_id)::text as task_count
+         FROM escrows e
+         WHERE e.created_at >= NOW() - ($1 || ' days')::INTERVAL`,
+        [input.days]
+      );
+
+      const row = result.rows[0];
+      return {
+        totalEscrowFunded: parseInt(row.total_escrow_funded, 10),
+        totalEscrowReleased: parseInt(row.total_escrow_released, 10),
+        totalPlatformFees: parseInt(row.total_platform_fees, 10),
+        taskCount: parseInt(row.task_count, 10),
+        periodDays: input.days,
+      };
+    }),
+
+  /**
+   * AI cost summary - aggregated AI decision costs
+   */
+  aiCostSummary: adminProcedure
+    .input(z.object({
+      days: z.number().int().min(1).max(365).default(30),
+    }))
+    .query(async ({ input }) => {
+      const result = await db.query<{
+        total_cost_cents: string;
+        total_requests: string;
+        avg_cost_cents: string;
+        model_breakdown: Record<string, unknown>[];
+      }>(
+        `SELECT
+           COALESCE(SUM(cost_cents), 0)::text as total_cost_cents,
+           COUNT(*)::text as total_requests,
+           COALESCE(AVG(cost_cents), 0)::text as avg_cost_cents
+         FROM ai_decisions
+         WHERE created_at >= NOW() - ($1 || ' days')::INTERVAL`,
+        [input.days]
+      );
+
+      // Model breakdown
+      const modelResult = await db.query<{
+        model: string;
+        request_count: string;
+        total_cost: string;
+      }>(
+        `SELECT
+           model,
+           COUNT(*)::text as request_count,
+           COALESCE(SUM(cost_cents), 0)::text as total_cost
+         FROM ai_decisions
+         WHERE created_at >= NOW() - ($1 || ' days')::INTERVAL
+         GROUP BY model
+         ORDER BY total_cost DESC`,
+        [input.days]
+      );
+
+      const row = result.rows[0];
+      return {
+        totalCostCents: parseInt(row.total_cost_cents, 10),
+        totalRequests: parseInt(row.total_requests, 10),
+        avgCostCents: parseFloat(row.avg_cost_cents),
+        periodDays: input.days,
+        modelBreakdown: modelResult.rows.map(m => ({
+          model: m.model,
+          requestCount: parseInt(m.request_count, 10),
+          totalCost: parseInt(m.total_cost, 10),
+        })),
+      };
+    }),
+
+  // --------------------------------------------------------------------------
+  // ESCROW OVERRIDE
+  // --------------------------------------------------------------------------
+
+  /**
+   * Admin override: force release or refund an escrow
+   */
+  escrowOverride: adminProcedure
+    .input(z.object({
+      escrowId: Schemas.uuid,
+      action: z.enum(['force_release', 'force_refund']),
+      reason: z.string().min(1).max(500),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const newState = input.action === 'force_release' ? 'RELEASED' : 'REFUNDED';
+
+      const result = await db.query<{ id: string; state: string; amount: number }>(
+        `UPDATE escrows SET
+           state = $1,
+           released_at = CASE WHEN $1 = 'RELEASED' THEN NOW() ELSE released_at END,
+           refunded_at = CASE WHEN $1 = 'REFUNDED' THEN NOW() ELSE refunded_at END,
+           admin_override_by = $2,
+           admin_override_reason = $3,
+           updated_at = NOW()
+         WHERE id = $4 AND state IN ('FUNDED', 'DISPUTED')
+         RETURNING id, state, amount`,
+        [newState, ctx.user.id, input.reason, input.escrowId]
+      );
+
+      if (result.rows.length === 0) {
+        throw new TRPCError({
+          code: 'NOT_FOUND',
+          message: 'Escrow not found or not in overridable state (must be FUNDED or DISPUTED)',
+        });
+      }
+
+      return result.rows[0];
+    }),
+});
+
+export type AdminRouter = typeof adminRouter;

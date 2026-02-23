@@ -140,7 +140,13 @@ export async function processMaintenanceJob(job: Job): Promise<void> {
     case 'cleanup_expired_notifications':
       await cleanupExpiredNotifications();
       break;
-    
+
+    case 'tax.annual_filing_requested': {
+      const { processTaxReportingJob } = await import('./tax-reporting-worker');
+      await processTaxReportingJob(job);
+      break;
+    }
+
     default:
       throw new Error(`Unknown maintenance job type: ${jobType}`);
   }

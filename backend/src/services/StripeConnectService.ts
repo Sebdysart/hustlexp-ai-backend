@@ -306,7 +306,7 @@ export const StripeConnectService = {
     try {
       const account = await stripeBreaker.execute(() => stripe!.accounts.retrieve(accountId));
 
-      const requirements = account.requirements || {};
+      const requirements = account.requirements as any || {};
       const isOnboarded = account.charges_enabled && account.payouts_enabled;
 
       return {
@@ -464,7 +464,7 @@ export const StripeConnectService = {
 
       // Determine if instant payouts are available
       const instantEligible = account.capabilities?.transfers === 'active' && 
-                             cardPayments?.statement_descriptor !== undefined;
+                             (cardPayments as any)?.statement_descriptor !== undefined;
 
       return {
         success: true,
@@ -568,6 +568,7 @@ export const StripeConnectService = {
 
   /**
    * Get tax information status
+   * Reads from tax_forms table (migration 009)
    */
   getTaxInfo: async (userId: string): Promise<ServiceResult<TaxInfo>> => {
     const accountId = await getConnectAccountId(userId);
@@ -579,25 +580,60 @@ export const StripeConnectService = {
       };
     }
 
-    // In production, this would fetch from Stripe or a tax info table
-    // For now, return placeholder
+    const result = await db.query<{
+      form_type: string;
+      status: string;
+      submitted_at: Date;
+      verified_at: Date | null;
+      requires_update: boolean;
+      tax_id_last4: string | null;
+      name_on_file: string | null;
+      business_name_on_file: string | null;
+    }>(
+      `SELECT form_type, status, submitted_at, verified_at, requires_update,
+              tax_id_last4, name_on_file, business_name_on_file
+       FROM tax_forms
+       WHERE user_id = $1 AND status IN ('pending', 'verified')
+       ORDER BY submitted_at DESC
+       LIMIT 1`,
+      [userId]
+    );
+
+    if (result.rows.length === 0) {
+      return {
+        success: true,
+        data: {
+          formType: null,
+          status: 'not_submitted',
+          submittedAt: null,
+          verifiedAt: null,
+          requiresUpdate: false,
+          taxIdLast4: null,
+          nameOnFile: null,
+          businessNameOnFile: null,
+        },
+      };
+    }
+
+    const row = result.rows[0];
     return {
       success: true,
       data: {
-        formType: null,
-        status: 'not_submitted',
-        submittedAt: null,
-        verifiedAt: null,
-        requiresUpdate: false,
-        taxIdLast4: null,
-        nameOnFile: null,
-        businessNameOnFile: null,
+        formType: row.form_type as TaxInfo['formType'],
+        status: row.status as TaxInfo['status'],
+        submittedAt: row.submitted_at,
+        verifiedAt: row.verified_at,
+        requiresUpdate: row.requires_update,
+        taxIdLast4: row.tax_id_last4,
+        nameOnFile: row.name_on_file,
+        businessNameOnFile: row.business_name_on_file,
       },
     };
   },
 
   /**
    * Submit tax information (W-9 or W-8BEN)
+   * Persists to tax_forms table (migration 009)
    */
   submitTaxInfo: async (params: TaxInfoInput & { userId: string }): Promise<ServiceResult<TaxInfo>> => {
     const { userId } = params;
@@ -611,19 +647,56 @@ export const StripeConnectService = {
       };
     }
 
-    // In production, this would submit to Stripe's tax form API or store for manual processing
-    // For now, return success with placeholder
+    const taxIdLast4 = params.ssnLast4 || params.ein?.slice(-4) || null;
+
+    // Expire any existing active form before inserting new one
+    await db.query(
+      `UPDATE tax_forms SET status = 'expired', updated_at = NOW()
+       WHERE user_id = $1 AND status IN ('pending', 'verified')`,
+      [userId]
+    );
+
+    const result = await db.query<{
+      form_type: string;
+      status: string;
+      submitted_at: Date;
+      verified_at: Date | null;
+      requires_update: boolean;
+      tax_id_last4: string | null;
+      name_on_file: string | null;
+      business_name_on_file: string | null;
+    }>(
+      `INSERT INTO tax_forms (
+        user_id, stripe_connect_id, form_type, tax_id_last4,
+        name_on_file, business_name_on_file, tax_classification,
+        address_line1, address_city, address_state, address_zip, address_country,
+        foreign_tax_id, treaty_country, treaty_article,
+        signature_on_file, signed_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+      RETURNING form_type, status, submitted_at, verified_at, requires_update,
+                tax_id_last4, name_on_file, business_name_on_file`,
+      [
+        userId, accountId, params.formType, taxIdLast4,
+        params.name || null, params.businessName || null, params.taxClassification || null,
+        params.addressLine1 || null, params.city || null, params.state || null,
+        params.zipCode || null, params.country || 'US',
+        params.foreignTaxId || null, params.treatyCountry || null, params.treatyArticle || null,
+        !!params.signature, params.signature ? new Date() : null,
+      ]
+    );
+
+    const row = result.rows[0];
     return {
       success: true,
       data: {
-        formType: params.formType,
-        status: 'pending',
-        submittedAt: new Date(),
-        verifiedAt: null,
-        requiresUpdate: false,
-        taxIdLast4: params.ssnLast4 || params.ein?.slice(-4) || null,
-        nameOnFile: params.name || null,
-        businessNameOnFile: params.businessName || null,
+        formType: row.form_type as TaxInfo['formType'],
+        status: row.status as TaxInfo['status'],
+        submittedAt: row.submitted_at,
+        verifiedAt: row.verified_at,
+        requiresUpdate: row.requires_update,
+        taxIdLast4: row.tax_id_last4,
+        nameOnFile: row.name_on_file,
+        businessNameOnFile: row.business_name_on_file,
       },
     };
   },
@@ -755,7 +828,7 @@ export const StripeConnectService = {
 
     try {
       const account = await stripeBreaker.execute(() => stripe!.accounts.retrieve(accountId));
-      const requirements = account.requirements || {};
+      const requirements = account.requirements as any || {};
 
       return {
         success: true,
