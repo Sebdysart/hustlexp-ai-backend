@@ -23,6 +23,9 @@ const DATABASE_URL = process.env.DATABASE_URL;
 const DATABASE_REPLICA_URL = process.env.DATABASE_REPLICA_URL;
 const POOL_MAX = parseInt(process.env.DB_POOL_MAX || '20', 10);
 const REPLICA_POOL_MAX = parseInt(process.env.DB_REPLICA_POOL_MAX || '15', 10);
+const DB_IDLE_TIMEOUT = parseInt(process.env.DB_IDLE_TIMEOUT_MS || '30000', 10);
+const DB_CONNECT_TIMEOUT = parseInt(process.env.DB_CONNECT_TIMEOUT_MS || '10000', 10);
+const DB_STATEMENT_TIMEOUT = parseInt(process.env.DB_STATEMENT_TIMEOUT_MS || '30000', 10);
 const DB_PGBOUNCER = process.env.DB_PGBOUNCER === 'true';
 
 if (!DATABASE_URL) {
@@ -40,11 +43,9 @@ const disablePreparedStatements = process.env.NODE_ENV === 'test' || process.env
 const pool = new Pool({
   connectionString: DATABASE_URL,
   max: POOL_MAX,
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 10000,
-  // Query timeout: kill any query taking longer than 30 seconds
-  // Prevents runaway queries from holding connections and DOSing the pool
-  statement_timeout: 30000,
+  idleTimeoutMillis: DB_IDLE_TIMEOUT,
+  connectionTimeoutMillis: DB_CONNECT_TIMEOUT,
+  statement_timeout: DB_STATEMENT_TIMEOUT,
 });
 
 dbLog.info('Database primary pool initialized');
@@ -63,9 +64,9 @@ const replicaPool = DATABASE_REPLICA_URL
   ? new Pool({
       connectionString: DATABASE_REPLICA_URL,
       max: REPLICA_POOL_MAX,
-      idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 10000,
-      statement_timeout: 30000,
+      idleTimeoutMillis: DB_IDLE_TIMEOUT,
+      connectionTimeoutMillis: DB_CONNECT_TIMEOUT,
+      statement_timeout: DB_STATEMENT_TIMEOUT,
     })
   : null;
 
