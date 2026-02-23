@@ -397,7 +397,7 @@ export const TaskService = {
       // If instant mode, trigger matching broadcast (async, non-blocking)
       if (instantMode) {
         // Set matched_at timestamp immediately (authority: DB NOW())
-        await db.query(
+        await db.query<Record<string, any>>(
           `UPDATE tasks SET matched_at = NOW() WHERE id = $1`,
           [createdTask.id]
         );
@@ -605,9 +605,9 @@ export const TaskService = {
       // Background check gate: high-value tasks (>$500) require clear background check
       if (task.price > 50000) {
         try {
-          const { BackgroundCheckService } = await import('./BackgroundCheckService');
-          const checkResult = await BackgroundCheckService.getStatus(workerId);
-          if (!checkResult.success || !checkResult.data || checkResult.data.status !== 'clear') {
+          const BackgroundCheckService = await import('./BackgroundCheckService');
+          const hasCheck = await BackgroundCheckService.hasValidBackgroundCheck(workerId);
+          if (!hasCheck) {
             log.info({ workerId, taskId, price: task.price }, 'High-value task requires background check');
             return {
               success: false,

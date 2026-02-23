@@ -13,6 +13,29 @@
 import pg from 'pg';
 const { Pool } = pg;
 import { logger } from './logger';
+
+// ============================================================================
+// CONNECTION POOLING (PgBouncer via Neon)
+// ============================================================================
+// Neon Serverless PostgreSQL includes built-in PgBouncer-like connection pooling
+// For high-scale deployments, explicit PgBouncer can be added:
+// 
+// PGBOUNCER_CONFIG = {
+//   pool_mode: 'transaction',     // Transaction-level pooling
+//   max_client_conn: 10000,       // Max client connections
+//   default_pool_size: 25,        // Connections per database/user
+//   min_pool_size: 5,             // Keep warm connections
+//   reserve_pool_size: 5,         // Overflow pool
+//   reserve_pool_timeout: 3,      // Seconds to wait for reserve
+//   server_idle_timeout: 600,     // Close idle server connections
+//   server_lifetime: 3600,        // Max connection lifetime
+//   server_connect_timeout: 15,   // Connection attempt timeout
+// }
+//
+// Current: Using Neon serverless pooling (sufficient for 10K users)
+// Future: Add explicit PgBouncer at 100K+ users
+
+
 const dbLog = logger.child({ module: 'db' });
 
 // ============================================================================

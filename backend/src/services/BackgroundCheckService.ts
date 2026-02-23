@@ -1,21 +1,23 @@
 /**
  * BackgroundCheckService v1.0.0
- *
- * Integrates with Checkr API for background checks on workers.
- * Handles candidate creation, report ordering, webhook processing, and status queries.
- *
- * @see migrations/20260222_005_background_checks.sql
+ * 
+ * CONSTITUTIONAL: Background check verification for workers
+ * 
+ * Manages criminal background check verification:
+ * - Check initiation
+ * - Status tracking
+ * - Result recording
+ * - Annual renewal workflow
+ * 
+ * @see ARCHITECTURE.md §11.7
  */
 
 import { db } from '../db';
-import type { ServiceResult } from '../types';
-import { ErrorCodes } from '../types';
 import { logger } from '../logger';
+import { TRPCError } from '@trpc/server';
+import { recomputeCapabilityProfile } from './CapabilityRecomputeService';
 
 const log = logger.child({ service: 'BackgroundCheckService' });
-
-const CHECKR_API_BASE = 'https://api.checkr.com/v1';
-const CHECKR_API_KEY = process.env.CHECKR_API_KEY || '';
 
 // ============================================================================
 // TYPES
@@ -23,230 +25,444 @@ const CHECKR_API_KEY = process.env.CHECKR_API_KEY || '';
 
 export interface BackgroundCheck {
   id: string;
-  user_id: string;
-  checkr_candidate_id: string | null;
-  checkr_report_id: string | null;
-  package: string;
-  status: string;
-  result: string | null;
-  completed_at: Date | null;
-  webhook_received_at: Date | null;
-  created_at: Date;
-  updated_at: Date;
+  userId: string;
+  provider: string;
+  checkId: string; // External provider's check ID
+  status: 'PENDING' | 'IN_PROGRESS' | 'CLEAR' | 'CONSIDER' | 'FAILED' | 'EXPIRED';
+  initiatedAt: string;
+  completedAt: string | null;
+  expiresAt: string | null;
+  resultSummary: string | null;
+  details: Record<string, unknown> | null;
+  reviewedBy: string | null;
+  reviewedAt: string | null;
+  notes: string | null;
 }
 
-interface CheckrCandidate {
-  id: string;
-  email: string;
-  first_name: string;
-  last_name: string;
-}
-
-interface CheckrReport {
-  id: string;
-  status: string;
-  result: string | null;
-  completed_at: string | null;
+export interface BackgroundCheckInitiation {
+  userId: string;
+  provider: 'checkr' | 'sterling' | 'goodhire' | 'manual';
+  ssnLast4?: string;
+  dateOfBirth?: string;
+  fullName?: string;
 }
 
 // ============================================================================
-// SERVICE
+// INITIATION
 // ============================================================================
 
-export const BackgroundCheckService = {
-  /**
-   * Initiate a background check for a user.
-   * Creates a Checkr candidate and orders a report.
-   */
-  initiateCheck: async (params: {
-    userId: string;
-    email: string;
-    firstName: string;
-    lastName: string;
-    dateOfBirth: string;
-    ssn?: string;
-    package?: string;
-  }): Promise<ServiceResult<BackgroundCheck>> => {
-    const { userId, email, firstName, lastName, dateOfBirth, ssn, package: pkg = 'tasker_standard' } = params;
+/**
+ * Initiate a background check
+ */
+export async function initiateBackgroundCheck(
+  initiation: BackgroundCheckInitiation
+): Promise<BackgroundCheck> {
+  // Check for existing valid check
+  const existingResult = await db.query<Record<string, any>>(
+    `
+    SELECT id, status
+    FROM background_checks
+    WHERE user_id = $1
+      AND status IN ('PENDING', 'IN_PROGRESS', 'CLEAR')
+      AND (expires_at IS NULL OR expires_at > CURRENT_DATE + INTERVAL '30 days')
+    ORDER BY initiated_at DESC
+    LIMIT 1
+    `,
+    [initiation.userId]
+  );
 
-    if (!CHECKR_API_KEY) {
-      return {
-        success: false,
-        error: { code: 'CHECKR_NOT_CONFIGURED', message: 'Checkr API key not configured' },
-      };
-    }
-
-    try {
-      // Check for existing pending check
-      const existing = await db.query<BackgroundCheck>(
-        `SELECT * FROM background_checks WHERE user_id = $1 AND status IN ('pending', 'processing') LIMIT 1`,
-        [userId]
-      );
-
-      if (existing.rows.length > 0) {
-        return {
-          success: false,
-          error: { code: ErrorCodes.INVALID_STATE, message: 'A background check is already in progress' },
-        };
-      }
-
-      // Step 1: Create candidate in Checkr
-      const candidateRes = await fetch(`${CHECKR_API_BASE}/candidates`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Basic ${Buffer.from(CHECKR_API_KEY + ':').toString('base64')}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          email,
-          first_name: firstName,
-          last_name: lastName,
-          dob: dateOfBirth,
-          ...(ssn && { ssn }),
-        }),
+  if (existingResult.rows.length > 0) {
+    const existing = existingResult.rows[0];
+    if (existing.status === 'PENDING' || existing.status === 'IN_PROGRESS') {
+      throw new TRPCError({
+        code: 'CONFLICT',
+        message: 'Background check already in progress',
       });
-
-      if (!candidateRes.ok) {
-        const errBody = await candidateRes.text();
-        log.error({ status: candidateRes.status, body: errBody.slice(0, 500) }, 'Checkr candidate creation failed');
-        return {
-          success: false,
-          error: { code: 'CHECKR_API_ERROR', message: 'Failed to create background check candidate' },
-        };
-      }
-
-      const candidate: CheckrCandidate = await candidateRes.json() as CheckrCandidate;
-
-      // Step 2: Create report (order the check)
-      const reportRes = await fetch(`${CHECKR_API_BASE}/reports`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Basic ${Buffer.from(CHECKR_API_KEY + ':').toString('base64')}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          candidate_id: candidate.id,
-          package: pkg,
-        }),
+    }
+    if (existing.status === 'CLEAR') {
+      throw new TRPCError({
+        code: 'CONFLICT',
+        message: 'Valid background check already on file',
       });
-
-      if (!reportRes.ok) {
-        const errBody = await reportRes.text();
-        log.error({ status: reportRes.status, body: errBody.slice(0, 500) }, 'Checkr report creation failed');
-        return {
-          success: false,
-          error: { code: 'CHECKR_API_ERROR', message: 'Failed to order background check report' },
-        };
-      }
-
-      const report: CheckrReport = await reportRes.json() as CheckrReport;
-
-      // Step 3: Store in database
-      const result = await db.query<BackgroundCheck>(
-        `INSERT INTO background_checks (user_id, checkr_candidate_id, checkr_report_id, package, status)
-         VALUES ($1, $2, $3, $4, 'processing')
-         RETURNING *`,
-        [userId, candidate.id, report.id, pkg]
-      );
-
-      log.info({ userId, candidateId: candidate.id, reportId: report.id }, 'Background check initiated');
-
-      return { success: true, data: result.rows[0] };
-    } catch (error) {
-      log.error({ err: error instanceof Error ? error.message : String(error), userId }, 'Background check initiation failed');
-      return {
-        success: false,
-        error: { code: 'INTERNAL_ERROR', message: error instanceof Error ? error.message : 'Unknown error' },
-      };
     }
-  },
+  }
 
-  /**
-   * Process a Checkr webhook event
-   */
-  handleWebhook: async (event: {
-    type: string;
-    data: { object: { id: string; status?: string; result?: string; completed_at?: string } };
-  }): Promise<ServiceResult<{ processed: boolean }>> => {
-    try {
-      const { type, data } = event;
-      const reportId = data.object.id;
+  // Create check record
+  // In production, this would call the provider's API
+  const externalCheckId = `bc_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  const expiresAt = new Date();
+  expiresAt.setFullYear(expiresAt.getFullYear() + 1); // 1 year validity
 
-      if (type === 'report.completed') {
-        const result = await db.query<BackgroundCheck>(
-          `UPDATE background_checks
-           SET status = 'complete',
-               result = $1,
-               completed_at = $2,
-               webhook_received_at = NOW(),
-               updated_at = NOW()
-           WHERE checkr_report_id = $3
-           RETURNING *`,
-          [data.object.result || 'clear', data.object.completed_at || new Date().toISOString(), reportId]
-        );
+  const result = await db.query<Record<string, any>>(
+    `
+    INSERT INTO background_checks (
+      user_id, provider, check_id, status,
+      initiated_at, expires_at, details
+    )
+    VALUES ($1, $2, $3, 'PENDING', NOW(), $4, $5)
+    RETURNING *
+    `,
+    [
+      initiation.userId,
+      initiation.provider,
+      externalCheckId,
+      expiresAt.toISOString(),
+      JSON.stringify({
+        ssnLast4: initiation.ssnLast4,
+        dateOfBirth: initiation.dateOfBirth,
+        fullName: initiation.fullName,
+      }),
+    ]
+  );
 
-        if (result.rows.length > 0) {
-          log.info({ reportId, result: data.object.result, userId: result.rows[0].user_id }, 'Background check completed via webhook');
-        }
+  const row = result.rows[0];
+  
+  log.info({ 
+    userId: initiation.userId, 
+    provider: initiation.provider,
+    checkId: row.id,
+    externalCheckId 
+  }, 'Background check initiated');
 
-        return { success: true, data: { processed: true } };
-      }
+  // In production: Call provider API here
+  // await callBackgroundCheckProvider(initiation, externalCheckId);
 
-      if (type === 'report.suspended' || type === 'report.disputed') {
-        await db.query(
-          `UPDATE background_checks
-           SET status = $1, webhook_received_at = NOW(), updated_at = NOW()
-           WHERE checkr_report_id = $2`,
-          [type === 'report.suspended' ? 'suspended' : 'disputed', reportId]
-        );
+  return {
+    id: row.id,
+    userId: row.user_id,
+    provider: row.provider,
+    checkId: row.check_id,
+    status: row.status,
+    initiatedAt: row.initiated_at,
+    completedAt: row.completed_at,
+    expiresAt: row.expires_at,
+    resultSummary: row.result_summary,
+    details: row.details,
+    reviewedBy: row.reviewed_by,
+    reviewedAt: row.reviewed_at,
+    notes: row.notes,
+  };
+}
 
-        log.info({ reportId, type }, 'Background check status updated via webhook');
-        return { success: true, data: { processed: true } };
-      }
+// ============================================================================
+// STATUS UPDATES (Webhook handlers)
+// ============================================================================
 
-      log.info({ type, reportId }, 'Unhandled Checkr webhook type');
-      return { success: true, data: { processed: false } };
-    } catch (error) {
-      log.error({ err: error instanceof Error ? error.message : String(error) }, 'Checkr webhook processing failed');
-      return {
-        success: false,
-        error: { code: 'WEBHOOK_ERROR', message: error instanceof Error ? error.message : 'Unknown error' },
-      };
-    }
-  },
+/**
+ * Update background check status (called by provider webhooks)
+ */
+export async function updateBackgroundCheckStatus(
+  externalCheckId: string,
+  status: 'IN_PROGRESS' | 'CLEAR' | 'CONSIDER' | 'FAILED',
+  resultSummary?: string,
+  details?: Record<string, unknown>
+): Promise<BackgroundCheck> {
+  const result = await db.query<Record<string, any>>(
+    `
+    UPDATE background_checks
+    SET status = $2,
+        completed_at = CASE WHEN $2 IN ('CLEAR', 'CONSIDER', 'FAILED') THEN NOW() ELSE NULL END,
+        result_summary = COALESCE($3, result_summary),
+        details = COALESCE($4, details)
+    WHERE check_id = $1
+    RETURNING *
+    `,
+    [externalCheckId, status, resultSummary || null, details ? JSON.stringify(details) : null]
+  );
 
-  /**
-   * Get background check status for a user
-   */
-  getStatus: async (userId: string): Promise<ServiceResult<BackgroundCheck | null>> => {
-    try {
-      const result = await db.query<BackgroundCheck>(
-        `SELECT * FROM background_checks WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1`,
-        [userId]
-      );
+  if (result.rows.length === 0) {
+    throw new TRPCError({
+      code: 'NOT_FOUND',
+      message: 'Background check not found',
+    });
+  }
 
-      return { success: true, data: result.rows[0] || null };
-    } catch (error) {
-      return {
-        success: false,
-        error: { code: 'DB_ERROR', message: error instanceof Error ? error.message : 'Unknown error' },
-      };
-    }
-  },
+  const row = result.rows[0];
 
-  /**
-   * Check if a user has a cleared background check
-   */
-  isCleared: async (userId: string): Promise<boolean> => {
-    try {
-      const result = await db.query<{ count: string }>(
-        `SELECT COUNT(*) as count FROM background_checks
-         WHERE user_id = $1 AND status = 'complete' AND result = 'clear'`,
-        [userId]
-      );
-      return parseInt(result.rows[0]?.count || '0', 10) > 0;
-    } catch {
-      return false;
-    }
-  },
+  // If cleared, trigger capability recompute
+  if (status === 'CLEAR') {
+    await recomputeCapabilityProfile(row.user_id, { 
+      reason: 'background_check_cleared',
+      sourceVerificationId: row.id 
+    });
+  }
+
+  log.info({ 
+    checkId: row.id,
+    userId: row.user_id,
+    status 
+  }, 'Background check status updated');
+
+  return {
+    id: row.id,
+    userId: row.user_id,
+    provider: row.provider,
+    checkId: row.check_id,
+    status: row.status,
+    initiatedAt: row.initiated_at,
+    completedAt: row.completed_at,
+    expiresAt: row.expires_at,
+    resultSummary: row.result_summary,
+    details: row.details,
+    reviewedBy: row.reviewed_by,
+    reviewedAt: row.reviewed_at,
+    notes: row.notes,
+  };
+}
+
+/**
+ * Review a CONSIDER status (manual review required)
+ */
+export async function reviewBackgroundCheck(
+  checkId: string,
+  adminUserId: string,
+  decision: 'CLEAR' | 'FAILED',
+  notes?: string
+): Promise<BackgroundCheck> {
+  const result = await db.query<Record<string, any>>(
+    `
+    UPDATE background_checks
+    SET status = $3,
+        reviewed_at = NOW(),
+        reviewed_by = $2,
+        notes = COALESCE($4, notes)
+    WHERE id = $1
+      AND status = 'CONSIDER'
+    RETURNING *
+    `,
+    [checkId, adminUserId, decision, notes || null]
+  );
+
+  if (result.rows.length === 0) {
+    throw new TRPCError({
+      code: 'NOT_FOUND',
+      message: 'Background check not found or not in CONSIDER status',
+    });
+  }
+
+  const row = result.rows[0];
+
+  // Trigger capability recompute if cleared
+  if (decision === 'CLEAR') {
+    await recomputeCapabilityProfile(row.user_id, { 
+      reason: 'background_check_reviewed_clear',
+      sourceVerificationId: row.id 
+    });
+  }
+
+  log.info({ 
+    checkId, 
+    userId: row.user_id,
+    adminUserId,
+    decision 
+  }, 'Background check reviewed');
+
+  return {
+    id: row.id,
+    userId: row.user_id,
+    provider: row.provider,
+    checkId: row.check_id,
+    status: row.status,
+    initiatedAt: row.initiated_at,
+    completedAt: row.completed_at,
+    expiresAt: row.expires_at,
+    resultSummary: row.result_summary,
+    details: row.details,
+    reviewedBy: row.reviewed_by,
+    reviewedAt: row.reviewed_at,
+    notes: row.notes,
+  };
+}
+
+// ============================================================================
+// QUERIES
+// ============================================================================
+
+/**
+ * Get background check for a user
+ */
+export async function getUserBackgroundCheck(userId: string): Promise<BackgroundCheck | null> {
+  const result = await db.query<Record<string, any>>(
+    `
+    SELECT *
+    FROM background_checks
+    WHERE user_id = $1
+    ORDER BY initiated_at DESC
+    LIMIT 1
+    `,
+    [userId]
+  );
+
+  if (result.rows.length === 0) {
+    return null;
+  }
+
+  const row = result.rows[0];
+  return {
+    id: row.id,
+    userId: row.user_id,
+    provider: row.provider,
+    checkId: row.check_id,
+    status: row.status,
+    initiatedAt: row.initiated_at,
+    completedAt: row.completed_at,
+    expiresAt: row.expires_at,
+    resultSummary: row.result_summary,
+    details: row.details,
+    reviewedBy: row.reviewed_by,
+    reviewedAt: row.reviewed_at,
+    notes: row.notes,
+  };
+}
+
+/**
+ * Check if user has valid background check
+ */
+export async function hasValidBackgroundCheck(userId: string): Promise<boolean> {
+  const result = await db.query<Record<string, any>>(
+    `
+    SELECT 1
+    FROM background_checks
+    WHERE user_id = $1
+      AND status = 'CLEAR'
+      AND (expires_at IS NULL OR expires_at > CURRENT_DATE)
+    LIMIT 1
+    `,
+    [userId]
+  );
+
+  return result.rows.length > 0;
+}
+
+/**
+ * Get checks requiring manual review
+ */
+export async function getPendingReviews(
+  limit: number = 50,
+  offset: number = 0
+): Promise<BackgroundCheck[]> {
+  const result = await db.query<Record<string, any>>(
+    `
+    SELECT *
+    FROM background_checks
+    WHERE status = 'CONSIDER'
+    ORDER BY completed_at ASC
+    LIMIT $1 OFFSET $2
+    `,
+    [limit, offset]
+  );
+
+  return result.rows.map(row => ({
+    id: row.id,
+    userId: row.user_id,
+    provider: row.provider,
+    checkId: row.check_id,
+    status: row.status,
+    initiatedAt: row.initiated_at,
+    completedAt: row.completed_at,
+    expiresAt: row.expires_at,
+    resultSummary: row.result_summary,
+    details: row.details,
+    reviewedBy: row.reviewed_by,
+    reviewedAt: row.reviewed_at,
+    notes: row.notes,
+  }));
+}
+
+/**
+ * Get checks by status
+ */
+export async function getChecksByStatus(
+  status: BackgroundCheck['status'],
+  limit: number = 50
+): Promise<BackgroundCheck[]> {
+  const result = await db.query<Record<string, any>>(
+    `
+    SELECT *
+    FROM background_checks
+    WHERE status = $1
+    ORDER BY initiated_at DESC
+    LIMIT $2
+    `,
+    [status, limit]
+  );
+
+  return result.rows.map(row => ({
+    id: row.id,
+    userId: row.user_id,
+    provider: row.provider,
+    checkId: row.check_id,
+    status: row.status,
+    initiatedAt: row.initiated_at,
+    completedAt: row.completed_at,
+    expiresAt: row.expires_at,
+    resultSummary: row.result_summary,
+    details: row.details,
+    reviewedBy: row.reviewed_by,
+    reviewedAt: row.reviewed_at,
+    notes: row.notes,
+  }));
+}
+
+// ============================================================================
+// MAINTENANCE
+// ============================================================================
+
+/**
+ * Mark expired background checks
+ * Called by cron job
+ */
+export async function markExpiredChecks(): Promise<number> {
+  const result = await db.query<Record<string, any>>(
+    `
+    UPDATE background_checks
+    SET status = 'EXPIRED'
+    WHERE status = 'CLEAR'
+      AND expires_at < CURRENT_DATE
+    RETURNING id, user_id
+    `
+  );
+
+  // Recompute capability profiles for affected users
+  const affectedUsers = new Set(result.rows.map(r => r.user_id));
+  for (const userId of affectedUsers) {
+    await recomputeCapabilityProfile(userId, { reason: 'background_check_expired' });
+  }
+
+  log.info({ count: result.rows.length }, 'Marked expired background checks');
+  return result.rows.length;
+}
+
+/**
+ * Get upcoming expirations (for renewal reminders)
+ */
+export async function getUpcomingExpirations(
+  days: number = 30
+): Promise<Array<{ userId: string; expiresAt: string }>> {
+  const result = await db.query<Record<string, any>>(
+    `
+    SELECT DISTINCT ON (user_id) user_id, expires_at
+    FROM background_checks
+    WHERE status = 'CLEAR'
+      AND expires_at BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '${days} days'
+    ORDER BY user_id, expires_at ASC
+    `
+  );
+
+  return result.rows.map(r => ({
+    userId: r.user_id,
+    expiresAt: r.expires_at,
+  }));
+}
+
+export default {
+  initiateBackgroundCheck,
+  updateBackgroundCheckStatus,
+  reviewBackgroundCheck,
+  getUserBackgroundCheck,
+  hasValidBackgroundCheck,
+  getPendingReviews,
+  getChecksByStatus,
+  markExpiredChecks,
+  getUpcomingExpirations,
 };

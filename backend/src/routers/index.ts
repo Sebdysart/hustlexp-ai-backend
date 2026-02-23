@@ -56,6 +56,8 @@ import { squadRouter } from './squad';
 import { stripeConnectRouter } from './stripeConnect';
 // v2.6.0: Feature Flags
 import { flagsRouter } from './flags';
+// v3.0.0: Core capability services (audit fix)
+import { capabilityRouter } from './capability';
 // v3.0.0: Admin Dashboard
 import { adminRouter } from './admin';
 // Phase 5: Incident Intelligence
@@ -114,6 +116,8 @@ export const appRouter = router({
   stripeConnect: stripeConnectRouter,
   // v2.6.0: Feature Flags
   flags: flagsRouter,
+  // v3.0.0: Core capability services (audit fix)
+  capability: capabilityRouter,
   // v3.0.0: Admin Dashboard
   admin: adminRouter,
   // Phase 5: Incident Intelligence

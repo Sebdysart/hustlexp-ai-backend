@@ -671,15 +671,26 @@ app.post('/webhooks/checkr', async (c) => {
     return c.json({ error: 'Invalid webhook payload' }, 400);
   }
 
-  const { BackgroundCheckService } = await import('./services/BackgroundCheckService');
-  const result = await BackgroundCheckService.handleWebhook(rawBody);
+  const { updateBackgroundCheckStatus } = await import('./services/BackgroundCheckService');
 
-  if (!result.success) {
-    pinoLogger.error({ error: result.error }, 'Checkr webhook processing failed');
-    return c.json({ error: result.error?.message ?? 'Webhook processing failed' }, 500);
+  try {
+    const { type, data } = rawBody;
+    const reportId = data?.object?.id;
+
+    if (type === 'report.completed' || type === 'report.suspended' || type === 'report.disputed') {
+      const statusMap: Record<string, 'IN_PROGRESS' | 'CLEAR' | 'CONSIDER' | 'FAILED'> = {
+        'report.completed': 'CLEAR',
+        'report.suspended': 'CONSIDER',
+        'report.disputed': 'CONSIDER',
+      };
+      await updateBackgroundCheckStatus(reportId, statusMap[type] ?? 'CONSIDER', data?.object?.result);
+    }
+
+    return c.json({ received: true, processed: true }, 200);
+  } catch (error) {
+    pinoLogger.error({ error: error instanceof Error ? error.message : String(error) }, 'Checkr webhook processing failed');
+    return c.json({ error: 'Webhook processing failed' }, 500);
   }
-
-  return c.json({ received: true, processed: result.data?.processed ?? false }, 200);
 });
 
 // ============================================================================

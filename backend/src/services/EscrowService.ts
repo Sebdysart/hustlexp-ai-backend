@@ -15,6 +15,7 @@
  */
 
 import { db, isInvariantViolation, isUniqueViolation, getErrorMessage } from '../db';
+import { config } from '../config';
 import { EarnedVerificationUnlockService } from './EarnedVerificationUnlockService';
 import { XPTaxService } from './XPTaxService';
 import { XPService } from './XPService';
@@ -26,7 +27,6 @@ import type {
 } from '../types';
 import { TERMINAL_ESCROW_STATES, ErrorCodes } from '../types';
 import { escrowLogger } from '../logger';
-import { config } from '../config';
 
 // ============================================================================
 // TYPES
@@ -380,8 +380,9 @@ export const EscrowService = {
         };
       }
 
-      // Calculate platform fee from config (PRODUCT_SPEC §9)
-      const platformFeeCents = Math.round(grossPayoutCents * (config.stripe.platformFeePercent / 100));
+      // Calculate platform fee (from config - default 15%)
+      const platformFeePercent = config.stripe.platformFeePercent || 15;
+      const platformFeeCents = Math.round(grossPayoutCents * (platformFeePercent / 100));
       const netPayoutCents = grossPayoutCents - platformFeeCents;
 
       // 2. Release escrow (SPEC FIX: Allow release from both FUNDED and LOCKED_DISPUTE states)
