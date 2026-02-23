@@ -19,6 +19,7 @@ import { AIJobService } from './AIJobService';
 import { AIProposalService } from './AIProposalService';
 import { AIDecisionService } from './AIDecisionService';
 import { aiLogger } from '../logger';
+import { scrubPII } from '../lib/pii-scrubber';
 
 const log = aiLogger.child({ service: 'OnboardingAIService' });
 
@@ -115,7 +116,7 @@ export const OnboardingAIService = {
                 role: 'user',
                 content: `You are a role inference engine for a gig marketplace app.
 Based on this user's onboarding response, determine if they want to be a Worker (do tasks for money) or a Poster (pay others to do tasks).
-User response: "${calibrationPrompt}"
+User response: "${scrubPII(calibrationPrompt)}"
 Respond with JSON only: {"worker": 0.0-1.0, "poster": 0.0-1.0, "certainty": "STRONG"|"MODERATE"|"WEAK"}`,
               }],
             }),

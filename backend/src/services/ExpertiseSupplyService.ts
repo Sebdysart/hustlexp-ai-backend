@@ -1224,7 +1224,7 @@ export const ExpertiseSupplyService = {
              ), 0) as p95_hours,
              COUNT(*) as sample_count
            FROM tasks
-           WHERE state IN ('COMPLETED', 'IN_PROGRESS', 'PROOF_SUBMITTED')
+           WHERE state IN ('COMPLETED', 'WORKING', 'PROOF_SUBMITTED')
              AND accepted_at IS NOT NULL
              AND category = (SELECT slug FROM expertise_registry WHERE id = $1)
              AND created_at > NOW() - INTERVAL '14 days'`,
