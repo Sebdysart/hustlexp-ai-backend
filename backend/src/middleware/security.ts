@@ -157,6 +157,56 @@ export function sanitizeAIInput(input: string): string {
 /**
  * General input sanitizer — strips control characters and limits length.
  */
+
+// ============================================================================
+// AI-SPECIFIC RATE LIMITING (Per-User Per-Minute)
+// ============================================================================
+
+const AI_RATE_LIMITS = {
+  groq: { requests: 30, windowMs: 60000 },      // 30 req/min
+  openai: { requests: 20, windowMs: 60000 },    // 20 req/min
+  deepseek: { requests: 25, windowMs: 60000 },  // 25 req/min
+  anthropic: { requests: 15, windowMs: 60000 }, // 15 req/min
+};
+
+/**
+ * AI per-minute rate limiter per user
+ * Prevents cost abuse while allowing legitimate usage
+ */
+export async function aiRateLimitMiddleware(provider: keyof typeof AI_RATE_LIMITS) {
+  const limits = AI_RATE_LIMITS[provider];
+  
+  return async (c: Context, next: Next) => {
+    const userId = c.get('userId');
+    if (!userId) {
+      return c.json({ error: 'Authentication required' }, 401);
+    }
+    
+    const key = `ratelimit:ai:${provider}:${userId}`;
+    const current = await redis.incr(key);
+    
+    if (current === 1) {
+      await redis.expire(key, limits.windowMs / 1000);
+    }
+    
+    if (current > limits.requests) {
+      c.header('X-RateLimit-Limit', limits.requests.toString());
+      c.header('X-RateLimit-Remaining', '0');
+      c.header('X-RateLimit-Reset', (await redis.ttl(key)).toString());
+      return c.json({ 
+        error: 'AI rate limit exceeded',
+        retryAfter: await redis.ttl(key)
+      }, 429);
+    }
+    
+    c.header('X-RateLimit-Limit', limits.requests.toString());
+    c.header('X-RateLimit-Remaining', (limits.requests - current).toString());
+    
+    await next();
+  };
+}
+
+
 export function sanitizeInput(input: string, maxLength = 10000): string {
   if (!input || typeof input !== 'string') return '';
 
