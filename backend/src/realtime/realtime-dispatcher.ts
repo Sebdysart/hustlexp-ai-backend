@@ -17,7 +17,7 @@
  */
 
 import { db } from '../db';
-import { getConnections, type SSEConnection } from './connection-registry';
+import { getConnections, getAllConnections, type SSEConnection } from './connection-registry';
 import { PlanService } from '../services/PlanService';
 import type { TaskProgressState } from '../types';
 import { logger } from '../logger';
@@ -138,8 +138,36 @@ function formatSSEMessage(payload: TaskProgressUpdatedPayload): string {
 }
 
 /**
+ * Dispatch message.new event to recipient's SSE connections
+ */
+export async function dispatchNewMessage(payload: {
+  messageId: string;
+  taskId: string;
+  senderId: string;
+  recipientId: string;
+  content?: string;
+  createdAt: string;
+}): Promise<void> {
+  const { recipientId } = payload;
+  const conns = getConnections(recipientId);
+  if (!conns) return;
+
+  const sseMessage = `event: message.new\ndata: ${JSON.stringify(payload)}\n\n`;
+
+  for (const conn of conns) {
+    if (conn.closed) continue;
+    try {
+      await writeToConnection(conn, sseMessage);
+    } catch (error) {
+      log.error({ err: error instanceof Error ? error.message : String(error), recipientId }, 'Failed to write message.new to SSE');
+      conn.closed = true;
+    }
+  }
+}
+
+/**
  * Write SSE message to connection
- * 
+ *
  * Uses the ReadableStream controller to enqueue the message
  */
 async function writeToConnection(conn: SSEConnection, message: string): Promise<void> {
@@ -154,5 +182,31 @@ async function writeToConnection(conn: SSEConnection, message: string): Promise<
     // Controller closed or stream error - mark connection as closed
     conn.closed = true;
     throw error;
+  }
+}
+
+/**
+ * Broadcast a flag_changed event to all active SSE connections
+ */
+export async function dispatchFlagChanged(flagName: string): Promise<void> {
+  const allConnections = getAllConnections();
+  const message = `event: flag_changed\ndata: ${JSON.stringify({ flag: flagName })}\n\n`;
+
+  let fanoutCount = 0;
+  for (const [userId, conns] of allConnections) {
+    for (const conn of conns) {
+      if (conn.closed) continue;
+      try {
+        await writeToConnection(conn, message);
+        fanoutCount++;
+      } catch (error) {
+        log.error({ err: error instanceof Error ? error.message : String(error), userId }, 'Failed to write flag_changed to SSE connection');
+        conn.closed = true;
+      }
+    }
+  }
+
+  if (fanoutCount > 0) {
+    log.info({ flagName, connectionCount: fanoutCount }, 'flag_changed broadcast complete');
   }
 }

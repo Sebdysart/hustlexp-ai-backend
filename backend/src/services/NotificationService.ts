@@ -16,8 +16,40 @@ import { db, isInvariantViolation, getErrorMessage } from '../db';
 import type { ServiceResult } from '../types';
 import { ErrorCodes } from '../types';
 import { logger } from '../logger';
+import { Redis } from '@upstash/redis';
+import { config } from '../config';
 
 const log = logger.child({ service: 'NotificationService' });
+
+let notifRedis: Redis | null = null;
+function getNotifRedis(): Redis | null {
+  if (!notifRedis && config.redis.restUrl && config.redis.restToken) {
+    notifRedis = new Redis({ url: config.redis.restUrl, token: config.redis.restToken });
+  }
+  return notifRedis;
+}
+
+async function checkAndIncrementFrequency(userId: string, category: string): Promise<{ hourlyCount: number; dailyCount: number }> {
+  const redis = getNotifRedis();
+  if (!redis) return { hourlyCount: 0, dailyCount: 0 };
+
+  const now = new Date();
+  const hourKey = `notif:freq:${userId}:${category}:hour:${now.toISOString().slice(0, 13)}`;
+  const dayKey = `notif:freq:${userId}:${category}:day:${now.toISOString().slice(0, 10)}`;
+
+  try {
+    const [hourly, daily] = await Promise.all([
+      redis.incr(hourKey),
+      redis.incr(dayKey),
+    ]);
+    // Set TTLs (only on first increment)
+    if (hourly === 1) await redis.expire(hourKey, 3600);
+    if (daily === 1) await redis.expire(dayKey, 86400);
+    return { hourlyCount: hourly, dailyCount: daily };
+  } catch {
+    return { hourlyCount: 0, dailyCount: 0 };
+  }
+}
 
 // ============================================================================
 // TYPES
@@ -217,16 +249,14 @@ export const NotificationService = {
         // Still create notification record, but mark as pending
       }
       
-      // Check frequency limits (NOTIFICATION_SPEC.md §2.2)
+      // Check frequency limits (NOTIFICATION_SPEC.md §2.2) - Redis-based
       const categoryLimits = FREQUENCY_LIMITS[category];
       const limits = categoryLimits || { perHour: Infinity, perDay: Infinity };
       if (limits.perHour !== Infinity || limits.perDay !== Infinity) {
-        const recentCount = await NotificationService.getRecentNotificationCount(userId, category, 60); // Last hour
-        const dailyCount = await NotificationService.getRecentNotificationCount(userId, category, 24 * 60); // Last 24 hours
-        
-        if (recentCount >= limits.perHour) {
+        const { hourlyCount, dailyCount } = await checkAndIncrementFrequency(userId, category);
+
+        if (hourlyCount > limits.perHour) {
           // Exceeded hourly limit - batch with existing notifications
-          // Find the most recent notification of the same category and batch with it
           const batchResult = await batchNotification(userId, category, {
             title,
             body,
@@ -235,14 +265,11 @@ export const NotificationService = {
             metadata,
             priority,
           });
-          
+
           if (batchResult.success) {
-            // Successfully batched - return the batched notification
             return batchResult;
           }
-          
-          // If batching failed (e.g., no existing notification to batch with), 
-          // still reject to prevent spam
+
           return {
             success: false,
             error: {
@@ -251,8 +278,8 @@ export const NotificationService = {
             },
           };
         }
-        
-        if (dailyCount >= limits.perDay) {
+
+        if (dailyCount > limits.perDay) {
           return {
             success: false,
             error: {

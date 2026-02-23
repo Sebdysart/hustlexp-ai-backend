@@ -32,10 +32,10 @@ export default defineConfig({
         // Phase 4 (Sprint):   15% — after full service-layer coverage
         // Phase 5 (GA):       40% — after router + middleware coverage
         // Phase 6 (Mature):   70% — production target
-        lines: 6,
-        functions: 5,
-        branches: 6,
-        statements: 6,
+        lines: 8,
+        functions: 7,
+        branches: 8,
+        statements: 8,
       },
     },
   },

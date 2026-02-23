@@ -168,6 +168,20 @@ function registerWorkers(): void {
     }
   ));
 
+  // Tax reporting worker - processes annual 1099-NEC form generation
+  activeWorkers.push(createWorker(
+    'tax_reporting',
+    async (job: Job) => {
+      const { processTaxReportingJob } = await import('./tax-reporting-worker');
+      await processTaxReportingJob(job);
+    },
+    {
+      concurrency: 1, // Process one tax job at a time (annual batch)
+      removeOnComplete: { count: 50, age: 7 * 86400 }, // Keep completed jobs for 7 days
+      removeOnFail: { age: 30 * 86400 }, // Keep failed jobs for 30 days
+    }
+  ));
+
   log.info('All BullMQ workers registered');
 }
 

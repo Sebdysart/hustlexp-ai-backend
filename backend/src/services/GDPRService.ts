@@ -992,6 +992,21 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
     await db.serializableTransaction(async (query) => {
       // 1. Immediate deletion (GDPR_COMPLIANCE_SPEC.md §3.1)
       
+      // Delete tables added after GDPR service was written
+      await query('DELETE FROM alpha_telemetry WHERE user_id = $1', [userId]);
+      await query('DELETE FROM device_tokens WHERE user_id = $1', [userId]);
+      await query('DELETE FROM worker_skills WHERE user_id = $1', [userId]);
+      await query('DELETE FROM xp_tax_ledger WHERE user_id = $1', [userId]);
+      await query('DELETE FROM user_xp_tax_status WHERE user_id = $1', [userId]);
+      await query('DELETE FROM insurance_contributions WHERE user_id = $1', [userId]);
+      await query('DELETE FROM insurance_claims WHERE user_id = $1', [userId]);
+      await query(
+        `UPDATE dispute_jury_votes SET voter_id = NULL WHERE voter_id = $1`,
+        [userId]
+      );
+      await query('DELETE FROM plan_entitlements WHERE user_id = $1', [userId]);
+      await query('DELETE FROM task_geofence_events WHERE user_id = $1', [userId]);
+
       // Delete notification preferences
       await query(
         `DELETE FROM notification_preferences WHERE user_id = $1`,

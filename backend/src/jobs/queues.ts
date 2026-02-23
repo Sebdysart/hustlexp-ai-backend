@@ -65,12 +65,13 @@ function createRedisConnection(): Redis {
 // QUEUE DEFINITIONS
 // ============================================================================
 
-export type QueueName = 
+export type QueueName =
   | 'critical_payments'
   | 'critical_trust'
   | 'user_notifications'
   | 'exports'
-  | 'maintenance';
+  | 'maintenance'
+  | 'tax_reporting';
 
 interface QueueConfig {
   name: QueueName;
@@ -187,6 +188,27 @@ export const QUEUE_CONFIGS: Record<QueueName, QueueConfig> = {
       },
       removeOnFail: {
         age: 7 * 24 * 60 * 60, // Keep failed jobs for 7 days
+      },
+    },
+    workerOptions: {
+      maxStalledCount: 1,
+    },
+  },
+
+  tax_reporting: {
+    name: 'tax_reporting',
+    defaultJobOptions: {
+      attempts: 3,
+      backoff: {
+        type: 'exponential',
+        delay: 30000, // 30s, 60s, 120s
+      },
+      removeOnComplete: {
+        age: 7 * 24 * 60 * 60, // Keep completed jobs for 7 days
+        count: 50,
+      },
+      removeOnFail: {
+        age: 30 * 24 * 60 * 60, // Keep failed jobs for 30 days
       },
     },
     workerOptions: {

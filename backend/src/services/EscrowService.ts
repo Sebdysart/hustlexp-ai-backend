@@ -26,6 +26,7 @@ import type {
 } from '../types';
 import { TERMINAL_ESCROW_STATES, ErrorCodes } from '../types';
 import { escrowLogger } from '../logger';
+import { config } from '../config';
 
 // ============================================================================
 // TYPES
@@ -86,6 +87,18 @@ function isValidTransition(from: EscrowState, to: EscrowState): boolean {
 // ============================================================================
 // SERVICE
 // ============================================================================
+
+async function logEscrowEvent(escrowId: string, fromState: string, toState: string, actorId?: string, actorType: string = 'system', metadata: Record<string, unknown> = {}): Promise<void> {
+  try {
+    await db.query(
+      `INSERT INTO escrow_events (escrow_id, from_state, to_state, actor_id, actor_type, metadata)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [escrowId, fromState, toState, actorId || null, actorType, JSON.stringify(metadata)]
+    );
+  } catch (error) {
+    escrowLogger.error({ err: error instanceof Error ? error.message : String(error), escrowId }, 'Failed to log escrow event');
+  }
+}
 
 export const EscrowService = {
   // --------------------------------------------------------------------------
@@ -243,7 +256,9 @@ export const EscrowService = {
           },
         };
       }
-      
+
+      await logEscrowEvent(escrowId, 'PENDING', 'FUNDED');
+
       return { success: true, data: result.rows[0] };
     } catch (error) {
       return {
@@ -322,8 +337,8 @@ export const EscrowService = {
       const paymentMethod: string = 'escrow'; // All tasks use escrow payment flow
       const grossPayoutCents = task.price;
 
-      // Calculate platform fee (20%)
-      const platformFeeCents = Math.round(grossPayoutCents * 0.20);
+      // Calculate platform fee from config (PRODUCT_SPEC §9)
+      const platformFeeCents = Math.round(grossPayoutCents * (config.stripe.platformFeePercent / 100));
       const netPayoutCents = grossPayoutCents - platformFeeCents;
 
       // 2. Release escrow (SPEC FIX: Allow release from both FUNDED and LOCKED_DISPUTE states)
@@ -362,6 +377,8 @@ export const EscrowService = {
           },
         };
       }
+
+      await logEscrowEvent(escrowId, escrow.state, 'RELEASED');
 
       // 3. v1.8.0: Record earnings for verification unlock tracking
       // This is idempotent via UNIQUE constraint on escrow_id
@@ -472,7 +489,9 @@ export const EscrowService = {
           },
         };
       }
-      
+
+      await logEscrowEvent(escrowId, 'FUNDED', 'REFUNDED');
+
       return { success: true, data: result.rows[0] };
     } catch (error) {
       return {
@@ -513,7 +532,9 @@ export const EscrowService = {
           },
         };
       }
-      
+
+      await logEscrowEvent(escrowId, 'FUNDED', 'LOCKED_DISPUTE');
+
       return { success: true, data: result.rows[0] };
     } catch (error) {
       return {
@@ -568,7 +589,9 @@ export const EscrowService = {
           },
         };
       }
-      
+
+      await logEscrowEvent(escrowId, 'LOCKED_DISPUTE', 'REFUND_PARTIAL');
+
       return { success: true, data: result.rows[0] };
     } catch (error) {
       return {

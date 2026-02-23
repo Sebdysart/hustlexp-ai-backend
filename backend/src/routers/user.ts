@@ -461,6 +461,30 @@ export const userRouter = router({
 
       return result.data;
     }),
+
+  xpLeaderboard: protectedProcedure
+    .input(z.object({ limit: z.number().min(1).max(100).optional().default(25) }).optional())
+    .query(async ({ input }) => {
+      const { XPService } = await import('../services/XPService');
+      const result = await XPService.getDailyLeaderboard(input?.limit ?? 25);
+      if (!result.success) {
+        throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: result.error?.message || 'Failed to get leaderboard' });
+      }
+      return result.data;
+    }),
+
+  requestErasure: protectedProcedure
+    .mutation(async ({ ctx }) => {
+      const { GDPRService } = await import('../services/GDPRService');
+      const result = await GDPRService.createRequest({
+        userId: ctx.user.id,
+        requestType: 'deletion',
+      });
+      if (!result.success) {
+        throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: result.error.message });
+      }
+      return result.data;
+    }),
 });
 
 export type UserRouter = typeof userRouter;

@@ -451,12 +451,13 @@ export const TaskService = {
     try {
       // Step 9-C: Check worker plan eligibility for task risk level
       // Trust-Tier Tightening: Check trust tier for Instant tasks
-      const taskResult = await db.query<{ 
+      const taskResult = await db.query<{
         risk_level: TaskRiskLevel;
         instant_mode: boolean;
         sensitive: boolean | null;
+        price: number;
       }>(
-        `SELECT risk_level, instant_mode, sensitive FROM tasks WHERE id = $1`,
+        `SELECT risk_level, instant_mode, sensitive, price FROM tasks WHERE id = $1`,
         [taskId]
       );
 
@@ -580,6 +581,46 @@ export const TaskService = {
             },
           },
         };
+      }
+
+      // Fraud risk check on task acceptance
+      try {
+        const { FraudDetectionService } = await import('./FraudDetectionService');
+        const riskResult = await FraudDetectionService.getRiskAssessment('user', workerId);
+        if (riskResult.success && riskResult.data && riskResult.data.riskScore > 0.7) {
+          log.warn({ workerId, taskId, riskScore: riskResult.data.riskScore }, 'Task acceptance blocked by fraud risk');
+          return {
+            success: false,
+            error: {
+              code: 'FRAUD_RISK_HIGH',
+              message: 'Task acceptance is under review due to account risk assessment',
+            },
+          };
+        }
+      } catch (fraudError) {
+        // Don't block task acceptance if fraud check fails
+        log.warn({ workerId, taskId, err: fraudError instanceof Error ? fraudError.message : String(fraudError) }, 'Fraud risk check failed, allowing acceptance');
+      }
+
+      // Background check gate: high-value tasks (>$500) require clear background check
+      if (task.price > 50000) {
+        try {
+          const { BackgroundCheckService } = await import('./BackgroundCheckService');
+          const checkResult = await BackgroundCheckService.getStatus(workerId);
+          if (!checkResult.success || !checkResult.data || checkResult.data.status !== 'clear') {
+            log.info({ workerId, taskId, price: task.price }, 'High-value task requires background check');
+            return {
+              success: false,
+              error: {
+                code: 'BACKGROUND_CHECK_REQUIRED',
+                message: 'High-value tasks require a completed background check',
+              },
+            };
+          }
+        } catch (bgCheckError) {
+          // Don't block if background check service is unavailable
+          log.warn({ workerId, taskId, err: bgCheckError instanceof Error ? bgCheckError.message : String(bgCheckError) }, 'Background check lookup failed, allowing acceptance');
+        }
       }
 
       // Instant mode: accept from MATCHING state; Standard: accept from OPEN state

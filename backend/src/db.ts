@@ -23,6 +23,7 @@ const DATABASE_URL = process.env.DATABASE_URL;
 const DATABASE_REPLICA_URL = process.env.DATABASE_REPLICA_URL;
 const POOL_MAX = parseInt(process.env.DB_POOL_MAX || '20', 10);
 const REPLICA_POOL_MAX = parseInt(process.env.DB_REPLICA_POOL_MAX || '15', 10);
+const DB_PGBOUNCER = process.env.DB_PGBOUNCER === 'true';
 
 if (!DATABASE_URL) {
   dbLog.fatal('DATABASE_URL is required');
@@ -33,9 +34,8 @@ if (!DATABASE_URL) {
 // CONNECTION POOL
 // ============================================================================
 
-// Disable prepared statements in test environment to avoid stale plan cache
-// when schema changes during test execution
-const isTestEnv = process.env.NODE_ENV === 'test' || process.env.VITEST === 'true';
+// Disable prepared statements in test env (stale plan cache) or PgBouncer (no prepared stmt support)
+const disablePreparedStatements = process.env.NODE_ENV === 'test' || process.env.VITEST === 'true' || DB_PGBOUNCER;
 
 const pool = new Pool({
   connectionString: DATABASE_URL,
@@ -87,6 +87,9 @@ if (replicaPool) {
  */
 pool.on('connect', () => {
   dbLog.info({ total: pool.totalCount, idle: pool.idleCount, waiting: pool.waitingCount }, 'Pool: client connected');
+  if (pool.totalCount / POOL_MAX > 0.8) {
+    dbLog.warn({ total: pool.totalCount, max: POOL_MAX, utilization: Math.round((pool.totalCount / POOL_MAX) * 100) }, 'Pool saturation warning: >80% connections in use');
+  }
 });
 
 pool.on('error', (err) => {
@@ -314,11 +317,12 @@ export const db: Database = {
     sql: string,
     params?: unknown[]
   ): Promise<QueryResult<T>> => {
+    const startMs = Date.now();
     const client = await pool.connect();
     try {
-      // In test environment, clear prepared statement cache before each query
-      // This prevents stale plans when schema changes during test execution
-      if (isTestEnv) {
+      // Clear prepared statement cache before each query when needed
+      // (test env: prevents stale plans; PgBouncer: avoids prepared stmt conflicts)
+      if (disablePreparedStatements) {
         // Clear all prepared statements on this connection
         // This ensures fresh planning for each query in tests
         try {
@@ -328,6 +332,10 @@ export const db: Database = {
         }
       }
       const result = await client.query(sql, params);
+      const durationMs = Date.now() - startMs;
+      if (durationMs > 1000) {
+        dbLog.warn({ durationMs, query: sql.slice(0, 200).replace(/[\w.-]+@[\w.-]+/g, '[EMAIL]').replace(/\+?\d{10,}/g, '[PHONE]') }, 'Slow query detected');
+      }
       return {
         rows: result.rows as T[],
         rowCount: result.rowCount ?? 0,

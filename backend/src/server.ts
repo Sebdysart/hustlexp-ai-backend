@@ -661,6 +661,28 @@ app.post('/webhooks/stripe', async (c) => {
 });
 
 // ============================================================================
+// CHECKR WEBHOOKS (Background Checks)
+// ============================================================================
+
+app.post('/webhooks/checkr', async (c) => {
+  const rawBody = await c.req.json().catch(() => null);
+
+  if (!rawBody || !rawBody.type) {
+    return c.json({ error: 'Invalid webhook payload' }, 400);
+  }
+
+  const { BackgroundCheckService } = await import('./services/BackgroundCheckService');
+  const result = await BackgroundCheckService.handleWebhook(rawBody);
+
+  if (!result.success) {
+    pinoLogger.error({ error: result.error }, 'Checkr webhook processing failed');
+    return c.json({ error: result.error?.message ?? 'Webhook processing failed' }, 500);
+  }
+
+  return c.json({ received: true, processed: result.data?.processed ?? false }, 200);
+});
+
+// ============================================================================
 // 404 HANDLER
 // ============================================================================
 
@@ -1109,7 +1131,7 @@ async function startServer() {
     endpoints: {
       health: ['/health', '/health/detailed', '/health/readiness', '/health/liveness'],
       trpc: '/trpc/*',
-      webhooks: '/webhooks/stripe',
+      webhooks: ['/webhooks/stripe', '/webhooks/checkr'],
       rest: [
         '/api/users/:userId/xp-celebration-status',
         '/api/users/:userId/xp-celebration-shown',
