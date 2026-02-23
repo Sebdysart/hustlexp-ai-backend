@@ -36,6 +36,8 @@ const AGENT_BUDGETS: Record<string, AICallConfig> = {
   reputation: { maxTokensPerCall: 1500, dailyBudgetPerUser: 5, fallbackChain: ['groq', 'deepseek'], timeoutMs: 10000 },
   onboarding: { maxTokensPerCall: 1000, dailyBudgetPerUser: 5, fallbackChain: ['groq', 'openai'], timeoutMs: 10000 },
   moderation: { maxTokensPerCall: 2000, dailyBudgetPerUser: 10, fallbackChain: ['groq', 'openai'], timeoutMs: 15000 },
+  incident_diagnosis: { maxTokensPerCall: 4000, dailyBudgetPerUser: 20, fallbackChain: ['deepseek', 'groq', 'openai'], timeoutMs: 45000 },
+  intent_bridge: { maxTokensPerCall: 6000, dailyBudgetPerUser: 30, fallbackChain: ['deepseek', 'openai', 'groq'], timeoutMs: 60000 },
   default: { maxTokensPerCall: 2000, dailyBudgetPerUser: 25, fallbackChain: ['groq', 'openai', 'deepseek'], timeoutMs: 20000 },
 };
 

@@ -71,6 +71,17 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         continue-on-error: true
+      - name: Analyze PR description intent
+        if: always()
+        run: |
+          CHANGED_FILES=$(git diff --name-only origin/main...HEAD | tr '\n' ',')
+          export CHANGED_FILES
+          npx tsx scripts/analyze-pr-description.ts > pr-intent-analysis.md 2>/dev/null || echo "PR intent analysis unavailable"
+        env:
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        continue-on-error: true
 
   # ─────────────────────────────────────────────────────────
   # Stage 1b: Migration Safety (parallel, only for migration PRs)

@@ -121,14 +121,18 @@ jobs:
     needs: [deploy-ephemeral, generate-type-manifest, generate-cross-surface-manifests]
     if: github.event.action != 'closed'
     steps:
-      - name: Dispatch to iOS repo
+      - uses: actions/download-artifact@v4
+        with:
+          name: cross-surface-manifests
+          path: manifests/
+      - name: Dispatch to iOS repo with manifests
         uses: peter-evans/repository-dispatch@v3
         with:
           token: ${{ secrets.CROSS_REPO_TOKEN }}
           repository: sebastiandysart/HUSTLEXPFINAL1
           event-type: backend-pr-ready
           client-payload: >-
-            {"pr_number": "${{ github.event.pull_request.number }}", "ephemeral_url": "${{ needs.deploy-ephemeral.outputs.ephemeral_url }}", "backend_sha": "${{ github.sha }}"}
+            {"pr_number": "${{ github.event.pull_request.number }}", "ephemeral_url": "${{ needs.deploy-ephemeral.outputs.ephemeral_url }}", "backend_sha": "${{ github.sha }}", "run_id": "${{ github.run_id }}", "has_manifests": true}
         continue-on-error: true
 
   cleanup:

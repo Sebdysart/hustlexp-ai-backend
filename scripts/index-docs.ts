@@ -188,7 +188,88 @@ async function main() {
     const sections = splitIntoSections(relativePath, content);
     allSections.push(...sections);
   }
-  console.log(`Parsed ${allSections.length} sections`);
+
+  // ── Index error codes from error-code-registry.ts ──────────────────
+  const errorRegistryPath = path.resolve(__dirname, '../backend/src/lib/error-code-registry.ts');
+  if (fs.existsSync(errorRegistryPath)) {
+    const errorContent = fs.readFileSync(errorRegistryPath, 'utf-8');
+    const codeMatches = errorContent.match(/['"]HX\d{3}['"]:\s*\{[^}]+\}/g) || [];
+    if (codeMatches.length > 0) {
+      allSections.push({
+        filePath: 'backend/src/lib/error-code-registry.ts',
+        sectionHeader: 'HX Error Codes',
+        content: `Error Code Registry — ${codeMatches.length} codes\n\n${codeMatches.join('\n\n')}`.slice(0, MAX_SECTION_LENGTH),
+        isLocked: true,
+      });
+      console.log(`Indexed ${codeMatches.length} error codes from error-code-registry.ts`);
+    }
+  }
+
+  // ── Index state machine transitions from TaskService/EscrowService ─
+  const stateFiles = [
+    { file: 'backend/src/services/TaskService.ts', name: 'Task State Machine' },
+    { file: 'backend/src/services/EscrowService.ts', name: 'Escrow State Machine' },
+  ];
+  for (const sf of stateFiles) {
+    const sfPath = path.resolve(__dirname, '..', sf.file);
+    if (fs.existsSync(sfPath)) {
+      const sfContent = fs.readFileSync(sfPath, 'utf-8');
+      const transitionMatch = sfContent.match(/VALID_TRANSITIONS[\s\S]*?\};/);
+      if (transitionMatch) {
+        allSections.push({
+          filePath: sf.file,
+          sectionHeader: sf.name,
+          content: `${sf.name}\n\n${transitionMatch[0]}`.slice(0, MAX_SECTION_LENGTH),
+          isLocked: true,
+        });
+        console.log(`Indexed state machine from ${sf.file}`);
+      }
+    }
+  }
+
+  // ── Index invariant test file names and descriptions ───────────────
+  const invariantsDir = path.resolve(__dirname, '../backend/tests/invariants');
+  if (fs.existsSync(invariantsDir)) {
+    const invariantFiles = fs.readdirSync(invariantsDir).filter(f => f.endsWith('.test.ts'));
+    const summaries = invariantFiles.map(f => {
+      const content = fs.readFileSync(path.join(invariantsDir, f), 'utf-8');
+      const firstDescribe = content.match(/describe\(['"]([^'"]+)['"]/)?.[1] || f;
+      return `- ${f}: ${firstDescribe}`;
+    });
+    if (summaries.length > 0) {
+      allSections.push({
+        filePath: 'backend/tests/invariants/',
+        sectionHeader: 'Invariant Test Coverage',
+        content: `Constitutional Invariant Tests — ${summaries.length} files\n\n${summaries.join('\n')}`,
+        isLocked: true,
+      });
+      console.log(`Indexed ${summaries.length} invariant test files`);
+    }
+  }
+
+  // ── Index router procedure names ───────────────────────────────────
+  const routersDir = path.resolve(__dirname, '../backend/src/routers');
+  if (fs.existsSync(routersDir)) {
+    const routerFiles = fs.readdirSync(routersDir).filter(f => f.endsWith('.ts') && f !== 'index.ts');
+    const routerSummaries: string[] = [];
+    for (const rf of routerFiles) {
+      const content = fs.readFileSync(path.join(routersDir, rf), 'utf-8');
+      const procedures = [...content.matchAll(/\.(query|mutation)\(/g)];
+      const procNames = [...content.matchAll(/(\w+):\s*(?:protectedProcedure|publicProcedure|adminProcedure)/g)].map(m => m[1]);
+      routerSummaries.push(`- ${rf}: ${procNames.join(', ') || `${procedures.length} procedures`}`);
+    }
+    if (routerSummaries.length > 0) {
+      allSections.push({
+        filePath: 'backend/src/routers/',
+        sectionHeader: 'Router Procedure Index',
+        content: `tRPC Router Procedures — ${routerSummaries.length} routers\n\n${routerSummaries.join('\n')}`,
+        isLocked: false,
+      });
+      console.log(`Indexed ${routerSummaries.length} router files`);
+    }
+  }
+
+  console.log(`Parsed ${allSections.length} sections (including code artifacts)`);
 
   // Generate embeddings in batches
   let embeddingsGenerated = 0;
