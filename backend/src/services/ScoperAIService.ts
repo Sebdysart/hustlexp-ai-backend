@@ -15,6 +15,7 @@ import type { ServiceResult } from '../types';
 import { AIClient } from './AIClient';
 import { ScoperProposalSchema } from '../lib/ai-response-schemas';
 import { aiLogger } from '../logger';
+import { scrubPII } from '../lib/pii-scrubber';
 
 const log = aiLogger.child({ service: 'ScoperAIService' });
 
@@ -112,7 +113,7 @@ Return JSON with EXACTLY these fields:
 - required_capabilities: string[] (optional, e.g., "vehicle", "tools")`,
             prompt: `Analyze this task and propose pricing/difficulty:
 
-Description: ${input.description}
+Description: ${scrubPII(input.description)}
 ${input.category ? `Category: ${input.category}` : ''}
 ${input.budget_hint_cents ? `Budget hint: $${(input.budget_hint_cents / 100).toFixed(2)}` : ''}
 ${input.location ? `Location: ${input.location.city}, ${input.location.state}` : ''}`,
@@ -168,7 +169,7 @@ ${input.location ? `Location: ${input.location.city}, ${input.location.state}` :
           timeoutMs: 5000,
           maxTokens: 300,
           systemPrompt: 'Clean and structure the following task description. Fix grammar, remove filler words, and standardize format. Keep it concise (max 300 chars). Return ONLY the cleaned description, no extra commentary.',
-          prompt: rawDescription,
+          prompt: scrubPII(rawDescription), // GDPR: Scrub PII before AI processing
         });
         return result.content.trim().slice(0, 500);
       } catch {

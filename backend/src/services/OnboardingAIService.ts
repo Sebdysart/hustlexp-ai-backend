@@ -57,15 +57,15 @@ export const OnboardingAIService = {
    */
   submitCalibration: async (params: SubmitCalibrationParams): Promise<ServiceResult<InferenceResult>> => {
     const { userId, calibrationPrompt, onboardingVersion } = params;
-    
+
     try {
-      // 1. Create AI event (immutable input)
+      // 1. Create AI event (immutable input) - PII SCRUBBED before storage
       const eventResult = await AIEventService.create({
         subsystem: 'onboarding',
         eventType: 'calibration_submitted',
         actorUserId: userId,
         payload: {
-          calibrationPrompt,
+          calibrationPrompt: scrubPII(calibrationPrompt), // GDPR: Scrub PII before database storage
           onboardingVersion,
         },
         schemaVersion: '1.0.0',
