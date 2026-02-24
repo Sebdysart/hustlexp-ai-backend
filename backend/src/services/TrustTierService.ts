@@ -454,7 +454,7 @@ export const TrustTierService = {
       `UPDATE tasks
        SET state = 'CANCELLED', updated_at = NOW()
        WHERE worker_id = $1
-         AND state IN ('ACCEPTED', 'PROOF_SUBMITTED', 'IN_PROGRESS')`,
+         AND state IN ('ACCEPTED', 'PROOF_SUBMITTED', 'WORKING')`,
       [userId]
     );
 

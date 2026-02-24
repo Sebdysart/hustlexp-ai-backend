@@ -451,13 +451,17 @@ export const TaskService = {
     try {
       // Step 9-C: Check worker plan eligibility for task risk level
       // Trust-Tier Tightening: Check trust tier for Instant tasks
+      // RACE CONDITION FIX: Lock task immediately with FOR UPDATE to prevent wasted work
       const taskResult = await db.query<{
         risk_level: TaskRiskLevel;
         instant_mode: boolean;
         sensitive: boolean | null;
         price: number;
+        state: string;
+        worker_id: string | null;
       }>(
-        `SELECT risk_level, instant_mode, sensitive, price FROM tasks WHERE id = $1`,
+        `SELECT risk_level, instant_mode, sensitive, price, state, worker_id
+         FROM tasks WHERE id = $1 FOR UPDATE`,
         [taskId]
       );
 
@@ -472,6 +476,27 @@ export const TaskService = {
       }
 
       const task = taskResult.rows[0];
+
+      // Early exit if task is already taken (before expensive eligibility checks)
+      if (task.state !== 'OPEN' && task.state !== 'MATCHING') {
+        return {
+          success: false,
+          error: {
+            code: ErrorCodes.INVALID_STATE,
+            message: `Cannot accept task: current state is ${task.state}, expected OPEN or MATCHING`,
+          },
+        };
+      }
+
+      if (task.worker_id !== null) {
+        return {
+          success: false,
+          error: {
+            code: ErrorCodes.INVALID_STATE,
+            message: `Task already accepted by another worker`,
+          },
+        };
+      }
 
       // Pre-Alpha Prerequisite: Eligibility Guard (centralized enforcement)
       const { EligibilityGuard } = await import('./EligibilityGuard');
