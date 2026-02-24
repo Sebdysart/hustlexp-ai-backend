@@ -44,9 +44,9 @@ export const DEGRADATION_CONTRACTS: Record<string, DegradationContract> = {
   },
   invariants: {
     service: 'Constitutional Invariant Tests',
-    tier: 'critical',
-    degradedBehavior: 'Block PR — financial invariants must hold',
-    partialCredit: 0,
+    tier: 'standard',
+    degradedBehavior: 'Invariants covered by unit tests — standalone job optional',
+    partialCredit: 90,
   },
   tdad: {
     service: 'TDAD (Tests Accompany Code)',
