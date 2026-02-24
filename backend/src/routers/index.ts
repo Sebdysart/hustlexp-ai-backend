@@ -64,6 +64,10 @@ import { adminRouter } from './admin';
 import { incidentsRouter } from './incidents';
 // Phase 6: Intent Bridge
 import { intentRouter } from './intent';
+// v3.1.0: Task Batching AI
+import { batchingRouter } from './batching';
+// v3.1.0: Movement Tracking
+import { trackingRouter } from './tracking';
 
 export const appRouter = router({
   task: taskRouter,
@@ -124,6 +128,10 @@ export const appRouter = router({
   incidents: incidentsRouter,
   // Phase 6: Intent Bridge
   intent: intentRouter,
+  // v3.1.0: Task Batching AI
+  batching: batchingRouter,
+  // v3.1.0: Movement Tracking
+  tracking: trackingRouter,
 });
 
 export type AppRouter = typeof appRouter;
