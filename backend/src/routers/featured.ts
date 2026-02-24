@@ -64,7 +64,7 @@ export const featuredRouter = router({
       let paymentIntentId: string | null = null;
 
       if (config.stripe.secretKey && !config.stripe.secretKey.includes('placeholder')) {
-        const stripe = new Stripe(config.stripe.secretKey, { apiVersion: '2025-12-15.clover' });
+        const stripe = new Stripe(config.stripe.secretKey, { apiVersion: '2025-11-17.clover' });
         const pi = await stripe.paymentIntents.create({
           amount: pricing.cents,
           currency: 'usd',
@@ -111,7 +111,7 @@ export const featuredRouter = router({
 
       // 1. Verify PaymentIntent status in Stripe
       if (config.stripe.secretKey && !config.stripe.secretKey.includes('placeholder')) {
-        const stripe = new Stripe(config.stripe.secretKey, { apiVersion: '2025-12-15.clover' });
+        const stripe = new Stripe(config.stripe.secretKey, { apiVersion: '2025-11-17.clover' });
         const pi = await stripe.paymentIntents.retrieve(input.stripePaymentIntentId);
 
         if (pi.status !== 'succeeded') {

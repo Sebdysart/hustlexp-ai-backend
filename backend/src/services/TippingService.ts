@@ -100,7 +100,7 @@ export const TippingService = {
         return { success: false, error: { code: 'STRIPE_NOT_CONFIGURED', message: 'Stripe not configured' } };
       }
 
-      const stripe = new Stripe(config.stripe.secretKey, { apiVersion: '2025-12-15.clover' });
+      const stripe = new Stripe(config.stripe.secretKey, { apiVersion: '2025-11-17.clover' });
 
       // Get worker's Stripe account
       const workerResult = await db.query<{ stripe_account_id: string }>(
@@ -165,7 +165,7 @@ export const TippingService = {
         return { success: false, error: { code: 'STRIPE_NOT_CONFIGURED', message: 'Stripe not configured' } };
       }
 
-      const stripe = new Stripe(config.stripe.secretKey, { apiVersion: '2025-12-15.clover' });
+      const stripe = new Stripe(config.stripe.secretKey, { apiVersion: '2025-11-17.clover' });
       const payment = await stripe.paymentIntents.retrieve(stripePaymentIntentId);
 
       if (payment.status !== 'succeeded') {
