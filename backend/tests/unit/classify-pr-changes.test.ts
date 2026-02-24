@@ -1,218 +1,360 @@
 /**
- * Unit tests for PR change classifier.
+ * PR Classifier Tests
  *
- * Tests the deterministic tier classification logic without
- * calling git or reading env vars.
+ * Verifies tier classification across representative file change patterns
  */
-import { describe, it, expect } from "vitest";
-import { classifyFiles } from "../../../scripts/classify-pr-changes";
 
-describe("classifyFiles", () => {
-  // ─── Tier 0: TRIVIAL ────────────────────────────────────────────────
-  it("pure markdown changes -> tier 0 TRIVIAL", () => {
-    const result = classifyFiles(["README.md", "docs/architecture.md"]);
-    expect(result.tier).toBe(0);
-    expect(result.tierName).toBe("TRIVIAL");
-    expect(result.mergeThreshold).toBe(40);
-    expect(result.skipGates).toContain("holodeck");
-    expect(result.skipGates).toContain("invariants");
-    expect(result.skipGates).toContain("tdad");
+import { describe, it, expect } from 'vitest';
+import { classifyPR, PRTier, TIER_THRESHOLDS } from '../../scripts/classify-pr-changes';
+
+describe('PR Tier Classifier', () => {
+  describe('TRIVIAL tier (docs, tests, assets)', () => {
+    it('should classify README-only changes as TRIVIAL', () => {
+      const files = ['README.md'];
+      const result = classifyPR(files);
+
+      expect(result.tier).toBe(PRTier.TRIVIAL);
+      expect(result.tierName).toBe('TRIVIAL');
+      expect(result.threshold).toBe(TIER_THRESHOLDS[PRTier.TRIVIAL]);
+      expect(result.justification).toContain('TRIVIAL: Only documentation, tests, or assets');
+    });
+
+    it('should classify docs folder changes as TRIVIAL', () => {
+      const files = [
+        'docs/API.md',
+        'docs/ARCHITECTURE.md',
+        'docs/CONTRIBUTING.md',
+      ];
+      const result = classifyPR(files);
+
+      expect(result.tier).toBe(PRTier.TRIVIAL);
+    });
+
+    it('should classify test-only changes as TRIVIAL', () => {
+      const files = [
+        'backend/tests/unit/task-service.test.ts',
+        'backend/tests/integration/escrow.test.ts',
+      ];
+      const result = classifyPR(files);
+
+      expect(result.tier).toBe(PRTier.TRIVIAL);
+    });
+
+    it('should classify asset changes as TRIVIAL', () => {
+      const files = [
+        'assets/logo.png',
+        'public/favicon.ico',
+        '.gitignore',
+      ];
+      const result = classifyPR(files);
+
+      expect(result.tier).toBe(PRTier.TRIVIAL);
+    });
   });
 
-  it("image files -> tier 0 TRIVIAL", () => {
-    const result = classifyFiles(["assets/logo.png", "docs/diagram.svg"]);
-    expect(result.tier).toBe(0);
-    expect(result.tierName).toBe("TRIVIAL");
+  describe('STANDARD tier (services, routers)', () => {
+    it('should classify non-financial service changes as STANDARD', () => {
+      const files = [
+        'backend/src/services/TaskService.ts',
+        'backend/src/routers/task.ts',
+      ];
+      const result = classifyPR(files);
+
+      expect(result.tier).toBe(PRTier.STANDARD);
+      expect(result.tierName).toBe('STANDARD');
+      expect(result.threshold).toBe(TIER_THRESHOLDS[PRTier.STANDARD]);
+    });
+
+    it('should classify analytics changes as STANDARD', () => {
+      const files = [
+        'backend/src/services/AnalyticsService.ts',
+        'backend/src/routers/analytics.ts',
+      ];
+      const result = classifyPR(files);
+
+      expect(result.tier).toBe(PRTier.STANDARD);
+    });
+
+    it('should classify notification changes as STANDARD', () => {
+      const files = [
+        'backend/src/services/NotificationService.ts',
+        'backend/src/routers/notification.ts',
+      ];
+      const result = classifyPR(files);
+
+      expect(result.tier).toBe(PRTier.STANDARD);
+    });
   });
 
-  it("non-orchestrator GitHub workflow -> tier 0 TRIVIAL", () => {
-    const result = classifyFiles([".github/workflows/ci.yml"]);
-    expect(result.tier).toBe(0);
-    expect(result.tierName).toBe("TRIVIAL");
+  describe('CRITICAL tier (financial services)', () => {
+    it('should classify EscrowService changes as CRITICAL', () => {
+      const files = ['backend/src/services/EscrowService.ts'];
+      const result = classifyPR(files);
+
+      expect(result.tier).toBe(PRTier.CRITICAL);
+      expect(result.tierName).toBe('CRITICAL');
+      expect(result.threshold).toBe(TIER_THRESHOLDS[PRTier.CRITICAL]);
+      expect(result.justification.some(j => j.includes('CRITICAL'))).toBe(true);
+    });
+
+    it('should classify LedgerService changes as CRITICAL', () => {
+      const files = ['backend/src/services/LedgerService.ts'];
+      const result = classifyPR(files);
+
+      expect(result.tier).toBe(PRTier.CRITICAL);
+    });
+
+    it('should classify PaymentService changes as CRITICAL', () => {
+      const files = ['backend/src/services/PaymentService.ts'];
+      const result = classifyPR(files);
+
+      expect(result.tier).toBe(PRTier.CRITICAL);
+    });
+
+    it('should classify XPService changes as CRITICAL', () => {
+      const files = ['backend/src/services/XPService.ts'];
+      const result = classifyPR(files);
+
+      expect(result.tier).toBe(PRTier.CRITICAL);
+    });
+
+    it('should classify TrustAndSafetyService changes as CRITICAL', () => {
+      const files = ['backend/src/services/TrustAndSafetyService.ts'];
+      const result = classifyPR(files);
+
+      expect(result.tier).toBe(PRTier.CRITICAL);
+    });
+
+    it('should classify escrow router changes as CRITICAL', () => {
+      const files = ['backend/src/routers/escrow.ts'];
+      const result = classifyPR(files);
+
+      expect(result.tier).toBe(PRTier.CRITICAL);
+    });
+
+    it('should classify xpTax router changes as CRITICAL', () => {
+      const files = ['backend/src/routers/xpTax.ts'];
+      const result = classifyPR(files);
+
+      expect(result.tier).toBe(PRTier.CRITICAL);
+    });
   });
 
-  it("LICENSE file -> tier 0 TRIVIAL", () => {
-    const result = classifyFiles(["LICENSE"]);
-    expect(result.tier).toBe(0);
+  describe('ARCHITECTURAL tier (migrations, infrastructure)', () => {
+    it('should classify migrations as ARCHITECTURAL', () => {
+      const files = ['migrations/20260223_001_add_column.sql'];
+      const result = classifyPR(files);
+
+      expect(result.tier).toBe(PRTier.ARCHITECTURAL);
+      expect(result.tierName).toBe('ARCHITECTURAL');
+      expect(result.threshold).toBe(TIER_THRESHOLDS[PRTier.ARCHITECTURAL]);
+      expect(result.justification.some(j => j.includes('ARCHITECTURAL'))).toBe(true);
+    });
+
+    it('should classify server.ts changes as ARCHITECTURAL', () => {
+      const files = ['backend/src/server.ts'];
+      const result = classifyPR(files);
+
+      expect(result.tier).toBe(PRTier.ARCHITECTURAL);
+    });
+
+    it('should classify config.ts changes as ARCHITECTURAL', () => {
+      const files = ['backend/src/config.ts'];
+      const result = classifyPR(files);
+
+      expect(result.tier).toBe(PRTier.ARCHITECTURAL);
+    });
+
+    it('should classify trpc.ts changes as ARCHITECTURAL', () => {
+      const files = ['backend/src/trpc.ts'];
+      const result = classifyPR(files);
+
+      expect(result.tier).toBe(PRTier.ARCHITECTURAL);
+    });
+
+    it('should classify db.ts changes as ARCHITECTURAL', () => {
+      const files = ['backend/src/db.ts'];
+      const result = classifyPR(files);
+
+      expect(result.tier).toBe(PRTier.ARCHITECTURAL);
+    });
+
+    it('should classify orchestrator workflow changes as ARCHITECTURAL', () => {
+      const files = ['.github/workflows/orchestrator.yml'];
+      const result = classifyPR(files);
+
+      expect(result.tier).toBe(PRTier.ARCHITECTURAL);
+    });
+
+    it('should classify holodeck workflow changes as ARCHITECTURAL', () => {
+      const files = ['.github/workflows/holodeck.yml'];
+      const result = classifyPR(files);
+
+      expect(result.tier).toBe(PRTier.ARCHITECTURAL);
+    });
   });
 
-  it(".gitignore -> tier 0 TRIVIAL", () => {
-    const result = classifyFiles([".gitignore"]);
-    expect(result.tier).toBe(0);
+  describe('Mixed tier changes (highest wins)', () => {
+    it('should elevate to ARCHITECTURAL when mixed with STANDARD', () => {
+      const files = [
+        'migrations/20260223_001_add_column.sql',
+        'backend/src/services/TaskService.ts',
+        'README.md',
+      ];
+      const result = classifyPR(files);
+
+      expect(result.tier).toBe(PRTier.ARCHITECTURAL);
+    });
+
+    it('should elevate to CRITICAL when mixed with TRIVIAL', () => {
+      const files = [
+        'backend/src/services/EscrowService.ts',
+        'README.md',
+        'docs/API.md',
+      ];
+      const result = classifyPR(files);
+
+      expect(result.tier).toBe(PRTier.CRITICAL);
+    });
+
+    it('should elevate to CRITICAL when mixing financial and non-financial services', () => {
+      const files = [
+        'backend/src/services/PaymentService.ts',
+        'backend/src/services/NotificationService.ts',
+      ];
+      const result = classifyPR(files);
+
+      expect(result.tier).toBe(PRTier.CRITICAL);
+    });
   });
 
-  // ─── Tier 1: STANDARD ───────────────────────────────────────────────
-  it("router changes -> tier 1 STANDARD", () => {
-    const result = classifyFiles(["backend/src/routers/taskRouter.ts"]);
-    expect(result.tier).toBe(1);
-    expect(result.tierName).toBe("STANDARD");
-    expect(result.mergeThreshold).toBe(80);
-    expect(result.skipGates).toEqual([]);
+  describe('Dimension scoring', () => {
+    it('should detect high blast radius for many file changes', () => {
+      const files = Array.from({ length: 10 }, (_, i) =>
+        `backend/src/services/Service${i}.ts`
+      );
+      const result = classifyPR(files);
+
+      expect(result.dimensions.blastRadius).toBeGreaterThanOrEqual(60);
+    });
+
+    it('should detect high security surface for auth changes', () => {
+      const files = ['backend/src/middleware/auth.ts'];
+      const result = classifyPR(files);
+
+      expect(result.dimensions.securitySurface).toBeGreaterThanOrEqual(60);
+    });
+
+    it('should detect high data mutation for migrations', () => {
+      const files = ['migrations/20260223_001_add_column.sql'];
+      const result = classifyPR(files);
+
+      expect(result.dimensions.dataMutation).toBe(100);
+    });
+
+    it('should detect high user impact for router changes', () => {
+      const files = ['backend/src/routers/task.ts'];
+      const result = classifyPR(files);
+
+      expect(result.dimensions.userImpact).toBeGreaterThanOrEqual(50);
+    });
+
+    it('should detect low reversibility for migrations', () => {
+      const files = ['migrations/20260223_001_add_column.sql'];
+      const result = classifyPR(files);
+
+      expect(result.dimensions.reversibility).toBe(100);
+    });
   });
 
-  it("middleware changes -> tier 1 STANDARD", () => {
-    const result = classifyFiles(["backend/src/middleware/auth.ts"]);
-    expect(result.tier).toBe(1);
-    expect(result.tierName).toBe("STANDARD");
+  describe('Edge cases', () => {
+    it('should handle empty file list gracefully', () => {
+      expect(() => classifyPR([])).toThrow('No changed files detected');
+    });
+
+    it('should handle single file change', () => {
+      const files = ['backend/src/services/TaskService.ts'];
+      const result = classifyPR(files);
+
+      expect(result.tier).toBe(PRTier.STANDARD);
+      expect(result.changedFiles).toHaveLength(1);
+    });
+
+    it('should include all changed files in result', () => {
+      const files = [
+        'README.md',
+        'backend/src/services/TaskService.ts',
+        'docs/API.md',
+      ];
+      const result = classifyPR(files);
+
+      expect(result.changedFiles).toEqual(files);
+    });
+
+    it('should provide justification for classification', () => {
+      const files = ['backend/src/services/EscrowService.ts'];
+      const result = classifyPR(files);
+
+      expect(result.justification).toBeDefined();
+      expect(result.justification.length).toBeGreaterThan(0);
+    });
   });
 
-  it("test file changes -> tier 1 STANDARD", () => {
-    const result = classifyFiles(["backend/tests/unit/foo.test.ts"]);
-    expect(result.tier).toBe(1);
-    expect(result.tierName).toBe("STANDARD");
-  });
+  describe('Real-world scenarios', () => {
+    it('should handle typical bug fix PR (service + test)', () => {
+      const files = [
+        'backend/src/services/TaskService.ts',
+        'backend/tests/unit/task-service.test.ts',
+      ];
+      const result = classifyPR(files);
 
-  it("non-financial service -> tier 1 STANDARD", () => {
-    const result = classifyFiles(["backend/src/services/NotificationService.ts"]);
-    expect(result.tier).toBe(1);
-    expect(result.tierName).toBe("STANDARD");
-  });
+      // Should be STANDARD (test file ignored, service is non-financial)
+      expect(result.tier).toBe(PRTier.STANDARD);
+    });
 
-  // ─── Tier 2: CRITICAL ───────────────────────────────────────────────
-  it("EscrowService changes -> tier 2 CRITICAL", () => {
-    const result = classifyFiles(["backend/src/services/EscrowService.ts"]);
-    expect(result.tier).toBe(2);
-    expect(result.tierName).toBe("CRITICAL");
-    expect(result.mergeThreshold).toBe(90);
-    expect(result.skipGates).toEqual([]);
-  });
+    it('should handle feature PR with router + service + tests', () => {
+      const files = [
+        'backend/src/routers/taskDiscovery.ts',
+        'backend/src/services/TaskDiscoveryService.ts',
+        'backend/tests/unit/task-discovery-service.test.ts',
+        'backend/tests/integration/task-discovery.test.ts',
+      ];
+      const result = classifyPR(files);
 
-  it("Ledger file -> tier 2 CRITICAL", () => {
-    const result = classifyFiles(["backend/src/services/LedgerService.ts"]);
-    expect(result.tier).toBe(2);
-    expect(result.tierName).toBe("CRITICAL");
-  });
+      expect(result.tier).toBe(PRTier.STANDARD);
+    });
 
-  it("Payment file -> tier 2 CRITICAL", () => {
-    const result = classifyFiles(["backend/src/routers/PaymentRouter.ts"]);
-    expect(result.tier).toBe(2);
-    expect(result.tierName).toBe("CRITICAL");
-  });
+    it('should handle hotfix PR with escrow service change', () => {
+      const files = [
+        'backend/src/services/EscrowService.ts',
+        'backend/tests/integration/escrow-service.test.ts',
+      ];
+      const result = classifyPR(files);
 
-  it("Trust file -> tier 2 CRITICAL", () => {
-    const result = classifyFiles(["backend/src/services/TrustService.ts"]);
-    expect(result.tier).toBe(2);
-    expect(result.tierName).toBe("CRITICAL");
-  });
+      expect(result.tier).toBe(PRTier.CRITICAL);
+    });
 
-  it("XP file -> tier 2 CRITICAL", () => {
-    const result = classifyFiles(["backend/src/services/XPService.ts"]);
-    expect(result.tier).toBe(2);
-    expect(result.tierName).toBe("CRITICAL");
-  });
+    it('should handle database schema change with migration + service', () => {
+      const files = [
+        'migrations/20260223_001_add_payment_intent_column.sql',
+        'backend/src/services/PaymentService.ts',
+      ];
+      const result = classifyPR(files);
 
-  it("Stripe file -> tier 2 CRITICAL", () => {
-    const result = classifyFiles(["backend/src/services/StripeService.ts"]);
-    expect(result.tier).toBe(2);
-    expect(result.tierName).toBe("CRITICAL");
-  });
+      expect(result.tier).toBe(PRTier.ARCHITECTURAL);
+    });
 
-  it("case-insensitive financial match -> tier 2", () => {
-    const result = classifyFiles(["backend/src/services/escrowHelpers.ts"]);
-    expect(result.tier).toBe(2);
-  });
+    it('should handle documentation-only PR', () => {
+      const files = [
+        'README.md',
+        'docs/API.md',
+        'docs/ARCHITECTURE.md',
+        'CHANGELOG.md',
+      ];
+      const result = classifyPR(files);
 
-  // ─── Tier 3: ARCHITECTURAL ──────────────────────────────────────────
-  it("migration files -> tier 3 ARCHITECTURAL", () => {
-    const result = classifyFiles(["migrations/001_initial.sql"]);
-    expect(result.tier).toBe(3);
-    expect(result.tierName).toBe("ARCHITECTURAL");
-    expect(result.mergeThreshold).toBe(95);
-  });
-
-  it("server.ts -> tier 3 ARCHITECTURAL", () => {
-    const result = classifyFiles(["backend/src/server.ts"]);
-    expect(result.tier).toBe(3);
-    expect(result.tierName).toBe("ARCHITECTURAL");
-  });
-
-  it("config.ts -> tier 3 ARCHITECTURAL", () => {
-    const result = classifyFiles(["backend/src/config.ts"]);
-    expect(result.tier).toBe(3);
-  });
-
-  it("trpc.ts -> tier 3 ARCHITECTURAL", () => {
-    const result = classifyFiles(["backend/src/trpc.ts"]);
-    expect(result.tier).toBe(3);
-  });
-
-  it("orchestrator.yml -> tier 3 ARCHITECTURAL", () => {
-    const result = classifyFiles([".github/workflows/orchestrator.yml"]);
-    expect(result.tier).toBe(3);
-    expect(result.tierName).toBe("ARCHITECTURAL");
-  });
-
-  it("Dockerfile -> tier 3 ARCHITECTURAL", () => {
-    const result = classifyFiles(["Dockerfile"]);
-    expect(result.tier).toBe(3);
-  });
-
-  it("docker-compose.yml -> tier 3 ARCHITECTURAL", () => {
-    const result = classifyFiles(["docker-compose.yml"]);
-    expect(result.tier).toBe(3);
-  });
-
-  it("infrastructure files -> tier 3 ARCHITECTURAL", () => {
-    const result = classifyFiles(["infrastructure/terraform/main.tf"]);
-    expect(result.tier).toBe(3);
-  });
-
-  it("database directory -> tier 3 ARCHITECTURAL", () => {
-    const result = classifyFiles(["backend/database/schema.sql"]);
-    expect(result.tier).toBe(3);
-  });
-
-  // ─── Mixed tiers (highest wins) ─────────────────────────────────────
-  it("README + EscrowService -> tier 2 (highest wins)", () => {
-    const result = classifyFiles([
-      "README.md",
-      "backend/src/services/EscrowService.ts",
-    ]);
-    expect(result.tier).toBe(2);
-    expect(result.tierName).toBe("CRITICAL");
-    expect(result.fileCount).toBe(2);
-    expect(result.skipGates).toEqual([]);
-  });
-
-  it("migration + router -> tier 3 (highest wins)", () => {
-    const result = classifyFiles([
-      "migrations/002_add_index.sql",
-      "backend/src/routers/taskRouter.ts",
-    ]);
-    expect(result.tier).toBe(3);
-    expect(result.tierName).toBe("ARCHITECTURAL");
-  });
-
-  it("trivial + standard -> tier 1", () => {
-    const result = classifyFiles([
-      "README.md",
-      "backend/src/middleware/auth.ts",
-    ]);
-    expect(result.tier).toBe(1);
-    expect(result.skipGates).toEqual([]);
-  });
-
-  // ─── Edge cases ─────────────────────────────────────────────────────
-  it("empty file list -> tier 0 TRIVIAL", () => {
-    const result = classifyFiles([]);
-    expect(result.tier).toBe(0);
-    expect(result.tierName).toBe("TRIVIAL");
-    expect(result.fileCount).toBe(0);
-    expect(result.skipGates).toContain("holodeck");
-  });
-
-  it("unknown file type defaults to tier 1", () => {
-    const result = classifyFiles(["some-random-file.xyz"]);
-    expect(result.tier).toBe(1);
-  });
-
-  it("justification includes all files", () => {
-    const result = classifyFiles([
-      "README.md",
-      "backend/src/services/EscrowService.ts",
-    ]);
-    expect(result.tierJustification).toHaveLength(2);
-    expect(result.tierJustification[0]).toContain("README.md");
-    expect(result.tierJustification[1]).toContain("EscrowService.ts");
+      expect(result.tier).toBe(PRTier.TRIVIAL);
+      expect(result.threshold).toBe(40);
+    });
   });
 });
