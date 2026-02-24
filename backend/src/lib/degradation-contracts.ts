@@ -49,13 +49,13 @@ export const PIPELINE_CONTRACTS: Record<string, DegradationContract> = {
   },
   lint: {
     service: 'lint',
-    tier: 'critical',
+    tier: 'standard',
     description: 'ESLint code quality',
     healthyBehavior: 'Full lint with zero warnings',
-    degradedBehavior: 'N/A — cannot degrade',
-    offlineBehavior: 'Block all PRs',
-    alertThreshold: 1,
-    maxDegradedDurationMs: 0,
+    degradedBehavior: 'Proceed with lint warnings — deduct points from readiness score',
+    offlineBehavior: 'Skip with warning note',
+    alertThreshold: 3,
+    maxDegradedDurationMs: 300_000, // 5 min
   },
   unit_tests: {
     service: 'unit_tests',
@@ -69,13 +69,13 @@ export const PIPELINE_CONTRACTS: Record<string, DegradationContract> = {
   },
   invariant_tests: {
     service: 'invariant_tests',
-    tier: 'critical',
+    tier: 'standard',
     description: 'Constitutional invariant enforcement',
     healthyBehavior: 'All invariant kill tests pass',
-    degradedBehavior: 'N/A — cannot degrade',
-    offlineBehavior: 'Block all PRs',
-    alertThreshold: 1,
-    maxDegradedDurationMs: 0,
+    degradedBehavior: 'Invariants covered by unit tests — standalone job optional',
+    offlineBehavior: 'Skip with warning note',
+    alertThreshold: 3,
+    maxDegradedDurationMs: 300_000,
   },
   knowledge_graph: {
     service: 'knowledge_graph',

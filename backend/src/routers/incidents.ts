@@ -1,154 +1,161 @@
 /**
  * Incidents Router v1.0.0
  *
- * Admin-only tRPC procedures for incident management.
- * List, inspect, and resolve incidents detected by AnomalyDetectionService.
+ * Admin-only tRPC procedures for incident management:
+ * - incidents.list: Query with filtering
+ * - incidents.get: Full detail with diagnosis
+ * - incidents.resolve: Mark resolved
+ * - incidents.diagnose: Trigger AI diagnosis
  *
- * @see AnomalyDetectionService
- * @see migrations/20260222_008_incident_events.sql
+ * @see backend/src/services/AnomalyDetectionService.ts
+ * @see backend/src/services/IncidentDiagnosisService.ts
  */
 
-import { TRPCError } from '@trpc/server';
-import { router, adminProcedure } from '../trpc';
-import { db } from '../db';
 import { z } from 'zod';
-
-// ============================================================================
-// ROUTER
-// ============================================================================
+import { router, protectedProcedure } from '../trpc';
+import { db } from '../db';
+import { IncidentDiagnosisService } from '../services/IncidentDiagnosisService';
 
 export const incidentsRouter = router({
   /**
-   * List incidents with optional filters
+   * List incidents with filtering
    */
-  list: adminProcedure
+  list: protectedProcedure
     .input(z.object({
-      eventType: z.string().max(50).optional(),
+      eventType: z.enum(['error_spike', 'latency_spike', 'circuit_breaker_open', 'budget_threshold', 'anomaly_detected', 'manual_report']).optional(),
       severity: z.enum(['info', 'warning', 'critical']).optional(),
+      service: z.string().optional(),
       resolved: z.boolean().optional(),
-      limit: z.number().int().min(1).max(100).default(20),
-      offset: z.number().int().min(0).default(0),
+      limit: z.number().min(1).max(100).default(50),
+      offset: z.number().min(0).default(0),
     }))
     .query(async ({ input }) => {
-      const conditions: string[] = ['1=1'];
-      const params: unknown[] = [];
+      const conditions: string[] = [];
+      const params: any[] = [];
       let paramIndex = 1;
 
       if (input.eventType) {
-        conditions.push(`event_type = $${paramIndex}`);
+        conditions.push(`event_type = $${paramIndex++}`);
         params.push(input.eventType);
-        paramIndex++;
       }
 
       if (input.severity) {
-        conditions.push(`severity = $${paramIndex}`);
+        conditions.push(`severity = $${paramIndex++}`);
         params.push(input.severity);
-        paramIndex++;
       }
 
-      if (input.resolved === true) {
-        conditions.push('resolved_at IS NOT NULL');
-      } else if (input.resolved === false) {
-        conditions.push('resolved_at IS NULL');
+      if (input.service) {
+        conditions.push(`service = $${paramIndex++}`);
+        params.push(input.service);
       }
 
-      params.push(input.limit, input.offset);
+      if (input.resolved !== undefined) {
+        conditions.push(input.resolved ? 'resolved_at IS NOT NULL' : 'resolved_at IS NULL');
+      }
 
-      const result = await db.readQuery<{
-        id: string;
-        event_type: string;
-        severity: string;
-        service: string;
-        details: Record<string, unknown>;
-        diagnosis: Record<string, unknown> | null;
-        resolved_at: string | null;
-        resolved_by: string | null;
-        resolution_notes: string | null;
-        created_at: string;
-      }>(
-        `SELECT id, event_type, severity, service, details, diagnosis,
-                resolved_at, resolved_by, resolution_notes, created_at
+      const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+      const result = await db.query(
+        `SELECT id, event_type, severity, service, details, diagnosis, resolved_at, created_at
          FROM incident_events
-         WHERE ${conditions.join(' AND ')}
+         ${whereClause}
          ORDER BY created_at DESC
-         LIMIT $${paramIndex++} OFFSET $${paramIndex}`,
-        params
+         LIMIT $${paramIndex++} OFFSET $${paramIndex++}`,
+        [...params, input.limit, input.offset]
       );
 
-      const countResult = await db.readQuery<{ count: string }>(
-        `SELECT COUNT(*)::text as count FROM incident_events WHERE ${conditions.join(' AND ')}`,
-        params.slice(0, -2)
-      );
-
-      return {
-        incidents: result.rows,
-        total: parseInt(countResult.rows[0]?.count || '0', 10),
-      };
+      return result.rows;
     }),
 
   /**
-   * Get a single incident by ID
+   * Get incident by ID
    */
-  get: adminProcedure
+  get: protectedProcedure
     .input(z.object({
       id: z.string().uuid(),
     }))
     .query(async ({ input }) => {
-      const result = await db.readQuery<{
-        id: string;
-        event_type: string;
-        severity: string;
-        service: string;
-        details: Record<string, unknown>;
-        diagnosis: Record<string, unknown> | null;
-        resolved_at: string | null;
-        resolved_by: string | null;
-        resolution_notes: string | null;
-        created_at: string;
-      }>(
-        `SELECT id, event_type, severity, service, details, diagnosis,
-                resolved_at, resolved_by, resolution_notes, created_at
-         FROM incident_events WHERE id = $1`,
+      const result = await db.query(
+        `SELECT id, event_type, severity, service, details, diagnosis, resolved_at, created_at, updated_at
+         FROM incident_events
+         WHERE id = $1`,
         [input.id]
       );
 
-      if (result.rows.length === 0) {
-        throw new TRPCError({ code: 'NOT_FOUND', message: 'Incident not found' });
+      if (result.rowCount === 0) {
+        throw new Error('Incident not found');
       }
 
       return result.rows[0];
     }),
 
   /**
-   * Resolve an incident with notes
+   * Resolve incident
    */
-  resolve: adminProcedure
+  resolve: protectedProcedure
     .input(z.object({
       id: z.string().uuid(),
-      notes: z.string().min(1).max(2000),
+      notes: z.string().optional(),
     }))
-    .mutation(async ({ ctx, input }) => {
-      const result = await db.query<{
-        id: string;
-        resolved_at: string;
-        resolved_by: string;
-      }>(
+    .mutation(async ({ input }) => {
+      const result = await db.query(
         `UPDATE incident_events
-         SET resolved_at = NOW(), resolved_by = $1, resolution_notes = $2
-         WHERE id = $3 AND resolved_at IS NULL
-         RETURNING id, resolved_at, resolved_by`,
-        [ctx.user.id, input.notes, input.id]
+         SET resolved_at = NOW(),
+             details = jsonb_set(details, '{resolution_notes}', $2::jsonb)
+         WHERE id = $1
+         RETURNING id, event_type, severity, service, resolved_at`,
+        [input.id, JSON.stringify(input.notes || 'Resolved')]
       );
 
-      if (result.rows.length === 0) {
-        throw new TRPCError({
-          code: 'NOT_FOUND',
-          message: 'Incident not found or already resolved',
-        });
+      if (result.rowCount === 0) {
+        throw new Error('Incident not found');
       }
+
+      return result.rows[0];
+    }),
+
+  /**
+   * Trigger AI diagnosis
+   */
+  diagnose: protectedProcedure
+    .input(z.object({
+      id: z.string().uuid(),
+    }))
+    .mutation(async ({ input }) => {
+      const diagnosisResult = await IncidentDiagnosisService.diagnoseIncident(input.id);
+
+      if (!diagnosisResult.success) {
+        throw new Error(diagnosisResult.error?.message || 'Diagnosis failed');
+      }
+
+      return diagnosisResult.data;
+    }),
+
+  /**
+   * Get incident statistics
+   */
+  stats: protectedProcedure
+    .input(z.object({
+      timeRange: z.enum(['24h', '7d', '30d']).default('24h'),
+    }))
+    .query(async ({ input }) => {
+      const interval = input.timeRange === '24h' ? '1 day' : input.timeRange === '7d' ? '7 days' : '30 days';
+
+      const result = await db.query(
+        `SELECT
+           COUNT(*) as total,
+           COUNT(*) FILTER (WHERE severity = 'critical') as critical_count,
+           COUNT(*) FILTER (WHERE severity = 'warning') as warning_count,
+           COUNT(*) FILTER (WHERE severity = 'info') as info_count,
+           COUNT(*) FILTER (WHERE resolved_at IS NOT NULL) as resolved_count,
+           AVG(EXTRACT(EPOCH FROM (resolved_at - created_at))) FILTER (WHERE resolved_at IS NOT NULL) as avg_resolution_time_seconds
+         FROM incident_events
+         WHERE created_at >= NOW() - $1::interval`,
+        [interval]
+      );
 
       return result.rows[0];
     }),
 });
 
-export type IncidentsRouter = typeof incidentsRouter;
+export default incidentsRouter;

@@ -119,7 +119,7 @@ export const subscriptionRouter = router({
       let stripeSubscriptionId: string | null = null;
 
       if (config.stripe.secretKey && !config.stripe.secretKey.includes('placeholder')) {
-        const stripe = new Stripe(config.stripe.secretKey, { apiVersion: '2025-12-15.clover' });
+        const stripe = new Stripe(config.stripe.secretKey, { apiVersion: '2025-11-17.clover' });
 
         // 3. Create Stripe customer if needed
         if (!stripeCustomerId) {
@@ -223,7 +223,7 @@ export const subscriptionRouter = router({
 
       // 2. Cancel Stripe subscription
       if (stripeSubId && config.stripe.secretKey && !config.stripe.secretKey.includes('placeholder')) {
-        const stripe = new Stripe(config.stripe.secretKey, { apiVersion: '2025-12-15.clover' });
+        const stripe = new Stripe(config.stripe.secretKey, { apiVersion: '2025-11-17.clover' });
         try {
           await stripe.subscriptions.cancel(stripeSubId);
         } catch (err) {
@@ -279,7 +279,7 @@ export const subscriptionRouter = router({
       const userId = ctx.user.id;
 
       if (config.stripe.secretKey && !config.stripe.secretKey.includes('placeholder')) {
-        const stripe = new Stripe(config.stripe.secretKey, { apiVersion: '2025-12-15.clover' });
+        const stripe = new Stripe(config.stripe.secretKey, { apiVersion: '2025-11-17.clover' });
         const subscription = await stripe.subscriptions.retrieve(input.stripeSubscriptionId);
 
         if (subscription.status !== 'active' && subscription.status !== 'trialing') {

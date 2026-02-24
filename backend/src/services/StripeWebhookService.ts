@@ -57,7 +57,7 @@ function getStripeClient(): Stripe {
       throw new Error('Stripe not configured');
     }
     stripe = new Stripe(config.stripe.secretKey, {
-      apiVersion: '2025-12-15.clover',
+      apiVersion: '2025-11-17.clover',
     });
   }
   return stripe;
