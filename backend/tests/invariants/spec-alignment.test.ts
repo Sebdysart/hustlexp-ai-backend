@@ -360,7 +360,17 @@ describe('SPEC ALIGNMENT: Escrow State Machine (PRODUCT_SPEC §4.2, §4.3)', () 
         }],
       });
 
-      // Mock 3: UPDATE escrow to RELEASED (the actual state transition)
+      // Mock 3: SELECT worker KYC info (KYC gate - added for 72-hour fixes)
+      db.query.mockResolvedValueOnce({
+        rowCount: 1,
+        rows: [{
+          payouts_enabled: true,
+          stripe_connect_id: 'acct_worker1',
+          stripe_connect_status: 'enabled',
+        }],
+      });
+
+      // Mock 4: UPDATE escrow to RELEASED (the actual state transition)
       db.query.mockResolvedValueOnce({
         rowCount: 1,
         rows: [{
@@ -373,7 +383,7 @@ describe('SPEC ALIGNMENT: Escrow State Machine (PRODUCT_SPEC §4.2, §4.3)', () 
         }],
       });
 
-      // Mock 4+: Downstream service calls (earnings tracking, XP, etc.)
+      // Mock 5+: Downstream service calls (earnings tracking, XP, etc.)
       db.query.mockResolvedValue({ rowCount: 0, rows: [] });
 
       const result = await EscrowService.release({ escrowId: 'escrow-1' });
@@ -394,19 +404,29 @@ describe('SPEC ALIGNMENT: Escrow State Machine (PRODUCT_SPEC §4.2, §4.3)', () 
         rows: [{ worker_id: 'worker-1', price: 1000 }],
       });
 
-      // Mock 3: UPDATE escrow (returns empty = no transition, triggers fallback)
+      // Mock 3: SELECT worker KYC info (KYC gate)
+      db.query.mockResolvedValueOnce({
+        rowCount: 1,
+        rows: [{
+          payouts_enabled: true,
+          stripe_connect_id: 'acct_worker1',
+          stripe_connect_status: 'enabled',
+        }],
+      });
+
+      // Mock 4: UPDATE escrow (returns empty = no transition, triggers fallback)
       db.query.mockResolvedValueOnce({
         rowCount: 1,
         rows: [{ id: 'escrow-1', task_id: 'task-1', amount: 1000, state: 'RELEASED', released_at: new Date() }],
       });
 
-      // Mock 4+: Downstream service calls
+      // Mock 5+: Downstream service calls
       db.query.mockResolvedValue({ rowCount: 0, rows: [] });
 
       await EscrowService.release({ escrowId: 'escrow-1' });
 
-      // The UPDATE query is the 3rd db.query call (index 2)
-      const updateSql = db.query.mock.calls[2][0];
+      // The UPDATE query is the 4th db.query call (index 3) after adding KYC gate
+      const updateSql = db.query.mock.calls[3][0];
       expect(updateSql).toContain("state IN ('FUNDED', 'LOCKED_DISPUTE')");
     });
   });
