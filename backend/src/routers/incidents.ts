@@ -142,7 +142,7 @@ export const incidentsRouter = router({
       const interval = input.timeRange === '24h' ? '1 day' : input.timeRange === '7d' ? '7 days' : '30 days';
 
       const result = await db.query(
-        `SELECT 
+        `SELECT
            COUNT(*) as total,
            COUNT(*) FILTER (WHERE severity = 'critical') as critical_count,
            COUNT(*) FILTER (WHERE severity = 'warning') as warning_count,
@@ -150,8 +150,8 @@ export const incidentsRouter = router({
            COUNT(*) FILTER (WHERE resolved_at IS NOT NULL) as resolved_count,
            AVG(EXTRACT(EPOCH FROM (resolved_at - created_at))) FILTER (WHERE resolved_at IS NOT NULL) as avg_resolution_time_seconds
          FROM incident_events
-         WHERE created_at >= NOW() - INTERVAL '${interval}'`,
-        []
+         WHERE created_at >= NOW() - $1::interval`,
+        [interval]
       );
 
       return result.rows[0];

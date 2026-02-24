@@ -26,6 +26,8 @@ interface IncidentStats {
 }
 
 async function generateReport(days: number = 7): Promise<IncidentStats> {
+  const interval = `${days} days`;
+
   // Overall stats
   const overallResult = await db.query<{
     total: string;
@@ -35,7 +37,7 @@ async function generateReport(days: number = 7): Promise<IncidentStats> {
     resolved_count: string;
     avg_resolution_minutes: string;
   }>(
-    `SELECT 
+    `SELECT
        COUNT(*) as total,
        COUNT(*) FILTER (WHERE severity = 'critical') as critical_count,
        COUNT(*) FILTER (WHERE severity = 'warning') as warning_count,
@@ -43,8 +45,8 @@ async function generateReport(days: number = 7): Promise<IncidentStats> {
        COUNT(*) FILTER (WHERE resolved_at IS NOT NULL) as resolved_count,
        AVG(EXTRACT(EPOCH FROM (resolved_at - created_at)) / 60) FILTER (WHERE resolved_at IS NOT NULL) as avg_resolution_minutes
      FROM incident_events
-     WHERE created_at >= NOW() - INTERVAL '${days} days'`,
-    []
+     WHERE created_at >= NOW() - $1::interval`,
+    [interval]
   );
 
   const overall = overallResult.rows[0];
@@ -54,10 +56,10 @@ async function generateReport(days: number = 7): Promise<IncidentStats> {
   const byTypeResult = await db.query<{ event_type: string; count: string }>(
     `SELECT event_type, COUNT(*) as count
      FROM incident_events
-     WHERE created_at >= NOW() - INTERVAL '${days} days'
+     WHERE created_at >= NOW() - $1::interval
      GROUP BY event_type
      ORDER BY count DESC`,
-    []
+    [interval]
   );
 
   const byType: Record<string, number> = {};
@@ -69,11 +71,11 @@ async function generateReport(days: number = 7): Promise<IncidentStats> {
   const byServiceResult = await db.query<{ service: string; count: string }>(
     `SELECT service, COUNT(*) as count
      FROM incident_events
-     WHERE created_at >= NOW() - INTERVAL '${days} days'
+     WHERE created_at >= NOW() - $1::interval
      GROUP BY service
      ORDER BY count DESC
      LIMIT 10`,
-    []
+    [interval]
   );
 
   const byService: Record<string, number> = {};
