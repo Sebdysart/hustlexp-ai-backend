@@ -94,12 +94,21 @@ describe('Money Path: Escrow Lifecycle', () => {
         rowCount: 1,
         rows: [{ worker_id: 'worker-1', price: 5000 }],
       });
-      // Mock 3: UPDATE escrow to RELEASED
+      // Mock 3: SELECT worker KYC status (KYC gate)
+      db.query.mockResolvedValueOnce({
+        rowCount: 1,
+        rows: [{
+          payouts_enabled: true,
+          stripe_connect_id: 'acct_test123',
+          stripe_connect_status: 'verified'
+        }],
+      });
+      // Mock 4: UPDATE escrow to RELEASED
       db.query.mockResolvedValueOnce({
         rowCount: 1,
         rows: [{ id: 'escrow-1', task_id: 'task-1', amount: 5000, state: 'RELEASED', released_at: new Date() }],
       });
-      // Mock 4+: Downstream (earnings, XP, etc.)
+      // Mock 5+: Downstream (earnings, XP, etc.)
       db.query.mockResolvedValueOnce({ rowCount: 0, rows: [] });
       db.query.mockResolvedValueOnce({ rowCount: 0, rows: [] });
       db.query.mockResolvedValueOnce({ rowCount: 0, rows: [] });
@@ -180,6 +189,15 @@ describe('Money Path: Escrow Lifecycle', () => {
       db.query.mockResolvedValueOnce({
         rowCount: 1,
         rows: [{ worker_id: 'worker-1', price: 5000 }],
+      });
+      // KYC gate check
+      db.query.mockResolvedValueOnce({
+        rowCount: 1,
+        rows: [{
+          payouts_enabled: true,
+          stripe_connect_id: 'acct_test123',
+          stripe_connect_status: 'verified'
+        }],
       });
       db.query.mockResolvedValueOnce({
         rowCount: 1,
