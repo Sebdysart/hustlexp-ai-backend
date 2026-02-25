@@ -204,22 +204,32 @@ export async function checkAIBudget(estimatedCost: number): Promise<{ allowed: b
 
     if (redisUrl && redisToken) {
       const redis = new Redis({ url: redisUrl, token: redisToken });
-      const currentCostStr = await redis.get<string>(redisKey);
-      const currentCost = parseFloat(currentCostStr || '0');
 
-      if (currentCost + estimatedCost > DAILY_COST_BUDGET_USD) {
+      // Atomic increment to avoid concurrency race conditions across instances.
+      // NOTE: Upstash Redis supports INCRBYFLOAT.
+      const newCost = await redis.incrbyfloat(redisKey, estimatedCost);
+
+      // If this request pushes us over budget, roll back the increment and reject.
+      if (newCost > DAILY_COST_BUDGET_USD) {
+        await redis.incrbyfloat(redisKey, -estimatedCost);
+
+        const previousCost = newCost - estimatedCost;
         log.error({
-          dailyCost: currentCost,
+          dailyCost: previousCost,
           requestCost: estimatedCost,
           budget: DAILY_COST_BUDGET_USD,
           source: 'redis',
         }, 'AI daily budget exceeded');
-        return { allowed: false, remaining: DAILY_COST_BUDGET_USD - currentCost };
+
+        return { allowed: false, remaining: DAILY_COST_BUDGET_USD - previousCost };
       }
 
-      // Increment cost in Redis with TTL of 25 hours (auto-cleanup)
-      const newCost = currentCost + estimatedCost;
-      await redis.set(redisKey, newCost.toString(), { ex: 90000 });
+      // Ensure the key expires (25 hours). Only set TTL if missing.
+      const ttl = await redis.ttl(redisKey);
+      if (ttl < 0) {
+        await redis.expire(redisKey, 90000);
+      }
+
       return { allowed: true, remaining: DAILY_COST_BUDGET_USD - newCost };
     }
   } catch (redisErr) {

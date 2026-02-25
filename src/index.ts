@@ -140,6 +140,19 @@ const OPTIONAL_AUTH_ROUTES = [
     '/api/tips',        // Tips
     '/api/pricing',     // Pricing info (public)
     '/identity',        // Identity verification start
+
+    // Previously-public routes: keep optional auth to preserve demo/anonymous UX
+    '/api/profile',
+    '/api/trust',
+    '/api/cards',
+    '/api/match',
+    '/api/cost',
+    '/api/proof',
+    '/api/boost',
+    '/api/planner',
+    '/api/actions',
+    '/api/brain',
+    '/api/memory',
 ];
 
 // Add global auth hook - protects ALL routes except public ones

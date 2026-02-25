@@ -21,7 +21,7 @@ interface EnvVars {
 
 export const env: EnvVars = new Proxy({} as EnvVars, {
   get(_target, prop: string) {
-    return process.env[prop] || '';
+    return process.env[prop] ?? '';
   },
   has(_target, prop: string) {
     return prop in process.env;
