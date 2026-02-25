@@ -12,6 +12,30 @@ import { logger } from '../logger';
 
 const log = logger.child({ module: 'ai-guard' });
 
+// Lazy singleton Redis client for AI budget tracking.
+// Avoids creating a new client on every checkAIBudget() call.
+let _redisClient: import('@upstash/redis').Redis | null = null;
+let _redisInitAttempted = false;
+
+async function getRedisClient(): Promise<import('@upstash/redis').Redis | null> {
+  if (_redisClient) return _redisClient;
+  if (_redisInitAttempted) return null; // already tried and failed / no creds
+  _redisInitAttempted = true;
+
+  try {
+    const { Redis } = await import('@upstash/redis');
+    const redisUrl = process.env.UPSTASH_REDIS_REST_URL;
+    const redisToken = process.env.UPSTASH_REDIS_REST_TOKEN;
+    if (redisUrl && redisToken) {
+      _redisClient = new Redis({ url: redisUrl, token: redisToken });
+      return _redisClient;
+    }
+  } catch {
+    log.warn('Failed to initialize Redis client for AI budget tracking');
+  }
+  return null;
+}
+
 // ============================================================================
 // TYPES
 // ============================================================================
@@ -198,12 +222,9 @@ export async function checkAIBudget(estimatedCost: number): Promise<{ allowed: b
 
   // Try Redis-backed tracking first (cross-instance safe)
   try {
-    const { Redis } = await import('@upstash/redis');
-    const redisUrl = process.env.UPSTASH_REDIS_REST_URL;
-    const redisToken = process.env.UPSTASH_REDIS_REST_TOKEN;
+    const redis = await getRedisClient();
 
-    if (redisUrl && redisToken) {
-      const redis = new Redis({ url: redisUrl, token: redisToken });
+    if (redis) {
 
       // Atomic increment to avoid concurrency race conditions across instances.
       // NOTE: Upstash Redis supports INCRBYFLOAT.
