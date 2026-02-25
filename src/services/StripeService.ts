@@ -390,10 +390,13 @@ class StripeServiceClass {
              `;
 
             // 2. Update Lock
+            // 'released' is a terminal state in StripeMoneyEngine — no further transitions allowed.
+            // Previously this set next_allowed_event to ['FORCE_REFUND'] which is not a valid MoneyEvent.
+            // Valid MoneyEvents are: HOLD_ESCROW, RELEASE_PAYOUT, REFUND_ESCROW only.
             await tx`
                  UPDATE money_state_lock
                  SET current_state = 'released',
-                     next_allowed_event = ${['FORCE_REFUND']},
+                     next_allowed_event = ${[]},
                      stripe_transfer_id = ${transfer.id},
                      version = version + 1
                  WHERE task_id = ${taskId} AND current_state = 'held'
