@@ -182,29 +182,67 @@ export function trackAIUsage(metrics: AIUsageMetrics): void {
 // ============================================================================
 
 const DAILY_COST_BUDGET_USD = 50; // $50/day cap for alpha
-let dailyCostAccumulator = 0;
-let lastResetDate = new Date().toDateString();
+
+// In-memory fallback for when Redis is unavailable
+let localDailyCostAccumulator = 0;
+let localLastResetDate = new Date().toDateString();
 
 /**
  * Check if AI spending is within daily budget.
+ * Uses Redis for cross-instance tracking when available, falls back to in-memory.
  * Resets at midnight UTC.
  */
-export function checkAIBudget(estimatedCost: number): { allowed: boolean; remaining: number } {
-  const today = new Date().toDateString();
-  if (today !== lastResetDate) {
-    dailyCostAccumulator = 0;
-    lastResetDate = today;
+export async function checkAIBudget(estimatedCost: number): Promise<{ allowed: boolean; remaining: number }> {
+  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  const redisKey = `ai:daily_cost:${today}`;
+
+  // Try Redis-backed tracking first (cross-instance safe)
+  try {
+    const { Redis } = await import('@upstash/redis');
+    const redisUrl = process.env.UPSTASH_REDIS_REST_URL;
+    const redisToken = process.env.UPSTASH_REDIS_REST_TOKEN;
+
+    if (redisUrl && redisToken) {
+      const redis = new Redis({ url: redisUrl, token: redisToken });
+      const currentCostStr = await redis.get<string>(redisKey);
+      const currentCost = parseFloat(currentCostStr || '0');
+
+      if (currentCost + estimatedCost > DAILY_COST_BUDGET_USD) {
+        log.error({
+          dailyCost: currentCost,
+          requestCost: estimatedCost,
+          budget: DAILY_COST_BUDGET_USD,
+          source: 'redis',
+        }, 'AI daily budget exceeded');
+        return { allowed: false, remaining: DAILY_COST_BUDGET_USD - currentCost };
+      }
+
+      // Increment cost in Redis with TTL of 25 hours (auto-cleanup)
+      const newCost = currentCost + estimatedCost;
+      await redis.set(redisKey, newCost.toString(), { ex: 90000 });
+      return { allowed: true, remaining: DAILY_COST_BUDGET_USD - newCost };
+    }
+  } catch (redisErr) {
+    log.warn({ redisErr }, 'Redis AI budget tracking unavailable — falling back to in-memory');
   }
 
-  if (dailyCostAccumulator + estimatedCost > DAILY_COST_BUDGET_USD) {
+  // Fallback: in-memory tracking (single-instance only)
+  const todayLocal = new Date().toDateString();
+  if (todayLocal !== localLastResetDate) {
+    localDailyCostAccumulator = 0;
+    localLastResetDate = todayLocal;
+  }
+
+  if (localDailyCostAccumulator + estimatedCost > DAILY_COST_BUDGET_USD) {
     log.error({
-      dailyCost: dailyCostAccumulator,
+      dailyCost: localDailyCostAccumulator,
       requestCost: estimatedCost,
       budget: DAILY_COST_BUDGET_USD,
+      source: 'memory',
     }, 'AI daily budget exceeded');
-    return { allowed: false, remaining: DAILY_COST_BUDGET_USD - dailyCostAccumulator };
+    return { allowed: false, remaining: DAILY_COST_BUDGET_USD - localDailyCostAccumulator };
   }
 
-  dailyCostAccumulator += estimatedCost;
-  return { allowed: true, remaining: DAILY_COST_BUDGET_USD - dailyCostAccumulator };
+  localDailyCostAccumulator += estimatedCost;
+  return { allowed: true, remaining: DAILY_COST_BUDGET_USD - localDailyCostAccumulator };
 }

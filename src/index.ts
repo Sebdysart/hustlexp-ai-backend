@@ -41,6 +41,7 @@ import { testConnection, isDatabaseAvailable, sql } from './db/index.js';
 import { runMigrations, seedTestData } from './db/schema.js';
 import { checkRateLimit, isRateLimitingEnabled, testRedisConnection } from './middleware/rateLimiter.js';
 import { validateEnv, logEnvStatus } from './utils/envValidator.js';
+import { validateConfig } from './config.js';
 import { runHealthCheck, quickHealthCheck } from './utils/healthCheck.js';
 import { requireAuth, optionalAuth, isAuthEnabled } from './middleware/firebaseAuth.js';
 import { DatabaseHealthService } from './services/DatabaseHealthService.js';
@@ -58,11 +59,37 @@ import { adminRateLimiter, financialRateLimiter } from './middleware/rateLimiter
 
 const fastify = Fastify({
     logger: false, // We use our own pino logger
+    bodyLimit: 1_048_576, // 1MB max body size (SECURITY: prevent memory exhaustion)
 });
 
-// Register CORS
+// Register CORS — restrict to configured origins (SECURITY: never use origin:true in production)
 await fastify.register(cors, {
-    origin: true,
+    origin: (origin, cb) => {
+        // Allow requests with no origin (mobile apps, curl, server-to-server)
+        if (!origin) return cb(null, true);
+
+        const allowedOrigins = process.env.ALLOWED_ORIGINS
+            ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim()).filter(Boolean)
+            : [];
+
+        // In development, allow localhost origins
+        const isDev = process.env.NODE_ENV !== 'production';
+        if (isDev && (origin.includes('localhost') || origin.includes('127.0.0.1'))) {
+            return cb(null, true);
+        }
+
+        if (allowedOrigins.length === 0 && isDev) {
+            // Dev fallback: allow all if no origins configured
+            return cb(null, true);
+        }
+
+        if (allowedOrigins.includes(origin)) {
+            return cb(null, true);
+        }
+
+        cb(new Error(`CORS: Origin ${origin} not allowed`), false);
+    },
+    credentials: true,
 });
 
 // Register raw-body plugin for Stripe webhook signature verification
@@ -87,50 +114,50 @@ fastify.addHook('onResponse', returnRequestId);
 // ============================================
 
 // Public routes that don't require authentication
+// SECURITY: Only truly public endpoints should be listed here.
+// Sensitive endpoints moved to OPTIONAL_AUTH_ROUTES (auth available but not required).
 const PUBLIC_ROUTES = [
     '/health',
     '/health/detailed',
-    // Core API endpoints for frontend
-    '/api/tasks',
-    '/api/users',
-    // AI endpoints
-    '/ai/orchestrate',
-    '/ai/onboarding',
-    '/ai/task-card',
-    '/api/onboarding',  // Alias for frontend compatibility
-    // Gamification endpoints (allow optional auth - they work for demo users too)
-    '/api/coach',
-    '/api/badges',
-    '/api/quests',
-    '/api/tips',
-    '/api/profile',
-    '/api/trust',
-    '/api/cards',
-    '/api/match',
-    '/api/cost',
-    '/api/proof',
-    '/api/pricing',
-    '/api/boost',
-    '/api/planner',
-    '/api/actions',
-    '/api/brain',
-    '/api/memory',
-    '/identity', // Merged Identity Routes
-    '/webhooks/identity',
     // Stripe webhook (uses Stripe signature verification, not Firebase auth)
     '/api/stripe/webhook',
+    // Webhooks from external services
+    '/webhooks/identity',
+];
+
+// Routes where auth is checked but not required (demo/anonymous access allowed)
+// These use optionalAuth — if a token is present it's validated, but requests without tokens are allowed
+const OPTIONAL_AUTH_ROUTES = [
+    '/api/tasks',       // Task browsing (read-only)
+    '/api/users',       // User lookup
+    '/ai/orchestrate',  // AI chat (may work in demo mode)
+    '/ai/onboarding',   // Onboarding flow
+    '/ai/task-card',    // Card generation
+    '/api/onboarding',  // Alias for frontend compatibility
+    '/api/coach',       // Growth coach tips
+    '/api/badges',      // Badge browsing
+    '/api/quests',      // Quest browsing
+    '/api/tips',        // Tips
+    '/api/pricing',     // Pricing info (public)
+    '/identity',        // Identity verification start
 ];
 
 // Add global auth hook - protects ALL routes except public ones
 fastify.addHook('onRequest', async (request, reply) => {
     const path = request.url.split('?')[0]; // Remove query params
 
-    // Skip auth for public routes
+    // Skip auth entirely for public routes (webhooks, health)
     if (PUBLIC_ROUTES.some(route => path === route || path.startsWith(route + '/'))) {
         return;
     }
 
-    // Require authentication for all other routes
+    // Optional auth for browsing/demo routes — validate token if present, but don't require it
+    if (OPTIONAL_AUTH_ROUTES.some(route => path === route || path.startsWith(route + '/'))) {
+        await optionalAuth(request, reply);
+        return;
+    }
+
+    // Require authentication for all other routes (financial, admin, sensitive)
     await requireAuth(request, reply);
 });
 
@@ -4447,6 +4474,21 @@ const PORT = parseInt(process.env.PORT || '3000');
 
 async function start() {
     try {
+        // Validate backend configuration (fail fast on critical missing vars)
+        const configResult = validateConfig();
+        if (!configResult.valid) {
+            for (const err of configResult.errors) {
+                logger.error(`CONFIG ERROR: ${err}`);
+            }
+            if (process.env.NODE_ENV === 'production') {
+                logger.fatal('Cannot start in production with invalid configuration');
+                process.exit(1);
+            }
+        }
+        for (const warn of configResult.warnings) {
+            logger.warn(`CONFIG WARNING: ${warn}`);
+        }
+
         // Validate environment variables
         const envResult = validateEnv();
         logEnvStatus(envResult);
