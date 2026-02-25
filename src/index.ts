@@ -72,10 +72,15 @@ await fastify.register(cors, {
             ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim()).filter(Boolean)
             : [];
 
-        // In development, allow localhost origins
+        // In development, allow localhost origins (parse URL to prevent bypass via crafted domains)
         const isDev = process.env.NODE_ENV !== 'production';
-        if (isDev && (origin.includes('localhost') || origin.includes('127.0.0.1'))) {
-            return cb(null, true);
+        if (isDev) {
+            try {
+                const hostname = new URL(origin).hostname;
+                if (hostname === 'localhost' || hostname === '127.0.0.1') {
+                    return cb(null, true);
+                }
+            } catch { /* invalid origin URL, fall through */ }
         }
 
         if (allowedOrigins.length === 0 && isDev) {
