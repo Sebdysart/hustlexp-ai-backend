@@ -4430,26 +4430,40 @@ fastify.get('/api/admin/ai/routes', { preHandler: [requireAdminFromJWT] }, async
 
 fastify.post('/webhooks/stripe', async (request, reply) => {
     // In production, verify signature using stripe.webhooks.constructEvent and usage of raw-body.
-    // Assuming configured or trusting body for now as per minimal instructions.
     // IMPORTANT: Verify signature logic should be added here.
 
-    // Using explicit specific cast if needed, or trusting 'any' for the event body.
     const event = request.body as any;
 
     try {
         if (event.type === 'payout.paid') {
-            // Retrieve metadata
+            // payout.paid is a Stripe banking-layer confirmation that a transfer has settled
+            // in the recipient's bank account. This is purely informational — the financial
+            // state machine already transitioned to 'released' when RELEASE_PAYOUT was processed.
+            //
+            // NOTE: We intentionally do NOT call StripeMoneyEngine.handle() here because:
+            //   1. 'WEBHOOK_PAYOUT_PAID' is not a valid MoneyEvent (only HOLD_ESCROW,
+            //      RELEASE_PAYOUT, REFUND_ESCROW are valid)
+            //   2. 'released' is a terminal state in the engine — no transitions out
+            //   3. The payout settlement is a banking confirmation, not a state transition
+            //
+            // We log the event and optionally update a settlement timestamp for audit trails.
             const taskId = event.data?.object?.metadata?.taskId;
             if (taskId) {
-                // Wrap Engine call to prevent crash propagation
+                logger.info({ taskId, eventId: event.id, payoutId: event.data?.object?.id },
+                    'payout.paid webhook received — banking settlement confirmed');
+
+                // Optionally record settlement timestamp in the DB for audit trail
                 try {
-                    await StripeMoneyEngine.handle(taskId, 'WEBHOOK_PAYOUT_PAID', { eventId: event.id });
-                    logger.info({ taskId, eventId: event.id }, 'Processed payout.paid webhook');
-                } catch (engineError: any) {
-                    logger.error({ err: engineError, taskId }, 'StripeMoneyEngine Failed in Webhook');
-                    // We catch engine error but still acknowledge receipt to Stripe (200 OK)
-                    // unless we want retry. Payout.paid is final state usually.
-                    // Let's return 200 to prevent endless retry loop for logical errors.
+                    await sql`
+                        UPDATE money_state_lock
+                        SET payout_settled_at = NOW(),
+                            updated_at = NOW()
+                        WHERE task_id = ${taskId}
+                          AND current_state = 'released'
+                    `;
+                } catch (dbErr) {
+                    // Non-critical: settlement timestamp is informational only
+                    logger.warn({ dbErr, taskId }, 'Failed to record payout settlement timestamp (non-critical)');
                 }
             } else {
                 logger.warn({ eventId: event.id }, 'Received payout.paid webhook without taskId');
