@@ -315,13 +315,17 @@ class StripeServiceClass {
             const [escrow] = await safeSql`SELECT * FROM escrow_holds WHERE task_id = ${taskId}`;
             const ctx = {
                 amountCents: escrow?.gross_amount_cents,
-                refundAmountCents: escrow?.net_payout_cents, // For reversal
+                // Refund the full gross amount to the poster (not net_payout_cents which is the hustler's share)
+                refundAmountCents: escrow?.gross_amount_cents,
                 posterId: escrow?.poster_id,
-                taskId
+                taskId,
+                reason: isAdmin ? 'Admin-initiated refund' : 'Escrow refund',
             };
-            // Determine Event
-            const event = isAdmin ? 'FORCE_REFUND' : 'REFUND_ESCROW';
-            return await StripeMoneyEngine.handle(taskId, event, ctx);
+            // Always use REFUND_ESCROW — the only valid refund event in the state machine.
+            // Admin override is passed via HandleOptions, not as a separate event type.
+            // Previously this used 'FORCE_REFUND' for admin which is not a valid MoneyEvent
+            // and would throw in getNextState().
+            return await StripeMoneyEngine.handle(taskId, 'REFUND_ESCROW', ctx, { adminOverride: isAdmin });
         } catch (e) { return { success: false, message: (e as Error).message }; }
     }
 
