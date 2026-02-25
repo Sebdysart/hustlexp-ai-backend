@@ -12,6 +12,30 @@ import { logger } from '../logger';
 
 const log = logger.child({ module: 'ai-guard' });
 
+// Lazy singleton Redis client for AI budget tracking.
+// Avoids creating a new client on every checkAIBudget() call.
+let _redisClient: import('@upstash/redis').Redis | null = null;
+let _redisInitAttempted = false;
+
+async function getRedisClient(): Promise<import('@upstash/redis').Redis | null> {
+  if (_redisClient) return _redisClient;
+  if (_redisInitAttempted) return null; // already tried and failed / no creds
+  _redisInitAttempted = true;
+
+  try {
+    const { Redis } = await import('@upstash/redis');
+    const redisUrl = process.env.UPSTASH_REDIS_REST_URL;
+    const redisToken = process.env.UPSTASH_REDIS_REST_TOKEN;
+    if (redisUrl && redisToken) {
+      _redisClient = new Redis({ url: redisUrl, token: redisToken });
+      return _redisClient;
+    }
+  } catch {
+    log.warn('Failed to initialize Redis client for AI budget tracking');
+  }
+  return null;
+}
+
 // ============================================================================
 // TYPES
 // ============================================================================
@@ -182,29 +206,87 @@ export function trackAIUsage(metrics: AIUsageMetrics): void {
 // ============================================================================
 
 const DAILY_COST_BUDGET_USD = 50; // $50/day cap for alpha
-let dailyCostAccumulator = 0;
-let lastResetDate = new Date().toDateString();
+
+// In-memory fallback for when Redis is unavailable
+let localDailyCostAccumulator = 0;
+let localLastResetDate = new Date().toDateString();
 
 /**
  * Check if AI spending is within daily budget.
+ * Uses Redis for cross-instance tracking when available, falls back to in-memory.
  * Resets at midnight UTC.
  */
-export function checkAIBudget(estimatedCost: number): { allowed: boolean; remaining: number } {
-  const today = new Date().toDateString();
-  if (today !== lastResetDate) {
-    dailyCostAccumulator = 0;
-    lastResetDate = today;
+export async function checkAIBudget(estimatedCost: number): Promise<{ allowed: boolean; remaining: number }> {
+  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  const redisKey = `ai:daily_cost:${today}`;
+
+  // Try Redis-backed tracking first (cross-instance safe)
+  try {
+    const redis = await getRedisClient();
+
+    if (redis) {
+
+      // Atomic increment to avoid concurrency race conditions across instances.
+      // NOTE: Upstash Redis supports INCRBYFLOAT.
+      const newCost = await redis.incrbyfloat(redisKey, estimatedCost);
+
+      // If this request pushes us over budget, roll back the increment and reject.
+      // Rollback is wrapped in its own try/catch so a transient Redis error
+      // does NOT fall through to the in-memory tracker (which would bypass the rejection).
+      if (newCost > DAILY_COST_BUDGET_USD) {
+        try {
+          await redis.incrbyfloat(redisKey, -estimatedCost);
+        } catch (rollbackErr) {
+          log.error({ rollbackErr, redisKey }, 'Redis budget rollback failed — budget value may be inflated');
+        }
+
+        const previousCost = newCost - estimatedCost;
+        log.error({
+          dailyCost: previousCost,
+          requestCost: estimatedCost,
+          budget: DAILY_COST_BUDGET_USD,
+          source: 'redis',
+        }, 'AI daily budget exceeded');
+
+        return { allowed: false, remaining: DAILY_COST_BUDGET_USD - previousCost };
+      }
+
+      // Ensure the key expires (25 hours). Only set TTL if missing.
+      // Wrap in its own try/catch — TTL is housekeeping, not critical path.
+      // If this fails, the increment is already committed; we must NOT fall
+      // through to in-memory (which would double-count the cost).
+      try {
+        const ttl = await redis.ttl(redisKey);
+        if (ttl < 0) {
+          await redis.expire(redisKey, 90000);
+        }
+      } catch (ttlErr) {
+        log.warn({ ttlErr, redisKey }, 'Redis TTL housekeeping failed (non-critical)');
+      }
+
+      return { allowed: true, remaining: DAILY_COST_BUDGET_USD - newCost };
+    }
+  } catch (redisErr) {
+    log.warn({ redisErr }, 'Redis AI budget tracking unavailable — falling back to in-memory');
   }
 
-  if (dailyCostAccumulator + estimatedCost > DAILY_COST_BUDGET_USD) {
+  // Fallback: in-memory tracking (single-instance only)
+  const todayLocal = new Date().toDateString();
+  if (todayLocal !== localLastResetDate) {
+    localDailyCostAccumulator = 0;
+    localLastResetDate = todayLocal;
+  }
+
+  if (localDailyCostAccumulator + estimatedCost > DAILY_COST_BUDGET_USD) {
     log.error({
-      dailyCost: dailyCostAccumulator,
+      dailyCost: localDailyCostAccumulator,
       requestCost: estimatedCost,
       budget: DAILY_COST_BUDGET_USD,
+      source: 'memory',
     }, 'AI daily budget exceeded');
-    return { allowed: false, remaining: DAILY_COST_BUDGET_USD - dailyCostAccumulator };
+    return { allowed: false, remaining: DAILY_COST_BUDGET_USD - localDailyCostAccumulator };
   }
 
-  dailyCostAccumulator += estimatedCost;
-  return { allowed: true, remaining: DAILY_COST_BUDGET_USD - dailyCostAccumulator };
+  localDailyCostAccumulator += estimatedCost;
+  return { allowed: true, remaining: DAILY_COST_BUDGET_USD - localDailyCostAccumulator };
 }

@@ -91,9 +91,15 @@ export interface PayoutRecord {
 }
 
 // In-memory ledger (Legacy/Fallback access)
+// WARNING: These in-memory caches are NOT shared across instances.
+// In a multi-instance deployment, data will be inconsistent.
+// TODO: Migrate to Redis-backed caching for cross-instance safety.
+// @deprecated — Use database queries as primary source of truth.
 const escrowLedger = new Map<string, EscrowRecord>();
 const payoutLedger = new Map<string, PayoutRecord>();
 const connectAccounts = new Map<string, string>();
+// WARNING: This in-memory Set resets on server restart, allowing event reprocessing.
+// The DB-based idempotency check (processed_stripe_events table) is the primary guard.
 const processedEvents = new Set<string>();
 
 // ============================================
@@ -309,13 +315,17 @@ class StripeServiceClass {
             const [escrow] = await safeSql`SELECT * FROM escrow_holds WHERE task_id = ${taskId}`;
             const ctx = {
                 amountCents: escrow?.gross_amount_cents,
-                refundAmountCents: escrow?.net_payout_cents, // For reversal
+                // Refund the full gross amount to the poster (not net_payout_cents which is the hustler's share)
+                refundAmountCents: escrow?.gross_amount_cents,
                 posterId: escrow?.poster_id,
-                taskId
+                taskId,
+                reason: isAdmin ? 'Admin-initiated refund' : 'Escrow refund',
             };
-            // Determine Event
-            const event = isAdmin ? 'FORCE_REFUND' : 'REFUND_ESCROW';
-            return await StripeMoneyEngine.handle(taskId, event, ctx);
+            // Always use REFUND_ESCROW — the only valid refund event in the state machine.
+            // Admin override is passed via HandleOptions, not as a separate event type.
+            // Previously this used 'FORCE_REFUND' for admin which is not a valid MoneyEvent
+            // and would throw in getNextState().
+            return await StripeMoneyEngine.handle(taskId, 'REFUND_ESCROW', ctx, { adminOverride: isAdmin });
         } catch (e) { return { success: false, message: (e as Error).message }; }
     }
 
@@ -380,10 +390,13 @@ class StripeServiceClass {
              `;
 
             // 2. Update Lock
+            // 'released' is a terminal state in StripeMoneyEngine — no further transitions allowed.
+            // Previously this set next_allowed_event to ['FORCE_REFUND'] which is not a valid MoneyEvent.
+            // Valid MoneyEvents are: HOLD_ESCROW, RELEASE_PAYOUT, REFUND_ESCROW only.
             await tx`
                  UPDATE money_state_lock
                  SET current_state = 'released',
-                     next_allowed_event = ${['FORCE_REFUND']},
+                     next_allowed_event = ${[]},
                      stripe_transfer_id = ${transfer.id},
                      version = version + 1
                  WHERE task_id = ${taskId} AND current_state = 'held'
@@ -483,7 +496,38 @@ class StripeServiceClass {
 
         } catch (err) {
             // RULE 3: NEVER THROW - Log and return OK anyway
-            serviceLogger.error({ err, eventId: event.id }, 'Webhook handler failed - Returning 200 OK anyway');
+            serviceLogger.error({ err, eventId: event.id, eventType: event.type }, 'Webhook handler failed - Returning 200 OK anyway');
+
+            // DLQ: Persist failed events for retry/investigation
+            // This ensures financial webhook failures are never silently lost
+            if (isDatabaseAvailable() && sql) {
+                try {
+                    await sql`
+                        INSERT INTO webhook_dead_letter_queue (
+                            event_id, event_type, payload, error_message, failed_at
+                        ) VALUES (
+                            ${event.id},
+                            ${event.type},
+                            ${JSON.stringify(event.data.object)},
+                            ${(err as Error).message || 'Unknown error'},
+                            NOW()
+                        ) ON CONFLICT (event_id) DO UPDATE
+                        SET retry_count = webhook_dead_letter_queue.retry_count + 1,
+                            last_error = ${(err as Error).message || 'Unknown error'},
+                            updated_at = NOW()
+                    `;
+                    serviceLogger.info({ eventId: event.id }, 'Failed webhook event persisted to DLQ');
+                } catch (dlqErr) {
+                    // Last resort: DLQ write failed — log full event for manual recovery
+                    serviceLogger.fatal({
+                        eventId: event.id,
+                        eventType: event.type,
+                        originalError: (err as Error).message,
+                        dlqError: (dlqErr as Error).message,
+                        eventData: JSON.stringify(event.data.object).slice(0, 1000),
+                    }, 'CRITICAL: Webhook DLQ write failed — manual intervention required');
+                }
+            }
         }
     }
 

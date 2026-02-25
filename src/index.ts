@@ -41,6 +41,7 @@ import { testConnection, isDatabaseAvailable, sql } from './db/index.js';
 import { runMigrations, seedTestData } from './db/schema.js';
 import { checkRateLimit, isRateLimitingEnabled, testRedisConnection } from './middleware/rateLimiter.js';
 import { validateEnv, logEnvStatus } from './utils/envValidator.js';
+import { validateConfig } from './config.js';
 import { runHealthCheck, quickHealthCheck } from './utils/healthCheck.js';
 import { requireAuth, optionalAuth, isAuthEnabled } from './middleware/firebaseAuth.js';
 import { DatabaseHealthService } from './services/DatabaseHealthService.js';
@@ -58,11 +59,42 @@ import { adminRateLimiter, financialRateLimiter } from './middleware/rateLimiter
 
 const fastify = Fastify({
     logger: false, // We use our own pino logger
+    bodyLimit: 1_048_576, // 1MB max body size (SECURITY: prevent memory exhaustion)
 });
 
-// Register CORS
+// Register CORS — restrict to configured origins (SECURITY: never use origin:true in production)
 await fastify.register(cors, {
-    origin: true,
+    origin: (origin, cb) => {
+        // Allow requests with no origin (mobile apps, curl, server-to-server)
+        if (!origin) return cb(null, true);
+
+        const allowedOrigins = process.env.ALLOWED_ORIGINS
+            ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim()).filter(Boolean)
+            : [];
+
+        // In development, allow localhost origins (parse URL to prevent bypass via crafted domains)
+        const isDev = process.env.NODE_ENV !== 'production';
+        if (isDev) {
+            try {
+                const hostname = new URL(origin).hostname;
+                if (hostname === 'localhost' || hostname === '127.0.0.1') {
+                    return cb(null, true);
+                }
+            } catch { /* invalid origin URL, fall through */ }
+        }
+
+        if (allowedOrigins.length === 0 && isDev) {
+            // Dev fallback: allow all if no origins configured
+            return cb(null, true);
+        }
+
+        if (allowedOrigins.includes(origin)) {
+            return cb(null, true);
+        }
+
+        cb(new Error(`CORS: Origin ${origin} not allowed`), false);
+    },
+    credentials: true,
 });
 
 // Register raw-body plugin for Stripe webhook signature verification
@@ -87,50 +119,64 @@ fastify.addHook('onResponse', returnRequestId);
 // ============================================
 
 // Public routes that don't require authentication
+// SECURITY: Only truly public endpoints should be listed here.
+// Sensitive endpoints moved to OPTIONAL_AUTH_ROUTES (auth available but not required).
 const PUBLIC_ROUTES = [
     '/health',
     '/health/detailed',
-    // Core API endpoints for frontend
-    '/api/tasks',
-    '/api/users',
-    // AI endpoints
-    '/ai/orchestrate',
-    '/ai/onboarding',
-    '/ai/task-card',
+    // Stripe webhooks (use Stripe signature verification, not Firebase auth)
+    '/api/stripe/webhook',
+    '/webhooks/stripe',
+    // Webhooks from external services
+    '/webhooks/identity',
+];
+
+// Routes where auth is checked but not required (demo/anonymous access allowed)
+// These use optionalAuth — if a token is present it's validated, but requests without tokens are allowed
+const OPTIONAL_AUTH_ROUTES = [
+    '/api/tasks',       // Task browsing (read-only)
+    '/api/users',       // User lookup
+    '/ai/orchestrate',  // AI chat (may work in demo mode)
+    '/ai/onboarding',   // Onboarding flow
+    '/ai/task-card',    // Card generation
     '/api/onboarding',  // Alias for frontend compatibility
-    // Gamification endpoints (allow optional auth - they work for demo users too)
-    '/api/coach',
-    '/api/badges',
-    '/api/quests',
-    '/api/tips',
+    '/api/coach',       // Growth coach tips
+    '/api/badges',      // Badge browsing
+    '/api/quests',      // Quest browsing
+    '/api/tips',        // Tips
+    '/api/pricing',     // Pricing info (public)
+    '/identity',        // Identity verification start
+
+    // Previously-public routes: keep optional auth to preserve demo/anonymous UX
     '/api/profile',
     '/api/trust',
     '/api/cards',
     '/api/match',
     '/api/cost',
     '/api/proof',
-    '/api/pricing',
     '/api/boost',
     '/api/planner',
     '/api/actions',
     '/api/brain',
     '/api/memory',
-    '/identity', // Merged Identity Routes
-    '/webhooks/identity',
-    // Stripe webhook (uses Stripe signature verification, not Firebase auth)
-    '/api/stripe/webhook',
 ];
 
 // Add global auth hook - protects ALL routes except public ones
 fastify.addHook('onRequest', async (request, reply) => {
     const path = request.url.split('?')[0]; // Remove query params
 
-    // Skip auth for public routes
+    // Skip auth entirely for public routes (webhooks, health)
     if (PUBLIC_ROUTES.some(route => path === route || path.startsWith(route + '/'))) {
         return;
     }
 
-    // Require authentication for all other routes
+    // Optional auth for browsing/demo routes — validate token if present, but don't require it
+    if (OPTIONAL_AUTH_ROUTES.some(route => path === route || path.startsWith(route + '/'))) {
+        await optionalAuth(request, reply);
+        return;
+    }
+
+    // Require authentication for all other routes (financial, admin, sensitive)
     await requireAuth(request, reply);
 });
 
@@ -3352,46 +3398,25 @@ fastify.post('/api/escrow/:taskId/refund', { preHandler: [requireAuth] }, async 
 
     const ctx = packRefundContext(task, body.amount, body.reason);
 
-    // Use REFUND_ESCROW. If Admin needs FORCE_REFUND (post-payout), handle that?
-    // User prompt used 'REFUND_ESCROW' in the example.
-    // But my implementation of `effectRefund` handles both states?
-    // My `executeStripeEffects` map:
-    // case 'REFUND_ESCROW': case 'RESOLVE_REFUND': case 'FORCE_REFUND': -> effectRefund
-    // So 'REFUND_ESCROW' works for both paths IF the transition table allows it.
-    // Transition Table:
-    // 'held' -> REFUND_ESCROW -> 'refunded' (Allowed)
-    // 'released' -> FORCE_REFUND -> 'refunded' (Allowed)
-    // 'released' -> REFUND_ESCROW -> ??? (Likely NOT allowed in getNextAllowed).
-    // Let's check `getNextAllowed`.
-    // `case 'released': return ['WEBHOOK_PAYOUT_PAID', 'FORCE_REFUND'];`
-    // So 'REFUND_ESCROW' is Forbidden for 'released'.
-    // So if state is released, we MUST use 'FORCE_REFUND'.
-    // And only Admin should do that.
+    // Always use REFUND_ESCROW — the only valid refund event in the StripeMoneyEngine state machine.
+    // The engine's getNextState() validates the transition: only 'held' → 'refunded' is allowed.
+    // If the escrow is in 'released' state (task completed), the engine will correctly reject the
+    // transition with a clear error message. Post-payout refunds require manual Stripe Dashboard action.
+    //
+    // NOTE: FORCE_REFUND was previously used here but is NOT a valid MoneyEvent type.
+    // The StripeMoneyEngine only accepts: HOLD_ESCROW, RELEASE_PAYOUT, REFUND_ESCROW.
+    // Using FORCE_REFUND would throw "Invalid event FORCE_REFUND for current state ..." at runtime.
 
-    const eventType = (isPoster) ? 'REFUND_ESCROW' : 'FORCE_REFUND';
-    // Actually, if state is 'held', even Admin uses REFUND_ESCROW?
-    // Or FORCE_REFUND allowed in held?
-    // Transition table for held: `['RELEASE_PAYOUT', 'REFUND_ESCROW', 'DISPUTE_OPEN']`.
-    // FORCE_REFUND is NOT in 'held' allowed list.
-    // So if held -> REFUND_ESCROW. If released -> FORCE_REFUND.
-    // We need to know the state to pick the event type?
-    // OR try one then the other?
-    // No, that's messy.
-    // I should query `money_state_lock`?
-    // `StripeMoneyEngine` does not expose state reader publicly yet?
-    // I'll assume current standard flow:
-    // If Task is completed/released, use FORCE_REFUND.
-    // How do I know? `Task.status`?
-    // If `task.status === 'completed'`, use FORCE_REFUND.
-    // If `task.status !== 'completed'`, use REFUND_ESCROW.
-
-    let event = 'REFUND_ESCROW';
     if (task.status === 'completed') {
-        event = 'FORCE_REFUND';
+        reply.status(400);
+        return {
+            error: 'Cannot refund a completed task — funds have already been released to the hustler. ' +
+                   'Post-payout refunds must be processed via Stripe Dashboard or admin tools.',
+        };
     }
 
     try {
-        const result = await StripeMoneyEngine.handle(taskId, event, ctx);
+        const result = await StripeMoneyEngine.handle(taskId, 'REFUND_ESCROW', ctx);
         return { success: true, state: result.state };
     } catch (err: any) {
         // Map engine errors to HTTP 400
@@ -4405,26 +4430,40 @@ fastify.get('/api/admin/ai/routes', { preHandler: [requireAdminFromJWT] }, async
 
 fastify.post('/webhooks/stripe', async (request, reply) => {
     // In production, verify signature using stripe.webhooks.constructEvent and usage of raw-body.
-    // Assuming configured or trusting body for now as per minimal instructions.
     // IMPORTANT: Verify signature logic should be added here.
 
-    // Using explicit specific cast if needed, or trusting 'any' for the event body.
     const event = request.body as any;
 
     try {
         if (event.type === 'payout.paid') {
-            // Retrieve metadata
+            // payout.paid is a Stripe banking-layer confirmation that a transfer has settled
+            // in the recipient's bank account. This is purely informational — the financial
+            // state machine already transitioned to 'released' when RELEASE_PAYOUT was processed.
+            //
+            // NOTE: We intentionally do NOT call StripeMoneyEngine.handle() here because:
+            //   1. 'WEBHOOK_PAYOUT_PAID' is not a valid MoneyEvent (only HOLD_ESCROW,
+            //      RELEASE_PAYOUT, REFUND_ESCROW are valid)
+            //   2. 'released' is a terminal state in the engine — no transitions out
+            //   3. The payout settlement is a banking confirmation, not a state transition
+            //
+            // We log the event and optionally update a settlement timestamp for audit trails.
             const taskId = event.data?.object?.metadata?.taskId;
             if (taskId) {
-                // Wrap Engine call to prevent crash propagation
+                logger.info({ taskId, eventId: event.id, payoutId: event.data?.object?.id },
+                    'payout.paid webhook received — banking settlement confirmed');
+
+                // Optionally record settlement timestamp in the DB for audit trail
                 try {
-                    await StripeMoneyEngine.handle(taskId, 'WEBHOOK_PAYOUT_PAID', { eventId: event.id });
-                    logger.info({ taskId, eventId: event.id }, 'Processed payout.paid webhook');
-                } catch (engineError: any) {
-                    logger.error({ err: engineError, taskId }, 'StripeMoneyEngine Failed in Webhook');
-                    // We catch engine error but still acknowledge receipt to Stripe (200 OK)
-                    // unless we want retry. Payout.paid is final state usually.
-                    // Let's return 200 to prevent endless retry loop for logical errors.
+                    await sql`
+                        UPDATE money_state_lock
+                        SET payout_settled_at = NOW(),
+                            updated_at = NOW()
+                        WHERE task_id = ${taskId}
+                          AND current_state = 'released'
+                    `;
+                } catch (dbErr) {
+                    // Non-critical: settlement timestamp is informational only
+                    logger.warn({ dbErr, taskId }, 'Failed to record payout settlement timestamp (non-critical)');
                 }
             } else {
                 logger.warn({ eventId: event.id }, 'Received payout.paid webhook without taskId');
@@ -4447,6 +4486,21 @@ const PORT = parseInt(process.env.PORT || '3000');
 
 async function start() {
     try {
+        // Validate backend configuration (fail fast on critical missing vars)
+        const configResult = validateConfig();
+        if (!configResult.valid) {
+            for (const err of configResult.errors) {
+                logger.error(`CONFIG ERROR: ${err}`);
+            }
+            if (process.env.NODE_ENV === 'production') {
+                logger.fatal('Cannot start in production with invalid configuration');
+                process.exit(1);
+            }
+        }
+        for (const warn of configResult.warnings) {
+            logger.warn(`CONFIG WARNING: ${warn}`);
+        }
+
         // Validate environment variables
         const envResult = validateEnv();
         logEnvStatus(envResult);

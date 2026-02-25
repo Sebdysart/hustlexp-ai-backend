@@ -229,15 +229,15 @@ describe('AI Guard: estimateAICost', () => {
 // ============================================================================
 
 describe('AI Guard: checkAIBudget', () => {
-  it('should allow spending within budget', () => {
-    const result = checkAIBudget(0.01);
+  it('should allow spending within budget', async () => {
+    const result = await checkAIBudget(0.01);
     expect(result.allowed).toBe(true);
     expect(result.remaining).toBeGreaterThan(0);
   });
 
-  it('should track remaining budget correctly', () => {
-    const result1 = checkAIBudget(10);
-    const result2 = checkAIBudget(10);
+  it('should track remaining budget correctly', async () => {
+    const result1 = await checkAIBudget(10);
+    const result2 = await checkAIBudget(10);
     expect(result2.remaining).toBeLessThan(result1.remaining);
   });
 });

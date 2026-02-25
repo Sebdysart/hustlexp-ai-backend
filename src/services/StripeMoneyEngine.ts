@@ -44,9 +44,16 @@ const logger = createLogger('StripeMoneyEngine');
 // STRIPE CLIENT
 // ============================================================================
 
-const stripe = new Stripe((env as any).STRIPE_SECRET_KEY || 'sk_test_placeholder', {
-  apiVersion: '2024-12-18.acacia' as any,
-});
+// SECURITY: Fail fast if Stripe key is missing — never use placeholder keys
+const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY || '';
+if (!STRIPE_SECRET_KEY && process.env.NODE_ENV === 'production') {
+  throw new Error('FATAL: STRIPE_SECRET_KEY is required in production. Refusing to start with missing key.');
+}
+
+const isStripeMoneyEngineConfigured = !!STRIPE_SECRET_KEY;
+const stripe = isStripeMoneyEngineConfigured
+  ? new Stripe(STRIPE_SECRET_KEY, { apiVersion: '2024-12-18.acacia' as any })
+  : null;
 
 // ============================================================================
 // TYPES
@@ -120,6 +127,7 @@ async function executeHoldEscrow(payload: any): Promise<{
   paymentIntentId: string;
   chargeId: string;
 }> {
+  if (!stripe) throw new Error('Stripe not configured — cannot execute HOLD_ESCROW');
   // Create and confirm payment intent with manual capture
   const paymentIntent = await stripe.paymentIntents.create({
     amount: payload.amountCents,
@@ -146,6 +154,7 @@ async function executeHoldEscrow(payload: any): Promise<{
 async function executeReleasePayout(payload: any, lockRow: any): Promise<{
   transferId: string;
 }> {
+  if (!stripe) throw new Error('Stripe not configured — cannot execute RELEASE_PAYOUT');
   assertPayoutsEnabled();
 
   // Check payout eligibility
@@ -177,6 +186,7 @@ async function executeReleasePayout(payload: any, lockRow: any): Promise<{
 async function executeRefundEscrow(payload: any, lockRow: any): Promise<{
   refundId: string;
 }> {
+  if (!stripe) throw new Error('Stripe not configured — cannot execute REFUND_ESCROW');
   const refund = await stripe.refunds.create({
     payment_intent: lockRow.stripe_payment_intent_id,
     amount: payload.refundAmountCents,
@@ -195,6 +205,7 @@ async function executeRefundEscrow(payload: any, lockRow: any): Promise<{
 // ============================================================================
 
 async function compensateHoldEscrow(paymentIntentId: string): Promise<void> {
+  if (!stripe) { logger.error({ paymentIntentId }, 'Stripe not configured — cannot compensate hold'); return; }
   try {
     await stripe.paymentIntents.cancel(paymentIntentId);
     logger.info({ paymentIntentId }, 'Compensation: payment intent cancelled');
@@ -208,6 +219,7 @@ async function compensateHoldEscrow(paymentIntentId: string): Promise<void> {
 }
 
 async function compensateReleasePayout(transferId: string): Promise<void> {
+  if (!stripe) { logger.error({ transferId }, 'Stripe not configured — cannot compensate release'); return; }
   try {
     await stripe.transfers.createReversal(transferId);
     logger.info({ transferId }, 'Compensation: transfer reversed');
