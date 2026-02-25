@@ -199,7 +199,7 @@ echo ""
 echo "EXPECTED:"
 echo "   - HOLD_ESCROW"
 echo "   - RELEASE_PAYOUT"
-echo "   - WEBHOOK_PAYOUT_PAID (if webhook received)"
+echo "   (payout.paid webhook is logged for audit but does NOT create a money event)"
 echo ""
 read -p "Press Enter when verified..."
 

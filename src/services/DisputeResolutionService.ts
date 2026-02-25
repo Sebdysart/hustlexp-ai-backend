@@ -268,22 +268,32 @@ class DisputeResolutionServiceClass {
         // (This is a side effect - we catch errors but don't fail the dispute)
       });
 
-      // 6. Try to lock escrow (non-blocking - dispute creation succeeds even if this fails)
+      // 6. Mark escrow as disputed in the DB (non-blocking - dispute creation succeeds even if this fails)
+      //
+      // NOTE: 'DISPUTE_OPEN' is NOT a valid MoneyEvent in the StripeMoneyEngine.
+      // The engine only accepts: HOLD_ESCROW, RELEASE_PAYOUT, REFUND_ESCROW.
+      // Opening a dispute does not move money — it's a metadata flag that prevents
+      // premature release while the dispute is being resolved.
+      // The actual money movement (refund or release) happens in finalizeDispute().
       try {
         const [moneyState] = await sql`
           SELECT current_state, amount_cents FROM money_state_lock WHERE task_id = ${taskId}
         `;
 
         if (moneyState && moneyState.current_state === 'held') {
-          await StripeMoneyEngine.handle(taskId, 'DISPUTE_OPEN', {
-            taskId,
-            amountCents: Number(moneyState.amount_cents),
-          }, { eventId: ulid() });
+          // Flag the escrow as disputed — prevents release until dispute is resolved
+          await sql`
+            UPDATE money_state_lock
+            SET dispute_id = ${disputeId},
+                updated_at = NOW()
+            WHERE task_id = ${taskId}
+              AND current_state = 'held'
+          `;
 
-          logger.info({ disputeId, taskId }, 'Escrow locked for dispute');
+          logger.info({ disputeId, taskId }, 'Escrow flagged as disputed (money held, no state transition)');
         }
       } catch (escrowError) {
-        logger.warn({ escrowError, disputeId, taskId }, 'Failed to lock escrow for dispute - continuing');
+        logger.warn({ escrowError, disputeId, taskId }, 'Failed to flag escrow for dispute - continuing');
       }
 
       // 7. Update task status to disputed
@@ -843,11 +853,17 @@ Analyze this dispute and provide your recommendation in JSON format.`;
       // 6. Execute the money engine operation
       const eventId = ulid();
 
+      // NOTE: The StripeMoneyEngine only supports three valid events:
+      //   HOLD_ESCROW, RELEASE_PAYOUT, REFUND_ESCROW
+      // 'RESOLVE_REFUND' and 'RESOLVE_UPHOLD' are NOT valid MoneyEvents.
+      // For dispute resolution:
+      //   - poster wins / split → REFUND_ESCROW (held → refunded)
+      //   - hustler wins → RELEASE_PAYOUT (held → released)
       try {
         if (outcome === 'poster' || outcome === 'split') {
           // Refund (full or partial) to poster
           if (refundAmountCents > 0) {
-            await StripeMoneyEngine.handle(dispute.task_id, 'RESOLVE_REFUND', {
+            await StripeMoneyEngine.handle(dispute.task_id, 'REFUND_ESCROW', {
               taskId: dispute.task_id,
               refundAmountCents,
               reason: 'requested_by_customer',
@@ -867,7 +883,7 @@ Analyze this dispute and provide your recommendation in JSON format.`;
           }
 
           if (hustlerStripeAccountId) {
-            await StripeMoneyEngine.handle(dispute.task_id, 'RESOLVE_UPHOLD', {
+            await StripeMoneyEngine.handle(dispute.task_id, 'RELEASE_PAYOUT', {
               taskId: dispute.task_id,
               payoutAmountCents: releaseAmountCents,
               hustlerStripeAccountId,
