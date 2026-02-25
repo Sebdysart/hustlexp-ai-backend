@@ -3398,46 +3398,25 @@ fastify.post('/api/escrow/:taskId/refund', { preHandler: [requireAuth] }, async 
 
     const ctx = packRefundContext(task, body.amount, body.reason);
 
-    // Use REFUND_ESCROW. If Admin needs FORCE_REFUND (post-payout), handle that?
-    // User prompt used 'REFUND_ESCROW' in the example.
-    // But my implementation of `effectRefund` handles both states?
-    // My `executeStripeEffects` map:
-    // case 'REFUND_ESCROW': case 'RESOLVE_REFUND': case 'FORCE_REFUND': -> effectRefund
-    // So 'REFUND_ESCROW' works for both paths IF the transition table allows it.
-    // Transition Table:
-    // 'held' -> REFUND_ESCROW -> 'refunded' (Allowed)
-    // 'released' -> FORCE_REFUND -> 'refunded' (Allowed)
-    // 'released' -> REFUND_ESCROW -> ??? (Likely NOT allowed in getNextAllowed).
-    // Let's check `getNextAllowed`.
-    // `case 'released': return ['WEBHOOK_PAYOUT_PAID', 'FORCE_REFUND'];`
-    // So 'REFUND_ESCROW' is Forbidden for 'released'.
-    // So if state is released, we MUST use 'FORCE_REFUND'.
-    // And only Admin should do that.
+    // Always use REFUND_ESCROW — the only valid refund event in the StripeMoneyEngine state machine.
+    // The engine's getNextState() validates the transition: only 'held' → 'refunded' is allowed.
+    // If the escrow is in 'released' state (task completed), the engine will correctly reject the
+    // transition with a clear error message. Post-payout refunds require manual Stripe Dashboard action.
+    //
+    // NOTE: FORCE_REFUND was previously used here but is NOT a valid MoneyEvent type.
+    // The StripeMoneyEngine only accepts: HOLD_ESCROW, RELEASE_PAYOUT, REFUND_ESCROW.
+    // Using FORCE_REFUND would throw "Invalid event FORCE_REFUND for current state ..." at runtime.
 
-    const eventType = (isPoster) ? 'REFUND_ESCROW' : 'FORCE_REFUND';
-    // Actually, if state is 'held', even Admin uses REFUND_ESCROW?
-    // Or FORCE_REFUND allowed in held?
-    // Transition table for held: `['RELEASE_PAYOUT', 'REFUND_ESCROW', 'DISPUTE_OPEN']`.
-    // FORCE_REFUND is NOT in 'held' allowed list.
-    // So if held -> REFUND_ESCROW. If released -> FORCE_REFUND.
-    // We need to know the state to pick the event type?
-    // OR try one then the other?
-    // No, that's messy.
-    // I should query `money_state_lock`?
-    // `StripeMoneyEngine` does not expose state reader publicly yet?
-    // I'll assume current standard flow:
-    // If Task is completed/released, use FORCE_REFUND.
-    // How do I know? `Task.status`?
-    // If `task.status === 'completed'`, use FORCE_REFUND.
-    // If `task.status !== 'completed'`, use REFUND_ESCROW.
-
-    let event = 'REFUND_ESCROW';
     if (task.status === 'completed') {
-        event = 'FORCE_REFUND';
+        reply.status(400);
+        return {
+            error: 'Cannot refund a completed task — funds have already been released to the hustler. ' +
+                   'Post-payout refunds must be processed via Stripe Dashboard or admin tools.',
+        };
     }
 
     try {
-        const result = await StripeMoneyEngine.handle(taskId, event, ctx);
+        const result = await StripeMoneyEngine.handle(taskId, 'REFUND_ESCROW', ctx);
         return { success: true, state: result.state };
     } catch (err: any) {
         // Map engine errors to HTTP 400
