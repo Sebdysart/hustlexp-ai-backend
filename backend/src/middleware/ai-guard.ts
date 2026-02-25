@@ -225,9 +225,16 @@ export async function checkAIBudget(estimatedCost: number): Promise<{ allowed: b
       }
 
       // Ensure the key expires (25 hours). Only set TTL if missing.
-      const ttl = await redis.ttl(redisKey);
-      if (ttl < 0) {
-        await redis.expire(redisKey, 90000);
+      // Wrap in its own try/catch — TTL is housekeeping, not critical path.
+      // If this fails, the increment is already committed; we must NOT fall
+      // through to in-memory (which would double-count the cost).
+      try {
+        const ttl = await redis.ttl(redisKey);
+        if (ttl < 0) {
+          await redis.expire(redisKey, 90000);
+        }
+      } catch (ttlErr) {
+        log.warn({ ttlErr, redisKey }, 'Redis TTL housekeeping failed (non-critical)');
       }
 
       return { allowed: true, remaining: DAILY_COST_BUDGET_USD - newCost };
