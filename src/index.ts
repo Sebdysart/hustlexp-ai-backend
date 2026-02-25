@@ -119,8 +119,9 @@ fastify.addHook('onResponse', returnRequestId);
 const PUBLIC_ROUTES = [
     '/health',
     '/health/detailed',
-    // Stripe webhook (uses Stripe signature verification, not Firebase auth)
+    // Stripe webhooks (use Stripe signature verification, not Firebase auth)
     '/api/stripe/webhook',
+    '/webhooks/stripe',
     // Webhooks from external services
     '/webhooks/identity',
 ];
