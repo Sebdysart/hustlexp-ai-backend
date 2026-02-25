@@ -231,8 +231,14 @@ export async function checkAIBudget(estimatedCost: number): Promise<{ allowed: b
       const newCost = await redis.incrbyfloat(redisKey, estimatedCost);
 
       // If this request pushes us over budget, roll back the increment and reject.
+      // Rollback is wrapped in its own try/catch so a transient Redis error
+      // does NOT fall through to the in-memory tracker (which would bypass the rejection).
       if (newCost > DAILY_COST_BUDGET_USD) {
-        await redis.incrbyfloat(redisKey, -estimatedCost);
+        try {
+          await redis.incrbyfloat(redisKey, -estimatedCost);
+        } catch (rollbackErr) {
+          log.error({ rollbackErr, redisKey }, 'Redis budget rollback failed — budget value may be inflated');
+        }
 
         const previousCost = newCost - estimatedCost;
         log.error({
