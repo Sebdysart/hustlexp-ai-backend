@@ -43,7 +43,8 @@
     "test:vault": "vitest run 'tests-vault/**/*.test.ts'",
     "test:new": "vitest run 'backend/tests/new/**/*.test.ts'",
     "citadel:mutate": "tsx scripts/citadel-mutation-gate.ts",
-    "citadel:constitution": "tsx scripts/citadel-constitution-enforcer.ts"
+    "citadel:constitution": "tsx scripts/citadel-constitution-enforcer.ts",
+    "citadel:oracle": "tsx scripts/citadel-oracle-ensemble.ts"
   },
   "dependencies": {
     "@aws-sdk/client-rekognition": "3.994.0",
@@ -83,6 +84,7 @@
     "zod": "3.23.8"
   },
   "devDependencies": {
+    "@google/generative-ai": "^0.24.1",
     "@modelcontextprotocol/sdk": "1.25.2",
     "@stryker-mutator/core": "^9.5.1",
     "@stryker-mutator/vitest-runner": "^9.5.1",
