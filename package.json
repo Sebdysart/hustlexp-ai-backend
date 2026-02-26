@@ -44,7 +44,8 @@
     "test:new": "vitest run 'backend/tests/new/**/*.test.ts'",
     "citadel:mutate": "tsx scripts/citadel-mutation-gate.ts",
     "citadel:constitution": "tsx scripts/citadel-constitution-enforcer.ts",
-    "citadel:oracle": "tsx scripts/citadel-oracle-ensemble.ts"
+    "citadel:oracle": "tsx scripts/citadel-oracle-ensemble.ts",
+    "citadel:provenance": "tsx scripts/citadel-provenance.ts"
   },
   "dependencies": {
     "@aws-sdk/client-rekognition": "3.994.0",
@@ -86,9 +87,12 @@
   "devDependencies": {
     "@google/generative-ai": "^0.24.1",
     "@modelcontextprotocol/sdk": "1.25.2",
+    "@noble/ed25519": "^3.0.0",
+    "@noble/hashes": "^2.0.1",
     "@stryker-mutator/core": "^9.5.1",
     "@stryker-mutator/vitest-runner": "^9.5.1",
     "@types/bcrypt": "6.0.0",
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "22.7.5",
     "@types/twilio": "3.19.2",
     "@types/uuid": "10.0.0",
@@ -97,6 +101,7 @@
     "@typescript-eslint/typescript-estree": "^8.56.0",
     "@typescript-eslint/utils": "^8.56.0",
     "@vitest/coverage-v8": "4.0.16",
+    "better-sqlite3": "^12.6.2",
     "eslint": "8.57.1",
     "eslint-config-prettier": "10.1.8",
     "prettier": "3.8.1",

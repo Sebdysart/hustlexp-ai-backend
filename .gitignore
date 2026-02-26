@@ -53,3 +53,7 @@ pids/
 *.pid
 *.seed
 *.pid.lock
+
+# Citadel provenance (per-run, not committed)
+citadel-provenance.sqlite
+citadel-provenance-report.md
