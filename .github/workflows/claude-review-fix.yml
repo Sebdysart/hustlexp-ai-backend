@@ -31,6 +31,8 @@ jobs:
 
       - uses: anthropics/claude-code-action@v1
         with:
+          # Auth handled by Claude GitHub App (OAuth) — install via: claude /install-github-app
+          # Falls back to ANTHROPIC_API_KEY secret if app not installed
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           trigger_phrase: "@claude"
           claude_args: '{"max_turns": 30}'
