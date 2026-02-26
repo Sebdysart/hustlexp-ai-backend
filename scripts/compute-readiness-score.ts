@@ -236,6 +236,13 @@ console.log("");
 console.log(`Score: ${earnedPoints}/${totalPossible}`);
 console.log(`Merge allowed: ${canMerge}`);
 
+// Write outputs for GitHub Actions (consumed by orchestrator auto-merge gate)
+const outputFile = process.env.GITHUB_OUTPUT;
+if (outputFile) {
+  fs.appendFileSync(outputFile, `total_score=${earnedPoints}\n`);
+  fs.appendFileSync(outputFile, `meets_threshold=${canMerge}\n`);
+}
+
 // Exit with non-zero if below threshold (fails the workflow)
 if (!canMerge) {
   console.error(
