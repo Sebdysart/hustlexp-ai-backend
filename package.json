@@ -39,7 +39,9 @@
     "compute:readiness-score": "tsx scripts/compute-readiness-score.ts",
     "classify:pr": "tsx scripts/classify-pr-changes.ts",
     "incident-report": "tsx scripts/generate-incident-report.ts",
-    "greptile:review": "tsx scripts/greptile-pr-review.ts"
+    "greptile:review": "tsx scripts/greptile-pr-review.ts",
+    "test:vault": "vitest run 'tests-vault/**/*.test.ts'",
+    "test:new": "vitest run 'backend/tests/new/**/*.test.ts'"
   },
   "dependencies": {
     "@aws-sdk/client-rekognition": "3.994.0",

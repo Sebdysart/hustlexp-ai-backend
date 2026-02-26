@@ -1,0 +1,3 @@
+[submodule "tests-vault"]
+	path = tests-vault
+	url = https://github.com/Sebdysart/hustlexp-tests-vault.git
