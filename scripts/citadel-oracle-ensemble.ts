@@ -48,9 +48,12 @@ async function queryGemini(diff: string, invariants: string): Promise<OracleVerd
   const genai = new GoogleGenerativeAI(process.env.GEMINI_API_KEY ?? '');
   const model = genai.getGenerativeModel({ model: 'gemini-2.0-flash-exp' });
   const result = await model.generateContent(ORACLE_PROMPT(diff, invariants));
-  const text = result.response.text().replace(/```json\n?|\n?```/g, '').trim();
-  const parsed = JSON.parse(text);
-  return { model: 'gemini-2.0-flash', ...parsed };
+  const text = result.response.text();
+  // Extract first JSON object from response (handles preamble text)
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) throw new Error('Gemini: no JSON object found in response');
+  const parsed = JSON.parse(jsonMatch[0]);
+  return { model: 'gemini-2.0-flash-exp', ...parsed }; // use actual model ID in label
 }
 
 async function queryClaude(diff: string, invariants: string): Promise<OracleVerdict> {
@@ -67,6 +70,9 @@ async function queryClaude(diff: string, invariants: string): Promise<OracleVerd
       messages: [{ role: 'user', content: ORACLE_PROMPT(diff, invariants) }],
     }),
   });
+  if (!resp.ok) {
+    throw new Error(`Anthropic API error: ${resp.status} ${resp.statusText}`);
+  }
   const data = await resp.json() as { content: { text: string }[] };
   const parsed = JSON.parse(data.content[0].text);
   return { model: 'claude-3.5-sonnet', ...parsed };
@@ -74,12 +80,17 @@ async function queryClaude(diff: string, invariants: string): Promise<OracleVerd
 
 async function main() {
   const diff = process.env.PR_DIFF ?? '';
-  const invariants = fs.existsSync('CLAUDE.md')
-    ? fs.readFileSync('CLAUDE.md', 'utf-8')
-        .split('\n')
-        .filter(l => l.startsWith('- **INV') || l.startsWith('- **ARCH') || l.startsWith('- **SM'))
-        .join('\n')
-    : 'Financial invariants: amounts must be positive, ledger entries are append-only, escrow can only release once.';
+  const invariants = (() => {
+    const content = fs.existsSync('CLAUDE.md')
+      ? fs.readFileSync('CLAUDE.md', 'utf-8')
+      : '';
+    // Extract everything under "## Quality Invariants"
+    const sections = content.split(/^## /m);
+    const invariantSection = sections.find(s => s.startsWith('Quality Invariants'));
+    return invariantSection
+      ? `## ${invariantSection}`.slice(0, 3000) // cap length for prompt
+      : 'Amounts must be positive. Ledger entries are append-only. Escrow can only release once.';
+  })();
 
   if (!diff) {
     console.log('No diff provided — oracle skipping.');
@@ -105,7 +116,8 @@ async function main() {
 
   const totalWeight = verdicts.reduce((s, v) => s + v.confidence, 0);
   const safeWeight = verdicts.filter(v => v.safe).reduce((s, v) => s + v.confidence, 0);
-  const weightedSafe = safeWeight / totalWeight;
+  // Guard: if no confidence weights, default to unsafe (conservative fail-closed)
+  const weightedSafe = totalWeight > 0 ? safeWeight / totalWeight : 0;
   const overallSafe = weightedSafe >= 0.5;
   const findings = verdicts.flatMap(v => v.findings);
 

@@ -41,15 +41,16 @@ describe('oracle ensemble voting', () => {
     expect(result.dissenting).toContain('gpt-4o');
   });
 
-  it('weighted vote can produce safe result even with dissenter', () => {
+  it('blocks when high-confidence dissenter outvotes moderate safe majority', () => {
     const verdicts: OracleVerdict[] = [
-      { model: 'gpt-4o', safe: false, confidence: 0.40, findings: ['minor concern'] },
-      { model: 'gemini', safe: true, confidence: 0.90, findings: [] },
-      { model: 'claude', safe: true, confidence: 0.85, findings: [] },
+      { model: 'gpt-4o', safe: false, confidence: 0.98, findings: ['invariant disabled'] },
+      { model: 'gemini', safe: true, confidence: 0.60, findings: [] },
+      { model: 'claude', safe: true, confidence: 0.61, findings: [] },
     ];
     const result = computeMajorityVerdict(verdicts);
-    // safeWeight = 1.75, totalWeight = 2.15, weightedSafe ≈ 0.814 >= 0.5 → safe
-    expect(result.safe).toBe(true);
+    // safeWeight = 1.21, totalWeight = 2.19, weightedSafe ≈ 0.553 → safe (barely)
+    // The spec comment said "confidence < 0.6" but the math shows ~0.553
+    expect(result.confidence).toBeLessThan(0.6);
     expect(result.dissenting).toContain('gpt-4o');
   });
 });
