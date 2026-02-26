@@ -47,4 +47,21 @@ describe('Result<T,E>', () => {
     expect(appErrorToStatus(AppError.paymentFailed('x'))).toBe(402);
     expect(appErrorToStatus(AppError.rateLimited('x'))).toBe(429);
   });
+
+  it('Result.chainAsync short-circuits on failure', async () => {
+    const err = AppError.forbidden('no access');
+    const r = await Result.chainAsync(
+      Result.fail<number, AppError>(err),
+      async (n) => Result.ok(n + 1),
+    );
+    expect(Result.isFail(r) && r.error.code).toBe('FORBIDDEN');
+  });
+
+  it('Result.chainAsync succeeds on ok', async () => {
+    const r = await Result.chainAsync(
+      Result.ok(5),
+      async (n) => Result.ok(n * 2),
+    );
+    expect(Result.isOk(r) && r.value).toBe(10);
+  });
 });

@@ -98,5 +98,11 @@ export function appErrorToStatus(error: AppError): number {
     case 'DATABASE_ERROR':    return 500;
     case 'RATE_LIMITED':      return 429;
     case 'INTERNAL_ERROR':    return 500;
+    default: {
+      // Exhaustive check — TypeScript will error here if a new AppErrorCode is added
+      // without updating this switch. This prevents silent HTTP 500s.
+      const _exhaustive: never = error.code;
+      return 500;
+    }
   }
 }

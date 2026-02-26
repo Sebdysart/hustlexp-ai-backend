@@ -48,39 +48,52 @@ export const UserId = {
 export const TaskId = {
   parse:   (raw: string): TaskId   => parseUUID<TaskId>(raw, 'TaskId'),
   isValid: (raw: string): boolean  => UUID_RE.test(raw),
-  unsafe:  (raw: string): TaskId   => raw as TaskId,
+  unsafe:  (raw: string): TaskId   => raw as TaskId, // ONLY for DB rows already validated
 } as const;
 
 export const EscrowId = {
   parse:   (raw: string): EscrowId  => parseUUID<EscrowId>(raw, 'EscrowId'),
   isValid: (raw: string): boolean   => UUID_RE.test(raw),
-  unsafe:  (raw: string): EscrowId  => raw as EscrowId,
+  unsafe:  (raw: string): EscrowId  => raw as EscrowId, // ONLY for DB rows already validated
 } as const;
 
 export const PaymentId = {
   parse:   (raw: string): PaymentId => parseUUID<PaymentId>(raw, 'PaymentId'),
   isValid: (raw: string): boolean   => UUID_RE.test(raw),
-  unsafe:  (raw: string): PaymentId => raw as PaymentId,
+  unsafe:  (raw: string): PaymentId => raw as PaymentId, // ONLY for DB rows already validated
 } as const;
 
 export const DisputeId = {
   parse:   (raw: string): DisputeId => parseUUID<DisputeId>(raw, 'DisputeId'),
   isValid: (raw: string): boolean   => UUID_RE.test(raw),
-  unsafe:  (raw: string): DisputeId => raw as DisputeId,
+  unsafe:  (raw: string): DisputeId => raw as DisputeId, // ONLY for DB rows already validated
 } as const;
 
 export const ProofId = {
   parse:   (raw: string): ProofId   => parseUUID<ProofId>(raw, 'ProofId'),
   isValid: (raw: string): boolean   => UUID_RE.test(raw),
-  unsafe:  (raw: string): ProofId   => raw as ProofId,
+  unsafe:  (raw: string): ProofId   => raw as ProofId, // ONLY for DB rows already validated
+} as const;
+
+export const LedgerEntryId = {
+  parse:   (raw: string): LedgerEntryId => parseUUID<LedgerEntryId>(raw, 'LedgerEntryId'),
+  isValid: (raw: string): boolean        => UUID_RE.test(raw),
+  unsafe:  (raw: string): LedgerEntryId => raw as LedgerEntryId, // ONLY for DB rows already validated
 } as const;
 
 export const Cents = {
+  parse: (n: number): Cents => {
+    if (!Number.isInteger(n) || n < 0) {
+      throw new TypeError(`Cents must be a non-negative integer, got: ${n}`);
+    }
+    return n as Cents;
+  },
   fromNumber: (n: number): Cents => {
     if (!Number.isInteger(n) || n < 0) {
       throw new TypeError(`Cents must be a non-negative integer, got: ${n}`);
     }
     return n as Cents;
   },
-  unsafe: (n: number): Cents => n as Cents,
+  isValid: (n: number): boolean => Number.isInteger(n) && n >= 0,
+  unsafe: (n: number): Cents => n as Cents, // ONLY for DB rows already validated
 } as const;
