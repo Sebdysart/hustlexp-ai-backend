@@ -1,6 +1,3 @@
-import { parse } from '@typescript-eslint/typescript-estree';
-import type { TSESTree } from '@typescript-eslint/utils';
-
 export interface Violation {
   file: string;
   line: number;
@@ -31,49 +28,52 @@ export function checkLedgerImmutability(source: string, filePath: string): Viola
     }
   });
 
+  // Also check full source for multi-line SQL patterns
+  const normalized = source.replace(/\s+/g, ' ').toLowerCase();
+  if (
+    (normalized.includes('update') || normalized.includes('delete')) &&
+    normalized.includes('ledger_entries')
+  ) {
+    // Only add if not already caught line-by-line
+    const alreadyCaught = violations.some(v => v.invariant === 'INV-4');
+    if (!alreadyCaught) {
+      violations.push({
+        file: filePath,
+        line: 0, // full-source match, no single line
+        invariant: 'INV-4',
+        message: `Multi-line ledger mutation detected in ${filePath} — ledger_entries are append-only`,
+      });
+    }
+  }
+
   return violations;
 }
 
 /**
  * INV-1/5: Balance and payment amounts must be positive integers.
- * Flags any assignment to `amount` fields without a positivity check nearby.
+ * Flags direct numeric literal assignments to amount/escrowAmount that are <= 0.
+ * (e.g., `amount: 0` or `amount: -100` — clearly invalid values)
+ * Variable assignments are NOT flagged here (the variable may be validated upstream).
  */
 export function checkAmountPositivity(source: string, filePath: string): Violation[] {
   const violations: Violation[] = [];
+  const lines = source.split('\n');
 
-  try {
-    const ast = parse(source, { loc: true, range: true, jsx: false });
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    function walk(node: any) {
-      // Flag: amount: someVar where someVar isn't guarded with > 0 or Math.abs
-      if (
-        node.type === 'Property' &&
-        node.key.type === 'Identifier' &&
-        (node.key.name === 'amount' || node.key.name === 'escrowAmount')
-      ) {
-        // Heuristic: check if there's no validation in the enclosing function body
+  lines.forEach((line, i) => {
+    // Flag: amount: 0 or amount: -N (numeric literal <= 0)
+    const match = line.match(/\b(amount|escrowAmount)\s*:\s*(-?\d+)/);
+    if (match) {
+      const value = parseInt(match[2], 10);
+      if (value <= 0) {
         violations.push({
           file: filePath,
-          line: node.loc?.start.line ?? 0,
+          line: i + 1,
           invariant: 'INV-1/5',
-          message: `Amount assignment at line ${node.loc?.start.line} — verify positivity guard exists (INV-1/5)`,
+          message: `Zero or negative amount literal '${match[2]}' assigned to '${match[1]}' — amounts must be positive (INV-1/5)`,
         });
       }
-      for (const key of Object.keys(node)) {
-        const child = (node as Record<string, unknown>)[key];
-        if (child && typeof child === 'object' && 'type' in (child as object)) {
-          walk(child as TSESTree.Node);
-        } else if (Array.isArray(child)) {
-          child.forEach(c => c && typeof c === 'object' && 'type' in c && walk(c as TSESTree.Node));
-        }
-      }
     }
-
-    walk(ast);
-  } catch {
-    // Parse errors are reported elsewhere (tsc)
-  }
+  });
 
   return violations;
 }

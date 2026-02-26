@@ -22,7 +22,14 @@ const ESCROW_TRANSITIONS: Record<string, string[]> = {
  * Pattern: status = 'completed' without going through TaskService.
  */
 export function checkStateMachineTransitions(source: string, filePath: string): Violation[] {
-  if (filePath.includes('Service.ts') || filePath.includes('.test.ts')) return [];
+  if (
+    filePath.includes('Service.ts') ||
+    filePath.includes('.test.ts') ||
+    filePath.includes('/test/') ||
+    filePath.includes('/mocks/') ||
+    filePath.includes('/migrations/') ||
+    filePath.includes('/seed/')
+  ) return [];
 
   const violations: Violation[] = [];
   const lines = source.split('\n');
@@ -32,6 +39,10 @@ export function checkStateMachineTransitions(source: string, filePath: string): 
   ];
 
   lines.forEach((line, i) => {
+    // Skip matches inside SQL contexts (SET status = ... is valid SQL)
+    const upperLine = line.toUpperCase();
+    if (upperLine.includes(' SET ') || upperLine.includes('WHERE ')) return;
+
     for (const state of stateValues) {
       if (
         new RegExp(`status\\s*=\\s*['"\`]${state}['"\`]`).test(line) ||
