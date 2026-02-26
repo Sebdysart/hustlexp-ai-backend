@@ -59,7 +59,6 @@ jobs:
             echo "passed=false" >> $GITHUB_OUTPUT
             exit 1
           fi
-        continue-on-error: true
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -93,7 +92,6 @@ jobs:
             echo "passed=false" >> $GITHUB_OUTPUT
             exit 1
           fi
-        continue-on-error: true
       - name: Post constitution report
         if: always() && hashFiles('citadel-constitution-report.md') != ''
         uses: marocchino/sticky-pull-request-comment@v2
@@ -124,13 +122,11 @@ jobs:
         run: |
           PR_DIFF=$(git diff origin/main...HEAD)
           export PR_DIFF
-          export PR_NUMBER=${{ github.event.pull_request.number }}
           npx tsx scripts/citadel-oracle-ensemble.ts
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        continue-on-error: true
       - name: Post oracle report
         if: always() && hashFiles('citadel-oracle-report.md') != ''
         uses: marocchino/sticky-pull-request-comment@v2
@@ -161,7 +157,6 @@ jobs:
         id: record
         run: npx tsx scripts/citadel-provenance.ts
         env:
-          GITHUB_RUN_ID: ${{ github.run_id }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           GATE_INTEGRITY: ${{ needs.integrity.outputs.passed }}
           GATE_MUTATION: ${{ needs.mutation.outputs.passed }}
