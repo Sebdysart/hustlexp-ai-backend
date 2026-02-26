@@ -54,11 +54,3 @@ pids/
 *.seed
 *.pid.lock
 
-# Citadel provenance (per-run, not committed)
-citadel-provenance.sqlite
-citadel-provenance-report.md
-citadel-constitution-report.md
-citadel-oracle-report.json
-citadel-oracle-report.md
-stryker-report.json
-reports/
