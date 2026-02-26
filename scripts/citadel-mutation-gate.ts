@@ -24,9 +24,34 @@ try {
   process.exit(1);
 }
 
-// Parse report and emit GitHub output
-const report = JSON.parse(fs.readFileSync('stryker-report.json', 'utf-8'));
-const score = report.mutationScore ?? 0;
+// Parse report and compute mutation score from mutant statuses
+if (!fs.existsSync('stryker-report.json')) {
+  console.error('Citadel: stryker-report.json not found after successful run');
+  process.exit(1);
+}
+
+const report = JSON.parse(fs.readFileSync('stryker-report.json', 'utf-8')) as {
+  files: Record<string, { mutants: { status: string }[] }>;
+};
+
+let killed = 0, timeout = 0, survived = 0, noCoverage = 0;
+
+for (const file of Object.values(report.files ?? {})) {
+  for (const mutant of file.mutants ?? []) {
+    switch (mutant.status) {
+      case 'Killed':      killed++;      break;
+      case 'Timeout':     timeout++;     break;
+      case 'Survived':    survived++;    break;
+      case 'NoCoverage':  noCoverage++;  break;
+      // Ignored, CompileError, RuntimeError, Pending — excluded from score
+    }
+  }
+}
+
+const detected = killed + timeout;
+const total = killed + timeout + survived + noCoverage;
+const score = total > 0 ? (detected / total) * 100 : 100; // 100% if no mutants
+
 console.log(`Citadel: mutation score ${score.toFixed(1)}% — gate passed`);
 
 if (process.env.GITHUB_OUTPUT) {
