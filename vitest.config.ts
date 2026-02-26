@@ -5,7 +5,7 @@ export default defineConfig({
     bail: 1,
     environment: 'node',
     testTimeout: 30000,
-    include: ['backend/tests/**/*.test.ts'],
+    include: ['backend/tests/**/*.test.ts', 'src/**/*.test.ts'],
     reporters: ['verbose'],
     // Run test files sequentially to avoid database race conditions
     fileParallelism: false,
