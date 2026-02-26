@@ -42,7 +42,8 @@
     "greptile:review": "tsx scripts/greptile-pr-review.ts",
     "test:vault": "vitest run 'tests-vault/**/*.test.ts'",
     "test:new": "vitest run 'backend/tests/new/**/*.test.ts'",
-    "citadel:mutate": "tsx scripts/citadel-mutation-gate.ts"
+    "citadel:mutate": "tsx scripts/citadel-mutation-gate.ts",
+    "citadel:constitution": "tsx scripts/citadel-constitution-enforcer.ts"
   },
   "dependencies": {
     "@aws-sdk/client-rekognition": "3.994.0",
