@@ -1258,7 +1258,7 @@ fastify.post('/api/tasks', { preHandler: [optionalAuth] }, async (request, reply
         const body = CreateTaskSchema.parse(request.body);
 
         // Get user from auth context or use anonymous
-        const clientId = (request as any).user?.uid || 'anonymous';
+        const clientId = request.user?.uid ?? 'anonymous';
 
         // Create task directly via TaskService
         const task = await TaskService.createTask({
@@ -1309,7 +1309,7 @@ fastify.post<{
     const { taskId } = request.params;
 
     // Get hustler from auth context
-    const hustlerId = (request as any).user?.uid || 'unknown';
+    const hustlerId = request.user?.uid ?? 'unknown';
 
     // Check task exists and is active (available)
     const task = await TaskService.getTask(taskId);
@@ -3640,8 +3640,12 @@ fastify.post('/api/stripe/webhook', {
         return { error: 'Missing stripe-signature header' };
     }
 
+    if (!request.rawBody) {
+        return reply.status(400).send({ error: 'Missing raw body for webhook verification' });
+    }
+
     const event = StripeService.verifyWebhook(
-        (request as any).rawBody as string | Buffer,
+        request.rawBody,
         signature
     );
 
@@ -4315,7 +4319,7 @@ fastify.post('/api/admin/beta/invites', { preHandler: [requireAdminFromJWT] }, a
         cityId,
         maxUses,
         expiresAt: expiresAt ? new Date(expiresAt) : undefined,
-        createdBy: (request as any).user?.uid,
+        createdBy: request.user?.uid,
     });
 
     return { invite };
@@ -4362,7 +4366,7 @@ fastify.get('/api/admin/notifications', { preHandler: [requireAdminFromJWT] }, a
 
 // Get user notifications
 fastify.get('/api/notifications', { preHandler: [requireAuth] }, async (request) => {
-    const userId = (request as any).user?.uid;
+    const userId = request.user?.uid;
     if (!userId) return { notifications: [] };
 
     return {
@@ -4376,7 +4380,7 @@ fastify.get('/api/notifications', { preHandler: [requireAuth] }, async (request)
 fastify.post('/api/admin/tasks/:taskId/force-complete', { preHandler: [requireAdminFromJWT] }, async (request) => {
     const { taskId } = request.params as { taskId: string };
     const { reason } = request.body as { reason?: string };
-    const adminId = (request as any).user?.uid || 'system';
+    const adminId = request.user?.uid ?? 'system';
 
     EventLogger.logEvent({
         eventType: 'custom',
@@ -4392,7 +4396,7 @@ fastify.post('/api/admin/tasks/:taskId/force-complete', { preHandler: [requireAd
 fastify.post('/api/admin/tasks/:taskId/force-refund', { preHandler: [requireAdminFromJWT] }, async (request) => {
     const { taskId } = request.params as { taskId: string };
     const { reason } = request.body as { reason?: string };
-    const adminId = (request as any).user?.uid || 'system';
+    const adminId = request.user?.uid ?? 'system';
 
     // Would call StripeService.refundEscrow(taskId) with admin override
     EventLogger.logEvent({
