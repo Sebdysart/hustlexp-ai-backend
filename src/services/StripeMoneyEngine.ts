@@ -287,13 +287,13 @@ export async function handle(
     }
 
     // 1b. Acquire row lock
-    const [lockRow] = await tx`
+    const [lockRow] = (await tx`
       SELECT task_id, current_state, amount_cents,
              stripe_payment_intent_id, stripe_charge_id, stripe_transfer_id
       FROM money_state_lock
       WHERE task_id = ${taskId}
       FOR UPDATE
-    `;
+    `) as MoneyStateLockRow[];
 
     const currentState: MoneyState = lockRow?.current_state || 'open';
 

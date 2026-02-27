@@ -43,7 +43,7 @@ export interface MatchingScoreComponents {
 }
 
 export interface TaskFeedItem {
-  task: Record<string, unknown>; // Task row from DB query
+  task: TaskFeedRow; // Task row from DB query
   matching_score: number;
   relevance_score: number;
   distance_miles: number;
@@ -74,7 +74,7 @@ export interface SearchFilters extends FeedFilters {
 }
 
 /** Row shape returned by browsePublicFeed SELECT */
-interface PublicTaskRow extends Record<string, unknown> {
+interface PublicTaskRow {
   id: string;
   title: string;
   description: string;
@@ -90,12 +90,25 @@ interface PublicTaskRow extends Record<string, unknown> {
 }
 
 /** Row shape returned by getFeed / search (tasks + matching scores) */
-interface TaskFeedRow {
+export interface TaskFeedRow {
+  // Task entity fields (from t.*)
+  id: string;
+  title: string;
+  description: string;
+  category: string | null;
+  price: number;
+  location: string | null;
+  deadline: string | null;
+  created_at: string;
+  state: string;
+  requires_proof: boolean;
+  mode: string;
+  poster_id: string;
+  // Computed scoring fields
   matching_score: number;
   relevance_score: number;
   distance_miles: number;
   search_rank?: number;
-  [key: string]: unknown; // t.* columns
 }
 
 // ============================================================================
@@ -277,7 +290,7 @@ export const TaskDiscoveryService = {
     },
     limit: number = 20,
     offset: number = 0
-  ): Promise<ServiceResult<Record<string, unknown>[]>> => {
+  ): Promise<ServiceResult<PublicTaskRow[]>> => {
     try {
       let sql = `
         SELECT

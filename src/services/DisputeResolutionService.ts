@@ -128,6 +128,12 @@ interface DisputeResolutionRow {
   finalized_at: Date | null;
 }
 
+interface JuryAssignmentRow {
+  dispute_id: string;
+  assigned_at: string;
+  jury_deliberation_deadline: string | null;
+}
+
 // ============================================================================
 // CONSTANTS
 // ============================================================================
@@ -1154,11 +1160,6 @@ Analyze this dispute and provide your recommendation in JSON format.`;
       ORDER BY dj.assigned_at ASC
     `;
 
-    interface JuryAssignmentRow {
-      dispute_id: string;
-      assigned_at: string;
-      jury_deliberation_deadline: string | null;
-    }
     return (rows as JuryAssignmentRow[]).map((r) => ({
       disputeId: r.dispute_id,
       assignedAt: new Date(r.assigned_at),
