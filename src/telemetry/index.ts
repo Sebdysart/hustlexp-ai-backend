@@ -9,8 +9,11 @@
  * outage must NEVER crash the application server.
  */
 
+import { readFileSync } from 'fs';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 import { NodeSDK } from '@opentelemetry/sdk-node';
-import { ConsoleSpanExporter } from '@opentelemetry/sdk-trace-base';
+import { ConsoleSpanExporter, NoopSpanProcessor } from '@opentelemetry/sdk-trace-base';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
 import { HttpInstrumentation } from '@opentelemetry/instrumentation-http';
 import { PgInstrumentation } from '@opentelemetry/instrumentation-pg';
@@ -18,22 +21,32 @@ import { trace } from '@opentelemetry/api';
 import { env } from '../config/env.js';
 
 // ---------------------------------------------------------------------------
-// Package metadata (resolved at build time via package.json)
+// Package metadata — resolved at runtime from package.json
 // ---------------------------------------------------------------------------
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const pkg = JSON.parse(readFileSync(join(__dirname, '../../package.json'), 'utf-8')) as { version: string };
 
 const SERVICE_NAME = env.SERVICE_NAME || 'hustlexp-ai-backend';
-const SERVICE_VERSION = '1.0.0';
+const SERVICE_VERSION = pkg.version;
 
 // ---------------------------------------------------------------------------
-// Choose exporter: OTLP when endpoint is configured, Console as fallback
+// Choose exporter:
+//   1. OTLP when endpoint is configured
+//   2. ConsoleSpanExporter in development / test (helpful for local debugging)
+//   3. No-op in production with no OTLP endpoint (avoids flooding stdout)
 // ---------------------------------------------------------------------------
 
-function buildExporter(): ConsoleSpanExporter | OTLPTraceExporter {
+function buildExporter(): ConsoleSpanExporter | OTLPTraceExporter | null {
   const endpoint = env.OTEL_EXPORTER_OTLP_ENDPOINT;
   if (endpoint) {
     return new OTLPTraceExporter({ url: endpoint });
   }
-  return new ConsoleSpanExporter();
+  if (process.env.NODE_ENV !== 'production') {
+    return new ConsoleSpanExporter();
+  }
+  // Production with no OTLP endpoint: return null to signal no-op
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -43,9 +56,12 @@ function buildExporter(): ConsoleSpanExporter | OTLPTraceExporter {
 let sdk: NodeSDK | null = null;
 
 try {
+  const exporter = buildExporter();
   sdk = new NodeSDK({
     serviceName: SERVICE_NAME,
-    traceExporter: buildExporter(),
+    // When no exporter is configured (production, no OTLP), use a no-op
+    // processor so spans are silently dropped instead of flooding stdout.
+    ...(exporter ? { traceExporter: exporter } : { spanProcessor: new NoopSpanProcessor() }),
     instrumentations: [
       new HttpInstrumentation(),
       // PgInstrumentation auto-instruments the native `pg` driver.

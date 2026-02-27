@@ -4,16 +4,18 @@
  * Verifies:
  *  1. tracedQuery resolves with the result of fn()
  *  2. tracedQuery re-throws errors from fn()
- *  3. fastifyPlugin registers onRequest and onResponse hooks
+ *  3. fastifyPlugin registers onRequest, onResponse, and onError hooks
  *  4. telemetry SDK init failure does NOT throw (server-safe)
  *  5. AI span attributes are set correctly (mock tracer)
  *  6. degradedMode enqueueAIRequest injects trace context carrier
+ *  7. onError hook records exception and ends span (5xx)
+ *  8. onError hook does NOT set ERROR status for 4xx
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // ---------------------------------------------------------------------------
-// Shared mock span — used by all tests that call startActiveSpan
+// Shared mock span — used by all tests that call startActiveSpan / startSpan
 // ---------------------------------------------------------------------------
 
 const mockSpanEnd = vi.fn();
@@ -29,9 +31,11 @@ const mockSpan = {
 };
 
 const mockStartActiveSpan = vi.fn((_name: string, fn: (span: typeof mockSpan) => unknown) => fn(mockSpan));
+const mockStartSpan = vi.fn(() => mockSpan);
 
 const mockTracer = {
   startActiveSpan: mockStartActiveSpan,
+  startSpan: mockStartSpan,
 };
 
 // ---------------------------------------------------------------------------
@@ -44,6 +48,7 @@ vi.mock('@opentelemetry/api', () => {
     SpanStatusCode,
     trace: {
       getTracer: () => mockTracer,
+      setSpan: (_ctx: unknown, _span: unknown) => ({ spanContext: 'mocked' }),
     },
     context: {
       active: () => ({}),
@@ -73,6 +78,7 @@ vi.mock('@opentelemetry/sdk-node', () => ({
 
 vi.mock('@opentelemetry/sdk-trace-base', () => ({
   ConsoleSpanExporter: class MockConsoleSpanExporter {},
+  NoopSpanProcessor: class MockNoopSpanProcessor {},
 }));
 
 vi.mock('@opentelemetry/exporter-trace-otlp-http', () => ({
@@ -102,6 +108,7 @@ describe('tracedQuery', () => {
     vi.clearAllMocks();
     // Re-set implementation after clearAllMocks
     mockStartActiveSpan.mockImplementation((_name: string, fn: (span: typeof mockSpan) => unknown) => fn(mockSpan));
+    mockStartSpan.mockReturnValue(mockSpan);
   });
 
   it('resolves with the result of fn()', async () => {
@@ -139,6 +146,7 @@ describe('fastifyPlugin', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockStartActiveSpan.mockImplementation((_name: string, fn: (span: typeof mockSpan) => unknown) => fn(mockSpan));
+    mockStartSpan.mockReturnValue(mockSpan);
   });
 
   it('registers onRequest, onResponse, and onError hooks on the Fastify instance', async () => {
@@ -159,7 +167,7 @@ describe('fastifyPlugin', () => {
     expect(addedHooks).toContain('onError');
   });
 
-  it('onRequest hook calls tracer.startActiveSpan with method + route', async () => {
+  it('onRequest hook calls tracer.startSpan with method + url and stores span on request', async () => {
     const { telemetryPlugin } = await import('../telemetry/fastifyPlugin.js');
 
     const addedHooks = new Map<string, (...args: unknown[]) => void>();
@@ -177,6 +185,7 @@ describe('fastifyPlugin', () => {
       routerPath: '/api/tasks/:id',
       url: '/api/tasks/123',
       otelSpan: undefined as unknown,
+      otelContext: undefined as unknown,
     };
     const done = vi.fn();
 
@@ -185,7 +194,48 @@ describe('fastifyPlugin', () => {
     onRequestHook!(fakeRequest, {}, done);
 
     expect(done).toHaveBeenCalled();
-    expect(mockStartActiveSpan).toHaveBeenCalledWith('GET /api/tasks/:id', expect.any(Function));
+    // Uses startSpan (not startActiveSpan) to avoid context being destroyed
+    expect(mockStartSpan).toHaveBeenCalledWith(
+      'GET /api/tasks/123',
+      expect.objectContaining({ attributes: expect.objectContaining({ 'http.method': 'GET' }) }),
+    );
+    // Span is stored on request
+    expect(fakeRequest.otelSpan).toBe(mockSpan);
+  });
+
+  it('preHandler hook sets http.route from routerPath', async () => {
+    const { telemetryPlugin } = await import('../telemetry/fastifyPlugin.js');
+
+    const addedHooks = new Map<string, (...args: unknown[]) => void>();
+    const mockFastify = {
+      decorateRequest: vi.fn(),
+      addHook: vi.fn((name: string, fn: (...args: unknown[]) => void) => {
+        addedHooks.set(name, fn);
+      }),
+    };
+
+    await telemetryPlugin(mockFastify as never);
+
+    const localSpan = {
+      setAttribute: vi.fn(),
+      setStatus: vi.fn(),
+      recordException: vi.fn(),
+      end: vi.fn(),
+    };
+    const fakeRequest = {
+      method: 'GET',
+      routerPath: '/api/tasks/:id',
+      url: '/api/tasks/123',
+      otelSpan: localSpan,
+    };
+    const done = vi.fn();
+
+    const preHandlerHook = addedHooks.get('preHandler');
+    expect(preHandlerHook).toBeDefined();
+    preHandlerHook!(fakeRequest, {}, done);
+
+    expect(localSpan.setAttribute).toHaveBeenCalledWith('http.route', '/api/tasks/:id');
+    expect(done).toHaveBeenCalled();
   });
 
   it('onResponse hook ends the span and sets status OK', async () => {
@@ -220,6 +270,84 @@ describe('fastifyPlugin', () => {
     expect(localSpan.end).toHaveBeenCalled();
     expect(done).toHaveBeenCalled();
   });
+
+  it('records exception and ends span in onError hook for 5xx errors', async () => {
+    const { telemetryPlugin } = await import('../telemetry/fastifyPlugin.js');
+
+    const addedHooks = new Map<string, (...args: unknown[]) => void>();
+    const mockFastify = {
+      decorateRequest: vi.fn(),
+      addHook: vi.fn((name: string, fn: (...args: unknown[]) => void) => {
+        addedHooks.set(name, fn);
+      }),
+    };
+
+    await telemetryPlugin(mockFastify as never);
+
+    const localSpan = {
+      setAttribute: vi.fn(),
+      setStatus: vi.fn(),
+      recordException: vi.fn(),
+      end: vi.fn(),
+    };
+    const fakeRequest = { otelSpan: localSpan };
+    const fakeReply = { statusCode: 500 };
+    const fakeError = new Error('internal server error');
+    const done = vi.fn();
+
+    const onErrorHook = addedHooks.get('onError') as (
+      req: unknown, reply: unknown, err: Error, done: () => void
+    ) => void;
+    expect(onErrorHook).toBeDefined();
+    onErrorHook(fakeRequest, fakeReply, fakeError, done);
+
+    expect(localSpan.setAttribute).toHaveBeenCalledWith('http.status_code', 500);
+    expect(localSpan.recordException).toHaveBeenCalledWith(fakeError);
+    // 5xx → ERROR status must be set
+    expect(localSpan.setStatus).toHaveBeenCalledWith({ code: 2, message: 'internal server error' });
+    expect(localSpan.end).toHaveBeenCalled();
+    expect(done).toHaveBeenCalled();
+  });
+
+  it('does not set SpanStatusCode.ERROR for 4xx errors in onError hook', async () => {
+    const { telemetryPlugin } = await import('../telemetry/fastifyPlugin.js');
+
+    const addedHooks = new Map<string, (...args: unknown[]) => void>();
+    const mockFastify = {
+      decorateRequest: vi.fn(),
+      addHook: vi.fn((name: string, fn: (...args: unknown[]) => void) => {
+        addedHooks.set(name, fn);
+      }),
+    };
+
+    await telemetryPlugin(mockFastify as never);
+
+    const localSpan = {
+      setAttribute: vi.fn(),
+      setStatus: vi.fn(),
+      recordException: vi.fn(),
+      end: vi.fn(),
+    };
+    const fakeRequest = { otelSpan: localSpan };
+    const fakeReply = { statusCode: 404 };
+    const fakeError = new Error('not found');
+    const done = vi.fn();
+
+    const onErrorHook = addedHooks.get('onError') as (
+      req: unknown, reply: unknown, err: Error, done: () => void
+    ) => void;
+    expect(onErrorHook).toBeDefined();
+    onErrorHook(fakeRequest, fakeReply, fakeError, done);
+
+    expect(localSpan.setAttribute).toHaveBeenCalledWith('http.status_code', 404);
+    expect(localSpan.recordException).toHaveBeenCalledWith(fakeError);
+    // 4xx → setStatus must NOT be called with ERROR
+    expect(localSpan.setStatus).not.toHaveBeenCalledWith(
+      expect.objectContaining({ code: 2 }),
+    );
+    expect(localSpan.end).toHaveBeenCalled();
+    expect(done).toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -248,6 +376,7 @@ describe('AI span attributes in routedGenerate', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockStartActiveSpan.mockImplementation((_name: string, fn: (span: typeof mockSpan) => unknown) => fn(mockSpan));
+    mockStartSpan.mockReturnValue(mockSpan);
   });
 
   it('sets ai.provider, ai.model, and ai.prompt_length attributes on the span', async () => {
