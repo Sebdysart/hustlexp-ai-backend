@@ -294,7 +294,7 @@ fastify.get('/health/detailed', async () => {
 fastify.get('/health/ai', async () => {
     const circuits = getAllCircuitStates();
     return {
-        degradedMode: env.AI_DEGRADED_MODE === 'true',
+        degradedMode: isDegradedMode(), // true when env flag OR all AI circuit breakers are OPEN
         models: circuits,
         timestamp: new Date().toISOString(),
     };
