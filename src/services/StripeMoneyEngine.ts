@@ -27,6 +27,7 @@
  */
 
 import Stripe from 'stripe';
+import { match } from 'ts-pattern';
 import { getSql, transaction } from '../db/index.js';
 import type { SqlTx } from '../db/index.js';
 import { createLogger } from '../utils/logger.js';
@@ -128,30 +129,31 @@ export interface HandleResult {
 /**
  * getNextState — pure function implementing the state transition table.
  *
+ * Uses ts-pattern exhaustive match so TypeScript will emit a compile error if
+ * a new MoneyState variant is added without updating this transition table.
+ *
  * Throws if the (state, event) pair is not in the table.
  */
 function getNextState(currentState: MoneyState, event: MoneyEvent): MoneyState {
-  switch (currentState) {
-    case 'open':
-      if (event === 'HOLD_ESCROW') return 'held';
-      break;
-
-    case 'held':
-      if (event === 'RELEASE_PAYOUT') return 'released';
-      if (event === 'REFUND_ESCROW') return 'refunded';
-      break;
-
+  const nextState: MoneyState | null = match(currentState)
+    .with('open',      () => event === 'HOLD_ESCROW'    ? 'held'     : null)
+    .with('held',      () => event === 'RELEASE_PAYOUT' ? 'released'
+                           : event === 'REFUND_ESCROW'  ? 'refunded'
+                           : null)
     // Terminal states — no transitions allowed
-    case 'released':
-    case 'refunded':
-    case 'completed':
-      break;
+    .with('released',  () => null)
+    .with('refunded',  () => null)
+    .with('completed', () => null)
+    .exhaustive();
+
+  if (nextState === null) {
+    throw new Error(
+      `Invalid event ${event} for current state ${currentState}. ` +
+      `No transition defined.`
+    );
   }
 
-  throw new Error(
-    `Invalid event ${event} for current state ${currentState}. ` +
-    `No transition defined.`
-  );
+  return nextState;
 }
 
 // ============================================================================

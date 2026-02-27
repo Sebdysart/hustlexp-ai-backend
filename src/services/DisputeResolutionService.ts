@@ -24,6 +24,7 @@
  */
 
 import { v4 as uuidv4 } from 'uuid';
+import { match } from 'ts-pattern';
 import { sql, isDatabaseAvailable, transaction } from '../db/index.js';
 import { serviceLogger } from '../utils/logger.js';
 import { routedGenerate } from '../ai/router.js';
@@ -891,25 +892,28 @@ Analyze this dispute and provide your recommendation in JSON format.`;
         ? Number(moneyState.amount_cents)
         : Math.round(task.recommendedPrice * 100);
 
-      // 5. Calculate amounts based on outcome
-      let refundAmountCents = 0;
-      let releaseAmountCents = 0;
-
-      switch (outcome) {
-        case 'poster':
-          refundAmountCents = taskAmountCents;
-          releaseAmountCents = 0;
-          break;
-        case 'hustler':
-          refundAmountCents = 0;
-          releaseAmountCents = taskAmountCents;
-          break;
-        case 'split':
+      // 5. Calculate amounts based on outcome.
+      //
+      // ts-pattern exhaustive match: TypeScript will emit a compile error if a
+      // new ResolutionOutcome variant is added without updating this handler.
+      const { refundAmountCents, releaseAmountCents } = match(outcome)
+        .with('poster', () => ({
+          refundAmountCents: taskAmountCents,
+          releaseAmountCents: 0,
+        }))
+        .with('hustler', () => ({
+          refundAmountCents: 0,
+          releaseAmountCents: taskAmountCents,
+        }))
+        .with('split', () => {
           // splitPercent is the percentage going to the hustler
-          releaseAmountCents = Math.round(taskAmountCents * (splitPercent / 100));
-          refundAmountCents = taskAmountCents - releaseAmountCents;
-          break;
-      }
+          const release = Math.round(taskAmountCents * (splitPercent / 100));
+          return {
+            refundAmountCents: taskAmountCents - release,
+            releaseAmountCents: release,
+          };
+        })
+        .exhaustive();
 
       // 6. Execute the money engine operation
       const eventId = ulid();

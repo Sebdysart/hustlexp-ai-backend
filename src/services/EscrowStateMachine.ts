@@ -19,6 +19,7 @@
  * @version 1.0.0 (BUILD_GUIDE aligned)
  */
 
+import { match } from 'ts-pattern';
 import { getSql, transaction } from '../db/index.js';
 import type { SqlTx } from '../db/index.js';
 import { createLogger } from '../utils/logger.js';
@@ -78,10 +79,20 @@ export const ESCROW_TRANSITIONS: Record<EscrowState, EscrowState[]> = {
 class EscrowStateMachineClass {
 
   /**
-   * Check if a transition is valid
+   * Check if a transition is valid.
+   *
+   * Uses ts-pattern exhaustive match so TypeScript will emit a compile error
+   * if a new EscrowState variant is added without updating this function.
    */
   canTransition(from: EscrowState, to: EscrowState): boolean {
-    const validTargets = ESCROW_TRANSITIONS[from] || [];
+    const validTargets: EscrowState[] = match(from)
+      .with('pending',        () => ['funded', 'refunded'] as EscrowState[])
+      .with('funded',         () => ['released', 'refunded', 'locked_dispute'] as EscrowState[])
+      .with('locked_dispute', () => ['released', 'refunded', 'partial_refund'] as EscrowState[])
+      .with('released',       () => [] as EscrowState[])       // Terminal
+      .with('refunded',       () => [] as EscrowState[])       // Terminal
+      .with('partial_refund', () => [] as EscrowState[])       // Terminal
+      .exhaustive();
     return validTargets.includes(to);
   }
 
