@@ -13,6 +13,7 @@
 import { transaction } from '../db/index.js';
 import type { SqlTx } from '../db/index.js';
 import { createLogger } from '../utils/logger.js';
+import { getErrorMessage } from '../utils/errors.js';
 
 const logger = createLogger('AtomicXPService');
 
@@ -109,15 +110,157 @@ export interface AwardXPResult {
 }
 
 /**
+ * Core XP award logic executed within an existing transaction context.
+ *
+ * IMPORTANT: This function does NOT verify that money_state_lock is 'released'.
+ * That check is the caller's responsibility. When called from
+ * EscrowStateMachine.transition(), the escrow state update and this call share
+ * one serializable transaction, so the 'released' state is guaranteed by the
+ * surrounding atomic block.
+ *
+ * Steps:
+ *   1. Fetch task details (price, etc.)
+ *   2. Fetch user details (current xp, level, streak)
+ *   3. INSERT into xp_ledger (UNIQUE on money_state_lock_task_id)
+ *   4. UPDATE user with new XP, level, streak
+ */
+export async function awardXPInTx(
+  taskId: string,
+  hustlerId: string,
+  tx: SqlTx,
+): Promise<AwardXPResult> {
+  // Step 1: Fetch task details
+  const [task] = await tx`
+    SELECT id, price, instant_mode, matched_at, accepted_at, state, completed_at, surge_level
+    FROM tasks
+    WHERE id = ${taskId}
+  `;
+
+  if (!task) {
+    return {
+      success: false,
+      xpAwarded: 0,
+      alreadyAwarded: false,
+      error: `Task not found: ${taskId}`,
+    };
+  }
+
+  // Step 2: Fetch user details
+  const [user] = await tx`
+    SELECT id, xp, level, streak, last_active_at
+    FROM users
+    WHERE id = ${hustlerId}
+  `;
+
+  if (!user) {
+    return {
+      success: false,
+      xpAwarded: 0,
+      alreadyAwarded: false,
+      error: `User not found: ${hustlerId}`,
+    };
+  }
+
+  // Calculate XP
+  const priceCents = (task.price || 0) * 100; // price is in dollars in task table
+  const baseXP = calculateBaseXP(priceCents);
+  const decayFactorVal = calculateDecayFactor(user.xp || 0);
+  const effectiveXP = Math.round(baseXP * decayFactorVal.toNumber());
+  const streakMul = getStreakMultiplier(user.streak || 0);
+  const finalXP = Math.max(1, Math.round(effectiveXP * streakMul));
+
+  const newTotalXP = (user.xp || 0) + finalXP;
+  const previousLevel = user.level || 1;
+  const newLevel = calculateLevel(newTotalXP);
+  const leveledUp = newLevel > previousLevel;
+  const newStreak = (user.streak || 0) + 1;
+
+  // Step 3: Insert into xp_ledger (UNIQUE constraint on money_state_lock_task_id)
+  try {
+    await tx`
+      INSERT INTO xp_ledger (
+        user_id, task_id, money_state_lock_task_id,
+        base_xp, decay_factor, effective_xp, streak_multiplier, final_xp,
+        created_at
+      ) VALUES (
+        ${hustlerId}, ${taskId}, ${taskId},
+        ${baseXP}, ${decayFactorVal.toNumber()}, ${effectiveXP}, ${streakMul}, ${finalXP},
+        NOW()
+      )
+    `;
+  } catch (err: unknown) {
+    // INV-5: Catch 23505 UNIQUE violation — means XP already awarded
+    if (
+      err instanceof Error &&
+      'code' in err &&
+      typeof (err as { code: unknown }).code === 'string' &&
+      (err as { code: string }).code === '23505'
+    ) {
+      logger.info({ taskId, hustlerId }, 'XP already awarded (idempotent)');
+      return {
+        success: true,
+        xpAwarded: 0,
+        alreadyAwarded: true,
+        finalXP: 0,
+        newTotalXP: user.xp || 0,
+        newLevel: user.level || 1,
+        newStreak: user.streak || 0,
+      };
+    }
+    throw err;
+  }
+
+  // Step 4: Update user XP, level, streak
+  await tx`
+    UPDATE users
+    SET xp = ${newTotalXP},
+        level = ${newLevel},
+        streak = ${newStreak},
+        updated_at = NOW()
+    WHERE id = ${hustlerId}
+  `;
+
+  logger.info({
+    taskId,
+    hustlerId,
+    baseXP,
+    decayFactor: decayFactorVal.toNumber(),
+    effectiveXP,
+    streakMultiplier: streakMul,
+    finalXP,
+    newTotalXP,
+    newLevel,
+    leveledUp,
+  }, 'XP awarded successfully');
+
+  return {
+    success: true,
+    xpAwarded: finalXP,
+    baseXP,
+    decayFactor: decayFactorVal.toFixed(4),
+    effectiveXP,
+    streakMultiplier: streakMul.toFixed(2),
+    finalXP,
+    newTotalXP,
+    newLevel,
+    previousLevel,
+    leveledUp,
+    newStreak,
+    alreadyAwarded: false,
+  };
+}
+
+/**
  * Award XP for a completed task. Enforces INV-1 (XP requires released escrow)
  * and INV-5 (idempotency via UNIQUE constraint on xp_ledger).
  *
+ * Opens its own serializable transaction and checks money_state_lock first.
+ * For use in standalone contexts. When called from EscrowStateMachine use
+ * awardXPInTx() instead so both operations share one atomic transaction.
+ *
  * Transaction steps:
  *   1. Check money_state_lock for task — must exist and be 'released'
- *   2. Fetch task details (price, etc.)
- *   3. Fetch user details (current xp, level, streak)
- *   4. INSERT into xp_ledger (UNIQUE on money_state_lock_task_id)
- *   5. UPDATE user with new XP, level, streak
+ *   2. Delegate to awardXPInTx for the remaining steps
  */
 export async function awardXPForTask(
   taskId: string,
@@ -150,134 +293,15 @@ export async function awardXPForTask(
         };
       }
 
-      // Step 2: Fetch task details
-      const [task] = await tx`
-        SELECT id, price, instant_mode, matched_at, accepted_at, state, completed_at, surge_level
-        FROM tasks
-        WHERE id = ${taskId}
-      `;
-
-      if (!task) {
-        return {
-          success: false,
-          xpAwarded: 0,
-          alreadyAwarded: false,
-          error: `Task not found: ${taskId}`,
-        };
-      }
-
-      // Step 3: Fetch user details
-      const [user] = await tx`
-        SELECT id, xp, level, streak, last_active_at
-        FROM users
-        WHERE id = ${hustlerId}
-      `;
-
-      if (!user) {
-        return {
-          success: false,
-          xpAwarded: 0,
-          alreadyAwarded: false,
-          error: `User not found: ${hustlerId}`,
-        };
-      }
-
-      // Calculate XP
-      const priceCents = (task.price || 0) * 100; // price is in dollars in task table
-      const baseXP = calculateBaseXP(priceCents);
-      const decayFactorVal = calculateDecayFactor(user.xp || 0);
-      const effectiveXP = Math.round(baseXP * decayFactorVal.toNumber());
-      const streakMul = getStreakMultiplier(user.streak || 0);
-      const finalXP = Math.max(1, Math.round(effectiveXP * streakMul));
-
-      const newTotalXP = (user.xp || 0) + finalXP;
-      const previousLevel = user.level || 1;
-      const newLevel = calculateLevel(newTotalXP);
-      const leveledUp = newLevel > previousLevel;
-      const newStreak = (user.streak || 0) + 1;
-
-      // Step 4: Insert into xp_ledger (UNIQUE constraint on money_state_lock_task_id)
-      try {
-        await tx`
-          INSERT INTO xp_ledger (
-            user_id, task_id, money_state_lock_task_id,
-            base_xp, decay_factor, effective_xp, streak_multiplier, final_xp,
-            created_at
-          ) VALUES (
-            ${hustlerId}, ${taskId}, ${taskId},
-            ${baseXP}, ${decayFactorVal.toNumber()}, ${effectiveXP}, ${streakMul}, ${finalXP},
-            NOW()
-          )
-        `;
-      } catch (err: unknown) {
-        // INV-5: Catch 23505 UNIQUE violation — means XP already awarded
-        if (
-          err instanceof Error &&
-          'code' in err &&
-          typeof (err as { code: unknown }).code === 'string' &&
-          (err as { code: string }).code === '23505'
-        ) {
-          logger.info({ taskId, hustlerId }, 'XP already awarded (idempotent)');
-          return {
-            success: true,
-            xpAwarded: 0,
-            alreadyAwarded: true,
-            finalXP: 0,
-            newTotalXP: user.xp || 0,
-            newLevel: user.level || 1,
-            newStreak: user.streak || 0,
-          };
-        }
-        throw err;
-      }
-
-      // Step 5: Update user XP, level, streak
-      await tx`
-        UPDATE users
-        SET xp = ${newTotalXP},
-            level = ${newLevel},
-            streak = ${newStreak},
-            updated_at = NOW()
-        WHERE id = ${hustlerId}
-      `;
-
-      logger.info({
-        taskId,
-        hustlerId,
-        baseXP,
-        decayFactor: decayFactorVal.toNumber(),
-        effectiveXP,
-        streakMultiplier: streakMul,
-        finalXP,
-        newTotalXP,
-        newLevel,
-        leveledUp,
-      }, 'XP awarded successfully');
-
-      return {
-        success: true,
-        xpAwarded: finalXP,
-        baseXP,
-        decayFactor: decayFactorVal.toFixed(4),
-        effectiveXP,
-        streakMultiplier: streakMul.toFixed(2),
-        finalXP,
-        newTotalXP,
-        newLevel,
-        previousLevel,
-        leveledUp,
-        newStreak,
-        alreadyAwarded: false,
-      };
+      return awardXPInTx(taskId, hustlerId, tx);
     });
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
     logger.error({ error, taskId, hustlerId }, 'Failed to award XP');
     return {
       success: false,
       xpAwarded: 0,
       alreadyAwarded: false,
-      error: message,
+      error: getErrorMessage(error),
     };
   }
 }

@@ -572,16 +572,25 @@ describe('INV-4: Escrow amount is IMMUTABLE after creation', () => {
     const inner = sqlTag._inner ?? sqlTag;
     inner.mockReset();
 
+    // Restore the default transaction behaviour: pass taggedMockSql (= inner) as
+    // tx so that sql calls inside the transaction callback are also counted by
+    // callIndex. Prior tests in the suite may have overridden __transactionMock
+    // via configureTransactionMock(); vi.clearAllMocks() only clears call history
+    // and does NOT restore the implementation, so we must do it explicitly here.
+    __transactionMock.mockImplementation(async (fn: Function) => fn(sqlTag));
+
     const callArgs: any[] = [];
     let callIndex = 0;
     inner.mockImplementation((...args: any[]) => {
       callArgs.push(args);
       const responses = [
-        // 1. GET lock
+        // 1. GET lock (outer sql, before transaction)
         [{ task_id: 'task-inv4-3', current_state: 'pending', amount_cents: 5000 }],
-        // 2. UPDATE money_state_lock (state change)
+        // 2-3. tx`` sub-calls for SET-clause ternaries (both are the false/empty branch)
+        [], [],
+        // 4. UPDATE money_state_lock (state change, no amount_cents column)
         [],
-        // 3. INSERT escrow_state_log
+        // 5. INSERT escrow_state_log
         [],
       ];
       const result = responses[callIndex] ?? [];
@@ -591,12 +600,13 @@ describe('INV-4: Escrow amount is IMMUTABLE after creation', () => {
 
     await EscrowStateMachine.transition('task-inv4-3', 'funded');
 
-    // The UPDATE call (index 1) should NOT contain amount_cents.
+    // The UPDATE call (index 3) should NOT contain amount_cents.
     // Since we use tagged templates, the raw sql is embedded in the template strings.
     // We verify the transition occurred without checking raw SQL directly —
     // the important thing is that the code path does not modify amount_cents.
-    // Structural analysis: EscrowStateMachine.transition() line 149-161 only sets
+    // Structural analysis: EscrowStateMachine.transition() sets only
     // current_state, stripe_payment_intent_id, stripe_transfer_id, and updated_at.
+    // callIndex is 5: 1 outer SELECT + 2 ternary sub-calls + 1 UPDATE + 1 INSERT.
     expect(callIndex).toBeGreaterThanOrEqual(2); // At least lock read + update happened
   });
 

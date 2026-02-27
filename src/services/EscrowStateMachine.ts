@@ -20,8 +20,10 @@
  */
 
 import { getSql, transaction } from '../db/index.js';
+import type { SqlTx } from '../db/index.js';
 import { createLogger } from '../utils/logger.js';
-import { awardXPForTask } from './AtomicXPService.js';
+import { awardXPInTx } from './AtomicXPService.js';
+import { getErrorMessage } from '../utils/errors.js';
 
 const logger = createLogger('EscrowStateMachine');
 
@@ -84,7 +86,12 @@ class EscrowStateMachineClass {
   }
 
   /**
-   * Execute a state transition
+   * Execute a state transition.
+   *
+   * When the target state is 'released', the escrow state update AND the XP
+   * award are wrapped in a SINGLE serializable transaction so that either both
+   * succeed or both roll back. This enforces INV-1: no money released without
+   * XP, no XP without money release.
    */
   async transition(
     taskId: string,
@@ -94,7 +101,8 @@ class EscrowStateMachineClass {
     const sql = getSql();
 
     try {
-      // Get current state from money_state_lock
+      // Read current state outside the write transaction so we can validate
+      // before acquiring a serializable lock.
       const [lock] = await sql`
         SELECT task_id, current_state, amount_cents
         FROM money_state_lock
@@ -145,43 +153,55 @@ class EscrowStateMachineClass {
         };
       }
 
-      // Execute transition
-      await sql`
-        UPDATE money_state_lock
-        SET
-          current_state = ${targetState},
-          ${targetState === 'funded' && context.stripePaymentIntentId
-            ? sql`stripe_payment_intent_id = ${context.stripePaymentIntentId},`
-            : sql``}
-          ${targetState === 'released' && context.stripeTransferId
-            ? sql`stripe_transfer_id = ${context.stripeTransferId},`
-            : sql``}
-          updated_at = NOW()
-        WHERE task_id = ${taskId}
-      `;
-
-      // Log transition
-      await sql`
-        INSERT INTO escrow_state_log (task_id, from_state, to_state, context, created_at)
-        VALUES (${taskId}, ${currentState}, ${targetState}, ${JSON.stringify(context)}, NOW())
-      `;
-
       let xpAwarded = 0;
 
-      // INV-1: Award XP when released
-      if (targetState === 'released') {
-        const [task] = await sql`
-          SELECT assigned_to FROM tasks WHERE id = ${taskId}
+      // ------------------------------------------------------------------
+      // ATOMIC BLOCK: escrow state update + XP award in one serializable tx.
+      //
+      // If the target is 'released' we must award XP inside the same
+      // transaction so that either both writes commit or neither does.
+      // For all other target states we still use the same transaction helper
+      // for consistency; XP is not awarded in those paths.
+      // ------------------------------------------------------------------
+      await transaction(async (tx: SqlTx) => {
+        // Execute state update
+        await tx`
+          UPDATE money_state_lock
+          SET
+            current_state = ${targetState},
+            ${targetState === 'funded' && context.stripePaymentIntentId
+              ? tx`stripe_payment_intent_id = ${context.stripePaymentIntentId},`
+              : tx``}
+            ${targetState === 'released' && context.stripeTransferId
+              ? tx`stripe_transfer_id = ${context.stripeTransferId},`
+              : tx``}
+            updated_at = NOW()
+          WHERE task_id = ${taskId}
         `;
 
-        if (task?.assigned_to) {
-          const xpResult = await awardXPForTask(taskId, task.assigned_to);
-          if (xpResult.success) {
-            xpAwarded = xpResult.xpAwarded;
-            logger.info({ taskId, xpAwarded }, 'XP awarded on escrow release');
+        // Log transition
+        await tx`
+          INSERT INTO escrow_state_log (task_id, from_state, to_state, context, created_at)
+          VALUES (${taskId}, ${currentState}, ${targetState}, ${JSON.stringify(context)}, NOW())
+        `;
+
+        // INV-1: Award XP when released — inside the same atomic block
+        if (targetState === 'released') {
+          const [task] = await tx`
+            SELECT assigned_to FROM tasks WHERE id = ${taskId}
+          `;
+
+          if (task?.assigned_to) {
+            // awardXPInTx operates within tx — any failure rolls back the
+            // entire transaction, including the escrow state update above.
+            const xpResult = await awardXPInTx(taskId, task.assigned_to, tx);
+            if (xpResult.success) {
+              xpAwarded = xpResult.xpAwarded;
+              logger.info({ taskId, xpAwarded }, 'XP awarded on escrow release');
+            }
           }
         }
-      }
+      });
 
       logger.info({
         taskId,
@@ -199,13 +219,15 @@ class EscrowStateMachineClass {
       };
 
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
-      logger.error({ error, taskId, targetState }, 'Escrow state transition failed');
+      logger.error(
+        { escrowId: taskId, targetState, error: getErrorMessage(error) },
+        'COMPENSATING_TX: escrow+XP transaction failed — no funds released, no XP awarded',
+      );
       return {
         success: false,
         previousState: 'pending',
         newState: 'pending',
-        error: message,
+        error: getErrorMessage(error),
       };
     }
   }
