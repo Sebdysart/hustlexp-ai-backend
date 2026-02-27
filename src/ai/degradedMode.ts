@@ -17,6 +17,7 @@
 
 import { env } from '../config/env.js';
 import { areAllCircuitsOpen } from '../utils/reliability.js';
+import { context, propagation } from '@opentelemetry/api';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -29,6 +30,8 @@ export interface QueuedAIJob {
   mode: string;
   enqueuedAt: number;
   expiresAt: number;
+  /** W3C trace context carrier for distributed tracing propagation */
+  traceContext: Record<string, string>;
 }
 
 export interface DegradedModeResult {
@@ -83,6 +86,16 @@ export function enqueueAIRequest(
   mode: string,
 ): QueuedAIJob {
   evictExpiredJobs(); // Clean up expired jobs before adding a new one
+
+  // Capture the current W3C trace context so the dequeued worker can
+  // re-attach to the originating distributed trace.
+  const carrier: Record<string, string> = {};
+  try {
+    propagation.inject(context.active(), carrier);
+  } catch (_err) {
+    // Telemetry failure must NEVER prevent job enqueuing
+  }
+
   const job: QueuedAIJob = {
     jobId: generateJobId(),
     userId,
@@ -90,6 +103,7 @@ export function enqueueAIRequest(
     mode,
     enqueuedAt: Date.now(),
     expiresAt: Date.now() + _maxWaitMs,
+    traceContext: carrier,
   };
   _queue.set(job.jobId, job);
   return job;

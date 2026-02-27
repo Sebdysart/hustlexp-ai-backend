@@ -19,6 +19,8 @@
 import { recordFailure, recordSuccess, AI_PROVIDERS } from '../utils/reliability.js';
 import { env } from '../config/env.js';
 import { aiLogger } from '../utils/logger.js';
+import { SpanStatusCode } from '@opentelemetry/api';
+import { tracer } from '../telemetry/index.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -221,22 +223,53 @@ export async function routedGenerate(
     const callFn = PROVIDER_CALL_FNS[provider];
     if (!callFn) continue;
 
+    // Determine the model name for span attributes based on provider
+    const modelName =
+      provider === 'openai'    ? (env.OPENAI_MODEL    || 'gpt-4o-mini') :
+      provider === 'groq'      ? (env.GROQ_MODEL      || 'llama-3.3-70b-versatile') :
+      provider === 'deepseek'  ? (env.DEEPSEEK_MODEL  || 'deepseek-chat') :
+      provider === 'anthropic' ? (env.ANTHROPIC_MODEL || 'claude-3-5-haiku-20241022') :
+      'unknown';
+
+    // Compute prompt length from all message contents for the span attribute
+    const promptLength = callOpts.messages.reduce((acc, m) => acc + m.content.length, 0) +
+      (callOpts.system?.length ?? 0);
+
     try {
-      const content = await callFn(callOpts);
+      const result = await tracer.startActiveSpan(`ai.generate ${provider}`, async (span) => {
+        span.setAttribute('ai.provider', provider);
+        span.setAttribute('ai.model', modelName);
+        span.setAttribute('ai.prompt_length', promptLength);
+        span.setAttribute('ai.task_type', taskType);
+        try {
+          const content = await callFn(callOpts);
 
-      // --- Fix 1: record success so circuit can close after recovery ---
-      recordSuccess(provider);
+          span.setAttribute('ai.response_length', content.length);
+          span.setStatus({ code: SpanStatusCode.OK });
 
-      aiLogger.debug({ provider, taskType }, 'routedGenerate succeeded');
-      return { content, provider };
+          // Record success so circuit can close after recovery
+          recordSuccess(provider);
+
+          aiLogger.debug({ provider, taskType }, 'routedGenerate succeeded');
+          span.end();
+          return { content, provider };
+        } catch (error) {
+          const err = error instanceof Error ? error : new Error(String(error));
+
+          span.recordException(err);
+          span.setStatus({ code: SpanStatusCode.ERROR, message: err.message });
+          span.end();
+
+          // Record failure so circuit opens after 5 consecutive fails
+          recordFailure(provider);
+
+          aiLogger.warn({ provider, taskType, err: err.message }, 'routedGenerate provider failed, trying next');
+          throw err;
+        }
+      });
+      return result;
     } catch (error) {
-      const err = error instanceof Error ? error : new Error(String(error));
-
-      // --- Fix 1: record failure so circuit opens after 5 consecutive fails ---
-      recordFailure(provider);
-
-      aiLogger.warn({ provider, taskType, err: err.message }, 'routedGenerate provider failed, trying next');
-      lastError = err;
+      lastError = error instanceof Error ? error : new Error(String(error));
     }
   }
 

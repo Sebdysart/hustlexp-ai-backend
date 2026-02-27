@@ -16,6 +16,10 @@
  *   src/routes/controlplane.ts   — risk scoring, shadow policy, market signals, city domination
  */
 
+// OpenTelemetry SDK MUST be initialized before any other module so it can
+// patch Node.js built-ins (http, net, etc.) before application code loads them.
+import './telemetry/index.js';
+
 import 'dotenv/config'; // Fallback for other files still using process.env
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
@@ -31,6 +35,7 @@ import { DatabaseHealthService } from './services/DatabaseHealthService.js';
 import { addRequestId, returnRequestId, createGlobalErrorHandler, logRequest } from './middleware/requestId.js';
 import { cacheIdempotentResponse } from './middleware/idempotency.js';
 import { authHook, idempotencyHook, rateLimiterHook, corsOriginCallback } from './middleware/hooks.js';
+import { telemetryPlugin } from './telemetry/fastifyPlugin.js';
 
 // Route modules
 import disputeRoutes from './routes/disputes.js';
@@ -142,6 +147,10 @@ async function start() {
         // ============================================
         // Register API Route Modules
         // ============================================
+
+        // Telemetry plugin MUST be registered before any route modules so that
+        // onRequest / onResponse hooks fire for every route.
+        await fastify.register(telemetryPlugin);
 
         // Core platform routes (pre-existing modular)
         await fastify.register(authRoutes, { prefix: '/api' });

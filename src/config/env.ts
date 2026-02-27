@@ -20,6 +20,10 @@ interface EnvVars {
   AI_DEGRADED_MODE: string;
   /** Maximum milliseconds a queued AI request is considered "pending" before expiry. Default: 5000 */
   AI_MAX_QUEUE_WAIT_MS: string;
+  /** OTLP endpoint for OpenTelemetry trace export (e.g. http://localhost:4318/v1/traces). Omit to use ConsoleSpanExporter. */
+  OTEL_EXPORTER_OTLP_ENDPOINT: string;
+  /** Service name reported in OTel spans. Defaults to 'hustlexp-ai-backend'. */
+  SERVICE_NAME: string;
   [key: string]: string | undefined;
 }
 
