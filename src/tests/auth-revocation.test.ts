@@ -40,4 +40,19 @@ describe('Auth token revocation', () => {
       verifyTokenWithRevocationCheck('test_token_3', mockAdminSdk, true),
     ).rejects.toThrow('Firebase Admin is not configured');
   });
+
+  it('rejects a token within 5 minutes of revocation', async () => {
+    // Simulate Firebase detecting a revoked token (e.g. within the 5-minute cache TTL window)
+    const revokedError = Object.assign(new Error('auth/id-token-revoked'), {
+      code: 'auth/id-token-revoked',
+    });
+    const mockVerify = vi.fn().mockRejectedValue(revokedError);
+    const mockAdminSdk = { auth: () => ({ verifyIdToken: mockVerify }) };
+
+    await expect(
+      verifyTokenWithRevocationCheck('some_valid_looking_token', mockAdminSdk, true),
+    ).rejects.toThrow();
+
+    expect(mockVerify).toHaveBeenCalledWith('some_valid_looking_token', true);
+  });
 });
