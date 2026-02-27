@@ -37,6 +37,7 @@ import crypto from 'crypto';
 import { ErrorTracker } from './utils/errorTracker.js';
 import { getAIEventsSummary, getRecentAIEvents } from './utils/aiEventLogger.js';
 import { logger } from './utils/logger.js';
+import { getErrorMessage } from './utils/errors.js';
 import { testConnection, isDatabaseAvailable, sql } from './db/index.js';
 import { runMigrations, seedTestData } from './db/schema.js';
 import { checkRateLimit, isRateLimitingEnabled, testRedisConnection } from './middleware/rateLimiter.js';
@@ -3028,7 +3029,7 @@ fastify.post<{
     } catch (error) {
         logger.error({ error }, 'Proof submission error');
         reply.status(400);
-        return { error: (error as Error).message };
+        return { error: getErrorMessage(error) };
     }
 });
 

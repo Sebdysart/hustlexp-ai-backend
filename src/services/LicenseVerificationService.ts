@@ -12,12 +12,9 @@
 import { transaction } from '../db/index.js';
 import { createLogger } from '../utils/logger.js';
 import { CapabilityProfileService } from './CapabilityProfileService.js';
+import { getErrorMessage } from '../utils/errors.js';
 
 const logger = createLogger('LicenseVerificationService');
-
-function getErrorMessage(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
 
 // ============================================================================
 // TYPES

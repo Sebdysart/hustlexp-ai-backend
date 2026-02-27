@@ -12,6 +12,7 @@ import { env } from '../config/env.js';
 import { assertPayoutsEnabled } from '../config/safety.js';
 import Stripe from 'stripe';
 import { serviceLogger } from '../utils/logger.js';
+import { getErrorMessage } from '../utils/errors.js';
 import { sql, isDatabaseAvailable, transaction, safeSql } from '../db/index.js';
 import { StripeMoneyEngine } from './StripeMoneyEngine.js';
 
@@ -327,7 +328,7 @@ class StripeServiceClass {
             // Previously this used 'FORCE_REFUND' for admin which is not a valid MoneyEvent
             // and would throw in getNextState().
             return await StripeMoneyEngine.handle(taskId, 'REFUND_ESCROW', ctx, { adminOverride: isAdmin });
-        } catch (e) { return { success: false, message: (e as Error).message }; }
+        } catch (e: unknown) { return { success: false, message: getErrorMessage(e) }; }
     }
 
     // ============================================
@@ -510,11 +511,11 @@ class StripeServiceClass {
                             ${event.id},
                             ${event.type},
                             ${JSON.stringify(event.data.object)},
-                            ${(err as Error).message || 'Unknown error'},
+                            ${getErrorMessage(err) || 'Unknown error'},
                             NOW()
                         ) ON CONFLICT (event_id) DO UPDATE
                         SET retry_count = webhook_dead_letter_queue.retry_count + 1,
-                            last_error = ${(err as Error).message || 'Unknown error'},
+                            last_error = ${getErrorMessage(err) || 'Unknown error'},
                             updated_at = NOW()
                     `;
                     serviceLogger.info({ eventId: event.id }, 'Failed webhook event persisted to DLQ');
@@ -523,8 +524,8 @@ class StripeServiceClass {
                     serviceLogger.fatal({
                         eventId: event.id,
                         eventType: event.type,
-                        originalError: (err as Error).message,
-                        dlqError: (dlqErr as Error).message,
+                        originalError: getErrorMessage(err),
+                        dlqError: getErrorMessage(dlqErr),
                         eventData: JSON.stringify(event.data.object).slice(0, 1000),
                     }, 'CRITICAL: Webhook DLQ write failed — manual intervention required');
                 }

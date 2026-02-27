@@ -17,12 +17,9 @@
 
 import { transaction } from '../db/index.js';
 import { createLogger } from '../utils/logger.js';
+import { getErrorMessage } from '../utils/errors.js';
 
 const logger = createLogger('TaxComplianceService');
-
-function getErrorMessage(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
 
 // ============================================================================
 // CONSTANTS

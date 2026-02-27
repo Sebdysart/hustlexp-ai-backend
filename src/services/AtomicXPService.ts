@@ -210,7 +210,12 @@ export async function awardXPForTask(
         `;
       } catch (err: unknown) {
         // INV-5: Catch 23505 UNIQUE violation — means XP already awarded
-        if (err instanceof Error && 'code' in err && (err as { code: string }).code === '23505') {
+        if (
+          err instanceof Error &&
+          'code' in err &&
+          typeof (err as { code: unknown }).code === 'string' &&
+          (err as { code: string }).code === '23505'
+        ) {
           logger.info({ taskId, hustlerId }, 'XP already awarded (idempotent)');
           return {
             success: true,
