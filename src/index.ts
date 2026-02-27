@@ -32,7 +32,7 @@ import { AICostGuardService } from './services/AICostGuardService.js';
 import { SmartMatchAIService } from './services/SmartMatchAIService.js';
 import { StripeMoneyEngine } from './services/StripeMoneyEngine.js';
 import { UserService } from './services/UserService.js';
-import { StripeService } from './services/StripeService.js'; // Keeping for now until full cleanup
+import { StripeService, checkStripeEventIdempotency } from './services/StripeService.js'; // Keeping for now until full cleanup
 import crypto from 'crypto';
 import { ErrorTracker } from './utils/errorTracker.js';
 import { getAIEventsSummary, getRecentAIEvents } from './utils/aiEventLogger.js';
@@ -4464,6 +4464,21 @@ fastify.post('/webhooks/stripe', async (request, reply) => {
     const event = request.body as StripeWebhookEvent;
 
     try {
+        // Idempotency guard: INSERT … ON CONFLICT DO NOTHING.
+        // Stripe retries webhooks on non-2xx responses; we must return 200 for duplicates.
+        if (isDatabaseAvailable() && sql) {
+            try {
+                const isDuplicate = await checkStripeEventIdempotency(event.id, sql);
+                if (isDuplicate) {
+                    logger.warn({ eventId: event.id, type: event.type }, 'Duplicate Stripe webhook received — skipping');
+                    return reply.send({ received: true, duplicate: true });
+                }
+            } catch (idempotencyErr) {
+                // Table may not exist yet — log and continue processing rather than dropping the event
+                logger.warn({ idempotencyErr, eventId: event.id }, 'Stripe idempotency check failed — continuing');
+            }
+        }
+
         if (event.type === 'payout.paid') {
             // payout.paid is a Stripe banking-layer confirmation that a transfer has settled
             // in the recipient's bank account. This is purely informational — the financial

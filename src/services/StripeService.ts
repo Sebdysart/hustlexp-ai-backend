@@ -14,6 +14,7 @@ import Stripe from 'stripe';
 import { serviceLogger } from '../utils/logger.js';
 import { getErrorMessage } from '../utils/errors.js';
 import { sql, isDatabaseAvailable, transaction, safeSql } from '../db/index.js';
+import type { SqlTx } from '../db/index.js';
 import { StripeMoneyEngine } from './StripeMoneyEngine.js';
 
 // Import centralized config for platform fee (fixes discrepancy with backend/src/config.ts)
@@ -102,6 +103,33 @@ const connectAccounts = new Map<string, string>();
 // WARNING: This in-memory Set resets on server restart, allowing event reprocessing.
 // The DB-based idempotency check (processed_stripe_events table) is the primary guard.
 const processedEvents = new Set<string>();
+
+// ============================================
+// Idempotency Helper (exported for testing)
+// ============================================
+
+/**
+ * Attempts to record a Stripe event ID in the processed_stripe_events table
+ * using INSERT … ON CONFLICT DO NOTHING.
+ *
+ * Returns true  if the event was already processed (duplicate — caller should skip).
+ * Returns false if the event is new and should be processed.
+ *
+ * The sql parameter accepts the module-level `sql` tagged-template client or a
+ * transaction client (SqlTx), making the function unit-testable without a real DB.
+ */
+export async function checkStripeEventIdempotency(
+    eventId: string,
+    sqlClient: SqlTx | typeof sql
+): Promise<boolean> {
+    const result = await (sqlClient as typeof sql)`
+        INSERT INTO processed_stripe_events (event_id, processed_at, event_type)
+        VALUES (${eventId}, NOW(), 'unknown')
+        ON CONFLICT (event_id) DO NOTHING
+        RETURNING event_id
+    `;
+    return result.length === 0; // true = duplicate (conflict fired, nothing inserted)
+}
 
 // ============================================
 // Stripe Service Class
@@ -435,19 +463,21 @@ class StripeServiceClass {
         // RULE 3: NEVER THROW - Wrap entire function in try-catch
         try {
             // RULE 1: IDEMPOTENCY (Global Shield)
-            if (processedEvents.has(event.id)) return;
+            // Fast in-memory check first (single-instance guard, resets on restart).
+            if (processedEvents.has(event.id)) {
+                serviceLogger.warn({ eventId: event.id, type: event.type }, 'Duplicate Stripe webhook received (in-memory) — skipping');
+                return;
+            }
 
+            // Durable DB-level check: INSERT … ON CONFLICT DO NOTHING.
+            // This is the primary race-condition guard across restarts and parallel instances.
             if (isDatabaseAvailable() && sql) {
                 try {
-                    const [exists] = await sql`
-                        INSERT INTO processed_stripe_events (event_id, event_type)
-                        VALUES (${event.id}, ${event.type})
-                        ON CONFLICT (event_id) DO NOTHING
-                        RETURNING event_id
-                     `;
-                    if (!exists) {
-                        processedEvents.add(event.id);
-                        return; // Already processed
+                    const isDuplicate = await checkStripeEventIdempotency(event.id, sql);
+                    if (isDuplicate) {
+                        processedEvents.add(event.id); // warm the in-memory cache
+                        serviceLogger.warn({ eventId: event.id, type: event.type }, 'Duplicate Stripe webhook received — skipping');
+                        return;
                     }
                 } catch (dbErr) {
                     // Idempotency table may not exist - continue anyway
