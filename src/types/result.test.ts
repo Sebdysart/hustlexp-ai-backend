@@ -33,7 +33,7 @@ describe('Result<T,E>', () => {
 
   it('Result.chain short-circuits on failure', () => {
     const err = AppError.validation('bad input');
-    const r = Result.chain(Result.fail<number, AppError>(err), (n) => Result.ok(n + 1));
+    const r = Result.chain<number, number, AppError>(Result.fail<AppError>(err), (n) => Result.ok(n + 1));
     expect(Result.isFail(r) && r.error.code).toBe('VALIDATION_ERROR');
   });
 
@@ -50,8 +50,8 @@ describe('Result<T,E>', () => {
 
   it('Result.chainAsync short-circuits on failure', async () => {
     const err = AppError.forbidden('no access');
-    const r = await Result.chainAsync(
-      Result.fail<number, AppError>(err),
+    const r = await Result.chainAsync<number, number, AppError>(
+      Result.fail<AppError>(err),
       async (n) => Result.ok(n + 1),
     );
     expect(Result.isFail(r) && r.error.code).toBe('FORBIDDEN');
