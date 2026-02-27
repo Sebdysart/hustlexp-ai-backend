@@ -32,6 +32,7 @@ import { TaskService } from './TaskService.js';
 import { UserService } from './UserService.js';
 import { BetaMetricsService } from './BetaMetricsService.js';
 import { ulid } from 'ulidx';
+import { getErrorMessage } from '../utils/errors.js';
 
 const logger = serviceLogger.child({ module: 'DisputeResolution' });
 
@@ -900,7 +901,7 @@ Analyze this dispute and provide your recommendation in JSON format.`;
           SET final_outcome = ${outcome},
               refund_amount_cents = ${refundAmountCents},
               release_amount_cents = ${releaseAmountCents},
-              money_engine_error = ${(moneyError as Error).message},
+              money_engine_error = ${getErrorMessage(moneyError)},
               updated_at = NOW()
           WHERE id = ${disputeId}
         `;
