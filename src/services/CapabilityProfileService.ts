@@ -124,6 +124,46 @@ export function getRiskClearanceForTier(tier: TrustTier): RiskLevel[] {
 }
 
 // ============================================================================
+// ROW TYPES
+// ============================================================================
+
+interface LicenseVerificationDbRow {
+  id: string;
+  trade: string;
+  state: string;
+  status: 'pending' | 'verified' | 'failed' | 'expired';
+  verified_at: Date | null;
+  expires_at: Date | null;
+  verification_method: string;
+}
+
+interface InsuranceVerificationDbRow {
+  id: string;
+  trade: string;
+  status: 'pending' | 'verified' | 'failed' | 'expired';
+  verified_at: Date | null;
+  expires_at: Date | null;
+  coverage_amount: number;
+}
+
+interface BackgroundCheckDbRow {
+  id: string;
+  status: 'pending' | 'verified' | 'failed' | 'expired';
+  verified_at: Date | null;
+  expires_at: Date | null;
+  provider: string;
+}
+
+interface VerifiedTradeDbRow {
+  trade: string;
+  state: string;
+  license_verification_id: string;
+  verified_at: Date;
+  expires_at: Date | null;
+  verification_method: string;
+}
+
+// ============================================================================
 // SOURCE RECORD FETCHING
 // ============================================================================
 
@@ -150,7 +190,7 @@ async function fetchLicenseVerifications(
     ORDER BY trade, state
   `;
 
-  return rows.map((row: any) => ({
+  return rows.map((row: LicenseVerificationDbRow) => ({
     id: row.id,
     trade: row.trade,
     state: row.state,
@@ -183,7 +223,7 @@ async function fetchInsuranceVerifications(
     ORDER BY trade
   `;
 
-  return rows.map((row: any) => ({
+  return rows.map((row: InsuranceVerificationDbRow) => ({
     id: row.id,
     trade: row.trade,
     status: row.status,
@@ -575,7 +615,7 @@ export async function getVerifiedTrades(userId: string): Promise<VerifiedTrade[]
     ORDER BY trade
   `;
 
-  return rows.map((row: any) => ({
+  return rows.map((row: VerifiedTradeDbRow) => ({
     trade: row.trade,
     state: row.state,
     licenseVerificationId: row.license_verification_id,

@@ -324,7 +324,22 @@ export async function checkExpiredInsurance(): Promise<{
 // HELPER FUNCTIONS
 // ============================================================================
 
-function formatVerification(row: any): InsuranceVerification {
+interface InsuranceVerificationRow {
+  id: string;
+  user_id: string;
+  trade: string;
+  status: InsuranceStatus;
+  coverage_amount: number;
+  verified_at: Date | null;
+  expires_at: Date | null;
+  failure_reason: string | null;
+  source: InsuranceSource;
+  verification_method: string | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+function formatVerification(row: InsuranceVerificationRow): InsuranceVerification {
   return {
     id: row.id,
     userId: row.user_id,

@@ -78,8 +78,15 @@ export const capabilityRouter = router({
     .query(async ({ ctx, input }) => {
       // Get task requirements
       const { db } = await import('../db');
-      const taskResult = await db.query<Record<string, any>>(
-        `SELECT trade_type, location_state, location_city, risk_level, 
+      const taskResult = await db.query<{
+        trade_type: string;
+        location_state: string;
+        location_city: string | undefined;
+        risk_level: 'low' | 'medium' | 'high' | 'critical';
+        insurance_required: boolean;
+        background_check_required: boolean;
+      }>(
+        `SELECT trade_type, location_state, location_city, risk_level,
                 insurance_required, background_check_required
          FROM tasks WHERE id = $1`,
         [input.taskId]

@@ -91,6 +91,32 @@ export interface FeedResult {
 }
 
 // ============================================================================
+// ROW TYPES
+// ============================================================================
+
+interface TaskFeedRow {
+  id: string;
+  title: string;
+  description: string;
+  trade: string;
+  location_address: string;
+  location_city: string;
+  location_state: string;
+  location_lat: number;
+  location_lng: number;
+  payout_cents: number;
+  currency: string;
+  risk_level: 'low' | 'medium' | 'high' | 'critical';
+  estimated_duration_minutes: number;
+  insurance_required: boolean;
+  background_check_required: boolean;
+  created_at: string;
+  poster_id: string;
+  poster_rating: number;
+  poster_completed_tasks: number;
+}
+
+// ============================================================================
 // CORE QUERY
 // ============================================================================
 
@@ -137,7 +163,7 @@ export async function queryFeed(query: FeedQuery): Promise<FeedResult> {
       )
   `;
 
-  const params: any[] = [query.userId];
+  const params: unknown[] = [query.userId];
   let paramIndex = 2;
 
   // Apply trade filter
@@ -213,7 +239,7 @@ export async function queryFeed(query: FeedQuery): Promise<FeedResult> {
   params.push(query.pagination.limit);
 
   // Execute query
-  const result = await db.query<Record<string, any>>(sql, params);
+  const result = await db.query<TaskFeedRow>(sql, params);
 
   log.debug({ 
     userId: query.userId, 
@@ -397,9 +423,29 @@ export async function getTasksByTrade(
   state: string,
   limit: number = 20
 ): Promise<FeedTask[]> {
-  const result = await db.query<Record<string, any>>(
+  const result = await db.query<{
+    id: string;
+    title: string;
+    description: string;
+    trade_type: string;
+    location_address: string;
+    location_city: string;
+    location_state: string;
+    location_lat: number;
+    location_lng: number;
+    payout_cents: number;
+    currency: string;
+    risk_level: string;
+    estimated_duration_minutes: number;
+    insurance_required: boolean;
+    background_check_required: boolean;
+    created_at: string;
+    poster_id: string;
+    poster_rating: number;
+    completed_tasks_count: number;
+  }>(
     `
-    SELECT 
+    SELECT
       t.id, t.title, t.description, t.trade_type, t.location_address,
       t.location_city, t.location_state, t.location_lat, t.location_lng,
       t.payout_cents, t.currency, t.risk_level, t.estimated_duration_minutes,

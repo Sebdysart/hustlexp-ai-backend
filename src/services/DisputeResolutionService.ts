@@ -106,6 +106,28 @@ export interface DisputeResolutionResult {
   resolution?: Partial<DisputeResolution>;
 }
 
+interface DisputeResolutionRow {
+  id: string;
+  task_id: string;
+  initiator_id: string;
+  initiator_role: 'poster' | 'hustler';
+  poster_id: string;
+  hustler_id: string;
+  reason: string;
+  status: DisputeResolutionStatus;
+  ai_outcome: ResolutionOutcome | null;
+  ai_confidence: number | null;
+  ai_reasoning: string | null;
+  ai_risk_flags: string[] | null;
+  jury_member_ids: string[] | null;
+  final_outcome: ResolutionOutcome | null;
+  refund_amount_cents: number | null;
+  release_amount_cents: number | null;
+  created_at: Date;
+  updated_at: Date;
+  finalized_at: Date | null;
+}
+
 // ============================================================================
 // CONSTANTS
 // ============================================================================
@@ -1089,7 +1111,7 @@ Analyze this dispute and provide your recommendation in JSON format.`;
     }
 
     // Return lightweight list (no evidence/jury details)
-    return rows.map((row: any) => ({
+    return rows.map((row: DisputeResolutionRow) => ({
       id: row.id,
       taskId: row.task_id,
       initiatorId: row.initiator_id,

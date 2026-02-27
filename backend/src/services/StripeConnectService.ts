@@ -306,7 +306,7 @@ export const StripeConnectService = {
     try {
       const account = await stripeBreaker.execute(() => stripe!.accounts.retrieve(accountId));
 
-      const requirements = account.requirements as any || {};
+      const requirements = account.requirements as Stripe.Account.Requirements || {};
       const isOnboarded = account.charges_enabled && account.payouts_enabled;
 
       return {
@@ -463,8 +463,8 @@ export const StripeConnectService = {
       const cardPayments = settings?.card_payments;
 
       // Determine if instant payouts are available
-      const instantEligible = account.capabilities?.transfers === 'active' && 
-                             (cardPayments as any)?.statement_descriptor !== undefined;
+      const instantEligible = account.capabilities?.transfers === 'active' &&
+                             cardPayments?.statement_descriptor_prefix !== undefined;
 
       return {
         success: true,
@@ -828,7 +828,7 @@ export const StripeConnectService = {
 
     try {
       const account = await stripeBreaker.execute(() => stripe!.accounts.retrieve(accountId));
-      const requirements = account.requirements as any || {};
+      const requirements = account.requirements as Stripe.Account.Requirements || {};
 
       return {
         success: true,

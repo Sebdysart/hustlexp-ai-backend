@@ -19,6 +19,28 @@ const logger = createLogger('FeedQueryService');
 // TYPES
 // ============================================================================
 
+interface FeedTaskRow {
+  id: string;
+  title: string;
+  description: string;
+  price: number;
+  location: string;
+  location_state: string;
+  category: string | null;
+  risk_level: RiskLevel;
+  required_trade: string | null;
+  required_trust_tier: number;
+  insurance_required: boolean;
+  background_check_required: boolean;
+  deadline: Date | null;
+  poster_id: string;
+  poster_name: string;
+  poster_avatar: string | null;
+  poster_trust_tier: number;
+  created_at: Date;
+  location_geog?: unknown;
+}
+
 export interface FeedTask {
   id: string;
   title: string;
@@ -199,7 +221,7 @@ export async function getFeed(options: FeedQueryOptions): Promise<FeedResult> {
 
     // Check if there are more results
     const hasMore = rows.length > limit;
-    const tasks = rows.slice(0, limit).map((row: any) => formatTask(row, options));
+    const tasks = rows.slice(0, limit).map((row: FeedTaskRow) => formatTask(row, options));
 
     // Generate next cursor
     const nextCursor = hasMore && tasks.length > 0
@@ -228,7 +250,7 @@ export async function getFeed(options: FeedQueryOptions): Promise<FeedResult> {
 /**
  * Format a database row into a FeedTask.
  */
-function formatTask(row: any, options: FeedQueryOptions): FeedTask {
+function formatTask(row: FeedTaskRow, options: FeedQueryOptions): FeedTask {
   const task: FeedTask = {
     id: row.id,
     title: row.title,

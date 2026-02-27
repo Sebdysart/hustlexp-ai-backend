@@ -375,7 +375,21 @@ export async function initiateCheckrBackgroundCheck(
 // HELPER FUNCTIONS
 // ============================================================================
 
-function formatBackgroundCheck(row: any): BackgroundCheck {
+interface BackgroundCheckRow {
+  id: string;
+  user_id: string;
+  status: BackgroundCheckStatus;
+  provider: string;
+  provider_check_id: string | null;
+  verified_at: Date | null;
+  expires_at: Date | null;
+  failure_reason: string | null;
+  results_encrypted: Buffer | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+function formatBackgroundCheck(row: BackgroundCheckRow): BackgroundCheck {
   return {
     id: row.id,
     userId: row.user_id,

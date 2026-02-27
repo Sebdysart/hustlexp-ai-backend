@@ -339,7 +339,28 @@ export async function checkExpiredLicenses(): Promise<{
 // HELPER FUNCTIONS
 // ============================================================================
 
-function formatVerification(row: any): LicenseVerification {
+interface LicenseVerificationRow {
+  id: string;
+  user_id: string;
+  trade: string;
+  state: string;
+  license_number: string;
+  license_type: string | null;
+  status: LicenseStatus;
+  verified_at: Date | null;
+  expires_at: Date | null;
+  failure_reason: string | null;
+  source: VerificationSource;
+  verification_method: string | null;
+  verification_provider: string | null;
+  confidence_score: number | null;
+  reviewer_id: string | null;
+  review_notes: string | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+function formatVerification(row: LicenseVerificationRow): LicenseVerification {
   return {
     id: row.id,
     userId: row.user_id,

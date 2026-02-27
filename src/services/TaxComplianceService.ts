@@ -586,7 +586,33 @@ async function verifyTIN(userId: string, tin: string, type: 'SSN' | 'EIN'): Prom
   logger.info({ userId, type }, 'TIN verification not yet implemented');
 }
 
-function formatWorkerTaxProfile(row: any): WorkerTaxProfile {
+interface WorkerTaxProfileRow {
+  id: string;
+  user_id: string;
+  tax_year: number;
+  w9_status: W9Status;
+  w9_received_at: Date | null;
+  w9_data: W9Data | null;
+  name_on_account: string | null;
+  tin_last4: string | null;
+  tin_type: 'SSN' | 'EIN' | null;
+  address_verified: boolean;
+  backup_withholding: boolean;
+  total_payments_cents: number;
+  total_transactions: number;
+  platform_fees_cents: number;
+  refunds_cents: number;
+  net_payments_cents: number;
+  requires_1099_nec: boolean;
+  requires_1099_k: boolean;
+  form_1099_nec_status: FilingStatus | null;
+  form_1099_k_status: FilingStatus | null;
+  stripe_tax_form_id: string | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+function formatWorkerTaxProfile(row: WorkerTaxProfileRow): WorkerTaxProfile {
   return {
     id: row.id,
     userId: row.user_id,

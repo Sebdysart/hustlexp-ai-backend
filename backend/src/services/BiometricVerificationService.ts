@@ -79,6 +79,14 @@ interface BiometricAnalysisResult {
   reasoning: string;
 }
 
+interface GcpFaceAnnotation {
+  detectionConfidence: number;
+  joyLikelihood: string;
+  sorrowLikelihood: string;
+  blurredLikelihood: string;
+  [key: string]: unknown;
+}
+
 interface LiDARValidationResult {
   depth_map_valid: boolean;
   depth_consistency_score: number;
@@ -98,7 +106,6 @@ interface LivenessSessionResult {
 
 const LIVENESS_THRESHOLD_LOW = 0.70; // Below this = suspicious
 const DEEPFAKE_THRESHOLD_HIGH = 0.85; // Above this = suspicious
-const AWS_LIVENESS_CONFIDENCE_THRESHOLD = 70; // AWS returns 0-100
 
 // ============================================================================
 // SERVICE
@@ -290,7 +297,7 @@ export const BiometricVerificationService = {
               },
             ));
             if (visionResponse.ok) {
-              const visionData = (await visionResponse.json()) as Record<string, any>;
+              const visionData = (await visionResponse.json()) as { responses?: Array<{ faceAnnotations?: Array<GcpFaceAnnotation> }> };
               const faces = visionData.responses?.[0]?.faceAnnotations || [];
               if (faces.length > 0) {
                 const face = faces[0];
@@ -423,7 +430,7 @@ export const BiometricVerificationService = {
    */
   validateLiDARDepthMap: async (
     depthMapUrl: string,
-    photoUrl: string,
+    _photoUrl: string,
   ): Promise<ServiceResult<LiDARValidationResult>> => {
     try {
       // LiDAR validation: Download depth map and check consistency
