@@ -21,12 +21,14 @@ import {
   cleanupTestData, 
   createTestUser, 
   createTestTask, 
-  createTestEscrow 
+  createTestEscrow,
+  hasDb,
 } from '../setup';
 
 let pool: pg.Pool;
 
 beforeAll(async () => {
+  if (!hasDb) return; // Skip DB setup when DATABASE_URL not available
   pool = createTestPool();
   
   const result = await pool.query('SELECT version FROM schema_versions LIMIT 1');
@@ -45,7 +47,7 @@ beforeEach(async () => {
 // PAYMENT INVARIANT 1: Duplicate Stripe event idempotency
 // =============================================================================
 
-describe('Payment Invariant 1: Duplicate Stripe event insert does not create multiple outbox events', () => {
+describe.skipIf(!hasDb)('Payment Invariant 1: Duplicate Stripe event insert does not create multiple outbox events', () => {
   
   it('MUST REJECT: duplicate stripe_event_id insert (UNIQUE constraint)', async () => {
     const stripeEventId = 'evt_test_duplicate_' + Date.now();
@@ -82,7 +84,7 @@ describe('Payment Invariant 1: Duplicate Stripe event insert does not create mul
 // PAYMENT INVARIANT 2: Same stripe_event processed twice cannot change escrow state twice
 // =============================================================================
 
-describe('Payment Invariant 2: Same stripe_event processed twice cannot change escrow state twice', () => {
+describe.skipIf(!hasDb)('Payment Invariant 2: Same stripe_event processed twice cannot change escrow state twice', () => {
   
   it('MUST PREVENT: duplicate escrow state change from same Stripe event (version check)', async () => {
     const posterId = await createTestUser(pool, `test-poster-${Date.now()}@hustlexp.test`);
@@ -146,7 +148,7 @@ describe('Payment Invariant 2: Same stripe_event processed twice cannot change e
 // PAYMENT INVARIANT 3: Escrow cannot transition out of terminal states
 // =============================================================================
 
-describe('Payment Invariant 3: Escrow cannot transition out of terminal states (trigger enforced)', () => {
+describe.skipIf(!hasDb)('Payment Invariant 3: Escrow cannot transition out of terminal states (trigger enforced)', () => {
   
   it('MUST REJECT: transition RELEASED → FUNDED (terminal state protection)', async () => {
     const posterId = await createTestUser(pool, `test-poster-${Date.now()}@hustlexp.test`);
@@ -181,7 +183,7 @@ describe('Payment Invariant 3: Escrow cannot transition out of terminal states (
 // PAYMENT INVARIANT 4: XP insert fails unless escrow is RELEASED
 // =============================================================================
 
-describe('Payment Invariant 4: XP insert fails unless escrow is RELEASED', () => {
+describe.skipIf(!hasDb)('Payment Invariant 4: XP insert fails unless escrow is RELEASED', () => {
   
   it('MUST REJECT: XP award when escrow is NOT RELEASED (FUNDED state)', async () => {
     const posterId = await createTestUser(pool, `test-poster-${Date.now()}@hustlexp.test`);
@@ -209,7 +211,7 @@ describe('Payment Invariant 4: XP insert fails unless escrow is RELEASED', () =>
 // PAYMENT INVARIANT 5: LOCKED_DISPUTE cannot be released
 // =============================================================================
 
-describe('Payment Invariant 5: LOCKED_DISPUTE cannot transition to RELEASED', () => {
+describe.skipIf(!hasDb)('Payment Invariant 5: LOCKED_DISPUTE cannot transition to RELEASED', () => {
   
   it('MUST REJECT: transition LOCKED_DISPUTE → RELEASED (Policy 1: dispute blocks release)', async () => {
     const posterId = await createTestUser(pool, `test-poster-${Date.now()}@hustlexp.test`);

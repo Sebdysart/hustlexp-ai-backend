@@ -12,12 +12,12 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { db } from '../../src/db';
+import { db, hasDb } from '../../src/db';
 import { TaskService } from '../../src/services/TaskService';
 import { PlanService } from '../../src/services/PlanService';
 import type { User, Task } from '../../src/types';
 
-describe('Plan Gating Invariant: Data Truth vs Delivery', () => {
+describe.skipIf(!hasDb)('Plan Gating Invariant: Data Truth vs Delivery', () => {
   let freeUser: User;
   let premiumUser: User;
   let taskId: string;

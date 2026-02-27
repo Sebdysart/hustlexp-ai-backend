@@ -20,11 +20,12 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
-import { createTestPool } from '../setup';
+import { createTestPool, hasDb } from '../setup';
 
 let pool: pg.Pool;
 
 beforeAll(async () => {
+  if (!hasDb) return; // Skip DB setup when DATABASE_URL not available
   pool = createTestPool();
   console.log('Connected to database for N5 query performance tests');
 });
@@ -37,7 +38,7 @@ afterAll(async () => {
 // PERF-N5-1: Feed query uses eligibility indexes
 // =============================================================================
 
-describe('PERF-N5-1: Feed query uses eligibility indexes', () => {
+describe.skipIf(!hasDb)('PERF-N5-1: Feed query uses eligibility indexes', () => {
   
   it('MUST PASS: EXPLAIN shows index usage for eligibility columns', async () => {
     const userId = '00000000-0000-0000-0000-000000000001'; // Test UUID
@@ -82,7 +83,7 @@ describe('PERF-N5-1: Feed query uses eligibility indexes', () => {
 // PERF-N5-2: Query plan doesn't regress
 // =============================================================================
 
-describe('PERF-N5-2: Query plan doesn't regress', () => {
+describe.skipIf(!hasDb)("PERF-N5-2: Query plan doesn't regress", () => {
   
   it('MUST PASS: Feed query execution time is within acceptable bounds', async () => {
     const userId = '00000000-0000-0000-0000-000000000001';

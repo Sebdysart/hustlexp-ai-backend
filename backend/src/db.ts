@@ -53,8 +53,16 @@ const DB_PGBOUNCER = process.env.DB_PGBOUNCER === 'true';
 
 if (!DATABASE_URL) {
   dbLog.fatal('DATABASE_URL is required');
-  throw new Error('DATABASE_URL environment variable is not set');
+  // In test environments without a database, we still allow the module to load
+  // so that tests can be skipped gracefully via `describe.skipIf(!hasDb)`.
+  // In production (NODE_ENV=production) we throw immediately to fail fast.
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('DATABASE_URL environment variable is not set');
+  }
 }
+
+/** True when a DATABASE_URL has been provided — use with describe.skipIf(!hasDb) in tests */
+export const hasDb = !!DATABASE_URL;
 
 // ============================================================================
 // CONNECTION POOL
@@ -63,15 +71,19 @@ if (!DATABASE_URL) {
 // Disable prepared statements in test env (stale plan cache) or PgBouncer (no prepared stmt support)
 const disablePreparedStatements = process.env.NODE_ENV === 'test' || process.env.VITEST === 'true' || DB_PGBOUNCER;
 
-const pool = new Pool({
-  connectionString: DATABASE_URL,
-  max: POOL_MAX,
-  idleTimeoutMillis: DB_IDLE_TIMEOUT,
-  connectionTimeoutMillis: DB_CONNECT_TIMEOUT,
-  statement_timeout: DB_STATEMENT_TIMEOUT,
-});
+const pool = DATABASE_URL
+  ? new Pool({
+      connectionString: DATABASE_URL,
+      max: POOL_MAX,
+      idleTimeoutMillis: DB_IDLE_TIMEOUT,
+      connectionTimeoutMillis: DB_CONNECT_TIMEOUT,
+      statement_timeout: DB_STATEMENT_TIMEOUT,
+    })
+  : null;
 
-dbLog.info('Database primary pool initialized');
+if (pool) {
+  dbLog.info('Database primary pool initialized');
+}
 
 // ============================================================================
 // READ REPLICA POOL (AUDIT FIX: Read-Write Splitting)
@@ -109,20 +121,22 @@ if (replicaPool) {
  * Pool event listeners for operational visibility.
  * Logs connection lifecycle events to help diagnose pool exhaustion.
  */
-pool.on('connect', () => {
-  dbLog.info({ total: pool.totalCount, idle: pool.idleCount, waiting: pool.waitingCount }, 'Pool: client connected');
-  if (pool.totalCount / POOL_MAX > 0.8) {
-    dbLog.warn({ total: pool.totalCount, max: POOL_MAX, utilization: Math.round((pool.totalCount / POOL_MAX) * 100) }, 'Pool saturation warning: >80% connections in use');
-  }
-});
+if (pool) {
+  pool.on('connect', () => {
+    dbLog.info({ total: pool!.totalCount, idle: pool!.idleCount, waiting: pool!.waitingCount }, 'Pool: client connected');
+    if (pool!.totalCount / POOL_MAX > 0.8) {
+      dbLog.warn({ total: pool!.totalCount, max: POOL_MAX, utilization: Math.round((pool!.totalCount / POOL_MAX) * 100) }, 'Pool saturation warning: >80% connections in use');
+    }
+  });
 
-pool.on('error', (err) => {
-  dbLog.error({ err: err.message, total: pool.totalCount, idle: pool.idleCount, waiting: pool.waitingCount }, 'Pool: idle client error');
-});
+  pool.on('error', (err) => {
+    dbLog.error({ err: err.message, total: pool!.totalCount, idle: pool!.idleCount, waiting: pool!.waitingCount }, 'Pool: idle client error');
+  });
 
-pool.on('remove', () => {
-  dbLog.info({ total: pool.totalCount, idle: pool.idleCount, waiting: pool.waitingCount }, 'Pool: client removed');
-});
+  pool.on('remove', () => {
+    dbLog.info({ total: pool!.totalCount, idle: pool!.idleCount, waiting: pool!.waitingCount }, 'Pool: client removed');
+  });
+}
 
 /**
  * Get current pool utilization metrics.
@@ -130,11 +144,11 @@ pool.on('remove', () => {
  */
 export function getPoolStats() {
   return {
-    totalConnections: pool.totalCount,
-    idleConnections: pool.idleCount,
-    waitingRequests: pool.waitingCount,
+    totalConnections: pool ? pool.totalCount : 0,
+    idleConnections: pool ? pool.idleCount : 0,
+    waitingRequests: pool ? pool.waitingCount : 0,
     maxConnections: POOL_MAX,
-    utilizationPercent: Math.round((pool.totalCount / POOL_MAX) * 100),
+    utilizationPercent: pool ? Math.round((pool.totalCount / POOL_MAX) * 100) : 0,
     replicaConnections: replicaPool ? replicaPool.totalCount : null,
     replicaIdle: replicaPool ? replicaPool.idleCount : null,
     replicaConfigured: !!replicaPool,
@@ -341,6 +355,7 @@ export const db: Database = {
     sql: string,
     params?: unknown[]
   ): Promise<QueryResult<T>> => {
+    if (!pool) throw new Error('DATABASE_URL is not set — database unavailable');
     const startMs = Date.now();
     const client = await pool.connect();
     try {
@@ -380,6 +395,7 @@ export const db: Database = {
     sql: string,
     params?: unknown[]
   ): Promise<QueryResult<T>> => {
+    if (!pool) throw new Error('DATABASE_URL is not set — database unavailable');
     const targetPool = replicaPool || pool;
     const client = await targetPool.connect();
     try {
@@ -399,6 +415,7 @@ export const db: Database = {
   transaction: async <T>(
     fn: (query: QueryFn) => Promise<T>
   ): Promise<T> => {
+    if (!pool) throw new Error('DATABASE_URL is not set — database unavailable');
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
@@ -436,6 +453,7 @@ export const db: Database = {
   serializableTransaction: async <T>(
     fn: (query: QueryFn) => Promise<T>
   ): Promise<T> => {
+    if (!pool) throw new Error('DATABASE_URL is not set — database unavailable');
     const client = await pool.connect();
     try {
       await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
@@ -496,7 +514,10 @@ export const db: Database = {
   /**
    * Get underlying pool for advanced usage
    */
-  getPool: () => pool,
+  getPool: () => {
+    if (!pool) throw new Error('DATABASE_URL is not set — database unavailable');
+    return pool;
+  },
 
   /**
    * Get pool utilization metrics for health endpoint
@@ -507,8 +528,10 @@ export const db: Database = {
    * Close all connections (for graceful shutdown)
    */
   close: async () => {
-    await pool.end();
-    dbLog.info('Database pool closed');
+    if (pool) {
+      await pool.end();
+      dbLog.info('Database pool closed');
+    }
   },
 };
 

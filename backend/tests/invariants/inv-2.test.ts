@@ -18,12 +18,14 @@ import {
   createTestUser, 
   createTestTask, 
   createTestEscrow,
-  setEscrowState
+  setEscrowState,
+  hasDb,
 } from '../setup';
 
 let pool: pg.Pool;
 
 beforeAll(async () => {
+  if (!hasDb) return; // Skip DB setup when DATABASE_URL not available
   pool = createTestPool();
   
   const result = await pool.query('SELECT version FROM schema_versions LIMIT 1');
@@ -50,7 +52,7 @@ async function attemptReleaseEscrow(escrowId: string): Promise<void> {
 // INV-2 KILL TESTS
 // =============================================================================
 
-describe('INV-2: RELEASED escrow requires COMPLETED task', () => {
+describe.skipIf(!hasDb)('INV-2: RELEASED escrow requires COMPLETED task', () => {
   
   it('MUST REJECT: release escrow when task is OPEN', async () => {
     const posterId = await createTestUser(pool, `test-poster-1-${Date.now()}@hustlexp.test`);
@@ -158,7 +160,7 @@ describe('INV-2: RELEASED escrow requires COMPLETED task', () => {
 // INV-3 KILL TESTS (COMPLETED requires ACCEPTED proof)
 // =============================================================================
 
-describe('INV-3: COMPLETED task requires ACCEPTED proof', () => {
+describe.skipIf(!hasDb)('INV-3: COMPLETED task requires ACCEPTED proof', () => {
   
   it('MUST REJECT: complete task when no proof exists', async () => {
     const posterId = await createTestUser(pool, `test-poster-inv3-1-${Date.now()}@hustlexp.test`);
@@ -233,7 +235,7 @@ describe('INV-3: COMPLETED task requires ACCEPTED proof', () => {
 // TERMINAL STATE TESTS
 // =============================================================================
 
-describe('Terminal State Protection', () => {
+describe.skipIf(!hasDb)('Terminal State Protection', () => {
   
   it('MUST REJECT: modification of COMPLETED task', async () => {
     const posterId = await createTestUser(pool, `test-poster-term-1-${Date.now()}@hustlexp.test`);

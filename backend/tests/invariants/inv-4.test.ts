@@ -17,12 +17,14 @@ import {
   cleanupTestData, 
   createTestUser, 
   createTestTask, 
-  createTestEscrow
+  createTestEscrow,
+  hasDb,
 } from '../setup';
 
 let pool: pg.Pool;
 
 beforeAll(async () => {
+  if (!hasDb) return; // Skip DB setup when DATABASE_URL not available
   pool = createTestPool();
   
   // Verify connection
@@ -53,7 +55,7 @@ async function attemptModifyEscrowAmount(
 // INV-4 KILL TESTS
 // =============================================================================
 
-describe('INV-4: Escrow amount is immutable after creation', () => {
+describe.skipIf(!hasDb)('INV-4: Escrow amount is immutable after creation', () => {
   
   it('MUST REJECT: modify escrow amount when state is PENDING', async () => {
     const posterId = await createTestUser(pool, `test-poster-1-${Date.now()}@hustlexp.test`);
@@ -202,7 +204,7 @@ describe('INV-4: Escrow amount is immutable after creation', () => {
 // EDGE CASES
 // =============================================================================
 
-describe('INV-4 Edge Cases', () => {
+describe.skipIf(!hasDb)('INV-4 Edge Cases', () => {
   
   it('MUST REJECT: attempt to set amount via direct UPDATE (bypassing state check)', async () => {
     const posterId = await createTestUser(pool, `test-poster-edge-1-${Date.now()}@hustlexp.test`);

@@ -26,12 +26,14 @@ import pg from 'pg';
 import { 
   createTestPool, 
   cleanupTestData, 
-  createTestUser
+  createTestUser,
+  hasDb,
 } from '../setup';
 
 let pool: pg.Pool;
 
 beforeAll(async () => {
+  if (!hasDb) return; // Skip DB setup when DATABASE_URL not available
   pool = createTestPool();
   console.log('Connected to database for E2E tests');
 });
@@ -48,7 +50,7 @@ beforeEach(async () => {
 // E2E-N2.4-1: Submit → Pending → Approve → Recompute → Capability granted
 // =============================================================================
 
-describe('E2E-N2.4-1: Submit → Pending → Approve → Recompute → Capability granted', () => {
+describe.skipIf(!hasDb)('E2E-N2.4-1: Submit → Pending → Approve → Recompute → Capability granted', () => {
   
   it('MUST PASS: Complete flow grants capability after approval', async () => {
     const userId = await createTestUser(pool, `test-user-${Date.now()}@hustlexp.test`);
@@ -130,7 +132,7 @@ describe('E2E-N2.4-1: Submit → Pending → Approve → Recompute → Capabilit
 // E2E-N2.4-2: Submit → Pending → Reject → Recompute → No capability granted
 // =============================================================================
 
-describe('E2E-N2.4-2: Submit → Pending → Reject → Recompute → No capability granted', () => {
+describe.skipIf(!hasDb)('E2E-N2.4-2: Submit → Pending → Reject → Recompute → No capability granted', () => {
   
   it('MUST PASS: Rejected verification does not grant capability', async () => {
     const userId = await createTestUser(pool, `test-user-${Date.now()}@hustlexp.test`);
@@ -181,7 +183,7 @@ describe('E2E-N2.4-2: Submit → Pending → Reject → Recompute → No capabil
 // E2E-N2.4-3: Approve → Expire → Recompute → Capability revoked
 // =============================================================================
 
-describe('E2E-N2.4-3: Approve → Expire → Recompute → Capability revoked', () => {
+describe.skipIf(!hasDb)('E2E-N2.4-3: Approve → Expire → Recompute → Capability revoked', () => {
   
   it('MUST PASS: Expired verification revokes capability', async () => {
     const userId = await createTestUser(pool, `test-user-${Date.now()}@hustlexp.test`);

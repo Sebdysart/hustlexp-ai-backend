@@ -17,12 +17,14 @@ import {
   cleanupTestData, 
   createTestUser, 
   createTestTask, 
-  createTestEscrow 
+  createTestEscrow,
+  hasDb,
 } from '../setup';
 
 let pool: pg.Pool;
 
 beforeAll(async () => {
+  if (!hasDb) return; // Skip DB setup when DATABASE_URL not available
   pool = createTestPool();
   
   // Verify connection
@@ -57,7 +59,7 @@ async function attemptXPAward(
 // INV-1 KILL TESTS
 // =============================================================================
 
-describe('INV-1: XP requires RELEASED escrow', () => {
+describe.skipIf(!hasDb)('INV-1: XP requires RELEASED escrow', () => {
   
   it('MUST REJECT: XP award when escrow is PENDING', async () => {
     const posterId = await createTestUser(pool, `test-poster-1-${Date.now()}@hustlexp.test`);

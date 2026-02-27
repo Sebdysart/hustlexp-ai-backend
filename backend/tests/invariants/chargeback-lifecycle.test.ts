@@ -20,11 +20,13 @@ import {
   createTestUser,
   createTestTask,
   createTestEscrow,
+  hasDb,
 } from '../setup';
 
 let pool: pg.Pool;
 
 beforeAll(async () => {
+  if (!hasDb) return; // Skip DB setup when DATABASE_URL not available
   pool = createTestPool();
   const result = await pool.query('SELECT version FROM schema_versions LIMIT 1');
   console.log('Connected to database with schema version:', result.rows[0]?.version);
@@ -42,7 +44,7 @@ beforeEach(async () => {
 // PAYMENT DISPUTES APPEND-ONLY (HX811)
 // =============================================================================
 
-describe('Chargeback: payment_disputes no delete (HX811)', () => {
+describe.skipIf(!hasDb)('Chargeback: payment_disputes no delete (HX811)', () => {
   it('MUST REJECT: DELETE from payment_disputes', async () => {
     // Setup: create a user, a stripe_event, and a payment_dispute
     const user = await createTestUser(pool);
@@ -82,7 +84,7 @@ describe('Chargeback: payment_disputes no delete (HX811)', () => {
 // ESCROW PAYOUT FREEZE GUARD (HX801)
 // =============================================================================
 
-describe('Chargeback: escrow release blocked when payouts_locked (HX801)', () => {
+describe.skipIf(!hasDb)('Chargeback: escrow release blocked when payouts_locked (HX801)', () => {
   it('MUST REJECT: escrow release when worker has payouts_locked = TRUE', async () => {
     // Setup: create poster, worker, task, escrow
     const poster = await createTestUser(pool);
@@ -164,7 +166,7 @@ describe('Chargeback: escrow release blocked when payouts_locked (HX801)', () =>
 // REVENUE LEDGER CHARGEBACK ENTRIES (HX701/HX702)
 // =============================================================================
 
-describe('Chargeback: revenue_ledger chargeback entries are immutable', () => {
+describe.skipIf(!hasDb)('Chargeback: revenue_ledger chargeback entries are immutable', () => {
   it('MUST REJECT: UPDATE on chargeback ledger entry (HX701)', async () => {
     const user = await createTestUser(pool);
 
@@ -217,7 +219,7 @@ describe('Chargeback: revenue_ledger chargeback entries are immutable', () => {
 // CHARGEBACK LIFECYCLE INTEGRATION
 // =============================================================================
 
-describe('Chargeback: full lifecycle simulation', () => {
+describe.skipIf(!hasDb)('Chargeback: full lifecycle simulation', () => {
   it('dispute_count increments correctly on user', async () => {
     const user = await createTestUser(pool);
 

@@ -33,12 +33,14 @@ import pg from 'pg';
 import { 
   createTestPool, 
   cleanupTestData, 
-  createTestUser
+  createTestUser,
+  hasDb,
 } from '../setup';
 
 let pool: pg.Pool;
 
 beforeAll(async () => {
+  if (!hasDb) return; // Skip DB setup when DATABASE_URL not available
   pool = createTestPool();
   
   // Verify connection
@@ -58,7 +60,7 @@ beforeEach(async () => {
 // INV-N2.4-1: Resolution cannot mutate capability_profiles directly
 // =============================================================================
 
-describe('INV-N2.4-1: Resolution cannot mutate capability_profiles directly', () => {
+describe.skipIf(!hasDb)('INV-N2.4-1: Resolution cannot mutate capability_profiles directly', () => {
   
   it('MUST REJECT: Direct INSERT into capability_profiles from resolution endpoint', async () => {
     const userId = await createTestUser(pool, `test-user-${Date.now()}@hustlexp.test`);
@@ -104,7 +106,7 @@ describe('INV-N2.4-1: Resolution cannot mutate capability_profiles directly', ()
 // INV-N2.4-2: Resolution cannot mutate verified_trades directly
 // =============================================================================
 
-describe('INV-N2.4-2: Resolution cannot mutate verified_trades directly', () => {
+describe.skipIf(!hasDb)('INV-N2.4-2: Resolution cannot mutate verified_trades directly', () => {
   
   it('MUST REJECT: Direct INSERT into verified_trades from resolution endpoint', async () => {
     const userId = await createTestUser(pool, `test-user-${Date.now()}@hustlexp.test`);
@@ -147,7 +149,7 @@ describe('INV-N2.4-2: Resolution cannot mutate verified_trades directly', () => 
 // INV-N2.4-3: Recompute is deterministic
 // =============================================================================
 
-describe('INV-N2.4-3: Recompute is deterministic (same inputs → same outputs)', () => {
+describe.skipIf(!hasDb)('INV-N2.4-3: Recompute is deterministic (same inputs → same outputs)', () => {
   
   it('MUST PASS: Running recompute twice with same inputs produces identical outputs', async () => {
     const userId = await createTestUser(pool, `test-user-${Date.now()}@hustlexp.test`);
@@ -223,7 +225,7 @@ describe('INV-N2.4-3: Recompute is deterministic (same inputs → same outputs)'
 // INV-N2.4-4: Expired verifications remove capability
 // =============================================================================
 
-describe('INV-N2.4-4: Expired verifications remove capability', () => {
+describe.skipIf(!hasDb)('INV-N2.4-4: Expired verifications remove capability', () => {
   
   it('MUST PASS: Expired license removes verified trade', async () => {
     const userId = await createTestUser(pool, `test-user-${Date.now()}@hustlexp.test`);

@@ -21,12 +21,14 @@ import {
   cleanupTestData, 
   createTestUser, 
   createTestTask, 
-  createTestEscrow 
+  createTestEscrow,
+  hasDb,
 } from '../setup';
 
 let pool: pg.Pool;
 
 beforeAll(async () => {
+  if (!hasDb) return; // Skip DB setup when DATABASE_URL not available
   pool = createTestPool();
   
   const result = await pool.query('SELECT version FROM schema_versions LIMIT 1');
@@ -45,7 +47,7 @@ beforeEach(async () => {
 // DISPUTE INVARIANT 1: Dispute creation locks escrow FUNDED→LOCKED_DISPUTE
 // =============================================================================
 
-describe('Dispute Invariant 1: Dispute creation locks escrow FUNDED→LOCKED_DISPUTE', () => {
+describe.skipIf(!hasDb)('Dispute Invariant 1: Dispute creation locks escrow FUNDED→LOCKED_DISPUTE', () => {
   
   it('MUST LOCK: dispute creation atomically locks escrow to LOCKED_DISPUTE', async () => {
     const posterId = await createTestUser(pool, `test-poster-${Date.now()}@hustlexp.test`);
@@ -89,7 +91,7 @@ describe('Dispute Invariant 1: Dispute creation locks escrow FUNDED→LOCKED_DIS
 // DISPUTE INVARIANT 2: Cannot create dispute outside 48h window
 // =============================================================================
 
-describe('Dispute Invariant 2: Cannot create dispute if outside 48h window', () => {
+describe.skipIf(!hasDb)('Dispute Invariant 2: Cannot create dispute if outside 48h window', () => {
   
   it('MUST REJECT: dispute creation outside 48h window', async () => {
     const posterId = await createTestUser(pool, `test-poster-${Date.now()}@hustlexp.test`);
@@ -128,7 +130,7 @@ describe('Dispute Invariant 2: Cannot create dispute if outside 48h window', () 
 // DISPUTE INVARIANT 3: Cannot resolve unless escrow is LOCKED_DISPUTE
 // =============================================================================
 
-describe('Dispute Invariant 3: Cannot resolve unless escrow is LOCKED_DISPUTE', () => {
+describe.skipIf(!hasDb)('Dispute Invariant 3: Cannot resolve unless escrow is LOCKED_DISPUTE', () => {
   
   it('MUST REJECT: resolve dispute when escrow is not LOCKED_DISPUTE', async () => {
     const posterId = await createTestUser(pool, `test-poster-${Date.now()}@hustlexp.test`);
@@ -181,7 +183,7 @@ describe('Dispute Invariant 3: Cannot resolve unless escrow is LOCKED_DISPUTE', 
 // DISPUTE INVARIANT 4: SPLIT resolution must sum to escrow.amount
 // =============================================================================
 
-describe('Dispute Invariant 4: SPLIT resolution must sum to escrow.amount', () => {
+describe.skipIf(!hasDb)('Dispute Invariant 4: SPLIT resolution must sum to escrow.amount', () => {
   
   it('MUST REJECT: SPLIT resolution with amounts that do not sum to escrow.amount', async () => {
     const posterId = await createTestUser(pool, `test-poster-${Date.now()}@hustlexp.test`);
@@ -236,7 +238,7 @@ describe('Dispute Invariant 4: SPLIT resolution must sum to escrow.amount', () =
 // DISPUTE INVARIANT 5: Dispute is terminal (RESOLVED cannot transition)
 // =============================================================================
 
-describe('Dispute Invariant 5: Dispute is terminal (RESOLVED cannot transition)', () => {
+describe.skipIf(!hasDb)('Dispute Invariant 5: Dispute is terminal (RESOLVED cannot transition)', () => {
   
   it('MUST REJECT: resolve dispute when already RESOLVED', async () => {
     const posterId = await createTestUser(pool, `test-poster-${Date.now()}@hustlexp.test`);

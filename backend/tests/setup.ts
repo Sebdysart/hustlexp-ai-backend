@@ -11,14 +11,20 @@ const { Pool } = pg;
 // Use environment variable — DATABASE_URL must be set in .env or CI
 const DATABASE_URL = process.env.DATABASE_URL;
 
-if (!DATABASE_URL) {
-  throw new Error(
-    'DATABASE_URL is not set. Set it in .env or as an environment variable.\n' +
-    'Example: DATABASE_URL=postgresql://user:pass@host/db?sslmode=require'
-  );
-}
+/**
+ * True when DATABASE_URL is available.
+ * Use with `describe.skipIf(!hasDb)` to gracefully skip DB tests in environments
+ * without a database (e.g., local development without Neon, pure unit-test CI runs).
+ */
+export const hasDb = !!DATABASE_URL;
 
 export function createTestPool(): pg.Pool {
+  if (!DATABASE_URL) {
+    throw new Error(
+      'DATABASE_URL is not set. Set it in .env or as an environment variable.\n' +
+      'Example: DATABASE_URL=postgresql://user:pass@host/db?sslmode=require'
+    );
+  }
   return new Pool({
     connectionString: DATABASE_URL,
     ssl: { rejectUnauthorized: false },

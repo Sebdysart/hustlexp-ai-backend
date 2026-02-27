@@ -20,12 +20,14 @@ import {
   cleanupTestData, 
   createTestUser, 
   createTestTask, 
-  createTestEscrow
+  createTestEscrow,
+  hasDb,
 } from '../setup';
 
 let pool: pg.Pool;
 
 beforeAll(async () => {
+  if (!hasDb) return; // Skip DB setup when DATABASE_URL not available
   pool = createTestPool();
   
   // Verify connection
@@ -45,7 +47,7 @@ beforeEach(async () => {
 // XP LEDGER APPEND-ONLY TESTS (HX102)
 // =============================================================================
 
-describe('Append-Only: XP Ledger (HX102)', () => {
+describe.skipIf(!hasDb)('Append-Only: XP Ledger (HX102)', () => {
   
   it('MUST REJECT: DELETE from xp_ledger', async () => {
     const posterId = await createTestUser(pool, `test-poster-xp-1-${Date.now()}@hustlexp.test`);
@@ -162,7 +164,7 @@ describe('Append-Only: XP Ledger (HX102)', () => {
 // BADGES APPEND-ONLY TESTS (HX401)
 // =============================================================================
 
-describe('Append-Only: Badges (HX401)', () => {
+describe.skipIf(!hasDb)('Append-Only: Badges (HX401)', () => {
   
   it('MUST REJECT: DELETE from badges', async () => {
     const userId = await createTestUser(pool, `test-user-badge-1-${Date.now()}@hustlexp.test`);
@@ -273,7 +275,7 @@ describe('Append-Only: Badges (HX401)', () => {
 // TRUST LEDGER APPEND-ONLY (if applicable)
 // =============================================================================
 
-describe('Append-Only: Trust Ledger (if applicable)', () => {
+describe.skipIf(!hasDb)('Append-Only: Trust Ledger (if applicable)', () => {
   
   it('MUST SUCCEED: INSERT into trust_ledger', async () => {
     const userId = await createTestUser(pool, `test-user-trust-1-${Date.now()}@hustlexp.test`);

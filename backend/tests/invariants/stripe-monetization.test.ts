@@ -21,7 +21,7 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { db } from '../../src/db';
+import { db, hasDb } from '../../src/db';
 import { PlanService } from '../../src/services/PlanService';
 import type { User, Task } from '../../src/types';
 
@@ -108,7 +108,7 @@ async function updateUserPlan(
 // INVARIANT S-1: Stripe Event Idempotency
 // ============================================================================
 
-describe('Invariant S-1: Stripe Event Idempotency', () => {
+describe.skipIf(!hasDb)('Invariant S-1: Stripe Event Idempotency', () => {
   it('S-1: duplicate stripe_event_id cannot be inserted', async () => {
     const eventId = `evt_test_${Date.now()}_${Math.random()}`;
     const payload = { type: 'checkout.session.completed', data: {} };
@@ -148,7 +148,7 @@ describe('Invariant S-1: Stripe Event Idempotency', () => {
 // INVARIANT S-2: Subscription Plan Changes Are Monotonic
 // ============================================================================
 
-describe('Invariant S-2: Subscription Plan Changes Are Monotonic', () => {
+describe.skipIf(!hasDb)('Invariant S-2: Subscription Plan Changes Are Monotonic', () => {
   let userId: string;
 
   beforeAll(async () => {
@@ -221,7 +221,7 @@ describe('Invariant S-2: Subscription Plan Changes Are Monotonic', () => {
 // INVARIANT S-3: Per-Task Entitlements Are Idempotent
 // ============================================================================
 
-describe('Invariant S-3: Per-Task Entitlements Are Idempotent', () => {
+describe.skipIf(!hasDb)('Invariant S-3: Per-Task Entitlements Are Idempotent', () => {
   let userId: string;
   let taskId: string;
 
@@ -310,7 +310,7 @@ describe('Invariant S-3: Per-Task Entitlements Are Idempotent', () => {
 // INVARIANT S-4: Entitlements Never Outlive Validity
 // ============================================================================
 
-describe('Invariant S-4: Entitlements Never Outlive Validity', () => {
+describe.skipIf(!hasDb)('Invariant S-4: Entitlements Never Outlive Validity', () => {
   let userId: string;
   let taskId: string;
 
@@ -415,7 +415,7 @@ describe('Invariant S-4: Entitlements Never Outlive Validity', () => {
 // INVARIANT S-5: Entitlements Must Reference a Valid Stripe Event
 // ============================================================================
 
-describe('Invariant S-5: Entitlements Must Reference a Valid Stripe Event', () => {
+describe.skipIf(!hasDb)('Invariant S-5: Entitlements Must Reference a Valid Stripe Event', () => {
   let userId: string;
   let taskId: string;
 
