@@ -86,6 +86,14 @@ describe('AI degraded mode — queue helpers', () => {
 });
 
 describe('AI degraded mode — circuit breaker integration', () => {
+  // Clean up circuit state after each test to prevent bleed between tests
+  afterEach(async () => {
+    const { resetCircuit } = await import('../utils/reliability.js');
+    for (const p of ['openai', 'groq', 'deepseek', 'anthropic']) {
+      resetCircuit(p);
+    }
+  });
+
   it('areAllCircuitsOpen() returns false when no failures recorded', async () => {
     const { areAllCircuitsOpen } = await import('../utils/reliability.js');
     // Default state — all CLOSED
@@ -106,6 +114,27 @@ describe('AI degraded mode — circuit breaker integration', () => {
     const after = getProviderHealth();
     expect(after['groq'].state).toBe('CLOSED');
     expect(after['groq'].failures).toBe(0);
+  });
+
+  it('isDegradedMode() returns true when all AI circuit breakers are OPEN', async () => {
+    const { recordFailure, resetCircuit } = await import('../utils/reliability.js');
+    const { isDegradedMode } = await import('../ai/degradedMode.js');
+
+    // Reset env flag to ensure we're testing the circuit path, not the env path
+    const originalVal = process.env.AI_DEGRADED_MODE;
+    delete process.env.AI_DEGRADED_MODE;
+
+    // Open all 4 circuits by recording 5 failures each
+    const providers = ['openai', 'groq', 'deepseek', 'anthropic'];
+    providers.forEach(p => {
+      for (let i = 0; i < 5; i++) recordFailure(p);
+    });
+
+    expect(isDegradedMode()).toBe(true);
+
+    // Cleanup
+    providers.forEach(p => resetCircuit(p));
+    if (originalVal !== undefined) process.env.AI_DEGRADED_MODE = originalVal;
   });
 });
 

@@ -44,12 +44,33 @@ export interface DegradedModeResult {
 const _queue = new Map<string, QueuedAIJob>();
 let _jobCounter = 0;
 
+// Parse AI_MAX_QUEUE_WAIT_MS once at module level with a NaN guard so we
+// avoid repeated parseInt() calls and the subtle risk of parseInt('', 10) → NaN.
+const _maxWaitMs = (() => {
+  const parsed = parseInt(env.AI_MAX_QUEUE_WAIT_MS || '5000', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 5000;
+})();
+
 /**
  * Generate a unique, sortable job ID.
  * Format: ai-{timestamp}-{counter}
  */
 function generateJobId(): string {
   return `ai-${Date.now()}-${++_jobCounter}`;
+}
+
+/**
+ * Evict jobs whose expiresAt timestamp has passed.
+ * Called at the start of enqueueAIRequest to bound queue growth without
+ * needing a setInterval.
+ */
+function evictExpiredJobs(): void {
+  const now = Date.now();
+  for (const [id, job] of _queue) {
+    if (job.expiresAt <= now) {
+      _queue.delete(id);
+    }
+  }
 }
 
 /**
@@ -61,14 +82,14 @@ export function enqueueAIRequest(
   message: string,
   mode: string,
 ): QueuedAIJob {
-  const maxWaitMs = parseInt(env.AI_MAX_QUEUE_WAIT_MS || '5000', 10);
+  evictExpiredJobs(); // Clean up expired jobs before adding a new one
   const job: QueuedAIJob = {
     jobId: generateJobId(),
     userId,
     message,
     mode,
     enqueuedAt: Date.now(),
-    expiresAt: Date.now() + maxWaitMs,
+    expiresAt: Date.now() + _maxWaitMs,
   };
   _queue.set(job.jobId, job);
   return job;
