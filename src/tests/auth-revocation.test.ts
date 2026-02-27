@@ -51,7 +51,7 @@ describe('Auth token revocation', () => {
 
     await expect(
       verifyTokenWithRevocationCheck('some_valid_looking_token', mockAdminSdk, true),
-    ).rejects.toThrow();
+    ).rejects.toThrow('auth/id-token-revoked');
 
     expect(mockVerify).toHaveBeenCalledWith('some_valid_looking_token', true);
   });

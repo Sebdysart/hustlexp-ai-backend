@@ -3174,7 +3174,7 @@ fastify.post('/api/stripe/connect/create', { preHandler: [requireRole('hustler')
     }
 });
 
-// Get account onboarding link - AUTH REQUIRED (own account)
+// requireAuth only (not requireFreshToken) — read-only redirect/status; no financial state mutation
 fastify.get('/api/stripe/connect/:userId/onboard', { preHandler: [requireAuth] }, async (request, reply) => {
     if (!request.user) {
         reply.status(401);
@@ -3200,7 +3200,7 @@ fastify.get('/api/stripe/connect/:userId/onboard', { preHandler: [requireAuth] }
     return { onboardingUrl: url };
 });
 
-// Get account status - AUTH REQUIRED (own account)
+// requireAuth only (not requireFreshToken) — read-only redirect/status; no financial state mutation
 fastify.get('/api/stripe/connect/:userId/status', { preHandler: [requireAuth] }, async (request, reply) => {
     if (!request.user) {
         reply.status(401);

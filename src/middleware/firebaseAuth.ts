@@ -83,6 +83,10 @@ function cacheSet(token: string, decoded: DecodedIdToken): void {
 // Core verification helper (exported for testability)
 // ---------------------------------------------------------------------------
 
+interface FirebaseAdminLike {
+  auth: () => { verifyIdToken: (token: string, checkRevoked: boolean) => Promise<DecodedIdToken> } | null;
+}
+
 /**
  * Verify a Firebase ID token.
  *
@@ -93,8 +97,7 @@ function cacheSet(token: string, decoded: DecodedIdToken): void {
  */
 export async function verifyTokenWithRevocationCheck(
   token: string,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  adminSdk: { auth: () => { verifyIdToken: (t: string, r: boolean) => Promise<DecodedIdToken> } } | any = null,
+  adminSdk: FirebaseAdminLike | null = null,
   checkRevoked = true,
 ): Promise<DecodedIdToken> {
   const sdk = adminSdk ?? { auth: () => ensureFirebase() };
@@ -102,7 +105,7 @@ export async function verifyTokenWithRevocationCheck(
   if (!auth) {
     throw new Error('Firebase Admin is not configured — missing credentials');
   }
-  return (auth as ReturnType<typeof getAuth>).verifyIdToken(token, checkRevoked);
+  return auth.verifyIdToken(token, checkRevoked);
 }
 
 // ---------------------------------------------------------------------------
@@ -287,6 +290,14 @@ export async function requireFreshToken(
   request: FastifyRequest,
   reply: FastifyReply,
 ): Promise<void> {
+  // First: check if auth is even enabled (dev mode passthrough)
+  const auth = ensureFirebase();
+  if (!auth) {
+    // Auth not configured — pass through (dev mode)
+    return;
+  }
+
+  // Second: now check that request.user exists (set by requireAuth)
   if (!request.user?.uid) {
     return reply.status(401).send({ error: 'Unauthorized', code: 'HX_AUTH_REQUIRED' });
   }
@@ -296,12 +307,6 @@ export async function requireFreshToken(
     return reply.status(401).send({ error: 'No bearer token', code: 'HX_AUTH_NO_TOKEN' });
   }
   const token = authorization.slice(7).trim();
-
-  const auth = ensureFirebase();
-  if (!auth) {
-    // Auth not configured — pass through (dev mode)
-    return;
-  }
 
   try {
     const decoded = await auth.verifyIdToken(token, true); // checkRevoked=true
