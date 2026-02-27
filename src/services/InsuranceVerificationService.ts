@@ -14,6 +14,9 @@ import { transaction } from '../db/index.js';
 import { createLogger } from '../utils/logger.js';
 import { CapabilityProfileService } from './CapabilityProfileService.js';
 
+/** Postgres tagged-template transaction callback type */
+type SqlTx = (strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown[]>;
+
 const logger = createLogger('InsuranceVerificationService');
 
 // ============================================================================
@@ -72,7 +75,7 @@ export async function createVerification(
   input: CreateInsuranceVerificationInput
 ): Promise<VerificationResult> {
   try {
-    return await transaction(async (tx: any) => {
+    return await transaction(async (tx: SqlTx) => {
       // Check for verified trade (INV-ELIGIBILITY-4)
       const [verifiedTrade] = await tx`
         SELECT 1 FROM verified_trades
@@ -172,7 +175,7 @@ export async function updateVerification(
   input: UpdateInsuranceVerificationInput
 ): Promise<VerificationResult> {
   try {
-    return await transaction(async (tx: any) => {
+    return await transaction(async (tx: SqlTx) => {
       const [current] = await tx`
         SELECT * FROM insurance_verifications WHERE id = ${verificationId}
       `;

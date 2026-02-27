@@ -484,7 +484,7 @@ export const db: Database = {
         schemaVersion: result.rows[0]?.version ?? null,
         latencyMs: Date.now() - start,
       };
-    } catch (error) {
+    } catch (_error) {
       return {
         connected: false,
         schemaVersion: null,

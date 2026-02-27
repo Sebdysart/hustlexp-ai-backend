@@ -1,4 +1,4 @@
-import type { ErrorHandler, Context } from 'hono';
+import type { ErrorHandler } from 'hono';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { TRPCError } from '@trpc/server';
 import * as Sentry from '@sentry/node';

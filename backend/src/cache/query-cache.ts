@@ -28,13 +28,6 @@ const DEFAULT_TTL = 300; // 5 minutes
 const DEFAULT_STALE_WHILE_REVALIDATE = 60; // 1 minute
 
 // ============================================================================
-// Cache Key Generation
-// ============================================================================
-function generateCacheKey(prefix: string, ...parts: (string | number)[]): string {
-  return `cache:${prefix}:${parts.join(':')}`;
-}
-
-// ============================================================================
 // Cached Query Function
 // ============================================================================
 export async function cachedQuery<T>(
@@ -225,7 +218,7 @@ export async function getCacheStats(): Promise<{
   tagKeys: number;
   staleKeys: number;
 }> {
-  const [queryKeys, tagKeys, staleKeys] = await Promise.all([
+  const [_queryKeys, _tagKeys, _staleKeys] = await Promise.all([
     redis.dbsize(), // Approximate, would need scan for exact count
     redis.dbsize(),
     redis.dbsize(),

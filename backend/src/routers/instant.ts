@@ -22,7 +22,7 @@ export const instantRouter = router({
     .input(z.object({
       limit: z.number().int().min(1).max(50).default(20),
     }).optional())
-    .query(async ({ ctx, input }) => {
+    .query(async ({ ctx: _ctx, input }) => {
       const limit = input?.limit ?? 20;
       const result = await db.query<{
         id: string;

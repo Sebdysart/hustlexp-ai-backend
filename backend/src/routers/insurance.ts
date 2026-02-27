@@ -148,7 +148,7 @@ export const insuranceRouter = router({
         claim_id: Schemas.uuid
       })
     )
-    .mutation(async ({ ctx, input }) => {
+    .mutation(async ({ ctx: _ctx, input }) => {
 
       const result = await SelfInsurancePoolService.payClaim(input.claim_id);
 

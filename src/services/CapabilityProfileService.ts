@@ -18,6 +18,9 @@
 import { transaction } from '../db/index.js';
 import { createLogger } from '../utils/logger.js';
 
+/** Postgres tagged-template transaction callback type */
+type SqlTx = (strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown[]>;
+
 const logger = createLogger('CapabilityProfileService');
 
 // ============================================================================
@@ -44,8 +47,8 @@ export interface CapabilityProfile {
     highRiskTasks: boolean;
     urgentJobs: boolean;
   };
-  verificationStatus: Record<string, any>;
-  expiresAt: Record<string, any>;
+  verificationStatus: Record<string, unknown>;
+  expiresAt: Record<string, unknown>;
   derivedAt: Date;
   createdAt: Date;
   updatedAt: Date;
@@ -171,7 +174,7 @@ interface VerifiedTradeDbRow {
  * Fetch active license verifications for a user
  */
 async function fetchLicenseVerifications(
-  tx: any,
+  tx: SqlTx,
   userId: string
 ): Promise<LicenseVerificationRecord[]> {
   const rows = await tx`
@@ -205,7 +208,7 @@ async function fetchLicenseVerifications(
  * Fetch insurance verifications for a user
  */
 async function fetchInsuranceVerifications(
-  tx: any,
+  tx: SqlTx,
   userId: string
 ): Promise<InsuranceVerificationRecord[]> {
   const rows = await tx`
@@ -237,7 +240,7 @@ async function fetchInsuranceVerifications(
  * Fetch background check for a user
  */
 async function fetchBackgroundCheck(
-  tx: any,
+  tx: SqlTx,
   userId: string
 ): Promise<BackgroundCheckRecord | null> {
   const [row] = await tx`
@@ -270,7 +273,7 @@ async function fetchBackgroundCheck(
  * Fetch user's trust tier and location from users table
  */
 async function fetchUserCoreData(
-  tx: any,
+  tx: SqlTx,
   userId: string
 ): Promise<{ trustTier: TrustTier; locationState: string; locationCity: string | null } | null> {
   const [row] = await tx`
@@ -295,7 +298,7 @@ async function fetchUserCoreData(
  * Fetch user's willingness flags from capability_claims
  */
 async function fetchWillingnessFlags(
-  tx: any,
+  tx: SqlTx,
   userId: string
 ): Promise<{ inHomeWork: boolean; highRiskTasks: boolean; urgentJobs: boolean }> {
   const [row] = await tx`
@@ -337,7 +340,7 @@ async function fetchWillingnessFlags(
  */
 export async function recompute(userId: string): Promise<RecomputeResult> {
   try {
-    return await transaction(async (tx: any) => {
+    return await transaction(async (tx: SqlTx) => {
       logger.info({ userId }, 'Starting capability profile recompute');
 
       // Step 1: Fetch all source records

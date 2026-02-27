@@ -17,7 +17,7 @@
  */
 
 import { logger } from '../logger';
-import type { CapabilityProfile, VerifiedTrade } from './CapabilityProfileService';
+import type { CapabilityProfile } from './CapabilityProfileService';
 
 const log = logger.child({ service: 'EligibilityResolverService' });
 

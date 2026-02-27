@@ -13,6 +13,9 @@
 import { transaction } from '../db/index.js';
 import { createLogger } from '../utils/logger.js';
 
+/** Postgres tagged-template transaction callback type */
+type SqlTx = (strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown[]>;
+
 const logger = createLogger('AtomicXPService');
 
 // ============================================================================
@@ -123,7 +126,7 @@ export async function awardXPForTask(
   hustlerId: string
 ): Promise<AwardXPResult> {
   try {
-    return await transaction(async (tx: any) => {
+    return await transaction(async (tx: SqlTx) => {
       // Step 1: Check money_state_lock — INV-1 / INV-XP-2
       const [lock] = await tx`
         SELECT task_id, current_state

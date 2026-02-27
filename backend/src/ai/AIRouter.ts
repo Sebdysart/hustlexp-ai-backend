@@ -215,7 +215,6 @@ export async function callAI(agent: string, userId: string, prompt: string): Pro
 }
 
 export async function getBudgetStatus(agent: string, userId: string): Promise<{ agent: string; userId: string; spent: number; limit: number; remaining: number; resetAt: string }> {
-  const agentConfig = AGENT_BUDGETS[agent] || AGENT_BUDGETS.default;
   const budget = await checkBudget(agent, userId);
   const tomorrow = new Date();
   tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);

@@ -216,10 +216,10 @@ app.get('/health/detailed', async (c) => {
   // Database check
   const dbStart = Date.now();
   try {
-    const result = await db.query('SELECT 1 as ping');
-    checks.database = { 
-      status: 'ok', 
-      latency: Date.now() - dbStart 
+    await db.query('SELECT 1 as ping');
+    checks.database = {
+      status: 'ok',
+      latency: Date.now() - dbStart
     };
   } catch (error) {
     checks.database = { 
@@ -309,7 +309,7 @@ import { join } from 'path';
 
 const publicDir = join(import.meta.dirname || __dirname, '..', '..', 'public');
 
-function serveStatic(path: string, contentType = 'text/html') {
+function serveStatic(path: string, _contentType = 'text/html') {
   return (c: Context) => {
     const filePath = join(publicDir, path);
     if (existsSync(filePath)) {
@@ -344,7 +344,6 @@ app.use('/trpc/*', trpcServer({
 import { firebaseAuth } from './auth/firebase';
 import { db } from './db';
 import type { User } from './types';
-import type { WebhookResult } from './services/StripeWebhookService';
 import { sseHandler } from './realtime/sse-handler';
 import { z } from 'zod';
 

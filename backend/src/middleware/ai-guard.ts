@@ -138,6 +138,7 @@ export function validateAIOutput(output: string): AIValidationResult {
   }
 
   // 5. Control character removal
+  // eslint-disable-next-line no-control-regex -- intentional removal of control characters from AI output
   sanitized = sanitized.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
 
   // Log violations for monitoring

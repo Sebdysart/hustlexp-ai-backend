@@ -23,7 +23,7 @@ const AGENT_RATE_LIMITS: Record<string, RateLimitConfig> = {
 };
 
 let redis: Redis | null = null;
-let ratelimits: Map<string, Ratelimit> = new Map();
+const ratelimits: Map<string, Ratelimit> = new Map();
 
 function getRedis(): Redis {
   if (!redis) {

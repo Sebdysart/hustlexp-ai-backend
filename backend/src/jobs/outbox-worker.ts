@@ -18,7 +18,7 @@
  */
 
 import { db } from '../db';
-import { getQueue, generateIdempotencyKey, type QueueName } from './queues';
+import { getQueue, type QueueName } from './queues';
 import { workerLogger } from '../logger';
 const log = workerLogger.child({ worker: 'outbox' });
 
@@ -188,7 +188,7 @@ export function startOutboxWorker(intervalMs: number = 5000): NodeJS.Timeout {
   
   // Set up polling interval
   // Start periodic surge evaluator (every 10 seconds)
-  const surgeEvaluatorInterval = setInterval(async () => {
+  setInterval(async () => {
     try {
       const { evaluateInstantSurges } = await import('./instant-surge-evaluator');
       await evaluateInstantSurges();
@@ -198,7 +198,7 @@ export function startOutboxWorker(intervalMs: number = 5000): NodeJS.Timeout {
   }, 10 * 1000); // Every 10 seconds
 
   // Pre-Alpha Prerequisite: Trust tier promotion worker (hourly)
-  const trustPromotionInterval = setInterval(async () => {
+  setInterval(async () => {
     try {
       const { processTrustTierPromotionJob } = await import('./trust-tier-promotion-worker');
       await processTrustTierPromotionJob();

@@ -28,6 +28,36 @@ import { sql, isDatabaseAvailable, transaction } from '../db/index.js';
 import { serviceLogger } from '../utils/logger.js';
 import { routedGenerate } from '../ai/router.js';
 import { StripeMoneyEngine } from './StripeMoneyEngine.js';
+
+/** Minimal shape for a dispute_evidence DB row */
+interface EvidenceRow {
+  id: string;
+  dispute_id: string;
+  submitted_by: string;
+  evidence_type: string;
+  content: string;
+  description?: string;
+  created_at: string;
+}
+
+/** Minimal shape for a dispute_jury vote DB row */
+interface JuryVoteRow {
+  juror_id: string;
+  vote: 'poster' | 'hustler';
+  reasoning?: string;
+  voted_at: string;
+}
+
+/** Minimal shape for a vote count row (SELECT vote, COUNT(*) AS count) */
+interface VoteCountRow {
+  vote: string;
+  count: number;
+}
+
+/** Minimal shape for a juror eligibility row */
+interface EligibleJurorRow {
+  id: string;
+}
 import { TaskService } from './TaskService.js';
 import { UserService } from './UserService.js';
 import { BetaMetricsService } from './BetaMetricsService.js';
@@ -457,14 +487,15 @@ class DisputeResolutionServiceClass {
       `;
 
       // Build the evidence summary for AI
-      const posterEvidence = evidence
-        .filter((e: any) => e.submitted_by === dispute.poster_id)
-        .map((e: any) => `[${e.evidence_type}] ${e.content}${e.description ? ' - ' + e.description : ''}`)
+      const evidenceRows = evidence as EvidenceRow[];
+      const posterEvidence = evidenceRows
+        .filter((e) => e.submitted_by === dispute.poster_id)
+        .map((e) => `[${e.evidence_type}] ${e.content}${e.description ? ' - ' + e.description : ''}`)
         .join('\n');
 
-      const hustlerEvidence = evidence
-        .filter((e: any) => e.submitted_by === dispute.hustler_id)
-        .map((e: any) => `[${e.evidence_type}] ${e.content}${e.description ? ' - ' + e.description : ''}`)
+      const hustlerEvidence = evidenceRows
+        .filter((e) => e.submitted_by === dispute.hustler_id)
+        .map((e) => `[${e.evidence_type}] ${e.content}${e.description ? ' - ' + e.description : ''}`)
         .join('\n');
 
       const userPrompt = `DISPUTE CASE:
@@ -478,10 +509,10 @@ Task Status at Dispute: ${task?.status || 'N/A'}
 DISPUTE REASON:
 ${dispute.reason}
 
-POSTER'S EVIDENCE (${evidence.filter((e: any) => e.submitted_by === dispute.poster_id).length} items):
+POSTER'S EVIDENCE (${evidenceRows.filter((e) => e.submitted_by === dispute.poster_id).length} items):
 ${posterEvidence || '(No evidence submitted by poster)'}
 
-HUSTLER'S EVIDENCE (${evidence.filter((e: any) => e.submitted_by === dispute.hustler_id).length} items):
+HUSTLER'S EVIDENCE (${evidenceRows.filter((e) => e.submitted_by === dispute.hustler_id).length} items):
 ${hustlerEvidence || '(No evidence submitted by hustler)'}
 
 Analyze this dispute and provide your recommendation in JSON format.`;
@@ -622,7 +653,7 @@ Analyze this dispute and provide your recommendation in JSON format.`;
 
       // Select exactly JURY_SIZE from the eligible pool
       const selectedJurors = eligibleJurors.slice(0, JURY_SIZE);
-      const jurorIds = selectedJurors.map((j: any) => j.id as string);
+      const jurorIds = (selectedJurors as EligibleJurorRow[]).map((j) => j.id);
 
       // 3. Atomically assign jury and transition status
       await transaction(async (tx) => {
@@ -751,8 +782,9 @@ Analyze this dispute and provide your recommendation in JSON format.`;
           GROUP BY vote
         `;
 
-        const posterVotes = votes.find((v: any) => v.vote === 'poster')?.count || 0;
-        const hustlerVotes = votes.find((v: any) => v.vote === 'hustler')?.count || 0;
+        const voteRows = votes as VoteCountRow[];
+        const posterVotes = voteRows.find((v) => v.vote === 'poster')?.count || 0;
+        const hustlerVotes = voteRows.find((v) => v.vote === 'hustler')?.count || 0;
 
         // INV-DISP-5: Determine outcome - 2/3 majority or split
         let juryOutcome: ResolutionOutcome;
@@ -1033,7 +1065,7 @@ Analyze this dispute and provide your recommendation in JSON format.`;
       hustlerId: row.hustler_id as string,
       reason: row.reason as string,
       status: row.status as DisputeResolutionStatus,
-      evidence: evidence.map((e: any) => ({
+      evidence: (evidence as EvidenceRow[]).map((e) => ({
         id: e.id,
         disputeId: e.dispute_id,
         submittedBy: e.submitted_by,
@@ -1050,9 +1082,9 @@ Analyze this dispute and provide your recommendation in JSON format.`;
         riskFlags: (row.ai_risk_flags as string[]) || [],
       } : null,
       juryMembers: (row.jury_member_ids as string[]) || [],
-      juryVotes: juryVotes.map((v: any) => ({
+      juryVotes: (juryVotes as JuryVoteRow[]).map((v) => ({
         jurorId: v.juror_id,
-        vote: v.vote as 'poster' | 'hustler',
+        vote: v.vote,
         reasoning: v.reasoning,
         votedAt: new Date(v.voted_at),
       })),

@@ -38,19 +38,6 @@ interface PriceBreakdown {
   total: number;
 }
 
-interface SurgeFactors {
-  demand_score: number; // 0-1 (ratio of open tasks to available workers in area)
-  time_of_day_multiplier: number;
-  day_of_week_multiplier: number;
-  weather_multiplier: number; // future: integrate weather API
-  category_demand: number; // category-specific demand
-}
-
-interface WorkerPriceModifier {
-  user_id: string;
-  modifier_percent: number; // -25 to +50
-}
-
 // ============================================================================
 // CONSTANTS
 // ============================================================================
@@ -104,7 +91,6 @@ export const DynamicPricingService = {
       const {
         basePriceCents,
         mode,
-        category,
         locationLat,
         locationLng,
         isASAP = false,

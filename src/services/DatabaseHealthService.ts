@@ -102,7 +102,7 @@ async function probe(
 
     const latencyMs = Date.now() - start;
 
-    if (!result || (result as any[]).length === 0) {
+    if (!result || (result as unknown[]).length === 0) {
       return { healthy: false, latencyMs, error: `${label}: empty result` };
     }
 

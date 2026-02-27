@@ -130,7 +130,7 @@ export interface UpdatePreferencesParams {
   pushEnabled?: boolean;
   emailEnabled?: boolean;
   smsEnabled?: boolean;
-  categoryPreferences?: Record<string, any>;
+  categoryPreferences?: Record<string, unknown>;
 }
 
 // Priority tiers that bypass quiet hours (NOTIFICATION_SPEC.md §2.1)

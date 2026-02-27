@@ -368,10 +368,10 @@ async function testEscrowTaskJoin(): Promise<SubsystemResult> {
 // ============================================================================
 async function cleanup() {
   console.log('\n🧹 Cleaning up load test data...');
-  try { await db.query("DELETE FROM xp_events WHERE reason IN ('LOAD_TEST', 'CONTENTION_TEST')"); } catch {}
-  try { await db.query("DELETE FROM tasks WHERE status = 'LOAD_TEST'"); } catch {}
-  try { await db.query("DELETE FROM ai_events WHERE task_type IN ('stress_test', 'load_test')"); } catch {}
-  try { await db.query("DELETE FROM ai_agent_decisions WHERE reasoning LIKE 'Load test %'"); } catch {}
+  try { await db.query("DELETE FROM xp_events WHERE reason IN ('LOAD_TEST', 'CONTENTION_TEST')"); } catch { /* empty */ }
+  try { await db.query("DELETE FROM tasks WHERE status = 'LOAD_TEST'"); } catch { /* empty */ }
+  try { await db.query("DELETE FROM ai_events WHERE task_type IN ('stress_test', 'load_test')"); } catch { /* empty */ }
+  try { await db.query("DELETE FROM ai_agent_decisions WHERE reasoning LIKE 'Load test %'"); } catch { /* empty */ }
   console.log('✅ Cleanup complete');
 }
 

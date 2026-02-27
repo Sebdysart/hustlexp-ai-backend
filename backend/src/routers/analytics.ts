@@ -11,7 +11,7 @@
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { router, protectedProcedure, publicProcedure, adminProcedure, Schemas } from '../trpc';
-import { AnalyticsService, type EventCategory, type EventType } from '../services/AnalyticsService';
+import { AnalyticsService, type EventType } from '../services/AnalyticsService';
 import { db } from '../db';
 
 export const analyticsRouter = router({

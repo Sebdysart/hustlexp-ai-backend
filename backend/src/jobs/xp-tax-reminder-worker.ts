@@ -40,7 +40,7 @@ interface UserWithUnpaidTax {
 /**
  * Send reminders for unpaid XP taxes
  */
-export const processXPTaxReminderJob = async (job: Job): Promise<void> => {
+export const processXPTaxReminderJob = async (_job: Job): Promise<void> => {
   try {
     log.info('Starting daily XP tax reminder run');
 

@@ -22,7 +22,7 @@ import { db } from '../db';
 import type { ServiceResult, Dispute, Task, Escrow, Evidence } from '../types';
 import { AIClient } from './AIClient';
 import { DisputeAnalysisSchema, EvidenceRequestSchema } from '../lib/ai-response-schemas';
-import { scrubPII, scrubObjectPII } from '../lib/pii-scrubber';
+import { scrubPII } from '../lib/pii-scrubber';
 import { aiLogger } from '../logger';
 
 const log = aiLogger.child({ service: 'DisputeAIService' });

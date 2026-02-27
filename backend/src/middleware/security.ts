@@ -211,6 +211,7 @@ export function sanitizeInput(input: string, maxLength = 10000): string {
   if (!input || typeof input !== 'string') return '';
 
   // Remove null bytes and control characters (except newlines/tabs)
+  // eslint-disable-next-line no-control-regex -- intentional removal of control characters for input sanitization
   let sanitized = input.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
 
   // Trim to max length

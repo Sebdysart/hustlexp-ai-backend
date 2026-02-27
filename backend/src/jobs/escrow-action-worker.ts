@@ -204,8 +204,8 @@ async function handleReleaseRequest(
  */
 async function handleRefundRequest(
   escrow: { id: string; version: number; stripe_payment_intent_id: string | null; stripe_refund_id: string | null },
-  disputeId: string | undefined,
-  reason: string
+  _disputeId: string | undefined,
+  _reason: string
 ): Promise<void> {
   // Idempotency: If refund_id already exists, skip
   if (escrow.stripe_refund_id) {

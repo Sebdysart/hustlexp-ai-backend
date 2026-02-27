@@ -20,7 +20,6 @@ import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { router, protectedProcedure, publicProcedure, Schemas } from '../trpc';
 import { TaskDiscoveryService } from '../services/TaskDiscoveryService';
-import { db } from '../db';
 
 // --------------------------------------------------------------------------
 // TRUST TIER THRESHOLDS (Progressive Verification)

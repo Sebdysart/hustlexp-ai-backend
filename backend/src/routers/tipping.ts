@@ -59,7 +59,7 @@ export const tippingRouter = router({
 
   getTipsForTask: protectedProcedure
     .input(z.object({ taskId: z.string().uuid() }))
-    .query(async ({ ctx, input }) => {
+    .query(async ({ ctx: _ctx, input }) => {
       const result = await TippingService.getTipsForTask(input.taskId);
       if (!result.success) {
         throw new TRPCError({

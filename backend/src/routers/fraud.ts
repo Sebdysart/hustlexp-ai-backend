@@ -12,7 +12,7 @@
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { router, adminProcedure, Schemas } from '../trpc';
-import { FraudDetectionService, type EntityType, type RiskLevel, type FraudPatternStatus, type RiskScoreStatus } from '../services/FraudDetectionService';
+import { FraudDetectionService, type FraudPatternStatus, type RiskScoreStatus } from '../services/FraudDetectionService';
 
 export const fraudRouter = router({
   // --------------------------------------------------------------------------

@@ -100,7 +100,7 @@ export async function sseHandler(c: Context): Promise<Response> {
           timestamp: new Date().toISOString(),
         });
         controller.enqueue(encoder.encode(`data: ${initMessage}\n\n`));
-      } catch (error) {
+      } catch (_error) {
         // Controller already closed or error
         if (conn) {
           conn.closed = true;
@@ -120,7 +120,7 @@ export async function sseHandler(c: Context): Promise<Response> {
             log.info({ userId: user.id }, 'SSE disconnected');
             try {
               controller.close();
-            } catch (error) {
+            } catch (_error) {
               // Controller already closed
             }
           }

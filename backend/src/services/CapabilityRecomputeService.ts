@@ -65,17 +65,6 @@ interface BackgroundCheckRow {
   expires_at: string | null;
 }
 
-interface CapabilityProfileRow {
-  user_id: string;
-  trust_tier: string;
-  risk_clearance: string[];
-  location_state: string | null;
-  insurance_valid: boolean;
-  insurance_expires_at: string | null;
-  background_check_valid: boolean;
-  background_check_expires_at: string | null;
-}
-
 /**
  * Map trust tier to risk clearance
  * 

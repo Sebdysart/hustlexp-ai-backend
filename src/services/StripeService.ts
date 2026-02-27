@@ -209,7 +209,7 @@ class StripeServiceClass {
     // Escrow & Payment Intent
     // ============================================
 
-    async createEscrowHold(taskId: string, posterId: string, hustlerId: string, amount: number, paymentMethodId: string): Promise<any | null> {
+    async createEscrowHold(taskId: string, posterId: string, hustlerId: string, amount: number, paymentMethodId: string): Promise<{ id: string; taskId: string; status: string; amount: number } | null> {
         if (!stripe || !sql) return null;
         if (!paymentMethodId || paymentMethodId.startsWith('pm_error')) {
             throw new Error('Stripe authentication failed: validation error');
@@ -310,7 +310,7 @@ class StripeServiceClass {
         }
     }
 
-    async refundEscrow(taskId: string, isAdmin: boolean = false): Promise<any> {
+    async refundEscrow(taskId: string, isAdmin: boolean = false): Promise<{ success: boolean; state?: string; message?: string }> {
         // Delegate to Engine
         try {
             // Fetch context needed
@@ -345,7 +345,7 @@ class StripeServiceClass {
         const hustlerId = pi.metadata.hustlerId;
         const amountCents = pi.amount;
 
-        await transaction(async (tx: any) => {
+        await transaction(async (tx: (strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown[]>) => {
             // 1. Create Escrow Hold Record
             const platformFee = Math.round(amountCents * PLATFORM_FEE_PERCENT);
             await tx`
@@ -383,7 +383,7 @@ class StripeServiceClass {
         if (!sql) return;
         serviceLogger.info({ taskId, transferId: transfer.id }, '[RECOVERY] Executing recoverReleaseEscrow');
 
-        await transaction(async (tx: any) => {
+        await transaction(async (tx: (strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown[]>) => {
             // 1. Update Escrow
             await tx`
                 UPDATE escrow_holds 
@@ -583,7 +583,7 @@ class StripeServiceClass {
         }
         try {
             const payouts = await sql`SELECT * FROM hustler_payouts WHERE hustler_id = ${hustlerId} ORDER BY created_at DESC LIMIT 50`;
-            return (payouts as any[]).map((p: any) => ({
+            return (payouts as Record<string, unknown>[]).map((p) => ({
                 id: p.id,
                 escrowId: p.escrow_id,
                 hustlerId: p.hustler_id,
@@ -607,7 +607,7 @@ class StripeServiceClass {
             return payoutLedger.get(payoutId) || null;
         }
         try {
-            const [p] = await sql`SELECT * FROM hustler_payouts WHERE id = ${payoutId}` as any[];
+            const [p] = await sql`SELECT * FROM hustler_payouts WHERE id = ${payoutId}` as Record<string, unknown>[];
             if (!p) return null;
             return {
                 id: p.id,

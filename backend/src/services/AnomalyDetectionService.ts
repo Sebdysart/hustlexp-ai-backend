@@ -27,7 +27,7 @@ export interface AnomalyEvent {
   eventType: 'error_spike' | 'latency_spike' | 'circuit_breaker_open' | 'budget_threshold' | 'anomaly_detected';
   severity: 'info' | 'warning' | 'critical';
   service: string;
-  details: Record<string, any>;
+  details: Record<string, unknown>;
 }
 
 const DEFAULT_CONFIG: AnomalyConfig = {
@@ -166,7 +166,7 @@ export const AnomalyDetectionService = {
     eventType: AnomalyEvent['eventType'];
     severity: AnomalyEvent['severity'];
     service: string;
-    details: Record<string, any>;
+    details: Record<string, unknown>;
   }): Promise<ServiceResult<AnomalyEvent>> {
     try {
       const result = await db.query<AnomalyEvent>(
@@ -216,3 +216,131 @@ export const AnomalyDetectionService = {
     return { success: true, data: allAnomalies };
   },
 };
+
+// ============================================================================
+// Exported pure helper functions (used by tests and CLI tools)
+// ============================================================================
+
+export interface DetectionResult {
+  detected: boolean;
+  eventType: string;
+  severity: 'info' | 'warning' | 'critical';
+  service: string;
+  details: Record<string, unknown>;
+}
+
+/**
+ * Check if the current error rate exceeds 2x the baseline.
+ */
+export function checkErrorRateSpike(current: number, baseline: number): DetectionResult {
+  const base: DetectionResult = {
+    detected: false,
+    eventType: 'error_spike',
+    severity: 'warning',
+    service: 'api',
+    details: {},
+  };
+
+  if (baseline <= 0) return base;
+
+  const ratio = current / baseline;
+  const detected = ratio > 2.0;
+  return {
+    ...base,
+    detected,
+    severity: ratio > 5.0 ? 'critical' : 'warning',
+    details: { ratio, current, baseline },
+  };
+}
+
+/**
+ * Check if P95 latency exceeds 2x the baseline.
+ */
+export function checkLatencySpike(currentP95: number, baseline: number): DetectionResult {
+  const base: DetectionResult = {
+    detected: false,
+    eventType: 'latency_spike',
+    severity: 'warning',
+    service: 'api',
+    details: {},
+  };
+
+  if (baseline <= 0) return base;
+
+  const ratio = currentP95 / baseline;
+  const detected = ratio > 2.0;
+  return {
+    ...base,
+    detected,
+    severity: ratio > 5.0 ? 'critical' : 'warning',
+    details: { ratio, currentP95, baseline },
+  };
+}
+
+/**
+ * Check if a circuit breaker is in OPEN state.
+ */
+export function checkCircuitBreakerOpen(service: string, state: string): DetectionResult {
+  const detected = state === 'OPEN';
+  return {
+    detected,
+    eventType: 'circuit_open',
+    severity: 'critical',
+    service,
+    details: { state },
+  };
+}
+
+/**
+ * Check if AI budget spend exceeds 80% of the total budget.
+ */
+export function checkBudgetExhaustion(spend: number, budget: number): DetectionResult {
+  const base: DetectionResult = {
+    detected: false,
+    eventType: 'budget_alert',
+    severity: 'warning',
+    service: 'ai',
+    details: {},
+  };
+
+  if (budget <= 0) return base;
+
+  const pct = (spend / budget) * 100;
+  const detected = pct > 80;
+  return {
+    ...base,
+    detected,
+    severity: pct > 95 ? 'critical' : 'warning',
+    details: { spend, budget, percentage: pct },
+  };
+}
+
+/**
+ * Persist a DetectionResult as an incident_events row.
+ */
+export async function recordAnomaly(
+  anomaly: DetectionResult
+): Promise<ServiceResult<{ id: string }>> {
+  try {
+    const result = await db.query<{ id: string }>(
+      `INSERT INTO incident_events (event_type, severity, service, details)
+       VALUES ($1, $2, $3, $4)
+       RETURNING id`,
+      [anomaly.eventType, anomaly.severity, anomaly.service, JSON.stringify(anomaly.details)]
+    );
+
+    if (!result.rowCount || result.rowCount === 0) {
+      return {
+        success: false,
+        error: { code: 'RECORD_ANOMALY_FAILED', message: 'Failed to insert incident event' },
+      };
+    }
+
+    return { success: true, data: result.rows[0] };
+  } catch (error) {
+    return {
+      success: false,
+      error: { code: 'RECORD_ANOMALY_FAILED', message: 'Failed to record anomaly' },
+    };
+  }
+}

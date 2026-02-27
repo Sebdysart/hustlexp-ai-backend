@@ -189,6 +189,7 @@ export async function publishToRoom(roomKey: string, message: Omit<SSEMessage, '
  * Deliver message to local subscribers only
  */
 function deliverToLocalSubscribers(roomKey: string, message: SSEMessage): void {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports -- lazy require to break circular dependency with connection-registry
   const { getConnections } = require('./connection-registry');
   
   const subscribers = roomSubscriptions.get(roomKey);
@@ -206,7 +207,7 @@ function deliverToLocalSubscribers(roomKey: string, message: SSEMessage): void {
       if (conn.closed) continue;
       try {
         conn.controller.enqueue(encoded);
-      } catch (error) {
+      } catch (_error) {
         // Connection closed
         conn.closed = true;
       }

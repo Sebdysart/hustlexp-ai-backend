@@ -28,10 +28,10 @@ export const ERROR_CODES: Record<string, ErrorCodeDefinition> = {
   // ═══════════════════════════════════════════════════════
   HX001: {
     code: 'HX001',
-    message: 'Invalid authentication token',
-    httpStatus: 401,
+    message: 'State transition violation',
+    httpStatus: 409,
     userFacing: true,
-    category: 'auth',
+    category: 'state_violation',
   },
   HX002: {
     code: 'HX002',
@@ -442,6 +442,116 @@ export const ERROR_CODES: Record<string, ErrorCodeDefinition> = {
     userFacing: false,
     category: 'system',
   },
+
+  // ═══════════════════════════════════════════════════════
+  // Compliance & Reporting (HX700-HX799)
+  // ═══════════════════════════════════════════════════════
+  HX700: {
+    code: 'HX700',
+    message: 'Compliance check failed',
+    httpStatus: 400,
+    userFacing: true,
+    category: 'compliance',
+  },
+  HX701: {
+    code: 'HX701',
+    message: 'Tax reporting required',
+    httpStatus: 400,
+    userFacing: true,
+    category: 'compliance',
+  },
+  HX702: {
+    code: 'HX702',
+    message: 'KYC verification required',
+    httpStatus: 403,
+    userFacing: true,
+    category: 'compliance',
+  },
+  HX703: {
+    code: 'HX703',
+    message: 'AML check failed',
+    httpStatus: 403,
+    userFacing: false,
+    category: 'compliance',
+  },
+  HX704: {
+    code: 'HX704',
+    message: 'Sanctions screening required',
+    httpStatus: 403,
+    userFacing: false,
+    category: 'compliance',
+  },
+
+  // ═══════════════════════════════════════════════════════
+  // Data & Privacy (HX800-HX899)
+  // ═══════════════════════════════════════════════════════
+  HX800: {
+    code: 'HX800',
+    message: 'Data privacy violation',
+    httpStatus: 403,
+    userFacing: true,
+    category: 'privacy',
+  },
+  HX801: {
+    code: 'HX801',
+    message: 'GDPR deletion request failed',
+    httpStatus: 500,
+    userFacing: false,
+    category: 'privacy',
+  },
+  HX802: {
+    code: 'HX802',
+    message: 'Data export failed',
+    httpStatus: 500,
+    userFacing: false,
+    category: 'privacy',
+  },
+
+  // ═══════════════════════════════════════════════════════
+  // Live Mode & Feature Flags (HX900-HX999)
+  // ═══════════════════════════════════════════════════════
+  HX900: {
+    code: 'HX900',
+    message: 'Feature not available',
+    httpStatus: 403,
+    userFacing: true,
+    category: 'live_mode',
+  },
+  HX901: {
+    code: 'HX901',
+    message: 'Live mode not enabled',
+    httpStatus: 403,
+    userFacing: true,
+    category: 'live_mode',
+  },
+  HX902: {
+    code: 'HX902',
+    message: 'Beta feature not accessible',
+    httpStatus: 403,
+    userFacing: true,
+    category: 'live_mode',
+  },
+  HX903: {
+    code: 'HX903',
+    message: 'Feature flag disabled',
+    httpStatus: 403,
+    userFacing: true,
+    category: 'live_mode',
+  },
+  HX904: {
+    code: 'HX904',
+    message: 'Regional restriction applies',
+    httpStatus: 403,
+    userFacing: true,
+    category: 'live_mode',
+  },
+  HX905: {
+    code: 'HX905',
+    message: 'Maintenance mode active',
+    httpStatus: 503,
+    userFacing: true,
+    category: 'live_mode',
+  },
 };
 
 /**
@@ -470,4 +580,26 @@ export function isValidErrorCode(code: string): boolean {
  */
 export function getAllCategories(): string[] {
   return [...new Set(Object.values(ERROR_CODES).map(e => e.category))];
+}
+
+// ============================================================================
+// Aliases for backward compatibility and test consumption
+// ============================================================================
+
+/** Alias for ErrorCodeDefinition (used by tests as ErrorCodeEntry) */
+export type ErrorCodeEntry = ErrorCodeDefinition;
+
+/**
+ * Look up an error code entry by its HX code string.
+ * Alias for getErrorDefinition.
+ */
+export function getErrorCode(code: string): ErrorCodeEntry | undefined {
+  return ERROR_CODES[code];
+}
+
+/**
+ * Return all error code entries as an array.
+ */
+export function getAllCodes(): ErrorCodeEntry[] {
+  return Object.values(ERROR_CODES);
 }

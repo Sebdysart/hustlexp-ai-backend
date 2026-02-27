@@ -19,6 +19,9 @@ import { transaction } from '../db/index.js';
 import { createLogger } from '../utils/logger.js';
 import { getErrorMessage } from '../utils/errors.js';
 
+/** Postgres tagged-template transaction callback type */
+type SqlTx = (strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown[]>;
+
 const logger = createLogger('TaxComplianceService');
 
 // ============================================================================
@@ -182,7 +185,7 @@ export async function submitW9(
   w9Data: W9Data
 ): Promise<{ success: boolean; error?: string }> {
   try {
-    return await transaction(async (tx: any) => {
+    return await transaction(async (tx: SqlTx) => {
       // Validate TIN format
       const tinValidation = validateTIN(w9Data.tin, w9Data.tinType);
       if (!tinValidation.valid) {
@@ -269,7 +272,7 @@ export async function markW9Verified(userId: string): Promise<void> {
  */
 export async function trackPayment(event: PaymentTrackingEvent): Promise<void> {
   try {
-    await transaction(async (tx: any) => {
+    await transaction(async (tx: SqlTx) => {
       // Update worker earnings tracking
       await tx`
         INSERT INTO worker_earnings_1099 (
@@ -338,7 +341,7 @@ export async function trackPayment(event: PaymentTrackingEvent): Promise<void> {
 /**
  * Check if worker has crossed tax reporting thresholds.
  */
-async function checkThresholds(tx: any, userId: string): Promise<TaxThresholdAlert[]> {
+async function checkThresholds(tx: SqlTx, userId: string): Promise<TaxThresholdAlert[]> {
   const [profile] = await tx`
     SELECT 
       total_payments_cents,
@@ -533,10 +536,15 @@ export async function generate1099KForms(taxYear: number): Promise<{
 // STRIPE INTEGRATION
 // ============================================================================
 
+/** Minimal worker row shape used by Stripe 1099 generation stubs */
+interface WorkerRow {
+  user_id: string;
+}
+
 /**
  * Generate 1099-NEC via Stripe Tax.
  */
-async function generateStripe1099NEC(worker: any): Promise<string> {
+async function generateStripe1099NEC(worker: WorkerRow): Promise<string> {
   // TODO: Implement Stripe Tax 1099-NEC generation
   // This requires Stripe Tax to be configured
   logger.info({ userId: worker.user_id }, 'Stripe 1099-NEC generation not yet implemented');
@@ -546,7 +554,7 @@ async function generateStripe1099NEC(worker: any): Promise<string> {
 /**
  * Generate 1099-K via Stripe.
  */
-async function generateStripe1099K(worker: any): Promise<string> {
+async function generateStripe1099K(worker: WorkerRow): Promise<string> {
   // TODO: Implement Stripe 1099-K generation
   logger.info({ userId: worker.user_id }, 'Stripe 1099-K generation not yet implemented');
   return `form_k_${worker.user_id}_${Date.now()}`;

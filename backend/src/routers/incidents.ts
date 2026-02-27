@@ -31,7 +31,7 @@ export const incidentsRouter = router({
     }))
     .query(async ({ input }) => {
       const conditions: string[] = [];
-      const params: any[] = [];
+      const params: unknown[] = [];
       let paramIndex = 1;
 
       if (input.eventType) {

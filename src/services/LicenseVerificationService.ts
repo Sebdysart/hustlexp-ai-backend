@@ -14,6 +14,9 @@ import { createLogger } from '../utils/logger.js';
 import { CapabilityProfileService } from './CapabilityProfileService.js';
 import { getErrorMessage } from '../utils/errors.js';
 
+/** Postgres tagged-template transaction callback type */
+type SqlTx = (strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown[]>;
+
 const logger = createLogger('LicenseVerificationService');
 
 // ============================================================================
@@ -83,7 +86,7 @@ export async function createVerification(
   input: CreateLicenseVerificationInput
 ): Promise<VerificationResult> {
   try {
-    return await transaction(async (tx: any) => {
+    return await transaction(async (tx: SqlTx) => {
       // Check if verification already exists for this user/trade/state
       const [existing] = await tx`
         SELECT id, status FROM license_verifications
@@ -164,7 +167,7 @@ export async function updateVerification(
   input: UpdateLicenseVerificationInput
 ): Promise<VerificationResult> {
   try {
-    return await transaction(async (tx: any) => {
+    return await transaction(async (tx: SqlTx) => {
       // Get current verification
       const [current] = await tx`
         SELECT * FROM license_verifications WHERE id = ${verificationId}

@@ -86,8 +86,8 @@ export async function sendPushNotification(
     });
 
     // Process results: deactivate invalid tokens
-    let sent = response.successCount;
-    let failed = response.failureCount;
+    const sent = response.successCount;
+    const failed = response.failureCount;
 
     if (response.failureCount > 0) {
       const deactivationPromises: Promise<void>[] = [];

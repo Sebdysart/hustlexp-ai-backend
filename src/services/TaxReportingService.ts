@@ -99,7 +99,7 @@ export class TaxReportingService {
         ORDER BY gross_amount DESC
       `;
 
-      const records: Tax1099KRecord[] = (rows as any[]).map((row) => ({
+      const records: Tax1099KRecord[] = (rows as Record<string, unknown>[]).map((row) => ({
         taxYear,
         workerId: row.worker_id,
         workerName: row.worker_name || 'Unknown',
@@ -156,7 +156,7 @@ export class TaxReportingService {
           AND eh.status = 'released'
           AND EXTRACT(YEAR FROM eh.updated_at) = ${taxYear}
         GROUP BY eh.hustler_id, u.name, u.email, u.tax_id
-      ` as any[];
+      ` as Record<string, unknown>[];
 
       if (!row || row.gross_amount === 0) {
         serviceLogger.debug(

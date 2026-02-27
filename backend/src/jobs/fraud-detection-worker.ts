@@ -40,7 +40,7 @@ interface ProofLocation {
 /**
  * Scan recent proofs for fraud patterns
  */
-export const processFraudDetectionJob = async (job: Job): Promise<void> => {
+export const processFraudDetectionJob = async (_job: Job): Promise<void> => {
   try {
     log.info('Starting fraud scan');
 

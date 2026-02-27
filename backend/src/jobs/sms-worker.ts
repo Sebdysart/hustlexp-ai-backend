@@ -53,7 +53,7 @@ interface SMSJobData {
  */
 export async function processSMSJob(job: Job<SMSJobData>): Promise<void> {
   // Extract data from job payload (structured as outbox event)
-  const { smsId, userId, toPhone, body } = job.data.payload;
+  const { smsId, toPhone, body } = job.data.payload;
   const jobIdempotencyKey = job.id || `sms:${smsId}`;
 
   try {

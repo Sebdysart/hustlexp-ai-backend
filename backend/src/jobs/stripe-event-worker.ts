@@ -167,7 +167,7 @@ async function handleCheckoutSessionCompleted(
   event: StripeEventEnvelope,
   stripeEventId: string
 ): Promise<void> {
-  const session = getEventObject<Record<string, any>>(event);
+  const session = getEventObject<Record<string, unknown>>(event);
 
   if (!session) {
     throw new Error('checkout.session.completed missing session object');
@@ -185,13 +185,13 @@ async function handleCheckoutSessionCompleted(
 }
 
 async function handleInvoicePaymentFailed(event: StripeEventEnvelope): Promise<void> {
-  const invoice = getEventObject<Record<string, any>>(event);
+  const invoice = getEventObject<Record<string, unknown>>(event);
 
   if (!invoice) {
     throw new Error('invoice.payment_failed missing invoice object');
   }
 
-  const userId = invoice.metadata?.user_id;
+  const userId = (invoice.metadata as Record<string, string> | undefined)?.user_id;
   if (!userId) {
     throw new Error('invoice.payment_failed missing user_id metadata');
   }
@@ -212,7 +212,7 @@ async function handleInvoicePaymentFailed(event: StripeEventEnvelope): Promise<v
 }
 
 async function handleAccountUpdated(event: StripeEventEnvelope): Promise<void> {
-  const account = getEventObject<Record<string, any>>(event);
+  const account = getEventObject<Record<string, unknown>>(event);
   if (!account) throw new Error('account.updated missing account object');
 
   const accountId = account.id as string;
@@ -256,8 +256,9 @@ async function handleAccountUpdated(event: StripeEventEnvelope): Promise<void> {
   );
 
   // Check if requirements became past_due
-  const requirements = account.requirements as Record<string, any> | undefined;
-  if (requirements?.currently_due?.length > 0) {
+  const requirements = account.requirements as Record<string, unknown> | undefined;
+  const currentlyDue = requirements?.currently_due as unknown[] | undefined;
+  if (currentlyDue && currentlyDue.length > 0) {
     const { NotificationService } = await import('../services/NotificationService');
     await NotificationService.createNotification({
       userId,

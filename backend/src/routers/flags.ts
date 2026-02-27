@@ -6,7 +6,6 @@
  * @see backend/src/services/FlagsService.ts
  */
 
-import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { router, protectedProcedure, adminProcedure } from '../trpc';
 import { FlagsService } from '../services/FlagsService';

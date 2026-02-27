@@ -28,7 +28,6 @@
 
 import { db } from '../db';
 import { logger } from '../logger';
-import type { QueryFn } from '../db';
 import type { ServiceResult } from '../types';
 import { NotificationService } from './NotificationService';
 

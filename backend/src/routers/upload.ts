@@ -10,7 +10,6 @@
  * Falls back to mock URLs if R2 credentials are not configured.
  */
 
-import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { router, protectedProcedure } from '../trpc';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';

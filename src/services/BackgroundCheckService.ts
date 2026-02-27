@@ -15,6 +15,9 @@ import { createLogger } from '../utils/logger.js';
 import { CapabilityProfileService } from './CapabilityProfileService.js';
 import { getErrorMessage } from '../utils/errors.js';
 
+/** Postgres tagged-template transaction callback type */
+type SqlTx = (strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown[]>;
+
 const logger = createLogger('BackgroundCheckService');
 
 // ============================================================================
@@ -69,7 +72,7 @@ export async function createBackgroundCheck(
   input: CreateBackgroundCheckInput
 ): Promise<BackgroundCheckResult> {
   try {
-    return await transaction(async (tx: any) => {
+    return await transaction(async (tx: SqlTx) => {
       // Check if user already has a verified background check
       const [existingVerified] = await tx`
         SELECT id FROM background_checks
@@ -149,7 +152,7 @@ export async function updateBackgroundCheck(
   input: UpdateBackgroundCheckInput
 ): Promise<BackgroundCheckResult> {
   try {
-    return await transaction(async (tx: any) => {
+    return await transaction(async (tx: SqlTx) => {
       const [current] = await tx`
         SELECT * FROM background_checks WHERE id = ${checkId}
       `;
@@ -201,7 +204,7 @@ export async function processProviderWebhook(
   provider: string,
   providerCheckId: string,
   status: BackgroundCheckStatus,
-  resultData?: any
+  resultData?: unknown
 ): Promise<BackgroundCheckResult> {
   try {
     const { sql } = await import('../db/index.js');

@@ -37,7 +37,7 @@ export const IncidentDiagnosisService = {
         event_type: string;
         severity: string;
         service: string;
-        details: any;
+        details: Record<string, unknown>;
         created_at: Date;
       }>(
         'SELECT event_type, severity, service, details, created_at FROM incident_events WHERE id = $1',
@@ -97,7 +97,7 @@ export const IncidentDiagnosisService = {
    * Build diagnosis prompt for AI
    */
   buildDiagnosisPrompt(
-    incident: any,
+    incident: { event_type: string; severity: string; service: string; details: Record<string, unknown>; created_at: Date },
     recentCommits: string[],
     recentDeployments: string[]
   ): string {
@@ -175,7 +175,7 @@ Format your response as JSON:
    */
   ruleBasedDiagnosis(
     incidentId: string,
-    incident: any,
+    incident: { event_type: string; severity: string; service: string; details: Record<string, unknown>; created_at: Date },
     recentCommits: string[],
     recentDeployments: string[]
   ): IncidentDiagnosis {
@@ -236,3 +236,134 @@ Format your response as JSON:
     ];
   },
 };
+
+// ============================================================================
+// Standalone exported diagnoseIncident function
+// ============================================================================
+
+export interface IncidentDiagnosisV2 {
+  incidentId: string;
+  rootCause: string;
+  suggestedAction: string;
+  diagnosisMethod: 'rule_based' | 'ai_assisted';
+  confidence: number; // 0.0 - 1.0
+  correlatedEvents: string[];
+}
+
+/**
+ * Diagnose an incident by ID using rule-based heuristics (with AI fallback).
+ * Uses db.readQuery for fetches and db.query for persistence.
+ */
+export async function diagnoseIncident(
+  incidentId: string
+): Promise<ServiceResult<IncidentDiagnosisV2>> {
+  try {
+    // 1. Fetch the incident
+    const incidentResult = await db.readQuery<{
+      id: string;
+      event_type: string;
+      severity: string;
+      service: string;
+      details: Record<string, unknown>;
+      diagnosis: unknown;
+      resolved_at: unknown;
+      created_at: string;
+    }>(
+      'SELECT * FROM incident_events WHERE id = $1',
+      [incidentId]
+    );
+
+    if (!incidentResult.rowCount || incidentResult.rowCount === 0) {
+      return {
+        success: false,
+        error: { code: 'INCIDENT_NOT_FOUND', message: `Incident ${incidentId} not found` },
+      };
+    }
+
+    const incident = incidentResult.rows[0];
+
+    // 2. Fetch correlated events (within 5 minutes of this incident)
+    const correlatedResult = await db.readQuery<{ id: string }>(
+      `SELECT id FROM incident_events
+       WHERE id != $1
+         AND created_at BETWEEN $2::timestamptz - INTERVAL '5 minutes'
+             AND $2::timestamptz + INTERVAL '5 minutes'
+       ORDER BY created_at`,
+      [incidentId, incident.created_at]
+    );
+
+    const correlatedEvents = correlatedResult.rows.map(r => r.id);
+
+    // 3. Fetch recent incidents for AI context (not currently used in rule-based)
+    await db.readQuery(
+      'SELECT id, event_type FROM incident_events WHERE id != $1 ORDER BY created_at DESC LIMIT 5',
+      [incidentId]
+    );
+
+    // 4. Rule-based diagnosis
+    const { rootCause, suggestedAction, confidence } = applyDiagnosisRules(
+      incident.event_type,
+      incident.service
+    );
+
+    const result: IncidentDiagnosisV2 = {
+      incidentId,
+      rootCause,
+      suggestedAction,
+      diagnosisMethod: 'rule_based',
+      confidence,
+      correlatedEvents,
+    };
+
+    // 5. Persist diagnosis back to the incident record
+    await db.query(
+      'UPDATE incident_events SET diagnosis = $1 WHERE id = $2',
+      [JSON.stringify(result), incidentId]
+    );
+
+    return { success: true, data: result };
+  } catch (error) {
+    return {
+      success: false,
+      error: { code: 'DIAGNOSIS_FAILED', message: 'Failed to diagnose incident' },
+    };
+  }
+}
+
+function applyDiagnosisRules(
+  eventType: string,
+  service: string
+): { rootCause: string; suggestedAction: string; confidence: number } {
+  switch (eventType) {
+    case 'circuit_open':
+      return {
+        rootCause: `Circuit breaker opened for ${service} — repeated downstream failures detected`,
+        suggestedAction: 'Investigate downstream service health, check recent deployments and error logs',
+        confidence: 0.8,
+      };
+    case 'error_spike':
+      return {
+        rootCause: `Error rate spike detected in ${service}`,
+        suggestedAction: 'Check recent deployments and rollback if necessary; inspect error logs',
+        confidence: 0.7,
+      };
+    case 'latency_spike':
+      return {
+        rootCause: `P95 latency spike detected in ${service}`,
+        suggestedAction: 'Inspect database query performance and connection pool; check for slow queries',
+        confidence: 0.65,
+      };
+    case 'budget_alert':
+      return {
+        rootCause: `AI budget threshold exceeded for ${service}`,
+        suggestedAction: 'Review AI usage patterns and optimize call frequency or increase budget',
+        confidence: 0.9,
+      };
+    default:
+      return {
+        rootCause: `Unknown incident type: ${eventType}`,
+        suggestedAction: 'Manual investigation required',
+        confidence: 0.3,
+      };
+  }
+}

@@ -12,7 +12,7 @@
 
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
-import { router, protectedProcedure, adminProcedure } from '../trpc';
+import { router, adminProcedure } from '../trpc';
 import { DisputeAIService } from '../services/DisputeAIService';
 
 export const disputeAIRouter = router({

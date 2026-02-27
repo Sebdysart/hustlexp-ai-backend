@@ -137,9 +137,9 @@ function buildBaseFeedQuery(): string {
 /**
  * Build feed query with mode-specific ordering and filters.
  */
-function buildFeedQuery(options: FeedQueryOptions): { sql: string; params: any[] } {
+function buildFeedQuery(options: FeedQueryOptions): { sql: string; params: unknown[] } {
   const { userId, cursor, limit = 20, feedMode = 'standard' } = options;
-  const params: any[] = [userId];
+  const params: unknown[] = [userId];
   let paramIndex = 2;
 
   let sql = buildBaseFeedQuery();

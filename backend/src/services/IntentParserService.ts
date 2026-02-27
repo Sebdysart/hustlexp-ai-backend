@@ -35,12 +35,15 @@ export const IntentParserService = {
    */
   async analyzeIntent(description: string): Promise<ServiceResult<IntentAnalysis>> {
     try {
+      // Normalize null/undefined to empty string
+      description = description ?? '';
+
       // Query knowledge graph for context
       let knowledgeContext = '';
       try {
         const kgResults = await KnowledgeGraphService.queryDocs(description, 5);
         if (kgResults && kgResults.length > 0) {
-          knowledgeContext = kgResults.map((doc: any) => `- ${doc.path}: ${doc.content.substring(0, 100)}`).join('\n');
+          knowledgeContext = kgResults.map((doc) => `- ${doc.filePath}: ${doc.content.substring(0, 100)}`).join('\n');
         }
       } catch (kgError) {
         console.warn('Knowledge graph query failed, proceeding without context:', kgError);
@@ -174,11 +177,28 @@ Focus on:
     if (lowerDesc.includes('ai') || lowerDesc.includes('matchmaking')) {
       affectedServices.push('AIService');
     }
+    if (lowerDesc.includes('proof') || lowerDesc.includes('submit proof') || lowerDesc.includes('evidence')) {
+      affectedServices.push('ProofService');
+    }
+    if (lowerDesc.includes('notification') || lowerDesc.includes('messaging') || lowerDesc.includes('message')) {
+      affectedServices.push('MessagingService');
+    }
 
     // Detect tier
     if (lowerDesc.includes('migration') || lowerDesc.includes('database') || lowerDesc.includes('schema')) {
       suggestedTier = 'architectural';
-    } else if (lowerDesc.includes('ui') || lowerDesc.includes('screen') || lowerDesc.includes('button')) {
+    } else if (
+      lowerDesc.includes('ui') ||
+      lowerDesc.includes('screen') ||
+      lowerDesc.includes('button') ||
+      lowerDesc.includes('readme') ||
+      lowerDesc.includes('typo') ||
+      lowerDesc.includes('docs ') ||
+      lowerDesc.includes(' docs') ||
+      lowerDesc === 'docs' ||
+      lowerDesc.includes('documentation') ||
+      affectedServices.length === 0
+    ) {
       suggestedTier = 'trivial';
     }
 
@@ -189,7 +209,7 @@ Focus on:
       affectedRouters,
       suggestedTier,
       riskAssessment: `Heuristic analysis based on keywords (AI unavailable)`,
-      suggestedTestFiles: affectedServices.map(s => `backend/tests/unit/${s.toLowerCase()}.test.ts`),
+      suggestedTestFiles: affectedServices.map(s => serviceToTestFile(s)),
       implementationPlan: [
         '1. Review affected services and invariants',
         '2. Implement changes with tests',
@@ -198,3 +218,197 @@ Focus on:
     };
   },
 };
+
+// ============================================================================
+// Exported helper functions (used by tests and CLI tools)
+// ============================================================================
+
+const KNOWN_SERVICES = [
+  'EscrowService', 'TaskService', 'StripeService', 'UserService', 'AIService',
+  'ProofService', 'MessagingService', 'TrustService', 'ReputationAIService',
+  'NotificationService', 'DisputeService', 'CapabilityProfileService',
+  'StripeConnectService', 'AIDecisionService', 'OnboardingAIService',
+];
+
+const KNOWN_ROUTERS = [
+  'escrow', 'task', 'user', 'admin', 'ai', 'dispute', 'stripe',
+  'notification', 'proof', 'analytics', 'fraud', 'moderation',
+];
+
+const FINANCIAL_SERVICES = new Set(['EscrowService', 'StripeService', 'StripeConnectService']);
+const FINANCIAL_INVARIANTS = new Set(['INV-1', 'INV-2', 'INV-3', 'INV-4', 'INV-5']);
+
+/**
+ * Convert a CamelCase service name to a kebab-case test file path.
+ * EscrowService → backend/tests/unit/escrow-service.test.ts
+ * AIDecisionService → backend/tests/unit/ai-decision-service.test.ts
+ */
+export function serviceToTestFile(serviceName: string): string {
+  // Handle transitions from lowercase to uppercase and from a run of uppercase
+  // letters to a mixed word (e.g. "AI" before "Decision")
+  const kebab = serviceName
+    .replace(/([a-z])([A-Z])/g, '$1-$2')         // camelCase boundary: e → D
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1-$2')   // acronym boundary: AI → D
+    .toLowerCase();
+  return `backend/tests/unit/${kebab}.test.ts`;
+}
+
+/**
+ * Match keywords in a description and return matched services, routers, and invariants.
+ */
+export function matchKeywords(description: string): {
+  services: Set<string>;
+  routers: Set<string>;
+  invariants: Set<string>;
+} {
+  const lower = description.toLowerCase();
+  const services = new Set<string>();
+  const routers = new Set<string>();
+  const invariants = new Set<string>();
+
+  // Financial / escrow
+  if (lower.includes('escrow') || lower.includes('refund') || lower.includes('release')) {
+    services.add('EscrowService');
+    routers.add('escrow');
+    invariants.add('INV-1');
+    invariants.add('INV-2');
+  }
+  if (lower.includes('payment') || lower.includes('stripe') || lower.includes('charge')) {
+    services.add('EscrowService');
+    services.add('StripeService');
+    routers.add('escrow');
+    invariants.add('INV-1');
+  }
+  if (lower.includes('stripe')) {
+    services.add('StripeService');
+  }
+
+  // Task / proof
+  if (lower.includes('task') || lower.includes('quest') || lower.includes('creation')) {
+    services.add('TaskService');
+    routers.add('task');
+  }
+  if (lower.includes('proof') || lower.includes('evidence') || lower.includes('submit')) {
+    services.add('ProofService');
+  }
+
+  // User / auth / admin
+  if (lower.includes('user') || lower.includes('profile') || lower.includes('login') || lower.includes('permission')) {
+    services.add('UserService');
+    routers.add('user');
+  }
+  if (lower.includes('admin')) {
+    routers.add('admin');
+  }
+
+  // Trust / reputation
+  if (lower.includes('trust') || lower.includes('tier')) {
+    services.add('TrustService');
+  }
+  if (lower.includes('reputation')) {
+    services.add('ReputationAIService');
+  }
+
+  // AI / matchmaking
+  if (lower.includes(' ai ') || lower.includes('matchmaking') || lower.includes('decision')) {
+    services.add('AIService');
+    routers.add('ai');
+  }
+
+  // Messaging / notifications
+  if (lower.includes('notification') || lower.includes('messaging') || lower.includes('message')) {
+    services.add('MessagingService');
+    services.add('NotificationService');
+  }
+
+  return { services, routers, invariants };
+}
+
+/**
+ * Determine the suggested tier based on description, invariants, and services.
+ */
+export function determineTier(
+  description: string,
+  invariants: string[],
+  services: string[]
+): IntentAnalysis['suggestedTier'] {
+  const lower = description.toLowerCase();
+
+  // Architectural: database migrations / schema changes
+  if (lower.includes('migration') || lower.includes('database') || lower.includes('schema')) {
+    return 'architectural';
+  }
+
+  // Critical: financial invariants or financial services
+  const hasFinancialInvariant = invariants.some(inv => FINANCIAL_INVARIANTS.has(inv));
+  const hasFinancialService = services.some(svc => FINANCIAL_SERVICES.has(svc));
+  if (hasFinancialInvariant || hasFinancialService) {
+    return 'critical';
+  }
+
+  // Trivial: documentation or pure cosmetic UI only (no backend services involved)
+  const noServices = services.length === 0;
+  const isDocOnly =
+    lower.includes('readme') ||
+    lower.includes('typo') ||
+    lower.includes('documentation') ||
+    lower.includes('docs');
+  const isPureUI =
+    noServices &&
+    (lower.includes('color') ||
+      lower.includes('screen') ||
+      lower.includes('button') ||
+      lower.includes('ui'));
+  if (isDocOnly || isPureUI) {
+    return 'trivial';
+  }
+
+  return 'standard';
+}
+
+/**
+ * Build a human-readable risk assessment string.
+ */
+export function buildRiskAssessment(
+  tier: IntentAnalysis['suggestedTier'],
+  services: string[],
+  invariants: string[]
+): string {
+  const financialServices = services.filter(s => FINANCIAL_SERVICES.has(s));
+  const invariantList = invariants.length > 0 ? ` Invariants: ${invariants.join(', ')}.` : '';
+  const financialNote = financialServices.length > 0 ? ' Touches financial path.' : '';
+
+  if (tier === 'critical') {
+    return `high risk — financial or safety-critical change.${invariantList}${financialNote}`;
+  }
+  if (tier === 'architectural') {
+    return `high risk — architectural change.${invariantList}`;
+  }
+  if (tier === 'standard') {
+    return `medium risk — standard feature change.${invariantList}${financialNote}`;
+  }
+  return `low risk — trivial or documentation-only change.`;
+}
+
+/**
+ * Extract INV-N references from arbitrary text.
+ */
+export function extractInvariantsFromText(text: string): string[] {
+  const matches = text.match(/INV-\d+/g) ?? [];
+  return [...new Set(matches)];
+}
+
+/**
+ * Extract known service names from arbitrary text.
+ */
+export function extractServicesFromText(text: string): string[] {
+  return KNOWN_SERVICES.filter(svc => text.includes(svc));
+}
+
+/**
+ * Extract known router names from arbitrary text.
+ */
+export function extractRoutersFromText(text: string): string[] {
+  const lower = text.toLowerCase();
+  return KNOWN_ROUTERS.filter(router => lower.includes(router));
+}

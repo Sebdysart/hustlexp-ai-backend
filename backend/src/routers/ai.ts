@@ -9,7 +9,6 @@
 import { TRPCError } from '@trpc/server';
 import { router, protectedProcedure, Schemas } from '../trpc';
 import { OnboardingAIService } from '../services/OnboardingAIService';
-import { z } from 'zod';
 
 export const aiRouter = router({
   // --------------------------------------------------------------------------

@@ -11,7 +11,7 @@
  */
 
 import { TRPCError } from '@trpc/server';
-import { router, protectedProcedure, Schemas } from '../trpc';
+import { router, protectedProcedure } from '../trpc';
 import { XPTaxService } from '../services/XPTaxService';
 import { StripeService } from '../services/StripeService';
 import { z } from 'zod';

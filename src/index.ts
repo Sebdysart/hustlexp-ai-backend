@@ -1266,7 +1266,7 @@ fastify.post('/api/tasks', { preHandler: [optionalAuth] }, async (request, reply
             clientId,
             title: body.title,
             description: body.description,
-            category: body.category as any,
+            category: body.category as TaskCategory,
             recommendedPrice: body.price,
             minPrice: body.price * 0.8,
             maxPrice: body.price * 1.2,
@@ -3253,7 +3253,16 @@ const CreateEscrowSchema = z.object({
 // MONEY ENGINE CONTEXT PACKERS
 // ============================================
 
-function packHoldEscrowContext(body: any, posterId: string) {
+/** Minimal task shape needed by the release/refund context packers */
+interface TaskWithEscrowShape {
+    id: string;
+    posterId: string;
+    assignedHustlerId?: string | null;
+    hustlerPayout?: number;
+    status?: string;
+}
+
+function packHoldEscrowContext(body: z.infer<typeof CreateEscrowSchema>, posterId: string) {
     return {
         eventId: crypto.randomUUID(),
         amountCents: Math.round(body.amount * 100),
@@ -3264,16 +3273,16 @@ function packHoldEscrowContext(body: any, posterId: string) {
     };
 }
 
-function packReleaseContext(task: any, hustlerStripeAccountId: string) {
+function packReleaseContext(task: TaskWithEscrowShape, hustlerStripeAccountId: string) {
     return {
         eventId: crypto.randomUUID(),
-        payoutAmountCents: Math.round(task.hustlerPayout * 100),
+        payoutAmountCents: Math.round((task.hustlerPayout ?? 0) * 100),
         hustlerStripeAccountId,
         taskId: task.id
     };
 }
 
-function packRefundContext(task: any, amount: number, reason?: string) {
+function packRefundContext(task: TaskWithEscrowShape, amount: number, reason?: string) {
     return {
         eventId: crypto.randomUUID(),
         refundAmountCents: Math.round(amount * 100),
@@ -3887,7 +3896,9 @@ fastify.get('/api/admin/moderation/logs', { preHandler: [requireAdminFromJWT] },
     const logs = SafetyService.getModerationLogs({
         userId,
         taskId,
-        type: type as any,
+        // `type` is a free-form string filter (e.g. 'spam', 'fraud') — cast to the service's
+        // expected string union since the service module is externally resolved at runtime.
+        type: type as string | undefined,
         severity,
         limit: limit ? parseInt(limit) : 100,
     });
@@ -4351,7 +4362,7 @@ fastify.get('/api/admin/notifications/stats', { preHandler: [requireAdminFromJWT
 // List notifications
 fastify.get('/api/admin/notifications', { preHandler: [requireAdminFromJWT] }, async (request) => {
     const { type, status, limit } = request.query as {
-        type?: any;
+        type?: string;
         status?: 'pending' | 'sent' | 'failed';
         limit?: string;
     };
@@ -4438,7 +4449,19 @@ fastify.post('/webhooks/stripe', async (request, reply) => {
     // In production, verify signature using stripe.webhooks.constructEvent and usage of raw-body.
     // IMPORTANT: Verify signature logic should be added here.
 
-    const event = request.body as any;
+    // Minimal type for Stripe webhook payload — in production use Stripe.Event after
+    // signature verification via stripe.webhooks.constructEvent(rawBody, sig, secret).
+    interface StripeWebhookEvent {
+        id: string;
+        type: string;
+        data?: {
+            object?: {
+                id?: string;
+                metadata?: Record<string, string>;
+            };
+        };
+    }
+    const event = request.body as StripeWebhookEvent;
 
     try {
         if (event.type === 'payout.paid') {
