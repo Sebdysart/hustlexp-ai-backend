@@ -57,6 +57,9 @@ import type { OrchestrateMode, TaskDraft, TaskCategory, AIContextBlock } from '.
 import { addRequestId, returnRequestId, createGlobalErrorHandler, logRequest } from './middleware/requestId.js';
 import { requireIdempotencyKey, cacheIdempotentResponse, isIdempotencyEnabled } from './middleware/idempotency.js';
 import { adminRateLimiter, financialRateLimiter } from './middleware/rateLimiter.js';
+// TASK-13: Degraded mode fallback + AI health
+import { isDegradedMode, handleDegradedRequest } from './ai/degradedMode.js';
+import { getAllCircuitStates } from './utils/reliability.js';
 
 const fastify = Fastify({
     logger: false, // We use our own pino logger
@@ -125,6 +128,7 @@ fastify.addHook('onResponse', returnRequestId);
 const PUBLIC_ROUTES = [
     '/health',
     '/health/detailed',
+    '/health/ai',
     // Stripe webhooks (use Stripe signature verification, not Firebase auth)
     '/api/stripe/webhook',
     '/webhooks/stripe',
@@ -283,6 +287,17 @@ fastify.get('/health', async () => {
 // Detailed health check (includes service connectivity)
 fastify.get('/health/detailed', async () => {
     return await runHealthCheck();
+});
+
+// AI circuit breaker / degraded-mode health (TASK-13)
+// Public — no auth required (load balancer / ops dashboard)
+fastify.get('/health/ai', async () => {
+    const circuits = getAllCircuitStates();
+    return {
+        degradedMode: env.AI_DEGRADED_MODE === 'true',
+        models: circuits,
+        timestamp: new Date().toISOString(),
+    };
 });
 
 // ============================================
@@ -976,6 +991,13 @@ fastify.get<{
 fastify.post('/ai/orchestrate', async (request, reply) => {
     try {
         const body = OrchestrateSchema.parse(request.body);
+
+        // TASK-13: Degraded mode — queue the request and return 202 immediately
+        if (isDegradedMode()) {
+            logger.warn({ userId: body.userId }, 'AI degraded mode active — queuing request');
+            reply.status(202);
+            return handleDegradedRequest(body.userId, body.message, body.mode || 'chat');
+        }
 
         // Check rate limit
         const rateLimit = await checkRateLimit('ai', body.userId);

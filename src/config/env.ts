@@ -16,6 +16,10 @@ interface EnvVars {
   PORT: string;
   ALLOWED_ORIGINS: string;
   PAYOUTS_DISABLED: string;
+  /** Set to 'true' to force degraded mode: all AI requests are queued instead of executed inline. */
+  AI_DEGRADED_MODE: string;
+  /** Maximum milliseconds a queued AI request is considered "pending" before expiry. Default: 5000 */
+  AI_MAX_QUEUE_WAIT_MS: string;
   [key: string]: string | undefined;
 }
 
