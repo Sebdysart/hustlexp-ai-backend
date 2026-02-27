@@ -322,7 +322,7 @@ export async function diagnoseIncident(
     );
 
     return { success: true, data: result };
-  } catch (error) {
+  } catch (_error) {
     return {
       success: false,
       error: { code: 'DIAGNOSIS_FAILED', message: 'Failed to diagnose incident' },

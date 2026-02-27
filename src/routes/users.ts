@@ -556,7 +556,7 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
             const changes = EarningsImpactSchema.parse(request.body);
             const impact = ProfileOptimizerService.predictEarningsImpact(userId, changes);
             return impact;
-        } catch (error) {
+        } catch (_error) {
             reply.status(400);
             return { error: 'Invalid request body' };
         }
@@ -660,7 +660,7 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
     });
 
     // Get system-wide AI stats (admin)
-    fastify.get('/api/cost/system/stats', async (request) => {
+    fastify.get('/api/cost/system/stats', async () => {
         const stats = AICostGuardService.getSystemStats();
         const limits = AICostGuardService.getLimits();
         return { stats, limits };
@@ -680,7 +680,6 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
     // Re-rank candidates for a task
     fastify.post('/api/match/:taskId/rerank', async (request, reply) => {
         try {
-            const { taskId } = request.params as { taskId: string };
             const { task, candidates, limit } = request.body as {
                 task: Parameters<typeof SmartMatchAIService.reRankCandidates>[0];
                 candidates: Parameters<typeof SmartMatchAIService.reRankCandidates>[1];
@@ -688,7 +687,7 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
             };
             const result = await SmartMatchAIService.reRankCandidates(task, candidates, limit);
             return result;
-        } catch (error) {
+        } catch (_error) {
             reply.status(500);
             return { error: 'Match ranking failed' };
         }

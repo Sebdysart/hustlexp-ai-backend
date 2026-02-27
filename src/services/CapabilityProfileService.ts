@@ -147,13 +147,6 @@ interface InsuranceVerificationDbRow {
   coverage_amount: number;
 }
 
-interface BackgroundCheckDbRow {
-  id: string;
-  status: 'pending' | 'verified' | 'failed' | 'expired';
-  verified_at: Date | null;
-  expires_at: Date | null;
-  provider: string;
-}
 
 interface VerifiedTradeDbRow {
   trade: string;

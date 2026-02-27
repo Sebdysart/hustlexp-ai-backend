@@ -350,7 +350,7 @@ export async function checkExpiredBackgroundChecks(): Promise<{
  */
 export async function initiateCheckrBackgroundCheck(
   userId: string,
-  candidateData: {
+  _candidateData: {
     firstName: string;
     lastName: string;
     email: string;

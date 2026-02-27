@@ -25,7 +25,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { match } from 'ts-pattern';
-import { sql, isDatabaseAvailable, transaction } from '../db/index.js';
+import { sql, transaction } from '../db/index.js';
 import { serviceLogger } from '../utils/logger.js';
 import { routedGenerate } from '../ai/router.js';
 import { StripeMoneyEngine } from './StripeMoneyEngine.js';
@@ -172,7 +172,6 @@ interface JuryAssignmentRow {
 const JURY_SIZE = 3;
 const JURY_MIN_TRUST_TIER = 2;
 const JURY_MIN_COMPLETED_TASKS = 5;
-const EVIDENCE_COLLECTION_WINDOW_MS = 72 * 60 * 60 * 1000; // 72 hours
 const JURY_DELIBERATION_WINDOW_MS = 48 * 60 * 60 * 1000; // 48 hours
 const AI_CONFIDENCE_THRESHOLD = 0.80; // Below this, AI defers to jury
 
@@ -1011,7 +1010,7 @@ Analyze this dispute and provide your recommendation in JSON format.`;
       }, 'Dispute finalized');
 
       // 9. Emit metric
-      try { BetaMetricsService.disputeResolved(outcome === 'poster' ? 'refunded' : 'upheld'); } catch (_) {}
+      try { BetaMetricsService.disputeResolved(outcome === 'poster' ? 'refunded' : 'upheld'); } catch (_e) { /* non-critical metric */ }
 
       return {
         success: true,

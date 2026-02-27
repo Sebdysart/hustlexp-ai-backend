@@ -28,17 +28,15 @@
 
 import Stripe from 'stripe';
 import { match } from 'ts-pattern';
-import { getSql, transaction } from '../db/index.js';
+import { transaction } from '../db/index.js';
 import type { SqlTx } from '../db/index.js';
 import { createLogger } from '../utils/logger.js';
 import { KillSwitch } from '../infra/KillSwitch.js';
 import { TemporalGuard } from '../infra/ordering/TemporalGuard.js';
-import { LedgerLockService } from './ledger/LedgerLockService.js';
 import { LedgerAccountService } from './ledger/LedgerAccountService.js';
 import { LedgerService } from './ledger/LedgerService.js';
 import { PayoutEligibilityResolver, PayoutDecision } from './PayoutEligibilityResolver.js';
 import { assertPayoutsEnabled } from '../config/safety.js';
-import { env } from '../config/env.js';
 
 const logger = createLogger('StripeMoneyEngine');
 

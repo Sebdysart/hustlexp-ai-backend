@@ -17,7 +17,7 @@
  */
 
 import { db } from '../db';
-import type { User, TaskProgressState } from '../types';
+import type { TaskProgressState } from '../types';
 
 // ============================================================================
 // TYPES

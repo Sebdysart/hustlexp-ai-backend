@@ -337,7 +337,7 @@ export async function recordAnomaly(
     }
 
     return { success: true, data: result.rows[0] };
-  } catch (error) {
+  } catch (_error) {
     return {
       success: false,
       error: { code: 'RECORD_ANOMALY_FAILED', message: 'Failed to record anomaly' },

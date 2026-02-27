@@ -16,7 +16,6 @@
  *   src/routes/controlplane.ts   — risk scoring, shadow policy, market signals, city domination
  */
 
-import { env } from './config/env.js';
 import 'dotenv/config'; // Fallback for other files still using process.env
 import Fastify from 'fastify';
 import cors from '@fastify/cors';

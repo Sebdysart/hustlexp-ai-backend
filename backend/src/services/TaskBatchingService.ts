@@ -10,7 +10,6 @@
  * @see AI_INFRASTRUCTURE.md §3.7
  */
 
-import { db } from '../db';
 import type { ServiceResult } from '../types';
 import { AIClient } from './AIClient';
 import { aiLogger } from '../logger';
@@ -218,7 +217,7 @@ Find the best combination that maximizes earnings per hour while minimizing trav
    */
   _generateHeuristicRecommendation: (
     tasks: Task[],
-    currentLocation?: { lat: number; lng: number }
+    _currentLocation?: { lat: number; lng: number }
   ): BatchRecommendation | null => {
     // Simple clustering: group tasks within 2km of each other
     const tasksWithCoords = tasks.filter(t => t.latitude && t.longitude);

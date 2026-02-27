@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { UserId, TaskId, EscrowId, PaymentId, Cents, DisputeId, ProofId, LedgerEntryId } from './brands.js';
+import { UserId, TaskId, Cents, DisputeId, ProofId, LedgerEntryId } from './brands.js';
 
 describe('Branded types — smart constructors', () => {
   it('UserId.parse accepts valid UUIDs', () => {

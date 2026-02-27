@@ -251,7 +251,7 @@ Map items to these skill names: lawn_mowing, furniture_assembly, painting_interi
           confidence: parsed.confidence || 0,
         },
       };
-    } catch (error) {
+    } catch (_error) {
       return {
         success: true,
         data: { detected_items: [], suggested_skills: [], confidence: 0 },

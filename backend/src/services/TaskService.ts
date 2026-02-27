@@ -827,7 +827,7 @@ export const TaskService = {
   /**
    * Reject proof: PROOF_SUBMITTED → ACCEPTED
    */
-  rejectProof: async (taskId: string, reason: string): Promise<ServiceResult<Task>> => {
+  rejectProof: async (taskId: string, _reason: string): Promise<ServiceResult<Task>> => {
     try {
       // Note: In a full implementation, we'd update the proof record too
       const result = await db.query<Task>(

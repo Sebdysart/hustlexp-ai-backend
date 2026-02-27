@@ -9,7 +9,6 @@
  * @see IEM_AI_GATE_SPEC.md
  */
 
-import { db } from '../db';
 import { AIClient } from './AIClient';
 import { logger } from '../logger';
 
@@ -185,10 +184,6 @@ export async function checkInstantEligibility(
         descriptionLower.includes('i will be');
       
       // Allow if task has "from X to Y" structure (moving/delivery) - access might not be needed if exterior
-      const isMovingOrDelivery = descriptionLower.includes('move') || 
-                                 descriptionLower.includes('deliver') ||
-                                 descriptionLower.includes('pick up') ||
-                                 descriptionLower.includes('transport');
       const hasFromToStructure = descriptionLower.includes('from') && descriptionLower.includes('to');
       // If moving from private space but has "to storage unit" or similar, might be exterior-only
       const hasExteriorDestination = descriptionLower.includes('to storage') ||

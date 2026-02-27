@@ -9,7 +9,7 @@
  *  5. Queue helpers work correctly (enqueue / get / dequeue)
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 
 // ---------------------------------------------------------------------------
 // We test the utility modules directly — no HTTP server needed.

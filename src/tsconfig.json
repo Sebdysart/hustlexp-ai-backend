@@ -13,7 +13,11 @@
     "noEmit": true,
     "baseUrl": ".."
   },
-  "files": [
-    "types/fastify.d.ts"
+  "include": [
+    "**/*"
+  ],
+  "exclude": [
+    "../node_modules",
+    "../dist"
   ]
 }

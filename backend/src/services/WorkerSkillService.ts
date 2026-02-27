@@ -149,8 +149,6 @@ export const WorkerSkillService = {
         return { success: false, error: { code: 'NOT_FOUND', message: 'User not found' } };
       }
 
-      const user = userResult.rows[0];
-
       // Get skill details for all requested skills
       const skillsResult = await db.query<Skill>(
         `SELECT * FROM skills WHERE id = ANY($1) AND is_active = TRUE`,

@@ -132,7 +132,7 @@ async function testFallbackChains() {
     // Test by calling with a deliberately bad prompt to a non-existent route
     // We can't test fallback without actual API calls, but we verify the chain
     // is correctly defined by importing and inspecting
-    const clientModule = await import('../services/AIClient');
+    await import('../services/AIClient');
     // The chains are internal, so we verify the type accepts all routes
     const routes: Array<import('../services/AIClient').AIRoute> = [
       'primary', 'fast', 'reasoning', 'safety', 'backup',

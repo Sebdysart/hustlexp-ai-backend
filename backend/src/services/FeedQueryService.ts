@@ -16,7 +16,6 @@
 
 import { db } from '../db';
 import { logger } from '../logger';
-import { TRPCError } from '@trpc/server';
 import type { CapabilityProfile } from './CapabilityProfileService';
 import { isEligible } from './EligibilityResolverService';
 

@@ -223,6 +223,7 @@ const ENCODING_ATTACK_PATTERNS: PatternRule[] = [
     {
         name: 'invisible_unicode_chars',
         // Zero-width characters, right-to-left overrides, and other invisible Unicode
+        // eslint-disable-next-line no-misleading-character-class
         pattern: /[\u200B\u200C\u200D\u200E\u200F\u202A-\u202E\u2060\u2061-\u2064\uFEFF\u00AD]{2,}/,
         weight: 25,
     },
@@ -444,6 +445,7 @@ export class PromptInjectionGuard {
         let sanitized = input;
 
         // Remove invisible unicode characters
+        // eslint-disable-next-line no-misleading-character-class
         sanitized = sanitized.replace(/[\u200B\u200C\u200D\u200E\u200F\u202A-\u202E\u2060\u2061-\u2064\uFEFF\u00AD]/g, '');
 
         // Remove XML-style injection tags

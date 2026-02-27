@@ -170,8 +170,6 @@ export const TaxReportingService = {
         return { success: false, error: { code: 'NO_FILING', message: 'No tax filing record found — run processAnnualFilings first' } };
       }
 
-      const filing = filingResult.rows[0];
-
       // Use Stripe Tax Forms API via raw request (SDK types may not include forms resource)
       // Stripe handles form generation and IRS e-filing for Connect platforms
       const taxForm = await (s as unknown as { rawRequest: (method: string, path: string, params: Record<string, string>) => Promise<{ body: string }> }).rawRequest(

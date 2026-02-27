@@ -150,7 +150,7 @@ export async function getSignedUrlForObject(
   
   try {
     await r2Client.send(headCommand);
-  } catch (error) {
+  } catch (_error) {
     throw new Error(`R2 object not found: ${key}`);
   }
   
@@ -196,7 +196,7 @@ export async function verifyFile(key: string): Promise<{
       sha256: response.Metadata?.sha256,
       lastModified: response.LastModified,
     };
-  } catch (error) {
+  } catch (_error) {
     return { exists: false };
   }
 }

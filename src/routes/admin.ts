@@ -2,7 +2,6 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { TPEEService } from '../services/TPEEService.js';
 import { StripeService } from '../services/StripeService.js';
-import { UserService } from '../services/UserService.js';
 import { DisputeService, type DisputeStatus } from '../services/DisputeService.js';
 import { SafetyService } from '../services/SafetyService.js';
 import { MetricsService } from '../services/MetricsService.js';

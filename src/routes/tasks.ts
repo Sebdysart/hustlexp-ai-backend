@@ -17,12 +17,6 @@ const CreateTaskSchema = z.object({
     location: z.string().optional(),
 });
 
-const CompleteTaskSchema = z.object({
-    hustlerId: z.string(),
-    rating: z.number().min(1).max(5).optional(),
-    skipProofCheck: z.boolean().optional(),
-});
-
 
 export async function taskRoutes(fastify: FastifyInstance): Promise<void> {
     // Get open tasks
@@ -148,7 +142,7 @@ export async function taskRoutes(fastify: FastifyInstance): Promise<void> {
     });
 
     // Check completion eligibility
-    fastify.get('/api/tasks/:taskId/eligibility', async (request, reply) => {
+    fastify.get('/api/tasks/:taskId/eligibility', async (request, _reply) => {
         const { taskId } = request.params as { taskId: string };
         const eligibility = await TaskCompletionService.getCompletionEligibility(taskId);
         return eligibility;
@@ -394,7 +388,6 @@ export async function taskRoutes(fastify: FastifyInstance): Promise<void> {
 
     fastify.post('/api/onboarding/:userId/answer', async (request, reply) => {
         try {
-            const { userId } = request.params as { userId: string };
             const body = request.body as { sessionId: string; questionKey: string; answer?: string; skip?: boolean };
             const result = await OnboardingService.answerQuestion(
                 body.sessionId,

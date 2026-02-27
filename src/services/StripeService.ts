@@ -176,7 +176,7 @@ class StripeServiceClass {
                 type: 'account_onboarding',
             });
             return link.url;
-        } catch (error) { return undefined; }
+        } catch (_error) { return undefined; }
     }
 
     async getAccountStatus(userId: string): Promise<AccountStatus | null> {
@@ -197,7 +197,7 @@ class StripeServiceClass {
                 requirements: account.requirements?.currently_due || [],
                 status,
             };
-        } catch (error) { return null; }
+        } catch (_error) { return null; }
     }
 
     async getConnectAccountId(userId: string): Promise<string | undefined> {
@@ -299,43 +299,38 @@ class StripeServiceClass {
         assertPayoutsEnabled(`releaseEscrow:${taskId}`);
 
         // Delegate to Engine for SAGA Safety
-        try {
-            // Need ctx
-            const [escrow] = await sql`SELECT * FROM escrow_holds WHERE task_id = ${taskId}`;
-            if (!escrow) throw new Error('Escrow not found');
+        // Need ctx
+        const [escrow] = await sql`SELECT * FROM escrow_holds WHERE task_id = ${taskId}`;
+        if (!escrow) throw new Error('Escrow not found');
 
-            const hustlerStripeAccountId = await this.getConnectAccountId(escrow.hustler_id);
-            if (!hustlerStripeAccountId) {
-                throw new Error(`No Stripe Connect account found for hustler ${escrow.hustler_id}`);
-            }
-
-            const ctx = {
-                hustlerStripeAccountId,
-                payoutAmountCents: escrow.net_payout_cents,
-                taskId,
-                hustlerId: escrow.hustler_id
-            };
-
-            const result = await StripeMoneyEngine.handle(taskId, 'RELEASE_PAYOUT', ctx);
-
-            // Fetch result Payout info... 
-            // Engine updates DB. We return structure.
-            return {
-                id: 'payout_engine_managed',
-                escrowId: escrow.id,
-                hustlerId: escrow.hustler_id,
-                hustlerStripeAccountId: ctx.hustlerStripeAccountId,
-                amount: escrow.net_payout_cents / 100,
-                fee: 0,
-                netAmount: escrow.net_payout_cents / 100,
-                type,
-                status: 'processing',
-                createdAt: new Date()
-            };
-
-        } catch (error) {
-            throw error;
+        const hustlerStripeAccountId = await this.getConnectAccountId(escrow.hustler_id);
+        if (!hustlerStripeAccountId) {
+            throw new Error(`No Stripe Connect account found for hustler ${escrow.hustler_id}`);
         }
+
+        const ctx = {
+            hustlerStripeAccountId,
+            payoutAmountCents: escrow.net_payout_cents,
+            taskId,
+            hustlerId: escrow.hustler_id
+        };
+
+        await StripeMoneyEngine.handle(taskId, 'RELEASE_PAYOUT', ctx);
+
+        // Fetch result Payout info...
+        // Engine updates DB. We return structure.
+        return {
+            id: 'payout_engine_managed',
+            escrowId: escrow.id,
+            hustlerId: escrow.hustler_id,
+            hustlerStripeAccountId: ctx.hustlerStripeAccountId,
+            amount: escrow.net_payout_cents / 100,
+            fee: 0,
+            netAmount: escrow.net_payout_cents / 100,
+            type,
+            status: 'processing',
+            createdAt: new Date()
+        };
     }
 
     async refundEscrow(taskId: string, isAdmin: boolean = false): Promise<{ success: boolean; state?: string; message?: string }> {
@@ -456,7 +451,7 @@ class StripeServiceClass {
         if (!stripe || !STRIPE_WEBHOOK_SECRET) return null;
         try {
             return stripe.webhooks.constructEvent(payload, signature, STRIPE_WEBHOOK_SECRET);
-        } catch (error) { return null; }
+        } catch (_error) { return null; }
     }
 
     async handleWebhookEvent(event: Stripe.Event): Promise<void> {
@@ -576,7 +571,7 @@ class StripeServiceClass {
                 amount: escrow.gross_amount_cents / 100,
                 status: escrow.status
             };
-        } catch (error) {
+        } catch (_error) {
             return null;
         }
     }
@@ -602,7 +597,7 @@ class StripeServiceClass {
                 releasedAt: escrow.released_at ? new Date(escrow.released_at) : undefined,
                 stripeTransferId: escrow.stripe_transfer_id
             };
-        } catch (error) {
+        } catch (_error) {
             return null;
         }
     }
@@ -627,7 +622,7 @@ class StripeServiceClass {
                 createdAt: new Date(p.created_at),
                 completedAt: p.completed_at ? new Date(p.completed_at) : undefined
             }));
-        } catch (error) {
+        } catch (_error) {
             return [];
         }
     }
@@ -653,7 +648,7 @@ class StripeServiceClass {
                 createdAt: new Date(p.created_at),
                 completedAt: p.completed_at ? new Date(p.completed_at) : undefined
             };
-        } catch (error) {
+        } catch (_error) {
             return null;
         }
     }

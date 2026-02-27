@@ -296,7 +296,7 @@ export async function taskProofRoutes(fastify: FastifyInstance): Promise<void> {
     });
 
     // Get trust profile
-    fastify.get('/api/proof/trust/:hustlerId', async (request, reply) => {
+    fastify.get('/api/proof/trust/:hustlerId', async (request, _reply) => {
         const { hustlerId } = request.params as { hustlerId: string };
         const profile = AIProofService.getTrustProfile(hustlerId);
 

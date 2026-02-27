@@ -10,7 +10,6 @@ import { getAIEventsSummary, getRecentAIEvents } from '../utils/aiEventLogger.js
 import { logger } from '../utils/logger.js';
 import { isDatabaseAvailable, sql } from '../db/index.js';
 import { checkRateLimit } from '../middleware/rateLimiter.js';
-import { optionalAuth } from '../middleware/firebaseAuth.js';
 import { isDegradedMode, handleDegradedRequest } from '../ai/degradedMode.js';
 import type { OrchestrateMode, TaskDraft, AIContextBlock } from '../types/index.js';
 

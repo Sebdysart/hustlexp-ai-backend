@@ -18,7 +18,6 @@ import Stripe from 'stripe';
 import { config } from '../config';
 import { db } from '../db';
 import type { ServiceResult } from '../types';
-import { ErrorCodes } from '../types';
 import { stripeBreaker } from '../middleware/circuit-breaker';
 import { stripeLogger } from '../logger';
 

@@ -141,7 +141,7 @@ export async function escrowRoutes(fastify: FastifyInstance): Promise<void> {
         let body;
         try {
             body = RefundSchema.parse(request.body);
-        } catch (e) {
+        } catch (_e) {
             reply.status(400);
             return { error: 'Invalid body: amount required' };
         }
@@ -149,7 +149,7 @@ export async function escrowRoutes(fastify: FastifyInstance): Promise<void> {
         let task;
         try {
             task = await TaskService.getTaskWithEscrow(taskId);
-        } catch (e) {
+        } catch (_e) {
             reply.status(404);
             return { error: 'Task not found' };
         }
@@ -191,7 +191,7 @@ export async function escrowRoutes(fastify: FastifyInstance): Promise<void> {
             }
 
             const { taskId } = request.params as { taskId: string };
-            const body = ApproveTaskSchema.parse(request.body);
+            ApproveTaskSchema.parse(request.body); // validate body shape
 
             const task = await TaskService.getTaskWithEscrow(taskId);
 
@@ -215,7 +215,7 @@ export async function escrowRoutes(fastify: FastifyInstance): Promise<void> {
             let hustlerStripeAccountId;
             try {
                 hustlerStripeAccountId = await UserService.getStripeConnectId(task.assignedHustlerId);
-            } catch (err) {
+            } catch (_err) {
                 reply.status(400);
                 return { error: 'Hustler has no Stripe Connect account connected' };
             }
