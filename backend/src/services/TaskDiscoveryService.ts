@@ -73,6 +73,31 @@ export interface SearchFilters extends FeedFilters {
   query?: string; // Full-text search
 }
 
+/** Row shape returned by browsePublicFeed SELECT */
+interface PublicTaskRow extends Record<string, unknown> {
+  id: string;
+  title: string;
+  description: string;
+  category: string | null;
+  price: number;
+  location: string | null;
+  deadline: string | null;
+  created_at: string;
+  state: string;
+  requires_proof: boolean;
+  mode: string;
+  poster_id: string;
+}
+
+/** Row shape returned by getFeed / search (tasks + matching scores) */
+interface TaskFeedRow {
+  matching_score: number;
+  relevance_score: number;
+  distance_miles: number;
+  search_rank?: number;
+  [key: string]: unknown; // t.* columns
+}
+
 // ============================================================================
 // MATCHING SCORE CALCULATION (TASK_DISCOVERY_SPEC.md §1)
 // ============================================================================
@@ -300,7 +325,7 @@ export const TaskDiscoveryService = {
       params.push(limit, offset);
       sql += ` LIMIT $${params.length - 1} OFFSET $${params.length}`;
 
-      const result = await db.query<Record<string, unknown>>(sql, params);
+      const result = await db.query<PublicTaskRow>(sql, params);
 
       return {
         success: true,
@@ -678,10 +703,10 @@ export const TaskDiscoveryService = {
       params.push(limit, offset);
       sql += ` LIMIT $${params.length - 1} OFFSET $${params.length}`;
       
-      const result = await db.query<Record<string, unknown>>(sql, params);
+      const result = await db.query<TaskFeedRow>(sql, params);
 
       // Generate "Why this task?" explanations (TASK_DISCOVERY_SPEC.md §4)
-      const feedItems: TaskFeedItem[] = result.rows.map((row: Record<string, unknown>) => {
+      const feedItems: TaskFeedItem[] = result.rows.map((row) => {
         const explanation = generateExplanation({
           matching_score: row.matching_score as number,
           distance_miles: row.distance_miles as number,
@@ -758,9 +783,9 @@ export const TaskDiscoveryService = {
         params.push(limit, offset);
         sql += ` LIMIT $${params.length - 1} OFFSET $${params.length}`;
         
-        const result = await db.query<Record<string, unknown>>(sql, params);
+        const result = await db.query<TaskFeedRow>(sql, params);
 
-        const feedItems: TaskFeedItem[] = result.rows.map((row: Record<string, unknown>) => ({
+        const feedItems: TaskFeedItem[] = result.rows.map((row) => ({
           task: row,
           matching_score: row.matching_score as number,
           relevance_score: row.relevance_score as number,
@@ -864,7 +889,7 @@ Be concise, specific, and motivating. No markdown. No filler.`),
           });
 
           if (aiResponse.ok) {
-            const aiData = await aiResponse.json() as Record<string, any>;
+            const aiData = await aiResponse.json() as { content?: Array<{ text?: string }> };
             const aiText = aiData.content?.[0]?.text;
             if (aiText && typeof aiText === 'string' && aiText.length > 10) {
               explanation = aiText.trim();

@@ -325,8 +325,9 @@ export async function checkExpiredBackgroundChecks(): Promise<{
     RETURNING id, user_id
   `;
 
+  interface ExpiredCheckRow { id: string; user_id: string; }
   // Recompute profiles for affected users
-  const affectedUserIds = new Set(result.map((r: any) => r.user_id));
+  const affectedUserIds = new Set((result as ExpiredCheckRow[]).map((r) => r.user_id));
   for (const userId of affectedUserIds) {
     await CapabilityProfileService.recompute(userId);
   }

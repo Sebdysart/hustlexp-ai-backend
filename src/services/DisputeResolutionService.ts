@@ -1154,7 +1154,12 @@ Analyze this dispute and provide your recommendation in JSON format.`;
       ORDER BY dj.assigned_at ASC
     `;
 
-    return rows.map((r: any) => ({
+    interface JuryAssignmentRow {
+      dispute_id: string;
+      assigned_at: string;
+      jury_deliberation_deadline: string | null;
+    }
+    return (rows as JuryAssignmentRow[]).map((r) => ({
       disputeId: r.dispute_id,
       assignedAt: new Date(r.assigned_at),
       deadline: r.jury_deliberation_deadline ? new Date(r.jury_deliberation_deadline) : null,

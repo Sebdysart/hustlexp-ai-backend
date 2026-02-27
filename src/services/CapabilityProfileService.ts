@@ -666,11 +666,13 @@ export async function checkExpiredCredentials(): Promise<{
       AND expires_at < NOW()
   `;
 
+  interface ExpiredCredentialRow { user_id: string; }
+
   // Combine unique user IDs
   const userIds = new Set([
-    ...expiredLicenses.map((r: any) => r.user_id),
-    ...expiredInsurance.map((r: any) => r.user_id),
-    ...expiredBackgroundChecks.map((r: any) => r.user_id),
+    ...expiredLicenses.map((r: ExpiredCredentialRow) => r.user_id),
+    ...expiredInsurance.map((r: ExpiredCredentialRow) => r.user_id),
+    ...expiredBackgroundChecks.map((r: ExpiredCredentialRow) => r.user_id),
   ]);
 
   let recomputed = 0;

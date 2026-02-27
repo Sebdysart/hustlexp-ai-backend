@@ -397,7 +397,7 @@ export const TaskService = {
       // If instant mode, trigger matching broadcast (async, non-blocking)
       if (instantMode) {
         // Set matched_at timestamp immediately (authority: DB NOW())
-        await db.query<Record<string, any>>(
+        await db.query(
           `UPDATE tasks SET matched_at = NOW() WHERE id = $1`,
           [createdTask.id]
         );

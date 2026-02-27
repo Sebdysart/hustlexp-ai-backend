@@ -151,7 +151,16 @@ async function executeHoldEscrow(payload: any): Promise<{
   };
 }
 
-async function executeReleasePayout(payload: any, lockRow: any): Promise<{
+interface MoneyStateLockRow {
+  task_id: string;
+  current_state: string;
+  amount_cents: number;
+  stripe_payment_intent_id: string | null;
+  stripe_charge_id: string | null;
+  stripe_transfer_id: string | null;
+}
+
+async function executeReleasePayout(payload: any, lockRow: MoneyStateLockRow): Promise<{
   transferId: string;
 }> {
   if (!stripe) throw new Error('Stripe not configured — cannot execute RELEASE_PAYOUT');
@@ -183,7 +192,7 @@ async function executeReleasePayout(payload: any, lockRow: any): Promise<{
   return { transferId: transfer.id };
 }
 
-async function executeRefundEscrow(payload: any, lockRow: any): Promise<{
+async function executeRefundEscrow(payload: any, lockRow: MoneyStateLockRow): Promise<{
   refundId: string;
 }> {
   if (!stripe) throw new Error('Stripe not configured — cannot execute REFUND_ESCROW');
