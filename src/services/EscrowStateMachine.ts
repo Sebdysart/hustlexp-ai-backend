@@ -100,9 +100,15 @@ class EscrowStateMachineClass {
   ): Promise<EscrowTransitionResult> {
     const sql = getSql();
 
+    // Hoisted so the catch block always reports the actual DB state at the
+    // time of failure (not a hardcoded sentinel). Overwritten after the DB
+    // read succeeds; if the read itself throws the sentinel 'pending' is safe
+    // because no state change has occurred yet.
+    let currentState: EscrowState = 'pending';
+
     try {
       // Read current state outside the write transaction so we can validate
-      // before acquiring a serializable lock.
+      // before acquiring the row lock inside the transaction.
       const [lock] = await sql`
         SELECT task_id, current_state, amount_cents
         FROM money_state_lock
@@ -131,7 +137,8 @@ class EscrowStateMachineClass {
         };
       }
 
-      const currentState = lock.current_state as EscrowState;
+      // Update the hoisted variable so the catch block reflects the true state.
+      currentState = lock.current_state as EscrowState;
 
       // Check if terminal
       if (TERMINAL_ESCROW_STATES.includes(currentState)) {
@@ -156,7 +163,13 @@ class EscrowStateMachineClass {
       let xpAwarded = 0;
 
       // ------------------------------------------------------------------
-      // ATOMIC BLOCK: escrow state update + XP award in one serializable tx.
+      // ATOMIC BLOCK: escrow state update + XP award in one transaction.
+      //
+      // Isolation strategy: READ COMMITTED + FOR UPDATE row lock.
+      // The `transaction()` helper uses sql.begin() which defaults to READ
+      // COMMITTED. We acquire an exclusive row lock on money_state_lock as
+      // the FIRST statement, which serialises concurrent transitions for
+      // the same taskId without SERIALIZABLE overhead.
       //
       // If the target is 'released' we must award XP inside the same
       // transaction so that either both writes commit or neither does.
@@ -164,6 +177,14 @@ class EscrowStateMachineClass {
       // for consistency; XP is not awarded in those paths.
       // ------------------------------------------------------------------
       await transaction(async (tx: SqlTx) => {
+        // First: acquire row-level exclusive lock to prevent concurrent
+        // transitions on this taskId from racing under READ COMMITTED.
+        // In production this blocks until any concurrent transaction holding
+        // the lock commits or rolls back.
+        // NOTE: In the test stub db/index.ts, `transaction` is a no-op;
+        //       this statement is validated for correctness at type-check time.
+        await tx`SELECT task_id FROM money_state_lock WHERE task_id = ${taskId} FOR UPDATE`;
+
         // Execute state update
         await tx`
           UPDATE money_state_lock
@@ -196,8 +217,16 @@ class EscrowStateMachineClass {
             // entire transaction, including the escrow state update above.
             const xpResult = await awardXPInTx(taskId, task.assigned_to, tx);
             if (xpResult.success) {
-              xpAwarded = xpResult.xpAwarded;
+              xpAwarded = xpResult.xpAwarded ?? 0;
               logger.info({ taskId, xpAwarded }, 'XP awarded on escrow release');
+            } else if (xpResult.alreadyAwarded) {
+              // XP was already awarded — idempotent re-release, safe to continue.
+              logger.info({ taskId }, 'XP already awarded — idempotent release, continuing');
+            } else {
+              // Real failure (e.g. user not found, task not found). Throw to
+              // trigger transaction rollback so escrow is NOT released without XP.
+              // This enforces INV-1: no money released without XP awarded.
+              throw new Error(`XP award failed: ${xpResult.error ?? 'unknown error'}`);
             }
           }
         }
@@ -220,13 +249,15 @@ class EscrowStateMachineClass {
 
     } catch (error: unknown) {
       logger.error(
-        { escrowId: taskId, targetState, error: getErrorMessage(error) },
+        { escrowId: taskId, targetState, currentState, error: getErrorMessage(error) },
         'COMPENSATING_TX: escrow+XP transaction failed — no funds released, no XP awarded',
       );
       return {
         success: false,
-        previousState: 'pending',
-        newState: 'pending',
+        // Report the actual state the DB was in when failure occurred.
+        // The transaction was rolled back, so the DB is still in currentState.
+        previousState: currentState,
+        newState: currentState,
         error: getErrorMessage(error),
       };
     }

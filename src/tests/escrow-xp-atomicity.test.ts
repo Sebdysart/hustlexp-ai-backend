@@ -117,11 +117,19 @@ describe('EscrowStateMachine escrow+XP atomicity', () => {
     // Track how many times `transaction` is called and capture the callback.
     const capturedCallbacks: Array<(tx: SqlTx) => Promise<unknown>> = [];
 
-    // The UPDATE SET clause has two ternary sub-template calls:
-    //   1. tx`` (empty) — the funded branch (false, targetState !== 'funded')
-    //   2. tx`stripe_transfer_id = ...` — the released branch (true, stripeTransferId set)
-    // Both are evaluated and consume mock slots before the outer tx`UPDATE...` call.
+    // Slot ordering (Fix 3 adds FOR UPDATE SELECT as the FIRST statement):
+    //   0. tx`SELECT ... FOR UPDATE`       — row lock (Fix 3)
+    //   1. tx`` (empty) — funded branch (false, targetState !== 'funded')
+    //   2. tx`stripe_transfer_id = ...` — released branch (stripeTransferId set)
+    //   3. tx`UPDATE money_state_lock...`
+    //   4. tx`INSERT INTO escrow_state_log...`
+    //   5. tx`SELECT assigned_to...`
+    //   6. awardXPInTx → task
+    //   7. awardXPInTx → user
+    //   8. awardXPInTx → INSERT xp_ledger
+    //   9. awardXPInTx → UPDATE users
     const mockTx = (vi.fn()
+      .mockResolvedValueOnce([])                                                        // FOR UPDATE SELECT (Fix 3)
       .mockResolvedValueOnce([])                                                        // tx`` sub-call (funded branch — false)
       .mockResolvedValueOnce([])                                                        // tx`stripe_transfer_id = ...` sub-call
       .mockResolvedValueOnce([])                                                        // tx`UPDATE money_state_lock...`
@@ -166,11 +174,18 @@ describe('EscrowStateMachine escrow+XP atomicity', () => {
     // transaction() to reject, which on a real DB triggers a full rollback.
     let transactionRejected = false;
 
-    // The UPDATE SET clause has two ternary sub-template calls:
-    //   1. tx`` (empty) — the funded branch (false)
-    //   2. tx`stripe_transfer_id = ...` — the released branch (stripeTransferId set)
-    // Both consume mock slots before the outer tx`UPDATE...` call.
+    // Slot ordering (Fix 3 adds FOR UPDATE SELECT as the FIRST statement):
+    //   0. tx`SELECT ... FOR UPDATE`       — row lock (Fix 3)
+    //   1. tx`` sub-call (funded branch — false)
+    //   2. tx`stripe_transfer_id = ...` sub-call
+    //   3. tx`UPDATE money_state_lock...`
+    //   4. tx`INSERT INTO escrow_state_log...`
+    //   5. tx`SELECT assigned_to...`
+    //   6. awardXPInTx → task
+    //   7. awardXPInTx → user
+    //   8. INSERT xp_ledger → throws
     const mockTx = (vi.fn()
+      .mockResolvedValueOnce([])                                                   // FOR UPDATE SELECT (Fix 3)
       .mockResolvedValueOnce([])                                                   // tx`` sub-call (funded branch — false)
       .mockResolvedValueOnce([])                                                   // tx`stripe_transfer_id = ...` sub-call
       .mockResolvedValueOnce([])                                                   // tx`UPDATE money_state_lock...`
@@ -295,5 +310,158 @@ describe('EscrowStateMachine escrow+XP atomicity', () => {
     expect(result.success).toBe(false);
     // The error message from the catch block should be present
     expect(result.error).toContain('Simulated DB failure');
+  });
+
+  // -------------------------------------------------------------------------
+  // Fix 1: Stale previousState/newState in catch block
+  // -------------------------------------------------------------------------
+
+  it('Fix 1: returns previousState:funded (not pending) when a funded escrow fails', async () => {
+    // getSql returns a funded lock; transaction throws to simulate DB failure
+    vi.doMock('../db/index.js', () => ({
+      getSql: () => vi.fn().mockResolvedValue([{
+        task_id: 'task-fix1',
+        current_state: 'funded',
+        amount_cents: 8000,
+      }]),
+      transaction: async (_cb: (tx: SqlTx) => Promise<unknown>) => {
+        throw new Error('Network error during commit');
+      },
+      sql: vi.fn(),
+      safeSql: vi.fn(),
+      isDatabaseAvailable: () => false,
+    }));
+
+    const { EscrowStateMachine } = await import('../services/EscrowStateMachine.js');
+
+    const result = await EscrowStateMachine.transition('task-fix1', 'released');
+
+    expect(result.success).toBe(false);
+    // Must reflect the real DB state (funded), not the hardcoded 'pending' sentinel
+    expect(result.previousState).toBe('funded');
+    expect(result.newState).toBe('funded');
+    expect(result.error).toContain('Network error during commit');
+  });
+
+  it('Fix 1: returns previousState:locked_dispute when a locked_dispute escrow fails', async () => {
+    vi.doMock('../db/index.js', () => ({
+      getSql: () => vi.fn().mockResolvedValue([{
+        task_id: 'task-fix1b',
+        current_state: 'locked_dispute',
+        amount_cents: 8000,
+      }]),
+      transaction: async (_cb: (tx: SqlTx) => Promise<unknown>) => {
+        throw new Error('Serialization failure');
+      },
+      sql: vi.fn(),
+      safeSql: vi.fn(),
+      isDatabaseAvailable: () => false,
+    }));
+
+    const { EscrowStateMachine } = await import('../services/EscrowStateMachine.js');
+
+    const result = await EscrowStateMachine.transition('task-fix1b', 'released');
+
+    expect(result.success).toBe(false);
+    expect(result.previousState).toBe('locked_dispute');
+    expect(result.newState).toBe('locked_dispute');
+  });
+
+  // -------------------------------------------------------------------------
+  // Fix 2a: awardXPInTx real failure causes rollback (previously swallowed)
+  // -------------------------------------------------------------------------
+
+  it('Fix 2a: throws and rolls back when awardXPInTx returns success:false non-idempotent', async () => {
+    let transactionRejected = false;
+
+    const mockTx = (vi.fn()
+      .mockResolvedValueOnce([])                                                   // FOR UPDATE SELECT
+      .mockResolvedValueOnce([])                                                   // tx`` sub-call (funded branch false)
+      .mockResolvedValueOnce([])                                                   // tx`stripe_transfer_id...` sub-call
+      .mockResolvedValueOnce([])                                                   // UPDATE money_state_lock
+      .mockResolvedValueOnce([])                                                   // INSERT escrow_state_log
+      .mockResolvedValueOnce([{ assigned_to: 'hustler-xp-fail' }])                // SELECT assigned_to
+      .mockResolvedValueOnce([])                                                   // awardXPInTx: task not found → []
+      .mockResolvedValue([])) as unknown as SqlTx;
+
+    vi.doMock('../db/index.js', () => ({
+      getSql: () => vi.fn().mockResolvedValue([{
+        task_id: 'task-fix2a',
+        current_state: 'funded',
+        amount_cents: 5000,
+      }]),
+      transaction: async (cb: (tx: SqlTx) => Promise<unknown>) => {
+        try {
+          return await cb(mockTx);
+        } catch (err) {
+          transactionRejected = true;
+          throw err;
+        }
+      },
+      sql: vi.fn(),
+      safeSql: vi.fn(),
+      isDatabaseAvailable: () => false,
+    }));
+
+    const { EscrowStateMachine } = await import('../services/EscrowStateMachine.js');
+
+    // awardXPInTx will return success:false because mockTx returns [] for the
+    // task query, making awardXPInTx return { success: false, alreadyAwarded: false }
+    const result = await EscrowStateMachine.transition('task-fix2a', 'released', {
+      stripeTransferId: 'tr_fix2a',
+    });
+
+    // Must fail — not silently continue
+    expect(result.success).toBe(false);
+    // Error message must mention XP award failure
+    expect(result.error).toMatch(/XP award failed/i);
+    // Transaction was rolled back
+    expect(transactionRejected).toBe(true);
+    // previousState must reflect the real state (funded), not 'pending'
+    expect(result.previousState).toBe('funded');
+    expect(result.newState).toBe('funded');
+  });
+
+  // -------------------------------------------------------------------------
+  // Fix 2b: alreadyAwarded path — idempotent, must NOT cause failure
+  // -------------------------------------------------------------------------
+
+  it('Fix 2b: succeeds when awardXPInTx returns alreadyAwarded:true (idempotent)', async () => {
+    const mockTx = (vi.fn()
+      .mockResolvedValueOnce([])                                                        // FOR UPDATE SELECT
+      .mockResolvedValueOnce([])                                                        // tx`` sub-call (funded branch false)
+      .mockResolvedValueOnce([])                                                        // tx`stripe_transfer_id...` sub-call
+      .mockResolvedValueOnce([])                                                        // UPDATE money_state_lock
+      .mockResolvedValueOnce([])                                                        // INSERT escrow_state_log
+      .mockResolvedValueOnce([{ assigned_to: 'hustler-idem' }])                        // SELECT assigned_to
+      .mockResolvedValueOnce([{ id: 'task-idem', price: 100, state: 'completed' }])    // awardXPInTx → task
+      .mockResolvedValueOnce([{ id: 'hustler-idem', xp: 500, level: 3, streak: 5 }])  // awardXPInTx → user
+      // Simulate the UNIQUE violation (code 23505) so awardXPInTx returns alreadyAwarded:true
+      .mockRejectedValueOnce(Object.assign(new Error('duplicate key value'), { code: '23505' }))
+      .mockResolvedValue([])) as unknown as SqlTx;
+
+    vi.doMock('../db/index.js', () => ({
+      getSql: () => vi.fn().mockResolvedValue([{
+        task_id: 'task-idem',
+        current_state: 'funded',
+        amount_cents: 10000,
+      }]),
+      transaction: async (cb: (tx: SqlTx) => Promise<unknown>) => cb(mockTx),
+      sql: vi.fn(),
+      safeSql: vi.fn(),
+      isDatabaseAvailable: () => false,
+    }));
+
+    const { EscrowStateMachine } = await import('../services/EscrowStateMachine.js');
+
+    const result = await EscrowStateMachine.transition('task-idem', 'released', {
+      stripeTransferId: 'tr_idem',
+    });
+
+    // Must succeed — alreadyAwarded is idempotent
+    expect(result.success).toBe(true);
+    expect(result.newState).toBe('released');
+    // xpAwarded is 0 because no new XP was granted (already existed)
+    expect(result.xpAwarded).toBe(0);
   });
 });
