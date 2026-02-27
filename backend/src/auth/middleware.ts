@@ -4,6 +4,7 @@ import { Context } from "hono";
 import { adminAuth } from "./firebase";
 import { redis, CACHE_KEYS } from "../cache/redis";
 import { authLogger } from "../logger";
+import { TOKEN_CACHE_TTL_SECONDS, REVOCATION_MARKER_TTL_SECONDS } from "./constants.js";
 
 export interface AuthenticatedUser {
   uid: string;
@@ -59,11 +60,11 @@ export async function authenticateRequest(
       name: decoded.name || undefined,
     };
 
-    // Cache session for 5 mins (TOKEN_CACHE_TTL) — reduces revocation window to ≤5 min
+    // Cache session for 5 mins (TOKEN_CACHE_TTL_SECONDS) — reduces revocation window to ≤5 min
     await redis.set(
       CACHE_KEYS.sessionToken(token),
       JSON.stringify(user),
-      5 * 60
+      TOKEN_CACHE_TTL_SECONDS
     );
 
     return user;
@@ -100,6 +101,6 @@ export async function requireAuth(c: Context): Promise<AuthenticatedUser> {
  * to be invalidated on next use.
  */
 export async function revokeUserSessions(uid: string): Promise<void> {
-  await redis.set(REVOKED_KEY(uid), new Date().toISOString(), 6 * 60); // 6 min (> 5 min cache TTL)
+  await redis.set(REVOKED_KEY(uid), new Date().toISOString(), REVOCATION_MARKER_TTL_SECONDS); // 6 min (> 5 min cache TTL)
   authLogger.info({ uid }, "User sessions revoked");
 }

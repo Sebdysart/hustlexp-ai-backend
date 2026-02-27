@@ -44,7 +44,7 @@ import { checkRateLimit, isRateLimitingEnabled, testRedisConnection } from './mi
 import { validateEnv, logEnvStatus } from './utils/envValidator.js';
 import { validateConfig } from './config.js';
 import { runHealthCheck, quickHealthCheck } from './utils/healthCheck.js';
-import { requireAuth, optionalAuth, isAuthEnabled } from './middleware/firebaseAuth.js';
+import { requireAuth, optionalAuth, isAuthEnabled, requireFreshToken } from './middleware/firebaseAuth.js';
 import { DatabaseHealthService } from './services/DatabaseHealthService.js';
 import disputeRoutes from './routes/disputes.js';
 import debugRoutes from './routes/debug.js';
@@ -3140,7 +3140,7 @@ const CreateConnectAccountSchema = z.object({
 });
 
 // Create Stripe Connect account for hustler - HUSTLER ONLY (own account)
-fastify.post('/api/stripe/connect/create', { preHandler: [requireRole('hustler')] }, async (request, reply) => {
+fastify.post('/api/stripe/connect/create', { preHandler: [requireRole('hustler'), requireFreshToken] }, async (request, reply) => {
     try {
         if (!request.user) {
             reply.status(401);
@@ -3292,7 +3292,7 @@ function packRefundContext(task: TaskWithEscrowShape, amount: number, reason?: s
 }
 
 // Create escrow hold when task is accepted - POSTER ONLY
-fastify.post('/api/escrow/create', { preHandler: [requireRole('poster')] }, async (request, reply) => {
+fastify.post('/api/escrow/create', { preHandler: [requireRole('poster'), requireFreshToken] }, async (request, reply) => {
     try {
         if (!request.user) {
             reply.status(401);
@@ -3351,7 +3351,7 @@ const RefundSchema = z.object({
 });
 
 // Refund escrow (task cancelled) - POSTER (held) or ADMIN (any)
-fastify.post('/api/escrow/:taskId/refund', { preHandler: [requireAuth] }, async (request, reply) => {
+fastify.post('/api/escrow/:taskId/refund', { preHandler: [requireAuth, requireFreshToken] }, async (request, reply) => {
     if (!request.user) {
         reply.status(401);
         return { error: 'Authentication required' };
@@ -3587,7 +3587,7 @@ fastify.post('/api/tasks/:taskId/reject', { preHandler: [requireRole('poster')] 
 });
 
 // Get real payout history for a hustler - HUSTLER ONLY (own payouts)
-fastify.get('/api/payouts/:hustlerId', { preHandler: [requireAuth] }, async (request, reply) => {
+fastify.get('/api/payouts/:hustlerId', { preHandler: [requireAuth, requireFreshToken] }, async (request, reply) => {
     if (!request.user) {
         reply.status(401);
         return { error: 'Authentication required' };
@@ -3612,7 +3612,7 @@ fastify.get('/api/payouts/:hustlerId', { preHandler: [requireAuth] }, async (req
 });
 
 // Get single payout details - AUTH REQUIRED (own payout or related party)
-fastify.get('/api/payouts/detail/:payoutId', { preHandler: [requireAuth] }, async (request, reply) => {
+fastify.get('/api/payouts/detail/:payoutId', { preHandler: [requireAuth, requireFreshToken] }, async (request, reply) => {
     if (!request.user) {
         reply.status(401);
         return { error: 'Authentication required' };
@@ -3675,7 +3675,7 @@ fastify.post('/api/stripe/webhook', {
 // ============================================
 
 // Get TPEE stats
-fastify.get('/api/admin/tpee/stats', { preHandler: [requireAdminFromJWT] }, async (request, reply) => {
+fastify.get('/api/admin/tpee/stats', { preHandler: [requireAdminFromJWT, requireFreshToken] }, async (request, reply) => {
     const stats = TPEEService.getStats();
     return {
         success: true,
@@ -3685,7 +3685,7 @@ fastify.get('/api/admin/tpee/stats', { preHandler: [requireAdminFromJWT] }, asyn
 });
 
 // Get recent TPEE logs
-fastify.get('/api/admin/tpee/logs', { preHandler: [requireAdminFromJWT] }, async (request) => {
+fastify.get('/api/admin/tpee/logs', { preHandler: [requireAdminFromJWT, requireFreshToken] }, async (request) => {
     const { limit } = request.query as { limit?: string };
     const logs = TPEEService.getRecentLogs(limit ? parseInt(limit) : 50);
     return {
@@ -3696,7 +3696,7 @@ fastify.get('/api/admin/tpee/logs', { preHandler: [requireAdminFromJWT] }, async
 });
 
 // Toggle shadow mode (admin only, dangerous)
-fastify.post('/api/admin/tpee/shadow-mode', { preHandler: [requireAdminFromJWT] }, async (request, reply) => {
+fastify.post('/api/admin/tpee/shadow-mode', { preHandler: [requireAdminFromJWT, requireFreshToken] }, async (request, reply) => {
     const { enabled } = request.body as { enabled: boolean };
 
     if (typeof enabled !== 'boolean') {
@@ -3719,7 +3719,7 @@ fastify.post('/api/admin/tpee/shadow-mode', { preHandler: [requireAdminFromJWT] 
 import { TaskOutcomeService } from './services/TaskOutcomeService.js';
 
 // Get TPEE decision quality report
-fastify.get('/api/admin/tpee/decision-quality', { preHandler: [requireAdminFromJWT] }, async () => {
+fastify.get('/api/admin/tpee/decision-quality', { preHandler: [requireAdminFromJWT, requireFreshToken] }, async () => {
     const report = await TaskOutcomeService.getTPEEDecisionQualityReport();
     return {
         success: true,
@@ -3728,7 +3728,7 @@ fastify.get('/api/admin/tpee/decision-quality', { preHandler: [requireAdminFromJ
 });
 
 // Get blocked user outcome analysis
-fastify.get('/api/admin/tpee/blocked-user-analysis', { preHandler: [requireAdminFromJWT] }, async () => {
+fastify.get('/api/admin/tpee/blocked-user-analysis', { preHandler: [requireAdminFromJWT, requireFreshToken] }, async () => {
     const analysis = await TaskOutcomeService.getBlockedUserOutcomeAnalysis();
     return {
         success: true,
@@ -3740,7 +3740,7 @@ fastify.get('/api/admin/tpee/blocked-user-analysis', { preHandler: [requireAdmin
 import { TPEEAIEscalation } from './services/TPEEAIEscalation.js';
 
 // Get AI escalation status
-fastify.get('/api/admin/tpee/ai/status', { preHandler: [requireAdminFromJWT] }, async () => {
+fastify.get('/api/admin/tpee/ai/status', { preHandler: [requireAdminFromJWT, requireFreshToken] }, async () => {
     return {
         success: true,
         status: TPEEAIEscalation.getStatus(),
@@ -3748,7 +3748,7 @@ fastify.get('/api/admin/tpee/ai/status', { preHandler: [requireAdminFromJWT] }, 
 });
 
 // Toggle pricing classifier
-fastify.post('/api/admin/tpee/ai/pricing-classifier', { preHandler: [requireAdminFromJWT] }, async (request, reply) => {
+fastify.post('/api/admin/tpee/ai/pricing-classifier', { preHandler: [requireAdminFromJWT, requireFreshToken] }, async (request, reply) => {
     const { enabled } = request.body as { enabled: boolean };
     if (typeof enabled !== 'boolean') {
         reply.status(400);
@@ -3759,7 +3759,7 @@ fastify.post('/api/admin/tpee/ai/pricing-classifier', { preHandler: [requireAdmi
 });
 
 // Toggle scam classifier
-fastify.post('/api/admin/tpee/ai/scam-classifier', { preHandler: [requireAdminFromJWT] }, async (request, reply) => {
+fastify.post('/api/admin/tpee/ai/scam-classifier', { preHandler: [requireAdminFromJWT, requireFreshToken] }, async (request, reply) => {
     const { enabled } = request.body as { enabled: boolean };
     if (typeof enabled !== 'boolean') {
         reply.status(400);
@@ -3770,7 +3770,7 @@ fastify.post('/api/admin/tpee/ai/scam-classifier', { preHandler: [requireAdminFr
 });
 
 // Master switch for AI escalation
-fastify.post('/api/admin/tpee/ai/escalation', { preHandler: [requireAdminFromJWT] }, async (request, reply) => {
+fastify.post('/api/admin/tpee/ai/escalation', { preHandler: [requireAdminFromJWT, requireFreshToken] }, async (request, reply) => {
     const { enabled } = request.body as { enabled: boolean };
     if (typeof enabled !== 'boolean') {
         reply.status(400);
@@ -3792,7 +3792,7 @@ import { requireRole, requireAdminFromJWT } from './middleware/firebaseAuth.js';
 // the admin claim from the cryptographically signed JWT, NOT from DB.
 
 // List disputes with filters
-fastify.get('/api/admin/disputes', { preHandler: [requireAdminFromJWT] }, async (request) => {
+fastify.get('/api/admin/disputes', { preHandler: [requireAdminFromJWT, requireFreshToken] }, async (request) => {
     const { status, posterId, hustlerId, limit } = request.query as {
         status?: DisputeStatus;
         posterId?: string;
@@ -3815,7 +3815,7 @@ fastify.get('/api/admin/disputes', { preHandler: [requireAdminFromJWT] }, async 
 });
 
 // Get single dispute with full details
-fastify.get('/api/admin/disputes/:disputeId', { preHandler: [requireAdminFromJWT] }, async (request, reply) => {
+fastify.get('/api/admin/disputes/:disputeId', { preHandler: [requireAdminFromJWT, requireFreshToken] }, async (request, reply) => {
     const { disputeId } = request.params as { disputeId: string };
     const dispute = await DisputeService.getDispute(disputeId);
 
@@ -3849,7 +3849,7 @@ const ResolveDisputeSchema = z.object({
     splitAmountPoster: z.number().optional(),
 });
 
-fastify.post('/api/admin/disputes/:disputeId/resolve', { preHandler: [requireAdminFromJWT] }, async (request, reply) => {
+fastify.post('/api/admin/disputes/:disputeId/resolve', { preHandler: [requireAdminFromJWT, requireFreshToken] }, async (request, reply) => {
     try {
         const { disputeId } = request.params as { disputeId: string };
         const body = ResolveDisputeSchema.parse(request.body);
@@ -3884,7 +3884,7 @@ fastify.post('/api/admin/disputes/:disputeId/resolve', { preHandler: [requireAdm
 });
 
 // Get moderation logs with filters
-fastify.get('/api/admin/moderation/logs', { preHandler: [requireAdminFromJWT] }, async (request) => {
+fastify.get('/api/admin/moderation/logs', { preHandler: [requireAdminFromJWT, requireFreshToken] }, async (request) => {
     const { userId, taskId, type, severity, limit } = request.query as {
         userId?: string;
         taskId?: string;
@@ -3911,7 +3911,7 @@ fastify.get('/api/admin/moderation/logs', { preHandler: [requireAdminFromJWT] },
 });
 
 // Get user strikes
-fastify.get('/api/admin/user/:userId/strikes', { preHandler: [requireAdminFromJWT] }, async (request) => {
+fastify.get('/api/admin/user/:userId/strikes', { preHandler: [requireAdminFromJWT, requireFreshToken] }, async (request) => {
     const { userId } = request.params as { userId: string };
     const strikes = await DisputeService.getUserStrikes(userId);
     const suspension = await DisputeService.isUserSuspended(userId);
@@ -3930,7 +3930,7 @@ const AddStrikeSchema = z.object({
     taskId: z.string().optional(),
 });
 
-fastify.post('/api/admin/user/:userId/strikes', { preHandler: [requireAdminFromJWT] }, async (request, reply) => {
+fastify.post('/api/admin/user/:userId/strikes', { preHandler: [requireAdminFromJWT, requireFreshToken] }, async (request, reply) => {
     try {
         const { userId } = request.params as { userId: string };
         const body = AddStrikeSchema.parse(request.body);
@@ -3961,7 +3961,7 @@ fastify.post('/api/admin/user/:userId/strikes', { preHandler: [requireAdminFromJ
 });
 
 // Unsuspend user (admin)
-fastify.post('/api/admin/user/:userId/unsuspend', { preHandler: [requireAdminFromJWT] }, async (request, reply) => {
+fastify.post('/api/admin/user/:userId/unsuspend', { preHandler: [requireAdminFromJWT, requireFreshToken] }, async (request, reply) => {
     const { userId } = request.params as { userId: string };
     const adminId = (request as { user?: { uid?: string } }).user?.uid || 'admin';
 
@@ -3976,7 +3976,7 @@ fastify.post('/api/admin/user/:userId/unsuspend', { preHandler: [requireAdminFro
 });
 
 // DEBUG: Restore Connect account mapping manually (Admin only)
-fastify.post('/api/admin/debug/link-connect', { preHandler: [requireAdminFromJWT] }, async (request, reply) => {
+fastify.post('/api/admin/debug/link-connect', { preHandler: [requireAdminFromJWT, requireFreshToken] }, async (request, reply) => {
     const { userId, accountId } = request.body as { userId: string; accountId: string };
     await StripeService.setConnectAccountId(userId, accountId);
     return { success: true, message: `Linked ${userId} to ${accountId}` };
@@ -3989,7 +3989,7 @@ fastify.get('/api/user/:userId/suspension', async (request) => {
 });
 
 // Safety stats (admin)
-fastify.get('/api/admin/safety/stats', { preHandler: [requireAdminFromJWT] }, async () => {
+fastify.get('/api/admin/safety/stats', { preHandler: [requireAdminFromJWT, requireFreshToken] }, async () => {
     return {
         moderation: SafetyService.getStats(),
         disputes: await DisputeService.getStats(),
@@ -4012,7 +4012,7 @@ function parseDateRange(query: { since?: string; until?: string }): { since?: Da
 }
 
 // Get global funnel metrics
-fastify.get('/api/admin/metrics/funnel', { preHandler: [requireAdminFromJWT] }, async (request) => {
+fastify.get('/api/admin/metrics/funnel', { preHandler: [requireAdminFromJWT, requireFreshToken] }, async (request) => {
     const range = parseDateRange(request.query as { since?: string; until?: string });
     const funnel = MetricsService.getGlobalFunnel(range);
 
@@ -4026,7 +4026,7 @@ fastify.get('/api/admin/metrics/funnel', { preHandler: [requireAdminFromJWT] }, 
 });
 
 // Get zone health metrics
-fastify.get('/api/admin/metrics/zones', { preHandler: [requireAdminFromJWT] }, async (request) => {
+fastify.get('/api/admin/metrics/zones', { preHandler: [requireAdminFromJWT, requireFreshToken] }, async (request) => {
     const range = parseDateRange(request.query as { since?: string; until?: string });
     const zones = MetricsService.getZoneHealth(range);
 
@@ -4041,7 +4041,7 @@ fastify.get('/api/admin/metrics/zones', { preHandler: [requireAdminFromJWT] }, a
 });
 
 // Get AI metrics summary
-fastify.get('/api/admin/metrics/ai', { preHandler: [requireAdminFromJWT] }, async (request) => {
+fastify.get('/api/admin/metrics/ai', { preHandler: [requireAdminFromJWT, requireFreshToken] }, async (request) => {
     const range = parseDateRange(request.query as { since?: string; until?: string });
     const summary = MetricsService.getAIMetricsSummary(range);
 
@@ -4064,7 +4064,7 @@ fastify.get('/api/admin/metrics/ai', { preHandler: [requireAdminFromJWT] }, asyn
 });
 
 // Get hustler earnings summary
-fastify.get('/api/admin/metrics/hustler/:userId', { preHandler: [requireAdminFromJWT] }, async (request) => {
+fastify.get('/api/admin/metrics/hustler/:userId', { preHandler: [requireAdminFromJWT, requireFreshToken] }, async (request) => {
     const { userId } = request.params as { userId: string };
     const range = parseDateRange(request.query as { since?: string; until?: string });
 
@@ -4080,7 +4080,7 @@ fastify.get('/api/admin/metrics/hustler/:userId', { preHandler: [requireAdminFro
 });
 
 // Get events log (paginated)
-fastify.get('/api/admin/events', { preHandler: [requireAdminFromJWT] }, async (request) => {
+fastify.get('/api/admin/events', { preHandler: [requireAdminFromJWT, requireFreshToken] }, async (request) => {
     const { eventType, userId, taskId, source, limit } = request.query as {
         eventType?: EventType;
         userId?: string;
@@ -4107,12 +4107,12 @@ fastify.get('/api/admin/events', { preHandler: [requireAdminFromJWT] }, async (r
 });
 
 // Get overall stats dashboard
-fastify.get('/api/admin/metrics/overview', { preHandler: [requireAdminFromJWT] }, async () => {
+fastify.get('/api/admin/metrics/overview', { preHandler: [requireAdminFromJWT, requireFreshToken] }, async () => {
     return MetricsService.getOverallStats();
 });
 
 // Get sample data for documentation
-fastify.get('/api/admin/metrics/samples', { preHandler: [requireAdminFromJWT] }, async () => {
+fastify.get('/api/admin/metrics/samples', { preHandler: [requireAdminFromJWT, requireFreshToken] }, async () => {
     return {
         sampleEvent: EventLogger.getSampleEvent(),
         sampleAIMetric: MetricsService.getSampleAIMetric(),
@@ -4133,34 +4133,34 @@ import { getProviderHealth, getAllCircuitStates, resetCircuit } from './utils/re
 // --- Background Jobs ---
 
 // Daily maintenance job
-fastify.post('/api/admin/jobs/run/daily-maintenance', { preHandler: [requireAdminFromJWT] }, async () => {
+fastify.post('/api/admin/jobs/run/daily-maintenance', { preHandler: [requireAdminFromJWT, requireFreshToken] }, async () => {
     return JobController.runDailyMaintenance();
 });
 
 // Weekly maintenance job
-fastify.post('/api/admin/jobs/run/weekly-maintenance', { preHandler: [requireAdminFromJWT] }, async () => {
+fastify.post('/api/admin/jobs/run/weekly-maintenance', { preHandler: [requireAdminFromJWT, requireFreshToken] }, async () => {
     return JobController.runWeeklyMaintenance();
 });
 
 // Hourly health check
-fastify.post('/api/admin/jobs/run/hourly-health', { preHandler: [requireAdminFromJWT] }, async () => {
+fastify.post('/api/admin/jobs/run/hourly-health', { preHandler: [requireAdminFromJWT, requireFreshToken] }, async () => {
     return JobController.runHourlyHealth();
 });
 
 // Get job history
-fastify.get('/api/admin/jobs/history', { preHandler: [requireAdminFromJWT] }, async (request) => {
+fastify.get('/api/admin/jobs/history', { preHandler: [requireAdminFromJWT, requireFreshToken] }, async (request) => {
     const { limit } = request.query as { limit?: string };
     return { jobs: JobController.getJobHistory(limit ? parseInt(limit) : 20) };
 });
 
 // Get daily metrics snapshots
-fastify.get('/api/admin/metrics/daily', { preHandler: [requireAdminFromJWT] }, async (request) => {
+fastify.get('/api/admin/metrics/daily', { preHandler: [requireAdminFromJWT, requireFreshToken] }, async (request) => {
     const { cityId, limit } = request.query as { cityId?: string; limit?: string };
     return { snapshots: JobController.getDailySnapshots({ cityId, limit: limit ? parseInt(limit) : 30 }) };
 });
 
 // Get weekly metrics snapshots
-fastify.get('/api/admin/metrics/weekly', { preHandler: [requireAdminFromJWT] }, async (request) => {
+fastify.get('/api/admin/metrics/weekly', { preHandler: [requireAdminFromJWT, requireFreshToken] }, async (request) => {
     const { cityId, limit } = request.query as { cityId?: string; limit?: string };
     return { snapshots: JobController.getWeeklySnapshots({ cityId, limit: limit ? parseInt(limit) : 12 }) };
 });
@@ -4168,12 +4168,12 @@ fastify.get('/api/admin/metrics/weekly', { preHandler: [requireAdminFromJWT] }, 
 // --- City & Zone Config ---
 
 // Get all active cities
-fastify.get('/api/admin/cities', { preHandler: [requireAdminFromJWT] }, async () => {
+fastify.get('/api/admin/cities', { preHandler: [requireAdminFromJWT, requireFreshToken] }, async () => {
     return { cities: CityService.getActiveCities(), stats: CityService.getCoverageStats() };
 });
 
 // Get zones for a city
-fastify.get('/api/admin/cities/:cityId/zones', { preHandler: [requireAdminFromJWT] }, async (request) => {
+fastify.get('/api/admin/cities/:cityId/zones', { preHandler: [requireAdminFromJWT, requireFreshToken] }, async (request) => {
     const { cityId } = request.params as { cityId: string };
     return { zones: CityService.getZonesForCity(cityId) };
 });
@@ -4187,13 +4187,13 @@ fastify.post('/api/location/resolve', async (request) => {
 // --- Marketplace Rules ---
 
 // Get all rules for a city
-fastify.get('/api/admin/rules/:cityId', { preHandler: [requireAdminFromJWT] }, async (request) => {
+fastify.get('/api/admin/rules/:cityId', { preHandler: [requireAdminFromJWT, requireFreshToken] }, async (request) => {
     const { cityId } = request.params as { cityId: string };
     return { rules: RulesService.getAllRules(cityId), sample: RulesService.getSampleRuleRow() };
 });
 
 // Set a rule
-fastify.post('/api/admin/rules/:cityId', { preHandler: [requireAdminFromJWT] }, async (request, reply) => {
+fastify.post('/api/admin/rules/:cityId', { preHandler: [requireAdminFromJWT, requireFreshToken] }, async (request, reply) => {
     const { cityId } = request.params as { cityId: string };
     const { key, value } = request.body as { key: string; value: unknown };
 
@@ -4209,7 +4209,7 @@ fastify.post('/api/admin/rules/:cityId', { preHandler: [requireAdminFromJWT] }, 
 // --- Feature Flags ---
 
 // Get all flags
-fastify.get('/api/admin/flags', { preHandler: [requireAdminFromJWT] }, async () => {
+fastify.get('/api/admin/flags', { preHandler: [requireAdminFromJWT, requireFreshToken] }, async () => {
     return { flags: FeatureFlagService.getAllFlags() };
 });
 
@@ -4221,14 +4221,14 @@ fastify.get('/api/flags/:key', async (request) => {
 });
 
 // Toggle flag (admin)
-fastify.post('/api/admin/flags/:key/toggle', { preHandler: [requireAdminFromJWT] }, async (request) => {
+fastify.post('/api/admin/flags/:key/toggle', { preHandler: [requireAdminFromJWT, requireFreshToken] }, async (request) => {
     const { key } = request.params as { key: string };
     const enabled = FeatureFlagService.toggleFlag(key);
     return { key, enabled };
 });
 
 // Set city override
-fastify.post('/api/admin/flags/:key/city-override', { preHandler: [requireAdminFromJWT] }, async (request, reply) => {
+fastify.post('/api/admin/flags/:key/city-override', { preHandler: [requireAdminFromJWT, requireFreshToken] }, async (request, reply) => {
     const { key } = request.params as { key: string };
     const { cityId, enabled } = request.body as { cityId: string; enabled: boolean };
 
@@ -4244,12 +4244,12 @@ fastify.post('/api/admin/flags/:key/city-override', { preHandler: [requireAdminF
 // --- Reliability & Health ---
 
 // Get provider health
-fastify.get('/api/admin/health/providers', { preHandler: [requireAdminFromJWT] }, async () => {
+fastify.get('/api/admin/health/providers', { preHandler: [requireAdminFromJWT, requireFreshToken] }, async () => {
     return { providers: getProviderHealth(), circuits: getAllCircuitStates() };
 });
 
 // Reset a circuit breaker
-fastify.post('/api/admin/health/reset-circuit/:provider', { preHandler: [requireAdminFromJWT] }, async (request) => {
+fastify.post('/api/admin/health/reset-circuit/:provider', { preHandler: [requireAdminFromJWT, requireFreshToken] }, async (request) => {
     const { provider } = request.params as { provider: string };
     resetCircuit(provider);
     return { success: true, provider, message: 'Circuit reset' };
@@ -4315,7 +4315,7 @@ fastify.post('/api/beta/consume-invite', { preHandler: [requireAuth] }, async (r
 // --- Admin Beta Management ---
 
 // Create invite code
-fastify.post('/api/admin/beta/invites', { preHandler: [requireAdminFromJWT] }, async (request) => {
+fastify.post('/api/admin/beta/invites', { preHandler: [requireAdminFromJWT, requireFreshToken] }, async (request) => {
     const { code, role, cityId, maxUses, expiresAt } = request.body as {
         code: string;
         role: 'hustler' | 'poster' | 'both';
@@ -4339,7 +4339,7 @@ fastify.post('/api/admin/beta/invites', { preHandler: [requireAdminFromJWT] }, a
 });
 
 // List all invites
-fastify.get('/api/admin/beta/invites', { preHandler: [requireAdminFromJWT] }, async () => {
+fastify.get('/api/admin/beta/invites', { preHandler: [requireAdminFromJWT, requireFreshToken] }, async () => {
     return {
         invites: InviteService.getAllInvites(),
         sample: InviteService.getSampleRow(),
@@ -4347,7 +4347,7 @@ fastify.get('/api/admin/beta/invites', { preHandler: [requireAdminFromJWT] }, as
 });
 
 // Get city capacity stats
-fastify.get('/api/admin/beta/city-stats/:cityId', { preHandler: [requireAdminFromJWT] }, async (request) => {
+fastify.get('/api/admin/beta/city-stats/:cityId', { preHandler: [requireAdminFromJWT, requireFreshToken] }, async (request) => {
     const { cityId } = request.params as { cityId: string };
     return InviteService.getCityStats(cityId);
 });
@@ -4355,12 +4355,12 @@ fastify.get('/api/admin/beta/city-stats/:cityId', { preHandler: [requireAdminFro
 // --- Admin Notifications ---
 
 // Get notification stats
-fastify.get('/api/admin/notifications/stats', { preHandler: [requireAdminFromJWT] }, async () => {
+fastify.get('/api/admin/notifications/stats', { preHandler: [requireAdminFromJWT, requireFreshToken] }, async () => {
     return NotificationService.getStats();
 });
 
 // List notifications
-fastify.get('/api/admin/notifications', { preHandler: [requireAdminFromJWT] }, async (request) => {
+fastify.get('/api/admin/notifications', { preHandler: [requireAdminFromJWT, requireFreshToken] }, async (request) => {
     const { type, status, limit } = request.query as {
         type?: string;
         status?: 'pending' | 'sent' | 'failed';
@@ -4390,7 +4390,7 @@ fastify.get('/api/notifications', { preHandler: [requireAuth] }, async (request)
 // --- Admin Users (extended) ---
 
 // Force complete a task
-fastify.post('/api/admin/tasks/:taskId/force-complete', { preHandler: [requireAdminFromJWT] }, async (request) => {
+fastify.post('/api/admin/tasks/:taskId/force-complete', { preHandler: [requireAdminFromJWT, requireFreshToken] }, async (request) => {
     const { taskId } = request.params as { taskId: string };
     const { reason } = request.body as { reason?: string };
     const adminId = request.user?.uid ?? 'system';
@@ -4406,7 +4406,7 @@ fastify.post('/api/admin/tasks/:taskId/force-complete', { preHandler: [requireAd
 });
 
 // Force refund a task
-fastify.post('/api/admin/tasks/:taskId/force-refund', { preHandler: [requireAdminFromJWT] }, async (request) => {
+fastify.post('/api/admin/tasks/:taskId/force-refund', { preHandler: [requireAdminFromJWT, requireFreshToken] }, async (request) => {
     const { taskId } = request.params as { taskId: string };
     const { reason } = request.body as { reason?: string };
     const adminId = request.user?.uid ?? 'system';
@@ -4424,7 +4424,7 @@ fastify.post('/api/admin/tasks/:taskId/force-refund', { preHandler: [requireAdmi
 });
 
 // Get AI routing config
-fastify.get('/api/admin/ai/routes', { preHandler: [requireAdminFromJWT] }, async () => {
+fastify.get('/api/admin/ai/routes', { preHandler: [requireAdminFromJWT, requireFreshToken] }, async () => {
     return {
         routes: {
             safety: 'openai',

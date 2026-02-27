@@ -51,6 +51,7 @@ function ensureFirebase(): ReturnType<typeof getAuth> | null {
 // No external dependency required; shared across requests in one process.
 // ---------------------------------------------------------------------------
 
+// NOTE: Keep in sync with backend/src/auth/constants.ts TOKEN_CACHE_TTL_SECONDS
 /** Cache TTL for verified tokens.  ≤5 min keeps the revocation window tight. */
 export const TOKEN_CACHE_TTL = 5 * 60; // 5 minutes (300 seconds)
 
@@ -290,10 +291,11 @@ export async function requireFreshToken(
     return reply.status(401).send({ error: 'Unauthorized', code: 'HX_AUTH_REQUIRED' });
   }
 
-  const token = request.headers.authorization?.split('Bearer ')[1];
-  if (!token) {
-    return reply.status(401).send({ error: 'No token provided', code: 'HX_AUTH_NO_TOKEN' });
+  const authorization = request.headers.authorization;
+  if (!authorization?.startsWith('Bearer ')) {
+    return reply.status(401).send({ error: 'No bearer token', code: 'HX_AUTH_NO_TOKEN' });
   }
+  const token = authorization.slice(7).trim();
 
   const auth = ensureFirebase();
   if (!auth) {
