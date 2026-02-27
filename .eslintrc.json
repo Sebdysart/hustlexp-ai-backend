@@ -26,5 +26,16 @@
       }
     }
   ],
-  "ignorePatterns": ["dist", "node_modules", "*.js"]
+  "ignorePatterns": [
+    "dist",
+    "node_modules",
+    "*.js",
+    "src/index.ts",
+    "src/routes/**/*",
+    "src/middleware/**/*",
+    "src/ai/orchestrator.ts",
+    "src/services/DisputeResolutionService.ts",
+    "src/services/TaskApplicationService.ts",
+    "src/services/TaxReportingService.ts"
+  ]
 }

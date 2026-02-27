@@ -20,14 +20,55 @@
  *       matches the postgres.js tagged-template function signature.
  */
 
-export const getSql = () => {};
-export const transaction = async () => {};
-export const safeSql = () => {};
-export const sql = () => {};
-export const isDatabaseAvailable = () => false;
+/* eslint-disable @typescript-eslint/no-explicit-any */
 
 /**
  * Type alias for a postgres.js tagged-template transaction callback parameter.
  * Use in service methods that accept a transaction: `async (tx: SqlTx) => { ... }`
+ *
+ * NOTE: Using `any[]` matches the postgres.js runtime behaviour where row shapes
+ * are determined at query time. Strict types require explicit generic parameters
+ * which are not used in this legacy src/ layer.
+ *
+ * The overload signatures support:
+ * - Tagged template: tx`SELECT ...` (TemplateStringsArray as first arg)
+ * - Helper syntax:   tx(values) for array interpolation in postgres.js
  */
-export type SqlTx = (strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown[]>;
+export interface SqlTx {
+  (strings: TemplateStringsArray, ...values: unknown[]): Promise<any[]>;
+  (values: unknown[]): any;
+}
+
+// Tagged-template stub that returns an empty array
+function taggedTemplate(
+  strings: TemplateStringsArray | unknown[],
+  ..._values: unknown[]
+): Promise<any[]> | any {
+  if (Array.isArray(strings) && !('raw' in (strings as object))) {
+    // Helper call: sql(array) — return the array as-is (postgres.js interpolation)
+    return strings;
+  }
+  // Tagged template call: sql`...`
+  return Promise.resolve([]);
+}
+
+// Extend with postgres.js extras used by some services
+interface SqlTemplate extends SqlTx {
+  unsafe: (query: string, params?: unknown[]) => Promise<any[]>;
+}
+
+const extendedSql: SqlTemplate = Object.assign(taggedTemplate as unknown as SqlTemplate, {
+  unsafe: async (_query: string, _params?: unknown[]) => [] as any[],
+});
+
+export const sql: SqlTemplate = extendedSql;
+export const safeSql: SqlTemplate = extendedSql;
+export const getSql = (): SqlTemplate => extendedSql;
+export const isDatabaseAvailable = (): boolean => false;
+export const testConnection = async (): Promise<boolean> => false;
+
+export const transaction = async <T>(
+  callback: (tx: SqlTx) => Promise<T>
+): Promise<T> => {
+  return callback(taggedTemplate as unknown as SqlTx);
+};

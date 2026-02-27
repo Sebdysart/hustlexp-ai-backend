@@ -33,8 +33,10 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
       - run: npm ci
-      - name: "TypeScript — zero errors"
+      - name: "TypeScript — zero errors (backend/src/)"
         run: npx tsc --noEmit
+      - name: "TypeScript — zero errors (src/)"
+        run: npx tsc -p src/tsconfig.json --noEmit
 
   lint:
     name: "Lint — zero warnings (src/ + backend/src/)"
@@ -71,7 +73,7 @@ jobs:
         timeout-minutes: 10
 
   audit:
-    name: "Security audit — no high/critical vulnerabilities"
+    name: "Security audit — no NEW high/critical vulnerabilities"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -80,16 +82,79 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
       - run: npm ci
-      - name: "Security audit — no high/critical vulnerabilities"
-        # Known vulnerabilities requiring --force (breaking changes) to fix:
-        # - @modelcontextprotocol/sdk GHSA-345p-7cg4-v4c7 (high)
-        # - @trpc/server GHSA-43p4-m455-4f4j (high) — pinned at 11.7.1
-        # - fast-xml-parser GHSA-37qj-frw5-hhjh et al. (critical) — via @aws-sdk
-        # - hono GHSA-3vhc-576x-3qv4 et al. (high) — pinned at 4.10.5
-        # - tsx/esbuild GHSA-67mh-4wv8-2f99 (moderate) — dev tooling only
-        # All require npm audit fix --force (breaking semver changes).
-        # Track remediation in: https://github.com/your-org/hustlexp-ai-backend/issues/XXX
-        run: npm audit --audit-level=high || true
+      - name: "Security audit — fail on NEW high/critical GHSAs"
+        # npm 10.x does not support --ignore-ghsa, so we implement a GHSA baseline
+        # check in Node.js. The script below extracts all GHSA IDs from `npm audit
+        # --json` and fails CI if any advisory is NOT in the known baseline below.
+        #
+        # KNOWN BASELINE (all require `npm audit fix --force` — breaking semver):
+        #   GHSA-345P-7CG4-V4C7  high     @modelcontextprotocol/sdk — cross-client data leak
+        #   GHSA-37QJ-FRW5-HHJH  high     fast-xml-parser — RangeError DoS (via @aws-sdk)
+        #   GHSA-3VHC-576X-3QV4  high     hono — JWK Auth JWT algorithm confusion
+        #   GHSA-43P4-M455-4F4J  high     @trpc/server — prototype pollution
+        #   GHSA-67MH-4WV8-2F99  moderate tsx/esbuild — dev tooling only
+        #   GHSA-6WQW-2P9W-4VW4  moderate hono — cache middleware bypass
+        #   GHSA-9R54-Q6CX-XMH5  moderate hono — XSS through ErrorBoundary
+        #   GHSA-F67F-6CW9-8MQ4  high     hono — JWT algorithm confusion
+        #   GHSA-FJ3W-JWP8-X2G3  low      fast-xml-parser — stack overflow
+        #   GHSA-GQ3J-XVXP-8HRF  low      hono — timing comparison
+        #   GHSA-JMR7-XGP7-CMFJ  high     fast-xml-parser — DoS entity expansion
+        #   GHSA-M7JM-9GC2-MPF2  critical fast-xml-parser — entity encoding bypass
+        #   GHSA-R354-F388-2FHH  moderate hono — IPv4 validation bypass
+        #   GHSA-W332-Q679-J88P  moderate hono — arbitrary key read
+        #
+        # To add a new known advisory: append its GHSA ID to KNOWN_GHSAS below
+        # and document it above with severity and package name.
+        # Track remediation: https://github.com/your-org/hustlexp-ai-backend/issues/XXX
+        run: |
+          npm audit --json > /tmp/audit.json 2>/dev/null || true
+          node - <<'EOF'
+          const fs = require('fs');
+          const KNOWN_GHSAS = new Set([
+            'GHSA-345P-7CG4-V4C7',
+            'GHSA-37QJ-FRW5-HHJH',
+            'GHSA-3VHC-576X-3QV4',
+            'GHSA-43P4-M455-4F4J',
+            'GHSA-67MH-4WV8-2F99',
+            'GHSA-6WQW-2P9W-4VW4',
+            'GHSA-9R54-Q6CX-XMH5',
+            'GHSA-F67F-6CW9-8MQ4',
+            'GHSA-FJ3W-JWP8-X2G3',
+            'GHSA-GQ3J-XVXP-8HRF',
+            'GHSA-JMR7-XGP7-CMFJ',
+            'GHSA-M7JM-9GC2-MPF2',
+            'GHSA-R354-F388-2FHH',
+            'GHSA-W332-Q679-J88P',
+          ]);
+          let data;
+          try {
+            data = JSON.parse(fs.readFileSync('/tmp/audit.json', 'utf8'));
+          } catch (e) {
+            console.error('Failed to parse npm audit output:', e.message);
+            process.exit(1);
+          }
+          const found = new Set();
+          const vulns = data.vulnerabilities || {};
+          for (const [, vuln] of Object.entries(vulns)) {
+            if (!Array.isArray(vuln.via)) continue;
+            for (const via of vuln.via) {
+              if (via && typeof via === 'object' && via.url) {
+                const m = via.url.match(/GHSA-[a-zA-Z0-9-]+/i);
+                if (m) found.add(m[0].toUpperCase());
+              }
+            }
+          }
+          const newGhsas = [...found].filter(g => !KNOWN_GHSAS.has(g));
+          console.log(`Known baseline: ${KNOWN_GHSAS.size} GHSAs`);
+          console.log(`Found in audit: ${found.size} GHSAs`);
+          if (newGhsas.length > 0) {
+            console.error('\nFAIL — NEW high/critical GHSAs detected (not in baseline):');
+            for (const g of newGhsas) console.error('  ' + g);
+            console.error('\nAdd them to KNOWN_GHSAS in ci.yml after triaging.');
+            process.exit(1);
+          }
+          console.log('OK — all found GHSAs are in the known baseline.');
+          EOF
 
   build:
     name: Build Validation

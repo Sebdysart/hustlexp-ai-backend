@@ -195,7 +195,7 @@ async function executeHoldEscrow(payload: HoldEscrowPayload): Promise<{
 
 interface MoneyStateLockRow {
   task_id: string;
-  current_state: string;
+  current_state: MoneyState;
   amount_cents: number;
   stripe_payment_intent_id: string | null;
   stripe_charge_id: string | null;
@@ -226,7 +226,7 @@ async function executeReleasePayout(payload: ReleasePayoutPayload, lockRow: Mone
     amount: payload.payoutAmountCents || lockRow.amount_cents,
     currency: 'usd',
     destination: payload.hustlerStripeAccountId,
-    source_transaction: lockRow.stripe_charge_id,
+    source_transaction: lockRow.stripe_charge_id ?? undefined,
     metadata: {
       taskId: payload.taskId,
       hustlerId: payload.hustlerId,
@@ -241,7 +241,7 @@ async function executeRefundEscrow(payload: RefundEscrowPayload, lockRow: MoneyS
 }> {
   if (!stripe) throw new Error('Stripe not configured — cannot execute REFUND_ESCROW');
   const refund = await stripe.refunds.create({
-    payment_intent: lockRow.stripe_payment_intent_id,
+    payment_intent: lockRow.stripe_payment_intent_id ?? undefined,
     amount: payload.refundAmountCents,
     reason: 'requested_by_customer',
     metadata: {
@@ -490,3 +490,6 @@ export default {
   handle,
   getNextState,
 };
+
+// Named export alias for callers using `import { StripeMoneyEngine }` syntax
+export const StripeMoneyEngine = { handle, getNextState };

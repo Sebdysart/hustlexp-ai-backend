@@ -608,7 +608,8 @@ class StripeServiceClass {
         }
         try {
             const payouts = await sql`SELECT * FROM hustler_payouts WHERE hustler_id = ${hustlerId} ORDER BY created_at DESC LIMIT 50`;
-            return (payouts as Record<string, unknown>[]).map((p) => ({
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            return (payouts as any[]).map((p: any) => ({
                 id: p.id,
                 escrowId: p.escrow_id,
                 hustlerId: p.hustler_id,
@@ -632,7 +633,8 @@ class StripeServiceClass {
             return payoutLedger.get(payoutId) || null;
         }
         try {
-            const [p] = await sql`SELECT * FROM hustler_payouts WHERE id = ${payoutId}` as Record<string, unknown>[];
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const [p] = await sql`SELECT * FROM hustler_payouts WHERE id = ${payoutId}` as any[];
             if (!p) return null;
             return {
                 id: p.id,

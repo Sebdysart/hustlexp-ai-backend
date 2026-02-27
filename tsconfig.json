@@ -41,17 +41,10 @@
         }
     },
     "include": [
-        "src/**/*",
         "backend/src/**/*"
     ],
     "exclude": [
         "node_modules",
-        "dist",
-        "src/ai/**/*",
-        "src/routes/**/*",
-        "src/services/**/*",
-        "src/middleware/**/*",
-        "src/index.ts",
-        "src/tests/**/*"
+        "dist"
     ]
 }
