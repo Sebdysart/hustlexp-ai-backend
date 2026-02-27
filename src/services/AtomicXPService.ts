@@ -208,9 +208,9 @@ export async function awardXPForTask(
             NOW()
           )
         `;
-      } catch (err: any) {
+      } catch (err: unknown) {
         // INV-5: Catch 23505 UNIQUE violation — means XP already awarded
-        if (err.code === '23505') {
+        if (err instanceof Error && 'code' in err && (err as { code: string }).code === '23505') {
           logger.info({ taskId, hustlerId }, 'XP already awarded (idempotent)');
           return {
             success: true,
@@ -264,13 +264,14 @@ export async function awardXPForTask(
         alreadyAwarded: false,
       };
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
     logger.error({ error, taskId, hustlerId }, 'Failed to award XP');
     return {
       success: false,
       xpAwarded: 0,
       alreadyAwarded: false,
-      error: error.message,
+      error: message,
     };
   }
 }

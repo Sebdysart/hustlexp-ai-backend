@@ -3418,10 +3418,11 @@ fastify.post('/api/escrow/:taskId/refund', { preHandler: [requireAuth] }, async 
     try {
         const result = await StripeMoneyEngine.handle(taskId, 'REFUND_ESCROW', ctx);
         return { success: true, state: result.state };
-    } catch (err: any) {
+    } catch (err: unknown) {
         // Map engine errors to HTTP 400
+        const message = err instanceof Error ? err.message : String(err);
         reply.status(400);
-        return { error: err.message };
+        return { error: message };
     }
 });
 
@@ -4476,9 +4477,10 @@ fastify.post('/webhooks/stripe', async (request, reply) => {
 
         return reply.send({ received: true });
 
-    } catch (err: any) {
+    } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
         logger.error({ err }, 'Webhook processing failed (Global Catch)');
-        return reply.status(500).send(err.message);
+        return reply.status(500).send(message);
     }
 });
 

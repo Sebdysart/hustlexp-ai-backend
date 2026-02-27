@@ -198,13 +198,14 @@ class EscrowStateMachineClass {
         xpAwarded,
       };
 
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
       logger.error({ error, taskId, targetState }, 'Escrow state transition failed');
       return {
         success: false,
         previousState: 'pending',
         newState: 'pending',
-        error: error.message,
+        error: message,
       };
     }
   }

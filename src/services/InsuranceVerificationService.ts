@@ -156,9 +156,10 @@ export async function createVerification(
         verification: formatVerification(verification),
       };
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
     logger.error({ error, input }, 'Failed to create insurance verification');
-    return { success: false, error: error.message };
+    return { success: false, error: message };
   }
 }
 
@@ -210,9 +211,10 @@ export async function updateVerification(
         verification: formatVerification(updated),
       };
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
     logger.error({ error, verificationId }, 'Failed to update insurance verification');
-    return { success: false, error: error.message };
+    return { success: false, error: message };
   }
 }
 

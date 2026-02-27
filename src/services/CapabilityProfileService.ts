@@ -480,11 +480,12 @@ export async function recompute(userId: string): Promise<RecomputeResult> {
         backgroundCheckValid,
       };
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
     logger.error({ error, userId }, 'Failed to recompute capability profile');
     return {
       success: false,
-      error: error.message,
+      error: message,
     };
   }
 }

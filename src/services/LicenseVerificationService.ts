@@ -15,6 +15,10 @@ import { CapabilityProfileService } from './CapabilityProfileService.js';
 
 const logger = createLogger('LicenseVerificationService');
 
+function getErrorMessage(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
 // ============================================================================
 // TYPES
 // ============================================================================
@@ -148,9 +152,9 @@ export async function createVerification(
         verification: formatVerification(verification),
       };
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     logger.error({ error, input }, 'Failed to create license verification');
-    return { success: false, error: error.message };
+    return { success: false, error: getErrorMessage(error) };
   }
 }
 
@@ -208,9 +212,9 @@ export async function updateVerification(
         verification: formatVerification(updated),
       };
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     logger.error({ error, verificationId }, 'Failed to update license verification');
-    return { success: false, error: error.message };
+    return { success: false, error: getErrorMessage(error) };
   }
 }
 

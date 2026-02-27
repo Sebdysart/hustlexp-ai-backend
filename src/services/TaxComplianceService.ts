@@ -20,6 +20,10 @@ import { createLogger } from '../utils/logger.js';
 
 const logger = createLogger('TaxComplianceService');
 
+function getErrorMessage(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
 // ============================================================================
 // CONSTANTS
 // ============================================================================
@@ -167,7 +171,7 @@ export async function getOrCreateWorkerTaxProfile(userId: string): Promise<Worke
     }
 
     return formatWorkerTaxProfile(profile);
-  } catch (error: any) {
+  } catch (error: unknown) {
     logger.error({ error, userId }, 'Failed to get/create worker tax profile');
     return null;
   }
@@ -237,9 +241,9 @@ export async function submitW9(
 
       return { success: true };
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     logger.error({ error, userId }, 'Failed to submit W-9');
-    return { success: false, error: error.message };
+    return { success: false, error: getErrorMessage(error) };
   }
 }
 
@@ -329,7 +333,7 @@ export async function trackPayment(event: PaymentTrackingEvent): Promise<void> {
       // Check thresholds and send alerts
       await checkThresholds(tx, event.userId);
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     logger.error({ error, event }, 'Failed to track payment for tax');
   }
 }
@@ -468,17 +472,17 @@ export async function generate1099NECForms(taxYear: number): Promise<{
         `;
 
         generated++;
-      } catch (error: any) {
-        errors.push(`Worker ${worker.user_id}: ${error.message}`);
+      } catch (error: unknown) {
+        errors.push(`Worker ${worker.user_id}: ${getErrorMessage(error)}`);
       }
     }
 
     logger.info({ taxYear, generated, errors: errors.length }, '1099-NEC generation complete');
 
     return { generated, errors };
-  } catch (error: any) {
+  } catch (error: unknown) {
     logger.error({ error, taxYear }, 'Failed to generate 1099-NEC forms');
-    return { generated: 0, errors: [error.message] };
+    return { generated: 0, errors: [getErrorMessage(error)] };
   }
 }
 
@@ -516,15 +520,15 @@ export async function generate1099KForms(taxYear: number): Promise<{
         `;
 
         generated++;
-      } catch (error: any) {
-        errors.push(`Worker ${worker.user_id}: ${error.message}`);
+      } catch (error: unknown) {
+        errors.push(`Worker ${worker.user_id}: ${getErrorMessage(error)}`);
       }
     }
 
     return { generated, errors };
-  } catch (error: any) {
+  } catch (error: unknown) {
     logger.error({ error, taxYear }, 'Failed to generate 1099-K forms');
-    return { generated: 0, errors: [error.message] };
+    return { generated: 0, errors: [getErrorMessage(error)] };
   }
 }
 

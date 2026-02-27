@@ -16,6 +16,10 @@ import { CapabilityProfileService } from './CapabilityProfileService.js';
 
 const logger = createLogger('BackgroundCheckService');
 
+function getErrorMessage(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
 // ============================================================================
 // TYPES
 // ============================================================================
@@ -133,9 +137,9 @@ export async function createBackgroundCheck(
         backgroundCheck: formatBackgroundCheck(check),
       };
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     logger.error({ error, input }, 'Failed to create background check');
-    return { success: false, error: error.message };
+    return { success: false, error: getErrorMessage(error) };
   }
 }
 
@@ -187,9 +191,9 @@ export async function updateBackgroundCheck(
         backgroundCheck: formatBackgroundCheck(updated),
       };
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     logger.error({ error, checkId }, 'Failed to update background check');
-    return { success: false, error: error.message };
+    return { success: false, error: getErrorMessage(error) };
   }
 }
 
@@ -232,9 +236,9 @@ export async function processProviderWebhook(
       expiresAt,
       resultsEncrypted,
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     logger.error({ error, provider, providerCheckId }, 'Failed to process webhook');
-    return { success: false, error: error.message };
+    return { success: false, error: getErrorMessage(error) };
   }
 }
 

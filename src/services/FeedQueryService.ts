@@ -219,7 +219,7 @@ export async function getFeed(options: FeedQueryOptions): Promise<FeedResult> {
       hasMore,
       totalCount: tasks.length,
     };
-  } catch (error: any) {
+  } catch (error: unknown) {
     logger.error({ error, userId: options.userId }, 'Failed to fetch feed');
     throw error;
   }
@@ -319,7 +319,7 @@ export async function isTaskEligibleForUser(
     }
 
     return { eligible: true };
-  } catch (error: any) {
+  } catch (error: unknown) {
     logger.error({ error, taskId, userId }, 'Error checking task eligibility');
     return { eligible: false, reason: 'Error checking eligibility' };
   }
@@ -355,7 +355,7 @@ export async function getEligibleTaskCount(userId: string): Promise<number> {
     `;
 
     return parseInt(result?.count || '0', 10);
-  } catch (error: any) {
+  } catch (error: unknown) {
     logger.error({ error, userId }, 'Failed to get eligible task count');
     return 0;
   }
@@ -383,7 +383,7 @@ export async function prewarmFeedCache(userId: string): Promise<void> {
     // Fetch the first page of results to warm the cache
     await getFeed({ userId, limit: 20 });
     logger.info({ userId }, 'Feed cache pre-warmed');
-  } catch (error: any) {
+  } catch (error: unknown) {
     logger.warn({ error, userId }, 'Failed to pre-warm feed cache');
   }
 }

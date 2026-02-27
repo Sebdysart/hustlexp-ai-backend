@@ -107,9 +107,9 @@ async function probe(
     }
 
     return { healthy: true, latencyMs };
-  } catch (err: any) {
+  } catch (err: unknown) {
     const latencyMs = Date.now() - start;
-    return { healthy: false, latencyMs, error: err?.message ?? String(err) };
+    return { healthy: false, latencyMs, error: err instanceof Error ? err.message : String(err) };
   }
 }
 

@@ -118,7 +118,7 @@ export class TaxReportingService {
       );
 
       return records;
-    } catch (error: any) {
+    } catch (error: unknown) {
       serviceLogger.error({ error, taxYear }, 'Failed to generate 1099-K records');
       throw error;
     }
@@ -178,7 +178,7 @@ export class TaxReportingService {
         payerTIN,
         ...(row.payee_tin ? { payeeTIN: row.payee_tin } : {}),
       };
-    } catch (error: any) {
+    } catch (error: unknown) {
       serviceLogger.error(
         { error, workerId, taxYear },
         'Failed to get worker tax summary'

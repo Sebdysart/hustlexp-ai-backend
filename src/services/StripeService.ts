@@ -130,9 +130,10 @@ class StripeServiceClass {
             await this.setConnectAccountId(userId, account.id);
             const onboardingUrl = await this.createAccountLink(account.id);
             return { success: true, accountId: account.id, onboardingUrl };
-        } catch (error: any) {
+        } catch (error: unknown) {
+            const message = error instanceof Error ? error.message : String(error);
             serviceLogger.error({ error, userId }, 'Failed to create Connect account');
-            return { success: false, error: error.message };
+            return { success: false, error: message };
         }
     }
 
