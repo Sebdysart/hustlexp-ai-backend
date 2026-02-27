@@ -13,11 +13,12 @@
  * Run: npx tsx backend/src/tests/ai-stress-test.ts
  */
 
+import type { config as ConfigType } from '../config';
+import type { Database } from '../db';
+
 // Config and db are loaded dynamically after env is set
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- dynamic imports for standalone test runner
-let config: Record<string, any>;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- dynamic imports for standalone test runner
-let db: { query: (sql: string, params?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }> };
+let config: typeof ConfigType;
+let db: Database;
 
 // ============================================================================
 // TEST FRAMEWORK
@@ -453,8 +454,7 @@ async function testRouterWiring() {
 
   await test('appRouter has matchmaker route', async () => {
     const { appRouter } = await import('../routers/index');
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- tRPC internal access for testing
-    const procedures = Object.keys((appRouter as any)._def.procedures || {});
+    const procedures = Object.keys((appRouter as { _def: { procedures: Record<string, unknown> } })._def.procedures || {});
     // Check that matchmaker procedures are accessible
     assert(
       procedures.some(p => p.startsWith('matchmaker.')),
@@ -464,8 +464,7 @@ async function testRouterWiring() {
 
   await test('appRouter has disputeAI route', async () => {
     const { appRouter } = await import('../routers/index');
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- tRPC internal access for testing
-    const procedures = Object.keys((appRouter as any)._def.procedures || {});
+    const procedures = Object.keys((appRouter as { _def: { procedures: Record<string, unknown> } })._def.procedures || {});
     assert(
       procedures.some(p => p.startsWith('disputeAI.')),
       `disputeAI not in appRouter. Found: ${procedures.filter(p => p.includes('dispute')).join(', ') || 'none'}`
@@ -474,8 +473,7 @@ async function testRouterWiring() {
 
   await test('appRouter has reputation route', async () => {
     const { appRouter } = await import('../routers/index');
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- tRPC internal access for testing
-    const procedures = Object.keys((appRouter as any)._def.procedures || {});
+    const procedures = Object.keys((appRouter as { _def: { procedures: Record<string, unknown> } })._def.procedures || {});
     assert(
       procedures.some(p => p.startsWith('reputation.')),
       `reputation not in appRouter. Found: ${procedures.filter(p => p.includes('reputation')).join(', ') || 'none'}`
@@ -484,8 +482,7 @@ async function testRouterWiring() {
 
   await test('appRouter total route count >= 38', async () => {
     const { appRouter } = await import('../routers/index');
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- tRPC internal access for testing
-    const routes = Object.keys((appRouter as any)._def.record || {});
+    const routes = Object.keys((appRouter as { _def: { record: Record<string, unknown> } })._def.record || {});
     assert(routes.length >= 38, `Expected ≥38 routes, found ${routes.length}: ${routes.join(', ')}`);
   });
 }

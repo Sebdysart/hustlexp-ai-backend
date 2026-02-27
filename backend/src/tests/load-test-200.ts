@@ -20,6 +20,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import type { Database } from '../db';
 
 // ============================================================================
 // TYPES
@@ -44,8 +45,7 @@ interface SubsystemResult {
 // ============================================================================
 // LOAD ENV + IMPORTS
 // ============================================================================
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- dynamic import for standalone test runner
-let db: Record<string, any>;
+let db: Database;
 
 async function loadEnv() {
   const envPath = path.resolve(import.meta.dirname || __dirname, '../../../.env');

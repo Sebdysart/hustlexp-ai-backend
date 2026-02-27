@@ -11,10 +11,8 @@
  */
 
 import { transaction } from '../db/index.js';
+import type { SqlTx } from '../db/index.js';
 import { createLogger } from '../utils/logger.js';
-
-/** Postgres tagged-template transaction callback type */
-type SqlTx = (strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown[]>;
 
 const logger = createLogger('AtomicXPService');
 

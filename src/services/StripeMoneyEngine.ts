@@ -28,6 +28,7 @@
 
 import Stripe from 'stripe';
 import { getSql, transaction } from '../db/index.js';
+import type { SqlTx } from '../db/index.js';
 import { createLogger } from '../utils/logger.js';
 import { KillSwitch } from '../infra/KillSwitch.js';
 import { TemporalGuard } from '../infra/ordering/TemporalGuard.js';
@@ -58,9 +59,6 @@ const stripe = isStripeMoneyEngineConfigured
 // ============================================================================
 // TYPES
 // ============================================================================
-
-/** Callback type for the transaction() helper (postgres tagged template function) */
-type SqlTx = (strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown[]>;
 
 /** Payload for HOLD_ESCROW: create and capture a PaymentIntent */
 export interface HoldEscrowPayload {
