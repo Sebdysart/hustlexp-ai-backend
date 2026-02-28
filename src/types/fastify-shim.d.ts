@@ -6,6 +6,8 @@ declare module 'fastify' {
   export interface FastifyRequest {
     user?: import('firebase-admin/auth').DecodedIdToken;
     rawBody?: string | Buffer;
+    /** Unique per-request ID attached by the addRequestId onRequest hook. */
+    requestId?: string;
     // Use string (not string | string[]) so header access works without union checks
     headers: Record<string, string | undefined>;
     ip: string;

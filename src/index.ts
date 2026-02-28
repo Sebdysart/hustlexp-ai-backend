@@ -101,6 +101,36 @@ fastify.addHook('onSend', async (request, reply, payload) => {
     return payload;
 });
 
+// 7. SECURITY HEADERS — applied to every outgoing response
+//    Ported from backend/src/middleware/security.ts (Hono layer)
+fastify.addHook('onSend', async (_request, reply, payload) => {
+    // Prevent clickjacking
+    reply.header('X-Frame-Options', 'DENY');
+    // Block MIME sniffing attacks
+    reply.header('X-Content-Type-Options', 'nosniff');
+    // Referrer policy — leak origin only to same-origin requests
+    reply.header('Referrer-Policy', 'strict-origin-when-cross-origin');
+    // Permissions policy — API server has no use for camera/mic/geolocation
+    reply.header('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+    // Remove server fingerprint header
+    reply.header('X-Powered-By', 'HustleXP');
+    // Content Security Policy — strict API-only policy blocks all content loading
+    reply.header(
+        'Content-Security-Policy',
+        "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+    );
+    // X-XSS-Protection: 0 — modern CSP supersedes this; 0 avoids XSS-Auditor bypass bugs
+    reply.header('X-XSS-Protection', '0');
+    // Cross-Origin policies — isolate this origin from cross-origin contexts
+    reply.header('Cross-Origin-Opener-Policy', 'same-origin');
+    reply.header('Cross-Origin-Resource-Policy', 'same-origin');
+    // HSTS — enforce HTTPS only in production (dev/CI uses plain HTTP)
+    if (process.env.NODE_ENV === 'production') {
+        reply.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
+    }
+    return payload;
+});
+
 // ============================================
 // Server Startup
 // ============================================

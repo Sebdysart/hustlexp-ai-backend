@@ -11,6 +11,8 @@ declare module 'fastify' {
     rawBody?: string | Buffer;
     otelSpan?: Span;
     otelContext?: Context;
+    /** Unique per-request ID attached by the addRequestId onRequest hook. */
+    requestId?: string;
     headers: Record<string, string | string[] | undefined>;
     ip: string;
     method: string;
