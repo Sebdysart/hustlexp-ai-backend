@@ -76,8 +76,9 @@ export const capabilityRouter = router({
       taskId: z.string(),
     }))
     .query(async ({ ctx, input }) => {
-      // Get task requirements
       const { db } = await import('../db');
+
+      // Fetch task requirements
       const taskResult = await db.query<{
         trade_type: string;
         location_state: string;
@@ -96,6 +97,36 @@ export const capabilityRouter = router({
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
       }
 
+      // Single roundtrip: account age, trust tier, active task count, active dispute
+      const ctxResult = await db.query<{
+        account_age_days: number;
+        trust_tier: number;
+        active_task_count: number;
+        has_active_dispute: boolean;
+      }>(
+        `SELECT
+           EXTRACT(DAY FROM NOW() - u.created_at)::int AS account_age_days,
+           u.trust_tier,
+           (
+             SELECT COUNT(*)::int FROM tasks
+             WHERE worker_id = u.id
+               AND state IN ('ACCEPTED', 'PROOF_SUBMITTED')
+           ) AS active_task_count,
+           EXISTS (
+             SELECT 1 FROM disputes
+             WHERE (worker_id = u.id OR initiated_by = u.id)
+               AND state != 'RESOLVED'
+           ) AS has_active_dispute
+         FROM users u
+         WHERE u.id = $1`,
+        [ctx.user.id]
+      );
+
+      if (ctxResult.rows.length === 0) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'User not found' });
+      }
+
+      const userCtx = ctxResult.rows[0];
       const task = taskResult.rows[0];
       const profile = await CapabilityProfileService.getCapabilityProfile(ctx.user.id);
 
@@ -111,10 +142,10 @@ export const capabilityRouter = router({
         {
           userId: ctx.user.id,
           capabilityProfile: profile,
-          activeTaskCount: 0, // TODO: query actual count
-          hasActiveDispute: false, // TODO: query actual status
-          accountAgeDays: 30, // TODO: calculate from user.created_at
-          trustScore: 4.5, // TODO: query actual score
+          activeTaskCount: userCtx.active_task_count,
+          hasActiveDispute: userCtx.has_active_dispute,
+          accountAgeDays: userCtx.account_age_days,
+          trustScore: userCtx.trust_tier,
         }
       );
     }),
