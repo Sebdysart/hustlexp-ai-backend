@@ -215,6 +215,8 @@ export function validateConfig(): { valid: boolean; errors: string[]; warnings: 
     }
     if (!config.tax.encryptionKey) {
       errors.push('TAX_TIN_ENCRYPTION_KEY is required in production (AES-256-GCM TIN encryption)');
+    } else if (!/^[0-9a-fA-F]{64}$/.test(config.tax.encryptionKey)) {
+      errors.push('TAX_TIN_ENCRYPTION_KEY must be exactly 64 hex characters (32 bytes) for AES-256-GCM — generate with: openssl rand -hex 32');
     }
   }
 

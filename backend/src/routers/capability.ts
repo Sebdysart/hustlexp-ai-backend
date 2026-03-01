@@ -9,6 +9,7 @@
 import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
 import { router, protectedProcedure } from '../trpc';
+import { db } from '../db';
 import * as CapabilityProfileService from '../services/CapabilityProfileService';
 import * as EligibilityResolverService from '../services/EligibilityResolverService';
 import * as FeedQueryService from '../services/FeedQueryService';
@@ -76,8 +77,6 @@ export const capabilityRouter = router({
       taskId: z.string(),
     }))
     .query(async ({ ctx, input }) => {
-      const { db } = await import('../db');
-
       // Fetch task requirements
       const taskResult = await db.query<{
         trade_type: string;
