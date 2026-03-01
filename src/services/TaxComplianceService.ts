@@ -589,7 +589,7 @@ async function getStripeConnectAccountId(userId: string): Promise<string | null>
  * Prerequisites (ops):
  *   - Stripe Tax must be enabled on the platform Connect account.
  *   - Worker must have a verified W-9 with encrypted TIN stored.
- *   - Worker must have a Stripe Connect account in hustler_profiles.
+ *   - Worker must have a Stripe Connect account (users.stripe_connect_id).
  *
  * Uses stripe.rawRequest() because stripe.tax.forms is not typed in SDK v20;
  * the server-side endpoint /v1/tax/forms is available when Tax Forms is enabled.
@@ -601,7 +601,7 @@ async function generateStripe1099NEC(worker: WorkerRow): Promise<string> {
 
   const connectAccountId = await getStripeConnectAccountId(worker.user_id);
   if (!connectAccountId) {
-    throw new Error(`Worker ${worker.user_id} has no Stripe Connect account in hustler_profiles`);
+    throw new Error(`Worker ${worker.user_id} has no stripe_connect_id in users`);
   }
 
   const tinEncrypted = worker.w9_data?.tinEncrypted;
@@ -651,7 +651,7 @@ async function generateStripe1099K(worker: WorkerRow): Promise<string> {
 
   const connectAccountId = await getStripeConnectAccountId(worker.user_id);
   if (!connectAccountId) {
-    throw new Error(`Worker ${worker.user_id} has no Stripe Connect account in hustler_profiles`);
+    throw new Error(`Worker ${worker.user_id} has no stripe_connect_id in users`);
   }
 
   const tinEncrypted = worker.w9_data?.tinEncrypted;
