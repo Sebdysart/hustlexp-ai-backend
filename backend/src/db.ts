@@ -42,8 +42,8 @@ const dbLog = logger.child({ module: 'db' });
 // CONFIGURATION
 // ============================================================================
 
-const DATABASE_URL = process.env.DATABASE_URL;
-const DATABASE_REPLICA_URL = process.env.DATABASE_REPLICA_URL;
+const DATABASE_URL = process.env.DATABASE_URL ?? '';
+const DATABASE_REPLICA_URL = process.env.DATABASE_REPLICA_URL ?? '';
 const POOL_MAX = parseInt(process.env.DB_POOL_MAX || '20', 10);
 const REPLICA_POOL_MAX = parseInt(process.env.DB_REPLICA_POOL_MAX || '15', 10);
 const DB_IDLE_TIMEOUT = parseInt(process.env.DB_IDLE_TIMEOUT_MS || '30000', 10);

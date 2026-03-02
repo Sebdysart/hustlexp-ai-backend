@@ -276,7 +276,7 @@ export const SelfInsurancePoolService = {
       );
 
       // Transfer funds to hustler via Stripe Connect
-      const stripeKey = process.env.STRIPE_SECRET_KEY;
+      const stripeKey = process.env.STRIPE_SECRET_KEY ?? '';
       if (stripeKey) {
         try {
           const hustlerResult = await db.query<{ stripe_connect_id: string }>(

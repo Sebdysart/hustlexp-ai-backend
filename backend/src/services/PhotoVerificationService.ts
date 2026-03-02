@@ -159,7 +159,7 @@ export const PhotoVerificationService = {
   ): Promise<ServiceResult<BeforeAfterComparisonResult>> => {
     try {
       // Call OpenAI Vision API for comparison
-      const apiKey = process.env.OPENAI_API_KEY;
+      const apiKey = process.env.OPENAI_API_KEY ?? '';
       if (!apiKey) {
         log.warn('OPENAI_API_KEY not set, using fallback scoring');
         return {

@@ -38,8 +38,8 @@ const IDEMPOTENCY_TTL_SECONDS = 86_400; // 24 hours
  * vars are absent so all callers can do a simple null check.
  */
 function buildRedisClient(): Redis | null {
-  const url   = process.env.UPSTASH_REDIS_REST_URL;
-  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+  const url   = process.env.UPSTASH_REDIS_REST_URL ?? '';
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN ?? '';
   if (!url || !token) return null;
 
   try {

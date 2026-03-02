@@ -10,10 +10,29 @@
  * @version 1.0.0
  */
 
+import { Redis } from '@upstash/redis';
 import { createLogger } from '../utils/logger.js';
 import type { RiskLevel } from './CapabilityProfileService.js';
 
 const logger = createLogger('FeedQueryService');
+
+// ---------------------------------------------------------------------------
+// Redis feed cache client (optional — degrades gracefully)
+// ---------------------------------------------------------------------------
+
+function buildFeedRedisClient(): Redis | null {
+  const url   = process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+  if (!url || !token) return null;
+  try {
+    return new Redis({ url, token });
+  } catch (err) {
+    logger.warn({ err }, 'FeedQueryService: Redis init failed — cache invalidation disabled');
+    return null;
+  }
+}
+
+const feedRedis = buildFeedRedisClient();
 
 // ============================================================================
 // TYPES
@@ -396,27 +415,21 @@ const FEED_CACHE_KEY = (userId: string) => `hustlexp:feed:eligible:${userId}`;
 
 /**
  * Invalidate feed cache for a user.
- * Called when capability profile changes (e.g. after profile recompute).
+ * Called when capability profile changes.
  *
- * @param userId - User whose feed cache should be evicted.
- * @param redis  - Injectable Redis client (duck-typed for testability).
- *                 Defaults to null; callers that have a Redis client should pass it.
- *                 Never throws — Redis failure degrades gracefully (next request recomputes).
+ * Accepts an injectable redis client (defaults to the module-level feedRedis)
+ * so tests can pass a mock without vi.mock(). Degrades gracefully when Redis
+ * is not configured or throws — never blocks the caller.
  */
 export async function invalidateFeedCache(
   userId: string,
-  redis: RedisDel | null = null,
+  redis: { del(key: string): Promise<number> } | null = feedRedis,
 ): Promise<void> {
-  if (!redis) {
-    logger.info({ userId }, 'Feed cache invalidation requested (no Redis client — skipped)');
-    return;
-  }
+  if (!redis) return;
   try {
-    await redis.del(FEED_CACHE_KEY(userId));
-    logger.info({ userId }, 'Feed cache invalidated');
-  } catch (error: unknown) {
-    // Graceful degradation — feed will be recomputed on next request.
-    logger.warn({ error, userId }, 'Feed cache invalidation failed (Redis error — ignored)');
+    await redis.del(`hustlexp:feed:eligible:${userId}`);
+  } catch (err) {
+    logger.warn({ err, userId }, 'FeedQueryService: Redis DEL failed for feed cache');
   }
 }
 

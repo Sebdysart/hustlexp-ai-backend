@@ -853,7 +853,7 @@ export const TaskDiscoveryService = {
 
       // Try AI-powered explanation first, fallback to template
       let explanation: string;
-      const anthropicKey = process.env.ANTHROPIC_API_KEY;
+      const anthropicKey = process.env.ANTHROPIC_API_KEY ?? '';
 
       if (anthropicKey && taskData) {
         try {

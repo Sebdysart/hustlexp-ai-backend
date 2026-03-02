@@ -137,6 +137,7 @@ class TaskApplicationServiceClass {
       }
 
       // 4. Validate proposed price if provided
+      // Use != null (not falsy) so that 0 is treated as a provided (invalid) value
       const proposedPriceCents = proposedPrice != null ? Math.round(proposedPrice * 100) : null;
       if (proposedPriceCents !== null) {
         if (proposedPriceCents <= 0) {

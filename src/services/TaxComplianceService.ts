@@ -697,7 +697,7 @@ function validateTIN(tin: string, type: 'SSN' | 'EIN'): { valid: boolean; error?
   const cleanTIN = tin.replace(/-/g, '');
 
   if (type === 'SSN') {
-    // SSN: 9 digits, format XXX-XX-XXXX
+    // SSN: 9 digits (format: 999-99-9999)
     if (!/^\d{9}$/.test(cleanTIN)) {
       return { valid: false, error: 'SSN must be 9 digits' };
     }

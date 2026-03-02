@@ -14,7 +14,7 @@
  * This is intentional for invariant tests - we're testing database-level enforcement,
  * not application-level transaction boundaries. Production code uses pool abstraction.
  * 
- * TODO (Future): Add out-of-order Stripe event replay handling (Stripe doesn't guarantee order).
+ * PLANNED (Future): Add out-of-order Stripe event replay handling (Stripe doesn't guarantee order).
  * This may require `created_at` monotonic checks or explicit event precedence rules.
  * 
  * @see STEP_9D_STRIPE_INTEGRATION.md
@@ -487,7 +487,7 @@ describe.skipIf(!hasDb)('Invariant S-5: Entitlements Must Reference a Valid Stri
     );
     expect(Number(eventExists.rows[0].count)).toBe(0);
 
-    // TODO: Once service layer validation is added, this should fail:
+    // PLANNED: Once service layer validation is added, this should fail:
     // await expect(
     //   PlanService.createEntitlement({
     //     userId,

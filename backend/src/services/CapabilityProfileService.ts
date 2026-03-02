@@ -15,6 +15,7 @@ import { db } from '../db';
 import { logger } from '../logger';
 import { TRPCError } from '@trpc/server';
 import { recomputeCapabilityProfile } from './CapabilityRecomputeService';
+import { redis, CACHE_KEYS } from '../cache/redis';
 
 const log = logger.child({ service: 'CapabilityProfileService' });
 
@@ -54,6 +55,22 @@ export interface CapabilitySummary {
 // ============================================================================
 // CORE FUNCTIONS
 // ============================================================================
+
+/**
+ * Invalidate the task feed cache for a user after capability changes
+ */
+async function invalidateFeedCache(userId: string): Promise<void> {
+  await redis.del(CACHE_KEYS.taskFeed(userId));
+  log.info({ userId }, 'Invalidated task feed cache after capability change');
+}
+
+/**
+ * Publicly exported wrapper — call this whenever capability profile changes
+ * to ensure the user's task feed cache is flushed
+ */
+export async function invalidateProfileFeedCache(userId: string): Promise<void> {
+  await invalidateFeedCache(userId);
+}
 
 /**
  * Get capability profile for a user
@@ -225,6 +242,7 @@ export async function getUserCapabilities(userId: string): Promise<{
 export async function recompute(userId: string, reason: string): Promise<void> {
   log.info({ userId, reason }, 'Triggering capability recompute');
   await recomputeCapabilityProfile(userId, { reason });
+  await invalidateFeedCache(userId);
 }
 
 /**
@@ -249,6 +267,7 @@ export async function initializeProfile(userId: string): Promise<void> {
 
   // Recompute to pick up any existing verifications
   await recomputeCapabilityProfile(userId, { reason: 'initializeProfile' });
+  await invalidateFeedCache(userId);
 }
 
 // ============================================================================
@@ -310,4 +329,5 @@ export default {
   initializeProfile,
   getProfilesBatch,
   findUsersWithCapability,
+  invalidateProfileFeedCache,
 };

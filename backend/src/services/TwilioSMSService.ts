@@ -68,7 +68,7 @@ export async function sendSMS(
     return { success: false, error: 'Twilio client not configured' };
   }
 
-  const fromPhone = process.env.TWILIO_FROM_PHONE;
+  const fromPhone = process.env.TWILIO_FROM_PHONE ?? '';
   if (!fromPhone) {
     log.warn('Cannot send SMS - TWILIO_FROM_PHONE not configured');
     return { success: false, error: 'TWILIO_FROM_PHONE not configured' };

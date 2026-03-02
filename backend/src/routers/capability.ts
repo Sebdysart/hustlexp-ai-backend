@@ -314,7 +314,7 @@ export const capabilityRouter = router({
       notes: z.string().optional(),
     }))
     .mutation(async ({ ctx, input }) => {
-      // TODO: Check admin role
+      // PLANNED: Enforce role-based access control (RBAC) for admin operations
       return await LicenseVerificationService.approveLicense(
         input.verificationId,
         ctx.user.id,
@@ -332,7 +332,7 @@ export const capabilityRouter = router({
       notes: z.string().optional(),
     }))
     .mutation(async ({ ctx, input }) => {
-      // TODO: Check admin role
+      // PLANNED: Enforce role-based access control (RBAC) for admin operations
       return await LicenseVerificationService.rejectLicense(
         input.verificationId,
         ctx.user.id,
@@ -350,7 +350,7 @@ export const capabilityRouter = router({
       offset: z.number().default(0),
     }))
     .query(async ({ input }) => {
-      // TODO: Check admin role
+      // PLANNED: Enforce role-based access control (RBAC) for admin operations
       return await LicenseVerificationService.getPendingVerifications(
         input.limit,
         input.offset

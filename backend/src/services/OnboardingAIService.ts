@@ -99,7 +99,7 @@ export const OnboardingAIService = {
         certaintyTier: 'WEAK' as CertaintyTier,
       };
 
-      const anthropicKey = process.env.ANTHROPIC_API_KEY;
+      const anthropicKey = process.env.ANTHROPIC_API_KEY ?? '';
       if (anthropicKey) {
         try {
           const aiResponse = await fetch('https://api.anthropic.com/v1/messages', {

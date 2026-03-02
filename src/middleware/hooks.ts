@@ -136,9 +136,7 @@ export function corsOriginCallback(origin: string | undefined, cb: (err: Error |
     // Allow requests with no origin (mobile apps, curl, server-to-server)
     if (!origin) return cb(null, true);
 
-    const allowedOrigins = process.env.ALLOWED_ORIGINS
-        ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim()).filter(Boolean)
-        : [];
+    const allowedOrigins = (process.env.ALLOWED_ORIGINS ?? '').split(',').map(o => o.trim()).filter(Boolean);
 
     // In development, allow localhost origins (parse URL to prevent bypass via crafted domains)
     const isDev = process.env.NODE_ENV !== 'production';

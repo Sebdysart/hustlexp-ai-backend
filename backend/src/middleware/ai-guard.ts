@@ -24,8 +24,8 @@ async function getRedisClient(): Promise<import('@upstash/redis').Redis | null> 
 
   try {
     const { Redis } = await import('@upstash/redis');
-    const redisUrl = process.env.UPSTASH_REDIS_REST_URL;
-    const redisToken = process.env.UPSTASH_REDIS_REST_TOKEN;
+    const redisUrl = process.env.UPSTASH_REDIS_REST_URL ?? '';
+    const redisToken = process.env.UPSTASH_REDIS_REST_TOKEN ?? '';
     if (redisUrl && redisToken) {
       _redisClient = new Redis({ url: redisUrl, token: redisToken });
       return _redisClient;

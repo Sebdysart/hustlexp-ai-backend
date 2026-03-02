@@ -15,11 +15,52 @@
  * @version 1.0.0
  */
 
+import { Redis } from '@upstash/redis';
 import { transaction } from '../db/index.js';
 import type { SqlTx } from '../db/index.js';
 import { createLogger } from '../utils/logger.js';
 
 const logger = createLogger('CapabilityProfileService');
+
+// ---------------------------------------------------------------------------
+// Redis feed cache client (optional — degrades gracefully)
+// ---------------------------------------------------------------------------
+
+function buildCapabilityRedisClient(): Redis | null {
+  const url   = process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+  if (!url || !token) return null;
+  try {
+    return new Redis({ url, token });
+  } catch (err) {
+    logger.warn({ err }, 'CapabilityProfileService: Redis init failed — cache invalidation disabled');
+    return null;
+  }
+}
+
+const capabilityRedis = buildCapabilityRedisClient();
+
+/**
+ * Invalidate the FeedQueryService feed cache for a user.
+ *
+ * Exported as a pure injectable function so tests can pass a mock redis
+ * client without vi.mock(). Separate from FeedQueryService to avoid the
+ * circular import (FeedQueryService imports RiskLevel from this module).
+ *
+ * Cache key matches FeedQueryService exactly: `hustlexp:feed:eligible:{userId}`
+ * Degrades gracefully — never throws, never blocks the caller.
+ */
+export async function invalidateProfileFeedCache(
+  userId: string,
+  redis: { del(key: string): Promise<number> } | null,
+): Promise<void> {
+  if (!redis) return;
+  try {
+    await redis.del(`hustlexp:feed:eligible:${userId}`);
+  } catch (err) {
+    logger.warn({ err, userId }, 'CapabilityProfileService: Redis DEL failed for feed cache');
+  }
+}
 
 // ============================================================================
 // TYPES
@@ -524,45 +565,9 @@ export async function recompute(userId: string): Promise<RecomputeResult> {
   }
 }
 
-/**
- * Invalidate the feed eligibility cache for a user.
- * Called after profile recompute to ensure the feed reflects new eligibility.
- *
- * Shares the same key as FeedQueryService (`hustlexp:feed:eligible:{userId}`)
- * so both services target the same cache entry.  This function is intentionally
- * independent of FeedQueryService to avoid a circular import.
- *
- * @param userId - User whose feed cache should be evicted.
- * @param redis  - Injectable Redis client (duck-typed for testability).
- *                 Defaults to null; pass the module-level client in production.
- *                 Never throws — cache invalidation must never block a recompute.
- */
-
-/** Minimal injectable Redis DEL interface — duck-typed for testability. */
-interface RedisDel {
-  del: (key: string) => Promise<number>;
-}
-
-export async function invalidateProfileFeedCache(
-  userId: string,
-  redis: RedisDel | null = null,
-): Promise<void> {
-  if (!redis) {
-    logger.info({ userId }, 'Feed cache invalidation requested (no Redis client — skipped)');
-    return;
-  }
-  try {
-    await redis.del(`hustlexp:feed:eligible:${userId}`);
-    logger.info({ userId }, 'Feed cache invalidated via CapabilityProfileService');
-  } catch (error: unknown) {
-    // Graceful degradation — feed will be recomputed on next request.
-    logger.warn({ error, userId }, 'Feed cache invalidation failed (Redis error — ignored)');
-  }
-}
-
-/** @deprecated Use invalidateProfileFeedCache instead */
+/** @deprecated Use invalidateProfileFeedCache(userId, capabilityRedis) instead */
 async function invalidateFeedCache(userId: string): Promise<void> {
-  return invalidateProfileFeedCache(userId);
+  return invalidateProfileFeedCache(userId, capabilityRedis);
 }
 
 // ============================================================================

@@ -31,8 +31,8 @@ function createRatelimiter(
   requestsPerMinute: number,
   label: string,
 ): RatelimitInstance | null {
-  const restUrl   = process.env.UPSTASH_REDIS_REST_URL;
-  const restToken = process.env.UPSTASH_REDIS_REST_TOKEN;
+  const restUrl   = process.env.UPSTASH_REDIS_REST_URL ?? '';
+  const restToken = process.env.UPSTASH_REDIS_REST_TOKEN ?? '';
 
   if (!restUrl || !restToken) {
     logger.warn(

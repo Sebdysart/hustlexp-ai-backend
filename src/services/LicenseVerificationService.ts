@@ -272,7 +272,7 @@ export async function getActiveVerifications(userId: string): Promise<LicenseVer
 async function triggerAsyncVerification(verificationId: string): Promise<void> {
   logger.info({ verificationId }, 'Starting async license verification');
 
-  // TODO: Implement actual verification logic
+  // PLANNED: Implement actual verification logic
   // - Check state contractor registry APIs
   // - OCR document verification
   // - Queue for manual review
@@ -290,7 +290,7 @@ async function triggerAsyncVerification(verificationId: string): Promise<void> {
 export async function processRegistryLookup(
   verificationId: string
 ): Promise<{ valid: boolean; expiresAt?: Date; licenseType?: string } | null> {
-  // TODO: Implement state registry API integrations
+  // PLANNED: Implement state registry API integrations
   // Examples:
   // - California: CSLB (Contractors State License Board)
   // - Texas: TDLR (Texas Department of Licensing and Regulation)

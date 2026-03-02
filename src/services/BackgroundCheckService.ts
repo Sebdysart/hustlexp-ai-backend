@@ -297,7 +297,7 @@ export async function getActiveBackgroundCheck(userId: string): Promise<Backgrou
 async function triggerAsyncBackgroundCheck(checkId: string): Promise<void> {
   logger.info({ checkId }, 'Starting async background check');
 
-  // TODO: Implement integrations with background check providers:
+  // PLANNED: Integrate background check providers:
   // - Checkr
   // - Sterling
   // - First Advantage
@@ -360,7 +360,7 @@ export async function initiateCheckrBackgroundCheck(
     zipcode?: string;
   }
 ): Promise<BackgroundCheckResult> {
-  // TODO: Implement Checkr API integration
+  // PLANNED: Implement Checkr API integration
   // 1. Create candidate
   // 2. Create report
   // 3. Store report ID

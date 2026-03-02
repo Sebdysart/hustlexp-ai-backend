@@ -277,7 +277,7 @@ export const BiometricVerificationService = {
 
       // GCP Vision fallback (if no AWS or AWS failed)
       if (!client) {
-        const gcpApiKey = process.env.GOOGLE_CLOUD_VISION_API_KEY;
+        const gcpApiKey = process.env.GOOGLE_CLOUD_VISION_API_KEY ?? '';
         if (gcpApiKey) {
           try {
             const visionResponse = await gcpVisionBreaker.execute(() => fetch(

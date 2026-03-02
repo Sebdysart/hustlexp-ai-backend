@@ -190,7 +190,7 @@ export const TutorialQuestService = {
    */
   scanEquipment: async (photoUrl: string): Promise<ServiceResult<EquipmentScanResult>> => {
     try {
-      const apiKey = process.env.OPENAI_API_KEY;
+      const apiKey = process.env.OPENAI_API_KEY ?? '';
       if (!apiKey) {
         return {
           success: true,

@@ -34,7 +34,7 @@ const AUTH_TAG_LENGTH = 16;  // GCM standard: 16 bytes
  * Returns null in development if not set (sessions stored plaintext with warning).
  */
 function getEncryptionKey(): Buffer | null {
-  const keyHex = process.env.SESSION_ENCRYPTION_KEY;
+  const keyHex = process.env.SESSION_ENCRYPTION_KEY ?? '';
   if (!keyHex) {
     return null;
   }

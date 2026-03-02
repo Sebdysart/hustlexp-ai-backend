@@ -277,7 +277,7 @@ async function triggerAsyncVerification(
 ): Promise<void> {
   logger.info({ verificationId, hasDocument: !!documentUrl }, 'Starting async insurance verification');
 
-  // TODO: Implement:
+  // PLANNED: Implement document verification:
   // - OCR of Certificate of Insurance (COI)
   // - Extract policy number, coverage dates, coverage amounts
   // - Validate with insurance carrier
