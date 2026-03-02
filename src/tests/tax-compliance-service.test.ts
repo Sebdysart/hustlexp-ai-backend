@@ -120,7 +120,7 @@ import {
  * Build a tagged-template mock that returns `rows` when called.
  * postgres.js tag: fn`SQL ${val}` ⟹ fn(strings, ...values) ⟹ Promise<rows>
  */
-function makeSqlMock(rows: unknown[]): ReturnType<typeof vi.fn> {
+function _makeSqlMock(rows: unknown[]): ReturnType<typeof vi.fn> {
   return vi.fn().mockResolvedValue(rows);
 }
 

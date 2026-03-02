@@ -22,7 +22,8 @@
     {
       "files": ["**/tests/**/*.ts", "**/*.test.ts", "**/server.ts"],
       "rules": {
-        "no-console": "off"
+        "no-console": "off",
+        "@typescript-eslint/no-explicit-any": "off"
       }
     }
   ],

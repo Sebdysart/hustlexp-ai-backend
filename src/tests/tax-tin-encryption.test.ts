@@ -10,7 +10,7 @@
  *   6. malformed stored string (wrong segment count) throws
  */
 
-import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 
 // ============================================================================
 // We test encryptTIN/decryptTIN by importing the module with a mock config key

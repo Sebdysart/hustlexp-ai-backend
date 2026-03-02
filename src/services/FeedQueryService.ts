@@ -423,11 +423,11 @@ const FEED_CACHE_KEY = (userId: string) => `hustlexp:feed:eligible:${userId}`;
  */
 export async function invalidateFeedCache(
   userId: string,
-  redis: { del(key: string): Promise<number> } | null = feedRedis,
+  redis: RedisDel | null = feedRedis,
 ): Promise<void> {
   if (!redis) return;
   try {
-    await redis.del(`hustlexp:feed:eligible:${userId}`);
+    await redis.del(FEED_CACHE_KEY(userId));
   } catch (err) {
     logger.warn({ err, userId }, 'FeedQueryService: Redis DEL failed for feed cache');
   }
