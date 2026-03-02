@@ -525,13 +525,44 @@ export async function recompute(userId: string): Promise<RecomputeResult> {
 }
 
 /**
- * Invalidate feed cache for a user.
- * Called after profile recompute to ensure feed reflects new eligibility.
+ * Invalidate the feed eligibility cache for a user.
+ * Called after profile recompute to ensure the feed reflects new eligibility.
+ *
+ * Shares the same key as FeedQueryService (`hustlexp:feed:eligible:{userId}`)
+ * so both services target the same cache entry.  This function is intentionally
+ * independent of FeedQueryService to avoid a circular import.
+ *
+ * @param userId - User whose feed cache should be evicted.
+ * @param redis  - Injectable Redis client (duck-typed for testability).
+ *                 Defaults to null; pass the module-level client in production.
+ *                 Never throws — cache invalidation must never block a recompute.
  */
+
+/** Minimal injectable Redis DEL interface — duck-typed for testability. */
+interface RedisDel {
+  del: (key: string) => Promise<number>;
+}
+
+export async function invalidateProfileFeedCache(
+  userId: string,
+  redis: RedisDel | null = null,
+): Promise<void> {
+  if (!redis) {
+    logger.info({ userId }, 'Feed cache invalidation requested (no Redis client — skipped)');
+    return;
+  }
+  try {
+    await redis.del(`hustlexp:feed:eligible:${userId}`);
+    logger.info({ userId }, 'Feed cache invalidated via CapabilityProfileService');
+  } catch (error: unknown) {
+    // Graceful degradation — feed will be recomputed on next request.
+    logger.warn({ error, userId }, 'Feed cache invalidation failed (Redis error — ignored)');
+  }
+}
+
+/** @deprecated Use invalidateProfileFeedCache instead */
 async function invalidateFeedCache(userId: string): Promise<void> {
-  // TODO: Implement cache invalidation with Redis/Upstash
-  // For now, just log the intent
-  logger.info({ userId }, 'Feed cache invalidation requested');
+  return invalidateProfileFeedCache(userId);
 }
 
 // ============================================================================

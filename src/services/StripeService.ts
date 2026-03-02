@@ -657,3 +657,59 @@ class StripeServiceClass {
 }
 
 export const StripeService = new StripeServiceClass();
+
+// ============================================
+// Redis Connect Account Cache Helpers
+// (Exported for testing — injectable Redis client)
+// ============================================
+
+/** Minimal injectable Redis get interface — duck-typed for testability. */
+interface RedisCacheGet {
+  get: (key: string) => Promise<string | null>;
+}
+/** Minimal injectable Redis set interface — duck-typed for testability. */
+interface RedisCacheSet {
+  set: (key: string, value: string, opts: { ex: number }) => Promise<unknown>;
+}
+
+const CONNECT_REDIS_KEY = (userId: string) => `hustlexp:connect:${userId}`;
+/** 24-hour TTL for Connect account IDs cached in Redis. */
+const CONNECT_REDIS_TTL_SECONDS = 86_400;
+
+/**
+ * Look up a Stripe Connect account ID from Redis.
+ *
+ * Returns null when Redis is not configured (redis === null), when the key is
+ * absent, or when the Redis call throws.  Never propagates errors — Redis is a
+ * performance layer, not a correctness requirement.
+ */
+export async function getConnectAccountFromRedis(
+  userId: string,
+  redis: RedisCacheGet | null,
+): Promise<string | null> {
+  if (!redis) return null;
+  try {
+    return await redis.get(CONNECT_REDIS_KEY(userId));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Store a Stripe Connect account ID in Redis with a 24-hour TTL.
+ *
+ * No-op when Redis is not configured (redis === null).
+ * Never throws — errors are silenced to protect the DB write path.
+ */
+export async function setConnectAccountInRedis(
+  userId: string,
+  accountId: string,
+  redis: RedisCacheSet | null,
+): Promise<void> {
+  if (!redis) return;
+  try {
+    await redis.set(CONNECT_REDIS_KEY(userId), accountId, { ex: CONNECT_REDIS_TTL_SECONDS });
+  } catch {
+    // Silently ignore — Redis is a performance layer, not a correctness requirement.
+  }
+}

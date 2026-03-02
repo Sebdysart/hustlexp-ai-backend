@@ -137,7 +137,7 @@ class TaskApplicationServiceClass {
       }
 
       // 4. Validate proposed price if provided
-      const proposedPriceCents = proposedPrice ? Math.round(proposedPrice * 100) : null;
+      const proposedPriceCents = proposedPrice != null ? Math.round(proposedPrice * 100) : null;
       if (proposedPriceCents !== null) {
         if (proposedPriceCents <= 0) {
           return { success: false, message: 'Proposed price must be positive' };

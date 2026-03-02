@@ -387,13 +387,37 @@ export async function getEligibleTaskCount(userId: string): Promise<number> {
 // CACHE MANAGEMENT
 // ============================================================================
 
+/** Minimal injectable Redis DEL interface — duck-typed for testability. */
+interface RedisDel {
+  del: (key: string) => Promise<number>;
+}
+
+const FEED_CACHE_KEY = (userId: string) => `hustlexp:feed:eligible:${userId}`;
+
 /**
  * Invalidate feed cache for a user.
- * Called when capability profile changes.
+ * Called when capability profile changes (e.g. after profile recompute).
+ *
+ * @param userId - User whose feed cache should be evicted.
+ * @param redis  - Injectable Redis client (duck-typed for testability).
+ *                 Defaults to null; callers that have a Redis client should pass it.
+ *                 Never throws — Redis failure degrades gracefully (next request recomputes).
  */
-export async function invalidateFeedCache(userId: string): Promise<void> {
-  // TODO: Implement with Redis/Upstash when cache layer is added
-  logger.info({ userId }, 'Feed cache invalidation requested');
+export async function invalidateFeedCache(
+  userId: string,
+  redis: RedisDel | null = null,
+): Promise<void> {
+  if (!redis) {
+    logger.info({ userId }, 'Feed cache invalidation requested (no Redis client — skipped)');
+    return;
+  }
+  try {
+    await redis.del(FEED_CACHE_KEY(userId));
+    logger.info({ userId }, 'Feed cache invalidated');
+  } catch (error: unknown) {
+    // Graceful degradation — feed will be recomputed on next request.
+    logger.warn({ error, userId }, 'Feed cache invalidation failed (Redis error — ignored)');
+  }
 }
 
 /**
