@@ -68,19 +68,43 @@ const RATE_LIMITS = {
 type RateLimitCategory = keyof typeof RATE_LIMITS;
 
 /**
+ * Decodes the Firebase UID from a JWT token without full verification.
+ * Safe for rate-limiting purposes only — auth verification is done separately.
+ * Using the Firebase UID (stable identity) instead of hashing the raw token
+ * ensures rate limit buckets persist across token refreshes.
+ */
+function extractFirebaseUid(token: string): string | null {
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    // Base64url-decode the payload segment
+    const payload = JSON.parse(
+      Buffer.from(parts[1], 'base64url').toString('utf8')
+    ) as Record<string, unknown>;
+    // Firebase ID tokens use 'sub' (same as 'user_id') for the UID
+    const uid = payload['sub'] ?? payload['user_id'];
+    return typeof uid === 'string' && uid.length > 0 ? uid : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Creates a rate-limiting middleware for the given category.
  * Extracts user ID from the Firebase auth context or falls back to IP.
  */
 export function rateLimitMiddleware(category: RateLimitCategory) {
   return async (c: Context, next: Next) => {
-    // Extract user identifier: prefer Firebase UID, fall back to IP
+    // Extract user identifier: prefer stable Firebase UID from token, fall back to IP
     const authHeader = c.req.header('authorization');
     let identifier: string;
 
     if (authHeader?.startsWith('Bearer ')) {
-      // Use a hash of the token as identifier (avoid storing raw tokens)
       const token = authHeader.slice(7);
-      identifier = `user:${hashIdentifier(token)}`;
+      // Decode (not verify) Firebase UID from JWT payload for stable rate-limit identity.
+      // Token refresh no longer resets the bucket — same user = same bucket.
+      const uid = extractFirebaseUid(token);
+      identifier = uid ? `user:${uid}` : `anon:${hashIdentifier(token)}`;
     } else {
       // Use forwarded IP or connecting IP
       identifier = `ip:${c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown'}`;

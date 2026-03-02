@@ -11,6 +11,7 @@
  *  - requireRole(role)         →  validates role claim stored in the JWT custom claims
  */
 
+import { createHash } from 'crypto';
 import { getApps, initializeApp, cert } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
 import type { DecodedIdToken } from 'firebase-admin/auth';
@@ -25,18 +26,20 @@ import { getErrorMessage } from '../utils/errors.js';
 let firebaseInitialised = false;
 
 function ensureFirebase(): ReturnType<typeof getAuth> | null {
-  if (!process.env.FIREBASE_PROJECT_ID ||
-      !process.env.FIREBASE_CLIENT_EMAIL ||
-      !process.env.FIREBASE_PRIVATE_KEY) {
+  const projectId = process.env.FIREBASE_PROJECT_ID ?? '';
+  const clientEmail = process.env.FIREBASE_CLIENT_EMAIL ?? '';
+  const privateKey = process.env.FIREBASE_PRIVATE_KEY ?? '';
+
+  if (!projectId || !clientEmail || !privateKey) {
     return null;
   }
 
   if (!firebaseInitialised && getApps().length === 0) {
     initializeApp({
       credential: cert({
-        projectId: process.env.FIREBASE_PROJECT_ID,
-        clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-        privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+        projectId,
+        clientEmail,
+        privateKey: privateKey.replace(/\\n/g, '\n'),
       }),
     });
     firebaseInitialised = true;
@@ -54,6 +57,8 @@ function ensureFirebase(): ReturnType<typeof getAuth> | null {
 // NOTE: Keep in sync with backend/src/auth/constants.ts TOKEN_CACHE_TTL_SECONDS
 /** Cache TTL for verified tokens.  ≤5 min keeps the revocation window tight. */
 export const TOKEN_CACHE_TTL = 5 * 60; // 5 minutes (300 seconds)
+/** Maximum entries in the in-process token cache.  Prevents unbounded memory growth. */
+export const TOKEN_CACHE_MAX = 10_000;
 
 interface CacheEntry {
   decoded: DecodedIdToken;
@@ -62,18 +67,29 @@ interface CacheEntry {
 
 const tokenCache = new Map<string, CacheEntry>();
 
+/** Hash the raw token so JWTs are never stored as Map keys (heap-dump safety). */
+function cacheKey(token: string): string {
+  return createHash('sha256').update(token).digest('hex');
+}
+
 function cacheGet(token: string): DecodedIdToken | null {
-  const entry = tokenCache.get(token);
+  const key = cacheKey(token);
+  const entry = tokenCache.get(key);
   if (!entry) return null;
   if (Date.now() > entry.expiresAt) {
-    tokenCache.delete(token);
+    tokenCache.delete(key);
     return null;
   }
   return entry.decoded;
 }
 
 function cacheSet(token: string, decoded: DecodedIdToken): void {
-  tokenCache.set(token, {
+  // Evict oldest entry (Map iteration order = insertion order) when at capacity.
+  if (tokenCache.size >= TOKEN_CACHE_MAX) {
+    const oldestKey = tokenCache.keys().next().value;
+    if (oldestKey !== undefined) tokenCache.delete(oldestKey);
+  }
+  tokenCache.set(cacheKey(token), {
     decoded,
     expiresAt: Date.now() + TOKEN_CACHE_TTL * 1000,
   });
@@ -144,9 +160,9 @@ async function verifyWithCache(token: string): Promise<DecodedIdToken | null> {
  */
 export function isAuthEnabled(): boolean {
   return Boolean(
-    process.env.FIREBASE_PROJECT_ID &&
-    process.env.FIREBASE_CLIENT_EMAIL &&
-    process.env.FIREBASE_PRIVATE_KEY,
+    (process.env.FIREBASE_PROJECT_ID ?? '') &&
+    (process.env.FIREBASE_CLIENT_EMAIL ?? '') &&
+    (process.env.FIREBASE_PRIVATE_KEY ?? ''),
   );
 }
 

@@ -151,11 +151,14 @@ app.use('*', cors({
 // Prometheus HTTP metrics collection
 app.use('*', httpMetricsMiddleware());
 
-// Rate limiting per route category
-app.use('/trpc/ai.*', rateLimitMiddleware('ai'));
-app.use('/trpc/escrow.*', rateLimitMiddleware('escrow'));
-app.use('/trpc/task.*', rateLimitMiddleware('task'));
-app.use('/api/*', rateLimitMiddleware('general'));
+// Rate limiting per route category.
+// Specific limits for high-risk routers run first.
+// Catch-all covers squad, notification, live, admin, instant, incidents, betaDashboard, etc.
+app.use('/trpc/ai.*', rateLimitMiddleware('ai'));       // 20/min — AI cost protection
+app.use('/trpc/escrow.*', rateLimitMiddleware('escrow')); // 30/min — financial ops
+app.use('/trpc/task.*', rateLimitMiddleware('task'));   // 60/min — core task ops
+app.use('/trpc/*', rateLimitMiddleware('general'));     // 100/min — all other tRPC routes
+app.use('/api/*', rateLimitMiddleware('general'));      // 100/min — REST endpoints
 
 // ============================================================================
 // PROMETHEUS METRICS ENDPOINT
