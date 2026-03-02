@@ -64,9 +64,20 @@ export async function getCapabilityProfile(userId: string): Promise<CapabilityPr
   await recomputeCapabilityProfile(userId, { reason: 'getCapabilityProfile' });
 
   // Load the profile
-  const profileResult = await db.query<Record<string, any>>(
+  const profileResult = await db.query<{
+    user_id: string;
+    trust_tier: string;
+    risk_clearance: string[];
+    location_state: string | null;
+    location_city: string | null;
+    insurance_valid: boolean;
+    insurance_expires_at: string | null;
+    background_check_valid: boolean;
+    background_check_expires_at: string | null;
+    updated_at: string;
+  }>(
     `
-    SELECT 
+    SELECT
       user_id, trust_tier, risk_clearance, location_state, location_city,
       insurance_valid, insurance_expires_at,
       background_check_valid, background_check_expires_at,
@@ -87,7 +98,12 @@ export async function getCapabilityProfile(userId: string): Promise<CapabilityPr
   const row = profileResult.rows[0];
 
   // Load verified trades
-  const tradesResult = await db.query<Record<string, any>>(
+  const tradesResult = await db.query<{
+    trade: string;
+    state: string;
+    expires_at: string | null;
+    license_verification_id: string;
+  }>(
     `
     SELECT trade, state, expires_at, license_verification_id
     FROM verified_trades
@@ -217,7 +233,7 @@ export async function recompute(userId: string, reason: string): Promise<void> {
 export async function initializeProfile(userId: string): Promise<void> {
   log.info({ userId }, 'Initializing capability profile');
   
-  await db.query<Record<string, any>>(
+  await db.query(
     `
     INSERT INTO capability_profiles (
       user_id, trust_tier, risk_clearance, location_state, location_city,
@@ -267,7 +283,7 @@ export async function findUsersWithCapability(
 ): Promise<string[]> {
   const now = new Date().toISOString();
   
-  const result = await db.query<Record<string, any>>(
+  const result = await db.query<{ user_id: string }>(
     `
     SELECT DISTINCT vt.user_id
     FROM verified_trades vt

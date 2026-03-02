@@ -13,7 +13,7 @@
  * @see staging/TASK_DISCOVERY_SPEC.md
  */
 
-import { db, isInvariantViolation, getErrorMessage } from '../db';
+import { db } from '../db';
 import type { ServiceResult } from '../types';
 import { ErrorCodes } from '../types';
 import { GeocodingService } from './GeocodingService';
@@ -43,7 +43,7 @@ export interface MatchingScoreComponents {
 }
 
 export interface TaskFeedItem {
-  task: Record<string, unknown>; // Task row from DB query
+  task: TaskFeedRow; // Task row from DB query
   matching_score: number;
   relevance_score: number;
   distance_miles: number;
@@ -71,6 +71,44 @@ export interface FeedFilters {
 
 export interface SearchFilters extends FeedFilters {
   query?: string; // Full-text search
+}
+
+/** Row shape returned by browsePublicFeed SELECT */
+interface PublicTaskRow {
+  id: string;
+  title: string;
+  description: string;
+  category: string | null;
+  price: number;
+  location: string | null;
+  deadline: string | null;
+  created_at: string;
+  state: string;
+  requires_proof: boolean;
+  mode: string;
+  poster_id: string;
+}
+
+/** Row shape returned by getFeed / search (tasks + matching scores) */
+export interface TaskFeedRow {
+  // Task entity fields (from t.*)
+  id: string;
+  title: string;
+  description: string;
+  category: string | null;
+  price: number;
+  location: string | null;
+  deadline: string | null;
+  created_at: string;
+  state: string;
+  requires_proof: boolean;
+  mode: string;
+  poster_id: string;
+  // Computed scoring fields
+  matching_score: number;
+  relevance_score: number;
+  distance_miles: number;
+  search_rank?: number;
 }
 
 // ============================================================================
@@ -129,25 +167,6 @@ function calculateDistanceScore(distanceMiles: number): number {
   }
 }
 
-/**
- * Calculate distance between two coordinates (Haversine formula)
- */
-function calculateDistance(
-  lat1: number,
-  lon1: number,
-  lat2: number,
-  lon2: number
-): number {
-  const R = 3959; // Earth radius in miles
-  const dLat = (lat2 - lat1) * Math.PI / 180;
-  const dLon = (lon2 - lon1) * Math.PI / 180;
-  const a =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-    Math.sin(dLon / 2) * Math.sin(dLon / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return R * c;
-}
 
 /**
  * Calculate category match (TASK_DISCOVERY_SPEC.md §1.2.3)
@@ -252,7 +271,7 @@ export const TaskDiscoveryService = {
     },
     limit: number = 20,
     offset: number = 0
-  ): Promise<ServiceResult<Record<string, unknown>[]>> => {
+  ): Promise<ServiceResult<PublicTaskRow[]>> => {
     try {
       let sql = `
         SELECT
@@ -300,7 +319,7 @@ export const TaskDiscoveryService = {
       params.push(limit, offset);
       sql += ` LIMIT $${params.length - 1} OFFSET $${params.length}`;
 
-      const result = await db.query<Record<string, unknown>>(sql, params);
+      const result = await db.query<PublicTaskRow>(sql, params);
 
       return {
         success: true,
@@ -529,7 +548,7 @@ export const TaskDiscoveryService = {
           continue;
         }
         
-        const { matchingScore, components, distanceMiles } = scoreResult.data;
+        const { matchingScore, distanceMiles } = scoreResult.data;
         
         // Skip tasks beyond max distance
         if (distanceMiles > maxDistanceMiles) {
@@ -570,7 +589,7 @@ export const TaskDiscoveryService = {
             [task.id, hustlerId, matchingScore, relevanceScore, distanceMiles, expiresAt]
           );
           cached++;
-        } catch (error) {
+        } catch (_error) {
           // Skip if insert fails (e.g., constraint violation)
           continue;
         }
@@ -678,10 +697,10 @@ export const TaskDiscoveryService = {
       params.push(limit, offset);
       sql += ` LIMIT $${params.length - 1} OFFSET $${params.length}`;
       
-      const result = await db.query<Record<string, unknown>>(sql, params);
+      const result = await db.query<TaskFeedRow>(sql, params);
 
       // Generate "Why this task?" explanations (TASK_DISCOVERY_SPEC.md §4)
-      const feedItems: TaskFeedItem[] = result.rows.map((row: Record<string, unknown>) => {
+      const feedItems: TaskFeedItem[] = result.rows.map((row) => {
         const explanation = generateExplanation({
           matching_score: row.matching_score as number,
           distance_miles: row.distance_miles as number,
@@ -758,9 +777,9 @@ export const TaskDiscoveryService = {
         params.push(limit, offset);
         sql += ` LIMIT $${params.length - 1} OFFSET $${params.length}`;
         
-        const result = await db.query<Record<string, unknown>>(sql, params);
+        const result = await db.query<TaskFeedRow>(sql, params);
 
-        const feedItems: TaskFeedItem[] = result.rows.map((row: Record<string, unknown>) => ({
+        const feedItems: TaskFeedItem[] = result.rows.map((row) => ({
           task: row,
           matching_score: row.matching_score as number,
           relevance_score: row.relevance_score as number,
@@ -864,7 +883,7 @@ Be concise, specific, and motivating. No markdown. No filler.`),
           });
 
           if (aiResponse.ok) {
-            const aiData = await aiResponse.json() as Record<string, any>;
+            const aiData = await aiResponse.json() as { content?: Array<{ text?: string }> };
             const aiText = aiData.content?.[0]?.text;
             if (aiText && typeof aiText === 'string' && aiText.length > 10) {
               explanation = aiText.trim();

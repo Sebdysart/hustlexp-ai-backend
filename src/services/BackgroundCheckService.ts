@@ -11,8 +11,10 @@
  */
 
 import { transaction } from '../db/index.js';
+import type { SqlTx } from '../db/index.js';
 import { createLogger } from '../utils/logger.js';
 import { CapabilityProfileService } from './CapabilityProfileService.js';
+import { getErrorMessage } from '../utils/errors.js';
 
 const logger = createLogger('BackgroundCheckService');
 
@@ -68,7 +70,7 @@ export async function createBackgroundCheck(
   input: CreateBackgroundCheckInput
 ): Promise<BackgroundCheckResult> {
   try {
-    return await transaction(async (tx: any) => {
+    return await transaction(async (tx: SqlTx) => {
       // Check if user already has a verified background check
       const [existingVerified] = await tx`
         SELECT id FROM background_checks
@@ -133,9 +135,9 @@ export async function createBackgroundCheck(
         backgroundCheck: formatBackgroundCheck(check),
       };
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     logger.error({ error, input }, 'Failed to create background check');
-    return { success: false, error: error.message };
+    return { success: false, error: getErrorMessage(error) };
   }
 }
 
@@ -148,7 +150,7 @@ export async function updateBackgroundCheck(
   input: UpdateBackgroundCheckInput
 ): Promise<BackgroundCheckResult> {
   try {
-    return await transaction(async (tx: any) => {
+    return await transaction(async (tx: SqlTx) => {
       const [current] = await tx`
         SELECT * FROM background_checks WHERE id = ${checkId}
       `;
@@ -187,9 +189,9 @@ export async function updateBackgroundCheck(
         backgroundCheck: formatBackgroundCheck(updated),
       };
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     logger.error({ error, checkId }, 'Failed to update background check');
-    return { success: false, error: error.message };
+    return { success: false, error: getErrorMessage(error) };
   }
 }
 
@@ -200,7 +202,7 @@ export async function processProviderWebhook(
   provider: string,
   providerCheckId: string,
   status: BackgroundCheckStatus,
-  resultData?: any
+  resultData?: unknown
 ): Promise<BackgroundCheckResult> {
   try {
     const { sql } = await import('../db/index.js');
@@ -232,9 +234,9 @@ export async function processProviderWebhook(
       expiresAt,
       resultsEncrypted,
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     logger.error({ error, provider, providerCheckId }, 'Failed to process webhook');
-    return { success: false, error: error.message };
+    return { success: false, error: getErrorMessage(error) };
   }
 }
 
@@ -324,8 +326,9 @@ export async function checkExpiredBackgroundChecks(): Promise<{
     RETURNING id, user_id
   `;
 
+  interface ExpiredCheckRow { id: string; user_id: string; }
   // Recompute profiles for affected users
-  const affectedUserIds = new Set(result.map((r: any) => r.user_id));
+  const affectedUserIds = new Set((result as ExpiredCheckRow[]).map((r) => r.user_id));
   for (const userId of affectedUserIds) {
     await CapabilityProfileService.recompute(userId);
   }
@@ -347,7 +350,7 @@ export async function checkExpiredBackgroundChecks(): Promise<{
  */
 export async function initiateCheckrBackgroundCheck(
   userId: string,
-  candidateData: {
+  _candidateData: {
     firstName: string;
     lastName: string;
     email: string;
@@ -374,7 +377,21 @@ export async function initiateCheckrBackgroundCheck(
 // HELPER FUNCTIONS
 // ============================================================================
 
-function formatBackgroundCheck(row: any): BackgroundCheck {
+interface BackgroundCheckRow {
+  id: string;
+  user_id: string;
+  status: BackgroundCheckStatus;
+  provider: string;
+  provider_check_id: string | null;
+  verified_at: Date | null;
+  expires_at: Date | null;
+  failure_reason: string | null;
+  results_encrypted: Buffer | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+function formatBackgroundCheck(row: BackgroundCheckRow): BackgroundCheck {
   return {
     id: row.id,
     userId: row.user_id,

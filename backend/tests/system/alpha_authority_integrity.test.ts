@@ -14,7 +14,7 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
-import { testDb, closeTestPool } from './test-db';
+import { testDb, closeTestPool, hasLocalDb } from './test-db';
 import { TrustTierService, TrustTier } from '../../src/services/TrustTierService';
 import { TaskRiskClassifier, TaskRisk } from '../../src/services/TaskRiskClassifier';
 import { EligibilityGuard, EligibilityErrorCode } from '../../src/services/EligibilityGuard';
@@ -111,7 +111,7 @@ async function cleanupTestData(userIds: string[], taskIds: string[]): Promise<vo
   }
 }
 
-describe('Alpha Authority Integrity Test', () => {
+describe.skipIf(!hasLocalDb)('Alpha Authority Integrity Test', () => {
   const testUserIds: string[] = [];
   const testTaskIds: string[] = [];
 

@@ -12,7 +12,9 @@ import { env } from '../config/env.js';
 import { assertPayoutsEnabled } from '../config/safety.js';
 import Stripe from 'stripe';
 import { serviceLogger } from '../utils/logger.js';
+import { getErrorMessage } from '../utils/errors.js';
 import { sql, isDatabaseAvailable, transaction, safeSql } from '../db/index.js';
+import type { SqlTx } from '../db/index.js';
 import { StripeMoneyEngine } from './StripeMoneyEngine.js';
 
 // Import centralized config for platform fee (fixes discrepancy with backend/src/config.ts)
@@ -103,6 +105,33 @@ const connectAccounts = new Map<string, string>();
 const processedEvents = new Set<string>();
 
 // ============================================
+// Idempotency Helper (exported for testing)
+// ============================================
+
+/**
+ * Attempts to record a Stripe event ID in the processed_stripe_events table
+ * using INSERT … ON CONFLICT DO NOTHING.
+ *
+ * Returns true  if the event was already processed (duplicate — caller should skip).
+ * Returns false if the event is new and should be processed.
+ *
+ * The sql parameter accepts the module-level `sql` tagged-template client or a
+ * transaction client (SqlTx), making the function unit-testable without a real DB.
+ */
+export async function checkStripeEventIdempotency(
+    eventId: string,
+    sqlClient: SqlTx | typeof sql
+): Promise<boolean> {
+    const result = await (sqlClient as typeof sql)`
+        INSERT INTO processed_stripe_events (event_id, processed_at, event_type)
+        VALUES (${eventId}, NOW(), 'unknown')
+        ON CONFLICT (event_id) DO NOTHING
+        RETURNING event_id
+    `;
+    return result.length === 0; // true = duplicate (conflict fired, nothing inserted)
+}
+
+// ============================================
 // Stripe Service Class
 // ============================================
 
@@ -130,9 +159,10 @@ class StripeServiceClass {
             await this.setConnectAccountId(userId, account.id);
             const onboardingUrl = await this.createAccountLink(account.id);
             return { success: true, accountId: account.id, onboardingUrl };
-        } catch (error: any) {
+        } catch (error: unknown) {
+            const message = error instanceof Error ? error.message : String(error);
             serviceLogger.error({ error, userId }, 'Failed to create Connect account');
-            return { success: false, error: error.message };
+            return { success: false, error: message };
         }
     }
 
@@ -146,7 +176,7 @@ class StripeServiceClass {
                 type: 'account_onboarding',
             });
             return link.url;
-        } catch (error) { return undefined; }
+        } catch (_error) { return undefined; }
     }
 
     async getAccountStatus(userId: string): Promise<AccountStatus | null> {
@@ -167,7 +197,7 @@ class StripeServiceClass {
                 requirements: account.requirements?.currently_due || [],
                 status,
             };
-        } catch (error) { return null; }
+        } catch (_error) { return null; }
     }
 
     async getConnectAccountId(userId: string): Promise<string | undefined> {
@@ -207,7 +237,7 @@ class StripeServiceClass {
     // Escrow & Payment Intent
     // ============================================
 
-    async createEscrowHold(taskId: string, posterId: string, hustlerId: string, amount: number, paymentMethodId: string): Promise<any | null> {
+    async createEscrowHold(taskId: string, posterId: string, hustlerId: string, amount: number, paymentMethodId: string): Promise<{ id: string; taskId: string; status: string; amount: number } | null> {
         if (!stripe || !sql) return null;
         if (!paymentMethodId || paymentMethodId.startsWith('pm_error')) {
             throw new Error('Stripe authentication failed: validation error');
@@ -269,46 +299,41 @@ class StripeServiceClass {
         assertPayoutsEnabled(`releaseEscrow:${taskId}`);
 
         // Delegate to Engine for SAGA Safety
-        try {
-            // Need ctx
-            const [escrow] = await sql`SELECT * FROM escrow_holds WHERE task_id = ${taskId}`;
-            if (!escrow) throw new Error('Escrow not found');
+        // Need ctx
+        const [escrow] = await sql`SELECT * FROM escrow_holds WHERE task_id = ${taskId}`;
+        if (!escrow) throw new Error('Escrow not found');
 
-            const hustlerStripeAccountId = await this.getConnectAccountId(escrow.hustler_id);
-            if (!hustlerStripeAccountId) {
-                throw new Error(`No Stripe Connect account found for hustler ${escrow.hustler_id}`);
-            }
-
-            const ctx = {
-                hustlerStripeAccountId,
-                payoutAmountCents: escrow.net_payout_cents,
-                taskId,
-                hustlerId: escrow.hustler_id
-            };
-
-            const result = await StripeMoneyEngine.handle(taskId, 'RELEASE_PAYOUT', ctx);
-
-            // Fetch result Payout info... 
-            // Engine updates DB. We return structure.
-            return {
-                id: 'payout_engine_managed',
-                escrowId: escrow.id,
-                hustlerId: escrow.hustler_id,
-                hustlerStripeAccountId: ctx.hustlerStripeAccountId,
-                amount: escrow.net_payout_cents / 100,
-                fee: 0,
-                netAmount: escrow.net_payout_cents / 100,
-                type,
-                status: 'processing',
-                createdAt: new Date()
-            };
-
-        } catch (error) {
-            throw error;
+        const hustlerStripeAccountId = await this.getConnectAccountId(escrow.hustler_id);
+        if (!hustlerStripeAccountId) {
+            throw new Error(`No Stripe Connect account found for hustler ${escrow.hustler_id}`);
         }
+
+        const ctx = {
+            hustlerStripeAccountId,
+            payoutAmountCents: escrow.net_payout_cents,
+            taskId,
+            hustlerId: escrow.hustler_id
+        };
+
+        await StripeMoneyEngine.handle(taskId, 'RELEASE_PAYOUT', ctx);
+
+        // Fetch result Payout info...
+        // Engine updates DB. We return structure.
+        return {
+            id: 'payout_engine_managed',
+            escrowId: escrow.id,
+            hustlerId: escrow.hustler_id,
+            hustlerStripeAccountId: ctx.hustlerStripeAccountId,
+            amount: escrow.net_payout_cents / 100,
+            fee: 0,
+            netAmount: escrow.net_payout_cents / 100,
+            type,
+            status: 'processing',
+            createdAt: new Date()
+        };
     }
 
-    async refundEscrow(taskId: string, isAdmin: boolean = false): Promise<any> {
+    async refundEscrow(taskId: string, isAdmin: boolean = false): Promise<{ success: boolean; state?: string; message?: string }> {
         // Delegate to Engine
         try {
             // Fetch context needed
@@ -326,7 +351,7 @@ class StripeServiceClass {
             // Previously this used 'FORCE_REFUND' for admin which is not a valid MoneyEvent
             // and would throw in getNextState().
             return await StripeMoneyEngine.handle(taskId, 'REFUND_ESCROW', ctx, { adminOverride: isAdmin });
-        } catch (e) { return { success: false, message: (e as Error).message }; }
+        } catch (e: unknown) { return { success: false, message: getErrorMessage(e) }; }
     }
 
     // ============================================
@@ -343,7 +368,7 @@ class StripeServiceClass {
         const hustlerId = pi.metadata.hustlerId;
         const amountCents = pi.amount;
 
-        await transaction(async (tx: any) => {
+        await transaction(async (tx: (strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown[]>) => {
             // 1. Create Escrow Hold Record
             const platformFee = Math.round(amountCents * PLATFORM_FEE_PERCENT);
             await tx`
@@ -381,7 +406,7 @@ class StripeServiceClass {
         if (!sql) return;
         serviceLogger.info({ taskId, transferId: transfer.id }, '[RECOVERY] Executing recoverReleaseEscrow');
 
-        await transaction(async (tx: any) => {
+        await transaction(async (tx: (strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown[]>) => {
             // 1. Update Escrow
             await tx`
                 UPDATE escrow_holds 
@@ -426,26 +451,28 @@ class StripeServiceClass {
         if (!stripe || !STRIPE_WEBHOOK_SECRET) return null;
         try {
             return stripe.webhooks.constructEvent(payload, signature, STRIPE_WEBHOOK_SECRET);
-        } catch (error) { return null; }
+        } catch (_error) { return null; }
     }
 
     async handleWebhookEvent(event: Stripe.Event): Promise<void> {
         // RULE 3: NEVER THROW - Wrap entire function in try-catch
         try {
             // RULE 1: IDEMPOTENCY (Global Shield)
-            if (processedEvents.has(event.id)) return;
+            // Fast in-memory check first (single-instance guard, resets on restart).
+            if (processedEvents.has(event.id)) {
+                serviceLogger.warn({ eventId: event.id, type: event.type }, 'Duplicate Stripe webhook received (in-memory) — skipping');
+                return;
+            }
 
+            // Durable DB-level check: INSERT … ON CONFLICT DO NOTHING.
+            // This is the primary race-condition guard across restarts and parallel instances.
             if (isDatabaseAvailable() && sql) {
                 try {
-                    const [exists] = await sql`
-                        INSERT INTO processed_stripe_events (event_id, event_type)
-                        VALUES (${event.id}, ${event.type})
-                        ON CONFLICT (event_id) DO NOTHING
-                        RETURNING event_id
-                     `;
-                    if (!exists) {
-                        processedEvents.add(event.id);
-                        return; // Already processed
+                    const isDuplicate = await checkStripeEventIdempotency(event.id, sql);
+                    if (isDuplicate) {
+                        processedEvents.add(event.id); // warm the in-memory cache
+                        serviceLogger.warn({ eventId: event.id, type: event.type }, 'Duplicate Stripe webhook received — skipping');
+                        return;
                     }
                 } catch (dbErr) {
                     // Idempotency table may not exist - continue anyway
@@ -509,11 +536,11 @@ class StripeServiceClass {
                             ${event.id},
                             ${event.type},
                             ${JSON.stringify(event.data.object)},
-                            ${(err as Error).message || 'Unknown error'},
+                            ${getErrorMessage(err) || 'Unknown error'},
                             NOW()
                         ) ON CONFLICT (event_id) DO UPDATE
                         SET retry_count = webhook_dead_letter_queue.retry_count + 1,
-                            last_error = ${(err as Error).message || 'Unknown error'},
+                            last_error = ${getErrorMessage(err) || 'Unknown error'},
                             updated_at = NOW()
                     `;
                     serviceLogger.info({ eventId: event.id }, 'Failed webhook event persisted to DLQ');
@@ -522,8 +549,8 @@ class StripeServiceClass {
                     serviceLogger.fatal({
                         eventId: event.id,
                         eventType: event.type,
-                        originalError: (err as Error).message,
-                        dlqError: (dlqErr as Error).message,
+                        originalError: getErrorMessage(err),
+                        dlqError: getErrorMessage(dlqErr),
                         eventData: JSON.stringify(event.data.object).slice(0, 1000),
                     }, 'CRITICAL: Webhook DLQ write failed — manual intervention required');
                 }
@@ -544,7 +571,7 @@ class StripeServiceClass {
                 amount: escrow.gross_amount_cents / 100,
                 status: escrow.status
             };
-        } catch (error) {
+        } catch (_error) {
             return null;
         }
     }
@@ -570,7 +597,7 @@ class StripeServiceClass {
                 releasedAt: escrow.released_at ? new Date(escrow.released_at) : undefined,
                 stripeTransferId: escrow.stripe_transfer_id
             };
-        } catch (error) {
+        } catch (_error) {
             return null;
         }
     }
@@ -581,6 +608,7 @@ class StripeServiceClass {
         }
         try {
             const payouts = await sql`SELECT * FROM hustler_payouts WHERE hustler_id = ${hustlerId} ORDER BY created_at DESC LIMIT 50`;
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
             return (payouts as any[]).map((p: any) => ({
                 id: p.id,
                 escrowId: p.escrow_id,
@@ -595,7 +623,7 @@ class StripeServiceClass {
                 createdAt: new Date(p.created_at),
                 completedAt: p.completed_at ? new Date(p.completed_at) : undefined
             }));
-        } catch (error) {
+        } catch (_error) {
             return [];
         }
     }
@@ -605,6 +633,7 @@ class StripeServiceClass {
             return payoutLedger.get(payoutId) || null;
         }
         try {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
             const [p] = await sql`SELECT * FROM hustler_payouts WHERE id = ${payoutId}` as any[];
             if (!p) return null;
             return {
@@ -621,7 +650,7 @@ class StripeServiceClass {
                 createdAt: new Date(p.created_at),
                 completedAt: p.completed_at ? new Date(p.completed_at) : undefined
             };
-        } catch (error) {
+        } catch (_error) {
             return null;
         }
     }

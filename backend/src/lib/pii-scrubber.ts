@@ -17,7 +17,7 @@ const log = logger.child({ module: 'pii-scrubber' });
 // ============================================================================
 
 /** RFC 5322-ish email pattern */
-const EMAIL_RE = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g;
+const EMAIL_RE = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
 
 /**
  * North American phone numbers in common formats:
@@ -33,7 +33,7 @@ const SSN_RE = /\b\d{3}[-\s]?\d{2}[-\s]?\d{4}\b/g;
  * Credit card numbers (13-19 digits, optionally separated by spaces or dashes).
  * Validated with a Luhn check to reduce false positives.
  */
-const CC_RE = /\b(?:\d[ \-]?){13,19}\b/g;
+const CC_RE = /\b(?:\d[ -]?){13,19}\b/g;
 
 /**
  * GPS coordinates in decimal-degree format:
@@ -47,7 +47,7 @@ const GPS_RE =
  *   user_abc123, usr-7f3e, account_id:12345, uid_xyz
  */
 const USER_ID_RE =
-  /\b(?:user|usr|account|acct|uid|member|profile)[_\-:]?[a-zA-Z0-9_\-]{3,}\b/gi;
+  /\b(?:user|usr|account|acct|uid|member|profile)[_:-]?[a-zA-Z0-9_-]{3,}\b/gi;
 
 /**
  * Capitalised two-or-three-word sequences that look like personal names.

@@ -61,17 +61,27 @@ export const taskRouter = router({
     }),
   
   /**
-   * List tasks by poster
-   * SECURITY: Uses auth context — users always get their own tasks
-   * Accepts optional state filter for frontend convenience
+   * List tasks by poster — cursor-paginated.
+   * SECURITY: Uses auth context — users always see their own tasks only.
+   *
+   * ⚠️  BREAKING CHANGE (2026-03-02): Return type changed.
+   *    Before: Task[]
+   *    After:  { tasks: Task[], nextCursor: string | undefined }
+   *
+   * iOS migration (manual Codable):
+   *    1. Add wrapper: struct PaginatedTasks: Codable { let tasks: [Task]; let nextCursor: String? }
+   *    2. Decode as PaginatedTasks instead of [Task]
+   *    3. Drive infinite scroll from nextCursor (nil = last page)
+   *    4. Reset cursor + clear array on pull-to-refresh
    */
   listByPoster: protectedProcedure
-    .input(z.object({
-      posterId: Schemas.uuid.optional(),
-      state: z.string().max(50).optional(),
-    }).optional())
+    .input(
+      Schemas.cursorPagination.extend({
+        posterId: Schemas.uuid.optional(),
+      }).optional()
+    )
     .query(async ({ ctx, input }) => {
-      const posterId = input?.posterId || ctx.user.id;
+      const posterId = input?.posterId ?? ctx.user.id;
       if (posterId !== ctx.user.id) {
         throw new TRPCError({
           code: 'FORBIDDEN',
@@ -79,7 +89,10 @@ export const taskRouter = router({
         });
       }
 
-      const result = await TaskService.getByPoster(posterId);
+      const result = await TaskService.getByPoster(posterId, {
+        cursor: input?.cursor ?? null,
+        limit: input?.limit ?? 20,
+      });
 
       if (!result.success) {
         throw new TRPCError({
@@ -88,21 +101,26 @@ export const taskRouter = router({
         });
       }
 
-      return result.data;
+      return result.data; // { tasks, nextCursor }
     }),
 
   /**
-   * List tasks by worker
-   * SECURITY: Uses auth context — users always get their own tasks
-   * Accepts optional state filter for frontend convenience
+   * List tasks by worker — cursor-paginated.
+   * SECURITY: Uses auth context — users always see their own tasks only.
+   *
+   * ⚠️  BREAKING CHANGE (2026-03-02): Return type changed.
+   *    Before: Task[]
+   *    After:  { tasks: Task[], nextCursor: string | undefined }
+   *    iOS: same migration as listByPoster — see above.
    */
   listByWorker: protectedProcedure
-    .input(z.object({
-      workerId: Schemas.uuid.optional(),
-      state: z.string().max(50).optional(),
-    }).optional())
+    .input(
+      Schemas.cursorPagination.extend({
+        workerId: Schemas.uuid.optional(),
+      }).optional()
+    )
     .query(async ({ ctx, input }) => {
-      const workerId = input?.workerId || ctx.user.id;
+      const workerId = input?.workerId ?? ctx.user.id;
       if (workerId !== ctx.user.id) {
         throw new TRPCError({
           code: 'FORBIDDEN',
@@ -110,7 +128,10 @@ export const taskRouter = router({
         });
       }
 
-      const result = await TaskService.getByWorker(workerId);
+      const result = await TaskService.getByWorker(workerId, {
+        cursor: input?.cursor ?? null,
+        limit: input?.limit ?? 20,
+      });
 
       if (!result.success) {
         throw new TRPCError({
@@ -119,7 +140,7 @@ export const taskRouter = router({
         });
       }
 
-      return result.data;
+      return result.data; // { tasks, nextCursor }
     }),
   
   /**

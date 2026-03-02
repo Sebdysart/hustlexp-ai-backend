@@ -24,14 +24,46 @@
  */
 
 import { v4 as uuidv4 } from 'uuid';
-import { sql, isDatabaseAvailable, transaction } from '../db/index.js';
+import { match } from 'ts-pattern';
+import { sql, transaction } from '../db/index.js';
 import { serviceLogger } from '../utils/logger.js';
 import { routedGenerate } from '../ai/router.js';
 import { StripeMoneyEngine } from './StripeMoneyEngine.js';
+
+/** Minimal shape for a dispute_evidence DB row */
+interface EvidenceRow {
+  id: string;
+  dispute_id: string;
+  submitted_by: string;
+  evidence_type: string;
+  content: string;
+  description?: string;
+  created_at: string;
+}
+
+/** Minimal shape for a dispute_jury vote DB row */
+interface JuryVoteRow {
+  juror_id: string;
+  vote: 'poster' | 'hustler';
+  reasoning?: string;
+  voted_at: string;
+}
+
+/** Minimal shape for a vote count row (SELECT vote, COUNT(*) AS count) */
+interface VoteCountRow {
+  vote: string;
+  count: number;
+}
+
+/** Minimal shape for a juror eligibility row */
+interface EligibleJurorRow {
+  id: string;
+}
 import { TaskService } from './TaskService.js';
 import { UserService } from './UserService.js';
 import { BetaMetricsService } from './BetaMetricsService.js';
 import { ulid } from 'ulidx';
+import { getErrorMessage } from '../utils/errors.js';
 
 const logger = serviceLogger.child({ module: 'DisputeResolution' });
 
@@ -105,6 +137,34 @@ export interface DisputeResolutionResult {
   resolution?: Partial<DisputeResolution>;
 }
 
+interface DisputeResolutionRow {
+  id: string;
+  task_id: string;
+  initiator_id: string;
+  initiator_role: 'poster' | 'hustler';
+  poster_id: string;
+  hustler_id: string;
+  reason: string;
+  status: DisputeResolutionStatus;
+  ai_outcome: ResolutionOutcome | null;
+  ai_confidence: number | null;
+  ai_reasoning: string | null;
+  ai_risk_flags: string[] | null;
+  jury_member_ids: string[] | null;
+  final_outcome: ResolutionOutcome | null;
+  refund_amount_cents: number | null;
+  release_amount_cents: number | null;
+  created_at: Date;
+  updated_at: Date;
+  finalized_at: Date | null;
+}
+
+interface JuryAssignmentRow {
+  dispute_id: string;
+  assigned_at: string;
+  jury_deliberation_deadline: string | null;
+}
+
 // ============================================================================
 // CONSTANTS
 // ============================================================================
@@ -112,7 +172,6 @@ export interface DisputeResolutionResult {
 const JURY_SIZE = 3;
 const JURY_MIN_TRUST_TIER = 2;
 const JURY_MIN_COMPLETED_TASKS = 5;
-const EVIDENCE_COLLECTION_WINDOW_MS = 72 * 60 * 60 * 1000; // 72 hours
 const JURY_DELIBERATION_WINDOW_MS = 48 * 60 * 60 * 1000; // 48 hours
 const AI_CONFIDENCE_THRESHOLD = 0.80; // Below this, AI defers to jury
 
@@ -428,14 +487,15 @@ class DisputeResolutionServiceClass {
       `;
 
       // Build the evidence summary for AI
-      const posterEvidence = evidence
-        .filter((e: any) => e.submitted_by === dispute.poster_id)
-        .map((e: any) => `[${e.evidence_type}] ${e.content}${e.description ? ' - ' + e.description : ''}`)
+      const evidenceRows = evidence as EvidenceRow[];
+      const posterEvidence = evidenceRows
+        .filter((e) => e.submitted_by === dispute.poster_id)
+        .map((e) => `[${e.evidence_type}] ${e.content}${e.description ? ' - ' + e.description : ''}`)
         .join('\n');
 
-      const hustlerEvidence = evidence
-        .filter((e: any) => e.submitted_by === dispute.hustler_id)
-        .map((e: any) => `[${e.evidence_type}] ${e.content}${e.description ? ' - ' + e.description : ''}`)
+      const hustlerEvidence = evidenceRows
+        .filter((e) => e.submitted_by === dispute.hustler_id)
+        .map((e) => `[${e.evidence_type}] ${e.content}${e.description ? ' - ' + e.description : ''}`)
         .join('\n');
 
       const userPrompt = `DISPUTE CASE:
@@ -449,10 +509,10 @@ Task Status at Dispute: ${task?.status || 'N/A'}
 DISPUTE REASON:
 ${dispute.reason}
 
-POSTER'S EVIDENCE (${evidence.filter((e: any) => e.submitted_by === dispute.poster_id).length} items):
+POSTER'S EVIDENCE (${evidenceRows.filter((e) => e.submitted_by === dispute.poster_id).length} items):
 ${posterEvidence || '(No evidence submitted by poster)'}
 
-HUSTLER'S EVIDENCE (${evidence.filter((e: any) => e.submitted_by === dispute.hustler_id).length} items):
+HUSTLER'S EVIDENCE (${evidenceRows.filter((e) => e.submitted_by === dispute.hustler_id).length} items):
 ${hustlerEvidence || '(No evidence submitted by hustler)'}
 
 Analyze this dispute and provide your recommendation in JSON format.`;
@@ -593,7 +653,7 @@ Analyze this dispute and provide your recommendation in JSON format.`;
 
       // Select exactly JURY_SIZE from the eligible pool
       const selectedJurors = eligibleJurors.slice(0, JURY_SIZE);
-      const jurorIds = selectedJurors.map((j: any) => j.id as string);
+      const jurorIds = (selectedJurors as EligibleJurorRow[]).map((j) => j.id);
 
       // 3. Atomically assign jury and transition status
       await transaction(async (tx) => {
@@ -722,8 +782,9 @@ Analyze this dispute and provide your recommendation in JSON format.`;
           GROUP BY vote
         `;
 
-        const posterVotes = votes.find((v: any) => v.vote === 'poster')?.count || 0;
-        const hustlerVotes = votes.find((v: any) => v.vote === 'hustler')?.count || 0;
+        const voteRows = votes as VoteCountRow[];
+        const posterVotes = voteRows.find((v) => v.vote === 'poster')?.count || 0;
+        const hustlerVotes = voteRows.find((v) => v.vote === 'hustler')?.count || 0;
 
         // INV-DISP-5: Determine outcome - 2/3 majority or split
         let juryOutcome: ResolutionOutcome;
@@ -830,25 +891,28 @@ Analyze this dispute and provide your recommendation in JSON format.`;
         ? Number(moneyState.amount_cents)
         : Math.round(task.recommendedPrice * 100);
 
-      // 5. Calculate amounts based on outcome
-      let refundAmountCents = 0;
-      let releaseAmountCents = 0;
-
-      switch (outcome) {
-        case 'poster':
-          refundAmountCents = taskAmountCents;
-          releaseAmountCents = 0;
-          break;
-        case 'hustler':
-          refundAmountCents = 0;
-          releaseAmountCents = taskAmountCents;
-          break;
-        case 'split':
+      // 5. Calculate amounts based on outcome.
+      //
+      // ts-pattern exhaustive match: TypeScript will emit a compile error if a
+      // new ResolutionOutcome variant is added without updating this handler.
+      const { refundAmountCents, releaseAmountCents } = match(outcome)
+        .with('poster', () => ({
+          refundAmountCents: taskAmountCents,
+          releaseAmountCents: 0,
+        }))
+        .with('hustler', () => ({
+          refundAmountCents: 0,
+          releaseAmountCents: taskAmountCents,
+        }))
+        .with('split', () => {
           // splitPercent is the percentage going to the hustler
-          releaseAmountCents = Math.round(taskAmountCents * (splitPercent / 100));
-          refundAmountCents = taskAmountCents - releaseAmountCents;
-          break;
-      }
+          const release = Math.round(taskAmountCents * (splitPercent / 100));
+          return {
+            refundAmountCents: taskAmountCents - release,
+            releaseAmountCents: release,
+          };
+        })
+        .exhaustive();
 
       // 6. Execute the money engine operation
       const eventId = ulid();
@@ -900,7 +964,7 @@ Analyze this dispute and provide your recommendation in JSON format.`;
           SET final_outcome = ${outcome},
               refund_amount_cents = ${refundAmountCents},
               release_amount_cents = ${releaseAmountCents},
-              money_engine_error = ${(moneyError as Error).message},
+              money_engine_error = ${getErrorMessage(moneyError)},
               updated_at = NOW()
           WHERE id = ${disputeId}
         `;
@@ -946,7 +1010,7 @@ Analyze this dispute and provide your recommendation in JSON format.`;
       }, 'Dispute finalized');
 
       // 9. Emit metric
-      try { BetaMetricsService.disputeResolved(outcome === 'poster' ? 'refunded' : 'upheld'); } catch (_) {}
+      try { BetaMetricsService.disputeResolved(outcome === 'poster' ? 'refunded' : 'upheld'); } catch (_e) { /* non-critical metric */ }
 
       return {
         success: true,
@@ -1004,7 +1068,7 @@ Analyze this dispute and provide your recommendation in JSON format.`;
       hustlerId: row.hustler_id as string,
       reason: row.reason as string,
       status: row.status as DisputeResolutionStatus,
-      evidence: evidence.map((e: any) => ({
+      evidence: (evidence as EvidenceRow[]).map((e) => ({
         id: e.id,
         disputeId: e.dispute_id,
         submittedBy: e.submitted_by,
@@ -1021,9 +1085,9 @@ Analyze this dispute and provide your recommendation in JSON format.`;
         riskFlags: (row.ai_risk_flags as string[]) || [],
       } : null,
       juryMembers: (row.jury_member_ids as string[]) || [],
-      juryVotes: juryVotes.map((v: any) => ({
+      juryVotes: (juryVotes as JuryVoteRow[]).map((v) => ({
         jurorId: v.juror_id,
-        vote: v.vote as 'poster' | 'hustler',
+        vote: v.vote,
         reasoning: v.reasoning,
         votedAt: new Date(v.voted_at),
       })),
@@ -1088,7 +1152,7 @@ Analyze this dispute and provide your recommendation in JSON format.`;
     }
 
     // Return lightweight list (no evidence/jury details)
-    return rows.map((row: any) => ({
+    return rows.map((row: DisputeResolutionRow) => ({
       id: row.id,
       taskId: row.task_id,
       initiatorId: row.initiator_id,
@@ -1131,7 +1195,7 @@ Analyze this dispute and provide your recommendation in JSON format.`;
       ORDER BY dj.assigned_at ASC
     `;
 
-    return rows.map((r: any) => ({
+    return (rows as JuryAssignmentRow[]).map((r) => ({
       disputeId: r.dispute_id,
       assignedAt: new Date(r.assigned_at),
       deadline: r.jury_deliberation_deadline ? new Date(r.jury_deliberation_deadline) : null,

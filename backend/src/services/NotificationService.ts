@@ -130,7 +130,7 @@ export interface UpdatePreferencesParams {
   pushEnabled?: boolean;
   emailEnabled?: boolean;
   smsEnabled?: boolean;
-  categoryPreferences?: Record<string, any>;
+  categoryPreferences?: Record<string, unknown>;
 }
 
 // Priority tiers that bypass quiet hours (NOTIFICATION_SPEC.md §2.1)
@@ -851,7 +851,7 @@ export const NotificationService = {
       );
       
       return parseInt(result.rows[0]?.count || '0', 10);
-    } catch (error) {
+    } catch (_error) {
       return 0; // On error, allow notification (fail open)
     }
   },
@@ -1051,8 +1051,8 @@ function isInQuietHours(
   const currentMinute = now.getMinutes();
   const currentTimeMinutes = currentHour * 60 + currentMinute;
   
-  const [startHour, startMin, startSec] = startTime.split(':').map(Number);
-  const [endHour, endMin, endSec] = endTime.split(':').map(Number);
+  const [startHour, startMin, _startSec] = startTime.split(':').map(Number);
+  const [endHour, endMin, _endSec] = endTime.split(':').map(Number);
   
   const startMinutes = startHour * 60 + startMin;
   const endMinutes = endHour * 60 + endMin;

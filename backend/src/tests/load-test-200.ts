@@ -20,6 +20,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import type { Database } from '../db';
 
 // ============================================================================
 // TYPES
@@ -44,8 +45,7 @@ interface SubsystemResult {
 // ============================================================================
 // LOAD ENV + IMPORTS
 // ============================================================================
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- dynamic import for standalone test runner
-let db: Record<string, any>;
+let db: Database;
 
 async function loadEnv() {
   const envPath = path.resolve(import.meta.dirname || __dirname, '../../../.env');
@@ -231,7 +231,7 @@ async function testXPWrites(): Promise<SubsystemResult> {
   const users = await db.query('SELECT id FROM users LIMIT 1');
   const userId = users.rows.length > 0 ? users.rows[0].id : uuid();
 
-  return runConcurrent('7. XP Writes (200×2)', 200, 2, async (uId, opIdx) => {
+  return runConcurrent('7. XP Writes (200×2)', 200, 2, async (uId, _opIdx) => {
     await db.query(
       `INSERT INTO xp_events (id, user_id, amount, reason)
        VALUES ($1, $2, $3, $4)`,
@@ -254,7 +254,7 @@ async function testNotificationReads(): Promise<SubsystemResult> {
 
 /** 9. AI Audit Trail Writes — 200 concurrent ai_events inserts */
 async function testAIEventWrites(): Promise<SubsystemResult> {
-  return runConcurrent('9. AI Event Writes (200×2)', 200, 2, async (userId, opIdx) => {
+  return runConcurrent('9. AI Event Writes (200×2)', 200, 2, async (_userId, _opIdx) => {
     await db.query(
       `INSERT INTO ai_events (id, model_used, task_type, tokens_in, tokens_out, success, created_at)
        VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
@@ -279,7 +279,7 @@ async function testMixedContention(): Promise<SubsystemResult> {
   const users = await db.query('SELECT id FROM users LIMIT 1');
   const userId = users.rows.length > 0 ? users.rows[0].id : uuid();
 
-  return runConcurrent('11. Mixed R/W Contention (200×3)', 200, 3, async (uId, opIdx) => {
+  return runConcurrent('11. Mixed R/W Contention (200×3)', 200, 3, async (uId, _opIdx) => {
     if (uId % 2 === 0) {
       await db.query(
         `INSERT INTO xp_events (id, user_id, amount, reason)
@@ -316,7 +316,7 @@ async function testComplexAggregation(): Promise<SubsystemResult> {
 
 /** 13. Transaction Safety — 200 concurrent BEGIN/COMMIT cycles */
 async function testTransactionSafety(): Promise<SubsystemResult> {
-  return runConcurrent('13. Transaction Safety (200×2)', 200, 2, async (userId, opIdx) => {
+  return runConcurrent('13. Transaction Safety (200×2)', 200, 2, async (_userId, _opIdx) => {
     const pool = db.getPool();
     const client = await pool.connect();
     try {
@@ -368,10 +368,10 @@ async function testEscrowTaskJoin(): Promise<SubsystemResult> {
 // ============================================================================
 async function cleanup() {
   console.log('\n🧹 Cleaning up load test data...');
-  try { await db.query("DELETE FROM xp_events WHERE reason IN ('LOAD_TEST', 'CONTENTION_TEST')"); } catch {}
-  try { await db.query("DELETE FROM tasks WHERE status = 'LOAD_TEST'"); } catch {}
-  try { await db.query("DELETE FROM ai_events WHERE task_type IN ('stress_test', 'load_test')"); } catch {}
-  try { await db.query("DELETE FROM ai_agent_decisions WHERE reasoning LIKE 'Load test %'"); } catch {}
+  try { await db.query("DELETE FROM xp_events WHERE reason IN ('LOAD_TEST', 'CONTENTION_TEST')"); } catch { /* empty */ }
+  try { await db.query("DELETE FROM tasks WHERE status = 'LOAD_TEST'"); } catch { /* empty */ }
+  try { await db.query("DELETE FROM ai_events WHERE task_type IN ('stress_test', 'load_test')"); } catch { /* empty */ }
+  try { await db.query("DELETE FROM ai_agent_decisions WHERE reasoning LIKE 'Load test %'"); } catch { /* empty */ }
   console.log('✅ Cleanup complete');
 }
 

@@ -167,7 +167,7 @@ export const BetaService = {
   enforceTaskCreation: async (
     taskLat?: number,
     taskLng?: number,
-    locationString?: string
+    _locationString?: string
   ): Promise<string | null> => {
     if (!config.beta.enabled) return null; // Kill switch
 

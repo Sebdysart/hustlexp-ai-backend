@@ -25,7 +25,7 @@ import { workerLogger } from '../logger';
 
 const log = workerLogger.child({ worker: 'expertise-recalc' });
 
-export const processExpertiseRecalcJob = async (job: Job): Promise<void> => {
+export const processExpertiseRecalcJob = async (_job: Job): Promise<void> => {
   const startTime = Date.now();
   log.info('Starting daily supply recalculation');
 

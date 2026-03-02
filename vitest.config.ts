@@ -5,7 +5,7 @@ export default defineConfig({
     bail: 1,
     environment: 'node',
     testTimeout: 30000,
-    include: ['backend/tests/**/*.test.ts'],
+    include: ['backend/tests/**/*.test.ts', 'src/**/*.test.ts'],
     reporters: ['verbose'],
     // Run test files sequentially to avoid database race conditions
     fileParallelism: false,
@@ -15,13 +15,18 @@ export default defineConfig({
     },
     coverage: {
       provider: 'v8',
-      reporter: ['text', 'json', 'html'],
-      include: ['backend/src/**/*.ts'],
+      // json-summary → coverage/coverage-summary.json (read by omni-link scanner)
+      reporter: ['text', 'json', 'html', 'json-summary'],
+      reportsDirectory: 'coverage',
+      include: ['backend/src/**/*.ts', 'src/**/*.ts'],
       exclude: [
         'backend/src/**/*.d.ts',
         'backend/src/**/index.ts',
         'backend/src/types.ts',
         'backend/src/jobs/**',
+        'src/**/*.d.ts',
+        'src/**/*.test.ts',
+        'src/tests/**',
       ],
       thresholds: {
         // Coverage gate ramp-up plan:
@@ -30,13 +35,14 @@ export default defineConfig({
         // Phase 3 (prev):      7% — after 8 service/middleware unit test suites
         // Phase 3b (prev):     6% — after SSRF/BIPA/AI-schema security hardening (new src files expanded denominator)
         // Phase 3c (prev):     8% — after production build plan + 5 gap fixes
-        // Phase 4 (current):  12% — after max-tier pipeline + TDAD enforcement
+        // Phase 4 (prev):     12% — after max-tier pipeline + TDAD enforcement (backend/src only)
+        // Phase 4b (current): 10% — denominator expanded to include src/**/*.ts layer (13,924 lines total)
         // Phase 5 (GA):       40% — after router + middleware coverage
         // Phase 6 (Mature):   70% — production target
-        lines: 12,
+        lines: 10,
         functions: 10,
-        branches: 12,
-        statements: 12,
+        branches: 10,
+        statements: 10,
       },
     },
   },

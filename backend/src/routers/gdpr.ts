@@ -12,7 +12,6 @@ import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { router, protectedProcedure, Schemas } from '../trpc';
 import { GDPRService } from '../services/GDPRService';
-import { db } from '../db';
 
 export const gdprRouter = router({
   // --------------------------------------------------------------------------

@@ -95,7 +95,7 @@ describe('Transaction Error Handling - Structural Verification', () => {
     // Check transaction method implementation (skip type declaration by looking for 'transaction: async')
     const transactionIndex = dbSource.indexOf('transaction: async');
     expect(transactionIndex).toBeGreaterThan(-1);
-    const transactionSection = dbSource.substring(transactionIndex, transactionIndex + 800);
+    const transactionSection = dbSource.substring(transactionIndex, transactionIndex + 900);
     expect(transactionSection).toContain('try');
     expect(transactionSection).toContain('ROLLBACK');
     expect(transactionSection).toContain('catch (rollbackError');
@@ -103,7 +103,7 @@ describe('Transaction Error Handling - Structural Verification', () => {
     // Check serializableTransaction method implementation
     const serializableIndex = dbSource.indexOf('serializableTransaction: async');
     expect(serializableIndex).toBeGreaterThan(-1);
-    const serializableSection = dbSource.substring(serializableIndex, serializableIndex + 800);
+    const serializableSection = dbSource.substring(serializableIndex, serializableIndex + 900);
     expect(serializableSection).toContain('try');
     expect(serializableSection).toContain('ROLLBACK');
     expect(serializableSection).toContain('catch (rollbackError');

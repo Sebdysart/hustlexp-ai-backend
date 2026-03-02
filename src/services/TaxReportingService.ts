@@ -99,7 +99,7 @@ export class TaxReportingService {
         ORDER BY gross_amount DESC
       `;
 
-      const records: Tax1099KRecord[] = (rows as any[]).map((row) => ({
+      const records: Tax1099KRecord[] = (rows as Record<string, unknown>[]).map((row) => ({
         taxYear,
         workerId: row.worker_id,
         workerName: row.worker_name || 'Unknown',
@@ -118,7 +118,7 @@ export class TaxReportingService {
       );
 
       return records;
-    } catch (error: any) {
+    } catch (error: unknown) {
       serviceLogger.error({ error, taxYear }, 'Failed to generate 1099-K records');
       throw error;
     }
@@ -156,7 +156,7 @@ export class TaxReportingService {
           AND eh.status = 'released'
           AND EXTRACT(YEAR FROM eh.updated_at) = ${taxYear}
         GROUP BY eh.hustler_id, u.name, u.email, u.tax_id
-      ` as any[];
+      ` as Record<string, unknown>[];
 
       if (!row || row.gross_amount === 0) {
         serviceLogger.debug(
@@ -178,7 +178,7 @@ export class TaxReportingService {
         payerTIN,
         ...(row.payee_tin ? { payeeTIN: row.payee_tin } : {}),
       };
-    } catch (error: any) {
+    } catch (error: unknown) {
       serviceLogger.error(
         { error, workerId, taxYear },
         'Failed to get worker tax summary'

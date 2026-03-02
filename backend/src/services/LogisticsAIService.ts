@@ -74,7 +74,7 @@ export const LogisticsAIService = {
   validateGPSProof: async (
     proofCoords: GPSCoordinates,
     taskCoords: GPSCoordinates,
-    accuracyMeters: number
+    _accuracyMeters: number
   ): Promise<ServiceResult<{ passed: boolean; distance_meters: number; risk_level: 'LOW' | 'MEDIUM' | 'HIGH' }>> => {
     try {
       const distanceMeters = LogisticsAIService._haversineDistance(proofCoords, taskCoords);

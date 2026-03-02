@@ -9,9 +9,7 @@
 import { Redis } from '@upstash/redis';
 import { db } from '../db';
 import { config } from '../config';
-import { logger } from '../logger';
 
-const log = logger.child({ service: 'FlagsService' });
 
 // ============================================================================
 // REDIS CACHE

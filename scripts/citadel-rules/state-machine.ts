@@ -1,62 +1,49 @@
-import type { Violation } from './financial.js';
+/**
+ * Citadel State Machine Rules
+ *
+ * Static analysis rules for enforcing state machine invariants at code-review time.
+ * These are used by citadel-constitution.test.ts to verify that prohibited patterns
+ * are detected in source files.
+ *
+ * SM-1: State transitions must go through the service layer — no direct status assignment
+ *        outside of *Service.ts files.
+ */
 
-// Valid transitions from CLAUDE.md
-const TASK_TRANSITIONS: Record<string, string[]> = {
-  open: ['assigned'],
-  assigned: ['in_progress', 'open'],
-  in_progress: ['completed', 'cancelled'],
-  completed: [],
-  cancelled: [],
-};
-
-const ESCROW_TRANSITIONS: Record<string, string[]> = {
-  PENDING: ['FUNDED'],
-  FUNDED: ['RELEASED', 'REFUNDED', 'DISPUTED'],
-  RELEASED: [],
-  REFUNDED: [],
-  DISPUTED: ['RELEASED', 'REFUNDED'],
-};
+export interface Violation {
+  invariant: string;
+  message: string;
+  file: string;
+  line?: number;
+}
 
 /**
- * Flags direct state string assignments that skip the service layer.
- * Pattern: status = 'completed' without going through TaskService.
+ * Check for direct state/status assignment outside of service files.
+ * SM-1: State transitions must go through TaskService, EscrowService, etc.
+ *       Direct assignment like `task.status = 'completed'` bypasses guards.
  */
 export function checkStateMachineTransitions(source: string, filePath: string): Violation[] {
-  if (
-    filePath.includes('Service.ts') ||
-    filePath.includes('.test.ts') ||
-    filePath.includes('/test/') ||
-    filePath.includes('/mocks/') ||
-    filePath.includes('/migrations/') ||
-    filePath.includes('/seed/')
-  ) return [];
-
   const violations: Violation[] = [];
+
+  // Only flag non-service files (service files ARE allowed to do state transitions)
+  if (/Service\.ts$/.test(filePath)) {
+    return violations;
+  }
+
   const lines = source.split('\n');
-  const stateValues = [
-    ...Object.keys(TASK_TRANSITIONS),
-    ...Object.keys(ESCROW_TRANSITIONS),
-  ];
-
-  lines.forEach((line, i) => {
-    // Skip matches inside SQL contexts (SET status = ... is valid SQL)
-    const upperLine = line.toUpperCase();
-    if (upperLine.includes(' SET ') || upperLine.includes('WHERE ')) return;
-
-    for (const state of stateValues) {
-      if (
-        new RegExp(`status\\s*=\\s*['"\`]${state}['"\`]`).test(line) ||
-        new RegExp(`status:\\s*['"\`]${state}['"\`]`).test(line)
-      ) {
-        violations.push({
-          file: filePath,
-          line: i + 1,
-          invariant: 'SM-1',
-          message: `Direct state assignment '${state}' outside service layer: "${line.trim()}"`,
-        });
-      }
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    // Detect direct status/state assignment patterns
+    // Matches: task.status = '...', escrow.state = '...', etc.
+    if (/\b\w+\.(status|state)\s*=\s*['"`]/.test(line)) {
+      violations.push({
+        invariant: 'SM-1',
+        message:
+          'Direct state/status assignment outside service layer — use TaskService or EscrowService',
+        file: filePath,
+        line: i + 1,
+      });
     }
-  });
+  }
 
   return violations;
 }

@@ -5,6 +5,7 @@
 
 import type { Context } from 'hono';
 import { MiddlewareHandler } from 'hono';
+import { createHash } from 'crypto';
 import { logger } from '../logger';
 
 const cacheLog = logger.child({ module: 'edge-cache' });
@@ -330,8 +331,7 @@ export async function purgeCloudflareCacheByTag(
 // ETag Support
 // ============================================================================
 export function generateETag(data: unknown): string {
-  const crypto = require('crypto');
-  const hash = crypto.createHash('md5');
+  const hash = createHash('md5');
   hash.update(JSON.stringify(data));
   return `"${hash.digest('hex')}"`;
 }

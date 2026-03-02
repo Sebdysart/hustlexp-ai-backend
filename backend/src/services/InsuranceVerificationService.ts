@@ -23,6 +23,32 @@ const log = logger.child({ service: 'InsuranceVerificationService' });
 // TYPES
 // ============================================================================
 
+interface InsuranceVerificationRow {
+  id: string;
+  user_id: string;
+  provider: string;
+  policy_number: string;
+  coverage_amount_cents: number;
+  expiration_date: string;
+  document_url: string | null;
+  status: 'PENDING' | 'APPROVED' | 'REJECTED' | 'EXPIRED';
+  submitted_at: string;
+  reviewed_at: string | null;
+  reviewed_by: string | null;
+  rejection_reason: string | null;
+  notes: string | null;
+}
+
+interface InsuranceStatusRow {
+  id: string;
+  status: string;
+}
+
+interface InsuranceExpirationRow {
+  user_id: string;
+  expiration_date: string;
+}
+
 export interface InsuranceVerification {
   id: string;
   userId: string;
@@ -74,7 +100,7 @@ export async function submitInsurance(
   submission: InsuranceSubmission
 ): Promise<InsuranceVerification> {
   // Check for existing valid verification
-  const existingResult = await db.query<Record<string, any>>(
+  const existingResult = await db.query<InsuranceStatusRow>(
     `
     SELECT id, status
     FROM insurance_verifications
@@ -113,7 +139,7 @@ export async function submitInsurance(
   }
 
   // Create verification record
-  const result = await db.query<Record<string, any>>(
+  const result = await db.query<InsuranceVerificationRow>(
     `
     INSERT INTO insurance_verifications (
       user_id, provider, policy_number, coverage_amount_cents,
@@ -170,7 +196,7 @@ export async function approveInsurance(
   adminUserId: string,
   notes?: string
 ): Promise<InsuranceVerification> {
-  const result = await db.query<Record<string, any>>(
+  const result = await db.query<InsuranceVerificationRow>(
     `
     UPDATE insurance_verifications
     SET status = 'APPROVED',
@@ -231,7 +257,7 @@ export async function rejectInsurance(
   reason: string,
   notes?: string
 ): Promise<InsuranceVerification> {
-  const result = await db.query<Record<string, any>>(
+  const result = await db.query<InsuranceVerificationRow>(
     `
     UPDATE insurance_verifications
     SET status = 'REJECTED',
@@ -287,7 +313,7 @@ export async function rejectInsurance(
  * Get insurance verification for a user
  */
 export async function getUserInsurance(userId: string): Promise<InsuranceVerification | null> {
-  const result = await db.query<Record<string, any>>(
+  const result = await db.query<InsuranceVerificationRow>(
     `
     SELECT *
     FROM insurance_verifications
@@ -324,7 +350,7 @@ export async function getUserInsurance(userId: string): Promise<InsuranceVerific
  * Check if user has valid insurance
  */
 export async function hasValidInsurance(userId: string): Promise<boolean> {
-  const result = await db.query<Record<string, any>>(
+  const result = await db.query<{ '?column?': number }>(
     `
     SELECT 1
     FROM insurance_verifications
@@ -346,7 +372,7 @@ export async function getPendingVerifications(
   limit: number = 50,
   offset: number = 0
 ): Promise<InsuranceVerification[]> {
-  const result = await db.query<Record<string, any>>(
+  const result = await db.query<InsuranceVerificationRow>(
     `
     SELECT *
     FROM insurance_verifications
@@ -383,7 +409,7 @@ export async function getPendingVerifications(
  * Called by cron job
  */
 export async function markExpiredInsurance(): Promise<number> {
-  const result = await db.query<Record<string, any>>(
+  const result = await db.query<{ id: string; user_id: string }>(
     `
     UPDATE insurance_verifications
     SET status = 'EXPIRED'
@@ -409,7 +435,7 @@ export async function markExpiredInsurance(): Promise<number> {
 export async function getUpcomingExpirations(
   days: number = 30
 ): Promise<Array<{ userId: string; expirationDate: string }>> {
-  const result = await db.query<Record<string, any>>(
+  const result = await db.query<InsuranceExpirationRow>(
     `
     SELECT DISTINCT ON (user_id) user_id, expiration_date
     FROM insurance_verifications

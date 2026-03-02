@@ -1,4 +1,4 @@
 export const AlertService = {
-  fire: async (..._args: any[]) => {},
-  notify: async (..._args: any[]) => {},
+  fire: async (..._args: unknown[]) => {},
+  notify: async (..._args: unknown[]) => {},
 };

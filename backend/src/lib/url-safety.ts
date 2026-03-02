@@ -7,10 +7,6 @@
  * @see biometric.ts (Zod refine), BiometricVerificationService.ts (fetch guards)
  */
 
-import { logger } from '../logger';
-
-const log = logger.child({ module: 'url-safety' });
-
 // ============================================================================
 // INTERNAL IP DETECTION
 // ============================================================================

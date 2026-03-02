@@ -16,6 +16,7 @@
  */
 
 import { transaction } from '../db/index.js';
+import type { SqlTx } from '../db/index.js';
 import { createLogger } from '../utils/logger.js';
 
 const logger = createLogger('CapabilityProfileService');
@@ -44,8 +45,8 @@ export interface CapabilityProfile {
     highRiskTasks: boolean;
     urgentJobs: boolean;
   };
-  verificationStatus: Record<string, any>;
-  expiresAt: Record<string, any>;
+  verificationStatus: Record<string, unknown>;
+  expiresAt: Record<string, unknown>;
   derivedAt: Date;
   createdAt: Date;
   updatedAt: Date;
@@ -124,6 +125,39 @@ export function getRiskClearanceForTier(tier: TrustTier): RiskLevel[] {
 }
 
 // ============================================================================
+// ROW TYPES
+// ============================================================================
+
+interface LicenseVerificationDbRow {
+  id: string;
+  trade: string;
+  state: string;
+  status: 'pending' | 'verified' | 'failed' | 'expired';
+  verified_at: Date | null;
+  expires_at: Date | null;
+  verification_method: string;
+}
+
+interface InsuranceVerificationDbRow {
+  id: string;
+  trade: string;
+  status: 'pending' | 'verified' | 'failed' | 'expired';
+  verified_at: Date | null;
+  expires_at: Date | null;
+  coverage_amount: number;
+}
+
+
+interface VerifiedTradeDbRow {
+  trade: string;
+  state: string;
+  license_verification_id: string;
+  verified_at: Date;
+  expires_at: Date | null;
+  verification_method: string;
+}
+
+// ============================================================================
 // SOURCE RECORD FETCHING
 // ============================================================================
 
@@ -131,7 +165,7 @@ export function getRiskClearanceForTier(tier: TrustTier): RiskLevel[] {
  * Fetch active license verifications for a user
  */
 async function fetchLicenseVerifications(
-  tx: any,
+  tx: SqlTx,
   userId: string
 ): Promise<LicenseVerificationRecord[]> {
   const rows = await tx`
@@ -150,7 +184,7 @@ async function fetchLicenseVerifications(
     ORDER BY trade, state
   `;
 
-  return rows.map((row: any) => ({
+  return rows.map((row: LicenseVerificationDbRow) => ({
     id: row.id,
     trade: row.trade,
     state: row.state,
@@ -165,7 +199,7 @@ async function fetchLicenseVerifications(
  * Fetch insurance verifications for a user
  */
 async function fetchInsuranceVerifications(
-  tx: any,
+  tx: SqlTx,
   userId: string
 ): Promise<InsuranceVerificationRecord[]> {
   const rows = await tx`
@@ -183,7 +217,7 @@ async function fetchInsuranceVerifications(
     ORDER BY trade
   `;
 
-  return rows.map((row: any) => ({
+  return rows.map((row: InsuranceVerificationDbRow) => ({
     id: row.id,
     trade: row.trade,
     status: row.status,
@@ -197,7 +231,7 @@ async function fetchInsuranceVerifications(
  * Fetch background check for a user
  */
 async function fetchBackgroundCheck(
-  tx: any,
+  tx: SqlTx,
   userId: string
 ): Promise<BackgroundCheckRecord | null> {
   const [row] = await tx`
@@ -230,7 +264,7 @@ async function fetchBackgroundCheck(
  * Fetch user's trust tier and location from users table
  */
 async function fetchUserCoreData(
-  tx: any,
+  tx: SqlTx,
   userId: string
 ): Promise<{ trustTier: TrustTier; locationState: string; locationCity: string | null } | null> {
   const [row] = await tx`
@@ -255,7 +289,7 @@ async function fetchUserCoreData(
  * Fetch user's willingness flags from capability_claims
  */
 async function fetchWillingnessFlags(
-  tx: any,
+  tx: SqlTx,
   userId: string
 ): Promise<{ inHomeWork: boolean; highRiskTasks: boolean; urgentJobs: boolean }> {
   const [row] = await tx`
@@ -297,7 +331,7 @@ async function fetchWillingnessFlags(
  */
 export async function recompute(userId: string): Promise<RecomputeResult> {
   try {
-    return await transaction(async (tx: any) => {
+    return await transaction(async (tx: SqlTx) => {
       logger.info({ userId }, 'Starting capability profile recompute');
 
       // Step 1: Fetch all source records
@@ -480,11 +514,12 @@ export async function recompute(userId: string): Promise<RecomputeResult> {
         backgroundCheckValid,
       };
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
     logger.error({ error, userId }, 'Failed to recompute capability profile');
     return {
       success: false,
-      error: error.message,
+      error: message,
     };
   }
 }
@@ -574,7 +609,7 @@ export async function getVerifiedTrades(userId: string): Promise<VerifiedTrade[]
     ORDER BY trade
   `;
 
-  return rows.map((row: any) => ({
+  return rows.map((row: VerifiedTradeDbRow) => ({
     trade: row.trade,
     state: row.state,
     licenseVerificationId: row.license_verification_id,
@@ -625,11 +660,13 @@ export async function checkExpiredCredentials(): Promise<{
       AND expires_at < NOW()
   `;
 
+  interface ExpiredCredentialRow { user_id: string; }
+
   // Combine unique user IDs
   const userIds = new Set([
-    ...expiredLicenses.map((r: any) => r.user_id),
-    ...expiredInsurance.map((r: any) => r.user_id),
-    ...expiredBackgroundChecks.map((r: any) => r.user_id),
+    ...expiredLicenses.map((r: ExpiredCredentialRow) => r.user_id),
+    ...expiredInsurance.map((r: ExpiredCredentialRow) => r.user_id),
+    ...expiredBackgroundChecks.map((r: ExpiredCredentialRow) => r.user_id),
   ]);
 
   let recomputed = 0;

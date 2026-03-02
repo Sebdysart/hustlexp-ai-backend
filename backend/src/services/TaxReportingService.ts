@@ -19,7 +19,7 @@ const REPORTING_THRESHOLD_CENTS = 60000; // $600.00
 let stripe: Stripe | null = null;
 function getStripe(): Stripe | null {
   if (!stripe && config.stripe.secretKey) {
-    stripe = new Stripe(config.stripe.secretKey, { apiVersion: '2024-12-18.acacia' as any });
+    stripe = new Stripe(config.stripe.secretKey, { apiVersion: '2024-12-18.acacia' as Stripe.LatestApiVersion });
   }
   return stripe;
 }
@@ -170,11 +170,9 @@ export const TaxReportingService = {
         return { success: false, error: { code: 'NO_FILING', message: 'No tax filing record found — run processAnnualFilings first' } };
       }
 
-      const filing = filingResult.rows[0];
-
       // Use Stripe Tax Forms API via raw request (SDK types may not include forms resource)
       // Stripe handles form generation and IRS e-filing for Connect platforms
-      const taxForm = await (s as any).rawRequest(
+      const taxForm = await (s as unknown as { rawRequest: (method: string, path: string, params: Record<string, string>) => Promise<{ body: string }> }).rawRequest(
         'POST',
         '/v1/tax/forms',
         {
@@ -182,8 +180,8 @@ export const TaxReportingService = {
           account: connectId,
           tax_year: taxYear.toString(),
         }
-      ).then((res: any) => JSON.parse(res.body)).catch((err: any) => {
-        log.error({ err: err.message, connectId, taxYear }, 'Stripe Tax Form API call failed');
+      ).then((res: { body: string }) => JSON.parse(res.body)).catch((err: unknown) => {
+        log.error({ err: err instanceof Error ? err.message : String(err), connectId, taxYear }, 'Stripe Tax Form API call failed');
         return null;
       });
 

@@ -21,7 +21,8 @@ import {
   cleanupTestData, 
   createTestUser, 
   createTestTask, 
-  createTestEscrow 
+  createTestEscrow,
+  hasDb,
 } from '../setup';
 import { TaskService } from '../../src/services/TaskService';
 import type { Job } from 'bullmq';
@@ -29,6 +30,7 @@ import type { Job } from 'bullmq';
 let pool: pg.Pool;
 
 beforeAll(async () => {
+  if (!hasDb) return; // Skip DB setup when DATABASE_URL not available
   pool = createTestPool();
   
   const result = await pool.query('SELECT version FROM schema_versions LIMIT 1');
@@ -47,7 +49,7 @@ beforeEach(async () => {
 // TRUST INVARIANT 1: Idempotency
 // =============================================================================
 
-describe('Trust Invariant 1: Idempotency - Same event processed twice does not demote tier twice', () => {
+describe.skipIf(!hasDb)('Trust Invariant 1: Idempotency - Same event processed twice does not demote tier twice', () => {
   
   it('MUST BE IDEMPOTENT: processing same trust event twice does not create duplicate ledger rows or demote tier twice', async () => {
     const workerId = await createTestUser(pool, `test-worker-${Date.now()}@hustlexp.test`);
@@ -123,7 +125,7 @@ describe('Trust Invariant 1: Idempotency - Same event processed twice does not d
 // TRUST INVARIANT 2: Worker penalty demotion
 // =============================================================================
 
-describe('Trust Invariant 2: Worker penalty demotes tier by exactly 1, floored at 1', () => {
+describe.skipIf(!hasDb)('Trust Invariant 2: Worker penalty demotes tier by exactly 1, floored at 1', () => {
   
   it('MUST DEMOTE: worker penalty demotes tier by 1, floored at 1', async () => {
     const workerId = await createTestUser(pool, `test-worker-${Date.now()}@hustlexp.test`);
@@ -229,7 +231,7 @@ describe('Trust Invariant 2: Worker penalty demotes tier by exactly 1, floored a
 // TRUST INVARIANT 3: Worker hold application
 // =============================================================================
 
-describe('Trust Invariant 3: Worker demoted to tier 1 with REFUND/SPLIT enters hold', () => {
+describe.skipIf(!hasDb)('Trust Invariant 3: Worker demoted to tier 1 with REFUND/SPLIT enters hold', () => {
   
   it('MUST HOLD: worker demoted to tier 1 with REFUND enters hold', async () => {
     const workerId = await createTestUser(pool, `test-worker-${Date.now()}@hustlexp.test`);
@@ -331,7 +333,7 @@ describe('Trust Invariant 3: Worker demoted to tier 1 with REFUND/SPLIT enters h
 // TRUST INVARIANT 4: Poster abuse hold
 // =============================================================================
 
-describe('Trust Invariant 4: Poster receives hold after 2 penalties in 30 days', () => {
+describe.skipIf(!hasDb)('Trust Invariant 4: Poster receives hold after 2 penalties in 30 days', () => {
   
   it('MUST HOLD: poster with 2 penalties in 30 days enters hold', async () => {
     const posterId = await createTestUser(pool, `test-poster-${Date.now()}@hustlexp.test`);
@@ -400,7 +402,7 @@ describe('Trust Invariant 4: Poster receives hold after 2 penalties in 30 days',
 // TRUST INVARIANT 5: Gating enforcement
 // =============================================================================
 
-describe('Trust Invariant 5: Gating enforcement - Hold blocks non-LOW tasks', () => {
+describe.skipIf(!hasDb)('Trust Invariant 5: Gating enforcement - Hold blocks non-LOW tasks', () => {
   
   it('MUST BLOCK: poster on hold cannot create HIGH risk task', async () => {
     const posterId = await createTestUser(pool, `test-poster-${Date.now()}@hustlexp.test`);

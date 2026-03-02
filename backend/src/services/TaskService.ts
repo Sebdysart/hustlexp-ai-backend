@@ -130,16 +130,43 @@ export const TaskService = {
   },
 
   /**
-   * Get tasks by poster
+   * Get tasks by poster — cursor-paginated.
+   * Cursor = ISO timestamp of the last-seen task's created_at.
+   * Returns up to `limit` tasks + a nextCursor to fetch the next page.
    */
-  getByPoster: async (posterId: string): Promise<ServiceResult<Task[]>> => {
+  getByPoster: async (
+    posterId: string,
+    options: { cursor?: string | null; limit?: number } = {}
+  ): Promise<ServiceResult<{ tasks: Task[]; nextCursor: string | undefined }>> => {
+    const { cursor, limit = 20 } = options;
+    // Fetch one extra row to detect if there is a next page
+    const fetchLimit = limit + 1;
+
     try {
-      const result = await db.query<Task>(
-        'SELECT * FROM tasks WHERE poster_id = $1 ORDER BY created_at DESC',
-        [posterId]
-      );
-      
-      return { success: true, data: result.rows };
+      const result = cursor
+        ? await db.query<Task>(
+            `SELECT * FROM tasks
+             WHERE poster_id = $1
+               AND created_at < $2::timestamptz
+             ORDER BY created_at DESC
+             LIMIT $3`,
+            [posterId, cursor, fetchLimit]
+          )
+        : await db.query<Task>(
+            `SELECT * FROM tasks
+             WHERE poster_id = $1
+             ORDER BY created_at DESC
+             LIMIT $2`,
+            [posterId, fetchLimit]
+          );
+
+      const hasMore = result.rows.length > limit;
+      const tasks = hasMore ? result.rows.slice(0, limit) : result.rows;
+      const nextCursor = hasMore
+        ? (tasks[tasks.length - 1] as Task & { created_at: string | Date }).created_at?.toString()
+        : undefined;
+
+      return { success: true, data: { tasks, nextCursor } };
     } catch (error) {
       return {
         success: false,
@@ -152,16 +179,41 @@ export const TaskService = {
   },
 
   /**
-   * Get tasks by worker
+   * Get tasks by worker — cursor-paginated.
+   * Cursor = ISO timestamp of the last-seen task's created_at.
    */
-  getByWorker: async (workerId: string): Promise<ServiceResult<Task[]>> => {
+  getByWorker: async (
+    workerId: string,
+    options: { cursor?: string | null; limit?: number } = {}
+  ): Promise<ServiceResult<{ tasks: Task[]; nextCursor: string | undefined }>> => {
+    const { cursor, limit = 20 } = options;
+    const fetchLimit = limit + 1;
+
     try {
-      const result = await db.query<Task>(
-        'SELECT * FROM tasks WHERE worker_id = $1 ORDER BY created_at DESC',
-        [workerId]
-      );
-      
-      return { success: true, data: result.rows };
+      const result = cursor
+        ? await db.query<Task>(
+            `SELECT * FROM tasks
+             WHERE worker_id = $1
+               AND created_at < $2::timestamptz
+             ORDER BY created_at DESC
+             LIMIT $3`,
+            [workerId, cursor, fetchLimit]
+          )
+        : await db.query<Task>(
+            `SELECT * FROM tasks
+             WHERE worker_id = $1
+             ORDER BY created_at DESC
+             LIMIT $2`,
+            [workerId, fetchLimit]
+          );
+
+      const hasMore = result.rows.length > limit;
+      const tasks = hasMore ? result.rows.slice(0, limit) : result.rows;
+      const nextCursor = hasMore
+        ? (tasks[tasks.length - 1] as Task & { created_at: string | Date }).created_at?.toString()
+        : undefined;
+
+      return { success: true, data: { tasks, nextCursor } };
     } catch (error) {
       return {
         success: false,
@@ -397,7 +449,7 @@ export const TaskService = {
       // If instant mode, trigger matching broadcast (async, non-blocking)
       if (instantMode) {
         // Set matched_at timestamp immediately (authority: DB NOW())
-        await db.query<Record<string, any>>(
+        await db.query(
           `UPDATE tasks SET matched_at = NOW() WHERE id = $1`,
           [createdTask.id]
         );
@@ -827,7 +879,7 @@ export const TaskService = {
   /**
    * Reject proof: PROOF_SUBMITTED → ACCEPTED
    */
-  rejectProof: async (taskId: string, reason: string): Promise<ServiceResult<Task>> => {
+  rejectProof: async (taskId: string, _reason: string): Promise<ServiceResult<Task>> => {
     try {
       // Note: In a full implementation, we'd update the proof record too
       const result = await db.query<Task>(

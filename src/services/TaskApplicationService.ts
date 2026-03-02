@@ -17,10 +17,9 @@
  */
 
 import { v4 as uuidv4 } from 'uuid';
-import { sql, isDatabaseAvailable, transaction } from '../db/index.js';
+import { sql, transaction } from '../db/index.js';
 import { serviceLogger } from '../utils/logger.js';
 import { TaskService } from './TaskService.js';
-import { BetaMetricsService } from './BetaMetricsService.js';
 
 const logger = serviceLogger.child({ module: 'TaskApplicationService' });
 

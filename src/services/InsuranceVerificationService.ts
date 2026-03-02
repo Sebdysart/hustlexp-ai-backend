@@ -11,6 +11,7 @@
  */
 
 import { transaction } from '../db/index.js';
+import type { SqlTx } from '../db/index.js';
 import { createLogger } from '../utils/logger.js';
 import { CapabilityProfileService } from './CapabilityProfileService.js';
 
@@ -72,7 +73,7 @@ export async function createVerification(
   input: CreateInsuranceVerificationInput
 ): Promise<VerificationResult> {
   try {
-    return await transaction(async (tx: any) => {
+    return await transaction(async (tx: SqlTx) => {
       // Check for verified trade (INV-ELIGIBILITY-4)
       const [verifiedTrade] = await tx`
         SELECT 1 FROM verified_trades
@@ -156,9 +157,10 @@ export async function createVerification(
         verification: formatVerification(verification),
       };
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
     logger.error({ error, input }, 'Failed to create insurance verification');
-    return { success: false, error: error.message };
+    return { success: false, error: message };
   }
 }
 
@@ -171,7 +173,7 @@ export async function updateVerification(
   input: UpdateInsuranceVerificationInput
 ): Promise<VerificationResult> {
   try {
-    return await transaction(async (tx: any) => {
+    return await transaction(async (tx: SqlTx) => {
       const [current] = await tx`
         SELECT * FROM insurance_verifications WHERE id = ${verificationId}
       `;
@@ -210,9 +212,10 @@ export async function updateVerification(
         verification: formatVerification(updated),
       };
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
     logger.error({ error, verificationId }, 'Failed to update insurance verification');
-    return { success: false, error: error.message };
+    return { success: false, error: message };
   }
 }
 
@@ -304,8 +307,9 @@ export async function checkExpiredInsurance(): Promise<{
     RETURNING id, user_id
   `;
 
+  interface ExpiredInsuranceRow { id: string; user_id: string; }
   // Recompute profiles for affected users
-  const affectedUserIds = new Set(result.map((r: any) => r.user_id));
+  const affectedUserIds = new Set((result as ExpiredInsuranceRow[]).map((r) => r.user_id));
   for (const userId of affectedUserIds) {
     await CapabilityProfileService.recompute(userId);
   }
@@ -322,7 +326,22 @@ export async function checkExpiredInsurance(): Promise<{
 // HELPER FUNCTIONS
 // ============================================================================
 
-function formatVerification(row: any): InsuranceVerification {
+interface InsuranceVerificationRow {
+  id: string;
+  user_id: string;
+  trade: string;
+  status: InsuranceStatus;
+  coverage_amount: number;
+  verified_at: Date | null;
+  expires_at: Date | null;
+  failure_reason: string | null;
+  source: InsuranceSource;
+  verification_method: string | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+function formatVerification(row: InsuranceVerificationRow): InsuranceVerification {
   return {
     id: row.id,
     userId: row.user_id,

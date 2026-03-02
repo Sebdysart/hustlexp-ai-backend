@@ -19,8 +19,7 @@ import type {
 import { classifyIntent } from './intents.js';
 import { routedGenerate } from './router.js';
 import { tools } from './tools.js';
-import { getTaskComposerPrompt, getPriceRefinementPrompt } from './prompts/intentClassifier.js';
-import { getSmartMatchPrompt } from './prompts/smartMatch.js';
+import { getTaskComposerPrompt } from './prompts/intentClassifier.js';
 import { getPriceAdvisorPrompt } from './prompts/priceAdvisor.js';
 import { getHustlerCoachPrompt } from './prompts/hustlerCoach.js';
 import { aiLogger } from '../utils/logger.js';
@@ -65,9 +64,6 @@ export async function orchestrate(input: OrchestrateInput): Promise<OrchestrateR
         // IDENTITY-AWARE: Get identity context for personalized AI
         const { AIIdentityContextService } = await import('../services/AIIdentityContextService.js');
         const identityContext = await AIIdentityContextService.getOnboardingContext(input.userId);
-        const identityPromptContext = identityContext
-            ? await AIIdentityContextService.generateAIPromptContext(input.userId)
-            : null;
 
         aiLogger.info({
             userId: input.userId,
@@ -79,32 +75,7 @@ export async function orchestrate(input: OrchestrateInput): Promise<OrchestrateR
             riskLevel: identityContext?.riskLevel || 'unknown',
         }, 'Orchestration started (identity-aware)');
 
-        // Inject identity context into input for handlers
-        const enrichedInput: OrchestrateInput = {
-            ...input,
-            context: {
-                screen,
-                recentActions: input.context?.recentActions || [],
-                profileSnapshot: input.context?.profileSnapshot || {
-                    role: 'hustler' as const,
-                    level: 1,
-                    xp: 0,
-                    streakDays: 0,
-                    topCategories: [],
-                    earningsLast7d: 0,
-                },
-                aiHistorySummary: input.context?.aiHistorySummary,
-                identityContext: identityContext ? {
-                    trustScore: identityContext.trustScore,
-                    trustTier: identityContext.trustTier,
-                    riskLevel: identityContext.riskLevel,
-                    shouldChallenge: identityContext.shouldChallenge,
-                    skipRedundantQuestions: identityContext.skipRedundantQuestions,
-                    isFullyVerified: identityContext.identityVerified && identityContext.isReturningUser,
-                } : null,
-                identityPromptContext,
-            },
-        };
+        // NOTE: Identity context is available in identityContext for downstream handlers.
 
         // NEW: Track this message as an action
         ActionTrackerService.trackAction(input.userId, {
@@ -439,7 +410,7 @@ Return JSON:
 /**
  * Handle other/unclear intents
  */
-async function handleOther(input: OrchestrateInput): Promise<OrchestrateResponse> {
+async function handleOther(_input: OrchestrateInput): Promise<OrchestrateResponse> {
     return {
         type: 'CLARIFICATION_NEEDED',
         data: null,

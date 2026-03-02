@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { db } from '../../src/db';
+import { db, hasDb } from '../../src/db';
 import { TrustTierService, TrustTier } from '../../src/services/TrustTierService';
 import { TaskRiskClassifier, TaskRisk } from '../../src/services/TaskRiskClassifier';
 import { EligibilityGuard, EligibilityErrorCode } from '../../src/services/EligibilityGuard';
@@ -82,7 +82,7 @@ async function cleanupTestData(userIds: string[], taskIds: string[]): Promise<vo
   }
 }
 
-describe('Trust Tier Alpha Gate Tests', () => {
+describe.skipIf(!hasDb)('Trust Tier Alpha Gate Tests', () => {
   const testUserIds: string[] = [];
   const testTaskIds: string[] = [];
 

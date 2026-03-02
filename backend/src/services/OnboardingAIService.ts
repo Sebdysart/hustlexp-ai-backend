@@ -123,7 +123,7 @@ Respond with JSON only: {"worker": 0.0-1.0, "poster": 0.0-1.0, "certainty": "STR
           });
 
           if (aiResponse.ok) {
-            const aiData = await aiResponse.json() as Record<string, any>;
+            const aiData = await aiResponse.json() as { content?: Array<{ text?: string }> };
             const content = aiData.content?.[0]?.text || '';
             const jsonMatch = content.match(/\{[\s\S]*\}/);
             if (jsonMatch) {

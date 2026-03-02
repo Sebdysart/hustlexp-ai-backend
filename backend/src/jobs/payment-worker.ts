@@ -49,7 +49,7 @@ interface PaymentJobData {
 
 export async function processPaymentJob(job: Job<PaymentJobData>): Promise<void> {
   const { stripeEventId, eventType } = job.data.payload;
-  const idempotencyKey = job.id || `payment:${stripeEventId}`;
+  const _idempotencyKey = job.id || `payment:${stripeEventId}`;
 
   try {
     // P0: Atomic claim - Only one worker can process this event

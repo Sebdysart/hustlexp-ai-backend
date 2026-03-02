@@ -345,7 +345,7 @@ export const ChargebackService = {
   handleDisputeUpdated: async (
     params: DisputeUpdatedParams
   ): Promise<ServiceResult<{ updated: boolean }>> => {
-    const { stripeDisputeId, stripeEventId, status, reason } = params;
+    const { stripeDisputeId, status, reason } = params;
 
     try {
       // Map Stripe dispute status to our status enum
@@ -400,7 +400,7 @@ export const ChargebackService = {
   handleDisputeClosed: async (
     params: DisputeClosedParams
   ): Promise<ServiceResult<{ resolved: boolean }>> => {
-    const { stripeDisputeId, stripeEventId, status, reason } = params;
+    const { stripeDisputeId, stripeEventId, status, reason: _reason } = params;
 
     try {
       // Fetch the dispute record

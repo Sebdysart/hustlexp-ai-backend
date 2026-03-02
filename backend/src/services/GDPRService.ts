@@ -628,7 +628,7 @@ export const GDPRService = {
       const deletedAt = completedAt;
       
       // Update request as completed
-      const result = await db.query<GDPRDataRequest>(
+      await db.query<GDPRDataRequest>(
         `UPDATE gdpr_data_requests
          SET status = 'completed',
              processed_at = $1,

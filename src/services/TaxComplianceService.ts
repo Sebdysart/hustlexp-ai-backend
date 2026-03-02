@@ -15,10 +15,29 @@
  * @version 1.0.0
  */
 
+import { randomBytes, createCipheriv, createDecipheriv } from 'node:crypto';
+import Stripe from 'stripe';
 import { transaction } from '../db/index.js';
+import type { SqlTx } from '../db/index.js';
 import { createLogger } from '../utils/logger.js';
+import { getErrorMessage } from '../utils/errors.js';
+import { env } from '../config/env.js';
+import { config } from '../config.js';
 
 const logger = createLogger('TaxComplianceService');
+
+// ============================================================================
+// STRIPE CLIENT (lazy singleton, matches StripeService pattern)
+// ============================================================================
+
+const _stripeSecretKey = env.STRIPE_SECRET_KEY;
+const _stripe: Stripe | null = _stripeSecretKey
+  ? new Stripe(_stripeSecretKey, { typescript: true })
+  : null;
+
+if (!_stripeSecretKey) {
+  logger.warn('STRIPE_SECRET_KEY not set — 1099 form generation via Stripe will be unavailable');
+}
 
 // ============================================================================
 // CONSTANTS
@@ -167,7 +186,7 @@ export async function getOrCreateWorkerTaxProfile(userId: string): Promise<Worke
     }
 
     return formatWorkerTaxProfile(profile);
-  } catch (error: any) {
+  } catch (error: unknown) {
     logger.error({ error, userId }, 'Failed to get/create worker tax profile');
     return null;
   }
@@ -181,7 +200,7 @@ export async function submitW9(
   w9Data: W9Data
 ): Promise<{ success: boolean; error?: string }> {
   try {
-    return await transaction(async (tx: any) => {
+    return await transaction(async (tx: SqlTx) => {
       // Validate TIN format
       const tinValidation = validateTIN(w9Data.tin, w9Data.tinType);
       if (!tinValidation.valid) {
@@ -237,9 +256,9 @@ export async function submitW9(
 
       return { success: true };
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     logger.error({ error, userId }, 'Failed to submit W-9');
-    return { success: false, error: error.message };
+    return { success: false, error: getErrorMessage(error) };
   }
 }
 
@@ -268,7 +287,7 @@ export async function markW9Verified(userId: string): Promise<void> {
  */
 export async function trackPayment(event: PaymentTrackingEvent): Promise<void> {
   try {
-    await transaction(async (tx: any) => {
+    await transaction(async (tx: SqlTx) => {
       // Update worker earnings tracking
       await tx`
         INSERT INTO worker_earnings_1099 (
@@ -329,7 +348,7 @@ export async function trackPayment(event: PaymentTrackingEvent): Promise<void> {
       // Check thresholds and send alerts
       await checkThresholds(tx, event.userId);
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     logger.error({ error, event }, 'Failed to track payment for tax');
   }
 }
@@ -337,7 +356,7 @@ export async function trackPayment(event: PaymentTrackingEvent): Promise<void> {
 /**
  * Check if worker has crossed tax reporting thresholds.
  */
-async function checkThresholds(tx: any, userId: string): Promise<TaxThresholdAlert[]> {
+async function checkThresholds(tx: SqlTx, userId: string): Promise<TaxThresholdAlert[]> {
   const [profile] = await tx`
     SELECT 
       total_payments_cents,
@@ -468,17 +487,17 @@ export async function generate1099NECForms(taxYear: number): Promise<{
         `;
 
         generated++;
-      } catch (error: any) {
-        errors.push(`Worker ${worker.user_id}: ${error.message}`);
+      } catch (error: unknown) {
+        errors.push(`Worker ${worker.user_id}: ${getErrorMessage(error)}`);
       }
     }
 
     logger.info({ taxYear, generated, errors: errors.length }, '1099-NEC generation complete');
 
     return { generated, errors };
-  } catch (error: any) {
+  } catch (error: unknown) {
     logger.error({ error, taxYear }, 'Failed to generate 1099-NEC forms');
-    return { generated: 0, errors: [error.message] };
+    return { generated: 0, errors: [getErrorMessage(error)] };
   }
 }
 
@@ -498,6 +517,7 @@ export async function generate1099KForms(taxYear: number): Promise<{
       WHERE tax_year = ${taxYear}
         AND requires_1099_k = TRUE
         AND form_1099_k_status IS NULL
+        AND w9_status = 'verified'
     `;
 
     let generated = 0;
@@ -516,15 +536,15 @@ export async function generate1099KForms(taxYear: number): Promise<{
         `;
 
         generated++;
-      } catch (error: any) {
-        errors.push(`Worker ${worker.user_id}: ${error.message}`);
+      } catch (error: unknown) {
+        errors.push(`Worker ${worker.user_id}: ${getErrorMessage(error)}`);
       }
     }
 
     return { generated, errors };
-  } catch (error: any) {
+  } catch (error: unknown) {
     logger.error({ error, taxYear }, 'Failed to generate 1099-K forms');
-    return { generated: 0, errors: [error.message] };
+    return { generated: 0, errors: [getErrorMessage(error)] };
   }
 }
 
@@ -532,23 +552,140 @@ export async function generate1099KForms(taxYear: number): Promise<{
 // STRIPE INTEGRATION
 // ============================================================================
 
-/**
- * Generate 1099-NEC via Stripe Tax.
- */
-async function generateStripe1099NEC(worker: any): Promise<string> {
-  // TODO: Implement Stripe Tax 1099-NEC generation
-  // This requires Stripe Tax to be configured
-  logger.info({ userId: worker.user_id }, 'Stripe 1099-NEC generation not yet implemented');
-  return `form_nec_${worker.user_id}_${Date.now()}`;
+/** Worker row shape from worker_earnings_1099 used by 1099 generation */
+interface WorkerRow {
+  user_id: string;
+  name_on_account: string | null;
+  tin_type: 'SSN' | 'EIN' | null;
+  // w9_data.tinEncrypted holds the AES-256-GCM encrypted TIN
+  w9_data: { tinEncrypted?: string } | null;
+  // IRS 1099-NEC/K requires GROSS amounts — use total_payments_cents, not net
+  total_payments_cents: number;
+  net_payments_cents: number;
+  tax_year: number;
 }
 
 /**
- * Generate 1099-K via Stripe.
+ * Fetch a worker's Stripe Connect account ID from users.stripe_connect_id.
+ *
+ * Canonical column — matches StripeService.ts (backend) authoritative lookup
+ * (backend/src/services/StripeService.ts:278 — `stripe_connect_id FROM users`).
+ * Returns null if the worker has no connected account.
  */
-async function generateStripe1099K(worker: any): Promise<string> {
-  // TODO: Implement Stripe 1099-K generation
-  logger.info({ userId: worker.user_id }, 'Stripe 1099-K generation not yet implemented');
-  return `form_k_${worker.user_id}_${Date.now()}`;
+async function getStripeConnectAccountId(userId: string): Promise<string | null> {
+  const { sql } = await import('../db/index.js');
+  const [row] = await sql`
+    SELECT stripe_connect_id
+    FROM users
+    WHERE id = ${userId}
+    LIMIT 1
+  ` as Array<{ stripe_connect_id: string | null }>;
+  return row?.stripe_connect_id ?? null;
+}
+
+/**
+ * Generate 1099-NEC via Stripe Tax Forms API.
+ *
+ * Prerequisites (ops):
+ *   - Stripe Tax must be enabled on the platform Connect account.
+ *   - Worker must have a verified W-9 with encrypted TIN stored.
+ *   - Worker must have a Stripe Connect account (users.stripe_connect_id).
+ *
+ * Uses stripe.rawRequest() because stripe.tax.forms is not typed in SDK v20;
+ * the server-side endpoint /v1/tax/forms is available when Tax Forms is enabled.
+ */
+async function generateStripe1099NEC(worker: WorkerRow): Promise<string> {
+  if (!_stripe) {
+    throw new Error('Stripe not configured — STRIPE_SECRET_KEY missing');
+  }
+
+  const connectAccountId = await getStripeConnectAccountId(worker.user_id);
+  if (!connectAccountId) {
+    throw new Error(`Worker ${worker.user_id} has no stripe_connect_id in users`);
+  }
+
+  const tinEncrypted = worker.w9_data?.tinEncrypted;
+  if (!tinEncrypted) {
+    throw new Error(`Worker ${worker.user_id} has no encrypted TIN in w9_data`);
+  }
+
+  const tin = decryptTIN(tinEncrypted);
+  const tinType = (worker.tin_type ?? 'SSN').toLowerCase() as 'ssn' | 'ein';
+
+  // IRS 1099-NEC box 1 requires GROSS nonemployee compensation (pre-fee).
+  const grossDollars = String(Math.round((worker.total_payments_cents ?? 0) / 100));
+
+  // Stripe Tax Forms API — /v1/tax/forms (requires Tax Forms to be enabled on platform)
+  const raw = await _stripe.rawRequest('POST', '/v1/tax/forms', {
+    type: 'us_1099_nec',
+    payee: {
+      account: connectAccountId,
+      tin: { type: tinType, value: tin },
+      name: worker.name_on_account ?? '',
+    },
+    tax_year: worker.tax_year ?? TAX_YEAR,
+    nonemployee_compensation: grossDollars,
+  }) as Record<string, unknown>;
+
+  if (typeof raw.id !== 'string' || !raw.id) {
+    throw new Error(`Stripe Tax Forms API returned unexpected response for 1099-NEC: ${JSON.stringify(raw)}`);
+  }
+
+  logger.info(
+    { userId: worker.user_id, connectAccountId, formId: raw.id },
+    '1099-NEC filed via Stripe Tax Forms'
+  );
+
+  return raw.id;
+}
+
+/**
+ * Generate 1099-K via Stripe Tax Forms API.
+ *
+ * Same prerequisites as generateStripe1099NEC.
+ */
+async function generateStripe1099K(worker: WorkerRow): Promise<string> {
+  if (!_stripe) {
+    throw new Error('Stripe not configured — STRIPE_SECRET_KEY missing');
+  }
+
+  const connectAccountId = await getStripeConnectAccountId(worker.user_id);
+  if (!connectAccountId) {
+    throw new Error(`Worker ${worker.user_id} has no stripe_connect_id in users`);
+  }
+
+  const tinEncrypted = worker.w9_data?.tinEncrypted;
+  if (!tinEncrypted) {
+    throw new Error(`Worker ${worker.user_id} has no encrypted TIN in w9_data`);
+  }
+
+  const tin = decryptTIN(tinEncrypted);
+  const tinType = (worker.tin_type ?? 'SSN').toLowerCase() as 'ssn' | 'ein';
+
+  // IRS 1099-K box 1a requires GROSS transaction amount (pre-fee).
+  const grossDollars = String(Math.round((worker.total_payments_cents ?? 0) / 100));
+
+  const raw = await _stripe.rawRequest('POST', '/v1/tax/forms', {
+    type: 'us_1099_k',
+    payee: {
+      account: connectAccountId,
+      tin: { type: tinType, value: tin },
+      name: worker.name_on_account ?? '',
+    },
+    tax_year: worker.tax_year ?? TAX_YEAR,
+    gross_amount: grossDollars,
+  }) as Record<string, unknown>;
+
+  if (typeof raw.id !== 'string' || !raw.id) {
+    throw new Error(`Stripe Tax Forms API returned unexpected response for 1099-K: ${JSON.stringify(raw)}`);
+  }
+
+  logger.info(
+    { userId: worker.user_id, connectAccountId, formId: raw.id },
+    '1099-K filed via Stripe Tax Forms'
+  );
+
+  return raw.id;
 }
 
 // ============================================================================
@@ -574,18 +711,108 @@ function validateTIN(tin: string, type: 'SSN' | 'EIN'): { valid: boolean; error?
   return { valid: true };
 }
 
+/**
+ * Encrypt a TIN using AES-256-GCM.
+ *
+ * Storage format: `<iv_hex>:<authTag_hex>:<ciphertext_hex>` (colon-delimited hex).
+ * Falls back to base64 encoding with a `b64_` prefix when
+ * TAX_TIN_ENCRYPTION_KEY is not set (dev/test only — logs a warning).
+ *
+ * Key: 32-byte hex string from env var TAX_TIN_ENCRYPTION_KEY.
+ * IV:  16 fresh random bytes per call (never reused).
+ */
 function encryptTIN(tin: string): string {
-  // TODO: Implement proper encryption (e.g., AES-256)
-  // For now, return a placeholder
-  return `enc_${Buffer.from(tin).toString('base64')}`;
+  const rawKey = config.tax.encryptionKey;
+
+  if (!rawKey) {
+    // Only acceptable in non-production environments.
+    logger.warn('TAX_TIN_ENCRYPTION_KEY not set — TIN stored as base64 (insecure, dev only)');
+    return `b64_${Buffer.from(tin, 'utf8').toString('base64')}`;
+  }
+
+  const key = Buffer.from(rawKey, 'hex');   // 32 bytes → AES-256
+  const iv  = randomBytes(16);              // 16 bytes
+  const cipher = createCipheriv('aes-256-gcm', key, iv);
+
+  const encrypted = Buffer.concat([cipher.update(tin, 'utf8'), cipher.final()]);
+  const authTag   = cipher.getAuthTag();    // 16 bytes by default
+
+  return `${iv.toString('hex')}:${authTag.toString('hex')}:${encrypted.toString('hex')}`;
+}
+
+/**
+ * Decrypt a TIN encrypted by encryptTIN().
+ *
+ * Handles both the AES-256-GCM format and the legacy b64_ fallback.
+ * Throws if the ciphertext has been tampered with (GCM auth tag mismatch).
+ */
+function decryptTIN(stored: string): string {
+  if (stored.startsWith('b64_')) {
+    // Legacy dev-only fallback — base64 encoded.
+    // NOTE: If rows with b64_ prefix exist when the encryption key is first deployed,
+    // a one-time migration job must re-encrypt them with AES-256-GCM before going live.
+    return Buffer.from(stored.slice(4), 'base64').toString('utf8');
+  }
+
+  const rawKey = config.tax.encryptionKey;
+  if (!rawKey) {
+    // Parallel guard to encryptTIN — produces a clear error instead of cryptic crypto throw.
+    throw new Error('Cannot decrypt AES-GCM TIN: TAX_TIN_ENCRYPTION_KEY is not set');
+  }
+
+  const parts = stored.split(':');
+  if (parts.length !== 3) {
+    throw new Error('Invalid encrypted TIN format — expected iv:authTag:ciphertext');
+  }
+
+  const [ivHex, authTagHex, ciphertextHex] = parts;
+  const key        = Buffer.from(rawKey, 'hex');
+  const iv         = Buffer.from(ivHex, 'hex');
+  const authTag    = Buffer.from(authTagHex, 'hex');
+  const ciphertext = Buffer.from(ciphertextHex, 'hex');
+
+  const decipher = createDecipheriv('aes-256-gcm', key, iv);
+  decipher.setAuthTag(authTag);
+
+  return decipher.update(ciphertext).toString('utf8') + decipher.final('utf8');
 }
 
 async function verifyTIN(userId: string, tin: string, type: 'SSN' | 'EIN'): Promise<void> {
-  // TODO: Implement TIN verification via IRS TIN Match API
-  logger.info({ userId, type }, 'TIN verification not yet implemented');
+  // Phase 3 (IRS TIN): IRS e-Services Bulk TIN Matching API — blocked on IRS registration.
+  // Until that integration is complete, log and no-op.
+  // On match:    call markW9Verified(userId)
+  // On no-match: set backup_withholding = TRUE in worker_earnings_1099
+  logger.info({ userId, type }, 'TIN verification pending IRS e-Services registration (Phase 3)');
+  void tin; // suppress unused-variable warning until IRS API is wired
 }
 
-function formatWorkerTaxProfile(row: any): WorkerTaxProfile {
+interface WorkerTaxProfileRow {
+  id: string;
+  user_id: string;
+  tax_year: number;
+  w9_status: W9Status;
+  w9_received_at: Date | null;
+  w9_data: W9Data | null;
+  name_on_account: string | null;
+  tin_last4: string | null;
+  tin_type: 'SSN' | 'EIN' | null;
+  address_verified: boolean;
+  backup_withholding: boolean;
+  total_payments_cents: number;
+  total_transactions: number;
+  platform_fees_cents: number;
+  refunds_cents: number;
+  net_payments_cents: number;
+  requires_1099_nec: boolean;
+  requires_1099_k: boolean;
+  form_1099_nec_status: FilingStatus | null;
+  form_1099_k_status: FilingStatus | null;
+  stripe_tax_form_id: string | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+function formatWorkerTaxProfile(row: WorkerTaxProfileRow): WorkerTaxProfile {
   return {
     id: row.id,
     userId: row.user_id,

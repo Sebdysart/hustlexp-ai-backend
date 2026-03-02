@@ -19,6 +19,28 @@ const logger = createLogger('FeedQueryService');
 // TYPES
 // ============================================================================
 
+interface FeedTaskRow {
+  id: string;
+  title: string;
+  description: string;
+  price: number;
+  location: string;
+  location_state: string;
+  category: string | null;
+  risk_level: RiskLevel;
+  required_trade: string | null;
+  required_trust_tier: number;
+  insurance_required: boolean;
+  background_check_required: boolean;
+  deadline: Date | null;
+  poster_id: string;
+  poster_name: string;
+  poster_avatar: string | null;
+  poster_trust_tier: number;
+  created_at: Date;
+  location_geog?: unknown;
+}
+
 export interface FeedTask {
   id: string;
   title: string;
@@ -115,9 +137,9 @@ function buildBaseFeedQuery(): string {
 /**
  * Build feed query with mode-specific ordering and filters.
  */
-function buildFeedQuery(options: FeedQueryOptions): { sql: string; params: any[] } {
+function buildFeedQuery(options: FeedQueryOptions): { sql: string; params: unknown[] } {
   const { userId, cursor, limit = 20, feedMode = 'standard' } = options;
-  const params: any[] = [userId];
+  const params: unknown[] = [userId];
   let paramIndex = 2;
 
   let sql = buildBaseFeedQuery();
@@ -199,7 +221,7 @@ export async function getFeed(options: FeedQueryOptions): Promise<FeedResult> {
 
     // Check if there are more results
     const hasMore = rows.length > limit;
-    const tasks = rows.slice(0, limit).map((row: any) => formatTask(row, options));
+    const tasks = rows.slice(0, limit).map((row: FeedTaskRow) => formatTask(row, options));
 
     // Generate next cursor
     const nextCursor = hasMore && tasks.length > 0
@@ -219,7 +241,7 @@ export async function getFeed(options: FeedQueryOptions): Promise<FeedResult> {
       hasMore,
       totalCount: tasks.length,
     };
-  } catch (error: any) {
+  } catch (error: unknown) {
     logger.error({ error, userId: options.userId }, 'Failed to fetch feed');
     throw error;
   }
@@ -228,7 +250,7 @@ export async function getFeed(options: FeedQueryOptions): Promise<FeedResult> {
 /**
  * Format a database row into a FeedTask.
  */
-function formatTask(row: any, options: FeedQueryOptions): FeedTask {
+function formatTask(row: FeedTaskRow, options: FeedQueryOptions): FeedTask {
   const task: FeedTask = {
     id: row.id,
     title: row.title,
@@ -319,7 +341,7 @@ export async function isTaskEligibleForUser(
     }
 
     return { eligible: true };
-  } catch (error: any) {
+  } catch (error: unknown) {
     logger.error({ error, taskId, userId }, 'Error checking task eligibility');
     return { eligible: false, reason: 'Error checking eligibility' };
   }
@@ -355,7 +377,7 @@ export async function getEligibleTaskCount(userId: string): Promise<number> {
     `;
 
     return parseInt(result?.count || '0', 10);
-  } catch (error: any) {
+  } catch (error: unknown) {
     logger.error({ error, userId }, 'Failed to get eligible task count');
     return 0;
   }
@@ -383,7 +405,7 @@ export async function prewarmFeedCache(userId: string): Promise<void> {
     // Fetch the first page of results to warm the cache
     await getFeed({ userId, limit: 20 });
     logger.info({ userId }, 'Feed cache pre-warmed');
-  } catch (error: any) {
+  } catch (error: unknown) {
     logger.warn({ error, userId }, 'Failed to pre-warm feed cache');
   }
 }

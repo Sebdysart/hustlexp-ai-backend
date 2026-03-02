@@ -161,6 +161,13 @@ export const config = {
     version: process.env.DD_VERSION || process.env.npm_package_version || '1.0.0',
   },
 
+  // Tax Compliance
+  tax: {
+    // 32-byte hex key for AES-256-GCM TIN encryption.
+    // Generate with: openssl rand -hex 32
+    encryptionKey: process.env.TAX_TIN_ENCRYPTION_KEY || '',
+  },
+
   // Application
   app: {
     port: parseInt(process.env.PORT || '3000', 10),
@@ -205,6 +212,11 @@ export function validateConfig(): { valid: boolean; errors: string[]; warnings: 
     }
     if (!config.identity.sendgrid.apiKey) {
       warnings.push('SendGrid not configured — email notifications will fail');
+    }
+    if (!config.tax.encryptionKey) {
+      errors.push('TAX_TIN_ENCRYPTION_KEY is required in production (AES-256-GCM TIN encryption)');
+    } else if (!/^[0-9a-fA-F]{64}$/.test(config.tax.encryptionKey)) {
+      errors.push('TAX_TIN_ENCRYPTION_KEY must be exactly 64 hex characters (32 bytes) for AES-256-GCM — generate with: openssl rand -hex 32');
     }
   }
 

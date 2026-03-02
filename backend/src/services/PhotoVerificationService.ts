@@ -213,12 +213,15 @@ Respond with JSON only: {"similarity_score": 0-1, "completion_score": 0-1, "chan
         throw new Error(`OpenAI API error: ${response.status}`);
       }
 
-      const data = await response.json() as Record<string, any>;
+      const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
       const content = data.choices?.[0]?.message?.content;
 
       // Parse AI response
       let parsed;
       try {
+        if (!content) {
+          throw new Error('Empty AI response');
+        }
         // Extract JSON from response (may be wrapped in markdown code blocks)
         const jsonMatch = content.match(/\{[\s\S]*\}/);
         parsed = JSON.parse(jsonMatch?.[0] || content);

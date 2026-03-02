@@ -7,7 +7,7 @@
  * @see ARCHITECTURE.md
  */
 
-import { db, type QueryFn, type QueryResult } from '../db';
+import { db, type QueryFn } from '../db';
 
 /**
  * Context for repository operations.

@@ -1,47 +1,39 @@
+/**
+ * Citadel Financial Rules
+ *
+ * Static analysis rules for enforcing financial invariants at code-review time.
+ * These are used by citadel-constitution.test.ts to verify that prohibited patterns
+ * are detected in source files.
+ *
+ * INV-4:    Ledger entries are immutable — no UPDATE/DELETE on ledger_entries
+ * ARCH-1:   No direct db calls in router files — must go through service layer
+ * INV-1/5:  Payment amounts must be positive — amount: 0 is flagged
+ */
+
 export interface Violation {
-  file: string;
-  line: number;
   invariant: string;
   message: string;
+  file: string;
+  line?: number;
 }
 
 /**
- * INV-4: Ledger entries are immutable — no UPDATE/DELETE on ledger_entries.
- * Scans source for raw SQL that touches ledger_entries with mutation verbs.
+ * Check for UPDATE or DELETE operations on ledger_entries table.
+ * INV-4: Ledger entries are immutable — no UPDATE/DELETE allowed.
  */
 export function checkLedgerImmutability(source: string, filePath: string): Violation[] {
   const violations: Violation[] = [];
   const lines = source.split('\n');
 
-  lines.forEach((line, i) => {
-    const lower = line.toLowerCase();
-    if (
-      (lower.includes('update') || lower.includes('delete')) &&
-      lower.includes('ledger_entr')
-    ) {
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    // Detect UPDATE ledger_entries or DELETE FROM ledger_entries patterns
+    if (/UPDATE\s+ledger_entries/i.test(line) || /DELETE\s+FROM\s+ledger_entries/i.test(line)) {
       violations.push({
+        invariant: 'INV-4',
+        message: 'Ledger entries are immutable — UPDATE/DELETE on ledger_entries is forbidden',
         file: filePath,
         line: i + 1,
-        invariant: 'INV-4',
-        message: `Ledger mutation detected: "${line.trim()}" — ledger_entries are append-only`,
-      });
-    }
-  });
-
-  // Also check full source for multi-line SQL patterns
-  const normalized = source.replace(/\s+/g, ' ').toLowerCase();
-  if (
-    (normalized.includes('update') || normalized.includes('delete')) &&
-    normalized.includes('ledger_entries')
-  ) {
-    // Only add if not already caught line-by-line
-    const alreadyCaught = violations.some(v => v.invariant === 'INV-4');
-    if (!alreadyCaught) {
-      violations.push({
-        file: filePath,
-        line: 0, // full-source match, no single line
-        invariant: 'INV-4',
-        message: `Multi-line ledger mutation detected in ${filePath} — ledger_entries are append-only`,
       });
     }
   }
@@ -50,54 +42,54 @@ export function checkLedgerImmutability(source: string, filePath: string): Viola
 }
 
 /**
- * INV-1/5: Balance and payment amounts must be positive integers.
- * Flags direct numeric literal assignments to amount/escrowAmount that are <= 0.
- * (e.g., `amount: 0` or `amount: -100` — clearly invalid values)
- * Variable assignments are NOT flagged here (the variable may be validated upstream).
+ * Check for direct db calls in router files.
+ * ARCH-1: Database access must go through the service layer, not directly in routers.
  */
-export function checkAmountPositivity(source: string, filePath: string): Violation[] {
+export function checkNoDirectDbInRouters(source: string, filePath: string): Violation[] {
   const violations: Violation[] = [];
-  const lines = source.split('\n');
 
-  lines.forEach((line, i) => {
-    // Flag: amount: 0 or amount: -N (numeric literal <= 0)
-    const match = line.match(/\b(amount|escrowAmount)\s*:\s*(-?\d+)/);
-    if (match) {
-      const value = parseInt(match[2], 10);
-      if (value <= 0) {
-        violations.push({
-          file: filePath,
-          line: i + 1,
-          invariant: 'INV-1/5',
-          message: `Zero or negative amount literal '${match[2]}' assigned to '${match[1]}' — amounts must be positive (INV-1/5)`,
-        });
-      }
+  // Only flag router files (path contains /routers/)
+  if (!/\/routers\//.test(filePath)) {
+    return violations;
+  }
+
+  const lines = source.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    // Detect direct db.query / db.execute calls
+    if (/\bdb\.(query|execute|transaction|serializableTransaction)\s*\(/.test(line)) {
+      violations.push({
+        invariant: 'ARCH-1',
+        message: 'Direct database call in router file — use service layer instead',
+        file: filePath,
+        line: i + 1,
+      });
     }
-  });
+  }
 
   return violations;
 }
 
 /**
- * Architecture Rule: No direct DB calls in routers.
- * Flags `db.` or `sql\`` usage inside files matching routers/ pattern.
+ * Check for zero amount literals in financial contexts.
+ * INV-1/5: Payment amounts must be positive — amount: 0 is a potential bug.
  */
-export function checkNoDirectDbInRouters(source: string, filePath: string): Violation[] {
-  if (!filePath.includes('/routers/')) return [];
-
+export function checkAmountPositivity(source: string, filePath: string): Violation[] {
   const violations: Violation[] = [];
   const lines = source.split('\n');
 
-  lines.forEach((line, i) => {
-    if (/\bdb\.\w+\(/.test(line) || /sql`/.test(line)) {
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    // Detect amount: 0 pattern (zero amount literal)
+    if (/\bamount\s*:\s*0\b/.test(line)) {
       violations.push({
+        invariant: 'INV-1/5',
+        message: 'Zero amount detected — payment amounts must be positive integers in cents',
         file: filePath,
         line: i + 1,
-        invariant: 'ARCH-1',
-        message: `Direct DB call in router: "${line.trim()}" — use a Service instead`,
       });
     }
-  });
+  }
 
   return violations;
 }

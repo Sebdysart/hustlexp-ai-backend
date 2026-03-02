@@ -23,7 +23,6 @@ import type {
   Escrow,
   EscrowState,
   ServiceResult,
-  ServiceError
 } from '../types';
 import { TERMINAL_ESCROW_STATES, ErrorCodes } from '../types';
 import { escrowLogger } from '../logger';

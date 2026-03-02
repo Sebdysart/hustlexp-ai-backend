@@ -13,7 +13,6 @@
 
 import { db, isInvariantViolation, getErrorMessage } from '../db';
 import type { ServiceResult } from '../types';
-import { ErrorCodes } from '../types';
 import { GDPRService } from './GDPRService';
 
 // ============================================================================
@@ -562,26 +561,3 @@ export const AnalyticsService = {
 // HELPER FUNCTIONS
 // ============================================================================
 
-/**
- * Anonymize IP address (privacy requirement)
- * 
- * GDPR_COMPLIANCE_SPEC.md: IP addresses must be anonymized
- */
-function anonymizeIP(ipAddress: string): string {
-  // Simple anonymization: Remove last octet for IPv4, last 64 bits for IPv6
-  if (ipAddress.includes('.')) {
-    // IPv4: 192.168.1.100 -> 192.168.1.0
-    const parts = ipAddress.split('.');
-    if (parts.length === 4) {
-      return `${parts[0]}.${parts[1]}.${parts[2]}.0`;
-    }
-  } else if (ipAddress.includes(':')) {
-    // IPv6: 2001:0db8:85a3:0000:0000:8a2e:0370:7334 -> 2001:0db8:85a3:0000:0000:0000:0000:0000
-    const parts = ipAddress.split(':');
-    if (parts.length === 8) {
-      return `${parts[0]}:${parts[1]}:${parts[2]}:${parts[3]}:0000:0000:0000:0000`;
-    }
-  }
-  
-  return ipAddress; // Return as-is if can't anonymize
-}

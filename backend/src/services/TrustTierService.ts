@@ -259,19 +259,19 @@ export const TrustTierService = {
       // Get distinct poster reviews (5-star only)
       // Note: Assuming reviews are stored in a reviews table or derived from task completion
       // For alpha, we'll check for 5 distinct posters with completed tasks
-      const reviewsResult = await db.query<{ distinct_posters: string }>(
+      const _reviewsResult = await db.query<{ distinct_posters: string }>(
         `SELECT COUNT(DISTINCT t.poster_id)::text as distinct_posters
          FROM public.tasks t
          WHERE t.worker_id = $1
            AND t.state = 'COMPLETED'`,
         [userId]
       );
-      const distinctPosters = parseInt(reviewsResult.rows[0]?.distinct_posters || '0', 10);
+      // distinctPosters available in _reviewsResult.rows[0]?.distinct_posters if needed
 
       // Check security deposit (escrow)
       // For alpha, we'll check if user has a security deposit locked
       // Escrows table references tasks, so we join through tasks to get worker_id
-      const depositResult = await db.query<{ has_deposit: boolean }>(
+      const _depositResult = await db.query<{ has_deposit: boolean }>(
         `SELECT EXISTS(
            SELECT 1 FROM escrows e
            JOIN tasks t ON e.task_id = t.id
@@ -281,7 +281,7 @@ export const TrustTierService = {
          ) as has_deposit`,
         [userId]
       );
-      const hasDeposit = depositResult.rows[0]?.has_deposit || false;
+      // hasDeposit available in _depositResult.rows[0]?.has_deposit if needed
 
       // SPEC ALIGNMENT: ELITE requires 100+ tasks per PRODUCT_SPEC §8.2
       if (completedCount < 100) {
@@ -463,7 +463,7 @@ export const TrustTierService = {
       // trust_ledger requires old_tier >= 1, but we might have UNVERIFIED (0) or BANNED (9)
       // Only log if old_tier is in valid range (1-4)
       if (currentTier >= 1 && currentTier <= 4) {
-        const idempotencyKey = `trust_ban:${userId}:${Date.now()}`;
+        // idempotency key for trust_ban would be: `trust_ban:${userId}:${Date.now()}`
         // Note: BANNED (9) cannot be inserted into trust_ledger due to constraint
         // We'll log the transition to a special value or skip logging for bans
         // For alpha, we'll skip trust_ledger logging for bans

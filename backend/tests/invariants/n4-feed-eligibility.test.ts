@@ -33,12 +33,14 @@ import pg from 'pg';
 import { 
   createTestPool, 
   cleanupTestData, 
-  createTestUser
+  createTestUser,
+  hasDb,
 } from '../setup';
 
 let pool: pg.Pool;
 
 beforeAll(async () => {
+  if (!hasDb) return; // Skip DB setup when DATABASE_URL not available
   pool = createTestPool();
   console.log('Connected to database for N4 feed eligibility tests');
 });
@@ -55,7 +57,7 @@ beforeEach(async () => {
 // INV-N4-1: Feed query returns ONLY eligible tasks
 // =============================================================================
 
-describe('INV-N4-1: Feed query returns ONLY eligible tasks', () => {
+describe.skipIf(!hasDb)('INV-N4-1: Feed query returns ONLY eligible tasks', () => {
   
   it('MUST PASS: Feed query excludes non-OPEN tasks', async () => {
     const userId = await createTestUser(pool, `test-user-${Date.now()}@hustlexp.test`);
@@ -156,7 +158,7 @@ describe('INV-N4-1: Feed query returns ONLY eligible tasks', () => {
 // INV-N4-2: Feed query uses SQL JOIN for eligibility (no post-query filtering)
 // =============================================================================
 
-describe('INV-N4-2: Feed query uses SQL JOIN for eligibility (no post-query filtering)', () => {
+describe.skipIf(!hasDb)('INV-N4-2: Feed query uses SQL JOIN for eligibility (no post-query filtering)', () => {
   
   it('MUST PASS: Feed query eligibility is enforced at SQL level, not application level', async () => {
     const userId = await createTestUser(pool, `test-user-${Date.now()}@hustlexp.test`);
@@ -204,7 +206,7 @@ describe('INV-N4-2: Feed query uses SQL JOIN for eligibility (no post-query filt
 // INV-N4-3: Tasks without capability_profiles are excluded
 // =============================================================================
 
-describe('INV-N4-3: Tasks without capability_profiles are excluded', () => {
+describe.skipIf(!hasDb)('INV-N4-3: Tasks without capability_profiles are excluded', () => {
   
   it('MUST PASS: INNER JOIN excludes users without capability_profiles', async () => {
     const userId = await createTestUser(pool, `test-user-${Date.now()}@hustlexp.test`);
@@ -237,7 +239,7 @@ describe('INV-N4-3: Tasks without capability_profiles are excluded', () => {
 // INV-N4-4: Frontend trusts all returned tasks are eligible
 // =============================================================================
 
-describe('INV-N4-4: Frontend trusts all returned tasks are eligible', () => {
+describe.skipIf(!hasDb)('INV-N4-4: Frontend trusts all returned tasks are eligible', () => {
   
   it('MUST PASS: All tasks returned by feed query are actionable (no disabled states)', async () => {
     const userId = await createTestUser(pool, `test-user-${Date.now()}@hustlexp.test`);

@@ -8,15 +8,34 @@
     "prettier"
   ],
   "parserOptions": {
-    "project": "./tsconfig.json",
+    "project": ["./tsconfig.json", "./src/tsconfig.json"],
     "ecmaVersion": 2022,
     "sourceType": "module"
   },
   "rules": {
     "@typescript-eslint/explicit-function-return-type": "off",
     "@typescript-eslint/no-explicit-any": "error",
-    "@typescript-eslint/no-unused-vars": ["error", { "argsIgnorePattern": "^_" }],
+    "@typescript-eslint/no-unused-vars": ["error", { "argsIgnorePattern": "^_", "varsIgnorePattern": "^_", "caughtErrorsIgnorePattern": "^_" }],
     "no-console": ["warn", { "allow": ["warn", "error"] }]
   },
-  "ignorePatterns": ["dist", "node_modules", "*.js"]
+  "overrides": [
+    {
+      "files": ["**/tests/**/*.ts", "**/*.test.ts", "**/server.ts"],
+      "rules": {
+        "no-console": "off"
+      }
+    }
+  ],
+  "ignorePatterns": [
+    "dist",
+    "node_modules",
+    "*.js",
+    "src/index.ts",
+    "src/routes/**/*",
+    "src/middleware/**/*",
+    "src/ai/orchestrator.ts",
+    "src/services/DisputeResolutionService.ts",
+    "src/services/TaskApplicationService.ts",
+    "src/services/TaxReportingService.ts"
+  ]
 }

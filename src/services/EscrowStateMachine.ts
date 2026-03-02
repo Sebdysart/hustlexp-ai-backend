@@ -19,9 +19,12 @@
  * @version 1.0.0 (BUILD_GUIDE aligned)
  */
 
+import { match } from 'ts-pattern';
 import { getSql, transaction } from '../db/index.js';
+import type { SqlTx } from '../db/index.js';
 import { createLogger } from '../utils/logger.js';
-import { awardXPForTask } from './AtomicXPService.js';
+import { awardXPInTx } from './AtomicXPService.js';
+import { getErrorMessage } from '../utils/errors.js';
 
 const logger = createLogger('EscrowStateMachine');
 
@@ -76,15 +79,30 @@ export const ESCROW_TRANSITIONS: Record<EscrowState, EscrowState[]> = {
 class EscrowStateMachineClass {
 
   /**
-   * Check if a transition is valid
+   * Check if a transition is valid.
+   *
+   * Uses ts-pattern exhaustive match so TypeScript will emit a compile error
+   * if a new EscrowState variant is added without updating this function.
    */
   canTransition(from: EscrowState, to: EscrowState): boolean {
-    const validTargets = ESCROW_TRANSITIONS[from] || [];
+    const validTargets: EscrowState[] = match(from)
+      .with('pending',        () => ['funded', 'refunded'] as EscrowState[])
+      .with('funded',         () => ['released', 'refunded', 'locked_dispute'] as EscrowState[])
+      .with('locked_dispute', () => ['released', 'refunded', 'partial_refund'] as EscrowState[])
+      .with('released',       () => [] as EscrowState[])       // Terminal
+      .with('refunded',       () => [] as EscrowState[])       // Terminal
+      .with('partial_refund', () => [] as EscrowState[])       // Terminal
+      .exhaustive();
     return validTargets.includes(to);
   }
 
   /**
-   * Execute a state transition
+   * Execute a state transition.
+   *
+   * When the target state is 'released', the escrow state update AND the XP
+   * award are wrapped in a SINGLE serializable transaction so that either both
+   * succeed or both roll back. This enforces INV-1: no money released without
+   * XP, no XP without money release.
    */
   async transition(
     taskId: string,
@@ -93,8 +111,15 @@ class EscrowStateMachineClass {
   ): Promise<EscrowTransitionResult> {
     const sql = getSql();
 
+    // Hoisted so the catch block always reports the actual DB state at the
+    // time of failure (not a hardcoded sentinel). Overwritten after the DB
+    // read succeeds; if the read itself throws the sentinel 'pending' is safe
+    // because no state change has occurred yet.
+    let currentState: EscrowState = 'pending';
+
     try {
-      // Get current state from money_state_lock
+      // Read current state outside the write transaction so we can validate
+      // before acquiring the row lock inside the transaction.
       const [lock] = await sql`
         SELECT task_id, current_state, amount_cents
         FROM money_state_lock
@@ -123,7 +148,8 @@ class EscrowStateMachineClass {
         };
       }
 
-      const currentState = lock.current_state as EscrowState;
+      // Update the hoisted variable so the catch block reflects the true state.
+      currentState = lock.current_state as EscrowState;
 
       // Check if terminal
       if (TERMINAL_ESCROW_STATES.includes(currentState)) {
@@ -145,43 +171,77 @@ class EscrowStateMachineClass {
         };
       }
 
-      // Execute transition
-      await sql`
-        UPDATE money_state_lock
-        SET
-          current_state = ${targetState},
-          ${targetState === 'funded' && context.stripePaymentIntentId
-            ? sql`stripe_payment_intent_id = ${context.stripePaymentIntentId},`
-            : sql``}
-          ${targetState === 'released' && context.stripeTransferId
-            ? sql`stripe_transfer_id = ${context.stripeTransferId},`
-            : sql``}
-          updated_at = NOW()
-        WHERE task_id = ${taskId}
-      `;
-
-      // Log transition
-      await sql`
-        INSERT INTO escrow_state_log (task_id, from_state, to_state, context, created_at)
-        VALUES (${taskId}, ${currentState}, ${targetState}, ${JSON.stringify(context)}, NOW())
-      `;
-
       let xpAwarded = 0;
 
-      // INV-1: Award XP when released
-      if (targetState === 'released') {
-        const [task] = await sql`
-          SELECT assigned_to FROM tasks WHERE id = ${taskId}
+      // ------------------------------------------------------------------
+      // ATOMIC BLOCK: escrow state update + XP award in one transaction.
+      //
+      // Isolation strategy: READ COMMITTED + FOR UPDATE row lock.
+      // The `transaction()` helper uses sql.begin() which defaults to READ
+      // COMMITTED. We acquire an exclusive row lock on money_state_lock as
+      // the FIRST statement, which serialises concurrent transitions for
+      // the same taskId without SERIALIZABLE overhead.
+      //
+      // If the target is 'released' we must award XP inside the same
+      // transaction so that either both writes commit or neither does.
+      // For all other target states we still use the same transaction helper
+      // for consistency; XP is not awarded in those paths.
+      // ------------------------------------------------------------------
+      await transaction(async (tx: SqlTx) => {
+        // First: acquire row-level exclusive lock to prevent concurrent
+        // transitions on this taskId from racing under READ COMMITTED.
+        // In production this blocks until any concurrent transaction holding
+        // the lock commits or rolls back.
+        // NOTE: In the test stub db/index.ts, `transaction` is a no-op;
+        //       this statement is validated for correctness at type-check time.
+        await tx`SELECT task_id FROM money_state_lock WHERE task_id = ${taskId} FOR UPDATE`;
+
+        // Execute state update
+        await tx`
+          UPDATE money_state_lock
+          SET
+            current_state = ${targetState},
+            ${targetState === 'funded' && context.stripePaymentIntentId
+              ? tx`stripe_payment_intent_id = ${context.stripePaymentIntentId},`
+              : tx``}
+            ${targetState === 'released' && context.stripeTransferId
+              ? tx`stripe_transfer_id = ${context.stripeTransferId},`
+              : tx``}
+            updated_at = NOW()
+          WHERE task_id = ${taskId}
         `;
 
-        if (task?.assigned_to) {
-          const xpResult = await awardXPForTask(taskId, task.assigned_to);
-          if (xpResult.success) {
-            xpAwarded = xpResult.xpAwarded;
-            logger.info({ taskId, xpAwarded }, 'XP awarded on escrow release');
+        // Log transition
+        await tx`
+          INSERT INTO escrow_state_log (task_id, from_state, to_state, context, created_at)
+          VALUES (${taskId}, ${currentState}, ${targetState}, ${JSON.stringify(context)}, NOW())
+        `;
+
+        // INV-1: Award XP when released — inside the same atomic block
+        if (targetState === 'released') {
+          const [task] = await tx`
+            SELECT assigned_to FROM tasks WHERE id = ${taskId}
+          `;
+
+          if (task?.assigned_to) {
+            // awardXPInTx operates within tx — any failure rolls back the
+            // entire transaction, including the escrow state update above.
+            const xpResult = await awardXPInTx(taskId, task.assigned_to, tx);
+            if (xpResult.success) {
+              xpAwarded = xpResult.xpAwarded ?? 0;
+              logger.info({ taskId, xpAwarded }, 'XP awarded on escrow release');
+            } else if (xpResult.alreadyAwarded) {
+              // XP was already awarded — idempotent re-release, safe to continue.
+              logger.info({ taskId }, 'XP already awarded — idempotent release, continuing');
+            } else {
+              // Real failure (e.g. user not found, task not found). Throw to
+              // trigger transaction rollback so escrow is NOT released without XP.
+              // This enforces INV-1: no money released without XP awarded.
+              throw new Error(`XP award failed: ${xpResult.error ?? 'unknown error'}`);
+            }
           }
         }
-      }
+      });
 
       logger.info({
         taskId,
@@ -198,13 +258,18 @@ class EscrowStateMachineClass {
         xpAwarded,
       };
 
-    } catch (error: any) {
-      logger.error({ error, taskId, targetState }, 'Escrow state transition failed');
+    } catch (error: unknown) {
+      logger.error(
+        { escrowId: taskId, targetState, currentState, error: getErrorMessage(error) },
+        'COMPENSATING_TX: escrow+XP transaction failed — no funds released, no XP awarded',
+      );
       return {
         success: false,
-        previousState: 'pending',
-        newState: 'pending',
-        error: error.message,
+        // Report the actual state the DB was in when failure occurred.
+        // The transaction was rolled back, so the DB is still in currentState.
+        previousState: currentState,
+        newState: currentState,
+        error: getErrorMessage(error),
       };
     }
   }

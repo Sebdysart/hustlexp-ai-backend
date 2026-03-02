@@ -15,19 +15,25 @@ import { Pool } from 'pg';
 // Example: postgresql://postgres:postgres@localhost:5432/hustlexp_test
 const TEST_DB_URL = process.env.LOCAL_TEST_DB_URL;
 
-if (!TEST_DB_URL) {
-  throw new Error(
-    'LOCAL_TEST_DB_URL environment variable is required for system integrity tests.\n' +
-    'These tests require local Postgres (not Neon serverless) to avoid driver-level query plan caching.\n' +
-    'Set LOCAL_TEST_DB_URL to a local Postgres connection string, e.g.:\n' +
-    '  postgresql://postgres:postgres@localhost:5432/hustlexp_test\n' +
-    'See backend/tests/system/README.md for setup instructions.'
-  );
-}
+/**
+ * True when LOCAL_TEST_DB_URL is available.
+ * Use with `describe.skipIf(!hasLocalDb)` to gracefully skip system integrity tests
+ * when a local Postgres instance is not available.
+ */
+export const hasLocalDb = !!TEST_DB_URL;
 
 let testPool: Pool | null = null;
 
 export function getTestPool(): Pool {
+  if (!TEST_DB_URL) {
+    throw new Error(
+      'LOCAL_TEST_DB_URL environment variable is required for system integrity tests.\n' +
+      'These tests require local Postgres (not Neon serverless) to avoid driver-level query plan caching.\n' +
+      'Set LOCAL_TEST_DB_URL to a local Postgres connection string, e.g.:\n' +
+      '  postgresql://postgres:postgres@localhost:5432/hustlexp_test\n' +
+      'See backend/tests/system/README.md for setup instructions.'
+    );
+  }
   if (!testPool) {
     // Parse connection string or use explicit connection params
     const url = new URL(TEST_DB_URL.replace(/^postgresql:\/\//, 'http://'));

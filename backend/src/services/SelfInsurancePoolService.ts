@@ -30,14 +30,6 @@ interface SelfInsurancePool {
   updated_at: Date;
 }
 
-interface InsuranceContribution {
-  id: string;
-  task_id: string;
-  hustler_id: string;
-  contribution_cents: number;
-  contribution_percentage: number;
-  created_at: Date;
-}
 
 type ClaimStatus = 'pending' | 'approved' | 'denied' | 'paid';
 

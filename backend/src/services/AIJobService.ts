@@ -27,12 +27,6 @@ interface CreateAIJobParams {
   maxAttempts?: number;
 }
 
-interface UpdateAIJobParams {
-  jobId: string;
-  status: AIJobStatus;
-  lastError?: string;
-}
-
 // ============================================================================
 // SERVICE
 // ============================================================================

@@ -9,6 +9,7 @@
 import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
 import { router, protectedProcedure } from '../trpc';
+import { db } from '../db';
 import * as CapabilityProfileService from '../services/CapabilityProfileService';
 import * as EligibilityResolverService from '../services/EligibilityResolverService';
 import * as FeedQueryService from '../services/FeedQueryService';
@@ -76,10 +77,16 @@ export const capabilityRouter = router({
       taskId: z.string(),
     }))
     .query(async ({ ctx, input }) => {
-      // Get task requirements
-      const { db } = await import('../db');
-      const taskResult = await db.query<Record<string, any>>(
-        `SELECT trade_type, location_state, location_city, risk_level, 
+      // Fetch task requirements
+      const taskResult = await db.query<{
+        trade_type: string;
+        location_state: string;
+        location_city: string | undefined;
+        risk_level: 'low' | 'medium' | 'high' | 'critical';
+        insurance_required: boolean;
+        background_check_required: boolean;
+      }>(
+        `SELECT trade_type, location_state, location_city, risk_level,
                 insurance_required, background_check_required
          FROM tasks WHERE id = $1`,
         [input.taskId]
@@ -89,6 +96,36 @@ export const capabilityRouter = router({
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
       }
 
+      // Single roundtrip: account age, trust tier, active task count, active dispute
+      const ctxResult = await db.query<{
+        account_age_days: number;
+        trust_tier: number;
+        active_task_count: number;
+        has_active_dispute: boolean;
+      }>(
+        `SELECT
+           EXTRACT(DAY FROM NOW() - u.created_at)::int AS account_age_days,
+           u.trust_tier,
+           (
+             SELECT COUNT(*)::int FROM tasks
+             WHERE worker_id = u.id
+               AND state IN ('ACCEPTED', 'PROOF_SUBMITTED')
+           ) AS active_task_count,
+           EXISTS (
+             SELECT 1 FROM disputes
+             WHERE (worker_id = u.id OR initiated_by = u.id)
+               AND state != 'RESOLVED'
+           ) AS has_active_dispute
+         FROM users u
+         WHERE u.id = $1`,
+        [ctx.user.id]
+      );
+
+      if (ctxResult.rows.length === 0) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'User not found' });
+      }
+
+      const userCtx = ctxResult.rows[0];
       const task = taskResult.rows[0];
       const profile = await CapabilityProfileService.getCapabilityProfile(ctx.user.id);
 
@@ -104,10 +141,10 @@ export const capabilityRouter = router({
         {
           userId: ctx.user.id,
           capabilityProfile: profile,
-          activeTaskCount: 0, // TODO: query actual count
-          hasActiveDispute: false, // TODO: query actual status
-          accountAgeDays: 30, // TODO: calculate from user.created_at
-          trustScore: 4.5, // TODO: query actual score
+          activeTaskCount: userCtx.active_task_count,
+          hasActiveDispute: userCtx.has_active_dispute,
+          accountAgeDays: userCtx.account_age_days,
+          trustScore: userCtx.trust_tier,
         }
       );
     }),

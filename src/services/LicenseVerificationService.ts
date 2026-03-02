@@ -10,8 +10,10 @@
  */
 
 import { transaction } from '../db/index.js';
+import type { SqlTx } from '../db/index.js';
 import { createLogger } from '../utils/logger.js';
 import { CapabilityProfileService } from './CapabilityProfileService.js';
+import { getErrorMessage } from '../utils/errors.js';
 
 const logger = createLogger('LicenseVerificationService');
 
@@ -82,7 +84,7 @@ export async function createVerification(
   input: CreateLicenseVerificationInput
 ): Promise<VerificationResult> {
   try {
-    return await transaction(async (tx: any) => {
+    return await transaction(async (tx: SqlTx) => {
       // Check if verification already exists for this user/trade/state
       const [existing] = await tx`
         SELECT id, status FROM license_verifications
@@ -148,9 +150,9 @@ export async function createVerification(
         verification: formatVerification(verification),
       };
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     logger.error({ error, input }, 'Failed to create license verification');
-    return { success: false, error: error.message };
+    return { success: false, error: getErrorMessage(error) };
   }
 }
 
@@ -163,7 +165,7 @@ export async function updateVerification(
   input: UpdateLicenseVerificationInput
 ): Promise<VerificationResult> {
   try {
-    return await transaction(async (tx: any) => {
+    return await transaction(async (tx: SqlTx) => {
       // Get current verification
       const [current] = await tx`
         SELECT * FROM license_verifications WHERE id = ${verificationId}
@@ -208,9 +210,9 @@ export async function updateVerification(
         verification: formatVerification(updated),
       };
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     logger.error({ error, verificationId }, 'Failed to update license verification');
-    return { success: false, error: error.message };
+    return { success: false, error: getErrorMessage(error) };
   }
 }
 
@@ -320,8 +322,9 @@ export async function checkExpiredLicenses(): Promise<{
     RETURNING id, user_id
   `;
 
+  interface ExpiredLicenseRow { id: string; user_id: string; }
   // Recompute profiles for affected users
-  const affectedUserIds = new Set(result.map((r: any) => r.user_id));
+  const affectedUserIds = new Set((result as ExpiredLicenseRow[]).map((r) => r.user_id));
   for (const userId of affectedUserIds) {
     await CapabilityProfileService.recompute(userId);
   }
@@ -338,7 +341,28 @@ export async function checkExpiredLicenses(): Promise<{
 // HELPER FUNCTIONS
 // ============================================================================
 
-function formatVerification(row: any): LicenseVerification {
+interface LicenseVerificationRow {
+  id: string;
+  user_id: string;
+  trade: string;
+  state: string;
+  license_number: string;
+  license_type: string | null;
+  status: LicenseStatus;
+  verified_at: Date | null;
+  expires_at: Date | null;
+  failure_reason: string | null;
+  source: VerificationSource;
+  verification_method: string | null;
+  verification_provider: string | null;
+  confidence_score: number | null;
+  reviewer_id: string | null;
+  review_notes: string | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+function formatVerification(row: LicenseVerificationRow): LicenseVerification {
   return {
     id: row.id,
     userId: row.user_id,

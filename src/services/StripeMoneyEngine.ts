@@ -27,16 +27,16 @@
  */
 
 import Stripe from 'stripe';
-import { getSql, transaction } from '../db/index.js';
+import { match } from 'ts-pattern';
+import { transaction } from '../db/index.js';
+import type { SqlTx } from '../db/index.js';
 import { createLogger } from '../utils/logger.js';
 import { KillSwitch } from '../infra/KillSwitch.js';
 import { TemporalGuard } from '../infra/ordering/TemporalGuard.js';
-import { LedgerLockService } from './ledger/LedgerLockService.js';
 import { LedgerAccountService } from './ledger/LedgerAccountService.js';
 import { LedgerService } from './ledger/LedgerService.js';
 import { PayoutEligibilityResolver, PayoutDecision } from './PayoutEligibilityResolver.js';
 import { assertPayoutsEnabled } from '../config/safety.js';
-import { env } from '../config/env.js';
 
 const logger = createLogger('StripeMoneyEngine');
 
@@ -52,12 +52,46 @@ if (!STRIPE_SECRET_KEY && process.env.NODE_ENV === 'production') {
 
 const isStripeMoneyEngineConfigured = !!STRIPE_SECRET_KEY;
 const stripe = isStripeMoneyEngineConfigured
-  ? new Stripe(STRIPE_SECRET_KEY, { apiVersion: '2024-12-18.acacia' as any })
+  ? new Stripe(STRIPE_SECRET_KEY, { apiVersion: '2024-12-18.acacia' as Stripe.LatestApiVersion })
   : null;
 
 // ============================================================================
 // TYPES
 // ============================================================================
+
+/** Payload for HOLD_ESCROW: create and capture a PaymentIntent */
+export interface HoldEscrowPayload {
+  amountCents: number;
+  paymentMethodId: string;
+  taskId: string;
+  posterId: string;
+  hustlerId?: string;
+  eventId?: string;
+}
+
+/** Payload for RELEASE_PAYOUT: transfer funds to a connected Stripe account */
+export interface ReleasePayoutPayload {
+  taskId: string;
+  hustlerId: string;
+  hustlerStripeAccountId: string;
+  payoutAmountCents?: number;
+  eventId?: string;
+}
+
+/** Payload for REFUND_ESCROW: refund the captured PaymentIntent to the poster */
+export interface RefundEscrowPayload {
+  taskId: string;
+  reason?: string;
+  refundAmountCents?: number;
+  posterId?: string;
+  eventId?: string;
+}
+
+/** Union of all valid engine payloads */
+export type MoneyEnginePayload =
+  | HoldEscrowPayload
+  | ReleasePayoutPayload
+  | RefundEscrowPayload;
 
 export type MoneyEvent =
   | 'HOLD_ESCROW'
@@ -93,37 +127,38 @@ export interface HandleResult {
 /**
  * getNextState — pure function implementing the state transition table.
  *
+ * Uses ts-pattern exhaustive match so TypeScript will emit a compile error if
+ * a new MoneyState variant is added without updating this transition table.
+ *
  * Throws if the (state, event) pair is not in the table.
  */
 function getNextState(currentState: MoneyState, event: MoneyEvent): MoneyState {
-  switch (currentState) {
-    case 'open':
-      if (event === 'HOLD_ESCROW') return 'held';
-      break;
-
-    case 'held':
-      if (event === 'RELEASE_PAYOUT') return 'released';
-      if (event === 'REFUND_ESCROW') return 'refunded';
-      break;
-
+  const nextState: MoneyState | null = match(currentState)
+    .with('open',      () => event === 'HOLD_ESCROW'    ? 'held'     : null)
+    .with('held',      () => event === 'RELEASE_PAYOUT' ? 'released'
+                           : event === 'REFUND_ESCROW'  ? 'refunded'
+                           : null)
     // Terminal states — no transitions allowed
-    case 'released':
-    case 'refunded':
-    case 'completed':
-      break;
+    .with('released',  () => null)
+    .with('refunded',  () => null)
+    .with('completed', () => null)
+    .exhaustive();
+
+  if (nextState === null) {
+    throw new Error(
+      `Invalid event ${event} for current state ${currentState}. ` +
+      `No transition defined.`
+    );
   }
 
-  throw new Error(
-    `Invalid event ${event} for current state ${currentState}. ` +
-    `No transition defined.`
-  );
+  return nextState;
 }
 
 // ============================================================================
 // STRIPE EFFECTS (Phase 2 operations)
 // ============================================================================
 
-async function executeHoldEscrow(payload: any): Promise<{
+async function executeHoldEscrow(payload: HoldEscrowPayload): Promise<{
   paymentIntentId: string;
   chargeId: string;
 }> {
@@ -145,13 +180,29 @@ async function executeHoldEscrow(payload: any): Promise<{
   // Capture the funds
   const captured = await stripe.paymentIntents.capture(paymentIntent.id);
 
+  // latest_charge is string | Stripe.Charge | null — extract .id when it's an object
+  const latestCharge = captured.latest_charge;
+  const chargeId =
+    typeof latestCharge === 'object' && latestCharge !== null
+      ? latestCharge.id
+      : (latestCharge ?? '');
+
   return {
     paymentIntentId: captured.id,
-    chargeId: (captured.latest_charge as any)?.id || (captured.latest_charge as string) || '',
+    chargeId,
   };
 }
 
-async function executeReleasePayout(payload: any, lockRow: any): Promise<{
+interface MoneyStateLockRow {
+  task_id: string;
+  current_state: MoneyState;
+  amount_cents: number;
+  stripe_payment_intent_id: string | null;
+  stripe_charge_id: string | null;
+  stripe_transfer_id: string | null;
+}
+
+async function executeReleasePayout(payload: ReleasePayoutPayload, lockRow: MoneyStateLockRow): Promise<{
   transferId: string;
 }> {
   if (!stripe) throw new Error('Stripe not configured — cannot execute RELEASE_PAYOUT');
@@ -165,7 +216,9 @@ async function executeReleasePayout(payload: any, lockRow: any): Promise<{
   });
 
   if (eligibility.decision === PayoutDecision.BLOCK) {
-    throw new Error(`Payout blocked: ${(eligibility as any).reason || 'Eligibility check failed'}`);
+    // The stub resolve() returns { decision }, but a real implementation may include reason
+    const reason = (eligibility as { decision: string; reason?: string }).reason;
+    throw new Error(`Payout blocked: ${reason ?? 'Eligibility check failed'}`);
   }
 
   // Create transfer to connected account
@@ -173,7 +226,7 @@ async function executeReleasePayout(payload: any, lockRow: any): Promise<{
     amount: payload.payoutAmountCents || lockRow.amount_cents,
     currency: 'usd',
     destination: payload.hustlerStripeAccountId,
-    source_transaction: lockRow.stripe_charge_id,
+    source_transaction: lockRow.stripe_charge_id ?? undefined,
     metadata: {
       taskId: payload.taskId,
       hustlerId: payload.hustlerId,
@@ -183,12 +236,12 @@ async function executeReleasePayout(payload: any, lockRow: any): Promise<{
   return { transferId: transfer.id };
 }
 
-async function executeRefundEscrow(payload: any, lockRow: any): Promise<{
+async function executeRefundEscrow(payload: RefundEscrowPayload, lockRow: MoneyStateLockRow): Promise<{
   refundId: string;
 }> {
   if (!stripe) throw new Error('Stripe not configured — cannot execute REFUND_ESCROW');
   const refund = await stripe.refunds.create({
-    payment_intent: lockRow.stripe_payment_intent_id,
+    payment_intent: lockRow.stripe_payment_intent_id ?? undefined,
     amount: payload.refundAmountCents,
     reason: 'requested_by_customer',
     metadata: {
@@ -247,7 +300,7 @@ async function compensateReleasePayout(transferId: string): Promise<void> {
 export async function handle(
   taskId: string,
   event: MoneyEvent,
-  payload: Record<string, any>,
+  payload: MoneyEnginePayload,
   options: HandleOptions = {}
 ): Promise<HandleResult> {
   const eventId = options.eventId || `${taskId}-${event}-${Date.now()}`;
@@ -264,7 +317,7 @@ export async function handle(
   // ========================================================================
   // PHASE 1: PREPARE (inside transaction)
   // ========================================================================
-  return transaction(async (tx: any) => {
+  return transaction(async (tx: SqlTx) => {
 
     // 1a. Idempotency check
     const [existing] = await tx`
@@ -278,13 +331,13 @@ export async function handle(
     }
 
     // 1b. Acquire row lock
-    const [lockRow] = await tx`
+    const [lockRow] = (await tx`
       SELECT task_id, current_state, amount_cents,
              stripe_payment_intent_id, stripe_charge_id, stripe_transfer_id
       FROM money_state_lock
       WHERE task_id = ${taskId}
       FOR UPDATE
-    `;
+    `) as MoneyStateLockRow[];
 
     const currentState: MoneyState = lockRow?.current_state || 'open';
 
@@ -297,23 +350,30 @@ export async function handle(
     // ========================================================================
     // PHASE 2: EXECUTE (Stripe operations)
     // ========================================================================
-    let stripeResult: any = {};
+    // All optional — populated only for the relevant event branch
+    type StripeExecuteResult = {
+      paymentIntentId?: string;
+      chargeId?: string;
+      transferId?: string;
+      refundId?: string;
+    };
+    let stripeResult: StripeExecuteResult = {};
 
     try {
       switch (event) {
         case 'HOLD_ESCROW':
-          stripeResult = await executeHoldEscrow(payload);
+          stripeResult = await executeHoldEscrow(payload as HoldEscrowPayload);
           break;
 
         case 'RELEASE_PAYOUT':
-          stripeResult = await executeReleasePayout(payload, lockRow);
+          stripeResult = await executeReleasePayout(payload as ReleasePayoutPayload, lockRow);
           break;
 
         case 'REFUND_ESCROW':
-          stripeResult = await executeRefundEscrow(payload, lockRow);
+          stripeResult = await executeRefundEscrow(payload as RefundEscrowPayload, lockRow);
           break;
       }
-    } catch (stripeError: any) {
+    } catch (stripeError: unknown) {
       logger.error({ stripeError, taskId, event }, 'Stripe operation failed');
 
       // Compensate if needed
@@ -347,15 +407,16 @@ export async function handle(
         WHERE task_id = ${taskId}
       `;
     } else {
-      // Create lock row for new escrow
+      // Create lock row for new escrow (HOLD_ESCROW path)
+      const holdPayload = payload as HoldEscrowPayload;
       await tx`
         INSERT INTO money_state_lock (
           task_id, current_state, amount_cents,
           stripe_payment_intent_id, stripe_charge_id,
           updated_at
         ) VALUES (
-          ${taskId}, ${nextState}, ${payload.amountCents || 0},
-          ${stripeResult.paymentIntentId || null}, ${stripeResult.chargeId || null},
+          ${taskId}, ${nextState}, ${holdPayload.amountCents || 0},
+          ${stripeResult.paymentIntentId ?? null}, ${stripeResult.chargeId ?? null},
           NOW()
         )
       `;
@@ -367,18 +428,27 @@ export async function handle(
       VALUES (${eventId}, ${taskId}, ${event}, NOW())
     `;
 
-    // 3c. Ledger entry
+    // 3c. Ledger entry — access fields safely via narrowed payload types
+    const amountCents =
+      event === 'HOLD_ESCROW'
+        ? ((payload as HoldEscrowPayload).amountCents ?? lockRow?.amount_cents ?? 0)
+        : (lockRow?.amount_cents ?? 0);
+    const fromAccount =
+      event === 'REFUND_ESCROW'
+        ? LedgerAccountService.getPlatformId()
+        : ((payload as HoldEscrowPayload).posterId ?? 'unknown');
+    const toAccount =
+      event === 'RELEASE_PAYOUT'
+        ? ((payload as ReleasePayoutPayload).hustlerId ?? 'unknown')
+        : LedgerAccountService.getPlatformId();
+
     try {
       const ledgerTx = await LedgerService.prepareTransaction({
         taskId,
         event,
-        amountCents: payload.amountCents || lockRow?.amount_cents || 0,
-        fromAccount: event === 'REFUND_ESCROW'
-          ? LedgerAccountService.getPlatformId()
-          : (payload.posterId || 'unknown'),
-        toAccount: event === 'RELEASE_PAYOUT'
-          ? (payload.hustlerId || 'unknown')
-          : LedgerAccountService.getPlatformId(),
+        amountCents,
+        fromAccount,
+        toAccount,
       });
       await LedgerService.commitTransaction(ledgerTx.id);
     } catch (ledgerErr) {
@@ -420,3 +490,6 @@ export default {
   handle,
   getNextState,
 };
+
+// Named export alias for callers using `import { StripeMoneyEngine }` syntax
+export const StripeMoneyEngine = { handle, getNextState };

@@ -20,7 +20,7 @@ export const alphaTelemetryRouter = router({
       end_date: z.date().optional(),
       role: z.enum(['hustler', 'poster']).optional(),
     }))
-    .query(async ({ input, ctx }) => {
+    .query(async ({ input, ctx: _ctx }) => {
       const endDate = input.end_date || new Date();
       
       const result = await db.query(`
