@@ -58,9 +58,11 @@ export const uploadRouter = router({
         .min(1, 'File cannot be empty')
         .max(MAX_FILE_SIZE, `File size must be under ${MAX_FILE_SIZE / 1024 / 1024}MB`)
         .optional(), // Optional for backward compat with iOS client
+      purpose: z.enum(['proof', 'message']).default('proof').optional(),
     }))
     .mutation(async ({ ctx, input }) => {
-      const key = `proofs/${input.taskId}/${ctx.user.id}/${Date.now()}_${input.filename}`;
+      const prefix = input.purpose === 'message' ? 'messages' : 'proofs';
+      const key = `${prefix}/${input.taskId}/${ctx.user.id}/${Date.now()}_${input.filename}`;
       const baseUrl = process.env.R2_PUBLIC_URL || `https://${r2Config.bucketName}.r2.dev`;
 
       // Generate real presigned URL if R2 is configured
