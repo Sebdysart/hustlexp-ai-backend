@@ -11,6 +11,7 @@ vi.mock('../../src/logger', () => {
 
 import { ReputationAIService } from '../../src/services/ReputationAIService';
 import { db } from '../../src/db';
+import { AIClient } from '../../src/services/AIClient';
 
 // ---------------------------------------------------------------------------
 // Shared fixtures
@@ -424,6 +425,81 @@ describe('ReputationAIService', () => {
 
       expect(result.success).toBe(false);
       expect((result as any).error.code).toBe('PROMOTION_CHECK_FAILED');
+    });
+  });
+
+  // ==========================================================================
+  // TDD: Fix #2 — TrustScoreSchema + NaN guard
+  // ==========================================================================
+  describe('calculateTrustScore — AI path validation (fix #2)', () => {
+    it('returns finite trust_score even when AI callJSON resolves with non-numeric trust_score', async () => {
+      // Simulate a hallucinated AI response where trust_score is a string.
+      // Before fix: Math.max(0, Math.min(100, 'garbage')) = NaN — passes silently.
+      // After fix:  service detects non-finite value, throws, falls back to heuristic.
+      (AIClient.isConfigured as any).mockReturnValue(true);
+      (AIClient.callJSON as any).mockResolvedValue({
+        data: {
+          trust_score: 'not-a-number',   // ← hallucinated string
+          trend: 'stable',
+          risk_factors: [],
+          strengths: [],
+          recommended_tier: 2,
+        },
+        provider: 'openai',
+        latencyMs: 50,
+        cached: false,
+        content: '{}',
+      });
+
+      mockTrustScoreQueries(baseUser, [], baseTaskStats, baseDisputeStats, []);
+
+      const result = await ReputationAIService.calculateTrustScore('u1');
+
+      expect(result.success).toBe(true);
+      expect(Number.isFinite((result as any).data.trust_score)).toBe(true);
+    });
+
+    it('returns finite trust_score even when AI callJSON resolves with out-of-range recommended_tier', async () => {
+      // Simulate a hallucinated recommended_tier of 99.
+      // After fix: bounds-clamped to [1,4] — should be 4, not 99.
+      (AIClient.isConfigured as any).mockReturnValue(true);
+      (AIClient.callJSON as any).mockResolvedValue({
+        data: {
+          trust_score: 85,
+          trend: 'improving',
+          risk_factors: [],
+          strengths: ['good'],
+          recommended_tier: 99,   // ← hallucinated out of [1,4]
+        },
+        provider: 'openai',
+        latencyMs: 50,
+        cached: false,
+        content: '{}',
+      });
+
+      mockTrustScoreQueries(baseUser, [], baseTaskStats, baseDisputeStats, []);
+
+      const result = await ReputationAIService.calculateTrustScore('u1');
+
+      expect(result.success).toBe(true);
+      expect((result as any).data.recommended_tier).toBeGreaterThanOrEqual(1);
+      expect((result as any).data.recommended_tier).toBeLessThanOrEqual(4);
+    });
+
+    it('falls back to heuristic when callJSON rejects (simulates ZodError from schema)', async () => {
+      // After fix, callJSON is called with TrustScoreSchema.
+      // When schema validation fails, callJSON throws — service must fall back.
+      (AIClient.isConfigured as any).mockReturnValue(true);
+      (AIClient.callJSON as any).mockRejectedValue(
+        new Error('ZodError: trust_score must be a number')
+      );
+
+      mockTrustScoreQueries(baseUser, [], baseTaskStats, baseDisputeStats, []);
+
+      const result = await ReputationAIService.calculateTrustScore('u1');
+
+      expect(result.success).toBe(true);
+      expect(Number.isFinite((result as any).data.trust_score)).toBe(true);
     });
   });
 });

@@ -18,6 +18,7 @@
 import { db } from '../db';
 import type { ServiceResult } from '../types';
 import { AIClient } from './AIClient';
+import { TrustScoreSchema } from '../lib/ai-response-schemas';
 import { aiLogger } from '../logger';
 
 const log = aiLogger.child({ service: 'ReputationAIService' });
@@ -261,9 +262,15 @@ SCORING GUIDELINES:
 - Risk deductions: -5 per open dispute, -10 if dispute_ratio > 20%, -15 if declining trend
 - Verification bonus: +5 if verified, +5 if account_age > 180 days`,
             prompt: `Analyze this user and calculate trust score:\n\n${JSON.stringify(context, null, 2)}`,
+            schema: TrustScoreSchema,
           });
 
           trustScore = aiResult.data;
+
+          // Guard: schema validates types but Math.max/min on non-finite is NaN — defensive check
+          if (!Number.isFinite(trustScore.trust_score)) {
+            throw new Error('Malformed AI trust score: non-finite trust_score');
+          }
 
           // Ensure trust_score is bounded
           trustScore.trust_score = Math.max(0, Math.min(100, trustScore.trust_score));

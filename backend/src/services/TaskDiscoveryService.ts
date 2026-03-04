@@ -18,6 +18,7 @@ import type { ServiceResult } from '../types';
 import { ErrorCodes } from '../types';
 import { GeocodingService } from './GeocodingService';
 import { scrubPII } from '../lib/pii-scrubber';
+import { AIClient } from './AIClient';
 
 // ============================================================================
 // TYPES
@@ -853,48 +854,26 @@ export const TaskDiscoveryService = {
 
       // Try AI-powered explanation first, fallback to template
       let explanation: string;
-      const anthropicKey = process.env.ANTHROPIC_API_KEY ?? '';
 
-      if (anthropicKey && taskData) {
+      if (AIClient.isConfigured() && taskData) {
         try {
-          const aiResponse = await fetch('https://api.anthropic.com/v1/messages', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'x-api-key': anthropicKey,
-              'anthropic-version': '2023-06-01',
-            },
-            body: JSON.stringify({
-              model: 'claude-3-5-haiku-20241022',
-              max_tokens: 120,
-              messages: [{
-                role: 'user',
-                content: scrubPII(`You are a task matching assistant for a gig marketplace. Generate a brief, encouraging 1-2 sentence explanation of why this task is a good match for this hustler.
-
-Task: "${taskData.title}" (${taskData.category}, $${taskData.price})
-Match score: ${(context.matching_score * 100).toFixed(0)}%
-Distance: ${context.distance_miles.toFixed(1)} miles
-Hustler expertise: ${expertise.length > 0 ? expertise.join(', ') : 'general'}
-
-Be concise, specific, and motivating. No markdown. No filler.`),
-              }],
-            }),
-            signal: AbortSignal.timeout(3000), // 3s timeout
+          const aiResult = await AIClient.call({
+            route: 'safety',  // Anthropic route — best for natural language generation
+            temperature: 0.7,
+            timeoutMs: 3000,
+            systemPrompt: 'You are a task matching assistant for a gig marketplace. Generate a brief, encouraging 1-2 sentence explanation of why this task is a good match for this hustler. Be concise, specific, and motivating. No markdown. No filler.',
+            prompt: scrubPII(
+              `Task: "${taskData.title}" (${taskData.category}, $${taskData.price})\n` +
+              `Match score: ${(context.matching_score * 100).toFixed(0)}%\n` +
+              `Distance: ${context.distance_miles.toFixed(1)} miles\n` +
+              `Hustler expertise: ${expertise.length > 0 ? expertise.join(', ') : 'general'}`
+            ),
           });
 
-          if (aiResponse.ok) {
-            const aiData = await aiResponse.json() as { content?: Array<{ text?: string }> };
-            const aiText = aiData.content?.[0]?.text;
-            if (aiText && typeof aiText === 'string' && aiText.length > 10) {
-              explanation = aiText.trim();
-            } else {
-              explanation = generateExplanation(context);
-            }
-          } else {
-            explanation = generateExplanation(context);
-          }
+          const aiText = aiResult.content?.trim();
+          explanation = (aiText && aiText.length > 10) ? aiText : generateExplanation(context);
         } catch {
-          // AI timeout or error — use deterministic fallback
+          // AI timeout, circuit open, or provider error — use deterministic fallback
           explanation = generateExplanation(context);
         }
       } else {

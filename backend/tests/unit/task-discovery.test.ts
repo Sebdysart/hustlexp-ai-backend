@@ -35,8 +35,17 @@ vi.mock('../../src/lib/pii-scrubber', () => ({
   scrubPII: vi.fn((text: string) => text), // pass-through
 }));
 
+vi.mock('../../src/services/AIClient', () => ({
+  AIClient: {
+    isConfigured: vi.fn().mockReturnValue(false),
+    call: vi.fn(),
+    callJSON: vi.fn(),
+  },
+}));
+
 import { TaskDiscoveryService } from '../../src/services/TaskDiscoveryService';
 import { db } from '../../src/db';
+import { AIClient } from '../../src/services/AIClient';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -557,6 +566,63 @@ describe('TaskDiscoveryService', () => {
       expect(result.success).toBe(false);
       if (!result.success) {
         expect(result.error.code).toBe('DB_ERROR');
+      }
+    });
+
+    // -----------------------------------------------------------------------
+    // TDD: Fix #1 — route getExplanation through AIClient.call (not raw fetch)
+    // -----------------------------------------------------------------------
+    it('uses AIClient.call when AI is configured and returns AI-generated explanation', async () => {
+      // Before fix: AIClient.call is never invoked (raw fetch used instead).
+      // After fix:  AIClient.call is the AI path; its response is used directly.
+      (AIClient.isConfigured as any).mockReturnValue(true);
+      (AIClient.call as any).mockResolvedValue({
+        content: 'This task perfectly matches your home repair expertise and location.',
+        provider: 'anthropic',
+        latencyMs: 80,
+        cached: false,
+      });
+
+      stubCalculateMatchingScoreSuccess();
+      // Q5: task details for explanation
+      (db.query as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        rows: [{ title: 'Fix faucet', category: 'home_repair', price: 5000, description: 'Leaky faucet' }],
+        rowCount: 1,
+      });
+      // Q6: user expertise
+      (db.query as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ rows: [], rowCount: 0 });
+
+      const result = await TaskDiscoveryService.getExplanation('task-1', 'hustler-1');
+
+      expect(result.success).toBe(true);
+      expect(AIClient.call).toHaveBeenCalled();   // ← FAILS before fix
+      if (result.success) {
+        expect(result.data).toBe(
+          'This task perfectly matches your home repair expertise and location.'
+        );
+      }
+    });
+
+    it('falls back to template explanation when AIClient.call throws', async () => {
+      // Before fix: AIClient.call is not called; no regression possible.
+      // After fix:  AIClient.call throws — must degrade to generateExplanation() template.
+      (AIClient.isConfigured as any).mockReturnValue(true);
+      (AIClient.call as any).mockRejectedValue(new Error('circuit open'));
+
+      stubCalculateMatchingScoreSuccess();
+      (db.query as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        rows: [{ title: 'Fix faucet', category: 'home_repair', price: 5000, description: 'Leaky faucet' }],
+        rowCount: 1,
+      });
+      (db.query as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ rows: [], rowCount: 0 });
+
+      const result = await TaskDiscoveryService.getExplanation('task-1', 'hustler-1');
+
+      expect(result.success).toBe(true);
+      expect(AIClient.call).toHaveBeenCalled();   // ← FAILS before fix
+      if (result.success) {
+        expect(typeof result.data).toBe('string');
+        expect(result.data.length).toBeGreaterThan(0);
       }
     });
   });

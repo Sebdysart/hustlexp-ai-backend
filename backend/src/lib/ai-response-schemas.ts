@@ -135,3 +135,18 @@ export const ScoperProposalSchema = z.object({
 });
 
 export type ScoperProposalParsed = z.infer<typeof ScoperProposalSchema>;
+
+// ============================================================================
+// REPUTATION AI — Trust Score Schema
+// ============================================================================
+
+export const TrustScoreSchema = z.object({
+  trust_score: z.number().min(0).max(100),
+  trend: z.enum(['improving', 'stable', 'declining']),
+  risk_factors: z.array(z.string()),
+  strengths: z.array(z.string()),
+  recommended_tier: z.number().int().min(1).max(4),
+  tier_change_reason: z.string().optional(),
+});
+
+export type TrustScoreParsed = z.infer<typeof TrustScoreSchema>;
