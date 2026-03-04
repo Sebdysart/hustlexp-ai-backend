@@ -2,7 +2,7 @@
  * Upload Router v2.0.0
  *
  * Presigned URL generation for Cloudflare R2 photo uploads.
- * Used by iOS ProofService for proof photo uploads.
+ * Used by iOS for proof and message photo uploads.
  *
  * Security: validates content type, file size, and sanitizes filenames.
  *
@@ -58,7 +58,7 @@ export const uploadRouter = router({
         .min(1, 'File cannot be empty')
         .max(MAX_FILE_SIZE, `File size must be under ${MAX_FILE_SIZE / 1024 / 1024}MB`)
         .optional(), // Optional for backward compat with iOS client
-      purpose: z.enum(['proof', 'message']).default('proof').optional(),
+      purpose: z.enum(['proof', 'message']).optional().default('proof'),
     }))
     .mutation(async ({ ctx, input }) => {
       const prefix = input.purpose === 'message' ? 'messages' : 'proofs';
