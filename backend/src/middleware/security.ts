@@ -61,6 +61,7 @@ const RATE_LIMITS = {
   ai: { limit: 20, windowSeconds: 60 },         // 20 AI requests/min
   auth: { limit: 10, windowSeconds: 60 },        // 10 auth attempts/min
   escrow: { limit: 30, windowSeconds: 60 },      // 30 escrow ops/min
+  financial: { limit: 10, windowSeconds: 60 },   // 10 financial ops/min (escrow release, stripe)
   task: { limit: 60, windowSeconds: 60 },         // 60 task ops/min
   general: { limit: 100, windowSeconds: 60 },     // 100 general requests/min
 } as const;

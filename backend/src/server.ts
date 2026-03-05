@@ -152,10 +152,12 @@ app.use('*', cors({
 app.use('*', httpMetricsMiddleware());
 
 // Rate limiting per route category.
-// Specific limits for high-risk routers run first.
+// Specific limits for high-risk routers run first — Hono matches first rule.
 // Catch-all covers squad, notification, live, admin, instant, incidents, betaDashboard, etc.
+app.use('/trpc/escrow.release*', rateLimitMiddleware('financial')); // 10/min — escrow release (strictest)
+app.use('/trpc/stripe.*', rateLimitMiddleware('financial'));        // 10/min — Stripe financial ops
 app.use('/trpc/ai.*', rateLimitMiddleware('ai'));       // 20/min — AI cost protection
-app.use('/trpc/escrow.*', rateLimitMiddleware('escrow')); // 30/min — financial ops
+app.use('/trpc/escrow.*', rateLimitMiddleware('escrow')); // 30/min — other escrow ops
 app.use('/trpc/task.*', rateLimitMiddleware('task'));   // 60/min — core task ops
 app.use('/trpc/*', rateLimitMiddleware('general'));     // 100/min — all other tRPC routes
 app.use('/api/*', rateLimitMiddleware('general'));      // 100/min — REST endpoints
