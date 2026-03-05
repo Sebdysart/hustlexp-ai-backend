@@ -10,8 +10,9 @@
 
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
-import { router, protectedProcedure, Schemas } from '../trpc';
+import { router, protectedProcedure, adminProcedure, Schemas } from '../trpc';
 import { NotificationService } from '../services/NotificationService';
+import { sendPushNotification } from '../services/PushNotificationService';
 import { db } from '../db';
 
 export const notificationRouter = router({
@@ -369,5 +370,31 @@ export const notificationRouter = router({
           message: error instanceof Error ? error.message : 'Failed to unregister device token',
         });
       }
+    }),
+
+  // --------------------------------------------------------------------------
+  // ADMIN / DEBUG
+  // --------------------------------------------------------------------------
+
+  /**
+   * Send a test push notification to a user (admin-only)
+   *
+   * Used for E2E push notification verification on real devices.
+   * Calls PushNotificationService.sendPushNotification() directly.
+   */
+  sendTestPush: adminProcedure
+    .input(z.object({
+      userId: Schemas.uuid,
+      title: z.string().default('HustleXP Test Push'),
+      body: z.string().default('If you see this, push notifications are working!'),
+    }))
+    .mutation(async ({ input }) => {
+      const result = await sendPushNotification(
+        input.userId,
+        input.title,
+        input.body,
+        { type: 'test', source: 'admin_debug' }
+      );
+      return result;
     }),
 });
