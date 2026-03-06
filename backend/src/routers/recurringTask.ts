@@ -183,14 +183,21 @@ export const recurringTaskRouter = router({
   // --------------------------------------------------------------------------
 
   listMine: protectedProcedure
-    .query(async ({ ctx }) => {
+    .input(z.object({
+      limit: z.number().int().min(1).max(100).default(50).optional(),
+      offset: z.number().int().min(0).default(0).optional(),
+    }).optional())
+    .query(async ({ ctx, input }) => {
+      const limit = Math.min(input?.limit ?? 50, 100);
+      const offset = input?.offset ?? 0;
       const result = await db.query<SeriesRow>(
         `SELECT rts.*, u.full_name as worker_name
          FROM recurring_task_series rts
          LEFT JOIN users u ON u.id = rts.preferred_worker_id
          WHERE rts.poster_id = $1
-         ORDER BY rts.created_at DESC`,
-        [ctx.user.id]
+         ORDER BY rts.created_at DESC
+         LIMIT $2 OFFSET $3`,
+        [ctx.user.id, limit, offset]
       );
       return result.rows.map(r => mapSeriesToResponse(r, r.worker_name));
     }),
@@ -285,8 +292,15 @@ export const recurringTaskRouter = router({
   // --------------------------------------------------------------------------
 
   listOccurrences: protectedProcedure
-    .input(z.object({ seriesId: Schemas.uuid }))
+    .input(z.object({
+      seriesId: Schemas.uuid,
+      limit: z.number().int().min(1).max(100).default(50).optional(),
+      offset: z.number().int().min(0).default(0).optional(),
+    }))
     .query(async ({ ctx, input }) => {
+      const limit = Math.min(input.limit ?? 50, 100);
+      const offset = input.offset ?? 0;
+
       // Verify ownership
       const series = await db.query(
         `SELECT id FROM recurring_task_series WHERE id = $1 AND poster_id = $2`,
@@ -302,8 +316,8 @@ export const recurringTaskRouter = router({
          LEFT JOIN users u ON u.id = rto.worker_id
          WHERE rto.series_id = $1
          ORDER BY rto.occurrence_number DESC
-         LIMIT 50`,
-        [input.seriesId]
+         LIMIT $2 OFFSET $3`,
+        [input.seriesId, limit, offset]
       );
       return (result.rows as unknown as OccurrenceRow[]).map(mapOccurrenceToResponse);
     }),

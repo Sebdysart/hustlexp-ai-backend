@@ -105,9 +105,10 @@ describe('Recurring Task Router', () => {
       expect(inputDef).toBeDefined();
     });
 
-    it('listMine should not require input', () => {
+    it('listMine should accept optional pagination input', () => {
       const inputDef = procedures.listMine._def.inputs;
-      expect(inputDef.length === 0 || inputDef[0] === undefined).toBe(true);
+      // listMine now accepts optional pagination (limit/offset) but does not require input
+      expect(inputDef.length === 0 || inputDef[0] === undefined || inputDef[0].safeParse(undefined).success).toBe(true);
     });
   });
 });

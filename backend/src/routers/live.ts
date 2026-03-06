@@ -94,6 +94,8 @@ export const liveRouter = router({
       latitude: z.number(),
       longitude: z.number(),
       radiusMiles: z.number().default(5),
+      limit: z.number().int().min(1).max(100).default(50).optional(),
+      offset: z.number().int().min(0).default(0).optional(),
     }))
     .query(async ({ ctx, input }) => {
       if (!ctx.user) {
@@ -103,6 +105,9 @@ export const liveRouter = router({
         });
       }
       
+      const limit = Math.min(input.limit ?? 50, 100);
+      const offset = input.offset ?? 0;
+
       try {
         // Query active live broadcasts (not expired, not accepted)
         // Join with tasks to get task details
@@ -124,7 +129,7 @@ export const liveRouter = router({
           task_category: string | null;
           task_deadline: Date | null;
         }>(
-          `SELECT 
+          `SELECT
             lb.id,
             lb.task_id,
             lb.started_at,
@@ -145,12 +150,12 @@ export const liveRouter = router({
             AND t.state = 'OPEN'
             AND t.mode = 'LIVE'
             AND (
-              lb.final_radius_miles IS NULL 
+              lb.final_radius_miles IS NULL
               OR lb.final_radius_miles >= $1
             )
           ORDER BY lb.started_at DESC
-          LIMIT 50`,
-          [input.radiusMiles]
+          LIMIT $2 OFFSET $3`,
+          [input.radiusMiles, limit, offset]
         );
         
         // NOTE: Geo-bounded filtering (Haversine / earthdistance) requires adding

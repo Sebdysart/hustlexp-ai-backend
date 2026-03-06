@@ -37,7 +37,13 @@ export const expertiseSupplyRouter = router({
    * Public to authenticated users — shown during onboarding and profile edit.
    */
   listExpertise: protectedProcedure
-    .query(async () => {
+    .input(z.object({
+      limit: z.number().int().min(1).max(100).default(50).optional(),
+      offset: z.number().int().min(0).default(0).optional(),
+    }).optional())
+    .query(async ({ input }) => {
+      const limit = Math.min(input?.limit ?? 50, 100);
+      const offset = input?.offset ?? 0;
       const result = await ExpertiseSupplyService.listExpertise();
       if (!result.success) {
         throw new TRPCError({
@@ -45,7 +51,7 @@ export const expertiseSupplyRouter = router({
           message: result.error.message,
         });
       }
-      return result.data;
+      return result.data.slice(offset, offset + limit);
     }),
 
   /**

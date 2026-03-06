@@ -156,7 +156,13 @@ export const squadRouter = router({
   // --------------------------------------------------------------------------
 
   listMine: protectedProcedure
-    .query(async ({ ctx }) => {
+    .input(z.object({
+      limit: z.number().int().min(1).max(100).default(50).optional(),
+      offset: z.number().int().min(0).default(0).optional(),
+    }).optional())
+    .query(async ({ ctx, input }) => {
+      const limit = Math.min(input?.limit ?? 50, 100);
+      const offset = input?.offset ?? 0;
       const result = await db.query<{
         id: string; name: string; emoji: string; tagline: string | null;
         status: string; squad_xp: number; squad_level: number;
@@ -168,8 +174,9 @@ export const squadRouter = router({
          FROM squads s
          JOIN squad_members sm ON sm.squad_id = s.id AND sm.user_id = $1
          WHERE s.status = 'active'
-         ORDER BY s.last_active_at DESC`,
-        [ctx.user.id]
+         ORDER BY s.last_active_at DESC
+         LIMIT $2 OFFSET $3`,
+        [ctx.user.id, limit, offset]
       );
 
       return result.rows.map(s => ({
@@ -375,7 +382,13 @@ export const squadRouter = router({
   // --------------------------------------------------------------------------
 
   listInvites: protectedProcedure
-    .query(async ({ ctx }) => {
+    .input(z.object({
+      limit: z.number().int().min(1).max(100).default(50).optional(),
+      offset: z.number().int().min(0).default(0).optional(),
+    }).optional())
+    .query(async ({ ctx, input }) => {
+      const limit = Math.min(input?.limit ?? 50, 100);
+      const offset = input?.offset ?? 0;
       const result = await db.query<{
         id: string; squad_id: string; squad_name: string; squad_emoji: string;
         inviter_name: string; sent_at: Date; expires_at: Date;
@@ -386,8 +399,9 @@ export const squadRouter = router({
          JOIN squads s ON s.id = si.squad_id
          JOIN users u ON u.id = si.inviter_id
          WHERE si.invitee_id = $1 AND si.status = 'pending' AND si.expires_at > NOW()
-         ORDER BY si.sent_at DESC`,
-        [ctx.user.id]
+         ORDER BY si.sent_at DESC
+         LIMIT $2 OFFSET $3`,
+        [ctx.user.id, limit, offset]
       );
 
       return result.rows.map(i => ({
@@ -462,8 +476,15 @@ export const squadRouter = router({
   // --------------------------------------------------------------------------
 
   listTasks: protectedProcedure
-    .input(z.object({ squadId: Schemas.uuid }))
+    .input(z.object({
+      squadId: Schemas.uuid,
+      limit: z.number().int().min(1).max(100).default(50).optional(),
+      offset: z.number().int().min(0).default(0).optional(),
+    }))
     .query(async ({ ctx, input }) => {
+      const limit = Math.min(input.limit ?? 50, 100);
+      const offset = input.offset ?? 0;
+
       // Verify membership
       const member = await db.query(
         `SELECT id FROM squad_members WHERE squad_id = $1 AND user_id = $2`,
@@ -488,8 +509,9 @@ export const squadRouter = router({
          LEFT JOIN squad_task_workers stw ON stw.squad_task_id = sta.id
          WHERE sta.squad_id = $1
          GROUP BY sta.id, t.id
-         ORDER BY sta.created_at DESC`,
-        [input.squadId]
+         ORDER BY sta.created_at DESC
+         LIMIT $2 OFFSET $3`,
+        [input.squadId, limit, offset]
       );
 
       return result.rows.map(r => ({
