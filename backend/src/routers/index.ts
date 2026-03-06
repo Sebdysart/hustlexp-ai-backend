@@ -52,6 +52,8 @@ import { subscriptionRouter } from './subscription';
 import { tippingRouter } from './tipping';
 // v2.4.0: Squads Mode
 import { squadRouter } from './squad';
+// v2.4.0: Recurring Tasks
+import { recurringTaskRouter } from './recurringTask';
 // v2.5.0: Stripe Connect
 import { stripeConnectRouter } from './stripeConnect';
 // v2.6.0: Feature Flags
@@ -116,6 +118,8 @@ export const appRouter = router({
   tipping: tippingRouter,
   // v2.4.0: Squads Mode
   squad: squadRouter,
+  // v2.4.0: Recurring Tasks
+  recurringTask: recurringTaskRouter,
   // v2.5.0: Stripe Connect
   stripeConnect: stripeConnectRouter,
   // v2.6.0: Feature Flags
