@@ -54,6 +54,19 @@ interface SeriesRow {
   worker_name: string | null;
 }
 
+interface OccurrenceRow {
+  id: string;
+  series_id: string;
+  task_id: string | null;
+  occurrence_number: number;
+  scheduled_date: string;
+  status: string;
+  worker_id: string | null;
+  worker_name: string | null;
+  completed_at: string | null;
+  rating: number | null;
+}
+
 // ── Response Mappers ────────────────────────────────────────────────────────
 
 function mapSeriesToResponse(row: SeriesRow, workerName?: string | null) {
@@ -85,7 +98,7 @@ function mapSeriesToResponse(row: SeriesRow, workerName?: string | null) {
   };
 }
 
-function mapOccurrenceToResponse(row: any) {
+function mapOccurrenceToResponse(row: OccurrenceRow) {
   return {
     id: row.id,
     seriesId: row.series_id,

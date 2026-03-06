@@ -17,7 +17,6 @@ export { StripeService } from './StripeService';
 // v1.9.0: Gap fix services
 export { WorkerSkillService } from './WorkerSkillService';
 export { DynamicPricingService } from './DynamicPricingService';
-export { ShadowBanService } from './ShadowBanService';
 export { PhotoVerificationService } from './PhotoVerificationService';
 export { GeofenceService } from './GeofenceService';
 export { HeatMapService } from './HeatMapService';
