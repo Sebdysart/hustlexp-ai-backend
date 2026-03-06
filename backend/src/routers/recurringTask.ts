@@ -305,7 +305,7 @@ export const recurringTaskRouter = router({
          LIMIT 50`,
         [input.seriesId]
       );
-      return result.rows.map(mapOccurrenceToResponse);
+      return (result.rows as unknown as OccurrenceRow[]).map(mapOccurrenceToResponse);
     }),
 
   // --------------------------------------------------------------------------
