@@ -22,6 +22,62 @@ import { db } from '../db';
 // Trust tier gate: Only Elite (tier 4) can create/join squads
 const REQUIRED_TRUST_TIER = 4;
 
+// ── Row Types for typed DB queries ────────────────────────────────────────
+
+interface ListTaskRow {
+  id: string;
+  task_id: string;
+  squad_id: string;
+  required_workers: number;
+  payment_split_mode: string;
+  per_worker_payment_cents: number;
+  status: string;
+  created_at: string;
+  t_id: string;
+  t_title: string;
+  t_description: string;
+  t_price: number;
+  t_location: string | null;
+  t_category: string | null;
+  t_state: string;
+  t_created_at: string;
+  t_updated_at: string;
+  accepted_workers: string[];
+}
+
+interface SquadTaskRow {
+  id: string;
+  squad_id: string;
+  task_id: string;
+  required_workers: number;
+  status: string;
+  s_id: string;
+}
+
+interface CountRow {
+  count: string; // PostgreSQL COUNT returns bigint serialized as string
+}
+
+interface LeaderboardRow {
+  rank: string;
+  id: string;
+  name: string;
+  emoji: string;
+  tagline: string | null;
+  organizer_id: string;
+  organizer_name: string;
+  status: string;
+  total_tasks_completed: number;
+  total_earnings_cents: number;
+  squad_xp: number;
+  squad_level: number;
+  average_rating: string; // NUMERIC serialized as string
+  max_members: number;
+  created_at: string;
+  last_active_at: string | null;
+  member_count: number;
+}
+
 function assertEliteTier(trustTier: number | string): void {
   const tierNum = typeof trustTier === 'number' ? trustTier : parseInt(trustTier, 10);
   if (isNaN(tierNum) || tierNum < REQUIRED_TRUST_TIER) {
@@ -417,7 +473,7 @@ export const squadRouter = router({
         throw new TRPCError({ code: 'FORBIDDEN', message: 'Not a member of this squad' });
       }
 
-      const result = await db.query(
+      const result = await db.query<ListTaskRow>(
         `SELECT sta.*,
            t.id as t_id, t.title as t_title, t.description as t_description,
            t.price as t_price, t.location as t_location,
@@ -469,7 +525,7 @@ export const squadRouter = router({
     .mutation(async ({ ctx, input }) => {
       return await db.transaction(async (query) => {
         // 1. Get the squad task and verify it's recruiting
-        const taskResult = await query(
+        const taskResult = await query<SquadTaskRow>(
           `SELECT sta.*, s.id as s_id
            FROM squad_task_assignments sta
            JOIN squads s ON s.id = sta.squad_id
@@ -500,7 +556,7 @@ export const squadRouter = router({
         );
 
         // 4. Check if now fully recruited → update status to 'ready'
-        const countResult = await query(
+        const countResult = await query<CountRow>(
           `SELECT COUNT(*) as count FROM squad_task_workers WHERE squad_task_id = $1`,
           [input.squadTaskId]
         );
@@ -531,7 +587,7 @@ export const squadRouter = router({
 
   leaderboard: protectedProcedure
     .query(async () => {
-      const result = await db.query(
+      const result = await db.query<LeaderboardRow>(
         `SELECT
            ROW_NUMBER() OVER (ORDER BY s.squad_xp DESC) as rank,
            s.id, s.name, s.emoji, s.tagline, s.organizer_id,

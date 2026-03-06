@@ -25,9 +25,38 @@ const RECURRING_TASK_LIMITS: Record<string, number> = {
   pro: 999999,
 };
 
+// ── Row Types ─────────────────────────────────────────────────────────────
+
+interface SeriesRow {
+  id: string;
+  poster_id: string;
+  template_task_id: string | null;
+  pattern: string;
+  day_of_week: number | null;
+  day_of_month: number | null;
+  time_of_day: string | null;
+  start_date: string;
+  end_date: string | null;
+  title: string;
+  description: string;
+  payment_cents: number;
+  location: string;
+  category: string | null;
+  estimated_duration: string;
+  required_tier: number;
+  status: string;
+  occurrence_count: number;
+  completed_count: number;
+  preferred_worker_id: string | null;
+  next_occurrence_at: string | null;
+  created_at: string;
+  updated_at: string;
+  worker_name: string | null;
+}
+
 // ── Response Mappers ────────────────────────────────────────────────────────
 
-function mapSeriesToResponse(row: any, workerName?: string | null) {
+function mapSeriesToResponse(row: SeriesRow, workerName?: string | null) {
   return {
     id: row.id,
     posterId: row.poster_id,
@@ -120,7 +149,7 @@ export const recurringTaskRouter = router({
 
       // 3. Insert series
       const paymentCents = Math.round(input.payment * 100);
-      const result = await db.query(
+      const result = await db.query<SeriesRow>(
         `INSERT INTO recurring_task_series
          (poster_id, title, description, payment_cents, location, category,
           estimated_duration, required_tier, pattern, day_of_week, day_of_month,
@@ -142,7 +171,7 @@ export const recurringTaskRouter = router({
 
   listMine: protectedProcedure
     .query(async ({ ctx }) => {
-      const result = await db.query(
+      const result = await db.query<SeriesRow>(
         `SELECT rts.*, u.full_name as worker_name
          FROM recurring_task_series rts
          LEFT JOIN users u ON u.id = rts.preferred_worker_id
@@ -160,7 +189,7 @@ export const recurringTaskRouter = router({
   getById: protectedProcedure
     .input(z.object({ id: Schemas.uuid }))
     .query(async ({ ctx, input }) => {
-      const result = await db.query(
+      const result = await db.query<SeriesRow>(
         `SELECT rts.*, u.full_name as worker_name
          FROM recurring_task_series rts
          LEFT JOIN users u ON u.id = rts.preferred_worker_id
