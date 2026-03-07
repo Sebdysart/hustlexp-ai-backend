@@ -21,39 +21,56 @@ export const notificationRouter = router({
   // --------------------------------------------------------------------------
   
   /**
-   * Get notifications for user (with pagination)
-   * 
+   * Get notifications for user (cursor-based pagination)
+   *
    * PRODUCT_SPEC §11: Notification System
+   *
+   * Input:  { cursor?, limit (default 20, max 50), unreadOnly }
+   * Output: { items, nextCursor }
+   *
+   * Uses limit+1 sentinel to detect the next page without a separate COUNT
+   * query. cursor is the `id` of the last item seen by the client.
    */
   getList: protectedProcedure
     .input(z.object({
-      limit: z.number().int().min(1).max(100).default(50),
-      offset: z.number().int().min(0).default(0),
+      cursor: z.string().uuid().optional(),
+      limit: z.number().int().min(1).max(50).default(20),
       unreadOnly: z.boolean().default(false),
     }))
-    .query(async ({ input, ctx }) => {
-      if (!ctx.user) {
-        throw new TRPCError({
-          code: 'UNAUTHORIZED',
-          message: 'Authentication required',
-        });
+    .query(async ({ ctx, input }) => {
+      const { cursor, limit, unreadOnly } = input;
+      const params: unknown[] = [ctx.user.id, limit + 1]; // $1 = user_id, $2 = sentinel
+      const conditions: string[] = [`user_id = $1`];
+
+      if (cursor) {
+        const cursorIdx = params.push(cursor); // captures $3 (or $N)
+        conditions.push(`id > $${cursorIdx}`);
       }
-      
-      const result = await NotificationService.getUserNotifications(
-        ctx.user.id,
-        input.limit,
-        input.offset,
-        input.unreadOnly
+      if (unreadOnly) {
+        conditions.push('read_at IS NULL');
+      }
+
+      const rows = await db.query<{
+        id: string;
+        user_id: string;
+        type: string;
+        title: string;
+        body: string;
+        read_at: Date | null;
+        created_at: Date;
+        data: Record<string, unknown> | null;
+      }>(
+        `SELECT id, user_id, type, title, body, read_at, created_at, data
+         FROM notifications
+         WHERE ${conditions.join(' AND ')}
+         ORDER BY created_at DESC
+         LIMIT $2`,
+        params
       );
-      
-      if (!result.success) {
-        throw new TRPCError({
-          code: 'INTERNAL_SERVER_ERROR',
-          message: result.error.message,
-        });
-      }
-      
-      return result.data;
+
+      const items = rows.rows.slice(0, limit);
+      const nextCursor = rows.rows.length > limit ? (items[items.length - 1]?.id ?? null) : null;
+      return { items, nextCursor };
     }),
   
   /**
