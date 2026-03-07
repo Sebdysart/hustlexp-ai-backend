@@ -54,3 +54,6 @@ pids/
 *.seed
 *.pid.lock
 
+
+# Git worktrees
+.worktrees/
