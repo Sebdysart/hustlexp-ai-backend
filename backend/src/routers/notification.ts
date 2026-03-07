@@ -33,7 +33,7 @@ export const notificationRouter = router({
    */
   getList: protectedProcedure
     .input(z.object({
-      cursor: z.string().uuid().optional(),
+      cursor: z.string().datetime().optional(),
       limit: z.number().int().min(1).max(50).default(20),
       unreadOnly: z.boolean().default(false),
     }))
@@ -44,7 +44,7 @@ export const notificationRouter = router({
 
       if (cursor) {
         const cursorIdx = params.push(cursor); // captures $3 (or $N)
-        conditions.push(`id > $${cursorIdx}`);
+        conditions.push(`created_at < $${cursorIdx}`);
       }
       if (unreadOnly) {
         conditions.push('read_at IS NULL');
@@ -55,7 +55,7 @@ export const notificationRouter = router({
         user_id: string;
         type: string;
         title: string;
-        body: string;
+        body: string | null;
         read_at: Date | null;
         created_at: Date;
         data: Record<string, unknown> | null;
@@ -69,7 +69,9 @@ export const notificationRouter = router({
       );
 
       const items = rows.rows.slice(0, limit);
-      const nextCursor = rows.rows.length > limit ? (items[items.length - 1]?.id ?? null) : null;
+      const nextCursor = rows.rows.length > limit
+        ? (items[items.length - 1]?.created_at?.toISOString() ?? null)
+        : null;
       return { items, nextCursor };
     }),
   

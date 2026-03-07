@@ -68,7 +68,7 @@ type NotificationRow = {
   user_id: string;
   type: string;
   title: string;
-  body: string;
+  body: string | null;
   read_at: Date | null;
   created_at: Date;
   data: Record<string, unknown> | null;
@@ -191,18 +191,18 @@ describe('notification.getList — cursor-based pagination', () => {
   // -------------------------------------------------------------------------
 
   describe('nextCursor — more pages exist', () => {
-    it('is the id of the last visible item when there is a next page', async () => {
+    it('is the created_at ISO timestamp of the last visible item when there is a next page', async () => {
       // limit=2, DB returns 3 rows (limit+1) → sentinel detected
       const notifs = [
-        makeNotification({ id: 'id-aaa' }),
-        makeNotification({ id: 'id-bbb' }),
-        makeNotification({ id: 'id-ccc' }), // sentinel row
+        makeNotification({ id: 'id-aaa', created_at: new Date('2024-01-03T00:00:00.000Z') }),
+        makeNotification({ id: 'id-bbb', created_at: new Date('2024-01-02T00:00:00.000Z') }),
+        makeNotification({ id: 'id-ccc', created_at: new Date('2024-01-01T00:00:00.000Z') }), // sentinel row
       ];
       setupNotifications(notifs);
 
       const result = await makeUserCaller().getList({ limit: 2 });
 
-      expect(result.nextCursor).toBe('id-bbb'); // last of the visible items
+      expect(result.nextCursor).toBe('2024-01-02T00:00:00.000Z'); // created_at of last visible item
       expect(result.items).toHaveLength(2);      // sentinel excluded from items
       expect(result.items.map((n: NotificationRow) => n.id)).toEqual(['id-aaa', 'id-bbb']);
     });
@@ -213,18 +213,18 @@ describe('notification.getList — cursor-based pagination', () => {
   // -------------------------------------------------------------------------
 
   describe('cursor forwarding', () => {
-    it('passes cursor condition to SQL when cursor provided', async () => {
+    it('passes created_at < cursor condition to SQL when cursor provided', async () => {
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
 
       await makeUserCaller().getList({
-        cursor: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+        cursor: '2024-01-01T00:00:00.000Z',
         limit: 5,
       });
 
       const [sql, params] = (mockDb.query as any).mock.calls[0];
 
-      expect(sql).toContain('id >');
-      expect(params).toContain('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa');
+      expect(sql).toContain('created_at <');
+      expect(params).toContain('2024-01-01T00:00:00.000Z');
     });
 
     // -----------------------------------------------------------------------
@@ -238,7 +238,7 @@ describe('notification.getList — cursor-based pagination', () => {
 
       const [sql] = (mockDb.query as any).mock.calls[0];
       // No cursor condition should appear
-      expect(sql).not.toMatch(/id\s*>/);
+      expect(sql).not.toMatch(/created_at\s*</);
     });
   });
 
