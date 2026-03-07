@@ -30,40 +30,47 @@ export const adminRouter = router({
   // --------------------------------------------------------------------------
 
   /**
-   * List users with pagination and optional filters
+   * List users with cursor-based pagination and optional filters.
+   *
+   * Returns { items, nextCursor } where nextCursor is the id of the last
+   * item on the current page, or null when there are no more pages.
+   * Pass nextCursor as `cursor` on the next call to advance the page.
    */
   listUsers: adminProcedure
     .input(z.object({
+      cursor: z.string().uuid().optional(),
       limit: z.number().int().min(1).max(100).default(20),
-      offset: z.number().int().min(0).default(0),
+      role: z.enum(['hustler', 'poster', 'admin']).optional(),
       search: z.string().max(255).optional(),
       trustTier: z.string().max(20).optional(),
       isBanned: z.boolean().optional(),
     }))
     .query(async ({ input }) => {
-      const conditions: string[] = ['1=1'];
-      const params: unknown[] = [];
-      let paramIndex = 1;
+      const { cursor, limit, role, search, trustTier, isBanned } = input;
+      const conditions: string[] = [];
+      const params: unknown[] = [limit + 1]; // $1 = fetch limit+1 to detect next page
 
-      if (input.search) {
-        conditions.push(`(u.full_name ILIKE $${paramIndex} OR u.email ILIKE $${paramIndex})`);
-        params.push(`%${input.search}%`);
-        paramIndex++;
+      if (cursor) {
+        conditions.push(`u.id > $${params.push(cursor)}`);
+      }
+      if (role) {
+        conditions.push(`u.role = $${params.push(role)}`);
+      }
+      if (search) {
+        const searchParam = `%${search}%`;
+        conditions.push(
+          `(u.email ILIKE $${params.push(searchParam)} OR u.full_name ILIKE $${params.length})`
+        );
+      }
+      if (trustTier) {
+        conditions.push(`u.trust_tier = $${params.push(trustTier)}`);
+      }
+      if (isBanned !== undefined) {
+        conditions.push(`u.is_banned = $${params.push(isBanned)}`);
       }
 
-      if (input.trustTier) {
-        conditions.push(`u.trust_tier = $${paramIndex}`);
-        params.push(input.trustTier);
-        paramIndex++;
-      }
-
-      if (input.isBanned !== undefined) {
-        conditions.push(`u.is_banned = $${paramIndex}`);
-        params.push(input.isBanned);
-        paramIndex++;
-      }
-
-      params.push(input.limit, input.offset);
+      const whereClause =
+        conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
       const result = await db.query<{
         id: string;
@@ -75,25 +82,23 @@ export const adminRouter = router({
         is_banned: boolean;
         default_mode: string;
         created_at: Date;
+        stripe_connect_id: string | null;
       }>(
         `SELECT u.id, u.full_name, u.email, u.trust_tier, u.xp_total,
-                u.is_verified, COALESCE(u.is_banned, false) as is_banned, u.default_mode, u.created_at
+                u.is_verified, COALESCE(u.is_banned, false) AS is_banned,
+                u.default_mode, u.created_at, u.stripe_connect_id
          FROM users u
-         WHERE ${conditions.join(' AND ')}
-         ORDER BY u.created_at DESC
-         LIMIT $${paramIndex++} OFFSET $${paramIndex}`,
+         ${whereClause}
+         ORDER BY u.id ASC
+         LIMIT $1`,
         params
       );
 
-      const countResult = await db.query<{ count: string }>(
-        `SELECT COUNT(*)::text as count FROM users u WHERE ${conditions.join(' AND ')}`,
-        params.slice(0, -2) // exclude limit/offset
-      );
+      const items = result.rows.slice(0, limit);
+      const nextCursor =
+        result.rows.length > limit ? (items[items.length - 1]?.id ?? null) : null;
 
-      return {
-        users: result.rows,
-        total: parseInt(countResult.rows[0]?.count || '0', 10),
-      };
+      return { items, nextCursor };
     }),
 
   /**
