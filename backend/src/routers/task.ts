@@ -472,6 +472,218 @@ export const taskRouter = router({
       
       return result.data;
     }),
+
+  // --------------------------------------------------------------------------
+  // APPLICATION MANAGEMENT
+  // --------------------------------------------------------------------------
+
+  /**
+   * Hustler applies for a task
+   */
+  applyForTask: protectedProcedure
+    .input(z.object({
+      taskId: Schemas.uuid,
+      message: z.string().max(500).optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const taskResult = await db.query(
+        `SELECT id, state, poster_id FROM tasks WHERE id = $1`,
+        [input.taskId]
+      );
+      if (taskResult.rows.length === 0) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
+      }
+      const task = taskResult.rows[0];
+      if (task.state !== 'POSTED') {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: `Task must be in POSTED state to apply, current: ${task.state}`,
+        });
+      }
+      if (task.poster_id === ctx.user.id) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'Cannot apply for your own task' });
+      }
+
+      const existing = await db.query(
+        `SELECT id FROM task_applications
+         WHERE task_id = $1 AND hustler_id = $2 AND status IN ('pending', 'countered')`,
+        [input.taskId, ctx.user.id]
+      );
+      if (existing.rows.length > 0) {
+        throw new TRPCError({ code: 'CONFLICT', message: 'You already have an active application for this task' });
+      }
+
+      const result = await db.query(
+        `INSERT INTO task_applications (id, task_id, hustler_id, message, status, counter_offer_round, created_at, updated_at)
+         VALUES (gen_random_uuid(), $1, $2, $3, 'pending', 0, NOW(), NOW())
+         RETURNING *`,
+        [input.taskId, ctx.user.id, input.message || null]
+      );
+
+      return {
+        id: result.rows[0].id,
+        taskId: result.rows[0].task_id,
+        status: result.rows[0].status,
+        message: result.rows[0].message,
+        appliedAt: result.rows[0].created_at,
+      };
+    }),
+
+  /**
+   * Poster lists applicants for their task
+   */
+  listApplicants: protectedProcedure
+    .input(z.object({ taskId: Schemas.uuid }))
+    .query(async ({ ctx, input }) => {
+      const taskResult = await db.query(
+        `SELECT poster_id FROM tasks WHERE id = $1`,
+        [input.taskId]
+      );
+      if (taskResult.rows.length === 0) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
+      }
+      if (taskResult.rows[0].poster_id !== ctx.user.id) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'Only the task poster can view applicants' });
+      }
+
+      const result = await db.query(
+        `SELECT
+           ta.id,
+           ta.hustler_id AS user_id,
+           COALESCE(u.display_name, u.name, 'Unknown') AS name,
+           COALESCE(u.rating, 5.0) AS rating,
+           COALESCE(u.completed_tasks, 0) AS completed_tasks,
+           COALESCE(u.trust_tier, 'rookie') AS tier,
+           ta.created_at AS applied_at,
+           ta.message
+         FROM task_applications ta
+         LEFT JOIN users u ON u.id = ta.hustler_id
+         WHERE ta.task_id = $1 AND ta.status = 'pending'
+         ORDER BY ta.created_at ASC`,
+        [input.taskId]
+      );
+
+      return result.rows;
+    }),
+
+  /**
+   * Poster accepts an applicant — assigns them as the worker
+   */
+  assignWorker: protectedProcedure
+    .input(z.object({
+      taskId: Schemas.uuid,
+      workerId: Schemas.uuid,
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const taskResult = await db.query(
+        `SELECT id, state, poster_id FROM tasks WHERE id = $1`,
+        [input.taskId]
+      );
+      if (taskResult.rows.length === 0) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
+      }
+      if (taskResult.rows[0].poster_id !== ctx.user.id) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'Only the task poster can assign workers' });
+      }
+      if (taskResult.rows[0].state !== 'POSTED') {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: `Task must be POSTED to assign a worker, current: ${taskResult.rows[0].state}`,
+        });
+      }
+
+      const appResult = await db.query(
+        `SELECT id FROM task_applications
+         WHERE task_id = $1 AND hustler_id = $2 AND status = 'pending'`,
+        [input.taskId, input.workerId]
+      );
+      if (appResult.rows.length === 0) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'No pending application found for this worker' });
+      }
+
+      await db.query(
+        `UPDATE task_applications SET status = 'accepted', updated_at = NOW()
+         WHERE id = $1`,
+        [appResult.rows[0].id]
+      );
+
+      await db.query(
+        `UPDATE task_applications SET status = 'rejected', rejection_reason = 'Another applicant was selected', updated_at = NOW()
+         WHERE task_id = $1 AND status = 'pending' AND id != $2`,
+        [input.taskId, appResult.rows[0].id]
+      );
+
+      const result = await TaskService.accept({
+        taskId: input.taskId,
+        workerId: input.workerId,
+      });
+
+      if (!result.success) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: result.error.message });
+      }
+
+      return result.data;
+    }),
+
+  /**
+   * Poster rejects a specific applicant
+   */
+  rejectApplicant: protectedProcedure
+    .input(z.object({
+      taskId: Schemas.uuid,
+      workerId: Schemas.uuid,
+      reason: z.string().max(500).optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const taskResult = await db.query(
+        `SELECT poster_id FROM tasks WHERE id = $1`,
+        [input.taskId]
+      );
+      if (taskResult.rows.length === 0) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
+      }
+      if (taskResult.rows[0].poster_id !== ctx.user.id) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'Only the task poster can reject applicants' });
+      }
+
+      const result = await db.query(
+        `UPDATE task_applications
+         SET status = 'rejected', rejection_reason = $3, updated_at = NOW()
+         WHERE task_id = $1 AND hustler_id = $2 AND status = 'pending'
+         RETURNING id`,
+        [input.taskId, input.workerId, input.reason || null]
+      );
+
+      if (result.rows.length === 0) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'No pending application found for this worker' });
+      }
+
+      return { success: true };
+    }),
+
+  /**
+   * Hustler withdraws their own application
+   */
+  withdrawApplication: protectedProcedure
+    .input(z.object({ taskId: Schemas.uuid }))
+    .mutation(async ({ ctx, input }) => {
+      const result = await db.query(
+        `UPDATE task_applications
+         SET status = 'withdrawn', updated_at = NOW()
+         WHERE task_id = $1 AND hustler_id = $2 AND status IN ('pending', 'countered')
+         RETURNING id`,
+        [input.taskId, ctx.user.id]
+      );
+
+      if (result.rows.length === 0) {
+        throw new TRPCError({
+          code: 'NOT_FOUND',
+          message: 'No active application found to withdraw',
+        });
+      }
+
+      return { success: true };
+    }),
 });
 
 export type TaskRouter = typeof taskRouter;
