@@ -27,6 +27,7 @@ import { httpMetricsMiddleware } from './monitoring/http-metrics';
 import { createMetricsEndpoint } from './monitoring/metrics';
 import { db } from './db';
 import { createRedisClient } from './cache/redis';
+import { captureError } from './lib/sentry';
 
 // ============================================================================
 // SECURITY VALIDATION (Fail-Fast in Production)
@@ -370,7 +371,6 @@ app.use('/trpc/*', trpcServer({
   createContext,
   onError({ error, type, path, ctx }) {
     if (error.code === 'INTERNAL_SERVER_ERROR') {
-      const { captureError } = require('./lib/sentry');
       captureError(error, {
         procedure: path,
         procedureType: type,
