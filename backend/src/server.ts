@@ -110,11 +110,16 @@ app.use('*', compress());
 app.use('*', securityHeaders);
 
 // API versioning headers
+// Note: the Deprecation header is set to 'true' for legacy /api/* paths
+// by dedicated middleware further below. For all other paths it is 'false'.
 app.use('*', async (c, next) => {
   await next();
-  c.header('X-API-Version', '2024-02-19');
+  c.header('X-API-Version', '1');
   c.header('X-HustleXP-Version', '2.4.0');
-  c.header('Deprecation', 'false');
+  // Per-route deprecation middleware may override this to 'true' for /api/* paths.
+  if (!c.res.headers.get('Deprecation')) {
+    c.header('Deprecation', 'false');
+  }
 });
 
 // Structured request logging (Pino) — includes requestId
@@ -164,13 +169,21 @@ app.use('*', httpMetricsMiddleware());
 // Rate limiting per route category.
 // Specific limits for high-risk routers run first — Hono matches first rule.
 // Catch-all covers squad, notification, live, admin, instant, incidents, betaDashboard, etc.
+// v1 aliases share the same rate limit buckets as the canonical paths.
 app.use('/trpc/escrow.release*', rateLimitMiddleware('financial')); // 10/min — escrow release (strictest)
+app.use('/trpc/v1/escrow.release*', rateLimitMiddleware('financial'));
 app.use('/trpc/stripe.*', rateLimitMiddleware('financial'));        // 10/min — Stripe financial ops
+app.use('/trpc/v1/stripe.*', rateLimitMiddleware('financial'));
 app.use('/trpc/ai.*', rateLimitMiddleware('ai'));       // 20/min — AI cost protection
+app.use('/trpc/v1/ai.*', rateLimitMiddleware('ai'));
 app.use('/trpc/escrow.*', rateLimitMiddleware('escrow')); // 30/min — other escrow ops
+app.use('/trpc/v1/escrow.*', rateLimitMiddleware('escrow'));
 app.use('/trpc/task.*', rateLimitMiddleware('task'));   // 60/min — core task ops
+app.use('/trpc/v1/task.*', rateLimitMiddleware('task'));
 app.use('/trpc/*', rateLimitMiddleware('general'));     // 100/min — all other tRPC routes
+app.use('/trpc/v1/*', rateLimitMiddleware('general'));
 app.use('/api/*', rateLimitMiddleware('general'));      // 100/min — REST endpoints
+app.use('/api/v1/*', rateLimitMiddleware('general'));
 
 // ============================================================================
 // PROMETHEUS METRICS ENDPOINT
@@ -388,10 +401,37 @@ app.use('/trpc/*', trpcServer({
 }));
 
 // ============================================================================
+// tRPC v1 ALIAS (/trpc/v1/*)
+// ============================================================================
+// Mounts the same router under the versioned prefix so clients can migrate
+// from /trpc/<procedure> to /trpc/v1/<procedure> at their own pace.
+// The legacy /trpc/* path above remains active for backward compatibility.
+
+// Mount the same appRouter under /trpc/v1, telling the tRPC fetch adapter
+// to strip the /trpc/v1 prefix (via the `endpoint` option) so procedure
+// names resolve correctly (e.g. /trpc/v1/task.listOpen → procedure "task.listOpen").
+app.use('/trpc/v1/*', trpcServer({
+  endpoint: '/trpc/v1',
+  router: appRouter,
+  createContext,
+  onError({ error, type, path, ctx }) {
+    if (error.code === 'INTERNAL_SERVER_ERROR') {
+      captureError(error, {
+        procedure: path,
+        procedureType: type,
+        userId: (ctx as any)?.user?.id,
+      });
+    }
+  },
+}));
+
+// ============================================================================
 // REST API WRAPPERS (Frontend Compatibility)
 // ============================================================================
-// These routes provide REST endpoints for the React Native frontend
-// They internally call tRPC endpoints for type safety
+// These routes provide REST endpoints for the React Native frontend.
+// All handlers live in `apiRouter` which is mounted at BOTH:
+//   - /api/v1  (canonical, versioned — new clients should use this)
+//   - /api     (legacy alias — kept for backward compatibility, emits Deprecation header)
 
 import { firebaseAuth } from './auth/firebase';
 import type { User } from './types';
@@ -404,7 +444,7 @@ async function getAuthUser(c: Context): Promise<User | null> {
   if (!authHeader?.startsWith('Bearer ')) {
     return null;
   }
-  
+
   const token = authHeader.slice(7);
   try {
     const decoded = await firebaseAuth.verifyIdToken(token);
@@ -422,9 +462,24 @@ async function getAuthUser(c: Context): Promise<User | null> {
 const uuidParam = z.string().uuid();
 const timestampBody = z.object({ timestamp: z.string().datetime().optional() }).optional();
 
+// Violation schema (declared before apiRouter so it is in scope for the handler)
+const violationSchema = z.object({
+  type: z.string().min(1).max(100),
+  rule: z.string().min(1).max(200),
+  component: z.string().min(1).max(200).optional(),
+  context: z.record(z.unknown()).optional(),
+  severity: z.enum(['ERROR', 'WARNING', 'INFO']).default('ERROR'),
+});
+
+// ---------------------------------------------------------------------------
+// Versioned REST sub-router
+// All route paths here are RELATIVE to the mount point (no /api prefix).
+// ---------------------------------------------------------------------------
+const apiRouter = new Hono<{ Variables: AppVariables }>();
+
 // Animation Tracking Endpoints
 
-app.get('/api/users/:userId/xp-celebration-status', async (c) => {
+apiRouter.get('/users/:userId/xp-celebration-status', async (c) => {
   const user = await getAuthUser(c);
   if (!user || user.id !== c.req.param('userId')) {
     return c.json({ error: 'Unauthorized' }, 401);
@@ -446,7 +501,7 @@ app.get('/api/users/:userId/xp-celebration-status', async (c) => {
   }
 });
 
-app.post('/api/users/:userId/xp-celebration-shown', async (c) => {
+apiRouter.post('/users/:userId/xp-celebration-shown', async (c) => {
   const user = await getAuthUser(c);
   if (!user || user.id !== c.req.param('userId')) {
     return c.json({ error: 'Unauthorized' }, 401);
@@ -474,7 +529,7 @@ app.post('/api/users/:userId/xp-celebration-shown', async (c) => {
   }
 });
 
-app.get('/api/users/:userId/badges/:badgeId/animation-status', async (c) => {
+apiRouter.get('/users/:userId/badges/:badgeId/animation-status', async (c) => {
   const user = await getAuthUser(c);
   if (!user || user.id !== c.req.param('userId')) {
     return c.json({ error: 'Unauthorized' }, 401);
@@ -504,7 +559,7 @@ app.get('/api/users/:userId/badges/:badgeId/animation-status', async (c) => {
   }
 });
 
-app.post('/api/users/:userId/badges/:badgeId/animation-shown', async (c) => {
+apiRouter.post('/users/:userId/badges/:badgeId/animation-shown', async (c) => {
   const user = await getAuthUser(c);
   if (!user || user.id !== c.req.param('userId')) {
     return c.json({ error: 'Unauthorized' }, 401);
@@ -539,7 +594,7 @@ app.post('/api/users/:userId/badges/:badgeId/animation-shown', async (c) => {
 
 // State Confirmation Endpoints
 
-app.get('/api/tasks/:taskId/state', async (c) => {
+apiRouter.get('/tasks/:taskId/state', async (c) => {
   const user = await getAuthUser(c);
   if (!user) {
     return c.json({ error: 'Unauthorized' }, 401);
@@ -565,7 +620,7 @@ app.get('/api/tasks/:taskId/state', async (c) => {
   }
 });
 
-app.get('/api/escrows/:escrowId/state', async (c) => {
+apiRouter.get('/escrows/:escrowId/state', async (c) => {
   const user = await getAuthUser(c);
   if (!user) {
     return c.json({ error: 'Unauthorized' }, 401);
@@ -593,15 +648,7 @@ app.get('/api/escrows/:escrowId/state', async (c) => {
 
 // Violation Reporting
 
-const violationSchema = z.object({
-  type: z.string().min(1).max(100),
-  rule: z.string().min(1).max(200),
-  component: z.string().min(1).max(200).optional(),
-  context: z.record(z.unknown()).optional(),
-  severity: z.enum(['ERROR', 'WARNING', 'INFO']).default('ERROR'),
-});
-
-app.post('/api/ui/violations', async (c) => {
+apiRouter.post('/ui/violations', async (c) => {
   const user = await getAuthUser(c);
   if (!user) {
     return c.json({ error: 'Unauthorized' }, 401);
@@ -642,7 +689,7 @@ app.post('/api/ui/violations', async (c) => {
 
 // User Onboarding Status
 
-app.get('/api/users/:userId/onboarding-status', async (c) => {
+apiRouter.get('/users/:userId/onboarding-status', async (c) => {
   const user = await getAuthUser(c);
   if (!user || user.id !== c.req.param('userId')) {
     return c.json({ error: 'Unauthorized' }, 401);
@@ -673,6 +720,22 @@ app.get('/api/users/:userId/onboarding-status', async (c) => {
     return c.json({ error: 'Internal server error' }, 500);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Mount REST sub-router at versioned path (canonical) and legacy path (alias)
+// ---------------------------------------------------------------------------
+
+// /api/v1/* — canonical versioned path (new clients should prefer this)
+app.route('/api/v1', apiRouter);
+
+// /api/* — legacy path kept for backward compatibility with existing iOS app.
+// Emits a Deprecation header to signal that callers should migrate to /api/v1.
+app.use('/api/*', async (c, next) => {
+  await next();
+  c.header('Deprecation', 'true');
+  c.header('Link', '</api/v1>; rel="successor-version"');
+});
+app.route('/api', apiRouter);
 
 // ============================================================================
 // STRIPE WEBHOOKS (Raw body needed)
