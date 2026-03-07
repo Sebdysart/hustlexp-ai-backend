@@ -25,6 +25,8 @@ import { securityHeaders, rateLimitMiddleware } from './middleware/security';
 import { requestIdMiddleware, serverTimingMiddleware } from './middleware/request-id';
 import { httpMetricsMiddleware } from './monitoring/http-metrics';
 import { createMetricsEndpoint } from './monitoring/metrics';
+import { db } from './db';
+import { createRedisClient } from './cache/redis';
 
 // ============================================================================
 // SECURITY VALIDATION (Fail-Fast in Production)
@@ -209,6 +211,34 @@ app.get('/health/readiness', async (c) => {
   }
 });
 
+// Combined readiness probe — checks both DB and Redis
+app.get('/ready', async (c) => {
+  const checks: Record<string, boolean> = {};
+
+  try {
+    await db.query('SELECT 1');
+    checks.db = true;
+  } catch {
+    checks.db = false;
+  }
+
+  try {
+    const redisClient = await createRedisClient();
+    if (redisClient) {
+      await redisClient.ping();
+    }
+    checks.redis = true;
+  } catch {
+    checks.redis = false;
+  }
+
+  const allHealthy = Object.values(checks).every(Boolean);
+  return c.json(
+    { status: allHealthy ? 'ready' : 'degraded', checks, timestamp: new Date().toISOString() },
+    allHealthy ? 200 : 503
+  );
+});
+
 // Liveness probe — lightweight "am I alive?" check (no DB)
 app.get('/health/liveness', (c) => {
   return c.json({ alive: true, uptime: process.uptime() });
@@ -357,7 +387,6 @@ app.use('/trpc/*', trpcServer({
 // They internally call tRPC endpoints for type safety
 
 import { firebaseAuth } from './auth/firebase';
-import { db } from './db';
 import type { User } from './types';
 import { sseHandler } from './realtime/sse-handler';
 import { z } from 'zod';
