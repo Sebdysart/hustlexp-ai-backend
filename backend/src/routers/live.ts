@@ -94,7 +94,7 @@ export const liveRouter = router({
       latitude: z.number(),
       longitude: z.number(),
       radiusMiles: z.number().default(5),
-      cursor: z.string().uuid().optional(),
+      cursor: z.string().datetime().optional(),
       limit: z.number().int().min(1).max(50).default(20),
     }))
     .query(async ({ ctx, input }) => {
@@ -118,7 +118,7 @@ export const liveRouter = router({
         let cursorClause = '';
         if (input.cursor) {
           const idx = params.push(input.cursor);
-          cursorClause = `AND lb.started_at < (SELECT started_at FROM live_broadcasts WHERE id = $${idx})`;
+          cursorClause = `AND lb.started_at < $${idx}`;
         }
         const limitIdx = params.push(input.limit + 1);
 
@@ -163,7 +163,7 @@ export const liveRouter = router({
               OR lb.final_radius_miles >= $1
             )
             ${cursorClause}
-          ORDER BY lb.started_at DESC
+          ORDER BY lb.started_at DESC, lb.id DESC
           LIMIT $${limitIdx}`,
           params
         );
@@ -176,7 +176,7 @@ export const liveRouter = router({
         const rows = result.rows;
         const hasMore = rows.length > input.limit;
         const page = hasMore ? rows.slice(0, input.limit) : rows;
-        const nextCursor = hasMore ? page[page.length - 1].id : null;
+        const nextCursor = hasMore ? (page[page.length - 1]?.started_at?.toISOString() ?? null) : null;
 
         return {
           items: page.map(broadcast => ({

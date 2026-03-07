@@ -69,6 +69,7 @@ type ExpertiseRow = {
   description: string | null;
   risk_tier: string;
   active: boolean;
+  sort_order: number;
 };
 
 type WaitlistRow = {
@@ -84,6 +85,7 @@ type WaitlistRow = {
   created_at: string;
 };
 
+let _sortOrderCounter = 0;
 function makeExpertise(overrides: Partial<ExpertiseRow & { id: string }> = {}): ExpertiseRow {
   const id = overrides.id ?? `exp-${Math.random().toString(36).slice(2, 10)}`;
   return {
@@ -93,6 +95,7 @@ function makeExpertise(overrides: Partial<ExpertiseRow & { id: string }> = {}): 
     description: null,
     risk_tier: 'low',
     active: true,
+    sort_order: ++_sortOrderCounter,
     ...overrides,
   };
 }
@@ -204,17 +207,17 @@ describe('expertiseSupply.listExpertise — cursor-based pagination', () => {
   // -------------------------------------------------------------------------
 
   describe('nextCursor — more pages exist', () => {
-    it('is the id of the last visible item when there is a next page', async () => {
+    it('is the sort_order of the last visible item when there is a next page', async () => {
       const rows = [
-        makeExpertise({ id: 'id-aaa' }),
-        makeExpertise({ id: 'id-bbb' }),
-        makeExpertise({ id: 'id-ccc' }), // sentinel row
+        makeExpertise({ id: 'id-aaa', sort_order: 1 }),
+        makeExpertise({ id: 'id-bbb', sort_order: 2 }),
+        makeExpertise({ id: 'id-ccc', sort_order: 3 }), // sentinel row
       ];
       mockDb.query.mockResolvedValueOnce({ rows, rowCount: 3 } as any);
 
       const result = await makeUserCaller().listExpertise({ limit: 2 });
 
-      expect(result.nextCursor).toBe('id-bbb');
+      expect(result.nextCursor).toBe(2);
       expect(result.items).toHaveLength(2);
       expect(result.items.map((e: any) => e.id)).toEqual(['id-aaa', 'id-bbb']);
     });
@@ -229,13 +232,13 @@ describe('expertiseSupply.listExpertise — cursor-based pagination', () => {
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
 
       await makeUserCaller().listExpertise({
-        cursor: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+        cursor: 3,
         limit: 5,
       });
 
       const [sql, params] = (mockDb.query as any).mock.calls[0];
-      expect(sql).toContain('id >');
-      expect(params).toContain('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa');
+      expect(sql).toContain('sort_order >');
+      expect(params).toContain(3);
     });
 
     it('does not add cursor clause when cursor is absent', async () => {
@@ -244,7 +247,7 @@ describe('expertiseSupply.listExpertise — cursor-based pagination', () => {
       await makeUserCaller().listExpertise({ limit: 10 });
 
       const [sql] = (mockDb.query as any).mock.calls[0];
-      expect(sql).not.toMatch(/AND\s+id\s*>/);
+      expect(sql).not.toMatch(/AND\s+sort_order\s*>/);
     });
   });
 

@@ -180,17 +180,18 @@ describe('live.listBroadcasts — cursor-based pagination', () => {
   // -------------------------------------------------------------------------
 
   describe('nextCursor — more pages exist', () => {
-    it('is the id of the last visible item when there is a next page', async () => {
+    it('is the ISO timestamp of the last visible item when there is a next page', async () => {
+      const ts = new Date('2025-01-01T00:00:00.000Z');
       const rows = [
-        makeBroadcast({ id: 'id-aaa' }),
-        makeBroadcast({ id: 'id-bbb' }),
-        makeBroadcast({ id: 'id-ccc' }), // sentinel row
+        makeBroadcast({ id: 'id-aaa', started_at: ts }),
+        makeBroadcast({ id: 'id-bbb', started_at: ts }),
+        makeBroadcast({ id: 'id-ccc', started_at: ts }), // sentinel row
       ];
       mockDb.query.mockResolvedValueOnce({ rows, rowCount: 3 } as any);
 
       const result = await makeCaller().listBroadcasts({ ...BASE_INPUT, limit: 2 });
 
-      expect(result.nextCursor).toBe('id-bbb');
+      expect(result.nextCursor).toBe('2025-01-01T00:00:00.000Z');
       expect(result.items).toHaveLength(2);
       expect(result.items.map((b: any) => b.id)).toEqual(['id-aaa', 'id-bbb']);
     });
@@ -206,13 +207,13 @@ describe('live.listBroadcasts — cursor-based pagination', () => {
 
       await makeCaller().listBroadcasts({
         ...BASE_INPUT,
-        cursor: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+        cursor: '2024-01-01T12:00:00.000Z',
         limit: 5,
       });
 
       const [sql, params] = (mockDb.query as any).mock.calls[0];
       expect(sql).toContain('lb.started_at <');
-      expect(params).toContain('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa');
+      expect(params).toContain('2024-01-01T12:00:00.000Z');
     });
 
     it('does not add cursor clause when cursor is absent', async () => {

@@ -39,7 +39,7 @@ export const expertiseSupplyRouter = router({
    */
   listExpertise: protectedProcedure
     .input(z.object({
-      cursor: z.string().uuid().optional(),
+      cursor: z.number().int().min(0).optional(),
       limit: z.number().int().min(1).max(50).default(20),
     }).optional())
     .query(async ({ input }) => {
@@ -47,9 +47,9 @@ export const expertiseSupplyRouter = router({
       const params: unknown[] = [];
       const conditions: string[] = ['active = TRUE'];
 
-      if (input?.cursor) {
+      if (input?.cursor !== undefined && input.cursor !== null) {
         const idx = params.push(input.cursor);
-        conditions.push(`id > $${idx}`);
+        conditions.push(`sort_order > $${idx}`);
       }
 
       const limitIdx = params.push(limit + 1);
@@ -62,11 +62,12 @@ export const expertiseSupplyRouter = router({
         description: string | null;
         risk_tier: string;
         active: boolean;
+        sort_order: number;
       }>(
-        `SELECT id, slug, display_name, description, risk_tier, active
+        `SELECT id, slug, display_name, description, risk_tier, active, sort_order
          FROM expertise_registry
          ${whereClause}
-         ORDER BY id ASC
+         ORDER BY sort_order ASC, id ASC
          LIMIT $${limitIdx}`,
         params
       );
@@ -74,7 +75,7 @@ export const expertiseSupplyRouter = router({
       const rows = result.rows;
       const hasMore = rows.length > limit;
       const page = hasMore ? rows.slice(0, limit) : rows;
-      const nextCursor = hasMore ? page[page.length - 1].id : null;
+      const nextCursor: number | null = hasMore ? (page[page.length - 1]?.sort_order ?? null) : null;
 
       return {
         items: page.map(r => ({

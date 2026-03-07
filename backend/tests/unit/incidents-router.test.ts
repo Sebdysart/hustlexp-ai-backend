@@ -53,7 +53,7 @@ type IncidentRow = {
   severity: string;
   service: string;
   details: object;
-  diagnosis: string | null;
+  diagnosis: Record<string, unknown> | null;
   resolved_at: Date | null;
   created_at: Date;
 };
@@ -88,6 +88,11 @@ function makeCaller(userId = 'admin-abc') {
   });
 }
 
+/** Prime the mock so that adminProcedure's admin_roles check returns a valid admin row. */
+function mockAdminCheck() {
+  mockDb.query.mockResolvedValueOnce({ rows: [{ role: 'admin' }], rowCount: 1 } as any);
+}
+
 // ===========================================================================
 // incidents.list — cursor-based pagination
 // ===========================================================================
@@ -103,6 +108,7 @@ describe('incidents.list — cursor-based pagination', () => {
 
   describe('return shape', () => {
     it('returns { items, nextCursor } shape', async () => {
+      mockAdminCheck();
       mockDb.query.mockResolvedValueOnce({ rows: [makeIncident({ id: 'aaa' })], rowCount: 1 } as any);
 
       const result = await makeCaller().list({ limit: 20 });
@@ -113,6 +119,7 @@ describe('incidents.list — cursor-based pagination', () => {
 
     it('items is an array of incident objects', async () => {
       const incidents = [makeIncident({ id: 'aaa', severity: 'critical' })];
+      mockAdminCheck();
       mockDb.query.mockResolvedValueOnce({ rows: incidents, rowCount: 1 } as any);
 
       const result = await makeCaller().list({ limit: 20 });
@@ -130,6 +137,7 @@ describe('incidents.list — cursor-based pagination', () => {
   describe('nextCursor — last page', () => {
     it('is null when results < limit (last page)', async () => {
       const rows = [makeIncident(), makeIncident(), makeIncident()];
+      mockAdminCheck();
       mockDb.query.mockResolvedValueOnce({ rows, rowCount: 3 } as any);
 
       const result = await makeCaller().list({ limit: 50 });
@@ -140,6 +148,7 @@ describe('incidents.list — cursor-based pagination', () => {
 
     it('is null when results exactly equal limit (no sentinel)', async () => {
       const rows = [makeIncident({ id: 'aaa' }), makeIncident({ id: 'bbb' })];
+      mockAdminCheck();
       mockDb.query.mockResolvedValueOnce({ rows, rowCount: 2 } as any);
 
       const result = await makeCaller().list({ limit: 2 });
@@ -149,6 +158,7 @@ describe('incidents.list — cursor-based pagination', () => {
     });
 
     it('is null for empty result set', async () => {
+      mockAdminCheck();
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
 
       const result = await makeCaller().list({ limit: 20 });
@@ -169,6 +179,7 @@ describe('incidents.list — cursor-based pagination', () => {
         makeIncident({ id: 'id-bbb' }),
         makeIncident({ id: 'id-ccc' }), // sentinel row
       ];
+      mockAdminCheck();
       mockDb.query.mockResolvedValueOnce({ rows, rowCount: 3 } as any);
 
       const result = await makeCaller().list({ limit: 2 });
@@ -185,6 +196,7 @@ describe('incidents.list — cursor-based pagination', () => {
 
   describe('cursor forwarding', () => {
     it('passes cursor to db.query as a SQL parameter', async () => {
+      mockAdminCheck();
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
 
       await makeCaller().list({
@@ -192,17 +204,18 @@ describe('incidents.list — cursor-based pagination', () => {
         limit: 5,
       });
 
-      const [sql, params] = (mockDb.query as any).mock.calls[0];
+      const [sql, params] = (mockDb.query as any).mock.calls[1];
       expect(sql).toContain('id >');
       expect(params).toContain('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa');
     });
 
     it('does not add cursor clause when cursor is absent', async () => {
+      mockAdminCheck();
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
 
       await makeCaller().list({ limit: 10 });
 
-      const [sql] = (mockDb.query as any).mock.calls[0];
+      const [sql] = (mockDb.query as any).mock.calls[1];
       expect(sql).not.toMatch(/AND\s+id\s*>/);
     });
   });
@@ -213,20 +226,22 @@ describe('incidents.list — cursor-based pagination', () => {
 
   describe('limit sentinel', () => {
     it('queries DB for limit+1 rows to detect next page', async () => {
+      mockAdminCheck();
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
 
       await makeCaller().list({ limit: 20 });
 
-      const [, params] = (mockDb.query as any).mock.calls[0];
+      const [, params] = (mockDb.query as any).mock.calls[1];
       expect(params).toContain(21);
     });
 
     it('queries DB for 3 rows when limit=2', async () => {
+      mockAdminCheck();
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
 
       await makeCaller().list({ limit: 2 });
 
-      const [, params] = (mockDb.query as any).mock.calls[0];
+      const [, params] = (mockDb.query as any).mock.calls[1];
       expect(params).toContain(3);
     });
   });
@@ -237,40 +252,44 @@ describe('incidents.list — cursor-based pagination', () => {
 
   describe('existing filters preserved', () => {
     it('filters by eventType when provided', async () => {
+      mockAdminCheck();
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
 
       await makeCaller().list({ eventType: 'error_spike', limit: 20 });
 
-      const [sql, params] = (mockDb.query as any).mock.calls[0];
+      const [sql, params] = (mockDb.query as any).mock.calls[1];
       expect(sql).toContain('event_type');
       expect(params).toContain('error_spike');
     });
 
     it('filters by severity when provided', async () => {
+      mockAdminCheck();
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
 
       await makeCaller().list({ severity: 'critical', limit: 20 });
 
-      const [sql, params] = (mockDb.query as any).mock.calls[0];
+      const [sql, params] = (mockDb.query as any).mock.calls[1];
       expect(sql).toContain('severity');
       expect(params).toContain('critical');
     });
 
     it('filters by resolved=false adds resolved_at IS NULL', async () => {
+      mockAdminCheck();
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
 
       await makeCaller().list({ resolved: false, limit: 20 });
 
-      const [sql] = (mockDb.query as any).mock.calls[0];
+      const [sql] = (mockDb.query as any).mock.calls[1];
       expect(sql).toContain('resolved_at IS NULL');
     });
 
     it('filters by resolved=true adds resolved_at IS NOT NULL', async () => {
+      mockAdminCheck();
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
 
       await makeCaller().list({ resolved: true, limit: 20 });
 
-      const [sql] = (mockDb.query as any).mock.calls[0];
+      const [sql] = (mockDb.query as any).mock.calls[1];
       expect(sql).toContain('resolved_at IS NOT NULL');
     });
   });

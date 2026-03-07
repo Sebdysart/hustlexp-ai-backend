@@ -12,7 +12,7 @@
  */
 
 import { z } from 'zod';
-import { router, protectedProcedure } from '../trpc';
+import { router, protectedProcedure, adminProcedure } from '../trpc';
 import { db } from '../db';
 import { IncidentDiagnosisService } from '../services/IncidentDiagnosisService';
 
@@ -20,7 +20,7 @@ export const incidentsRouter = router({
   /**
    * List incidents with filtering
    */
-  list: protectedProcedure
+  list: adminProcedure
     .input(z.object({
       eventType: z.enum(['error_spike', 'latency_spike', 'circuit_breaker_open', 'budget_threshold', 'anomaly_detected', 'manual_report']).optional(),
       severity: z.enum(['info', 'warning', 'critical']).optional(),
@@ -66,7 +66,7 @@ export const incidentsRouter = router({
         severity: string;
         service: string;
         details: unknown;
-        diagnosis: string | null;
+        diagnosis: Record<string, unknown> | null;
         resolved_at: Date | null;
         created_at: Date;
       }>(
