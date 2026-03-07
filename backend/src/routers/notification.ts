@@ -29,7 +29,7 @@ export const notificationRouter = router({
    * Output: { items, nextCursor }
    *
    * Uses limit+1 sentinel to detect the next page without a separate COUNT
-   * query. cursor is the `id` of the last item seen by the client.
+   * query. cursor is the ISO 8601 `created_at` timestamp of the last item seen by the client.
    */
   getList: protectedProcedure
     .input(z.object({
