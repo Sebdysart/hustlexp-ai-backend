@@ -338,6 +338,16 @@ app.get('/legal', serveStatic('index.html'));
 app.use('/trpc/*', trpcServer({
   router: appRouter,
   createContext,
+  onError({ error, type, path, ctx }) {
+    if (error.code === 'INTERNAL_SERVER_ERROR') {
+      const { captureError } = require('./lib/sentry');
+      captureError(error, {
+        procedure: path,
+        procedureType: type,
+        userId: (ctx as any)?.user?.id,
+      });
+    }
+  },
 }));
 
 // ============================================================================
