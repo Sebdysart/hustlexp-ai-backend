@@ -184,22 +184,39 @@ export const recurringTaskRouter = router({
 
   listMine: protectedProcedure
     .input(z.object({
-      limit: z.number().int().min(1).max(100).default(50).optional(),
-      offset: z.number().int().min(0).default(0).optional(),
+      cursor: z.string().uuid().optional(),
+      limit: z.number().int().min(1).max(50).default(20),
     }).optional())
     .query(async ({ ctx, input }) => {
-      const limit = Math.min(input?.limit ?? 50, 100);
-      const offset = input?.offset ?? 0;
+      const limit = input?.limit ?? 20;
+      const cursor = input?.cursor;
+
+      const params: unknown[] = [ctx.user.id, limit + 1];
+      let cursorClause = '';
+      if (cursor) {
+        const cursorIdx = params.push(cursor);
+        cursorClause = `AND rts.id > $${cursorIdx}`;
+      }
+
       const result = await db.query<SeriesRow>(
         `SELECT rts.*, u.full_name as worker_name
          FROM recurring_task_series rts
          LEFT JOIN users u ON u.id = rts.preferred_worker_id
-         WHERE rts.poster_id = $1
-         ORDER BY rts.created_at DESC
-         LIMIT $2 OFFSET $3`,
-        [ctx.user.id, limit, offset]
+         WHERE rts.poster_id = $1 ${cursorClause}
+         ORDER BY rts.id ASC
+         LIMIT $2`,
+        params
       );
-      return result.rows.map(r => mapSeriesToResponse(r, r.worker_name));
+
+      const rows = result.rows;
+      const hasMore = rows.length > limit;
+      const items = hasMore ? rows.slice(0, limit) : rows;
+      const nextCursor = hasMore ? items[items.length - 1].id : null;
+
+      return {
+        items: items.map(r => mapSeriesToResponse(r, r.worker_name)),
+        nextCursor,
+      };
     }),
 
   // --------------------------------------------------------------------------
@@ -294,12 +311,12 @@ export const recurringTaskRouter = router({
   listOccurrences: protectedProcedure
     .input(z.object({
       seriesId: Schemas.uuid,
-      limit: z.number().int().min(1).max(100).default(50).optional(),
-      offset: z.number().int().min(0).default(0).optional(),
+      cursor: z.string().uuid().optional(),
+      limit: z.number().int().min(1).max(50).default(20),
     }))
     .query(async ({ ctx, input }) => {
-      const limit = Math.min(input.limit ?? 50, 100);
-      const offset = input.offset ?? 0;
+      const limit = input.limit;
+      const cursor = input.cursor;
 
       // Verify ownership
       const series = await db.query(
@@ -310,16 +327,32 @@ export const recurringTaskRouter = router({
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Series not found' });
       }
 
-      const result = await db.query(
+      const params: unknown[] = [input.seriesId, limit + 1];
+      let cursorClause = '';
+      if (cursor) {
+        const cursorIdx = params.push(cursor);
+        cursorClause = `AND rto.id > $${cursorIdx}`;
+      }
+
+      const result = await db.query<OccurrenceRow>(
         `SELECT rto.*, u.full_name as worker_name
          FROM recurring_task_occurrences rto
          LEFT JOIN users u ON u.id = rto.worker_id
-         WHERE rto.series_id = $1
-         ORDER BY rto.occurrence_number DESC
-         LIMIT $2 OFFSET $3`,
-        [input.seriesId, limit, offset]
+         WHERE rto.series_id = $1 ${cursorClause}
+         ORDER BY rto.id ASC
+         LIMIT $2`,
+        params
       );
-      return (result.rows as unknown as OccurrenceRow[]).map(mapOccurrenceToResponse);
+
+      const rows = result.rows;
+      const hasMore = rows.length > limit;
+      const items = hasMore ? rows.slice(0, limit) : rows;
+      const nextCursor = hasMore ? items[items.length - 1].id : null;
+
+      return {
+        items: items.map(mapOccurrenceToResponse),
+        nextCursor,
+      };
     }),
 
   // --------------------------------------------------------------------------

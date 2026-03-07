@@ -157,12 +157,20 @@ export const squadRouter = router({
 
   listMine: protectedProcedure
     .input(z.object({
-      limit: z.number().int().min(1).max(100).default(50).optional(),
-      offset: z.number().int().min(0).default(0).optional(),
+      cursor: z.string().uuid().optional(),
+      limit: z.number().int().min(1).max(50).default(20),
     }).optional())
     .query(async ({ ctx, input }) => {
-      const limit = Math.min(input?.limit ?? 50, 100);
-      const offset = input?.offset ?? 0;
+      const limit = input?.limit ?? 20;
+      const cursor = input?.cursor;
+
+      const params: unknown[] = [ctx.user.id, limit + 1];
+      let cursorClause = '';
+      if (cursor) {
+        const cursorIdx = params.push(cursor);
+        cursorClause = `AND s.id > $${cursorIdx}`;
+      }
+
       const result = await db.query<{
         id: string; name: string; emoji: string; tagline: string | null;
         status: string; squad_xp: number; squad_level: number;
@@ -173,24 +181,32 @@ export const squadRouter = router({
            (SELECT sm2.role FROM squad_members sm2 WHERE sm2.squad_id = s.id AND sm2.user_id = $1) as my_role
          FROM squads s
          JOIN squad_members sm ON sm.squad_id = s.id AND sm.user_id = $1
-         WHERE s.status = 'active'
-         ORDER BY s.last_active_at DESC
-         LIMIT $2 OFFSET $3`,
-        [ctx.user.id, limit, offset]
+         WHERE s.status = 'active' ${cursorClause}
+         ORDER BY s.id ASC
+         LIMIT $2`,
+        params
       );
 
-      return result.rows.map(s => ({
-        id: s.id,
-        name: s.name,
-        emoji: s.emoji,
-        tagline: s.tagline,
-        status: s.status,
-        squadXp: s.squad_xp,
-        squadLevel: s.squad_level,
-        totalTasksCompleted: s.total_tasks_completed,
-        memberCount: parseInt(s.member_count, 10),
-        myRole: s.my_role,
-      }));
+      const rows = result.rows;
+      const hasMore = rows.length > limit;
+      const items = hasMore ? rows.slice(0, limit) : rows;
+      const nextCursor = hasMore ? items[items.length - 1].id : null;
+
+      return {
+        items: items.map(s => ({
+          id: s.id,
+          name: s.name,
+          emoji: s.emoji,
+          tagline: s.tagline,
+          status: s.status,
+          squadXp: s.squad_xp,
+          squadLevel: s.squad_level,
+          totalTasksCompleted: s.total_tasks_completed,
+          memberCount: parseInt(s.member_count, 10),
+          myRole: s.my_role,
+        })),
+        nextCursor,
+      };
     }),
 
   // --------------------------------------------------------------------------
@@ -383,12 +399,20 @@ export const squadRouter = router({
 
   listInvites: protectedProcedure
     .input(z.object({
-      limit: z.number().int().min(1).max(100).default(50).optional(),
-      offset: z.number().int().min(0).default(0).optional(),
+      cursor: z.string().uuid().optional(),
+      limit: z.number().int().min(1).max(50).default(20),
     }).optional())
     .query(async ({ ctx, input }) => {
-      const limit = Math.min(input?.limit ?? 50, 100);
-      const offset = input?.offset ?? 0;
+      const limit = input?.limit ?? 20;
+      const cursor = input?.cursor;
+
+      const params: unknown[] = [ctx.user.id, limit + 1];
+      let cursorClause = '';
+      if (cursor) {
+        const cursorIdx = params.push(cursor);
+        cursorClause = `AND si.id > $${cursorIdx}`;
+      }
+
       const result = await db.query<{
         id: string; squad_id: string; squad_name: string; squad_emoji: string;
         inviter_name: string; sent_at: Date; expires_at: Date;
@@ -399,20 +423,29 @@ export const squadRouter = router({
          JOIN squads s ON s.id = si.squad_id
          JOIN users u ON u.id = si.inviter_id
          WHERE si.invitee_id = $1 AND si.status = 'pending' AND si.expires_at > NOW()
-         ORDER BY si.sent_at DESC
-         LIMIT $2 OFFSET $3`,
-        [ctx.user.id, limit, offset]
+           ${cursorClause}
+         ORDER BY si.id ASC
+         LIMIT $2`,
+        params
       );
 
-      return result.rows.map(i => ({
-        id: i.id,
-        squadId: i.squad_id,
-        squadName: i.squad_name,
-        squadEmoji: i.squad_emoji,
-        inviterName: i.inviter_name,
-        sentAt: i.sent_at,
-        expiresAt: i.expires_at,
-      }));
+      const rows = result.rows;
+      const hasMore = rows.length > limit;
+      const items = hasMore ? rows.slice(0, limit) : rows;
+      const nextCursor = hasMore ? items[items.length - 1].id : null;
+
+      return {
+        items: items.map(i => ({
+          id: i.id,
+          squadId: i.squad_id,
+          squadName: i.squad_name,
+          squadEmoji: i.squad_emoji,
+          inviterName: i.inviter_name,
+          sentAt: i.sent_at,
+          expiresAt: i.expires_at,
+        })),
+        nextCursor,
+      };
     }),
 
   // --------------------------------------------------------------------------
@@ -478,12 +511,12 @@ export const squadRouter = router({
   listTasks: protectedProcedure
     .input(z.object({
       squadId: Schemas.uuid,
-      limit: z.number().int().min(1).max(100).default(50).optional(),
-      offset: z.number().int().min(0).default(0).optional(),
+      cursor: z.string().uuid().optional(),
+      limit: z.number().int().min(1).max(50).default(20),
     }))
     .query(async ({ ctx, input }) => {
-      const limit = Math.min(input.limit ?? 50, 100);
-      const offset = input.offset ?? 0;
+      const limit = input.limit;
+      const cursor = input.cursor;
 
       // Verify membership
       const member = await db.query(
@@ -492,6 +525,13 @@ export const squadRouter = router({
       );
       if (member.rows.length === 0) {
         throw new TRPCError({ code: 'FORBIDDEN', message: 'Not a member of this squad' });
+      }
+
+      const params: unknown[] = [input.squadId, limit + 1];
+      let cursorClause = '';
+      if (cursor) {
+        const cursorIdx = params.push(cursor);
+        cursorClause = `AND sta.id > $${cursorIdx}`;
       }
 
       const result = await db.query<ListTaskRow>(
@@ -507,35 +547,43 @@ export const squadRouter = router({
          FROM squad_task_assignments sta
          JOIN tasks t ON t.id = sta.task_id
          LEFT JOIN squad_task_workers stw ON stw.squad_task_id = sta.id
-         WHERE sta.squad_id = $1
+         WHERE sta.squad_id = $1 ${cursorClause}
          GROUP BY sta.id, t.id
-         ORDER BY sta.created_at DESC
-         LIMIT $2 OFFSET $3`,
-        [input.squadId, limit, offset]
+         ORDER BY sta.id ASC
+         LIMIT $2`,
+        params
       );
 
-      return result.rows.map(r => ({
-        id: r.id,
-        taskId: r.task_id,
-        squadId: r.squad_id,
-        task: {
-          id: r.t_id,
-          title: r.t_title,
-          description: r.t_description,
-          payment: r.t_price / 100,
-          location: r.t_location,
-          category: r.t_category,
-          state: r.t_state,
-          createdAt: r.t_created_at,
-          updatedAt: r.t_updated_at,
-        },
-        requiredWorkers: r.required_workers,
-        acceptedWorkers: r.accepted_workers || [],
-        paymentSplit: r.payment_split_mode,
-        perWorkerPayment: r.per_worker_payment_cents / 100,
-        status: r.status,
-        createdAt: r.created_at,
-      }));
+      const rows = result.rows;
+      const hasMore = rows.length > limit;
+      const items = hasMore ? rows.slice(0, limit) : rows;
+      const nextCursor = hasMore ? items[items.length - 1].id : null;
+
+      return {
+        items: items.map(r => ({
+          id: r.id,
+          taskId: r.task_id,
+          squadId: r.squad_id,
+          task: {
+            id: r.t_id,
+            title: r.t_title,
+            description: r.t_description,
+            payment: r.t_price / 100,
+            location: r.t_location,
+            category: r.t_category,
+            state: r.t_state,
+            createdAt: r.t_created_at,
+            updatedAt: r.t_updated_at,
+          },
+          requiredWorkers: r.required_workers,
+          acceptedWorkers: r.accepted_workers || [],
+          paymentSplit: r.payment_split_mode,
+          perWorkerPayment: r.per_worker_payment_cents / 100,
+          status: r.status,
+          createdAt: r.created_at,
+        })),
+        nextCursor,
+      };
     }),
 
   // --------------------------------------------------------------------------
