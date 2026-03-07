@@ -28,6 +28,13 @@ import { createMetricsEndpoint } from './monitoring/metrics';
 import { db } from './db';
 import { createRedisClient } from './cache/redis';
 import { captureError } from './lib/sentry';
+import { validateEnv } from './lib/env-validator';
+
+// ============================================================================
+// ENV VALIDATION (Fail-Fast on Missing Required Variables)
+// ============================================================================
+
+validateEnv();
 
 // ============================================================================
 // SECURITY VALIDATION (Fail-Fast in Production)

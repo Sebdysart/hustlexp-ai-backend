@@ -1,26 +1,15 @@
 import * as Sentry from '@sentry/node';
 
-export function initSentry() {
-  const dsn = process.env.SENTRY_DSN;
-  if (!dsn) {
-    console.warn('[Sentry] SENTRY_DSN not set — error tracking disabled');
-    return;
-  }
-  Sentry.init({
-    dsn,
-    environment: process.env.NODE_ENV ?? 'development',
-    release: process.env.APP_VERSION ?? 'unknown',
-    tracesSampleRate: process.env.NODE_ENV === 'production' ? 0.1 : 0,
-    beforeSend(event) {
-      if (event.request?.data) {
-        const data = event.request.data as Record<string, unknown>;
-        delete data['password'];
-        delete data['ssn'];
-        delete data['bankAccount'];
-      }
-      return event;
-    },
-  });
+/**
+ * Sentry is initialized automatically when ../sentry.ts is imported by server.ts.
+ * That module also scrubs sensitive headers (authorization, cookie) AND body fields
+ * (password, ssn, bankAccount) via its beforeSend callback.
+ *
+ * This function exists for compatibility with callers that expect an explicit init step;
+ * the actual initialization happens via automatic module evaluation of src/sentry.ts.
+ */
+export function initSentry(): void {
+  // No-op: initialization happens via automatic module evaluation of ../sentry.ts
 }
 
 export function captureError(error: unknown, context?: Record<string, unknown>) {

@@ -17,12 +17,14 @@ describe('Sentry integration', () => {
     expect(() => initSentry()).not.toThrow();
   });
 
-  it('calls Sentry.init when SENTRY_DSN is set', async () => {
+  it('initSentry is a no-op — initialization is handled by src/sentry.ts at module load', async () => {
     process.env.SENTRY_DSN = 'https://test@sentry.io/123';
     const Sentry = await import('@sentry/node');
     const { initSentry } = await import('../../src/lib/sentry');
-    initSentry();
-    expect(Sentry.init).toHaveBeenCalled();
+    // initSentry() must not throw; actual Sentry.init is called by ../sentry.ts
+    expect(() => initSentry()).not.toThrow();
+    // Sentry.init is NOT called by the no-op wrapper
+    expect(Sentry.init).not.toHaveBeenCalled();
   });
 
   it('captureError calls Sentry.captureException', async () => {

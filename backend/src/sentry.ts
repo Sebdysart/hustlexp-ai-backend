@@ -39,6 +39,13 @@ if (dsn) {
         delete event.request.headers['authorization'];
         delete event.request.headers['cookie'];
       }
+      // Strip PII from request body
+      if (event.request?.data) {
+        const data = event.request.data as Record<string, unknown>;
+        delete data['password'];
+        delete data['ssn'];
+        delete data['bankAccount'];
+      }
       return event;
     },
 

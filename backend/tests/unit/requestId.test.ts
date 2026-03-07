@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { Hono } from 'hono';
-import { requestIdMiddleware } from '../../src/middleware/requestId';
+import { requestIdMiddleware } from '../../src/middleware/request-id';
 
 describe('requestIdMiddleware', () => {
   it('echoes provided x-request-id', async () => {
@@ -11,12 +11,15 @@ describe('requestIdMiddleware', () => {
     expect(res.headers.get('x-request-id')).toBe('test-id-123');
   });
 
-  it('generates a UUID request ID when none provided', async () => {
+  it('generates a req_ULID request ID when none provided', async () => {
     const app = new Hono();
     app.use('*', requestIdMiddleware);
     app.get('/test', (c) => c.json({ ok: true }));
     const res = await app.request('/test');
-    expect(res.headers.get('x-request-id')).toMatch(/^[0-9a-f-]{36}$/);
+    // Production middleware generates `req_${ulid()}` — a non-empty string starting with req_
+    const id = res.headers.get('x-request-id');
+    expect(id).toBeTruthy();
+    expect(id).toMatch(/^req_[0-9A-Z]{26}$/);
   });
 
   it('sets requestId in context', async () => {
