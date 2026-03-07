@@ -29,6 +29,7 @@ import { db } from './db';
 import { createRedisClient } from './cache/redis';
 import { captureError } from './lib/sentry';
 import { validateEnv } from './lib/env-validator';
+import { sseHandler } from './realtime/sse-handler';
 
 // ============================================================================
 // ENV VALIDATION (Fail-Fast on Missing Required Variables)
@@ -171,19 +172,13 @@ app.use('*', httpMetricsMiddleware());
 // Catch-all covers squad, notification, live, admin, instant, incidents, betaDashboard, etc.
 // v1 aliases share the same rate limit buckets as the canonical paths.
 app.use('/trpc/escrow.release*', rateLimitMiddleware('financial')); // 10/min — escrow release (strictest)
-app.use('/trpc/v1/escrow.release*', rateLimitMiddleware('financial'));
 app.use('/trpc/stripe.*', rateLimitMiddleware('financial'));        // 10/min — Stripe financial ops
-app.use('/trpc/v1/stripe.*', rateLimitMiddleware('financial'));
 app.use('/trpc/ai.*', rateLimitMiddleware('ai'));       // 20/min — AI cost protection
-app.use('/trpc/v1/ai.*', rateLimitMiddleware('ai'));
 app.use('/trpc/escrow.*', rateLimitMiddleware('escrow')); // 30/min — other escrow ops
-app.use('/trpc/v1/escrow.*', rateLimitMiddleware('escrow'));
 app.use('/trpc/task.*', rateLimitMiddleware('task'));   // 60/min — core task ops
-app.use('/trpc/v1/task.*', rateLimitMiddleware('task'));
-app.use('/trpc/*', rateLimitMiddleware('general'));     // 100/min — all other tRPC routes
-app.use('/trpc/v1/*', rateLimitMiddleware('general'));
-app.use('/api/*', rateLimitMiddleware('general'));      // 100/min — REST endpoints
-app.use('/api/v1/*', rateLimitMiddleware('general'));
+app.use('/trpc/*', rateLimitMiddleware('general'));     // 100/min — all other tRPC routes (covers /trpc/v1/* too)
+app.use('/realtime/*', rateLimitMiddleware('general')); // 100/min — SSE realtime stream
+app.use('/api/*', rateLimitMiddleware('general'));      // 100/min — REST endpoints (covers /api/v1/* too)
 
 // ============================================================================
 // PROMETHEUS METRICS ENDPOINT
@@ -383,10 +378,16 @@ app.get('/terms', serveStatic('terms-of-service.html'));
 app.get('/legal', serveStatic('index.html'));
 
 // ============================================================================
-// tRPC HANDLER
+// tRPC v1 HANDLER (/trpc/v1/*)
 // ============================================================================
+// MUST be registered BEFORE the legacy /trpc/* handler so that Hono's
+// first-match routing gives /trpc/v1/* requests to this handler.
+// The `endpoint` option tells the tRPC fetch adapter to strip the /trpc/v1
+// prefix so procedure names resolve correctly
+// (e.g. /trpc/v1/task.listOpen → procedure "task.listOpen").
 
-app.use('/trpc/*', trpcServer({
+app.use('/trpc/v1/*', trpcServer({
+  endpoint: '/trpc/v1',
   router: appRouter,
   createContext,
   onError({ error, type, path, ctx }) {
@@ -401,17 +402,13 @@ app.use('/trpc/*', trpcServer({
 }));
 
 // ============================================================================
-// tRPC v1 ALIAS (/trpc/v1/*)
+// tRPC LEGACY HANDLER (/trpc/*)
 // ============================================================================
-// Mounts the same router under the versioned prefix so clients can migrate
-// from /trpc/<procedure> to /trpc/v1/<procedure> at their own pace.
-// The legacy /trpc/* path above remains active for backward compatibility.
+// Registered AFTER /trpc/v1/* so that versioned requests are handled above.
+// Clients on the legacy /trpc/<procedure> path continue to work here for
+// backward compatibility.
 
-// Mount the same appRouter under /trpc/v1, telling the tRPC fetch adapter
-// to strip the /trpc/v1 prefix (via the `endpoint` option) so procedure
-// names resolve correctly (e.g. /trpc/v1/task.listOpen → procedure "task.listOpen").
-app.use('/trpc/v1/*', trpcServer({
-  endpoint: '/trpc/v1',
+app.use('/trpc/*', trpcServer({
   router: appRouter,
   createContext,
   onError({ error, type, path, ctx }) {
@@ -435,7 +432,6 @@ app.use('/trpc/v1/*', trpcServer({
 
 import { firebaseAuth } from './auth/firebase';
 import type { User } from './types';
-import { sseHandler } from './realtime/sse-handler';
 import { z } from 'zod';
 
 // Helper to get authenticated user from Bearer token
