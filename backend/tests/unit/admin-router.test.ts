@@ -324,6 +324,11 @@ describe('admin.listUsers — cursor-based pagination', () => {
       const [sql, params] = (mockDb.query as any).mock.calls[1];
       expect(sql).toContain('ILIKE');
       expect(params).toContain('%alice%');
+      // Both OR branches must reference the same $N — guards against the fragile
+      // double-push pattern where params.push() and params.length could diverge.
+      const ilikeParts = sql.match(/ILIKE \$(\d+)/g);
+      expect(ilikeParts).toHaveLength(2);
+      expect(ilikeParts![0]).toBe(ilikeParts![1]); // both reference same $N
     });
 
     it('accepts default limit of 20 when limit not provided', async () => {

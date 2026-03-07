@@ -58,9 +58,8 @@ export const adminRouter = router({
       }
       if (search) {
         const searchParam = `%${search}%`;
-        conditions.push(
-          `(u.email ILIKE $${params.push(searchParam)} OR u.full_name ILIKE $${params.length})`
-        );
+        const searchIdx = params.push(searchParam); // push once, capture index
+        conditions.push(`(u.email ILIKE $${searchIdx} OR u.full_name ILIKE $${searchIdx})`);
       }
       if (trustTier) {
         conditions.push(`u.trust_tier = $${params.push(trustTier)}`);
