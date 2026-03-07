@@ -154,7 +154,17 @@ export const adminRouter = router({
       const whereClause =
         conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
-      const result = await db.query(
+      const result = await db.query<{
+        id: string;
+        title: string;
+        state: string;
+        price: number;
+        poster_id: string;
+        worker_id: string | null;
+        created_at: Date;
+        poster_name: string | null;
+        worker_name: string | null;
+      }>(
         `SELECT t.id, t.title, t.state, t.price, t.poster_id, t.worker_id, t.created_at,
                 p.full_name as poster_name, w.full_name as worker_name
          FROM tasks t
@@ -201,7 +211,14 @@ export const adminRouter = router({
       const whereClause =
         conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
-      const result = await db.query(
+      const result = await db.query<{
+        id: string;
+        task_id: string;
+        status: string;
+        reason: string;
+        created_at: Date;
+        task_title: string;
+      }>(
         `SELECT d.id, d.task_id, d.status, d.reason, d.created_at,
                 t.title as task_title
          FROM disputes d
