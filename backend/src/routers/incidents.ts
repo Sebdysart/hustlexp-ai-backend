@@ -26,45 +26,67 @@ export const incidentsRouter = router({
       severity: z.enum(['info', 'warning', 'critical']).optional(),
       service: z.string().optional(),
       resolved: z.boolean().optional(),
-      limit: z.number().min(1).max(100).default(50),
-      offset: z.number().min(0).default(0),
+      cursor: z.string().uuid().optional(),
+      limit: z.number().int().min(1).max(100).default(50),
     }))
     .query(async ({ input }) => {
       const conditions: string[] = [];
       const params: unknown[] = [];
-      let paramIndex = 1;
 
       if (input.eventType) {
-        conditions.push(`event_type = $${paramIndex++}`);
-        params.push(input.eventType);
+        const idx = params.push(input.eventType);
+        conditions.push(`event_type = $${idx}`);
       }
 
       if (input.severity) {
-        conditions.push(`severity = $${paramIndex++}`);
-        params.push(input.severity);
+        const idx = params.push(input.severity);
+        conditions.push(`severity = $${idx}`);
       }
 
       if (input.service) {
-        conditions.push(`service = $${paramIndex++}`);
-        params.push(input.service);
+        const idx = params.push(input.service);
+        conditions.push(`service = $${idx}`);
       }
 
       if (input.resolved !== undefined) {
         conditions.push(input.resolved ? 'resolved_at IS NOT NULL' : 'resolved_at IS NULL');
       }
 
-      const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+      if (input.cursor) {
+        const idx = params.push(input.cursor);
+        conditions.push(`id > $${idx}`);
+      }
 
-      const result = await db.query(
+      const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+      const limitIdx = params.push(input.limit + 1);
+
+      const result = await db.query<{
+        id: string;
+        event_type: string;
+        severity: string;
+        service: string;
+        details: unknown;
+        diagnosis: string | null;
+        resolved_at: Date | null;
+        created_at: Date;
+      }>(
         `SELECT id, event_type, severity, service, details, diagnosis, resolved_at, created_at
          FROM incident_events
          ${whereClause}
-         ORDER BY created_at DESC
-         LIMIT $${paramIndex++} OFFSET $${paramIndex++}`,
-        [...params, input.limit, input.offset]
+         ORDER BY id ASC
+         LIMIT $${limitIdx}`,
+        params
       );
 
-      return result.rows;
+      const rows = result.rows;
+      const hasMore = rows.length > input.limit;
+      const page = hasMore ? rows.slice(0, input.limit) : rows;
+      const nextCursor = hasMore ? page[page.length - 1].id : null;
+
+      return {
+        items: page,
+        nextCursor,
+      };
     }),
 
   /**

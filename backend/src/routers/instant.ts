@@ -20,10 +20,27 @@ export const instantRouter = router({
    */
   listAvailable: protectedProcedure
     .input(z.object({
+      cursor: z.string().uuid().optional(),
       limit: z.number().int().min(1).max(50).default(20),
     }).optional())
     .query(async ({ ctx: _ctx, input }) => {
       const limit = input?.limit ?? 20;
+      const params: unknown[] = [];
+      const conditions: string[] = [
+        "mode = 'LIVE'",
+        "state = 'OPEN'",
+        'worker_id IS NULL',
+      ];
+
+      if (input?.cursor) {
+        const idx = params.push(input.cursor);
+        conditions.push(`id > $${idx}`);
+      }
+
+      const limitIdx = params.push(limit + 1);
+
+      const whereClause = `WHERE ${conditions.join(' AND ')}`;
+
       const result = await db.query<{
         id: string;
         title: string;
@@ -34,23 +51,29 @@ export const instantRouter = router({
       }>(
         `SELECT id, title, description, price, location, created_at
          FROM tasks
-         WHERE mode = 'LIVE'
-           AND state = 'OPEN'
-           AND worker_id IS NULL
-         ORDER BY created_at DESC
-         LIMIT $1`,
-        [limit]
+         ${whereClause}
+         ORDER BY id ASC
+         LIMIT $${limitIdx}`,
+        params
       );
 
-      return result.rows.map(task => ({
-        id: task.id,
-        title: task.title,
-        description: task.description,
-        price: task.price,
-        location: task.location,
-        createdAt: task.created_at,
-        waitingSeconds: Math.floor((Date.now() - task.created_at.getTime()) / 1000),
-      }));
+      const rows = result.rows;
+      const hasMore = rows.length > limit;
+      const page = hasMore ? rows.slice(0, limit) : rows;
+      const nextCursor = hasMore ? page[page.length - 1].id : null;
+
+      return {
+        items: page.map(task => ({
+          id: task.id,
+          title: task.title,
+          description: task.description,
+          price: task.price,
+          location: task.location,
+          createdAt: task.created_at,
+          waitingSeconds: Math.floor((Date.now() - task.created_at.getTime()) / 1000),
+        })),
+        nextCursor,
+      };
     }),
 
   /**

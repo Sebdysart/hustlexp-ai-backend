@@ -94,8 +94,8 @@ export const liveRouter = router({
       latitude: z.number(),
       longitude: z.number(),
       radiusMiles: z.number().default(5),
-      limit: z.number().int().min(1).max(100).default(50).optional(),
-      offset: z.number().int().min(0).default(0).optional(),
+      cursor: z.string().uuid().optional(),
+      limit: z.number().int().min(1).max(50).default(20),
     }))
     .query(async ({ ctx, input }) => {
       if (!ctx.user) {
@@ -104,15 +104,24 @@ export const liveRouter = router({
           message: 'Authentication required',
         });
       }
-      
-      const limit = Math.min(input.limit ?? 50, 100);
-      const offset = input.offset ?? 0;
 
       try {
         // Query active live broadcasts (not expired, not accepted)
         // Join with tasks to get task details
         // Note: Geo-bounded filtering requires latitude/longitude columns on tasks table
-        // For now, return all active broadcasts within the provided radius
+        // For now, return all active broadcasts within the provided radius.
+        // Cursor is based on (started_at, id) using started_at DESC ordering.
+        // We use started_at < cursor_started_at for keyset pagination because
+        // the sort direction is DESC. The cursor value is the broadcast id which
+        // we resolve to a started_at in the query using a subquery.
+        const params: unknown[] = [input.radiusMiles];
+        let cursorClause = '';
+        if (input.cursor) {
+          const idx = params.push(input.cursor);
+          cursorClause = `AND lb.started_at < (SELECT started_at FROM live_broadcasts WHERE id = $${idx})`;
+        }
+        const limitIdx = params.push(input.limit + 1);
+
         const result = await db.query<{
           id: string;
           task_id: string;
@@ -153,34 +162,43 @@ export const liveRouter = router({
               lb.final_radius_miles IS NULL
               OR lb.final_radius_miles >= $1
             )
+            ${cursorClause}
           ORDER BY lb.started_at DESC
-          LIMIT $2 OFFSET $3`,
-          [input.radiusMiles, limit, offset]
+          LIMIT $${limitIdx}`,
+          params
         );
-        
+
         // NOTE: Geo-bounded filtering (Haversine / earthdistance) requires adding
         // latitude/longitude columns to the tasks table. Current schema only has
         // location VARCHAR(255). For now, we filter by initial_radius_miles on broadcast.
         // See ARCHITECTURE.md §3.4 for future geo-query plan.
-        
-        return result.rows.map(broadcast => ({
-          id: broadcast.id,
-          taskId: broadcast.task_id,
-          startedAt: broadcast.started_at.toISOString(),
-          expiredAt: broadcast.expired_at?.toISOString() || null,
-          initialRadiusMiles: Number(broadcast.initial_radius_miles),
-          finalRadiusMiles: broadcast.final_radius_miles ? Number(broadcast.final_radius_miles) : null,
-          hustlersNotified: broadcast.hustlers_notified,
-          hustlersViewed: broadcast.hustlers_viewed,
-          task: {
-            id: broadcast.task_id,
-            title: broadcast.task_title,
-            price: broadcast.task_price,
-            location: broadcast.task_location,
-            category: broadcast.task_category,
-            deadline: broadcast.task_deadline?.toISOString() || null,
-          },
-        }));
+
+        const rows = result.rows;
+        const hasMore = rows.length > input.limit;
+        const page = hasMore ? rows.slice(0, input.limit) : rows;
+        const nextCursor = hasMore ? page[page.length - 1].id : null;
+
+        return {
+          items: page.map(broadcast => ({
+            id: broadcast.id,
+            taskId: broadcast.task_id,
+            startedAt: broadcast.started_at.toISOString(),
+            expiredAt: broadcast.expired_at?.toISOString() || null,
+            initialRadiusMiles: Number(broadcast.initial_radius_miles),
+            finalRadiusMiles: broadcast.final_radius_miles ? Number(broadcast.final_radius_miles) : null,
+            hustlersNotified: broadcast.hustlers_notified,
+            hustlersViewed: broadcast.hustlers_viewed,
+            task: {
+              id: broadcast.task_id,
+              title: broadcast.task_title,
+              price: broadcast.task_price,
+              location: broadcast.task_location,
+              category: broadcast.task_category,
+              deadline: broadcast.task_deadline?.toISOString() || null,
+            },
+          })),
+          nextCursor,
+        };
       } catch (error) {
         throw new TRPCError({
           code: 'INTERNAL_SERVER_ERROR',

@@ -26,6 +26,7 @@ import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { router, protectedProcedure, adminProcedure } from '../trpc';
 import { ExpertiseSupplyService } from '../services/ExpertiseSupplyService';
+import { db } from '../db';
 
 export const expertiseSupplyRouter = router({
   // ==========================================================================
@@ -38,20 +39,54 @@ export const expertiseSupplyRouter = router({
    */
   listExpertise: protectedProcedure
     .input(z.object({
-      limit: z.number().int().min(1).max(100).default(50).optional(),
-      offset: z.number().int().min(0).default(0).optional(),
+      cursor: z.string().uuid().optional(),
+      limit: z.number().int().min(1).max(50).default(20),
     }).optional())
     .query(async ({ input }) => {
-      const limit = Math.min(input?.limit ?? 50, 100);
-      const offset = input?.offset ?? 0;
-      const result = await ExpertiseSupplyService.listExpertise();
-      if (!result.success) {
-        throw new TRPCError({
-          code: 'INTERNAL_SERVER_ERROR',
-          message: result.error.message,
-        });
+      const limit = input?.limit ?? 20;
+      const params: unknown[] = [];
+      const conditions: string[] = ['active = TRUE'];
+
+      if (input?.cursor) {
+        const idx = params.push(input.cursor);
+        conditions.push(`id > $${idx}`);
       }
-      return result.data.slice(offset, offset + limit);
+
+      const limitIdx = params.push(limit + 1);
+      const whereClause = `WHERE ${conditions.join(' AND ')}`;
+
+      const result = await db.query<{
+        id: string;
+        slug: string;
+        display_name: string;
+        description: string | null;
+        risk_tier: string;
+        active: boolean;
+      }>(
+        `SELECT id, slug, display_name, description, risk_tier, active
+         FROM expertise_registry
+         ${whereClause}
+         ORDER BY id ASC
+         LIMIT $${limitIdx}`,
+        params
+      );
+
+      const rows = result.rows;
+      const hasMore = rows.length > limit;
+      const page = hasMore ? rows.slice(0, limit) : rows;
+      const nextCursor = hasMore ? page[page.length - 1].id : null;
+
+      return {
+        items: page.map(r => ({
+          id: r.id,
+          slug: r.slug,
+          displayName: r.display_name,
+          description: r.description,
+          riskTier: r.risk_tier,
+          active: r.active,
+        })),
+        nextCursor,
+      };
     }),
 
   /**
@@ -171,15 +206,65 @@ export const expertiseSupplyRouter = router({
    * Get the current user's waitlist entries.
    */
   getMyWaitlist: protectedProcedure
-    .query(async ({ ctx }) => {
-      const result = await ExpertiseSupplyService.getUserWaitlist(ctx.user.id);
-      if (!result.success) {
-        throw new TRPCError({
-          code: 'INTERNAL_SERVER_ERROR',
-          message: result.error.message,
-        });
+    .input(z.object({
+      cursor: z.string().uuid().optional(),
+      limit: z.number().int().min(1).max(50).default(20),
+    }).optional())
+    .query(async ({ ctx, input }) => {
+      const limit = input?.limit ?? 20;
+      const params: unknown[] = [ctx.user.id];
+      const conditions: string[] = ['ew.user_id = $1'];
+
+      if (input?.cursor) {
+        const idx = params.push(input.cursor);
+        conditions.push(`ew.id > $${idx}`);
       }
-      return result.data;
+
+      const limitIdx = params.push(limit + 1);
+      const whereClause = `WHERE ${conditions.join(' AND ')}`;
+
+      const result = await db.query<{
+        id: string;
+        slug: string;
+        display_name: string;
+        geo_zone: string;
+        position: number;
+        requested_weight: string;
+        status: string;
+        invited_at: string | null;
+        invite_expires_at: string | null;
+        created_at: string;
+      }>(
+        `SELECT ew.id, er.slug, er.display_name, ew.geo_zone, ew.position,
+                ew.requested_weight, ew.status, ew.invited_at, ew.invite_expires_at, ew.created_at
+         FROM expertise_waitlist ew
+         JOIN expertise_registry er ON er.id = ew.expertise_id
+         ${whereClause}
+         ORDER BY ew.id ASC
+         LIMIT $${limitIdx}`,
+        params
+      );
+
+      const rows = result.rows;
+      const hasMore = rows.length > limit;
+      const page = hasMore ? rows.slice(0, limit) : rows;
+      const nextCursor = hasMore ? page[page.length - 1].id : null;
+
+      return {
+        items: page.map(r => ({
+          id: r.id,
+          expertiseSlug: r.slug,
+          expertiseDisplayName: r.display_name,
+          geoZone: r.geo_zone,
+          position: r.position,
+          requestedWeight: parseFloat(r.requested_weight),
+          status: r.status,
+          invitedAt: r.invited_at,
+          inviteExpiresAt: r.invite_expires_at,
+          createdAt: r.created_at,
+        })),
+        nextCursor,
+      };
     }),
 
   /**
