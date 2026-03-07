@@ -127,26 +127,32 @@ export const adminRouter = router({
   // --------------------------------------------------------------------------
 
   /**
-   * List tasks with pagination and optional filters
+   * List tasks with cursor-based pagination and optional filters.
+   *
+   * Returns { items, nextCursor } where nextCursor is the id of the last
+   * item on the current page, or null when there are no more pages.
+   * Pass nextCursor as `cursor` on the next call to advance the page.
    */
   listTasks: adminProcedure
     .input(z.object({
+      cursor: z.string().uuid().optional(),
       limit: z.number().int().min(1).max(100).default(20),
-      offset: z.number().int().min(0).default(0),
       state: z.string().max(30).optional(),
     }))
     .query(async ({ input }) => {
-      const conditions: string[] = ['1=1'];
-      const params: unknown[] = [];
-      let paramIndex = 1;
+      const { cursor, limit, state } = input;
+      const conditions: string[] = [];
+      const params: unknown[] = [limit + 1]; // $1 = fetch limit+1 to detect next page
 
-      if (input.state) {
-        conditions.push(`t.state = $${paramIndex}`);
-        params.push(input.state);
-        paramIndex++;
+      if (cursor) {
+        conditions.push(`t.id > $${params.push(cursor)}`);
+      }
+      if (state) {
+        conditions.push(`t.state = $${params.push(state)}`);
       }
 
-      params.push(input.limit, input.offset);
+      const whereClause =
+        conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
       const result = await db.query(
         `SELECT t.id, t.title, t.state, t.price, t.poster_id, t.worker_id, t.created_at,
@@ -154,65 +160,63 @@ export const adminRouter = router({
          FROM tasks t
          LEFT JOIN users p ON p.id = t.poster_id
          LEFT JOIN users w ON w.id = t.worker_id
-         WHERE ${conditions.join(' AND ')}
-         ORDER BY t.created_at DESC
-         LIMIT $${paramIndex++} OFFSET $${paramIndex}`,
+         ${whereClause}
+         ORDER BY t.id ASC
+         LIMIT $1`,
         params
       );
 
-      const countResult = await db.query<{ count: string }>(
-        `SELECT COUNT(*)::text as count FROM tasks t WHERE ${conditions.join(' AND ')}`,
-        params.slice(0, -2)
-      );
+      const items = result.rows.slice(0, limit);
+      const nextCursor =
+        result.rows.length > limit ? (items[items.length - 1]?.id ?? null) : null;
 
-      return {
-        tasks: result.rows,
-        total: parseInt(countResult.rows[0]?.count || '0', 10),
-      };
+      return { items, nextCursor };
     }),
 
   /**
-   * List disputes with pagination
+   * List disputes with cursor-based pagination and optional filters.
+   *
+   * Returns { items, nextCursor } where nextCursor is the id of the last
+   * item on the current page, or null when there are no more pages.
+   * Pass nextCursor as `cursor` on the next call to advance the page.
    */
   listDisputes: adminProcedure
     .input(z.object({
+      cursor: z.string().uuid().optional(),
       limit: z.number().int().min(1).max(100).default(20),
-      offset: z.number().int().min(0).default(0),
       status: z.string().max(30).optional(),
     }))
     .query(async ({ input }) => {
-      const conditions: string[] = ['1=1'];
-      const params: unknown[] = [];
-      let paramIndex = 1;
+      const { cursor, limit, status } = input;
+      const conditions: string[] = [];
+      const params: unknown[] = [limit + 1]; // $1 = fetch limit+1 to detect next page
 
-      if (input.status) {
-        conditions.push(`d.status = $${paramIndex}`);
-        params.push(input.status);
-        paramIndex++;
+      if (cursor) {
+        conditions.push(`d.id > $${params.push(cursor)}`);
+      }
+      if (status) {
+        conditions.push(`d.status = $${params.push(status)}`);
       }
 
-      params.push(input.limit, input.offset);
+      const whereClause =
+        conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
       const result = await db.query(
         `SELECT d.id, d.task_id, d.status, d.reason, d.created_at,
                 t.title as task_title
          FROM disputes d
          JOIN tasks t ON t.id = d.task_id
-         WHERE ${conditions.join(' AND ')}
-         ORDER BY d.created_at DESC
-         LIMIT $${paramIndex++} OFFSET $${paramIndex}`,
+         ${whereClause}
+         ORDER BY d.id ASC
+         LIMIT $1`,
         params
       );
 
-      const countResult = await db.query<{ count: string }>(
-        `SELECT COUNT(*)::text as count FROM disputes d WHERE ${conditions.join(' AND ')}`,
-        params.slice(0, -2)
-      );
+      const items = result.rows.slice(0, limit);
+      const nextCursor =
+        result.rows.length > limit ? (items[items.length - 1]?.id ?? null) : null;
 
-      return {
-        disputes: result.rows,
-        total: parseInt(countResult.rows[0]?.count || '0', 10),
-      };
+      return { items, nextCursor };
     }),
 
   // --------------------------------------------------------------------------

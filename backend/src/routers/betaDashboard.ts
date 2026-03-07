@@ -332,15 +332,31 @@ export const betaDashboardRouter = router({
   // ==========================================================================
 
   /**
-   * List all beta users with their stats.
+   * List beta users with cursor-based pagination and optional sort.
+   *
+   * Returns { items, nextCursor } where nextCursor is the id of the last
+   * item on the current page, or null when there are no more pages.
+   * Pass nextCursor as `cursor` on the next call to advance the page.
    */
   listUsers: adminProcedure
     .input(z.object({
-      limit: z.number().int().min(1).max(100).default(100),
+      cursor: z.string().uuid().optional(),
+      limit: z.number().int().min(1).max(100).default(20),
       sortBy: z.enum(['created_at', 'xp_total', 'tasks_posted', 'tasks_completed']).default('created_at'),
     }).optional())
     .query(async ({ input }) => {
-      const limit = input?.limit || 100;
+      const cursor = input?.cursor;
+      const limit = input?.limit ?? 20;
+      const conditions: string[] = [];
+      const params: unknown[] = [limit + 1]; // $1 = fetch limit+1 to detect next page
+
+      if (cursor) {
+        conditions.push(`u.id > $${params.push(cursor)}`);
+      }
+
+      const whereClause =
+        conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
       const result = await db.query<{
         id: string;
         email: string;
@@ -369,12 +385,17 @@ export const betaDashboardRouter = router({
            COALESCE((SELECT SUM(amount_cents) FROM revenue_ledger WHERE user_id = u.id AND event_type = 'platform_fee'), 0) as total_earned_cents,
            COALESCE((SELECT SUM(amount) FROM escrows e JOIN tasks t ON t.id = e.task_id WHERE t.poster_id = u.id AND e.state != 'REFUNDED'), 0) as total_spent_cents
          FROM users u
-         ORDER BY u.created_at DESC
+         ${whereClause}
+         ORDER BY u.id ASC
          LIMIT $1`,
-        [limit]
+        params
       );
 
-      return result.rows.map(r => ({
+      const rows = result.rows.slice(0, limit);
+      const nextCursor =
+        result.rows.length > limit ? (rows[rows.length - 1]?.id ?? null) : null;
+
+      const items = rows.map(r => ({
         id: r.id,
         email: r.email,
         fullName: r.full_name,
@@ -388,6 +409,8 @@ export const betaDashboardRouter = router({
         totalEarnedCents: parseInt(r.total_earned_cents, 10),
         totalSpentCents: parseInt(r.total_spent_cents, 10),
       }));
+
+      return { items, nextCursor };
     }),
 
   // ==========================================================================

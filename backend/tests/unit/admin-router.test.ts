@@ -344,3 +344,387 @@ describe('admin.listUsers — cursor-based pagination', () => {
     });
   });
 });
+
+// =============================================================================
+// Task row type and helpers
+// =============================================================================
+
+type TaskRow = {
+  id: string;
+  title: string;
+  state: string;
+  price: number;
+  poster_id: string;
+  worker_id: string | null;
+  created_at: Date;
+  poster_name: string;
+  worker_name: string | null;
+};
+
+function makeTask(overrides: Partial<TaskRow & { id: string }> = {}): TaskRow {
+  const id = overrides.id ?? `task-${Math.random().toString(36).slice(2, 10)}`;
+  return {
+    id,
+    title: 'Test Task',
+    state: 'open',
+    price: 5000,
+    poster_id: 'poster-id',
+    worker_id: null,
+    created_at: new Date('2025-01-01T00:00:00Z'),
+    poster_name: 'Test Poster',
+    worker_name: null,
+    ...overrides,
+  };
+}
+
+/**
+ * Set up the mock so that:
+ *   call 1: admin_roles check → returns 1 row (grants access)
+ *   call 2: the actual listTasks query → returns `taskRows`
+ */
+function setupAdminAndTasks(taskRows: TaskRow[]) {
+  mockDb.query.mockResolvedValueOnce({ rows: [{ role: 'admin' }], rowCount: 1 } as any);
+  mockDb.query.mockResolvedValueOnce({ rows: taskRows, rowCount: taskRows.length } as any);
+}
+
+// =============================================================================
+// admin.listTasks — cursor-based pagination
+// =============================================================================
+
+describe('admin.listTasks — cursor-based pagination', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  // -------------------------------------------------------------------------
+  // Return shape
+  // -------------------------------------------------------------------------
+
+  describe('return shape', () => {
+    it('returns { items, nextCursor } instead of { tasks, total }', async () => {
+      setupAdminAndTasks([makeTask({ id: 'aaa' })]);
+
+      const result = await makeAdminCaller().listTasks({ limit: 20 });
+
+      expect(result).toHaveProperty('items');
+      expect(result).toHaveProperty('nextCursor');
+      expect(result).not.toHaveProperty('tasks');
+      expect(result).not.toHaveProperty('total');
+    });
+
+    it('items is an array of task objects', async () => {
+      const tasks = [makeTask({ id: 'aaa', title: 'Fix the leak' })];
+      setupAdminAndTasks(tasks);
+
+      const result = await makeAdminCaller().listTasks({ limit: 20 });
+
+      expect(Array.isArray(result.items)).toBe(true);
+      expect(result.items).toHaveLength(1);
+      expect(result.items[0].title).toBe('Fix the leak');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // nextCursor behaviour
+  // -------------------------------------------------------------------------
+
+  describe('nextCursor', () => {
+    it('is null when results < limit (last page)', async () => {
+      const tasks = [makeTask(), makeTask(), makeTask()];
+      setupAdminAndTasks(tasks);
+
+      const result = await makeAdminCaller().listTasks({ limit: 100 });
+
+      expect(result.nextCursor).toBeNull();
+      expect(result.items).toHaveLength(3);
+    });
+
+    it('is null when results exactly equal limit (no sentinel)', async () => {
+      const tasks = [makeTask({ id: 'aaa' }), makeTask({ id: 'bbb' })];
+      setupAdminAndTasks(tasks);
+
+      const result = await makeAdminCaller().listTasks({ limit: 2 });
+
+      expect(result.nextCursor).toBeNull();
+      expect(result.items).toHaveLength(2);
+    });
+
+    it('is the id of the last visible item when there is a next page', async () => {
+      const tasks = [
+        makeTask({ id: 'id-aaa' }),
+        makeTask({ id: 'id-bbb' }),
+        makeTask({ id: 'id-ccc' }), // sentinel
+      ];
+      setupAdminAndTasks(tasks);
+
+      const result = await makeAdminCaller().listTasks({ limit: 2 });
+
+      expect(result.nextCursor).toBe('id-bbb');
+      expect(result.items).toHaveLength(2);
+      expect(result.items.map((t: TaskRow) => t.id)).toEqual(['id-aaa', 'id-bbb']);
+    });
+
+    it('nextCursor is null for empty result set', async () => {
+      setupAdminAndTasks([]);
+
+      const result = await makeAdminCaller().listTasks({ limit: 20 });
+
+      expect(result.items).toHaveLength(0);
+      expect(result.nextCursor).toBeNull();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Cursor forwarding
+  // -------------------------------------------------------------------------
+
+  describe('cursor forwarding', () => {
+    it('passes cursor to db.query as a SQL parameter', async () => {
+      mockDb.query.mockResolvedValueOnce({ rows: [{ role: 'admin' }], rowCount: 1 } as any);
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+
+      await makeAdminCaller().listTasks({
+        cursor: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+        limit: 5,
+      });
+
+      const calls = (mockDb.query as any).mock.calls;
+      const [sql, params] = calls[1];
+
+      expect(sql).toContain('t.id >');
+      expect(params).toContain('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa');
+    });
+
+    it('does not add t.id > clause when cursor is absent', async () => {
+      mockDb.query.mockResolvedValueOnce({ rows: [{ role: 'admin' }], rowCount: 1 } as any);
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+
+      await makeAdminCaller().listTasks({ limit: 10 });
+
+      const [sql] = (mockDb.query as any).mock.calls[1];
+      expect(sql).not.toContain('t.id >');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Limit parameter plumbing
+  // -------------------------------------------------------------------------
+
+  describe('limit parameter', () => {
+    it('queries DB for limit+1 rows to detect next page', async () => {
+      mockDb.query.mockResolvedValueOnce({ rows: [{ role: 'admin' }], rowCount: 1 } as any);
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+
+      await makeAdminCaller().listTasks({ limit: 20 });
+
+      const [, params] = (mockDb.query as any).mock.calls[1];
+      expect(params[0]).toBe(21);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Optional filters
+  // -------------------------------------------------------------------------
+
+  describe('optional filters', () => {
+    it('passes state filter as a SQL parameter', async () => {
+      mockDb.query.mockResolvedValueOnce({ rows: [{ role: 'admin' }], rowCount: 1 } as any);
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+
+      await makeAdminCaller().listTasks({ limit: 10, state: 'open' });
+
+      const [sql, params] = (mockDb.query as any).mock.calls[1];
+      expect(sql).toContain('t.state =');
+      expect(params).toContain('open');
+    });
+  });
+});
+
+// =============================================================================
+// Dispute row type and helpers
+// =============================================================================
+
+type DisputeRow = {
+  id: string;
+  task_id: string;
+  status: string;
+  reason: string;
+  created_at: Date;
+  task_title: string;
+};
+
+function makeDispute(overrides: Partial<DisputeRow & { id: string }> = {}): DisputeRow {
+  const id = overrides.id ?? `dispute-${Math.random().toString(36).slice(2, 10)}`;
+  return {
+    id,
+    task_id: 'task-id',
+    status: 'open',
+    reason: 'Test dispute reason',
+    created_at: new Date('2025-01-01T00:00:00Z'),
+    task_title: 'Test Task',
+    ...overrides,
+  };
+}
+
+/**
+ * Set up the mock so that:
+ *   call 1: admin_roles check → returns 1 row (grants access)
+ *   call 2: the actual listDisputes query → returns `disputeRows`
+ */
+function setupAdminAndDisputes(disputeRows: DisputeRow[]) {
+  mockDb.query.mockResolvedValueOnce({ rows: [{ role: 'admin' }], rowCount: 1 } as any);
+  mockDb.query.mockResolvedValueOnce({ rows: disputeRows, rowCount: disputeRows.length } as any);
+}
+
+// =============================================================================
+// admin.listDisputes — cursor-based pagination
+// =============================================================================
+
+describe('admin.listDisputes — cursor-based pagination', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  // -------------------------------------------------------------------------
+  // Return shape
+  // -------------------------------------------------------------------------
+
+  describe('return shape', () => {
+    it('returns { items, nextCursor } instead of { disputes, total }', async () => {
+      setupAdminAndDisputes([makeDispute({ id: 'aaa' })]);
+
+      const result = await makeAdminCaller().listDisputes({ limit: 20 });
+
+      expect(result).toHaveProperty('items');
+      expect(result).toHaveProperty('nextCursor');
+      expect(result).not.toHaveProperty('disputes');
+      expect(result).not.toHaveProperty('total');
+    });
+
+    it('items is an array of dispute objects', async () => {
+      const disputes = [makeDispute({ id: 'aaa', reason: 'Work not done' })];
+      setupAdminAndDisputes(disputes);
+
+      const result = await makeAdminCaller().listDisputes({ limit: 20 });
+
+      expect(Array.isArray(result.items)).toBe(true);
+      expect(result.items).toHaveLength(1);
+      expect(result.items[0].reason).toBe('Work not done');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // nextCursor behaviour
+  // -------------------------------------------------------------------------
+
+  describe('nextCursor', () => {
+    it('is null when results < limit (last page)', async () => {
+      const disputes = [makeDispute(), makeDispute()];
+      setupAdminAndDisputes(disputes);
+
+      const result = await makeAdminCaller().listDisputes({ limit: 100 });
+
+      expect(result.nextCursor).toBeNull();
+      expect(result.items).toHaveLength(2);
+    });
+
+    it('is null when results exactly equal limit (no sentinel)', async () => {
+      const disputes = [makeDispute({ id: 'aaa' }), makeDispute({ id: 'bbb' })];
+      setupAdminAndDisputes(disputes);
+
+      const result = await makeAdminCaller().listDisputes({ limit: 2 });
+
+      expect(result.nextCursor).toBeNull();
+      expect(result.items).toHaveLength(2);
+    });
+
+    it('is the id of the last visible item when there is a next page', async () => {
+      const disputes = [
+        makeDispute({ id: 'id-aaa' }),
+        makeDispute({ id: 'id-bbb' }),
+        makeDispute({ id: 'id-ccc' }), // sentinel
+      ];
+      setupAdminAndDisputes(disputes);
+
+      const result = await makeAdminCaller().listDisputes({ limit: 2 });
+
+      expect(result.nextCursor).toBe('id-bbb');
+      expect(result.items).toHaveLength(2);
+      expect(result.items.map((d: DisputeRow) => d.id)).toEqual(['id-aaa', 'id-bbb']);
+    });
+
+    it('nextCursor is null for empty result set', async () => {
+      setupAdminAndDisputes([]);
+
+      const result = await makeAdminCaller().listDisputes({ limit: 20 });
+
+      expect(result.items).toHaveLength(0);
+      expect(result.nextCursor).toBeNull();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Cursor forwarding
+  // -------------------------------------------------------------------------
+
+  describe('cursor forwarding', () => {
+    it('passes cursor to db.query as a SQL parameter', async () => {
+      mockDb.query.mockResolvedValueOnce({ rows: [{ role: 'admin' }], rowCount: 1 } as any);
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+
+      await makeAdminCaller().listDisputes({
+        cursor: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+        limit: 5,
+      });
+
+      const calls = (mockDb.query as any).mock.calls;
+      const [sql, params] = calls[1];
+
+      expect(sql).toContain('d.id >');
+      expect(params).toContain('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb');
+    });
+
+    it('does not add d.id > clause when cursor is absent', async () => {
+      mockDb.query.mockResolvedValueOnce({ rows: [{ role: 'admin' }], rowCount: 1 } as any);
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+
+      await makeAdminCaller().listDisputes({ limit: 10 });
+
+      const [sql] = (mockDb.query as any).mock.calls[1];
+      expect(sql).not.toContain('d.id >');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Limit parameter plumbing
+  // -------------------------------------------------------------------------
+
+  describe('limit parameter', () => {
+    it('queries DB for limit+1 rows to detect next page', async () => {
+      mockDb.query.mockResolvedValueOnce({ rows: [{ role: 'admin' }], rowCount: 1 } as any);
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+
+      await makeAdminCaller().listDisputes({ limit: 20 });
+
+      const [, params] = (mockDb.query as any).mock.calls[1];
+      expect(params[0]).toBe(21);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Optional filters
+  // -------------------------------------------------------------------------
+
+  describe('optional filters', () => {
+    it('passes status filter as a SQL parameter', async () => {
+      mockDb.query.mockResolvedValueOnce({ rows: [{ role: 'admin' }], rowCount: 1 } as any);
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+
+      await makeAdminCaller().listDisputes({ limit: 10, status: 'open' });
+
+      const [sql, params] = (mockDb.query as any).mock.calls[1];
+      expect(sql).toContain('d.status =');
+      expect(params).toContain('open');
+    });
+  });
+});
