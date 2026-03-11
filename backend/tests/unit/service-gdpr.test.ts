@@ -1,0 +1,700 @@
+/**
+ * GDPRService Extended Unit Tests
+ *
+ * Covers: generateExport, executeDeletion, hasBiometricConsent,
+ * collectUserDataForExport, and DB error paths.
+ *
+ * The existing gdpr-service.test.ts already covers: createRequest,
+ * getRequestById, getUserRequests, cancelRequest, updateConsent,
+ * getConsentStatus. This file covers the remaining uncovered methods.
+ */
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+// ---------------------------------------------------------------------------
+// Mocks
+// ---------------------------------------------------------------------------
+
+vi.mock('../../src/db', () => ({
+  db: {
+    query: vi.fn(),
+    transaction: vi.fn(),
+    serializableTransaction: vi.fn(),
+  },
+  isInvariantViolation: vi.fn(() => false),
+  getErrorMessage: vi.fn(() => ''),
+}));
+
+vi.mock('../../src/logger', () => ({
+  logger: {
+    child: () => ({ error: vi.fn(), warn: vi.fn(), info: vi.fn() }),
+  },
+}));
+
+vi.mock('../../src/services/NotificationService', () => ({
+  NotificationService: {
+    createNotification: vi.fn().mockResolvedValue({ success: true }),
+  },
+}));
+
+vi.mock('crypto', async (importOriginal) => {
+  const actual = await importOriginal() as Record<string, unknown>;
+  return {
+    ...actual,
+    randomUUID: vi.fn(() => 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'),
+  };
+});
+
+vi.mock('../../src/jobs/queues', () => ({
+  generateIdempotencyKey: vi.fn(() => 'idempotency-key-test-123'),
+}));
+
+// ---------------------------------------------------------------------------
+// Imports
+// ---------------------------------------------------------------------------
+
+import { db } from '../../src/db';
+import { GDPRService, collectUserDataForExport } from '../../src/services/GDPRService';
+import { NotificationService } from '../../src/services/NotificationService';
+
+const mockDb = vi.mocked(db);
+const mockNotification = vi.mocked(NotificationService);
+
+beforeEach(() => {
+  vi.clearAllMocks();
+});
+
+// ===========================================================================
+// generateExport
+// ===========================================================================
+
+describe('GDPRService.generateExport', () => {
+  it('returns NOT_FOUND when request does not exist', async () => {
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+
+    const result = await GDPRService.generateExport('req-missing');
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.code).toBe('NOT_FOUND');
+      expect(result.error.message).toContain('req-missing');
+    }
+  });
+
+  it('returns INVALID_STATE when request is already completed', async () => {
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{
+        id: 'req-1', user_id: 'user-1', status: 'completed',
+        request_details: { format: 'json' },
+      }],
+      rowCount: 1,
+    } as never);
+
+    const result = await GDPRService.generateExport('req-1');
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.code).toBe('INVALID_STATE');
+      expect(result.error.message).toContain('completed');
+    }
+  });
+
+  it('returns INVALID_STATE when request is cancelled', async () => {
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{
+        id: 'req-1', user_id: 'user-1', status: 'cancelled',
+        request_details: { format: 'json' },
+      }],
+      rowCount: 1,
+    } as never);
+
+    const result = await GDPRService.generateExport('req-1');
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.code).toBe('INVALID_STATE');
+    }
+  });
+
+  it('returns INVALID_INPUT for unknown export format', async () => {
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{
+        id: 'req-1', user_id: 'user-1', status: 'pending',
+        request_details: { format: 'xlsx' }, // invalid
+      }],
+      rowCount: 1,
+    } as never);
+
+    const result = await GDPRService.generateExport('req-1');
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.code).toBe('INVALID_INPUT');
+      expect(result.error.message).toContain('xlsx');
+    }
+  });
+
+  it('creates export and outbox event within transaction (happy path - json)', async () => {
+    // Fetch request
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{
+        id: 'req-1', user_id: 'user-1', status: 'pending',
+        request_details: { format: 'json' },
+      }],
+      rowCount: 1,
+    } as never);
+
+    // db.transaction mock: execute the callback and return the result
+    const transactionQuery = vi.fn();
+    // UPDATE gdpr_data_requests → processing
+    transactionQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+    // INSERT into exports
+    transactionQuery.mockResolvedValueOnce({ rows: [{ id: 'export-1' }], rowCount: 1 } as never);
+    // SELECT idempotency duplicate check
+    transactionQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+    // INSERT outbox_event
+    transactionQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+    mockDb.transaction.mockImplementation(async (fn) => fn(transactionQuery) as Promise<unknown>);
+
+    const result = await GDPRService.generateExport('req-1');
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.exportId).toBe('export-1');
+    }
+  });
+
+  it('creates export with csv format', async () => {
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{
+        id: 'req-2', user_id: 'user-2', status: 'pending',
+        request_details: { format: 'csv' },
+      }],
+      rowCount: 1,
+    } as never);
+
+    const transactionQuery = vi.fn();
+    transactionQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+    transactionQuery.mockResolvedValueOnce({ rows: [{ id: 'export-2' }], rowCount: 1 } as never);
+    transactionQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+    transactionQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+    mockDb.transaction.mockImplementation(async (fn) => fn(transactionQuery) as Promise<unknown>);
+
+    const result = await GDPRService.generateExport('req-2');
+    expect(result.success).toBe(true);
+  });
+
+  it('handles idempotent outbox event (already exists)', async () => {
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{
+        id: 'req-3', user_id: 'user-3', status: 'processing',
+        request_details: { format: 'pdf' },
+      }],
+      rowCount: 1,
+    } as never);
+
+    const transactionQuery = vi.fn();
+    transactionQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+    transactionQuery.mockResolvedValueOnce({ rows: [{ id: 'export-3' }], rowCount: 1 } as never);
+    // Duplicate exists
+    transactionQuery.mockResolvedValueOnce({ rows: [{ id: 'existing-outbox' }], rowCount: 1 } as never);
+    // No INSERT (skipped due to idempotency)
+
+    mockDb.transaction.mockImplementation(async (fn) => fn(transactionQuery) as Promise<unknown>);
+
+    const result = await GDPRService.generateExport('req-3');
+    expect(result.success).toBe(true);
+  });
+
+  it('uses default json format when request_details has no format', async () => {
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{
+        id: 'req-4', user_id: 'user-4', status: 'pending',
+        request_details: {},
+      }],
+      rowCount: 1,
+    } as never);
+
+    const transactionQuery = vi.fn();
+    transactionQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+    transactionQuery.mockResolvedValueOnce({ rows: [{ id: 'export-4' }], rowCount: 1 } as never);
+    transactionQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+    transactionQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+    mockDb.transaction.mockImplementation(async (fn) => fn(transactionQuery) as Promise<unknown>);
+
+    const result = await GDPRService.generateExport('req-4');
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.exportId).toBe('export-4');
+    }
+  });
+
+  it('handles transaction failure gracefully and marks request rejected', async () => {
+    mockDb.query
+      .mockResolvedValueOnce({
+        rows: [{
+          id: 'req-5', user_id: 'user-5', status: 'pending',
+          request_details: { format: 'json' },
+        }],
+        rowCount: 1,
+      } as never)
+      // UPDATE to rejected
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+    mockDb.transaction.mockRejectedValue(new Error('Transaction failed'));
+
+    const result = await GDPRService.generateExport('req-5');
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.code).toBe('DB_ERROR');
+    }
+
+    // Should have tried to update status to rejected
+    const updateCall = mockDb.query.mock.calls.find(
+      ([sql]) => typeof sql === 'string' && sql.includes("'rejected'"),
+    );
+    expect(updateCall).toBeDefined();
+  });
+});
+
+// ===========================================================================
+// executeDeletion
+// ===========================================================================
+
+describe('GDPRService.executeDeletion', () => {
+  it('returns NOT_FOUND when request does not exist', async () => {
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+
+    const result = await GDPRService.executeDeletion('req-missing');
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.code).toBe('NOT_FOUND');
+    }
+  });
+
+  it('returns INVALID_STATE when request is cancelled', async () => {
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{
+        id: 'req-1', user_id: 'user-1', status: 'cancelled',
+        request_type: 'deletion', deadline: new Date(Date.now() - 86400000),
+      }],
+      rowCount: 1,
+    } as never);
+
+    const result = await GDPRService.executeDeletion('req-1');
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.code).toBe('INVALID_STATE');
+      expect(result.error.message).toContain('cancelled');
+    }
+  });
+
+  it('returns INVALID_STATE when grace period has not expired', async () => {
+    const futureDeadline = new Date(Date.now() + 5 * 86400000); // 5 days from now
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{
+        id: 'req-1', user_id: 'user-1', status: 'pending',
+        request_type: 'deletion', deadline: futureDeadline,
+      }],
+      rowCount: 1,
+    } as never);
+
+    const result = await GDPRService.executeDeletion('req-1');
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.code).toBe('INVALID_STATE');
+      expect(result.error.message).toContain('grace period');
+    }
+  });
+
+  it('executes deletion after grace period and sends notification', async () => {
+    const pastDeadline = new Date(Date.now() - 86400000); // 1 day ago
+
+    // 1. Fetch request
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{
+        id: 'req-1', user_id: 'user-1', status: 'pending',
+        request_type: 'deletion', deadline: pastDeadline,
+      }],
+      rowCount: 1,
+    } as never);
+
+    // 2. UPDATE to processing
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+    // 3. serializableTransaction (deleteAndAnonymizeUserData)
+    const serializableQuery = vi.fn().mockResolvedValue({ rows: [], rowCount: 0 } as never);
+    mockDb.serializableTransaction.mockImplementation(async (fn) => fn(serializableQuery) as Promise<unknown>);
+
+    // 4. UPDATE to completed
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ id: 'req-1', status: 'completed' }],
+      rowCount: 1,
+    } as never);
+
+    mockNotification.createNotification.mockResolvedValue({ success: true } as never);
+
+    const result = await GDPRService.executeDeletion('req-1');
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.deletedAt).toBeInstanceOf(Date);
+    }
+
+    // Notification should have been sent
+    expect(mockNotification.createNotification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: 'user-1',
+        title: 'Account Deletion Completed',
+      }),
+    );
+  });
+
+  it('marks request rejected when deleteAndAnonymizeUserData fails', async () => {
+    const pastDeadline = new Date(Date.now() - 86400000);
+
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{
+        id: 'req-1', user_id: 'user-1', status: 'pending',
+        request_type: 'deletion', deadline: pastDeadline,
+      }],
+      rowCount: 1,
+    } as never);
+
+    // UPDATE to processing
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+    // serializableTransaction throws
+    mockDb.serializableTransaction.mockRejectedValue(new Error('DB transaction failed'));
+
+    // UPDATE to rejected (error path)
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+    const result = await GDPRService.executeDeletion('req-1');
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.code).toBe('DB_ERROR');
+    }
+  });
+
+  it('handles notification failure gracefully (does not fail the deletion)', async () => {
+    const pastDeadline = new Date(Date.now() - 86400000);
+
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{
+        id: 'req-1', user_id: 'user-1', status: 'pending',
+        request_type: 'deletion', deadline: pastDeadline,
+      }],
+      rowCount: 1,
+    } as never);
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // processing
+    mockDb.serializableTransaction.mockImplementation(async (fn) => {
+      const q = vi.fn().mockResolvedValue({ rows: [], rowCount: 0 } as never);
+      return fn(q) as Promise<unknown>;
+    });
+    mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'req-1', status: 'completed' }] } as never); // completed
+
+    mockNotification.createNotification.mockRejectedValue(new Error('Push service down'));
+
+    const result = await GDPRService.executeDeletion('req-1');
+
+    // Notification failure should NOT fail the deletion
+    expect(result.success).toBe(true);
+  });
+});
+
+// ===========================================================================
+// hasBiometricConsent
+// ===========================================================================
+
+describe('GDPRService.hasBiometricConsent', () => {
+  it('returns true when user has active biometric consent', async () => {
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ granted: true }],
+      rowCount: 1,
+    } as never);
+
+    const result = await GDPRService.hasBiometricConsent('user-1');
+    expect(result).toBe(true);
+  });
+
+  it('returns false when user has no biometric consent', async () => {
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+
+    const result = await GDPRService.hasBiometricConsent('user-1');
+    expect(result).toBe(false);
+  });
+
+  it('returns false (fail closed) on database error', async () => {
+    mockDb.query.mockRejectedValueOnce(new Error('DB connection lost'));
+
+    const result = await GDPRService.hasBiometricConsent('user-1');
+    expect(result).toBe(false);
+  });
+
+  it('queries with correct consent_type', async () => {
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+
+    await GDPRService.hasBiometricConsent('user-42');
+
+    const [sql, params] = mockDb.query.mock.calls[0];
+    expect(sql).toContain("consent_type = 'biometric_data'");
+    expect(params).toContain('user-42');
+  });
+});
+
+// ===========================================================================
+// collectUserDataForExport
+// ===========================================================================
+
+describe('collectUserDataForExport', () => {
+  it('collects all user data categories', async () => {
+    // Return empty rows for all 12 queries
+    mockDb.query.mockResolvedValue({ rows: [], rowCount: 0 } as never);
+
+    const data = await collectUserDataForExport('user-1');
+
+    expect(data).toHaveProperty('account');
+    expect(data).toHaveProperty('tasks_posted');
+    expect(data).toHaveProperty('tasks_worked');
+    expect(data).toHaveProperty('transactions');
+    expect(data).toHaveProperty('messages_last_90_days');
+    expect(data).toHaveProperty('ratings_given');
+    expect(data).toHaveProperty('ratings_received');
+    expect(data).toHaveProperty('trust_tier_history');
+    expect(data).toHaveProperty('xp_history');
+    expect(data).toHaveProperty('analytics_events_last_90_days');
+    expect(data).toHaveProperty('notification_preferences');
+    expect(data).toHaveProperty('consent_history');
+    expect(data).toHaveProperty('saved_searches');
+    expect(data).toHaveProperty('export_date');
+    expect(data).toHaveProperty('user_id');
+  });
+
+  it('includes export_date as ISO string', async () => {
+    mockDb.query.mockResolvedValue({ rows: [], rowCount: 0 } as never);
+
+    const data = await collectUserDataForExport('user-1');
+
+    expect(typeof data.export_date).toBe('string');
+    expect(() => new Date(data.export_date as string)).not.toThrow();
+  });
+
+  it('includes user account data when found', async () => {
+    const userRow = {
+      id: 'user-1', email: 'user@example.com', name: 'John Doe',
+      phone: '+15551234567', created_at: new Date(), account_status: 'active',
+      current_level: 5, xp_total: 1500, trust_tier: 2, current_streak: 7,
+    };
+    // First query returns user row; rest return empty
+    mockDb.query
+      .mockResolvedValueOnce({ rows: [userRow], rowCount: 1 } as never)
+      .mockResolvedValue({ rows: [], rowCount: 0 } as never);
+
+    const data = await collectUserDataForExport('user-1');
+
+    expect(data.account).toEqual(userRow);
+  });
+
+  it('handles tasks_posted and tasks_worked arrays', async () => {
+    const postedTask = { id: 'task-1', title: 'Fix my sink' };
+    const workedTask = { id: 'task-2', title: 'Walk my dog' };
+
+    mockDb.query
+      .mockResolvedValueOnce({ rows: [{}], rowCount: 1 } as never) // user
+      .mockResolvedValueOnce({ rows: [postedTask], rowCount: 1 } as never) // posted tasks
+      .mockResolvedValueOnce({ rows: [workedTask], rowCount: 1 } as never) // worked tasks
+      .mockResolvedValue({ rows: [], rowCount: 0 } as never); // rest
+
+    const data = await collectUserDataForExport('user-1');
+
+    expect(data.tasks_posted).toHaveLength(1);
+    expect(data.tasks_worked).toHaveLength(1);
+  });
+
+  it('throws on database error', async () => {
+    mockDb.query.mockRejectedValueOnce(new Error('Connection timeout'));
+
+    await expect(collectUserDataForExport('user-1')).rejects.toThrow('Connection timeout');
+  });
+
+  it('notification_preferences is null when not found', async () => {
+    mockDb.query.mockResolvedValue({ rows: [], rowCount: 0 } as never);
+
+    const data = await collectUserDataForExport('user-1');
+
+    expect(data.notification_preferences).toBeNull();
+  });
+
+  it('consent_history is an empty array when no consents', async () => {
+    mockDb.query.mockResolvedValue({ rows: [], rowCount: 0 } as never);
+
+    const data = await collectUserDataForExport('user-1');
+
+    expect(Array.isArray(data.consent_history)).toBe(true);
+    expect(data.consent_history).toHaveLength(0);
+  });
+});
+
+// ===========================================================================
+// createRequest — DB error path
+// ===========================================================================
+
+describe('GDPRService.createRequest — error paths', () => {
+  it('returns DB_ERROR on unexpected database error', async () => {
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+    mockDb.query.mockRejectedValueOnce(new Error('Unique constraint violation'));
+
+    const result = await GDPRService.createRequest({
+      userId: 'user-1',
+      requestType: 'export',
+      exportFormat: 'json',
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.code).toBe('DB_ERROR');
+    }
+  });
+
+  it('handles invariant violation errors', async () => {
+    const { isInvariantViolation } = await import('../../src/db');
+    vi.mocked(isInvariantViolation).mockReturnValue(true);
+
+    const invariantError = Object.assign(new Error('HX violation'), { code: 'HX001' });
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+    mockDb.query.mockRejectedValueOnce(invariantError);
+
+    const result = await GDPRService.createRequest({
+      userId: 'user-1',
+      requestType: 'export',
+      exportFormat: 'json',
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.code).toBe('HX001');
+    }
+
+    vi.mocked(isInvariantViolation).mockReturnValue(false);
+  });
+
+  it('includes scope in requestDetails when provided', async () => {
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ id: 'req-1', request_type: 'export', status: 'pending' }],
+      rowCount: 1,
+    } as never);
+
+    const result = await GDPRService.createRequest({
+      userId: 'user-1',
+      requestType: 'export',
+      exportFormat: 'json',
+      scope: ['tasks', 'messages'],
+    });
+
+    expect(result.success).toBe(true);
+
+    // Verify request_details JSONB contains format and scope
+    const insertArgs = mockDb.query.mock.calls[1][1] as unknown[];
+    const requestDetails = JSON.parse(insertArgs[2] as string);
+    expect(requestDetails.format).toBe('json');
+    expect(requestDetails.scope).toEqual(['tasks', 'messages']);
+  });
+});
+
+// ===========================================================================
+// getUserRequests — DB error path
+// ===========================================================================
+
+describe('GDPRService.getUserRequests — error path', () => {
+  it('returns DB_ERROR on unexpected error', async () => {
+    mockDb.query.mockRejectedValueOnce(new Error('Connection lost'));
+
+    const result = await GDPRService.getUserRequests('user-1');
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.code).toBe('DB_ERROR');
+    }
+  });
+});
+
+// ===========================================================================
+// updateConsent — error path
+// ===========================================================================
+
+describe('GDPRService.updateConsent — error path', () => {
+  it('returns DB_ERROR on unexpected error', async () => {
+    mockDb.query.mockRejectedValueOnce(new Error('Constraint violation'));
+
+    const result = await GDPRService.updateConsent({
+      userId: 'user-1',
+      consentType: 'marketing',
+      purpose: 'Marketing emails',
+      granted: true,
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.code).toBe('DB_ERROR');
+    }
+  });
+
+  it('sends correct params for consent with ipAddress and userAgent', async () => {
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{
+        id: 'c-1', user_id: 'user-1', consent_type: 'analytics',
+        granted: true, granted_at: new Date(),
+      }],
+      rowCount: 1,
+    } as never);
+
+    await GDPRService.updateConsent({
+      userId: 'user-1',
+      consentType: 'analytics',
+      purpose: 'Analytics tracking',
+      granted: true,
+      ipAddress: '1.2.3.4',
+      userAgent: 'HustleXP-iOS/2.0',
+    });
+
+    const params = mockDb.query.mock.calls[0][1] as unknown[];
+    expect(params).toContain('1.2.3.4');
+    expect(params).toContain('HustleXP-iOS/2.0');
+  });
+});
+
+// ===========================================================================
+// getConsentStatus — error path
+// ===========================================================================
+
+describe('GDPRService.getConsentStatus — error path', () => {
+  it('returns DB_ERROR on unexpected error', async () => {
+    mockDb.query.mockRejectedValueOnce(new Error('DB timeout'));
+
+    const result = await GDPRService.getConsentStatus('user-1');
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.code).toBe('DB_ERROR');
+    }
+  });
+
+  it('returns empty array when no consents exist', async () => {
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+
+    const result = await GDPRService.getConsentStatus('user-1');
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data).toHaveLength(0);
+    }
+  });
+});

@@ -15,6 +15,7 @@
 import { Redis } from 'ioredis';
 import { config } from '../config';
 import { logger } from '../logger';
+import { getConnections } from './connection-registry';
 
 const log = logger.child({ module: 'redis-pubsub' });
 
@@ -189,8 +190,6 @@ export async function publishToRoom(roomKey: string, message: Omit<SSEMessage, '
  * Deliver message to local subscribers only
  */
 function deliverToLocalSubscribers(roomKey: string, message: SSEMessage): void {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports -- lazy require to break circular dependency with connection-registry
-  const { getConnections } = require('./connection-registry');
   
   const subscribers = roomSubscriptions.get(roomKey);
   if (!subscribers) return;
