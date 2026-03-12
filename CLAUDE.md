@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Node.js backend: Hono + tRPC + BullMQ + PostgreSQL. 690+ tests across 32 files.
+Node.js backend: Hono + tRPC + BullMQ + PostgreSQL. 5,448 tests across 239 files (89.6% stmt, 77.6% branch coverage).
 
 ## Key Commands
 

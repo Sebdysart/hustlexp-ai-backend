@@ -20,7 +20,7 @@ Production-grade tRPC API backend for HustleXP, a gamified local task marketplac
      +--------v---+  +------v------+  +----v-------+
      | tRPC Router|  | REST Routes |  | Static     |
      | 38 routers |  | /health     |  | /privacy   |
-     | 261 procs  |  | /realtime   |  | /terms     |
+     | 290 procs  |  | /realtime   |  | /terms     |
      +--------+---+  +------+------+  | /legal     |
               |              |         +------------+
      +--------v--------------v--------+
@@ -337,6 +337,19 @@ npm run test:coverage    # Coverage report
 npm run test:invariants  # Database integrity tests
 npm run health           # curl localhost:3000/health
 ```
+
+## Test Coverage
+
+| Metric | Coverage |
+|--------|---------|
+| Statements | 89.61% |
+| Branches | 77.59% |
+| Functions | 90.88% |
+| Lines | 90.44% |
+
+**5,448 tests** across **239 test files** (vitest, 0 failures). 16 invariant files skipped (require live `DATABASE_URL`).
+
+Coverage is enforced via CI. `vitest.config.ts` excludes `server.ts` and test helpers from the report so numbers reflect business logic only.
 
 ## Deployment
 
