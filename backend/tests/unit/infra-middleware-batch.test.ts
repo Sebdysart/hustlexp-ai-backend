@@ -280,7 +280,7 @@ describe('rateLimitMiddleware', () => {
     await middleware(c as never, mockNext);
 
     expect(mockNext).toHaveBeenCalledOnce();
-    expect(c.header).toHaveBeenCalledWith('X-RateLimit-Limit', '100');
+    expect(c.header).toHaveBeenCalledWith('X-RateLimit-Limit', '120');
     expect(c.header).toHaveBeenCalledWith('X-RateLimit-Remaining', '59');
   });
 

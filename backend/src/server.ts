@@ -153,14 +153,39 @@ app.use('*', httpMetricsMiddleware());
 
 // Rate limiting per route category.
 // Specific limits for high-risk routers run first — Hono matches first rule.
-// Catch-all covers squad, notification, live, admin, instant, incidents, betaDashboard, etc.
-app.use('/trpc/escrow.release*', rateLimitMiddleware('financial')); // 10/min — escrow release (strictest)
+// Order matters: most restrictive patterns first, catch-all last.
+
+// Tier 1: Auth (20/min) — brute force protection
+app.use('/trpc/user.register*', rateLimitMiddleware('auth'));       // 20/min — registration
+app.use('/trpc/biometric.*', rateLimitMiddleware('auth'));          // 20/min — biometric auth
+app.use('/trpc/admin.*', rateLimitMiddleware('auth'));              // 20/min — privileged admin access
+
+// Tier 2: Financial (10/min) — strictest, money operations
+app.use('/trpc/escrow.release*', rateLimitMiddleware('financial')); // 10/min — escrow release
 app.use('/trpc/stripe.*', rateLimitMiddleware('financial'));        // 10/min — Stripe financial ops
-app.use('/trpc/ai.*', rateLimitMiddleware('ai'));       // 20/min — AI cost protection
-app.use('/trpc/escrow.*', rateLimitMiddleware('escrow')); // 30/min — other escrow ops
-app.use('/trpc/task.*', rateLimitMiddleware('task'));   // 60/min — core task ops
-app.use('/trpc/*', rateLimitMiddleware('general'));     // 100/min — all other tRPC routes
-app.use('/api/*', rateLimitMiddleware('general'));      // 100/min — REST endpoints
+app.use('/trpc/stripeConnect.*', rateLimitMiddleware('financial')); // 10/min — Stripe Connect onboarding
+app.use('/trpc/fraud.*', rateLimitMiddleware('financial'));         // 10/min — fraud reporting
+
+// Tier 3: AI (20/min) — cost protection
+app.use('/trpc/ai.*', rateLimitMiddleware('ai'));                  // 20/min — AI cost protection
+app.use('/trpc/disputeAI.*', rateLimitMiddleware('ai'));           // 20/min — AI dispute resolution
+app.use('/trpc/matchmaker.*', rateLimitMiddleware('ai'));          // 20/min — AI matchmaking
+
+// Tier 4: Domain-specific
+app.use('/trpc/escrow.*', rateLimitMiddleware('escrow'));           // 30/min — other escrow ops
+app.use('/trpc/task.*', rateLimitMiddleware('task'));               // 60/min — core task ops
+
+// Tier 5: Mutation (60/min) — write-heavy routes
+app.use('/trpc/messaging.*', rateLimitMiddleware('mutation'));      // 60/min — message sends
+app.use('/trpc/rating.*', rateLimitMiddleware('mutation'));         // 60/min — review submissions
+app.use('/trpc/moderation.*', rateLimitMiddleware('mutation'));     // 60/min — moderation actions
+app.use('/trpc/upload.*', rateLimitMiddleware('mutation'));         // 60/min — file uploads
+app.use('/trpc/notification.*', rateLimitMiddleware('mutation'));   // 60/min — notification management
+app.use('/trpc/tipping.*', rateLimitMiddleware('mutation'));        // 60/min — tip mutations
+
+// Tier 6: General (120/min) — catch-all for remaining tRPC and REST routes
+app.use('/trpc/*', rateLimitMiddleware('general'));                 // 120/min — all other tRPC routes
+app.use('/api/*', rateLimitMiddleware('general'));                  // 120/min — REST endpoints
 
 // ============================================================================
 // PROMETHEUS METRICS ENDPOINT

@@ -59,11 +59,12 @@ export async function securityHeaders(c: Context, next: Next) {
  */
 const RATE_LIMITS = {
   ai: { limit: 20, windowSeconds: 60 },         // 20 AI requests/min
-  auth: { limit: 10, windowSeconds: 60 },        // 10 auth attempts/min
+  auth: { limit: 20, windowSeconds: 60 },        // 20 auth attempts/min (brute force protection)
   escrow: { limit: 30, windowSeconds: 60 },      // 30 escrow ops/min
   financial: { limit: 10, windowSeconds: 60 },   // 10 financial ops/min (escrow release, stripe)
+  mutation: { limit: 60, windowSeconds: 60 },    // 60 mutation ops/min (write-heavy routes)
   task: { limit: 60, windowSeconds: 60 },         // 60 task ops/min
-  general: { limit: 100, windowSeconds: 60 },     // 100 general requests/min
+  general: { limit: 120, windowSeconds: 60 },     // 120 general requests/min
 } as const;
 
 type RateLimitCategory = keyof typeof RATE_LIMITS;
