@@ -130,43 +130,25 @@ export const TaskService = {
   },
 
   /**
-   * Get tasks by poster — cursor-paginated.
-   * Cursor = ISO timestamp of the last-seen task's created_at.
-   * Returns up to `limit` tasks + a nextCursor to fetch the next page.
+   * Get tasks by poster — offset-paginated.
    */
   getByPoster: async (
     posterId: string,
-    options: { cursor?: string | null; limit?: number } = {}
-  ): Promise<ServiceResult<{ tasks: Task[]; nextCursor: string | undefined }>> => {
-    const { cursor, limit = 20 } = options;
-    // Fetch one extra row to detect if there is a next page
-    const fetchLimit = limit + 1;
+    options: { limit?: number; offset?: number } = {}
+  ): Promise<ServiceResult<Task[]>> => {
+    const { limit = 20, offset = 0 } = options;
 
     try {
-      const result = cursor
-        ? await db.query<Task>(
-            `SELECT * FROM tasks
-             WHERE poster_id = $1
-               AND created_at < $2::timestamptz
-             ORDER BY created_at DESC
-             LIMIT $3`,
-            [posterId, cursor, fetchLimit]
-          )
-        : await db.query<Task>(
-            `SELECT * FROM tasks
-             WHERE poster_id = $1
-             ORDER BY created_at DESC
-             LIMIT $2`,
-            [posterId, fetchLimit]
-          );
+      const result = await db.query<Task>(
+        `SELECT * FROM tasks
+         WHERE poster_id = $1
+         ORDER BY created_at DESC
+         LIMIT $2
+         OFFSET $3`,
+        [posterId, limit, offset]
+      );
 
-      const hasMore = result.rows.length > limit;
-      const tasks = hasMore ? result.rows.slice(0, limit) : result.rows;
-      const nextCursor = hasMore
-        ? (tasks[tasks.length - 1] as Task & { created_at: string | Date }).created_at?.toString()
-        : undefined;
-
-      return { success: true, data: { tasks, nextCursor } };
+      return { success: true, data: result.rows };
     } catch (error) {
       return {
         success: false,
@@ -179,41 +161,25 @@ export const TaskService = {
   },
 
   /**
-   * Get tasks by worker — cursor-paginated.
-   * Cursor = ISO timestamp of the last-seen task's created_at.
+   * Get tasks by worker — offset-paginated.
    */
   getByWorker: async (
     workerId: string,
-    options: { cursor?: string | null; limit?: number } = {}
-  ): Promise<ServiceResult<{ tasks: Task[]; nextCursor: string | undefined }>> => {
-    const { cursor, limit = 20 } = options;
-    const fetchLimit = limit + 1;
+    options: { limit?: number; offset?: number } = {}
+  ): Promise<ServiceResult<Task[]>> => {
+    const { limit = 20, offset = 0 } = options;
 
     try {
-      const result = cursor
-        ? await db.query<Task>(
-            `SELECT * FROM tasks
-             WHERE worker_id = $1
-               AND created_at < $2::timestamptz
-             ORDER BY created_at DESC
-             LIMIT $3`,
-            [workerId, cursor, fetchLimit]
-          )
-        : await db.query<Task>(
-            `SELECT * FROM tasks
-             WHERE worker_id = $1
-             ORDER BY created_at DESC
-             LIMIT $2`,
-            [workerId, fetchLimit]
-          );
+      const result = await db.query<Task>(
+        `SELECT * FROM tasks
+         WHERE worker_id = $1
+         ORDER BY created_at DESC
+         LIMIT $2
+         OFFSET $3`,
+        [workerId, limit, offset]
+      );
 
-      const hasMore = result.rows.length > limit;
-      const tasks = hasMore ? result.rows.slice(0, limit) : result.rows;
-      const nextCursor = hasMore
-        ? (tasks[tasks.length - 1] as Task & { created_at: string | Date }).created_at?.toString()
-        : undefined;
-
-      return { success: true, data: { tasks, nextCursor } };
+      return { success: true, data: result.rows };
     } catch (error) {
       return {
         success: false,

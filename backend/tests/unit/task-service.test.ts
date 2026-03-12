@@ -285,7 +285,7 @@ describe('TaskService.getById', () => {
 });
 
 // ===========================================================================
-// 4. getByPoster
+// 4. getByPoster (offset pagination)
 // ===========================================================================
 describe('TaskService.getByPoster', () => {
   it('returns tasks for a poster', async () => {
@@ -295,9 +295,11 @@ describe('TaskService.getByPoster', () => {
     const result = await TaskService.getByPoster('poster-1');
 
     expect(result.success).toBe(true);
-    // getByPoster now returns { tasks, nextCursor } for cursor pagination
-    expect(result.data?.tasks).toHaveLength(2);
-    expect(result.data?.nextCursor).toBeUndefined(); // 2 rows < default limit of 20
+    expect(result.data).toHaveLength(2);
+    expect(mockQuery).toHaveBeenCalledWith(
+      expect.stringContaining('OFFSET $3'),
+      ['poster-1', 20, 0]
+    );
   });
 
   it('returns empty array when poster has no tasks', async () => {
@@ -306,13 +308,24 @@ describe('TaskService.getByPoster', () => {
     const result = await TaskService.getByPoster('poster-empty');
 
     expect(result.success).toBe(true);
-    expect(result.data?.tasks).toHaveLength(0);
-    expect(result.data?.nextCursor).toBeUndefined();
+    expect(result.data).toHaveLength(0);
+  });
+
+  it('supports custom limit and offset', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+
+    const result = await TaskService.getByPoster('poster-1', { limit: 10, offset: 30 });
+
+    expect(result.success).toBe(true);
+    expect(mockQuery).toHaveBeenCalledWith(
+      expect.stringContaining('OFFSET $3'),
+      ['poster-1', 10, 30]
+    );
   });
 });
 
 // ===========================================================================
-// 5. getByWorker
+// 5. getByWorker (offset pagination)
 // ===========================================================================
 describe('TaskService.getByWorker', () => {
   it('returns tasks for a worker', async () => {
@@ -322,9 +335,11 @@ describe('TaskService.getByWorker', () => {
     const result = await TaskService.getByWorker('worker-1');
 
     expect(result.success).toBe(true);
-    // getByWorker now returns { tasks, nextCursor } for cursor pagination
-    expect(result.data?.tasks).toHaveLength(1);
-    expect(result.data?.nextCursor).toBeUndefined(); // 1 row < default limit of 20
+    expect(result.data).toHaveLength(1);
+    expect(mockQuery).toHaveBeenCalledWith(
+      expect.stringContaining('OFFSET $3'),
+      ['worker-1', 20, 0]
+    );
   });
 });
 

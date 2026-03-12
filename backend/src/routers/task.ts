@@ -61,22 +61,12 @@ export const taskRouter = router({
     }),
   
   /**
-   * List tasks by poster — cursor-paginated.
+   * List tasks by poster — offset-paginated.
    * SECURITY: Uses auth context — users always see their own tasks only.
-   *
-   * ⚠️  BREAKING CHANGE (2026-03-02): Return type changed.
-   *    Before: Task[]
-   *    After:  { tasks: Task[], nextCursor: string | undefined }
-   *
-   * iOS migration (manual Codable):
-   *    1. Add wrapper: struct PaginatedTasks: Codable { let tasks: [Task]; let nextCursor: String? }
-   *    2. Decode as PaginatedTasks instead of [Task]
-   *    3. Drive infinite scroll from nextCursor (nil = last page)
-   *    4. Reset cursor + clear array on pull-to-refresh
    */
   listByPoster: protectedProcedure
     .input(
-      Schemas.cursorPagination.extend({
+      Schemas.pagination.extend({
         posterId: Schemas.uuid.optional(),
       }).optional()
     )
@@ -90,8 +80,8 @@ export const taskRouter = router({
       }
 
       const result = await TaskService.getByPoster(posterId, {
-        cursor: input?.cursor ?? null,
         limit: input?.limit ?? 20,
+        offset: input?.offset ?? 0,
       });
 
       if (!result.success) {
@@ -101,21 +91,16 @@ export const taskRouter = router({
         });
       }
 
-      return result.data; // { tasks, nextCursor }
+      return result.data;
     }),
 
   /**
-   * List tasks by worker — cursor-paginated.
+   * List tasks by worker — offset-paginated.
    * SECURITY: Uses auth context — users always see their own tasks only.
-   *
-   * ⚠️  BREAKING CHANGE (2026-03-02): Return type changed.
-   *    Before: Task[]
-   *    After:  { tasks: Task[], nextCursor: string | undefined }
-   *    iOS: same migration as listByPoster — see above.
    */
   listByWorker: protectedProcedure
     .input(
-      Schemas.cursorPagination.extend({
+      Schemas.pagination.extend({
         workerId: Schemas.uuid.optional(),
       }).optional()
     )
@@ -129,8 +114,8 @@ export const taskRouter = router({
       }
 
       const result = await TaskService.getByWorker(workerId, {
-        cursor: input?.cursor ?? null,
         limit: input?.limit ?? 20,
+        offset: input?.offset ?? 0,
       });
 
       if (!result.success) {
@@ -140,7 +125,7 @@ export const taskRouter = router({
         });
       }
 
-      return result.data; // { tasks, nextCursor }
+      return result.data;
     }),
   
   /**
