@@ -71,6 +71,7 @@ export const tippingRouter = router({
     }),
 
   getMyTipsReceived: protectedProcedure
+    .input(z.void())
     .query(async ({ ctx }) => {
       const result = await TippingService.getTotalTipsReceived(ctx.user.id);
       if (!result.success) {

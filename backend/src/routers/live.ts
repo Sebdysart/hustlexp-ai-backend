@@ -69,6 +69,7 @@ export const liveRouter = router({
    * Get Live Mode status
    */
   getStatus: protectedProcedure
+    .input(z.void())
     .query(async ({ ctx }) => {
       const user = ctx.user;
       

@@ -101,6 +101,7 @@ export const gdprRouter = router({
    * Get all GDPR requests for user
    */
   getMyRequests: protectedProcedure
+    .input(z.void())
     .query(async ({ ctx }) => {
       if (!ctx.user) {
         throw new TRPCError({

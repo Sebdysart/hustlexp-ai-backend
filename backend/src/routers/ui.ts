@@ -26,6 +26,7 @@ export const uiRouter = router({
    * Returns true if xp_first_celebration_shown_at IS NULL
    */
   getXPCelebrationStatus: protectedProcedure
+    .input(z.void())
     .query(async ({ ctx }) => {
       const result = await db.query<{ xp_first_celebration_shown_at: Date | null }>(
         `SELECT xp_first_celebration_shown_at FROM users WHERE id = $1`,

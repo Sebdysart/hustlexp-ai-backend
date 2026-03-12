@@ -168,6 +168,7 @@ export const featuredRouter = router({
     }),
 
   getFeaturedTasks: protectedProcedure
+    .input(z.void())
     .query(async () => {
       const result = await db.query(
         `SELECT fl.*, t.title, t.description, t.price, t.location_text

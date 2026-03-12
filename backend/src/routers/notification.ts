@@ -60,6 +60,7 @@ export const notificationRouter = router({
    * Get unread notification count
    */
   getUnreadCount: protectedProcedure
+    .input(z.void())
     .query(async ({ ctx }) => {
       if (!ctx.user) {
         throw new TRPCError({
@@ -152,6 +153,7 @@ export const notificationRouter = router({
    * Mark all notifications as read for user
    */
   markAllAsRead: protectedProcedure
+    .input(z.void())
     .mutation(async ({ ctx }) => {
       if (!ctx.user) {
         throw new TRPCError({
@@ -212,6 +214,7 @@ export const notificationRouter = router({
    * Get notification preferences for user
    */
   getPreferences: protectedProcedure
+    .input(z.void())
     .query(async ({ ctx }) => {
       if (!ctx.user) {
         throw new TRPCError({

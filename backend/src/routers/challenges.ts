@@ -16,6 +16,7 @@ const DEFAULT_CHALLENGES = [
 
 export const challengesRouter = router({
   getTodaysChallenges: protectedProcedure
+    .input(z.void())
     .query(async ({ ctx }) => {
       const userId = ctx.user.id;
       const today = new Date().toISOString().split('T')[0];

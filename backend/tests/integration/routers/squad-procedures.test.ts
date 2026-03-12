@@ -126,7 +126,11 @@ describe('Squad Router', () => {
 
     it('leaderboard should not require input', () => {
       const inputDef = procedures.leaderboard._def.inputs;
-      expect(inputDef.length === 0 || inputDef[0] === undefined).toBe(true);
+      // z.void() counts as "no user input required"
+      const hasNoInput = inputDef.length === 0
+        || inputDef[0] === undefined
+        || inputDef[0]?._def?.typeName === 'ZodVoid';
+      expect(hasNoInput).toBe(true);
     });
   });
 });

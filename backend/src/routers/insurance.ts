@@ -24,7 +24,7 @@ export const insuranceRouter = router({
   /**
    * Get insurance pool status (public)
    */
-  getPoolStatus: protectedProcedure.query(async () => {
+  getPoolStatus: protectedProcedure.input(z.void()).query(async () => {
     const result = await SelfInsurancePoolService.getPoolStatus();
 
     if (!result.success) {
@@ -40,7 +40,7 @@ export const insuranceRouter = router({
   /**
    * Get my claims (hustler view)
    */
-  getMyClaims: protectedProcedure.query(async ({ ctx }) => {
+  getMyClaims: protectedProcedure.input(z.void()).query(async ({ ctx }) => {
     const result = await SelfInsurancePoolService.getMyClaims(ctx.user.id);
 
     if (!result.success) {

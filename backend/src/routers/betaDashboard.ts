@@ -59,6 +59,7 @@ export const betaDashboardRouter = router({
    * Get beta status — caps, guardrails, remaining capacity.
    */
   getStatus: adminProcedure
+    .input(z.void())
     .query(async () => {
       const result = await BetaService.getBetaStatus();
       if (!result.success) {
@@ -74,6 +75,7 @@ export const betaDashboardRouter = router({
    * Get kill signals — conditions that indicate beta should be stopped.
    */
   getKillSignals: adminProcedure
+    .input(z.void())
     .query(async () => {
       const result = await BetaService.getKillSignals();
       if (!result.success) {
@@ -130,6 +132,7 @@ export const betaDashboardRouter = router({
    * SUM(gross) - SUM(net) should = SUM(platform_fee) for platform_fee events.
    */
   verifyLedgerIntegrity: adminProcedure
+    .input(z.void())
     .query(async () => {
       const result = await RevenueService.verifyLedgerIntegrity();
       if (!result.success) {
@@ -145,6 +148,7 @@ export const betaDashboardRouter = router({
    * Get platform dispute rate (30d + 90d rolling windows).
    */
   getDisputeRate: adminProcedure
+    .input(z.void())
     .query(async () => {
       const result = await ChargebackService.getPlatformDisputeRate();
       if (!result.success) {
@@ -398,6 +402,7 @@ export const betaDashboardRouter = router({
    * Get beta configuration (public — used by iOS for geo-fence display).
    */
   getBetaConfig: protectedProcedure
+    .input(z.void())
     .query(async () => {
       return {
         enabled: config.beta.enabled,
@@ -463,6 +468,7 @@ export const betaDashboardRouter = router({
    * Get kill switch audit history — all beta state changes.
    */
   getKillSwitchHistory: adminProcedure
+    .input(z.void())
     .query(async () => {
       const result = await db.query<{
         admin_user_id: string;

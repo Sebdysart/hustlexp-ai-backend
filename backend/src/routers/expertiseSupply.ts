@@ -58,6 +58,7 @@ export const expertiseSupplyRouter = router({
    * Get the current user's expertise selections.
    */
   getMyExpertise: protectedProcedure
+    .input(z.void())
     .query(async ({ ctx }) => {
       const result = await ExpertiseSupplyService.getUserExpertise(ctx.user.id);
       if (!result.success) {
@@ -171,6 +172,7 @@ export const expertiseSupplyRouter = router({
    * Get the current user's waitlist entries.
    */
   getMyWaitlist: protectedProcedure
+    .input(z.void())
     .query(async ({ ctx }) => {
       const result = await ExpertiseSupplyService.getUserWaitlist(ctx.user.id);
       if (!result.success) {
@@ -262,6 +264,7 @@ export const expertiseSupplyRouter = router({
    * Normally runs via daily cron — this is for manual trigger.
    */
   triggerRecalc: adminProcedure
+    .input(z.void())
     .mutation(async () => {
       const result = await ExpertiseSupplyService.recalculateAllCapacity();
       if (!result.success) {

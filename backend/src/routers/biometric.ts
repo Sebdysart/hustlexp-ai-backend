@@ -241,6 +241,7 @@ export const biometricRouter = router({
    * Client calls this first, runs the liveness challenge, then calls getLivenessResult.
    */
   createLivenessSession: protectedProcedure
+    .input(z.void())
     .mutation(async () => {
       const result = await BiometricVerificationService.createLivenessSession();
 

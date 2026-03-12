@@ -26,6 +26,7 @@ export const capabilityRouter = router({
    * Get current user's capability profile
    */
   getProfile: protectedProcedure
+    .input(z.void())
     .query(async ({ ctx }) => {
       return await CapabilityProfileService.getCapabilityProfile(ctx.user.id);
     }),
@@ -34,6 +35,7 @@ export const capabilityRouter = router({
    * Get capability summary (lightweight)
    */
   getSummary: protectedProcedure
+    .input(z.void())
     .query(async ({ ctx }) => {
       return await CapabilityProfileService.getCapabilitySummary(ctx.user.id);
     }),
@@ -60,6 +62,7 @@ export const capabilityRouter = router({
    * Trigger profile recompute
    */
   recomputeProfile: protectedProcedure
+    .input(z.void())
     .mutation(async ({ ctx }) => {
       await CapabilityProfileService.recompute(ctx.user.id, 'user_requested');
       return { success: true };
@@ -237,6 +240,7 @@ export const capabilityRouter = router({
    * Get user's license verifications
    */
   getLicenses: protectedProcedure
+    .input(z.void())
     .query(async ({ ctx }) => {
       return await LicenseVerificationService.getUserLicenses(ctx.user.id);
     }),
@@ -271,6 +275,7 @@ export const capabilityRouter = router({
    * Get user's insurance verification
    */
   getInsurance: protectedProcedure
+    .input(z.void())
     .query(async ({ ctx }) => {
       return await InsuranceVerificationService.getUserInsurance(ctx.user.id);
     }),
@@ -297,6 +302,7 @@ export const capabilityRouter = router({
    * Get user's background check status
    */
   getBackgroundCheck: protectedProcedure
+    .input(z.void())
     .query(async ({ ctx }) => {
       return await BackgroundCheckService.getUserBackgroundCheck(ctx.user.id);
     }),

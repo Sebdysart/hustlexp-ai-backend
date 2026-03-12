@@ -90,6 +90,7 @@ export const userRouter = router({
    * Returns mobile-compatible JSON shape (camelCase, mapped field names)
    */
   me: protectedProcedure
+    .input(z.void())
     .query(async ({ ctx }) => {
       return await toMobileUser(ctx.user!);
     }),
@@ -170,6 +171,7 @@ export const userRouter = router({
    * Get XP history
    */
   xpHistory: protectedProcedure
+    .input(z.void())
     .query(async ({ ctx }) => {
       const result = await XPService.getHistory(ctx.user.id);
       
@@ -187,6 +189,7 @@ export const userRouter = router({
    * Get user badges
    */
   badges: protectedProcedure
+    .input(z.void())
     .query(async ({ ctx }) => {
       const result = await db.query(
         `SELECT * FROM badges WHERE user_id = $1 ORDER BY awarded_at DESC`,
@@ -331,6 +334,7 @@ export const userRouter = router({
    * Returns onboarding completion status and first task completion status
    */
   getOnboardingStatus: protectedProcedure
+    .input(z.void())
     .query(async ({ ctx }) => {
       const result = await db.query<{
         onboarding_completed_at: Date | null;
@@ -406,7 +410,7 @@ export const userRouter = router({
    * Get verification unlock status and progress
    * Shows earnings toward $40 threshold
    */
-  getVerificationUnlockStatus: protectedProcedure.query(async ({ ctx }) => {
+  getVerificationUnlockStatus: protectedProcedure.input(z.void()).query(async ({ ctx }) => {
     const result = await EarnedVerificationUnlockService.getUnlockProgress(ctx.user.id);
 
     if (!result.success) {
@@ -422,7 +426,7 @@ export const userRouter = router({
   /**
    * Check if user has unlocked verification (boolean)
    */
-  checkVerificationEligibility: protectedProcedure.query(async ({ ctx }) => {
+  checkVerificationEligibility: protectedProcedure.input(z.void()).query(async ({ ctx }) => {
     const result = await EarnedVerificationUnlockService.checkUnlockEligibility(ctx.user.id);
 
     if (!result.success) {
@@ -474,6 +478,7 @@ export const userRouter = router({
     }),
 
   requestErasure: protectedProcedure
+    .input(z.void())
     .mutation(async ({ ctx }) => {
       const { GDPRService } = await import('../services/GDPRService');
       const result = await GDPRService.createRequest({

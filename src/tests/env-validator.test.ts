@@ -74,4 +74,72 @@ describe('logEnvStatus', () => {
     };
     expect(() => logEnvStatus(failResult)).not.toThrow();
   });
+
+  it('logs info when result is valid (covers valid=true branch)', async () => {
+    const { logEnvStatus } = await import('../utils/envValidator.js');
+    const passResult = {
+      valid: true,
+      errors: [],
+      warnings: ['some warning'],
+    };
+    expect(() => logEnvStatus(passResult)).not.toThrow();
+  });
+});
+
+describe('validateEnv — production-specific branches', () => {
+  it('warns when ALLOWED_ORIGINS is not set in production', async () => {
+    const saved: Record<string, string | undefined> = {};
+    const vars: Record<string, string | undefined> = {
+      NODE_ENV: 'production',
+      DATABASE_URL: 'postgres://localhost/test',
+      STRIPE_SECRET_KEY: 'sk_test_dummy',
+      STRIPE_WEBHOOK_SECRET: 'whsec_dummy',
+    };
+    // Save and set
+    for (const [k, v] of Object.entries(vars)) {
+      saved[k] = process.env[k];
+      if (v !== undefined) process.env[k] = v;
+    }
+    // Ensure ALLOWED_ORIGINS is unset
+    saved['ALLOWED_ORIGINS'] = process.env['ALLOWED_ORIGINS'];
+    delete process.env['ALLOWED_ORIGINS'];
+
+    const { validateEnv } = await import('../utils/envValidator.js');
+    const result = validateEnv();
+
+    expect(result.warnings.some((w: string) => w.includes('ALLOWED_ORIGINS') && w.includes('production'))).toBe(true);
+
+    // Restore
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
+  it('warns when AI_DEGRADED_MODE=true in production', async () => {
+    const saved: Record<string, string | undefined> = {};
+    const vars: Record<string, string> = {
+      NODE_ENV: 'production',
+      DATABASE_URL: 'postgres://localhost/test',
+      STRIPE_SECRET_KEY: 'sk_test_dummy',
+      STRIPE_WEBHOOK_SECRET: 'whsec_dummy',
+      ALLOWED_ORIGINS: 'https://hustlexp.com',
+      AI_DEGRADED_MODE: 'true',
+    };
+    for (const [k, v] of Object.entries(vars)) {
+      saved[k] = process.env[k];
+      process.env[k] = v;
+    }
+
+    const { validateEnv } = await import('../utils/envValidator.js');
+    const result = validateEnv();
+
+    expect(result.warnings.some((w: string) => w.includes('AI_DEGRADED_MODE'))).toBe(true);
+
+    // Restore
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
 });

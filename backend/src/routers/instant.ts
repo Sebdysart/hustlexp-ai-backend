@@ -126,7 +126,7 @@ export const instantRouter = router({
    * Get instant task metrics (for testing)
    * Notification Urgency Design v1: Includes notification-to-accept latency
    */
-  metrics: protectedProcedure.query(async () => {
+  metrics: protectedProcedure.input(z.void()).query(async () => {
     // Time-to-accept (created_at → accepted_at for LIVE mode tasks)
     const timeToAcceptResult = await db.query<{
       created_at: Date;

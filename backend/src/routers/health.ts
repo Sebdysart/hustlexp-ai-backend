@@ -8,18 +8,21 @@ import { router, publicProcedure } from '../trpc';
 import { db } from '../db';
 import { config } from '../config';
 import { StripeService } from '../services/StripeService';
+import { z } from 'zod';
 
 export const healthRouter = router({
   /**
    * Basic health check
    */
   ping: publicProcedure
+    .input(z.void())
     .query(() => ({ status: 'ok', timestamp: new Date().toISOString() })),
   
   /**
    * Full system health check
    */
   status: publicProcedure
+    .input(z.void())
     .query(async () => {
       const dbHealth = await db.healthCheck();
       
@@ -50,6 +53,7 @@ export const healthRouter = router({
    * Database schema verification
    */
   verifySchema: publicProcedure
+    .input(z.void())
     .query(async () => {
       const health = await db.healthCheck();
       

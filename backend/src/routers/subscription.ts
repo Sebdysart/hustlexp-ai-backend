@@ -40,6 +40,7 @@ export const subscriptionRouter = router({
    * Get current subscription status including recurring task usage.
    */
   getMySubscription: protectedProcedure
+    .input(z.void())
     .query(async ({ ctx }) => {
       const userId = ctx.user.id;
 

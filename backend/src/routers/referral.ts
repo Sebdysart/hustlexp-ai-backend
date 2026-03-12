@@ -116,6 +116,7 @@ export const referralRouter = router({
     }),
 
   getReferralStats: protectedProcedure
+    .input(z.void())
     .query(async ({ ctx }) => {
       const userId = ctx.user.id;
 

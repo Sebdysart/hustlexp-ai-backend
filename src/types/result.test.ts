@@ -64,4 +64,28 @@ describe('Result<T,E>', () => {
     );
     expect(Result.isOk(r) && r.value).toBe(10);
   });
+
+  it('appErrorToStatus maps AI_UNAVAILABLE to 503', () => {
+    expect(appErrorToStatus(AppError.aiUnavailable('AI down'))).toBe(503);
+  });
+
+  it('appErrorToStatus maps DATABASE_ERROR to 500', () => {
+    expect(appErrorToStatus(AppError.database('db error'))).toBe(500);
+  });
+
+  it('appErrorToStatus maps INTERNAL_ERROR to 500', () => {
+    expect(appErrorToStatus(AppError.internal('internal'))).toBe(500);
+  });
+
+  it('appErrorToStatus maps FORBIDDEN to 403', () => {
+    expect(appErrorToStatus(AppError.forbidden('no'))).toBe(403);
+  });
+
+  it('appErrorToStatus maps VALIDATION_ERROR to 400', () => {
+    expect(appErrorToStatus(AppError.validation('bad'))).toBe(400);
+  });
+
+  it('appErrorToStatus maps CONFLICT to 409', () => {
+    expect(appErrorToStatus(AppError.conflict('dup'))).toBe(409);
+  });
 });

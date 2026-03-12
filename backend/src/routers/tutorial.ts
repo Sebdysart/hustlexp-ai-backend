@@ -9,7 +9,7 @@ import { router, protectedProcedure } from '../trpc';
 import { TutorialQuestService } from '../services/TutorialQuestService';
 
 export const tutorialRouter = router({
-  getScenarios: protectedProcedure.query(async () => {
+  getScenarios: protectedProcedure.input(z.void()).query(async () => {
     return TutorialQuestService.getScenarios();
   }),
 

@@ -15,6 +15,7 @@ export const flagsRouter = router({
    * Get evaluated flags for the authenticated user
    */
   getFlags: protectedProcedure
+    .input(z.void())
     .query(async ({ ctx }) => {
       const flags = await FlagsService.getUserFlags(ctx.user.id);
       return flags;

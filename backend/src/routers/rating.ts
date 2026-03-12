@@ -199,6 +199,7 @@ export const ratingRouter = router({
    * This should be called by a background job daily
    */
   processAutoRatings: adminProcedure
+    .input(z.void())
     .mutation(async () => {
       const result = await RatingService.processAutoRatings();
       

@@ -608,6 +608,7 @@ export const squadRouter = router({
   // --------------------------------------------------------------------------
 
   leaderboard: protectedProcedure
+    .input(z.void())
     .query(async () => {
       const result = await db.query<LeaderboardRow>(
         `SELECT

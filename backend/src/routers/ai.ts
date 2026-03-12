@@ -9,6 +9,7 @@
 import { TRPCError } from '@trpc/server';
 import { router, protectedProcedure, Schemas } from '../trpc';
 import { OnboardingAIService } from '../services/OnboardingAIService';
+import { z } from 'zod';
 
 export const aiRouter = router({
   // --------------------------------------------------------------------------
@@ -41,6 +42,7 @@ export const aiRouter = router({
    * Get inference result
    */
   getInferenceResult: protectedProcedure
+    .input(z.void())
     .query(async ({ ctx }) => {
       const result = await OnboardingAIService.getInferenceResult(ctx.user.id);
       

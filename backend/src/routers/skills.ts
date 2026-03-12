@@ -13,7 +13,7 @@ import { db } from '../db';
 
 export const skillsRouter = router({
   // Public: Browse skill catalog
-  getCategories: publicProcedure.query(async () => {
+  getCategories: publicProcedure.input(z.void()).query(async () => {
     return WorkerSkillService.getCategories();
   }),
 
@@ -36,7 +36,7 @@ export const skillsRouter = router({
       return WorkerSkillService.removeSkill(ctx.user.id, input.skillId);
     }),
 
-  getMySkills: protectedProcedure.query(async ({ ctx }) => {
+  getMySkills: protectedProcedure.input(z.void()).query(async ({ ctx }) => {
     return WorkerSkillService.getWorkerSkills(ctx.user.id);
   }),
 
@@ -63,7 +63,7 @@ export const skillsRouter = router({
       );
     }),
 
-  getLicenseSubmissions: protectedProcedure.query(async ({ ctx }) => {
+  getLicenseSubmissions: protectedProcedure.input(z.void()).query(async ({ ctx }) => {
     const result = await db.query(
       `SELECT ws.id, ws.skill_id as "skillId", s.name as "skillName",
               ws.license_url as "photoUrl", ws.verified as "licenseVerified",

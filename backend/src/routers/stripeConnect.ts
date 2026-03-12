@@ -70,6 +70,7 @@ export const stripeConnectRouter = router({
    * Returns whether worker has completed Stripe Connect onboarding
    */
   getOnboardingStatus: protectedProcedure
+    .input(z.void())
     .query(async ({ ctx }) => {
       const result = await StripeConnectService.getOnboardingStatus(ctx.user.id);
 
@@ -118,6 +119,7 @@ export const stripeConnectRouter = router({
    * Generates a one-time login link to Stripe Express
    */
   getDashboardLink: protectedProcedure
+    .input(z.void())
     .query(async ({ ctx }) => {
       const result = await StripeConnectService.getDashboardLink(ctx.user.id);
 
@@ -148,6 +150,7 @@ export const stripeConnectRouter = router({
    * Returns instant vs standard payout preference and eligibility
    */
   getPayoutSettings: protectedProcedure
+    .input(z.void())
     .query(async ({ ctx }) => {
       const result = await StripeConnectService.getPayoutSettings(ctx.user.id);
 
@@ -228,6 +231,7 @@ export const stripeConnectRouter = router({
    * Returns W-9/W-8BEN submission status and any requirements
    */
   getTaxInfo: protectedProcedure
+    .input(z.void())
     .query(async ({ ctx }) => {
       const result = await StripeConnectService.getTaxInfo(ctx.user.id);
 
@@ -356,6 +360,7 @@ export const stripeConnectRouter = router({
    * Returns account status, capabilities, and requirements
    */
   getAccountDetails: protectedProcedure
+    .input(z.void())
     .query(async ({ ctx }) => {
       const result = await StripeConnectService.getAccountDetails(ctx.user.id);
 

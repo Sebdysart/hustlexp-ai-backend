@@ -96,6 +96,7 @@ export const reputationRouter = router({
    * PRODUCT_SPEC.md §8.2: Tier promotion eligibility
    */
   checkTierEligibility: protectedProcedure
+    .input(z.void())
     .query(async ({ ctx }) => {
       const result = await ReputationAIService.shouldPromoteTier(ctx.user.id);
 

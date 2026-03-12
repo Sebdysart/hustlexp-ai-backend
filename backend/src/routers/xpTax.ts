@@ -27,7 +27,7 @@ export const xpTaxRouter = router({
   /**
    * Get current tax status (unpaid balance, XP held back)
    */
-  getTaxStatus: protectedProcedure.query(async ({ ctx }) => {
+  getTaxStatus: protectedProcedure.input(z.void()).query(async ({ ctx }) => {
     const result = await XPTaxService.checkTaxStatus(ctx.user.id);
 
     if (!result.success) {
@@ -73,6 +73,7 @@ export const xpTaxRouter = router({
    * Frontend calls this before payTax to get a clientSecret
    */
   createPaymentIntent: protectedProcedure
+    .input(z.void())
     .mutation(async ({ ctx }) => {
       const status = await XPTaxService.checkTaxStatus(ctx.user.id);
       if (!status.success || !status.data) {

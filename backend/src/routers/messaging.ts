@@ -227,6 +227,7 @@ export const messagingRouter = router({
    * Get unread message count (global, not task-specific)
    */
   getUnreadCount: protectedProcedure
+    .input(z.void())
     .query(async ({ ctx }) => {
       if (!ctx.user) {
         throw new TRPCError({
@@ -253,6 +254,7 @@ export const messagingRouter = router({
    * Returns one entry per task with latest message and unread count
    */
   getConversations: protectedProcedure
+    .input(z.void())
     .query(async ({ ctx }) => {
       if (!ctx.user) {
         throw new TRPCError({ code: 'UNAUTHORIZED', message: 'Authentication required' });

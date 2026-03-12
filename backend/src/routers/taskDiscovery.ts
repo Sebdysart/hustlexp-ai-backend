@@ -382,6 +382,7 @@ export const taskDiscoveryRouter = router({
    * Get all saved searches for the authenticated user
    */
   getSavedSearches: protectedProcedure
+    .input(z.void())
     .query(async ({ ctx }) => {
       if (!ctx.user) {
         throw new TRPCError({
