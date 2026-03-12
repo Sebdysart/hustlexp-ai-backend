@@ -6,8 +6,8 @@
  * READ:
  *   - getById: single task fetch via TaskService
  *   - getState: raw db.query for task state
- *   - listByPoster: cursor-paginated (via TaskService.getByPoster)
- *   - listByWorker: cursor-paginated (via TaskService.getByWorker)
+ *   - listByPoster: offset-paginated (via TaskService.getByPoster)
+ *   - listByWorker: offset-paginated (via TaskService.getByWorker)
  *   - listOpen: offset-paginated (via TaskService.listOpen)
  *   - getProof: raw db.query for proof by taskId
  *
@@ -236,7 +236,7 @@ describe('task.getState', () => {
 });
 
 // ===========================================================================
-// task.listByPoster — cursor-based (via TaskService)
+// task.listByPoster — offset-based (via TaskService)
 // ===========================================================================
 
 describe('task.listByPoster', () => {
@@ -244,32 +244,30 @@ describe('task.listByPoster', () => {
     vi.clearAllMocks();
   });
 
-  it('returns { tasks, nextCursor } from TaskService', async () => {
+  it('returns task array from TaskService', async () => {
     const tasks = [makeTaskRow()];
     mockTaskService.getByPoster.mockResolvedValueOnce({
       success: true,
-      data: { tasks: tasks as any, nextCursor: '2025-06-01T00:00:00Z' },
+      data: tasks as any,
     });
 
     const result = await makeCaller().listByPoster({});
 
-    expect(result).toHaveProperty('tasks');
-    expect(result).toHaveProperty('nextCursor');
-    expect(result.tasks).toHaveLength(1);
-    expect(result.nextCursor).toBe('2025-06-01T00:00:00Z');
+    expect(Array.isArray(result)).toBe(true);
+    expect(result).toHaveLength(1);
   });
 
   it('defaults to ctx.user.id when no posterId given', async () => {
     mockTaskService.getByPoster.mockResolvedValueOnce({
       success: true,
-      data: { tasks: [] as any, nextCursor: undefined },
+      data: [] as any,
     });
 
     await makeCaller().listByPoster({});
 
     expect(mockTaskService.getByPoster).toHaveBeenCalledWith(
       USER_ID,
-      expect.objectContaining({ cursor: null, limit: 20 })
+      expect.objectContaining({ offset: 0, limit: 20 })
     );
   });
 
@@ -282,26 +280,25 @@ describe('task.listByPoster', () => {
   it('returns empty tasks when none found', async () => {
     mockTaskService.getByPoster.mockResolvedValueOnce({
       success: true,
-      data: { tasks: [] as any, nextCursor: undefined },
+      data: [] as any,
     });
 
     const result = await makeCaller().listByPoster({});
 
-    expect(result.tasks).toHaveLength(0);
-    expect(result.nextCursor).toBeUndefined();
+    expect(result).toHaveLength(0);
   });
 
-  it('passes cursor and limit to TaskService', async () => {
+  it('passes offset and limit to TaskService', async () => {
     mockTaskService.getByPoster.mockResolvedValueOnce({
       success: true,
-      data: { tasks: [] as any, nextCursor: undefined },
+      data: [] as any,
     });
 
-    await makeCaller().listByPoster({ cursor: '2025-01-01T00:00:00Z', limit: 10 });
+    await makeCaller().listByPoster({ offset: 30, limit: 10 });
 
     expect(mockTaskService.getByPoster).toHaveBeenCalledWith(
       USER_ID,
-      { cursor: '2025-01-01T00:00:00Z', limit: 10 }
+      { offset: 30, limit: 10 }
     );
   });
 
@@ -317,17 +314,17 @@ describe('task.listByPoster', () => {
   it('accepts undefined input (no params at all)', async () => {
     mockTaskService.getByPoster.mockResolvedValueOnce({
       success: true,
-      data: { tasks: [] as any, nextCursor: undefined },
+      data: [] as any,
     });
 
     const result = await makeCaller().listByPoster(undefined as any);
 
-    expect(result.tasks).toHaveLength(0);
+    expect(result).toHaveLength(0);
   });
 });
 
 // ===========================================================================
-// task.listByWorker — cursor-based (via TaskService)
+// task.listByWorker — offset-based (via TaskService)
 // ===========================================================================
 
 describe('task.listByWorker', () => {
@@ -335,18 +332,17 @@ describe('task.listByWorker', () => {
     vi.clearAllMocks();
   });
 
-  it('returns { tasks, nextCursor } from TaskService', async () => {
+  it('returns task array from TaskService', async () => {
     const tasks = [makeTaskRow({ worker_id: USER_ID, state: 'ACCEPTED' })];
     mockTaskService.getByWorker.mockResolvedValueOnce({
       success: true,
-      data: { tasks: tasks as any, nextCursor: undefined },
+      data: tasks as any,
     });
 
     const result = await makeCaller().listByWorker({});
 
-    expect(result).toHaveProperty('tasks');
-    expect(result).toHaveProperty('nextCursor');
-    expect(result.tasks).toHaveLength(1);
+    expect(Array.isArray(result)).toBe(true);
+    expect(result).toHaveLength(1);
   });
 
   it('throws FORBIDDEN when workerId does not match user', async () => {
@@ -358,14 +354,14 @@ describe('task.listByWorker', () => {
   it('defaults to ctx.user.id when no workerId given', async () => {
     mockTaskService.getByWorker.mockResolvedValueOnce({
       success: true,
-      data: { tasks: [] as any, nextCursor: undefined },
+      data: [] as any,
     });
 
     await makeCaller().listByWorker({});
 
     expect(mockTaskService.getByWorker).toHaveBeenCalledWith(
       USER_ID,
-      expect.objectContaining({ cursor: null, limit: 20 })
+      expect.objectContaining({ offset: 0, limit: 20 })
     );
   });
 
