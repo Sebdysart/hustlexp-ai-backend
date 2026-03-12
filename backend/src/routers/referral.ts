@@ -20,6 +20,7 @@ function generateReferralCode(): string {
 
 export const referralRouter = router({
   getOrCreateCode: protectedProcedure
+    .input(z.void())
     .mutation(async ({ ctx }) => {
       const userId = ctx.user.id;
 

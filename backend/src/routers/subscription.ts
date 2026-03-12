@@ -206,6 +206,7 @@ export const subscriptionRouter = router({
    * Cancel subscription: cancels in Stripe and downgrades to free plan.
    */
   cancel: protectedProcedure
+    .input(z.void())
     .mutation(async ({ ctx }) => {
       const userId = ctx.user.id;
 
