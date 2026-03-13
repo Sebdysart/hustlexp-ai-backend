@@ -68,6 +68,17 @@ export interface RatingStats {
   recentRatings: TaskRating[]; // Last 10 ratings
 }
 
+/** Text review: a rating that includes a written comment (for profile "Reviews" display) */
+export interface TextReview {
+  id: string;
+  task_id: string;
+  task_title: string | null;
+  stars: number;
+  text: string;
+  created_at: Date;
+  is_auto_rated: boolean;
+}
+
 // Rating window: 7 days after task completion (RATING_SYSTEM_SPEC.md §1.1)
 const RATING_WINDOW_DAYS = 7;
 
@@ -167,6 +178,56 @@ export const RatingService = {
         success: true,
         data: result.rows,
       };
+    } catch (error) {
+      return {
+        success: false,
+        error: {
+          code: 'DB_ERROR',
+          message: error instanceof Error ? error.message : 'Unknown error',
+        },
+      };
+    }
+  },
+
+  /**
+   * Get text reviews for a user: public ratings that include a written comment.
+   * Used for profile "Reviews" / "What people say" display.
+   */
+  getTextReviewsForUser: async (
+    userId: string,
+    limit: number = 50,
+    offset: number = 0
+  ): Promise<ServiceResult<TextReview[]>> => {
+    try {
+      const result = await db.query<{
+        id: string;
+        task_id: string;
+        stars: number;
+        text: string;
+        created_at: Date;
+        is_auto_rated: boolean;
+        task_title: string | null;
+      }>(
+        `SELECT r.id, r.task_id, r.stars, r.comment AS text, r.created_at, r.is_auto_rated,
+                t.title AS task_title
+         FROM task_ratings r
+         JOIN tasks t ON t.id = r.task_id
+         WHERE r.ratee_id = $1 AND r.is_public = true
+           AND r.comment IS NOT NULL AND TRIM(r.comment) != ''
+         ORDER BY r.created_at DESC
+         LIMIT $2 OFFSET $3`,
+        [userId, limit, offset]
+      );
+      const rows: TextReview[] = result.rows.map((row) => ({
+        id: row.id,
+        task_id: row.task_id,
+        task_title: row.task_title,
+        stars: row.stars,
+        text: row.text,
+        created_at: row.created_at,
+        is_auto_rated: row.is_auto_rated,
+      }));
+      return { success: true, data: rows };
     } catch (error) {
       return {
         success: false,

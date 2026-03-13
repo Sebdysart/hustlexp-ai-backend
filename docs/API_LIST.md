@@ -21,7 +21,7 @@
 | taskDiscovery | 11 | public + protected |
 | messaging | 7 | protected |
 | notification | 11 | protected + admin |
-| rating | 6 | protected + admin |
+| rating | 7 | protected + admin |
 | gdpr | 6 | protected |
 | analytics | 8 | public + protected + admin |
 | fraud | 9 | admin |
@@ -47,7 +47,7 @@
 | featured | 3 | protected |
 | referral | 3 | protected |
 | subscription | 4 | protected |
-| tipping | 4 | protected |
+| tipping | 5 | protected |
 | squad | 10 | protected |
 | recurringTask | 9 | protected |
 | stripeConnect | 11 | protected |
@@ -97,7 +97,7 @@
 `getList` `getUnreadCount` `getById` `markAsRead` `markAllAsRead` `markAsClicked` `getPreferences` `updatePreferences` `registerDeviceToken` `unregisterDeviceToken` `sendTestPush` (admin)
 
 ### rating
-`submitRating` `getTaskRatings` `getUserRatingSummary` `getMyRatings` `getRatingsReceived` `processAutoRatings` (admin)
+`submitRating` `getTaskRatings` `getUserRatingSummary` `getMyRatings` `getRatingsReceived` `getTextReviews` `processAutoRatings` (admin)
 
 ### gdpr
 `createRequest` `getRequestStatus` `getMyRequests` `cancelRequest` `getConsentStatus` `updateConsent`
@@ -175,7 +175,7 @@
 `getMySubscription` `subscribe` `cancel` `confirmSubscription`
 
 ### tipping
-`createTip` `confirmTip` `getTipsForTask` `getMyTipsReceived`
+`createTip` `confirmTip` `getTipsForTask` `getMyTipsReceived` `getMyTipsSent`
 
 ### squad
 `create` `listMine` `getById` `invite` `respondToInvite` `listInvites` `leave` `disband` `listTasks` `acceptTask` `leaderboard`

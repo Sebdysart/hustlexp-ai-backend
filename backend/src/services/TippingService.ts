@@ -46,7 +46,7 @@ export const TippingService = {
   /**
    * Create a tip for a completed task
    */
-  createTip: async (params: CreateTipParams): Promise<ServiceResult<{ clientSecret: string; tipId: string }>> => {
+  createTip: async (params: CreateTipParams): Promise<ServiceResult<{ clientSecret: string; tipId: string; amountCents: number }>> => {
     const { taskId, posterId, amountCents } = params;
 
     try {
@@ -67,7 +67,7 @@ export const TippingService = {
 
       const task = taskResult.rows[0];
 
-      if (task.state !== 'completed') {
+      if (task.state !== 'COMPLETED') {
         return { success: false, error: { code: 'INVALID_STATE', message: 'Can only tip on completed tasks' } };
       }
 
@@ -102,13 +102,13 @@ export const TippingService = {
 
       const stripe = new Stripe(config.stripe.secretKey, { apiVersion: '2025-11-17.clover' });
 
-      // Get worker's Stripe account
-      const workerResult = await db.query<{ stripe_account_id: string }>(
-        'SELECT stripe_account_id FROM users WHERE id = $1',
+      // Get worker's Stripe Connect account (tips go 100% to worker)
+      const workerResult = await db.query<{ stripe_connect_id: string | null }>(
+        'SELECT stripe_connect_id FROM users WHERE id = $1',
         [task.worker_id]
       );
 
-      const workerStripeId = workerResult.rows[0]?.stripe_account_id;
+      const workerStripeId = workerResult.rows[0]?.stripe_connect_id ?? undefined;
 
       const paymentIntent = await stripe.paymentIntents.create({
         amount: amountCents,
@@ -141,6 +141,7 @@ export const TippingService = {
         data: {
           clientSecret: paymentIntent.client_secret!,
           tipId: tipResult.rows[0].id,
+          amountCents,
         }
       };
     } catch (error) {
@@ -184,18 +185,27 @@ export const TippingService = {
         return { success: false, error: { code: 'NOT_FOUND', message: 'Tip not found' } };
       }
 
-      // Send notification to worker
+      // Notify worker (support both constitutional schema and legacy type/data columns)
       const tip = result.rows[0];
-      await db.query(
-        `INSERT INTO notifications (user_id, type, title, body, data, created_at)
-         VALUES ($1, 'tip_received', '💰 You received a tip!',
-                 $2, $3, NOW())`,
-        [
-          tip.worker_id,
-          `You received a $${(tip.amount_cents / 100).toFixed(2)} tip! Great job!`,
-          JSON.stringify({ task_id: tip.task_id, amount_cents: tip.amount_cents })
-        ]
-      );
+      const notifBody = `You received a $${(tip.amount_cents / 100).toFixed(2)} tip! Great job!`;
+      const notifMeta = { task_id: tip.task_id, amount_cents: tip.amount_cents };
+      try {
+        await db.query(
+          `INSERT INTO notifications (user_id, category, title, body, deep_link, task_id, metadata, channels, priority, created_at)
+           VALUES ($1, 'tip_received', '💰 You received a tip!', $2, $3, $4, $5::JSONB, ARRAY['push']::TEXT[], 'HIGH', NOW())`,
+          [tip.worker_id, notifBody, `/task/${tip.task_id}`, tip.task_id, JSON.stringify(notifMeta)]
+        );
+      } catch (notifErr) {
+        try {
+          await db.query(
+            `INSERT INTO notifications (user_id, type, title, body, data, created_at)
+             VALUES ($1, 'tip_received', '💰 You received a tip!', $2, $3, NOW())`,
+            [tip.worker_id, notifBody, JSON.stringify(notifMeta)]
+          );
+        } catch {
+          log.warn({ tipId: tip.id, workerId: tip.worker_id }, 'Could not create tip_received notification');
+        }
+      }
 
       return { success: true, data: tip };
     } catch (error) {
@@ -245,6 +255,28 @@ export const TippingService = {
           count: parseInt(result.rows[0].count, 10),
         }
       };
+    } catch (error) {
+      return {
+        success: false,
+        error: { code: 'GET_TIPS_FAILED', message: error instanceof Error ? error.message : 'Failed' }
+      };
+    }
+  },
+
+  /**
+   * Get tips sent by a user (as poster)
+   */
+  getTipsSentByUser: async (
+    posterId: string,
+    limit: number = 50,
+    offset: number = 0
+  ): Promise<ServiceResult<Tip[]>> => {
+    try {
+      const result = await db.query<Tip>(
+        `SELECT * FROM tips WHERE poster_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3`,
+        [posterId, limit, offset]
+      );
+      return { success: true, data: result.rows };
     } catch (error) {
       return {
         success: false,

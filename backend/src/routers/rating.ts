@@ -187,6 +187,38 @@ export const ratingRouter = router({
       
       return result.data;
     }),
+
+  /**
+   * Get text reviews for a user: ratings that include a written comment.
+   * Use for profile "Reviews" / "What people say". Own user or any user (public reviews only).
+   */
+  getTextReviews: protectedProcedure
+    .input(z.object({
+      userId: Schemas.uuid.optional(), // If omitted, current user
+      limit: z.number().int().min(1).max(100).default(50),
+      offset: z.number().int().min(0).default(0),
+    }))
+    .query(async ({ input, ctx }) => {
+      if (!ctx.user) {
+        throw new TRPCError({
+          code: 'UNAUTHORIZED',
+          message: 'Authentication required',
+        });
+      }
+      const userId = input.userId ?? ctx.user.id;
+      const result = await RatingService.getTextReviewsForUser(
+        userId,
+        input.limit,
+        input.offset
+      );
+      if (!result.success) {
+        throw new TRPCError({
+          code: result.error.code === 'NOT_FOUND' ? 'NOT_FOUND' : 'INTERNAL_SERVER_ERROR',
+          message: result.error.message,
+        });
+      }
+      return result.data;
+    }),
   
   // --------------------------------------------------------------------------
   // ADMIN OPERATIONS

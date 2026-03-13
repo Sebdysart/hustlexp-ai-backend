@@ -82,4 +82,25 @@ export const tippingRouter = router({
       }
       return result.data;
     }),
+
+  /** Tips the current user has sent (as poster) */
+  getMyTipsSent: protectedProcedure
+    .input(z.object({
+      limit: z.number().int().min(1).max(100).default(50),
+      offset: z.number().int().min(0).default(0),
+    }).default({ limit: 50, offset: 0 }))
+    .query(async ({ ctx, input }) => {
+      const result = await TippingService.getTipsSentByUser(
+        ctx.user.id,
+        input.limit,
+        input.offset
+      );
+      if (!result.success) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: result.error?.message || 'Failed to get tips sent',
+        });
+      }
+      return result.data;
+    }),
 });

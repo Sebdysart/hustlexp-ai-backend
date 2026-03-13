@@ -83,7 +83,7 @@ describe('TippingService', () => {
 
     it('returns UNAUTHORIZED when poster does not own task', async () => {
       mockDb.query.mockResolvedValueOnce({
-        rows: [{ state: 'completed', poster_id: 'other-poster', worker_id: 'worker-1', price: 5000 }],
+        rows: [{ state: 'COMPLETED', poster_id: 'other-poster', worker_id: 'worker-1', price: 5000 }],
         rowCount: 1,
       } as never);
 
@@ -99,7 +99,7 @@ describe('TippingService', () => {
 
     it('returns INVALID_AMOUNT when tip below minimum ($1)', async () => {
       mockDb.query.mockResolvedValueOnce({
-        rows: [{ state: 'completed', poster_id: 'poster-1', worker_id: 'worker-1', price: 5000 }],
+        rows: [{ state: 'COMPLETED', poster_id: 'poster-1', worker_id: 'worker-1', price: 5000 }],
         rowCount: 1,
       } as never);
 
@@ -115,7 +115,7 @@ describe('TippingService', () => {
 
     it('returns INVALID_AMOUNT when tip exceeds 50% of task price', async () => {
       mockDb.query.mockResolvedValueOnce({
-        rows: [{ state: 'completed', poster_id: 'poster-1', worker_id: 'worker-1', price: 5000 }],
+        rows: [{ state: 'COMPLETED', poster_id: 'poster-1', worker_id: 'worker-1', price: 5000 }],
         rowCount: 1,
       } as never);
 
@@ -132,7 +132,7 @@ describe('TippingService', () => {
     it('returns DUPLICATE when tip already exists', async () => {
       mockDb.query
         .mockResolvedValueOnce({
-          rows: [{ state: 'completed', poster_id: 'poster-1', worker_id: 'worker-1', price: 5000 }],
+          rows: [{ state: 'COMPLETED', poster_id: 'poster-1', worker_id: 'worker-1', price: 5000 }],
           rowCount: 1,
         } as never)
         .mockResolvedValueOnce({ rows: [{ id: 'tip-existing' }], rowCount: 1 } as never); // Existing tip
@@ -150,7 +150,7 @@ describe('TippingService', () => {
     it('creates tip with Stripe payment intent', async () => {
       mockDb.query
         .mockResolvedValueOnce({
-          rows: [{ state: 'completed', poster_id: 'poster-1', worker_id: 'worker-1', price: 5000 }],
+          rows: [{ state: 'COMPLETED', poster_id: 'poster-1', worker_id: 'worker-1', price: 5000 }],
           rowCount: 1,
         } as never) // Task check
         .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // No existing tip

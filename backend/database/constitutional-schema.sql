@@ -1682,6 +1682,27 @@ WHERE is_public = true
 GROUP BY ratee_id;
 
 -- ----------------------------------------------------------------------------
+-- 11.4b TIPPING (post-completion tips: poster → worker, 100% to worker)
+-- ----------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS tips (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  task_id UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  poster_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  worker_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  amount_cents INTEGER NOT NULL CHECK (amount_cents >= 100),
+  stripe_payment_intent_id TEXT,
+  status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'completed', 'failed')),
+  created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
+  completed_at TIMESTAMPTZ,
+  UNIQUE(task_id, poster_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_tips_worker ON tips(worker_id);
+CREATE INDEX IF NOT EXISTS idx_tips_task ON tips(task_id);
+CREATE INDEX IF NOT EXISTS idx_tips_poster ON tips(poster_id);
+
+-- ----------------------------------------------------------------------------
 -- 11.5 ANALYTICS INFRASTRUCTURE (GAP J - PRODUCT_SPEC §13)
 -- ----------------------------------------------------------------------------
 
