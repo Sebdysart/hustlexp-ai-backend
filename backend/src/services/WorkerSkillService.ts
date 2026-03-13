@@ -7,7 +7,7 @@
  * require license/background check verification. Soft-gated skills
  * unlock by trust tier and XP.
  *
- * @see migrations/20260208_001_worker_skills_system.sql
+ * @see backend/database/constitutional-schema.sql
  */
 
 import { db } from '../db';

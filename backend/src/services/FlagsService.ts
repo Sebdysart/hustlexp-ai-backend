@@ -3,7 +3,7 @@
  *
  * Feature flag evaluation with Redis caching and deterministic rollout.
  *
- * @see migrations/20260222_004_feature_flags.sql
+ * @see backend/database/constitutional-schema.sql
  */
 
 import { Redis } from '@upstash/redis';

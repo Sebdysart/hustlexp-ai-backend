@@ -3,7 +3,7 @@
  *
  * Semantic search over vectorized documentation using pgvector.
  *
- * @see migrations/20260222_007_doc_embeddings.sql
+ * @see backend/database/constitutional-schema.sql
  */
 
 import { db } from '../db';

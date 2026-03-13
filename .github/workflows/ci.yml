@@ -35,11 +35,9 @@ jobs:
       - run: npm ci
       - name: "TypeScript — zero errors (backend/src/)"
         run: npx tsc --noEmit
-      - name: "TypeScript — zero errors (src/)"
-        run: npx tsc -p src/tsconfig.json --noEmit
 
   lint:
-    name: "Lint — zero warnings (src/ + backend/src/)"
+    name: "Lint — zero warnings (backend/src/)"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -48,8 +46,8 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
       - run: npm ci
-      - name: "Lint — zero warnings (src/ + backend/src/)"
-        run: npx eslint src/ backend/src/ --ext .ts --max-warnings 0
+      - name: "Lint — zero warnings (backend/src/)"
+        run: npx eslint backend/src/ --ext .ts --max-warnings 0
 
   test:
     name: "Tests — zero failures"

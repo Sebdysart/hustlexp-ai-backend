@@ -5,7 +5,7 @@ export default defineConfig({
     bail: 1,
     environment: 'node',
     testTimeout: 30000,
-    include: ['backend/tests/**/*.test.ts', 'src/**/*.test.ts'],
+    include: ['backend/tests/**/*.test.ts'],
     reporters: ['verbose'],
     // Run test files sequentially to avoid database race conditions
     fileParallelism: false,
@@ -18,7 +18,7 @@ export default defineConfig({
       // json-summary → coverage/coverage-summary.json (read by omni-link scanner)
       reporter: ['text', 'json', 'html', 'json-summary'],
       reportsDirectory: 'coverage',
-      include: ['backend/src/**/*.ts', 'src/**/*.ts'],
+      include: ['backend/src/**/*.ts'],
       exclude: [
         'backend/src/**/*.d.ts',
         'backend/src/**/index.ts',
@@ -26,9 +26,6 @@ export default defineConfig({
         'backend/src/jobs/**',
         'backend/src/test/**',       // Test helpers/factories — not source code
         'backend/src/server.ts',     // HTTP server entry point — integration-only
-        'src/**/*.d.ts',
-        'src/**/*.test.ts',
-        'src/tests/**',
       ],
       thresholds: {
         // Coverage gate ramp-up plan:

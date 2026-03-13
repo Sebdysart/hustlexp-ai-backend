@@ -64,6 +64,35 @@ export const MovementTrackingService = {
     initialLocation: GPSPoint
   ): Promise<ServiceResult<MovementSession>> => {
     try {
+      // Maps & location: only when task is en-route or at location (REQUIREMENTS: EN_ROUTE only)
+      const taskResult = await db.query<{ worker_id: string | null; progress_state: string }>(
+        `SELECT worker_id, progress_state FROM tasks WHERE id = $1`,
+        [taskId]
+      );
+      if (taskResult.rows.length === 0) {
+        return {
+          success: false,
+          error: { code: 'NOT_FOUND', message: 'Task not found' },
+        };
+      }
+      const task = taskResult.rows[0];
+      if (task.worker_id !== userId) {
+        return {
+          success: false,
+          error: { code: 'FORBIDDEN', message: 'Only the assigned worker can start movement tracking for this task' },
+        };
+      }
+      const allowedProgressStates = ['ACCEPTED', 'TRAVELING', 'WORKING'];
+      if (!allowedProgressStates.includes(task.progress_state)) {
+        return {
+          success: false,
+          error: {
+            code: 'INVALID_STATE',
+            message: `Movement tracking only allowed when task is in progress (ACCEPTED/TRAVELING/WORKING). Current: ${task.progress_state}`,
+          },
+        };
+      }
+
       const sessionId = `mvmt-${taskId}-${Date.now()}`;
 
       const result = await db.query<MovementSession>(

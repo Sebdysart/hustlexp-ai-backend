@@ -552,12 +552,11 @@ Description:
   target directory. Files are sorted by timestamp, deduplicated by content hash,
   and renamed with sequential prefixes (001_, 002_, etc.).
 
-Default source directories:
+Default source directory:
   - backend/database/migrations
-  - src/db/migrations
 
 Default target directory:
-  - migrations/
+  - backend/database/migrations
 
 Output:
   - Migrations written to target directory with sequential prefixes
@@ -568,11 +567,8 @@ Output:
 
   // Default configuration
   const options: ConsolidationOptions = {
-    sourceDirs: [
-      path.resolve(process.cwd(), 'backend/database/migrations'),
-      path.resolve(process.cwd(), 'src/db/migrations'),
-    ],
-    targetDir: path.resolve(process.cwd(), 'migrations'),
+    sourceDirs: [path.resolve(process.cwd(), 'backend/database/migrations')],
+    targetDir: path.resolve(process.cwd(), 'backend/database/migrations'),
   };
 
   const result = runConsolidation(options, dryRun);

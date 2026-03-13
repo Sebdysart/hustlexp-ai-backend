@@ -3,6 +3,7 @@
  * HustleXP Schema Migration - Using pg Pool
  */
 
+import 'dotenv/config';
 import pg from 'pg';
 import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
@@ -31,7 +32,12 @@ async function main() {
     ...(needsSSL ? { ssl: { rejectUnauthorized: false } } : {})
   });
   
-  const client = await pool.connect();
+  try {
+    const client = await pool.connect();
+  } catch (error) {
+    console.error('❌ Error connecting to database:', error.message);
+    process.exit(1);
+  }
   
   try {
     // Step 1: Check current state

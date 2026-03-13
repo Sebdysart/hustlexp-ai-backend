@@ -1,5 +1,7 @@
 # AGENTS.md
 
+Cursor/IDE instructions for this project. For Claude-specific protocol and invariants, see [CLAUDE.md](CLAUDE.md).
+
 ## Cursor Cloud specific instructions
 
 ### Project overview

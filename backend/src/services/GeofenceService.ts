@@ -85,6 +85,18 @@ export const GeofenceService = {
         return { success: false, error: { code: 'NOT_ASSIGNED', message: 'You are not assigned to this task' } };
       }
 
+      // Maps & location: only when task is en-route or at location (REQUIREMENTS: EN_ROUTE only)
+      const allowedProgressStates = ['ACCEPTED', 'TRAVELING', 'WORKING'];
+      if (!allowedProgressStates.includes(task.progress_state)) {
+        return {
+          success: false,
+          error: {
+            code: 'INVALID_STATE',
+            message: `Proximity check only allowed when task is in progress (ACCEPTED/TRAVELING/WORKING). Current: ${task.progress_state}`,
+          },
+        };
+      }
+
       // Calculate distance using PostGIS
       const distResult = await db.query<{ distance_meters: number }>(
         `SELECT ST_Distance(

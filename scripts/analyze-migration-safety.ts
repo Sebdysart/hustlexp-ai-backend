@@ -6,8 +6,8 @@
  * production data integrity. Designed for CI use in PR pipelines.
  *
  * Usage:
- *   npx tsx scripts/analyze-migration-safety.ts migrations/20260222_008_foo.sql
- *   CHANGED_FILES="migrations/foo.sql other/file.ts" npx tsx scripts/analyze-migration-safety.ts
+ *   npx tsx scripts/analyze-migration-safety.ts backend/database/migrations/20260222_008_foo.sql
+ *   CHANGED_FILES="backend/database/migrations/foo.sql other/file.ts" npx tsx scripts/analyze-migration-safety.ts
  */
 
 import { readFileSync, appendFileSync, existsSync } from 'fs';
@@ -262,16 +262,16 @@ export function resolveMigrationFiles(
   // CLI args (skip node and script path)
   const cliArgs = argv.slice(2);
   for (const arg of cliArgs) {
-    if (arg.match(/migrations\/.*\.sql$/i)) {
-      files.push(arg);
-    }
+if (arg.match(/(?:^|[/\\])migrations\/.*\.sql$/i) || arg.match(/database\/migrations\/.*\.sql$/i)) {
+        files.push(arg);
+      }
   }
 
   // CHANGED_FILES env var
   if (changedFilesEnv) {
     const envFiles = changedFilesEnv
       .split(/[\s,]+/)
-      .filter((f) => f.match(/migrations\/.*\.sql$/i));
+      .filter((f) => f.match(/(?:^|[/\\])migrations\/.*\.sql$/i) || f.match(/database\/migrations\/.*\.sql$/i));
     for (const f of envFiles) {
       if (!files.includes(f)) {
         files.push(f);

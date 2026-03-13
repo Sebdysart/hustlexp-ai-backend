@@ -7,8 +7,8 @@
  * running application code.
  *
  * Usage:
- *   npx tsx scripts/check-dual-read-compat.ts migrations/20260222_008_foo.sql
- *   CHANGED_FILES="migrations/foo.sql" npx tsx scripts/check-dual-read-compat.ts
+ *   npx tsx scripts/check-dual-read-compat.ts backend/database/migrations/20260222_008_foo.sql
+ *   CHANGED_FILES="backend/database/migrations/foo.sql" npx tsx scripts/check-dual-read-compat.ts
  */
 
 import { readFileSync, existsSync } from 'fs';

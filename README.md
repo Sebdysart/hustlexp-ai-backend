@@ -109,7 +109,6 @@ hustlexp-backend-clean/
 │   ├── middleware/             # Security headers, rate limiting
 │   ├── realtime/              # SSE (Server-Sent Events)
 │   └── storage/               # S3/R2 file storage
-├── migrations/                # 23 SQL migration files
 ├── public/                    # Static HTML (privacy, terms, legal)
 ├── scripts/                   # Utility and test scripts
 ├── package.json
@@ -117,6 +116,9 @@ hustlexp-backend-clean/
 ├── vitest.config.ts
 └── Procfile                   # Railway/Heroku deployment
 ```
+
+**Docs:** [docs/README.md](docs/README.md) (index) · [Project Success Plan](docs/PROJECT_SUCCESS_PLAN.md) · [Schedule](docs/PROJECT_SCHEDULE.md) · [Migrations](docs/MIGRATIONS.md) · [ENV](docs/ENV.md) · [Scripts](docs/SCRIPTS.md).  
+**Root:** [AGENTS.md](AGENTS.md) (Cursor) · [CLAUDE.md](CLAUDE.md) (Claude) · [PRODUCTION_HARDENING.md](PRODUCTION_HARDENING.md).
 
 ## API Surface (261 Procedures)
 
@@ -300,7 +302,7 @@ npm run db:migrate    # Run all pending migrations
 npm run db:check      # Verify database connection
 ```
 
-53 migration files across three directories (root `migrations/`, `backend/database/migrations/`, `backend/src/migrations/`).
+**Canonical:** `npm run db:migrate` applies `backend/database/constitutional-schema.sql` via `migrate-pg.mjs`. See [docs/MIGRATIONS.md](docs/MIGRATIONS.md). Other SQL in `backend/database/migrations/` and `backend/src/migrations/` is reference only.
 
 ## Background Workers (23)
 

@@ -115,7 +115,7 @@ function getChangedFiles(): string[] {
 function calculateBlastRadius(files: string[]): number {
   const serviceCount = files.filter(f => f.includes('/services/')).length;
   const routerCount = files.filter(f => f.includes('/routers/')).length;
-  const migrationCount = files.filter(f => f.includes('migrations/')).length;
+  const migrationCount = files.filter(f => f.includes('database/migrations/') || f.includes('constitutional-schema')).length;
 
   // Migrations have highest blast radius
   if (migrationCount > 0) return 100;
@@ -161,7 +161,7 @@ function calculateSecuritySurface(files: string[]): number {
  * Based on: migrations, schema changes, database queries
  */
 function calculateDataMutation(files: string[]): number {
-  const hasMigration = files.some(f => f.includes('migrations/'));
+  const hasMigration = files.some(f => f.includes('database/migrations/') || f.includes('constitutional-schema'));
   const hasDbChanges = files.some(f => f.includes('db.ts'));
   const hasServiceChanges = files.some(f => f.includes('/services/'));
 
@@ -194,7 +194,7 @@ function calculateUserImpact(files: string[]): number {
  * Lower = more reversible = safer
  */
 function calculateReversibility(files: string[]): number {
-  const hasMigration = files.some(f => f.includes('migrations/'));
+  const hasMigration = files.some(f => f.includes('database/migrations/') || f.includes('constitutional-schema'));
   const hasConfigChanges = files.some(f =>
     f.includes('config.ts') ||
     f.includes('server.ts') ||

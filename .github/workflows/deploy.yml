@@ -29,22 +29,9 @@ jobs:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
       - run: curl --retry 5 --retry-delay 10 --retry-connrefused ${{ secrets.STAGING_URL }}/health
 
-  smoke-tests:
-    runs-on: ubuntu-latest
-    needs: deploy-staging
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-      - run: npm ci
-      - run: npx vitest run src/test/smoke/
-        env:
-          SMOKE_TEST_URL: ${{ secrets.STAGING_URL }}
-
   deploy-production:
     runs-on: ubuntu-latest
-    needs: smoke-tests
+    needs: deploy-staging
     environment: production
     steps:
       - uses: actions/checkout@v4

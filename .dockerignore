@@ -11,7 +11,7 @@ dist
 # Environment files (secrets must come from env vars, not files)
 .env
 .env.*
-!.env.example
+!.env.template
 
 # IDE/Editor
 .vscode

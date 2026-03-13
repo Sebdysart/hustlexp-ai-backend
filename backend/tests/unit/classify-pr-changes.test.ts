@@ -142,7 +142,7 @@ describe('PR Tier Classifier', () => {
 
   describe('ARCHITECTURAL tier (migrations, infrastructure)', () => {
     it('should classify migrations as ARCHITECTURAL', () => {
-      const files = ['migrations/20260223_001_add_column.sql'];
+      const files = ['backend/database/migrations/20260223_001_add_column.sql'];
       const result = classifyPR(files);
 
       expect(result.tier).toBe(PRTier.ARCHITECTURAL);
@@ -197,7 +197,7 @@ describe('PR Tier Classifier', () => {
   describe('Mixed tier changes (highest wins)', () => {
     it('should elevate to ARCHITECTURAL when mixed with STANDARD', () => {
       const files = [
-        'migrations/20260223_001_add_column.sql',
+        'backend/database/migrations/20260223_001_add_column.sql',
         'backend/src/services/TaskService.ts',
         'README.md',
       ];
@@ -246,7 +246,7 @@ describe('PR Tier Classifier', () => {
     });
 
     it('should detect high data mutation for migrations', () => {
-      const files = ['migrations/20260223_001_add_column.sql'];
+      const files = ['backend/database/migrations/20260223_001_add_column.sql'];
       const result = classifyPR(files);
 
       expect(result.dimensions.dataMutation).toBe(100);
@@ -260,7 +260,7 @@ describe('PR Tier Classifier', () => {
     });
 
     it('should detect low reversibility for migrations', () => {
-      const files = ['migrations/20260223_001_add_column.sql'];
+      const files = ['backend/database/migrations/20260223_001_add_column.sql'];
       const result = classifyPR(files);
 
       expect(result.dimensions.reversibility).toBe(100);
@@ -336,7 +336,7 @@ describe('PR Tier Classifier', () => {
 
     it('should handle database schema change with migration + service', () => {
       const files = [
-        'migrations/20260223_001_add_payment_intent_column.sql',
+        'backend/database/migrations/20260223_001_add_payment_intent_column.sql',
         'backend/src/services/PaymentService.ts',
       ];
       const result = classifyPR(files);

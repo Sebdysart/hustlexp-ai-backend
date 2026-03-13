@@ -6,8 +6,8 @@
  * markdown summary of schema changes for inclusion in readiness score comments.
  *
  * Usage:
- *   npx tsx scripts/generate-schema-diff.ts migrations/20260222_008_foo.sql
- *   CHANGED_FILES="migrations/foo.sql" npx tsx scripts/generate-schema-diff.ts
+ *   npx tsx scripts/generate-schema-diff.ts backend/database/migrations/20260222_008_foo.sql
+ *   CHANGED_FILES="backend/database/migrations/foo.sql" npx tsx scripts/generate-schema-diff.ts
  */
 
 import { readFileSync, existsSync } from 'fs';

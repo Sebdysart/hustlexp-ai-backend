@@ -4,7 +4,7 @@
  * Validates that StripeConnectService.getTaxInfo/submitTaxInfo
  * properly persist and retrieve from the tax_forms table.
  *
- * @see migrations/20260222_009_tax_forms.sql
+ * @see backend/database/migrations/20260222_009_tax_forms.sql
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -275,7 +275,7 @@ describe('Tax Forms Persistence', () => {
   describe('Migration SQL schema', () => {
     const getMigrationPath = async () => {
       const path = await import('path');
-      return path.resolve(__dirname, '../../../migrations/20260222_009_tax_forms.sql');
+      return path.resolve(__dirname, '../../database/migrations/20260222_009_tax_forms.sql');
     };
 
     it('migration file exists', async () => {
