@@ -18,13 +18,13 @@ import { Sentry } from './sentry.js';
 import { Hono, type Context } from 'hono';
 import { cors } from 'hono/cors';
 import { trpcServer } from '@hono/trpc-server';
-import { appRouter } from './routers';
-import { createContext } from './trpc';
-import { config } from './config';
-import { securityHeaders, rateLimitMiddleware } from './middleware/security';
-import { requestIdMiddleware, serverTimingMiddleware } from './middleware/request-id';
-import { httpMetricsMiddleware } from './monitoring/http-metrics';
-import { createMetricsEndpoint } from './monitoring/metrics';
+import { appRouter } from './routers/index.js';
+import { createContext } from './trpc.js';
+import { config } from './config.js';
+import { securityHeaders, rateLimitMiddleware } from './middleware/security.js';
+import { requestIdMiddleware, serverTimingMiddleware } from './middleware/request-id.js';
+import { httpMetricsMiddleware } from './monitoring/http-metrics.js';
+import { createMetricsEndpoint } from './monitoring/metrics.js';
 
 // ============================================================================
 // SECURITY VALIDATION (Fail-Fast in Production)
@@ -67,7 +67,7 @@ type AppVariables = {
 };
 import { compress } from 'hono/compress';
 import { bodyLimit } from 'hono/body-limit';
-import { logger as pinoLogger } from './logger';
+import { logger as pinoLogger } from './logger.js';
 
 // ============================================================================
 // APP INITIALIZATION
@@ -371,10 +371,10 @@ app.use('/trpc/*', trpcServer({
 // These routes provide REST endpoints for the React Native frontend
 // They internally call tRPC endpoints for type safety
 
-import { firebaseAuth } from './auth/firebase';
-import { db } from './db';
-import type { User } from './types';
-import { sseHandler } from './realtime/sse-handler';
+import { firebaseAuth } from './auth/firebase.js';
+import { db } from './db.js';
+import type { User } from './types.js';
+import { sseHandler } from './realtime/sse-handler.js';
 import { z } from 'zod';
 
 // Helper to get authenticated user from Bearer token
