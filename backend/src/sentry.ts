@@ -16,7 +16,7 @@
  */
 
 import * as Sentry from '@sentry/node';
-import { config } from './config';
+import { config } from './config.js';
 
 const dsn = config.sentry.dsn;
 
