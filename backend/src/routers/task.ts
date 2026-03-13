@@ -11,6 +11,7 @@ import { router, protectedProcedure, Schemas } from '../trpc.js';
 import { TaskService } from '../services/TaskService.js';
 import { ProofService } from '../services/ProofService.js';
 import { db } from '../db.js';
+import { cachedDbQuery, invalidateTask, CACHE_KEYS, CACHE_TTL, CACHE_TAGS } from '../cache/db-cache.js';
 import { z } from 'zod';
 
 export const taskRouter = router({
@@ -19,21 +20,22 @@ export const taskRouter = router({
   // --------------------------------------------------------------------------
   
   /**
-   * Get task by ID
+   * Get task by ID (cached in Redis; invalidated on task mutations)
    */
   getById: protectedProcedure
     .input(z.object({ taskId: Schemas.uuid }))
     .query(async ({ input }) => {
-      const result = await TaskService.getById(input.taskId);
-      
-      if (!result.success) {
-        throw new TRPCError({
-          code: 'NOT_FOUND',
-          message: result.error.message,
-        });
-      }
-      
-      return result.data;
+      return cachedDbQuery(
+        CACHE_KEYS.taskDetails(input.taskId),
+        async () => {
+          const result = await TaskService.getById(input.taskId);
+          if (!result.success) {
+            throw new TRPCError({ code: 'NOT_FOUND', message: result.error.message });
+          }
+          return result.data;
+        },
+        { tags: [CACHE_TAGS.TASK(input.taskId)], ttl: CACHE_TTL.taskDetails }
+      );
     }),
   
   /**
@@ -197,7 +199,7 @@ export const taskRouter = router({
           message: result.error.message,
         });
       }
-      
+      await invalidateTask(result.data.id);
       return result.data;
     }),
   
@@ -219,7 +221,7 @@ export const taskRouter = router({
           message: result.error.message,
         });
       }
-      
+      await invalidateTask(input.taskId);
       return result.data;
     }),
   
@@ -248,7 +250,7 @@ export const taskRouter = router({
         `SELECT * FROM tasks WHERE id = $1`,
         [input.taskId]
       );
-
+      await invalidateTask(input.taskId);
       return result.rows[0];
     }),
 
@@ -317,7 +319,7 @@ export const taskRouter = router({
           message: taskResult.error.message,
         });
       }
-      
+      await invalidateTask(input.taskId);
       return {
         task: taskResult.data,
         proof: proofResult.data,
@@ -402,7 +404,7 @@ export const taskRouter = router({
           message: reviewResult.error.message,
         });
       }
-      
+      await invalidateTask(proofResult.data.task_id);
       return reviewResult.data;
     }),
   
@@ -432,7 +434,7 @@ export const taskRouter = router({
           message: result.error.message,
         });
       }
-
+      await invalidateTask(input.taskId);
       return result.data;
     }),
   
@@ -469,7 +471,7 @@ export const taskRouter = router({
           message: result.error.message,
         });
       }
-      
+      await invalidateTask(input.taskId);
       return result.data;
     }),
 
@@ -621,7 +623,7 @@ export const taskRouter = router({
       if (!result.success) {
         throw new TRPCError({ code: 'BAD_REQUEST', message: result.error.message });
       }
-
+      await invalidateTask(input.taskId);
       return result.data;
     }),
 
@@ -657,7 +659,7 @@ export const taskRouter = router({
       if (result.rows.length === 0) {
         throw new TRPCError({ code: 'NOT_FOUND', message: 'No pending application found for this worker' });
       }
-
+      await invalidateTask(input.taskId);
       return { success: true };
     }),
 

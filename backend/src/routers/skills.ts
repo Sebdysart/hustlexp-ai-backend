@@ -10,30 +10,44 @@ import { TRPCError } from '@trpc/server';
 import { router, publicProcedure, protectedProcedure } from '../trpc.js';
 import { WorkerSkillService } from '../services/WorkerSkillService.js';
 import { db } from '../db.js';
+import { cachedDbQuery, invalidateSkills, CACHE_TTL, CACHE_TAGS } from '../cache/db-cache.js';
 
 export const skillsRouter = router({
-  // Public: Browse skill catalog
+  // Public: Browse skill catalog (cached)
   getCategories: publicProcedure.input(z.void()).query(async () => {
-    return WorkerSkillService.getCategories();
+    return cachedDbQuery(
+      'skills:categories',
+      () => WorkerSkillService.getCategories(),
+      { tags: [CACHE_TAGS.SKILLS], ttl: CACHE_TTL.userStats }
+    );
   }),
 
   getSkills: publicProcedure
     .input(z.object({ categoryId: z.string().uuid().optional() }).optional())
     .query(async ({ input }) => {
-      return WorkerSkillService.getSkills(input?.categoryId);
+      const key = `skills:list:${input?.categoryId ?? 'all'}`;
+      return cachedDbQuery(
+        key,
+        () => WorkerSkillService.getSkills(input?.categoryId),
+        { tags: [CACHE_TAGS.SKILLS], ttl: CACHE_TTL.userStats }
+      );
     }),
 
   // Protected: Worker skill management
   addSkills: protectedProcedure
     .input(z.object({ skillIds: z.array(z.string().uuid()).min(1).max(50) }))
     .mutation(async ({ ctx, input }) => {
-      return WorkerSkillService.addSkills(ctx.user.id, input.skillIds);
+      const out = await WorkerSkillService.addSkills(ctx.user.id, input.skillIds);
+      await invalidateSkills();
+      return out;
     }),
 
   removeSkill: protectedProcedure
     .input(z.object({ skillId: z.string().uuid() }))
     .mutation(async ({ ctx, input }) => {
-      return WorkerSkillService.removeSkill(ctx.user.id, input.skillId);
+      const out = await WorkerSkillService.removeSkill(ctx.user.id, input.skillId);
+      await invalidateSkills();
+      return out;
     }),
 
   getMySkills: protectedProcedure.input(z.void()).query(async ({ ctx }) => {

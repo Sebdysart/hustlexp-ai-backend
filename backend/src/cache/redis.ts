@@ -9,7 +9,8 @@ export type RedisClient = Redis | null;
 // ─── Singleton Redis Client ────────────────────────────────────────────────
 let redisClient: Redis | null = null;
 
-function getClient(): Redis | null {
+/** Get shared Redis REST client; null if not configured (cache/rate-limit no-op). */
+export function getClient(): Redis | null {
   if (redisClient) return redisClient;
 
   if (config.redis.restUrl && config.redis.restToken) {

@@ -34,6 +34,7 @@ The project uses **two Redis connection modes** (both can point at the same Upst
 - **AIClient** (`services/AIClient.ts`) — AI response cache by hash; TTL from `CACHE_TTL.aiCache`.
 - **GeocodingService** — Geocode result cache (address → lat/lng, reverse); long TTL (e.g. 30 days).
 - **CapabilityProfileService** — Uses cache layer (query-cache or redis) for profile data.
+- **DB/query cache** (`cache/query-cache.js`, `cache/db-cache.js`) — Shared client; tag-based invalidation. Caches: `task.getById` (task details), `user.getById` (other-user public profile), `skills.getCategories` / `skills.getSkills`. Mutations invalidate by tag (e.g. `invalidateTask`, `invalidateUser`, `invalidateSkills`). If REST client is missing, cache is skipped and queries hit the DB.
 
 ### 2.2 NotificationService — `backend/src/services/NotificationService.ts`
 

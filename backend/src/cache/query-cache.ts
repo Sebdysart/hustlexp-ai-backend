@@ -1,19 +1,12 @@
 // ============================================================================
 // HustleXP Query Result Caching
-// Redis-based caching with tag-based invalidation
+// Redis-based caching with tag-based invalidation (uses shared client from redis.js)
 // ============================================================================
 
-import { Redis } from '@upstash/redis';
-import { config } from '../config.js';
+import { getClient } from './redis.js';
 import { logger } from '../logger.js';
 
 const cacheLog = logger.child({ module: 'query-cache' });
-
-// Initialize Redis client
-const redis = new Redis({
-  url: config.redis.restUrl,
-  token: config.redis.restToken,
-});
 
 // ============================================================================
 // Cache Configuration
@@ -43,42 +36,38 @@ export async function cachedQuery<T>(
   
   const cacheKey = `cache:query:${key}`;
   const staleKey = `cache:stale:${key}`;
-  
+  const client = getClient();
+
   try {
-    // Try to get from cache
-    const cached = await redis.get<string>(cacheKey);
-    
-    if (cached) {
-      const data = JSON.parse(cached);
-      
-      // Check if stale-while-revalidate is enabled
-      if (staleWhileRevalidate > 0) {
-        const isStale = await redis.get(staleKey);
-        
-        if (isStale) {
-          // Data is stale, trigger background refresh
-          cacheLog.debug({ key }, 'Cache stale, refreshing in background');
-          refreshCache(cacheKey, staleKey, queryFn, ttl, staleWhileRevalidate, tags);
+    if (client) {
+      const cached = await client.get<string>(cacheKey);
+
+      if (cached) {
+        const data = typeof cached === 'string' ? JSON.parse(cached) : cached;
+
+        if (staleWhileRevalidate > 0) {
+          const isStale = await client.get(staleKey);
+          if (isStale) {
+            cacheLog.debug({ key }, 'Cache stale, refreshing in background');
+            refreshCache(cacheKey, staleKey, queryFn, ttl, staleWhileRevalidate, tags);
+          }
         }
+
+        cacheLog.debug({ key, hit: true }, 'Cache hit');
+        return data as T;
       }
-      
-      cacheLog.debug({ key, hit: true }, 'Cache hit');
-      return data;
     }
-    
-    // Cache miss - execute query
+
     cacheLog.debug({ key, hit: false }, 'Cache miss');
-    
     const result = await queryFn();
-    
-    // Store in cache
-    await storeInCache(cacheKey, staleKey, result, ttl, staleWhileRevalidate, tags);
-    
+
+    if (client) {
+      await storeInCache(client, cacheKey, staleKey, result, ttl, staleWhileRevalidate, tags);
+    }
+
     return result;
   } catch (error) {
     cacheLog.error({ err: error, key }, 'Cache error, falling back to query');
-    
-    // Fallback to query on cache error
     return queryFn();
   }
 }
@@ -94,9 +83,11 @@ async function refreshCache<T>(
   staleWhileRevalidate: number,
   tags: string[]
 ): Promise<void> {
+  const client = getClient();
+  if (!client) return;
   try {
     const result = await queryFn();
-    await storeInCache(cacheKey, staleKey, result, ttl, staleWhileRevalidate, tags);
+    await storeInCache(client, cacheKey, staleKey, result, ttl, staleWhileRevalidate, tags);
     cacheLog.debug({ key: cacheKey }, 'Cache refreshed in background');
   } catch (error) {
     cacheLog.error({ err: error, key: cacheKey }, 'Background cache refresh failed');
@@ -107,6 +98,7 @@ async function refreshCache<T>(
 // Store in Cache
 // ============================================================================
 async function storeInCache<T>(
+  client: import('@upstash/redis').Redis,
   cacheKey: string,
   staleKey: string,
   data: T,
@@ -114,22 +106,18 @@ async function storeInCache<T>(
   staleWhileRevalidate: number,
   tags: string[]
 ): Promise<void> {
-  const pipeline = redis.pipeline();
-  
-  // Store the data
-  pipeline.setex(cacheKey, ttl + staleWhileRevalidate, JSON.stringify(data));
-  
-  // Set stale marker (data becomes stale after TTL)
+  const pipeline = client.pipeline();
+  const fullTtl = ttl + staleWhileRevalidate;
+  const payload = JSON.stringify(data);
+
+  pipeline.setex(cacheKey, fullTtl, payload);
   if (staleWhileRevalidate > 0) {
     pipeline.setex(staleKey, ttl, '1');
   }
-  
-  // Add to tag sets for bulk invalidation
   for (const tag of tags) {
     pipeline.sadd(`cache:tag:${tag}`, cacheKey);
-    pipeline.expire(`cache:tag:${tag}`, ttl + staleWhileRevalidate);
+    pipeline.expire(`cache:tag:${tag}`, fullTtl);
   }
-  
   await pipeline.exec();
 }
 
@@ -141,11 +129,11 @@ async function storeInCache<T>(
  * Invalidate a specific cache key
  */
 export async function invalidateCache(key: string): Promise<void> {
+  const client = getClient();
+  if (!client) return;
   const cacheKey = `cache:query:${key}`;
   const staleKey = `cache:stale:${key}`;
-  
-  await redis.del(cacheKey, staleKey);
-  
+  await client.del(cacheKey, staleKey);
   cacheLog.debug({ key }, 'Cache invalidated');
 }
 
@@ -153,28 +141,21 @@ export async function invalidateCache(key: string): Promise<void> {
  * Invalidate all cache entries with a specific tag
  */
 export async function invalidateCacheByTag(tag: string): Promise<number> {
+  const client = getClient();
+  if (!client) return 0;
   const tagKey = `cache:tag:${tag}`;
-  const keys = await redis.smembers(tagKey);
-  
-  if (keys.length === 0) {
-    return 0;
-  }
-  
-  const pipeline = redis.pipeline();
-  
-  // Delete all cached entries
+  const keys = await client.smembers(tagKey) as string[];
+
+  if (keys.length === 0) return 0;
+
+  const pipeline = client.pipeline();
   for (const key of keys) {
     pipeline.del(key);
     pipeline.del(key.replace('cache:query:', 'cache:stale:'));
   }
-  
-  // Delete the tag set
   pipeline.del(tagKey);
-  
   await pipeline.exec();
-  
   cacheLog.debug({ tag, count: keys.length }, 'Cache invalidated by tag');
-  
   return keys.length;
 }
 
@@ -195,18 +176,15 @@ export async function invalidateCacheByTags(tags: string[]): Promise<number> {
  * Clear all cache (use with caution!)
  */
 export async function clearAllCache(): Promise<void> {
-  // Get all cache keys
-  let cursor = '0';
+  const client = getClient();
+  if (!client) return;
+  let cursor: number | string = 0;
   do {
-    const scanResult = await redis.scan(Number(cursor), { match: 'cache:*', count: 100 }) as unknown as [string, string[]];
-    cursor = String(scanResult[0]);
-    const keys = scanResult[1];
-
-    if (keys.length > 0) {
-      await redis.del(...keys);
-    }
-  } while (cursor !== '0');
-  
+    const result = await client.scan(cursor, { match: 'cache:*', count: 100 }) as unknown as { cursor: number; keys: string[] };
+    cursor = result.cursor;
+    const keys = result.keys ?? [];
+    if (keys.length > 0) await client.del(...keys);
+  } while (cursor !== 0);
   cacheLog.info('All cache cleared');
 }
 
@@ -218,17 +196,11 @@ export async function getCacheStats(): Promise<{
   tagKeys: number;
   staleKeys: number;
 }> {
-  const [_queryKeys, _tagKeys, _staleKeys] = await Promise.all([
-    redis.dbsize(), // Approximate, would need scan for exact count
-    redis.dbsize(),
-    redis.dbsize(),
-  ]);
-  
-  return {
-    queryKeys: 0, // Would need to implement proper counting
-    tagKeys: 0,
-    staleKeys: 0,
-  };
+  const client = getClient();
+  if (!client) return { queryKeys: 0, tagKeys: 0, staleKeys: 0 };
+  // Approximate; exact count would require SCAN
+  const dbsize = await client.dbsize();
+  return { queryKeys: dbsize, tagKeys: 0, staleKeys: 0 };
 }
 
 // ============================================================================
