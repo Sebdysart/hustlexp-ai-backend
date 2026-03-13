@@ -71,7 +71,7 @@ async function verifySchema() {
   
   // 2. Verify core tables exist
   const expectedTables = [
-    'users', 'tasks', 'escrows', 'proofs', 'proof_photos',
+    'users', 'tasks', 'escrows', 'proofs', 'proof_photos', 'proof_videos',
     'xp_ledger', 'trust_ledger', 'badges', 'disputes',
     'processed_stripe_events',
     'ai_events', 'ai_jobs', 'ai_proposals', 'ai_decisions', 'evidence',

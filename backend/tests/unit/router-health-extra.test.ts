@@ -62,7 +62,7 @@ function makeCaller() {
 
 // All expected tables, triggers, views from the router source
 const ALL_TABLES = [
-  'schema_versions', 'users', 'tasks', 'escrows', 'proofs', 'proof_photos',
+  'schema_versions', 'users', 'tasks', 'escrows', 'proofs', 'proof_photos', 'proof_videos',
   'xp_ledger', 'trust_ledger', 'badges', 'disputes', 'stripe_events',
   'ai_events', 'ai_jobs', 'ai_proposals', 'ai_decisions', 'evidence',
   'admin_roles', 'admin_actions', 'live_sessions', 'live_broadcasts',

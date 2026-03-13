@@ -66,6 +66,8 @@
 ### task
 `getById` `getState` `listByPoster` `listByWorker` `listOpen` `create` `accept` `start` `getProof` `submitProof` `reviewProof` `complete` `cancel` `applyForTask` `listApplicants` `assignWorker` `rejectApplicant` `withdrawApplication`
 
+- **Proof:** `getProof` returns the proof with `photos` and `videos` arrays. `submitProof` accepts optional `photoUrls` and `videoUrls` (video proof of completion).
+
 ### escrow
 `getById` `getState` `getByTaskId` `createPaymentIntent` `confirmFunding` `release` `refund` `lockForDispute` `getHistory` `awardXP`
 

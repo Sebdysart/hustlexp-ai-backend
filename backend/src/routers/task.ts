@@ -11,7 +11,9 @@ import { router, protectedProcedure, Schemas } from '../trpc.js';
 import { TaskService } from '../services/TaskService.js';
 import { ProofService } from '../services/ProofService.js';
 import { db } from '../db.js';
+import type { Proof } from '../types.js';
 import { cachedDbQuery, invalidateTask, CACHE_KEYS, CACHE_TTL, CACHE_TAGS } from '../cache/db-cache.js';
+import { logger } from '../logger.js';
 import { z } from 'zod';
 
 export const taskRouter = router({
@@ -263,7 +265,7 @@ export const taskRouter = router({
   getProof: protectedProcedure
     .input(z.object({ taskId: z.string().uuid() }))
     .query(async ({ ctx, input }) => {
-      const result = await db.query(
+      const result = await db.query<Proof>(
         `SELECT p.* FROM proofs p
          JOIN tasks t ON t.id = p.task_id
          WHERE p.task_id = $1
@@ -277,7 +279,16 @@ export const taskRouter = router({
         throw new TRPCError({ code: 'NOT_FOUND', message: 'No proof found for this task' });
       }
 
-      return result.rows[0];
+      const proof = result.rows[0];
+      const [photosRes, videosRes] = await Promise.all([
+        ProofService.getPhotos(proof.id),
+        ProofService.getVideos(proof.id),
+      ]);
+      return {
+        ...proof,
+        photos: photosRes.success ? photosRes.data : [],
+        videos: videosRes.success ? videosRes.data : [],
+      };
     }),
 
   submitProof: protectedProcedure
@@ -286,6 +297,7 @@ export const taskRouter = router({
       description: z.string().max(2000).optional(),
       // Extended fields from iOS frontend
       photoUrls: z.array(z.string().url().max(2048)).max(10).optional(),
+      videoUrls: z.array(z.string().url().max(2048)).max(5).optional(),
       notes: z.string().max(2000).optional(),
       gpsLatitude: z.number().min(-90).max(90).optional(),
       gpsLongitude: z.number().min(-180).max(180).optional(),
@@ -302,14 +314,29 @@ export const taskRouter = router({
         gpsLongitude: input.gpsLongitude,
         biometricHash: input.biometricHash,
       });
-      
+
       if (!proofResult.success) {
         throw new TRPCError({
           code: 'BAD_REQUEST',
           message: proofResult.error.message,
         });
       }
-      
+
+      // Attach video proof URLs to the proof
+      if (input.videoUrls?.length) {
+        for (const url of input.videoUrls) {
+          const videoResult = await ProofService.addVideo({
+            proofId: proofResult.data.id,
+            storageKey: url,
+            contentType: 'video/mp4',
+          });
+          if (!videoResult.success) {
+            // Log but do not fail the whole submission; proof is already created
+            logger.child({ service: 'task' }).warn({ proofId: proofResult.data.id, url }, 'Failed to add video to proof');
+          }
+        }
+      }
+
       // Transition task to PROOF_SUBMITTED
       const taskResult = await TaskService.submitProof(input.taskId);
       

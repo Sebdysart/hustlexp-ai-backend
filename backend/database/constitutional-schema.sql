@@ -434,6 +434,29 @@ CREATE TABLE IF NOT EXISTS proof_photos (
 
 CREATE INDEX IF NOT EXISTS idx_proof_photos_proof ON proof_photos(proof_id);
 
+-- ----------------------------------------------------------------------------
+-- 1.4.2 PROOF VIDEOS TABLE (video proof of completion)
+-- ----------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS proof_videos (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    proof_id UUID NOT NULL REFERENCES proofs(id) ON DELETE CASCADE,
+
+    -- Storage (URL or R2 key)
+    storage_key VARCHAR(500) NOT NULL,
+    content_type VARCHAR(100) NOT NULL DEFAULT 'video/mp4',
+    file_size_bytes BIGINT,
+    duration_seconds INTEGER,
+
+    -- Order
+    sequence_number INTEGER DEFAULT 1,
+
+    -- Timestamps
+    created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_proof_videos_proof ON proof_videos(proof_id);
+
 -- ============================================================================
 -- SECTION 2: XP SYSTEM (PRODUCT_SPEC §5)
 -- ============================================================================

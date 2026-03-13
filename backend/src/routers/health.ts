@@ -81,6 +81,7 @@ export const healthRouter = router({
         'escrows',
         'proofs',
         'proof_photos',
+        'proof_videos',
         'xp_ledger',
         'trust_ledger',
         'badges',

@@ -297,6 +297,17 @@ export interface ProofPhoto {
   created_at: Date;
 }
 
+export interface ProofVideo {
+  id: string;
+  proof_id: string;
+  storage_key: string;
+  content_type: string;
+  file_size_bytes: number | null;
+  duration_seconds: number | null;
+  sequence_number: number;
+  created_at: Date;
+}
+
 export interface XPLedgerEntry {
   id: string;
   user_id: string;

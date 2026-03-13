@@ -54,6 +54,7 @@ export async function cleanupTestData(pool: pg.Pool): Promise<void> {
   // Delete in order that respects foreign keys
   // Skip xp_ledger and badges - they're append-only and uniqueness is guaranteed by TEST_RUN_ID
   await pool.query('DELETE FROM trust_ledger WHERE user_id IN (SELECT id FROM users WHERE email LIKE $1)', [pattern]);
+  await pool.query('DELETE FROM proof_videos WHERE proof_id IN (SELECT p.id FROM proofs p JOIN tasks t ON p.task_id = t.id JOIN users u ON t.poster_id = u.id WHERE u.email LIKE $1)', [pattern]);
   await pool.query('DELETE FROM proof_photos WHERE proof_id IN (SELECT p.id FROM proofs p JOIN tasks t ON p.task_id = t.id JOIN users u ON t.poster_id = u.id WHERE u.email LIKE $1)', [pattern]);
   await pool.query('DELETE FROM proofs WHERE task_id IN (SELECT id FROM tasks WHERE poster_id IN (SELECT id FROM users WHERE email LIKE $1))', [pattern]);
   await pool.query('DELETE FROM escrows WHERE task_id IN (SELECT id FROM tasks WHERE poster_id IN (SELECT id FROM users WHERE email LIKE $1))', [pattern]);

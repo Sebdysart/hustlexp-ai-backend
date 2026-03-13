@@ -28,7 +28,7 @@ const log = logger.child({ service: 'ProofService' });
 // TYPES
 // ============================================================================
 
-import type { Proof, ProofState, ProofPhoto } from '../types.js';
+import type { Proof, ProofState, ProofPhoto, ProofVideo } from '../types.js';
 
 
 interface SubmitProofParams {
@@ -48,6 +48,15 @@ interface AddPhotoParams {
   fileSizeBytes: number;
   checksumSha256: string;
   captureTime?: Date;
+  sequenceNumber?: number;
+}
+
+interface AddVideoParams {
+  proofId: string;
+  storageKey: string;
+  contentType?: string;
+  fileSizeBytes?: number;
+  durationSeconds?: number;
   sequenceNumber?: number;
 }
 
@@ -146,7 +155,29 @@ export const ProofService = {
         'SELECT * FROM proof_photos WHERE proof_id = $1 ORDER BY sequence_number',
         [proofId]
       );
-      
+
+      return { success: true, data: result.rows };
+    } catch (error) {
+      return {
+        success: false,
+        error: {
+          code: 'DB_ERROR',
+          message: error instanceof Error ? error.message : 'Unknown error',
+        },
+      };
+    }
+  },
+
+  /**
+   * Get videos for a proof
+   */
+  getVideos: async (proofId: string): Promise<ServiceResult<ProofVideo[]>> => {
+    try {
+      const result = await db.query<ProofVideo>(
+        'SELECT * FROM proof_videos WHERE proof_id = $1 ORDER BY sequence_number',
+        [proofId]
+      );
+
       return { success: true, data: result.rows };
     } catch (error) {
       return {
@@ -245,6 +276,50 @@ export const ProofService = {
         [proofId, storageKey, contentType, fileSizeBytes, checksumSha256, captureTime, seqNum]
       );
       
+      return { success: true, data: result.rows[0] };
+    } catch (error) {
+      return {
+        success: false,
+        error: {
+          code: 'DB_ERROR',
+          message: error instanceof Error ? error.message : 'Unknown error',
+        },
+      };
+    }
+  },
+
+  /**
+   * Add video to proof
+   */
+  addVideo: async (params: AddVideoParams): Promise<ServiceResult<ProofVideo>> => {
+    const {
+      proofId,
+      storageKey,
+      contentType = 'video/mp4',
+      fileSizeBytes,
+      durationSeconds,
+      sequenceNumber,
+    } = params;
+
+    try {
+      let seqNum = sequenceNumber;
+      if (seqNum === undefined) {
+        const countResult = await db.query<{ count: string }>(
+          'SELECT COUNT(*) as count FROM proof_videos WHERE proof_id = $1',
+          [proofId]
+        );
+        seqNum = parseInt(countResult.rows[0].count, 10) + 1;
+      }
+
+      const result = await db.query<ProofVideo>(
+        `INSERT INTO proof_videos (
+          proof_id, storage_key, content_type, file_size_bytes,
+          duration_seconds, sequence_number
+        ) VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING *`,
+        [proofId, storageKey, contentType, fileSizeBytes ?? null, durationSeconds ?? null, seqNum]
+      );
+
       return { success: true, data: result.rows[0] };
     } catch (error) {
       return {
