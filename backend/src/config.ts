@@ -16,14 +16,8 @@ export const config = {
   // Cache (Upstash Redis)
   redis: {
     // REST API (for @upstash/redis client - caching, rate limiting)
-    restUrl: process.env.UPSTASH_REDIS_REST_URL || '',
-    restToken: process.env.UPSTASH_REDIS_REST_TOKEN || '',
-    // Direct TCP (for BullMQ/ioredis - job queues)
-    // Upstash provides both REST and direct TCP endpoints
-    // Use UPSTASH_REDIS_URL (direct TCP connection string) for BullMQ
-    // Format: redis://default:{password}@{endpoint}:6379
-    // OR use separate Redis instance: REDIS_URL=redis://localhost:6379
-    url: process.env.UPSTASH_REDIS_URL || process.env.REDIS_URL || '',  // Direct TCP connection string
+    restUrl: process.env.REDIS_URL || '',
+    restToken: process.env.REDIS_TOKEN || '',
   },
   
   // Payments (Stripe)
