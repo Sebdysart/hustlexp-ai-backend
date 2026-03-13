@@ -48,7 +48,7 @@
 | referral | 3 | protected |
 | subscription | 4 | protected |
 | tipping | 5 | protected |
-| squad | 10 | protected |
+| squad | 15 | protected |
 | recurringTask | 10 | protected |
 | stripeConnect | 11 | protected |
 | flags | 2 | protected + admin |
@@ -178,7 +178,7 @@
 `createTip` `confirmTip` `getTipsForTask` `getMyTipsReceived` `getMyTipsSent`
 
 ### squad
-`create` `listMine` `getById` `invite` `respondToInvite` `listInvites` `leave` `disband` `listTasks` `acceptTask` `leaderboard`
+`create` `listMine` `getById` `invite` `respondToInvite` `listInvites` `leave` `disband` `createTeamTask` `listTasks` `getTeamTask` `startTeamTask` `withdrawFromTeamTask` `acceptTask` `leaderboard`
 
 ### recurringTask
 `create` `listMine` `getById` `pause` `resume` `cancel` `listOccurrences` `generateOccurrences` `skipOccurrence` `setPreferredWorker`

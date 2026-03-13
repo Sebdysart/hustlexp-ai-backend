@@ -1,8 +1,8 @@
 /**
  * Squad Router Structure Tests
  *
- * Verifies the squad tRPC router has all 11 expected procedures
- * (8 original + 3 new: listTasks, acceptTask, leaderboard)
+ * Verifies the squad tRPC router has all 15 expected procedures
+ * (8 original + 3: listTasks, acceptTask, leaderboard + 4 team task: createTeamTask, getTeamTask, startTeamTask, withdrawFromTeamTask)
  * with correct types (query vs mutation).
  */
 
@@ -32,9 +32,9 @@ describe('Squad Router', () => {
   describe('procedure definitions', () => {
     const procedures = squadRouter._def.procedures as Record<string, any>;
 
-    it('should have exactly 11 procedures (8 original + 3 new)', () => {
+    it('should have exactly 15 procedures', () => {
       const procedureNames = Object.keys(procedures);
-      expect(procedureNames).toHaveLength(11);
+      expect(procedureNames).toHaveLength(15);
     });
 
     it('should have all original procedure names', () => {
@@ -55,8 +55,8 @@ describe('Squad Router', () => {
       }
     });
 
-    it('should have all 3 new procedure names', () => {
-      const newProcedures = ['listTasks', 'acceptTask', 'leaderboard'];
+    it('should have all team task and list procedure names', () => {
+      const newProcedures = ['listTasks', 'getTeamTask', 'createTeamTask', 'startTeamTask', 'withdrawFromTeamTask', 'acceptTask', 'leaderboard'];
 
       const procedureNames = Object.keys(procedures);
       for (const name of newProcedures) {

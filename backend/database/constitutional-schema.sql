@@ -1764,6 +1764,88 @@ CREATE INDEX IF NOT EXISTS idx_recurring_occurrences_date ON recurring_task_occu
 CREATE INDEX IF NOT EXISTS idx_tasks_parent_series ON tasks(parent_series_id) WHERE parent_series_id IS NOT NULL;
 
 -- ----------------------------------------------------------------------------
+-- 11.4d SQUADS AND TEAM TASKS (PRODUCT_SPEC §11 - multi-worker tasks, tier-gated)
+-- ----------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS squads (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name VARCHAR(100) NOT NULL,
+  emoji VARCHAR(10) NOT NULL DEFAULT '⚡',
+  tagline VARCHAR(200),
+  organizer_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  max_members INT NOT NULL DEFAULT 5,
+  status VARCHAR(20) NOT NULL DEFAULT 'active'
+    CHECK (status IN ('active', 'paused', 'disbanded')),
+  total_tasks_completed INT NOT NULL DEFAULT 0,
+  total_earnings_cents INT NOT NULL DEFAULT 0,
+  average_rating NUMERIC(3,2) NOT NULL DEFAULT 0,
+  squad_xp INT NOT NULL DEFAULT 0,
+  squad_level INT NOT NULL DEFAULT 1,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  last_active_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS squad_members (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  squad_id UUID NOT NULL REFERENCES squads(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  role VARCHAR(20) NOT NULL DEFAULT 'member'
+    CHECK (role IN ('organizer', 'member')),
+  joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  last_active_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(squad_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS squad_invites (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  squad_id UUID NOT NULL REFERENCES squads(id) ON DELETE CASCADE,
+  inviter_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  invitee_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  status VARCHAR(20) NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending', 'accepted', 'declined', 'expired')),
+  sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  expires_at TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '7 days'),
+  responded_at TIMESTAMPTZ,
+  UNIQUE(squad_id, invitee_id)
+);
+
+CREATE TABLE IF NOT EXISTS squad_task_assignments (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  squad_id UUID NOT NULL REFERENCES squads(id) ON DELETE CASCADE,
+  task_id UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  required_workers INT NOT NULL DEFAULT 2,
+  payment_split_mode VARCHAR(20) NOT NULL DEFAULT 'equal'
+    CHECK (payment_split_mode IN ('equal', 'weighted')),
+  per_worker_payment_cents INT NOT NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'recruiting'
+    CHECK (status IN ('recruiting', 'ready', 'in_progress', 'completed', 'cancelled')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS squad_task_workers (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  squad_task_id UUID NOT NULL REFERENCES squad_task_assignments(id) ON DELETE CASCADE,
+  worker_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  accepted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  completed_at TIMESTAMPTZ,
+  payment_share_cents INT,
+  UNIQUE(squad_task_id, worker_id)
+);
+
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS squad_id UUID REFERENCES squads(id) ON DELETE SET NULL;
+
+CREATE INDEX IF NOT EXISTS idx_squads_organizer ON squads(organizer_id);
+CREATE INDEX IF NOT EXISTS idx_squad_members_user ON squad_members(user_id);
+CREATE INDEX IF NOT EXISTS idx_squad_members_squad ON squad_members(squad_id);
+CREATE INDEX IF NOT EXISTS idx_squad_invites_invitee ON squad_invites(invitee_id, status);
+CREATE INDEX IF NOT EXISTS idx_squad_task_assignments_squad ON squad_task_assignments(squad_id);
+CREATE INDEX IF NOT EXISTS idx_squad_task_assignments_task ON squad_task_assignments(task_id);
+CREATE INDEX IF NOT EXISTS idx_squad_task_workers_worker ON squad_task_workers(worker_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_squad ON tasks(squad_id) WHERE squad_id IS NOT NULL;
+
+-- ----------------------------------------------------------------------------
 -- 11.5 ANALYTICS INFRASTRUCTURE (GAP J - PRODUCT_SPEC §13)
 -- ----------------------------------------------------------------------------
 

@@ -472,6 +472,78 @@ export const squadRouter = router({
     }),
 
   // --------------------------------------------------------------------------
+  // CREATE TEAM TASK (organizer posts a task for the squad)
+  // --------------------------------------------------------------------------
+
+  createTeamTask: protectedProcedure
+    .input(z.object({
+      squadId: Schemas.uuid,
+      title: z.string().min(3).max(255),
+      description: z.string().min(10).max(5000),
+      totalPriceCents: z.number().int().min(500),
+      requiredWorkers: z.number().int().min(2).max(20).default(2),
+      paymentSplit: z.enum(['equal', 'weighted']).default('equal'),
+      location: z.string().max(500).optional(),
+      category: z.string().max(100).optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      assertEliteTier(ctx.user.trust_tier);
+
+      return await db.transaction(async (query) => {
+        const organizerCheck = await query<{ id: string }>(
+          `SELECT s.id FROM squads s
+           JOIN squad_members sm ON sm.squad_id = s.id AND sm.user_id = $2
+           WHERE s.id = $1 AND s.status = 'active' AND sm.role = 'organizer'`,
+          [input.squadId, ctx.user.id]
+        );
+        if (organizerCheck.rows.length === 0) {
+          throw new TRPCError({ code: 'FORBIDDEN', message: 'Only the squad organizer can create team tasks' });
+        }
+
+        const perWorkerCents = Math.floor(input.totalPriceCents / input.requiredWorkers);
+        if (perWorkerCents < 100) {
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message: 'Total price too low for required workers (min $1 per worker)',
+          });
+        }
+
+        const taskResult = await query<{ id: string }>(
+          `INSERT INTO tasks (poster_id, title, description, price, requirements, location, category, risk_level, state)
+           VALUES ($1, $2, $3, $4, '', $5, $6, 'LOW', 'OPEN')
+           RETURNING id`,
+          [ctx.user.id, input.title, input.description, input.totalPriceCents, input.location ?? null, input.category ?? null]
+        );
+        const taskId = taskResult.rows[0].id;
+
+        try {
+          await query(
+            `UPDATE tasks SET squad_id = $1 WHERE id = $2`,
+            [input.squadId, taskId]
+          );
+        } catch {
+          // squad_id column may not exist if migration not run; continue
+        }
+
+        const assignResult = await query<{ id: string }>(
+          `INSERT INTO squad_task_assignments (squad_id, task_id, required_workers, payment_split_mode, per_worker_payment_cents, status)
+           VALUES ($1, $2, $3, $4, $5, 'recruiting')
+           RETURNING id`,
+          [input.squadId, taskId, input.requiredWorkers, input.paymentSplit, perWorkerCents]
+        );
+
+        return {
+          id: assignResult.rows[0].id,
+          taskId,
+          squadId: input.squadId,
+          requiredWorkers: input.requiredWorkers,
+          perWorkerPaymentCents: perWorkerCents,
+          status: 'recruiting',
+        };
+      });
+    }),
+
+  // --------------------------------------------------------------------------
   // LIST SQUAD TASKS
   // --------------------------------------------------------------------------
 
@@ -536,6 +608,150 @@ export const squadRouter = router({
         status: r.status,
         createdAt: r.created_at,
       }));
+    }),
+
+  // --------------------------------------------------------------------------
+  // GET TEAM TASK (single assignment with task + workers)
+  // --------------------------------------------------------------------------
+
+  getTeamTask: protectedProcedure
+    .input(z.object({ squadTaskId: Schemas.uuid }))
+    .query(async ({ ctx, input }) => {
+      const member = await db.query(
+        `SELECT 1 FROM squad_members WHERE squad_id = (SELECT squad_id FROM squad_task_assignments WHERE id = $1) AND user_id = $2`,
+        [input.squadTaskId, ctx.user.id]
+      );
+      if (member.rows.length === 0) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'Not a member of this squad' });
+      }
+
+      const assign = await db.query<{
+        id: string; task_id: string; squad_id: string; required_workers: number;
+        payment_split_mode: string; per_worker_payment_cents: number; status: string; created_at: string;
+        t_title: string; t_description: string; t_price: number; t_location: string | null; t_category: string | null; t_state: string;
+      }>(
+        `SELECT sta.id, sta.task_id, sta.squad_id, sta.required_workers, sta.payment_split_mode,
+                sta.per_worker_payment_cents, sta.status, sta.created_at,
+                t.title as t_title, t.description as t_description, t.price as t_price,
+                t.location as t_location, t.category as t_category, t.state as t_state
+         FROM squad_task_assignments sta
+         JOIN tasks t ON t.id = sta.task_id
+         WHERE sta.id = $1`,
+        [input.squadTaskId]
+      );
+      if (assign.rows.length === 0) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Team task not found' });
+      }
+      const a = assign.rows[0];
+
+      const workers = await db.query<{ worker_id: string; full_name: string | null; accepted_at: string; completed_at: string | null }>(
+        `SELECT stw.worker_id, u.full_name, stw.accepted_at, stw.completed_at
+         FROM squad_task_workers stw
+         JOIN users u ON u.id = stw.worker_id
+         WHERE stw.squad_task_id = $1`,
+        [input.squadTaskId]
+      );
+
+      return {
+        id: a.id,
+        taskId: a.task_id,
+        squadId: a.squad_id,
+        task: {
+          title: a.t_title,
+          description: a.t_description,
+          payment: a.t_price / 100,
+          location: a.t_location,
+          category: a.t_category,
+          state: a.t_state,
+        },
+        requiredWorkers: a.required_workers,
+        paymentSplit: a.payment_split_mode,
+        perWorkerPaymentCents: a.per_worker_payment_cents,
+        status: a.status,
+        createdAt: a.created_at,
+        workers: workers.rows.map(w => ({
+          workerId: w.worker_id,
+          workerName: w.full_name,
+          acceptedAt: w.accepted_at,
+          completedAt: w.completed_at,
+        })),
+      };
+    }),
+
+  // --------------------------------------------------------------------------
+  // START TEAM TASK (organizer moves ready → in_progress)
+  // --------------------------------------------------------------------------
+
+  startTeamTask: protectedProcedure
+    .input(z.object({ squadTaskId: Schemas.uuid }))
+    .mutation(async ({ ctx, input }) => {
+      const organizer = await db.query(
+        `SELECT sta.squad_id FROM squad_task_assignments sta
+         JOIN squad_members sm ON sm.squad_id = sta.squad_id AND sm.user_id = $2
+         WHERE sta.id = $1 AND sm.role = 'organizer'`,
+        [input.squadTaskId, ctx.user.id]
+      );
+      if (organizer.rows.length === 0) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'Only the squad organizer can start a team task' });
+      }
+
+      const result = await db.query(
+        `UPDATE squad_task_assignments SET status = 'in_progress', updated_at = NOW()
+         WHERE id = $1 AND status = 'ready'
+         RETURNING id`,
+        [input.squadTaskId]
+      );
+      if (result.rows.length === 0) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'Team task not found or not ready (must be fully recruited)',
+        });
+      }
+      return { success: true, status: 'in_progress' };
+    }),
+
+  // --------------------------------------------------------------------------
+  // WITHDRAW FROM TEAM TASK (worker removes themselves before start)
+  // --------------------------------------------------------------------------
+
+  withdrawFromTeamTask: protectedProcedure
+    .input(z.object({ squadTaskId: Schemas.uuid }))
+    .mutation(async ({ ctx, input }) => {
+      const assignment = await db.query<{ id: string; status: string; required_workers: number }>(
+        `SELECT id, status, required_workers FROM squad_task_assignments WHERE id = $1`,
+        [input.squadTaskId]
+      );
+      if (assignment.rows.length === 0) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Team task not found' });
+      }
+      if (assignment.rows[0].status !== 'recruiting' && assignment.rows[0].status !== 'ready') {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'Can only withdraw from a task that has not started',
+        });
+      }
+
+      const deleted = await db.query(
+        `DELETE FROM squad_task_workers WHERE squad_task_id = $1 AND worker_id = $2 RETURNING id`,
+        [input.squadTaskId, ctx.user.id]
+      );
+      if (deleted.rows.length === 0) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'You are not assigned to this team task' });
+      }
+
+      const countResult = await db.query<{ count: string }>(
+        `SELECT COUNT(*) as count FROM squad_task_workers WHERE squad_task_id = $1`,
+        [input.squadTaskId]
+      );
+      const count = parseInt(countResult.rows[0].count, 10);
+      if (count < assignment.rows[0].required_workers) {
+        await db.query(
+          `UPDATE squad_task_assignments SET status = 'recruiting', updated_at = NOW() WHERE id = $1`,
+          [input.squadTaskId]
+        );
+      }
+
+      return { success: true };
     }),
 
   // --------------------------------------------------------------------------
