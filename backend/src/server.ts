@@ -14,7 +14,7 @@
  */
 
 // Sentry must be imported first to capture all errors
-import { Sentry } from './sentry';
+import { Sentry } from './sentry.js';
 import { Hono, type Context } from 'hono';
 import { cors } from 'hono/cors';
 import { trpcServer } from '@hono/trpc-server';
