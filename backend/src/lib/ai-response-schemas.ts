@@ -150,3 +150,20 @@ export const TrustScoreSchema = z.object({
 });
 
 export type TrustScoreParsed = z.infer<typeof TrustScoreSchema>;
+
+// ============================================================================
+// TASK SUGGESTION AI — Suggested tasks for worker (ranked + reason per task)
+// ============================================================================
+
+export const TaskSuggestionItemSchema = z.object({
+  taskId: z.string().uuid(),
+  reason: z.string().min(1).max(500),
+  fitScore: z.number().min(0).max(1),
+});
+
+export const TaskSuggestionsSchema = z.object({
+  suggestions: z.array(TaskSuggestionItemSchema),
+});
+
+export type TaskSuggestionItemParsed = z.infer<typeof TaskSuggestionItemSchema>;
+export type TaskSuggestionsParsed = z.infer<typeof TaskSuggestionsSchema>;

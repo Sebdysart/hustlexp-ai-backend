@@ -20,6 +20,7 @@ import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { router, protectedProcedure, publicProcedure, Schemas } from '../trpc.js';
 import { TaskDiscoveryService } from '../services/TaskDiscoveryService.js';
+import { TaskSuggestionAIService } from '../services/TaskSuggestionAIService.js';
 
 // --------------------------------------------------------------------------
 // TRUST TIER THRESHOLDS (Progressive Verification)
@@ -276,11 +277,47 @@ export const taskDiscoveryRouter = router({
         explanation: result.data,
       };
     }),
-  
+
+  // --------------------------------------------------------------------------
+  // AI TASK SUGGESTIONS
+  // --------------------------------------------------------------------------
+
+  /**
+   * Get AI-powered task suggestions for the current worker.
+   * Returns top N open tasks with a short AI-generated reason per task (why it fits the worker).
+   */
+  getAISuggestions: protectedProcedure
+    .input(z.object({
+      limit: z.number().int().min(1).max(20).default(10),
+      max_distance_miles: z.number().positive().optional(),
+      category: z.string().optional(),
+      min_price: z.number().int().nonnegative().optional(),
+      max_price: z.number().int().positive().optional(),
+    }).optional())
+    .query(async ({ input, ctx }) => {
+      if (!ctx.user) {
+        throw new TRPCError({ code: 'UNAUTHORIZED', message: 'Authentication required' });
+      }
+      const result = await TaskSuggestionAIService.getSuggestions(ctx.user.id, {
+        limit: input?.limit,
+        max_distance_miles: input?.max_distance_miles,
+        category: input?.category,
+        min_price: input?.min_price,
+        max_price: input?.max_price,
+      });
+      if (!result.success) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: result.error.message,
+        });
+      }
+      return { suggestions: result.data };
+    }),
+
   // --------------------------------------------------------------------------
   // SEARCH
   // --------------------------------------------------------------------------
-  
+
   /**
    * Search tasks by query (full-text search)
    */

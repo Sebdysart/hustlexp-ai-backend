@@ -18,7 +18,7 @@
 | health | 3 | public |
 | ui | 5 | protected |
 | instant | 4 | protected |
-| taskDiscovery | 10 | public + protected |
+| taskDiscovery | 11 | public + protected |
 | messaging | 7 | protected |
 | notification | 11 | protected + admin |
 | rating | 6 | protected + admin |
@@ -88,7 +88,7 @@
 `listAvailable` `accept` `dismiss` `metrics`
 
 ### taskDiscovery
-`browseTasks` (public) `getFeed` `calculateFeedScores` `calculateMatchingScore` `getExplanation` `search` `saveSearch` `getSavedSearches` `deleteSavedSearch` `executeSavedSearch`
+`browseTasks` (public) `getFeed` `calculateFeedScores` `calculateMatchingScore` `getExplanation` `getAISuggestions` `search` `saveSearch` `getSavedSearches` `deleteSavedSearch` `executeSavedSearch`
 
 ### messaging
 `sendMessage` `sendPhotoMessage` `getTaskMessages` `markAsRead` `markAllAsRead` `getUnreadCount` `getConversations`

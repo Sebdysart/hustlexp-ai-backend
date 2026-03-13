@@ -170,6 +170,7 @@ app.use('/trpc/fraud.*', rateLimitMiddleware('financial'));         // 10/min �
 app.use('/trpc/ai.*', rateLimitMiddleware('ai'));                  // 20/min — AI cost protection
 app.use('/trpc/disputeAI.*', rateLimitMiddleware('ai'));           // 20/min — AI dispute resolution
 app.use('/trpc/matchmaker.*', rateLimitMiddleware('ai'));          // 20/min — AI matchmaking
+app.use('/trpc/taskDiscovery.getAISuggestions', rateLimitMiddleware('ai')); // 20/min — AI task suggestions
 
 // Tier 4: Domain-specific
 app.use('/trpc/escrow.*', rateLimitMiddleware('escrow'));           // 30/min — other escrow ops
