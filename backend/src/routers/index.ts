@@ -6,7 +6,7 @@
  * @see ARCHITECTURE.md §1
  */
 
-import { router } from '../trpc';
+import { router } from '../trpc.js';
 import { taskRouter } from './task';
 import { escrowRouter } from './escrow';
 import { userRouter } from './user';
