@@ -31,7 +31,7 @@
 | insurance | 5 | protected + admin |
 | biometric | 4 | protected |
 | skills | 8 | public + protected |
-| pricing | 2 | protected |
+| pricing | 3 | protected |
 | geofence | 3 | protected |
 | heatmap | 2 | protected |
 | batchQuest | 2 | protected |
@@ -127,7 +127,7 @@
 `getCategories` (public) `getSkills` (public) `addSkills` `removeSkill` `getMySkills` `submitLicense` `getLicenseSubmissions` `checkTaskEligibility`
 
 ### pricing
-`calculate` `updateMyModifier`
+`calculate` `getSmartPrice` `updateMyModifier`
 
 ### geofence
 `checkProximity` `getTaskEvents` `verifyPresence`
