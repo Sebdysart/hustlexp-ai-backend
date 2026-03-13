@@ -35,7 +35,7 @@ export function getPublisher(): Redis {
       retryStrategy: (times) => Math.min(times * 50, 2000),
       maxRetriesPerRequest: 3,
     });
-    publisher.on('error', (err) => log.error({ err }, 'Redis publisher error'));
+    publisher.on('error', (err) => onRedisError(err, 'publisher'));
   }
   return publisher;
 }
@@ -49,9 +49,21 @@ export function getSubscriber(): Redis {
       retryStrategy: (times) => Math.min(times * 50, 2000),
       maxRetriesPerRequest: 3,
     });
-    subscriber.on('error', (err) => log.error({ err }, 'Redis subscriber error'));
+    subscriber.on('error', (err) => onRedisError(err, 'subscriber'));
   }
   return subscriber;
+}
+
+function onRedisError(err: unknown, role: string): void {
+  const replyErr = err as { message?: string; type?: string };
+  if (replyErr?.type === 'ReplyError' && replyErr?.message?.includes('WRONGPASS')) {
+    log.error(
+      'Redis %s: WRONGPASS — invalid username/password for TCP connection. Use the Redis URL from Upstash Dashboard (not the REST token). Check UPSTASH_REDIS_URL or REDIS_URL.',
+      role
+    );
+    return;
+  }
+  log.error({ err }, 'Redis %s error', role);
 }
 
 // ============================================================================
