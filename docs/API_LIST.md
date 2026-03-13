@@ -12,7 +12,7 @@
 |--------|------------|------|
 | task | 20 | protected |
 | escrow | 10 | protected |
-| user | 16 | public + protected |
+| user | 17 | public + protected |
 | ai | 3 | protected |
 | live | 3 | protected |
 | health | 3 | public |
@@ -70,7 +70,7 @@
 `getById` `getState` `getByTaskId` `createPaymentIntent` `confirmFunding` `release` `refund` `lockForDispute` `getHistory` `awardXP`
 
 ### user
-`me` `getById` `xpHistory` `badges` `register` (public) `updateProfile` `getOnboardingStatus` `completeOnboarding` `getVerificationUnlockStatus` `checkVerificationEligibility` `getVerificationEarningsLedger` `xpLeaderboard` `requestErasure`
+`me` `getById` `getStreakStatus` `xpHistory` `badges` `register` (public) `updateProfile` `getOnboardingStatus` `completeOnboarding` `getVerificationUnlockStatus` `checkVerificationEligibility` `getVerificationEarningsLedger` `xpLeaderboard` `requestErasure`
 
 ### ai
 `submitCalibration` `getInferenceResult` `confirmRole`

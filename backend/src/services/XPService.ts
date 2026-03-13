@@ -18,6 +18,7 @@ import { logger } from '../logger.js';
 import type { ServiceResult } from '../types.js';
 import { ErrorCodes } from '../types.js';
 import { AlphaInstrumentation } from './AlphaInstrumentation.js';
+import { updateStreakOnTaskCompletion } from './StreakService.js';
 import { Redis } from '@upstash/redis';
 import { config } from '../config.js';
 
@@ -381,6 +382,36 @@ export const XPService = {
       // Track daily XP for cap enforcement
       if (result.success && result.data) {
         await XPService.trackDailyXP(userId, result.data.effective_xp);
+      }
+
+      // Gamified streaks: update streak on task completion (after XP award)
+      if (result.success) {
+        try {
+          const taskRow = await db.query<{ completed_at: Date | null }>(
+            'SELECT completed_at FROM tasks WHERE id = $1',
+            [taskId]
+          );
+          const completedAt = taskRow.rows[0]?.completed_at ? new Date(taskRow.rows[0].completed_at) : new Date();
+          const streakResult = await updateStreakOnTaskCompletion(userId, completedAt);
+          if (streakResult.success && streakResult.data.streakChanged) {
+            const userRoleResult = await db.query<{ default_mode: string }>(
+              'SELECT default_mode FROM users WHERE id = $1',
+              [userId]
+            );
+            const role = userRoleResult.rows[0]?.default_mode === 'poster' ? 'poster' : 'hustler';
+            await AlphaInstrumentation.emitTrustDeltaApplied({
+              user_id: userId,
+              role,
+              delta_type: 'streak',
+              delta_amount: streakResult.data.newStreak,
+              reason_code: 'task_completion',
+              task_id: taskId,
+              timestamp: new Date(),
+            });
+          }
+        } catch (err) {
+          log.warn({ err: err instanceof Error ? err.message : String(err), userId, taskId }, 'Streak update failed');
+        }
       }
 
       return result;

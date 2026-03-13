@@ -13,6 +13,7 @@ import { XPService } from '../services/XPService.js';
 import { EarnedVerificationUnlockService } from '../services/EarnedVerificationUnlockService.js';
 import type { User } from '../types.js';
 import { cachedDbQuery, invalidateUser, CACHE_KEYS, CACHE_TTL, CACHE_TAGS } from '../cache/db-cache.js';
+import { getStreakStatus } from '../services/StreakService.js';
 import { z } from 'zod';
 
 // --------------------------------------------------------------------------
@@ -95,7 +96,24 @@ export const userRouter = router({
     .query(async ({ ctx }) => {
       return await toMobileUser(ctx.user!);
     }),
-  
+
+  /**
+   * Get gamified streak status for the current user (PRODUCT_SPEC §5.4, §5.5).
+   * Returns current streak, last completion time, grace expiry, and a UI message.
+   */
+  getStreakStatus: protectedProcedure
+    .input(z.void())
+    .query(async ({ ctx }) => {
+      const result = await getStreakStatus(ctx.user!.id);
+      if (!result.success) {
+        throw new TRPCError({
+          code: result.error.code === 'NOT_FOUND' ? 'NOT_FOUND' : 'INTERNAL_SERVER_ERROR',
+          message: result.error.message,
+        });
+      }
+      return result.data;
+    }),
+
   /**
    * Get user by ID
    * Returns full profile for own user, public profile for others (IDOR protection).
