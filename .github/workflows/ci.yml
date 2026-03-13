@@ -2,9 +2,14 @@ name: CI — Lint, Typecheck, Test
 
 on:
   push:
-    branches: [main, "feat/**"]
+    branches: [main, "feat/*"]
   pull_request:
+    branches: [main, "feat/*"]
   workflow_call:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
     outputs:
       typecheck_result:
         description: "TypeCheck job result"

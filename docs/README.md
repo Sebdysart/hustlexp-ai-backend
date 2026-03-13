@@ -18,6 +18,7 @@ Quick reference to all docs in this repo.
 | [ENV.md](ENV.md) | Environment variables (single reference); copy `.env.template` to `.env` |
 | [SCRIPTS.md](SCRIPTS.md) | Where scripts live: repo-root `scripts/` vs `backend/scripts/` |
 | [API_LIST.md](API_LIST.md) | Full tRPC API list by router and procedure (public/protected/admin) |
+| [CI_CD.md](CI_CD.md) | CI/CD workflows, required secrets, and deploy flow (Railway + AWS) |
 
 ## Root-level docs
 

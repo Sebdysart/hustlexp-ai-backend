@@ -1,42 +1,66 @@
+# Deploy to Railway — runs only after CI succeeds on main (no duplicate test runs).
 name: Deploy
 
 on:
-  push:
-    branches:
-      - main
+  workflow_run:
+    workflows: ["CI — Lint, Typecheck, Test"]
+    types: [completed]
+    branches: [main]
 
 jobs:
-  pre-deploy-checks:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-      - run: npm ci
-      - run: npm run build
-      - run: npx vitest run
-
   deploy-staging:
+    name: Deploy to Railway (staging)
+    if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
-    needs: pre-deploy-checks
     environment: staging
     steps:
-      - uses: actions/checkout@v4
-      - run: npm i -g @railway/cli
-      - run: railway deploy --service=${{ secrets.RAILWAY_SERVICE }} --environment=staging
+      - name: Checkout commit that passed CI
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Install Railway CLI
+        run: npm i -g @railway/cli
+
+      - name: Deploy to staging
+        run: railway deploy --service=${{ secrets.RAILWAY_SERVICE }} --environment=staging
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-      - run: curl --retry 5 --retry-delay 10 --retry-connrefused ${{ secrets.STAGING_URL }}/health
+
+      - name: Health check (staging)
+        run: |
+          for i in 1 2 3 4 5; do
+            curl -fsS --connect-timeout 5 "${{ secrets.STAGING_URL }}/health" && exit 0
+            sleep 10
+          done
+          echo "Health check failed"
+          exit 1
 
   deploy-production:
+    name: Deploy to Railway (production)
+    if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
-    needs: deploy-staging
+    needs: [deploy-staging]
     environment: production
     steps:
-      - uses: actions/checkout@v4
-      - run: npm i -g @railway/cli
-      - run: railway deploy --service=${{ secrets.RAILWAY_SERVICE }} --environment=production
+      - name: Checkout commit that passed CI
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Install Railway CLI
+        run: npm i -g @railway/cli
+
+      - name: Deploy to production
+        run: railway deploy --service=${{ secrets.RAILWAY_SERVICE }} --environment=production
         env:
           RAILWAY_TOKEN: ${{ secrets.PRODUCTION_RAILWAY_TOKEN }}
-      - run: curl --retry 5 --retry-delay 10 --retry-connrefused ${{ secrets.PRODUCTION_URL }}/health
+
+      - name: Health check (production)
+        run: |
+          for i in 1 2 3 4 5; do
+            curl -fsS --connect-timeout 5 "${{ secrets.PRODUCTION_URL }}/health" && exit 0
+            sleep 10
+          done
+          echo "Health check failed"
+          exit 1
