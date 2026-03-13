@@ -16,10 +16,10 @@
  * @see schema.sql v1.8.0 (proof_submissions biometric fields)
  */
 
-import { db } from '../db';
-import { BiometricVerificationService } from '../services/BiometricVerificationService';
-import { notifyAdmins } from '../services/AdminNotificationHelper';
-import { workerLogger } from '../logger';
+import { db } from '../db.js';
+import { BiometricVerificationService } from '../services/BiometricVerificationService.js';
+import { notifyAdmins } from '../services/AdminNotificationHelper.js';
+import { workerLogger } from '../logger.js';
 import type { Job } from 'bullmq';
 
 const log = workerLogger.child({ worker: 'biometric-analyzer' });

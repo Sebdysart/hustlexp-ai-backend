@@ -15,9 +15,9 @@
  * @see hardening_invariants.sql (append-only triggers: HX701, HX702)
  */
 
-import { db } from '../db';
-import type { ServiceResult } from '../types';
-import { logger } from '../logger';
+import { db } from '../db.js';
+import type { ServiceResult } from '../types.js';
+import { logger } from '../logger.js';
 
 const log = logger.child({ service: 'RevenueService' });
 

@@ -7,8 +7,8 @@
  * INV-4: Escrow amount is immutable after creation (enforced by DB trigger).
  */
 
-import { BaseRepository, type RepositoryContext } from './BaseRepository';
-import type { Escrow, EscrowState } from '../types';
+import { BaseRepository, type RepositoryContext } from './BaseRepository.js';
+import type { Escrow, EscrowState } from '../types.js';
 
 export class EscrowRepository extends BaseRepository<Escrow> {
   protected readonly tableName = 'escrow';

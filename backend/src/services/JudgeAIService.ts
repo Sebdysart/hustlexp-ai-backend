@@ -18,12 +18,12 @@
  * @see schema.sql v1.8.0 (ai_agent_decisions)
  */
 
-import { db } from '../db';
-import type { ServiceResult } from '../types';
-import { AIClient } from './AIClient';
-import { JudgeVerdictSchema } from '../lib/ai-response-schemas';
-import { scrubPII } from '../lib/pii-scrubber';
-import { aiLogger } from '../logger';
+import { db } from '../db.js';
+import type { ServiceResult } from '../types.js';
+import { AIClient } from './AIClient.js';
+import { JudgeVerdictSchema } from '../lib/ai-response-schemas.js';
+import { scrubPII } from '../lib/pii-scrubber.js';
+import { aiLogger } from '../logger.js';
 
 const log = aiLogger.child({ service: 'JudgeAIService' });
 

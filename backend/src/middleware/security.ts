@@ -10,8 +10,8 @@
 
 import { Context, Next } from 'hono';
 import { createHash } from 'crypto';
-import { checkRateLimit, redis } from '../cache/redis';
-import { config } from '../config';
+import { checkRateLimit, redis } from '../cache/redis.js';
+import { config } from '../config.js';
 
 // ============================================================================
 // SECURITY HEADERS

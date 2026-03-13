@@ -6,8 +6,8 @@
  */
 
 import { z } from 'zod';
-import { router, protectedProcedure } from '../trpc';
-import { GeofenceService } from '../services/GeofenceService';
+import { router, protectedProcedure } from '../trpc.js';
+import { GeofenceService } from '../services/GeofenceService.js';
 
 export const geofenceRouter = router({
   checkProximity: protectedProcedure

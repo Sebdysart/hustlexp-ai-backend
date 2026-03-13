@@ -12,8 +12,8 @@
 
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
-import { router, protectedProcedure, adminProcedure } from '../trpc';
-import { ReputationAIService } from '../services/ReputationAIService';
+import { router, protectedProcedure, adminProcedure } from '../trpc.js';
+import { ReputationAIService } from '../services/ReputationAIService.js';
 
 export const reputationRouter = router({
   // --------------------------------------------------------------------------

@@ -20,7 +20,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import type { Database } from '../db';
+import type { Database } from '../db.js';
 
 // ============================================================================
 // TYPES

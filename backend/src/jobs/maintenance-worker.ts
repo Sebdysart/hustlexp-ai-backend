@@ -8,9 +8,9 @@
  * @see ARCHITECTURE.md §2.4 (Recovery patterns)
  */
 
-import { db } from '../db';
+import { db } from '../db.js';
 import type { Job } from 'bullmq';
-import { workerLogger } from '../logger';
+import { workerLogger } from '../logger.js';
 const log = workerLogger.child({ worker: 'maintenance' });
 
 // ============================================================================

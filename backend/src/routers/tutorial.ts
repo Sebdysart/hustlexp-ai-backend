@@ -5,8 +5,8 @@
  */
 
 import { z } from 'zod';
-import { router, protectedProcedure } from '../trpc';
-import { TutorialQuestService } from '../services/TutorialQuestService';
+import { router, protectedProcedure } from '../trpc.js';
+import { TutorialQuestService } from '../services/TutorialQuestService.js';
 
 export const tutorialRouter = router({
   getScenarios: protectedProcedure.input(z.void()).query(async () => {

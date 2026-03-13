@@ -18,7 +18,7 @@
 
 import { Queue, QueueOptions, Worker, WorkerOptions, Job } from 'bullmq';
 import Redis from 'ioredis';
-import { config } from '../config';
+import { config } from '../config.js';
 
 // ============================================================================
 // REDIS CONNECTION (Upstash)

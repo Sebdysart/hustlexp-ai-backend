@@ -6,8 +6,8 @@
  */
 
 import { z } from 'zod';
-import { router, protectedProcedure } from '../trpc';
-import { DynamicPricingService } from '../services/DynamicPricingService';
+import { router, protectedProcedure } from '../trpc.js';
+import { DynamicPricingService } from '../services/DynamicPricingService.js';
 
 export const pricingRouter = router({
   // Calculate dynamic price for a task

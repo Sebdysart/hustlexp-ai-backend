@@ -5,8 +5,8 @@
  * so services never write raw queries directly.
  */
 
-import { BaseRepository, type RepositoryContext } from './BaseRepository';
-import type { User } from '../types';
+import { BaseRepository, type RepositoryContext } from './BaseRepository.js';
+import type { User } from '../types.js';
 
 export class UserRepository extends BaseRepository<User> {
   protected readonly tableName = 'users';

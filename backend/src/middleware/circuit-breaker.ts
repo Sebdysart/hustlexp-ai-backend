@@ -15,7 +15,7 @@
  * @see ARCHITECTURE.md §2.6 (Resilience)
  */
 
-import { logger } from '../logger';
+import { logger } from '../logger.js';
 
 // ============================================================================
 // TYPES

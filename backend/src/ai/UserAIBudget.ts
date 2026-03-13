@@ -7,7 +7,7 @@
  */
 
 import { Redis } from '@upstash/redis';
-import { config } from '../config';
+import { config } from '../config.js';
 
 const USER_DAILY_CEILING_CENTS = 500; // $5.00
 const GLOBAL_DAILY_CEILING_CENTS = 50000; // $500.00

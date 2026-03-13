@@ -9,9 +9,9 @@
 
 import { Redis } from '@upstash/redis';
 import { TRPCError } from '@trpc/server';
-import { config } from '../config';
-import { db } from '../db';
-import { checkUserBudget, trackUserCost, checkGlobalBudget, trackGlobalCost } from './UserAIBudget';
+import { config } from '../config.js';
+import { db } from '../db.js';
+import { checkUserBudget, trackUserCost, checkGlobalBudget, trackGlobalCost } from './UserAIBudget.js';
 
 interface AICallConfig {
   maxTokensPerCall: number;

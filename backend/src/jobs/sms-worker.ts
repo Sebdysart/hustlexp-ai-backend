@@ -17,10 +17,10 @@
  * @see ARCHITECTURE.md §2.6 (Notification Services)
  */
 
-import { db } from '../db';
-import { sendSMS } from '../services/TwilioSMSService';
-import { markOutboxEventProcessed, markOutboxEventFailed } from './outbox-worker';
-import { workerLogger } from '../logger';
+import { db } from '../db.js';
+import { sendSMS } from '../services/TwilioSMSService.js';
+import { markOutboxEventProcessed, markOutboxEventFailed } from './outbox-worker.js';
+import { workerLogger } from '../logger.js';
 import type { Job } from 'bullmq';
 
 const log = workerLogger.child({ worker: 'sms' });

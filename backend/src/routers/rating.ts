@@ -10,9 +10,9 @@
 
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
-import { router, protectedProcedure, adminProcedure, Schemas } from '../trpc';
-import { RatingService } from '../services/RatingService';
-import { db } from '../db';
+import { router, protectedProcedure, adminProcedure, Schemas } from '../trpc.js';
+import { RatingService } from '../services/RatingService.js';
+import { db } from '../db.js';
 
 export const ratingRouter = router({
   // --------------------------------------------------------------------------

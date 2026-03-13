@@ -7,8 +7,8 @@
  */
 
 import { z } from 'zod';
-import { router, protectedProcedure } from '../trpc';
-import { MovementTrackingService } from '../services/MovementTrackingService';
+import { router, protectedProcedure } from '../trpc.js';
+import { MovementTrackingService } from '../services/MovementTrackingService.js';
 
 const GPSPointSchema = z.object({
   latitude: z.number().min(-90).max(90),

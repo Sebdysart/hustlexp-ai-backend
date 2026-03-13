@@ -20,8 +20,8 @@
  */
 
 import type { Job } from 'bullmq';
-import { ExpertiseSupplyService } from '../services/ExpertiseSupplyService';
-import { workerLogger } from '../logger';
+import { ExpertiseSupplyService } from '../services/ExpertiseSupplyService.js';
+import { workerLogger } from '../logger.js';
 
 const log = workerLogger.child({ worker: 'expertise-recalc' });
 

@@ -5,7 +5,7 @@
  * Protects against abuse and spam.
  */
 
-import { db } from '../db';
+import { db } from '../db.js';
 
 interface RateLimitConfig {
   maxAcceptsPerWindow: number;

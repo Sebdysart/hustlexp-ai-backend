@@ -20,8 +20,8 @@
  * @see Trust Engine MVP Implementation Spec §D
  */
 
-import { db } from '../db';
-import { workerLogger } from '../logger';
+import { db } from '../db.js';
+import { workerLogger } from '../logger.js';
 import type { Job } from 'bullmq';
 
 const log = workerLogger.child({ worker: 'trust' });

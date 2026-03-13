@@ -7,10 +7,10 @@
  */
 
 import { TRPCError } from '@trpc/server';
-import { router, protectedProcedure, Schemas } from '../trpc';
-import { TaskService } from '../services/TaskService';
-import { ProofService } from '../services/ProofService';
-import { db } from '../db';
+import { router, protectedProcedure, Schemas } from '../trpc.js';
+import { TaskService } from '../services/TaskService.js';
+import { ProofService } from '../services/ProofService.js';
+import { db } from '../db.js';
 import { z } from 'zod';
 
 export const taskRouter = router({

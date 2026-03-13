@@ -10,8 +10,8 @@
  * Uses PostGIS for proximity queries and time-window matching.
  */
 
-import { db } from '../db';
-import type { ServiceResult } from '../types';
+import { db } from '../db.js';
+import type { ServiceResult } from '../types.js';
 
 // ============================================================================
 // TYPES

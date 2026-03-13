@@ -15,9 +15,9 @@
  * @see schema.sql v1.8.0 (user_xp_tax_status)
  */
 
-import { db } from '../db';
-import { NotificationService } from '../services/NotificationService';
-import { workerLogger } from '../logger';
+import { db } from '../db.js';
+import { NotificationService } from '../services/NotificationService.js';
+import { workerLogger } from '../logger.js';
 import type { Job } from 'bullmq';
 
 const log = workerLogger.child({ worker: 'xp-tax-reminder' });

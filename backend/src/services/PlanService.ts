@@ -16,8 +16,8 @@
  * @see STEP_9_MONETIZATION_PRICING.md
  */
 
-import { db } from '../db';
-import type { TaskProgressState } from '../types';
+import { db } from '../db.js';
+import type { TaskProgressState } from '../types.js';
 
 // ============================================================================
 // TYPES

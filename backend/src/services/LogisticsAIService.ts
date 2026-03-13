@@ -10,9 +10,9 @@
  * @see schema.sql v1.8.0 (ai_agent_decisions, fraud_detection_events)
  */
 
-import { db } from '../db';
-import type { ServiceResult } from '../types';
-import { aiLogger } from '../logger';
+import { db } from '../db.js';
+import type { ServiceResult } from '../types.js';
+import { aiLogger } from '../logger.js';
 
 const log = aiLogger.child({ service: 'LogisticsAIService' });
 

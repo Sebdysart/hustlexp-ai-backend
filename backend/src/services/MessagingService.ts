@@ -11,12 +11,12 @@
  * @see staging/MESSAGING_SPEC.md
  */
 
-import { db, isInvariantViolation, getErrorMessage } from '../db';
-import type { ServiceResult, TaskState } from '../types';
-import { ErrorCodes } from '../types';
-import { ContentModerationService } from './ContentModerationService';
-import { NotificationService } from './NotificationService';
-import { logger } from '../logger';
+import { db, isInvariantViolation, getErrorMessage } from '../db.js';
+import type { ServiceResult, TaskState } from '../types.js';
+import { ErrorCodes } from '../types.js';
+import { ContentModerationService } from './ContentModerationService.js';
+import { NotificationService } from './NotificationService.js';
+import { logger } from '../logger.js';
 
 const log = logger.child({ service: 'MessagingService' });
 

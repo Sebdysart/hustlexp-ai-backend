@@ -4,8 +4,8 @@
  */
 
 import type { Job } from 'bullmq';
-import { TaxReportingService } from '../services/TaxReportingService';
-import { workerLogger } from '../logger';
+import { TaxReportingService } from '../services/TaxReportingService.js';
+import { workerLogger } from '../logger.js';
 
 const log = workerLogger.child({ worker: 'tax-reporting' });
 

@@ -29,11 +29,11 @@
  * @see schema.sql v1.8.0 (proof_submissions biometric fields)
  */
 
-import { db } from '../db';
-import type { ServiceResult } from '../types';
-import { awsRekognitionBreaker, gcpVisionBreaker } from '../middleware/circuit-breaker';
-import { validateSafeUrl } from '../lib/url-safety';
-import { logger } from '../logger';
+import { db } from '../db.js';
+import type { ServiceResult } from '../types.js';
+import { awsRekognitionBreaker, gcpVisionBreaker } from '../middleware/circuit-breaker.js';
+import { validateSafeUrl } from '../lib/url-safety.js';
+import { logger } from '../logger.js';
 
 const log = logger.child({ service: 'BiometricVerificationService' });
 

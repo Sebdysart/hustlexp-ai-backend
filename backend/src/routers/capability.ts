@@ -8,14 +8,14 @@
 
 import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
-import { router, protectedProcedure } from '../trpc';
-import { db } from '../db';
-import * as CapabilityProfileService from '../services/CapabilityProfileService';
-import * as EligibilityResolverService from '../services/EligibilityResolverService';
-import * as FeedQueryService from '../services/FeedQueryService';
-import * as LicenseVerificationService from '../services/LicenseVerificationService';
-import * as InsuranceVerificationService from '../services/InsuranceVerificationService';
-import * as BackgroundCheckService from '../services/BackgroundCheckService';
+import { router, protectedProcedure } from '../trpc.js';
+import { db } from '../db.js';
+import * as CapabilityProfileService from '../services/CapabilityProfileService.js';
+import * as EligibilityResolverService from '../services/EligibilityResolverService.js';
+import * as FeedQueryService from '../services/FeedQueryService.js';
+import * as LicenseVerificationService from '../services/LicenseVerificationService.js';
+import * as InsuranceVerificationService from '../services/InsuranceVerificationService.js';
+import * as BackgroundCheckService from '../services/BackgroundCheckService.js';
 
 export const capabilityRouter = router({
   // ==========================================================================

@@ -4,10 +4,10 @@
  * System health and status endpoints
  */
 
-import { router, publicProcedure } from '../trpc';
-import { db } from '../db';
-import { config } from '../config';
-import { StripeService } from '../services/StripeService';
+import { router, publicProcedure } from '../trpc.js';
+import { db } from '../db.js';
+import { config } from '../config.js';
+import { StripeService } from '../services/StripeService.js';
 import { z } from 'zod';
 
 export const healthRouter = router({

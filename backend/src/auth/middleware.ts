@@ -1,9 +1,9 @@
 // backend/auth/middleware.ts
 
 import { Context } from "hono";
-import { adminAuth } from "./firebase";
-import { redis, CACHE_KEYS } from "../cache/redis";
-import { authLogger } from "../logger";
+import { adminAuth } from "./firebase.js";
+import { redis, CACHE_KEYS } from "../cache/redis.js";
+import { authLogger } from "../logger.js";
 import { TOKEN_CACHE_TTL_SECONDS, REVOCATION_MARKER_TTL_SECONDS } from "./constants.js";
 
 export interface AuthenticatedUser {

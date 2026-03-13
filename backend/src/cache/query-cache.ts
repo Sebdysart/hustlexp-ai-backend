@@ -4,8 +4,8 @@
 // ============================================================================
 
 import { Redis } from '@upstash/redis';
-import { config } from '../config';
-import { logger } from '../logger';
+import { config } from '../config.js';
+import { logger } from '../logger.js';
 
 const cacheLog = logger.child({ module: 'query-cache' });
 

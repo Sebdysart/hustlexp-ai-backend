@@ -16,10 +16,10 @@
  * @see schema.sql v1.8.0 (fraud_detection_events)
  */
 
-import { db } from '../db';
-import { LogisticsAIService } from '../services/LogisticsAIService';
+import { db } from '../db.js';
+import { LogisticsAIService } from '../services/LogisticsAIService.js';
 import type { Job } from 'bullmq';
-import { workerLogger } from '../logger';
+import { workerLogger } from '../logger.js';
 const log = workerLogger.child({ worker: 'fraud-detection' });
 
 // ============================================================================

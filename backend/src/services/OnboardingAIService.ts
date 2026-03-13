@@ -11,15 +11,15 @@
  * @see ONBOARDING_SPEC.md
  */
 
-import { db, isInvariantViolation, getErrorMessage } from '../db';
-import type { ServiceResult, User, CertaintyTier } from '../types';
-import { ErrorCodes } from '../types';
-import { AIEventService } from './AIEventService';
-import { AIJobService } from './AIJobService';
-import { AIProposalService } from './AIProposalService';
-import { AIDecisionService } from './AIDecisionService';
-import { aiLogger } from '../logger';
-import { scrubPII } from '../lib/pii-scrubber';
+import { db, isInvariantViolation, getErrorMessage } from '../db.js';
+import type { ServiceResult, User, CertaintyTier } from '../types.js';
+import { ErrorCodes } from '../types.js';
+import { AIEventService } from './AIEventService.js';
+import { AIJobService } from './AIJobService.js';
+import { AIProposalService } from './AIProposalService.js';
+import { AIDecisionService } from './AIDecisionService.js';
+import { aiLogger } from '../logger.js';
+import { scrubPII } from '../lib/pii-scrubber.js';
 
 const log = aiLogger.child({ service: 'OnboardingAIService' });
 

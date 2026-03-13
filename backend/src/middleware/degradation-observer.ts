@@ -9,7 +9,7 @@
  * @see lib/degradation-contracts.ts (policy definitions)
  */
 
-import { getContract, type DegradationState } from '../lib/degradation-contracts';
+import { getContract, type DegradationState } from '../lib/degradation-contracts.js';
 
 // ============================================================================
 // TYPES

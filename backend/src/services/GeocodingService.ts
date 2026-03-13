@@ -10,10 +10,10 @@
  * @see https://developers.google.com/maps/documentation/geocoding
  */
 
-import { config } from '../config';
-import { redis } from '../cache/redis';
-import { googleMapsBreaker } from '../middleware/circuit-breaker';
-import { logger } from '../logger';
+import { config } from '../config.js';
+import { redis } from '../cache/redis.js';
+import { googleMapsBreaker } from '../middleware/circuit-breaker.js';
+import { logger } from '../logger.js';
 
 const log = logger.child({ service: 'GeocodingService' });
 

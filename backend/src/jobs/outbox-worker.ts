@@ -17,9 +17,9 @@
  * @see ARCHITECTURE.md §2.4 (Outbox pattern)
  */
 
-import { db } from '../db';
-import { getQueue, type QueueName } from './queues';
-import { workerLogger } from '../logger';
+import { db } from '../db.js';
+import { getQueue, type QueueName } from './queues.js';
+import { workerLogger } from '../logger.js';
 const log = workerLogger.child({ worker: 'outbox' });
 
 // ============================================================================

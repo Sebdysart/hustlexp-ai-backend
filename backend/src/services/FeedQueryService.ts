@@ -14,10 +14,10 @@
  * @see ARCHITECTURE.md §12.1
  */
 
-import { db } from '../db';
-import { logger } from '../logger';
-import type { CapabilityProfile } from './CapabilityProfileService';
-import { isEligible } from './EligibilityResolverService';
+import { db } from '../db.js';
+import { logger } from '../logger.js';
+import type { CapabilityProfile } from './CapabilityProfileService.js';
+import { isEligible } from './EligibilityResolverService.js';
 
 const log = logger.child({ service: 'FeedQueryService' });
 

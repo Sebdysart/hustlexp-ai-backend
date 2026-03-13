@@ -9,8 +9,8 @@
  */
 
 import { z } from 'zod';
-import { router, protectedProcedure } from '../trpc';
-import { IntentParserService } from '../services/IntentParserService';
+import { router, protectedProcedure } from '../trpc.js';
+import { IntentParserService } from '../services/IntentParserService.js';
 
 export const intentRouter = router({
   /**

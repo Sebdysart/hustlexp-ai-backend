@@ -12,9 +12,9 @@
  * @see NotificationService.createNotification
  */
 
-import { db } from '../db';
-import { NotificationService, type NotificationPriority } from './NotificationService';
-import { logger } from '../logger';
+import { db } from '../db.js';
+import { NotificationService, type NotificationPriority } from './NotificationService.js';
+import { logger } from '../logger.js';
 
 const log = logger.child({ service: 'AdminNotificationHelper' });
 

@@ -15,13 +15,13 @@
  * @see src/services/SafetyService.ts (existing implementation)
  */
 
-import { db, isInvariantViolation, getErrorMessage } from '../db';
-import type { ServiceResult } from '../types';
-import { ErrorCodes } from '../types';
-import { NotificationService } from './NotificationService';
-import { notifyAdmins } from './AdminNotificationHelper';
-import { AIClient } from './AIClient';
-import { logger } from '../logger';
+import { db, isInvariantViolation, getErrorMessage } from '../db.js';
+import type { ServiceResult } from '../types.js';
+import { ErrorCodes } from '../types.js';
+import { NotificationService } from './NotificationService.js';
+import { notifyAdmins } from './AdminNotificationHelper.js';
+import { AIClient } from './AIClient.js';
+import { logger } from '../logger.js';
 
 const log = logger.child({ service: 'ContentModerationService' });
 

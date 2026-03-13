@@ -10,8 +10,8 @@
  * @see PostGIS documentation for spatial queries
  */
 
-import { db } from '../db';
-import type { ServiceResult } from '../types';
+import { db } from '../db.js';
+import type { ServiceResult } from '../types.js';
 
 // ============================================================================
 // TYPES

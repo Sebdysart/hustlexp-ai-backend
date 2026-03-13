@@ -12,9 +12,9 @@
  */
 
 import { z } from 'zod';
-import { router, protectedProcedure } from '../trpc';
-import { db } from '../db';
-import { IncidentDiagnosisService } from '../services/IncidentDiagnosisService';
+import { router, protectedProcedure } from '../trpc.js';
+import { db } from '../db.js';
+import { IncidentDiagnosisService } from '../services/IncidentDiagnosisService.js';
 
 export const incidentsRouter = router({
   /**

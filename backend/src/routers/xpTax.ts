@@ -11,11 +11,11 @@
  */
 
 import { TRPCError } from '@trpc/server';
-import { router, protectedProcedure } from '../trpc';
-import { XPTaxService } from '../services/XPTaxService';
-import { StripeService } from '../services/StripeService';
+import { router, protectedProcedure } from '../trpc.js';
+import { XPTaxService } from '../services/XPTaxService.js';
+import { StripeService } from '../services/StripeService.js';
 import { z } from 'zod';
-import { logger } from '../logger';
+import { logger } from '../logger.js';
 
 const log = logger.child({ router: 'xpTax' });
 

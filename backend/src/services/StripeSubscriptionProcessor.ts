@@ -16,8 +16,8 @@
  * @see STEP_9D_STRIPE_INTEGRATION.md
  */
 
-import { db } from '../db';
-import { stripeLogger } from '../logger';
+import { db } from '../db.js';
+import { stripeLogger } from '../logger.js';
 
 const log = stripeLogger.child({ service: 'SubscriptionProcessor' });
 

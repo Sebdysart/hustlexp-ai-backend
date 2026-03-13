@@ -5,9 +5,9 @@
  */
 
 import { z } from 'zod';
-import { router, protectedProcedure } from '../trpc';
-import { db } from '../db';
-import { AlphaInstrumentation } from '../services/AlphaInstrumentation';
+import { router, protectedProcedure } from '../trpc.js';
+import { db } from '../db.js';
+import { AlphaInstrumentation } from '../services/AlphaInstrumentation.js';
 
 export const alphaTelemetryRouter = router({
   /**

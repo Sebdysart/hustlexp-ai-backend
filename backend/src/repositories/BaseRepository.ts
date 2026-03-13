@@ -7,7 +7,7 @@
  * @see ARCHITECTURE.md
  */
 
-import { db, type QueryFn } from '../db';
+import { db, type QueryFn } from '../db.js';
 
 /**
  * Context for repository operations.

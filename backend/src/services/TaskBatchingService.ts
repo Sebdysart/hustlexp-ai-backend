@@ -10,9 +10,9 @@
  * @see AI_INFRASTRUCTURE.md §3.7
  */
 
-import type { ServiceResult } from '../types';
-import { AIClient } from './AIClient';
-import { aiLogger } from '../logger';
+import type { ServiceResult } from '../types.js';
+import { AIClient } from './AIClient.js';
+import { aiLogger } from '../logger.js';
 import { z } from 'zod';
 
 const log = aiLogger.child({ service: 'TaskBatchingService' });

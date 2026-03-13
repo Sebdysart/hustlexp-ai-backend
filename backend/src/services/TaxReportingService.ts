@@ -5,10 +5,10 @@
  * Integrates with Stripe Tax Reporting API for form generation.
  */
 
-import { db } from '../db';
-import type { ServiceResult } from '../types';
-import { logger } from '../logger';
-import { config } from '../config';
+import { db } from '../db.js';
+import type { ServiceResult } from '../types.js';
+import { logger } from '../logger.js';
+import { config } from '../config.js';
 import Stripe from 'stripe';
 
 const log = logger.child({ service: 'TaxReportingService' });

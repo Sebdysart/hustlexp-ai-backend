@@ -11,8 +11,8 @@
 
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
-import { router, adminProcedure, Schemas } from '../trpc';
-import { FraudDetectionService, type FraudPatternStatus, type RiskScoreStatus } from '../services/FraudDetectionService';
+import { router, adminProcedure, Schemas } from '../trpc.js';
+import { FraudDetectionService, type FraudPatternStatus, type RiskScoreStatus } from '../services/FraudDetectionService.js';
 
 export const fraudRouter = router({
   // --------------------------------------------------------------------------

@@ -12,9 +12,9 @@
  * 4. Log transition
  */
 
-import { db } from '../db';
-import { TrustTierService, TrustTier } from '../services/TrustTierService';
-import { workerLogger } from '../logger';
+import { db } from '../db.js';
+import { TrustTierService, TrustTier } from '../services/TrustTierService.js';
+import { workerLogger } from '../logger.js';
 
 const log = workerLogger.child({ worker: 'trust-tier-promotion' });
 

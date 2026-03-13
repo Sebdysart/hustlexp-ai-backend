@@ -12,8 +12,8 @@
  */
 
 import { TRPCError } from '@trpc/server';
-import { router, protectedProcedure } from '../trpc';
-import { db } from '../db';
+import { router, protectedProcedure } from '../trpc.js';
+import { db } from '../db.js';
 import { z } from 'zod';
 
 export const uiRouter = router({

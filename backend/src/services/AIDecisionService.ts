@@ -10,8 +10,8 @@
  * @see AI_INFRASTRUCTURE.md §6.4, §7.3
  */
 
-import { db } from '../db';
-import type { ServiceResult, AIDecision } from '../types';
+import { db } from '../db.js';
+import type { ServiceResult, AIDecision } from '../types.js';
 
 // ============================================================================
 // TYPES

@@ -16,8 +16,8 @@
  */
 
 import { TRPCError } from '@trpc/server';
-import { router, adminProcedure, Schemas } from '../trpc';
-import { db } from '../db';
+import { router, adminProcedure, Schemas } from '../trpc.js';
+import { db } from '../db.js';
 import { z } from 'zod';
 
 // ============================================================================

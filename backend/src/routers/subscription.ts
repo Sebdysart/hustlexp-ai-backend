@@ -12,12 +12,12 @@
 
 import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
-import { router, protectedProcedure } from '../trpc';
-import { db } from '../db';
+import { router, protectedProcedure } from '../trpc.js';
+import { db } from '../db.js';
 import Stripe from 'stripe';
-import { config } from '../config';
-import { RevenueService } from '../services/RevenueService';
-import { logger } from '../logger';
+import { config } from '../config.js';
+import { RevenueService } from '../services/RevenueService.js';
+import { logger } from '../logger.js';
 
 const log = logger.child({ router: 'subscription' });
 

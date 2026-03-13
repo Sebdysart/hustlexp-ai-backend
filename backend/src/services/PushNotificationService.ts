@@ -17,9 +17,9 @@
  * @see NOTIFICATION_SPEC.md
  */
 
-import { messaging } from '../auth/firebase';
-import { db } from '../db';
-import { logger } from '../logger';
+import { messaging } from '../auth/firebase.js';
+import { db } from '../db.js';
+import { logger } from '../logger.js';
 
 const log = logger.child({ service: 'PushNotificationService' });
 

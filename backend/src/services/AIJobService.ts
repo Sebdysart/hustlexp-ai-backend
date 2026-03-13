@@ -10,8 +10,8 @@
  * @see AI_INFRASTRUCTURE.md §6.2
  */
 
-import { db } from '../db';
-import type { ServiceResult, AIJob, AIJobStatus } from '../types';
+import { db } from '../db.js';
+import type { ServiceResult, AIJob, AIJobStatus } from '../types.js';
 
 // ============================================================================
 // TYPES

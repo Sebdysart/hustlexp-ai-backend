@@ -11,11 +11,11 @@
  * @see ARCHITECTURE.md §11.3
  */
 
-import { db } from '../db';
-import { logger } from '../logger';
+import { db } from '../db.js';
+import { logger } from '../logger.js';
 import { TRPCError } from '@trpc/server';
-import { recomputeCapabilityProfile } from './CapabilityRecomputeService';
-import { redis, CACHE_KEYS } from '../cache/redis';
+import { recomputeCapabilityProfile } from './CapabilityRecomputeService.js';
+import { redis, CACHE_KEYS } from '../cache/redis.js';
 
 const log = logger.child({ service: 'CapabilityProfileService' });
 

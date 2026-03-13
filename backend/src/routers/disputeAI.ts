@@ -12,8 +12,8 @@
 
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
-import { router, adminProcedure } from '../trpc';
-import { DisputeAIService } from '../services/DisputeAIService';
+import { router, adminProcedure } from '../trpc.js';
+import { DisputeAIService } from '../services/DisputeAIService.js';
 
 export const disputeAIRouter = router({
   // --------------------------------------------------------------------------

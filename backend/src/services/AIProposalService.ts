@@ -10,8 +10,8 @@
  * @see AI_INFRASTRUCTURE.md §6.3, §7.2
  */
 
-import { db } from '../db';
-import type { ServiceResult, AIProposal, CertaintyTier } from '../types';
+import { db } from '../db.js';
+import type { ServiceResult, AIProposal, CertaintyTier } from '../types.js';
 import { createHash } from 'crypto';
 
 // ============================================================================

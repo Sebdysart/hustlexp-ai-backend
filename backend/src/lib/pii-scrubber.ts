@@ -8,7 +8,7 @@
  * @see validators.ts (Zod schemas that may contain PII fields)
  */
 
-import { logger } from '../logger';
+import { logger } from '../logger.js';
 
 const log = logger.child({ module: 'pii-scrubber' });
 

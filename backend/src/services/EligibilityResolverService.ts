@@ -16,8 +16,8 @@
  * @see ARCHITECTURE.md §11.4
  */
 
-import { logger } from '../logger';
-import type { CapabilityProfile } from './CapabilityProfileService';
+import { logger } from '../logger.js';
+import type { CapabilityProfile } from './CapabilityProfileService.js';
 
 const log = logger.child({ service: 'EligibilityResolverService' });
 

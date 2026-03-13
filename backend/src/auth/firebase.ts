@@ -1,8 +1,8 @@
 import { getApps, initializeApp, cert } from "firebase-admin/app";
 import { getAuth, DecodedIdToken } from "firebase-admin/auth";
 import { getMessaging, Messaging } from 'firebase-admin/messaging';
-import { config } from "../config";
-import { authLogger } from "../logger";
+import { config } from "../config.js";
+import { authLogger } from "../logger.js";
 
 let app = getApps()[0];
 

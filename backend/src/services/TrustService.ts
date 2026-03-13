@@ -11,9 +11,9 @@
  * @see ARCHITECTURE.md §2.2
  */
 
-import { db, isInvariantViolation, getErrorMessage } from '../db';
-import type { ServiceResult, TrustLedgerEntry, User } from '../types';
-import { ErrorCodes } from '../types';
+import { db, isInvariantViolation, getErrorMessage } from '../db.js';
+import type { ServiceResult, TrustLedgerEntry, User } from '../types.js';
+import { ErrorCodes } from '../types.js';
 
 // ============================================================================
 // TYPES

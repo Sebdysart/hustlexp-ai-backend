@@ -7,8 +7,8 @@
  */
 
 import { z } from 'zod';
-import { router, protectedProcedure } from '../trpc';
-import { TaskBatchingService } from '../services/TaskBatchingService';
+import { router, protectedProcedure } from '../trpc.js';
+import { TaskBatchingService } from '../services/TaskBatchingService.js';
 
 const TaskSchema = z.object({
   id: z.string(),

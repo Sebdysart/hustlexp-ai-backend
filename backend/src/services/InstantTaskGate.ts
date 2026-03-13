@@ -9,8 +9,8 @@
  * @see IEM_AI_GATE_SPEC.md
  */
 
-import { AIClient } from './AIClient';
-import { logger } from '../logger';
+import { AIClient } from './AIClient.js';
+import { logger } from '../logger.js';
 
 const log = logger.child({ service: 'InstantTaskGate' });
 

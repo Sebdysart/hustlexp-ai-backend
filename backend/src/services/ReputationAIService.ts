@@ -15,11 +15,11 @@
  * @see schema.sql (ai_agent_decisions, task_ratings, disputes)
  */
 
-import { db } from '../db';
-import type { ServiceResult } from '../types';
-import { AIClient } from './AIClient';
-import { TrustScoreSchema } from '../lib/ai-response-schemas';
-import { aiLogger } from '../logger';
+import { db } from '../db.js';
+import type { ServiceResult } from '../types.js';
+import { AIClient } from './AIClient.js';
+import { TrustScoreSchema } from '../lib/ai-response-schemas.js';
+import { aiLogger } from '../logger.js';
 
 const log = aiLogger.child({ service: 'ReputationAIService' });
 

@@ -11,11 +11,11 @@
  */
 
 import { z } from 'zod';
-import { router, protectedProcedure } from '../trpc';
+import { router, protectedProcedure } from '../trpc.js';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-import { config } from '../config';
-import { logger } from '../logger';
+import { config } from '../config.js';
+import { logger } from '../logger.js';
 
 const log = logger.child({ router: 'upload' });
 

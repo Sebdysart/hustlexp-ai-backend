@@ -13,9 +13,9 @@
  */
 
 import twilio from 'twilio';
-import { config } from '../config';
-import { twilioBreaker } from '../middleware/circuit-breaker';
-import { logger } from '../logger';
+import { config } from '../config.js';
+import { twilioBreaker } from '../middleware/circuit-breaker.js';
+import { logger } from '../logger.js';
 
 const log = logger.child({ service: 'TwilioSMSService' });
 

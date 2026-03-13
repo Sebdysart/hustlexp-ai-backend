@@ -10,7 +10,7 @@
  * - INSTANT_INTERRUPTS_ENABLED: Controls interrupt notifications
  */
 
-import { logger } from '../logger';
+import { logger } from '../logger.js';
 
 const log = logger.child({ service: 'InstantModeKillSwitch' });
 

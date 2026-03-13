@@ -12,12 +12,12 @@
  * @see PRODUCT_SPEC.md §3
  */
 
-import { db, isInvariantViolation, getErrorMessage } from '../db';
-import { writeToOutbox } from '../jobs/outbox-helpers';
-import { PlanService } from './PlanService';
-import { ScoperAIService } from './ScoperAIService';
-import { MIN_INSTANT_TIER, MIN_SENSITIVE_INSTANT_TIER } from './InstantTrustConfig';
-import { taskLogger } from '../logger';
+import { db, isInvariantViolation, getErrorMessage } from '../db.js';
+import { writeToOutbox } from '../jobs/outbox-helpers.js';
+import { PlanService } from './PlanService.js';
+import { ScoperAIService } from './ScoperAIService.js';
+import { MIN_INSTANT_TIER, MIN_SENSITIVE_INSTANT_TIER } from './InstantTrustConfig.js';
+import { taskLogger } from '../logger.js';
 
 const log = taskLogger.child({ service: 'TaskService' });
 import type {
@@ -25,8 +25,8 @@ import type {
   TaskState,
   TaskProgressState,
   ServiceResult
-} from '../types';
-import { TERMINAL_TASK_STATES, VALID_PROGRESS_TRANSITIONS, ErrorCodes } from '../types';
+} from '../types.js';
+import { TERMINAL_TASK_STATES, VALID_PROGRESS_TRANSITIONS, ErrorCodes } from '../types.js';
 
 // Risk level type (from database schema - matches tasks.risk_level CHECK constraint)
 type TaskRiskLevel = 'LOW' | 'MEDIUM' | 'HIGH' | 'IN_HOME';

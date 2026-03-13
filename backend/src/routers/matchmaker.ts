@@ -11,9 +11,9 @@
 
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
-import { router, protectedProcedure, adminProcedure } from '../trpc';
-import { MatchmakerAIService } from '../services/MatchmakerAIService';
-import { db } from '../db';
+import { router, protectedProcedure, adminProcedure } from '../trpc.js';
+import { MatchmakerAIService } from '../services/MatchmakerAIService.js';
+import { db } from '../db.js';
 
 export const matchmakerRouter = router({
   // --------------------------------------------------------------------------

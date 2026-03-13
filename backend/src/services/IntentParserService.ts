@@ -14,9 +14,9 @@
  * @see scripts/analyze-pr-description.ts (PR validation)
  */
 
-import { ServiceResult } from '../types';
-import { AIClient } from './AIClient';
-import { KnowledgeGraphService } from './KnowledgeGraphService';
+import { ServiceResult } from '../types.js';
+import { AIClient } from './AIClient.js';
+import { KnowledgeGraphService } from './KnowledgeGraphService.js';
 
 export interface IntentAnalysis {
   affectedInvariants: string[]; // INV-1, INV-2, etc.

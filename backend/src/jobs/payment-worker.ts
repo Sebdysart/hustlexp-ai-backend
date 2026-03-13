@@ -20,10 +20,10 @@
  * @see ARCHITECTURE.md §2.4
  */
 
-import { db } from '../db';
-import { writeToOutbox } from './outbox-helpers';
-import { TaskService } from '../services/TaskService';
-import { workerLogger } from '../logger';
+import { db } from '../db.js';
+import { writeToOutbox } from './outbox-helpers.js';
+import { TaskService } from '../services/TaskService.js';
+import { workerLogger } from '../logger.js';
 import type { Job } from 'bullmq';
 import type Stripe from 'stripe';
 

@@ -24,8 +24,8 @@
 
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
-import { router, protectedProcedure, adminProcedure } from '../trpc';
-import { ExpertiseSupplyService } from '../services/ExpertiseSupplyService';
+import { router, protectedProcedure, adminProcedure } from '../trpc.js';
+import { ExpertiseSupplyService } from '../services/ExpertiseSupplyService.js';
 
 export const expertiseSupplyRouter = router({
   // ==========================================================================

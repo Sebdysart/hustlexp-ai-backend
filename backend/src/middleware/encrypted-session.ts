@@ -7,7 +7,7 @@
  * AUTHORITY: Security audit finding — HIGH severity
  *
  * Usage:
- *   import { encryptSession, decryptSession } from './middleware/encrypted-session';
+ *   import { encryptSession, decryptSession } from './middleware/encrypted-session.js';
  *   await redis.set(key, encryptSession(user), ttl);
  *   const user = decryptSession(await redis.get(key));
  *
@@ -17,7 +17,7 @@
  */
 
 import { createCipheriv, createDecipheriv, randomBytes } from 'crypto';
-import { logger } from '../logger';
+import { logger } from '../logger.js';
 
 const log = logger.child({ module: 'encrypted-session' });
 

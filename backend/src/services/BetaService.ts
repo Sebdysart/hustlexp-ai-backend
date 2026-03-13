@@ -18,10 +18,10 @@
  * @see config.ts (beta section)
  */
 
-import { db } from '../db';
-import { config } from '../config';
-import type { ServiceResult } from '../types';
-import { logger } from '../logger';
+import { db } from '../db.js';
+import { config } from '../config.js';
+import type { ServiceResult } from '../types.js';
+import { logger } from '../logger.js';
 
 const log = logger.child({ service: 'BetaService' });
 

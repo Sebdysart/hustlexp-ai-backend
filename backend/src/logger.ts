@@ -6,7 +6,7 @@
  * - Production: JSON lines (machine-parseable for Railway / Datadog / Sentry)
  *
  * Usage:
- *   import { logger } from './logger';
+ *   import { logger } from './logger.js';
  *   logger.info({ taskId, userId }, 'Task claimed');
  *   logger.error({ err, escrowId }, 'Escrow release failed');
  *
@@ -16,7 +16,7 @@
  */
 
 import pino from 'pino';
-import { config } from './config';
+import { config } from './config.js';
 
 const isDev = config.app.isDevelopment;
 
@@ -62,7 +62,7 @@ export const logger = pino({
 
 /**
  * Pre-built child loggers for major subsystems.
- * Import directly: `import { authLogger } from './logger';`
+ * Import directly: `import { authLogger } from './logger.js';`
  */
 export const authLogger = logger.child({ module: 'auth' });
 export const taskLogger = logger.child({ module: 'task' });

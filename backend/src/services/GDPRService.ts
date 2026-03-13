@@ -14,11 +14,11 @@
  */
 
 import { randomUUID } from 'crypto';
-import { db, isInvariantViolation, getErrorMessage } from '../db';
-import type { ServiceResult } from '../types';
-import { ErrorCodes } from '../types';
-import { NotificationService } from './NotificationService';
-import { logger } from '../logger';
+import { db, isInvariantViolation, getErrorMessage } from '../db.js';
+import type { ServiceResult } from '../types.js';
+import { ErrorCodes } from '../types.js';
+import { NotificationService } from './NotificationService.js';
+import { logger } from '../logger.js';
 
 const log = logger.child({ service: 'GDPRService' });
 

@@ -7,11 +7,11 @@
  */
 
 import { TRPCError } from '@trpc/server';
-import { router, publicProcedure, protectedProcedure, Schemas } from '../trpc';
-import { db } from '../db';
-import { XPService } from '../services/XPService';
-import { EarnedVerificationUnlockService } from '../services/EarnedVerificationUnlockService';
-import type { User } from '../types';
+import { router, publicProcedure, protectedProcedure, Schemas } from '../trpc.js';
+import { db } from '../db.js';
+import { XPService } from '../services/XPService.js';
+import { EarnedVerificationUnlockService } from '../services/EarnedVerificationUnlockService.js';
+import type { User } from '../types.js';
 import { z } from 'zod';
 
 // --------------------------------------------------------------------------

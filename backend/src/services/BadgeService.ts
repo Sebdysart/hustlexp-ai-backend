@@ -10,9 +10,9 @@
  * @see ARCHITECTURE.md §2.3
  */
 
-import { db, isInvariantViolation, getErrorMessage } from '../db';
-import type { ServiceResult, Badge } from '../types';
-import { ErrorCodes } from '../types';
+import { db, isInvariantViolation, getErrorMessage } from '../db.js';
+import type { ServiceResult, Badge } from '../types.js';
+import { ErrorCodes } from '../types.js';
 
 // ============================================================================
 // TYPES

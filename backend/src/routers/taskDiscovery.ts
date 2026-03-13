@@ -18,8 +18,8 @@
 
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
-import { router, protectedProcedure, publicProcedure, Schemas } from '../trpc';
-import { TaskDiscoveryService } from '../services/TaskDiscoveryService';
+import { router, protectedProcedure, publicProcedure, Schemas } from '../trpc.js';
+import { TaskDiscoveryService } from '../services/TaskDiscoveryService.js';
 
 // --------------------------------------------------------------------------
 // TRUST TIER THRESHOLDS (Progressive Verification)

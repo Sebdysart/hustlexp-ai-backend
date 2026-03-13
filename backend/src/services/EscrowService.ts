@@ -14,18 +14,18 @@
  * @see PRODUCT_SPEC.md §4
  */
 
-import { db, isInvariantViolation, isUniqueViolation, getErrorMessage } from '../db';
-import { config } from '../config';
-import { EarnedVerificationUnlockService } from './EarnedVerificationUnlockService';
-import { XPTaxService } from './XPTaxService';
-import { XPService } from './XPService';
+import { db, isInvariantViolation, isUniqueViolation, getErrorMessage } from '../db.js';
+import { config } from '../config.js';
+import { EarnedVerificationUnlockService } from './EarnedVerificationUnlockService.js';
+import { XPTaxService } from './XPTaxService.js';
+import { XPService } from './XPService.js';
 import type {
   Escrow,
   EscrowState,
   ServiceResult,
-} from '../types';
-import { TERMINAL_ESCROW_STATES, ErrorCodes } from '../types';
-import { escrowLogger } from '../logger';
+} from '../types.js';
+import { TERMINAL_ESCROW_STATES, ErrorCodes } from '../types.js';
+import { escrowLogger } from '../logger.js';
 
 // ============================================================================
 // TYPES

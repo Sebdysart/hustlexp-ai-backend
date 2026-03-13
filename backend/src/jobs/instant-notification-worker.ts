@@ -11,9 +11,9 @@
  */
 
 import { Job } from 'bullmq';
-import { db } from '../db';
-import { NotificationService } from '../services/NotificationService';
-import { workerLogger } from '../logger';
+import { db } from '../db.js';
+import { NotificationService } from '../services/NotificationService.js';
+import { workerLogger } from '../logger.js';
 const log = workerLogger.child({ worker: 'instant-notification' });
 
 interface InstantNotificationJobData {

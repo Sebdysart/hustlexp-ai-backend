@@ -10,12 +10,12 @@
  * @see schema.sql v1.8.0 (ai_agent_decisions)
  */
 
-import { db } from '../db';
-import type { ServiceResult } from '../types';
-import { AIClient } from './AIClient';
-import { ScoperProposalSchema } from '../lib/ai-response-schemas';
-import { aiLogger } from '../logger';
-import { scrubPII } from '../lib/pii-scrubber';
+import { db } from '../db.js';
+import type { ServiceResult } from '../types.js';
+import { AIClient } from './AIClient.js';
+import { ScoperProposalSchema } from '../lib/ai-response-schemas.js';
+import { aiLogger } from '../logger.js';
+import { scrubPII } from '../lib/pii-scrubber.js';
 
 const log = aiLogger.child({ service: 'ScoperAIService' });
 

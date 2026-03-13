@@ -12,10 +12,10 @@
  * @see ARCHITECTURE.md §11.6
  */
 
-import { db } from '../db';
-import { logger } from '../logger';
+import { db } from '../db.js';
+import { logger } from '../logger.js';
 import { TRPCError } from '@trpc/server';
-import { recomputeCapabilityProfile } from './CapabilityRecomputeService';
+import { recomputeCapabilityProfile } from './CapabilityRecomputeService.js';
 
 const log = logger.child({ service: 'InsuranceVerificationService' });
 

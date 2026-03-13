@@ -8,11 +8,11 @@
 
 import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
-import { router, protectedProcedure } from '../trpc';
-import { db } from '../db';
+import { router, protectedProcedure } from '../trpc.js';
+import { db } from '../db.js';
 import Stripe from 'stripe';
-import { config } from '../config';
-import { RevenueService } from '../services/RevenueService';
+import { config } from '../config.js';
+import { RevenueService } from '../services/RevenueService.js';
 
 const FEATURE_PRICING: Record<string, { cents: number; hours: number }> = {
   promoted: { cents: 299, hours: 24 },

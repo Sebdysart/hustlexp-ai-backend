@@ -8,9 +8,9 @@
  * @see schema.sql (movement_events table)
  */
 
-import { db } from '../db';
-import type { ServiceResult } from '../types';
-import { aiLogger } from '../logger';
+import { db } from '../db.js';
+import type { ServiceResult } from '../types.js';
+import { aiLogger } from '../logger.js';
 
 const log = aiLogger.child({ service: 'MovementTrackingService' });
 

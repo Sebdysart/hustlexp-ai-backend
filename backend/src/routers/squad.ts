@@ -16,8 +16,8 @@
 
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
-import { router, protectedProcedure, Schemas } from '../trpc';
-import { db } from '../db';
+import { router, protectedProcedure, Schemas } from '../trpc.js';
+import { db } from '../db.js';
 
 // Trust tier gate: Only Elite (tier 4) can create/join squads
 const REQUIRED_TRUST_TIER = 4;

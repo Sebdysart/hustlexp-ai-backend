@@ -12,9 +12,9 @@
  * @see backend/src/services/AnomalyDetectionService.ts
  */
 
-import { ServiceResult } from '../types';
-import { AIClient } from './AIClient';
-import { db } from '../db';
+import { ServiceResult } from '../types.js';
+import { AIClient } from './AIClient.js';
+import { db } from '../db.js';
 
 export interface IncidentDiagnosis {
   incidentId: string;

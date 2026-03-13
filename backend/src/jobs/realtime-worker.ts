@@ -18,7 +18,7 @@
  */
 
 import type { Job } from 'bullmq';
-import { dispatchTaskProgress } from '../realtime/realtime-dispatcher';
+import { dispatchTaskProgress } from '../realtime/realtime-dispatcher.js';
 
 // ============================================================================
 // TYPES

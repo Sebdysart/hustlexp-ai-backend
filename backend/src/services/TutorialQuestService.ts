@@ -11,8 +11,8 @@
  * Also serves as Equipment Inventory scan via photo (Gap 14).
  */
 
-import { db } from '../db';
-import type { ServiceResult } from '../types';
+import { db } from '../db.js';
+import type { ServiceResult } from '../types.js';
 
 // ============================================================================
 // TYPES

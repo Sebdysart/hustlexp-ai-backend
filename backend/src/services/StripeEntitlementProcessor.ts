@@ -14,7 +14,7 @@
  * @see STEP_9D_STRIPE_INTEGRATION.md
  */
 
-import { db } from '../db';
+import { db } from '../db.js';
 
 interface PaymentIntentPayload {
   id: string;

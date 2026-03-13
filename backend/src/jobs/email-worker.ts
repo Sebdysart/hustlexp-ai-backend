@@ -17,13 +17,13 @@
  * @see ARCHITECTURE.md §2.6 (Email Service)
  */
 
-import { db } from '../db';
-import { config } from '../config';
+import { db } from '../db.js';
+import { config } from '../config.js';
 import sgMail from '@sendgrid/mail';
-import { markOutboxEventProcessed, markOutboxEventFailed } from './outbox-worker';
-import { workerLogger } from '../logger';
+import { markOutboxEventProcessed, markOutboxEventFailed } from './outbox-worker.js';
+import { workerLogger } from '../logger.js';
 import type { Job } from 'bullmq';
-import { sendgridBreaker } from '../middleware/circuit-breaker';
+import { sendgridBreaker } from '../middleware/circuit-breaker.js';
 
 const log = workerLogger.child({ worker: 'email' });
 

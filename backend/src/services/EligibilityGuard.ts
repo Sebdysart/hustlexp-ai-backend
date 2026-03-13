@@ -11,10 +11,10 @@
  * - Logs reconstruct why access was allowed or denied
  */
 
-import { db } from '../db';
-import { logger } from '../logger';
-import { TrustTier, TrustTierService } from './TrustTierService';
-import { TaskRisk } from './TaskRiskClassifier';
+import { db } from '../db.js';
+import { logger } from '../logger.js';
+import { TrustTier, TrustTierService } from './TrustTierService.js';
+import { TaskRisk } from './TaskRiskClassifier.js';
 
 const log = logger.child({ service: 'EligibilityGuard' });
 

@@ -35,8 +35,8 @@
  * Reference: Phase N2.4 — Verification Resolution (LOCKED)
  */
 
-import { db } from '../db';
-import { logger } from '../logger';
+import { db } from '../db.js';
+import { logger } from '../logger.js';
 import { TRPCError } from '@trpc/server';
 
 const log = logger.child({ service: 'CapabilityRecomputeService' });

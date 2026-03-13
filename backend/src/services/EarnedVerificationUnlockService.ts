@@ -10,9 +10,9 @@
  * @see schema.sql v1.8.0 (verification_earnings_tracking, verification_earnings_ledger)
  */
 
-import { db } from '../db';
-import { logger } from '../logger';
-import type { ServiceResult } from '../types';
+import { db } from '../db.js';
+import { logger } from '../logger.js';
+import type { ServiceResult } from '../types.js';
 
 const log = logger.child({ service: 'EarnedVerificationUnlockService' });
 

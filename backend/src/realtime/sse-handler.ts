@@ -15,17 +15,17 @@
  */
 
 import { Context } from 'hono';
-import { addConnection, removeConnection, type SSEConnection } from './connection-registry';
-import { firebaseAuth } from '../auth/firebase';
-import { db } from '../db';
-import type { User } from '../types';
-import { logger } from '../logger';
+import { addConnection, removeConnection, type SSEConnection } from './connection-registry.js';
+import { firebaseAuth } from '../auth/firebase.js';
+import { db } from '../db.js';
+import type { User } from '../types.js';
+import { logger } from '../logger.js';
 import { 
   initializePubSub, 
   subscribeToRoom, 
   unsubscribeAllRooms,
   getUserRoomKey 
-} from './redis-pubsub';
+} from './redis-pubsub.js';
 
 const log = logger.child({ module: 'sse-handler' });
 

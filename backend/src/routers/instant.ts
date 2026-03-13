@@ -6,9 +6,9 @@
  * Not production-ready UI.
  */
 
-import { router, protectedProcedure } from '../trpc';
-import { TaskService } from '../services/TaskService';
-import { db } from '../db';
+import { router, protectedProcedure } from '../trpc.js';
+import { TaskService } from '../services/TaskService.js';
+import { db } from '../db.js';
 import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
 

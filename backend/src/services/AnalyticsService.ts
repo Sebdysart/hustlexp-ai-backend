@@ -11,9 +11,9 @@
  * @see staging/ANALYTICS_SPEC.md
  */
 
-import { db, isInvariantViolation, getErrorMessage } from '../db';
-import type { ServiceResult } from '../types';
-import { GDPRService } from './GDPRService';
+import { db, isInvariantViolation, getErrorMessage } from '../db.js';
+import type { ServiceResult } from '../types.js';
+import { GDPRService } from './GDPRService.js';
 
 // ============================================================================
 // TYPES

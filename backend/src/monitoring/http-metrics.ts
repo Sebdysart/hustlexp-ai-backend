@@ -1,4 +1,4 @@
-import { httpRequestDuration, httpRequestsTotal } from './metrics'
+import { httpRequestDuration, httpRequestsTotal } from './metrics.js'
 import type { MiddlewareHandler } from 'hono'
 
 function normalizeRoute(path: string): string {

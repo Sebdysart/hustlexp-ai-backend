@@ -12,8 +12,8 @@
  * Decision: Simple majority
  */
 
-import { db } from '../db';
-import type { ServiceResult } from '../types';
+import { db } from '../db.js';
+import type { ServiceResult } from '../types.js';
 
 // ============================================================================
 // TYPES

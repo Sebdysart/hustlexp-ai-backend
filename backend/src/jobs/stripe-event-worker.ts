@@ -16,11 +16,11 @@
  * @see STEP_9D_STRIPE_INTEGRATION.md
  */
 
-import { db } from '../db';
-import { processSubscriptionEvent } from '../services/StripeSubscriptionProcessor';
-import { processEntitlementPurchase } from '../services/StripeEntitlementProcessor';
+import { db } from '../db.js';
+import { processSubscriptionEvent } from '../services/StripeSubscriptionProcessor.js';
+import { processEntitlementPurchase } from '../services/StripeEntitlementProcessor.js';
 import type { Job } from 'bullmq';
-import { workerLogger } from '../logger';
+import { workerLogger } from '../logger.js';
 const log = workerLogger.child({ worker: 'stripe-event' });
 
 // ============================================================================

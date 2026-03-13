@@ -24,12 +24,12 @@
 
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
-import { router, adminProcedure, protectedProcedure } from '../trpc';
-import { BetaService } from '../services/BetaService';
-import { RevenueService } from '../services/RevenueService';
-import { ChargebackService } from '../services/ChargebackService';
-import { db } from '../db';
-import { config } from '../config';
+import { router, adminProcedure, protectedProcedure } from '../trpc.js';
+import { BetaService } from '../services/BetaService.js';
+import { RevenueService } from '../services/RevenueService.js';
+import { ChargebackService } from '../services/ChargebackService.js';
+import { db } from '../db.js';
+import { config } from '../config.js';
 
 export const betaDashboardRouter = router({
   // ==========================================================================

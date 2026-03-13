@@ -7,69 +7,69 @@
  */
 
 import { router } from '../trpc.js';
-import { taskRouter } from './task';
-import { escrowRouter } from './escrow';
-import { userRouter } from './user';
-import { aiRouter } from './ai';
-import { liveRouter } from './live';
-import { healthRouter } from './health';
-import { uiRouter } from './ui';
-import { instantRouter } from './instant';
+import { taskRouter } from './task.js';
+import { escrowRouter } from './escrow.js';
+import { userRouter } from './user.js';
+import { aiRouter } from './ai.js';
+import { liveRouter } from './live.js';
+import { healthRouter } from './health.js';
+import { uiRouter } from './ui.js';
+import { instantRouter } from './instant.js';
 // Phase 3: Critical gap routers
-import { taskDiscoveryRouter } from './taskDiscovery';
-import { messagingRouter } from './messaging';
-import { notificationRouter } from './notification';
-import { ratingRouter } from './rating';
-import { gdprRouter } from './gdpr';
-import { analyticsRouter } from './analytics';
-import { fraudRouter } from './fraud';
-import { moderationRouter } from './moderation';
-import { alphaTelemetryRouter } from './alpha-telemetry';
+import { taskDiscoveryRouter } from './taskDiscovery.js';
+import { messagingRouter } from './messaging.js';
+import { notificationRouter } from './notification.js';
+import { ratingRouter } from './rating.js';
+import { gdprRouter } from './gdpr.js';
+import { analyticsRouter } from './analytics.js';
+import { fraudRouter } from './fraud.js';
+import { moderationRouter } from './moderation.js';
+import { alphaTelemetryRouter } from './alpha-telemetry.js';
 // v1.8.0: Gamification routers
-import { xpTaxRouter } from './xpTax';
-import { insuranceRouter } from './insurance';
-import { biometricRouter } from './biometric';
+import { xpTaxRouter } from './xpTax.js';
+import { insuranceRouter } from './insurance.js';
+import { biometricRouter } from './biometric.js';
 // v2.0.0: Business model gap-fill routers
-import { skillsRouter } from './skills';
-import { pricingRouter } from './pricing';
-import { geofenceRouter } from './geofence';
-import { heatmapRouter } from './heatmap';
-import { batchQuestRouter } from './batchQuest';
-import { tutorialRouter } from './tutorial';
-import { juryRouter } from './jury';
-import { uploadRouter } from './upload';
+import { skillsRouter } from './skills.js';
+import { pricingRouter } from './pricing.js';
+import { geofenceRouter } from './geofence.js';
+import { heatmapRouter } from './heatmap.js';
+import { batchQuestRouter } from './batchQuest.js';
+import { tutorialRouter } from './tutorial.js';
+import { juryRouter } from './jury.js';
+import { uploadRouter } from './upload.js';
 // v2.1.0: AI agent routers
-import { matchmakerRouter } from './matchmaker';
-import { disputeAIRouter } from './disputeAI';
-import { reputationRouter } from './reputation';
+import { matchmakerRouter } from './matchmaker.js';
+import { disputeAIRouter } from './disputeAI.js';
+import { reputationRouter } from './reputation.js';
 // v2.1.0: Business feature routers
-import { betaDashboardRouter } from './betaDashboard';
-import { challengesRouter } from './challenges';
-import { expertiseSupplyRouter } from './expertiseSupply';
-import { featuredRouter } from './featured';
-import { referralRouter } from './referral';
-import { subscriptionRouter } from './subscription';
-import { tippingRouter } from './tipping';
+import { betaDashboardRouter } from './betaDashboard.js';
+import { challengesRouter } from './challenges.js';
+import { expertiseSupplyRouter } from './expertiseSupply.js';
+import { featuredRouter } from './featured.js';
+import { referralRouter } from './referral.js';
+import { subscriptionRouter } from './subscription.js';
+import { tippingRouter } from './tipping.js';
 // v2.4.0: Squads Mode
-import { squadRouter } from './squad';
+import { squadRouter } from './squad.js';
 // v2.4.0: Recurring Tasks
-import { recurringTaskRouter } from './recurringTask';
+import { recurringTaskRouter } from './recurringTask.js';
 // v2.5.0: Stripe Connect
-import { stripeConnectRouter } from './stripeConnect';
+import { stripeConnectRouter } from './stripeConnect.js';
 // v2.6.0: Feature Flags
-import { flagsRouter } from './flags';
+import { flagsRouter } from './flags.js';
 // v3.0.0: Core capability services (audit fix)
-import { capabilityRouter } from './capability';
+import { capabilityRouter } from './capability.js';
 // v3.0.0: Admin Dashboard
-import { adminRouter } from './admin';
+import { adminRouter } from './admin.js';
 // Phase 5: Incident Intelligence
-import { incidentsRouter } from './incidents';
+import { incidentsRouter } from './incidents.js';
 // Phase 6: Intent Bridge
-import { intentRouter } from './intent';
+import { intentRouter } from './intent.js';
 // v3.1.0: Task Batching AI
-import { batchingRouter } from './batching';
+import { batchingRouter } from './batching.js';
 // v3.1.0: Movement Tracking
-import { trackingRouter } from './tracking';
+import { trackingRouter } from './tracking.js';
 
 export const appRouter = router({
   task: taskRouter,

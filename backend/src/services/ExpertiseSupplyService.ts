@@ -26,10 +26,10 @@
  * @see BetaService.ts
  */
 
-import { db } from '../db';
-import { logger } from '../logger';
-import type { ServiceResult } from '../types';
-import { NotificationService } from './NotificationService';
+import { db } from '../db.js';
+import { logger } from '../logger.js';
+import type { ServiceResult } from '../types.js';
+import { NotificationService } from './NotificationService.js';
 
 const log = logger.child({ service: 'ExpertiseSupplyService' });
 

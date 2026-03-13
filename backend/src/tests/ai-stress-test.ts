@@ -13,8 +13,8 @@
  * Run: npx tsx backend/src/tests/ai-stress-test.ts
  */
 
-import type { config as ConfigType } from '../config';
-import type { Database } from '../db';
+import type { config as ConfigType } from '../config.js';
+import type { Database } from '../db.js';
 
 // Config and db are loaded dynamically after env is set
 let config: typeof ConfigType;

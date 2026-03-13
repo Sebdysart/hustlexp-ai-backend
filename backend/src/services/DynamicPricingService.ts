@@ -13,8 +13,8 @@
  * @see PRODUCT_SPEC §3.5 (Live Mode pricing)
  */
 
-import { db } from '../db';
-import type { ServiceResult } from '../types';
+import { db } from '../db.js';
+import type { ServiceResult } from '../types.js';
 
 // ============================================================================
 // TYPES

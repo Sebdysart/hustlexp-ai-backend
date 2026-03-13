@@ -9,10 +9,10 @@
  * Launch Hardening v1: Error containment, observability
  */
 
-import { db } from '../db';
-import { writeToOutbox } from './outbox-helpers';
-import { InstantObservability } from '../services/InstantObservability';
-import { workerLogger } from '../logger';
+import { db } from '../db.js';
+import { writeToOutbox } from './outbox-helpers.js';
+import { InstantObservability } from '../services/InstantObservability.js';
+import { workerLogger } from '../logger.js';
 const log = workerLogger.child({ worker: 'instant-surge-evaluator' });
 
 /**

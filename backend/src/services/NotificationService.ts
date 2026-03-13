@@ -12,12 +12,12 @@
  */
 
 import { randomUUID } from 'crypto';
-import { db, isInvariantViolation, getErrorMessage } from '../db';
-import type { ServiceResult } from '../types';
-import { ErrorCodes } from '../types';
-import { logger } from '../logger';
+import { db, isInvariantViolation, getErrorMessage } from '../db.js';
+import type { ServiceResult } from '../types.js';
+import { ErrorCodes } from '../types.js';
+import { logger } from '../logger.js';
 import { Redis } from '@upstash/redis';
-import { config } from '../config';
+import { config } from '../config.js';
 
 const log = logger.child({ service: 'NotificationService' });
 

@@ -4,8 +4,8 @@
 
 import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
-import { router, protectedProcedure } from '../trpc';
-import { db } from '../db';
+import { router, protectedProcedure } from '../trpc.js';
+import { db } from '../db.js';
 
 // Default daily challenges if none exist for today
 const DEFAULT_CHALLENGES = [

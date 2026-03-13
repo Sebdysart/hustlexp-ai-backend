@@ -18,12 +18,12 @@
  * @see AI_INFRASTRUCTURE.md §7.3
  */
 
-import { db } from '../db';
-import type { ServiceResult, Dispute, Task, Escrow, Evidence } from '../types';
-import { AIClient } from './AIClient';
-import { DisputeAnalysisSchema, EvidenceRequestSchema } from '../lib/ai-response-schemas';
-import { scrubPII } from '../lib/pii-scrubber';
-import { aiLogger } from '../logger';
+import { db } from '../db.js';
+import type { ServiceResult, Dispute, Task, Escrow, Evidence } from '../types.js';
+import { AIClient } from './AIClient.js';
+import { DisputeAnalysisSchema, EvidenceRequestSchema } from '../lib/ai-response-schemas.js';
+import { scrubPII } from '../lib/pii-scrubber.js';
+import { aiLogger } from '../logger.js';
 
 const log = aiLogger.child({ service: 'DisputeAIService' });
 

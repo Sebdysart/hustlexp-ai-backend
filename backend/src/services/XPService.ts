@@ -13,13 +13,13 @@
  * @see PRODUCT_SPEC.md §5
  */
 
-import { db, isInvariantViolation, isUniqueViolation, getErrorMessage } from '../db';
-import { logger } from '../logger';
-import type { ServiceResult } from '../types';
-import { ErrorCodes } from '../types';
-import { AlphaInstrumentation } from './AlphaInstrumentation';
+import { db, isInvariantViolation, isUniqueViolation, getErrorMessage } from '../db.js';
+import { logger } from '../logger.js';
+import type { ServiceResult } from '../types.js';
+import { ErrorCodes } from '../types.js';
+import { AlphaInstrumentation } from './AlphaInstrumentation.js';
 import { Redis } from '@upstash/redis';
-import { config } from '../config';
+import { config } from '../config.js';
 
 const log = logger.child({ service: 'XPService' });
 

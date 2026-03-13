@@ -5,8 +5,8 @@
  */
 
 import { z } from 'zod';
-import { router, protectedProcedure } from '../trpc';
-import { JuryPoolService } from '../services/JuryPoolService';
+import { router, protectedProcedure } from '../trpc.js';
+import { JuryPoolService } from '../services/JuryPoolService.js';
 
 export const juryRouter = router({
   submitVote: protectedProcedure

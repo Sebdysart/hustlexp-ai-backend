@@ -16,10 +16,10 @@
  * @see RevenueService (ledger append)
  */
 
-import { db } from '../db';
-import { RevenueService } from './RevenueService';
-import type { ServiceResult } from '../types';
-import { stripeLogger } from '../logger';
+import { db } from '../db.js';
+import { RevenueService } from './RevenueService.js';
+import type { ServiceResult } from '../types.js';
+import { stripeLogger } from '../logger.js';
 
 const log = stripeLogger.child({ service: 'ChargebackService' });
 

@@ -5,8 +5,8 @@
  */
 
 import { z } from 'zod';
-import { router, protectedProcedure } from '../trpc';
-import { HeatMapService } from '../services/HeatMapService';
+import { router, protectedProcedure } from '../trpc.js';
+import { HeatMapService } from '../services/HeatMapService.js';
 
 export const heatmapRouter = router({
   getHeatMap: protectedProcedure

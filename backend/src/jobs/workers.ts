@@ -18,11 +18,11 @@
  * @see ARCHITECTURE.md §2.4 (Outbox pattern)
  */
 
-import { createWorker, getQueue } from './queues';
-import { startOutboxWorker } from './outbox-worker';
-import { processExportJob } from './export-worker';
-import { processEmailJob } from './email-worker';
-import { workerLogger as log } from '../logger';
+import { createWorker, getQueue } from './queues.js';
+import { startOutboxWorker } from './outbox-worker.js';
+import { processExportJob } from './export-worker.js';
+import { processEmailJob } from './email-worker.js';
+import { workerLogger as log } from '../logger.js';
 import type { Job, Worker } from 'bullmq';
 
 // Track all registered workers for graceful shutdown

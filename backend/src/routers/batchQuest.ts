@@ -5,8 +5,8 @@
  */
 
 import { z } from 'zod';
-import { router, protectedProcedure } from '../trpc';
-import { BatchQuestingService } from '../services/BatchQuestingService';
+import { router, protectedProcedure } from '../trpc.js';
+import { BatchQuestingService } from '../services/BatchQuestingService.js';
 
 export const batchQuestRouter = router({
   getSuggestions: protectedProcedure

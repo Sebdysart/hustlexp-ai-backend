@@ -11,10 +11,10 @@
  * @see BiometricVerificationService (complements this for face checks)
  */
 
-import { db } from '../db';
-import type { ServiceResult } from '../types';
-import { openaiBreaker } from '../middleware/circuit-breaker';
-import { logger } from '../logger';
+import { db } from '../db.js';
+import type { ServiceResult } from '../types.js';
+import { openaiBreaker } from '../middleware/circuit-breaker.js';
+import { logger } from '../logger.js';
 
 const log = logger.child({ service: 'PhotoVerificationService' });
 

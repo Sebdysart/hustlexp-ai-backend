@@ -10,11 +10,11 @@
  */
 
 import { TRPCError } from '@trpc/server';
-import { router, protectedProcedure, Schemas } from '../trpc';
-import { EscrowService } from '../services/EscrowService';
-import { StripeService } from '../services/StripeService';
-import { XPService } from '../services/XPService';
-import { db } from '../db';
+import { router, protectedProcedure, Schemas } from '../trpc.js';
+import { EscrowService } from '../services/EscrowService.js';
+import { StripeService } from '../services/StripeService.js';
+import { XPService } from '../services/XPService.js';
+import { db } from '../db.js';
 import { z } from 'zod';
 
 export const escrowRouter = router({

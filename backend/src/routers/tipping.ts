@@ -4,9 +4,9 @@
 
 import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
-import { router, protectedProcedure } from '../trpc';
-import { TippingService } from '../services/TippingService';
-import { db } from '../db';
+import { router, protectedProcedure } from '../trpc.js';
+import { TippingService } from '../services/TippingService.js';
+import { db } from '../db.js';
 
 export const tippingRouter = router({
   createTip: protectedProcedure

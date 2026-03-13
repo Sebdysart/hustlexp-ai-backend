@@ -7,9 +7,9 @@
 
 import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
-import { router, publicProcedure, protectedProcedure } from '../trpc';
-import { WorkerSkillService } from '../services/WorkerSkillService';
-import { db } from '../db';
+import { router, publicProcedure, protectedProcedure } from '../trpc.js';
+import { WorkerSkillService } from '../services/WorkerSkillService.js';
+import { db } from '../db.js';
 
 export const skillsRouter = router({
   // Public: Browse skill catalog

@@ -12,8 +12,8 @@
  */
 
 import { TRPCError } from '@trpc/server';
-import { router, protectedProcedure, adminProcedure, Schemas } from '../trpc';
-import { SelfInsurancePoolService } from '../services/SelfInsurancePoolService';
+import { router, protectedProcedure, adminProcedure, Schemas } from '../trpc.js';
+import { SelfInsurancePoolService } from '../services/SelfInsurancePoolService.js';
 import { z } from 'zod';
 
 export const insuranceRouter = router({

@@ -11,12 +11,12 @@
  */
 
 import { TRPCError } from '@trpc/server';
-import { router, protectedProcedure, Schemas } from '../trpc';
-import { db } from '../db';
-import { BiometricVerificationService } from '../services/BiometricVerificationService';
-import { LogisticsAIService } from '../services/LogisticsAIService';
-import { GDPRService } from '../services/GDPRService';
-import { validateSafeUrl } from '../lib/url-safety';
+import { router, protectedProcedure, Schemas } from '../trpc.js';
+import { db } from '../db.js';
+import { BiometricVerificationService } from '../services/BiometricVerificationService.js';
+import { LogisticsAIService } from '../services/LogisticsAIService.js';
+import { GDPRService } from '../services/GDPRService.js';
+import { validateSafeUrl } from '../lib/url-safety.js';
 import { z } from 'zod';
 
 /**

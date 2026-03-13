@@ -15,11 +15,11 @@
  */
 
 import Stripe from 'stripe';
-import { config } from '../config';
-import { db } from '../db';
-import type { ServiceResult } from '../types';
-import { stripeBreaker } from '../middleware/circuit-breaker';
-import { stripeLogger } from '../logger';
+import { config } from '../config.js';
+import { db } from '../db.js';
+import type { ServiceResult } from '../types.js';
+import { stripeBreaker } from '../middleware/circuit-breaker.js';
+import { stripeLogger } from '../logger.js';
 
 // ============================================================================
 // INITIALIZATION

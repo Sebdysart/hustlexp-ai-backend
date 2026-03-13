@@ -13,9 +13,9 @@
  */
 
 import { Redis } from 'ioredis';
-import { config } from '../config';
-import { logger } from '../logger';
-import { getConnections } from './connection-registry';
+import { config } from '../config.js';
+import { logger } from '../logger.js';
+import { getConnections } from './connection-registry.js';
 
 const log = logger.child({ module: 'redis-pubsub' });
 

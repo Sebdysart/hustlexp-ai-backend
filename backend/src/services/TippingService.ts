@@ -14,10 +14,10 @@
  */
 
 import Stripe from 'stripe';
-import { config } from '../config';
-import { db } from '../db';
-import type { ServiceResult } from '../types';
-import { logger } from '../logger';
+import { config } from '../config.js';
+import { db } from '../db.js';
+import type { ServiceResult } from '../types.js';
+import { logger } from '../logger.js';
 
 const log = logger.child({ service: 'TippingService' });
 

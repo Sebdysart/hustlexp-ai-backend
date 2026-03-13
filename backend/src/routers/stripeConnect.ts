@@ -15,9 +15,9 @@
  */
 
 import { TRPCError } from '@trpc/server';
-import { router, protectedProcedure } from '../trpc';
-import { StripeConnectService } from '../services/StripeConnectService';
-import { TaxReportingService } from '../services/TaxReportingService';
+import { router, protectedProcedure } from '../trpc.js';
+import { StripeConnectService } from '../services/StripeConnectService.js';
+import { TaxReportingService } from '../services/TaxReportingService.js';
 import { z } from 'zod';
 
 // ============================================================================

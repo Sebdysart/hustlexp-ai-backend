@@ -18,10 +18,10 @@
  * @see backend/tests/invariants/stripe-monetization.test.ts
  */
 
-import { db } from '../db';
-import { writeToOutbox } from '../jobs/outbox-helpers';
+import { db } from '../db.js';
+import { writeToOutbox } from '../jobs/outbox-helpers.js';
 import Stripe from 'stripe';
-import { config } from '../config';
+import { config } from '../config.js';
 
 // ============================================================================
 // TYPES

@@ -17,10 +17,10 @@
  * @see email-worker.ts (sibling worker for email channel)
  */
 
-import { db } from '../db';
-import { sendPushNotification } from '../services/PushNotificationService';
-import { markOutboxEventProcessed, markOutboxEventFailed } from './outbox-worker';
-import { workerLogger } from '../logger';
+import { db } from '../db.js';
+import { sendPushNotification } from '../services/PushNotificationService.js';
+import { markOutboxEventProcessed, markOutboxEventFailed } from './outbox-worker.js';
+import { workerLogger } from '../logger.js';
 import type { Job } from 'bullmq';
 
 const log = workerLogger.child({ worker: 'push' });

@@ -12,8 +12,8 @@
  * @see backend/src/services/IncidentDiagnosisService.ts
  */
 
-import { db } from '../db';
-import { ServiceResult } from '../types';
+import { db } from '../db.js';
+import { ServiceResult } from '../types.js';
 
 export interface AnomalyConfig {
   errorRateThreshold: number; // Multiplier (e.g., 2.0 = 2x baseline)

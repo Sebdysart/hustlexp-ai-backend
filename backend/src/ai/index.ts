@@ -2,6 +2,6 @@
  * AI Module Index
  */
 
-export { callAI, getBudgetStatus, type CallAIResult } from './AIRouter';
-export { checkRateLimit, requireRateLimit, type RateLimitResult } from './rateLimit';
-export { default as AIRouter } from './AIRouter';
+export { callAI, getBudgetStatus, type CallAIResult } from './AIRouter.js';
+export { checkRateLimit, requireRateLimit, type RateLimitResult } from './rateLimit.js';
+export { default as AIRouter } from './AIRouter.js';

@@ -12,10 +12,10 @@
 import { initTRPC, TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { createHash } from 'crypto';
-import { firebaseAuth } from './auth/firebase';
-import { db } from './db';
-import type { User } from './types';
-import { logger } from './logger';
+import { firebaseAuth } from './auth/firebase.js';
+import { db } from './db.js';
+import type { User } from './types.js';
+import { logger } from './logger.js';
 
 const log = logger.child({ module: 'trpc' });
 

@@ -15,8 +15,8 @@
 
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
-import { router, protectedProcedure, Schemas } from '../trpc';
-import { db } from '../db';
+import { router, protectedProcedure, Schemas } from '../trpc.js';
+import { db } from '../db.js';
 
 // Subscription limits for recurring task series
 const RECURRING_TASK_LIMITS: Record<string, number> = {

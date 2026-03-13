@@ -14,8 +14,8 @@
  * - trust_delta_applied: Trust change auditability
  */
 
-import { db } from '../db';
-import { logger } from '../logger';
+import { db } from '../db.js';
+import { logger } from '../logger.js';
 
 const log = logger.child({ service: 'AlphaInstrumentation' });
 

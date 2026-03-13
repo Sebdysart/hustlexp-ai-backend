@@ -13,12 +13,12 @@
  * @see staging/TASK_DISCOVERY_SPEC.md
  */
 
-import { db } from '../db';
-import type { ServiceResult } from '../types';
-import { ErrorCodes } from '../types';
-import { GeocodingService } from './GeocodingService';
-import { scrubPII } from '../lib/pii-scrubber';
-import { AIClient } from './AIClient';
+import { db } from '../db.js';
+import type { ServiceResult } from '../types.js';
+import { ErrorCodes } from '../types.js';
+import { GeocodingService } from './GeocodingService.js';
+import { scrubPII } from '../lib/pii-scrubber.js';
+import { AIClient } from './AIClient.js';
 
 // ============================================================================
 // TYPES

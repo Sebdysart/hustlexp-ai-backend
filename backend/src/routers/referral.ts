@@ -5,8 +5,8 @@
 
 import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
-import { router, protectedProcedure } from '../trpc';
-import { db } from '../db';
+import { router, protectedProcedure } from '../trpc.js';
+import { db } from '../db.js';
 
 // Generate a random referral code
 function generateReferralCode(): string {

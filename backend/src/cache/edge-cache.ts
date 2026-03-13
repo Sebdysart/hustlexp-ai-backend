@@ -6,7 +6,7 @@
 import type { Context } from 'hono';
 import { MiddlewareHandler } from 'hono';
 import { createHash } from 'crypto';
-import { logger } from '../logger';
+import { logger } from '../logger.js';
 
 const cacheLog = logger.child({ module: 'edge-cache' });
 

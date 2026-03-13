@@ -10,8 +10,8 @@
  * @see AI_INFRASTRUCTURE.md §6.1
  */
 
-import { db } from '../db';
-import type { ServiceResult, AIEvent } from '../types';
+import { db } from '../db.js';
+import type { ServiceResult, AIEvent } from '../types.js';
 import { createHash } from 'crypto';
 
 // ============================================================================

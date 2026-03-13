@@ -10,10 +10,10 @@
 
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
-import { router, protectedProcedure, adminProcedure, Schemas } from '../trpc';
-import { NotificationService } from '../services/NotificationService';
-import { sendPushNotification } from '../services/PushNotificationService';
-import { db } from '../db';
+import { router, protectedProcedure, adminProcedure, Schemas } from '../trpc.js';
+import { NotificationService } from '../services/NotificationService.js';
+import { sendPushNotification } from '../services/PushNotificationService.js';
+import { db } from '../db.js';
 
 export const notificationRouter = router({
   // --------------------------------------------------------------------------

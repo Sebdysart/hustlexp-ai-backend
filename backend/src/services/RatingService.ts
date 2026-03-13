@@ -11,9 +11,9 @@
  * @see staging/RATING_SYSTEM_SPEC.md
  */
 
-import { db, isInvariantViolation, isUniqueViolation, getErrorMessage } from '../db';
-import type { ServiceResult, TaskState } from '../types';
-import { ErrorCodes } from '../types';
+import { db, isInvariantViolation, isUniqueViolation, getErrorMessage } from '../db.js';
+import type { ServiceResult, TaskState } from '../types.js';
+import { ErrorCodes } from '../types.js';
 
 // ============================================================================
 // TYPES

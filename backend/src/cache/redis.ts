@@ -1,7 +1,7 @@
-import { config } from '../config';
+import { config } from '../config.js';
 import { Redis } from '@upstash/redis';
 import { Ratelimit } from '@upstash/ratelimit';
-import { logger } from '../logger';
+import { logger } from '../logger.js';
 const redisLog = logger.child({ module: 'redis' });
 
 export type RedisClient = Redis | null;

@@ -7,8 +7,8 @@
  */
 
 import { Redis } from '@upstash/redis';
-import { db } from '../db';
-import { config } from '../config';
+import { db } from '../db.js';
+import { config } from '../config.js';
 
 
 // ============================================================================

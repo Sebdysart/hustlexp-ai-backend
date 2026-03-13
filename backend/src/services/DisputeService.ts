@@ -11,12 +11,12 @@
  * @see AI_INFRASTRUCTURE.md §7.3
  */
 
-import { db, isInvariantViolation, isUniqueViolation, getErrorMessage } from '../db';
-import type { ServiceResult, Dispute, DisputeState, Escrow } from '../types';
-import { ErrorCodes } from '../types';
-import { writeToOutbox } from '../jobs/outbox-helpers';
-import { TaskService } from './TaskService';
-import { EscrowService } from './EscrowService';
+import { db, isInvariantViolation, isUniqueViolation, getErrorMessage } from '../db.js';
+import type { ServiceResult, Dispute, DisputeState, Escrow } from '../types.js';
+import { ErrorCodes } from '../types.js';
+import { writeToOutbox } from '../jobs/outbox-helpers.js';
+import { TaskService } from './TaskService.js';
+import { EscrowService } from './EscrowService.js';
 
 // ============================================================================
 // HELPERS

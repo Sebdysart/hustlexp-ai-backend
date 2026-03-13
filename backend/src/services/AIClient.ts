@@ -16,10 +16,10 @@
 import OpenAI from 'openai';
 import Groq from 'groq-sdk';
 import type { ZodSchema } from 'zod';
-import { config } from '../config';
-import { redis, CACHE_KEYS, CACHE_TTL } from '../cache/redis';
+import { config } from '../config.js';
+import { redis, CACHE_KEYS, CACHE_TTL } from '../cache/redis.js';
 import crypto from 'crypto';
-import { aiLogger } from '../logger';
+import { aiLogger } from '../logger.js';
 
 const log = aiLogger.child({ service: 'AIClient' });
 import {
@@ -27,7 +27,7 @@ import {
   groqBreaker,
   deepseekBreaker,
   anthropicBreaker,
-} from '../middleware/circuit-breaker';
+} from '../middleware/circuit-breaker.js';
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -160,7 +160,7 @@ function hashPrompt(systemPrompt: string | undefined, prompt: string, model: str
 
 // ─── Circuit Breaker Mapping ─────────────────────────────────────────────
 
-import type { CircuitBreaker } from '../middleware/circuit-breaker';
+import type { CircuitBreaker } from '../middleware/circuit-breaker.js';
 
 const PROVIDER_BREAKERS: Record<string, CircuitBreaker> = {
   openai: openaiBreaker,

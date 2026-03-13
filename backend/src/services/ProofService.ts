@@ -12,15 +12,15 @@
  * @see PRODUCT_SPEC.md §3
  */
 
-import { db, isInvariantViolation, getErrorMessage } from '../db';
-import { BiometricVerificationService } from './BiometricVerificationService';
-import { LogisticsAIService } from './LogisticsAIService';
-import { JudgeAIService } from './JudgeAIService';
-import { PhotoVerificationService } from './PhotoVerificationService';
-import type { ServiceResult } from '../types';
-import type { BiometricSignals, LogisticsSignals, PhotoVerificationSignals } from './JudgeAIService';
-import { ErrorCodes } from '../types';
-import { logger } from '../logger';
+import { db, isInvariantViolation, getErrorMessage } from '../db.js';
+import { BiometricVerificationService } from './BiometricVerificationService.js';
+import { LogisticsAIService } from './LogisticsAIService.js';
+import { JudgeAIService } from './JudgeAIService.js';
+import { PhotoVerificationService } from './PhotoVerificationService.js';
+import type { ServiceResult } from '../types.js';
+import type { BiometricSignals, LogisticsSignals, PhotoVerificationSignals } from './JudgeAIService.js';
+import { ErrorCodes } from '../types.js';
+import { logger } from '../logger.js';
 
 const log = logger.child({ service: 'ProofService' });
 
@@ -28,7 +28,7 @@ const log = logger.child({ service: 'ProofService' });
 // TYPES
 // ============================================================================
 
-import type { Proof, ProofState, ProofPhoto } from '../types';
+import type { Proof, ProofState, ProofPhoto } from '../types.js';
 
 
 interface SubmitProofParams {

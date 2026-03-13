@@ -13,10 +13,10 @@
  * @see schema.sql v1.8.0 (xp_tax_ledger, user_xp_tax_status, trigger)
  */
 
-import { db } from '../db';
-import { logger } from '../logger';
-import type { ServiceResult } from '../types';
-import { StripeService } from './StripeService';
+import { db } from '../db.js';
+import { logger } from '../logger.js';
+import type { ServiceResult } from '../types.js';
+import { StripeService } from './StripeService.js';
 
 const log = logger.child({ service: 'XPTaxService' });
 

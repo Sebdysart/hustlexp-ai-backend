@@ -12,7 +12,7 @@
 
 import pg from 'pg';
 const { Pool } = pg;
-import { logger } from './logger';
+import { logger } from './logger.js';
 
 // ============================================================================
 // CONNECTION POOLING (PgBouncer via Neon)

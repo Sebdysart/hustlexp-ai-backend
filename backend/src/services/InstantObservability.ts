@@ -11,8 +11,8 @@
  * - Worker crash loops
  */
 
-import { db } from '../db';
-import { logger } from '../logger';
+import { db } from '../db.js';
+import { logger } from '../logger.js';
 
 const log = logger.child({ service: 'InstantObservability' });
 

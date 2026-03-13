@@ -16,11 +16,11 @@
  * @see Step 10 - Realtime Transport Implementation
  */
 
-import { db } from '../db';
-import { getConnections, getAllConnections, type SSEConnection } from './connection-registry';
-import { PlanService } from '../services/PlanService';
-import type { TaskProgressState } from '../types';
-import { logger } from '../logger';
+import { db } from '../db.js';
+import { getConnections, getAllConnections, type SSEConnection } from './connection-registry.js';
+import { PlanService } from '../services/PlanService.js';
+import type { TaskProgressState } from '../types.js';
+import { logger } from '../logger.js';
 
 const log = logger.child({ module: 'realtime-dispatcher' });
 

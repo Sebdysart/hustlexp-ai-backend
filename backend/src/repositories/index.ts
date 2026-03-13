@@ -5,7 +5,7 @@
  * All repositories accept an optional RepositoryContext for transaction support.
  *
  * Usage:
- *   import { taskRepository, userRepository, escrowRepository } from './repositories';
+ *   import { taskRepository, userRepository, escrowRepository } from './repositories.js';
  *
  *   // Simple query
  *   const task = await taskRepository.findById(taskId);
@@ -17,7 +17,7 @@
  *   });
  */
 
-export { BaseRepository, type RepositoryContext } from './BaseRepository';
-export { TaskRepository, taskRepository } from './TaskRepository';
-export { UserRepository, userRepository } from './UserRepository';
-export { EscrowRepository, escrowRepository } from './EscrowRepository';
+export { BaseRepository, type RepositoryContext } from './BaseRepository.js';
+export { TaskRepository, taskRepository } from './TaskRepository.js';
+export { UserRepository, userRepository } from './UserRepository.js';
+export { EscrowRepository, escrowRepository } from './EscrowRepository.js';

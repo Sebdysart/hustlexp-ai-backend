@@ -11,9 +11,9 @@
  * - No downgrades except permanent ban
  */
 
-import { db } from '../db';
-import { logger } from '../logger';
-import { AlphaInstrumentation } from './AlphaInstrumentation';
+import { db } from '../db.js';
+import { logger } from '../logger.js';
+import { AlphaInstrumentation } from './AlphaInstrumentation.js';
 
 const log = logger.child({ service: 'TrustTierService' });
 

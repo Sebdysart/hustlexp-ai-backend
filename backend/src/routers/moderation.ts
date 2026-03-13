@@ -13,8 +13,8 @@
 
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
-import { router, protectedProcedure, adminProcedure, Schemas } from '../trpc';
-import { ContentModerationService, type ReviewDecision, type ReportStatus, type AppealStatus } from '../services/ContentModerationService';
+import { router, protectedProcedure, adminProcedure, Schemas } from '../trpc.js';
+import { ContentModerationService, type ReviewDecision, type ReportStatus, type AppealStatus } from '../services/ContentModerationService.js';
 
 export const moderationRouter = router({
   // --------------------------------------------------------------------------

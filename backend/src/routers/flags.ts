@@ -7,8 +7,8 @@
  */
 
 import { z } from 'zod';
-import { router, protectedProcedure, adminProcedure } from '../trpc';
-import { FlagsService } from '../services/FlagsService';
+import { router, protectedProcedure, adminProcedure } from '../trpc.js';
+import { FlagsService } from '../services/FlagsService.js';
 
 export const flagsRouter = router({
   /**

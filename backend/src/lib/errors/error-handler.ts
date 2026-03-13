@@ -2,7 +2,7 @@ import type { ErrorHandler } from 'hono';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { TRPCError } from '@trpc/server';
 import * as Sentry from '@sentry/node';
-import { logger } from '../../logger';
+import { logger } from '../../logger.js';
 import {
   AppError,
   ValidationError,
@@ -11,7 +11,7 @@ import {
   NotFoundError,
   ConflictError,
   RateLimitError,
-} from './index';
+} from './index.js';
 
 export function createHonoErrorHandler(): ErrorHandler {
   return (err, c) => {

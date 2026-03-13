@@ -5,7 +5,7 @@
 import { Ratelimit } from '@upstash/ratelimit';
 import { Redis } from '@upstash/redis';
 import { TRPCError } from '@trpc/server';
-import { config } from '../config';
+import { config } from '../config.js';
 
 interface RateLimitConfig {
   requests: number;

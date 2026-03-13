@@ -18,8 +18,8 @@
  * @see ARCHITECTURE.md §2.4 (Outbox pattern)
  */
 
-import { db, type QueryFn } from '../db';
-import { generateIdempotencyKey, type QueueName } from './queues';
+import { db, type QueryFn } from '../db.js';
+import { generateIdempotencyKey, type QueueName } from './queues.js';
 
 // ============================================================================
 // TYPES

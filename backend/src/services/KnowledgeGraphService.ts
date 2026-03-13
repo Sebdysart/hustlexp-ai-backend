@@ -6,7 +6,7 @@
  * @see backend/database/constitutional-schema.sql
  */
 
-import { db } from '../db';
+import { db } from '../db.js';
 import OpenAI from 'openai';
 
 // ============================================================================

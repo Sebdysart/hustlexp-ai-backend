@@ -19,13 +19,13 @@
  * @see ARCHITECTURE.md §2.4 (Outbox pattern), §2.5 (File Storage)
  */
 
-import { db } from '../db';
-import { r2 } from '../storage/r2';
-import { writeToOutbox } from './outbox-helpers';
-import { markOutboxEventProcessed, markOutboxEventFailed } from './outbox-worker';
+import { db } from '../db.js';
+import { r2 } from '../storage/r2.js';
+import { writeToOutbox } from './outbox-helpers.js';
+import { markOutboxEventProcessed, markOutboxEventFailed } from './outbox-worker.js';
 import type { Job } from 'bullmq';
-import { collectUserDataForExport } from '../services/GDPRService';
-import { workerLogger } from '../logger';
+import { collectUserDataForExport } from '../services/GDPRService.js';
+import { workerLogger } from '../logger.js';
 const log = workerLogger.child({ worker: 'export' });
 
 // ============================================================================
