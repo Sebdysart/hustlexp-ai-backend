@@ -1,7 +1,7 @@
 /**
  * Recurring Task Router Structure Tests
  *
- * Verifies the recurringTask tRPC router has all 9 expected procedures
+ * Verifies the recurringTask tRPC router has all 10 expected procedures
  * with correct types (query vs mutation).
  */
 
@@ -31,9 +31,9 @@ describe('Recurring Task Router', () => {
   describe('procedure definitions', () => {
     const procedures = recurringTaskRouter._def.procedures as Record<string, any>;
 
-    it('should have exactly 9 procedures', () => {
+    it('should have exactly 10 procedures', () => {
       const procedureNames = Object.keys(procedures);
-      expect(procedureNames).toHaveLength(9);
+      expect(procedureNames).toHaveLength(10);
     });
 
     it('should have all expected procedure names', () => {
@@ -45,6 +45,7 @@ describe('Recurring Task Router', () => {
         'resume',
         'cancel',
         'listOccurrences',
+        'generateOccurrences',
         'skipOccurrence',
         'setPreferredWorker',
       ];

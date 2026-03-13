@@ -1703,6 +1703,67 @@ CREATE INDEX IF NOT EXISTS idx_tips_task ON tips(task_id);
 CREATE INDEX IF NOT EXISTS idx_tips_poster ON tips(poster_id);
 
 -- ----------------------------------------------------------------------------
+-- 11.4c RECURRING TASKS (PRODUCT_SPEC §12 — poster automation, tier-gated)
+-- ----------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS recurring_task_series (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  poster_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  template_task_id UUID REFERENCES tasks(id) ON DELETE SET NULL,
+
+  pattern VARCHAR(20) NOT NULL
+    CHECK (pattern IN ('daily', 'weekly', 'biweekly', 'monthly')),
+  day_of_week INT CHECK (day_of_week >= 1 AND day_of_week <= 7),
+  day_of_month INT CHECK (day_of_month >= 1 AND day_of_month <= 28),
+  time_of_day VARCHAR(5),
+  start_date DATE NOT NULL,
+  end_date DATE,
+
+  title VARCHAR(255) NOT NULL,
+  description TEXT NOT NULL,
+  payment_cents INT NOT NULL CHECK (payment_cents >= 500),
+  location VARCHAR(500),
+  category VARCHAR(50),
+  estimated_duration VARCHAR(50),
+  required_tier INT NOT NULL DEFAULT 1,
+
+  status VARCHAR(20) NOT NULL DEFAULT 'active'
+    CHECK (status IN ('active', 'paused', 'completed', 'cancelled')),
+  occurrence_count INT NOT NULL DEFAULT 0,
+  completed_count INT NOT NULL DEFAULT 0,
+  preferred_worker_id UUID REFERENCES users(id) ON DELETE SET NULL,
+
+  next_occurrence_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS recurring_task_occurrences (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  series_id UUID NOT NULL REFERENCES recurring_task_series(id) ON DELETE CASCADE,
+  task_id UUID REFERENCES tasks(id) ON DELETE SET NULL,
+  occurrence_number INT NOT NULL,
+  scheduled_date DATE NOT NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'scheduled'
+    CHECK (status IN ('scheduled', 'posted', 'in_progress', 'completed', 'skipped', 'cancelled')),
+  worker_id UUID REFERENCES users(id) ON DELETE SET NULL,
+  completed_at TIMESTAMPTZ,
+  rating INT CHECK (rating >= 1 AND rating <= 5),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(series_id, occurrence_number)
+);
+
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS parent_series_id UUID REFERENCES recurring_task_series(id) ON DELETE SET NULL;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS occurrence_number INT;
+
+CREATE INDEX IF NOT EXISTS idx_recurring_series_poster ON recurring_task_series(poster_id);
+CREATE INDEX IF NOT EXISTS idx_recurring_series_status ON recurring_task_series(status) WHERE status = 'active';
+CREATE INDEX IF NOT EXISTS idx_recurring_series_next ON recurring_task_series(next_occurrence_at) WHERE status = 'active';
+CREATE INDEX IF NOT EXISTS idx_recurring_occurrences_series ON recurring_task_occurrences(series_id);
+CREATE INDEX IF NOT EXISTS idx_recurring_occurrences_date ON recurring_task_occurrences(scheduled_date);
+CREATE INDEX IF NOT EXISTS idx_tasks_parent_series ON tasks(parent_series_id) WHERE parent_series_id IS NOT NULL;
+
+-- ----------------------------------------------------------------------------
 -- 11.5 ANALYTICS INFRASTRUCTURE (GAP J - PRODUCT_SPEC §13)
 -- ----------------------------------------------------------------------------
 

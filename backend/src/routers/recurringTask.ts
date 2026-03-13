@@ -17,6 +17,10 @@ import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { router, protectedProcedure, Schemas } from '../trpc.js';
 import { db } from '../db.js';
+import { logger } from '../logger.js';
+import { generateOccurrencesForSeries } from '../services/RecurringTaskService.js';
+
+const log = logger.child({ router: 'recurringTask' });
 
 // Subscription limits for recurring task series
 const RECURRING_TASK_LIMITS: Record<string, number> = {
@@ -175,7 +179,14 @@ export const recurringTaskRouter = router({
          input.timeOfDay || null, input.startDate, input.endDate || null]
       );
 
-      return mapSeriesToResponse(result.rows[0]);
+      const series = result.rows[0];
+      // Seed initial occurrences so listOccurrences returns data
+      const gen = await generateOccurrencesForSeries(series.id, { maxOccurrences: 30 });
+      if (!gen.success) {
+        log.warn({ seriesId: series.id, err: gen.error }, 'Initial occurrence generation failed');
+      }
+
+      return mapSeriesToResponse(series);
     }),
 
   // --------------------------------------------------------------------------
@@ -345,6 +356,35 @@ export const recurringTaskRouter = router({
   // --------------------------------------------------------------------------
   // SET PREFERRED WORKER
   // --------------------------------------------------------------------------
+
+  /**
+   * Generate upcoming occurrences for a series (e.g. after create or when a job runs).
+   * Idempotent: only inserts dates that do not already have an occurrence.
+   */
+  generateOccurrences: protectedProcedure
+    .input(z.object({
+      seriesId: Schemas.uuid,
+      maxOccurrences: z.number().int().min(1).max(100).default(30).optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const seriesCheck = await db.query(
+        `SELECT id FROM recurring_task_series WHERE id = $1 AND poster_id = $2`,
+        [input.seriesId, ctx.user.id]
+      );
+      if (seriesCheck.rows.length === 0) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Series not found' });
+      }
+      const result = await generateOccurrencesForSeries(input.seriesId, {
+        maxOccurrences: input.maxOccurrences ?? 30,
+      });
+      if (!result.success) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: result.error.message,
+        });
+      }
+      return result.data;
+    }),
 
   setPreferredWorker: protectedProcedure
     .input(z.object({

@@ -49,7 +49,7 @@
 | subscription | 4 | protected |
 | tipping | 5 | protected |
 | squad | 10 | protected |
-| recurringTask | 9 | protected |
+| recurringTask | 10 | protected |
 | stripeConnect | 11 | protected |
 | flags | 2 | protected + admin |
 | capability | 18 | protected |
@@ -181,7 +181,7 @@
 `create` `listMine` `getById` `invite` `respondToInvite` `listInvites` `leave` `disband` `listTasks` `acceptTask` `leaderboard`
 
 ### recurringTask
-`create` `listMine` `getById` `pause` `resume` `cancel` `listOccurrences` `skipOccurrence` `setPreferredWorker`
+`create` `listMine` `getById` `pause` `resume` `cancel` `listOccurrences` `generateOccurrences` `skipOccurrence` `setPreferredWorker`
 
 ### stripeConnect
 `getOnboardingStatus` `createOnboardingLink` `getDashboardLink` `getPayoutSettings` `updatePayoutSettings` `getTaxInfo` `submitTaxInfo` `getEarningsSummary` `get1099Status` `getAccountDetails` `refreshOnboarding`
