@@ -64,6 +64,7 @@ function makeCaller(plan = 'premium', trustTier = 3) {
       trust_tier: trustTier,
       plan,
       firebase_uid: 'fb-poster',
+      default_mode: 'poster',
     } as any,
     firebaseUid: 'fb-poster',
   });

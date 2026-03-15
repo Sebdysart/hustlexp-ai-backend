@@ -144,6 +144,7 @@ function makePosterCaller(userId = 'poster-abc') {
     trust_tier: 3,
     plan: 'premium',
     firebase_uid: 'fb-poster',
+    default_mode: 'poster',
   };
   return recurringTaskRouter.createCaller({
     user: fakeUser as any,

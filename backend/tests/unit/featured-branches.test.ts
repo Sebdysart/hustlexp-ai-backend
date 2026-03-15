@@ -98,7 +98,7 @@ const UUID3 = '00000000-0000-0000-0000-000000000003';
 
 function makeCaller() {
   return featuredRouter.createCaller({
-    user: { id: UUID1, email: 'user@test.com', full_name: 'User', firebase_uid: 'fb-1' } as any,
+    user: { id: UUID1, email: 'user@test.com', full_name: 'User', firebase_uid: 'fb-1', default_mode: 'poster' } as any,
     firebaseUid: 'fb-1',
   });
 }

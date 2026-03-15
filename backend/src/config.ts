@@ -23,7 +23,7 @@ export const config = {
     // Use UPSTASH_REDIS_URL (direct TCP connection string) for BullMQ
     // Format: redis://default:{password}@{endpoint}:6379
     // OR use separate Redis instance: REDIS_URL=redis://localhost:6379
-    url: process.env.REDIS_URL || '',  // Direct TCP connection string
+    url: process.env.UPSTASH_REDIS_URL || process.env.REDIS_URL || '',  // Direct TCP connection string
   },
   
   // Payments (Stripe)

@@ -82,7 +82,18 @@ vi.mock('../../src/services/ProofService', () => ({
     submit: vi.fn(),
     getById: vi.fn(),
     review: vi.fn(),
+    getPhotos: vi.fn().mockResolvedValue({ success: true, data: [] }),
+    getVideos: vi.fn().mockResolvedValue({ success: true, data: [] }),
   },
+}));
+
+vi.mock('../../src/cache/db-cache', () => ({
+  // Pass-through: execute the wrapped function directly, no cache layer in tests
+  cachedDbQuery: vi.fn().mockImplementation((_key: string, fn: () => Promise<unknown>) => fn()),
+  invalidateTask: vi.fn().mockResolvedValue(undefined),
+  CACHE_KEYS: { taskDetails: (id: string) => `task:${id}` },
+  CACHE_TTL: { taskDetails: 60 },
+  CACHE_TAGS: { TASK: (id: string) => `task:${id}` },
 }));
 
 // ---------------------------------------------------------------------------
@@ -147,12 +158,13 @@ function makeProofRow(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function makeCaller(userId = USER_ID) {
+function makeCaller(userId = USER_ID, defaultMode: 'worker' | 'poster' = 'worker') {
   const fakeUser = {
     id: userId,
     email: 'user@hustlexp.com',
     full_name: 'Test User',
-    role: 'hustler',
+    role: defaultMode === 'worker' ? 'hustler' : 'poster',
+    default_mode: defaultMode,
     firebase_uid: 'fb-user',
   };
   return taskRouter.createCaller({
@@ -160,6 +172,12 @@ function makeCaller(userId = USER_ID) {
     firebaseUid: 'fb-user',
   });
 }
+
+// Convenience helpers matching the tRPC middleware checks:
+//   hustlerProcedure → default_mode === 'worker'
+//   posterProcedure  → default_mode === 'poster'
+const makeCallerAsHustler = (userId = USER_ID) => makeCaller(userId, 'worker');
+const makeCallerAsPoster = (userId = USER_ID) => makeCaller(userId, 'poster');
 
 // ===========================================================================
 // task.getById
@@ -251,7 +269,7 @@ describe('task.listByPoster', () => {
       data: { tasks: tasks as any, nextCursor: '2025-06-01T00:00:00Z' },
     });
 
-    const result = await makeCaller().listByPoster({});
+    const result = await makeCallerAsPoster().listByPoster({});
 
     expect(result).toHaveProperty('tasks');
     expect(result).toHaveProperty('nextCursor');
@@ -265,7 +283,7 @@ describe('task.listByPoster', () => {
       data: { tasks: [] as any, nextCursor: undefined },
     });
 
-    await makeCaller().listByPoster({});
+    await makeCallerAsPoster().listByPoster({});
 
     expect(mockTaskService.getByPoster).toHaveBeenCalledWith(
       USER_ID,
@@ -275,7 +293,7 @@ describe('task.listByPoster', () => {
 
   it('throws FORBIDDEN when posterId does not match user', async () => {
     await expect(
-      makeCaller().listByPoster({ posterId: OTHER_USER_ID })
+      makeCallerAsPoster().listByPoster({ posterId: OTHER_USER_ID })
     ).rejects.toThrow('You can only view your own posted tasks');
   });
 
@@ -285,7 +303,7 @@ describe('task.listByPoster', () => {
       data: { tasks: [] as any, nextCursor: undefined },
     });
 
-    const result = await makeCaller().listByPoster({});
+    const result = await makeCallerAsPoster().listByPoster({});
 
     expect(result.tasks).toHaveLength(0);
     expect(result.nextCursor).toBeUndefined();
@@ -297,7 +315,7 @@ describe('task.listByPoster', () => {
       data: { tasks: [] as any, nextCursor: undefined },
     });
 
-    await makeCaller().listByPoster({ cursor: '2025-01-01T00:00:00Z', limit: 10 });
+    await makeCallerAsPoster().listByPoster({ cursor: '2025-01-01T00:00:00Z', limit: 10 });
 
     expect(mockTaskService.getByPoster).toHaveBeenCalledWith(
       USER_ID,
@@ -311,7 +329,7 @@ describe('task.listByPoster', () => {
       error: { code: 'DB_ERROR', message: 'Database unavailable' },
     });
 
-    await expect(makeCaller().listByPoster({})).rejects.toThrow('Database unavailable');
+    await expect(makeCallerAsPoster().listByPoster({})).rejects.toThrow('Database unavailable');
   });
 
   it('accepts undefined input (no params at all)', async () => {
@@ -320,7 +338,7 @@ describe('task.listByPoster', () => {
       data: { tasks: [] as any, nextCursor: undefined },
     });
 
-    const result = await makeCaller().listByPoster(undefined as any);
+    const result = await makeCallerAsPoster().listByPoster(undefined as any);
 
     expect(result.tasks).toHaveLength(0);
   });
@@ -463,7 +481,7 @@ describe('task.create', () => {
     const task = makeTaskRow({ title: 'Mow the lawn' });
     mockTaskService.create.mockResolvedValueOnce({ success: true, data: task as any });
 
-    const result = await makeCaller().create(validInput);
+    const result = await makeCallerAsPoster().create(validInput);
 
     expect(result).toEqual(task);
   });
@@ -474,7 +492,7 @@ describe('task.create', () => {
       data: makeTaskRow() as any,
     });
 
-    await makeCaller().create(validInput);
+    await makeCallerAsPoster().create(validInput);
 
     expect(mockTaskService.create).toHaveBeenCalledWith(
       expect.objectContaining({ posterId: USER_ID })
@@ -487,7 +505,7 @@ describe('task.create', () => {
       data: makeTaskRow() as any,
     });
 
-    await makeCaller().create({
+    await makeCallerAsPoster().create({
       ...validInput,
       requirements: 'Bring your own mower',
       location: '123 Main St',
@@ -518,7 +536,7 @@ describe('task.create', () => {
       error: { code: 'PRICE_TOO_LOW', message: 'Too cheap' },
     });
 
-    await expect(makeCaller().create(validInput)).rejects.toThrow('Too cheap');
+    await expect(makeCallerAsPoster().create(validInput)).rejects.toThrow('Too cheap');
   });
 
   it('throws PRECONDITION_FAILED for HX901/HX902 errors', async () => {
@@ -527,24 +545,24 @@ describe('task.create', () => {
       error: { code: 'HX902', message: 'Live violation' },
     });
 
-    await expect(makeCaller().create(validInput)).rejects.toThrow('Live violation');
+    await expect(makeCallerAsPoster().create(validInput)).rejects.toThrow('Live violation');
   });
 
   it('rejects input with empty title', async () => {
     await expect(
-      makeCaller().create({ ...validInput, title: '' })
+      makeCallerAsPoster().create({ ...validInput, title: '' })
     ).rejects.toThrow();
   });
 
   it('rejects input with negative price', async () => {
     await expect(
-      makeCaller().create({ ...validInput, price: -100 })
+      makeCallerAsPoster().create({ ...validInput, price: -100 })
     ).rejects.toThrow();
   });
 
   it('rejects input with non-integer price', async () => {
     await expect(
-      makeCaller().create({ ...validInput, price: 50.5 })
+      makeCallerAsPoster().create({ ...validInput, price: 50.5 })
     ).rejects.toThrow();
   });
 });
@@ -656,7 +674,10 @@ describe('task.getProof', () => {
 
     const result = await makeCaller().getProof({ taskId: TASK_ID });
 
-    expect(result).toEqual(proof);
+    // Router enriches proof with photos/videos arrays
+    expect(result).toMatchObject(proof);
+    expect(result).toHaveProperty('photos');
+    expect(result).toHaveProperty('videos');
   });
 
   it('throws NOT_FOUND when no proof exists', async () => {
@@ -827,7 +848,7 @@ describe('task.reviewProof', () => {
     mockTaskService.getById.mockResolvedValueOnce({ success: true, data: task as any });
     mockProofService.review.mockResolvedValueOnce({ success: true, data: reviewedProof as any });
 
-    const result = await makeCaller().reviewProof({
+    const result = await makeCallerAsPoster().reviewProof({
       proofId: PROOF_ID,
       decision: 'ACCEPTED',
       reason: 'Looks good',
@@ -861,7 +882,7 @@ describe('task.reviewProof', () => {
       data: makeProofRow({ state: 'ACCEPTED' }) as any,
     });
 
-    const result = await makeCaller().reviewProof({
+    const result = await makeCallerAsPoster().reviewProof({
       taskId: TASK_ID,
       approved: true,
       feedback: 'Nice work',
@@ -895,7 +916,7 @@ describe('task.reviewProof', () => {
       data: makeProofRow({ state: 'REJECTED' }) as any,
     });
 
-    await makeCaller().reviewProof({ taskId: TASK_ID, approved: false });
+    await makeCallerAsPoster().reviewProof({ taskId: TASK_ID, approved: false });
 
     expect(mockProofService.review).toHaveBeenCalledWith(
       expect.objectContaining({ decision: 'REJECTED' })
@@ -903,14 +924,14 @@ describe('task.reviewProof', () => {
   });
 
   it('throws BAD_REQUEST when neither proofId nor taskId is given', async () => {
-    await expect(makeCaller().reviewProof({})).rejects.toThrow('proofId or taskId is required');
+    await expect(makeCallerAsPoster().reviewProof({})).rejects.toThrow('proofId or taskId is required');
   });
 
   it('throws BAD_REQUEST when neither decision nor approved is given', async () => {
     // Note: the code checks for decision before calling any services,
     // so no service mocks are needed here.
     await expect(
-      makeCaller().reviewProof({ proofId: PROOF_ID })
+      makeCallerAsPoster().reviewProof({ proofId: PROOF_ID })
     ).rejects.toThrow('decision or approved is required');
   });
 
@@ -918,7 +939,7 @@ describe('task.reviewProof', () => {
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
 
     await expect(
-      makeCaller().reviewProof({ taskId: TASK_ID, approved: true })
+      makeCallerAsPoster().reviewProof({ taskId: TASK_ID, approved: true })
     ).rejects.toThrow('No proof found for this task');
   });
 
@@ -930,7 +951,7 @@ describe('task.reviewProof', () => {
     mockTaskService.getById.mockResolvedValueOnce({ success: true, data: task as any });
 
     await expect(
-      makeCaller().reviewProof({ proofId: PROOF_ID, decision: 'ACCEPTED' })
+      makeCallerAsPoster().reviewProof({ proofId: PROOF_ID, decision: 'ACCEPTED' })
     ).rejects.toThrow('Only the task poster can review proof');
   });
 
@@ -941,7 +962,7 @@ describe('task.reviewProof', () => {
     });
 
     await expect(
-      makeCaller().reviewProof({ proofId: PROOF_ID, decision: 'ACCEPTED' })
+      makeCallerAsPoster().reviewProof({ proofId: PROOF_ID, decision: 'ACCEPTED' })
     ).rejects.toThrow('Proof not found');
   });
 
@@ -960,7 +981,7 @@ describe('task.reviewProof', () => {
     });
 
     await expect(
-      makeCaller().reviewProof({ proofId: PROOF_ID, decision: 'ACCEPTED' })
+      makeCallerAsPoster().reviewProof({ proofId: PROOF_ID, decision: 'ACCEPTED' })
     ).rejects.toThrow('Cannot transition');
   });
 });
@@ -981,7 +1002,7 @@ describe('task.complete', () => {
     mockTaskService.getById.mockResolvedValueOnce({ success: true, data: task as any });
     mockTaskService.complete.mockResolvedValueOnce({ success: true, data: completed as any });
 
-    const result = await makeCaller().complete({ taskId: TASK_ID });
+    const result = await makeCallerAsPoster().complete({ taskId: TASK_ID });
 
     expect(result).toEqual(completed);
   });
@@ -992,14 +1013,14 @@ describe('task.complete', () => {
       error: { code: 'NOT_FOUND', message: 'Task not found' },
     });
 
-    await expect(makeCaller().complete({ taskId: TASK_ID })).rejects.toThrow('Task not found');
+    await expect(makeCallerAsPoster().complete({ taskId: TASK_ID })).rejects.toThrow('Task not found');
   });
 
   it('throws FORBIDDEN when user is not the poster', async () => {
     const task = makeTaskRow({ poster_id: OTHER_USER_ID });
     mockTaskService.getById.mockResolvedValueOnce({ success: true, data: task as any });
 
-    await expect(makeCaller().complete({ taskId: TASK_ID })).rejects.toThrow(
+    await expect(makeCallerAsPoster().complete({ taskId: TASK_ID })).rejects.toThrow(
       'Only the task poster can mark it complete'
     );
   });
@@ -1012,7 +1033,7 @@ describe('task.complete', () => {
       error: { code: 'HX301', message: 'Proof must be accepted' },
     });
 
-    await expect(makeCaller().complete({ taskId: TASK_ID })).rejects.toThrow(
+    await expect(makeCallerAsPoster().complete({ taskId: TASK_ID })).rejects.toThrow(
       'Proof must be accepted'
     );
   });
@@ -1025,7 +1046,7 @@ describe('task.complete', () => {
       error: { code: 'OTHER', message: 'Something else' },
     });
 
-    await expect(makeCaller().complete({ taskId: TASK_ID })).rejects.toThrow('Something else');
+    await expect(makeCallerAsPoster().complete({ taskId: TASK_ID })).rejects.toThrow('Something else');
   });
 });
 
@@ -1045,7 +1066,7 @@ describe('task.cancel', () => {
     mockTaskService.getById.mockResolvedValueOnce({ success: true, data: task as any });
     mockTaskService.cancel.mockResolvedValueOnce({ success: true, data: cancelled as any });
 
-    const result = await makeCaller().cancel({ taskId: TASK_ID });
+    const result = await makeCallerAsPoster().cancel({ taskId: TASK_ID });
 
     expect(result).toEqual(cancelled);
   });
@@ -1056,14 +1077,14 @@ describe('task.cancel', () => {
       error: { code: 'NOT_FOUND', message: 'Task not found' },
     });
 
-    await expect(makeCaller().cancel({ taskId: TASK_ID })).rejects.toThrow('Task not found');
+    await expect(makeCallerAsPoster().cancel({ taskId: TASK_ID })).rejects.toThrow('Task not found');
   });
 
   it('throws FORBIDDEN when user is not the poster', async () => {
     const task = makeTaskRow({ poster_id: OTHER_USER_ID });
     mockTaskService.getById.mockResolvedValueOnce({ success: true, data: task as any });
 
-    await expect(makeCaller().cancel({ taskId: TASK_ID })).rejects.toThrow(
+    await expect(makeCallerAsPoster().cancel({ taskId: TASK_ID })).rejects.toThrow(
       'Only the task poster can cancel'
     );
   });
@@ -1076,7 +1097,7 @@ describe('task.cancel', () => {
       error: { code: 'TERMINAL', message: 'Already completed' },
     });
 
-    await expect(makeCaller().cancel({ taskId: TASK_ID })).rejects.toThrow('Already completed');
+    await expect(makeCallerAsPoster().cancel({ taskId: TASK_ID })).rejects.toThrow('Already completed');
   });
 
   it('accepts optional reason', async () => {
@@ -1087,7 +1108,7 @@ describe('task.cancel', () => {
     mockTaskService.cancel.mockResolvedValueOnce({ success: true, data: cancelled as any });
 
     // Should not throw — reason is optional in input schema
-    const result = await makeCaller().cancel({ taskId: TASK_ID, reason: 'Changed my mind' });
+    const result = await makeCallerAsPoster().cancel({ taskId: TASK_ID, reason: 'Changed my mind' });
 
     expect(result).toEqual(cancelled);
   });
@@ -1239,7 +1260,7 @@ describe('task.listApplicants', () => {
       rowCount: 1,
     } as any);
 
-    const result = await makeCaller().listApplicants({ taskId: TASK_ID });
+    const result = await makeCallerAsPoster().listApplicants({ taskId: TASK_ID });
 
     expect(Array.isArray(result)).toBe(true);
     expect(result).toHaveLength(1);
@@ -1251,7 +1272,7 @@ describe('task.listApplicants', () => {
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
 
     await expect(
-      makeCaller().listApplicants({ taskId: TASK_ID })
+      makeCallerAsPoster().listApplicants({ taskId: TASK_ID })
     ).rejects.toThrow('Task not found');
   });
 
@@ -1262,7 +1283,7 @@ describe('task.listApplicants', () => {
     } as any);
 
     await expect(
-      makeCaller().listApplicants({ taskId: TASK_ID })
+      makeCallerAsPoster().listApplicants({ taskId: TASK_ID })
     ).rejects.toThrow('Only the task poster can view applicants');
   });
 
@@ -1273,7 +1294,7 @@ describe('task.listApplicants', () => {
     } as any);
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
 
-    const result = await makeCaller().listApplicants({ taskId: TASK_ID });
+    const result = await makeCallerAsPoster().listApplicants({ taskId: TASK_ID });
 
     expect(result).toHaveLength(0);
   });
@@ -1285,7 +1306,7 @@ describe('task.listApplicants', () => {
     } as any);
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
 
-    await makeCaller().listApplicants({ taskId: TASK_ID });
+    await makeCallerAsPoster().listApplicants({ taskId: TASK_ID });
 
     expect(mockDb.query).toHaveBeenCalledTimes(2);
   });
@@ -1319,7 +1340,7 @@ describe('task.assignWorker', () => {
     const acceptedTask = makeTaskRow({ state: 'ACCEPTED', worker_id: OTHER_USER_ID });
     mockTaskService.accept.mockResolvedValueOnce({ success: true, data: acceptedTask as any });
 
-    const result = await makeCaller().assignWorker({
+    const result = await makeCallerAsPoster().assignWorker({
       taskId: TASK_ID,
       workerId: OTHER_USER_ID,
     });
@@ -1335,7 +1356,7 @@ describe('task.assignWorker', () => {
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
 
     await expect(
-      makeCaller().assignWorker({ taskId: TASK_ID, workerId: OTHER_USER_ID })
+      makeCallerAsPoster().assignWorker({ taskId: TASK_ID, workerId: OTHER_USER_ID })
     ).rejects.toThrow('Task not found');
   });
 
@@ -1346,7 +1367,7 @@ describe('task.assignWorker', () => {
     } as any);
 
     await expect(
-      makeCaller().assignWorker({ taskId: TASK_ID, workerId: OTHER_USER_ID })
+      makeCallerAsPoster().assignWorker({ taskId: TASK_ID, workerId: OTHER_USER_ID })
     ).rejects.toThrow('Only the task poster can assign workers');
   });
 
@@ -1357,7 +1378,7 @@ describe('task.assignWorker', () => {
     } as any);
 
     await expect(
-      makeCaller().assignWorker({ taskId: TASK_ID, workerId: OTHER_USER_ID })
+      makeCallerAsPoster().assignWorker({ taskId: TASK_ID, workerId: OTHER_USER_ID })
     ).rejects.toThrow('Task must be POSTED to assign a worker');
   });
 
@@ -1369,7 +1390,7 @@ describe('task.assignWorker', () => {
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
 
     await expect(
-      makeCaller().assignWorker({ taskId: TASK_ID, workerId: OTHER_USER_ID })
+      makeCallerAsPoster().assignWorker({ taskId: TASK_ID, workerId: OTHER_USER_ID })
     ).rejects.toThrow('No pending application found for this worker');
   });
 
@@ -1390,7 +1411,7 @@ describe('task.assignWorker', () => {
     });
 
     await expect(
-      makeCaller().assignWorker({ taskId: TASK_ID, workerId: OTHER_USER_ID })
+      makeCallerAsPoster().assignWorker({ taskId: TASK_ID, workerId: OTHER_USER_ID })
     ).rejects.toThrow('Accept failed');
   });
 });
@@ -1416,7 +1437,7 @@ describe('task.rejectApplicant', () => {
       rowCount: 1,
     } as any);
 
-    const result = await makeCaller().rejectApplicant({
+    const result = await makeCallerAsPoster().rejectApplicant({
       taskId: TASK_ID,
       workerId: OTHER_USER_ID,
       reason: 'Not a good fit',
@@ -1429,7 +1450,7 @@ describe('task.rejectApplicant', () => {
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
 
     await expect(
-      makeCaller().rejectApplicant({ taskId: TASK_ID, workerId: OTHER_USER_ID })
+      makeCallerAsPoster().rejectApplicant({ taskId: TASK_ID, workerId: OTHER_USER_ID })
     ).rejects.toThrow('Task not found');
   });
 
@@ -1440,7 +1461,7 @@ describe('task.rejectApplicant', () => {
     } as any);
 
     await expect(
-      makeCaller().rejectApplicant({ taskId: TASK_ID, workerId: OTHER_USER_ID })
+      makeCallerAsPoster().rejectApplicant({ taskId: TASK_ID, workerId: OTHER_USER_ID })
     ).rejects.toThrow('Only the task poster can reject applicants');
   });
 
@@ -1452,7 +1473,7 @@ describe('task.rejectApplicant', () => {
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
 
     await expect(
-      makeCaller().rejectApplicant({ taskId: TASK_ID, workerId: OTHER_USER_ID })
+      makeCallerAsPoster().rejectApplicant({ taskId: TASK_ID, workerId: OTHER_USER_ID })
     ).rejects.toThrow('No pending application found for this worker');
   });
 
@@ -1466,7 +1487,7 @@ describe('task.rejectApplicant', () => {
       rowCount: 1,
     } as any);
 
-    const result = await makeCaller().rejectApplicant({
+    const result = await makeCallerAsPoster().rejectApplicant({
       taskId: TASK_ID,
       workerId: OTHER_USER_ID,
     });

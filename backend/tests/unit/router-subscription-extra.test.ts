@@ -66,7 +66,7 @@ const USER_UUID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 
 function makeCaller(userId = USER_UUID) {
   return subscriptionRouter.createCaller({
-    user: { id: userId } as any,
+    user: { id: userId, default_mode: 'poster' } as any,
     firebaseUid: 'fb-uid',
   });
 }

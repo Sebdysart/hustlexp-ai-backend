@@ -26,6 +26,10 @@ vi.mock('../../src/logger', () => ({
     warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn(),
   },
   escrowLogger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
+  aiLogger: {
+    child: () => ({ warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() }),
+    warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn(),
+  },
 }));
 
 vi.mock('../../src/services/DynamicPricingService', () => ({
@@ -52,7 +56,7 @@ const UUID1 = '00000000-0000-0000-0000-000000000001';
 
 function makeCaller() {
   return pricingRouter.createCaller({
-    user: { id: UUID1, email: 'user@test.com', full_name: 'User', firebase_uid: 'fb-1' } as any,
+    user: { id: UUID1, email: 'user@test.com', full_name: 'User', firebase_uid: 'fb-1', default_mode: 'poster' } as any,
     firebaseUid: 'fb-1',
   });
 }

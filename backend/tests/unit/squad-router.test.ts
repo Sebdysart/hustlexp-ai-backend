@@ -159,6 +159,7 @@ function makeUserCaller(userId = 'user-abc') {
     role: 'hustler',
     trust_tier: 4,
     firebase_uid: 'fb-user',
+    default_mode: 'worker',
   };
   return squadRouter.createCaller({
     user: fakeUser as any,

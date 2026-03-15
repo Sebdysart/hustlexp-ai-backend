@@ -23,6 +23,7 @@ import { db } from '../db.js';
 import { StripeService } from '../services/StripeService.js';
 import { TaskService } from '../services/TaskService.js';
 import { workerLogger } from '../logger.js';
+import { config } from '../config.js';
 import type { Job } from 'bullmq';
 
 const log = workerLogger.child({ worker: 'escrow-action' });
@@ -171,13 +172,20 @@ async function handleReleaseRequest(
 
   const escrowAmount = escrowAmountResult.rows[0].amount;
 
+  // Deduct platform fee before paying out to worker (PRODUCT_SPEC §9: 15% default)
+  const platformFeePercent = config.stripe.platformFeePercent ?? 15;
+  const platformFeeCents = Math.round(escrowAmount * (platformFeePercent / 100));
+  const netPayoutCents = escrowAmount - platformFeeCents;
+
+  log.info({ escrowId: escrow.id, escrowAmount, platformFeeCents, netPayoutCents }, 'Platform fee applied to transfer');
+
   // Create Stripe transfer
   const transferResult = await StripeService.createTransfer({
     escrowId: escrow.id,
     taskId,
     workerId: task.worker_id,
     workerStripeAccountId: worker.stripe_connect_id,
-    amount: escrowAmount,
+    amount: netPayoutCents,
     description: `Dispute resolution: ${reason}`,
   });
 

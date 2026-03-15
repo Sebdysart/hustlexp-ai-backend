@@ -61,7 +61,7 @@ const mockStripeService = vi.mocked(StripeService);
 
 function makeCaller(userId = 'test-uid') {
   return xpTaxRouter.createCaller({
-    user: { id: userId } as any,
+    user: { id: userId, default_mode: 'worker' } as any,
     firebaseUid: 'fb-uid',
   });
 }

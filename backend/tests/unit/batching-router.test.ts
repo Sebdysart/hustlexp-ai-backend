@@ -50,7 +50,7 @@ const mockService = vi.mocked(TaskBatchingService);
 
 function makeCaller(userId = 'test-uid') {
   return batchingRouter.createCaller({
-    user: { id: userId } as any,
+    user: { id: userId, default_mode: 'worker' } as any,
     firebaseUid: 'fb-uid',
   });
 }

@@ -51,7 +51,7 @@ const mockDb = vi.mocked(db);
 
 function makeCaller(userId = 'test-uid') {
   return subscriptionRouter.createCaller({
-    user: { id: userId } as any,
+    user: { id: userId, default_mode: 'poster' } as any,
     firebaseUid: 'fb-uid',
   });
 }

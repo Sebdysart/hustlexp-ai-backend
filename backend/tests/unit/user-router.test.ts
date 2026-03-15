@@ -66,6 +66,14 @@ vi.mock('../../src/services/GDPRService', () => ({
   },
 }));
 
+vi.mock('../../src/cache/db-cache', () => ({
+  cachedDbQuery: vi.fn().mockImplementation((_key: string, fn: () => Promise<unknown>) => fn()),
+  invalidateUser: vi.fn().mockResolvedValue(undefined),
+  CACHE_KEYS: { userProfile: (id: string) => `user:${id}` },
+  CACHE_TTL: { userProfile: 60 },
+  CACHE_TAGS: { USER: (id: string) => `user:${id}` },
+}));
+
 // ---------------------------------------------------------------------------
 // Imports
 // ---------------------------------------------------------------------------

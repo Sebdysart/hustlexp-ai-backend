@@ -33,10 +33,15 @@ vi.mock('../../src/services/XPService', () => ({
   XPService: { awardXP: vi.fn().mockResolvedValue(undefined) },
 }));
 
+vi.mock('../../src/services/SelfInsurancePoolService.js', () => ({
+  SelfInsurancePoolService: { recordContribution: vi.fn().mockResolvedValue({ success: true }) },
+}));
+
 import { db, isInvariantViolation, isUniqueViolation, getErrorMessage } from '../../src/db';
 import { EscrowService } from '../../src/services/EscrowService';
 import { EarnedVerificationUnlockService } from '../../src/services/EarnedVerificationUnlockService';
 import { XPService } from '../../src/services/XPService';
+import { SelfInsurancePoolService } from '../../src/services/SelfInsurancePoolService.js';
 
 const mockDb = vi.mocked(db);
 const mockIsInvariantViolation = vi.mocked(isInvariantViolation);
@@ -191,6 +196,32 @@ describe('EscrowService', () => {
       expect(XPService.awardXP).toHaveBeenCalledWith({
         userId: 'worker-1', taskId: 'task-1', escrowId: 'esc-1', baseXP: 500,
       });
+
+      // Verify self-insurance contribution: 2% of gross payout
+      expect(SelfInsurancePoolService.recordContribution).toHaveBeenCalledWith(
+        'task-1', 'worker-1', 100,
+      );
+    });
+
+    it('continues release even if self-insurance contribution fails', async () => {
+      const escrowRow = { id: 'esc-1', task_id: 'task-1', amount: 5000, state: 'FUNDED' };
+      const taskRow = { worker_id: 'worker-1', price: 5000 };
+      const workerKycRow = { payouts_enabled: true, stripe_connect_id: 'acct_test', stripe_connect_status: 'complete' };
+      const released = makeEscrow({ state: 'RELEASED' });
+
+      mockDb.query
+        .mockResolvedValueOnce({ rows: [escrowRow], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [taskRow], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [workerKycRow], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [released], rowCount: 1 } as never);
+
+      vi.mocked(SelfInsurancePoolService.recordContribution).mockRejectedValueOnce(
+        new Error('DB pool unreachable')
+      );
+
+      const result = await EscrowService.release({ escrowId: 'esc-1' });
+      // Payout must still succeed despite insurance failure
+      expect(result.success).toBe(true);
     });
 
     it('returns INV_2_VIOLATION when trigger fires HX201', async () => {

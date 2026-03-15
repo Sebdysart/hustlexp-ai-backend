@@ -96,6 +96,7 @@ function makeCaller(userId = 'user-abc') {
     live_mode_session_started_at: null,
     live_mode_total_tasks: 0,
     live_mode_completion_rate: 0,
+    default_mode: 'worker',
   };
   return liveRouter.createCaller({
     user: fakeUser as any,

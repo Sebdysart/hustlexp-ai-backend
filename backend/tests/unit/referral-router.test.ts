@@ -47,7 +47,7 @@ const UUID2 = '00000000-0000-0000-0000-000000000002';
 
 function makeCaller(userId = UUID1) {
   return referralRouter.createCaller({
-    user: { id: userId, email: 'user@test.com', full_name: 'User', firebase_uid: 'fb-1' } as any,
+    user: { id: userId, email: 'user@test.com', full_name: 'User', firebase_uid: 'fb-1', default_mode: 'worker' } as any,
     firebaseUid: 'fb-1',
   });
 }

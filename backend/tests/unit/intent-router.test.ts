@@ -49,7 +49,7 @@ const mockService = vi.mocked(IntentParserService);
 
 function makeCaller() {
   return intentRouter.createCaller({
-    user: { id: 'test-uid' } as any,
+    user: { id: 'test-uid', default_mode: 'worker' } as any,
     firebaseUid: 'fb-uid',
   });
 }

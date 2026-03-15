@@ -110,6 +110,7 @@ function makeCaller() {
     email: 'worker@hustlexp.com',
     full_name: 'Test Worker',
     role: 'worker',
+    default_mode: 'worker', // hustlerProcedure requires default_mode === 'worker'
     firebase_uid: 'fb-worker-123',
   };
   return stripeConnectRouter.createCaller({

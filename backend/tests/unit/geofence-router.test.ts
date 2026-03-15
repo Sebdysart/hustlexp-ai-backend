@@ -54,7 +54,7 @@ const TEST_UUID = '11111111-1111-1111-1111-111111111111';
 
 function makeCaller(userId = 'test-uid') {
   return geofenceRouter.createCaller({
-    user: { id: userId } as any,
+    user: { id: userId, default_mode: 'worker' } as any,
     firebaseUid: 'fb-uid',
   });
 }

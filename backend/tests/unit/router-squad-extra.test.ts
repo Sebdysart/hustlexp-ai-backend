@@ -65,6 +65,22 @@ function makeEliteCaller(userId = USER_UUID, trustTier = 4) {
       role: 'hustler',
       trust_tier: trustTier,
       firebase_uid: 'fb-user',
+      default_mode: 'poster',
+    } as any,
+    firebaseUid: 'fb-user',
+  });
+}
+
+function makeHustlerCaller(userId = USER_UUID, trustTier = 4) {
+  return squadRouter.createCaller({
+    user: {
+      id: userId,
+      email: 'user@hustlexp.com',
+      full_name: 'Elite User',
+      role: 'hustler',
+      trust_tier: trustTier,
+      firebase_uid: 'fb-user',
+      default_mode: 'worker',
     } as any,
     firebaseUid: 'fb-user',
   });
@@ -129,6 +145,7 @@ describe('squad.create', () => {
       user: {
         id: USER_UUID,
         trust_tier: '3', // string, < 4
+        default_mode: 'poster',
       } as any,
       firebaseUid: 'fb-user',
     });
@@ -315,7 +332,7 @@ describe('squad.respondToInvite', () => {
     });
 
     await expect(
-      makeEliteCaller().respondToInvite({ inviteId: INVITE_UUID, accept: true })
+      makeHustlerCaller().respondToInvite({ inviteId: INVITE_UUID, accept: true })
     ).rejects.toThrow('Invite not found or already responded');
   });
 
@@ -331,7 +348,7 @@ describe('squad.respondToInvite', () => {
       return fn(txQuery);
     });
 
-    const result = await makeEliteCaller().respondToInvite({ inviteId: INVITE_UUID, accept: true });
+    const result = await makeHustlerCaller().respondToInvite({ inviteId: INVITE_UUID, accept: true });
     expect(result.status).toBe('accepted');
   });
 
@@ -346,7 +363,7 @@ describe('squad.respondToInvite', () => {
       return fn(txQuery);
     });
 
-    const result = await makeEliteCaller().respondToInvite({ inviteId: INVITE_UUID, accept: false });
+    const result = await makeHustlerCaller().respondToInvite({ inviteId: INVITE_UUID, accept: false });
     expect(result.status).toBe('declined');
   });
 });
@@ -362,7 +379,7 @@ describe('squad.leave', () => {
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
 
     await expect(
-      makeEliteCaller().leave({ squadId: SQUAD_UUID })
+      makeHustlerCaller().leave({ squadId: SQUAD_UUID })
     ).rejects.toThrow('Not a member of this squad');
   });
 
@@ -373,7 +390,7 @@ describe('squad.leave', () => {
     } as any);
 
     await expect(
-      makeEliteCaller().leave({ squadId: SQUAD_UUID })
+      makeHustlerCaller().leave({ squadId: SQUAD_UUID })
     ).rejects.toThrow('Organizers cannot leave');
   });
 
@@ -381,7 +398,7 @@ describe('squad.leave', () => {
     mockDb.query.mockResolvedValueOnce({ rows: [{ role: 'member' }], rowCount: 1 } as any);
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any); // DELETE
 
-    const result = await makeEliteCaller().leave({ squadId: SQUAD_UUID });
+    const result = await makeHustlerCaller().leave({ squadId: SQUAD_UUID });
     expect(result.success).toBe(true);
   });
 });
@@ -424,7 +441,7 @@ describe('squad.acceptTask', () => {
     });
 
     await expect(
-      makeEliteCaller().acceptTask({ squadTaskId: TASK_UUID })
+      makeHustlerCaller().acceptTask({ squadTaskId: TASK_UUID })
     ).rejects.toThrow('Recruiting squad task not found');
   });
 
@@ -440,7 +457,7 @@ describe('squad.acceptTask', () => {
     });
 
     await expect(
-      makeEliteCaller().acceptTask({ squadTaskId: TASK_UUID })
+      makeHustlerCaller().acceptTask({ squadTaskId: TASK_UUID })
     ).rejects.toThrow('Not a member of this squad');
   });
 
@@ -457,7 +474,7 @@ describe('squad.acceptTask', () => {
       return fn(txQuery);
     });
 
-    const result = await makeEliteCaller().acceptTask({ squadTaskId: TASK_UUID });
+    const result = await makeHustlerCaller().acceptTask({ squadTaskId: TASK_UUID });
     expect(result.taskStatus).toBe('recruiting');
   });
 
@@ -475,7 +492,7 @@ describe('squad.acceptTask', () => {
       return fn(txQuery);
     });
 
-    const result = await makeEliteCaller().acceptTask({ squadTaskId: TASK_UUID });
+    const result = await makeHustlerCaller().acceptTask({ squadTaskId: TASK_UUID });
     expect(result.taskStatus).toBe('ready');
     expect(result.squadTaskId).toBe(TASK_UUID);
   });

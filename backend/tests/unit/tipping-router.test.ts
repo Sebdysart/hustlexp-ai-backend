@@ -59,7 +59,7 @@ const TEST_UUID_2 = '22222222-2222-2222-2222-222222222222';
 
 function makeCaller(userId = 'test-uid') {
   return tippingRouter.createCaller({
-    user: { id: userId } as any,
+    user: { id: userId, default_mode: 'worker' } as any,
     firebaseUid: 'fb-uid',
   });
 }

@@ -50,7 +50,7 @@ const mockService = vi.mocked(HeatMapService);
 
 function makeCaller(userId = 'test-uid') {
   return heatmapRouter.createCaller({
-    user: { id: userId } as any,
+    user: { id: userId, default_mode: 'worker' } as any,
     firebaseUid: 'fb-uid',
   });
 }

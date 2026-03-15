@@ -10,7 +10,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // ── Mocks (BEFORE imports) ──────────────────────────────────────────────────
 
-vi.mock('../../../src/db/index.js', () => {
+vi.mock('../../src/db.js', () => {
   const mockTx = Object.assign(
     vi.fn().mockResolvedValue([]),
     { unsafe: vi.fn().mockResolvedValue([]) },
@@ -25,7 +25,7 @@ vi.mock('../../../src/db/index.js', () => {
   };
 });
 
-vi.mock('../../../src/utils/logger.js', () => {
+vi.mock('../../src/logger.js', () => {
   const noop = vi.fn();
   const makeLogger = () => ({
     info: noop,
@@ -57,9 +57,9 @@ import {
   getEligibleTaskCount,
   invalidateFeedCache,
   prewarmFeedCache,
-} from '../../../src/services/FeedQueryService.js';
+} from '../../src/services/FeedQueryService.js';
 
-import * as dbModule from '../../../src/db/index.js';
+import * as dbModule from '../../src/db.js';
 
 function getMockSql() {
   return dbModule.sql as unknown as ReturnType<typeof vi.fn>;

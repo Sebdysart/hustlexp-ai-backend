@@ -66,7 +66,7 @@ const TEST_UUID_2 = '22222222-2222-2222-2222-222222222222';
 
 function makeCaller(authenticated = true) {
   const ctx: any = authenticated
-    ? { user: { id: 'test-uid', email: 'test@test.com' }, firebaseUid: 'fb-uid' }
+    ? { user: { id: 'test-uid', email: 'test@test.com', default_mode: 'worker' }, firebaseUid: 'fb-uid' }
     : { user: null, firebaseUid: null };
   return skillsRouter.createCaller(ctx);
 }

@@ -115,11 +115,15 @@ function makeEscrow(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function makeCaller(userId: string = POSTER_ID, role: string = 'user') {
+function makeCaller(userId: string = POSTER_ID, role: string = 'user', defaultMode: 'worker' | 'poster' = 'poster') {
   return escrowRouter.createCaller({
-    user: { id: userId, role } as any,
+    user: { id: userId, role, default_mode: defaultMode } as any,
     firebaseUid: `fb-${userId}`,
   });
+}
+
+function makeWorkerCaller(userId: string = WORKER_ID) {
+  return makeCaller(userId, 'user', 'worker');
 }
 
 // =============================================================================
@@ -977,7 +981,7 @@ describe('escrow.awardXP', () => {
         data: xpData as any,
       });
 
-      const caller = makeCaller(POSTER_ID);
+      const caller = makeWorkerCaller();
       const result = await caller.awardXP({
         taskId: TASK_ID,
         escrowId: ESCROW_ID,
@@ -996,7 +1000,7 @@ describe('escrow.awardXP', () => {
         error: { code: 'HX101', message: 'XP requires released escrow' },
       });
 
-      const caller = makeCaller(POSTER_ID);
+      const caller = makeWorkerCaller();
       await expect(caller.awardXP({
         taskId: TASK_ID,
         escrowId: ESCROW_ID,
@@ -1010,7 +1014,7 @@ describe('escrow.awardXP', () => {
         error: { code: '23505', message: 'XP already awarded for this escrow' },
       });
 
-      const caller = makeCaller(POSTER_ID);
+      const caller = makeWorkerCaller();
       await expect(caller.awardXP({
         taskId: TASK_ID,
         escrowId: ESCROW_ID,
@@ -1024,7 +1028,7 @@ describe('escrow.awardXP', () => {
         error: { code: 'OTHER_ERROR', message: 'Something else failed' },
       });
 
-      const caller = makeCaller(POSTER_ID);
+      const caller = makeWorkerCaller();
       await expect(caller.awardXP({
         taskId: TASK_ID,
         escrowId: ESCROW_ID,
@@ -1040,14 +1044,14 @@ describe('escrow.awardXP', () => {
         data: { id: 'xp-1' } as any,
       });
 
-      await makeCaller(POSTER_ID).awardXP({
+      await makeWorkerCaller(WORKER_ID).awardXP({
         taskId: TASK_ID,
         escrowId: ESCROW_ID,
         baseXP: 750,
       });
 
       expect(mockXPService.awardXP).toHaveBeenCalledWith({
-        userId: POSTER_ID,
+        userId: WORKER_ID,
         taskId: TASK_ID,
         escrowId: ESCROW_ID,
         baseXP: 750,
@@ -1126,7 +1130,7 @@ describe('Financial Safety — cross-cutting', () => {
       error: { code: '23505', message: 'duplicate key' },
     });
 
-    await expect(makeCaller(POSTER_ID).awardXP({
+    await expect(makeWorkerCaller().awardXP({
       taskId: TASK_ID,
       escrowId: ESCROW_ID,
       baseXP: 500,

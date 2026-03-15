@@ -19,6 +19,8 @@
 import { db } from '../db.js';
 import { processSubscriptionEvent } from '../services/StripeSubscriptionProcessor.js';
 import { processEntitlementPurchase } from '../services/StripeEntitlementProcessor.js';
+import { RevenueService } from '../services/RevenueService.js';
+import { ChargebackService } from '../services/ChargebackService.js';
 import type { Job } from 'bullmq';
 import { workerLogger } from '../logger.js';
 const log = workerLogger.child({ worker: 'stripe-event' });
@@ -105,6 +107,22 @@ export async function processStripeEventJob(job: Job<StripeEventJobData>): Promi
 
       case 'invoice.payment_failed':
         await handleInvoicePaymentFailed(event);
+        break;
+
+      case 'invoice.paid':
+        await handleInvoicePaid(event);
+        break;
+
+      case 'charge.dispute.created':
+        await handleChargeDisputeCreated(event, stripeEventId);
+        break;
+
+      case 'charge.dispute.updated':
+        await handleChargeDisputeUpdated(event, stripeEventId);
+        break;
+
+      case 'charge.dispute.closed':
+        await handleChargeDisputeClosed(event, stripeEventId);
         break;
 
       case 'account.updated':
@@ -272,4 +290,75 @@ async function handleAccountUpdated(event: StripeEventEnvelope): Promise<void> {
   }
 
   log.info({ userId, accountId, connectStatus, payoutsEnabled, chargesEnabled }, 'Stripe Connect status synced');
+}
+
+async function handleInvoicePaid(event: StripeEventEnvelope): Promise<void> {
+  const invoice = getEventObject<Record<string, unknown>>(event);
+
+  if (!invoice) {
+    throw new Error('invoice.paid missing invoice object');
+  }
+
+  const userId = (invoice.metadata as Record<string, string> | undefined)?.user_id;
+  const amountPaid = invoice.amount_paid as number | undefined;
+
+  if (userId && amountPaid && amountPaid > 0) {
+    await RevenueService.logEvent({
+      eventType: 'subscription',
+      userId,
+      amountCents: amountPaid,
+      stripeEventId: event.id,
+    });
+  }
+}
+
+async function handleChargeDisputeCreated(
+  event: StripeEventEnvelope,
+  stripeEventId: string
+): Promise<void> {
+  const dispute = getEventObject<Record<string, unknown>>(event);
+  if (!dispute) throw new Error('charge.dispute.created missing dispute object');
+
+  await ChargebackService.handleDisputeCreated({
+    stripeDisputeId: dispute.id as string,
+    stripeChargeId: dispute.charge as string,
+    stripePaymentIntentId: (dispute.payment_intent as string | null) ?? null,
+    stripeEventId,
+    amountCents: dispute.amount as number,
+    currency: (dispute.currency as string) || 'usd',
+    reason: (dispute.reason as string | null) ?? null,
+  });
+}
+
+async function handleChargeDisputeUpdated(
+  event: StripeEventEnvelope,
+  stripeEventId: string
+): Promise<void> {
+  const dispute = getEventObject<Record<string, unknown>>(event);
+  if (!dispute) throw new Error('charge.dispute.updated missing dispute object');
+
+  await ChargebackService.handleDisputeUpdated({
+    stripeDisputeId: dispute.id as string,
+    stripeEventId,
+    status: dispute.status as string,
+    reason: (dispute.reason as string | null) ?? null,
+  });
+}
+
+async function handleChargeDisputeClosed(
+  event: StripeEventEnvelope,
+  stripeEventId: string
+): Promise<void> {
+  const dispute = getEventObject<Record<string, unknown>>(event);
+  if (!dispute) throw new Error('charge.dispute.closed missing dispute object');
+
+  const rawStatus = dispute.status as string;
+  const status: 'won' | 'lost' = rawStatus === 'won' ? 'won' : 'lost';
+
+  await ChargebackService.handleDisputeClosed({
+    stripeDisputeId: dispute.id as string,
+    stripeEventId,
+    status,
+    reason: (dispute.reason as string | null) ?? null,
+  });
 }

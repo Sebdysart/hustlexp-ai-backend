@@ -54,7 +54,7 @@ const mockService = vi.mocked(MovementTrackingService);
 
 function makeCaller(authenticated = true) {
   const ctx: any = authenticated
-    ? { user: { id: 'test-uid' }, firebaseUid: 'fb-uid' }
+    ? { user: { id: 'test-uid', default_mode: 'worker' }, firebaseUid: 'fb-uid' }
     : { user: null, firebaseUid: null };
   return trackingRouter.createCaller(ctx);
 }

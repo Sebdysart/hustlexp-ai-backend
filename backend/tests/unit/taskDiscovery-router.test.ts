@@ -34,6 +34,10 @@ vi.mock('../../src/logger', () => ({
     warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn(),
   },
   escrowLogger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
+  aiLogger: {
+    child: () => ({ warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() }),
+    warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn(),
+  },
 }));
 
 vi.mock('../../src/services/TaskDiscoveryService', () => ({
@@ -68,7 +72,7 @@ const TEST_UUID = '11111111-1111-1111-1111-111111111111';
 
 function makeCaller(userId = 'test-uid', trustTier = 2) {
   return taskDiscoveryRouter.createCaller({
-    user: { id: userId, trust_tier: trustTier } as any,
+    user: { id: userId, trust_tier: trustTier, default_mode: 'worker' } as any,
     firebaseUid: 'fb-uid',
   });
 }

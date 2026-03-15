@@ -19,6 +19,7 @@ import { config } from '../config.js';
 import { EarnedVerificationUnlockService } from './EarnedVerificationUnlockService.js';
 import { XPTaxService } from './XPTaxService.js';
 import { XPService } from './XPService.js';
+import { SelfInsurancePoolService } from './SelfInsurancePoolService.js';
 import type {
   Escrow,
   EscrowState,
@@ -334,7 +335,7 @@ export const EscrowService = {
       const task = taskResult.rows[0];
       const workerId = task.worker_id!;
       const paymentMethod: string = 'escrow'; // All tasks use escrow payment flow
-      const grossPayoutCents = task.price;
+      const grossPayoutCents = escrow.amount;
 
       // KYC GATE: Verify worker has completed Stripe Connect onboarding
       // before releasing funds (FinCEN/BSA compliance)
@@ -422,6 +423,22 @@ export const EscrowService = {
       }
 
       await logEscrowEvent(escrowId, escrow.state, 'RELEASED');
+
+      // v1.x: Record 2% self-insurance contribution from worker earnings
+      try {
+        const insuranceContributionCents = Math.round(grossPayoutCents * 0.02);
+        await SelfInsurancePoolService.recordContribution(
+          escrow.task_id,
+          workerId,
+          insuranceContributionCents,
+        );
+      } catch (insuranceError) {
+        // Non-fatal: pool contribution failure must not block payout
+        escrowLogger.warn(
+          { err: insuranceError instanceof Error ? insuranceError.message : String(insuranceError), workerId, escrowId },
+          'Failed to record self-insurance contribution — escrow release proceeds'
+        );
+      }
 
       // 3. v1.8.0: Record earnings for verification unlock tracking
       // This is idempotent via UNIQUE constraint on escrow_id

@@ -25,7 +25,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // ============================================================================
 
 // Mock the top-level src/db module
-vi.mock('../../../src/db/index.js', () => {
+vi.mock('../../src/db/index.js', () => {
   const mockTx = Object.assign(
     vi.fn().mockResolvedValue([]),
     { unsafe: vi.fn().mockResolvedValue([]) },
@@ -41,7 +41,7 @@ vi.mock('../../../src/db/index.js', () => {
 });
 
 // Mock the top-level src/utils/logger module
-vi.mock('../../../src/utils/logger.js', () => {
+vi.mock('../../src/utils/logger.js', () => {
   const noop = vi.fn();
   const makeLogger = () => ({
     info: noop,
@@ -60,7 +60,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 // Mock the top-level src/utils/errors module
-vi.mock('../../../src/utils/errors.js', () => ({
+vi.mock('../../src/utils/errors.js', () => ({
   getErrorMessage: vi.fn((err: unknown) =>
     err instanceof Error ? err.message : String(err)
   ),
@@ -84,7 +84,7 @@ vi.mock('@neondatabase/serverless', () => ({
 }));
 
 // Mock CapabilityProfileService for services that depend on it
-vi.mock('../../../src/services/CapabilityProfileService.js', () => ({
+vi.mock('../../src/services/CapabilityProfileService.js', () => ({
   CapabilityProfileService: {
     recompute: vi.fn().mockResolvedValue({ success: true }),
   },
@@ -104,7 +104,7 @@ vi.mock('../../../src/services/CapabilityProfileService.js', () => ({
 // IMPORTS — After mocks
 // ============================================================================
 
-import { PromptInjectionGuard } from '../../../src/ai/PromptInjectionGuard.js';
+import { PromptInjectionGuard } from '../../src/ai/PromptInjectionGuard.js';
 
 import {
   createBackgroundCheck,
@@ -115,7 +115,7 @@ import {
   getActiveBackgroundCheck,
   checkExpiredBackgroundChecks,
   initiateCheckrBackgroundCheck,
-} from '../../../src/services/BackgroundCheckService.js';
+} from '../../src/services/BackgroundCheckService.js';
 
 import {
   createVerification as createInsuranceVerification,
@@ -124,7 +124,7 @@ import {
   getUserVerifications as getInsuranceUserVerifications,
   getActiveVerifications as getActiveInsuranceVerifications,
   checkExpiredInsurance,
-} from '../../../src/services/InsuranceVerificationService.js';
+} from '../../src/services/InsuranceVerificationService.js';
 
 import {
   createVerification as createLicenseVerification,
@@ -134,9 +134,9 @@ import {
   getActiveVerifications as getActiveLicenseVerifications,
   processRegistryLookup,
   checkExpiredLicenses,
-} from '../../../src/services/LicenseVerificationService.js';
+} from '../../src/services/LicenseVerificationService.js';
 
-import { TaxReportingService } from '../../../src/services/TaxReportingService.js';
+import { TaxReportingService } from '../../src/services/TaxReportingService.js';
 
 import {
   invalidateFeedCache,
@@ -144,7 +144,7 @@ import {
   getFeed,
   isTaskEligibleForUser,
   getEligibleTaskCount,
-} from '../../../src/services/FeedQueryService.js';
+} from '../../src/services/FeedQueryService.js';
 
 import {
   getRiskClearanceForTier,
@@ -152,11 +152,11 @@ import {
   getProfile,
   getVerifiedTrades,
   invalidateProfileFeedCache,
-} from '../../../src/services/CapabilityProfileService.js';
+} from '../../src/services/CapabilityProfileService.js';
 
-import { DatabaseHealthService } from '../../../src/services/DatabaseHealthService.js';
+import { DatabaseHealthService } from '../../src/services/DatabaseHealthService.js';
 
-import * as dbModule from '../../../src/db/index.js';
+import * as dbModule from '../../src/db/index.js';
 import { neon } from '@neondatabase/serverless';
 
 // ============================================================================
@@ -428,7 +428,7 @@ describe('BackgroundCheckService', () => {
     getMockTransaction().mockImplementationOnce(async (cb) => cb(mockTx));
 
     const { CapabilityProfileService } = await import(
-      '../../../src/services/CapabilityProfileService.js'
+      '../../src/services/CapabilityProfileService.js'
     );
 
     const result = await updateBackgroundCheck('check-1', {
@@ -676,7 +676,7 @@ describe('InsuranceVerificationService', () => {
     getMockTransaction().mockImplementationOnce(async (cb) => cb(mockTx));
 
     const { CapabilityProfileService } = await import(
-      '../../../src/services/CapabilityProfileService.js'
+      '../../src/services/CapabilityProfileService.js'
     );
 
     const result = await updateInsuranceVerification('ins-1', {
@@ -869,7 +869,7 @@ describe('LicenseVerificationService', () => {
     getMockTransaction().mockImplementationOnce(async (cb) => cb(mockTx));
 
     const { CapabilityProfileService } = await import(
-      '../../../src/services/CapabilityProfileService.js'
+      '../../src/services/CapabilityProfileService.js'
     );
 
     const result = await updateLicenseVerification('lic-1', {

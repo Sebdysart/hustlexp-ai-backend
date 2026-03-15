@@ -47,6 +47,9 @@ describe('MovementTrackingService.startSession', () => {
       averageSpeed: 0,
       status: 'active',
     };
+    // First query: task validation (SELECT worker_id, progress_state FROM tasks)
+    mockQuery.mockResolvedValueOnce({ rows: [{ worker_id: 'user-1', progress_state: 'ACCEPTED' }] });
+    // Second query: INSERT movement_sessions ... RETURNING *
     mockQuery.mockResolvedValueOnce({ rows: [fakeSession] });
 
     const result = await MovementTrackingService.startSession('task-1', 'user-1', gpsPoint);

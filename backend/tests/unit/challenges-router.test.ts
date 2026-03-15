@@ -46,7 +46,7 @@ const CHALLENGE_ID = '00000000-0000-0000-0000-000000000099';
 
 function makeCaller() {
   return challengesRouter.createCaller({
-    user: { id: UUID1, email: 'user@test.com', full_name: 'User', firebase_uid: 'fb-1' } as any,
+    user: { id: UUID1, email: 'user@test.com', full_name: 'User', firebase_uid: 'fb-1', default_mode: 'worker' } as any,
     firebaseUid: 'fb-1',
   });
 }

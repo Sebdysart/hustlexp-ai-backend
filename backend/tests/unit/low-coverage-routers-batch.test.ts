@@ -152,6 +152,7 @@ function makeFakeUser(overrides: Record<string, unknown> = {}) {
     email: 'test@hustlexp.com',
     full_name: 'Test User',
     role: 'hustler',
+    default_mode: 'worker', // hustlerProcedure requires default_mode === 'worker'
     firebase_uid: 'fb-uid-123',
     live_mode_state: 'OFF',
     live_mode_session_started_at: null,
