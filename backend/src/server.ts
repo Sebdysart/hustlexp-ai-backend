@@ -162,8 +162,9 @@ app.use('/trpc/admin.*', rateLimitMiddleware('auth'));              // 20/min �
 
 // Tier 2: Financial (10/min) — strictest, money operations
 app.use('/trpc/escrow.release*', rateLimitMiddleware('financial')); // 10/min — escrow release
-app.use('/trpc/stripe.*', rateLimitMiddleware('financial'));        // 10/min — Stripe financial ops
+app.use('/trpc/stripe.*', rateLimitMiddleware('financial'));        // 10/min — Stripe financial ops (dead pattern, kept for forward compat)
 app.use('/trpc/stripeConnect.*', rateLimitMiddleware('financial')); // 10/min — Stripe Connect onboarding
+app.use('/trpc/subscription.*', rateLimitMiddleware('financial')); // 10/min — Stripe subscription billing mutations
 app.use('/trpc/fraud.*', rateLimitMiddleware('financial'));         // 10/min — fraud reporting
 
 // Tier 3: AI (20/min) — cost protection
@@ -183,6 +184,10 @@ app.use('/trpc/moderation.*', rateLimitMiddleware('mutation'));     // 60/min �
 app.use('/trpc/upload.*', rateLimitMiddleware('mutation'));         // 60/min — file uploads
 app.use('/trpc/notification.*', rateLimitMiddleware('mutation'));   // 60/min — notification management
 app.use('/trpc/tipping.*', rateLimitMiddleware('mutation'));        // 60/min — tip mutations
+app.use('/trpc/recurringTask.*', rateLimitMiddleware('mutation'));  // 60/min — recurring task create/pause/resume/cancel
+app.use('/trpc/dispute.*', rateLimitMiddleware('mutation'));        // 60/min — dispute submissions
+app.use('/trpc/xpTax.*', rateLimitMiddleware('mutation'));          // 60/min — XP tax mutations
+app.use('/trpc/incidents.*', rateLimitMiddleware('mutation'));      // 60/min — incident reporting (admin-authed separately)
 
 // Tier 6: General (120/min) — catch-all for remaining tRPC and REST routes
 app.use('/trpc/*', rateLimitMiddleware('general'));                 // 120/min — all other tRPC routes
