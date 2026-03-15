@@ -64,6 +64,7 @@ import { gdprRouter } from './gdpr.js';
 import { tutorialRouter } from './tutorial.js';
 import { batchQuestRouter } from './batchQuest.js';
 import { uiRouter } from './ui.js';
+import { disputeRouter } from './dispute.js';
 
 // ── ADMIN DOMAIN ────────────────────────────────────────────────────────
 // Requires admin_roles table entry. Platform operations.
@@ -130,6 +131,7 @@ export const appRouter = router({
   tutorial: tutorialRouter,
   batchQuest: batchQuestRouter,
   ui: uiRouter,
+  dispute: disputeRouter,
 
   // ── Admin Domain ───────────────────────────────────────────────────────
   admin: adminRouter,
