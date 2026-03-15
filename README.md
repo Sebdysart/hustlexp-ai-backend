@@ -1,6 +1,41 @@
 # HustleXP Backend
 
-Production-grade tRPC API backend for HustleXP, a gamified local task marketplace. Built with Hono, tRPC v11, PostgreSQL (Neon), Redis (Upstash), and deployed on Railway.
+HustleXP is a **gamified local task marketplace** — think "Uber for local help" but with one critical difference: completing work here builds a permanent, verifiable identity. Every task earns XP. XP builds trust tiers. Trust tiers unlock better tasks, higher XP multipliers, Live Mode access, squad formation, and preferential AI matching. Your reputation compounds over time instead of resetting with every job.
+
+**Two user roles:**
+- **Hustlers** — workers who browse tasks, navigate to locations, submit GPS + photo + biometric proof of completion, and earn XP toward the next trust tier.
+- **Posters** — employers who post tasks (standard, AI-assisted, or ASAP/Live), review applicants by trust tier and rating, approve proof, and release payment from Stripe escrow.
+
+**What makes it different from TaskRabbit:**
+
+| | TaskRabbit | HustleXP |
+|--|--|--|
+| Worker identity | Resets per job | Compounds (XP → tiers → reputation) |
+| Task urgency | Booking flow | Live Mode radar — 60s claim windows, surge pricing |
+| Payment safety | Platform-managed | Escrow + GPS + biometric proof + AI verification |
+| Team work | No | Squads (Elite+ workers, shared XP + earnings) |
+| Fraud prevention | None | 4 AI agents, DB-trigger invariants, liveness detection |
+
+---
+
+## Current Status
+
+| Metric | Value |
+|--------|-------|
+| Ecosystem Health | **100/100** |
+| Beta Gate | **100/100 — Private Beta Ready** |
+| Test Files | 239 passing, 0 failing |
+| Tests | 5,448 passing |
+| Statement Coverage | 89.6% |
+| Branch Coverage | 77.6% |
+| API Procedures | 290+ across 38 routers |
+| Database | 103 tables, PostGIS |
+| Deployed | Railway — auto-deploy from `main` |
+| Production URL | `https://hustlexp-ai-backend-staging-production.up.railway.app` |
+
+---
+
+## Architecture Overview
 
 ```
                     +-----------------+
@@ -41,6 +76,17 @@ Production-grade tRPC API backend for HustleXP, a gamified local task marketplac
                      +------------+
 ```
 
+**Four architectural layers:**
+```
+Layer 0 — PostgreSQL triggers: enforce ALL financial invariants (no negative escrow,
+           double-spend prevention, XP requires RELEASED escrow, badge immutability)
+Layer 1 — 68 Services: business logic, state machines, AI orchestration
+Layer 2 — 38 tRPC Routers: typed procedures + Zod validation + Firebase JWT auth
+Layer 3 — 4 AI Agents: proposal-only authority, deterministic fallbacks, cost governance
+```
+
+---
+
 ## Quick Start
 
 ```bash
@@ -51,6 +97,69 @@ npm run dev                    # Start dev server (port 3000)
 npm run dev:workers            # Start background workers (separate terminal)
 ```
 
+---
+
+## Core Business Logic
+
+### 1. Task Lifecycle
+
+Nine states forming a strict state machine enforced by PostgreSQL triggers:
+
+```
+OPEN → ACCEPTED → PROOF_SUBMITTED → COMPLETED  (terminal)
+     ↘ CANCELLED              ↘ DISPUTED → COMPLETED / CANCELLED
+     ↘ EXPIRED
+```
+
+Workers can only claim tasks within their trust tier. Proof submission requires GPS accuracy within task geofence. Completion requires Poster approval or admin override. All transitions are atomic — no invalid paths exist in the database.
+
+### 2. Escrow Chain
+
+Money never moves without a corresponding state transition:
+
+```
+PENDING → FUNDED (Poster card charged at worker claim)
+        → RELEASED (worker paid after proof approved — triggers XP award)
+        → REFUNDED (Poster gets money back after rejection/dispute win)
+        → LOCKED_DISPUTE (frozen during dispute — neither party can access)
+        → REFUND_PARTIAL (dispute split resolution)
+```
+
+Before any release: KYC check (`payouts_enabled + stripe_connect_id`), platform fee deducted, revenue logged. XP is only awarded after escrow reaches RELEASED — enforced at the DB trigger level. No escrow release = no XP. This is invariant, not convention.
+
+### 3. XP + Trust Tier System
+
+```
+effective_xp = base_xp × streak_multiplier × trust_multiplier × live_mode_multiplier
+
+base_xp           ≈ 10% of task price in cents  ($50 task = 500 base XP)
+streak_multiplier = 1.0 + (streak_days × 0.05), max 2.0
+trust_multiplier  = 1.0 (Rookie) → 1.5 (Verified) → 2.0 (Trusted/Elite)
+live_multiplier   = 1.25× during active Live Mode session
+daily_cap         = 10,000 XP
+```
+
+Trust tiers gate features: Verified unlocks medium tasks, Trusted unlocks recurring tasks, Elite unlocks Live Mode + Squads, Master unlocks all. Promotion is deterministic (task count + approval rate + dispute history). Demotion only via ban.
+
+### 4. AI Agent Pipeline
+
+Four agents, all Authority Level A2 (proposal-only — humans make final calls):
+
+| Agent | Purpose | Budget/user/day |
+|-------|---------|----------------|
+| **Judge** | GPS + photo + biometric → APPROVE / REVIEW / REJECT | $0.50 |
+| **Matchmaker** | Worker ranking + price suggestions | $0.10 |
+| **Dispute** | Fault scoring, split ratios, escalation | $1.00 |
+| **Reputation** | Dynamic trust scoring, anomaly detection | $0.05 |
+
+Provider chains: Groq (fast, cheap) → DeepSeek (reasoning) → OpenAI (fallback). Deterministic fallback if all AI unavailable. Global circuit breaker at $500/day.
+
+### 5. Live Mode / ASAP Broadcasting
+
+Poster creates ASAP task (min $15) → broadcasts to all Elite+ Hustlers within 5 miles via SSE → workers see pulsing quest alerts on Live Radar screen → first to accept within 60-second window wins → 1.25× XP multiplier active during full Live session. Surge pricing: `urgencyPremium` (30% of base) + `surgeMultiplier` (1.0–3.0×) compound on top of base payment.
+
+---
+
 ## Tech Stack
 
 | Layer | Technology | Purpose |
@@ -58,185 +167,113 @@ npm run dev:workers            # Start background workers (separate terminal)
 | HTTP Framework | Hono v4.10 | Request routing, middleware, CORS |
 | API Layer | tRPC v11.7 | Type-safe RPC with Zod validation |
 | Database | PostgreSQL (Neon) | 103 tables, PostGIS, triggers |
-| Cache | Upstash Redis | Rate limiting, caching, sessions |
+| Cache | Upstash Redis | Rate limiting, caching, pub/sub |
 | Job Queue | BullMQ + ioredis | 23 async background workers |
-| Auth | Firebase Admin SDK | JWT verification, user lookup |
-| Payments | Stripe SDK v20 | Escrow, subscriptions, tipping |
+| Auth | Firebase Admin SDK | JWT verification, FCM push |
+| Payments | Stripe SDK v20 | Escrow, Connect, subscriptions, 1099-NEC |
 | Storage | Cloudflare R2 (S3) | Photo proofs, license uploads |
-| AI | OpenAI, Groq, DeepSeek, Anthropic | 4 AI agents (Judge, Matchmaker, Dispute, Reputation) |
-| Email | SendGrid | Transactional emails, verification |
-| SMS | Twilio | Phone verification, alerts |
-| Runtime | Node.js + tsx | ES2022 target, ESM modules |
+| AI | OpenAI, Groq, Anthropic, DeepSeek | 4 agents with cost governance |
+| Email | SendGrid | Transactional emails |
+| SMS | Twilio | Phone OTP verification |
+| Runtime | Node.js + tsx | ES2022, ESM modules |
+
+---
 
 ## Project Structure
 
 ```
-hustlexp-backend-clean/
+hustlexp-ai-backend/
 ├── backend/src/
-│   ├── server.ts              # Hono server entry (860 lines)
-│   ├── trpc.ts                # tRPC setup, auth middleware, error formatting
-│   ├── db.ts                  # PostgreSQL pool, error codes (HX001-HX905)
-│   ├── config.ts              # Environment validation
+│   ├── server.ts              # Hono server entry
+│   ├── trpc.ts                # tRPC setup, auth middleware
+│   ├── db.ts                  # PostgreSQL pool, HX error codes
+│   ├── config.ts              # Environment + fee configuration
 │   ├── types.ts               # Shared TypeScript types
-│   ├── routers/               # 38 tRPC routers (+ index.ts aggregator)
-│   │   ├── task.ts            # Core task CRUD + state machine
-│   │   ├── user.ts            # Registration, profiles, XP, badges
-│   │   ├── escrow.ts          # Payment escrow lifecycle
-│   │   ├── messaging.ts       # Direct messaging
-│   │   ├── taskDiscovery.ts   # AI-powered task feed + search
-│   │   ├── rating.ts          # Ratings and reviews
-│   │   ├── notification.ts    # Push notification management
-│   │   ├── skills.ts          # Worker skill system
-│   │   ├── betaDashboard.ts   # Admin dashboard + kill switches
-│   │   └── ... (29 more)
+│   ├── ai/                    # 4 AI agents + AIRouter cost governance
+│   ├── routers/               # 38 tRPC routers
 │   ├── services/              # 68 business logic services
-│   │   ├── TaskService.ts
-│   │   ├── EscrowService.ts
-│   │   ├── StripeService.ts
-│   │   ├── JudgeAIService.ts
-│   │   ├── MatchmakerAIService.ts
-│   │   ├── DisputeAIService.ts
-│   │   ├── ReputationAIService.ts
-│   │   └── ... (61 more)
 │   ├── jobs/                  # 23 BullMQ background workers
-│   │   ├── payment-worker.ts
-│   │   ├── fraud-detection-worker.ts
-│   │   ├── push-worker.ts
-│   │   ├── email-worker.ts
-│   │   └── ... (19 more)
-│   ├── auth/                  # Firebase auth + middleware
-│   ├── cache/                 # Redis caching layer
-│   ├── middleware/             # Security headers, rate limiting
-│   ├── realtime/              # SSE (Server-Sent Events)
-│   └── storage/               # S3/R2 file storage
-├── public/                    # Static HTML (privacy, terms, legal)
-├── scripts/                   # Utility and test scripts
-├── package.json
-├── tsconfig.json
-├── vitest.config.ts
-└── Procfile                   # Railway/Heroku deployment
+│   ├── auth/                  # Firebase auth middleware
+│   ├── middleware/            # Security headers, rate limiting (6 tiers)
+│   ├── realtime/              # SSE broadcasting
+│   └── storage/               # R2 file storage
+├── backend/tests/unit/        # 239 test files, 5,448 tests
+├── migrations/                # SQL migration files
+└── scripts/                   # CI pipeline (Zenith Codex, 16 layers)
 ```
 
-**Docs:** [docs/README.md](docs/README.md) (index) · [Project Success Plan](docs/PROJECT_SUCCESS_PLAN.md) · [Schedule](docs/PROJECT_SCHEDULE.md) · [Migrations](docs/MIGRATIONS.md) · [ENV](docs/ENV.md) · [Scripts](docs/SCRIPTS.md).  
-**Root:** [AGENTS.md](AGENTS.md) (Cursor) · [CLAUDE.md](CLAUDE.md) (Claude) · [PRODUCTION_HARDENING.md](PRODUCTION_HARDENING.md).
+---
 
-## API Surface (261 Procedures)
-
-All tRPC routes are at `/trpc/*`. Auth via `Authorization: Bearer <firebase_jwt>`.
+## API Surface (290+ Procedures)
 
 ### Core Business
 
 | Router | Procedures | Description |
 |--------|-----------|-------------|
-| **task** | `getById` `getState` `listOpen` `listByPoster` `listByWorker` `getProof` `create` `accept` `start` `submitProof` `reviewProof` `complete` `cancel` | Task lifecycle and state machine |
-| **escrow** | `getById` `getState` `getByTaskId` `getHistory` `createPaymentIntent` `confirmFunding` `release` `refund` `lockForDispute` `awardXP` | Payment escrow management |
-| **user** | `me` `getById` `xpHistory` `badges` `register` `updateProfile` `getOnboardingStatus` `completeOnboarding` `getVerificationUnlockStatus` `checkVerificationEligibility` `getVerificationEarningsLedger` | User accounts and gamification |
-| **messaging** | `sendMessage` `sendPhotoMessage` `getTaskMessages` `getConversations` `getUnreadCount` `markAsRead` `markAllAsRead` | In-app direct messaging |
-| **rating** | `submitRating` `getTaskRatings` `getUserRatingSummary` `getMyRatings` `getRatingsReceived` `processAutoRatings` | Bidirectional ratings |
+| **task** | create, accept, start, submitProof, reviewProof, complete, cancel, getById, getState, listOpen, listByPoster, listByWorker, getProof, listApplicants | Task lifecycle + state machine |
+| **escrow** | getById, getState, getByTaskId, getHistory, createPaymentIntent, confirmFunding, release, refund, lockForDispute, awardXP | Payment escrow management |
+| **user** | me, getById, register, updateProfile, xpHistory, badges, getOnboardingStatus, completeOnboarding, getVerificationUnlockStatus, checkVerificationEligibility | User accounts + gamification |
+| **messaging** | sendMessage, sendPhotoMessage, getTaskMessages, getConversations, getUnreadCount, markAsRead, markAllAsRead | Task-scoped messaging |
+| **rating** | submitRating, getTaskRatings, getUserRatingSummary, getMyRatings, getRatingsReceived, processAutoRatings | Bidirectional ratings |
 
-### Discovery and Matching
-
-| Router | Procedures | Description |
-|--------|-----------|-------------|
-| **taskDiscovery** | `getFeed` `search` `calculateMatchingScore` `calculateFeedScores` `getExplanation` `saveSearch` `getSavedSearches` `deleteSavedSearch` `executeSavedSearch` | AI-powered task recommendation |
-| **matchmaker** | `rankCandidates` `explainMatch` `suggestPrice` | AI matchmaking engine |
-| **heatmap** | `getHeatMap` `getDemandAlerts` | Demand heat mapping |
-| **geofence** | `checkProximity` `getTaskEvents` `verifyPresence` | Location verification |
-| **skills** | `getCategories` `getSkills` `getMySkills` `addSkills` `removeSkill` `submitLicense` `getLicenseSubmissions` `checkTaskEligibility` | Worker skill management |
-
-### Payments and Finance
+### Discovery & Matching
 
 | Router | Procedures | Description |
 |--------|-----------|-------------|
-| **pricing** | `calculate` `updateMyModifier` | Dynamic pricing engine |
-| **subscription** | `getMySubscription` `subscribe` `cancel` `confirmSubscription` | Stripe subscription management |
-| **tipping** | `createTip` `confirmTip` `getTipsForTask` `getMyTipsReceived` | In-app tipping |
-| **xpTax** | `getTaxStatus` `getTaxHistory` `createPaymentIntent` `payTax` | XP tax system |
-| **insurance** | `getPoolStatus` `getMyClaims` `fileClaim` `reviewClaim` `payClaim` | Self-insurance pool |
-| **featured** | `promoteTask` `confirmPromotion` `getFeaturedTasks` | Promoted listings |
-| **referral** | `getOrCreateCode` `redeemCode` `getReferralStats` | Referral rewards |
+| **taskDiscovery** | getFeed, search, calculateMatchingScore, saveSearch, getSavedSearches, executeSavedSearch | AI-powered task feed |
+| **matchmaker** | rankCandidates, explainMatch, suggestPrice | AI matchmaking engine |
+| **heatmap** | getHeatMap, getDemandAlerts | Demand heat mapping |
+| **geofence** | checkProximity, getTaskEvents, verifyPresence | Location verification |
+| **skills** | getCategories, getMySkills, addSkills, submitLicense, checkTaskEligibility | Skill + license management |
 
-### AI Agents
+### Payments & Finance
 
 | Router | Procedures | Description |
 |--------|-----------|-------------|
-| **ai** | `submitCalibration` `getInferenceResult` `confirmRole` | AI onboarding calibration |
-| **disputeAI** | `analyzeDispute` `generateEvidenceRequest` `assessEscalation` | AI dispute resolution |
-| **reputation** | `calculateTrustScore` `detectAnomalies` `generateUserInsight` `checkTierEligibility` | AI reputation scoring |
+| **subscription** | getMySubscription, subscribe, cancel, confirmSubscription | Stripe subscriptions (Free / Premium $14.99 / Pro $29.99) |
+| **tipping** | createTip, confirmTip, getTipsForTask, getMyTipsReceived | In-app tipping |
+| **xpTax** | getTaxStatus, getTaxHistory, createPaymentIntent, payTax | 10% tax on offline payments |
+| **insurance** | getPoolStatus, getMyClaims, fileClaim, reviewClaim | Self-insurance pool |
+| **featured** | promoteTask, confirmPromotion, getFeaturedTasks | Task promotion ($2.99–$7.99) |
 
-### Safety and Compliance
+### Safety & Compliance
 
 | Router | Procedures | Description |
 |--------|-----------|-------------|
-| **fraud** | `calculateRiskScore` `getLatestRiskScore` `getRiskAssessment` `getHighRiskScores` `updateRiskScoreStatus` `detectPattern` `getUserPatterns` `getDetectedPatterns` `updatePatternStatus` | Fraud detection |
-| **moderation** | `moderateContent` `getPendingQueue` `getQueueItemById` `reviewQueueItem` `createReport` `getUserReports` `reviewReport` `createAppeal` `getUserAppeals` `reviewAppeal` `getPendingAppeals` | Content moderation |
-| **biometric** | `submitBiometricProof` `analyzeFacePhoto` | Biometric verification |
-| **gdpr** | `createRequest` `getRequestStatus` `getMyRequests` `cancelRequest` `getConsentStatus` `updateConsent` | GDPR data export/delete |
-| **verification** | (via user router) | License and identity verification |
+| **fraud** | calculateRiskScore, getHighRiskScores, detectPattern, getUserPatterns | Real-time fraud scoring |
+| **moderation** | moderateContent, getPendingQueue, reviewQueueItem, createReport, createAppeal | Content moderation + appeals |
+| **biometric** | submitBiometricProof, analyzeFacePhoto | Liveness + deepfake detection |
+| **gdpr** | createRequest, getConsentStatus, updateConsent | GDPR data rights |
 
 ### Platform Features
 
 | Router | Procedures | Description |
 |--------|-----------|-------------|
-| **notification** | `getList` `getUnreadCount` `getById` `markAsRead` `markAllAsRead` `markAsClicked` `getPreferences` `updatePreferences` `registerDeviceToken` `unregisterDeviceToken` | Push notifications |
-| **live** | `toggle` `getStatus` `listBroadcasts` | Live mode broadcasting |
-| **instant** | `listAvailable` `accept` `dismiss` `metrics` | Instant task matching |
-| **batchQuest** | `getSuggestions` `buildRoute` | Multi-task route optimization |
-| **tutorial** | `getScenarios` `submitAnswers` `scanEquipment` | Interactive tutorials |
-| **challenges** | `getTodaysChallenges` `updateProgress` | Daily challenges |
-| **jury** | `submitVote` `getVoteTally` | Community jury disputes |
-| **expertiseSupply** | `listExpertise` `getMyExpertise` `addExpertise` `removeExpertise` `promoteExpertise` `checkCapacity` `getMyWaitlist` `acceptInvite` `getSupplyDashboard` `updateCapacity` `triggerRecalc` | Supply/demand control |
-| **upload** | `getPresignedUrl` | S3/R2 file upload |
+| **notification** | getList, getPreferences, updatePreferences, registerDeviceToken | Push notification management |
+| **live** | toggle, getStatus, listBroadcasts | Live Mode session management |
+| **instant** | listAvailable, accept, dismiss, metrics | Instant task matching |
+| **squad** | create, joinSquad, leaveSquad, getMembers, listMine | Team-based collaboration |
+| **recurringTask** | create, cancel, listMine, listOccurrences | Recurring task series |
+| **expertiseSupply** | listExpertise, getMyExpertise, addExpertise, getSupplyDashboard | Supply/demand control |
+| **betaDashboard** | getMetrics, getRevenueSummary, getMonthlyPnl, listUsers, requestKillSwitchToggle | Admin dashboard + kill switches |
 
-### Monitoring
-
-| Router | Procedures | Description |
-|--------|-----------|-------------|
-| **health** | `ping` `status` `verifySchema` | Server health checks |
-| **analytics** | `trackEvent` `trackBatch` `getUserEvents` `getTaskEvents` `calculateFunnel` `calculateCohortRetention` `trackABTest` `getEventCounts` | Product analytics |
-| **alphaTelemetry** | `getEdgeStateDistribution` `getEdgeStateTimeSpent` `getDisputeRate` `getProofCorrectionRate` `getTrustTierMovement` `emitEdgeStateImpression` `emitEdgeStateExit` | Alpha telemetry |
-| **betaDashboard** | `getMetrics` `getStatus` `getKillSignals` `getRevenueSummary` `getMonthlyPnl` `verifyLedgerIntegrity` `getDisputeRate` `getDailyTaskCounts` `getDailyRevenue` `getActivityFeed` `listUsers` `getBetaConfig` `requestKillSwitchToggle` `getKillSwitchHistory` | Admin dashboard |
-| **ui** | `getXPCelebrationStatus` `markXPCelebrationShown` `getBadgeAnimationStatus` `markBadgeAnimationShown` `reportViolation` | UI state sync |
-
-### REST Endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/health` | Basic health check |
-| GET | `/health/detailed` | Full service status (DB, Firebase, Stripe, Redis) |
-| GET | `/realtime/stream` | SSE endpoint for real-time updates |
-| GET | `/privacy-policy` | Privacy policy HTML |
-| GET | `/terms-of-service` | Terms of service HTML |
-| GET | `/legal` | Legal landing page |
-| GET/POST | `/api/users/:id/xp-celebration-status` | XP celebration state |
-| GET/POST | `/api/users/:id/badges/:badgeId/animation-status` | Badge animation state |
-| GET | `/api/tasks/:taskId/state` | Task state machine |
-| GET | `/api/escrows/:escrowId/state` | Escrow state |
-| POST | `/api/ui/violations` | UI violation reports |
-| GET | `/api/users/:id/onboarding-status` | Onboarding completion |
+---
 
 ## Auth Model
 
 ```
-Client request
-    |
-    v
-Authorization: Bearer <firebase_jwt>
-    |
-    v
-Firebase Admin SDK verifies token
-    |
-    v
-Database lookup by firebase_uid
-    |
-    v
-Context { user, firebaseUid } injected into tRPC procedures
+Client → Authorization: Bearer <firebase_jwt>
+       → Firebase Admin SDK verifies
+       → DB lookup by firebase_uid
+       → Context { user, firebaseUid } injected into procedure
+
+Three types:
+  publicProcedure   — no auth (health checks, legal pages)
+  protectedProcedure — valid Firebase JWT required
+  adminProcedure    — admin role in admin_roles table required
 ```
 
-Three procedure types:
-- **publicProcedure** - No auth (health checks, legal pages)
-- **protectedProcedure** - Requires valid Firebase JWT
-- **adminProcedure** - Requires admin role in `admin_roles` table
+---
 
 ## Environment Variables
 
@@ -247,7 +284,7 @@ Three procedure types:
 | `DATABASE_URL` | Neon PostgreSQL connection string |
 | `UPSTASH_REDIS_REST_URL` | Redis REST endpoint |
 | `UPSTASH_REDIS_REST_TOKEN` | Redis REST token |
-| `UPSTASH_REDIS_URL` | Redis TCP connection (BullMQ) |
+| `UPSTASH_REDIS_URL` | Redis TCP (BullMQ) |
 | `STRIPE_SECRET_KEY` | Stripe API key |
 | `STRIPE_WEBHOOK_SECRET` | Stripe webhook signing secret |
 | `FIREBASE_PROJECT_ID` | Firebase project ID |
@@ -258,104 +295,95 @@ Three procedure types:
 
 | Variable | Description |
 |----------|-------------|
-| `R2_ACCOUNT_ID` `R2_ACCESS_KEY_ID` `R2_SECRET_ACCESS_KEY` `R2_BUCKET_NAME` | Cloudflare R2 storage |
-| `SENDGRID_API_KEY` `SENDGRID_FROM_EMAIL` | Email via SendGrid |
-| `OPENAI_API_KEY` | OpenAI (GPT-4o) |
-| `GROQ_API_KEY` | Groq (Llama 3.3 70B) |
-| `DEEPSEEK_API_KEY` | DeepSeek (R1 reasoning) |
-| `ANTHROPIC_API_KEY` | Anthropic (Claude Sonnet) |
-| `TWILIO_ACCOUNT_SID` `TWILIO_AUTH_TOKEN` `TWILIO_VERIFY_SERVICE_SID` | SMS verification |
-| `GOOGLE_MAPS_API_KEY` | Google Maps geocoding |
+| `R2_ACCOUNT_ID` `R2_ACCESS_KEY_ID` `R2_SECRET_ACCESS_KEY` `R2_BUCKET_NAME` | Cloudflare R2 |
+| `SENDGRID_API_KEY` `SENDGRID_FROM_EMAIL` | Email |
+| `OPENAI_API_KEY` `GROQ_API_KEY` `DEEPSEEK_API_KEY` `ANTHROPIC_API_KEY` | AI providers |
+| `TWILIO_ACCOUNT_SID` `TWILIO_AUTH_TOKEN` `TWILIO_VERIFY_SERVICE_SID` | SMS |
+| `GOOGLE_MAPS_API_KEY` | Geocoding |
+| `PLATFORM_FEE_PERCENT` | Platform fee % (default: 15) |
 
-### Application
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PORT` | `3000` | Server port |
-| `NODE_ENV` | `development` | Environment |
-| `ALLOWED_ORIGINS` | `*` (dev) | CORS origins (comma-separated) |
+---
 
 ## Database
 
 **103 tables** on PostgreSQL (Neon) with PostGIS. Key areas:
 
 - **Core**: users, tasks, escrows, payments, revenue_ledger
-- **Gamification**: xp_events, badges, user_badges, challenges, daily_progress
-- **Trust**: trust_events, trust_tier_audit, fraud_risk_scores, fraud_patterns
+- **Gamification**: xp_events, badges, user_badges, streaks, daily_progress
+- **Trust**: trust_events, trust_tier_audit, fraud_risk_scores
 - **Skills**: skill_categories, skills, user_skills, license_submissions
 - **Messaging**: task_messages, conversations
 - **Notifications**: notifications, device_tokens, notification_preferences
-- **AI**: ai_decisions, ai_audit_trail, calibration_responses
+- **AI**: ai_decisions, ai_audit_trail, ai_cost_logs
 - **Moderation**: moderation_queue, user_reports, appeals
-- **Financial**: subscription_plans, user_subscriptions, tips, referral_codes
+- **Financial**: subscription_plans, user_subscriptions, tips, referral_codes, self_insurance_pool
 
-Financial operations are protected by PostgreSQL triggers enforcing:
-- No negative escrow balances
-- Double-spending prevention
-- Append-only audit logs
-- Trust tier audit trail
+Financial operations enforced by PostgreSQL triggers:
+- No negative escrow balances (INV-1)
+- Double-spending prevention (INV-2)
+- Append-only audit logs (INV-3)
+- XP requires RELEASED escrow (INV-4)
+- Badge immutability (INV-5)
 
-### Migrations
-
-```bash
-npm run db:migrate    # Run all pending migrations
-npm run db:check      # Verify database connection
-```
-
-**Canonical:** `npm run db:migrate` applies `backend/database/constitutional-schema.sql` via `migrate-pg.mjs`. See [docs/MIGRATIONS.md](docs/MIGRATIONS.md). Other SQL in `backend/database/migrations/` and `backend/src/migrations/` is reference only.
+---
 
 ## Background Workers (23)
 
-BullMQ workers processing async jobs via Redis:
+| Worker | Trigger | Purpose |
+|--------|---------|---------|
+| payment-worker | Payment initiated | Stripe PaymentIntent → fund escrow |
+| escrow-action-worker | Outbox event | Execute escrow state transitions |
+| fraud-detection-worker | Real-time signal | Velocity checks, pattern detection |
+| push-worker | Notification queued | Firebase FCM delivery |
+| email-worker | Email event | SendGrid dispatch |
+| sms-worker | SMS event | Twilio OTP |
+| biometric-analyzer-worker | Proof submitted | Async liveness + deepfake |
+| instant-matching-worker | Task enters MATCHING | Match workers to ASAP tasks |
+| trust-tier-promotion-worker | Cron: daily 2AM | Evaluate tier promotions |
+| xp-tax-reminder-worker | Cron: daily 9AM | Unpaid tax reminders |
+| maintenance-worker | Cron: daily 3AM | Expire stale tasks, cleanup |
+| stripe-event-worker | Stripe webhook | Route payment events |
+| outbox-worker | Scheduled poll | Transactional outbox pattern |
+| recurring-task-worker | Per-series schedule | Generate recurring instances |
+| tax-reporting-worker | Cron: Feb 1 annually | Generate + file 1099-NEC forms |
+| ... 8 more | Various | Surge evaluation, GDPR export, expertise recalc, incident diagnosis |
 
-| Worker | Purpose |
-|--------|---------|
-| payment-worker | Stripe payment processing |
-| escrow-action-worker | Escrow state transitions |
-| fraud-detection-worker | Real-time fraud scoring |
-| push-worker | Push notification delivery |
-| email-worker | SendGrid email dispatch |
-| sms-worker | Twilio SMS delivery |
-| instant-matching-worker | Instant task matching |
-| biometric-analyzer-worker | Face photo analysis |
-| trust-tier-promotion-worker | Trust tier recalculation |
-| xp-tax-reminder-worker | Tax payment reminders |
-| maintenance-worker | Cleanup and maintenance |
-| stripe-event-worker | Webhook event processing |
-| outbox-worker | Transactional outbox pattern |
-| ... | 10 more specialized workers |
+---
+
+## Test Coverage
+
+```bash
+npm test               # Run all tests (vitest)
+npm run test:coverage  # Coverage report
+npm run test:invariants # Database integrity tests (requires live DATABASE_URL)
+```
+
+| Metric | Value |
+|--------|-------|
+| Test files | 239 (+ 16 skipped invariant files) |
+| Tests passing | 5,448 |
+| Statement coverage | 89.6% |
+| Branch coverage | 77.6% |
+| Function coverage | 90.9% |
+
+---
 
 ## Scripts
 
 ```bash
 npm run dev              # Hot-reload dev server
-npm run dev:workers      # Hot-reload background workers
+npm run dev:workers      # Hot-reload workers
 npm start                # Production server
 npm run start:workers    # Production workers
 npm run build            # TypeScript type check
-npm test                 # Run all tests (vitest)
-npm run test:watch       # Watch mode
-npm run test:coverage    # Coverage report
-npm run test:invariants  # Database integrity tests
 npm run health           # curl localhost:3000/health
 ```
 
-## Test Coverage
-
-| Metric | Coverage |
-|--------|---------|
-| Statements | 89.61% |
-| Branches | 77.59% |
-| Functions | 90.88% |
-| Lines | 90.44% |
-
-**5,448 tests** across **239 test files** (vitest, 0 failures). 16 invariant files skipped (require live `DATABASE_URL`).
-
-Coverage is enforced via CI. `vitest.config.ts` excludes `server.ts` and test helpers from the report so numbers reflect business logic only.
+---
 
 ## Deployment
 
-Deployed on **Railway** via Procfile:
+Deployed on **Railway** via Procfile. Auto-deploys on push to `main`.
 
 ```
 web: npx tsx backend/src/server.ts
@@ -363,23 +391,60 @@ web: npx tsx backend/src/server.ts
 
 Production URL: `https://hustlexp-ai-backend-staging-production.up.railway.app`
 
-### Deploy Steps
+---
 
-1. Push to `main` branch (Railway auto-deploys)
-2. Railway runs `npm install` + starts Procfile
-3. Verify: `curl https://your-app.up.railway.app/health`
+## Roadmap
 
-## Architecture
+**Next 90 days (Private Beta):**
+1. Fix Stripe `application_fee_amount` enforcement — fee is calculated but not enforced at the Stripe API level
+2. Wire dispute submission — currently a UI stub on iOS, needs real backend connection
+3. AWS Rekognition integration — step-up biometric auth at task location
+4. Wire insurance contribution collection — `recordContribution()` is never called from escrow flow
+5. Branch coverage to 85% (currently 77.6%)
+6. Checkr background check unblock — account authorization pending
 
-```
-Layer 0: PostgreSQL triggers (financial invariants, audit logs)
-Layer 1: Services (68 files - business logic, state machines)
-Layer 2: tRPC Routers (38 files - typed API, Zod validation)
-Layer 3: AI Agents (Judge, Matchmaker, Dispute, Reputation)
-```
+**6–12 months:**
+- Android client
+- AI agents shift from assistive to predictive (demand forecasting, hot zone routing)
+- Subscription renewal revenue logging (currently only month 1 captured)
+- Squad commercial contract access (Poster posts $500+ commercial job → requires squad bid)
 
-All financial operations use escrow accounts with state machine transitions to ensure atomic, append-only money movement. Error responses use HustleXP error codes (HX001-HX905) for programmatic handling.
+**2-year north star:**
+HustleXP becomes a skilled-labor credentialing network. A Master Hustler with 4.95+ stars and $10k+ earned is more verifiable than a resume. The XP economy extends into insurance discounts, earned wage advance at Trusted+, and portable verified identity exportable to other gig platforms.
+
+---
+
+## What's Deferred
+
+| Feature | Status | Reason |
+|---------|--------|--------|
+| Checkr background checks | Blocked | Account authorization pending |
+| AWS Rekognition liveness | Planned | Amplify SDK not yet installed on iOS |
+| Android client | Roadmap | iOS private beta first |
+| Video proof / LiDAR | Roadmap | Judge Agent Phase 2 |
+| AI-dynamic insurance premiums | Roadmap | Risk Engine Phase 2 |
+
+---
+
+## Error Codes (HX001–HX905)
+
+All errors follow `{ code: string, message: string }` where code is a HustleXP error code:
+
+| Range | Category |
+|-------|---------|
+| HX001–006 | Auth & Authorization |
+| HX100–106 | User & Profile |
+| HX200–209 | Tasks & Discovery |
+| HX300–310 | Payments & Escrow |
+| HX400–407 | Trust & Safety |
+| HX500–505 | AI & Intelligence |
+| HX600–607 | System & Infrastructure |
+| HX700–704 | Compliance & Reporting |
+| HX800–802 | Data & Privacy |
+| HX900–905 | Live Mode & Features |
+
+---
 
 ## License
 
-Proprietary - All rights reserved.
+Proprietary — All rights reserved.
