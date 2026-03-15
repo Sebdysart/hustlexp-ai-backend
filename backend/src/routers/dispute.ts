@@ -176,6 +176,7 @@ export const disputeRouter = router({
    * Fetch all disputes for the current user (as poster or worker).
    */
   getMine: protectedProcedure
+    .input(z.void())
     .query(async ({ ctx }) => {
       const result = await DisputeService.getByUserId(ctx.user!.id);
 
