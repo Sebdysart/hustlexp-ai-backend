@@ -7,7 +7,7 @@
  */
 
 import { TRPCError } from '@trpc/server';
-import { router, protectedProcedure } from '../trpc.js';
+import { router, hustlerProcedure } from '../trpc.js';
 import { db } from '../db.js';
 import { z } from 'zod';
 
@@ -20,7 +20,7 @@ export const liveRouter = router({
    * Toggle Live Mode on/off
    * Enforces cooldown (HX904) and ban checks (HX905)
    */
-  toggle: protectedProcedure
+  toggle: hustlerProcedure
     .input(z.object({
       enabled: z.boolean(),
     }))
@@ -68,7 +68,7 @@ export const liveRouter = router({
   /**
    * Get Live Mode status
    */
-  getStatus: protectedProcedure
+  getStatus: hustlerProcedure
     .input(z.void())
     .query(async ({ ctx }) => {
       const user = ctx.user;
@@ -90,7 +90,7 @@ export const liveRouter = router({
    * Note: Currently returns all active broadcasts. Geo-bounded filtering
    * requires latitude/longitude columns on tasks table (future enhancement).
    */
-  listBroadcasts: protectedProcedure
+  listBroadcasts: hustlerProcedure
     .input(z.object({
       latitude: z.number(),
       longitude: z.number(),

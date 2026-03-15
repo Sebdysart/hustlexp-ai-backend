@@ -184,6 +184,44 @@ const isAdmin = t.middleware(async ({ ctx, next }) => {
 
 export const adminProcedure = t.procedure.use(isAdmin);
 
+// Middleware: require Hustler role (default_mode = 'worker')
+const isHustler = t.middleware(async ({ ctx, next }) => {
+  if (!ctx.user) {
+    throw new TRPCError({
+      code: 'UNAUTHORIZED',
+      message: 'Authentication required',
+    });
+  }
+  if (ctx.user.default_mode !== 'worker') {
+    throw new TRPCError({
+      code: 'FORBIDDEN',
+      message: 'Hustler access required',
+    });
+  }
+  return next({ ctx: { ...ctx, user: ctx.user } });
+});
+
+export const hustlerProcedure = t.procedure.use(isHustler);
+
+// Middleware: require Poster role (default_mode = 'poster')
+const isPoster = t.middleware(async ({ ctx, next }) => {
+  if (!ctx.user) {
+    throw new TRPCError({
+      code: 'UNAUTHORIZED',
+      message: 'Authentication required',
+    });
+  }
+  if (ctx.user.default_mode !== 'poster') {
+    throw new TRPCError({
+      code: 'FORBIDDEN',
+      message: 'Poster access required',
+    });
+  }
+  return next({ ctx: { ...ctx, user: ctx.user } });
+});
+
+export const posterProcedure = t.procedure.use(isPoster);
+
 // ============================================================================
 // INPUT SCHEMAS (Zod validation)
 // ============================================================================

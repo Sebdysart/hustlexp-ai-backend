@@ -7,7 +7,7 @@
  */
 
 import { TRPCError } from '@trpc/server';
-import { router, protectedProcedure, Schemas } from '../trpc.js';
+import { router, hustlerProcedure, Schemas } from '../trpc.js';
 import { OnboardingAIService } from '../services/OnboardingAIService.js';
 import { z } from 'zod';
 
@@ -19,7 +19,7 @@ export const aiRouter = router({
   /**
    * Submit calibration prompt for role inference
    */
-  submitCalibration: protectedProcedure
+  submitCalibration: hustlerProcedure
     .input(Schemas.submitCalibration)
     .mutation(async ({ ctx, input }) => {
       const result = await OnboardingAIService.submitCalibration({
@@ -41,7 +41,7 @@ export const aiRouter = router({
   /**
    * Get inference result
    */
-  getInferenceResult: protectedProcedure
+  getInferenceResult: hustlerProcedure
     .input(z.void())
     .query(async ({ ctx }) => {
       const result = await OnboardingAIService.getInferenceResult(ctx.user.id);
@@ -59,7 +59,7 @@ export const aiRouter = router({
   /**
    * Confirm role and complete onboarding
    */
-  confirmRole: protectedProcedure
+  confirmRole: hustlerProcedure
     .input(Schemas.confirmRole)
     .mutation(async ({ ctx, input }) => {
       const result = await OnboardingAIService.confirmRole({

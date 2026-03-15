@@ -1,0 +1,60 @@
+# HustleXP Backend — Domain Code Ownership
+#
+# Maps routers and services to domain teams for PR review routing.
+# See docs/plans/2026-03-14-domain-reorganization.md for domain definitions.
+#
+# Format: <pattern> <owner>
+# GitHub expands @org/team-name to team members.
+
+# ── Hustler Domain ───────────────────────────────────────────────────────
+backend/src/routers/taskDiscovery.ts     @Sebdysart
+backend/src/routers/instant.ts           @Sebdysart
+backend/src/routers/live.ts              @Sebdysart
+backend/src/routers/stripeConnect.ts     @Sebdysart
+backend/src/routers/xpTax.ts            @Sebdysart
+backend/src/routers/skills.ts           @Sebdysart
+backend/src/routers/referral.ts         @Sebdysart
+backend/src/routers/geofence.ts         @Sebdysart
+backend/src/routers/tracking.ts         @Sebdysart
+backend/src/routers/heatmap.ts          @Sebdysart
+backend/src/routers/insurance.ts        @Sebdysart
+backend/src/routers/challenges.ts       @Sebdysart
+backend/src/routers/capability.ts       @Sebdysart
+backend/src/routers/batching.ts         @Sebdysart
+backend/src/routers/tipping.ts          @Sebdysart
+backend/src/routers/expertiseSupply.ts  @Sebdysart
+backend/src/routers/biometric.ts        @Sebdysart
+backend/src/routers/ai.ts              @Sebdysart
+backend/src/routers/intent.ts          @Sebdysart
+
+# ── Poster Domain ────────────────────────────────────────────────────────
+backend/src/routers/recurringTask.ts    @Sebdysart
+backend/src/routers/featured.ts         @Sebdysart
+backend/src/routers/pricing.ts          @Sebdysart
+backend/src/routers/subscription.ts     @Sebdysart
+
+# ── Financial (Critical — all changes reviewed) ─────────────────────────
+backend/src/routers/escrow.ts           @Sebdysart
+backend/src/routers/stripeConnect.ts    @Sebdysart
+backend/src/services/EscrowService.ts   @Sebdysart
+backend/src/services/StripeService.ts   @Sebdysart
+backend/src/services/StripeConnectService.ts @Sebdysart
+backend/src/services/TippingService.ts  @Sebdysart
+
+# ── Shared Domain ────────────────────────────────────────────────────────
+backend/src/routers/task.ts             @Sebdysart
+backend/src/routers/squad.ts            @Sebdysart
+backend/src/routers/messaging.ts        @Sebdysart
+backend/src/routers/user.ts             @Sebdysart
+
+# ── Admin Domain ─────────────────────────────────────────────────────────
+backend/src/routers/admin.ts            @Sebdysart
+backend/src/routers/betaDashboard.ts    @Sebdysart
+backend/src/routers/incidents.ts        @Sebdysart
+
+# ── Infrastructure (Critical — architectural changes) ────────────────────
+backend/src/trpc.ts                     @Sebdysart
+backend/src/server.ts                   @Sebdysart
+backend/src/db.ts                       @Sebdysart
+backend/src/config.ts                   @Sebdysart
+backend/src/routers/index.ts            @Sebdysart

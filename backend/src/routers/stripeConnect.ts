@@ -15,7 +15,7 @@
  */
 
 import { TRPCError } from '@trpc/server';
-import { router, protectedProcedure } from '../trpc.js';
+import { router, hustlerProcedure } from '../trpc.js';
 import { StripeConnectService } from '../services/StripeConnectService.js';
 import { TaxReportingService } from '../services/TaxReportingService.js';
 import { z } from 'zod';
@@ -69,7 +69,7 @@ export const stripeConnectRouter = router({
    * Get onboarding status for current worker
    * Returns whether worker has completed Stripe Connect onboarding
    */
-  getOnboardingStatus: protectedProcedure
+  getOnboardingStatus: hustlerProcedure
     .input(z.void())
     .query(async ({ ctx }) => {
       const result = await StripeConnectService.getOnboardingStatus(ctx.user.id);
@@ -88,7 +88,7 @@ export const stripeConnectRouter = router({
    * Create onboarding link for worker to complete KYC
    * Generates a Stripe Connect onboarding URL
    */
-  createOnboardingLink: protectedProcedure
+  createOnboardingLink: hustlerProcedure
     .input(z.object({
       refreshUrl: z.string().url().max(2048),
       returnUrl: z.string().url().max(2048),
@@ -118,7 +118,7 @@ export const stripeConnectRouter = router({
    * Get dashboard link to worker's Stripe Express dashboard
    * Generates a one-time login link to Stripe Express
    */
-  getDashboardLink: protectedProcedure
+  getDashboardLink: hustlerProcedure
     .input(z.void())
     .query(async ({ ctx }) => {
       const result = await StripeConnectService.getDashboardLink(ctx.user.id);
@@ -149,7 +149,7 @@ export const stripeConnectRouter = router({
    * Get current payout settings
    * Returns instant vs standard payout preference and eligibility
    */
-  getPayoutSettings: protectedProcedure
+  getPayoutSettings: hustlerProcedure
     .input(z.void())
     .query(async ({ ctx }) => {
       const result = await StripeConnectService.getPayoutSettings(ctx.user.id);
@@ -175,7 +175,7 @@ export const stripeConnectRouter = router({
    * Update payout preferences
    * Switch between instant and standard payout schedules
    */
-  updatePayoutSettings: protectedProcedure
+  updatePayoutSettings: hustlerProcedure
     .input(z.object({
       schedule: PayoutScheduleSchema,
       // Instant payout settings
@@ -230,7 +230,7 @@ export const stripeConnectRouter = router({
    * Get tax information status
    * Returns W-9/W-8BEN submission status and any requirements
    */
-  getTaxInfo: protectedProcedure
+  getTaxInfo: hustlerProcedure
     .input(z.void())
     .query(async ({ ctx }) => {
       const result = await StripeConnectService.getTaxInfo(ctx.user.id);
@@ -256,7 +256,7 @@ export const stripeConnectRouter = router({
    * Submit tax information (W-9 or W-8BEN)
    * Required for 1099 reporting threshold tracking
    */
-  submitTaxInfo: protectedProcedure
+  submitTaxInfo: hustlerProcedure
     .input(TaxInfoInputSchema)
     .mutation(async ({ ctx, input }) => {
       const result = await StripeConnectService.submitTaxInfo({
@@ -296,7 +296,7 @@ export const stripeConnectRouter = router({
    * Get earnings summary for 1099 threshold tracking
    * Returns current year earnings and 1099-K threshold status
    */
-  getEarningsSummary: protectedProcedure
+  getEarningsSummary: hustlerProcedure
     .input(z.object({
       year: z.number().int().min(2020).max(2100).optional(),
     }).optional())
@@ -331,7 +331,7 @@ export const stripeConnectRouter = router({
    * Get 1099-NEC filing status for current user
    * Returns tax filing records for the given year (defaults to current year)
    */
-  get1099Status: protectedProcedure
+  get1099Status: hustlerProcedure
     .input(z.object({
       taxYear: z.number().int().min(2020).max(2100).optional(),
     }).optional())
@@ -359,7 +359,7 @@ export const stripeConnectRouter = router({
    * Get Stripe Connect account details
    * Returns account status, capabilities, and requirements
    */
-  getAccountDetails: protectedProcedure
+  getAccountDetails: hustlerProcedure
     .input(z.void())
     .query(async ({ ctx }) => {
       const result = await StripeConnectService.getAccountDetails(ctx.user.id);
@@ -385,7 +385,7 @@ export const stripeConnectRouter = router({
    * Refresh onboarding link if expired
    * Generates a new onboarding link for users who need to complete requirements
    */
-  refreshOnboarding: protectedProcedure
+  refreshOnboarding: hustlerProcedure
     .input(z.object({
       refreshUrl: z.string().url().max(2048),
       returnUrl: z.string().url().max(2048),

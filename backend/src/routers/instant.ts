@@ -6,7 +6,7 @@
  * Not production-ready UI.
  */
 
-import { router, protectedProcedure } from '../trpc.js';
+import { router, hustlerProcedure } from '../trpc.js';
 import { TaskService } from '../services/TaskService.js';
 import { db } from '../db.js';
 import { z } from 'zod';
@@ -18,7 +18,7 @@ export const instantRouter = router({
    * v0: Simple list, no filtering
    * Uses mode='LIVE' + state='OPEN' as proxy for instant tasks
    */
-  listAvailable: protectedProcedure
+  listAvailable: hustlerProcedure
     .input(z.object({
       limit: z.number().int().min(1).max(50).default(20),
     }).optional())
@@ -57,7 +57,7 @@ export const instantRouter = router({
    * Accept instant task (one-tap)
    * v0: Direct accept, no validation beyond DB
    */
-  accept: protectedProcedure
+  accept: hustlerProcedure
     .input(z.object({ taskId: z.string().uuid() }))
     .mutation(async ({ ctx, input }) => {
       const result = await TaskService.accept({
@@ -92,7 +92,7 @@ export const instantRouter = router({
    * Dismiss instant task notification
    * Notification Urgency Design v1: Track dismissals for metrics
    */
-  dismiss: protectedProcedure
+  dismiss: hustlerProcedure
     .input(z.object({ taskId: z.string().uuid() }))
     .mutation(async ({ ctx, input }) => {
       // Mark notification as dismissed (read) for this user
@@ -126,7 +126,7 @@ export const instantRouter = router({
    * Get instant task metrics (for testing)
    * Notification Urgency Design v1: Includes notification-to-accept latency
    */
-  metrics: protectedProcedure.input(z.void()).query(async () => {
+  metrics: hustlerProcedure.input(z.void()).query(async () => {
     // Time-to-accept (created_at → accepted_at for LIVE mode tasks)
     const timeToAcceptResult = await db.query<{
       created_at: Date;

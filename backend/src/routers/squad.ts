@@ -16,7 +16,7 @@
 
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
-import { router, protectedProcedure, Schemas } from '../trpc.js';
+import { router, protectedProcedure, hustlerProcedure, posterProcedure, Schemas } from '../trpc.js';
 import { db } from '../db.js';
 
 // Trust tier gate: Only Elite (tier 4) can create/join squads
@@ -93,7 +93,7 @@ export const squadRouter = router({
   // CREATE SQUAD
   // --------------------------------------------------------------------------
 
-  create: protectedProcedure
+  create: posterProcedure
     .input(z.object({
       name: z.string().min(2).max(100),
       emoji: z.string().max(10).default('⚡️'),
@@ -272,7 +272,7 @@ export const squadRouter = router({
   // INVITE MEMBER
   // --------------------------------------------------------------------------
 
-  invite: protectedProcedure
+  invite: posterProcedure
     .input(z.object({
       squadId: Schemas.uuid,
       inviteeId: Schemas.uuid,
@@ -335,7 +335,7 @@ export const squadRouter = router({
   // RESPOND TO INVITE
   // --------------------------------------------------------------------------
 
-  respondToInvite: protectedProcedure
+  respondToInvite: hustlerProcedure
     .input(z.object({
       inviteId: Schemas.uuid,
       accept: z.boolean(),
@@ -381,7 +381,7 @@ export const squadRouter = router({
   // LIST PENDING INVITES
   // --------------------------------------------------------------------------
 
-  listInvites: protectedProcedure
+  listInvites: hustlerProcedure
     .input(z.object({
       limit: z.number().int().min(1).max(100).default(50).optional(),
       offset: z.number().int().min(0).default(0).optional(),
@@ -419,7 +419,7 @@ export const squadRouter = router({
   // LEAVE SQUAD
   // --------------------------------------------------------------------------
 
-  leave: protectedProcedure
+  leave: hustlerProcedure
     .input(z.object({ squadId: Schemas.uuid }))
     .mutation(async ({ ctx, input }) => {
       // Can't leave if you're the organizer (must disband)
@@ -451,7 +451,7 @@ export const squadRouter = router({
   // DISBAND SQUAD (organizer only)
   // --------------------------------------------------------------------------
 
-  disband: protectedProcedure
+  disband: posterProcedure
     .input(z.object({ squadId: Schemas.uuid }))
     .mutation(async ({ ctx, input }) => {
       const orgCheck = await db.query(
@@ -475,7 +475,7 @@ export const squadRouter = router({
   // CREATE TEAM TASK (organizer posts a task for the squad)
   // --------------------------------------------------------------------------
 
-  createTeamTask: protectedProcedure
+  createTeamTask: posterProcedure
     .input(z.object({
       squadId: Schemas.uuid,
       title: z.string().min(3).max(255),
@@ -682,7 +682,7 @@ export const squadRouter = router({
   // START TEAM TASK (organizer moves ready → in_progress)
   // --------------------------------------------------------------------------
 
-  startTeamTask: protectedProcedure
+  startTeamTask: posterProcedure
     .input(z.object({ squadTaskId: Schemas.uuid }))
     .mutation(async ({ ctx, input }) => {
       const organizer = await db.query(
@@ -714,7 +714,7 @@ export const squadRouter = router({
   // WITHDRAW FROM TEAM TASK (worker removes themselves before start)
   // --------------------------------------------------------------------------
 
-  withdrawFromTeamTask: protectedProcedure
+  withdrawFromTeamTask: hustlerProcedure
     .input(z.object({ squadTaskId: Schemas.uuid }))
     .mutation(async ({ ctx, input }) => {
       const assignment = await db.query<{ id: string; status: string; required_workers: number }>(
@@ -758,7 +758,7 @@ export const squadRouter = router({
   // ACCEPT SQUAD TASK
   // --------------------------------------------------------------------------
 
-  acceptTask: protectedProcedure
+  acceptTask: hustlerProcedure
     .input(z.object({ squadTaskId: Schemas.uuid }))
     .mutation(async ({ ctx, input }) => {
       return await db.transaction(async (query) => {

@@ -8,7 +8,7 @@
 
 import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
-import { router, protectedProcedure } from '../trpc.js';
+import { router, posterProcedure } from '../trpc.js';
 import { db } from '../db.js';
 import Stripe from 'stripe';
 import { config } from '../config.js';
@@ -25,7 +25,7 @@ export const featuredRouter = router({
    * Promote a task: creates a Stripe PaymentIntent and inserts
    * the listing with active = FALSE until payment is confirmed.
    */
-  promoteTask: protectedProcedure
+  promoteTask: posterProcedure
     .input(z.object({
       taskId: z.string().uuid(),
       featureType: z.enum(['promoted', 'highlighted', 'urgent_boost']),
@@ -101,7 +101,7 @@ export const featuredRouter = router({
    * Confirm promotion: verifies the PaymentIntent succeeded,
    * then activates the featured listing and logs revenue.
    */
-  confirmPromotion: protectedProcedure
+  confirmPromotion: posterProcedure
     .input(z.object({
       listingId: z.string().uuid(),
       stripePaymentIntentId: z.string(),
@@ -167,7 +167,7 @@ export const featuredRouter = router({
       };
     }),
 
-  getFeaturedTasks: protectedProcedure
+  getFeaturedTasks: posterProcedure
     .input(z.void())
     .query(async () => {
       const result = await db.query(

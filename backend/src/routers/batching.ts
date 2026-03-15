@@ -7,7 +7,7 @@
  */
 
 import { z } from 'zod';
-import { router, protectedProcedure } from '../trpc.js';
+import { router, hustlerProcedure } from '../trpc.js';
 import { TaskBatchingService } from '../services/TaskBatchingService.js';
 
 const TaskSchema = z.object({
@@ -24,7 +24,7 @@ export const batchingRouter = router({
   /**
    * Generate batch recommendation for available tasks
    */
-  generateRecommendation: protectedProcedure
+  generateRecommendation: hustlerProcedure
     .input(z.object({
       availableTasks: z.array(TaskSchema),
       currentLocation: z.object({
@@ -49,7 +49,7 @@ export const batchingRouter = router({
   /**
    * Calculate savings for a specific set of tasks
    */
-  calculateSavings: protectedProcedure
+  calculateSavings: hustlerProcedure
     .input(z.object({
       tasks: z.array(TaskSchema),
     }))

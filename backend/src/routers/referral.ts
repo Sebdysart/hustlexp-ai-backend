@@ -5,7 +5,7 @@
 
 import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
-import { router, protectedProcedure } from '../trpc.js';
+import { router, hustlerProcedure } from '../trpc.js';
 import { db } from '../db.js';
 
 // Generate a random referral code
@@ -19,7 +19,7 @@ function generateReferralCode(): string {
 }
 
 export const referralRouter = router({
-  getOrCreateCode: protectedProcedure
+  getOrCreateCode: hustlerProcedure
     .input(z.void())
     .mutation(async ({ ctx }) => {
       const userId = ctx.user.id;
@@ -68,7 +68,7 @@ export const referralRouter = router({
       return { code, usesCount: 0, totalEarnedCents: 0 };
     }),
 
-  redeemCode: protectedProcedure
+  redeemCode: hustlerProcedure
     .input(z.object({ code: z.string().min(2).max(20) }))
     .mutation(async ({ ctx, input }) => {
       const referredId = ctx.user.id;
@@ -115,7 +115,7 @@ export const referralRouter = router({
       return { success: true, message: 'Referral code applied! Complete your first task to earn $5.' };
     }),
 
-  getReferralStats: protectedProcedure
+  getReferralStats: hustlerProcedure
     .input(z.void())
     .query(async ({ ctx }) => {
       const userId = ctx.user.id;

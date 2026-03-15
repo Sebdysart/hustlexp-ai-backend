@@ -10,7 +10,7 @@
  */
 
 import { TRPCError } from '@trpc/server';
-import { router, protectedProcedure, Schemas } from '../trpc.js';
+import { router, protectedProcedure, hustlerProcedure, posterProcedure, Schemas } from '../trpc.js';
 import { EscrowService } from '../services/EscrowService.js';
 import { StripeService } from '../services/StripeService.js';
 import { XPService } from '../services/XPService.js';
@@ -99,7 +99,7 @@ export const escrowRouter = router({
    * Create payment intent for escrow funding
    * Amount is optional — if omitted, derived from task price
    */
-  createPaymentIntent: protectedProcedure
+  createPaymentIntent: posterProcedure
     .input(z.object({
       taskId: Schemas.uuid,
       amount: z.number().int().positive().max(99999900).optional(), // max $999,999
@@ -143,7 +143,7 @@ export const escrowRouter = router({
    * Confirm escrow funding (after Stripe payment succeeds)
    * SECURITY: Only the poster who created the escrow can confirm funding
    */
-  confirmFunding: protectedProcedure
+  confirmFunding: posterProcedure
     .input(Schemas.fundEscrow)
     .mutation(async ({ ctx, input }) => {
       // Authorization: verify caller is the poster
@@ -175,7 +175,7 @@ export const escrowRouter = router({
    * INV-2: Will fail if task is not COMPLETED
    * SECURITY: Only the poster who created the escrow can release funds
    */
-  release: protectedProcedure
+  release: posterProcedure
     .input(Schemas.releaseEscrow)
     .mutation(async ({ ctx, input }) => {
       // Authorization: only poster can release escrow
@@ -207,7 +207,7 @@ export const escrowRouter = router({
    * Refund escrow to poster
    * SECURITY: Only the poster who created the escrow can request a refund
    */
-  refund: protectedProcedure
+  refund: posterProcedure
     .input(z.object({ escrowId: Schemas.uuid }))
     .mutation(async ({ ctx, input }) => {
       // Authorization: only poster can request refund
@@ -281,7 +281,7 @@ export const escrowRouter = router({
    * INV-1: Will fail if escrow is not RELEASED
    * INV-5: Will fail if XP already awarded for this escrow
    */
-  awardXP: protectedProcedure
+  awardXP: hustlerProcedure
     .input(Schemas.awardXP)
     .mutation(async ({ ctx, input }) => {
       const result = await XPService.awardXP({

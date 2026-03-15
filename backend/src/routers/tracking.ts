@@ -7,7 +7,7 @@
  */
 
 import { z } from 'zod';
-import { router, protectedProcedure } from '../trpc.js';
+import { router, hustlerProcedure } from '../trpc.js';
 import { MovementTrackingService } from '../services/MovementTrackingService.js';
 
 const GPSPointSchema = z.object({
@@ -21,7 +21,7 @@ export const trackingRouter = router({
   /**
    * Start movement tracking session
    */
-  startSession: protectedProcedure
+  startSession: hustlerProcedure
     .input(z.object({
       taskId: z.string(),
       initialLocation: GPSPointSchema,
@@ -43,7 +43,7 @@ export const trackingRouter = router({
   /**
    * Update location during tracking
    */
-  updateLocation: protectedProcedure
+  updateLocation: hustlerProcedure
     .input(z.object({
       sessionId: z.string(),
       location: GPSPointSchema,
@@ -64,7 +64,7 @@ export const trackingRouter = router({
   /**
    * Stop tracking session
    */
-  stopSession: protectedProcedure
+  stopSession: hustlerProcedure
     .input(z.object({
       sessionId: z.string(),
     }))
@@ -81,7 +81,7 @@ export const trackingRouter = router({
   /**
    * Get session statistics
    */
-  getStats: protectedProcedure
+  getStats: hustlerProcedure
     .input(z.object({
       sessionId: z.string(),
     }))

@@ -12,7 +12,7 @@
 
 import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
-import { router, protectedProcedure } from '../trpc.js';
+import { router, posterProcedure } from '../trpc.js';
 import { db } from '../db.js';
 import Stripe from 'stripe';
 import { config } from '../config.js';
@@ -39,7 +39,7 @@ export const subscriptionRouter = router({
   /**
    * Get current subscription status including recurring task usage.
    */
-  getMySubscription: protectedProcedure
+  getMySubscription: posterProcedure
     .input(z.void())
     .query(async ({ ctx }) => {
       const userId = ctx.user.id;
@@ -87,7 +87,7 @@ export const subscriptionRouter = router({
    * Subscribe to a plan. Creates a Stripe Subscription and updates
    * the user's plan. Returns clientSecret for first payment.
    */
-  subscribe: protectedProcedure
+  subscribe: posterProcedure
     .input(z.object({
       plan: z.enum(['premium', 'pro']),
       interval: z.enum(['month', 'year']),
@@ -206,7 +206,7 @@ export const subscriptionRouter = router({
   /**
    * Cancel subscription: cancels in Stripe and downgrades to free plan.
    */
-  cancel: protectedProcedure
+  cancel: posterProcedure
     .input(z.void())
     .mutation(async ({ ctx }) => {
       const userId = ctx.user.id;
@@ -275,7 +275,7 @@ export const subscriptionRouter = router({
    * Confirm subscription: verifies the Stripe subscription is active
    * and updates user plan + expiration date.
    */
-  confirmSubscription: protectedProcedure
+  confirmSubscription: posterProcedure
     .input(z.object({ stripeSubscriptionId: z.string() }))
     .mutation(async ({ ctx, input }) => {
       const userId = ctx.user.id;

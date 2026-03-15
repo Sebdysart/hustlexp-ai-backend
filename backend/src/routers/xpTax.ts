@@ -11,7 +11,7 @@
  */
 
 import { TRPCError } from '@trpc/server';
-import { router, protectedProcedure } from '../trpc.js';
+import { router, hustlerProcedure } from '../trpc.js';
 import { XPTaxService } from '../services/XPTaxService.js';
 import { StripeService } from '../services/StripeService.js';
 import { z } from 'zod';
@@ -27,7 +27,7 @@ export const xpTaxRouter = router({
   /**
    * Get current tax status (unpaid balance, XP held back)
    */
-  getTaxStatus: protectedProcedure.input(z.void()).query(async ({ ctx }) => {
+  getTaxStatus: hustlerProcedure.input(z.void()).query(async ({ ctx }) => {
     const result = await XPTaxService.checkTaxStatus(ctx.user.id);
 
     if (!result.success) {
@@ -43,7 +43,7 @@ export const xpTaxRouter = router({
   /**
    * Get tax payment history
    */
-  getTaxHistory: protectedProcedure
+  getTaxHistory: hustlerProcedure
     .input(
       z
         .object({
@@ -72,7 +72,7 @@ export const xpTaxRouter = router({
    * Create a Stripe PaymentIntent for tax payment
    * Frontend calls this before payTax to get a clientSecret
    */
-  createPaymentIntent: protectedProcedure
+  createPaymentIntent: hustlerProcedure
     .input(z.void())
     .mutation(async ({ ctx }) => {
       const status = await XPTaxService.checkTaxStatus(ctx.user.id);
@@ -110,7 +110,7 @@ export const xpTaxRouter = router({
    * Releases held XP after payment confirmed
    * Accepts both paymentIntentId and stripe_payment_intent_id for frontend compat
    */
-  payTax: protectedProcedure
+  payTax: hustlerProcedure
     .input(
       z.object({
         stripe_payment_intent_id: z.string().min(1).optional(),

@@ -10,7 +10,7 @@
  *   tasks in read-only mode, regardless of trust tier. Each task includes a
  *   `canAccept` flag and `requiredTrustTier` so the frontend can show
  *   "Verify to Accept" CTAs. This solves the marketplace cold-start problem.
- * - `getFeed` (protectedProcedure): Personalized feed with matching scores.
+ * - `getFeed` (hustlerProcedure): Personalized feed with matching scores.
  *   Now includes `canAccept` based on user trust tier vs task requirements.
  *
  * @see backend/src/services/TaskDiscoveryService.ts
@@ -18,7 +18,7 @@
 
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
-import { router, protectedProcedure, publicProcedure, Schemas } from '../trpc.js';
+import { router, hustlerProcedure, publicProcedure, Schemas } from '../trpc.js';
 import { TaskDiscoveryService } from '../services/TaskDiscoveryService.js';
 import { TaskSuggestionAIService } from '../services/TaskSuggestionAIService.js';
 
@@ -120,7 +120,7 @@ export const taskDiscoveryRouter = router({
    * PRODUCT_SPEC §9: Task Discovery & Matching Algorithm
    * Now includes progressive verification: canAccept flag per task.
    */
-  getFeed: protectedProcedure
+  getFeed: hustlerProcedure
     .input(z.object({
       limit: z.number().int().min(1).max(100).default(20),
       offset: z.number().int().min(0).default(0),
@@ -187,7 +187,7 @@ export const taskDiscoveryRouter = router({
    * 
    * Call this periodically to pre-calculate scores for better feed performance
    */
-  calculateFeedScores: protectedProcedure
+  calculateFeedScores: hustlerProcedure
     .input(z.object({
       maxDistanceMiles: z.number().positive().default(10.0),
     }))
@@ -217,7 +217,7 @@ export const taskDiscoveryRouter = router({
   /**
    * Calculate matching score for a specific task
    */
-  calculateMatchingScore: protectedProcedure
+  calculateMatchingScore: hustlerProcedure
     .input(z.object({
       taskId: Schemas.uuid,
     }))
@@ -249,7 +249,7 @@ export const taskDiscoveryRouter = router({
    * 
    * PRODUCT_SPEC §9.4: Explains why a task matches the hustler
    */
-  getExplanation: protectedProcedure
+  getExplanation: hustlerProcedure
     .input(z.object({
       taskId: Schemas.uuid,
     }))
@@ -286,7 +286,7 @@ export const taskDiscoveryRouter = router({
    * Get AI-powered task suggestions for the current worker.
    * Returns top N open tasks with a short AI-generated reason per task (why it fits the worker).
    */
-  getAISuggestions: protectedProcedure
+  getAISuggestions: hustlerProcedure
     .input(z.object({
       limit: z.number().int().min(1).max(20).default(10),
       max_distance_miles: z.number().positive().optional(),
@@ -321,7 +321,7 @@ export const taskDiscoveryRouter = router({
   /**
    * Search tasks by query (full-text search)
    */
-  search: protectedProcedure
+  search: hustlerProcedure
     .input(z.object({
       query: z.string().min(1).max(200).optional(),
       limit: z.number().int().min(1).max(100).default(20),
@@ -382,7 +382,7 @@ export const taskDiscoveryRouter = router({
   /**
    * Save a search query for quick access
    */
-  saveSearch: protectedProcedure
+  saveSearch: hustlerProcedure
     .input(z.object({
       name: z.string().min(1).max(100),
       query: z.string().max(200).optional(),
@@ -418,7 +418,7 @@ export const taskDiscoveryRouter = router({
   /**
    * Get all saved searches for the authenticated user
    */
-  getSavedSearches: protectedProcedure
+  getSavedSearches: hustlerProcedure
     .input(z.void())
     .query(async ({ ctx }) => {
       if (!ctx.user) {
@@ -443,7 +443,7 @@ export const taskDiscoveryRouter = router({
   /**
    * Delete a saved search
    */
-  deleteSavedSearch: protectedProcedure
+  deleteSavedSearch: hustlerProcedure
     .input(z.object({
       searchId: Schemas.uuid,
     }))
@@ -473,7 +473,7 @@ export const taskDiscoveryRouter = router({
   /**
    * Execute a saved search (run search with saved filters)
    */
-  executeSavedSearch: protectedProcedure
+  executeSavedSearch: hustlerProcedure
     .input(z.object({
       searchId: Schemas.uuid,
       limit: z.number().int().min(1).max(100).default(20),

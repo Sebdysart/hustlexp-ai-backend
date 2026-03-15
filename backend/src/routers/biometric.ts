@@ -11,7 +11,7 @@
  */
 
 import { TRPCError } from '@trpc/server';
-import { router, protectedProcedure, Schemas } from '../trpc.js';
+import { router, hustlerProcedure, Schemas } from '../trpc.js';
 import { db } from '../db.js';
 import { BiometricVerificationService } from '../services/BiometricVerificationService.js';
 import { LogisticsAIService } from '../services/LogisticsAIService.js';
@@ -36,7 +36,7 @@ export const biometricRouter = router({
    * Submit biometric proof for validation
    * Runs liveness, deepfake, GPS, and time-lock checks
    */
-  submitBiometricProof: protectedProcedure
+  submitBiometricProof: hustlerProcedure
     .input(
       z.object({
         proof_id: Schemas.uuid,
@@ -202,7 +202,7 @@ export const biometricRouter = router({
    * Analyze face photo only (no GPS validation)
    * Used for profile photo verification
    */
-  analyzeFacePhoto: protectedProcedure
+  analyzeFacePhoto: hustlerProcedure
     .input(
       z.object({
         photo_url: safeUrlSchema
@@ -240,7 +240,7 @@ export const biometricRouter = router({
    * Returns sessionId for the iOS FaceLivenessDetector (AWS Amplify SDK).
    * Client calls this first, runs the liveness challenge, then calls getLivenessResult.
    */
-  createLivenessSession: protectedProcedure
+  createLivenessSession: hustlerProcedure
     .input(z.void())
     .mutation(async () => {
       const result = await BiometricVerificationService.createLivenessSession();
@@ -261,7 +261,7 @@ export const biometricRouter = router({
    * Called after the iOS client finishes the FaceLivenessDetector challenge.
    * Returns confidence score (0-100).
    */
-  getLivenessResult: protectedProcedure
+  getLivenessResult: hustlerProcedure
     .input(z.object({
       sessionId: z.string().min(1),
     }))

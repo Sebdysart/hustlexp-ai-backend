@@ -7,7 +7,7 @@
  */
 
 import { TRPCError } from '@trpc/server';
-import { router, publicProcedure, protectedProcedure, Schemas } from '../trpc.js';
+import { router, publicProcedure, protectedProcedure, hustlerProcedure, Schemas } from '../trpc.js';
 import { db } from '../db.js';
 import { XPService } from '../services/XPService.js';
 import { EarnedVerificationUnlockService } from '../services/EarnedVerificationUnlockService.js';
@@ -422,7 +422,7 @@ export const userRouter = router({
    * Get verification unlock status and progress
    * Shows earnings toward $40 threshold
    */
-  getVerificationUnlockStatus: protectedProcedure.input(z.void()).query(async ({ ctx }) => {
+  getVerificationUnlockStatus: hustlerProcedure.input(z.void()).query(async ({ ctx }) => {
     const result = await EarnedVerificationUnlockService.getUnlockProgress(ctx.user.id);
 
     if (!result.success) {
@@ -438,7 +438,7 @@ export const userRouter = router({
   /**
    * Check if user has unlocked verification (boolean)
    */
-  checkVerificationEligibility: protectedProcedure.input(z.void()).query(async ({ ctx }) => {
+  checkVerificationEligibility: hustlerProcedure.input(z.void()).query(async ({ ctx }) => {
     const result = await EarnedVerificationUnlockService.checkUnlockEligibility(ctx.user.id);
 
     if (!result.success) {
@@ -454,7 +454,7 @@ export const userRouter = router({
   /**
    * Get earnings ledger (audit trail)
    */
-  getVerificationEarningsLedger: protectedProcedure
+  getVerificationEarningsLedger: hustlerProcedure
     .input(
       z
         .object({

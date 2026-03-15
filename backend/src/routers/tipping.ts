@@ -4,12 +4,12 @@
 
 import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
-import { router, protectedProcedure } from '../trpc.js';
+import { router, hustlerProcedure } from '../trpc.js';
 import { TippingService } from '../services/TippingService.js';
 import { db } from '../db.js';
 
 export const tippingRouter = router({
-  createTip: protectedProcedure
+  createTip: hustlerProcedure
     .input(z.object({
       taskId: z.string().uuid(),
       amountCents: z.number().min(100).max(50000),
@@ -29,7 +29,7 @@ export const tippingRouter = router({
       return result.data;
     }),
 
-  confirmTip: protectedProcedure
+  confirmTip: hustlerProcedure
     .input(z.object({
       tipId: z.string().uuid(),
       stripePaymentIntentId: z.string(),
@@ -57,7 +57,7 @@ export const tippingRouter = router({
       return result.data;
     }),
 
-  getTipsForTask: protectedProcedure
+  getTipsForTask: hustlerProcedure
     .input(z.object({ taskId: z.string().uuid() }))
     .query(async ({ ctx: _ctx, input }) => {
       const result = await TippingService.getTipsForTask(input.taskId);
@@ -70,7 +70,7 @@ export const tippingRouter = router({
       return result.data;
     }),
 
-  getMyTipsReceived: protectedProcedure
+  getMyTipsReceived: hustlerProcedure
     .input(z.void())
     .query(async ({ ctx }) => {
       const result = await TippingService.getTotalTipsReceived(ctx.user.id);
@@ -84,7 +84,7 @@ export const tippingRouter = router({
     }),
 
   /** Tips the current user has sent (as poster) */
-  getMyTipsSent: protectedProcedure
+  getMyTipsSent: hustlerProcedure
     .input(z.object({
       limit: z.number().int().min(1).max(100).default(50),
       offset: z.number().int().min(0).default(0),

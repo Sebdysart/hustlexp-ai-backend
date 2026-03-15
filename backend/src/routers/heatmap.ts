@@ -5,11 +5,11 @@
  */
 
 import { z } from 'zod';
-import { router, protectedProcedure } from '../trpc.js';
+import { router, hustlerProcedure } from '../trpc.js';
 import { HeatMapService } from '../services/HeatMapService.js';
 
 export const heatmapRouter = router({
-  getHeatMap: protectedProcedure
+  getHeatMap: hustlerProcedure
     .input(z.object({
       centerLat: z.number().min(-90).max(90),
       centerLng: z.number().min(-180).max(180),
@@ -20,7 +20,7 @@ export const heatmapRouter = router({
       return HeatMapService.getHeatMap(input);
     }),
 
-  getDemandAlerts: protectedProcedure
+  getDemandAlerts: hustlerProcedure
     .input(z.object({
       lat: z.number().min(-90).max(90),
       lng: z.number().min(-180).max(180),

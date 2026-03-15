@@ -26,7 +26,7 @@ vi.mock('../../src/logger', () => ({
 }));
 
 // ─── Imports ─────────────────────────────────────────────────────────────────
-import { createContext, Schemas, router, publicProcedure, protectedProcedure } from '../../src/trpc';
+import { createContext, Schemas, router, publicProcedure, protectedProcedure, hustlerProcedure, posterProcedure } from '../../src/trpc';
 import { firebaseAuth } from '../../src/auth/firebase';
 import { db } from '../../src/db';
 
@@ -421,5 +421,87 @@ describe('tRPC exports', () => {
 
   it('protectedProcedure has mutation method', () => {
     expect(typeof protectedProcedure.mutation).toBe('function');
+  });
+
+  it('hustlerProcedure has query method', () => {
+    expect(typeof hustlerProcedure.query).toBe('function');
+  });
+
+  it('posterProcedure has query method', () => {
+    expect(typeof posterProcedure.query).toBe('function');
+  });
+});
+
+// ============================================================================
+// Role-based procedures (hustlerProcedure / posterProcedure)
+// ============================================================================
+
+describe('hustlerProcedure', () => {
+  const testRouter = router({
+    hustlerOnly: hustlerProcedure.query(() => 'hustler-ok'),
+  });
+
+  it('allows user with default_mode = worker', async () => {
+    const caller = testRouter.createCaller({
+      user: { ...mockUser, default_mode: 'worker' } as any,
+      firebaseUid: 'uid-1',
+    });
+    const result = await caller.hustlerOnly();
+    expect(result).toBe('hustler-ok');
+  });
+
+  it('rejects user with default_mode = poster with FORBIDDEN', async () => {
+    const caller = testRouter.createCaller({
+      user: { ...mockUser, default_mode: 'poster' } as any,
+      firebaseUid: 'uid-1',
+    });
+    await expect(caller.hustlerOnly()).rejects.toThrow(
+      expect.objectContaining({ code: 'FORBIDDEN', message: 'Hustler access required' })
+    );
+  });
+
+  it('rejects null user with UNAUTHORIZED', async () => {
+    const caller = testRouter.createCaller({
+      user: null,
+      firebaseUid: null,
+    });
+    await expect(caller.hustlerOnly()).rejects.toThrow(
+      expect.objectContaining({ code: 'UNAUTHORIZED', message: 'Authentication required' })
+    );
+  });
+});
+
+describe('posterProcedure', () => {
+  const testRouter = router({
+    posterOnly: posterProcedure.query(() => 'poster-ok'),
+  });
+
+  it('allows user with default_mode = poster', async () => {
+    const caller = testRouter.createCaller({
+      user: { ...mockUser, default_mode: 'poster' } as any,
+      firebaseUid: 'uid-1',
+    });
+    const result = await caller.posterOnly();
+    expect(result).toBe('poster-ok');
+  });
+
+  it('rejects user with default_mode = worker with FORBIDDEN', async () => {
+    const caller = testRouter.createCaller({
+      user: { ...mockUser, default_mode: 'worker' } as any,
+      firebaseUid: 'uid-1',
+    });
+    await expect(caller.posterOnly()).rejects.toThrow(
+      expect.objectContaining({ code: 'FORBIDDEN', message: 'Poster access required' })
+    );
+  });
+
+  it('rejects null user with UNAUTHORIZED', async () => {
+    const caller = testRouter.createCaller({
+      user: null,
+      firebaseUid: null,
+    });
+    await expect(caller.posterOnly()).rejects.toThrow(
+      expect.objectContaining({ code: 'UNAUTHORIZED', message: 'Authentication required' })
+    );
   });
 });

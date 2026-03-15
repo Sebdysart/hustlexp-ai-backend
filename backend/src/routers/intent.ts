@@ -9,14 +9,14 @@
  */
 
 import { z } from 'zod';
-import { router, protectedProcedure } from '../trpc.js';
+import { router, hustlerProcedure } from '../trpc.js';
 import { IntentParserService } from '../services/IntentParserService.js';
 
 export const intentRouter = router({
   /**
    * Analyze natural language description
    */
-  analyze: protectedProcedure
+  analyze: hustlerProcedure
     .input(z.object({
       description: z.string().min(10),
     }))
@@ -33,7 +33,7 @@ export const intentRouter = router({
   /**
    * Validate intent against actual changes
    */
-  validateChanges: protectedProcedure
+  validateChanges: hustlerProcedure
     .input(z.object({
       description: z.string(),
       changedFiles: z.array(z.string()),

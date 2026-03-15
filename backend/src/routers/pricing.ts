@@ -7,13 +7,13 @@
 
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
-import { router, protectedProcedure } from '../trpc.js';
+import { router, posterProcedure } from '../trpc.js';
 import { DynamicPricingService } from '../services/DynamicPricingService.js';
 import { SmartPricingService } from '../services/SmartPricingService.js';
 
 export const pricingRouter = router({
   // Calculate dynamic price for a task (from existing base price)
-  calculate: protectedProcedure
+  calculate: posterProcedure
     .input(z.object({
       basePriceCents: z.number().int().positive(),
       mode: z.enum(['STANDARD', 'LIVE']),
@@ -30,7 +30,7 @@ export const pricingRouter = router({
    * Smart pricing: AI/heuristic base suggestion + surge + ASAP + worker modifier.
    * Use when creating a task to get a recommended price from title, description, category, and location.
    */
-  getSmartPrice: protectedProcedure
+  getSmartPrice: posterProcedure
     .input(z.object({
       title: z.string().min(1).max(500),
       description: z.string().max(5000).optional(),
@@ -64,7 +64,7 @@ export const pricingRouter = router({
     }),
 
   // Update worker's price modifier (IC Compliance)
-  updateMyModifier: protectedProcedure
+  updateMyModifier: posterProcedure
     .input(z.object({
       modifierPercent: z.number().int().min(-25).max(50),
     }))

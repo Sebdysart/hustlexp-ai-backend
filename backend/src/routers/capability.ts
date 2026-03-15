@@ -8,7 +8,7 @@
 
 import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
-import { router, protectedProcedure } from '../trpc.js';
+import { router, hustlerProcedure } from '../trpc.js';
 import { db } from '../db.js';
 import * as CapabilityProfileService from '../services/CapabilityProfileService.js';
 import * as EligibilityResolverService from '../services/EligibilityResolverService.js';
@@ -25,7 +25,7 @@ export const capabilityRouter = router({
   /**
    * Get current user's capability profile
    */
-  getProfile: protectedProcedure
+  getProfile: hustlerProcedure
     .input(z.void())
     .query(async ({ ctx }) => {
       return await CapabilityProfileService.getCapabilityProfile(ctx.user.id);
@@ -34,7 +34,7 @@ export const capabilityRouter = router({
   /**
    * Get capability summary (lightweight)
    */
-  getSummary: protectedProcedure
+  getSummary: hustlerProcedure
     .input(z.void())
     .query(async ({ ctx }) => {
       return await CapabilityProfileService.getCapabilitySummary(ctx.user.id);
@@ -43,7 +43,7 @@ export const capabilityRouter = router({
   /**
    * Check if user has specific capability
    */
-  hasCapability: protectedProcedure
+  hasCapability: hustlerProcedure
     .input(z.object({
       trade: z.string(),
       state: z.string(),
@@ -61,7 +61,7 @@ export const capabilityRouter = router({
   /**
    * Trigger profile recompute
    */
-  recomputeProfile: protectedProcedure
+  recomputeProfile: hustlerProcedure
     .input(z.void())
     .mutation(async ({ ctx }) => {
       await CapabilityProfileService.recompute(ctx.user.id, 'user_requested');
@@ -75,7 +75,7 @@ export const capabilityRouter = router({
   /**
    * Check eligibility for a task
    */
-  checkEligibility: protectedProcedure
+  checkEligibility: hustlerProcedure
     .input(z.object({
       taskId: z.string(),
     }))
@@ -159,7 +159,7 @@ export const capabilityRouter = router({
   /**
    * Query task feed
    */
-  queryFeed: protectedProcedure
+  queryFeed: hustlerProcedure
     .input(z.object({
       location: z.object({
         lat: z.number(),
@@ -194,7 +194,7 @@ export const capabilityRouter = router({
   /**
    * Get nearby tasks (simple, no eligibility filter)
    */
-  getNearbyTasks: protectedProcedure
+  getNearbyTasks: hustlerProcedure
     .input(z.object({
       lat: z.number(),
       lng: z.number(),
@@ -217,7 +217,7 @@ export const capabilityRouter = router({
   /**
    * Submit license for verification
    */
-  submitLicense: protectedProcedure
+  submitLicense: hustlerProcedure
     .input(z.object({
       tradeType: z.string(),
       issuingState: z.string(),
@@ -239,7 +239,7 @@ export const capabilityRouter = router({
   /**
    * Get user's license verifications
    */
-  getLicenses: protectedProcedure
+  getLicenses: hustlerProcedure
     .input(z.void())
     .query(async ({ ctx }) => {
       return await LicenseVerificationService.getUserLicenses(ctx.user.id);
@@ -252,7 +252,7 @@ export const capabilityRouter = router({
   /**
    * Submit insurance for verification
    */
-  submitInsurance: protectedProcedure
+  submitInsurance: hustlerProcedure
     .input(z.object({
       provider: z.string(),
       policyNumber: z.string(),
@@ -274,7 +274,7 @@ export const capabilityRouter = router({
   /**
    * Get user's insurance verification
    */
-  getInsurance: protectedProcedure
+  getInsurance: hustlerProcedure
     .input(z.void())
     .query(async ({ ctx }) => {
       return await InsuranceVerificationService.getUserInsurance(ctx.user.id);
@@ -287,7 +287,7 @@ export const capabilityRouter = router({
   /**
    * Initiate background check
    */
-  initiateBackgroundCheck: protectedProcedure
+  initiateBackgroundCheck: hustlerProcedure
     .input(z.object({
       provider: z.enum(['checkr', 'sterling', 'goodhire', 'manual']),
     }))
@@ -301,7 +301,7 @@ export const capabilityRouter = router({
   /**
    * Get user's background check status
    */
-  getBackgroundCheck: protectedProcedure
+  getBackgroundCheck: hustlerProcedure
     .input(z.void())
     .query(async ({ ctx }) => {
       return await BackgroundCheckService.getUserBackgroundCheck(ctx.user.id);
@@ -314,7 +314,7 @@ export const capabilityRouter = router({
   /**
    * Approve license verification (admin only)
    */
-  approveLicense: protectedProcedure
+  approveLicense: hustlerProcedure
     .input(z.object({
       verificationId: z.string(),
       notes: z.string().optional(),
@@ -331,7 +331,7 @@ export const capabilityRouter = router({
   /**
    * Reject license verification (admin only)
    */
-  rejectLicense: protectedProcedure
+  rejectLicense: hustlerProcedure
     .input(z.object({
       verificationId: z.string(),
       reason: z.string(),
@@ -350,7 +350,7 @@ export const capabilityRouter = router({
   /**
    * Get pending license verifications (admin only)
    */
-  getPendingLicenses: protectedProcedure
+  getPendingLicenses: hustlerProcedure
     .input(z.object({
       limit: z.number().default(50),
       offset: z.number().default(0),

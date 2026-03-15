@@ -3,7 +3,7 @@
  *
  * Endpoints for managing expertise-based supply/demand balance.
  *
- * User endpoints (protectedProcedure):
+ * User endpoints (hustlerProcedure):
  *   - listExpertise: Browse available expertise categories
  *   - getMyExpertise: View current selections
  *   - addExpertise: Select an expertise (auto-waitlists if capped)
@@ -24,7 +24,7 @@
 
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
-import { router, protectedProcedure, adminProcedure } from '../trpc.js';
+import { router, hustlerProcedure, adminProcedure } from '../trpc.js';
 import { ExpertiseSupplyService } from '../services/ExpertiseSupplyService.js';
 
 export const expertiseSupplyRouter = router({
@@ -36,7 +36,7 @@ export const expertiseSupplyRouter = router({
    * List all active expertise categories.
    * Public to authenticated users — shown during onboarding and profile edit.
    */
-  listExpertise: protectedProcedure
+  listExpertise: hustlerProcedure
     .input(z.object({
       limit: z.number().int().min(1).max(100).default(50).optional(),
       offset: z.number().int().min(0).default(0).optional(),
@@ -57,7 +57,7 @@ export const expertiseSupplyRouter = router({
   /**
    * Get the current user's expertise selections.
    */
-  getMyExpertise: protectedProcedure
+  getMyExpertise: hustlerProcedure
     .input(z.void())
     .query(async ({ ctx }) => {
       const result = await ExpertiseSupplyService.getUserExpertise(ctx.user.id);
@@ -74,7 +74,7 @@ export const expertiseSupplyRouter = router({
    * Add an expertise to the user's profile.
    * If capacity is full → auto-waitlisted with FIFO position.
    */
-  addExpertise: protectedProcedure
+  addExpertise: hustlerProcedure
     .input(z.object({
       expertiseId: z.string().uuid(),
       isPrimary: z.boolean().default(true),
@@ -100,7 +100,7 @@ export const expertiseSupplyRouter = router({
    * Remove an expertise from the user's profile.
    * Respects 30-day lock period.
    */
-  removeExpertise: protectedProcedure
+  removeExpertise: hustlerProcedure
     .input(z.object({
       expertiseId: z.string().uuid(),
       geoZone: z.string().default('seattle_metro'),
@@ -123,7 +123,7 @@ export const expertiseSupplyRouter = router({
   /**
    * Swap primary/secondary expertise.
    */
-  promoteExpertise: protectedProcedure
+  promoteExpertise: hustlerProcedure
     .input(z.object({
       expertiseId: z.string().uuid(),
     }))
@@ -145,7 +145,7 @@ export const expertiseSupplyRouter = router({
    * Check capacity status for a specific expertise.
    * Shows whether it's accepting new hustlers or waitlisted.
    */
-  checkCapacity: protectedProcedure
+  checkCapacity: hustlerProcedure
     .input(z.object({
       expertiseId: z.string().uuid(),
       geoZone: z.string().default('seattle_metro'),
@@ -171,7 +171,7 @@ export const expertiseSupplyRouter = router({
   /**
    * Get the current user's waitlist entries.
    */
-  getMyWaitlist: protectedProcedure
+  getMyWaitlist: hustlerProcedure
     .input(z.void())
     .query(async ({ ctx }) => {
       const result = await ExpertiseSupplyService.getUserWaitlist(ctx.user.id);
@@ -188,7 +188,7 @@ export const expertiseSupplyRouter = router({
    * Accept a waitlist invitation.
    * Must be called within 48 hours of invitation.
    */
-  acceptInvite: protectedProcedure
+  acceptInvite: hustlerProcedure
     .input(z.object({
       waitlistEntryId: z.string().uuid(),
     }))

@@ -15,7 +15,7 @@
 
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
-import { router, protectedProcedure, Schemas } from '../trpc.js';
+import { router, posterProcedure, Schemas } from '../trpc.js';
 import { db } from '../db.js';
 import { logger } from '../logger.js';
 import { generateOccurrencesForSeries } from '../services/RecurringTaskService.js';
@@ -124,7 +124,7 @@ export const recurringTaskRouter = router({
   // CREATE SERIES
   // --------------------------------------------------------------------------
 
-  create: protectedProcedure
+  create: posterProcedure
     .input(z.object({
       title: z.string().min(3).max(255),
       description: z.string().min(10),
@@ -193,7 +193,7 @@ export const recurringTaskRouter = router({
   // LIST MY SERIES
   // --------------------------------------------------------------------------
 
-  listMine: protectedProcedure
+  listMine: posterProcedure
     .input(z.object({
       limit: z.number().int().min(1).max(100).default(50).optional(),
       offset: z.number().int().min(0).default(0).optional(),
@@ -217,7 +217,7 @@ export const recurringTaskRouter = router({
   // GET SERIES BY ID
   // --------------------------------------------------------------------------
 
-  getById: protectedProcedure
+  getById: posterProcedure
     .input(z.object({ id: Schemas.uuid }))
     .query(async ({ ctx, input }) => {
       const result = await db.query<SeriesRow>(
@@ -237,7 +237,7 @@ export const recurringTaskRouter = router({
   // PAUSE SERIES
   // --------------------------------------------------------------------------
 
-  pause: protectedProcedure
+  pause: posterProcedure
     .input(z.object({ id: Schemas.uuid }))
     .mutation(async ({ ctx, input }) => {
       const result = await db.query(
@@ -256,7 +256,7 @@ export const recurringTaskRouter = router({
   // RESUME SERIES
   // --------------------------------------------------------------------------
 
-  resume: protectedProcedure
+  resume: posterProcedure
     .input(z.object({ id: Schemas.uuid }))
     .mutation(async ({ ctx, input }) => {
       const result = await db.query(
@@ -275,7 +275,7 @@ export const recurringTaskRouter = router({
   // CANCEL SERIES (with transactional occurrence cleanup)
   // --------------------------------------------------------------------------
 
-  cancel: protectedProcedure
+  cancel: posterProcedure
     .input(z.object({ id: Schemas.uuid }))
     .mutation(async ({ ctx, input }) => {
       return await db.transaction(async (query) => {
@@ -302,7 +302,7 @@ export const recurringTaskRouter = router({
   // LIST OCCURRENCES
   // --------------------------------------------------------------------------
 
-  listOccurrences: protectedProcedure
+  listOccurrences: posterProcedure
     .input(z.object({
       seriesId: Schemas.uuid,
       limit: z.number().int().min(1).max(100).default(50).optional(),
@@ -337,7 +337,7 @@ export const recurringTaskRouter = router({
   // SKIP OCCURRENCE
   // --------------------------------------------------------------------------
 
-  skipOccurrence: protectedProcedure
+  skipOccurrence: posterProcedure
     .input(z.object({ occurrenceId: Schemas.uuid }))
     .mutation(async ({ ctx, input }) => {
       const result = await db.query(
@@ -361,7 +361,7 @@ export const recurringTaskRouter = router({
    * Generate upcoming occurrences for a series (e.g. after create or when a job runs).
    * Idempotent: only inserts dates that do not already have an occurrence.
    */
-  generateOccurrences: protectedProcedure
+  generateOccurrences: posterProcedure
     .input(z.object({
       seriesId: Schemas.uuid,
       maxOccurrences: z.number().int().min(1).max(100).default(30).optional(),
@@ -386,7 +386,7 @@ export const recurringTaskRouter = router({
       return result.data;
     }),
 
-  setPreferredWorker: protectedProcedure
+  setPreferredWorker: posterProcedure
     .input(z.object({
       seriesId: Schemas.uuid,
       workerId: Schemas.uuid,

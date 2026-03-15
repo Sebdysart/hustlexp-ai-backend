@@ -7,7 +7,7 @@
 
 import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
-import { router, publicProcedure, protectedProcedure } from '../trpc.js';
+import { router, publicProcedure, hustlerProcedure } from '../trpc.js';
 import { WorkerSkillService } from '../services/WorkerSkillService.js';
 import { db } from '../db.js';
 import { cachedDbQuery, invalidateSkills, CACHE_TTL, CACHE_TAGS } from '../cache/db-cache.js';
@@ -34,7 +34,7 @@ export const skillsRouter = router({
     }),
 
   // Protected: Worker skill management
-  addSkills: protectedProcedure
+  addSkills: hustlerProcedure
     .input(z.object({ skillIds: z.array(z.string().uuid()).min(1).max(50) }))
     .mutation(async ({ ctx, input }) => {
       const out = await WorkerSkillService.addSkills(ctx.user.id, input.skillIds);
@@ -42,7 +42,7 @@ export const skillsRouter = router({
       return out;
     }),
 
-  removeSkill: protectedProcedure
+  removeSkill: hustlerProcedure
     .input(z.object({ skillId: z.string().uuid() }))
     .mutation(async ({ ctx, input }) => {
       const out = await WorkerSkillService.removeSkill(ctx.user.id, input.skillId);
@@ -50,11 +50,11 @@ export const skillsRouter = router({
       return out;
     }),
 
-  getMySkills: protectedProcedure.input(z.void()).query(async ({ ctx }) => {
+  getMySkills: hustlerProcedure.input(z.void()).query(async ({ ctx }) => {
     return WorkerSkillService.getWorkerSkills(ctx.user.id);
   }),
 
-  submitLicense: protectedProcedure
+  submitLicense: hustlerProcedure
     .input(z.object({
       skillId: z.string().uuid(),
       // Accept both field naming conventions for frontend compat
@@ -77,7 +77,7 @@ export const skillsRouter = router({
       );
     }),
 
-  getLicenseSubmissions: protectedProcedure.input(z.void()).query(async ({ ctx }) => {
+  getLicenseSubmissions: hustlerProcedure.input(z.void()).query(async ({ ctx }) => {
     const result = await db.query(
       `SELECT ws.id, ws.skill_id as "skillId", s.name as "skillName",
               ws.license_url as "photoUrl", ws.verified as "licenseVerified",
@@ -91,7 +91,7 @@ export const skillsRouter = router({
     return result.rows;
   }),
 
-  checkTaskEligibility: protectedProcedure
+  checkTaskEligibility: hustlerProcedure
     .input(z.object({ taskId: z.string().uuid() }))
     .query(async ({ ctx, input }) => {
       return WorkerSkillService.checkTaskEligibility(ctx.user.id, input.taskId);

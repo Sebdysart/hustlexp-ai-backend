@@ -4,7 +4,7 @@
 
 import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
-import { router, protectedProcedure } from '../trpc.js';
+import { router, hustlerProcedure } from '../trpc.js';
 import { db } from '../db.js';
 
 // Default daily challenges if none exist for today
@@ -15,7 +15,7 @@ const DEFAULT_CHALLENGES = [
 ];
 
 export const challengesRouter = router({
-  getTodaysChallenges: protectedProcedure
+  getTodaysChallenges: hustlerProcedure
     .input(z.void())
     .query(async ({ ctx }) => {
       const userId = ctx.user.id;
@@ -80,7 +80,7 @@ export const challengesRouter = router({
       }));
     }),
 
-  updateProgress: protectedProcedure
+  updateProgress: hustlerProcedure
     .input(z.object({
       challengeId: z.string().uuid(),
       progress: z.number().min(0),

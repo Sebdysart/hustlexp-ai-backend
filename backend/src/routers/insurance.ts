@@ -12,7 +12,7 @@
  */
 
 import { TRPCError } from '@trpc/server';
-import { router, protectedProcedure, adminProcedure, Schemas } from '../trpc.js';
+import { router, hustlerProcedure, adminProcedure, Schemas } from '../trpc.js';
 import { SelfInsurancePoolService } from '../services/SelfInsurancePoolService.js';
 import { z } from 'zod';
 
@@ -24,7 +24,7 @@ export const insuranceRouter = router({
   /**
    * Get insurance pool status (public)
    */
-  getPoolStatus: protectedProcedure.input(z.void()).query(async () => {
+  getPoolStatus: hustlerProcedure.input(z.void()).query(async () => {
     const result = await SelfInsurancePoolService.getPoolStatus();
 
     if (!result.success) {
@@ -40,7 +40,7 @@ export const insuranceRouter = router({
   /**
    * Get my claims (hustler view)
    */
-  getMyClaims: protectedProcedure.input(z.void()).query(async ({ ctx }) => {
+  getMyClaims: hustlerProcedure.input(z.void()).query(async ({ ctx }) => {
     const result = await SelfInsurancePoolService.getMyClaims(ctx.user.id);
 
     if (!result.success) {
@@ -60,7 +60,7 @@ export const insuranceRouter = router({
   /**
    * File a claim against insurance pool
    */
-  fileClaim: protectedProcedure
+  fileClaim: hustlerProcedure
     .input(
       z.object({
         // Accept both naming conventions for frontend compat

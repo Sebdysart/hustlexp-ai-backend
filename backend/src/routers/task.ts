@@ -7,7 +7,7 @@
  */
 
 import { TRPCError } from '@trpc/server';
-import { router, protectedProcedure, Schemas } from '../trpc.js';
+import { router, protectedProcedure, hustlerProcedure, posterProcedure, Schemas } from '../trpc.js';
 import { TaskService } from '../services/TaskService.js';
 import { ProofService } from '../services/ProofService.js';
 import { db } from '../db.js';
@@ -78,7 +78,7 @@ export const taskRouter = router({
    *    3. Drive infinite scroll from nextCursor (nil = last page)
    *    4. Reset cursor + clear array on pull-to-refresh
    */
-  listByPoster: protectedProcedure
+  listByPoster: posterProcedure
     .input(
       Schemas.cursorPagination.extend({
         posterId: Schemas.uuid.optional(),
@@ -117,7 +117,7 @@ export const taskRouter = router({
    *    After:  { tasks: Task[], nextCursor: string | undefined }
    *    iOS: same migration as listByPoster — see above.
    */
-  listByWorker: protectedProcedure
+  listByWorker: hustlerProcedure
     .input(
       Schemas.cursorPagination.extend({
         workerId: Schemas.uuid.optional(),
@@ -150,7 +150,7 @@ export const taskRouter = router({
   /**
    * List open tasks (feed)
    */
-  listOpen: protectedProcedure
+  listOpen: hustlerProcedure
     .input(Schemas.pagination)
     .query(async ({ input }) => {
       const result = await TaskService.listOpen({ limit: input.limit, offset: input.offset });
@@ -172,7 +172,7 @@ export const taskRouter = router({
   /**
    * Create a new task
    */
-  create: protectedProcedure
+  create: posterProcedure
     .input(Schemas.createTask)
     .mutation(async ({ ctx, input }) => {
       const result = await TaskService.create({
@@ -208,7 +208,7 @@ export const taskRouter = router({
   /**
    * Accept a task (worker claims it)
    */
-  accept: protectedProcedure
+  accept: hustlerProcedure
     .input(z.object({ taskId: Schemas.uuid }))
     .mutation(async ({ ctx, input }) => {
       const result = await TaskService.accept({
@@ -231,7 +231,7 @@ export const taskRouter = router({
    * Start working on an accepted task (ACCEPTED → IN_PROGRESS)
    * Frontend calls this when worker begins task
    */
-  start: protectedProcedure
+  start: hustlerProcedure
     .input(z.object({ taskId: Schemas.uuid }))
     .mutation(async ({ ctx, input }) => {
       // Verify worker is the one who accepted
@@ -291,7 +291,7 @@ export const taskRouter = router({
       };
     }),
 
-  submitProof: protectedProcedure
+  submitProof: hustlerProcedure
     .input(z.object({
       taskId: z.string().uuid(),
       description: z.string().max(2000).optional(),
@@ -356,7 +356,7 @@ export const taskRouter = router({
   /**
    * Review proof (accept/reject)
    */
-  reviewProof: protectedProcedure
+  reviewProof: posterProcedure
     .input(z.object({
       // Original schema fields
       proofId: z.string().uuid().optional(),
@@ -440,7 +440,7 @@ export const taskRouter = router({
    * INV-3: Will fail if proof is not ACCEPTED
    * SECURITY: Only the poster can mark a task as complete
    */
-  complete: protectedProcedure
+  complete: posterProcedure
     .input(z.object({ taskId: Schemas.uuid }))
     .mutation(async ({ ctx, input }) => {
       // Authorization: only the poster can complete a task
@@ -468,7 +468,7 @@ export const taskRouter = router({
   /**
    * Cancel task
    */
-  cancel: protectedProcedure
+  cancel: posterProcedure
     .input(z.object({ 
       taskId: Schemas.uuid,
       reason: z.string().max(1000).optional(),
@@ -509,7 +509,7 @@ export const taskRouter = router({
   /**
    * Hustler applies for a task
    */
-  applyForTask: protectedProcedure
+  applyForTask: hustlerProcedure
     .input(z.object({
       taskId: Schemas.uuid,
       message: z.string().max(500).optional(),
@@ -561,7 +561,7 @@ export const taskRouter = router({
   /**
    * Poster lists applicants for their task
    */
-  listApplicants: protectedProcedure
+  listApplicants: posterProcedure
     .input(z.object({ taskId: Schemas.uuid }))
     .query(async ({ ctx, input }) => {
       const taskResult = await db.query(
@@ -598,7 +598,7 @@ export const taskRouter = router({
   /**
    * Poster accepts an applicant — assigns them as the worker
    */
-  assignWorker: protectedProcedure
+  assignWorker: posterProcedure
     .input(z.object({
       taskId: Schemas.uuid,
       workerId: Schemas.uuid,
@@ -657,7 +657,7 @@ export const taskRouter = router({
   /**
    * Poster rejects a specific applicant
    */
-  rejectApplicant: protectedProcedure
+  rejectApplicant: posterProcedure
     .input(z.object({
       taskId: Schemas.uuid,
       workerId: Schemas.uuid,
@@ -693,7 +693,7 @@ export const taskRouter = router({
   /**
    * Hustler withdraws their own application
    */
-  withdrawApplication: protectedProcedure
+  withdrawApplication: hustlerProcedure
     .input(z.object({ taskId: Schemas.uuid }))
     .mutation(async ({ ctx, input }) => {
       const result = await db.query(
