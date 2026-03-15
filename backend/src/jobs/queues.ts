@@ -71,7 +71,10 @@ export type QueueName =
   | 'user_notifications'
   | 'exports'
   | 'maintenance'
-  | 'tax_reporting';
+  | 'tax_reporting'
+  | 'biometric_analysis'
+  | 'expertise_recalc'
+  | 'xp_tax_reminders';
 
 interface QueueConfig {
   name: QueueName;
@@ -209,6 +212,70 @@ export const QUEUE_CONFIGS: Record<QueueName, QueueConfig> = {
       },
       removeOnFail: {
         age: 30 * 24 * 60 * 60, // Keep failed jobs for 30 days
+      },
+    },
+    workerOptions: {
+      maxStalledCount: 1,
+    },
+  },
+
+  biometric_analysis: {
+    name: 'biometric_analysis',
+    defaultJobOptions: {
+      attempts: 3,
+      backoff: {
+        type: 'exponential',
+        delay: 2000, // 2s, 4s, 8s
+      },
+      removeOnComplete: {
+        age: 12 * 60 * 60, // 12 hours
+        count: 500,
+      },
+      removeOnFail: {
+        age: 3 * 24 * 60 * 60, // 3 days
+      },
+    },
+    workerOptions: {
+      maxStalledCount: 2,
+      concurrency: 3,
+    },
+  },
+
+  expertise_recalc: {
+    name: 'expertise_recalc',
+    defaultJobOptions: {
+      attempts: 3,
+      backoff: {
+        type: 'exponential',
+        delay: 30000, // 30s, 60s, 120s
+      },
+      removeOnComplete: {
+        age: 24 * 60 * 60, // 24 hours
+        count: 10,
+      },
+      removeOnFail: {
+        age: 7 * 24 * 60 * 60, // 7 days
+      },
+    },
+    workerOptions: {
+      maxStalledCount: 1,
+    },
+  },
+
+  xp_tax_reminders: {
+    name: 'xp_tax_reminders',
+    defaultJobOptions: {
+      attempts: 2,
+      backoff: {
+        type: 'fixed',
+        delay: 60000, // 1 minute
+      },
+      removeOnComplete: {
+        age: 24 * 60 * 60, // 24 hours
+        count: 10,
+      },
+      removeOnFail: {
+        age: 7 * 24 * 60 * 60, // 7 days
       },
     },
     workerOptions: {

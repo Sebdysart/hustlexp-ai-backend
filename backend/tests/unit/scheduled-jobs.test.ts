@@ -49,6 +49,18 @@ vi.mock('../../src/jobs/email-worker', () => ({
   processEmailJob: vi.fn(),
 }));
 
+vi.mock('../../src/jobs/biometric-analyzer-worker', () => ({
+  processBiometricAnalysisJob: vi.fn(),
+}));
+
+vi.mock('../../src/jobs/expertise-recalc-worker', () => ({
+  processExpertiseRecalcJob: vi.fn(),
+}));
+
+vi.mock('../../src/jobs/xp-tax-reminder-worker', () => ({
+  processXPTaxReminderJob: vi.fn(),
+}));
+
 vi.mock('../../src/logger', () => ({
   workerLogger: {
     info: vi.fn(),
@@ -161,7 +173,7 @@ describe('Worker Routing', () => {
     expect(workersSource).toContain('./fraud-detection-worker');
   });
 
-  it('workers.ts registers workers for all 6 queues', async () => {
+  it('workers.ts registers workers for all 9 queues', async () => {
     const fs = await import('fs');
     const path = await import('path');
     const workersPath = path.resolve(__dirname, '../../src/jobs/workers.ts');
@@ -173,5 +185,8 @@ describe('Worker Routing', () => {
     expect(workersSource).toContain("'critical_trust'");
     expect(workersSource).toContain("'maintenance'");
     expect(workersSource).toContain("'tax_reporting'");
+    expect(workersSource).toContain("'biometric_analysis'");
+    expect(workersSource).toContain("'expertise_recalc'");
+    expect(workersSource).toContain("'xp_tax_reminders'");
   });
 });

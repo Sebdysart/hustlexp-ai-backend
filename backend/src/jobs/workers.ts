@@ -18,10 +18,14 @@
  * @see ARCHITECTURE.md §2.4 (Outbox pattern)
  */
 
+import { fileURLToPath } from 'url';
 import { createWorker, getQueue } from './queues.js';
 import { startOutboxWorker } from './outbox-worker.js';
 import { processExportJob } from './export-worker.js';
 import { processEmailJob } from './email-worker.js';
+import { processBiometricAnalysisJob } from './biometric-analyzer-worker.js';
+import { processExpertiseRecalcJob } from './expertise-recalc-worker.js';
+import { processXPTaxReminderJob } from './xp-tax-reminder-worker.js';
 import { workerLogger as log } from '../logger.js';
 import type { Job, Worker } from 'bullmq';
 
@@ -186,6 +190,45 @@ function registerWorkers(): void {
     }
   ));
 
+  // Biometric analysis worker — analyzes proof photos for liveness/deepfake detection
+  activeWorkers.push(createWorker(
+    'biometric_analysis',
+    async (job: Job) => {
+      await processBiometricAnalysisJob(job);
+    },
+    {
+      concurrency: 3,
+      removeOnComplete: { count: 500, age: 43200 },
+      removeOnFail: { age: 3 * 86400 },
+    }
+  ));
+
+  // Expertise supply recalculation worker — daily cron, processes recalc jobs
+  activeWorkers.push(createWorker(
+    'expertise_recalc',
+    async (job: Job) => {
+      await processExpertiseRecalcJob(job);
+    },
+    {
+      concurrency: 1,
+      removeOnComplete: { count: 10, age: 86400 },
+      removeOnFail: { age: 7 * 86400 },
+    }
+  ));
+
+  // XP tax reminder worker — daily cron, sends reminders for unpaid XP taxes
+  activeWorkers.push(createWorker(
+    'xp_tax_reminders',
+    async (job: Job) => {
+      await processXPTaxReminderJob(job);
+    },
+    {
+      concurrency: 1,
+      removeOnComplete: { count: 10, age: 86400 },
+      removeOnFail: { age: 7 * 86400 },
+    }
+  ));
+
   log.info('All BullMQ workers registered');
 }
 
@@ -241,6 +284,28 @@ async function registerScheduledJobs(): Promise<void> {
     {
       repeat: { pattern: '*/5 * * * *' },
       jobId: 'scheduled:fraud_detection',
+    }
+  );
+
+  // Expertise supply recalculation — daily at 3:00 AM (off-peak)
+  const expertiseRecalcQueue = getQueue('expertise_recalc');
+  await expertiseRecalcQueue.add(
+    'expertise.recalculate_all',
+    {},
+    {
+      repeat: { pattern: '0 3 * * *' },
+      jobId: 'scheduled:expertise_recalc_daily',
+    }
+  );
+
+  // XP tax reminders — daily at 10:00 AM
+  const xpTaxRemindersQueue = getQueue('xp_tax_reminders');
+  await xpTaxRemindersQueue.add(
+    'xp_tax.send_reminders',
+    {},
+    {
+      repeat: { pattern: '0 10 * * *' },
+      jobId: 'scheduled:xp_tax_reminders_daily',
     }
   );
 
@@ -328,8 +393,9 @@ process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 // START WORKERS
 // ============================================================================
 
-// Start workers if this file is run directly
-if (require.main === module) {
+// Start workers if this file is run directly (ESM-compatible entry point guard)
+const __filename = fileURLToPath(import.meta.url);
+if (process.argv[1] === __filename) {
   startWorkers().catch(error => {
     log.fatal({ err: error }, 'Fatal error starting workers');
     process.exit(1);
