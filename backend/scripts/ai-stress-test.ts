@@ -10,7 +10,7 @@
  *   6. Router→Service→AIClient path validation
  *   7. Constitutional A2 authority enforcement
  *
- * Run: npx tsx backend/src/tests/ai-stress-test.ts
+ * Run: npx tsx backend/scripts/ai-stress-test.ts
  */
 
 import type { config as ConfigType } from '../config.js';

@@ -15,7 +15,7 @@
  *  11. Complex aggregation queries
  *  12. Transaction safety (BEGIN/COMMIT)
  *
- * Run: npx tsx backend/src/tests/load-test-200.ts
+ * Run: npx tsx backend/scripts/load-test-200.ts
  */
 
 import * as fs from 'fs';
