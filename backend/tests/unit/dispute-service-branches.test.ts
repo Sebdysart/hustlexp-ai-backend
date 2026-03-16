@@ -36,7 +36,7 @@ vi.mock('../../src/services/TaskService', () => ({
   TaskService: { getById: vi.fn() },
 }));
 
-vi.mock('../../src/jobs/outbox-helpers', () => ({
+vi.mock('../../src/lib/outbox-helpers', () => ({
   writeToOutbox: vi.fn().mockResolvedValue(undefined),
 }));
 

@@ -39,7 +39,7 @@ vi.mock('../../src/logger', () => {
   };
 });
 
-vi.mock('../../src/jobs/outbox-helpers', () => ({
+vi.mock('../../src/lib/outbox-helpers', () => ({
   writeToOutbox: vi.fn().mockResolvedValue({ id: 'outbox-1', idempotencyKey: 'k' }),
 }));
 

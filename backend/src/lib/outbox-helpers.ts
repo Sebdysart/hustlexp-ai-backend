@@ -19,7 +19,7 @@
  */
 
 import { db, type QueryFn } from '../db.js';
-import { generateIdempotencyKey, type QueueName } from './queues.js';
+import { generateIdempotencyKey, type QueueName } from '../jobs/queues.js';
 
 // ============================================================================
 // TYPES

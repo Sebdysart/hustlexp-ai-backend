@@ -13,7 +13,7 @@
  */
 
 import { db, isInvariantViolation, getErrorMessage } from '../db.js';
-import { writeToOutbox } from '../jobs/outbox-helpers.js';
+import { writeToOutbox } from '../lib/outbox-helpers.js';
 import { PlanService } from './PlanService.js';
 import { ScoperAIService } from './ScoperAIService.js';
 import { MIN_INSTANT_TIER, MIN_SENSITIVE_INSTANT_TIER } from './InstantTrustConfig.js';

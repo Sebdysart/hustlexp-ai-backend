@@ -21,7 +21,7 @@
 
 import { db } from '../db.js';
 import { r2 } from '../storage/r2.js';
-import { writeToOutbox } from './outbox-helpers.js';
+import { writeToOutbox } from '../lib/outbox-helpers.js';
 import { markOutboxEventProcessed, markOutboxEventFailed } from './outbox-worker.js';
 import type { Job } from 'bullmq';
 import { collectUserDataForExport } from '../services/GDPRService.js';

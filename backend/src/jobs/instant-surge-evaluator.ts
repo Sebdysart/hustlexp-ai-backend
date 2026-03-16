@@ -10,7 +10,7 @@
  */
 
 import { db } from '../db.js';
-import { writeToOutbox } from './outbox-helpers.js';
+import { writeToOutbox } from '../lib/outbox-helpers.js';
 import { InstantObservability } from '../services/InstantObservability.js';
 import { workerLogger } from '../logger.js';
 const log = workerLogger.child({ worker: 'instant-surge-evaluator' });

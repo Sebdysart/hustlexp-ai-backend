@@ -129,7 +129,7 @@ vi.mock('../../src/auth/firebase', () => ({
   verifyIdToken: vi.fn(),
 }));
 
-vi.mock('../../src/jobs/outbox-helpers', () => ({
+vi.mock('../../src/lib/outbox-helpers', () => ({
   writeToOutbox: vi.fn().mockResolvedValue(undefined),
 }));
 

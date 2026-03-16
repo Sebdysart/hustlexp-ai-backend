@@ -21,7 +21,7 @@
  */
 
 import { db } from '../db.js';
-import { writeToOutbox } from './outbox-helpers.js';
+import { writeToOutbox } from '../lib/outbox-helpers.js';
 import { TaskService } from '../services/TaskService.js';
 import { workerLogger } from '../logger.js';
 import type { Job } from 'bullmq';

@@ -82,7 +82,7 @@ import { reputationRouter } from './reputation.js';
 import { healthRouter } from './health.js';
 import { fraudRouter } from './fraud.js';
 import { flagsRouter } from './flags.js';
-import { alphaTelemetryRouter } from './alpha-telemetry.js';
+import { alphaTelemetryRouter } from './alphaTelemetry.js';
 
 // ============================================================================
 // APP ROUTER

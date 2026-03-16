@@ -45,7 +45,7 @@ vi.mock('../../src/services/AlphaInstrumentation', () => ({
 // ---------------------------------------------------------------------------
 
 import { db } from '../../src/db';
-import { alphaTelemetryRouter } from '../../src/routers/alpha-telemetry';
+import { alphaTelemetryRouter } from '../../src/routers/alphaTelemetry';
 import { AlphaInstrumentation } from '../../src/services/AlphaInstrumentation';
 
 const mockDb = vi.mocked(db);

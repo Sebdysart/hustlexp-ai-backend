@@ -8,7 +8,7 @@
 
 import { Job } from 'bullmq';
 import { db } from '../db.js';
-import { writeToOutbox } from './outbox-helpers.js';
+import { writeToOutbox } from '../lib/outbox-helpers.js';
 import { PlanService } from '../services/PlanService.js';
 import { MIN_INSTANT_TIER, MIN_SENSITIVE_INSTANT_TIER } from '../services/InstantTrustConfig.js';
 import { workerLogger } from '../logger.js';

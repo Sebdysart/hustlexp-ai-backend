@@ -54,7 +54,7 @@ vi.mock('../../src/logger', () => ({
   },
 }));
 
-vi.mock('../../src/jobs/outbox-helpers', () => ({
+vi.mock('../../src/lib/outbox-helpers', () => ({
   writeToOutbox: vi.fn().mockResolvedValue({ id: 'outbox-1', idempotencyKey: 'k1' }),
 }));
 
@@ -81,7 +81,7 @@ vi.mock('stripe', () => {
 });
 
 import { db } from '../../src/db';
-import { writeToOutbox } from '../../src/jobs/outbox-helpers';
+import { writeToOutbox } from '../../src/lib/outbox-helpers';
 import { processWebhook } from '../../src/services/StripeWebhookService';
 
 const mockDb = vi.mocked(db);

@@ -97,7 +97,7 @@ vi.mock('../../src/services/EscrowService', () => ({
   },
 }));
 
-vi.mock('../../src/jobs/outbox-helpers', () => ({
+vi.mock('../../src/lib/outbox-helpers', () => ({
   writeToOutbox: vi.fn().mockResolvedValue({ id: 'outbox-1' }),
 }));
 
@@ -113,7 +113,7 @@ import { AIProposalService } from '../../src/services/AIProposalService';
 import { AIDecisionService } from '../../src/services/AIDecisionService';
 import { TaskService } from '../../src/services/TaskService';
 import { EscrowService } from '../../src/services/EscrowService';
-import { writeToOutbox } from '../../src/jobs/outbox-helpers';
+import { writeToOutbox } from '../../src/lib/outbox-helpers';
 
 const mockDb = vi.mocked(db);
 const mockAIClient = vi.mocked(AIClient);

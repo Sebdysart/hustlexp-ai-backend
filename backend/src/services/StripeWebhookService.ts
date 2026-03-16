@@ -19,7 +19,7 @@
  */
 
 import { db } from '../db.js';
-import { writeToOutbox } from '../jobs/outbox-helpers.js';
+import { writeToOutbox } from '../lib/outbox-helpers.js';
 import Stripe from 'stripe';
 import { config } from '../config.js';
 
