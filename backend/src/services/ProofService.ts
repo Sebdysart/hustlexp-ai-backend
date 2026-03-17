@@ -598,7 +598,7 @@ export const ProofService = {
         return { valid: true };
 
       default:
-        return { valid: true };
+        return { valid: false, reason: 'Unknown proof type — cannot validate.' };
     }
   },
 };
