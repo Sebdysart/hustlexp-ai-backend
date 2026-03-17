@@ -96,6 +96,39 @@ vi.mock('../../src/cache/db-cache', () => ({
   CACHE_TAGS: { TASK: (id: string) => `task:${id}` },
 }));
 
+vi.mock('../../src/services/ComplianceGuardianService', () => ({
+  ComplianceGuardianService: {
+    evaluate: vi.fn().mockResolvedValue({
+      score: 0,
+      tier: 'clean',
+      triggeredRules: [],
+      suggestedAlternative: undefined,
+      notes: { score: 0, tier: 'clean', triggered_rules: [], suggested_alternative: null, admin_review_id: null, appeal_status: 'none' },
+    }),
+  },
+}));
+
+vi.mock('../../src/services/TaskTemplateRegistry', () => ({
+  getTemplate: vi.fn().mockReturnValue({
+    slug: 'standard_physical',
+    displayName: 'Standard Physical',
+    defaultRiskTier: 0,
+    requiredTrustTier: 'rookie',
+    completionCriteriaType: 'photo_proof',
+    autoReleaseHours: 24,
+    lateCancelPct: 0,
+    requiresMutualConsent: false,
+    requiresContentRelease: false,
+    scoperContext: '',
+  }),
+}));
+
+vi.mock('../../src/services/TaskRiskClassifier', () => ({
+  TaskRiskClassifier: {
+    classifyWithTemplate: vi.fn().mockReturnValue(0),
+  },
+}));
+
 // ---------------------------------------------------------------------------
 // Imports
 // ---------------------------------------------------------------------------

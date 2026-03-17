@@ -15,6 +15,9 @@ import type { Proof } from '../types.js';
 import { cachedDbQuery, invalidateTask, CACHE_KEYS, CACHE_TTL, CACHE_TAGS } from '../cache/db-cache.js';
 import { logger } from '../logger.js';
 import { z } from 'zod';
+import { ComplianceGuardianService } from '../services/ComplianceGuardianService.js';
+import { getTemplate } from '../services/TaskTemplateRegistry.js';
+import { TaskRiskClassifier } from '../services/TaskRiskClassifier.js';
 
 export const taskRouter = router({
   // --------------------------------------------------------------------------
@@ -175,6 +178,18 @@ export const taskRouter = router({
   create: posterProcedure
     .input(Schemas.createTask)
     .mutation(async ({ ctx, input }) => {
+      // Run compliance check — hard blocks throw before any DB write
+      const compliance = await ComplianceGuardianService.evaluate({
+        description: input.description,
+        userId: ctx.user.id,
+      });
+      if (compliance.tier === 'hard_block') {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: 'Task blocked by compliance check. HustleXP only allows legal IRL tasks.',
+        });
+      }
+
       const result = await TaskService.create({
         posterId: ctx.user.id,
         title: input.title,
@@ -189,7 +204,7 @@ export const taskRouter = router({
         liveBroadcastRadiusMiles: input.liveBroadcastRadiusMiles,
         instantMode: input.instantMode,
       });
-      
+
       if (!result.success) {
         // Map HX error codes to tRPC error codes
         let code: 'BAD_REQUEST' | 'PRECONDITION_FAILED' = 'BAD_REQUEST';
@@ -202,9 +217,140 @@ export const taskRouter = router({
         });
       }
       await invalidateTask(result.data.id);
+
+      // Persist template system fields
+      const template = getTemplate(input.templateSlug ?? 'standard_physical');
+      const riskTier = TaskRiskClassifier.classifyWithTemplate(
+        {
+          insideHome: input.insideHome ?? false,
+          peoplePresent: input.peoplePresent ?? false,
+          petsPresent: input.petsPresent ?? false,
+          caregiving: template.slug === 'care',
+        },
+        template.slug,
+        input.wildcardFlags ?? []
+      );
+      void riskTier; // computed for future use; not stored (no risk_tier column in migration)
+
+      await db.query(
+        `UPDATE tasks
+         SET template_slug = $2,
+             illegal_risk_score = $3,
+             compliance_guardian_notes = $4,
+             late_cancel_pct = $5,
+             content_release = $6,
+             cancellation_window_hours = $7
+         WHERE id = $1`,
+        [
+          result.data.id,
+          template.slug,
+          compliance.score,
+          JSON.stringify(compliance.notes),
+          template.lateCancelPct,
+          template.requiresContentRelease,
+          template.autoReleaseHours,
+        ]
+      );
+
       return result.data;
     }),
   
+  /**
+   * Evaluate a task draft for compliance before creation.
+   * HARD_BLOCK (score ≥ 61): throws, no task created.
+   * SOFT_FLAG (score 21–60): returns result for Poster awareness.
+   */
+  evaluateDraft: posterProcedure
+    .input(Schemas.evaluateDraft)
+    .mutation(async ({ ctx, input }) => {
+      const result = await ComplianceGuardianService.evaluate({
+        description: input.description,
+        userId: ctx.user.id,
+      });
+
+      if (result.tier === 'hard_block') {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: `This task was blocked. Reason: ${result.triggeredRules.join(', ')}. HustleXP only allows legal IRL tasks.`,
+        });
+      }
+
+      return {
+        score: result.score,
+        tier: result.tier,
+        triggeredRules: result.triggeredRules,
+        suggestedAlternative: result.suggestedAlternative,
+        notes: result.notes,
+      };
+    }),
+
+  /**
+   * Accept a task with mutual consent checklist.
+   * Required for wildcard_bizarre and content_creator templates.
+   */
+  acceptWithConsent: hustlerProcedure
+    .input(Schemas.acceptWithConsent)
+    .mutation(async ({ ctx, input }) => {
+      const taskResult = await db.query<{
+        template_slug: string;
+        state: string;
+      }>(
+        `SELECT template_slug, state FROM tasks WHERE id = $1`,
+        [input.taskId]
+      );
+
+      if (!taskResult.rows[0]) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
+      }
+
+      const task = taskResult.rows[0];
+      const template = getTemplate(task.template_slug);
+
+      if (!template.requiresMutualConsent) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: 'This template does not require consent checklist',
+        });
+      }
+
+      await db.query(
+        `UPDATE tasks
+         SET mutual_consent_accepted = TRUE,
+             worker_id = $2,
+             state = 'claimed',
+             accepted_at = NOW()
+         WHERE id = $1 AND state = 'posted'`,
+        [input.taskId, ctx.user.id]
+      );
+
+      return { accepted: true };
+    }),
+
+  /**
+   * Get compliance status for a task — surfaces existing stored score.
+   * No new LLM call.
+   */
+  getComplianceStatus: protectedProcedure
+    .input(z.object({ taskId: z.string().uuid() }))
+    .query(async ({ input }) => {
+      const result = await db.query<{
+        illegal_risk_score: number;
+        compliance_guardian_notes: object;
+      }>(
+        `SELECT illegal_risk_score, compliance_guardian_notes FROM tasks WHERE id = $1`,
+        [input.taskId]
+      );
+
+      if (!result.rows[0]) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
+      }
+
+      return {
+        score: result.rows[0].illegal_risk_score,
+        notes: result.rows[0].compliance_guardian_notes,
+      };
+    }),
+
   /**
    * Accept a task (worker claims it)
    */

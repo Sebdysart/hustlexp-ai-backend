@@ -245,6 +245,22 @@ export const Schemas = {
     liveBroadcastRadiusMiles: z.number().positive().max(100).optional(),
     // Instant Execution Mode (IEM v1)
     instantMode: z.boolean().default(false),
+    // Template system fields
+    templateSlug: z.string().max(50).optional(),
+    wildcardFlags: z.array(z.string()).optional(),
+    insideHome: z.boolean().optional(),
+    peoplePresent: z.boolean().optional(),
+    petsPresent: z.boolean().optional(),
+  }),
+
+  evaluateDraft: z.object({
+    description: z.string().min(10).max(5000),
+    templateSlug: z.string().max(50).optional(),
+  }),
+
+  acceptWithConsent: z.object({
+    taskId: z.string().uuid(),
+    consentItems: z.array(z.string()).min(1).max(10),
   }),
   
   // Escrow
