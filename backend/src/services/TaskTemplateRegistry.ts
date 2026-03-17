@@ -222,7 +222,7 @@ export function getTemplateFallback(slug: string): TaskTemplate {
  * Care keyword regex — detects care content regardless of template slug.
  * Used to override caregiving=false when the description contains care signals.
  */
-export const CARE_KEYWORDS = /\b(bathe|bathing|wash|elder|elderly|senior|babysit|babysitter|childcare|child care|infant|toddler|diaper|disabled|wheelchair|dementia|alzheimer|pet sit|petsit|dog sit|dogsit)\b/i;
+export const CARE_KEYWORDS = /\b(bathe|bathing|wash(?:ing)?|elder|elderly|senior|babysit(?:ting)?|babysitter|childcare|child care|infant|toddler|diaper|disabled|wheelchair|dementia|alzheimer|pet sit|petsit|dog sit|dogsit)\b/i;
 
 /**
  * Returns true if the task description contains care-related content.
@@ -235,7 +235,7 @@ export function isCareContent(description: string): boolean {
  * Content release keyword regex — detects camera/video/streaming tasks.
  * Used to force requiresContentRelease=true regardless of template slug.
  */
-export const CONTENT_RELEASE_KEYWORDS = /\b(film|filming|video|camera|record|recording|stream|streaming|appear\s+on\s+(camera|screen|video)|youtube|tiktok|instagram|social\s+media|channel)\b/i;
+export const CONTENT_RELEASE_KEYWORDS = /\b(film(?:ing)?(?!\s+(?:a\s+)?(?:fly\s|flies\s|insect|pest\s+control|infestation|mold|structural\s+damage))|video|camera|record(?:ing)?(?!\s+(?:\w+\s+){0,3}(?:dimensions?|measurements?|weight\s+(?:for|and)|for\s+shipping))|stream(?:ing)?(?!\s+(?:my\s+)?(?:internet|connection|speed|bandwidth|network|data\b))|appear\s+on\s+(?:camera|screen|video)|youtube|tiktok|instagram|social\s+media|channel)\b/i;
 
 /**
  * Returns true if the task description contains content-release signals.
