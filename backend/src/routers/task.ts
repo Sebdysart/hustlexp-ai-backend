@@ -182,6 +182,7 @@ export const taskRouter = router({
       const compliance = await ComplianceGuardianService.evaluate({
         description: input.description,
         userId: ctx.user.id,
+        templateSlug: input.templateSlug,
       });
       if (compliance.tier === 'hard_block') {
         throw new TRPCError({
@@ -266,6 +267,7 @@ export const taskRouter = router({
       const result = await ComplianceGuardianService.evaluate({
         description: input.description,
         userId: ctx.user.id,
+        templateSlug: input.templateSlug,
       });
 
       if (result.tier === 'hard_block') {
@@ -313,7 +315,7 @@ export const taskRouter = router({
         });
       }
 
-      await db.query(
+      const updateResult = await db.query(
         `UPDATE tasks
          SET mutual_consent_accepted = TRUE,
              worker_id = $2,
@@ -322,6 +324,13 @@ export const taskRouter = router({
          WHERE id = $1 AND state = 'posted'`,
         [input.taskId, ctx.user.id]
       );
+
+      if ((updateResult.rowCount ?? 0) === 0) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'Task is no longer available for claiming',
+        });
+      }
 
       return { accepted: true };
     }),

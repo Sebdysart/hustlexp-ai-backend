@@ -27,6 +27,7 @@ export interface ComplianceNotes {
 interface EvaluateInput {
   description: string;
   userId: string;
+  templateSlug?: string;
   ipAddress?: string;
   deviceFingerprint?: string;
 }
