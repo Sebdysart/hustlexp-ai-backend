@@ -46,14 +46,21 @@ const HARD_BLOCK_PATTERNS = [
   /happy\s+ending/i,
   /erotic|sexual\s+service/i,
   /unlicensed\s+(medical|legal|therapy)/i,
-  /\b(deliver|bring|transport|carry|drop.?off).{0,30}(gun|firearm|weapon|pistol|rifle|ammo|ammunition)\b/i,
-  /\b(gun|firearm|weapon|pistol|rifle).{0,30}(delivery|transport|drop.?off|location)\b/i,
   /no\s+address.{0,20}deliver/i,
 ];
 
+// Weapon transport patterns — evaluated via _weaponPatternCheck() to support negator carveout
+const WEAPON_TRANSPORT_PATTERNS = [
+  /\b(deliver|bring|transport|carry|drop.?off).{0,30}(gun|firearm|weapon|pistol|rifle|ammo|ammunition)\b/i,
+  /\b(gun|firearm|weapon|pistol|rifle).{0,30}(delivery|transport|drop.?off|location)\b/i,
+];
+
+// If any of these words appear in the description, weapon transport is downgraded to soft_flag
+const WEAPON_CONTEXT_NEGATORS = /gun\s+range|shooting\s+range|hunting|rifle\s+case|gun\s+case|firearm\s+case|storage\s+unit|licensed\s+dealer|licensed\s+firearm|sporting\s+goods/i;
+
 const SOFT_FLAG_PATTERNS = [
   { pattern: /massage/i, rule: 'physical_contact_ambiguous', score: 35 },
-  { pattern: /overnight.{0,30}(stay|companion|babysit|nanny|childcare|caregiver|sitter|care)/i, rule: 'overnight_ambiguous', score: 45 },
+  { pattern: /overnight.{0,30}(stay|companion|babysit|nanny|childcare|caregiver|sitter|(?<![a-z-])care\b)/i, rule: 'overnight_ambiguous', score: 45 },
   { pattern: /alone.{0,20}(house|home|apartment)/i, rule: 'isolation_flag', score: 30 },
   { pattern: /(notary|legal\s+document).{0,30}(home|house)/i, rule: 'unlicensed_legal', score: 40 },
   { pattern: /medical.{0,20}(advice|treatment|injection)/i, rule: 'unlicensed_medical', score: 50 },
@@ -209,11 +216,29 @@ export const ComplianceGuardianService = {
     return 'clean';
   },
 
+  _weaponPatternCheck: (description: string): { score: number; triggeredRules: string[] } | null => {
+    const weaponMatch = WEAPON_TRANSPORT_PATTERNS.some(p => p.test(description));
+    if (!weaponMatch) return null;
+
+    const hasNegator = WEAPON_CONTEXT_NEGATORS.test(description);
+    if (hasNegator) {
+      // Legitimate sporting/hunting/storage context — downgrade to soft_flag
+      return { score: 60, triggeredRules: ['weapon_transport_context'] };
+    }
+    // No context words — treat as hard_block
+    return { score: 85, triggeredRules: ['weapon_delivery_attempt'] };
+  },
+
   _heuristicCheck: (description: string): { score: number; triggeredRules: string[] } => {
     for (const pattern of HARD_BLOCK_PATTERNS) {
       if (pattern.test(description)) {
         return { score: 85, triggeredRules: ['hard_block_pattern'] };
       }
+    }
+
+    const weaponResult = ComplianceGuardianService._weaponPatternCheck(description);
+    if (weaponResult) {
+      return weaponResult;
     }
 
     // Check if description contains license affirmers (suppress soft flags)

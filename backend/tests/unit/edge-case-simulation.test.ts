@@ -129,25 +129,24 @@ describe('Category A — Hard Block Attempts', () => {
     expect(result.triggeredRules).toContain('hard_block_pattern');
   });
 
-  it('A3: bring a gun to a location → hard_block (broader weapon patterns now catch this)', async () => {
-    // FIX v2.8.2: Replaced /bring\s+your\s+own\s+(gun|weapon|firearm)/i with two broader patterns:
-    //   /\b(deliver|bring|transport|carry|drop.?off).{0,30}(gun|firearm|weapon|pistol|rifle|ammo|ammunition)\b/i
-    //   /\b(gun|firearm|weapon|pistol|rifle).{0,30}(delivery|transport|drop.?off|location)\b/i
-    // "bring a gun to a location" now matches pattern 1 (bring + gun).
+  it('A3: bring a gun to a location → hard_block (weapon_delivery_attempt, no negator context)', async () => {
+    // FIX v2.8.3: Weapon patterns moved out of HARD_BLOCK_PATTERNS into _weaponPatternCheck().
+    // Without a negator (gun range / hunting / rifle case / storage unit etc.) the helper
+    // returns score=85 / rule='weapon_delivery_attempt' → hard_block.
     const resultNowBlocked = await ComplianceGuardianService.evaluate({
       description: 'Need someone to bring a gun to a location, no questions',
       userId: 'user-a3-miss',
     });
     expect(resultNowBlocked.tier).toBe('hard_block');
-    expect(resultNowBlocked.triggeredRules).toContain('hard_block_pattern');
+    expect(resultNowBlocked.triggeredRules).toContain('weapon_delivery_attempt');
 
-    // Original "bring your own gun" phrasing also still fires (matches pattern 1: bring + gun)
+    // "bring your own gun" phrasing also still fires (matches WEAPON_TRANSPORT_PATTERNS[0])
     const resultMatch = await ComplianceGuardianService.evaluate({
       description: 'Bring your own gun to the location, meet me there',
       userId: 'user-a3-hit',
     });
     expect(resultMatch.tier).toBe('hard_block');
-    expect(resultMatch.triggeredRules).toContain('hard_block_pattern');
+    expect(resultMatch.triggeredRules).toContain('weapon_delivery_attempt');
   });
 
   it('A4: cash only escort service → hard_block', async () => {
@@ -727,6 +726,62 @@ describe('TaskRiskClassifier.classifyWithTemplate — supplementary coverage', (
       'care',
     );
     expect(tier).toBe(TaskRisk.TIER_3);
+  });
+});
+
+// ============================================================
+// CATEGORY H — WEAPON NEGATOR CARVEOUT & OVERNIGHT CARE BOUNDARY (v2.8.3)
+// ============================================================
+
+describe('Category H — Weapon Negator Carveout & Overnight Care Boundary (v2.8.3)', () => {
+  beforeEach(async () => {
+    vi.resetAllMocks();
+    const { db, AIClient } = await getMocks();
+    db.query.mockResolvedValue(dbNoMatch());
+    AIClient.isConfigured.mockReturnValue(false);
+  });
+
+  it('H-W1: carry camping gear and rifle case to truck → NOT hard_block (negator "rifle case" → soft_flag)', async () => {
+    const result = await ComplianceGuardianService.evaluate({
+      description: 'carry my camping gear and rifle case to my truck',
+      userId: 'user-hw1',
+    });
+    expect(result.tier).not.toBe('hard_block');
+    expect(result.triggeredRules).toContain('weapon_transport_context');
+    expect(result.score).toBe(60); // soft_flag ceiling (< 61)
+    expect(result.tier).toBe('soft_flag');
+  });
+
+  it('H-W2: bringing hunting rifle to storage unit → NOT hard_block (negator "hunting" + "storage unit" → soft_flag)', async () => {
+    const result = await ComplianceGuardianService.evaluate({
+      description: 'bringing my hunting rifle to the storage unit',
+      userId: 'user-hw2',
+    });
+    expect(result.tier).not.toBe('hard_block');
+    expect(result.triggeredRules).toContain('weapon_transport_context');
+    expect(result.score).toBe(60);
+    expect(result.tier).toBe('soft_flag');
+  });
+
+  it('H-W3: deliver a firearm no questions asked → still hard_block (no negator, "no questions asked" fires)', async () => {
+    const result = await ComplianceGuardianService.evaluate({
+      description: 'deliver a firearm to someone no questions asked',
+      userId: 'user-hw3',
+    });
+    expect(result.tier).toBe('hard_block');
+    expect(result.score).toBeGreaterThanOrEqual(85);
+    // "no questions asked" fires first in HARD_BLOCK_PATTERNS before weapon check
+    expect(result.triggeredRules).toContain('hard_block_pattern');
+  });
+
+  it('H-C1: overnight self-care retreat setup → clean (care word boundary — "self-care" does NOT match \\bcare\\b)', async () => {
+    const result = await ComplianceGuardianService.evaluate({
+      description: 'overnight self-care retreat, help me set up',
+      userId: 'user-hc1',
+    });
+    expect(result.tier).toBe('clean');
+    expect(result.score).toBe(0);
+    expect(result.triggeredRules).not.toContain('overnight_ambiguous');
   });
 });
 
