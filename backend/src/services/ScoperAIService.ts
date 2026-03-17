@@ -72,6 +72,14 @@ const DIFFICULTY_PRICE_RANGES = {
   hard: { min: 15000, max: 50000 } // $150-$500
 };
 
+// Talent templates use performance/creator pricing floors, not keyword-based labor pricing
+const TALENT_TEMPLATES = new Set<string>([
+  TEMPLATE_SLUGS.WILDCARD_BIZARRE,
+  TEMPLATE_SLUGS.CONTENT_CREATOR,
+  TEMPLATE_SLUGS.EVENT_APPEARANCE,
+  TEMPLATE_SLUGS.CREATIVE_PRODUCTION,
+]);
+
 // ============================================================================
 // SERVICE
 // ============================================================================
@@ -269,19 +277,13 @@ ${input.location ? `Location: ${input.location.city}, ${input.location.state}` :
     const flags: string[] = [];
     const requiredCapabilities: string[] = [];
 
-    // Template-aware base pricing (talent templates price like talent, not labor)
-    const TALENT_TEMPLATES = new Set([
-      'wildcard_bizarre', 'content_creator', 'event_appearance', 'creative_production'
-    ]);
+    const isTalentTemplate = !!(input.templateSlug && TALENT_TEMPLATES.has(input.templateSlug));
 
-    if (input.templateSlug && TALENT_TEMPLATES.has(input.templateSlug)) {
+    if (isTalentTemplate) {
       // Talent floor: $75 base for performance/creator tasks (3hr × $25/hr minimum)
       priceCents = 7500;
       difficulty = 'hard';
-    }
-
-    // Keyword-based adjustments
-    if (description.includes('delivery') || description.includes('pickup')) {
+    } else if (description.includes('delivery') || description.includes('pickup')) {
       priceCents = 2500;
       difficulty = 'easy';
       requiredCapabilities.push('vehicle');
