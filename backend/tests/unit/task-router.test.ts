@@ -140,6 +140,9 @@ vi.mock('../../src/services/TaskTemplateRegistry', () => ({
     scoperContext: '',
   }),
   getManifest: vi.fn().mockReturnValue([]),
+  // FIX 2 & 3: content-based detection helpers — default to false in tests
+  isCareContent: vi.fn().mockReturnValue(false),
+  isContentReleaseRequired: vi.fn().mockReturnValue(false),
 }));
 
 vi.mock('../../src/services/TaskRiskClassifier', () => ({

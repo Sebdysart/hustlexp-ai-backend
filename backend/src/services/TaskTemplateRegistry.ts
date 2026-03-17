@@ -200,10 +200,48 @@ Flag "bizarre_custom" + audience_size + performance_element.`,
 };
 
 /**
- * Get template by slug. Falls back to wildcard_bizarre for unknown slugs.
+ * Get template by slug. Returns undefined for unknown slugs (callers must validate).
  */
-export function getTemplate(slug: string): TaskTemplate {
+export function getTemplate(slug: string): TaskTemplate | undefined {
+  return TaskTemplateRegistry[slug as TemplateSlug];
+}
+
+/**
+ * Get template by slug with wildcard fallback for backwards-compatible internal use.
+ * @deprecated Prefer getTemplate() with explicit undefined handling.
+ */
+export function getTemplateFallback(slug: string): TaskTemplate {
   return TaskTemplateRegistry[slug as TemplateSlug] ?? TaskTemplateRegistry.wildcard_bizarre;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CONTENT-BASED DETECTION HELPERS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Care keyword regex — detects care content regardless of template slug.
+ * Used to override caregiving=false when the description contains care signals.
+ */
+export const CARE_KEYWORDS = /\b(bathe|bathing|wash|elder|elderly|senior|babysit|babysitter|childcare|child care|infant|toddler|diaper|disabled|wheelchair|dementia|alzheimer|pet sit|petsit|dog sit|dogsit)\b/i;
+
+/**
+ * Returns true if the task description contains care-related content.
+ */
+export function isCareContent(description: string): boolean {
+  return CARE_KEYWORDS.test(description);
+}
+
+/**
+ * Content release keyword regex — detects camera/video/streaming tasks.
+ * Used to force requiresContentRelease=true regardless of template slug.
+ */
+export const CONTENT_RELEASE_KEYWORDS = /\b(film|filming|video|camera|record|recording|stream|streaming|appear\s+on\s+(camera|screen|video)|youtube|tiktok|instagram|social\s+media|channel)\b/i;
+
+/**
+ * Returns true if the task description contains content-release signals.
+ */
+export function isContentReleaseRequired(description: string): boolean {
+  return CONTENT_RELEASE_KEYWORDS.test(description);
 }
 
 /**

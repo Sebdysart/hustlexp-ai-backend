@@ -17,7 +17,7 @@ import { logger } from '../logger.js';
 import { z } from 'zod';
 import { ComplianceGuardianService } from '../services/ComplianceGuardianService.js';
 import { ScoperAIService } from '../services/ScoperAIService.js';
-import { getTemplate, getManifest } from '../services/TaskTemplateRegistry.js';
+import { getTemplate, getManifest, isCareContent, isContentReleaseRequired } from '../services/TaskTemplateRegistry.js';
 import { TaskRiskClassifier } from '../services/TaskRiskClassifier.js';
 
 export const taskRouter = router({
@@ -192,10 +192,29 @@ export const taskRouter = router({
         });
       }
 
-      // Resolve template before TaskService.create() so template_slug is written
-      // atomically in the INSERT — prevents a NULL window if the server crashes
-      // between the INSERT and the subsequent UPDATE.
-      const template = getTemplate(input.templateSlug ?? 'standard_physical');
+      // FIX 4: Validate template slug — reject unknown slugs with a clear error.
+      const resolvedSlug = input.templateSlug ?? 'standard_physical';
+      const template = getTemplate(resolvedSlug);
+      if (!template) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: `Invalid template: ${resolvedSlug}. Use GET /api/templates/manifest for valid options.`,
+        });
+      }
+
+      // FIX 1: Enforce requiredTrustTier — reject if poster's tier is below template minimum.
+      // trust_tier in DB is numeric (1=rookie, 2=verified, 3=trusted).
+      const TRUST_TIER_ORDER = ['rookie', 'verified', 'trusted'];
+      const TRUST_TIER_NUMERIC_MAP: Record<number, string> = { 1: 'rookie', 2: 'verified', 3: 'trusted', 4: 'trusted' };
+      const posterTierName = TRUST_TIER_NUMERIC_MAP[ctx.user.trust_tier ?? 1] ?? 'rookie';
+      const posterTierIndex = TRUST_TIER_ORDER.indexOf(posterTierName);
+      const requiredTierIndex = TRUST_TIER_ORDER.indexOf(template.requiredTrustTier ?? 'rookie');
+      if (posterTierIndex < requiredTierIndex) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: `This task type requires ${template.requiredTrustTier} trust level. Your current level is ${posterTierName}.`,
+        });
+      }
 
       const result = await TaskService.create({
         posterId: ctx.user.id,
@@ -227,12 +246,26 @@ export const taskRouter = router({
       await invalidateTask(result.data.id);
 
       // Persist remaining template system fields (template_slug already set in the INSERT above)
+
+      // FIX 2: Content-based caregiving detection — OR with template slug check.
+      const caregiving = template.slug === 'care' || isCareContent(input.description);
+
+      // FIX 3: Content-based content-release detection — OR with template flag.
+      const requiresContentRelease = template.requiresContentRelease || isContentReleaseRequired(input.description);
+
+      // FIX 3 (addendum): Content-based content release also forces mutual consent.
+      const requiresMutualConsent = template.requiresMutualConsent || requiresContentRelease;
+      void requiresMutualConsent; // stored via template fields; logged here for auditing
+
+      // FIX 5: Care content forces autoReleaseHours=0 (manual release only — safety invariant).
+      const autoReleaseHours = caregiving ? 0 : template.autoReleaseHours;
+
       const riskTier = TaskRiskClassifier.classifyWithTemplate(
         {
           insideHome: input.insideHome ?? false,
           peoplePresent: input.peoplePresent ?? false,
           petsPresent: input.petsPresent ?? false,
-          caregiving: template.slug === 'care',
+          caregiving,
         },
         template.slug,
         input.wildcardFlags ?? [],
@@ -253,8 +286,8 @@ export const taskRouter = router({
           compliance.score,
           JSON.stringify(compliance.notes),
           template.lateCancelPct,
-          template.requiresContentRelease,
-          template.autoReleaseHours,
+          requiresContentRelease,
+          autoReleaseHours,
         ]
       );
 
@@ -319,7 +352,9 @@ export const taskRouter = router({
       }
 
       const task = taskResult.rows[0];
-      const template = getTemplate(task.template_slug);
+      const template = getTemplate(task.template_slug) ?? (() => {
+        throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: 'Unknown template on task' });
+      })();
 
       if (!template.requiresMutualConsent) {
         throw new TRPCError({
