@@ -93,7 +93,7 @@ describe('JSONB Counter Boundary Conditions', () => {
   //
   // VERDICT: CORRECT — the service correctly uses atomicResult(false) and the
   //          Math.max(score, 21) floor ensures soft_flag even if base score is 0.
-  it('ATTACK 1 (BUG FOUND): empty counter — "no questions asked" → heuristic=85 + coded_phrase_first_occurrence (+15) = 100, NOT 85', async () => {
+  it('ATTACK 1 (FIXED): empty counter — "no questions asked" → heuristic=85, score capped at 85 (NOT inflated to 100)', async () => {
     const db = await getDb();
     // Simulate CTE returning was_repeat=false (empty JSONB counter → no prior matches)
     db.query.mockResolvedValueOnce(atomicResult(false));
@@ -103,25 +103,18 @@ describe('JSONB Counter Boundary Conditions', () => {
       userId: 'user-atk1',
     });
 
-    // BUG UNCOVERED: "no questions asked" is BOTH a HARD_BLOCK_PATTERN (score=85) AND
-    // a FLAGGED_PATTERN ("no questions asked"). The service:
+    // FIX: "no questions asked" is BOTH a HARD_BLOCK_PATTERN (score=85) AND a FLAGGED_PATTERN.
+    // The dual-membership score inflation is now fixed:
     //   1. _heuristicCheck returns score=85 (hard_block_pattern)
     //   2. _codeLevelPatternMatch ALSO matches "no questions asked" → was_repeat=false
-    //   3. isRepeat=false → heuristicResult.score += 15 → 85+15 = 100
-    //   4. Math.max(100, 21) = 100 → hard_block
+    //   3. alreadyHardBlock=true → score NOT bumped → stays at 85
+    //   4. Math.max(85, 21) = 85 → hard_block
     //
-    // VERDICT: WRONG — the hard_block heuristic score (85) is inflated by the coded-phrase
-    // +15 bump even though the description already triggered a hard block. The final score
-    // is 100 instead of 85. The tier is still hard_block, so this is functionally harmless,
-    // but the score inflation is unexpected. A description with a hard_block pattern will
-    // ALWAYS get an extra +15 or +25 if that same phrase is also in FLAGGED_PATTERNS.
-    //
-    // "no questions asked" is in both HARD_BLOCK_PATTERNS and FLAGGED_PATTERNS — this dual
-    // membership causes score inflation for hard_block cases.
-    expect(result.score).toBe(100); // ACTUAL: 85 + 15 = 100 (not 85)
+    // Score is 85 (not 100). Rule coded_phrase_first_occurrence is still recorded for analytics.
+    expect(result.score).toBe(85); // FIXED: capped at 85, not inflated to 100
     expect(result.tier).toBe('hard_block');
     expect(result.triggeredRules).toContain('hard_block_pattern');
-    expect(result.triggeredRules).toContain('coded_phrase_first_occurrence'); // BOTH fire
+    expect(result.triggeredRules).toContain('coded_phrase_first_occurrence'); // rule still recorded
   });
 
   // ── ATTACK 1b ─────────────────────────────────────────────────────────────
@@ -331,19 +324,19 @@ describe('JSONB Counter Boundary Conditions', () => {
   // instant is excluded. A user who submitted exactly 30 days ago resets to first
   // occurrence. This is a known off-by-one in the SQL that could be >= instead of >.
   // The test documents the ACTUAL behavior.
-  it('ATTACK 9 (OFF-BY-ONE): phrase at exactly 30-day boundary — SQL uses >, not >=, so entry is EXCLUDED', async () => {
+  it('ATTACK 9 (FIXED): phrase at exactly 30-day boundary — SQL uses >=, entry IS included (was_repeat=true)', async () => {
     const db = await getDb();
-    // Simulate: entry at exactly NOW() - 30days fails the > test → was_repeat=false (null → false)
-    db.query.mockResolvedValueOnce({ rows: [{ was_repeat: null }], rowCount: 1 } as any);
+    // FIX: SQL now uses >= instead of >, so an entry at exactly 30 days IS included.
+    // A user who submitted exactly 30 days ago is correctly treated as a repeat occurrence.
+    db.query.mockResolvedValueOnce(atomicResult(true)); // entry at boundary → was_repeat=true
 
     const result = await ComplianceGuardianService.evaluate({
       description: 'deliver for a friend',
       userId: 'user-atk9',
     });
 
-    // Off-by-one: entry at exactly 30 days is NOT included → treated as first occurrence
-    // This documents the boundary behavior — was_repeat=false at exactly 30 days
-    expect(result.triggeredRules).toContain('coded_phrase_first_occurrence');
+    // FIXED: entry at exactly 30 days IS included in the 30-day window → was_repeat=true
+    expect(result.triggeredRules).toContain('cross_task_pattern_repeat');
     expect(result.tier).toBe('soft_flag');
   });
 
@@ -450,7 +443,7 @@ describe('Concurrent Submission Race Conditions', () => {
   //   BUT: the UPDATE silently fails (no row updated), yet the service continues.
   //   This means flagged_phrase_counter is NEVER incremented for non-existent users.
   //   This is a SILENT FAILURE — no error, no log at INFO level, counter not updated.
-  it('ATTACK 12: user with no DB row — UPDATE returns 0 rows, rows[0] undefined, graceful false fallback', async () => {
+  it('ATTACK 12 (FIXED): user with no DB row — UPDATE returns 0 rows, warning logged, returns first-occurrence', async () => {
     const db = await getDb();
     db.query.mockResolvedValueOnce(noUserResult()); // 0 rows returned from RETURNING
 
@@ -459,15 +452,14 @@ describe('Concurrent Submission Race Conditions', () => {
       userId: 'user-nonexistent',
     });
 
-    // rows[0] = undefined → undefined?.was_repeat = undefined → ?? false → isRepeat=false
-    // Service continues WITHOUT logging a warning about missing user row
+    // FIX: When rows is empty (no user row found), service:
+    //   1. Logs a warning via log.warn (counter not updated)
+    //   2. Returns { matched: true, isRepeat: false, matchedPhrase } — first occurrence treatment
+    //   3. Does NOT crash or throw
     expect(result.triggeredRules).toContain('coded_phrase_first_occurrence');
     expect(result.tier).toBe('soft_flag');
-    // No crash — graceful fallback
-
-    // BUG DOCUMENTED: Counter was NOT actually updated (user doesn't exist).
-    // The service treats this identically to a successful empty-counter case.
-    // A ghost user can submit indefinitely with "first occurrence" scoring.
+    // No crash — graceful fallback with warning logged
+    // (The warning is logged at the service level — the mock logger captures it silently)
   });
 });
 

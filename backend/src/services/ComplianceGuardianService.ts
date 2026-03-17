@@ -72,6 +72,12 @@ const SOFT_FLAG_PATTERNS = [
   { pattern: /\b(escort(?!\s*(to|service\s+dog|vehicle))|private\s+escort)\b/i, score: 45, rule: 'escort_ambiguous' },
   { pattern: /\b(controlled\s+substances?|pharmacolog\w*|score\s+some)\b/i, score: 40, rule: 'drug_reference' },
   { pattern: /\b(reconnaissance|casing|staking?\s+out|surveil).{0,20}(house|home|property|neighbor|building)\b/i, score: 45, rule: 'property_surveillance' },
+  { pattern: /\b(pretend|pose|act).{0,20}(you'?re|to\s+be|as).{0,20}(hoa|police|officer|inspector|official|city|government|landlord|authority|representative|agent\s+from)\b/i, score: 55, rule: 'authority_impersonation' },
+  { pattern: /\b(impersonat|pretend.{0,10}official|fake.{0,10}(inspector|officer|agent|representative))\b/i, score: 55, rule: 'authority_impersonation' },
+  { pattern: /\b(pose|pretend|act|go\s+as).{0,20}(a|an).{0,20}(journalist|reporter|critic|reviewer|doctor|nurse|lawyer|attorney|detective|investigator|photographer|influencer)\b/i, score: 40, rule: 'professional_role_impersonation' },
+  { pattern: /\b(live|stay|sleep).{0,20}(in|at).{0,20}(my\s+)?(house|home|apartment|place|unit)\b/i, score: 45, rule: 'extended_presence_livein' },
+  { pattern: /\buntil\s+i\s+(fall\s+)?asleep\b/i, score: 35, rule: 'presence_until_asleep' },
+  { pattern: /\bfor\s+(one|1|two|2|three|3|a)\s+(week|weeks|night|nights)\b.{0,30}(companion|assistant|stay|live)/i, score: 40, rule: 'multi_night_arrangement' },
 ];
 
 // ============================================================
@@ -130,16 +136,21 @@ export const ComplianceGuardianService = {
     let codedPhraseMatched = false;
     if (patternMatch.matched && patternMatch.matchedPhrase) {
       codedPhraseMatched = true;
+      // BUG FIX #1: If the heuristic already returned hard_block (score=85), do NOT add the
+      // coded-phrase score delta. The phrase is already in HARD_BLOCK_PATTERNS — double-scoring
+      // would inflate the score to 100 without adding any new signal. Still record the rule for
+      // analytics but cap the score at the heuristic value.
+      const alreadyHardBlock = heuristicResult.score >= 85;
       if (patternMatch.isRepeat) {
         // Repeat occurrence: +25 to push firmly into soft_flag range
         heuristicResult = {
-          score: heuristicResult.score + 25,
+          score: alreadyHardBlock ? heuristicResult.score : heuristicResult.score + 25,
           triggeredRules: [...heuristicResult.triggeredRules, 'cross_task_pattern_repeat'],
         };
       } else {
         // First occurrence: +15 to push into soft_flag range
         heuristicResult = {
-          score: heuristicResult.score + 15,
+          score: alreadyHardBlock ? heuristicResult.score : heuristicResult.score + 15,
           triggeredRules: [...heuristicResult.triggeredRules, 'coded_phrase_first_occurrence'],
         };
       }
@@ -326,13 +337,13 @@ export const ComplianceGuardianService = {
           SELECT jsonb_agg(entry ORDER BY (entry->>'matched_at')) AS arr
           FROM old_data,
                jsonb_array_elements(old_data.counter) AS entry
-          WHERE (entry->>'matched_at')::timestamptz > NOW() - INTERVAL '30 days'
+          WHERE (entry->>'matched_at')::timestamptz >= NOW() - INTERVAL '30 days'
         ),
         repeat_check AS (
           SELECT bool_or(entry->>'phrase' = $3) AS was_repeat
           FROM old_data,
                jsonb_array_elements(old_data.counter) AS entry
-          WHERE (entry->>'matched_at')::timestamptz > NOW() - INTERVAL '30 days'
+          WHERE (entry->>'matched_at')::timestamptz >= NOW() - INTERVAL '30 days'
         ),
         new_counter AS (
           -- Keep the 19 most-recent entries from the 30-day window, then append the new
@@ -363,7 +374,13 @@ export const ComplianceGuardianService = {
         [userId, newEntry, matchedPhrase]
       );
 
-      const isRepeat = atomicResult.rows[0]?.was_repeat ?? false;
+      // BUG FIX #3: If no row was returned, the user doesn't exist in the DB.
+      // The counter was never updated. Log a warning but don't block — treat as first occurrence.
+      if (!atomicResult.rows[0]) {
+        log.warn({ userId }, 'flagged_phrase_counter update found no user row — counter not updated, treating as first occurrence');
+        return { matched: true, isRepeat: false, matchedPhrase };
+      }
+      const isRepeat = atomicResult.rows[0].was_repeat ?? false;
       return { matched: true, isRepeat, matchedPhrase };
     } catch (err) {
       log.warn({ err }, 'Failed to update flagged_phrase_counter atomically, continuing without cross-task check');
