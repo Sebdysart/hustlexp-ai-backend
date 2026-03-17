@@ -80,8 +80,8 @@ const SOFT_FLAG_PATTERNS = [
   { pattern: /(notary|legal\s+document).{0,30}(home|house)/i, rule: 'unlicensed_legal', score: 40 },
   { pattern: /medical.{0,20}(advice|treatment|injection)/i, rule: 'unlicensed_medical', score: 50 },
   { pattern: /cash\s+only.{0,20}no\s+record/i, rule: 'unreported_payment', score: 45 },
-  { pattern: /\b(gfe|girlfriend\s+experience|full\s+service|intimate\s+service|companionship\s+service)\b/i, score: 50, rule: 'sex_work_coded_language' },
-  { pattern: /\b(escort(?!\s*(to|service\s+dog|vehicle))|private\s+escort)\b/i, score: 45, rule: 'escort_ambiguous' },
+  { pattern: /\b(gfe|girlfriend\s+experience|full\s+service(?!\s*(car|auto|vehicle|detailing|cleaning|wardrobe|consultation|menu|buffet|spa|salon|wash|wax|oil\s+change|repair|maintenance))|intimate\s+service|companionship\s+service)\b/i, score: 50, rule: 'sex_work_coded_language' },
+  { pattern: /\b(escort(?!\s*(to\b|service\s+dog|vehicle|my|her|his|their|our|your|someone|a\s+person|the\s+patient|the\s+guest))|private\s+escort)\b/i, score: 45, rule: 'escort_ambiguous' },
   { pattern: /\b(controlled\s+substances?|pharmacolog\w*|score\s+some)\b/i, score: 40, rule: 'drug_reference' },
   { pattern: /\b(reconnaissance|casing|staking?\s+out|surveil).{0,20}(house|home|property|neighbor|building)\b/i, score: 45, rule: 'property_surveillance' },
   { pattern: /\b(pretend|pose|act).{0,20}(you'?re|to\s+be|as).{0,20}(hoa|police|officer|inspector|official|city|government|landlord|authority|representative|agent\s+from)\b/i, score: 55, rule: 'authority_impersonation' },
@@ -113,7 +113,7 @@ export const FLAGGED_PATTERNS: string[] = [
 ];
 
 // Override: if description contains license-affirming words, suppress soft flags
-const LICENSE_AFFIRMERS = [/licensed/i, /certified/i, /credentials/i, /professional/i];
+const LICENSE_AFFIRMERS = [/licensed/i, /certified/i, /credentials/i, /professional/i, /therapist/i, /practitioner/i];
 
 // Homoglyph map: common visual lookalikes (Cyrillic + accented Latin → ASCII)
 const HOMOGLYPH_MAP: Record<string, string> = {
