@@ -31,7 +31,7 @@
  * a fake protected context to bypass middleware.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // ---------------------------------------------------------------------------
 // Mocks — must come before any imports that transitively touch these modules
@@ -160,7 +160,7 @@ import { TaskService } from '../../src/services/TaskService';
 import { ProofService } from '../../src/services/ProofService';
 import { ComplianceGuardianService } from '../../src/services/ComplianceGuardianService';
 import { getTemplate } from '../../src/services/TaskTemplateRegistry';
-import { taskRouter } from '../../src/routers/task';
+import { taskRouter, draftEvalCalls } from '../../src/routers/task';
 
 const mockDb = vi.mocked(db);
 const mockTaskService = vi.mocked(TaskService);
@@ -1720,6 +1720,114 @@ describe('task.evaluateDraft', () => {
     expect(mockCompliance.evaluate).toHaveBeenCalledWith(
       expect.objectContaining({ templateSlug: 'event_appearance' })
     );
+  });
+});
+
+// ===========================================================================
+// task.evaluateDraft — per-user rate limit (5/min)
+// ===========================================================================
+
+describe('task.evaluateDraft rate limit', () => {
+  const RATE_LIMIT_USER = 'ffffffff-ffff-ffff-ffff-ffffffffffff';
+
+  const cleanResult = {
+    score: 0,
+    tier: 'clean' as const,
+    triggeredRules: [],
+    notes: {
+      score: 0,
+      tier: 'clean',
+      triggered_rules: [],
+      suggested_alternative: null,
+      admin_review_id: null,
+      appeal_status: 'none',
+    },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Clear the rate-limit map so each test starts with a clean slate
+    draftEvalCalls.clear();
+  });
+
+  afterEach(() => {
+    draftEvalCalls.clear();
+    vi.useRealTimers();
+  });
+
+  it('allows the first 5 calls within a 1-minute window', async () => {
+    const caller = makeCallerAsPoster(RATE_LIMIT_USER);
+    mockCompliance.evaluate.mockResolvedValue(cleanResult);
+
+    for (let i = 0; i < 5; i++) {
+      await expect(
+        caller.evaluateDraft({ description: 'Help move boxes' })
+      ).resolves.toBeDefined();
+    }
+
+    expect(mockCompliance.evaluate).toHaveBeenCalledTimes(5);
+  });
+
+  it('throws TOO_MANY_REQUESTS on the 6th call within the window', async () => {
+    const caller = makeCallerAsPoster(RATE_LIMIT_USER);
+    // First 5 succeed
+    mockCompliance.evaluate.mockResolvedValue(cleanResult);
+    for (let i = 0; i < 5; i++) {
+      await caller.evaluateDraft({ description: 'Help move boxes' });
+    }
+
+    // 6th call must be rate-limited — compliance should not even be called
+    await expect(
+      caller.evaluateDraft({ description: 'Help move boxes' })
+    ).rejects.toMatchObject({ code: 'TOO_MANY_REQUESTS' });
+
+    // Compliance was never called for the blocked 6th attempt
+    expect(mockCompliance.evaluate).toHaveBeenCalledTimes(5);
+  });
+
+  it('resets the window after 1 minute and allows calls again', async () => {
+    vi.useFakeTimers();
+    const caller = makeCallerAsPoster(RATE_LIMIT_USER);
+    mockCompliance.evaluate.mockResolvedValue(cleanResult);
+
+    // Exhaust the limit
+    for (let i = 0; i < 5; i++) {
+      await caller.evaluateDraft({ description: 'Help move boxes' });
+    }
+
+    // 6th call is blocked
+    await expect(
+      caller.evaluateDraft({ description: 'Help move boxes' })
+    ).rejects.toMatchObject({ code: 'TOO_MANY_REQUESTS' });
+
+    // Advance time by 61 seconds so the window expires
+    vi.advanceTimersByTime(61_000);
+
+    // Now calls should succeed again
+    await expect(
+      caller.evaluateDraft({ description: 'Help move boxes after reset' })
+    ).resolves.toBeDefined();
+  });
+
+  it('tracks limits independently per user', async () => {
+    const userA = 'aaaaaaaa-aaaa-aaaa-aaaa-000000000001';
+    const userB = 'aaaaaaaa-aaaa-aaaa-aaaa-000000000002';
+    mockCompliance.evaluate.mockResolvedValue(cleanResult);
+
+    // Exhaust user A's limit
+    const callerA = makeCallerAsPoster(userA);
+    for (let i = 0; i < 5; i++) {
+      await callerA.evaluateDraft({ description: 'Help move boxes' });
+    }
+    await expect(
+      callerA.evaluateDraft({ description: 'Help move boxes' })
+    ).rejects.toMatchObject({ code: 'TOO_MANY_REQUESTS' });
+
+    // User B's limit is unaffected
+    const callerB = makeCallerAsPoster(userB);
+    await expect(
+      callerB.evaluateDraft({ description: 'Help move boxes' })
+    ).resolves.toBeDefined();
   });
 });
 

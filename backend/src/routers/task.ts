@@ -20,6 +20,31 @@ import { ScoperAIService } from '../services/ScoperAIService.js';
 import { getTemplate, getManifest, isCareContent, isContentReleaseRequired } from '../services/TaskTemplateRegistry.js';
 import { TaskRiskClassifier } from '../services/TaskRiskClassifier.js';
 
+// ---------------------------------------------------------------------------
+// In-memory rate limit for evaluateDraft: max 5 calls per minute per user
+// ---------------------------------------------------------------------------
+
+export const draftEvalCalls = new Map<string, { count: number; resetAt: number }>();
+
+function checkDraftEvalRateLimit(userId: string): void {
+  const now = Date.now();
+  const window = 60_000; // 1 minute
+  const maxCalls = 5;
+
+  const entry = draftEvalCalls.get(userId);
+  if (!entry || now > entry.resetAt) {
+    draftEvalCalls.set(userId, { count: 1, resetAt: now + window });
+    return;
+  }
+  entry.count++;
+  if (entry.count > maxCalls) {
+    throw new TRPCError({
+      code: 'TOO_MANY_REQUESTS',
+      message: 'Too many draft evaluations. Please wait before trying again.',
+    });
+  }
+}
+
 export const taskRouter = router({
   // --------------------------------------------------------------------------
   // READ OPERATIONS
@@ -302,6 +327,8 @@ export const taskRouter = router({
   evaluateDraft: posterProcedure
     .input(Schemas.evaluateDraft)
     .mutation(async ({ ctx, input }) => {
+      checkDraftEvalRateLimit(ctx.user.id);
+
       const complianceResult = await ComplianceGuardianService.evaluate({
         description: input.description,
         userId: ctx.user.id,
