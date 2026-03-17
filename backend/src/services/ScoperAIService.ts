@@ -195,8 +195,9 @@ ${input.location ? `Location: ${input.location.city}, ${input.location.state}` :
         ) {
           const cap = Math.round(basePriceBeforeMultipliers * 1.1);
           if (proposal.suggested_price_cents > cap) {
+            const priceAfterMultipliers = proposal.suggested_price_cents;
             proposal.suggested_price_cents = cap;
-            log.info({ cap, original: proposal.suggested_price_cents }, 'Not genuinely bizarre (AI-confirmed) — premium capped at 1.1x');
+            log.info({ cap, original: priceAfterMultipliers }, 'Not genuinely bizarre (AI-confirmed) — premium capped at 1.1x');
           }
         }
 

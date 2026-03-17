@@ -269,10 +269,26 @@ export const ComplianceGuardianService = {
           WHERE (entry->>'matched_at')::timestamptz > NOW() - INTERVAL '30 days'
         ),
         new_counter AS (
-          SELECT (COALESCE(
-            (SELECT arr FROM pruned_data LIMIT 19),
-            '[]'::jsonb
-          ) || jsonb_build_array($2::jsonb)) AS counter
+          -- Keep the 19 most-recent entries from the 30-day window, then append the new
+          -- entry — capping the stored array at 20 total elements.
+          -- Inner subquery orders DESC (most recent first), LIMIT 19, then re-aggregates
+          -- ascending so the array stays chronologically ordered.
+          SELECT (
+            COALESCE(
+              (
+                SELECT jsonb_agg(entry ORDER BY (entry->>'matched_at'))
+                FROM (
+                  SELECT entry
+                  FROM jsonb_array_elements(
+                    COALESCE((SELECT arr FROM pruned_data), '[]'::jsonb)
+                  ) AS entry
+                  ORDER BY (entry->>'matched_at') DESC
+                  LIMIT 19
+                ) t
+              ),
+              '[]'::jsonb
+            ) || jsonb_build_array($2::jsonb)
+          ) AS counter
         )
         UPDATE users
         SET flagged_phrase_counter = (SELECT counter FROM new_counter)
