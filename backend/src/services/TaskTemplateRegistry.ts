@@ -227,7 +227,8 @@ export function applyWildcardMultipliers(
   activeFlags: string[],
   maxPriceCents = 50000
 ): number {
-  const totalMultiplier = activeFlags
+  const uniqueFlags = [...new Set(activeFlags)];
+  const totalMultiplier = uniqueFlags
     .filter(f => WILDCARD_MULTIPLIERS[f] !== undefined)
     .reduce((sum, f) => sum + WILDCARD_MULTIPLIERS[f], 0);
 

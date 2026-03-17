@@ -445,7 +445,7 @@ export const TaskService = {
         )
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
         RETURNING *`,
-        [posterId, title, description, finalPrice, xpReward, requirements, location, category, deadline, requiresProof, riskLevel, mode, liveBroadcastRadiusMiles, instantMode, sensitive, initialState, templateSlug ?? null]
+        [posterId, title, description, finalPrice, xpReward, requirements, location, category, deadline, requiresProof, riskLevel, mode, liveBroadcastRadiusMiles, instantMode, sensitive, initialState, templateSlug || null]
       );
       
       let createdTask = result.rows[0];

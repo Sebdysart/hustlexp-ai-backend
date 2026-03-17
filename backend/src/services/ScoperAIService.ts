@@ -419,9 +419,9 @@ ${input.location ? `Location: ${input.location.city}, ${input.location.state}` :
       }
     }
 
-    // Rule 4: Confidence threshold
-    if (proposal.confidence_score < MIN_CONFIDENCE_THRESHOLD) {
-      errors.push(`SCOPER-ERR-004: Confidence ${(proposal.confidence_score * 100).toFixed(0)}% too low, requires human review`);
+    // Rule 4: Confidence threshold (must be between 0.60 and 1.0)
+    if (proposal.confidence_score < MIN_CONFIDENCE_THRESHOLD || proposal.confidence_score > 1.0) {
+      errors.push('SCOPER-ERR-004: confidence_score must be between 0.60 and 1.0');
     }
 
     // Rule 5: Reasoning required
