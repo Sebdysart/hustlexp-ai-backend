@@ -18,6 +18,7 @@ function makeComplianceResult(overrides: Partial<ComplianceResult> = {}): Compli
     triggeredRules: [],
     deception_detected: false,
     is_genuinely_bizarre: false,
+    ai_signals_computed: true,  // ADD THIS — tests that explicitly test cap behavior need AI to have run
     notes: {
       score: 5,
       tier: 'clean',
@@ -27,6 +28,7 @@ function makeComplianceResult(overrides: Partial<ComplianceResult> = {}): Compli
       appeal_status: 'none',
       deception_detected: false,
       is_genuinely_bizarre: false,
+      ai_signals_computed: true,  // ADD THIS
     },
     ...overrides,
   };
@@ -106,5 +108,28 @@ describe('ScoperAI wildcard multiplier — no complianceResult', () => {
     if (!result.success) return;
     // Base 7500 + 0.30x = 9750, uncapped
     expect(result.data.suggested_price_cents).toBeGreaterThan(7500);
+  });
+});
+
+describe('ScoperAI wildcard multiplier — no AI signals (ai_signals_computed=false)', () => {
+  it('does NOT cap when ai_signals_computed is false even if is_genuinely_bizarre is false', async () => {
+    const complianceResult = makeComplianceResult({
+      ai_signals_computed: false,  // AI didn't run
+      is_genuinely_bizarre: false,  // default false — should NOT trigger cap
+    });
+
+    const result = await ScoperAIService.analyzeTaskScope({
+      description: 'Scatter my grandfather\'s ashes at a hiking peak',
+      templateSlug: TEMPLATE_SLUGS.WILDCARD_BIZARRE,
+      wildcardFlags: ['travel_over_30min_flag', 'performance_element_flag'],
+      complianceResult,
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+
+    // Without AI signals, cap should NOT apply. travel+performance = 0.40x on base ~7500
+    // = 7500 * 1.40 = 10500. Should be > 1.1x cap of 8250.
+    expect(result.data.suggested_price_cents).toBeGreaterThan(8250);
   });
 });

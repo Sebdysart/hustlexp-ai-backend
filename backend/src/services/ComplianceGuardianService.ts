@@ -15,6 +15,7 @@ export interface ComplianceResult {
   notes: ComplianceNotes;
   deception_detected: boolean;
   is_genuinely_bizarre: boolean;
+  ai_signals_computed: boolean;
 }
 
 export interface ComplianceNotes {
@@ -26,6 +27,7 @@ export interface ComplianceNotes {
   appeal_status: 'none' | 'pending' | 'approved' | 'rejected';
   deception_detected: boolean;
   is_genuinely_bizarre: boolean;
+  ai_signals_computed: boolean;
 }
 
 interface EvaluateInput {
@@ -93,11 +95,20 @@ export const ComplianceGuardianService = {
     const patternMatch = await ComplianceGuardianService._codeLevelPatternMatch(description, userId);
     let heuristicResult = ComplianceGuardianService._heuristicCheck(description);
 
-    if (patternMatch.isRepeat && patternMatch.matchedPhrase) {
-      heuristicResult = {
-        score: heuristicResult.score + 15,
-        triggeredRules: [...heuristicResult.triggeredRules, 'cross_task_pattern_repeat'],
-      };
+    if (patternMatch.matched && patternMatch.matchedPhrase) {
+      if (patternMatch.isRepeat) {
+        // Repeat occurrence: +15 to push firmly into soft_flag range
+        heuristicResult = {
+          score: heuristicResult.score + 15,
+          triggeredRules: [...heuristicResult.triggeredRules, 'cross_task_pattern_repeat'],
+        };
+      } else {
+        // First occurrence: +8 to push into AI-check range (15+) without immediately soft-flagging
+        heuristicResult = {
+          score: heuristicResult.score + 8,
+          triggeredRules: [...heuristicResult.triggeredRules, 'coded_phrase_first_occurrence'],
+        };
+      }
     }
 
     let finalResult: { score: number; triggeredRules: string[]; deception_detected: boolean; is_genuinely_bizarre: boolean } = {
@@ -106,12 +117,26 @@ export const ComplianceGuardianService = {
       is_genuinely_bizarre: false,
     };
 
-    if (AIClient.isConfigured() && heuristicResult.score >= 15 && heuristicResult.score <= 50) {
+    const isWildcardTask = input.templateSlug === 'wildcard_bizarre';
+    const scoreInAmbiguousRange = heuristicResult.score >= 15 && heuristicResult.score <= 50;
+    const shouldRunAI = AIClient.isConfigured() && (scoreInAmbiguousRange || isWildcardTask);
+
+    let aiSignalsComputed = false;
+
+    if (shouldRunAI) {
       try {
         finalResult = await ComplianceGuardianService._aiCheck(description, heuristicResult);
+        aiSignalsComputed = true;
       } catch (err) {
         log.warn({ err }, 'AI compliance check failed, using heuristic result');
       }
+    }
+
+    if (!AIClient.isConfigured() && isWildcardTask) {
+      log.warn(
+        { templateSlug: input.templateSlug },
+        'AI not configured — deception_detected and is_genuinely_bizarre unavailable for wildcard task. Bizarre cap will not apply, deception will not be detected.'
+      );
     }
 
     const tier = ComplianceGuardianService._scoreTotier(finalResult.score);
@@ -133,7 +158,8 @@ export const ComplianceGuardianService = {
       finalResult.triggeredRules,
       suggestedAlternative ?? undefined,
       finalResult.deception_detected,
-      finalResult.is_genuinely_bizarre
+      finalResult.is_genuinely_bizarre,
+      aiSignalsComputed,
     );
 
     return {
@@ -144,6 +170,7 @@ export const ComplianceGuardianService = {
       notes,
       deception_detected: finalResult.deception_detected ?? false,
       is_genuinely_bizarre: finalResult.is_genuinely_bizarre ?? false,
+      ai_signals_computed: aiSignalsComputed,
     };
   },
 
@@ -152,7 +179,8 @@ export const ComplianceGuardianService = {
     triggeredRules: string[],
     suggestedAlternative?: string,
     deception_detected: boolean = false,
-    is_genuinely_bizarre: boolean = false
+    is_genuinely_bizarre: boolean = false,
+    ai_signals_computed: boolean = false
   ): ComplianceNotes => ({
     score,
     tier: ComplianceGuardianService._scoreTotier(score),
@@ -162,6 +190,7 @@ export const ComplianceGuardianService = {
     appeal_status: 'none',
     deception_detected,
     is_genuinely_bizarre,
+    ai_signals_computed,
   }),
 
   _scoreTotier: (score: number): ComplianceTier => {
@@ -214,40 +243,38 @@ export const ComplianceGuardianService = {
       return { matched: false, isRepeat: false, matchedPhrase: null };
     }
 
-    // Fetch and update user's counter
+    // Atomic single-query approach — no SELECT→UPDATE race condition.
+    // The UPDATE reads flagged_phrase_counter, prunes old entries, checks for repeat,
+    // and appends the new entry all in one round-trip. RETURNING evaluates the
+    // pre-update value of flagged_phrase_counter so was_repeat reflects the state
+    // before this submission was added.
     try {
-      const userRow = await db.query<{ flagged_phrase_counter: Array<{ phrase: string; matched_at: string }> }>(
-        'SELECT flagged_phrase_counter FROM users WHERE id = $1',
-        [userId]
+      const newEntry = JSON.stringify({ phrase: matchedPhrase, matched_at: new Date().toISOString() });
+
+      const result = await db.query<{ was_repeat: boolean }>(
+        `UPDATE users
+         SET flagged_phrase_counter = (
+           SELECT COALESCE(
+             jsonb_agg(entry ORDER BY (entry->>'matched_at')),
+             '[]'::jsonb
+           ) || jsonb_build_array($2::jsonb)
+           FROM jsonb_array_elements(COALESCE(flagged_phrase_counter, '[]'::jsonb)) AS entry
+           WHERE (entry->>'matched_at')::timestamptz > NOW() - INTERVAL '30 days'
+           LIMIT 19
+         )
+         WHERE id = $1
+         RETURNING (
+           SELECT bool_or(entry->>'phrase' = $3)
+           FROM jsonb_array_elements(COALESCE(flagged_phrase_counter, '[]'::jsonb)) AS entry
+           WHERE (entry->>'matched_at')::timestamptz > NOW() - INTERVAL '30 days'
+         ) AS was_repeat`,
+        [userId, newEntry, matchedPhrase]
       );
 
-      const now = new Date();
-      const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-
-      const counter: Array<{ phrase: string; matched_at: string }> =
-        userRow.rows[0]?.flagged_phrase_counter ?? [];
-
-      // Prune entries older than 30 days
-      const pruned = counter.filter(
-        entry => new Date(entry.matched_at) > thirtyDaysAgo
-      );
-
-      // Check if this phrase already exists in pruned counter (cross-task repeat)
-      const isRepeat = pruned.some(entry => entry.phrase === matchedPhrase);
-
-      // Append new match
-      pruned.push({ phrase: matchedPhrase, matched_at: now.toISOString() });
-
-      // Write back (max 20 entries — trim oldest if over limit)
-      const trimmed = pruned.slice(-20);
-      await db.query(
-        'UPDATE users SET flagged_phrase_counter = $1 WHERE id = $2',
-        [JSON.stringify(trimmed), userId]
-      );
-
+      const isRepeat = result.rows[0]?.was_repeat ?? false;
       return { matched: true, isRepeat, matchedPhrase };
     } catch (err) {
-      log.warn({ err }, 'Failed to update flagged_phrase_counter, continuing without cross-task check');
+      log.warn({ err }, 'Failed to update flagged_phrase_counter atomically, continuing without cross-task check');
       return { matched: true, isRepeat: false, matchedPhrase };
     }
   },

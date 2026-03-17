@@ -180,16 +180,18 @@ ${input.location ? `Location: ${input.location.city}, ${input.location.state}` :
           log.info('Deception detected — wildcard multipliers zeroed');
         }
 
-        // GENUINE BIZARRE CAP: If task is NOT genuinely bizarre, cap premium at 1.1x.
-        // Prevents mundane tasks with creative framing from claiming full bonuses.
+        // GENUINE BIZARRE CAP: Only applies when AI actually evaluated bizarreness AND
+        // determined the task is NOT genuinely bizarre. If AI didn't run (ai_signals_computed=false),
+        // full bonuses apply — we cannot penalize tasks we haven't evaluated.
         if (
-          !input.complianceResult?.is_genuinely_bizarre &&
-          !input.complianceResult?.deception_detected // deception path already handled above
+          input.complianceResult?.ai_signals_computed === true &&
+          !input.complianceResult.is_genuinely_bizarre &&
+          !input.complianceResult.deception_detected
         ) {
           const cap = Math.round(basePriceBeforeMultipliers * 1.1);
           if (proposal.suggested_price_cents > cap) {
             proposal.suggested_price_cents = cap;
-            log.info({ cap, original: proposal.suggested_price_cents }, 'Not genuinely bizarre — premium capped at 1.1x');
+            log.info({ cap, original: proposal.suggested_price_cents }, 'Not genuinely bizarre (AI-confirmed) — premium capped at 1.1x');
           }
         }
 

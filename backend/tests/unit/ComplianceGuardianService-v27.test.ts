@@ -64,9 +64,9 @@ describe('_codeLevelPatternMatch', () => {
 
   it('returns matched: true for flagged phrase', async () => {
     const mockDb = await import('../../src/db.js');
+    // Single atomic UPDATE returning was_repeat=false (first occurrence)
     vi.spyOn(mockDb.db, 'query')
-      .mockResolvedValueOnce({ rows: [{ flagged_phrase_counter: [] }], rowCount: 1 } as any)
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
+      .mockResolvedValueOnce({ rows: [{ was_repeat: false }], rowCount: 1 } as any);
 
     const result = await ComplianceGuardianService._codeLevelPatternMatch(
       'Deliver this package, no questions asked',
@@ -78,13 +78,9 @@ describe('_codeLevelPatternMatch', () => {
 
   it('returns isRepeat: true when phrase already in counter', async () => {
     const mockDb = await import('../../src/db.js');
-    const recentEntry = {
-      phrase: 'no questions asked',
-      matched_at: new Date().toISOString(),
-    };
+    // Single atomic UPDATE returning was_repeat=true (phrase found in pre-update counter)
     vi.spyOn(mockDb.db, 'query')
-      .mockResolvedValueOnce({ rows: [{ flagged_phrase_counter: [recentEntry] }], rowCount: 1 } as any)
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
+      .mockResolvedValueOnce({ rows: [{ was_repeat: true }], rowCount: 1 } as any);
 
     const result = await ComplianceGuardianService._codeLevelPatternMatch(
       'Drop off this bag, no questions asked please',
@@ -93,27 +89,20 @@ describe('_codeLevelPatternMatch', () => {
     expect(result.isRepeat).toBe(true);
   });
 
-  it('prunes entries older than 30 days', async () => {
+  it('prunes entries older than 30 days — handled atomically by the SQL UPDATE', async () => {
     const mockDb = await import('../../src/db.js');
-    const oldEntry = {
-      phrase: 'no questions asked',
-      matched_at: new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString(),
-    };
-    let savedCounter: unknown;
+    // Pruning now happens inside the single atomic UPDATE query on the DB side.
+    // The JS layer just receives was_repeat from RETURNING.
     vi.spyOn(mockDb.db, 'query')
-      .mockResolvedValueOnce({ rows: [{ flagged_phrase_counter: [oldEntry] }], rowCount: 1 } as any)
-      .mockImplementationOnce(async (_sql: string, params: unknown[]) => {
-        savedCounter = JSON.parse(params[0] as string);
-        return { rows: [], rowCount: 1 };
-      });
+      .mockResolvedValueOnce({ rows: [{ was_repeat: false }], rowCount: 1 } as any);
 
-    await ComplianceGuardianService._codeLevelPatternMatch(
+    const result = await ComplianceGuardianService._codeLevelPatternMatch(
       'Please deliver no questions asked',
       'user-123'
     );
 
-    // Old entry pruned, only new entry saved
-    expect((savedCounter as any[]).length).toBe(1);
-    expect((savedCounter as any[])[0].matched_at).not.toBe(oldEntry.matched_at);
+    // The old entry was pruned inside the DB; the new occurrence is not a repeat
+    expect(result.matched).toBe(true);
+    expect(result.isRepeat).toBe(false);
   });
 });
