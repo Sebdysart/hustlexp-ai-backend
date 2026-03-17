@@ -1,7 +1,19 @@
+import { z } from 'zod';
 import { db } from '../db.js';
 import { AIClient } from './AIClient.js';
 import { logger } from '../logger.js';
 import { scrubPII } from '../lib/pii-scrubber.js';
+
+// FIX 1 & 2: Zod schema to validate LLM response shape and clamp score to [0, 100]
+const AiCheckResponseSchema = z.object({
+  score: z.number().int().min(0).max(100),
+  rules: z.array(z.string()).default([]),
+  deception_detected: z.boolean().default(false),
+  is_genuinely_bizarre: z.boolean().default(false),
+});
+
+// FIX 3: Maximum description length before LLM call
+const MAX_DESCRIPTION_LENGTH = 2000;
 
 const log = logger.child({ service: 'ComplianceGuardianService' });
 
@@ -177,7 +189,7 @@ export const ComplianceGuardianService = {
 
     if (shouldRunAI) {
       try {
-        finalResult = await ComplianceGuardianService._aiCheck(description, heuristicResult, input.templateSlug);
+        finalResult = await ComplianceGuardianService._aiCheck(description, heuristicResult, input.templateSlug, userId);
         aiSignalsComputed = true;
       } catch (err) {
         log.warn({ err }, 'AI compliance check failed, using heuristic result');
@@ -320,61 +332,40 @@ export const ComplianceGuardianService = {
       return { matched: false, isRepeat: false, matchedPhrase: null };
     }
 
-    // CTE approach: capture OLD counter in old_data before the UPDATE so that
-    // repeat_check reflects pre-update state. RETURNING then reads from repeat_check
-    // (pre-update), not from the newly updated column — fixing the bug where
-    // was_repeat was always true after the first use.
+    // FIX 4: Per-phrase object-keyed counter — eliminates cycling attack.
+    // flagged_phrase_counter is now a JSONB object keyed by phrase string:
+    //   { "no questions asked": { "count": 2, "first_at": "...", "last_at": "..." }, ... }
+    // Each phrase has its own independent slot that cannot be displaced by other phrases.
     try {
-      const newEntry = JSON.stringify({ phrase: matchedPhrase, matched_at: new Date().toISOString() });
-
       const atomicResult = await db.query<{ was_repeat: boolean }>(
-        `WITH old_data AS (
-          SELECT COALESCE(flagged_phrase_counter, '[]'::jsonb) AS counter
-          FROM users
-          WHERE id = $1
+        `WITH current_entry AS (
+          SELECT flagged_phrase_counter->$3 AS entry FROM users WHERE id = $1
         ),
-        pruned_data AS (
-          SELECT jsonb_agg(entry ORDER BY (entry->>'matched_at')) AS arr
-          FROM old_data,
-               jsonb_array_elements(old_data.counter) AS entry
-          WHERE (entry->>'matched_at')::timestamptz >= NOW() - INTERVAL '30 days'
+        was_repeat AS (
+          SELECT
+            (current_entry.entry IS NOT NULL
+             AND (current_entry.entry->>'last_at')::timestamptz >= NOW() - INTERVAL '30 days') AS was_repeat,
+            COALESCE((current_entry.entry->>'count')::int, 0) AS current_count
+          FROM current_entry
         ),
-        repeat_check AS (
-          SELECT bool_or(entry->>'phrase' = $3) AS was_repeat
-          FROM old_data,
-               jsonb_array_elements(old_data.counter) AS entry
-          WHERE (entry->>'matched_at')::timestamptz >= NOW() - INTERVAL '30 days'
-        ),
-        new_counter AS (
-          -- Keep the 19 most-recent entries from the 30-day window, then append the new
-          -- entry — capping the stored array at 20 total elements.
-          -- Inner subquery orders DESC (most recent first), LIMIT 19, then re-aggregates
-          -- ascending so the array stays chronologically ordered.
-          SELECT (
-            COALESCE(
-              (
-                SELECT jsonb_agg(entry ORDER BY (entry->>'matched_at'))
-                FROM (
-                  SELECT entry
-                  FROM jsonb_array_elements(
-                    COALESCE((SELECT arr FROM pruned_data), '[]'::jsonb)
-                  ) AS entry
-                  ORDER BY (entry->>'matched_at') DESC
-                  LIMIT 19
-                ) t
-              ),
-              '[]'::jsonb
-            ) || jsonb_build_array($2::jsonb)
-          ) AS counter
+        new_entry AS (
+          SELECT jsonb_build_object(
+            'count', (SELECT current_count + 1 FROM was_repeat),
+            'first_at', COALESCE(
+              (SELECT entry->>'first_at' FROM current_entry WHERE entry IS NOT NULL),
+              NOW()::text
+            ),
+            'last_at', NOW()::text
+          ) AS entry
         )
         UPDATE users
-        SET flagged_phrase_counter = (SELECT counter FROM new_counter)
+        SET flagged_phrase_counter = COALESCE(flagged_phrase_counter, '{}'::jsonb) || jsonb_build_object($3, (SELECT entry FROM new_entry))
         WHERE id = $1
-        RETURNING (SELECT was_repeat FROM repeat_check) AS was_repeat`,
-        [userId, newEntry, matchedPhrase]
+        RETURNING (SELECT was_repeat FROM was_repeat) AS was_repeat`,
+        [userId, null, matchedPhrase]
       );
 
-      // BUG FIX #3: If no row was returned, the user doesn't exist in the DB.
+      // If no row was returned, the user doesn't exist in the DB.
       // The counter was never updated. Log a warning but don't block — treat as first occurrence.
       if (!atomicResult.rows[0]) {
         log.warn({ userId }, 'flagged_phrase_counter update found no user row — counter not updated, treating as first occurrence');
@@ -392,10 +383,18 @@ export const ComplianceGuardianService = {
     description: string,
     heuristic: { score: number; triggeredRules: string[] },
     templateSlug?: string,
+    userId?: string,
   ): Promise<{ score: number; triggeredRules: string[]; deception_detected: boolean; is_genuinely_bizarre: boolean }> => {
     const templateContext = templateSlug === 'wildcard_bizarre'
       ? '\nTEMPLATE CONTEXT: This task was submitted under the wildcard_bizarre template. The Poster intentionally classified it as a custom or unusual one-off gig. Use this as context when evaluating is_genuinely_bizarre — the Poster has already signalled they expect this to be unusual.\n'
       : '';
+
+    // FIX 3: Truncate description before sending to LLM to prevent cost DoS
+    let truncatedDesc = description;
+    if (description.length > MAX_DESCRIPTION_LENGTH) {
+      log.warn({ userId, originalLength: description.length }, 'compliance: description truncated before AI check');
+      truncatedDesc = description.substring(0, MAX_DESCRIPTION_LENGTH) + '…';
+    }
 
     const response = await AIClient.callJSON<{
       score: number;
@@ -439,14 +438,28 @@ Set is_genuinely_bizarre: true ONLY IF (Rule1 OR Rule3 OR Rule4) AND (Rule2 OR R
 Rule 2 and Rule 5 alone cannot satisfy the threshold.
 
 Return JSON: { "score": number, "rules": string[], "deception_detected": boolean, "is_genuinely_bizarre": boolean }`,
-      prompt: scrubPII(description),
+      prompt: scrubPII(truncatedDesc),
     });
 
+    // FIX 1 & 2: Validate and clamp LLM response via Zod — reject non-numeric / out-of-range scores.
+    // NOTE: If response.data is null/undefined, throw so the catch block in evaluate() handles it
+    // gracefully (aiSignalsComputed=false, heuristic fallback). This preserves the pre-existing
+    // null-safety behaviour from before this patch.
+    if (response.data == null) {
+      throw new TypeError('_aiCheck: LLM returned null/undefined data');
+    }
+    const parsed = AiCheckResponseSchema.safeParse(response.data);
+    if (!parsed.success) {
+      log.warn({ error: parsed.error, userId }, '_aiCheck: invalid LLM response shape, using heuristic fallback');
+      return { score: heuristic.score, triggeredRules: heuristic.triggeredRules, deception_detected: false, is_genuinely_bizarre: false };
+    }
+    const { score, rules, deception_detected, is_genuinely_bizarre } = parsed.data;
+
     return {
-      score: Math.max(heuristic.score, response.data.score),
-      triggeredRules: [...new Set([...heuristic.triggeredRules, ...response.data.rules])],
-      deception_detected: response.data.deception_detected ?? false,
-      is_genuinely_bizarre: response.data.is_genuinely_bizarre ?? false,
+      score: Math.max(heuristic.score, score),
+      triggeredRules: [...new Set([...heuristic.triggeredRules, ...rules])],
+      deception_detected: deception_detected ?? false,
+      is_genuinely_bizarre: is_genuinely_bizarre ?? false,
     };
   },
 
