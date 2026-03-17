@@ -549,6 +549,58 @@ export const ProofService = {
       };
     }
   },
+
+  /**
+   * Validate proof submission against completion criteria type.
+   * Called before releasing escrow to ensure the correct proof type is present.
+   */
+  validateProofForCriteria: async (
+    taskId: string,
+    proof: {
+      type: 'photo_proof' | 'check_in_check_out' | 'session_completion' | 'hybrid';
+      photoUrls?: string[];
+      checkInAt?: string | null;
+      checkOutAt?: string | null;
+      hustlerConfirmed?: boolean;
+      posterConfirmed?: boolean;
+    }
+  ): Promise<{ valid: boolean; reason?: string }> => {
+    switch (proof.type) {
+      case 'photo_proof':
+        if (!proof.photoUrls?.length) {
+          return { valid: false, reason: 'At least one photo is required for proof submission.' };
+        }
+        return { valid: true };
+
+      case 'check_in_check_out':
+        if (!proof.checkInAt) {
+          return { valid: false, reason: 'GPS check-in timestamp is required.' };
+        }
+        if (!proof.checkOutAt) {
+          return { valid: false, reason: 'GPS check-out timestamp is required.' };
+        }
+        return { valid: true };
+
+      case 'session_completion':
+        if (!proof.hustlerConfirmed) {
+          return { valid: false, reason: 'Hustler must confirm session completion.' };
+        }
+        if (!proof.posterConfirmed) {
+          return { valid: false, reason: 'Poster must confirm session completion before payment releases.' };
+        }
+        return { valid: true };
+
+      case 'hybrid':
+        // GPS check-in/out required; bonus proof items are optional
+        if (!proof.checkInAt || !proof.checkOutAt) {
+          return { valid: false, reason: 'GPS check-in and check-out are required for this task type.' };
+        }
+        return { valid: true };
+
+      default:
+        return { valid: true };
+    }
+  },
 };
 
 export default ProofService;
