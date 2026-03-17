@@ -33,6 +33,22 @@ export interface TaskRiskInput {
 }
 
 // ============================================================================
+// TEMPLATE MINIMUM TIERS
+// ============================================================================
+
+// Template minimum risk tiers (flags can only raise, never lower)
+const TEMPLATE_MIN_TIERS: Record<string, TaskRisk> = {
+  standard_physical:    TaskRisk.TIER_0,
+  in_home:              TaskRisk.TIER_2,
+  care:                 TaskRisk.TIER_3,
+  content_creator:      TaskRisk.TIER_1,
+  event_appearance:     TaskRisk.TIER_1,
+  creative_production:  TaskRisk.TIER_1,
+  specialized_licensed: TaskRisk.TIER_1,
+  wildcard_bizarre:     TaskRisk.TIER_1,
+};
+
+// ============================================================================
 // TASK RISK CLASSIFIER
 // ============================================================================
 
@@ -72,5 +88,27 @@ export const TaskRiskClassifier = {
       default:
         return 'LOW';
     }
+  },
+
+  /**
+   * Classify task risk with template-aware minimum tiers.
+   * Active flags can only raise the tier, never lower it.
+   */
+  classifyWithTemplate: (
+    input: TaskRiskInput,
+    templateSlug: string,
+    activeFlags: string[] = []
+  ): TaskRisk => {
+    // Start with base boolean-flag classification
+    const baseRisk = TaskRiskClassifier.classifyTaskRisk(input);
+
+    // Apply template minimum tier
+    const templateMin = TEMPLATE_MIN_TIERS[templateSlug] ?? TaskRisk.TIER_1;
+
+    // private_location_flag bumps to TIER_2
+    const flagBump = activeFlags.includes('private_location_flag') ? TaskRisk.TIER_2 : TaskRisk.TIER_0;
+
+    // Flags can only raise, never lower
+    return Math.max(baseRisk, templateMin, flagBump) as TaskRisk;
   },
 };
