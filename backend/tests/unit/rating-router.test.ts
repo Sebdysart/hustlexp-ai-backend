@@ -38,6 +38,7 @@ vi.mock('../../src/services/RatingService', () => ({
     getRatingsForTask: vi.fn(),
     getRatingSummary: vi.fn(),
     getRatingsForUser: vi.fn(),
+    getTextReviewsForUser: vi.fn(),
     processAutoRatings: vi.fn(),
   },
 }));
@@ -306,6 +307,55 @@ describe('rating router', () => {
 
       const caller = makeAdminCaller();
       await expect(caller.processAutoRatings()).rejects.toThrow('Failed');
+    });
+  });
+
+  // =========================================================================
+  // getTextReviews
+  // =========================================================================
+  describe('getTextReviews', () => {
+    it('returns text reviews for current user when userId not provided', async () => {
+      const mockData = [{ id: 'review-1', comment: 'Great work!', stars: 5 }];
+      mockRatingService.getTextReviewsForUser.mockResolvedValue({ success: true, data: mockData } as any);
+
+      const caller = makeProtectedCaller();
+      const result = await caller.getTextReviews({ limit: 10, offset: 0 });
+
+      expect(result).toEqual(mockData);
+      expect(mockRatingService.getTextReviewsForUser).toHaveBeenCalledWith(TEST_UUID, 10, 0);
+    });
+
+    it('returns text reviews for specified userId', async () => {
+      const mockData = [{ id: 'review-2', comment: 'Very professional', stars: 4 }];
+      mockRatingService.getTextReviewsForUser.mockResolvedValue({ success: true, data: mockData } as any);
+
+      const caller = makeProtectedCaller();
+      const result = await caller.getTextReviews({ userId: TEST_UUID_2, limit: 20, offset: 5 });
+
+      expect(result).toEqual(mockData);
+      expect(mockRatingService.getTextReviewsForUser).toHaveBeenCalledWith(TEST_UUID_2, 20, 5);
+    });
+
+    it('throws INTERNAL_SERVER_ERROR on service failure', async () => {
+      mockRatingService.getTextReviewsForUser.mockResolvedValue({
+        success: false,
+        error: { code: 'DB_ERROR', message: 'Database error' },
+      } as any);
+
+      const caller = makeProtectedCaller();
+      await expect(caller.getTextReviews({ limit: 10, offset: 0 }))
+        .rejects.toThrow('Database error');
+    });
+
+    it('throws NOT_FOUND on NOT_FOUND service error', async () => {
+      mockRatingService.getTextReviewsForUser.mockResolvedValue({
+        success: false,
+        error: { code: 'NOT_FOUND', message: 'User not found' },
+      } as any);
+
+      const caller = makeProtectedCaller();
+      await expect(caller.getTextReviews({ limit: 10, offset: 0 }))
+        .rejects.toThrow('User not found');
     });
   });
 });

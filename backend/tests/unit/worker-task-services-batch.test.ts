@@ -554,6 +554,13 @@ describe('WorkerSkillService.checkTaskEligibility', () => {
     expect(result.success).toBe(true);
     expect(result.data?.eligible).toBe(true);
   });
+
+  it('returns DB_ERROR when db throws', async () => {
+    mockQuery.mockRejectedValueOnce(new Error('Connection timeout'));
+    const result = await WorkerSkillService.checkTaskEligibility('user-1', 'task-1');
+    expect(result.success).toBe(false);
+    expect(result.error?.code).toBe('DB_ERROR');
+  });
 });
 
 describe('WorkerSkillService.getEligibleTaskFilter', () => {
@@ -570,6 +577,13 @@ describe('WorkerSkillService.getEligibleTaskFilter', () => {
     expect(result.success).toBe(true);
     expect(typeof result.data).toBe('string');
     expect(result.data).toContain('task_skills');
+  });
+
+  it('returns DB_ERROR when db throws', async () => {
+    mockQuery.mockRejectedValueOnce(new Error('Query timeout'));
+    const result = await WorkerSkillService.getEligibleTaskFilter('user-1');
+    expect(result.success).toBe(false);
+    expect(result.error?.code).toBe('DB_ERROR');
   });
 });
 
@@ -591,6 +605,14 @@ describe('WorkerSkillService.recordTaskCompletion', () => {
     const result = await WorkerSkillService.recordTaskCompletion('user-1', 'task-1');
     expect(result.success).toBe(true);
     expect(mockQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns DB_ERROR when db throws', async () => {
+    mockQuery.mockRejectedValueOnce(new Error('DB failure'));
+    const result = await WorkerSkillService.recordTaskCompletion('user-1', 'task-1');
+    expect(result.success).toBe(false);
+    expect(result.error?.code).toBe('DB_ERROR');
+    expect(result.error?.message).toContain('DB failure');
   });
 });
 

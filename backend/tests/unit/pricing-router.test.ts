@@ -39,14 +39,22 @@ vi.mock('../../src/services/DynamicPricingService', () => ({
   },
 }));
 
+vi.mock('../../src/services/SmartPricingService', () => ({
+  SmartPricingService: {
+    getSmartPrice: vi.fn(),
+  },
+}));
+
 // ---------------------------------------------------------------------------
 // Imports
 // ---------------------------------------------------------------------------
 
 import { pricingRouter } from '../../src/routers/pricing';
 import { DynamicPricingService } from '../../src/services/DynamicPricingService';
+import { SmartPricingService } from '../../src/services/SmartPricingService';
 
 const mockPricing = vi.mocked(DynamicPricingService);
+const mockSmartPricing = vi.mocked(SmartPricingService);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -116,6 +124,72 @@ describe('pricing router', () => {
         locationLng: -87.6,
         isASAP: true,
       });
+    });
+  });
+
+  // =========================================================================
+  // getSmartPrice
+  // =========================================================================
+  describe('getSmartPrice', () => {
+    it('returns smart price data on success', async () => {
+      const data = {
+        suggestedPriceCents: 7500,
+        minCents: 5000,
+        maxCents: 15000,
+        confidence: 0.85,
+        reasoning: 'Standard physical labor',
+      };
+      mockSmartPricing.getSmartPrice.mockResolvedValue({ success: true, data } as any);
+
+      const result = await makeCaller().getSmartPrice({
+        title: 'Help me move furniture',
+        description: 'Need help moving a couch upstairs',
+        category: 'moving',
+        mode: 'STANDARD',
+      });
+
+      expect(result).toEqual(data);
+      expect(mockSmartPricing.getSmartPrice).toHaveBeenCalledWith(
+        expect.objectContaining({ title: 'Help me move furniture' })
+      );
+    });
+
+    it('passes all optional parameters through', async () => {
+      const data = { suggestedPriceCents: 10000, minCents: 7500, maxCents: 15000, confidence: 0.9, reasoning: 'ASAP premium' };
+      mockSmartPricing.getSmartPrice.mockResolvedValue({ success: true, data } as any);
+
+      const WORKER_ID = '11111111-1111-1111-1111-111111111111';
+      await makeCaller().getSmartPrice({
+        title: 'Urgent delivery',
+        description: 'ASAP delivery downtown',
+        category: 'delivery',
+        location: 'Chicago, IL',
+        locationLat: 41.8781,
+        locationLng: -87.6298,
+        mode: 'LIVE',
+        isASAP: true,
+        workerId: WORKER_ID,
+      });
+
+      expect(mockSmartPricing.getSmartPrice).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: 'Urgent delivery',
+          mode: 'LIVE',
+          isASAP: true,
+          workerId: WORKER_ID,
+        })
+      );
+    });
+
+    it('throws INTERNAL_SERVER_ERROR when SmartPricingService fails', async () => {
+      mockSmartPricing.getSmartPrice.mockResolvedValue({
+        success: false,
+        error: { code: 'PRICING_ERROR', message: 'Smart pricing unavailable' },
+      } as any);
+
+      await expect(
+        makeCaller().getSmartPrice({ title: 'Some task', mode: 'STANDARD' })
+      ).rejects.toThrow('Smart pricing unavailable');
     });
   });
 

@@ -36,6 +36,7 @@ vi.mock('../../src/services/TippingService', () => ({
     confirmTip: vi.fn(),
     getTipsForTask: vi.fn(),
     getTotalTipsReceived: vi.fn(),
+    getTipsSentByUser: vi.fn(),
   },
 }));
 
@@ -211,5 +212,36 @@ describe('tipping.getMyTipsReceived', () => {
     } as any);
 
     await expect(makeCaller().getMyTipsReceived()).rejects.toThrow('DB error');
+  });
+});
+
+describe('tipping.getMyTipsSent', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('returns tips sent by the current user', async () => {
+    const data = [{ id: TEST_UUID, amountCents: 500, taskId: TEST_UUID_2 }];
+    mockService.getTipsSentByUser.mockResolvedValueOnce({ success: true, data } as any);
+
+    const result = await makeCaller().getMyTipsSent({ limit: 10, offset: 0 });
+
+    expect(result).toEqual(data);
+    expect(mockService.getTipsSentByUser).toHaveBeenCalledWith('test-uid', 10, 0);
+  });
+
+  it('uses default limit and offset', async () => {
+    mockService.getTipsSentByUser.mockResolvedValueOnce({ success: true, data: [] } as any);
+
+    await makeCaller().getMyTipsSent({});
+
+    expect(mockService.getTipsSentByUser).toHaveBeenCalledWith('test-uid', 50, 0);
+  });
+
+  it('throws INTERNAL_SERVER_ERROR when service fails', async () => {
+    mockService.getTipsSentByUser.mockResolvedValueOnce({
+      success: false,
+      error: { message: 'Failed to get tips sent' },
+    } as any);
+
+    await expect(makeCaller().getMyTipsSent({})).rejects.toThrow('Failed to get tips sent');
   });
 });

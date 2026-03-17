@@ -54,6 +54,7 @@ import {
   trackCacheHit,
   flushMetrics,
   getStatsD,
+  reportSystemMetrics,
 } from '../../src/monitoring/datadog';
 
 describe('Datadog Monitoring', () => {
@@ -224,6 +225,22 @@ describe('Datadog Monitoring', () => {
     it('tracks cache miss', () => {
       trackCacheHit('miss', 'task:feed:456');
       expect(_calls.some(c => c.method === 'increment')).toBe(true);
+    });
+  });
+
+  // ===========================================================================
+  // System Metrics
+  // ===========================================================================
+  describe('reportSystemMetrics', () => {
+    it('records heap_used, heap_total, rss, cpu.user, cpu.system gauges', () => {
+      reportSystemMetrics();
+      const gaugeCalls = _calls.filter(c => c.method === 'gauge');
+      const metricNames = gaugeCalls.map(c => c.args[0] as string);
+      expect(metricNames).toContain('system.memory.heap_used');
+      expect(metricNames).toContain('system.memory.heap_total');
+      expect(metricNames).toContain('system.memory.rss');
+      expect(metricNames).toContain('system.cpu.user');
+      expect(metricNames).toContain('system.cpu.system');
     });
   });
 

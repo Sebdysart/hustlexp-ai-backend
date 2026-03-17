@@ -136,11 +136,15 @@ vi.mock('../../src/services/TaskRiskClassifier', () => ({
 import { db } from '../../src/db';
 import { TaskService } from '../../src/services/TaskService';
 import { ProofService } from '../../src/services/ProofService';
+import { ComplianceGuardianService } from '../../src/services/ComplianceGuardianService';
+import { getTemplate } from '../../src/services/TaskTemplateRegistry';
 import { taskRouter } from '../../src/routers/task';
 
 const mockDb = vi.mocked(db);
 const mockTaskService = vi.mocked(TaskService);
 const mockProofService = vi.mocked(ProofService);
+const mockCompliance = vi.mocked(ComplianceGuardianService);
+const mockGetTemplate = vi.mocked(getTemplate);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1582,5 +1586,353 @@ describe('task.withdrawApplication', () => {
     const [sql] = (mockDb.query as any).mock.calls[0];
     expect(sql).toContain("'pending'");
     expect(sql).toContain("'countered'");
+  });
+});
+
+// ===========================================================================
+// task.evaluateDraft
+// ===========================================================================
+
+describe('task.evaluateDraft', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('returns compliance result for a clean description', async () => {
+    mockCompliance.evaluate.mockResolvedValueOnce({
+      score: 5,
+      tier: 'clean',
+      triggeredRules: [],
+      notes: {
+        score: 5,
+        tier: 'clean',
+        triggered_rules: [],
+        suggested_alternative: null,
+        admin_review_id: null,
+        appeal_status: 'none',
+      },
+    });
+
+    const result = await makeCallerAsPoster().evaluateDraft({
+      description: 'Help me move furniture to the second floor',
+    });
+
+    expect(result.score).toBe(5);
+    expect(result.tier).toBe('clean');
+    expect(result.triggeredRules).toEqual([]);
+    expect(mockCompliance.evaluate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        description: 'Help me move furniture to the second floor',
+      })
+    );
+  });
+
+  it('returns soft_flag result without throwing', async () => {
+    mockCompliance.evaluate.mockResolvedValueOnce({
+      score: 35,
+      tier: 'soft_flag',
+      triggeredRules: ['physical_contact_ambiguous'],
+      suggestedAlternative: 'specialized_licensed',
+      notes: {
+        score: 35,
+        tier: 'soft_flag',
+        triggered_rules: ['physical_contact_ambiguous'],
+        suggested_alternative: 'specialized_licensed',
+        admin_review_id: null,
+        appeal_status: 'none',
+      },
+    });
+
+    const result = await makeCallerAsPoster().evaluateDraft({
+      description: 'I need a massage at home tonight',
+    });
+
+    expect(result.score).toBe(35);
+    expect(result.tier).toBe('soft_flag');
+    expect(result.triggeredRules).toContain('physical_contact_ambiguous');
+    expect(result.suggestedAlternative).toBe('specialized_licensed');
+  });
+
+  it('throws BAD_REQUEST for hard_block result', async () => {
+    mockCompliance.evaluate.mockResolvedValueOnce({
+      score: 85,
+      tier: 'hard_block',
+      triggeredRules: ['hard_block_pattern'],
+      notes: {
+        score: 85,
+        tier: 'hard_block',
+        triggered_rules: ['hard_block_pattern'],
+        suggested_alternative: null,
+        admin_review_id: null,
+        appeal_status: 'none',
+      },
+    });
+
+    await expect(
+      makeCallerAsPoster().evaluateDraft({
+        description: 'deliver package no questions asked downtown',
+      })
+    ).rejects.toThrow('blocked');
+  });
+
+  it('passes templateSlug to compliance service', async () => {
+    mockCompliance.evaluate.mockResolvedValueOnce({
+      score: 0,
+      tier: 'clean',
+      triggeredRules: [],
+      notes: {
+        score: 0,
+        tier: 'clean',
+        triggered_rules: [],
+        suggested_alternative: null,
+        admin_review_id: null,
+        appeal_status: 'none',
+      },
+    });
+
+    await makeCallerAsPoster().evaluateDraft({
+      description: 'Be a brand ambassador at a local event for 4 hours',
+      templateSlug: 'event_appearance',
+    });
+
+    expect(mockCompliance.evaluate).toHaveBeenCalledWith(
+      expect.objectContaining({ templateSlug: 'event_appearance' })
+    );
+  });
+});
+
+// ===========================================================================
+// task.acceptWithConsent
+// ===========================================================================
+
+describe('task.acceptWithConsent', () => {
+  const CONSENT_TEMPLATE = {
+    slug: 'wildcard_bizarre',
+    displayName: 'Wildcard / Custom',
+    defaultRiskTier: 1,
+    requiredTrustTier: 'verified',
+    completionCriteriaType: 'hybrid',
+    autoReleaseHours: 48,
+    lateCancelPct: 75,
+    requiresMutualConsent: true,
+    requiresContentRelease: false,
+    scoperContext: '',
+  };
+
+  const NO_CONSENT_TEMPLATE = {
+    slug: 'standard_physical',
+    displayName: 'Standard Physical',
+    defaultRiskTier: 0,
+    requiredTrustTier: 'rookie',
+    completionCriteriaType: 'photo_proof',
+    autoReleaseHours: 24,
+    lateCancelPct: 0,
+    requiresMutualConsent: false,
+    requiresContentRelease: false,
+    scoperContext: '',
+  };
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it('successfully accepts a wildcard task with mutual consent', async () => {
+    mockDb.query
+      .mockResolvedValueOnce({
+        rows: [{ template_slug: 'wildcard_bizarre', state: 'posted' }],
+        rowCount: 1,
+      } as any)
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
+
+    mockGetTemplate.mockReturnValueOnce(CONSENT_TEMPLATE as any);
+
+    const result = await makeCallerAsHustler().acceptWithConsent({
+      taskId: TASK_ID,
+      consentItems: ['I understand the task is custom', 'I agree to the terms'],
+    });
+
+    expect(result).toEqual({ accepted: true });
+  });
+
+  it('throws NOT_FOUND when task does not exist', async () => {
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+
+    await expect(
+      makeCallerAsHustler().acceptWithConsent({
+        taskId: TASK_ID,
+        consentItems: ['I agree'],
+      })
+    ).rejects.toThrow('Task not found');
+  });
+
+  it('throws BAD_REQUEST when template does not require consent', async () => {
+    // Router: db.query first (returns task row), then getTemplate is called
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ template_slug: 'standard_physical', state: 'posted' }],
+      rowCount: 1,
+    } as any);
+    mockGetTemplate.mockReturnValueOnce(NO_CONSENT_TEMPLATE as any);
+
+    await expect(
+      makeCallerAsHustler().acceptWithConsent({
+        taskId: TASK_ID,
+        consentItems: ['I agree'],
+      })
+    ).rejects.toThrow('does not require consent checklist');
+  });
+
+  it('throws PRECONDITION_FAILED when task is no longer available', async () => {
+    mockDb.query
+      .mockResolvedValueOnce({
+        rows: [{ template_slug: 'wildcard_bizarre', state: 'claimed' }],
+        rowCount: 1,
+      } as any)
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // UPDATE matched no rows
+
+    mockGetTemplate.mockReturnValueOnce(CONSENT_TEMPLATE as any);
+
+    await expect(
+      makeCallerAsHustler().acceptWithConsent({
+        taskId: TASK_ID,
+        consentItems: ['I agree'],
+      })
+    ).rejects.toThrow('no longer available');
+  });
+});
+
+// ===========================================================================
+// task.getComplianceStatus
+// ===========================================================================
+
+describe('task.getComplianceStatus', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it('returns score and notes for an existing task', async () => {
+    const notes = {
+      score: 45,
+      tier: 'soft_flag',
+      triggered_rules: ['overnight_ambiguous'],
+      suggested_alternative: null,
+      admin_review_id: null,
+      appeal_status: 'none',
+    };
+
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ illegal_risk_score: 45, compliance_guardian_notes: notes }],
+      rowCount: 1,
+    } as any);
+
+    const result = await makeCaller().getComplianceStatus({ taskId: TASK_ID });
+
+    expect(result.score).toBe(45);
+    expect(result.notes).toEqual(notes);
+  });
+
+  it('throws NOT_FOUND when task does not exist', async () => {
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+
+    await expect(
+      makeCaller().getComplianceStatus({ taskId: TASK_ID })
+    ).rejects.toThrow('Task not found');
+  });
+
+  it('returns clean score for a newly created task', async () => {
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ illegal_risk_score: 0, compliance_guardian_notes: { tier: 'clean' } }],
+      rowCount: 1,
+    } as any);
+
+    const result = await makeCaller().getComplianceStatus({ taskId: TASK_ID });
+
+    expect(result.score).toBe(0);
+  });
+});
+
+// ===========================================================================
+// task.submitProof — video attachment branch
+// ===========================================================================
+
+describe('task.submitProof — video URLs branch', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('attaches video URLs to proof when videoUrls provided', async () => {
+    const proofRow = makeProofRow();
+    mockProofService.submit.mockResolvedValueOnce({
+      success: true,
+      data: proofRow as any,
+    });
+    mockProofService.addVideo = vi.fn().mockResolvedValue({
+      success: true,
+      data: { id: 'vid-1' },
+    });
+    mockTaskService.submitProof.mockResolvedValueOnce({
+      success: true,
+      data: makeTaskRow() as any,
+    });
+
+    const result = await makeCallerAsHustler().submitProof({
+      taskId: TASK_ID,
+      description: 'Done',
+      videoUrls: ['https://example.com/video1.mp4'],
+    });
+
+    expect(mockProofService.addVideo).toHaveBeenCalledWith(
+      expect.objectContaining({
+        proofId: proofRow.id,
+        storageKey: 'https://example.com/video1.mp4',
+        contentType: 'video/mp4',
+      })
+    );
+    expect(result).toBeDefined();
+  });
+
+  it('does not call addVideo when no videoUrls provided', async () => {
+    const proofRow = makeProofRow();
+    mockProofService.submit.mockResolvedValueOnce({
+      success: true,
+      data: proofRow as any,
+    });
+    mockProofService.addVideo = vi.fn().mockResolvedValue({ success: true, data: {} });
+    mockTaskService.submitProof.mockResolvedValueOnce({
+      success: true,
+      data: makeTaskRow() as any,
+    });
+
+    await makeCallerAsHustler().submitProof({
+      taskId: TASK_ID,
+      description: 'Done',
+    });
+
+    expect(mockProofService.addVideo).not.toHaveBeenCalled();
+  });
+
+  it('continues submission when addVideo fails (non-blocking)', async () => {
+    const proofRow = makeProofRow();
+    mockProofService.submit.mockResolvedValueOnce({
+      success: true,
+      data: proofRow as any,
+    });
+    mockProofService.addVideo = vi.fn().mockResolvedValue({
+      success: false,
+      error: { code: 'DB_ERROR', message: 'Storage error' },
+    });
+    mockTaskService.submitProof.mockResolvedValueOnce({
+      success: true,
+      data: makeTaskRow() as any,
+    });
+
+    // Should not throw even though addVideo failed
+    const result = await makeCallerAsHustler().submitProof({
+      taskId: TASK_ID,
+      description: 'Done',
+      videoUrls: ['https://example.com/video1.mp4'],
+    });
+
+    expect(result).toBeDefined();
+    expect(mockTaskService.submitProof).toHaveBeenCalled();
   });
 });

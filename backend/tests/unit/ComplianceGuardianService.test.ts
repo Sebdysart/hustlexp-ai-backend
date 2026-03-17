@@ -82,5 +82,135 @@ describe('ComplianceGuardianService', () => {
       expect(notes.suggested_alternative).toBe('specialized_licensed');
       expect(notes.appeal_status).toBe('none');
     });
+
+    it('tier is clean when score is 0', () => {
+      const notes = ComplianceGuardianService.toNotes(0, []);
+      expect(notes.tier).toBe('clean');
+      expect(notes.suggested_alternative).toBeNull();
+      expect(notes.admin_review_id).toBeNull();
+    });
+
+    it('tier is soft_flag when score is exactly 21', () => {
+      const notes = ComplianceGuardianService.toNotes(21, []);
+      expect(notes.tier).toBe('soft_flag');
+    });
+
+    it('tier is soft_flag when score is 60', () => {
+      const notes = ComplianceGuardianService.toNotes(60, []);
+      expect(notes.tier).toBe('soft_flag');
+    });
+
+    it('tier is hard_block when score is exactly 61', () => {
+      const notes = ComplianceGuardianService.toNotes(61, []);
+      expect(notes.tier).toBe('hard_block');
+    });
+
+    it('no suggestedAlternative when omitted', () => {
+      const notes = ComplianceGuardianService.toNotes(45, ['some_rule']);
+      expect(notes.suggested_alternative).toBeNull();
+    });
+  });
+
+  describe('_heuristicCheck branches', () => {
+    it('overnight stay triggers overnight_ambiguous rule', () => {
+      const result = ComplianceGuardianService._heuristicCheck(
+        'I need someone for an overnight stay in my apartment'
+      );
+      expect(result.triggeredRules).toContain('overnight_ambiguous');
+      expect(result.score).toBeGreaterThanOrEqual(21);
+    });
+
+    it('alone in home triggers isolation_flag rule', () => {
+      const result = ComplianceGuardianService._heuristicCheck(
+        'I need someone alone in my house to water plants'
+      );
+      expect(result.triggeredRules).toContain('isolation_flag');
+    });
+
+    it('notary at home triggers unlicensed_legal rule', () => {
+      const result = ComplianceGuardianService._heuristicCheck(
+        'I need a notary for legal documents at my home'
+      );
+      expect(result.triggeredRules).toContain('unlicensed_legal');
+    });
+
+    it('medical advice triggers unlicensed_medical rule', () => {
+      const result = ComplianceGuardianService._heuristicCheck(
+        'I need medical advice and treatment at home'
+      );
+      expect(result.triggeredRules).toContain('unlicensed_medical');
+    });
+
+    it('cash only no record triggers unreported_payment rule', () => {
+      const result = ComplianceGuardianService._heuristicCheck(
+        'cash only no record payment arrangement'
+      );
+      expect(result.triggeredRules).toContain('unreported_payment');
+    });
+
+    it('licensed massage suppresses physical_contact_ambiguous', () => {
+      const result = ComplianceGuardianService._heuristicCheck(
+        'Licensed massage therapist for deep tissue session'
+      );
+      expect(result.triggeredRules).not.toContain('physical_contact_ambiguous');
+      expect(result.score).toBeLessThanOrEqual(20);
+    });
+
+    it('multiple soft flags accumulate — highest score wins', () => {
+      // overnight (45) + isolation_flag (30) => highest is 45
+      const result = ComplianceGuardianService._heuristicCheck(
+        'I need someone alone in my apartment overnight companion'
+      );
+      expect(result.score).toBe(45);
+      expect(result.triggeredRules.length).toBeGreaterThanOrEqual(2);
+    });
+
+    it('returns score 0 and empty rules for benign description', () => {
+      const result = ComplianceGuardianService._heuristicCheck('Help me carry boxes');
+      expect(result.score).toBe(0);
+      expect(result.triggeredRules).toHaveLength(0);
+    });
+
+    it('hard_block pattern returns score 85', () => {
+      const result = ComplianceGuardianService._heuristicCheck(
+        'erotic service available now'
+      );
+      expect(result.score).toBe(85);
+      expect(result.triggeredRules).toContain('hard_block_pattern');
+    });
+  });
+
+  describe('evaluate — CLEAN path does NOT log violation', () => {
+    it('does not INSERT compliance_violations for clean tasks', async () => {
+      const { db } = await import('../../src/db.js');
+      vi.clearAllMocks();
+      await ComplianceGuardianService.evaluate({
+        description: 'Help me clean my apartment',
+        userId: 'u-clean',
+      });
+      const insertCalls = (db.query as ReturnType<typeof vi.fn>).mock.calls.filter(
+        ([sql]: [string]) => sql.includes('INSERT INTO compliance_violations')
+      );
+      expect(insertCalls).toHaveLength(0);
+    });
+  });
+
+  describe('evaluate — suggested alternative mapping', () => {
+    it('maps physical_contact_ambiguous to specialized_licensed alternative', async () => {
+      const result = await ComplianceGuardianService.evaluate({
+        description: 'I need a massage at my home tonight',
+        userId: 'u-massage',
+      });
+      expect(result.suggestedAlternative).toBe('specialized_licensed');
+    });
+
+    it('no alternative for a rule with no mapping', async () => {
+      const result = await ComplianceGuardianService.evaluate({
+        description: 'I need someone alone in my house to water plants',
+        userId: 'u-isolation',
+      });
+      // isolation_flag has no SUGGESTED_ALTERNATIVES entry
+      expect(result.suggestedAlternative).toBeUndefined();
+    });
   });
 });
