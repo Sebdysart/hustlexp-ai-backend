@@ -22,6 +22,7 @@ export type CompletionCriteriaType =
 export interface TaskTemplate {
   slug: TemplateSlug;
   displayName: string;
+  one_line_desc: string;
   defaultRiskTier: 0 | 1 | 2 | 3;
   requiredTrustTier: 'rookie' | 'verified' | 'trusted';
   completionCriteriaType: CompletionCriteriaType;
@@ -48,6 +49,7 @@ export const TaskTemplateRegistry: Record<TemplateSlug, TaskTemplate> = {
   standard_physical: {
     slug: 'standard_physical',
     displayName: 'Standard Physical',
+    one_line_desc: 'Help moving, delivery, or muscle work out in the world',
     defaultRiskTier: 0,
     requiredTrustTier: 'rookie',
     completionCriteriaType: 'photo_proof',
@@ -66,6 +68,7 @@ Flag "vehicle_required" if delivery >2 miles or items too large to carry.`,
   in_home: {
     slug: 'in_home',
     displayName: 'In-Home',
+    one_line_desc: 'Cleaning, repairs, or handyman work inside someone\'s home',
     defaultRiskTier: 2,
     requiredTrustTier: 'verified',
     completionCriteriaType: 'photo_proof',
@@ -84,6 +87,7 @@ Always flag "inside_home" — minimum TIER_2 risk.`,
   care: {
     slug: 'care',
     displayName: 'Care',
+    one_line_desc: 'Childcare, pet care, elder care, or personal assistance',
     defaultRiskTier: 3,
     requiredTrustTier: 'verified',
     completionCriteriaType: 'check_in_check_out',
@@ -102,6 +106,7 @@ Flag "caregiving" always.`,
   content_creator: {
     slug: 'content_creator',
     displayName: 'Content & Creator',
+    one_line_desc: 'You appear in someone\'s stream, video, or podcast in person',
     defaultRiskTier: 1,
     requiredTrustTier: 'verified',
     completionCriteriaType: 'hybrid',
@@ -120,6 +125,7 @@ DO NOT price like physical labor. Price like talent.`,
   event_appearance: {
     slug: 'event_appearance',
     displayName: 'Event & Appearance',
+    one_line_desc: 'Brand promo, party hosting, or crowd work at an event',
     defaultRiskTier: 1,
     requiredTrustTier: 'verified',
     completionCriteriaType: 'check_in_check_out',
@@ -137,6 +143,7 @@ Hustler-sourced professional attire: +$10–$15 flat.`,
   creative_production: {
     slug: 'creative_production',
     displayName: 'Creative Production',
+    one_line_desc: 'Photo shoot, video shoot, music session, or film work',
     defaultRiskTier: 1,
     requiredTrustTier: 'verified',
     completionCriteriaType: 'session_completion',
@@ -155,6 +162,7 @@ Never under $50 for any production task.`,
   specialized_licensed: {
     slug: 'specialized_licensed',
     displayName: 'Specialized / Licensed',
+    one_line_desc: 'Trade work, therapy, notary, or licensed skill services',
     defaultRiskTier: 1,
     requiredTrustTier: 'trusted',
     completionCriteriaType: 'photo_proof',
@@ -173,6 +181,7 @@ Flag "license_required" for all trade work.`,
   wildcard_bizarre: {
     slug: 'wildcard_bizarre',
     displayName: 'Wildcard / Custom',
+    one_line_desc: 'Anything weird, one-off, or hard to categorize',
     defaultRiskTier: 1,
     requiredTrustTier: 'verified',
     completionCriteriaType: 'hybrid',
@@ -195,6 +204,18 @@ Flag "bizarre_custom" + audience_size + performance_element.`,
  */
 export function getTemplate(slug: string): TaskTemplate {
   return TaskTemplateRegistry[slug as TemplateSlug] ?? TaskTemplateRegistry.wildcard_bizarre;
+}
+
+/**
+ * Get lightweight manifest for iOS template reclassify valve.
+ * Returns slug, display_name, and one_line_desc for all 8 templates.
+ */
+export function getManifest(): Array<{ slug: TemplateSlug; display_name: string; one_line_desc: string }> {
+  return Object.values(TaskTemplateRegistry).map(t => ({
+    slug: t.slug,
+    display_name: t.displayName,
+    one_line_desc: t.one_line_desc,
+  }));
 }
 
 /**

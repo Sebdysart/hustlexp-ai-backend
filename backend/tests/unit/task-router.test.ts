@@ -54,6 +54,13 @@ vi.mock('../../src/logger', () => ({
     debug: vi.fn(),
   },
   escrowLogger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
+  aiLogger: {
+    child: () => ({ warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() }),
+    warn: vi.fn(),
+    error: vi.fn(),
+    info: vi.fn(),
+    debug: vi.fn(),
+  },
   taskLogger: {
     child: () => ({ warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() }),
     warn: vi.fn(),
@@ -109,9 +116,20 @@ vi.mock('../../src/services/ComplianceGuardianService', () => ({
 }));
 
 vi.mock('../../src/services/TaskTemplateRegistry', () => ({
+  TEMPLATE_SLUGS: {
+    STANDARD_PHYSICAL: 'standard_physical',
+    IN_HOME: 'in_home',
+    CARE: 'care',
+    CONTENT_CREATOR: 'content_creator',
+    EVENT_APPEARANCE: 'event_appearance',
+    CREATIVE_PRODUCTION: 'creative_production',
+    SPECIALIZED_LICENSED: 'specialized_licensed',
+    WILDCARD_BIZARRE: 'wildcard_bizarre',
+  },
   getTemplate: vi.fn().mockReturnValue({
     slug: 'standard_physical',
     displayName: 'Standard Physical',
+    one_line_desc: 'Help moving, delivery, or muscle work out in the world',
     defaultRiskTier: 0,
     requiredTrustTier: 'rookie',
     completionCriteriaType: 'photo_proof',
@@ -121,6 +139,7 @@ vi.mock('../../src/services/TaskTemplateRegistry', () => ({
     requiresContentRelease: false,
     scoperContext: '',
   }),
+  getManifest: vi.fn().mockReturnValue([]),
 }));
 
 vi.mock('../../src/services/TaskRiskClassifier', () => ({

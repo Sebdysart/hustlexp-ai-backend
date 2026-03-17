@@ -17,6 +17,7 @@ import { ScoperProposalSchema } from '../lib/ai-response-schemas.js';
 import { aiLogger } from '../logger.js';
 import { scrubPII } from '../lib/pii-scrubber.js';
 import { getTemplate, applyWildcardMultipliers, TEMPLATE_SLUGS } from './TaskTemplateRegistry.js';
+import type { ComplianceResult } from './ComplianceGuardianService.js';
 
 const log = aiLogger.child({ service: 'ScoperAIService' });
 
@@ -37,6 +38,7 @@ interface ScoperInput {
   };
   templateSlug?: string;       // NEW: template context injection
   wildcardFlags?: string[];    // NEW: deterministic multipliers (wildcard_bizarre only)
+  complianceResult?: ComplianceResult;  // NEW: Guardian outputs for multiplier decisions
 }
 
 interface ScoperProposal {
@@ -163,10 +165,34 @@ ${input.location ? `Location: ${input.location.city}, ${input.location.state}` :
         input.templateSlug === TEMPLATE_SLUGS.WILDCARD_BIZARRE &&
         input.wildcardFlags?.length
       ) {
+        // Capture base price before multipliers (needed for deception override below)
+        const basePriceBeforeMultipliers = proposal.suggested_price_cents;
+
         proposal.suggested_price_cents = applyWildcardMultipliers(
           proposal.suggested_price_cents,
           input.wildcardFlags
         );
+
+        // DECEPTION OVERRIDE: If Guardian flagged deception, zero all bonuses.
+        // Deceptive tasks (pretend boyfriend, fake professional) get no weirdness premium.
+        if (input.complianceResult?.deception_detected) {
+          proposal.suggested_price_cents = basePriceBeforeMultipliers;
+          log.info('Deception detected — wildcard multipliers zeroed');
+        }
+
+        // GENUINE BIZARRE CAP: If task is NOT genuinely bizarre, cap premium at 1.1x.
+        // Prevents mundane tasks with creative framing from claiming full bonuses.
+        if (
+          !input.complianceResult?.is_genuinely_bizarre &&
+          !input.complianceResult?.deception_detected // deception path already handled above
+        ) {
+          const cap = Math.round(basePriceBeforeMultipliers * 1.1);
+          if (proposal.suggested_price_cents > cap) {
+            proposal.suggested_price_cents = cap;
+            log.info({ cap, original: proposal.suggested_price_cents }, 'Not genuinely bizarre — premium capped at 1.1x');
+          }
+        }
+
         // Re-sync XP to match adjusted price (clamp to constitutional bounds)
         proposal.suggested_xp = Math.round(
           Math.min(proposal.suggested_price_cents, MAX_PRICE_CENTS) / 10

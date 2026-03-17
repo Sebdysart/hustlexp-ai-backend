@@ -7,7 +7,7 @@
  */
 
 import { TRPCError } from '@trpc/server';
-import { router, protectedProcedure, hustlerProcedure, posterProcedure, Schemas } from '../trpc.js';
+import { router, protectedProcedure, publicProcedure, hustlerProcedure, posterProcedure, Schemas } from '../trpc.js';
 import { TaskService } from '../services/TaskService.js';
 import { ProofService } from '../services/ProofService.js';
 import { db } from '../db.js';
@@ -16,7 +16,8 @@ import { cachedDbQuery, invalidateTask, CACHE_KEYS, CACHE_TTL, CACHE_TAGS } from
 import { logger } from '../logger.js';
 import { z } from 'zod';
 import { ComplianceGuardianService } from '../services/ComplianceGuardianService.js';
-import { getTemplate } from '../services/TaskTemplateRegistry.js';
+import { ScoperAIService } from '../services/ScoperAIService.js';
+import { getTemplate, getManifest } from '../services/TaskTemplateRegistry.js';
 import { TaskRiskClassifier } from '../services/TaskRiskClassifier.js';
 
 export const taskRouter = router({
@@ -264,25 +265,33 @@ export const taskRouter = router({
   evaluateDraft: posterProcedure
     .input(Schemas.evaluateDraft)
     .mutation(async ({ ctx, input }) => {
-      const result = await ComplianceGuardianService.evaluate({
+      const complianceResult = await ComplianceGuardianService.evaluate({
         description: input.description,
         userId: ctx.user.id,
         templateSlug: input.templateSlug,
       });
 
-      if (result.tier === 'hard_block') {
+      if (complianceResult.tier === 'hard_block') {
         throw new TRPCError({
           code: 'BAD_REQUEST',
-          message: `This task was blocked. Reason: ${result.triggeredRules.join(', ')}. HustleXP only allows legal IRL tasks.`,
+          message: `This task was blocked. Reason: ${complianceResult.triggeredRules.join(', ')}. HustleXP only allows legal IRL tasks.`,
         });
       }
 
+      const scopeResult = await ScoperAIService.analyzeTaskScope({
+        description: input.description,
+        templateSlug: input.templateSlug,
+        wildcardFlags: input.wildcardFlags,
+        complianceResult: complianceResult,
+      });
+
       return {
-        score: result.score,
-        tier: result.tier,
-        triggeredRules: result.triggeredRules,
-        suggestedAlternative: result.suggestedAlternative,
-        notes: result.notes,
+        score: complianceResult.score,
+        tier: complianceResult.tier,
+        triggeredRules: complianceResult.triggeredRules,
+        suggestedAlternative: complianceResult.suggestedAlternative,
+        notes: complianceResult.notes,
+        scopeProposal: scopeResult.success ? scopeResult.data : null,
       };
     }),
 
@@ -333,6 +342,15 @@ export const taskRouter = router({
       }
 
       return { accepted: true };
+    }),
+
+  /**
+   * Get lightweight template manifest for iOS template reclassify valve.
+   * Returns slug, display_name, and one_line_desc for all 8 templates.
+   */
+  getTemplateManifest: publicProcedure
+    .query(async () => {
+      return getManifest();
     }),
 
   /**

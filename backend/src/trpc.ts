@@ -256,6 +256,7 @@ export const Schemas = {
   evaluateDraft: z.object({
     description: z.string().min(10).max(5000),
     templateSlug: z.string().max(50).optional(),
+    wildcardFlags: z.array(z.string()).optional(),
   }),
 
   acceptWithConsent: z.object({
