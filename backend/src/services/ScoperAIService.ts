@@ -173,11 +173,16 @@ ${input.location ? `Location: ${input.location.city}, ${input.location.state}` :
           input.wildcardFlags
         );
 
-        // DECEPTION OVERRIDE: If Guardian flagged deception, zero all bonuses.
-        // Deceptive tasks (pretend boyfriend, fake professional) get no weirdness premium.
-        if (input.complianceResult?.deception_detected) {
+        // DECEPTION OVERRIDE: If Guardian flagged deception AND AI actually ran,
+        // zero all wildcard bonuses. Deceptive tasks (pretend boyfriend, fake professional)
+        // get no weirdness premium. Guard on ai_signals_computed to avoid zeroing multipliers
+        // when a heuristic (non-AI) path sets deception_detected without AI confirmation.
+        if (
+          input.complianceResult?.ai_signals_computed === true &&
+          input.complianceResult.deception_detected
+        ) {
           proposal.suggested_price_cents = basePriceBeforeMultipliers;
-          log.info('Deception detected — wildcard multipliers zeroed');
+          log.info('Deception detected (AI-confirmed) — wildcard multipliers zeroed');
         }
 
         // GENUINE BIZARRE CAP: Only applies when AI actually evaluated bizarreness AND

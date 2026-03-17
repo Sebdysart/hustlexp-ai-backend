@@ -111,6 +111,30 @@ describe('ScoperAI wildcard multiplier — no complianceResult', () => {
   });
 });
 
+describe('ScoperAI wildcard multiplier — deception override requires AI confirmation', () => {
+  it('does NOT zero multipliers when deception_detected=true but ai_signals_computed=false', async () => {
+    const complianceResult = makeComplianceResult({
+      deception_detected: true,
+      ai_signals_computed: false, // AI didn't run — heuristic path only
+      is_genuinely_bizarre: false,
+    });
+
+    const result = await ScoperAIService.analyzeTaskScope({
+      description: 'Pretend to be my girlfriend',
+      templateSlug: TEMPLATE_SLUGS.WILDCARD_BIZARRE,
+      wildcardFlags: ['performance_element_flag', 'audience_present_flag'],
+      complianceResult,
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+
+    // Without ai_signals_computed, deception override should NOT fire.
+    // Base ~7500, multipliers 0.30x → ~9750. Should be > base 7500.
+    expect(result.data.suggested_price_cents).toBeGreaterThan(7500);
+  });
+});
+
 describe('ScoperAI wildcard multiplier — no AI signals (ai_signals_computed=false)', () => {
   it('does NOT cap when ai_signals_computed is false even if is_genuinely_bizarre is false', async () => {
     const complianceResult = makeComplianceResult({

@@ -125,7 +125,7 @@ export const ComplianceGuardianService = {
 
     if (shouldRunAI) {
       try {
-        finalResult = await ComplianceGuardianService._aiCheck(description, heuristicResult);
+        finalResult = await ComplianceGuardianService._aiCheck(description, heuristicResult, input.templateSlug);
         aiSignalsComputed = true;
       } catch (err) {
         log.warn({ err }, 'AI compliance check failed, using heuristic result');
@@ -243,35 +243,45 @@ export const ComplianceGuardianService = {
       return { matched: false, isRepeat: false, matchedPhrase: null };
     }
 
-    // Atomic single-query approach — no SELECT→UPDATE race condition.
-    // The UPDATE reads flagged_phrase_counter, prunes old entries, checks for repeat,
-    // and appends the new entry all in one round-trip. RETURNING evaluates the
-    // pre-update value of flagged_phrase_counter so was_repeat reflects the state
-    // before this submission was added.
+    // CTE approach: capture OLD counter in old_data before the UPDATE so that
+    // repeat_check reflects pre-update state. RETURNING then reads from repeat_check
+    // (pre-update), not from the newly updated column — fixing the bug where
+    // was_repeat was always true after the first use.
     try {
       const newEntry = JSON.stringify({ phrase: matchedPhrase, matched_at: new Date().toISOString() });
 
-      const result = await db.query<{ was_repeat: boolean }>(
-        `UPDATE users
-         SET flagged_phrase_counter = (
-           SELECT COALESCE(
-             jsonb_agg(entry ORDER BY (entry->>'matched_at')),
-             '[]'::jsonb
-           ) || jsonb_build_array($2::jsonb)
-           FROM jsonb_array_elements(COALESCE(flagged_phrase_counter, '[]'::jsonb)) AS entry
-           WHERE (entry->>'matched_at')::timestamptz > NOW() - INTERVAL '30 days'
-           LIMIT 19
-         )
-         WHERE id = $1
-         RETURNING (
-           SELECT bool_or(entry->>'phrase' = $3)
-           FROM jsonb_array_elements(COALESCE(flagged_phrase_counter, '[]'::jsonb)) AS entry
-           WHERE (entry->>'matched_at')::timestamptz > NOW() - INTERVAL '30 days'
-         ) AS was_repeat`,
+      const atomicResult = await db.query<{ was_repeat: boolean }>(
+        `WITH old_data AS (
+          SELECT COALESCE(flagged_phrase_counter, '[]'::jsonb) AS counter
+          FROM users
+          WHERE id = $1
+        ),
+        pruned_data AS (
+          SELECT jsonb_agg(entry ORDER BY (entry->>'matched_at')) AS arr
+          FROM old_data,
+               jsonb_array_elements(old_data.counter) AS entry
+          WHERE (entry->>'matched_at')::timestamptz > NOW() - INTERVAL '30 days'
+        ),
+        repeat_check AS (
+          SELECT bool_or(entry->>'phrase' = $3) AS was_repeat
+          FROM old_data,
+               jsonb_array_elements(old_data.counter) AS entry
+          WHERE (entry->>'matched_at')::timestamptz > NOW() - INTERVAL '30 days'
+        ),
+        new_counter AS (
+          SELECT (COALESCE(
+            (SELECT arr FROM pruned_data LIMIT 19),
+            '[]'::jsonb
+          ) || jsonb_build_array($2::jsonb)) AS counter
+        )
+        UPDATE users
+        SET flagged_phrase_counter = (SELECT counter FROM new_counter)
+        WHERE id = $1
+        RETURNING (SELECT was_repeat FROM repeat_check) AS was_repeat`,
         [userId, newEntry, matchedPhrase]
       );
 
-      const isRepeat = result.rows[0]?.was_repeat ?? false;
+      const isRepeat = atomicResult.rows[0]?.was_repeat ?? false;
       return { matched: true, isRepeat, matchedPhrase };
     } catch (err) {
       log.warn({ err }, 'Failed to update flagged_phrase_counter atomically, continuing without cross-task check');
@@ -281,8 +291,13 @@ export const ComplianceGuardianService = {
 
   _aiCheck: async (
     description: string,
-    heuristic: { score: number; triggeredRules: string[] }
+    heuristic: { score: number; triggeredRules: string[] },
+    templateSlug?: string,
   ): Promise<{ score: number; triggeredRules: string[]; deception_detected: boolean; is_genuinely_bizarre: boolean }> => {
+    const templateContext = templateSlug === 'wildcard_bizarre'
+      ? '\nTEMPLATE CONTEXT: This task was submitted under the wildcard_bizarre template. The Poster intentionally classified it as a custom or unusual one-off gig. Use this as context when evaluating is_genuinely_bizarre — the Poster has already signalled they expect this to be unusual.\n'
+      : '';
+
     const response = await AIClient.callJSON<{
       score: number;
       rules: string[];
@@ -292,7 +307,7 @@ export const ComplianceGuardianService = {
       route: 'fast',
       temperature: 0.1,
       timeoutMs: 5000,
-      systemPrompt: `You are HustleXP's Compliance Guardian v2.7. Score this IRL gig task description 0–100 for illegal content. Return JSON with exactly these fields: score, rules, deception_detected, is_genuinely_bizarre.
+      systemPrompt: `You are HustleXP's Compliance Guardian v2.7. ${templateContext}Score this IRL gig task description 0–100 for illegal content. Return JSON with exactly these fields: score, rules, deception_detected, is_genuinely_bizarre.
 
 SCORING:
 0–20 = clearly legal IRL gig task

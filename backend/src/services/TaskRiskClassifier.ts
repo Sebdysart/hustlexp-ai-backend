@@ -97,7 +97,8 @@ export const TaskRiskClassifier = {
   classifyWithTemplate: (
     input: TaskRiskInput,
     templateSlug: string,
-    activeFlags: string[] = []
+    activeFlags: string[] = [],
+    complianceResult?: import('./ComplianceGuardianService.js').ComplianceResult,
   ): TaskRisk => {
     // Start with base boolean-flag classification
     const baseRisk = TaskRiskClassifier.classifyTaskRisk(input);
@@ -109,6 +110,13 @@ export const TaskRiskClassifier = {
     const flagBump = activeFlags.includes('private_location_flag') ? TaskRisk.TIER_2 : TaskRisk.TIER_0;
 
     // Flags can only raise, never lower
-    return Math.max(baseRisk, templateMin, flagBump) as TaskRisk;
+    let finalTier = Math.max(baseRisk, templateMin, flagBump) as TaskRisk;
+
+    // Deception tasks carry social-manipulation risk — minimum TIER_2 regardless of physical signals
+    if (complianceResult?.ai_signals_computed && complianceResult.deception_detected) {
+      finalTier = Math.max(finalTier, TaskRisk.TIER_2) as TaskRisk;
+    }
+
+    return finalTier;
   },
 };

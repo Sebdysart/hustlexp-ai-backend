@@ -166,3 +166,28 @@ describe('First-occurrence coded phrase bump', () => {
     expect(result.score).toBeGreaterThanOrEqual(15);
   });
 });
+
+describe('_aiCheck templateSlug injection', () => {
+  beforeEach(() => vi.resetAllMocks());
+
+  it('passes templateSlug to _aiCheck for wildcard tasks', async () => {
+    const { AIClient } = await import('../../src/services/AIClient.js');
+    vi.mocked(AIClient.isConfigured).mockReturnValue(true);
+    let capturedPrompt = '';
+    vi.mocked(AIClient.callJSON).mockImplementation(async (opts: any) => {
+      capturedPrompt = opts.systemPrompt;
+      return { data: { score: 0, rules: [], deception_detected: false, is_genuinely_bizarre: false }, provider: 'test' };
+    });
+
+    const { db } = await import('../../src/db.js');
+    vi.mocked(db.query).mockResolvedValue({ rows: [{ was_repeat: false }], rowCount: 1 } as any);
+
+    await ComplianceGuardianService.evaluate({
+      description: 'Something weird and one-off',
+      userId: 'user-1',
+      templateSlug: 'wildcard_bizarre',
+    });
+
+    expect(capturedPrompt).toContain('wildcard_bizarre');
+  });
+});

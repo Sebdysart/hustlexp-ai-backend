@@ -192,6 +192,11 @@ export const taskRouter = router({
         });
       }
 
+      // Resolve template before TaskService.create() so template_slug is written
+      // atomically in the INSERT — prevents a NULL window if the server crashes
+      // between the INSERT and the subsequent UPDATE.
+      const template = getTemplate(input.templateSlug ?? 'standard_physical');
+
       const result = await TaskService.create({
         posterId: ctx.user.id,
         title: input.title,
@@ -205,6 +210,7 @@ export const taskRouter = router({
         mode: input.mode,
         liveBroadcastRadiusMiles: input.liveBroadcastRadiusMiles,
         instantMode: input.instantMode,
+        templateSlug: template.slug,
       });
 
       if (!result.success) {
@@ -220,8 +226,7 @@ export const taskRouter = router({
       }
       await invalidateTask(result.data.id);
 
-      // Persist template system fields
-      const template = getTemplate(input.templateSlug ?? 'standard_physical');
+      // Persist remaining template system fields (template_slug already set in the INSERT above)
       const riskTier = TaskRiskClassifier.classifyWithTemplate(
         {
           insideHome: input.insideHome ?? false,
@@ -230,22 +235,21 @@ export const taskRouter = router({
           caregiving: template.slug === 'care',
         },
         template.slug,
-        input.wildcardFlags ?? []
+        input.wildcardFlags ?? [],
+        compliance,
       );
       void riskTier; // computed for future use; not stored (no risk_tier column in migration)
 
       await db.query(
         `UPDATE tasks
-         SET template_slug = $2,
-             illegal_risk_score = $3,
-             compliance_guardian_notes = $4,
-             late_cancel_pct = $5,
-             content_release = $6,
-             cancellation_window_hours = $7
+         SET illegal_risk_score = $2,
+             compliance_guardian_notes = $3,
+             late_cancel_pct = $4,
+             content_release = $5,
+             cancellation_window_hours = $6
          WHERE id = $1`,
         [
           result.data.id,
-          template.slug,
           compliance.score,
           JSON.stringify(compliance.notes),
           template.lateCancelPct,

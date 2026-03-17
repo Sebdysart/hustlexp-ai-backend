@@ -52,6 +52,8 @@ interface CreateTaskParams {
   // Instant Execution Mode (IEM v1)
   instantMode?: boolean;
   sensitive?: boolean; // Sensitive tasks require higher trust tier (Tier ≥ 3)
+  // Template system — set atomically with the INSERT to prevent NULL window on partial failure
+  templateSlug?: string;
 }
 
 interface AcceptTaskParams {
@@ -286,6 +288,7 @@ export const TaskService = {
       mode = 'STANDARD',
       liveBroadcastRadiusMiles,
       sensitive = false,
+      templateSlug,
     } = params;
     let { instantMode = false } = params;
 
@@ -437,11 +440,12 @@ export const TaskService = {
         `INSERT INTO tasks (
           poster_id, title, description, price, xp_reward,
           requirements, location, category, deadline, requires_proof,
-          risk_level, mode, live_broadcast_radius_miles, instant_mode, sensitive, state
+          risk_level, mode, live_broadcast_radius_miles, instant_mode, sensitive, state,
+          template_slug
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
         RETURNING *`,
-        [posterId, title, description, finalPrice, xpReward, requirements, location, category, deadline, requiresProof, riskLevel, mode, liveBroadcastRadiusMiles, instantMode, sensitive, initialState]
+        [posterId, title, description, finalPrice, xpReward, requirements, location, category, deadline, requiresProof, riskLevel, mode, liveBroadcastRadiusMiles, instantMode, sensitive, initialState, templateSlug ?? null]
       );
       
       let createdTask = result.rows[0];
