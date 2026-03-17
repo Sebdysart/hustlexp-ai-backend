@@ -47,6 +47,9 @@ const HARD_BLOCK_PATTERNS = [
   /erotic|sexual\s+service/i,
   /unlicensed\s+(medical|legal|therapy)/i,
   /no\s+address.{0,20}deliver/i,
+  /\b(buy|sell|score|source|obtain|get\s+me|find\s+me).{0,30}(drugs?|weed|meth|cocaine|heroin|pills?|controlled\s+substances?|narcotics?)\b/i,
+  /\b(lockpick(ing)?|pick\s+the\s+lock|break\s+in|breaking\s+and\s+entering|b\s*&\s*e|b\s*and\s*e)\b/i,
+  /\bdon'?t\s+(need\s+to\s+know|ask|tell\s+me).{0,20}(inside|contents?|what\s+it\s+is)\b/i,
 ];
 
 // Weapon transport patterns — evaluated via _weaponPatternCheck() to support negator carveout
@@ -60,11 +63,15 @@ const WEAPON_CONTEXT_NEGATORS = /gun\s+range|shooting\s+range|hunting|rifle\s+ca
 
 const SOFT_FLAG_PATTERNS = [
   { pattern: /massage/i, rule: 'physical_contact_ambiguous', score: 35 },
-  { pattern: /overnight.{0,30}(stay|companion|babysit|nanny|childcare|caregiver|sitter|(?<![a-z-])care\b)/i, rule: 'overnight_ambiguous', score: 45 },
+  { pattern: /overnight.{0,30}(stay|companion|babysit|nanny|childcare|caregiver|sitter|(?<!self\s)(?<!\w)care\b)/i, rule: 'overnight_ambiguous', score: 45 },
   { pattern: /alone.{0,20}(house|home|apartment)/i, rule: 'isolation_flag', score: 30 },
   { pattern: /(notary|legal\s+document).{0,30}(home|house)/i, rule: 'unlicensed_legal', score: 40 },
   { pattern: /medical.{0,20}(advice|treatment|injection)/i, rule: 'unlicensed_medical', score: 50 },
   { pattern: /cash\s+only.{0,20}no\s+record/i, rule: 'unreported_payment', score: 45 },
+  { pattern: /\b(gfe|girlfriend\s+experience|full\s+service|intimate\s+service|companionship\s+service)\b/i, score: 50, rule: 'sex_work_coded_language' },
+  { pattern: /\b(escort(?!\s*(to|service\s+dog|vehicle))|private\s+escort)\b/i, score: 45, rule: 'escort_ambiguous' },
+  { pattern: /\b(controlled\s+substances?|pharmacolog\w*|score\s+some)\b/i, score: 40, rule: 'drug_reference' },
+  { pattern: /\b(reconnaissance|casing|staking?\s+out|surveil).{0,20}(house|home|property|neighbor|building)\b/i, score: 45, rule: 'property_surveillance' },
 ];
 
 // ============================================================
@@ -90,6 +97,22 @@ export const FLAGGED_PATTERNS: string[] = [
 // Override: if description contains license-affirming words, suppress soft flags
 const LICENSE_AFFIRMERS = [/licensed/i, /certified/i, /credentials/i, /professional/i];
 
+// Homoglyph map: common visual lookalikes (Cyrillic + accented Latin → ASCII)
+const HOMOGLYPH_MAP: Record<string, string> = {
+  '\u0456': 'i',  // Cyrillic і → i
+  '\u0430': 'a',  // Cyrillic а → a
+  '\u0435': 'e',  // Cyrillic е → e
+  '\u043E': 'o',  // Cyrillic о → o
+  '\u0440': 'r',  // Cyrillic р → r
+  '\u0441': 'c',  // Cyrillic с → c
+  '\u0445': 'x',  // Cyrillic х → x
+  '\u00E8': 'e',  // è → e (accented Latin)
+  '\u00E9': 'e',  // é → e
+  '\u00E0': 'a',  // à → a
+  '\u00F3': 'o',  // ó → o
+  '\u00FA': 'u',  // ú → u
+};
+
 const SUGGESTED_ALTERNATIVES: Record<string, string> = {
   physical_contact_ambiguous: 'specialized_licensed',
   unlicensed_medical: 'specialized_licensed',
@@ -101,7 +124,8 @@ export const ComplianceGuardianService = {
     const { description, userId, ipAddress, deviceFingerprint } = input;
 
     const patternMatch = await ComplianceGuardianService._codeLevelPatternMatch(description, userId);
-    let heuristicResult = ComplianceGuardianService._heuristicCheck(description);
+    const normalizedDescription = ComplianceGuardianService._normalizeDescription(description);
+    let heuristicResult = ComplianceGuardianService._heuristicCheck(normalizedDescription);
 
     let codedPhraseMatched = false;
     if (patternMatch.matched && patternMatch.matchedPhrase) {
@@ -259,11 +283,18 @@ export const ComplianceGuardianService = {
   },
 
   _normalizeDescription: (description: string): string => {
-    return description
+    // Step 1: Replace known homoglyphs (Cyrillic lookalikes, accented Latin)
+    let normalized = description;
+    for (const [char, replacement] of Object.entries(HOMOGLYPH_MAP)) {
+      normalized = normalized.split(char).join(replacement);
+    }
+    return normalized
+      .normalize('NFKC')              // normalize ligatures, fullwidth, superscripts, etc.
       .toLowerCase()
-      .trim()
-      .replace(/[^\w\s]/g, '') // strip punctuation
-      .replace(/\s+/g, ' ')    // collapse whitespace
+      .replace(/['\u2019\u2018`]/g, '') // strip apostrophes/smart quotes (contractions: don't → dont)
+      .replace(/_/g, ' ')             // underscores → spaces (FIX 2)
+      .replace(/[^\w\s]/g, ' ')       // punctuation/remaining non-ASCII → spaces (FIX 1: space not empty)
+      .replace(/\s+/g, ' ')           // collapse whitespace
       .trim();
   },
 
