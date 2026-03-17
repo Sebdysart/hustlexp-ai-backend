@@ -16,6 +16,7 @@ import { AIClient } from './AIClient.js';
 import { ScoperProposalSchema } from '../lib/ai-response-schemas.js';
 import { aiLogger } from '../logger.js';
 import { scrubPII } from '../lib/pii-scrubber.js';
+import { getTemplate, applyWildcardMultipliers, TEMPLATE_SLUGS } from './TaskTemplateRegistry.js';
 
 const log = aiLogger.child({ service: 'ScoperAIService' });
 
@@ -34,6 +35,8 @@ interface ScoperInput {
     state: string;
     zip_code?: string;
   };
+  templateSlug?: string;       // NEW: template context injection
+  wildcardFlags?: string[];    // NEW: deterministic multipliers (wildcard_bizarre only)
 }
 
 interface ScoperProposal {
@@ -82,6 +85,10 @@ export const ScoperAIService = {
     try {
       let proposal: ScoperProposal;
 
+      // Extract template context for injection
+      const template = input.templateSlug ? getTemplate(input.templateSlug) : null;
+      const templateContext = template ? `\n\n${template.scoperContext}` : '';
+
       // Try AI-based analysis first, fall back to heuristics
       if (AIClient.isConfigured()) {
         try {
@@ -98,7 +105,7 @@ CONSTITUTIONAL BOUNDS:
 - Price: $15-$500 (1500-50000 cents)
 - XP: price_cents / 10 (±20% tolerance)
 - Difficulty tiers: easy ($15-$50), medium ($50-$150), hard ($150-$500)
-- Confidence threshold: >= 0.60 (below requires human review)
+- Confidence threshold: >= 0.60 (below requires human review)${templateContext}
 
 Return JSON with EXACTLY these fields:
 - suggested_price_cents: number (1500-50000)
@@ -141,6 +148,29 @@ ${input.location ? `Location: ${input.location.city}, ${input.location.state}` :
             message: `Proposal validation failed: ${validation.errors.join(', ')}`
           }
         };
+      }
+
+      // Apply deterministic wildcard multipliers AFTER validation (spec: multiply then clamp)
+      if (
+        input.templateSlug === TEMPLATE_SLUGS.WILDCARD_BIZARRE &&
+        input.wildcardFlags?.length
+      ) {
+        proposal.suggested_price_cents = applyWildcardMultipliers(
+          proposal.suggested_price_cents,
+          input.wildcardFlags
+        );
+        // Re-sync XP to match adjusted price (clamp to constitutional bounds)
+        proposal.suggested_xp = Math.round(
+          Math.min(proposal.suggested_price_cents, MAX_PRICE_CENTS) / 10
+        );
+        // Re-correct difficulty tier
+        if (proposal.suggested_price_cents <= DIFFICULTY_PRICE_RANGES.easy.max) {
+          proposal.difficulty = 'easy';
+        } else if (proposal.suggested_price_cents <= DIFFICULTY_PRICE_RANGES.medium.max) {
+          proposal.difficulty = 'medium';
+        } else {
+          proposal.difficulty = 'hard';
+        }
       }
 
       return { success: true, data: proposal };
@@ -238,6 +268,17 @@ ${input.location ? `Location: ${input.location.city}, ${input.location.state}` :
     let difficulty: Difficulty = 'medium';
     const flags: string[] = [];
     const requiredCapabilities: string[] = [];
+
+    // Template-aware base pricing (talent templates price like talent, not labor)
+    const TALENT_TEMPLATES = new Set([
+      'wildcard_bizarre', 'content_creator', 'event_appearance', 'creative_production'
+    ]);
+
+    if (input.templateSlug && TALENT_TEMPLATES.has(input.templateSlug)) {
+      // Talent floor: $75 base for performance/creator tasks (3hr × $25/hr minimum)
+      priceCents = 7500;
+      difficulty = 'hard';
+    }
 
     // Keyword-based adjustments
     if (description.includes('delivery') || description.includes('pickup')) {
