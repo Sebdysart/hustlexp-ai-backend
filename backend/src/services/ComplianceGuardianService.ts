@@ -46,13 +46,14 @@ const HARD_BLOCK_PATTERNS = [
   /happy\s+ending/i,
   /erotic|sexual\s+service/i,
   /unlicensed\s+(medical|legal|therapy)/i,
-  /bring\s+your\s+own\s+(gun|weapon|firearm)/i,
+  /\b(deliver|bring|transport|carry|drop.?off).{0,30}(gun|firearm|weapon|pistol|rifle|ammo|ammunition)\b/i,
+  /\b(gun|firearm|weapon|pistol|rifle).{0,30}(delivery|transport|drop.?off|location)\b/i,
   /no\s+address.{0,20}deliver/i,
 ];
 
 const SOFT_FLAG_PATTERNS = [
   { pattern: /massage/i, rule: 'physical_contact_ambiguous', score: 35 },
-  { pattern: /overnight.{0,20}(stay|companion)/i, rule: 'overnight_ambiguous', score: 45 },
+  { pattern: /overnight.{0,30}(stay|companion|babysit|nanny|childcare|caregiver|sitter|care)/i, rule: 'overnight_ambiguous', score: 45 },
   { pattern: /alone.{0,20}(house|home|apartment)/i, rule: 'isolation_flag', score: 30 },
   { pattern: /(notary|legal\s+document).{0,30}(home|house)/i, rule: 'unlicensed_legal', score: 40 },
   { pattern: /medical.{0,20}(advice|treatment|injection)/i, rule: 'unlicensed_medical', score: 50 },
@@ -95,20 +96,29 @@ export const ComplianceGuardianService = {
     const patternMatch = await ComplianceGuardianService._codeLevelPatternMatch(description, userId);
     let heuristicResult = ComplianceGuardianService._heuristicCheck(description);
 
+    let codedPhraseMatched = false;
     if (patternMatch.matched && patternMatch.matchedPhrase) {
+      codedPhraseMatched = true;
       if (patternMatch.isRepeat) {
-        // Repeat occurrence: +15 to push firmly into soft_flag range
+        // Repeat occurrence: +25 to push firmly into soft_flag range
         heuristicResult = {
-          score: heuristicResult.score + 15,
+          score: heuristicResult.score + 25,
           triggeredRules: [...heuristicResult.triggeredRules, 'cross_task_pattern_repeat'],
         };
       } else {
-        // First occurrence: +8 to push into AI-check range (15+) without immediately soft-flagging
+        // First occurrence: +15 to push into soft_flag range
         heuristicResult = {
-          score: heuristicResult.score + 8,
+          score: heuristicResult.score + 15,
           triggeredRules: [...heuristicResult.triggeredRules, 'coded_phrase_first_occurrence'],
         };
       }
+    }
+
+    if (codedPhraseMatched) {
+      heuristicResult = {
+        ...heuristicResult,
+        score: Math.max(heuristicResult.score, 21), // Ensure coded phrase alone reaches soft_flag
+      };
     }
 
     let finalResult: { score: number; triggeredRules: string[]; deception_detected: boolean; is_genuinely_bizarre: boolean } = {
