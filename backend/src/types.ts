@@ -54,7 +54,7 @@ export type LiveModeState = 'OFF' | 'ACTIVE' | 'COOLDOWN' | 'PAUSED';
 export type TaskMode = 'STANDARD' | 'LIVE';
 
 // Account status (PRODUCT_SPEC §11)
-export type AccountStatus = 'ACTIVE' | 'PAUSED' | 'SUSPENDED';
+export type AccountStatus = 'ACTIVE' | 'PAUSED' | 'SUSPENDED' | 'DELETED';
 
 // Evidence access scope (AI_INFRASTRUCTURE §9)
 export type EvidenceAccessScope = 'uploader_only' | 'restricted' | 'dispute_reviewers' | 'admin_only';

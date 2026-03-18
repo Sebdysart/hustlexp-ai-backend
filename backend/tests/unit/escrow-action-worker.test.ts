@@ -13,9 +13,19 @@ vi.mock('../../src/db', () => ({
 vi.mock('../../src/services/StripeService.js', () => ({
   StripeService: { createTransfer: vi.fn(), createRefund: vi.fn() },
 }));
-vi.mock('../../src/logger', () => ({
-  workerLogger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), child: vi.fn().mockReturnThis() },
-}));
+vi.mock('../../src/logger', () => {
+  const base = { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn(), child: () => base };
+  return {
+    logger: base,
+    escrowLogger: base,
+    taskLogger: base,
+    aiLogger: base,
+    stripeLogger: base,
+    authLogger: base,
+    workerLogger: base,
+    dbLogger: base,
+  };
+});
 vi.mock('../../src/services/TaskService.js', () => ({
   TaskService: { updateStatus: vi.fn(), advanceProgress: vi.fn() },
 }));

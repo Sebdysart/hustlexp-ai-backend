@@ -18,6 +18,8 @@ import { db, isInvariantViolation, getErrorMessage } from '../db.js';
 import type { ServiceResult } from '../types.js';
 import { ErrorCodes } from '../types.js';
 import { NotificationService } from './NotificationService.js';
+import { EscrowService } from './EscrowService.js';
+import { TaskService } from './TaskService.js';
 import { logger } from '../logger.js';
 
 const log = logger.child({ service: 'GDPRService' });
@@ -987,11 +989,67 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
     const anonymizedId = `DELETED_USER_${randomUUID().split('-')[0].toUpperCase()}`;
     const anonymizedEmail = `deleted-${randomUUID().split('-')[0]}@deleted.hustlexp.app`;
     const deletedAt = new Date();
-    
+
+    // -------------------------------------------------------------------------
+    // FIX 2: Cancel all non-terminal tasks where this user is the poster, and
+    // refund any FUNDED escrows attached to those tasks. Must run BEFORE the
+    // anonymization transaction so that TaskService/EscrowService can still
+    // locate the task by poster_id and the escrow by task FK.
+    // -------------------------------------------------------------------------
+    const openPosterTasksResult = await db.query<{ id: string }>(
+      `SELECT t.id FROM tasks t WHERE t.poster_id = $1
+       AND t.state NOT IN ('COMPLETED', 'CANCELLED', 'EXPIRED')`,
+      [userId]
+    );
+    for (const row of openPosterTasksResult.rows) {
+      const cancelResult = await TaskService.cancel(row.id);
+      if (!cancelResult.success) {
+        log.warn({ taskId: row.id, userId, err: cancelResult.error?.message }, 'GDPR: could not cancel poster task — continuing');
+      }
+      // Refund any FUNDED escrow attached to this task
+      const escrowResult = await db.query<{ id: string }>(
+        `SELECT id FROM escrows WHERE task_id = $1 AND state = 'FUNDED'`,
+        [row.id]
+      );
+      for (const escrow of escrowResult.rows) {
+        const refundResult = await EscrowService.refund({ escrowId: escrow.id });
+        if (!refundResult.success) {
+          log.warn({ escrowId: escrow.id, taskId: row.id, userId, err: refundResult.error?.message }, 'GDPR: could not refund poster task escrow — continuing');
+        }
+      }
+    }
+
+    // -------------------------------------------------------------------------
+    // FIX 1: Refund all FUNDED or LOCKED_DISPUTE escrows where this user is the
+    // worker. Must run BEFORE nulling worker_id so EscrowService can still
+    // locate the worker. FUNDED escrows are refunded via EscrowService.refund().
+    // LOCKED_DISPUTE escrows are returned 100% to the poster via partialRefund().
+    // -------------------------------------------------------------------------
+    const workerEscrowsResult = await db.query<{ id: string; state: string }>(
+      `SELECT e.id, e.state FROM escrows e
+       JOIN tasks t ON t.id = e.task_id
+       WHERE t.worker_id = $1 AND e.state IN ('FUNDED', 'LOCKED_DISPUTE')`,
+      [userId]
+    );
+    for (const row of workerEscrowsResult.rows) {
+      if (row.state === 'FUNDED') {
+        const refundResult = await EscrowService.refund({ escrowId: row.id });
+        if (!refundResult.success) {
+          log.warn({ escrowId: row.id, userId, err: refundResult.error?.message }, 'GDPR: could not refund worker FUNDED escrow — continuing');
+        }
+      } else if (row.state === 'LOCKED_DISPUTE') {
+        // Return full amount to poster (0% to deleted worker)
+        const refundResult = await EscrowService.partialRefund({ escrowId: row.id, workerPercent: 0, posterPercent: 100 });
+        if (!refundResult.success) {
+          log.warn({ escrowId: row.id, userId, err: refundResult.error?.message }, 'GDPR: could not partialRefund worker LOCKED_DISPUTE escrow — continuing');
+        }
+      }
+    }
+
     // Use a transaction to ensure atomicity
     await db.serializableTransaction(async (query) => {
       // 1. Immediate deletion (GDPR_COMPLIANCE_SPEC.md §3.1)
-      
+
       // Delete tables added after GDPR service was written
       await query('DELETE FROM alpha_telemetry WHERE user_id = $1', [userId]);
       await query('DELETE FROM device_tokens WHERE user_id = $1', [userId]);
@@ -1033,14 +1091,21 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
         [userId]
       );
       
-      // 2. Anonymize account data (email, name, phone)
+      // 2. Anonymize account data (email, name, phone, and PII-linked Stripe IDs)
+      // FIX 6: stripe_customer_id and stripe_connect_id are PII-linked identifiers
+      // (Stripe stores name/email behind them). They must be cleared to satisfy GDPR
+      // erasure. avatar_url (hosted photo) and bio are also PII and must be cleared.
       await query(
         `UPDATE users
          SET email = $1,
              name = 'Deleted User',
              phone = NULL,
              account_status = 'DELETED',
-             paused_at = $2
+             paused_at = $2,
+             stripe_customer_id = NULL,
+             stripe_connect_id = NULL,
+             avatar_url = NULL,
+             bio = NULL
          WHERE id = $3`,
         [anonymizedEmail, deletedAt, userId]
       );

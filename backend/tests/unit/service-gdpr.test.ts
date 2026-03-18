@@ -24,11 +24,19 @@ vi.mock('../../src/db', () => ({
   getErrorMessage: vi.fn(() => ''),
 }));
 
-vi.mock('../../src/logger', () => ({
-  logger: {
-    child: () => ({ error: vi.fn(), warn: vi.fn(), info: vi.fn() }),
-  },
-}));
+vi.mock('../../src/logger', () => {
+  const base = { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn(), child: () => base };
+  return {
+    logger: base,
+    escrowLogger: base,
+    taskLogger: base,
+    aiLogger: base,
+    stripeLogger: base,
+    authLogger: base,
+    workerLogger: base,
+    dbLogger: base,
+  };
+});
 
 vi.mock('../../src/services/NotificationService', () => ({
   NotificationService: {
@@ -328,6 +336,12 @@ describe('GDPRService.executeDeletion', () => {
     // 2. UPDATE to processing
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
 
+    // 2a. FIX 2: SELECT open poster tasks (none)
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+
+    // 2b. FIX 1: SELECT worker FUNDED/LOCKED_DISPUTE escrows (none)
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+
     // 3. serializableTransaction (deleteAndAnonymizeUserData)
     const serializableQuery = vi.fn().mockResolvedValue({ rows: [], rowCount: 0 } as never);
     mockDb.serializableTransaction.mockImplementation(async (fn) => fn(serializableQuery) as Promise<unknown>);
@@ -370,6 +384,12 @@ describe('GDPRService.executeDeletion', () => {
     // UPDATE to processing
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
 
+    // FIX 2: SELECT open poster tasks (none)
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+
+    // FIX 1: SELECT worker FUNDED/LOCKED_DISPUTE escrows (none)
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+
     // serializableTransaction throws
     mockDb.serializableTransaction.mockRejectedValue(new Error('DB transaction failed'));
 
@@ -395,6 +415,10 @@ describe('GDPRService.executeDeletion', () => {
       rowCount: 1,
     } as never);
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // processing
+    // FIX 2: SELECT open poster tasks (none)
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+    // FIX 1: SELECT worker FUNDED/LOCKED_DISPUTE escrows (none)
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
     mockDb.serializableTransaction.mockImplementation(async (fn) => {
       const q = vi.fn().mockResolvedValue({ rows: [], rowCount: 0 } as never);
       return fn(q) as Promise<unknown>;

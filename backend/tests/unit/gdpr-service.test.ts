@@ -17,11 +17,19 @@ vi.mock('../../src/db', () => ({
   getErrorMessage: vi.fn(() => ''),
 }));
 
-vi.mock('../../src/logger', () => ({
-  logger: {
-    child: () => ({ error: vi.fn(), warn: vi.fn(), info: vi.fn() }),
-  },
-}));
+vi.mock('../../src/logger', () => {
+  const base = { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn(), child: () => base };
+  return {
+    logger: base,
+    escrowLogger: base,
+    taskLogger: base,
+    aiLogger: base,
+    stripeLogger: base,
+    authLogger: base,
+    workerLogger: base,
+    dbLogger: base,
+  };
+});
 
 vi.mock('../../src/services/NotificationService', () => ({
   NotificationService: {

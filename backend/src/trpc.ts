@@ -167,10 +167,12 @@ const isAuthenticated = t.middleware(async ({ ctx, next }) => {
   }
   // Secondary defense: check is_banned on every request even if the auth cache
   // still holds the pre-ban user row (cache TTL up to 5 min after ban is set).
-  if (ctx.user.is_banned) {
+  // Also block SUSPENDED accounts — FraudDetectionService sets account_status
+  // before (or instead of) flipping is_banned. Both must block API access.
+  if (ctx.user.is_banned || ctx.user.account_status === 'SUSPENDED') {
     throw new TRPCError({
       code: 'UNAUTHORIZED',
-      message: 'Account suspended',
+      message: 'Account suspended.',
     });
   }
   return next({ ctx: { ...ctx, user: ctx.user } });

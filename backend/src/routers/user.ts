@@ -228,6 +228,8 @@ export const userRouter = router({
       defaultMode: z.string().max(20).default('worker'),
       // COPPA compliance: date of birth for age verification (AUDIT FIX)
       dateOfBirth: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Date of birth must be YYYY-MM-DD format'),
+      // Optional phone for ban-evasion cross-reference
+      phone: z.string().max(20).optional(),
     }))
     .mutation(async ({ input }) => {
       // --------------------------------------------------------------------------
@@ -256,22 +258,42 @@ export const userRouter = router({
         });
       }
 
+      // FIX 3: Ban evasion via new Firebase account — phone number cross-reference.
+      // A banned user with phone A registering with email B is detected here.
+      if (input.phone) {
+        const bannedPhone = await db.query<{ id: string }>(
+          `SELECT id FROM users WHERE phone = $1 AND is_banned = true`,
+          [input.phone]
+        );
+        if (bannedPhone.rows.length > 0) {
+          throw new TRPCError({ code: 'FORBIDDEN', message: 'Account registration not permitted.' });
+        }
+      }
+
       // Normalize role: iOS sends "hustler" but DB stores "worker"
       const dbMode = normalizeRole(input.defaultMode);
 
       // Check if user already exists
       const existing = await db.query<User>(
-        'SELECT id FROM users WHERE firebase_uid = $1 OR email = $2',
+        'SELECT * FROM users WHERE firebase_uid = $1 OR email = $2',
         [input.firebaseUid, input.email]
       );
 
       if (existing.rows.length > 0) {
-        // Return existing user instead of error (handles re-registration from social auth)
-        const existingUser = await db.query<User>(
-          'SELECT * FROM users WHERE firebase_uid = $1 OR email = $2',
-          [input.firebaseUid, input.email]
-        );
-        return await toMobileUser(existingUser.rows[0]);
+        let existingUser: User | null = existing.rows[0];
+
+        // FIX 4: If the matched row is a GDPR-deleted account, treat it as
+        // non-existent and create a fresh account instead of returning the
+        // dead row. Without this check, re-using the same Firebase UID after
+        // GDPR deletion permanently locks the user into the anonymized account.
+        if (existingUser.account_status === 'DELETED') {
+          existingUser = null;
+        }
+
+        if (existingUser) {
+          // Return existing user instead of error (handles re-registration from social auth)
+          return await toMobileUser(existingUser);
+        }
       }
 
       const result = await db.query<User>(
