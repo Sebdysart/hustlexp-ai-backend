@@ -106,30 +106,21 @@ describe('analytics router', () => {
   // trackEvent
   // =========================================================================
   describe('trackEvent', () => {
-    it('tracks event for anonymous user', async () => {
+    it('tracks event for authenticated user using ctx.user.id', async () => {
       mockAnalytics.trackEvent.mockResolvedValue({ success: true, data: { id: 'e-1' } } as any);
 
-      const caller = makePublicCaller();
+      const caller = makeProtectedCaller();
       const result = await caller.trackEvent(BASE_EVENT);
 
       expect(result).toEqual({ id: 'e-1' });
-    });
-
-    it('uses authenticated user id instead of input userId', async () => {
-      mockAnalytics.trackEvent.mockResolvedValue({ success: true, data: { id: 'e-2' } } as any);
-
-      const caller = makeProtectedCaller();
-      await caller.trackEvent({ ...BASE_EVENT, userId: UUID1 });
-
       expect(mockAnalytics.trackEvent).toHaveBeenCalledWith(
         expect.objectContaining({ userId: UUID1 }),
       );
     });
 
-    it('throws BAD_REQUEST when authenticated user sends different userId', async () => {
-      const caller = makeProtectedCaller();
-      await expect(caller.trackEvent({ ...BASE_EVENT, userId: UUID2 }))
-        .rejects.toThrow('Cannot track events for a different user');
+    it('requires authentication — rejects unauthenticated callers', async () => {
+      const caller = makePublicCaller();
+      await expect(caller.trackEvent(BASE_EVENT)).rejects.toThrow();
     });
 
     it('throws on service failure', async () => {
@@ -138,7 +129,7 @@ describe('analytics router', () => {
         error: { code: 'DB_ERROR', message: 'Insert failed' },
       } as any);
 
-      const caller = makePublicCaller();
+      const caller = makeProtectedCaller();
       await expect(caller.trackEvent(BASE_EVENT)).rejects.toThrow('Insert failed');
     });
   });
@@ -147,22 +138,27 @@ describe('analytics router', () => {
   // trackBatch
   // =========================================================================
   describe('trackBatch', () => {
-    it('tracks batch of events', async () => {
+    it('tracks batch of events for authenticated user', async () => {
       mockAnalytics.trackBatch.mockResolvedValue({ success: true, data: { count: 2 } } as any);
 
-      const caller = makePublicCaller();
+      const caller = makeProtectedCaller();
       const result = await caller.trackBatch({
         events: [BASE_EVENT, { ...BASE_EVENT, eventType: 'button_click' }],
       });
 
       expect(result).toEqual({ count: 2 });
+      expect(mockAnalytics.trackBatch).toHaveBeenCalledWith(
+        expect.arrayContaining([
+          expect.objectContaining({ userId: UUID1 }),
+        ]),
+      );
     });
 
-    it('throws BAD_REQUEST when authenticated user sends spoofed userId in batch', async () => {
-      const caller = makeProtectedCaller();
+    it('requires authentication — rejects unauthenticated callers', async () => {
+      const caller = makePublicCaller();
       await expect(caller.trackBatch({
-        events: [{ ...BASE_EVENT, userId: UUID2 }],
-      })).rejects.toThrow('Cannot track events for a different user');
+        events: [BASE_EVENT],
+      })).rejects.toThrow();
     });
   });
 

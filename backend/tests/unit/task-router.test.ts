@@ -282,7 +282,7 @@ describe('task.getState', () => {
 
   it('returns { state } for existing task', async () => {
     mockDb.query.mockResolvedValueOnce({
-      rows: [{ state: 'ACCEPTED' }],
+      rows: [{ state: 'ACCEPTED', poster_id: USER_ID, worker_id: null }],
       rowCount: 1,
     } as any);
 
@@ -298,12 +298,13 @@ describe('task.getState', () => {
   });
 
   it('passes taskId to db.query', async () => {
-    mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'OPEN' }], rowCount: 1 } as any);
+    mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'OPEN', poster_id: USER_ID, worker_id: null }], rowCount: 1 } as any);
 
     await makeCaller().getState({ taskId: TASK_ID });
 
     const [sql, params] = (mockDb.query as any).mock.calls[0];
-    expect(sql).toContain('SELECT state FROM tasks');
+    expect(sql).toContain('SELECT state');
+    expect(sql).toContain('FROM tasks');
     expect(params).toContain(TASK_ID);
   });
 

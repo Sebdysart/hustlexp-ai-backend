@@ -41,9 +41,11 @@ vi.mock('../../src/services/OnboardingAIService', () => ({
 // Imports
 // ---------------------------------------------------------------------------
 
+import { db } from '../../src/db';
 import { aiRouter } from '../../src/routers/ai';
 import { OnboardingAIService } from '../../src/services/OnboardingAIService';
 
+const mockDb = vi.mocked(db);
 const mockAI = vi.mocked(OnboardingAIService);
 
 // ---------------------------------------------------------------------------
@@ -148,6 +150,8 @@ describe('ai router', () => {
   describe('confirmRole', () => {
     it('confirms role on success', async () => {
       const data = { confirmed: true, mode: 'worker' };
+      // Guard: no prior task history
+      mockDb.query.mockResolvedValueOnce({ rows: [{ count: '0' }], rowCount: 1 } as any);
       mockAI.confirmRole.mockResolvedValue({ success: true, data } as any);
 
       const caller = makeCaller();
@@ -165,6 +169,8 @@ describe('ai router', () => {
     });
 
     it('allows AI override', async () => {
+      // Guard: no prior task history
+      mockDb.query.mockResolvedValueOnce({ rows: [{ count: '0' }], rowCount: 1 } as any);
       mockAI.confirmRole.mockResolvedValue({ success: true, data: { confirmed: true } } as any);
 
       const caller = makeCaller();
@@ -176,6 +182,8 @@ describe('ai router', () => {
     });
 
     it('throws BAD_REQUEST on service failure', async () => {
+      // Guard: no prior task history
+      mockDb.query.mockResolvedValueOnce({ rows: [{ count: '0' }], rowCount: 1 } as any);
       mockAI.confirmRole.mockResolvedValue({
         success: false,
         error: { code: 'BAD_REQUEST', message: 'Invalid mode' },
@@ -185,6 +193,16 @@ describe('ai router', () => {
       await expect(caller.confirmRole({
         confirmedMode: 'worker',
       })).rejects.toThrow('Invalid mode');
+    });
+
+    it('throws PRECONDITION_FAILED when user has prior task history', async () => {
+      // Guard: user has task history
+      mockDb.query.mockResolvedValueOnce({ rows: [{ count: '3' }], rowCount: 1 } as any);
+
+      const caller = makeCaller();
+      await expect(caller.confirmRole({
+        confirmedMode: 'poster',
+      })).rejects.toThrow('Role cannot be changed after completing tasks.');
     });
   });
 });
