@@ -16,9 +16,10 @@
  */
 
 import { TRPCError } from '@trpc/server';
-import { router, adminProcedure, Schemas } from '../trpc.js';
+import { router, adminProcedure, Schemas, invalidateAuthCacheForUser } from '../trpc.js';
 import { db } from '../db.js';
 import { z } from 'zod';
+import { EscrowService } from '../services/EscrowService.js';
 
 // ============================================================================
 // ROUTER
@@ -105,7 +106,7 @@ export const adminRouter = router({
       banned: z.boolean(),
       reason: z.string().max(500).optional(),
     }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const result = await db.query<{ id: string; is_banned: boolean }>(
         `UPDATE users SET is_banned = $1, updated_at = NOW() WHERE id = $2 RETURNING id, is_banned`,
         [input.banned, input.userId]
@@ -114,6 +115,22 @@ export const adminRouter = router({
       if (result.rows.length === 0) {
         throw new TRPCError({ code: 'NOT_FOUND', message: 'User not found' });
       }
+
+      await db.query(
+        `INSERT INTO admin_actions (admin_id, action_type, target_id, reason, metadata)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [
+          ctx.user.id,
+          input.banned ? 'user_ban' : 'user_unban',
+          input.userId,
+          input.reason ?? null,
+          JSON.stringify({ banned: input.banned }),
+        ]
+      );
+
+      // Evict any cached auth entries for this user so the ban takes effect
+      // immediately rather than waiting up to 5 minutes for the cache TTL to expire.
+      invalidateAuthCacheForUser(input.userId);
 
       return result.rows[0];
     }),
@@ -308,7 +325,13 @@ export const adminRouter = router({
   // --------------------------------------------------------------------------
 
   /**
-   * Admin override: force release or refund an escrow
+   * Admin override: force release or refund an escrow.
+   *
+   * v2.9.8 fixes:
+   *   - force_release now calls EscrowService.release() with adminOverride=true:
+   *       runs full fee/XP/insurance pipeline, skips KYC gate only.
+   *   - force_refund now calls EscrowService.refund() (correct state name: LOCKED_DISPUTE).
+   *   - Both actions write to admin_actions audit table.
    */
   escrowOverride: adminProcedure
     .input(z.object({
@@ -317,29 +340,38 @@ export const adminRouter = router({
       reason: z.string().min(1).max(500),
     }))
     .mutation(async ({ ctx, input }) => {
-      const newState = input.action === 'force_release' ? 'RELEASED' : 'REFUNDED';
+      let serviceResult;
 
-      const result = await db.query<{ id: string; state: string; amount: number }>(
-        `UPDATE escrows SET
-           state = $1,
-           released_at = CASE WHEN $1 = 'RELEASED' THEN NOW() ELSE released_at END,
-           refunded_at = CASE WHEN $1 = 'REFUNDED' THEN NOW() ELSE refunded_at END,
-           admin_override_by = $2,
-           admin_override_reason = $3,
-           updated_at = NOW()
-         WHERE id = $4 AND state IN ('FUNDED', 'DISPUTED')
-         RETURNING id, state, amount`,
-        [newState, ctx.user.id, input.reason, input.escrowId]
-      );
+      if (input.action === 'force_release') {
+        serviceResult = await EscrowService.release({
+          escrowId: input.escrowId,
+          adminOverride: true,
+          reason: input.reason,
+        });
+      } else {
+        serviceResult = await EscrowService.refund({ escrowId: input.escrowId });
+      }
 
-      if (result.rows.length === 0) {
+      if (!serviceResult.success) {
         throw new TRPCError({
           code: 'NOT_FOUND',
-          message: 'Escrow not found or not in overridable state (must be FUNDED or DISPUTED)',
+          message: serviceResult.error.message,
         });
       }
 
-      return result.rows[0];
+      await db.query(
+        `INSERT INTO admin_actions (admin_id, action_type, target_id, reason, metadata)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [
+          ctx.user.id,
+          'escrow_override',
+          input.escrowId,
+          input.reason,
+          JSON.stringify({ override_type: input.action }),
+        ]
+      );
+
+      return serviceResult.data;
     }),
 });
 

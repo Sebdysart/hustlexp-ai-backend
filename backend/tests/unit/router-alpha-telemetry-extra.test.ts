@@ -9,6 +9,10 @@
  * - getTrustTierMovement: with and without delta_type filter
  * - emitEdgeStateImpression: success path
  * - emitEdgeStateExit: success path + duration clamping
+ *
+ * v2.9.8: aggregate read procedures changed to adminProcedure.
+ * Tests now call mockAdminCheck() in beforeEach to satisfy the
+ * admin_roles guard; DATA_CALL_IDX=1 accounts for the extra query.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -71,6 +75,18 @@ function makeCaller() {
   });
 }
 
+/**
+ * Prepend admin_roles mock so adminProcedure middleware passes.
+ * The admin check queries admin_roles first, consuming mock slot 0.
+ * All data query assertions must use DATA_CALL_IDX (1) instead of 0.
+ */
+function mockAdminCheck() {
+  mockDb.query.mockResolvedValueOnce({ rows: [{ role: 'admin' }], rowCount: 1 } as any);
+}
+
+/** Index of the first actual data query (after admin_roles check). */
+const DATA_CALL_IDX = 1;
+
 const START_DATE = new Date('2025-01-01T00:00:00Z');
 const END_DATE   = new Date('2025-02-01T00:00:00Z');
 
@@ -79,7 +95,7 @@ const END_DATE   = new Date('2025-02-01T00:00:00Z');
 // ---------------------------------------------------------------------------
 
 describe('alphaTelemetry.getEdgeStateDistribution', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => { vi.clearAllMocks(); mockAdminCheck(); });
 
   it('returns distribution rows without role filter', async () => {
     const rows = [
@@ -94,8 +110,8 @@ describe('alphaTelemetry.getEdgeStateDistribution', () => {
 
     expect(result).toHaveLength(2);
     expect(result[0].state).toBe('E1_NO_TASKS_AVAILABLE');
-    // Verify query was called with just 2 params (no role)
-    const [, params] = (mockDb.query as any).mock.calls[0];
+    // Verify query was called with just 2 params (no role) — call[1] is data query, call[0] is admin check
+    const [, params] = (mockDb.query as any).mock.calls[DATA_CALL_IDX];
     expect(params).toHaveLength(2);
   });
 
@@ -107,7 +123,7 @@ describe('alphaTelemetry.getEdgeStateDistribution', () => {
       role: 'hustler',
     });
 
-    const [sql, params] = (mockDb.query as any).mock.calls[0];
+    const [sql, params] = (mockDb.query as any).mock.calls[DATA_CALL_IDX];
     expect(sql).toContain('role = $3');
     expect(params).toContain('hustler');
     expect(params).toHaveLength(3);
@@ -121,7 +137,7 @@ describe('alphaTelemetry.getEdgeStateDistribution', () => {
       end_date: END_DATE,
     });
 
-    const [, params] = (mockDb.query as any).mock.calls[0];
+    const [, params] = (mockDb.query as any).mock.calls[DATA_CALL_IDX];
     // Date objects compare by identity; use toStrictEqual for value equality
     expect(params[1]).toStrictEqual(END_DATE);
   });
@@ -132,7 +148,7 @@ describe('alphaTelemetry.getEdgeStateDistribution', () => {
 
     await makeCaller().getEdgeStateDistribution({ start_date: START_DATE });
 
-    const [, params] = (mockDb.query as any).mock.calls[0];
+    const [, params] = (mockDb.query as any).mock.calls[DATA_CALL_IDX];
     const usedEndDate: Date = params[1];
     const after = new Date();
     expect(usedEndDate.getTime()).toBeGreaterThanOrEqual(before.getTime());
@@ -151,7 +167,7 @@ describe('alphaTelemetry.getEdgeStateDistribution', () => {
 // ---------------------------------------------------------------------------
 
 describe('alphaTelemetry.getEdgeStateTimeSpent', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => { vi.clearAllMocks(); mockAdminCheck(); });
 
   it('returns time spent rows without state filter', async () => {
     const rows = [
@@ -162,7 +178,7 @@ describe('alphaTelemetry.getEdgeStateTimeSpent', () => {
     const result = await makeCaller().getEdgeStateTimeSpent({ start_date: START_DATE });
 
     expect(result).toHaveLength(1);
-    const [, params] = (mockDb.query as any).mock.calls[0];
+    const [, params] = (mockDb.query as any).mock.calls[DATA_CALL_IDX];
     expect(params).toHaveLength(2); // no state filter
   });
 
@@ -174,7 +190,7 @@ describe('alphaTelemetry.getEdgeStateTimeSpent', () => {
       state: 'E2_ELIGIBILITY_MISMATCH',
     });
 
-    const [sql, params] = (mockDb.query as any).mock.calls[0];
+    const [sql, params] = (mockDb.query as any).mock.calls[DATA_CALL_IDX];
     expect(sql).toContain('state = $3');
     expect(params).toContain('E2_ELIGIBILITY_MISMATCH');
   });
@@ -191,7 +207,7 @@ describe('alphaTelemetry.getEdgeStateTimeSpent', () => {
 // ---------------------------------------------------------------------------
 
 describe('alphaTelemetry.getDisputeRate', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => { vi.clearAllMocks(); mockAdminCheck(); });
 
   it('returns dispute_rate_per_100 of 0 when totalTasks=0', async () => {
     mockDb.query.mockResolvedValueOnce({ rows: [{ total_tasks: '0' }], rowCount: 1 } as any);
@@ -230,7 +246,7 @@ describe('alphaTelemetry.getDisputeRate', () => {
 // ---------------------------------------------------------------------------
 
 describe('alphaTelemetry.getProofCorrectionRate', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => { vi.clearAllMocks(); mockAdminCheck(); });
 
   it('returns correction_success_rate of 0 when totalFailures=0', async () => {
     mockDb.query.mockResolvedValueOnce({ rows: [{ total_failures: '0' }], rowCount: 1 } as any);
@@ -258,7 +274,7 @@ describe('alphaTelemetry.getProofCorrectionRate', () => {
 // ---------------------------------------------------------------------------
 
 describe('alphaTelemetry.getTrustTierMovement', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => { vi.clearAllMocks(); mockAdminCheck(); });
 
   it('returns movement rows without delta_type filter', async () => {
     const rows = [
@@ -269,7 +285,7 @@ describe('alphaTelemetry.getTrustTierMovement', () => {
     const result = await makeCaller().getTrustTierMovement({ start_date: START_DATE });
 
     expect(result).toHaveLength(1);
-    const [, params] = (mockDb.query as any).mock.calls[0];
+    const [, params] = (mockDb.query as any).mock.calls[DATA_CALL_IDX];
     expect(params).toHaveLength(2); // no delta_type
   });
 
@@ -281,7 +297,7 @@ describe('alphaTelemetry.getTrustTierMovement', () => {
       delta_type: 'tier',
     });
 
-    const [sql, params] = (mockDb.query as any).mock.calls[0];
+    const [sql, params] = (mockDb.query as any).mock.calls[DATA_CALL_IDX];
     expect(sql).toContain('delta_type = $3');
     expect(params).toContain('tier');
   });

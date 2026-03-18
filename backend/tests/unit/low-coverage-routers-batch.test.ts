@@ -380,9 +380,10 @@ describe('betaDashboardRouter', () => {
   // ---- getBetaConfig -------------------------------------------------------
 
   describe('getBetaConfig', () => {
-    it('returns beta config for authenticated users (protectedProcedure)', async () => {
-      // getBetaConfig uses protectedProcedure — no admin_roles check needed
-      const caller = betaDashboardRouter.createCaller(makeProtectedCtx());
+    it('returns beta config for admin users (adminProcedure — v2.9.8)', async () => {
+      // getBetaConfig was changed to adminProcedure in v2.9.8 to prevent GPS boundary leakage
+      seedAdminRoleCheck();
+      const caller = betaDashboardRouter.createCaller(makeAdminCtx());
       const result = await caller.getBetaConfig();
 
       // Verifies that config fields are present (values come from config.ts)

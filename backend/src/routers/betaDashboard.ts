@@ -399,9 +399,12 @@ export const betaDashboardRouter = router({
   // ==========================================================================
 
   /**
-   * Get beta configuration (public — used by iOS for geo-fence display).
+   * Get beta configuration (admin-only — contains operational GPS bounding box and beta dates).
+   *
+   * v2.9.8: Changed from protectedProcedure to adminProcedure to prevent GPS boundary
+   * and beta timeline leakage to all authenticated users.
    */
-  getBetaConfig: protectedProcedure
+  getBetaConfig: adminProcedure
     .input(z.void())
     .query(async () => {
       return {

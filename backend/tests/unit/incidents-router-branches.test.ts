@@ -46,7 +46,11 @@ function makeCaller(userId = 'admin-1') {
   });
 }
 
-beforeEach(() => vi.clearAllMocks());
+function seedAdminCheck() {
+  mockDb.query.mockResolvedValueOnce({ rows: [{ role: 'admin' }], rowCount: 1 } as any);
+}
+
+beforeEach(() => { vi.clearAllMocks(); seedAdminCheck(); });
 
 describe('incidents.get', () => {
   it('returns incident when found', async () => {
@@ -88,7 +92,8 @@ describe('incidents.resolve', () => {
     expect(result.resolved_at).toBeDefined();
 
     // Check that the default 'Resolved' was used in the query
-    const [, params] = mockDb.query.mock.calls[0];
+    // calls[0] = isAdmin admin_roles check; calls[1] = the UPDATE query
+    const [, params] = mockDb.query.mock.calls[1];
     expect(JSON.parse(params![1] as string)).toBe('Resolved');
   });
 
@@ -148,7 +153,8 @@ describe('incidents.stats', () => {
     const result = await makeCaller().stats({ timeRange: '24h' });
     expect(result.total).toBe('5');
 
-    const [, params] = mockDb.query.mock.calls[0];
+    // calls[0] = isAdmin admin_roles check; calls[1] = the stats SELECT query
+    const [, params] = mockDb.query.mock.calls[1];
     expect(params![0]).toBe('1 day');
   });
 
@@ -159,7 +165,7 @@ describe('incidents.stats', () => {
 
     await makeCaller().stats({ timeRange: '7d' });
 
-    const [, params] = mockDb.query.mock.calls[0];
+    const [, params] = mockDb.query.mock.calls[1];
     expect(params![0]).toBe('7 days');
   });
 
@@ -170,7 +176,7 @@ describe('incidents.stats', () => {
 
     await makeCaller().stats({ timeRange: '30d' });
 
-    const [, params] = mockDb.query.mock.calls[0];
+    const [, params] = mockDb.query.mock.calls[1];
     expect(params![0]).toBe('30 days');
   });
 
@@ -181,7 +187,7 @@ describe('incidents.stats', () => {
 
     await makeCaller().stats({});
 
-    const [, params] = mockDb.query.mock.calls[0];
+    const [, params] = mockDb.query.mock.calls[1];
     expect(params![0]).toBe('1 day');
   });
 });

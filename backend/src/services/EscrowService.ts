@@ -46,6 +46,10 @@ interface FundEscrowParams {
 interface ReleaseEscrowParams {
   escrowId: string;
   stripeTransferId?: string;
+  /** When true, skips KYC payouts_enabled gate (admin-override path only). Fee/XP/insurance still run. */
+  adminOverride?: boolean;
+  /** Reason for admin override — recorded in escrow_events metadata. */
+  reason?: string;
 }
 
 interface RefundEscrowParams {
@@ -288,7 +292,7 @@ export const EscrowService = {
    * - Attempts XP award (may be blocked by tax trigger HX201)
    */
   release: async (params: ReleaseEscrowParams): Promise<ServiceResult<Escrow>> => {
-    const { escrowId, stripeTransferId } = params;
+    const { escrowId, stripeTransferId, adminOverride = false, reason } = params;
 
     try {
       // 1. Get escrow and task details for payment method and worker
@@ -339,46 +343,49 @@ export const EscrowService = {
       const grossPayoutCents = escrow.amount;
 
       // KYC GATE: Verify worker has completed Stripe Connect onboarding
-      // before releasing funds (FinCEN/BSA compliance)
-      const workerKycResult = await db.query<{
-        payouts_enabled: boolean;
-        stripe_connect_id: string | null;
-        stripe_connect_status: string | null;
-      }>(
-        `SELECT payouts_enabled, stripe_connect_id, stripe_connect_status FROM users WHERE id = $1`,
-        [workerId]
-      );
+      // before releasing funds (FinCEN/BSA compliance).
+      // Skipped when adminOverride=true (admin force-release path) — but fee/XP/insurance still run.
+      if (!adminOverride) {
+        const workerKycResult = await db.query<{
+          payouts_enabled: boolean;
+          stripe_connect_id: string | null;
+          stripe_connect_status: string | null;
+        }>(
+          `SELECT payouts_enabled, stripe_connect_id, stripe_connect_status FROM users WHERE id = $1`,
+          [workerId]
+        );
 
-      if (workerKycResult.rows.length === 0) {
-        return {
-          success: false,
-          error: {
-            code: ErrorCodes.NOT_FOUND,
-            message: `Worker ${workerId} not found`,
-          },
-        };
-      }
+        if (workerKycResult.rows.length === 0) {
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.NOT_FOUND,
+              message: `Worker ${workerId} not found`,
+            },
+          };
+        }
 
-      const workerKyc = workerKycResult.rows[0];
+        const workerKyc = workerKycResult.rows[0];
 
-      if (!workerKyc.stripe_connect_id) {
-        return {
-          success: false,
-          error: {
-            code: ErrorCodes.INVALID_STATE,
-            message: `Worker has not set up Stripe Connect — cannot release payout`,
-          },
-        };
-      }
+        if (!workerKyc.stripe_connect_id) {
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.INVALID_STATE,
+              message: `Worker has not set up Stripe Connect — cannot release payout`,
+            },
+          };
+        }
 
-      if (!workerKyc.payouts_enabled) {
-        return {
-          success: false,
-          error: {
-            code: ErrorCodes.INVALID_STATE,
-            message: `Worker KYC incomplete — payouts not enabled (status: ${workerKyc.stripe_connect_status ?? 'unknown'})`,
-          },
-        };
+        if (!workerKyc.payouts_enabled) {
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.INVALID_STATE,
+              message: `Worker KYC incomplete — payouts not enabled (status: ${workerKyc.stripe_connect_status ?? 'unknown'})`,
+            },
+          };
+        }
       }
 
       // Calculate platform fee (from config - default 15%)
@@ -425,7 +432,7 @@ export const EscrowService = {
         };
       }
 
-      await logEscrowEvent(escrowId, escrow.state, 'RELEASED');
+      await logEscrowEvent(escrowId, escrow.state, 'RELEASED', undefined, adminOverride ? 'admin' : 'system', adminOverride && reason ? { adminOverride: true, reason } : {});
 
       // v1.x: Record 2% self-insurance contribution from worker earnings
       try {

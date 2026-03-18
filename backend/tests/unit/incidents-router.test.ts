@@ -88,6 +88,11 @@ function makeCaller(userId = 'admin-abc') {
   });
 }
 
+/** Seed admin_roles mock so adminProcedure passes. */
+function seedAdminCheck() {
+  mockDb.query.mockResolvedValueOnce({ rows: [{ role: 'admin' }], rowCount: 1 } as any);
+}
+
 // ===========================================================================
 // incidents.list — offset-based pagination (returns array)
 // ===========================================================================
@@ -95,6 +100,7 @@ function makeCaller(userId = 'admin-abc') {
 describe('incidents.list — offset-based pagination', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    seedAdminCheck();
   });
 
   // -------------------------------------------------------------------------
@@ -132,7 +138,7 @@ describe('incidents.list — offset-based pagination', () => {
 
       await makeCaller().list({ limit: 25, offset: 10 });
 
-      const [sql, params] = (mockDb.query as any).mock.calls[0];
+      const [sql, params] = (mockDb.query as any).mock.calls[1];
       expect(sql).toContain('LIMIT');
       expect(sql).toContain('OFFSET');
       expect(params).toContain(25);
@@ -144,7 +150,7 @@ describe('incidents.list — offset-based pagination', () => {
 
       await makeCaller().list({});
 
-      const [sql, params] = (mockDb.query as any).mock.calls[0];
+      const [sql, params] = (mockDb.query as any).mock.calls[1];
       expect(sql).toContain('LIMIT');
       expect(sql).toContain('OFFSET');
       expect(params).toContain(50);
@@ -196,7 +202,7 @@ describe('incidents.list — offset-based pagination', () => {
 
       await makeCaller().list({ eventType: 'error_spike', limit: 20, offset: 0 });
 
-      const [sql, params] = (mockDb.query as any).mock.calls[0];
+      const [sql, params] = (mockDb.query as any).mock.calls[1];
       expect(sql).toContain('event_type');
       expect(params).toContain('error_spike');
     });
@@ -206,7 +212,7 @@ describe('incidents.list — offset-based pagination', () => {
 
       await makeCaller().list({ severity: 'critical', limit: 20, offset: 0 });
 
-      const [sql, params] = (mockDb.query as any).mock.calls[0];
+      const [sql, params] = (mockDb.query as any).mock.calls[1];
       expect(sql).toContain('severity');
       expect(params).toContain('critical');
     });
@@ -216,7 +222,7 @@ describe('incidents.list — offset-based pagination', () => {
 
       await makeCaller().list({ service: 'auth', limit: 20, offset: 0 });
 
-      const [sql, params] = (mockDb.query as any).mock.calls[0];
+      const [sql, params] = (mockDb.query as any).mock.calls[1];
       expect(sql).toContain('service');
       expect(params).toContain('auth');
     });
@@ -226,7 +232,7 @@ describe('incidents.list — offset-based pagination', () => {
 
       await makeCaller().list({ resolved: false, limit: 20, offset: 0 });
 
-      const [sql] = (mockDb.query as any).mock.calls[0];
+      const [sql] = (mockDb.query as any).mock.calls[1];
       expect(sql).toContain('resolved_at IS NULL');
     });
 
@@ -235,7 +241,7 @@ describe('incidents.list — offset-based pagination', () => {
 
       await makeCaller().list({ resolved: true, limit: 20, offset: 0 });
 
-      const [sql] = (mockDb.query as any).mock.calls[0];
+      const [sql] = (mockDb.query as any).mock.calls[1];
       expect(sql).toContain('resolved_at IS NOT NULL');
     });
 
@@ -250,7 +256,7 @@ describe('incidents.list — offset-based pagination', () => {
         offset: 0,
       });
 
-      const [sql, params] = (mockDb.query as any).mock.calls[0];
+      const [sql, params] = (mockDb.query as any).mock.calls[1];
       expect(sql).toContain('event_type');
       expect(sql).toContain('severity');
       expect(sql).toContain('resolved_at IS NULL');
