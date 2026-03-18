@@ -204,6 +204,16 @@ export const taskRouter = router({
   create: posterProcedure
     .input(Schemas.createTask)
     .mutation(async ({ ctx, input }) => {
+      // FIX 7: Gate unimplemented multi-leg proof and partial-payout features.
+      // These schema columns exist but have zero application logic — reject early
+      // to prevent tasks from being created with silently-broken behaviour.
+      if (input.prorate_on_abort === true || (input.proof_steps && input.proof_steps.length > 0)) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: 'Multi-leg proof and partial payout features are not yet available.',
+        });
+      }
+
       // Run compliance check — hard blocks throw before any DB write
       const compliance = await ComplianceGuardianService.evaluate({
         description: input.description,

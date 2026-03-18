@@ -328,6 +328,8 @@ describe('EscrowService', () => {
   describe('lockForDispute', () => {
     it('locks from FUNDED state', async () => {
       const locked = makeEscrow({ state: 'LOCKED_DISPUTE' });
+      // Window check returns no rows (no completed_at — window guard skipped)
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
       mockDb.query.mockResolvedValueOnce({ rows: [locked], rowCount: 1 } as never);
 
       const result = await EscrowService.lockForDispute('esc-1');
@@ -337,8 +339,9 @@ describe('EscrowService', () => {
 
     it('fails when not in FUNDED state', async () => {
       mockDb.query
-        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
-        .mockResolvedValueOnce({ rows: [makeEscrow({ state: 'PENDING' })], rowCount: 1 } as never);
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // window check
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // UPDATE — 0 rows
+        .mockResolvedValueOnce({ rows: [makeEscrow({ state: 'PENDING' })], rowCount: 1 } as never); // getById
 
       const result = await EscrowService.lockForDispute('esc-1');
       expect(result.success).toBe(false);

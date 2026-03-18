@@ -12,6 +12,7 @@
  * @see PRODUCT_SPEC.md §3
  */
 
+import { TRPCError } from '@trpc/server';
 import { db, isInvariantViolation, getErrorMessage } from '../db.js';
 import { BiometricVerificationService } from './BiometricVerificationService.js';
 import { LogisticsAIService } from './LogisticsAIService.js';
@@ -200,8 +201,55 @@ export const ProofService = {
    */
   submit: async (params: SubmitProofParams): Promise<ServiceResult<Proof>> => {
     const { taskId, submitterId, description } = params;
-    
+
     try {
+      // FIX 1 + FIX 2: Fetch the task to validate submitter identity and task state
+      const taskCheck = await db.query<{ worker_id: string | null; state: string }>(
+        `SELECT worker_id, state FROM tasks WHERE id = $1`,
+        [taskId]
+      );
+
+      if (taskCheck.rows.length === 0) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: `Task ${taskId} not found` });
+      }
+
+      const task = taskCheck.rows[0];
+
+      // FIX 1: Only the assigned worker may submit proof
+      if (task.worker_id !== submitterId) {
+        throw new TRPCError({ code: 'UNAUTHORIZED', message: 'Only the assigned worker can submit proof.' });
+      }
+
+      // FIX 2: Only allow proof submission on active task states
+      const PROOF_ALLOWED_STATES = ['accepted', 'in_progress', 'ACCEPTED', 'IN_PROGRESS'];
+      if (!PROOF_ALLOWED_STATES.includes(task.state)) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: `Cannot submit proof for a task in '${task.state}' state.`,
+        });
+      }
+
+      // FIX 6: Block duplicate active-proof submissions
+      const existing = await db.query(
+        `SELECT id FROM proofs WHERE task_id = $1 AND state IN ('pending', 'submitted', 'PENDING', 'SUBMITTED')`,
+        [taskId]
+      );
+      if (existing.rows.length > 0) {
+        throw new TRPCError({ code: 'CONFLICT', message: 'A proof is already pending review for this task.' });
+      }
+
+      // FIX 3: Require at least one form of proof content
+      const hasDescription = typeof description === 'string' && description.trim().length > 0;
+      const hasPhotos = Array.isArray(params.photoUrls) && params.photoUrls.length > 0;
+      const hasLocation = params.gpsLatitude != null && params.gpsLongitude != null;
+
+      if (!hasDescription && !hasPhotos && !hasLocation) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: 'Proof must include at least a description, photo, or location.',
+        });
+      }
+
       // Create proof in PENDING state
       const createResult = await db.query<Proof>(
         `INSERT INTO proofs (task_id, submitter_id, state, description)
@@ -223,6 +271,10 @@ export const ProofService = {
       
       return { success: true, data: submitResult.rows[0] };
     } catch (error) {
+      // Re-throw TRPCErrors (e.g. UNAUTHORIZED, PRECONDITION_FAILED, BAD_REQUEST, CONFLICT)
+      if (error instanceof TRPCError) {
+        throw error;
+      }
       if (isInvariantViolation(error)) {
         return {
           success: false,

@@ -520,8 +520,9 @@ export const TaskService = {
           price: number;
           state: string;
           worker_id: string | null;
+          poster_id: string;
         }>(
-          `SELECT risk_level, instant_mode, sensitive, price, state, worker_id
+          `SELECT risk_level, instant_mode, sensitive, price, state, worker_id, poster_id
            FROM tasks WHERE id = $1 FOR UPDATE`,
           [taskId]
         );
@@ -537,6 +538,17 @@ export const TaskService = {
         }
 
         const task = taskResult.rows[0];
+
+        // FIX 4: Prevent self-dealing — a poster cannot accept their own task
+        if (task.poster_id === workerId) {
+          return {
+            success: false,
+            error: {
+              code: 'FORBIDDEN',
+              message: 'You cannot accept your own task.',
+            },
+          };
+        }
 
         // Early exit if task is already taken (before expensive eligibility checks)
         if (task.state !== 'OPEN' && task.state !== 'MATCHING') {

@@ -251,6 +251,10 @@ export const Schemas = {
     insideHome: z.boolean().optional(),
     peoplePresent: z.boolean().optional(),
     petsPresent: z.boolean().optional(),
+    // FIX 7: Accept these fields in the schema so callers can provide them,
+    // but the router will immediately reject them (features not yet implemented).
+    prorate_on_abort: z.boolean().optional(),
+    proof_steps: z.array(z.unknown()).optional(),
   }),
 
   evaluateDraft: z.object({

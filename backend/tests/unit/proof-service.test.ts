@@ -214,6 +214,8 @@ describe('ProofService', () => {
       const submittedProof = makeProof({ state: 'SUBMITTED' });
 
       mockDb.query
+        .mockResolvedValueOnce({ rows: [{ worker_id: 'user-1', state: 'ACCEPTED' }], rowCount: 1 } as never) // task lookup (FIX 1+2)
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // duplicate check (FIX 6)
         .mockResolvedValueOnce({ rows: [pendingProof], rowCount: 1 } as never) // INSERT
         .mockResolvedValueOnce({ rows: [submittedProof], rowCount: 1 } as never); // UPDATE
 
@@ -225,29 +227,39 @@ describe('ProofService', () => {
 
       expect(result.success).toBe(true);
       if (result.success) expect(result.data.state).toBe('SUBMITTED');
-      expect(mockDb.query).toHaveBeenCalledTimes(2);
+      expect(mockDb.query).toHaveBeenCalledTimes(4); // task lookup + dup check + INSERT + UPDATE
     });
 
     it('returns INVARIANT_VIOLATION on constraint failure', async () => {
       const error = { code: 'HX001', message: 'invariant' };
       mockIsInvariantViolation.mockReturnValueOnce(true);
-      mockDb.query.mockRejectedValueOnce(error);
+      // task lookup succeeds, dup check succeeds, then INSERT throws invariant violation
+      mockDb.query
+        .mockResolvedValueOnce({ rows: [{ worker_id: 'user-1', state: 'ACCEPTED' }], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+        .mockRejectedValueOnce(error);
 
       const result = await ProofService.submit({
         taskId: 'task-1',
         submitterId: 'user-1',
+        description: 'proof content',
       });
 
       expect(result.success).toBe(false);
       if (!result.success) expect(result.error.code).toBe('HX001');
     });
 
-    it('returns DB_ERROR on generic failure', async () => {
-      mockDb.query.mockRejectedValueOnce(new Error('timeout'));
+    it('returns DB_ERROR on generic failure during INSERT', async () => {
+      // task lookup succeeds, dup check succeeds, then INSERT throws a generic error
+      mockDb.query
+        .mockResolvedValueOnce({ rows: [{ worker_id: 'user-1', state: 'ACCEPTED' }], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+        .mockRejectedValueOnce(new Error('timeout'));
 
       const result = await ProofService.submit({
         taskId: 'task-1',
         submitterId: 'user-1',
+        description: 'proof content',
       });
 
       expect(result.success).toBe(false);

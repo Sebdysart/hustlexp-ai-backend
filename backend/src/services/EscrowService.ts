@@ -14,6 +14,7 @@
  * @see PRODUCT_SPEC.md §4
  */
 
+import { TRPCError } from '@trpc/server';
 import { db, isInvariantViolation, isUniqueViolation, getErrorMessage } from '../db.js';
 import { config } from '../config.js';
 import { EarnedVerificationUnlockService } from './EarnedVerificationUnlockService.js';
@@ -566,13 +567,42 @@ export const EscrowService = {
 
   /**
    * Lock for dispute: FUNDED → LOCKED_DISPUTE
+   *
+   * FIX 5: Enforces challenge_window_hours. A poster cannot file a dispute after
+   * the challenge window (measured from task.completed_at) has elapsed.
    */
   lockForDispute: async (escrowId: string): Promise<ServiceResult<Escrow>> => {
     try {
+      // FIX 5: Fetch the associated task to enforce the challenge window
+      const windowCheck = await db.query<{
+        completed_at: Date | null;
+        challenge_window_hours: number | null;
+      }>(
+        `SELECT t.completed_at, t.challenge_window_hours
+         FROM escrows e
+         JOIN tasks t ON t.id = e.task_id
+         WHERE e.id = $1`,
+        [escrowId]
+      );
+
+      if (windowCheck.rows.length > 0) {
+        const { completed_at, challenge_window_hours } = windowCheck.rows[0];
+        if (completed_at != null) {
+          const windowMs = (challenge_window_hours ?? 6) * 60 * 60 * 1000;
+          const deadlineAt = new Date(new Date(completed_at).getTime() + windowMs);
+          if (new Date() > deadlineAt) {
+            throw new TRPCError({
+              code: 'PRECONDITION_FAILED',
+              message: `Dispute window has closed. Tasks must be disputed within ${challenge_window_hours ?? 6} hours of completion.`,
+            });
+          }
+        }
+      }
+
       const result = await db.query<Escrow>(
-        `UPDATE escrows 
+        `UPDATE escrows
          SET state = 'LOCKED_DISPUTE'
-         WHERE id = $1 
+         WHERE id = $1
            AND state = 'FUNDED'
          RETURNING *`,
         [escrowId]
@@ -597,6 +627,10 @@ export const EscrowService = {
 
       return { success: true, data: result.rows[0] };
     } catch (error) {
+      // Re-throw TRPCErrors (e.g. challenge window PRECONDITION_FAILED) — do not swallow
+      if (error instanceof TRPCError) {
+        throw error;
+      }
       return {
         success: false,
         error: {
