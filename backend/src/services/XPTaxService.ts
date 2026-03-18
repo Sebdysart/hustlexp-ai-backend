@@ -174,6 +174,17 @@ export const XPTaxService = {
     stripePaymentIntentId: string
   ): Promise<ServiceResult<{ xp_released: number }>> => {
     try {
+      // FIX 4: Hard-block if Stripe is not configured — never process tax payments without verification
+      if (!StripeService.isConfigured()) {
+        return {
+          success: false,
+          error: {
+            code: 'XP_TAX_PAYMENT_UNAVAILABLE',
+            message: 'XP_TAX_PAYMENT_UNAVAILABLE: Stripe is not configured. Cannot process tax payment.',
+          },
+        };
+      }
+
       // Verify Stripe payment succeeded
       const piResult = await StripeService.verifyPaymentIntent(stripePaymentIntentId);
 
@@ -204,13 +215,14 @@ export const XPTaxService = {
 
         amountPaidCents = piResult.data.amountCents;
       } else {
-        // Stripe not configured (dev mode) — fall back to unpaid tax total
-        log.warn({ userId }, 'Stripe not available, using unpaid tax total as amount');
-        const statusResult = await db.query<{ total_unpaid_tax_cents: number }>(
-          'SELECT total_unpaid_tax_cents FROM user_xp_tax_status WHERE user_id = $1',
-          [userId]
-        );
-        amountPaidCents = statusResult.rows[0]?.total_unpaid_tax_cents || 0;
+        // Stripe returned an error despite being configured — propagate it
+        return {
+          success: false,
+          error: {
+            code: 'STRIPE_VERIFICATION_FAILED',
+            message: piResult.error?.message ?? 'Failed to verify Stripe payment intent',
+          },
+        };
       }
 
       if (amountPaidCents <= 0) {

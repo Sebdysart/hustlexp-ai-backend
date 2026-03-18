@@ -70,7 +70,11 @@ describe('EscrowService', () => {
 
   describe('refund', () => {
     it('should refund FUNDED escrow', async () => {
-      (db.query as any).mockResolvedValueOnce({ rows: [{ id: 'e1', state: 'REFUNDED' }], rowCount: 1 });
+      // FIX 3: refund() now pre-fetches task_id + worker_id before the UPDATE
+      (db.query as any).mockResolvedValueOnce({ rows: [{ task_id: 'task-1' }], rowCount: 1 }); // SELECT task_id
+      (db.query as any).mockResolvedValueOnce({ rows: [{ worker_id: null }], rowCount: 1 });   // SELECT worker_id (null = no clawback)
+      (db.query as any).mockResolvedValueOnce({ rows: [{ id: 'e1', state: 'REFUNDED' }], rowCount: 1 }); // UPDATE
+      (db.query as any).mockResolvedValueOnce({ rowCount: 1 }); // logEscrowEvent
       const result = await EscrowService.refund({ escrowId: 'e1' });
       expect(result.success).toBe(true);
     });

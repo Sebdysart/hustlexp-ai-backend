@@ -226,6 +226,7 @@ describe('XPService.awardXP', () => {
   }
 
   it('awards XP successfully when all checks pass', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ total: '0' }] }); // checkDailyXPCap DB fallback
     mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] }); // checkVelocity
 
     const ledgerRow = makeLedgerRow();
@@ -247,6 +248,7 @@ describe('XPService.awardXP', () => {
   });
 
   it('returns NOT_FOUND when user is missing inside transaction', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ total: '0' }] }); // checkDailyXPCap DB fallback
     mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] }); // checkVelocity
 
     mockTx.mockImplementationOnce(async (fn: Function) => {
@@ -263,6 +265,7 @@ describe('XPService.awardXP', () => {
   });
 
   it('returns HX101 (INV_1_VIOLATION) when escrow is not released', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ total: '0' }] }); // checkDailyXPCap DB fallback
     mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] }); // checkVelocity
     mockIsInvariant.mockReturnValue(true);
     mockTx.mockRejectedValueOnce({ code: 'HX101' });
@@ -276,6 +279,7 @@ describe('XPService.awardXP', () => {
   });
 
   it('returns 23505 (INV_5_VIOLATION) when XP already awarded for this escrow', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ total: '0' }] }); // checkDailyXPCap DB fallback
     mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] }); // checkVelocity
     mockIsUnique.mockReturnValue(true);
     mockTx.mockRejectedValueOnce(new Error('unique violation'));
@@ -290,6 +294,7 @@ describe('XPService.awardXP', () => {
   });
 
   it('returns DB_ERROR on unexpected transaction failure', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ total: '0' }] }); // checkDailyXPCap DB fallback
     mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] }); // checkVelocity
     mockTx.mockRejectedValueOnce(new Error('connection lost'));
 
@@ -302,6 +307,7 @@ describe('XPService.awardXP', () => {
   });
 
   it('causes a level-up from level 1 to level 2 (100 XP threshold)', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ total: '0' }] }); // checkDailyXPCap DB fallback
     mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] }); // checkVelocity
 
     // User has 50 XP, base 60 pushes to 110 > 100 threshold -> level 2
@@ -329,8 +335,9 @@ describe('XPService.awardXP', () => {
     }
   });
 
-  it('flags velocity as suspicious but still awards XP (advisory not blocking)', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [{ count: '6' }] }); // suspicious: >5
+  it('flags velocity as suspicious but still awards XP when baseXP <= 1000 (advisory)', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ total: '0' }] }); // checkDailyXPCap DB fallback
+    mockQuery.mockResolvedValueOnce({ rows: [{ count: '6' }] }); // suspicious: >5 but baseXP=100 (advisory)
 
     const ledgerRow = makeLedgerRow();
     mockTx.mockImplementationOnce(async (fn: Function) => {
@@ -350,6 +357,7 @@ describe('XPService.awardXP', () => {
   it('emits trust delta with role=poster when user default_mode is poster', async () => {
     const emitSpy = AlphaInstrumentation.emitTrustDeltaApplied as ReturnType<typeof vi.fn>;
 
+    mockQuery.mockResolvedValueOnce({ rows: [{ total: '0' }] }); // checkDailyXPCap DB fallback
     mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] }); // checkVelocity
 
     const ledgerRow = makeLedgerRow();
@@ -373,6 +381,7 @@ describe('XPService.awardXP', () => {
     (AlphaInstrumentation.emitTrustDeltaApplied as ReturnType<typeof vi.fn>)
       .mockRejectedValueOnce(new Error('instrumentation down'));
 
+    mockQuery.mockResolvedValueOnce({ rows: [{ total: '0' }] }); // checkDailyXPCap DB fallback
     mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] }); // checkVelocity
 
     const ledgerRow = makeLedgerRow();
@@ -472,11 +481,21 @@ describe('XPService.getByTask', () => {
 // checkDailyXPCap
 // ═══════════════════════════════════════════════════════════════════════════
 describe('XPService.checkDailyXPCap', () => {
-  it('returns allowed=true when redis not configured', async () => {
+  it('falls back to DB query when redis not configured (FIX 1: cap always enforced)', async () => {
+    // With Redis unconfigured, checkDailyXPCap queries xp_ledger for today's total
+    mockQuery.mockResolvedValueOnce({ rows: [{ total: '0' }] }); // 0 XP earned today
     const result = await XPService.checkDailyXPCap('user-1');
-    expect(result.allowed).toBe(true);
+    expect(result.allowed).toBe(true); // 0 earned < 10000 cap
     expect(result.earned).toBe(0);
     expect(result.cap).toBe(10000);
+    expect(result.remaining).toBe(10000);
+  });
+
+  it('blocks when DB shows daily cap reached', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ total: '10000' }] }); // already at cap
+    const result = await XPService.checkDailyXPCap('user-1', 100);
+    expect(result.allowed).toBe(false); // 10000 + 100 > 10000
+    expect(result.earned).toBe(10000);
   });
 });
 

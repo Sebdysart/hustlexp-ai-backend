@@ -523,6 +523,21 @@ export const EscrowService = {
     const { escrowId } = params;
 
     try {
+      // FIX 3: Fetch worker_id before refunding so we can clawback XP
+      const escrowPreCheck = await db.query<{ task_id: string }>(
+        `SELECT task_id FROM escrows WHERE id = $1`,
+        [escrowId]
+      );
+      const taskId = escrowPreCheck.rows[0]?.task_id;
+      let workerId: string | null = null;
+      if (taskId) {
+        const taskRow = await db.query<{ worker_id: string | null }>(
+          `SELECT worker_id FROM tasks WHERE id = $1`,
+          [taskId]
+        );
+        workerId = taskRow.rows[0]?.worker_id ?? null;
+      }
+
       const result = await db.query<Escrow>(
         `UPDATE escrows
          SET state = 'REFUNDED',
@@ -559,6 +574,19 @@ export const EscrowService = {
       }
 
       await logEscrowEvent(escrowId, 'FUNDED', 'REFUNDED');
+
+      // FIX 3: Clawback XP if the worker had already been awarded XP for this escrow
+      if (workerId) {
+        try {
+          await XPService.clawbackXP(workerId, escrowId, 'task_refunded');
+        } catch (clawbackError) {
+          // Non-fatal: clawback failure must not block the refund
+          escrowLogger.error(
+            { err: clawbackError instanceof Error ? clawbackError.message : String(clawbackError), workerId, escrowId },
+            'XP clawback failed during refund — refund proceeds'
+          );
+        }
+      }
 
       return { success: true, data: result.rows[0] };
     } catch (error) {
@@ -701,6 +729,26 @@ export const EscrowService = {
       }
 
       await logEscrowEvent(escrowId, 'LOCKED_DISPUTE', 'REFUND_PARTIAL');
+
+      // FIX 3: Clawback XP when dispute resolves against the worker (posterPercent > 0)
+      if (posterPercent > 0) {
+        try {
+          const disputeTaskRow = await db.query<{ worker_id: string | null }>(
+            `SELECT t.worker_id FROM escrows e JOIN tasks t ON t.id = e.task_id WHERE e.id = $1`,
+            [escrowId]
+          );
+          const disputeWorkerId = disputeTaskRow.rows[0]?.worker_id ?? null;
+          if (disputeWorkerId) {
+            await XPService.clawbackXP(disputeWorkerId, escrowId, 'dispute_lost');
+          }
+        } catch (clawbackError) {
+          // Non-fatal: clawback failure must not block the partial refund
+          escrowLogger.error(
+            { err: clawbackError instanceof Error ? clawbackError.message : String(clawbackError), escrowId },
+            'XP clawback failed during partialRefund — refund proceeds'
+          );
+        }
+      }
 
       return { success: true, data: result.rows[0] };
     } catch (error) {

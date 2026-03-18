@@ -246,8 +246,8 @@ export const XPService = {
   awardXP: async (params: AwardXPParams): Promise<ServiceResult<XPLedgerEntry>> => {
     const { userId, taskId, escrowId, baseXP } = params;
 
-    // Anti-farming: Check daily XP cap
-    const capCheck = await XPService.checkDailyXPCap(userId);
+    // Anti-farming: Check daily XP cap (pass xpAmount so DB-fallback cap check is accurate)
+    const capCheck = await XPService.checkDailyXPCap(userId, baseXP);
     if (!capCheck.allowed) {
       return {
         success: false,
@@ -259,9 +259,21 @@ export const XPService = {
     }
 
     // Anti-farming: Check velocity
+    // FIX 2: Hard-block large awards when velocity is suspicious
+    const VELOCITY_BLOCK_THRESHOLD = 1000;
     const velocityCheck = await XPService.checkVelocity(userId);
+    if (velocityCheck.suspicious && baseXP > VELOCITY_BLOCK_THRESHOLD) {
+      log.warn({ userId, baseXP, velocityData: velocityCheck }, 'XP velocity block triggered');
+      return {
+        success: false,
+        error: {
+          code: 'XP_VELOCITY_EXCEEDED',
+          message: 'XP_VELOCITY_EXCEEDED: Award blocked due to suspicious velocity pattern',
+        },
+      };
+    }
     if (velocityCheck.suspicious) {
-      log.warn({ userId, recentEvents: velocityCheck.recentEvents }, 'XP velocity suspicious - allowing but flagging');
+      log.warn({ userId, baseXP, recentEvents: velocityCheck.recentEvents }, 'XP velocity suspicious (below block threshold) - allowing but flagging');
     }
 
     let effectiveXPAwarded = 0;
@@ -496,17 +508,42 @@ export const XPService = {
   /**
    * Check daily XP cap for anti-farming
    */
-  checkDailyXPCap: async (userId: string): Promise<{ allowed: boolean; earned: number; cap: number }> => {
+  checkDailyXPCap: async (userId: string, xpAmount: number = 0): Promise<{ allowed: boolean; earned: number; cap: number; remaining: number }> => {
     const redis = getXPRedis();
-    if (!redis) return { allowed: true, earned: 0, cap: DAILY_XP_CAP };
+    if (!redis) {
+      // FIX 1: Redis absent — fall back to DB query so cap is always enforced
+      try {
+        const result = await db.query<{ total: string }>(
+          `SELECT COALESCE(SUM(effective_xp), 0) as total
+           FROM xp_ledger
+           WHERE user_id = $1 AND awarded_at::date = CURRENT_DATE`,
+          [userId]
+        );
+        const totalToday = parseInt(result.rows[0]?.total ?? '0', 10);
+        return {
+          allowed: totalToday + xpAmount <= DAILY_XP_CAP,
+          earned: totalToday,
+          cap: DAILY_XP_CAP,
+          remaining: Math.max(0, DAILY_XP_CAP - totalToday),
+        };
+      } catch {
+        // DB fallback failed — block to be safe (fail closed)
+        return { allowed: false, earned: 0, cap: DAILY_XP_CAP, remaining: 0 };
+      }
+    }
 
     const dateKey = new Date().toISOString().split('T')[0];
     const key = `xp:daily:${userId}:${dateKey}`;
     try {
       const earned = Number(await redis.get(key) ?? 0);
-      return { allowed: earned < DAILY_XP_CAP, earned, cap: DAILY_XP_CAP };
+      return {
+        allowed: earned + xpAmount <= DAILY_XP_CAP,
+        earned,
+        cap: DAILY_XP_CAP,
+        remaining: Math.max(0, DAILY_XP_CAP - earned),
+      };
     } catch {
-      return { allowed: true, earned: 0, cap: DAILY_XP_CAP };
+      return { allowed: true, earned: 0, cap: DAILY_XP_CAP, remaining: DAILY_XP_CAP };
     }
   },
 
@@ -542,6 +579,64 @@ export const XPService = {
     } catch {
       return { suspicious: false, recentEvents: 0 };
     }
+  },
+
+  /**
+   * Clawback XP awarded for an escrow that was subsequently refunded or lost in dispute.
+   *
+   * INV-4 compliance: The xp_ledger is immutable (no UPDATE/DELETE). We insert a
+   * debit entry with negative effective_xp to offset the original credit, then
+   * update the user's running xp_total.
+   *
+   * FIX 3: Closes the dispute-then-refund free-XP exploit.
+   */
+  clawbackXP: async (userId: string, escrowId: string, reason: string): Promise<void> => {
+    // Find the original XP award for this escrow
+    const award = await db.query<{ id: string; effective_xp: number; task_id: string }>(
+      `SELECT id, effective_xp, task_id FROM xp_ledger
+       WHERE user_id = $1 AND escrow_id = $2
+       ORDER BY awarded_at DESC LIMIT 1`,
+      [userId, escrowId]
+    );
+    if (award.rows.length === 0) {
+      // No XP was ever awarded for this escrow — nothing to clawback
+      log.info({ userId, escrowId, reason }, 'XP clawback: no award found for escrow, skipping');
+      return;
+    }
+
+    const xpToDeduct = award.rows[0].effective_xp;
+    const taskId = award.rows[0].task_id;
+
+    // Insert a debit entry (negative effective_xp) to preserve ledger immutability (INV-4)
+    await db.query(
+      `INSERT INTO xp_ledger (
+        user_id, task_id, escrow_id,
+        base_xp, streak_multiplier, trust_multiplier, live_mode_multiplier, effective_xp,
+        reason,
+        user_xp_before, user_xp_after,
+        user_level_before, user_level_after,
+        user_streak_at_award
+      )
+      SELECT
+        $1, $3, $2,
+        -base_xp, streak_multiplier, trust_multiplier, live_mode_multiplier, -effective_xp,
+        $4,
+        user_xp_after, GREATEST(0, user_xp_after - effective_xp),
+        user_level_after, user_level_before,
+        user_streak_at_award
+      FROM xp_ledger
+      WHERE user_id = $1 AND escrow_id = $2
+      ORDER BY awarded_at DESC LIMIT 1`,
+      [userId, escrowId, taskId, reason]
+    );
+
+    // Update the user's running XP total (floor at 0)
+    await db.query(
+      `UPDATE users SET xp_total = GREATEST(0, xp_total - $1), updated_at = NOW() WHERE id = $2`,
+      [xpToDeduct, userId]
+    );
+
+    log.info({ userId, xpDeducted: xpToDeduct, reason, escrowId }, 'XP clawback applied');
   },
 
   /**

@@ -72,6 +72,7 @@ vi.mock('../../src/services/AIClient', () => ({
 
 vi.mock('../../src/services/StripeService', () => ({
   StripeService: {
+    isConfigured: vi.fn(() => true),
     verifyPaymentIntent: vi.fn(),
   },
 }));
@@ -1216,21 +1217,15 @@ describe('XPTaxService.getTaxHistory', () => {
 });
 
 describe('XPTaxService.payTax', () => {
-  it('returns zero when amountPaidCents is 0 (Stripe not configured)', async () => {
-    // Stripe returns failure → falls back to db query for unpaid total
-    mockStripe.verifyPaymentIntent.mockResolvedValueOnce({
-      success: false,
-      error: { code: 'STRIPE_NOT_CONFIGURED', message: 'No key' },
-    });
-    mockDb.query
-      .mockResolvedValueOnce({ rows: [{ total_unpaid_tax_cents: 0 }], rowCount: 1 }) // status query
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 }); // unpaid taxes query (not reached)
+  it('returns XP_TAX_PAYMENT_UNAVAILABLE when Stripe is not configured (FIX 4)', async () => {
+    // FIX 4: payTax hard-blocks when Stripe is not configured (no dev-mode bypass)
+    vi.mocked(mockStripe.isConfigured).mockReturnValueOnce(false);
 
     const result = await XPTaxService.payTax('user-1', 'pi_test_123');
 
-    expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.data.xp_released).toBe(0);
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.code).toBe('XP_TAX_PAYMENT_UNAVAILABLE');
     }
   });
 

@@ -167,9 +167,12 @@ describe('Money Path: Escrow Lifecycle', () => {
     });
 
     it('should prevent refunding already-released escrow', async () => {
-      // Mock 1: UPDATE returns 0 rows (WHERE state IN ('FUNDED', 'LOCKED_DISPUTE') doesn't match)
+      // FIX 3: refund() pre-fetches task_id + worker_id before the UPDATE
+      db.query.mockResolvedValueOnce({ rowCount: 1, rows: [{ task_id: 'task-1' }] }); // SELECT task_id
+      db.query.mockResolvedValueOnce({ rowCount: 1, rows: [{ worker_id: null }] });   // SELECT worker_id
+      // UPDATE returns 0 rows (WHERE state = 'FUNDED' doesn't match RELEASED)
       db.query.mockResolvedValueOnce({ rowCount: 0, rows: [] });
-      // Mock 2: getById SELECT for error message — returns RELEASED (terminal)
+      // getById SELECT for error message — returns RELEASED (terminal)
       db.query.mockResolvedValueOnce({
         rowCount: 1,
         rows: [{ id: 'escrow-1', task_id: 'task-1', amount: 5000, state: 'RELEASED' }],
@@ -212,12 +215,15 @@ describe('Money Path: Escrow Lifecycle', () => {
       expect(result.data?.state).toBe('RELEASED');
     });
 
-    it('should allow LOCKED_DISPUTE → REFUNDED (poster wins)', async () => {
-      // refund() does UPDATE ... WHERE state IN ('FUNDED', 'LOCKED_DISPUTE') — single query
+    it('should allow FUNDED → REFUNDED via refund() (poster cancels before dispute)', async () => {
+      // FIX 3: refund() pre-fetches task_id + worker_id before the UPDATE
+      db.query.mockResolvedValueOnce({ rowCount: 1, rows: [{ task_id: 'task-1' }] }); // SELECT task_id
+      db.query.mockResolvedValueOnce({ rowCount: 1, rows: [{ worker_id: null }] });   // SELECT worker_id (null = no clawback)
       db.query.mockResolvedValueOnce({
         rowCount: 1,
         rows: [{ id: 'escrow-1', task_id: 'task-1', amount: 5000, state: 'REFUNDED', refunded_at: new Date() }],
-      });
+      }); // UPDATE
+      db.query.mockResolvedValueOnce({ rowCount: 1, rows: [] }); // logEscrowEvent INSERT
 
       const result = await EscrowService.refund({ escrowId: 'escrow-1' });
       expect(result.success).toBe(true);

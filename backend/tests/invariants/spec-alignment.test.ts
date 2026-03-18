@@ -743,7 +743,14 @@ describe('Integration: Full XP Award Flow', () => {
     // Setup: VERIFIED user (tier 2), 14-day streak, LIVE task
     // Expected: 100 base × 1.7 streak × 1.5 trust × 1.25 live = 318.75 → 318
 
-    const mockQuery = vi.fn()
+    // FIX 1: awardXP now calls checkDailyXPCap (DB query) then checkVelocity before transaction
+    db.query
+      .mockResolvedValueOnce({ rows: [{ total: '0' }] })      // checkDailyXPCap DB fallback
+      .mockResolvedValueOnce({ rows: [{ count: '0' }] })      // checkVelocity
+      .mockResolvedValueOnce({ rows: [{ default_mode: 'worker' }] }) // post-tx AlphaInstrumentation
+      .mockResolvedValueOnce({ rows: [{ completed_at: null }] });    // post-tx StreakService
+
+    const mockTxQuery = vi.fn()
       .mockResolvedValueOnce({
         rows: [{
           xp_total: 500,
@@ -764,7 +771,7 @@ describe('Integration: Full XP Award Flow', () => {
       .mockResolvedValueOnce({ rowCount: 1 });
 
     db.serializableTransaction.mockImplementation(async (fn) => {
-      return fn(mockQuery);
+      return fn(mockTxQuery);
     });
 
     const result = await XPService.awardXP({
