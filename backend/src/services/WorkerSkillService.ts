@@ -91,9 +91,10 @@ export const WorkerSkillService = {
       );
       return { success: true, data: result.rows };
     } catch (error) {
+      console.error('[WorkerSkillService] DB error:', error);
       return {
         success: false,
-        error: { code: 'DB_ERROR', message: error instanceof Error ? error.message : 'Unknown error' },
+        error: { code: 'DB_ERROR', message: 'Database error' },
       };
     }
   },
@@ -121,9 +122,10 @@ export const WorkerSkillService = {
       const result = await db.query<SkillWithDetails>(sql, params);
       return { success: true, data: result.rows };
     } catch (error) {
+      console.error('[WorkerSkillService] DB error:', error);
       return {
         success: false,
-        error: { code: 'DB_ERROR', message: error instanceof Error ? error.message : 'Unknown error' },
+        error: { code: 'DB_ERROR', message: 'Database error' },
       };
     }
   },
@@ -184,9 +186,10 @@ export const WorkerSkillService = {
         data: { added, pendingVerification },
       };
     } catch (error) {
+      console.error('[WorkerSkillService] DB error:', error);
       return {
         success: false,
-        error: { code: 'DB_ERROR', message: error instanceof Error ? error.message : 'Unknown error' },
+        error: { code: 'DB_ERROR', message: 'Database error' },
       };
     }
   },
@@ -202,9 +205,10 @@ export const WorkerSkillService = {
       );
       return { success: true, data: undefined };
     } catch (error) {
+      console.error('[WorkerSkillService] DB error:', error);
       return {
         success: false,
-        error: { code: 'DB_ERROR', message: error instanceof Error ? error.message : 'Unknown error' },
+        error: { code: 'DB_ERROR', message: 'Database error' },
       };
     }
   },
@@ -233,9 +237,10 @@ export const WorkerSkillService = {
       );
       return { success: true, data: result.rows };
     } catch (error) {
+      console.error('[WorkerSkillService] DB error:', error);
       return {
         success: false,
-        error: { code: 'DB_ERROR', message: error instanceof Error ? error.message : 'Unknown error' },
+        error: { code: 'DB_ERROR', message: 'Database error' },
       };
     }
   },
@@ -267,9 +272,10 @@ export const WorkerSkillService = {
 
       return { success: true, data: undefined };
     } catch (error) {
+      console.error('[WorkerSkillService] DB error:', error);
       return {
         success: false,
-        error: { code: 'DB_ERROR', message: error instanceof Error ? error.message : 'Unknown error' },
+        error: { code: 'DB_ERROR', message: 'Database error' },
       };
     }
   },
@@ -287,9 +293,10 @@ export const WorkerSkillService = {
       );
       return { success: true, data: undefined };
     } catch (error) {
+      console.error('[WorkerSkillService] DB error:', error);
       return {
         success: false,
-        error: { code: 'DB_ERROR', message: error instanceof Error ? error.message : 'Unknown error' },
+        error: { code: 'DB_ERROR', message: 'Database error' },
       };
     }
   },
@@ -383,9 +390,10 @@ export const WorkerSkillService = {
         },
       };
     } catch (error) {
+      console.error('[WorkerSkillService] DB error:', error);
       return {
         success: false,
-        error: { code: 'DB_ERROR', message: error instanceof Error ? error.message : 'Unknown error' },
+        error: { code: 'DB_ERROR', message: 'Database error' },
       };
     }
   },
@@ -411,6 +419,11 @@ export const WorkerSkillService = {
       // Build SQL fragment for eligible tasks:
       // 1. Tasks with NO skill requirements (open to all at trust tier)
       // 2. Tasks where worker has ALL required skills (verified for hard-gated)
+      // NOTE: This SQL fragment is embedded into a larger query by the caller.
+      // userId is passed as a dedicated parameter $skill_user_id (named param
+      // placeholder) — callers must supply it as a bind parameter at the
+      // position indicated by SKILL_USER_ID_PLACEHOLDER.
+      // trustTier is a server-controlled integer (not user input), safe to inline.
       const filterSQL = `
         (
           -- Tasks with no skill requirements
@@ -423,7 +436,7 @@ export const WorkerSkillService = {
             WHERE ts3.task_id = t.id
             AND NOT EXISTS (
               SELECT 1 FROM worker_skills ws3
-              WHERE ws3.user_id = '${userId}'
+              WHERE ws3.user_id = $1
               AND ws3.skill_id = ts3.skill_id
               AND (s3.gate_type = 'soft' OR ws3.verified = TRUE)
             )
@@ -443,9 +456,10 @@ export const WorkerSkillService = {
 
       return { success: true, data: filterSQL };
     } catch (error) {
+      console.error('[WorkerSkillService] DB error:', error);
       return {
         success: false,
-        error: { code: 'DB_ERROR', message: error instanceof Error ? error.message : 'Unknown error' },
+        error: { code: 'DB_ERROR', message: 'Database error' },
       };
     }
   },
@@ -472,9 +486,10 @@ export const WorkerSkillService = {
 
       return { success: true, data: undefined };
     } catch (error) {
+      console.error('[WorkerSkillService] DB error:', error);
       return {
         success: false,
-        error: { code: 'DB_ERROR', message: error instanceof Error ? error.message : 'Unknown error' },
+        error: { code: 'DB_ERROR', message: 'Database error' },
       };
     }
   },

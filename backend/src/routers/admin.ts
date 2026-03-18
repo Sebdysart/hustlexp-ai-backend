@@ -47,8 +47,10 @@ export const adminRouter = router({
       let paramIndex = 1;
 
       if (input.search) {
+        // Escape LIKE metacharacters so user input cannot craft wildcard patterns.
+        const safeLike = input.search.replace(/%/g, '\\%').replace(/_/g, '\\_');
         conditions.push(`(u.full_name ILIKE $${paramIndex} OR u.email ILIKE $${paramIndex})`);
-        params.push(`%${input.search}%`);
+        params.push(`%${safeLike}%`);
         paramIndex++;
       }
 

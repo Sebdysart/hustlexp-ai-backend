@@ -364,7 +364,7 @@ describe('WorkerSkillService.getCategories', () => {
     const result = await WorkerSkillService.getCategories();
     expect(result.success).toBe(false);
     expect(result.error?.code).toBe('DB_ERROR');
-    expect(result.error?.message).toBe('connection refused');
+    expect(result.error?.message).toBe('Database error');
   });
 });
 
@@ -612,7 +612,7 @@ describe('WorkerSkillService.recordTaskCompletion', () => {
     const result = await WorkerSkillService.recordTaskCompletion('user-1', 'task-1');
     expect(result.success).toBe(false);
     expect(result.error?.code).toBe('DB_ERROR');
-    expect(result.error?.message).toContain('DB failure');
+    expect(result.error?.message).toBe('Database error');
   });
 });
 

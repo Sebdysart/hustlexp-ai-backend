@@ -68,7 +68,7 @@ export const taskDiscoveryRouter = router({
   browseTasks: publicProcedure
     .input(z.object({
       limit: z.number().int().min(1).max(100).default(20),
-      offset: z.number().int().min(0).default(0),
+      offset: z.number().int().min(0).max(10000).default(0),
       category: z.string().optional(),
       min_price: z.number().int().nonnegative().optional(),
       max_price: z.number().int().positive().optional(),
@@ -91,8 +91,10 @@ export const taskDiscoveryRouter = router({
         });
       }
 
-      // Annotate each task with progressive verification info
-      const annotatedTasks = result.data.map((task) => ({
+      // Annotate each task with progressive verification info.
+      // poster_id is intentionally stripped from public browse results to
+      // prevent poster identity enumeration by unauthenticated callers.
+      const annotatedTasks = result.data.map(({ poster_id: _posterId, ...task }) => ({
         ...task,
         canAccept: canUserAcceptTask(userTrustTier, task.price as number),
         requiredTrustTier: getRequiredTierForTask(task.price as number),

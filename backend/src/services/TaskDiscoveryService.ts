@@ -327,11 +327,12 @@ export const TaskDiscoveryService = {
         data: result.rows,
       };
     } catch (error) {
+      console.error('[TaskDiscoveryService] DB error:', error);
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'Database error',
         },
       };
     }
@@ -511,11 +512,12 @@ export const TaskDiscoveryService = {
         },
       };
     } catch (error) {
+      console.error('[TaskDiscoveryService] DB error:', error);
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'Database error',
         },
       };
     }
@@ -603,11 +605,12 @@ export const TaskDiscoveryService = {
         data: { calculated, cached },
       };
     } catch (error) {
+      console.error('[TaskDiscoveryService] DB error:', error);
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'Database error',
         },
       };
     }
@@ -723,11 +726,12 @@ export const TaskDiscoveryService = {
         data: feedItems,
       };
     } catch (error) {
+      console.error('[TaskDiscoveryService] DB error:', error);
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'Database error',
         },
       };
     }
@@ -802,11 +806,12 @@ export const TaskDiscoveryService = {
         return TaskDiscoveryService.getFeed(hustlerId, searchFilters, limit, offset);
       }
     } catch (error) {
+      console.error('[TaskDiscoveryService] DB error:', error);
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'Database error',
         },
       };
     }
@@ -885,11 +890,12 @@ export const TaskDiscoveryService = {
         data: explanation,
       };
     } catch (error) {
+      console.error('[TaskDiscoveryService] DB error:', error);
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'Database error',
         },
       };
     }
@@ -942,11 +948,12 @@ export const TaskDiscoveryService = {
         }
       };
     } catch (error) {
+      console.error('[TaskDiscoveryService] DB error:', error);
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'Database error',
         },
       };
     }
@@ -976,11 +983,12 @@ export const TaskDiscoveryService = {
       
       return { success: true, data: searches };
     } catch (error) {
+      console.error('[TaskDiscoveryService] DB error:', error);
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'Database error',
         },
       };
     }
@@ -1012,11 +1020,12 @@ export const TaskDiscoveryService = {
       
       return { success: true, data: undefined };
     } catch (error) {
+      console.error('[TaskDiscoveryService] DB error:', error);
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'Database error',
         },
       };
     }
@@ -1065,11 +1074,12 @@ export const TaskDiscoveryService = {
         offset
       );
     } catch (error) {
+      console.error('[TaskDiscoveryService] DB error:', error);
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'Database error',
         },
       };
     }
