@@ -209,10 +209,10 @@ describe('escrow.getState', () => {
 
   describe('return shape', () => {
     it('returns { state } for a valid escrow', async () => {
-      mockDb.query.mockResolvedValueOnce({
-        rows: [{ state: 'FUNDED' }],
-        rowCount: 1,
-      } as any);
+      mockEscrowService.getById.mockResolvedValueOnce({
+        success: true,
+        data: makeEscrow({ state: 'FUNDED' }) as any,
+      });
 
       const caller = makeCaller(POSTER_ID);
       const result = await caller.getState({ escrowId: ESCROW_ID });
@@ -223,10 +223,10 @@ describe('escrow.getState', () => {
     it('returns correct state for each escrow state', async () => {
       for (const state of ['PENDING', 'FUNDED', 'RELEASED', 'REFUNDED', 'LOCKED_DISPUTE']) {
         vi.clearAllMocks();
-        mockDb.query.mockResolvedValueOnce({
-          rows: [{ state }],
-          rowCount: 1,
-        } as any);
+        mockEscrowService.getById.mockResolvedValueOnce({
+          success: true,
+          data: makeEscrow({ state }) as any,
+        });
 
         const result = await makeCaller().getState({ escrowId: ESCROW_ID });
         expect(result.state).toBe(state);
@@ -236,10 +236,10 @@ describe('escrow.getState', () => {
 
   describe('error handling', () => {
     it('throws NOT_FOUND when escrow does not exist', async () => {
-      mockDb.query.mockResolvedValueOnce({
-        rows: [],
-        rowCount: 0,
-      } as any);
+      mockEscrowService.getById.mockResolvedValueOnce({
+        success: false,
+        error: { code: 'NOT_FOUND', message: 'Escrow not found' },
+      });
 
       const caller = makeCaller(POSTER_ID);
       await expect(caller.getState({ escrowId: ESCROW_ID }))
@@ -250,19 +250,16 @@ describe('escrow.getState', () => {
     });
   });
 
-  describe('db interaction', () => {
-    it('queries the escrows table with the correct escrowId', async () => {
-      mockDb.query.mockResolvedValueOnce({
-        rows: [{ state: 'FUNDED' }],
-        rowCount: 1,
-      } as any);
+  describe('service delegation', () => {
+    it('calls EscrowService.getById with the correct escrowId', async () => {
+      mockEscrowService.getById.mockResolvedValueOnce({
+        success: true,
+        data: makeEscrow({ state: 'FUNDED' }) as any,
+      });
 
       await makeCaller().getState({ escrowId: ESCROW_ID });
 
-      expect(mockDb.query).toHaveBeenCalledTimes(1);
-      const [sql, params] = (mockDb.query as any).mock.calls[0];
-      expect(sql).toContain('SELECT state FROM escrows');
-      expect(params).toEqual([ESCROW_ID]);
+      expect(mockEscrowService.getById).toHaveBeenCalledWith(ESCROW_ID);
     });
   });
 });
@@ -280,6 +277,11 @@ describe('escrow.getByTaskId', () => {
     it('returns escrow data for a valid task', async () => {
       const escrow = makeEscrow();
       mockEscrowService.getByTaskId.mockResolvedValueOnce({
+        success: true,
+        data: escrow as any,
+      });
+      // getByTaskId also calls getById for auth check
+      mockEscrowService.getById.mockResolvedValueOnce({
         success: true,
         data: escrow as any,
       });
@@ -312,6 +314,11 @@ describe('escrow.getByTaskId', () => {
         success: true,
         data: makeEscrow() as any,
       });
+      // Auth check also calls getById
+      mockEscrowService.getById.mockResolvedValueOnce({
+        success: true,
+        data: makeEscrow() as any,
+      });
 
       await makeCaller().getByTaskId({ taskId: TASK_ID });
 
@@ -332,6 +339,8 @@ describe('escrow.createPaymentIntent', () => {
   describe('return shape', () => {
     it('returns payment intent data on success with explicit amount', async () => {
       mockStripeService.isConfigured.mockReturnValue(true);
+      // Router queries task price first
+      mockDb.query.mockResolvedValueOnce({ rows: [{ price: 5000 }], rowCount: 1 } as any);
       mockStripeService.createPaymentIntent.mockResolvedValueOnce({
         success: true,
         data: {
@@ -352,12 +361,10 @@ describe('escrow.createPaymentIntent', () => {
       expect(result).toHaveProperty('amount', 5000);
     });
 
-    it('derives amount from task when amount is omitted', async () => {
+    it('derives amount from task price when amount is omitted', async () => {
       mockStripeService.isConfigured.mockReturnValue(true);
-      mockEscrowService.getByTaskId.mockResolvedValueOnce({
-        success: true,
-        data: makeEscrow({ amount: 7500 }) as any,
-      });
+      // Router queries task price first (used as the amount when none provided)
+      mockDb.query.mockResolvedValueOnce({ rows: [{ price: 7500 }], rowCount: 1 } as any);
       mockStripeService.createPaymentIntent.mockResolvedValueOnce({
         success: true,
         data: {
@@ -391,20 +398,32 @@ describe('escrow.createPaymentIntent', () => {
   });
 
   describe('error handling', () => {
-    it('throws NOT_FOUND when amount is omitted and task has no escrow', async () => {
+    it('throws NOT_FOUND when task does not exist', async () => {
       mockStripeService.isConfigured.mockReturnValue(true);
-      mockEscrowService.getByTaskId.mockResolvedValueOnce({
-        success: false,
-        error: { code: 'NOT_FOUND', message: 'No escrow found' },
-      });
+      // Router queries task — task not found
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
 
       const caller = makeCaller(POSTER_ID);
       await expect(caller.createPaymentIntent({ taskId: TASK_ID }))
         .rejects.toMatchObject({ code: 'NOT_FOUND' });
     });
 
+    it('throws BAD_REQUEST when task has no price set (REG-2 guard)', async () => {
+      mockStripeService.isConfigured.mockReturnValue(true);
+      // Router queries task — price is null
+      mockDb.query.mockResolvedValueOnce({ rows: [{ price: null }], rowCount: 1 } as any);
+
+      const caller = makeCaller(POSTER_ID);
+      await expect(caller.createPaymentIntent({ taskId: TASK_ID, amount: 5000 }))
+        .rejects.toMatchObject({
+          code: 'BAD_REQUEST',
+          message: expect.stringContaining('Task price has not been set'),
+        });
+    });
+
     it('throws INTERNAL_SERVER_ERROR when Stripe call fails', async () => {
       mockStripeService.isConfigured.mockReturnValue(true);
+      mockDb.query.mockResolvedValueOnce({ rows: [{ price: 5000 }], rowCount: 1 } as any);
       mockStripeService.createPaymentIntent.mockResolvedValueOnce({
         success: false,
         error: { code: 'STRIPE_ERROR', message: 'Card declined' },
@@ -419,6 +438,7 @@ describe('escrow.createPaymentIntent', () => {
   describe('service delegation', () => {
     it('passes posterId from context to StripeService', async () => {
       mockStripeService.isConfigured.mockReturnValue(true);
+      mockDb.query.mockResolvedValueOnce({ rows: [{ price: 1000 }], rowCount: 1 } as any);
       mockStripeService.createPaymentIntent.mockResolvedValueOnce({
         success: true,
         data: { paymentIntentId: 'pi_x', clientSecret: 'cs_x', amount: 1000 },
@@ -826,6 +846,11 @@ describe('escrow.lockForDispute', () => {
   describe('return shape', () => {
     it('returns locked escrow data on success', async () => {
       const lockedEscrow = makeEscrow({ state: 'LOCKED_DISPUTE' });
+      // Auth check
+      mockEscrowService.getById.mockResolvedValueOnce({
+        success: true,
+        data: makeEscrow() as any,
+      });
       mockEscrowService.lockForDispute.mockResolvedValueOnce({
         success: true,
         data: lockedEscrow as any,
@@ -839,8 +864,39 @@ describe('escrow.lockForDispute', () => {
     });
   });
 
+  describe('authorization', () => {
+    it('throws FORBIDDEN when caller is not a participant', async () => {
+      mockEscrowService.getById.mockResolvedValueOnce({
+        success: true,
+        data: makeEscrow() as any,
+      });
+
+      const caller = makeCaller(OTHER_USER_ID);
+      await expect(caller.lockForDispute({ escrowId: ESCROW_ID }))
+        .rejects.toMatchObject({
+          code: 'FORBIDDEN',
+          message: 'Only task participants can file a dispute',
+        });
+    });
+
+    it('throws NOT_FOUND when escrow does not exist (auth check)', async () => {
+      mockEscrowService.getById.mockResolvedValueOnce({
+        success: false,
+        error: { code: 'NOT_FOUND', message: 'Escrow not found' },
+      });
+
+      const caller = makeCaller(POSTER_ID);
+      await expect(caller.lockForDispute({ escrowId: ESCROW_ID }))
+        .rejects.toMatchObject({ code: 'NOT_FOUND' });
+    });
+  });
+
   describe('error handling', () => {
     it('throws BAD_REQUEST when lock fails', async () => {
+      mockEscrowService.getById.mockResolvedValueOnce({
+        success: true,
+        data: makeEscrow() as any,
+      });
       mockEscrowService.lockForDispute.mockResolvedValueOnce({
         success: false,
         error: { code: 'INVALID_STATE', message: 'Cannot lock: wrong state' },
@@ -853,7 +909,11 @@ describe('escrow.lockForDispute', () => {
   });
 
   describe('service delegation', () => {
-    it('calls EscrowService.lockForDispute with the escrowId', async () => {
+    it('calls EscrowService.lockForDispute with escrowId and options object', async () => {
+      mockEscrowService.getById.mockResolvedValueOnce({
+        success: true,
+        data: makeEscrow() as any,
+      });
       mockEscrowService.lockForDispute.mockResolvedValueOnce({
         success: true,
         data: makeEscrow({ state: 'LOCKED_DISPUTE' }) as any,
@@ -861,7 +921,11 @@ describe('escrow.lockForDispute', () => {
 
       await makeCaller(POSTER_ID).lockForDispute({ escrowId: ESCROW_ID });
 
-      expect(mockEscrowService.lockForDispute).toHaveBeenCalledWith(ESCROW_ID);
+      // Router passes (escrowId, { adminOverride: ctx.user.is_admin }) since v2.9.3 REG-5 fix
+      // The second argument must be an object with an 'adminOverride' key
+      const [calledEscrowId, calledOptions] = mockEscrowService.lockForDispute.mock.calls[0];
+      expect(calledEscrowId).toBe(ESCROW_ID);
+      expect(calledOptions).toHaveProperty('adminOverride');
     });
   });
 });

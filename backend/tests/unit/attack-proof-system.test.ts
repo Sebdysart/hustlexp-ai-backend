@@ -542,8 +542,13 @@ describe('Attack #11 — prorate_on_abort=false, abort mid-task (should get $0)'
    */
   it('SAFE — refund transitions to REFUNDED, subsequent release is rejected', async () => {
     // Step 1: refund succeeds
+    // refund() now does 2 pre-check queries (SELECT task_id, SELECT worker_id) before the UPDATE
     const refunded = makeEscrow({ state: 'REFUNDED' });
-    mockDb.query.mockResolvedValueOnce({ rows: [refunded], rowCount: 1 } as never);
+    mockDb.query
+      .mockResolvedValueOnce({ rows: [{ task_id: 'task-1' }], rowCount: 1 } as never) // pre-check: task_id
+      .mockResolvedValueOnce({ rows: [{ worker_id: null }], rowCount: 1 } as never)   // pre-check: worker_id (no worker yet)
+      .mockResolvedValueOnce({ rows: [refunded], rowCount: 1 } as never)               // UPDATE
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);                      // logEscrowEvent
 
     const refundResult = await EscrowService.refund({ escrowId: 'esc-1' });
     expect(refundResult.success).toBe(true);

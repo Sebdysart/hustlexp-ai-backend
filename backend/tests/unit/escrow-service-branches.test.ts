@@ -348,8 +348,12 @@ describe('EscrowService.release — XP error handling', () => {
 
 describe('EscrowService.refund — rowCount=0 branches', () => {
   it('returns getById error when getById fails after UPDATE rowCount=0', async () => {
-    // UPDATE returns rowCount=0
-    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+    // Two pre-check queries before UPDATE
+    mockQuery
+      .mockResolvedValueOnce({ rows: [{ task_id: 'task-1' }], rowCount: 1 } as never) // pre-check: task_id
+      .mockResolvedValueOnce({ rows: [{ worker_id: 'worker-1' }], rowCount: 1 } as never) // pre-check: worker_id
+      // UPDATE returns rowCount=0
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
     // getById fallback → also fails (DB_ERROR)
     mockQuery.mockRejectedValueOnce(new Error('db error') as never);
 
@@ -360,13 +364,17 @@ describe('EscrowService.refund — rowCount=0 branches', () => {
   });
 
   it('returns ESCROW_TERMINAL when getById returns a terminal-state escrow', async () => {
-    // UPDATE rowCount=0
-    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
-    // getById → REFUNDED (terminal)
-    mockQuery.mockResolvedValueOnce({
-      rows: [makeEscrow({ state: 'REFUNDED' })],
-      rowCount: 1,
-    } as never);
+    // Two pre-check queries before UPDATE
+    mockQuery
+      .mockResolvedValueOnce({ rows: [{ task_id: 'task-1' }], rowCount: 1 } as never) // pre-check: task_id
+      .mockResolvedValueOnce({ rows: [{ worker_id: 'worker-1' }], rowCount: 1 } as never) // pre-check: worker_id
+      // UPDATE rowCount=0
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      // getById → REFUNDED (terminal)
+      .mockResolvedValueOnce({
+        rows: [makeEscrow({ state: 'REFUNDED' })],
+        rowCount: 1,
+      } as never);
 
     const result = await EscrowService.refund({ escrowId: 'esc-1' });
 
@@ -375,8 +383,11 @@ describe('EscrowService.refund — rowCount=0 branches', () => {
   });
 
   it('returns INVALID_STATE when getById returns escrow in PENDING state', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
-    mockQuery.mockResolvedValueOnce({ rows: [makeEscrow({ state: 'PENDING' })], rowCount: 1 } as never);
+    mockQuery
+      .mockResolvedValueOnce({ rows: [{ task_id: 'task-1' }], rowCount: 1 } as never) // pre-check: task_id
+      .mockResolvedValueOnce({ rows: [{ worker_id: 'worker-1' }], rowCount: 1 } as never) // pre-check: worker_id
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // UPDATE rowCount=0
+      .mockResolvedValueOnce({ rows: [makeEscrow({ state: 'PENDING' })], rowCount: 1 } as never); // getById fallback
 
     const result = await EscrowService.refund({ escrowId: 'esc-1' });
 

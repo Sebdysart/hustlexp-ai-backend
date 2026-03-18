@@ -9,6 +9,7 @@
 import { TRPCError } from '@trpc/server';
 import { router, publicProcedure, protectedProcedure, hustlerProcedure, Schemas } from '../trpc.js';
 import { db } from '../db.js';
+import { logger } from '../logger.js';
 import { XPService } from '../services/XPService.js';
 import { EarnedVerificationUnlockService } from '../services/EarnedVerificationUnlockService.js';
 import type { User } from '../types.js';
@@ -324,13 +325,27 @@ export const userRouter = router({
         const newMode = normalizeRole(input.defaultMode);
         if (newMode !== ctx.user.default_mode) {
           // Guard: no open tasks in current role before switching
-          const openTasksCount = await db.query(
-            `SELECT COUNT(*) FROM tasks
-             WHERE (poster_id = $1 OR worker_id = $1)
-             AND state NOT IN ('COMPLETED', 'CANCELLED', 'REFUNDED')`,
-            [ctx.user.id]
-          );
-          if (parseInt(openTasksCount.rows[0].count) > 0) {
+          // REG-11 FIX: EXPIRED is a terminal TaskState — include it here so expired
+          // tasks don't block role switching. REFUNDED is EscrowState, not TaskState —
+          // removed. Terminal TaskStates: COMPLETED, CANCELLED, EXPIRED.
+          // REG-13 FIX: Wrap in try/catch to sanitize DB errors before surfacing to caller.
+          let openTasksCount: number;
+          try {
+            const result = await db.query(
+              `SELECT COUNT(*) FROM tasks
+               WHERE (poster_id = $1 OR worker_id = $1)
+               AND state NOT IN ('COMPLETED', 'CANCELLED', 'EXPIRED')`,
+              [ctx.user.id]
+            );
+            openTasksCount = parseInt(result.rows[0].count, 10);
+          } catch (err) {
+            logger.error({ userId: ctx.user.id, err }, 'Failed to check open tasks for role switch');
+            throw new TRPCError({
+              code: 'INTERNAL_SERVER_ERROR',
+              message: 'Unable to verify account status. Please try again.',
+            });
+          }
+          if (openTasksCount > 0) {
             throw new TRPCError({
               code: 'PRECONDITION_FAILED',
               message: 'Cannot switch role while you have active tasks. Complete or cancel all tasks first.',

@@ -128,6 +128,16 @@ export const escrowRouter = router({
       }
       const taskPriceCents = taskRow.rows[0].price;
 
+      // REG-2 FIX: Reject escrow creation if task has no price set.
+      // Without this guard, null coerces to 0 and the floor check silently passes,
+      // allowing a $1 escrow to be created for an unpriced draft task.
+      if (taskPriceCents == null) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: 'Task price has not been set. Price the task before creating an escrow.',
+        });
+      }
+
       // SECURITY FIX (v2.9.3): Enforce escrow amount >= task price.
       // Without this guard a poster can fund $1 for a $50 task, underpaying the worker.
       let amount = input.amount !== undefined ? input.amount : taskPriceCents;
@@ -268,7 +278,7 @@ export const escrowRouter = router({
         });
       }
 
-      const result = await EscrowService.lockForDispute(input.escrowId);
+      const result = await EscrowService.lockForDispute(input.escrowId, { adminOverride: ctx.user.is_admin });
 
       if (!result.success) {
         throw new TRPCError({

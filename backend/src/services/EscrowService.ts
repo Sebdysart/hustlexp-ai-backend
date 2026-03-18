@@ -613,7 +613,7 @@ export const EscrowService = {
    * FIX 5: Enforces challenge_window_hours. A poster cannot file a dispute after
    * the challenge window (measured from task.completed_at) has elapsed.
    */
-  lockForDispute: async (escrowId: string): Promise<ServiceResult<Escrow>> => {
+  lockForDispute: async (escrowId: string, options?: { adminOverride?: boolean }): Promise<ServiceResult<Escrow>> => {
     try {
       // FIX 5: Fetch the associated task to enforce the challenge window
       const windowCheck = await db.query<{
@@ -633,20 +633,26 @@ export const EscrowService = {
         // SECURITY FIX (v2.9.3): A dispute may only be filed on a completed task.
         // Previously, null completed_at silently skipped the window guard, allowing
         // any authenticated user to lock an in-progress task's escrow indefinitely.
-        if (completed_at == null) {
+        // REG-5 FIX: adminOverride bypasses this check so admins can lock mid-task
+        // escrows for fraud investigation (completed_at=null).
+        if (completed_at == null && !options?.adminOverride) {
           throw new TRPCError({
             code: 'BAD_REQUEST',
             message: 'Cannot dispute a task that has not been completed',
           });
         }
 
-        const windowMs = (challenge_window_hours ?? 6) * 60 * 60 * 1000;
-        const deadlineAt = new Date(new Date(completed_at).getTime() + windowMs);
-        if (new Date() > deadlineAt) {
-          throw new TRPCError({
-            code: 'PRECONDITION_FAILED',
-            message: `Dispute window has closed. Tasks must be disputed within ${challenge_window_hours ?? 6} hours of completion.`,
-          });
+        // Only enforce challenge window when the task has a completion timestamp.
+        // If completed_at is null and adminOverride=true, skip the window check entirely.
+        if (completed_at != null) {
+          const windowMs = (challenge_window_hours ?? 6) * 60 * 60 * 1000;
+          const deadlineAt = new Date(new Date(completed_at).getTime() + windowMs);
+          if (new Date() > deadlineAt) {
+            throw new TRPCError({
+              code: 'PRECONDITION_FAILED',
+              message: `Dispute window has closed. Tasks must be disputed within ${challenge_window_hours ?? 6} hours of completion.`,
+            });
+          }
         }
       }
 
@@ -746,7 +752,8 @@ export const EscrowService = {
           );
           const disputeWorkerId = disputeTaskRow.rows[0]?.worker_id ?? null;
           if (disputeWorkerId) {
-            await XPService.clawbackXP(disputeWorkerId, escrowId, 'dispute_lost');
+            const posterFraction = posterPercent / 100;
+            await XPService.clawbackXP(disputeWorkerId, escrowId, 'dispute_lost', posterFraction);
           }
         } catch (clawbackError) {
           // Non-fatal: clawback failure must not block the partial refund

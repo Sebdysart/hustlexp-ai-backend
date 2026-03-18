@@ -260,7 +260,8 @@ export const XPService = {
 
     // Anti-farming: Check velocity
     // FIX 2: Hard-block large awards when velocity is suspicious
-    const VELOCITY_BLOCK_THRESHOLD = 1000;
+    // REG-9 FIX: Raised from 1000 to 3000 — a $150 task (1500 XP) must not be blocked.
+    const VELOCITY_BLOCK_THRESHOLD = 3000;
     const velocityCheck = await XPService.checkVelocity(userId);
     if (velocityCheck.suspicious && baseXP > VELOCITY_BLOCK_THRESHOLD) {
       log.warn({ userId, baseXP, velocityData: velocityCheck }, 'XP velocity block triggered');
@@ -590,7 +591,7 @@ export const XPService = {
    *
    * FIX 3: Closes the dispute-then-refund free-XP exploit.
    */
-  clawbackXP: async (userId: string, escrowId: string, reason: string): Promise<void> => {
+  clawbackXP: async (userId: string, escrowId: string, reason: string, fraction = 1.0): Promise<void> => {
     // Find the original XP award for this escrow
     const award = await db.query<{ id: string; effective_xp: number; task_id: string }>(
       `SELECT id, effective_xp, task_id FROM xp_ledger
@@ -604,7 +605,11 @@ export const XPService = {
       return;
     }
 
-    const xpToDeduct = award.rows[0].effective_xp;
+    // REG-10 FIX: Apply fraction to support partial clawback (e.g. 60% for partial dispute).
+    // Clamp to [0, 1] to guard against bad callers.
+    const clampedFraction = Math.min(1, Math.max(0, fraction));
+    const xpToDeduct = Math.round(award.rows[0].effective_xp * clampedFraction);
+    if (xpToDeduct === 0) return;
     const taskId = award.rows[0].task_id;
 
     // Insert a debit entry (negative effective_xp) to preserve ledger immutability (INV-4)

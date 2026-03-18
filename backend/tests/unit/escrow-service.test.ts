@@ -304,7 +304,11 @@ describe('EscrowService', () => {
   describe('refund', () => {
     it('refunds from FUNDED state', async () => {
       const refunded = makeEscrow({ state: 'REFUNDED' });
-      mockDb.query.mockResolvedValueOnce({ rows: [refunded], rowCount: 1 } as never);
+      mockDb.query
+        .mockResolvedValueOnce({ rows: [{ task_id: 'task-1' }], rowCount: 1 } as never) // pre-check: task_id
+        .mockResolvedValueOnce({ rows: [{ worker_id: 'worker-1' }], rowCount: 1 } as never) // pre-check: worker_id
+        .mockResolvedValueOnce({ rows: [refunded], rowCount: 1 } as never) // UPDATE
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // logEscrowEvent
 
       const result = await EscrowService.refund({ escrowId: 'esc-1' });
       expect(result.success).toBe(true);
@@ -313,8 +317,10 @@ describe('EscrowService', () => {
 
     it('returns ESCROW_TERMINAL when already refunded', async () => {
       mockDb.query
-        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
-        .mockResolvedValueOnce({ rows: [makeEscrow({ state: 'REFUNDED' })], rowCount: 1 } as never);
+        .mockResolvedValueOnce({ rows: [{ task_id: 'task-1' }], rowCount: 1 } as never) // pre-check: task_id
+        .mockResolvedValueOnce({ rows: [{ worker_id: 'worker-1' }], rowCount: 1 } as never) // pre-check: worker_id
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // UPDATE rowCount=0
+        .mockResolvedValueOnce({ rows: [makeEscrow({ state: 'REFUNDED' })], rowCount: 1 } as never); // getById fallback
 
       const result = await EscrowService.refund({ escrowId: 'esc-1' });
       expect(result.success).toBe(false);
