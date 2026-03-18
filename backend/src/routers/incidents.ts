@@ -12,15 +12,17 @@
  */
 
 import { z } from 'zod';
-import { router, protectedProcedure } from '../trpc.js';
+import { TRPCError } from '@trpc/server';
+import { router, adminProcedure } from '../trpc.js';
 import { db } from '../db.js';
 import { IncidentDiagnosisService } from '../services/IncidentDiagnosisService.js';
+import { checkRateLimit } from '../cache/redis.js';
 
 export const incidentsRouter = router({
   /**
    * List incidents with filtering
    */
-  list: protectedProcedure
+  list: adminProcedure
     .input(z.object({
       eventType: z.enum(['error_spike', 'latency_spike', 'circuit_breaker_open', 'budget_threshold', 'anomaly_detected', 'manual_report']).optional(),
       severity: z.enum(['info', 'warning', 'critical']).optional(),
@@ -70,7 +72,7 @@ export const incidentsRouter = router({
   /**
    * Get incident by ID
    */
-  get: protectedProcedure
+  get: adminProcedure
     .input(z.object({
       id: z.string().uuid(),
     }))
@@ -92,7 +94,7 @@ export const incidentsRouter = router({
   /**
    * Resolve incident
    */
-  resolve: protectedProcedure
+  resolve: adminProcedure
     .input(z.object({
       id: z.string().uuid(),
       notes: z.string().optional(),
@@ -117,11 +119,20 @@ export const incidentsRouter = router({
   /**
    * Trigger AI diagnosis
    */
-  diagnose: protectedProcedure
+  diagnose: adminProcedure
     .input(z.object({
       id: z.string().uuid(),
     }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
+      // Rate limit: 20 AI diagnosis calls per admin per minute (AI cost protection)
+      const rlResult = await checkRateLimit(ctx.user.id, 'incident_diagnose', 20, 60);
+      if (!rlResult.allowed) {
+        throw new TRPCError({
+          code: 'TOO_MANY_REQUESTS',
+          message: 'Diagnosis rate limit exceeded. Maximum 20 diagnoses per minute.',
+        });
+      }
+
       const diagnosisResult = await IncidentDiagnosisService.diagnoseIncident(input.id);
 
       if (!diagnosisResult.success) {
@@ -134,7 +145,7 @@ export const incidentsRouter = router({
   /**
    * Get incident statistics
    */
-  stats: protectedProcedure
+  stats: adminProcedure
     .input(z.object({
       timeRange: z.enum(['24h', '7d', '30d']).default('24h'),
     }))

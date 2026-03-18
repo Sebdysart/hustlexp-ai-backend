@@ -143,6 +143,9 @@ export interface User {
   is_verified: boolean;
   verified_at?: Date;
   student_id_verified: boolean;
+
+  // Account suspension
+  is_banned?: boolean;
   
   // Stripe
   stripe_customer_id?: string;

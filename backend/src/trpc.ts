@@ -58,6 +58,19 @@ function authCacheGet(token: string): CachedAuth | null {
   return entry;
 }
 
+/**
+ * Invalidate all auth cache entries for a given user ID.
+ * Call this immediately after banning a user so the cached user row
+ * (with is_banned=false) is evicted before the 5-minute TTL expires.
+ */
+export function invalidateAuthCacheForUser(userId: string): void {
+  for (const [key, entry] of authCache.entries()) {
+    if (entry.user.id === userId) {
+      authCache.delete(key);
+    }
+  }
+}
+
 function authCacheSet(token: string, value: { user: User; firebaseUid: string }, tokenExp: number): void {
   // Evict oldest entry when at capacity (Map preserves insertion order)
   if (authCache.size >= AUTH_CACHE_MAX) {
@@ -150,6 +163,14 @@ const isAuthenticated = t.middleware(async ({ ctx, next }) => {
     throw new TRPCError({
       code: 'UNAUTHORIZED',
       message: 'Authentication required',
+    });
+  }
+  // Secondary defense: check is_banned on every request even if the auth cache
+  // still holds the pre-ban user row (cache TTL up to 5 min after ban is set).
+  if (ctx.user.is_banned) {
+    throw new TRPCError({
+      code: 'UNAUTHORIZED',
+      message: 'Account suspended',
     });
   }
   return next({ ctx: { ...ctx, user: ctx.user } });

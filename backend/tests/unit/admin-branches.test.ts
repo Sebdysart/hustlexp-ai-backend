@@ -33,6 +33,14 @@ vi.mock('../../src/logger', () => ({
     debug: vi.fn(),
   },
   escrowLogger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
+  stripeLogger: { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() },
+}));
+
+vi.mock('../../src/services/EscrowService', () => ({
+  EscrowService: {
+    release: vi.fn(),
+    refund: vi.fn(),
+  },
 }));
 
 // ---------------------------------------------------------------------------
@@ -40,9 +48,11 @@ vi.mock('../../src/logger', () => ({
 // ---------------------------------------------------------------------------
 
 import { db } from '../../src/db';
+import { EscrowService } from '../../src/services/EscrowService';
 import { adminRouter } from '../../src/routers/admin';
 
 const mockDb = vi.mocked(db);
+const mockEscrowService = vi.mocked(EscrowService);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -273,10 +283,13 @@ describe('admin.escrowOverride branches', () => {
 
   it('force_release returns updated escrow with RELEASED state', async () => {
     prependAdminCheck();
-    mockDb.query.mockResolvedValueOnce({
-      rows: [{ id: ESC_UUID, state: 'RELEASED', amount: 5000 }],
-      rowCount: 1,
+    // escrowOverride now delegates to EscrowService.release (v2.9.8)
+    mockEscrowService.release.mockResolvedValueOnce({
+      success: true,
+      data: { id: ESC_UUID, state: 'RELEASED', amount: 5000 },
     } as any);
+    // admin_actions audit INSERT
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
 
     const result = await makeAdminCaller().escrowOverride({
       escrowId: ESC_UUID,
@@ -285,19 +298,20 @@ describe('admin.escrowOverride branches', () => {
     });
 
     expect(result.state).toBe('RELEASED');
-    // Verify newState param passed to query
-    const [sql, params] = (mockDb.query as any).mock.calls[1];
-    expect(params[0]).toBe('RELEASED');
-    expect(params[2]).toBe('Admin override: work completed off-platform');
-    expect(sql).toContain("state = $1");
+    expect(mockEscrowService.release).toHaveBeenCalledWith({
+      escrowId: ESC_UUID,
+      adminOverride: true,
+      reason: 'Admin override: work completed off-platform',
+    });
   });
 
   it('force_refund returns updated escrow with REFUNDED state', async () => {
     prependAdminCheck();
-    mockDb.query.mockResolvedValueOnce({
-      rows: [{ id: ESC_UUID, state: 'REFUNDED', amount: 5000 }],
-      rowCount: 1,
+    mockEscrowService.refund.mockResolvedValueOnce({
+      success: true,
+      data: { id: ESC_UUID, state: 'REFUNDED', amount: 5000 },
     } as any);
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
 
     const result = await makeAdminCaller().escrowOverride({
       escrowId: ESC_UUID,
@@ -306,13 +320,15 @@ describe('admin.escrowOverride branches', () => {
     });
 
     expect(result.state).toBe('REFUNDED');
-    const [, params] = (mockDb.query as any).mock.calls[1];
-    expect(params[0]).toBe('REFUNDED');
+    expect(mockEscrowService.refund).toHaveBeenCalledWith({ escrowId: ESC_UUID });
   });
 
-  it('throws NOT_FOUND when escrow not in overridable state', async () => {
+  it('throws NOT_FOUND when EscrowService returns failure', async () => {
     prependAdminCheck();
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+    mockEscrowService.release.mockResolvedValueOnce({
+      success: false,
+      error: { message: 'Escrow not found or not in overridable state' },
+    } as any);
 
     await expect(
       makeAdminCaller().escrowOverride({
@@ -323,12 +339,13 @@ describe('admin.escrowOverride branches', () => {
     ).rejects.toThrow('Escrow not found or not in overridable state');
   });
 
-  it('passes admin user id into override query', async () => {
+  it('writes admin_actions audit log with admin user id and escrow id', async () => {
     prependAdminCheck();
-    mockDb.query.mockResolvedValueOnce({
-      rows: [{ id: ESC_UUID, state: 'RELEASED', amount: 1000 }],
-      rowCount: 1,
+    mockEscrowService.release.mockResolvedValueOnce({
+      success: true,
+      data: { id: ESC_UUID, state: 'RELEASED', amount: 1000 },
     } as any);
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
 
     await makeAdminCaller().escrowOverride({
       escrowId: ESC_UUID,
@@ -336,11 +353,11 @@ describe('admin.escrowOverride branches', () => {
       reason: 'Test',
     });
 
-    const [, params] = (mockDb.query as any).mock.calls[1];
-    // params[1] is ctx.user.id (admin user id)
-    expect(params[1]).toBe(ADMIN_UUID);
-    // params[3] is the escrowId
-    expect(params[3]).toBe(ESC_UUID);
+    // Second db.query call is the admin_actions INSERT (first is isAdmin check)
+    const [sql, params] = (mockDb.query as any).mock.calls[1];
+    expect(sql).toContain('admin_actions');
+    expect(params[0]).toBe(ADMIN_UUID); // admin_id
+    expect(params[2]).toBe(ESC_UUID);   // target_id
   });
 });
 
