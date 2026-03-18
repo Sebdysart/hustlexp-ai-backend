@@ -382,7 +382,9 @@ export const EscrowService = {
       }
 
       // Calculate platform fee (from config - default 15%)
-      const platformFeePercent = config.stripe.platformFeePercent || 15;
+      // SECURITY FIX (v2.9.3): Clamp to [0, 100] — a negative env var must not
+      // produce a negative fee (which would overpay the worker).
+      const platformFeePercent = Math.min(100, Math.max(0, config.stripe.platformFeePercent ?? 15));
       const platformFeeCents = Math.round(grossPayoutCents * (platformFeePercent / 100));
       const netPayoutCents = grossPayoutCents - platformFeeCents;
 
@@ -510,28 +512,33 @@ export const EscrowService = {
   },
 
   /**
-   * Refund escrow: FUNDED/LOCKED_DISPUTE → REFUNDED
+   * Refund escrow: FUNDED → REFUNDED
+   *
+   * SECURITY FIX (v2.9.3): LOCKED_DISPUTE removed from the allowed states.
+   * A poster cannot call refund() while a worker's dispute is active.
+   * LOCKED_DISPUTE escrows can only be resolved via the dispute resolution
+   * path (admin partialRefund or release), not by a direct poster refund.
    */
   refund: async (params: RefundEscrowParams): Promise<ServiceResult<Escrow>> => {
     const { escrowId } = params;
-    
+
     try {
       const result = await db.query<Escrow>(
-        `UPDATE escrows 
+        `UPDATE escrows
          SET state = 'REFUNDED',
              refunded_at = NOW()
-         WHERE id = $1 
-           AND state IN ('FUNDED', 'LOCKED_DISPUTE')
+         WHERE id = $1
+           AND state = 'FUNDED'
          RETURNING *`,
         [escrowId]
       );
-      
+
       if (result.rowCount === 0) {
         const existing = await EscrowService.getById(escrowId);
         if (!existing.success) {
           return existing;
         }
-        
+
         if (isTerminalState(existing.data.state)) {
           return {
             success: false,
@@ -541,7 +548,7 @@ export const EscrowService = {
             },
           };
         }
-        
+
         return {
           success: false,
           error: {
@@ -587,15 +594,24 @@ export const EscrowService = {
 
       if (windowCheck.rows.length > 0) {
         const { completed_at, challenge_window_hours } = windowCheck.rows[0];
-        if (completed_at != null) {
-          const windowMs = (challenge_window_hours ?? 6) * 60 * 60 * 1000;
-          const deadlineAt = new Date(new Date(completed_at).getTime() + windowMs);
-          if (new Date() > deadlineAt) {
-            throw new TRPCError({
-              code: 'PRECONDITION_FAILED',
-              message: `Dispute window has closed. Tasks must be disputed within ${challenge_window_hours ?? 6} hours of completion.`,
-            });
-          }
+
+        // SECURITY FIX (v2.9.3): A dispute may only be filed on a completed task.
+        // Previously, null completed_at silently skipped the window guard, allowing
+        // any authenticated user to lock an in-progress task's escrow indefinitely.
+        if (completed_at == null) {
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message: 'Cannot dispute a task that has not been completed',
+          });
+        }
+
+        const windowMs = (challenge_window_hours ?? 6) * 60 * 60 * 1000;
+        const deadlineAt = new Date(new Date(completed_at).getTime() + windowMs);
+        if (new Date() > deadlineAt) {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message: `Dispute window has closed. Tasks must be disputed within ${challenge_window_hours ?? 6} hours of completion.`,
+          });
         }
       }
 

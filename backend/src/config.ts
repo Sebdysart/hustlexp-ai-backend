@@ -30,7 +30,10 @@ export const config = {
   stripe: {
     secretKey: process.env.STRIPE_SECRET_KEY || '',
     webhookSecret: process.env.STRIPE_WEBHOOK_SECRET || '',
-    platformFeePercent: parseInt(process.env.PLATFORM_FEE_PERCENT || '15', 10), // PRODUCT_SPEC §9: 15% platform fee
+    // SECURITY FIX (v2.9.3): Clamp to [0, 100] at parse time. A negative or
+    // non-numeric env var would silently pass through parseInt and could cause
+    // the fee calculation to produce a negative value (overpaying the worker).
+    platformFeePercent: (() => { const raw = parseInt(process.env.PLATFORM_FEE_PERCENT || '15', 10); return isNaN(raw) || raw < 0 ? 15 : Math.min(raw, 100); })(), // PRODUCT_SPEC §9: 15% platform fee
     minimumTaskValueCents: parseInt(process.env.MIN_TASK_VALUE_CENTS || '500', 10), // PRODUCT_SPEC §9: $5.00 minimum
     plans: {
       premium: {

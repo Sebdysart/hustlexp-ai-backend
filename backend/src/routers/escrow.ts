@@ -52,42 +52,48 @@ export const escrowRouter = router({
   /**
    * Get server-authoritative escrow state
    * Used for state confirmation (UI_SPEC §9.1)
+   * SECURITY FIX (v2.9.3): Added participant authorization check.
    */
   getState: protectedProcedure
     .input(z.object({ escrowId: z.string().uuid() }))
-    .query(async ({ input }) => {
-      const result = await db.query<{ state: string }>(
-        `SELECT state FROM escrows WHERE id = $1`,
-        [input.escrowId]
-      );
-      
-      if (result.rows.length === 0) {
-        throw new TRPCError({
-          code: 'NOT_FOUND',
-          message: 'Escrow not found',
-        });
+    .query(async ({ ctx, input }) => {
+      const escrow = await EscrowService.getById(input.escrowId);
+      if (!escrow.success) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Escrow not found' });
       }
-      
+      if (escrow.data.poster_id !== ctx.user.id && escrow.data.worker_id !== ctx.user.id && !ctx.user.is_admin) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'You do not have access to this escrow' });
+      }
       return {
-        state: result.rows[0].state,
+        state: escrow.data.state,
       };
     }),
-  
+
   /**
    * Get escrow by task ID
+   * SECURITY FIX (v2.9.3): Added participant authorization check.
    */
   getByTaskId: protectedProcedure
     .input(z.object({ taskId: Schemas.uuid }))
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       const result = await EscrowService.getByTaskId(input.taskId);
-      
+
       if (!result.success) {
         throw new TRPCError({
           code: 'NOT_FOUND',
           message: result.error.message,
         });
       }
-      
+
+      // Fetch poster_id/worker_id (getByTaskId only selects from escrows, not the join)
+      const escrow = await EscrowService.getById(result.data.id);
+      if (!escrow.success) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Escrow not found' });
+      }
+      if (escrow.data.poster_id !== ctx.user.id && escrow.data.worker_id !== ctx.user.id && !ctx.user.is_admin) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'You do not have access to this escrow' });
+      }
+
       return result.data;
     }),
   
@@ -112,15 +118,24 @@ export const escrowRouter = router({
         });
       }
       
-      // If amount not provided, look up from task
-      let amount = input.amount;
-      if (!amount) {
-        const taskResult = await EscrowService.getByTaskId(input.taskId);
-        if (taskResult.success) {
-          amount = taskResult.data.amount;
-        } else {
-          throw new TRPCError({ code: 'NOT_FOUND', message: 'Could not determine amount for task' });
-        }
+      // Resolve amount — if not provided, derive from task price
+      const taskRow = await db.query<{ price: number }>(
+        `SELECT price FROM tasks WHERE id = $1`,
+        [input.taskId]
+      );
+      if (taskRow.rows.length === 0) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
+      }
+      const taskPriceCents = taskRow.rows[0].price;
+
+      // SECURITY FIX (v2.9.3): Enforce escrow amount >= task price.
+      // Without this guard a poster can fund $1 for a $50 task, underpaying the worker.
+      let amount = input.amount !== undefined ? input.amount : taskPriceCents;
+      if (amount < taskPriceCents) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: `Escrow amount (${amount}) cannot be less than task price (${taskPriceCents})`,
+        });
       }
 
       const result = await StripeService.createPaymentIntent({
@@ -235,19 +250,33 @@ export const escrowRouter = router({
   
   /**
    * Lock escrow for dispute
+   * SECURITY FIX (v2.9.3): Added participant authorization check.
+   * Any authenticated user could previously grief-lock any escrow.
    */
   lockForDispute: protectedProcedure
     .input(z.object({ escrowId: Schemas.uuid }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
+      // Authorization: only the task's poster or worker may file a dispute
+      const escrow = await EscrowService.getById(input.escrowId);
+      if (!escrow.success) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Escrow not found' });
+      }
+      if (escrow.data.poster_id !== ctx.user.id && escrow.data.worker_id !== ctx.user.id) {
+        throw new TRPCError({
+          code: 'FORBIDDEN',
+          message: 'Only task participants can file a dispute',
+        });
+      }
+
       const result = await EscrowService.lockForDispute(input.escrowId);
-      
+
       if (!result.success) {
         throw new TRPCError({
           code: 'BAD_REQUEST',
           message: result.error.message,
         });
       }
-      
+
       return result.data;
     }),
   
