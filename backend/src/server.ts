@@ -334,6 +334,8 @@ app.get('/health/detailed', async (c) => {
 // ============================================================================
 
 // SSE endpoint for task progress updates
+// SECURITY: rate-limited to 10 new connection attempts/min per user (connection-flood protection)
+app.use('/realtime/stream', rateLimitMiddleware('sse'));
 app.get('/realtime/stream', sseHandler);
 
 // ============================================================================

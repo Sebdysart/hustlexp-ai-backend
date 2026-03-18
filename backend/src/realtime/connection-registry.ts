@@ -33,10 +33,25 @@ export interface SSEConnection {
 const connections = new Map<string, Set<SSEConnection>>();
 
 /**
- * Add SSE connection to registry
+ * Maximum simultaneous SSE connections allowed per user.
+ * Prevents connection-flood DoS: each connection allocates a ReadableStream
+ * controller, a TCP socket, and a Redis pub/sub channel.
+ */
+export const MAX_CONNECTIONS_PER_USER = 5;
+
+/**
+ * Add SSE connection to registry.
+ * Throws SSE_CONNECTION_LIMIT if the user already has MAX_CONNECTIONS_PER_USER
+ * active connections — caller (sse-handler) must catch and return 429.
  */
 export function addConnection(userId: string, conn: SSEConnection): void {
-  if (!connections.has(userId)) {
+  const existing = connections.get(userId);
+  if (existing && existing.size >= MAX_CONNECTIONS_PER_USER) {
+    throw new Error(
+      `SSE_CONNECTION_LIMIT: User ${userId} has reached the maximum of ${MAX_CONNECTIONS_PER_USER} concurrent connections`
+    );
+  }
+  if (!existing) {
     connections.set(userId, new Set());
   }
   connections.get(userId)!.add(conn);

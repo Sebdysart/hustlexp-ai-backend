@@ -65,6 +65,7 @@ const RATE_LIMITS = {
   mutation: { limit: 60, windowSeconds: 60 },    // 60 mutation ops/min (write-heavy routes)
   task: { limit: 60, windowSeconds: 60 },         // 60 task ops/min
   general: { limit: 120, windowSeconds: 60 },     // 120 general requests/min
+  sse: { limit: 10, windowSeconds: 60 },          // 10 SSE connection attempts/min (connection-flood protection)
 } as const;
 
 type RateLimitCategory = keyof typeof RATE_LIMITS;
