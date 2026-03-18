@@ -18,6 +18,7 @@
 
 import { Queue, QueueOptions, Worker, WorkerOptions, Job } from 'bullmq';
 import Redis from 'ioredis';
+import { createHmac } from 'crypto';
 import { config } from '../config.js';
 
 // ============================================================================
@@ -373,6 +374,38 @@ export function createWorker(
       ...options,
     }
   );
+}
+
+// ============================================================================
+// HMAC PAYLOAD SIGNING (Attack 12 — Redis injection defence)
+// ============================================================================
+
+/**
+ * Sign a financial job payload with HMAC-SHA256.
+ * Returns a 64-character hex digest that must be stored as `_sig` in the job.
+ *
+ * Hard rule: Only call this for FINANCIAL jobs (critical_payments escrow events).
+ */
+export function signJobPayload(payload: Record<string, unknown>): string {
+  const body = JSON.stringify(payload);
+  return createHmac('sha256', config.queue.hmacSecret).update(body).digest('hex');
+}
+
+/**
+ * Verify a financial job payload against its HMAC-SHA256 signature.
+ * Uses constant-time comparison to prevent timing attacks.
+ *
+ * Returns true only when `signature` matches the expected HMAC of `payload`.
+ */
+export function verifyJobSignature(payload: Record<string, unknown>, signature: string): boolean {
+  const expected = signJobPayload(payload);
+  // Constant-time comparison — prevents timing side-channel
+  if (expected.length !== signature.length) return false;
+  let diff = 0;
+  for (let i = 0; i < expected.length; i++) {
+    diff |= expected.charCodeAt(i) ^ signature.charCodeAt(i);
+  }
+  return diff === 0;
 }
 
 // ============================================================================

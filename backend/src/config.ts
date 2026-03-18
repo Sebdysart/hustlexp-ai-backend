@@ -171,6 +171,11 @@ export const config = {
     encryptionKey: process.env.TAX_TIN_ENCRYPTION_KEY || '',
   },
 
+  // Job Queue Security
+  queue: {
+    hmacSecret: process.env.QUEUE_HMAC_SECRET || 'dev-queue-hmac-secret-not-for-production',
+  },
+
   // Application
   app: {
     port: parseInt(process.env.PORT || '3000', 10),
@@ -198,6 +203,9 @@ export function validateConfig(): { valid: boolean; errors: string[]; warnings: 
 
   // Required in production
   if (config.app.isProduction) {
+    if (!process.env.QUEUE_HMAC_SECRET) {
+      errors.push('QUEUE_HMAC_SECRET is required in production (HMAC signing for financial BullMQ jobs)');
+    }
     if (!config.firebase.projectId) errors.push('FIREBASE_PROJECT_ID is required');
     if (!config.firebase.privateKey) errors.push('FIREBASE_PRIVATE_KEY is required');
     if (!config.firebase.clientEmail) errors.push('FIREBASE_CLIENT_EMAIL is required');

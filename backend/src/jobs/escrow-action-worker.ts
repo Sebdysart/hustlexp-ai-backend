@@ -24,6 +24,8 @@ import { StripeService } from '../services/StripeService.js';
 import { TaskService } from '../services/TaskService.js';
 import { workerLogger } from '../logger.js';
 import { config } from '../config.js';
+import { verifyJobSignature } from './queues.js';
+import { z } from 'zod';
 import type { Job } from 'bullmq';
 
 const log = workerLogger.child({ worker: 'escrow-action' });
@@ -46,13 +48,48 @@ interface EscrowActionJobData {
 }
 
 // ============================================================================
+// ZOD SCHEMA (Attack 1 — null payload / schema validation)
+// ============================================================================
+
+const FinancialJobPayloadSchema = z.object({
+  escrow_id: z.string().uuid(),
+  task_id: z.string().uuid(),
+  dispute_id: z.string().uuid().optional(),
+  reason: z.string().min(1),
+  refund_amount: z.number().nonnegative().optional(),
+  release_amount: z.number().nonnegative().optional(),
+  _sig: z.string().length(64), // SHA256 hex = 64 chars
+});
+
+// ============================================================================
 // ESCROW ACTION WORKER
 // ============================================================================
 
 export async function processEscrowActionJob(job: Job<EscrowActionJobData>): Promise<void> {
   const { payload } = job.data;
-  const { escrow_id, task_id, dispute_id, reason, refund_amount, release_amount } = payload;
   const eventType = job.name;
+
+  // --- Step 1: Zod schema validation (Attack 1 — reject null / malformed payloads) ---
+  const parsed = FinancialJobPayloadSchema.safeParse(payload);
+  if (!parsed.success) {
+    log.error(
+      { jobId: job.id, eventType, errors: parsed.error.issues },
+      'Invalid financial job payload schema — rejecting',
+    );
+    throw new Error('JOB_SCHEMA_INVALID: ' + parsed.error.message);
+  }
+
+  // --- Step 2: HMAC signature verification (Attack 12 — Redis injection defence) ---
+  const { _sig, ...payloadWithoutSig } = parsed.data;
+  if (!verifyJobSignature(payloadWithoutSig as Record<string, unknown>, _sig)) {
+    log.error(
+      { jobId: job.id, eventType },
+      'Job signature verification failed — possible Redis injection attack',
+    );
+    throw new Error('JOB_SIGNATURE_INVALID: Payload signature verification failed');
+  }
+
+  const { escrow_id, task_id, dispute_id, reason, refund_amount, release_amount } = parsed.data;
 
   try {
     // Lock escrow FOR UPDATE

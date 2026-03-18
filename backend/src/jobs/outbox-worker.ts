@@ -18,9 +18,16 @@
  */
 
 import { db } from '../db.js';
-import { getQueue, type QueueName } from './queues.js';
+import { getQueue, signJobPayload, type QueueName } from './queues.js';
 import { workerLogger } from '../logger.js';
 const log = workerLogger.child({ worker: 'outbox' });
+
+// Financial event types that require HMAC payload signing
+const FINANCIAL_EVENT_TYPES = new Set([
+  'escrow.release_requested',
+  'escrow.refund_requested',
+  'escrow.partial_refund_requested',
+]);
 
 // ============================================================================
 // TYPES
@@ -78,7 +85,14 @@ export async function processOutboxEvents(batchSize: number = 100): Promise<{
       try {
         // Get the appropriate queue
         const queue = getQueue(event.queue_name);
-        
+
+        // Sign financial job payloads to prevent Redis injection (Attack 12)
+        let jobPayload: Record<string, unknown> = event.payload;
+        if (FINANCIAL_EVENT_TYPES.has(event.event_type)) {
+          const signature = signJobPayload(event.payload);
+          jobPayload = { ...event.payload, _sig: signature };
+        }
+
         // Enqueue job with idempotency key
         const job = await queue.add(
           event.event_type,
@@ -86,7 +100,7 @@ export async function processOutboxEvents(batchSize: number = 100): Promise<{
             aggregate_type: event.aggregate_type,
             aggregate_id: event.aggregate_id,
             event_version: event.event_version,
-            payload: event.payload,
+            payload: jobPayload,
           },
           {
             jobId: event.idempotency_key, // Use idempotency key as job ID (prevents duplicates)

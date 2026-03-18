@@ -24,12 +24,14 @@ vi.mock('../../src/services/TaskService.js', () => ({
 vi.mock('../../src/config.js', () => ({
   config: {
     stripe: { platformFeePercent: 15 },
+    queue: { hmacSecret: 'test-hmac-secret-for-unit-tests' },
   },
 }));
 
 import { db } from '../../src/db';
 import { StripeService } from '../../src/services/StripeService.js';
 import { processEscrowActionJob } from '../../src/jobs/escrow-action-worker.js';
+import { signJobPayload } from '../../src/jobs/queues.js';
 import type { Job } from 'bullmq';
 
 // ---------------------------------------------------------------------------
@@ -40,8 +42,13 @@ function makeJob(name: string, payload: object): Job<{ payload: object }> {
   return { name, data: { payload } } as unknown as Job<{ payload: object }>;
 }
 
-const ESCROW_ID = 'escrow-001';
-const TASK_ID = 'task-001';
+function makeSignedPayload(fields: Record<string, unknown>): Record<string, unknown> {
+  const sig = signJobPayload(fields);
+  return { ...fields, _sig: sig };
+}
+
+const ESCROW_ID = '00000000-0000-0000-0000-000000000001';
+const TASK_ID = '10000000-0000-0000-0000-000000000001';
 const WORKER_ID = 'worker-001';
 const STRIPE_CONNECT_ID = 'acct_test_123';
 const ESCROW_VERSION = 1;
@@ -89,11 +96,9 @@ describe('escrow-action-worker — platform fee deduction (P0 revenue bug)', () 
     const escrowAmountCents = 10_000; // $100.00
     setupReleaseDbMocks(escrowAmountCents);
 
-    const job = makeJob('escrow.release_requested', {
-      escrow_id: ESCROW_ID,
-      task_id: TASK_ID,
-      reason: 'dispute resolved in worker favour',
-    });
+    const job = makeJob('escrow.release_requested',
+      makeSignedPayload({ escrow_id: ESCROW_ID, task_id: TASK_ID, reason: 'dispute resolved in worker favour' }),
+    );
 
     await processEscrowActionJob(job as never);
 
@@ -107,11 +112,9 @@ describe('escrow-action-worker — platform fee deduction (P0 revenue bug)', () 
     const escrowAmountCents = 10_000;
     setupReleaseDbMocks(escrowAmountCents);
 
-    const job = makeJob('escrow.release_requested', {
-      escrow_id: ESCROW_ID,
-      task_id: TASK_ID,
-      reason: 'dispute resolved',
-    });
+    const job = makeJob('escrow.release_requested',
+      makeSignedPayload({ escrow_id: ESCROW_ID, task_id: TASK_ID, reason: 'dispute resolved' }),
+    );
 
     await processEscrowActionJob(job as never);
 
@@ -124,11 +127,9 @@ describe('escrow-action-worker — platform fee deduction (P0 revenue bug)', () 
     const escrowAmountCents = 3_333; // $33.33
     setupReleaseDbMocks(escrowAmountCents);
 
-    const job = makeJob('escrow.release_requested', {
-      escrow_id: ESCROW_ID,
-      task_id: TASK_ID,
-      reason: 'dispute resolved',
-    });
+    const job = makeJob('escrow.release_requested',
+      makeSignedPayload({ escrow_id: ESCROW_ID, task_id: TASK_ID, reason: 'dispute resolved' }),
+    );
 
     await processEscrowActionJob(job as never);
 
@@ -152,11 +153,9 @@ describe('escrow-action-worker — platform fee deduction (P0 revenue bug)', () 
       }],
     } as never);
 
-    const job = makeJob('escrow.release_requested', {
-      escrow_id: ESCROW_ID,
-      task_id: TASK_ID,
-      reason: 'replay',
-    });
+    const job = makeJob('escrow.release_requested',
+      makeSignedPayload({ escrow_id: ESCROW_ID, task_id: TASK_ID, reason: 'replay' }),
+    );
 
     await processEscrowActionJob(job as never);
 
