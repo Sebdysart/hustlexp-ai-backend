@@ -55,8 +55,8 @@ export const taskRouter = router({
    */
   getById: protectedProcedure
     .input(z.object({ taskId: Schemas.uuid }))
-    .query(async ({ input }) => {
-      return cachedDbQuery(
+    .query(async ({ input, ctx }) => {
+      const task = await cachedDbQuery(
         CACHE_KEYS.taskDetails(input.taskId),
         async () => {
           const result = await TaskService.getById(input.taskId);
@@ -67,6 +67,30 @@ export const taskRouter = router({
         },
         { tags: [CACHE_TAGS.TASK(input.taskId)], ttl: CACHE_TTL.taskDetails }
       );
+
+      const isParticipant = task.poster_id === ctx.user.id || task.worker_id === ctx.user.id;
+      // Tasks in OPEN/MATCHING/POSTED state are discoverable (hustler feed)
+      const isDiscoverable = ['OPEN', 'MATCHING', 'POSTED'].includes(task.state);
+
+      if (!isParticipant && !isDiscoverable) {
+        // Last resort: check admin role before throwing
+        const adminResult = await db.query(
+          'SELECT 1 FROM admin_roles WHERE user_id = $1 LIMIT 1',
+          [ctx.user.id]
+        );
+        if (adminResult.rows.length === 0) {
+          throw new TRPCError({ code: 'FORBIDDEN', message: 'Access denied' });
+        }
+        // Admin: full access
+        return task;
+      }
+
+      // Strip sensitive identity fields for non-participants browsing the feed
+      if (!isParticipant && isDiscoverable) {
+        return { ...task, poster_id: undefined, worker_id: undefined };
+      }
+
+      return task;
     }),
   
   /**
@@ -75,21 +99,33 @@ export const taskRouter = router({
    */
   getState: protectedProcedure
     .input(z.object({ taskId: Schemas.uuid }))
-    .query(async ({ input }) => {
-      const result = await db.query<{ state: string }>(
-        `SELECT state FROM tasks WHERE id = $1`,
+    .query(async ({ input, ctx }) => {
+      const result = await db.query<{ state: string; poster_id: string; worker_id: string | null }>(
+        `SELECT state, poster_id, worker_id FROM tasks WHERE id = $1`,
         [input.taskId]
       );
-      
+
       if (result.rows.length === 0) {
         throw new TRPCError({
           code: 'NOT_FOUND',
           message: 'Task not found',
         });
       }
-      
+
+      const task = result.rows[0];
+      const isParticipant = task.poster_id === ctx.user.id || task.worker_id === ctx.user.id;
+      if (!isParticipant) {
+        const adminResult = await db.query(
+          'SELECT 1 FROM admin_roles WHERE user_id = $1 LIMIT 1',
+          [ctx.user.id]
+        );
+        if (adminResult.rows.length === 0) {
+          throw new TRPCError({ code: 'FORBIDDEN', message: 'Access denied' });
+        }
+      }
+
       return {
-        state: result.rows[0].state,
+        state: task.state,
       };
     }),
   

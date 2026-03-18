@@ -9,6 +9,7 @@
 import { TRPCError } from '@trpc/server';
 import { router, hustlerProcedure, Schemas } from '../trpc.js';
 import { OnboardingAIService } from '../services/OnboardingAIService.js';
+import { db } from '../db.js';
 import { z } from 'zod';
 
 export const aiRouter = router({
@@ -62,6 +63,19 @@ export const aiRouter = router({
   confirmRole: hustlerProcedure
     .input(Schemas.confirmRole)
     .mutation(async ({ ctx, input }) => {
+      // Guard: ai.confirmRole is an onboarding-only path.
+      // Block role change if the user has any task history (ever participated as poster or worker).
+      const taskCount = await db.query(
+        `SELECT COUNT(*) FROM tasks WHERE poster_id = $1 OR worker_id = $1`,
+        [ctx.user.id]
+      );
+      if (parseInt(taskCount.rows[0].count) > 0) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'Role cannot be changed after completing tasks.',
+        });
+      }
+
       const result = await OnboardingAIService.confirmRole({
         userId: ctx.user.id,
         confirmedMode: input.confirmedMode,

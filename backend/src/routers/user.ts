@@ -321,9 +321,25 @@ export const userRouter = router({
         values.push(input.phone);
       }
       if (input.defaultMode !== undefined) {
+        const newMode = normalizeRole(input.defaultMode);
+        if (newMode !== ctx.user.default_mode) {
+          // Guard: no open tasks in current role before switching
+          const openTasksCount = await db.query(
+            `SELECT COUNT(*) FROM tasks
+             WHERE (poster_id = $1 OR worker_id = $1)
+             AND state NOT IN ('COMPLETED', 'CANCELLED', 'REFUNDED')`,
+            [ctx.user.id]
+          );
+          if (parseInt(openTasksCount.rows[0].count) > 0) {
+            throw new TRPCError({
+              code: 'PRECONDITION_FAILED',
+              message: 'Cannot switch role while you have active tasks. Complete or cancel all tasks first.',
+            });
+          }
+        }
         updates.push(`default_mode = $${paramIndex++}`);
         // Normalize: iOS sends "hustler" but DB stores "worker"
-        values.push(normalizeRole(input.defaultMode));
+        values.push(newMode);
       }
 
       if (updates.length === 0) {

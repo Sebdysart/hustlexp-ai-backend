@@ -21,17 +21,17 @@ export const analyticsRouter = router({
   
   /**
    * Track an analytics event
-   * 
+   *
    * ANALYTICS_SPEC.md §1: All user actions and system events are tracked
    * Privacy: Respects user consent (only track if user has granted analytics consent)
-   * 
-   * Note: Can be called publicly for anonymous events, or protected for user events
+   *
+   * Security: Requires authentication — userId is always derived from ctx.user.id,
+   * never accepted from the request body.
    */
-  trackEvent: publicProcedure
+  trackEvent: protectedProcedure
     .input(z.object({
       eventType: z.string().min(1).max(100), // Allow custom event types
       eventCategory: z.enum(['user_action', 'system_event', 'error', 'performance']),
-      userId: z.string().uuid().optional(), // Optional - may be anonymous
       sessionId: z.string().uuid(),
       deviceId: z.string().uuid(),
       taskId: Schemas.uuid.optional(),
@@ -45,15 +45,8 @@ export const analyticsRouter = router({
       eventTimestamp: z.string().datetime().optional(), // Optional - defaults to NOW()
     }))
     .mutation(async ({ input, ctx }) => {
-      // Security: If authenticated, always use the authenticated user's ID
-      // Prevent userId spoofing by ignoring input.userId when user is authenticated
-      const userId = ctx.user?.id || input.userId || undefined;
-      if (ctx.user && input.userId && input.userId !== ctx.user.id) {
-        throw new TRPCError({
-          code: 'BAD_REQUEST',
-          message: 'Cannot track events for a different user',
-        });
-      }
+      // Security: always derive userId from auth context — never from request body
+      const userId = ctx.user.id;
 
       const result = await AnalyticsService.trackEvent({
         eventType: input.eventType,
@@ -84,13 +77,15 @@ export const analyticsRouter = router({
   
   /**
    * Track multiple events in a batch (for performance)
+   *
+   * Security: Requires authentication — userId is always derived from ctx.user.id,
+   * never accepted from the request body.
    */
-  trackBatch: publicProcedure
+  trackBatch: protectedProcedure
     .input(z.object({
       events: z.array(z.object({
         eventType: z.string().min(1).max(100),
         eventCategory: z.enum(['user_action', 'system_event', 'error', 'performance']),
-        userId: z.string().uuid().optional(),
         sessionId: z.string().uuid(),
         deviceId: z.string().uuid(),
         taskId: Schemas.uuid.optional(),
@@ -105,21 +100,13 @@ export const analyticsRouter = router({
       })).min(1).max(100), // Batch limit
     }))
     .mutation(async ({ input, ctx }) => {
-      // Security: Prevent userId spoofing in batch events
-      if (ctx.user) {
-        const spoofedEvent = input.events.find(e => e.userId && e.userId !== ctx.user!.id);
-        if (spoofedEvent) {
-          throw new TRPCError({
-            code: 'BAD_REQUEST',
-            message: 'Cannot track events for a different user',
-          });
-        }
-      }
+      // Security: always derive userId from auth context — never from request body
+      const userId = ctx.user.id;
 
       const events = input.events.map(event => ({
         eventType: event.eventType,
         eventCategory: event.eventCategory,
-        userId: ctx.user?.id || event.userId || undefined,
+        userId,
         sessionId: event.sessionId,
         deviceId: event.deviceId,
         taskId: event.taskId,

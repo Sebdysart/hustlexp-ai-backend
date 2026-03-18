@@ -4,7 +4,7 @@
  * System health and status endpoints
  */
 
-import { router, publicProcedure } from '../trpc.js';
+import { router, publicProcedure, protectedProcedure, adminProcedure } from '../trpc.js';
 import { db } from '../db.js';
 import { config } from '../config.js';
 import { StripeService } from '../services/StripeService.js';
@@ -21,7 +21,7 @@ export const healthRouter = router({
   /**
    * Full system health check
    */
-  status: publicProcedure
+  status: protectedProcedure
     .input(z.void())
     .query(async () => {
       const dbHealth = await db.healthCheck();
@@ -52,7 +52,7 @@ export const healthRouter = router({
   /**
    * Database schema verification
    */
-  verifySchema: publicProcedure
+  verifySchema: adminProcedure
     .input(z.void())
     .query(async () => {
       const health = await db.healthCheck();
