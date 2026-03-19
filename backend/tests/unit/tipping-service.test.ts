@@ -218,7 +218,7 @@ describe('TippingService', () => {
       // FFF-01: Verify idempotency key is passed to prevent orphaned PIs on retry
       expect(mockPaymentIntentsCreate).toHaveBeenCalledWith(
         expect.objectContaining({ amount: 500, currency: 'usd' }),
-        { idempotencyKey: 'tip_pi_task-1_poster-1_500' }
+        { idempotencyKey: 'tip_pi_task-1_poster-1' }
       );
     });
 

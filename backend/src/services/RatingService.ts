@@ -581,7 +581,7 @@ export const RatingService = {
         `SELECT t.id, t.poster_id, t.worker_id, t.completed_at
          FROM tasks t
          WHERE t.state = 'COMPLETED'
-           AND t.completed_at < NOW() - INTERVAL '${RATING_WINDOW_DAYS} days'
+           AND t.completed_at < NOW() - ($1 * INTERVAL '1 day')
            AND t.worker_id IS NOT NULL
            AND (
              NOT EXISTS (
@@ -593,7 +593,7 @@ export const RatingService = {
                WHERE r2.task_id = t.id AND r2.rater_id = t.worker_id AND r2.ratee_id = t.poster_id
              )
            )`,
-        []
+        [RATING_WINDOW_DAYS]
       );
       
       // Filter out tasks without workers

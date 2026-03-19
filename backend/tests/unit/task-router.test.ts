@@ -174,7 +174,9 @@ import { db } from '../../src/db';
 import { TaskService } from '../../src/services/TaskService';
 import { ProofService } from '../../src/services/ProofService';
 import { ComplianceGuardianService } from '../../src/services/ComplianceGuardianService';
-import { getTemplate } from '../../src/services/TaskTemplateRegistry';
+import { getTemplate, isCareContent, isContentReleaseRequired, getManifest } from '../../src/services/TaskTemplateRegistry';
+import { TaskRiskClassifier } from '../../src/services/TaskRiskClassifier';
+import { cachedDbQuery, invalidateTask } from '../../src/cache/db-cache';
 import { taskRouter } from '../../src/routers/task';
 import { checkRateLimit } from '../../src/cache/redis';
 
@@ -185,6 +187,12 @@ const mockTaskService = vi.mocked(TaskService);
 const mockProofService = vi.mocked(ProofService);
 const mockCompliance = vi.mocked(ComplianceGuardianService);
 const mockGetTemplate = vi.mocked(getTemplate);
+const mockIsCareContent = vi.mocked(isCareContent);
+const mockIsContentReleaseRequired = vi.mocked(isContentReleaseRequired);
+const mockGetManifest = vi.mocked(getManifest);
+const mockTaskRiskClassifier = vi.mocked(TaskRiskClassifier);
+const mockCachedDbQuery = vi.mocked(cachedDbQuery);
+const mockInvalidateTask = vi.mocked(invalidateTask);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -256,13 +264,69 @@ function makeCaller(userId = USER_ID, defaultMode: 'worker' | 'poster' = 'worker
 const makeCallerAsHustler = (userId = USER_ID) => makeCaller(userId, 'worker');
 const makeCallerAsPoster = (userId = USER_ID) => makeCaller(userId, 'poster');
 
+// ---------------------------------------------------------------------------
+// Global beforeEach — reset all mocks then restore always-on defaults.
+// Centralising vi.resetAllMocks() here (instead of per-describe) ensures the
+// default implementations are re-established AFTER the reset, so they are
+// always available. Per-describe beforeEach blocks have been emptied of their
+// vi.resetAllMocks() calls to avoid wiping these defaults a second time.
+// ---------------------------------------------------------------------------
+beforeEach(() => {
+  // Reset all mocks first (clears Once queues AND implementations)
+  vi.resetAllMocks();
+
+  // Cache pass-through: execute the wrapped fn directly, no cache in tests
+  mockCachedDbQuery.mockImplementation((_key: string, fn: () => Promise<unknown>) => fn());
+  mockInvalidateTask.mockResolvedValue(undefined);
+
+  // Rate limiting: allowed by default
+  mockCheckRateLimit.mockResolvedValue({ allowed: true, remaining: 10 });
+
+  // Compliance: clean result by default
+  mockCompliance.evaluate.mockResolvedValue({
+    score: 0,
+    tier: 'clean',
+    triggeredRules: [],
+    suggestedAlternative: undefined,
+    notes: { score: 0, tier: 'clean', triggered_rules: [], suggested_alternative: null, admin_review_id: null, appeal_status: 'none' },
+  });
+
+  // Template stubs
+  mockGetTemplate.mockReturnValue({
+    slug: 'standard_physical',
+    displayName: 'Standard Physical',
+    one_line_desc: 'Help moving, delivery, or muscle work out in the world',
+    defaultRiskTier: 0,
+    requiredTrustTier: 'rookie',
+    completionCriteriaType: 'photo_proof',
+    autoReleaseHours: 24,
+    lateCancelPct: 0,
+    requiresMutualConsent: false,
+    requiresContentRelease: false,
+    scoperContext: '',
+  } as any);
+  mockGetManifest.mockReturnValue([]);
+  mockIsCareContent.mockReturnValue(false);
+  mockIsContentReleaseRequired.mockReturnValue(false);
+
+  // Risk classifier
+  mockTaskRiskClassifier.classifyWithTemplate.mockReturnValue(0);
+
+  // ProofService safe defaults
+  mockProofService.getPhotos.mockResolvedValue({ success: true, data: [] } as any);
+  mockProofService.getVideos.mockResolvedValue({ success: true, data: [] } as any);
+
+  // db.transaction: delegate to callback with the same query fn
+  mockDb.transaction.mockImplementation((fn: (q: typeof mockDb.query) => Promise<unknown>) => fn(mockDb.query));
+});
+
 // ===========================================================================
 // task.getById
 // ===========================================================================
 
 describe('task.getById', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    // reset handled by global beforeEach
   });
 
   it('returns task data when found', async () => {
@@ -295,7 +359,7 @@ describe('task.getById', () => {
 
 describe('task.getState', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    // reset handled by global beforeEach
   });
 
   it('returns { state } for existing task', async () => {
@@ -337,7 +401,7 @@ describe('task.getState', () => {
 
 describe('task.listByPoster', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    // reset handled by global beforeEach
   });
 
   it('returns { tasks, nextCursor } from TaskService', async () => {
@@ -428,7 +492,7 @@ describe('task.listByPoster', () => {
 
 describe('task.listByWorker', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    // reset handled by global beforeEach
   });
 
   it('returns { tasks, nextCursor } from TaskService', async () => {
@@ -481,7 +545,7 @@ describe('task.listByWorker', () => {
 
 describe('task.listOpen', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    // reset handled by global beforeEach
   });
 
   it('returns task data array from TaskService', async () => {
@@ -546,7 +610,7 @@ describe('task.listOpen', () => {
 
 describe('task.create', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    // reset handled by global beforeEach
   });
 
   const validInput = {
@@ -651,7 +715,7 @@ describe('task.create', () => {
 
 describe('task.accept', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    // reset handled by global beforeEach
   });
 
   it('returns accepted task from TaskService', async () => {
@@ -696,7 +760,7 @@ describe('task.accept', () => {
 
 describe('task.start', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    // reset handled by global beforeEach
   });
 
   it('returns task row when worker is assigned and state is ACCEPTED', async () => {
@@ -744,7 +808,7 @@ describe('task.start', () => {
 
 describe('task.getProof', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    // reset handled by global beforeEach
   });
 
   it('returns proof row when found', async () => {
@@ -789,7 +853,7 @@ describe('task.getProof', () => {
 
 describe('task.submitProof', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    // reset handled by global beforeEach
   });
 
   // YY-02: raw BEGIN/COMMIT/ROLLBACK removed. ProofService.submit and
@@ -830,7 +894,7 @@ describe('task.submitProof', () => {
     await makeCaller().submitProof({
       taskId: TASK_ID,
       description: 'Done',
-      photoUrls: ['https://example.com/photo.jpg'],
+      photoUrls: ['https://pub-abc123def456abcd.r2.dev/proof/photo.jpg'],
       notes: 'Extra notes',
       gpsLatitude: 37.7749,
       gpsLongitude: -122.4194,
@@ -842,7 +906,7 @@ describe('task.submitProof', () => {
         taskId: TASK_ID,
         submitterId: USER_ID,
         description: 'Done',
-        photoUrls: ['https://example.com/photo.jpg'],
+        photoUrls: ['https://pub-abc123def456abcd.r2.dev/proof/photo.jpg'],
         gpsLatitude: 37.7749,
         gpsLongitude: -122.4194,
         biometricHash: 'abc123',
@@ -929,7 +993,7 @@ describe('task.submitProof', () => {
 
 describe('task.reviewProof', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    // reset handled by global beforeEach
   });
 
   it('reviews proof by proofId + decision (original schema)', async () => {
@@ -1155,7 +1219,7 @@ describe('task.reviewProof', () => {
 // FORBIDDEN as ServiceResult error codes when appropriate.
 describe('task.complete', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    // reset handled by global beforeEach
   });
 
   it('returns completed task when poster calls', async () => {
@@ -1218,7 +1282,7 @@ describe('task.complete', () => {
 
 describe('task.cancel', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    // reset handled by global beforeEach
   });
 
   // YY-01: ownership check moved inside TaskService.cancel(). Router passes
@@ -1283,7 +1347,7 @@ describe('task.cancel', () => {
 
 describe('task.applyForTask', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    // reset handled by global beforeEach
   });
 
   it('returns application data on success', async () => {
@@ -1393,7 +1457,7 @@ describe('task.applyForTask', () => {
 
 describe('task.listApplicants', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    // reset handled by global beforeEach
   });
 
   it('returns array of applicant objects', async () => {
@@ -1477,7 +1541,7 @@ describe('task.listApplicants', () => {
 
 describe('task.assignWorker', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    // reset handled by global beforeEach
   });
 
   // NOTE: The new assignWorker implementation wraps all 5 DB ops in db.transaction()
@@ -1652,7 +1716,7 @@ describe('task.assignWorker', () => {
 
 describe('task.rejectApplicant', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    // reset handled by global beforeEach
   });
 
   it('returns { success: true } on successful rejection', async () => {
@@ -1732,7 +1796,7 @@ describe('task.rejectApplicant', () => {
 
 describe('task.withdrawApplication', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    // reset handled by global beforeEach
   });
 
   it('returns { success: true } on successful withdrawal', async () => {
@@ -1788,7 +1852,7 @@ describe('task.withdrawApplication', () => {
 
 describe('task.evaluateDraft', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    // reset handled by global beforeEach
   });
 
   it('returns compliance result for a clean description', async () => {
@@ -1919,7 +1983,7 @@ describe('task.evaluateDraft rate limit', () => {
   };
 
   beforeEach(() => {
-    vi.clearAllMocks();
+    // reset handled by global beforeEach
     // Default: allow all rate-limit checks
     mockCheckRateLimit.mockResolvedValue({ allowed: true, remaining: 10 });
   });
@@ -2043,7 +2107,7 @@ describe('task.acceptWithConsent', () => {
   };
 
   beforeEach(() => {
-    vi.resetAllMocks();
+    // reset handled by global beforeEach
     // Make db.transaction call through so queries inside use the mockDb.query queue
     vi.mocked((mockDb as any).transaction).mockImplementation((fn: (q: typeof mockDb.query) => Promise<unknown>) => fn(mockDb.query));
   });
@@ -2132,7 +2196,7 @@ describe('task.acceptWithConsent', () => {
 
 describe('task.getComplianceStatus', () => {
   beforeEach(() => {
-    vi.resetAllMocks();
+    // reset handled by global beforeEach
   });
 
   it('returns score and notes for an existing task', async () => {
@@ -2182,7 +2246,7 @@ describe('task.getComplianceStatus', () => {
 
 describe('task.submitProof — video URLs branch', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    // reset handled by global beforeEach
   });
 
   it('attaches video URLs to proof when videoUrls provided', async () => {
@@ -2206,13 +2270,13 @@ describe('task.submitProof — video URLs branch', () => {
     const result = await makeCallerAsHustler().submitProof({
       taskId: TASK_ID,
       description: 'Done',
-      videoUrls: ['https://example.com/video1.mp4'],
+      videoUrls: ['https://pub-abc123def456abcd.r2.dev/proof/video1.mp4'],
     });
 
     expect(mockProofService.addVideo).toHaveBeenCalledWith(
       expect.objectContaining({
         proofId: proofRow.id,
-        storageKey: 'https://example.com/video1.mp4',
+        storageKey: 'https://pub-abc123def456abcd.r2.dev/proof/video1.mp4',
         contentType: 'video/mp4',
       })
     );
@@ -2264,7 +2328,7 @@ describe('task.submitProof — video URLs branch', () => {
     const result = await makeCallerAsHustler().submitProof({
       taskId: TASK_ID,
       description: 'Done',
-      videoUrls: ['https://example.com/video1.mp4'],
+      videoUrls: ['https://pub-abc123def456abcd.r2.dev/proof/video1.mp4'],
     });
 
     expect(result).toBeDefined();

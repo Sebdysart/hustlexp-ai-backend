@@ -33,6 +33,7 @@ import type { QueryFn } from '../db.js';
 import { StripeService } from '../services/StripeService.js';
 import { TaskService } from '../services/TaskService.js';
 import { notifyAdmins } from '../services/AdminNotificationHelper.js';
+import { RevenueService } from '../services/RevenueService.js';
 import { workerLogger } from '../logger.js';
 import { config } from '../config.js';
 import { verifyJobSignature } from './queues.js';
@@ -567,6 +568,7 @@ async function handlePartialRefundRequest(
 
   // Create transfer if release_amount > 0
   let transferId: string | null = escrow.stripe_transfer_id;
+  let netReleaseCents: number | undefined;
   if (releaseAmount > 0) {
     // TT-03: Re-read stripe_transfer_id from the DB after the first transaction committed.
     // Two concurrent BullMQ retries can both see stripe_transfer_id = null in their stale
@@ -612,7 +614,7 @@ async function handlePartialRefundRequest(
       // deducts the fee — this path previously passed the raw releaseAmount,
       // bypassing the fee entirely in the SPLIT dispute resolution path.
       const platformFeePercent = Math.min(100, Math.max(0, config.stripe?.platformFeePercent ?? 15));
-      const netReleaseCents = Math.round(releaseAmount * (1 - platformFeePercent / 100));
+      netReleaseCents = Math.round(releaseAmount * (1 - platformFeePercent / 100));
 
       log.info(
         { escrowId: escrow.id, releaseAmount, platformFeePercent, netReleaseCents },
@@ -713,6 +715,35 @@ async function handlePartialRefundRequest(
     to: 'CLOSED',
     actor: { type: 'system' },
   });
+
+  // Log platform fee to revenue ledger (SPLIT path)
+  // Previously uncaptured: netReleaseCents deducts ~15% but RevenueService.logEvent() was never called.
+  // Non-fatal: ledger write failure must not block dispute resolution confirmation.
+  if (releaseAmount > 0 && netReleaseCents !== undefined) {
+    const platformFee = releaseAmount - netReleaseCents;
+    try {
+      await RevenueService.logEvent({
+        eventType: 'platform_fee',
+        userId: task.worker_id!,
+        taskId,
+        amountCents: platformFee,
+        grossAmountCents: releaseAmount,
+        platformFeeCents: platformFee,
+        netAmountCents: netReleaseCents,
+        feeBasisPoints: Math.round((config.stripe.platformFeePercent ?? 15) * 100),
+        escrowId: escrow.id,
+        stripeTransferId: transferId ?? undefined,
+        metadata: {
+          event: 'escrow_partial_release',
+        },
+      });
+    } catch (revenueError) {
+      log.error(
+        { err: revenueError instanceof Error ? revenueError.message : String(revenueError), escrowId: escrow.id },
+        'Failed to write revenue ledger entry for SPLIT partial release — requires manual reconciliation'
+      );
+    }
+  }
 
   log.info({ escrowId: escrow.id, refundAmount, releaseAmount }, 'Escrow set to REFUND_PARTIAL');
 }

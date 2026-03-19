@@ -453,6 +453,20 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
     // BullMQ retry loop until max_attempts is exhausted.
     if (errorMessage.includes('Email is suppressed')) {
       log.info({ emailId, jobId: job.id, idempotencyKey: outboxKey, error: errorMessage }, 'Email suppressed, skipping retry');
+      // Mark the outbox row as suppressed so the poller never re-enqueues it
+      try {
+        await db.query(
+          `UPDATE email_outbox
+              SET status = 'suppressed',
+                  suppressed_at = NOW(),
+                  suppressed_reason = COALESCE(suppressed_reason, 'detected_on_send')
+            WHERE id = $1
+              AND status != 'suppressed'`,
+          [emailId]
+        );
+      } catch (dbErr) {
+        log.error({ emailId, err: dbErr }, 'Failed to mark email as suppressed');
+      }
       return;
     }
 

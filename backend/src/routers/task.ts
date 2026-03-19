@@ -25,6 +25,39 @@ import { checkRateLimit } from '../cache/redis.js';
 const taskRouterLog = logger.child({ router: 'task' });
 
 // ---------------------------------------------------------------------------
+// R2 storage allowlist for proof photo/video URLs.
+// Only Cloudflare R2 public URLs are accepted — same logic as messaging.ts.
+// This prevents SSRF and tracking-pixel injection via arbitrary URLs.
+// ---------------------------------------------------------------------------
+const PROOF_R2_PUBLIC_HOSTNAME = (() => {
+  const raw = process.env.R2_PUBLIC_URL || '';
+  try {
+    return raw ? new URL(raw).hostname : null;
+  } catch {
+    return null;
+  }
+})();
+
+function isApprovedProofMediaHost(url: string): boolean {
+  try {
+    const { hostname } = new URL(url);
+    if (PROOF_R2_PUBLIC_HOSTNAME && hostname === PROOF_R2_PUBLIC_HOSTNAME) return true;
+    if (/^pub-[a-f0-9]+\.r2\.dev$/.test(hostname)) return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+const approvedProofMediaUrl = z
+  .string()
+  .url()
+  .max(2048)
+  .refine(isApprovedProofMediaHost, {
+    message: 'Proof media URL must be from an approved storage domain (R2 only)',
+  });
+
+// ---------------------------------------------------------------------------
 // Redis-backed rate limit for evaluateDraft: max 5 calls per 60s per user.
 //
 // Replaces the previous in-memory Map, which reset on process restart and
@@ -653,8 +686,8 @@ export const taskRouter = router({
       taskId: z.string().uuid(),
       description: z.string().max(2000).optional(),
       // Extended fields from iOS frontend
-      photoUrls: z.array(z.string().url().max(2048)).max(10).optional(),
-      videoUrls: z.array(z.string().url().max(2048)).max(5).optional(),
+      photoUrls: z.array(approvedProofMediaUrl).max(10).optional(),
+      videoUrls: z.array(approvedProofMediaUrl).max(5).optional(),
       notes: z.string().max(2000).optional(),
       gpsLatitude: z.number().min(-90).max(90).optional(),
       gpsLongitude: z.number().min(-180).max(180).optional(),

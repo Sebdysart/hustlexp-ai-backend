@@ -172,7 +172,7 @@ export const TippingService = {
           } : {}),
           description: `HustleXP Tip for Task ${taskId}`,
         },
-        { idempotencyKey: `tip_pi_${taskId}_${posterId}_${amountCents}` }
+        { idempotencyKey: `tip_pi_${taskId}_${posterId}` }
       );
 
       // Step 3 — Insert the tip row referencing the newly created PI.

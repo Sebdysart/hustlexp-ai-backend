@@ -304,33 +304,36 @@ export const messagingRouter = router({
       }
 
       const result = await db.query(
-        `SELECT DISTINCT ON (t.id)
-          t.id as "taskId",
-          t.id as id,
-          t.title as "taskTitle",
-          CASE WHEN t.poster_id = $1 THEN t.worker_id ELSE t.poster_id END as "otherUserId",
-          CASE WHEN t.poster_id = $1 THEN wu.full_name ELSE pu.full_name END as "otherUserName",
-          CASE WHEN t.poster_id = $1 THEN 'worker' ELSE 'poster' END as "otherUserRole",
-          m.content as "lastMessage",
-          m.created_at as "lastMessageAt",
-          COALESCE(unread.cnt, 0)::int as "unreadCount"
-        FROM tasks t
-        LEFT JOIN users wu ON wu.id = t.worker_id
-        LEFT JOIN users pu ON pu.id = t.poster_id
-        LEFT JOIN LATERAL (
-          SELECT content, created_at FROM task_messages
-          WHERE task_id = t.id
-            AND (moderation_status IS NULL OR moderation_status NOT IN ('quarantined'))
-          ORDER BY created_at DESC LIMIT 1
-        ) m ON true
-        LEFT JOIN LATERAL (
-          SELECT COUNT(*)::int as cnt FROM task_messages
-          WHERE task_id = t.id AND sender_id != $1 AND read_at IS NULL
-        ) unread ON true
-        WHERE (t.poster_id = $1 OR t.worker_id = $1)
-          AND t.state IN ('ACCEPTED', 'PROOF_SUBMITTED', 'DISPUTED', 'COMPLETED', 'CANCELLED')
-          AND (t.state NOT IN ('COMPLETED', 'CANCELLED') OR t.updated_at >= NOW() - INTERVAL '7 days')
-        ORDER BY t.id, m.created_at DESC NULLS LAST`,
+        `SELECT * FROM (
+          SELECT DISTINCT ON (t.id)
+            t.id as "taskId",
+            t.id as id,
+            t.title as "taskTitle",
+            CASE WHEN t.poster_id = $1 THEN t.worker_id ELSE t.poster_id END as "otherUserId",
+            CASE WHEN t.poster_id = $1 THEN wu.full_name ELSE pu.full_name END as "otherUserName",
+            CASE WHEN t.poster_id = $1 THEN 'worker' ELSE 'poster' END as "otherUserRole",
+            m.content as "lastMessage",
+            m.created_at as "lastMessageAt",
+            COALESCE(unread.cnt, 0)::int as "unreadCount"
+          FROM tasks t
+          LEFT JOIN users wu ON wu.id = t.worker_id
+          LEFT JOIN users pu ON pu.id = t.poster_id
+          LEFT JOIN LATERAL (
+            SELECT content, created_at FROM task_messages
+            WHERE task_id = t.id
+              AND (moderation_status IS NULL OR moderation_status NOT IN ('quarantined'))
+            ORDER BY created_at DESC LIMIT 1
+          ) m ON true
+          LEFT JOIN LATERAL (
+            SELECT COUNT(*)::int as cnt FROM task_messages
+            WHERE task_id = t.id AND sender_id != $1 AND read_at IS NULL
+          ) unread ON true
+          WHERE (t.poster_id = $1 OR t.worker_id = $1)
+            AND t.state IN ('ACCEPTED', 'PROOF_SUBMITTED', 'DISPUTED', 'COMPLETED', 'CANCELLED')
+            AND (t.state NOT IN ('COMPLETED', 'CANCELLED') OR t.updated_at >= NOW() - INTERVAL '7 days')
+          ORDER BY t.id, m.created_at DESC NULLS LAST
+        ) conversations
+        ORDER BY "lastMessageAt" DESC NULLS LAST, "taskId"`,
         [ctx.user.id]
       );
 

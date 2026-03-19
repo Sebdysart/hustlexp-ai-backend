@@ -71,7 +71,7 @@ export const CACHE_TTL = {
   aiCache: 24 * 60 * 60,
   taskDetails: 10 * 60,
   userStats: 30 * 60,
-  sessionToken: 7 * 24 * 60 * 60,
+  sessionToken: 300, // 5 minutes — matches TOKEN_CACHE_TTL_SECONDS in auth/middleware.ts
   rateLimit: 60,
 } as const;
 

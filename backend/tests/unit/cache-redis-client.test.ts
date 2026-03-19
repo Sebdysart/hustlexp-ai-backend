@@ -212,8 +212,8 @@ describe('CACHE_TTL', () => {
     expect(CACHE_TTL.aiCache).toBe(24 * 60 * 60);
   });
 
-  it('sessionToken TTL is 7 days in seconds', () => {
-    expect(CACHE_TTL.sessionToken).toBe(7 * 24 * 60 * 60);
+  it('sessionToken TTL is 5 minutes (300 seconds)', () => {
+    expect(CACHE_TTL.sessionToken).toBe(300);
   });
 });
 
