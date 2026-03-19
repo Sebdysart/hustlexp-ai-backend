@@ -65,6 +65,14 @@ vi.mock('../../src/services/AdminNotificationHelper.js', () => ({
   notifyAdmins: vi.fn(),
 }));
 
+// RevenueService is mocked so logEvent never issues a real db.query call.
+// This prevents mockResolvedValueOnce queue leakage between tests (vi.clearAllMocks
+// clears call counts but NOT queued once-values — mocking the module entirely
+// isolates db.query from revenue ledger writes).
+vi.mock('../../src/services/RevenueService.js', () => ({
+  RevenueService: { logEvent: vi.fn().mockResolvedValue({ success: true, data: { id: 'rev_mock_id' } }) },
+}));
+
 // ---------------------------------------------------------------------------
 // Imports (after vi.mock declarations)
 // ---------------------------------------------------------------------------
@@ -121,6 +129,9 @@ function makeEscrowRow(overrides: Partial<{
  *   query #2       — SELECT stripe_connect_id FROM users
  *   query #3       — TT-03 fresh re-read: SELECT stripe_transfer_id FROM escrows
  *   transaction #2 — version-checked UPDATE escrows (store transfer_id)
+ *
+ * Note: RevenueService.logEvent is module-mocked (vi.mock) so it does NOT
+ * issue an additional db.query call — no query #4 needed here.
  */
 function setupReleaseMocks(escrowAmountCents = 10_000, escrowOverrides = {}) {
   const dbQuery = vi.mocked(db.query);

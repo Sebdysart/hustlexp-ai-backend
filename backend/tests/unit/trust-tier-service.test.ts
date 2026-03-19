@@ -44,8 +44,12 @@ vi.mock('../../src/auth-cache', () => ({
 
 vi.mock('../../src/logger', () => {
   const child = () => ({ warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() });
-  return { logger: { child }, aiLogger: { child } };
+  return { logger: { child }, aiLogger: { child }, authLogger: { child, warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() } };
 });
+
+vi.mock('../../src/auth/middleware', () => ({
+  revokeUserSessions: vi.fn().mockResolvedValue(undefined),
+}));
 
 vi.mock('../../src/services/AlphaInstrumentation', () => ({
   AlphaInstrumentation: {
@@ -294,6 +298,8 @@ describe('TrustTierService.banUser', () => {
     mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 2 }], rowCount: 1 });
     // UPDATE users SET trust_tier = BANNED
     mockQuery.mockResolvedValueOnce({ rows: [] });
+    // SELECT firebase_uid FROM users (for revokeUserSessions)
+    mockQuery.mockResolvedValueOnce({ rows: [{ firebase_uid: 'firebase-u1' }], rowCount: 1 });
     // SELECT active tasks — none
     mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
     // UPDATE tasks (cancel active)
@@ -317,13 +323,14 @@ describe('TrustTierService.banUser', () => {
   it('cancels active tasks on ban', async () => {
     mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 3 }], rowCount: 1 });
     mockQuery.mockResolvedValueOnce({ rows: [] }); // update users
+    mockQuery.mockResolvedValueOnce({ rows: [{ firebase_uid: 'firebase-u1' }], rowCount: 1 }); // SELECT firebase_uid
     mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // select active tasks — none
     mockQuery.mockResolvedValueOnce({ rows: [] }); // cancel tasks UPDATE
     mockQuery.mockResolvedValueOnce({ rows: [{ default_mode: 'poster' }] }); // instrumentation
 
     await TrustTierService.banUser('u1', 'abuse');
-    // The fourth call (index 3) should be the cancel tasks query
-    const cancelCall = mockQuery.mock.calls[3];
+    // The fifth call (index 4) should be the cancel tasks query (shifted by firebase_uid lookup)
+    const cancelCall = mockQuery.mock.calls[4];
     expect(cancelCall[0]).toContain('CANCELLED');
   });
 
@@ -335,6 +342,8 @@ describe('TrustTierService.banUser', () => {
     mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 2 }], rowCount: 1 });
     // UPDATE users SET trust_tier = BANNED
     mockQuery.mockResolvedValueOnce({ rows: [] });
+    // SELECT firebase_uid FROM users (for revokeUserSessions)
+    mockQuery.mockResolvedValueOnce({ rows: [{ firebase_uid: 'firebase-u1' }], rowCount: 1 });
     // SELECT active tasks — one task with id 'task-1'
     mockQuery.mockResolvedValueOnce({ rows: [{ id: 'task-1' }], rowCount: 1 });
     // SELECT escrow for task-1 — funded escrow exists
@@ -367,6 +376,8 @@ describe('TrustTierService.banUser', () => {
     mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 2 }], rowCount: 1 });
     // UPDATE users SET trust_tier = BANNED
     mockQuery.mockResolvedValueOnce({ rows: [] });
+    // SELECT firebase_uid FROM users (for revokeUserSessions)
+    mockQuery.mockResolvedValueOnce({ rows: [{ firebase_uid: 'firebase-u1' }], rowCount: 1 });
     // SELECT active tasks — one task with id 'task-2'
     mockQuery.mockResolvedValueOnce({ rows: [{ id: 'task-2' }], rowCount: 1 });
     // SELECT escrow for task-2 — no funded escrow

@@ -16,6 +16,7 @@ import type { QueryFn } from '../db.js';
 import { logger } from '../logger.js';
 import { AlphaInstrumentation } from './AlphaInstrumentation.js';
 import { invalidateAuthCacheForUser } from '../auth-cache.js';
+import { revokeUserSessions } from '../auth/middleware.js';
 import { writeToOutbox } from '../lib/outbox-helpers.js';
 
 const log = logger.child({ service: 'TrustTierService' });
@@ -553,6 +554,29 @@ export const TrustTierService = {
       // Another concurrent call already applied the ban — return early without
       // touching outbox or tasks to prevent duplicate events.
       return;
+    }
+
+    // Evict the auth cache so the banned status is enforced immediately
+    // (mirrors the pattern in FraudDetectionService.detectPattern lines 498-518)
+    await invalidateAuthCacheForUser(userId);
+
+    // Revoke Firebase refresh tokens so the user cannot re-authenticate after
+    // the Redis revocation marker expires.
+    try {
+      const fbRow = await db.query<{ firebase_uid: string | null }>(
+        'SELECT firebase_uid FROM users WHERE id = $1',
+        [userId]
+      );
+      const firebaseUid = fbRow.rows[0]?.firebase_uid;
+      if (firebaseUid) {
+        await revokeUserSessions(firebaseUid);
+      } else {
+        log.warn({ userId }, '[TrustTierService] banUser: firebase_uid is null — Firebase token revocation skipped, Redis marker still active');
+      }
+    } catch (revokeErr) {
+      // A Firebase failure must not block the ban — the Redis marker still
+      // provides short-term protection via the cache TTL.
+      log.error({ err: revokeErr instanceof Error ? revokeErr.message : String(revokeErr), userId }, '[TrustTierService] banUser: revokeUserSessions failed');
     }
 
     // Emit escrow refund outbox events for any funded escrows on active tasks

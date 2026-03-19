@@ -472,13 +472,10 @@ export const DisputeService = {
             throw new Error('SPLIT amounts must be non-negative');
           }
           if (refundAmount === 0 || releaseAmount === 0) {
-            return {
-              success: false,
-              error: {
-                code: 'BAD_REQUEST',
-                message: 'SPLIT requires both amounts to be positive. Use RELEASE or REFUND action for full payouts.',
-              },
-            };
+            throw Object.assign(
+              new Error('SPLIT requires both amounts to be positive. Use RELEASE or REFUND for full payouts.'),
+              { code: 'BAD_REQUEST' }
+            );
           }
           if (refundAmount + releaseAmount !== escrow.amount) {
             throw new Error(`SPLIT amounts (${refundAmount} + ${releaseAmount} = ${refundAmount + releaseAmount}) must sum to escrow amount (${escrow.amount})`);
@@ -644,6 +641,16 @@ export const DisputeService = {
           };
         }
       }
+      const errCode = (error as { code?: string }).code;
+      if (errCode === 'BAD_REQUEST') {
+        return {
+          success: false,
+          error: {
+            code: 'BAD_REQUEST',
+            message: error instanceof Error ? error.message : 'Unknown error',
+          },
+        };
+      }
       if (isInvariantViolation(error)) {
         return {
           success: false,
@@ -662,7 +669,7 @@ export const DisputeService = {
       };
     }
   },
-  
+
   /**
    * Escalate dispute to higher authority
    */

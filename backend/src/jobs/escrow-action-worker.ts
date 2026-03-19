@@ -391,6 +391,31 @@ async function handleReleaseRequest(
   });
 
   log.info({ escrowId: escrow.id, transferId }, 'Transfer created for escrow');
+
+  // Log platform fee to revenue ledger for dispute-driven RELEASE outcomes.
+  // Non-fatal: ledger write failure must not block payout confirmation.
+  if (platformFeeCents > 0) {
+    try {
+      await RevenueService.logEvent({
+        eventType: 'platform_fee',
+        userId: task.worker_id!,
+        taskId,
+        amountCents: platformFeeCents,
+        grossAmountCents: escrow.amount,
+        platformFeeCents,
+        netAmountCents: netPayoutCents,
+        feeBasisPoints: Math.round(platformFeePercent * 100),
+        escrowId: escrow.id,
+        stripeTransferId: transferId,
+        metadata: { event: 'escrow_dispute_release' },
+      });
+    } catch (revenueErr) {
+      log.warn(
+        { err: revenueErr instanceof Error ? revenueErr.message : String(revenueErr), escrowId: escrow.id },
+        'handleReleaseRequest: revenue ledger write failed — manual reconciliation required'
+      );
+    }
+  }
 }
 
 /**
@@ -753,7 +778,7 @@ async function handlePartialRefundRequest(
   // Log platform fee to revenue ledger (SPLIT path)
   // Previously uncaptured: netReleaseCents deducts ~15% but RevenueService.logEvent() was never called.
   // Non-fatal: ledger write failure must not block dispute resolution confirmation.
-  if (releaseAmount > 0 && netReleaseCents !== undefined) {
+  if (releaseAmount > 0 && netReleaseCents !== undefined && task.worker_id) {
     // Use adjustedPlatformFeeCents (residual-corrected) so all cents are accounted for.
     // Fall back to raw difference if undefined (idempotent replay path where the
     // new-transfer block was skipped — no residual to correct in that case).
@@ -761,7 +786,7 @@ async function handlePartialRefundRequest(
     try {
       await RevenueService.logEvent({
         eventType: 'platform_fee',
-        userId: task.worker_id!,
+        userId: task.worker_id,
         taskId,
         amountCents: platformFee,
         grossAmountCents: releaseAmount,
@@ -780,6 +805,13 @@ async function handlePartialRefundRequest(
         'Failed to write revenue ledger entry for SPLIT partial release — requires manual reconciliation'
       );
     }
+  } else if (releaseAmount > 0 && netReleaseCents !== undefined && !task.worker_id) {
+    // worker_id is null on this idempotent retry path — skip ledger entry.
+    // The Stripe transfer ID can be used for manual reconciliation later.
+    log.warn(
+      { escrowId: escrow.id, releaseAmount, stripeTransferId: transferId ?? null },
+      'Skipping revenue ledger entry for SPLIT partial release — task.worker_id is null; reconcile via Stripe transfer ID'
+    );
   }
 
   log.info({ escrowId: escrow.id, refundAmount, releaseAmount }, 'Escrow set to REFUND_PARTIAL');

@@ -1298,6 +1298,35 @@ export const EscrowService = {
 
       await logEscrowEvent(escrowId, 'LOCKED_DISPUTE', 'REFUND_PARTIAL');
 
+      // Log platform fee to revenue ledger for the worker's partial payout.
+      // Non-fatal: ledger write failure must not block the partial refund confirmation.
+      if (workerCents > 0 && resolvedTransferId) {
+        const netWorkerCentsForLedger = Math.round(workerCents * (1 - platformFeePercent / 100));
+        const feeCents = workerCents - netWorkerCentsForLedger;
+        if (feeCents > 0) {
+          try {
+            await RevenueService.logEvent({
+              eventType: 'platform_fee',
+              userId: txWorkerId!,
+              taskId: txTaskId ?? undefined,
+              amountCents: feeCents,
+              grossAmountCents: workerCents,
+              platformFeeCents: feeCents,
+              netAmountCents: netWorkerCentsForLedger,
+              feeBasisPoints: Math.round(platformFeePercent * 100),
+              escrowId,
+              stripeTransferId: resolvedTransferId,
+              metadata: { event: 'escrow_partial_refund' },
+            });
+          } catch (revenueErr) {
+            escrowLogger.error(
+              { err: revenueErr instanceof Error ? revenueErr.message : String(revenueErr), escrowId },
+              '[EscrowService.partialRefund] revenue ledger write failed — manual reconciliation required'
+            );
+          }
+        }
+      }
+
       // FIX 3: Clawback XP when dispute resolves against the worker (posterPercent > 0)
       if (posterPercent > 0) {
         try {
