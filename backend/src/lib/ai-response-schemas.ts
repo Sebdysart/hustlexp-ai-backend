@@ -155,6 +155,20 @@ export type TrustScoreParsed = z.infer<typeof TrustScoreSchema>;
 // TASK SUGGESTION AI — Suggested tasks for worker (ranked + reason per task)
 // ============================================================================
 
+// ============================================================================
+// REPUTATION AI — User Insight Schema
+// ============================================================================
+
+export const UserInsightSchema = z.object({
+  summary: z.string().max(2000),
+});
+
+export type UserInsightParsed = z.infer<typeof UserInsightSchema>;
+
+// ============================================================================
+// TASK SUGGESTION AI — Suggested tasks for worker (ranked + reason per task)
+// ============================================================================
+
 export const TaskSuggestionItemSchema = z.object({
   taskId: z.string().uuid(),
   reason: z.string().min(1).max(500),

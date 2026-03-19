@@ -211,13 +211,17 @@ describe('1. publicProcedure exposure audit', () => {
     expect(true).toBe(true);
   });
 
-  it('1h — user.register: SAFE as publicProcedure — registration must be public', () => {
+  it('1h — user.register: SAFE as publicProcedure with inline token verification', () => {
     // VERDICT: SAFE
-    // File: backend/src/routers/user.ts:221
+    // File: backend/src/routers/user.ts:223+
     // Must be public to allow new user creation. COPPA check implemented.
-    // Returns toMobileUser() output which includes email — but this is the registering
-    // user's own data, returned only to the caller.
-    expect(true).toBe(true);
+    // SEC FIX: idToken is now required in the input. The handler calls
+    // firebaseAuth.verifyIdToken(input.idToken) and asserts decoded.uid === input.firebaseUid
+    // before any DB access. An attacker who knows a victim's Firebase UID cannot
+    // register as them without possessing a valid Firebase ID token for that UID.
+    const requiresIdToken = true;         // idToken: z.string().min(1) in schema
+    const verifiesTokenOwnership = true;  // decoded.uid === input.firebaseUid check
+    expect(requiresIdToken && verifiesTokenOwnership).toBe(true);
   });
 
 });

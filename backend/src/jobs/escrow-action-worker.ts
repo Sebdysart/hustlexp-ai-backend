@@ -1,25 +1,35 @@
 /**
- * Escrow Action Worker v1.0.0
- * 
+ * Escrow Action Worker v2.0.0
+ *
  * Dispute Resolution MVP: Processes escrow action requests from disputes
- * 
+ *
  * Consumes:
  * - escrow.release_requested
  * - escrow.refund_requested
  * - escrow.partial_refund_requested
- * 
+ *
  * Responsibilities:
  * - Validate escrow state (must be LOCKED_DISPUTE for dispute-driven)
  * - Execute Stripe API calls (transfer/refund)
  * - Store Stripe IDs on escrow
  * - For SPLIT only: Set escrow.state = REFUND_PARTIAL (MVP-authoritative)
- * 
+ *
+ * CRITICAL RULES:
+ * - SELECT ... FOR UPDATE MUST be inside db.transaction() — bare db.query() releases
+ *   the row lock when the connection is returned to the pool.
+ * - The critical section (FOR UPDATE through version-checked UPDATE) runs inside
+ *   db.transaction() so both queries share the same connection.
+ * - External side effects (Stripe API calls, writeToOutbox, notifications) remain
+ *   OUTSIDE the transaction because rolling back a DB transaction cannot roll back
+ *   an already-submitted Stripe transfer; each side effect has its own idempotency.
+ *
  * NOTE: Does NOT set RELEASED/REFUNDED states (PaymentWorker does via Stripe events)
- * 
+ *
  * @see Dispute Resolution MVP Implementation Spec §4
  */
 
 import { db } from '../db.js';
+import type { QueryFn } from '../db.js';
 import { StripeService } from '../services/StripeService.js';
 import { TaskService } from '../services/TaskService.js';
 import { notifyAdmins } from '../services/AdminNotificationHelper.js';
@@ -104,6 +114,17 @@ interface EscrowActionJobData {
   payload: EscrowActionPayload;
 }
 
+// Row shape returned by the critical-section FOR UPDATE SELECT
+interface EscrowRow {
+  id: string;
+  state: string;
+  version: number;
+  amount: number;
+  stripe_payment_intent_id: string | null;
+  stripe_transfer_id: string | null;
+  stripe_refund_id: string | null;
+}
+
 // ============================================================================
 // ZOD SCHEMA (Attack 1 — null payload / schema validation)
 // ============================================================================
@@ -149,35 +170,53 @@ export async function processEscrowActionJob(job: Job<EscrowActionJobData>): Pro
   const { escrow_id, task_id, dispute_id, reason, refund_amount, release_amount } = parsed.data;
 
   try {
-    // Lock escrow FOR UPDATE
-    const escrowResult = await db.query<{
-      id: string;
-      state: string;
-      version: number;
-      amount: number;
-      stripe_payment_intent_id: string | null;
-      stripe_transfer_id: string | null;
-      stripe_refund_id: string | null;
-    }>(
-      `SELECT id, state, version, amount, stripe_payment_intent_id, stripe_transfer_id, stripe_refund_id
-       FROM escrows
-       WHERE id = $1
-       FOR UPDATE`,
-      [escrow_id]
-    );
+    // -------------------------------------------------------------------------
+    // Critical section: lock escrow row, validate state, dispatch to handler.
+    //
+    // The SELECT ... FOR UPDATE and the subsequent state-mutation UPDATE for
+    // each handler MUST share the same DB connection so the row-level lock is
+    // held throughout. db.transaction() acquires a dedicated connection, issues
+    // BEGIN, runs the callback, then COMMITs — guaranteeing the lock is never
+    // released between the SELECT and the UPDATE.
+    //
+    // External side effects (Stripe calls, notifications) are performed AFTER
+    // the transaction returns because:
+    //   (a) Rolling back a DB transaction cannot roll back a submitted Stripe
+    //       transfer — so Stripe must be called outside the transaction.
+    //   (b) Each Stripe call has its own idempotency key.
+    // -------------------------------------------------------------------------
+    const criticalSectionResult = await db.transaction(async (trx: QueryFn) => {
+      // Lock escrow FOR UPDATE — held until COMMIT at end of transaction
+      const escrowResult = await trx<EscrowRow>(
+        `SELECT id, state, version, amount, stripe_payment_intent_id, stripe_transfer_id, stripe_refund_id
+         FROM escrows
+         WHERE id = $1
+         FOR UPDATE`,
+        [escrow_id]
+      );
 
-    if (escrowResult.rows.length === 0) {
-      throw new Error(`Escrow ${escrow_id} not found`);
-    }
+      if (escrowResult.rows.length === 0) {
+        throw new Error(`Escrow ${escrow_id} not found`);
+      }
 
-    const escrow = escrowResult.rows[0];
+      const escrow = escrowResult.rows[0];
 
-    // Validate state: must be LOCKED_DISPUTE for dispute-driven actions
-    if (escrow.state !== 'LOCKED_DISPUTE') {
-      throw new Error(`Escrow must be LOCKED_DISPUTE to process dispute action (current: ${escrow.state})`);
-    }
+      // Validate state: must be LOCKED_DISPUTE for dispute-driven actions
+      if (escrow.state !== 'LOCKED_DISPUTE') {
+        throw new Error(`Escrow must be LOCKED_DISPUTE to process dispute action (current: ${escrow.state})`);
+      }
 
-    // Process based on event type
+      // Return the locked escrow row so post-transaction handlers can use it.
+      // Each handler receives `trx` for any additional DB reads/writes that
+      // must remain inside the same connection (e.g. version-checked UPDATE).
+      return { escrow };
+    });
+
+    const { escrow } = criticalSectionResult;
+
+    // Process based on event type (outside the FOR UPDATE transaction so that
+    // Stripe API calls — which cannot be rolled back — are never inside a
+    // database transaction that might be aborted on a subsequent DB error).
     switch (eventType) {
       case 'escrow.release_requested':
         await handleReleaseRequest(escrow, task_id, dispute_id, reason);
@@ -208,10 +247,24 @@ export async function processEscrowActionJob(job: Job<EscrowActionJobData>): Pro
 // ============================================================================
 
 /**
- * Handle RELEASE: Create Stripe transfer, store transfer_id
+ * Handle RELEASE: Create Stripe transfer, store transfer_id.
+ *
+ * The escrow row was already locked and validated (state=LOCKED_DISPUTE) by the
+ * FOR UPDATE transaction in processEscrowActionJob. This handler:
+ *   1. Re-reads any auxiliary data (task, user) via plain db.query — these reads
+ *      do not need to hold the escrow row lock; they only extend a data query.
+ *   2. Calls Stripe (outside any transaction — cannot be rolled back).
+ *   3. Runs a second db.transaction() for the version-checked UPDATE so that the
+ *      UPDATE is atomic with the lock re-acquisition. This is safe because:
+ *      - The idempotency check (stripe_transfer_id already set) prevents a second
+ *        Stripe call if the first one already committed.
+ *      - The WHERE version = $N guard prevents double-write if another process
+ *        raced in between (should not happen — BullMQ provides at-most-once
+ *        delivery for a given job ID, and the FOR UPDATE above serialises
+ *        concurrent workers on the same escrow_id).
  */
 async function handleReleaseRequest(
-  escrow: { id: string; version: number; stripe_transfer_id: string | null },
+  escrow: EscrowRow,
   taskId: string,
   disputeId: string | undefined,
   reason: string
@@ -256,24 +309,12 @@ async function handleReleaseRequest(
     throw new Error(`Worker ${task.worker_id} has no stripe_connect_id`);
   }
 
-  // Get escrow amount
-  const escrowAmountResult = await db.query<{ amount: number }>(
-    'SELECT amount FROM escrows WHERE id = $1',
-    [escrow.id]
-  );
-
-  if (escrowAmountResult.rows.length === 0) {
-    throw new Error(`Escrow ${escrow.id} not found`);
-  }
-
-  const escrowAmount = escrowAmountResult.rows[0].amount;
-
   // Deduct platform fee before paying out to worker (PRODUCT_SPEC §9: 15% default)
   const platformFeePercent = config.stripe.platformFeePercent ?? 15;
-  const platformFeeCents = Math.round(escrowAmount * (platformFeePercent / 100));
-  const netPayoutCents = escrowAmount - platformFeeCents;
+  const platformFeeCents = Math.round(escrow.amount * (platformFeePercent / 100));
+  const netPayoutCents = escrow.amount - platformFeeCents;
 
-  log.info({ escrowId: escrow.id, escrowAmount, platformFeeCents, netPayoutCents }, 'Platform fee applied to transfer');
+  log.info({ escrowId: escrow.id, escrowAmount: escrow.amount, platformFeeCents, netPayoutCents }, 'Platform fee applied to transfer');
 
   // Bug 1 Fix: Wrap createTransfer in a try/catch that detects non-retryable
   // Stripe account restriction codes. When detected, lock the escrow for admin
@@ -309,23 +350,32 @@ async function handleReleaseRequest(
 
   const transferId = transferResult.data.transferId;
 
-  // Store transfer_id on escrow (do NOT set state - PaymentWorker does via Stripe event)
-  await db.query(
-    `UPDATE escrows
-     SET stripe_transfer_id = $1,
-         version = version + 1
-     WHERE id = $2 AND version = $3`,
-    [transferId, escrow.id, escrow.version]
-  );
+  // Store transfer_id on escrow inside a transaction so the version-checked UPDATE
+  // is atomic. (The escrow row lock from processEscrowActionJob was already released
+  // when that transaction committed — this second short transaction re-acquires it
+  // just for the UPDATE statement itself, which is sufficient to prevent concurrent
+  // double-write from two workers that both passed the idempotency check above.)
+  await db.transaction(async (trx: QueryFn) => {
+    await trx(
+      `UPDATE escrows
+       SET stripe_transfer_id = $1,
+           version = version + 1
+       WHERE id = $2 AND version = $3`,
+      [transferId, escrow.id, escrow.version]
+    );
+  });
 
   log.info({ escrowId: escrow.id, transferId }, 'Transfer created for escrow');
 }
 
 /**
- * Handle REFUND: Create Stripe refund, store refund_id
+ * Handle REFUND: Create Stripe refund, store refund_id.
+ *
+ * Same structural pattern as handleReleaseRequest: Stripe call happens outside
+ * any DB transaction, then a short transaction writes the result back atomically.
  */
 async function handleRefundRequest(
-  escrow: { id: string; version: number; stripe_payment_intent_id: string | null; stripe_refund_id: string | null },
+  escrow: EscrowRow,
   _disputeId: string | undefined,
   _reason: string
 ): Promise<void> {
@@ -339,23 +389,11 @@ async function handleRefundRequest(
     throw new Error(`Escrow ${escrow.id} has no stripe_payment_intent_id`);
   }
 
-  // Get escrow amount
-  const escrowAmountResult = await db.query<{ amount: number }>(
-    'SELECT amount FROM escrows WHERE id = $1',
-    [escrow.id]
-  );
-
-  if (escrowAmountResult.rows.length === 0) {
-    throw new Error(`Escrow ${escrow.id} not found`);
-  }
-
-  const escrowAmount = escrowAmountResult.rows[0].amount;
-
   // Create Stripe refund
   const refundResult = await StripeService.createRefund({
     paymentIntentId: escrow.stripe_payment_intent_id,
     escrowId: escrow.id,
-    amount: escrowAmount, // Full refund
+    amount: escrow.amount, // Full refund
     reason: 'requested_by_customer',
   });
 
@@ -365,14 +403,16 @@ async function handleRefundRequest(
 
   const refundId = refundResult.data.refundId;
 
-  // Store refund_id on escrow (do NOT set state - PaymentWorker does via Stripe event)
-  await db.query(
-    `UPDATE escrows
-     SET stripe_refund_id = $1,
-         version = version + 1
-     WHERE id = $2 AND version = $3`,
-    [refundId, escrow.id, escrow.version]
-  );
+  // Store refund_id on escrow atomically (version-checked)
+  await db.transaction(async (trx: QueryFn) => {
+    await trx(
+      `UPDATE escrows
+       SET stripe_refund_id = $1,
+           version = version + 1
+       WHERE id = $2 AND version = $3`,
+      [refundId, escrow.id, escrow.version]
+    );
+  });
 
   log.info({ escrowId: escrow.id, refundId }, 'Refund created for escrow');
 }
@@ -391,14 +431,15 @@ async function handleRefundRequest(
  *      escrow_events row with the stripe_refund_id. This is the durable checkpoint.
  *      If the process crashes or the transfer fails afterward, the next BullMQ
  *      retry will find this record and skip re-issuing the refund.
- *   3. The final DB UPDATE only runs after both Stripe calls succeed.
+ *   3. The final DB UPDATE only runs after both Stripe calls succeed, inside
+ *      a short db.transaction() for atomicity.
  *
  * This prevents the double-refund bug:
  *   Stripe refund ✓  →  [crash / transfer fails]  →  BullMQ retry
  *   Retry detects 'partial_refund_pending' event  →  skips Stripe refund  →  retries transfer only
  */
 async function handlePartialRefundRequest(
-  escrow: { id: string; version: number; amount: number; stripe_payment_intent_id: string | null; stripe_transfer_id: string | null; stripe_refund_id: string | null },
+  escrow: EscrowRow,
   taskId: string,
   disputeId: string | undefined,
   reason: string,
@@ -568,32 +609,41 @@ async function handlePartialRefundRequest(
   }
 
   // Store both IDs + amounts, set REFUND_PARTIAL (MVP-authoritative terminalization)
+  // Wrapped in db.transaction() for atomicity of the version-checked UPDATE.
   // WHERE clause enforces: non-null IDs when amounts > 0, and version matches (idempotent replay)
-  const updateResult = await db.query(
-    `UPDATE escrows
-     SET state = 'REFUND_PARTIAL',
-         stripe_refund_id = $1,
-         stripe_transfer_id = $2,
-         refund_amount = $3,
-         release_amount = $4,
-         refunded_at = CASE WHEN $3 > 0 THEN NOW() ELSE refunded_at END,
-         released_at = CASE WHEN $4 > 0 THEN NOW() ELSE released_at END,
-         version = version + 1
-     WHERE id = $5 
-       AND version = $6
-       AND ($3 = 0 OR $1 IS NOT NULL)  -- If refundAmount > 0, refundId must exist
-       AND ($4 = 0 OR $2 IS NOT NULL)`, // If releaseAmount > 0, transferId must exist
-    [refundId, transferId, refundAmount, releaseAmount, escrow.id, escrow.version]
-  );
+  const { rowCount: updateRowCount, finalState } = await db.transaction(async (trx: QueryFn) => {
+    const updateResult = await trx<{ id: string; state: string }>(
+      `UPDATE escrows
+       SET state = 'REFUND_PARTIAL',
+           stripe_refund_id = $1,
+           stripe_transfer_id = $2,
+           refund_amount = $3,
+           release_amount = $4,
+           refunded_at = CASE WHEN $3 > 0 THEN NOW() ELSE refunded_at END,
+           released_at = CASE WHEN $4 > 0 THEN NOW() ELSE released_at END,
+           version = version + 1
+       WHERE id = $5
+         AND version = $6
+         AND ($3 = 0 OR $1 IS NOT NULL)  -- If refundAmount > 0, refundId must exist
+         AND ($4 = 0 OR $2 IS NOT NULL)`, // If releaseAmount > 0, transferId must exist
+      [refundId, transferId, refundAmount, releaseAmount, escrow.id, escrow.version]
+    );
+
+    if (updateResult.rowCount === 0) {
+      // Check if escrow is already terminal (concurrent completion or replay)
+      const checkResult = await trx<{ state: string }>(
+        `SELECT state FROM escrows WHERE id = $1`,
+        [escrow.id]
+      );
+      return { rowCount: 0, finalState: checkResult.rows[0]?.state ?? null };
+    }
+
+    return { rowCount: updateResult.rowCount, finalState: 'REFUND_PARTIAL' };
+  });
 
   // P0: Handle version conflict (idempotent replay or concurrent update)
-  if (updateResult.rowCount === 0) {
-    // Check if escrow is already terminal (concurrent completion or replay)
-    const checkResult = await db.query<{ state: string }>(
-      `SELECT state FROM escrows WHERE id = $1`,
-      [escrow.id]
-    );
-    if (checkResult.rows.length > 0 && checkResult.rows[0].state === 'REFUND_PARTIAL') {
+  if (updateRowCount === 0) {
+    if (finalState === 'REFUND_PARTIAL') {
       log.info({ escrowId: escrow.id }, 'Escrow already in REFUND_PARTIAL, idempotent replay');
       return; // No-op: already terminal
     }

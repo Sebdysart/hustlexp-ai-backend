@@ -117,16 +117,18 @@ describe('checkRateLimit — denied', () => {
 });
 
 // ---------------------------------------------------------------------------
-// checkRateLimit — Redis/Ratelimit failure (fail-open)
+// checkRateLimit — Redis/Ratelimit failure (fail-closed)
 // ---------------------------------------------------------------------------
 
 describe('checkRateLimit — failure fallback', () => {
-  it('returns allowed=true when the ratelimit throws (fail-open)', async () => {
+  it('returns allowed=false when the ratelimit throws (fail-closed)', async () => {
     mockLimit.mockRejectedValue(new Error('Redis unavailable'));
 
     const result = await checkRateLimit('judge', 'user-1');
 
-    expect(result.allowed).toBe(true);
+    // Intentional fail-CLOSED: consistent with UserAIBudget and AIRouter budget guards.
+    // A Redis failure must not silently bypass per-user limits.
+    expect(result.allowed).toBe(false);
     expect(result.limit).toBe(0);
     expect(result.remaining).toBe(0);
     expect(result.reset).toBe(0);

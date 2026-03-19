@@ -94,8 +94,20 @@ export async function createContext(opts: {
       );
       user.is_admin = adminResult.rows.length > 0;
 
-      // Cache only when we have a valid user — unauthenticated misses are not cached
-      authCacheSet(token, { user, firebaseUid: decoded.uid }, decoded.exp);
+      // Do NOT cache banned/suspended/deleted users. If we cache them, every subsequent
+      // request hits the in-process cache instead of falling through to the revocation
+      // check, which means the isAuthenticated middleware's ban guard is the only
+      // protection — and the Redis revocation marker keeps triggering a full Firebase
+      // round-trip on cache miss, draining Firebase quota. Skipping the cache ensures
+      // the revocation marker stays effective and subsequent requests stay cheap.
+      const isInactive =
+        user.is_banned ||
+        user.account_status === 'SUSPENDED' ||
+        user.account_status === 'DELETED';
+
+      if (!isInactive) {
+        authCacheSet(token, { user, firebaseUid: decoded.uid }, decoded.exp);
+      }
     }
 
     return { user, firebaseUid: decoded.uid };

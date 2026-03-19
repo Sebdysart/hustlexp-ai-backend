@@ -222,27 +222,33 @@ async function fundEscrowForPaymentIntent(event: StripeEventEnvelope): Promise<v
 
   const paymentIntentId = paymentIntent.id;
 
-  // Look up a PENDING escrow for this payment intent
-  const escrowResult = await db.query<{ id: string }>(
-    `SELECT id FROM escrows WHERE stripe_payment_intent_id = $1 AND state = 'PENDING'`,
-    [paymentIntentId]
-  );
+  // Wrap the SELECT + fund in a transaction with FOR UPDATE so that two concurrent
+  // payment_intent.succeeded webhooks for the same payment intent cannot both pass the
+  // PENDING check and both call EscrowService.fund. The FOR UPDATE row-lock means the
+  // second concurrent transaction blocks until the first commits, at which point the
+  // escrow state is already FUNDED and the WHERE state = 'PENDING' clause returns no rows.
+  await db.transaction(async (query) => {
+    const escrowResult = await query<{ id: string }>(
+      `SELECT id FROM escrows WHERE stripe_payment_intent_id = $1 AND state = 'PENDING' FOR UPDATE`,
+      [paymentIntentId]
+    );
 
-  if (escrowResult.rows.length === 0) {
-    // No PENDING escrow — either there is no escrow for this payment intent
-    // (entitlement-only payment) or it was already funded (idempotent replay).
-    log.info({ paymentIntentId }, 'payment_intent.succeeded: no PENDING escrow found, skipping escrow funding');
-    return;
-  }
+    if (escrowResult.rows.length === 0) {
+      // No PENDING escrow — either there is no escrow for this payment intent
+      // (entitlement-only payment) or it was already funded (idempotent replay).
+      log.info({ paymentIntentId }, 'payment_intent.succeeded: no PENDING escrow found, skipping escrow funding');
+      return;
+    }
 
-  const escrowId = escrowResult.rows[0].id;
-  const result = await EscrowService.fund({ escrowId, stripePaymentIntentId: paymentIntentId });
+    const escrowId = escrowResult.rows[0].id;
+    const result = await EscrowService.fund({ escrowId, stripePaymentIntentId: paymentIntentId });
 
-  if (!result.success) {
-    throw new Error(`Failed to fund escrow ${escrowId} for payment_intent ${paymentIntentId}: ${result.error.message}`);
-  }
+    if (!result.success) {
+      throw new Error(`Failed to fund escrow ${escrowId} for payment_intent ${paymentIntentId}: ${result.error.message}`);
+    }
 
-  log.info({ escrowId, paymentIntentId }, 'Escrow funded via payment_intent.succeeded (PENDING → FUNDED)');
+    log.info({ escrowId, paymentIntentId }, 'Escrow funded via payment_intent.succeeded (PENDING → FUNDED)');
+  });
 }
 
 async function handleCheckoutSessionCompleted(

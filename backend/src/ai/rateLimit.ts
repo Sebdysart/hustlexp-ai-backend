@@ -62,8 +62,10 @@ export async function checkRateLimit(agent: string, userId: string): Promise<Rat
     const { success, limit, remaining, reset } = await ratelimit.limit(`${agent}:${userId}`);
     return { allowed: success, limit, remaining, reset };
   } catch (error) {
+    // Intentional fail-CLOSED: consistent with UserAIBudget and AIRouter budget guards.
+    // A Redis failure or connection exhaustion must not silently bypass per-user limits.
     console.warn(`[RateLimit] Failed:`, error);
-    return { allowed: true, limit: 0, remaining: 0, reset: 0 };
+    return { allowed: false, limit: 0, remaining: 0, reset: 0 };
   }
 }
 

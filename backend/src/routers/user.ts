@@ -17,6 +17,7 @@ import { cachedDbQuery, invalidateUser, CACHE_KEYS, CACHE_TTL, CACHE_TAGS } from
 import { invalidateAuthCacheForUser } from '../auth-cache.js';
 import { getStreakStatus } from '../services/StreakService.js';
 import { z } from 'zod';
+import { firebaseAuth } from '../auth/firebase.js';
 
 // --------------------------------------------------------------------------
 // Helper: Transform DB user row → iOS-compatible JSON
@@ -222,6 +223,10 @@ export const userRouter = router({
    */
   register: publicProcedure
     .input(z.object({
+      // Firebase ID token — caller must prove ownership of firebaseUid.
+      // The register endpoint is intentionally public (no auth middleware), so we
+      // do inline token verification here instead of relying on protectedProcedure.
+      idToken: z.string().min(1),
       firebaseUid: z.string().max(128),
       email: z.string().email().max(254),
       fullName: z.string().min(1).max(255),
@@ -233,6 +238,28 @@ export const userRouter = router({
       phone: z.string().max(20).optional(),
     }))
     .mutation(async ({ input }) => {
+      // --------------------------------------------------------------------------
+      // FIREBASE TOKEN OWNERSHIP VERIFICATION (SEC FIX)
+      // The caller must prove they own the Firebase UID by supplying a valid
+      // Firebase ID token. This prevents an attacker who knows a victim's UID
+      // from registering as them or retrieving their profile via this endpoint.
+      // --------------------------------------------------------------------------
+      let decodedToken;
+      try {
+        decodedToken = await firebaseAuth.verifyIdToken(input.idToken);
+      } catch {
+        throw new TRPCError({
+          code: 'UNAUTHORIZED',
+          message: 'Invalid or expired Firebase ID token.',
+        });
+      }
+      if (decodedToken.uid !== input.firebaseUid) {
+        throw new TRPCError({
+          code: 'UNAUTHORIZED',
+          message: 'Firebase ID token does not match the provided firebaseUid.',
+        });
+      }
+
       // --------------------------------------------------------------------------
       // COPPA AGE VERIFICATION (AUDIT FIX)
       // Users under 13 are blocked per Children's Online Privacy Protection Act.

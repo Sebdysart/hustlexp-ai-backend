@@ -394,10 +394,8 @@ export const XPService = {
         }
       }
 
-      // Track daily XP for cap enforcement
-      if (result.success && result.data) {
-        await XPService.trackDailyXP(userId, result.data.effective_xp);
-      }
+      // Note: daily XP tracking is now performed atomically inside checkDailyXPCap
+      // via Redis INCRBY. No separate trackDailyXP call is needed here.
 
       // Gamified streaks: update streak on task completion (after XP award)
       if (result.success) {
@@ -509,12 +507,24 @@ export const XPService = {
   },
 
   /**
-   * Check daily XP cap for anti-farming
+   * Check daily XP cap for anti-farming.
+   *
+   * When Redis is available this performs an atomic INCRBY + cap check + DECRBY rollback
+   * to eliminate the TOCTOU race between concurrent awardXP calls for the same user.
+   * The pattern is:
+   *   1. INCRBY key awardAmount  (atomic — returns new total)
+   *   2. If new total > cap: DECRBY key awardAmount to roll back, return blocked
+   *   3. If new total <= cap: increment is committed, return allowed
+   *   4. EXPIRE key 86400 to auto-expire at end of day window
+   *
+   * This collapses checkDailyXPCap + trackDailyXP into a single atomic operation.
+   * When xpAmount is 0 (read-only probe), a GET is used instead to avoid spurious
+   * increments.
    */
   checkDailyXPCap: async (userId: string, xpAmount: number = 0): Promise<{ allowed: boolean; earned: number; cap: number; remaining: number }> => {
     const redis = getXPRedis();
     if (!redis) {
-      // FIX 1: Redis absent — fall back to DB query so cap is always enforced
+      // Redis absent — fall back to DB query so cap is always enforced
       try {
         const result = await db.query<{ total: string }>(
           `SELECT COALESCE(SUM(effective_xp), 0) as total
@@ -538,34 +548,59 @@ export const XPService = {
     const dateKey = new Date().toISOString().split('T')[0];
     const key = `xp:daily:${userId}:${dateKey}`;
     try {
-      const earned = Number(await redis.get(key) ?? 0);
+      if (xpAmount === 0) {
+        // Read-only probe: just read current value without modifying it
+        const earned = Number(await redis.get(key) ?? 0);
+        return {
+          allowed: earned < DAILY_XP_CAP,
+          earned,
+          cap: DAILY_XP_CAP,
+          remaining: Math.max(0, DAILY_XP_CAP - earned),
+        };
+      }
+
+      // Atomic increment: INCRBY returns the new total after adding xpAmount.
+      // If the new total exceeds the cap we immediately roll it back with DECRBY.
+      // Because INCRBY is atomic, no other concurrent call can observe an intermediate
+      // state — this eliminates the TOCTOU gap between the old GET + later INCRBY pattern.
+      const newTotal = Number(await redis.incrby(key, xpAmount));
+      await redis.expire(key, 86400);
+
+      if (newTotal > DAILY_XP_CAP) {
+        // Roll back: this award would exceed the cap — undo the increment
+        await redis.decrby(key, xpAmount);
+        const earnedBeforeAward = newTotal - xpAmount;
+        return {
+          allowed: false,
+          earned: earnedBeforeAward,
+          cap: DAILY_XP_CAP,
+          remaining: Math.max(0, DAILY_XP_CAP - earnedBeforeAward),
+        };
+      }
+
+      // Increment committed — cap not exceeded
+      const earnedBeforeAward = newTotal - xpAmount;
       return {
-        allowed: earned + xpAmount <= DAILY_XP_CAP,
-        earned,
+        allowed: true,
+        earned: earnedBeforeAward,
         cap: DAILY_XP_CAP,
-        remaining: Math.max(0, DAILY_XP_CAP - earned),
+        remaining: Math.max(0, DAILY_XP_CAP - newTotal),
       };
     } catch {
-      // FIX: Fail CLOSED on Redis error — fail open allowed unlimited XP farming during outage.
-      return { allowed: false, earned: 0, cap: DAILY_XP_CAP, remaining: 0, reason: 'redis_error' };
+      // Fail CLOSED on Redis error — fail open allowed unlimited XP farming during outage.
+      return { allowed: false, earned: 0, cap: DAILY_XP_CAP, remaining: 0 };
     }
   },
 
   /**
-   * Track daily XP earned
+   * Track daily XP earned (no-op: tracking is now performed atomically inside
+   * checkDailyXPCap via INCRBY. This stub is preserved so any callers outside
+   * the normal awardXP flow (e.g. manual test tooling) continue to compile.
+   *
+   * @deprecated Tracking is now atomic inside checkDailyXPCap. Do not call directly.
    */
-  trackDailyXP: async (userId: string, xpAmount: number): Promise<void> => {
-    const redis = getXPRedis();
-    if (!redis) return;
-
-    const dateKey = new Date().toISOString().split('T')[0];
-    const key = `xp:daily:${userId}:${dateKey}`;
-    try {
-      await redis.incrby(key, xpAmount);
-      await redis.expire(key, 86400);
-    } catch {
-      // Non-fatal
-    }
+  trackDailyXP: async (_userId: string, _xpAmount: number): Promise<void> => {
+    // No-op: atomic INCRBY in checkDailyXPCap handles both check and tracking.
   },
 
   /**
@@ -646,7 +681,7 @@ export const XPService = {
       FROM xp_ledger
       WHERE user_id = $1 AND escrow_id = $2
       ORDER BY awarded_at DESC LIMIT 1
-      ON CONFLICT (user_id, escrow_id, reason) DO NOTHING
+      ON CONFLICT ON CONSTRAINT xp_ledger_escrow_reason_unique DO NOTHING
       RETURNING id`,
       [userId, escrowId, taskId, reason, adjustedBaseXP, adjustedEffectiveXP, xpToDeduct]
     );

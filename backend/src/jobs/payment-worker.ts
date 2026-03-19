@@ -32,6 +32,7 @@ import { RevenueService } from '../services/RevenueService.js';
 import { sendPushNotification } from '../services/PushNotificationService.js';
 import { workerLogger } from '../logger.js';
 import { verifyJobSignature } from './queues.js';
+import { config } from '../config.js';
 import type { Job } from 'bullmq';
 import type Stripe from 'stripe';
 import type { QueryFn } from '../db.js';
@@ -470,9 +471,10 @@ async function handleChargeRefunded(charge: Stripe.Charge, stripeEventId: string
         task_id: string;
         state: string;
         version: number;
+        amount: number;
         stripe_refund_id: string | null;
       }>(
-        `SELECT id, task_id, state, version, stripe_refund_id
+        `SELECT id, task_id, state, version, amount, stripe_refund_id
          FROM escrows
          WHERE id = $1
          FOR UPDATE`,
@@ -493,9 +495,10 @@ async function handleChargeRefunded(charge: Stripe.Charge, stripeEventId: string
         task_id: string;
         state: string;
         version: number;
+        amount: number;
         stripe_refund_id: string | null;
       }>(
-        `SELECT id, task_id, state, version, stripe_refund_id
+        `SELECT id, task_id, state, version, amount, stripe_refund_id
          FROM escrows
          WHERE stripe_payment_intent_id = $1
          FOR UPDATE`,
@@ -574,6 +577,27 @@ async function handleChargeRefunded(charge: Stripe.Charge, stripeEventId: string
     taskId: escrow.task_id,
     to: 'CLOSED',
     actor: { type: 'system' },
+  });
+
+  // Record platform fee reversal in revenue ledger for accurate P&L.
+  // When a charge is refunded, any platform fee already recognised must be reversed.
+  // We record a negative entry (platform_fee_reversal) mirroring the pattern used
+  // by handleTransferFailed for its failed_transfer ledger entry.
+  const platformFeePercent = config.stripe.platformFeePercent ?? 15;
+  const platformFeeCents = Math.round(escrow.amount * (platformFeePercent / 100));
+  await RevenueService.logEvent({
+    eventType: 'platform_fee_reversal',
+    userId: 'system',
+    amountCents: -platformFeeCents,
+    escrowId: escrow.id,
+    stripeEventId,
+    stripeChargeId: charge.id,
+    metadata: {
+      reason: 'charge_refunded',
+      escrow_amount_cents: escrow.amount,
+      platform_fee_percent: platformFeePercent,
+      refund_id: refundId,
+    },
   });
 
   // Emit outbox event: escrow.refunded

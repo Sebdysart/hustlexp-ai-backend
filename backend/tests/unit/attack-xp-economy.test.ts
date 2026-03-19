@@ -827,6 +827,129 @@ describe('BONUS ATTACK — XPTax fallback: dev mode bypasses Stripe verification
   });
 });
 
+// ═══════════════════════════════════════════════════════════════════════════
+// BUG FIX REGRESSION: clawbackXP — ON CONFLICT and negative-value constraints
+// ═══════════════════════════════════════════════════════════════════════════
+describe('clawbackXP — bug-fix regression suite', () => {
+  /**
+   * BUG 1 (ON CONFLICT): clawbackXP used ON CONFLICT (user_id, escrow_id, reason)
+   *   but the only real constraint was UNIQUE (escrow_id).  PostgreSQL threw
+   *   "no unique or exclusion constraint matching ON CONFLICT specification" on every
+   *   call — swallowed by the catch block, so XP was never deducted on refund/dispute.
+   *
+   * Fix: Changed to ON CONFLICT ON CONSTRAINT xp_ledger_escrow_reason_unique so it
+   *   targets the actual (escrow_id, reason) constraint added in fix_xp_ledger_clawback.sql.
+   *
+   * BUG 2 (CHECK constraints): clawbackXP inserted negative base_xp / effective_xp but
+   *   the table had CHECK (base_xp > 0) / CHECK (effective_xp > 0).
+   *
+   *   Fix: Migration relaxes to CHECK (base_xp != 0) / CHECK (effective_xp != 0).
+   *   The service stores negative values; sign + reason together make the ledger
+   *   self-describing.
+   *
+   * BUG 3 (INV-1 trigger): The xp_requires_released_escrow trigger fired on ALL
+   *   inserts.  Clawback inserts happen after the escrow is REFUNDED — the trigger
+   *   blocked them.  Fix: trigger skips the RELEASED check when effective_xp < 0.
+   */
+
+  it('clawbackXP SQL uses ON CONFLICT ON CONSTRAINT xp_ledger_escrow_reason_unique (not composite columns)', async () => {
+    // Wire: award lookup finds a row
+    mockQuery.mockResolvedValueOnce({
+      rows: [{
+        id: 'xp-1', base_xp: 1000, effective_xp: 1000, task_id: 'task-clawback',
+        streak_multiplier: 1.0, trust_multiplier: 1.0, live_mode_multiplier: 1.0,
+        user_xp_after: 1000, user_level_after: 2, user_streak_at_award: 0,
+      }],
+    });
+    // Wire: clawback INSERT succeeds (rowCount=1 → deduction applied)
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'xp-clawback-1' }], rowCount: 1 });
+    // Wire: UPDATE users SET xp_total
+    mockQuery.mockResolvedValueOnce({ rows: [{ xp_total: 0, current_level: 1 }] });
+
+    await XPService.clawbackXP('user-1', 'escrow-1', 'refund', 1.0);
+
+    // Find the INSERT call (second call)
+    const insertCall = mockQuery.mock.calls[1];
+    const sql: string = insertCall[0] as string;
+
+    // Must use ON CONFLICT ON CONSTRAINT — not the broken composite column list
+    expect(sql).toContain('ON CONFLICT ON CONSTRAINT xp_ledger_escrow_reason_unique');
+    expect(sql).not.toContain('ON CONFLICT (user_id, escrow_id, reason)');
+  });
+
+  it('clawbackXP inserts NEGATIVE effective_xp (debit entry, not a no-op positive)', async () => {
+    // Wire: award lookup
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ id: 'xp-2', base_xp: 500, effective_xp: 500, task_id: 'task-x',
+        streak_multiplier: 1.0, trust_multiplier: 1.0, live_mode_multiplier: 1.0,
+        user_xp_after: 500, user_level_after: 1, user_streak_at_award: 0 }],
+    });
+    // Wire: clawback INSERT
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'xp-clawback-2' }], rowCount: 1 });
+    // Wire: UPDATE users
+    mockQuery.mockResolvedValueOnce({ rows: [{ xp_total: 0, current_level: 1 }] });
+
+    await XPService.clawbackXP('user-2', 'escrow-2', 'dispute_loss', 1.0);
+
+    // The INSERT SELECT uses $6 = adjustedEffectiveXP = -500
+    const insertCall = mockQuery.mock.calls[1];
+    const params = insertCall[1] as unknown[];
+    // params: [userId, escrowId, taskId, reason, adjustedBaseXP, adjustedEffectiveXP, xpToDeduct]
+    // $6 = adjustedEffectiveXP (index 5)
+    const adjustedEffectiveXP = params[5] as number;
+    expect(adjustedEffectiveXP).toBe(-500);
+    // $5 = adjustedBaseXP (index 4)
+    const adjustedBaseXP = params[4] as number;
+    expect(adjustedBaseXP).toBe(-500);
+  });
+
+  it('clawbackXP partial fraction — stores proportional negative values', async () => {
+    // 60% clawback of 1000 XP → -600 effective, -600 base
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ id: 'xp-3', base_xp: 1000, effective_xp: 1000, task_id: 'task-partial',
+        streak_multiplier: 1.0, trust_multiplier: 1.0, live_mode_multiplier: 1.0,
+        user_xp_after: 1000, user_level_after: 2, user_streak_at_award: 0 }],
+    });
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'xp-clawback-3' }], rowCount: 1 });
+    mockQuery.mockResolvedValueOnce({ rows: [{ xp_total: 400, current_level: 1 }] });
+
+    await XPService.clawbackXP('user-3', 'escrow-3', 'partial_dispute', 0.6);
+
+    const insertParams = mockQuery.mock.calls[1][1] as unknown[];
+    expect(insertParams[5]).toBe(-600); // adjustedEffectiveXP
+    expect(insertParams[4]).toBe(-600); // adjustedBaseXP
+    // xpToDeduct passed as $7 (index 6)
+    expect(insertParams[6]).toBe(600);
+  });
+
+  it('clawbackXP is idempotent — rowCount=0 signals already applied, no double deduction', async () => {
+    // Award lookup
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ id: 'xp-4', base_xp: 800, effective_xp: 800, task_id: 'task-idem',
+        streak_multiplier: 1.0, trust_multiplier: 1.0, live_mode_multiplier: 1.0,
+        user_xp_after: 800, user_level_after: 2, user_streak_at_award: 0 }],
+    });
+    // ON CONFLICT DO NOTHING — rowCount=0 (already applied)
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+    // UPDATE users should NOT be called on rowCount=0 path
+
+    await XPService.clawbackXP('user-4', 'escrow-4', 'refund', 1.0);
+
+    // Only 2 calls: award lookup + insert. No UPDATE users call.
+    expect(mockQuery).toHaveBeenCalledTimes(2);
+  });
+
+  it('clawbackXP skips entirely when no XP award exists for the escrow', async () => {
+    // No award found
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+
+    await XPService.clawbackXP('user-5', 'escrow-5', 'refund', 1.0);
+
+    // Only 1 call: award lookup. Nothing else.
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+  });
+});
+
 // ── Helper used in Attack 11 (avoids circular import issues) ────────────────
 async function EscrowService_create_guard(amount: number) {
   // Mirrors EscrowService.ts:187-195 validation logic

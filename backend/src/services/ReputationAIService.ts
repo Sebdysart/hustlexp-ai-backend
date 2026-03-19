@@ -18,7 +18,7 @@
 import { db } from '../db.js';
 import type { ServiceResult } from '../types.js';
 import { AIClient } from './AIClient.js';
-import { TrustScoreSchema } from '../lib/ai-response-schemas.js';
+import { TrustScoreSchema, UserInsightSchema } from '../lib/ai-response-schemas.js';
 import { aiLogger } from '../logger.js';
 
 const log = aiLogger.child({ service: 'ReputationAIService' });
@@ -585,6 +585,10 @@ SCORING GUIDELINES:
       // Attempt AI-generated insight
       if (AIClient.isConfigured()) {
         try {
+          const contextJson = JSON.stringify(context, null, 2);
+          // Unicode-safe truncation — same pattern as DisputeAIService / MatchmakerAIService
+          const truncatedContextJson = [...contextJson].slice(0, 2000).join('');
+
           const aiResult = await AIClient.callJSON<{ summary: string }>({
             route: 'fast',
             temperature: 0.3,
@@ -595,7 +599,8 @@ Write exactly 3 concise sentences summarizing this user's platform behavior.
 Highlight notable patterns - both positive and concerning.
 Be factual and specific. Reference actual numbers from the data.
 Return JSON with a single field: { "summary": "..." }`,
-            prompt: `Generate admin insight for this user:\n\n${JSON.stringify(context, null, 2)}`,
+            prompt: `Generate admin insight for this user:\n\n${truncatedContextJson}`,
+            schema: UserInsightSchema,
           });
 
           const summary = aiResult.data.summary;

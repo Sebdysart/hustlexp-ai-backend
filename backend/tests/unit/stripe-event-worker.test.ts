@@ -16,7 +16,17 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Mocks
 // ---------------------------------------------------------------------------
 vi.mock('../../src/db', () => ({
-  db: { query: vi.fn() },
+  db: {
+    query: vi.fn(),
+    // transaction executes the callback with a per-transaction query function.
+    // We expose the inner txQuery as a spy so tests can control its responses.
+    transaction: vi.fn(async (fn: (q: ReturnType<typeof vi.fn>) => Promise<unknown>) => {
+      const txQuery = vi.fn();
+      // Attach txQuery to the module-level ref so individual tests can prime it
+      (globalThis as Record<string, unknown>).__txQuery = txQuery;
+      return fn(txQuery);
+    }),
+  },
 }));
 
 vi.mock('../../src/logger', () => ({
@@ -315,10 +325,16 @@ describe('processStripeEventJob', () => {
 
   // -------------------------------------------------------------------------
   // payment_intent.succeeded — escrow PENDING → FUNDED (critical bug fix)
+  //
+  // After Bug 2 fix: the SELECT FOR UPDATE + EscrowService.fund call happens inside
+  // db.transaction(). The transaction mock passes a per-call txQuery spy to the
+  // callback; we prime that txQuery for the escrow SELECT. The outer mockDb.query
+  // still handles the atomic claim UPDATE and the success/error status UPDATEs.
   // -------------------------------------------------------------------------
   describe('payment_intent.succeeded', () => {
     const paymentIntent = { id: 'pi_test_abc', amount: 5000 };
 
+    /** Helper: prime the outer claim query */
     function setupPaymentIntentSucceededClaim() {
       // 1. Atomic claim UPDATE → returns event row
       mockDb.query.mockResolvedValueOnce({
@@ -327,13 +343,22 @@ describe('processStripeEventJob', () => {
       } as never);
     }
 
+    /** Helper: prime txQuery (inner transaction query) for the escrow SELECT */
+    function primeTxEscrowSelect(rows: { id: string }[]) {
+      // The transaction mock captures txQuery in globalThis.__txQuery before calling fn.
+      // We schedule a one-shot implementation that will apply when txQuery is first called
+      // inside the transaction callback (the SELECT FOR UPDATE).
+      const origTransaction = vi.mocked(mockDb.transaction);
+      origTransaction.mockImplementationOnce(async (fn) => {
+        const txQuery = vi.fn().mockResolvedValueOnce({ rows, rowCount: rows.length });
+        return fn(txQuery as never);
+      });
+    }
+
     it('calls EscrowService.fund with the correct escrowId and paymentIntentId when a PENDING escrow exists', async () => {
       setupPaymentIntentSucceededClaim();
-      // 2. Escrow lookup → returns a PENDING escrow
-      mockDb.query.mockResolvedValueOnce({
-        rows: [{ id: 'escrow-1' }],
-        rowCount: 1,
-      } as never);
+      // 2. Escrow SELECT FOR UPDATE (inside transaction) → PENDING escrow found
+      primeTxEscrowSelect([{ id: 'escrow-1' }]);
       // 3. Final success UPDATE
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
 
@@ -347,11 +372,8 @@ describe('processStripeEventJob', () => {
 
     it('skips EscrowService.fund (no-op) when no PENDING escrow exists for the payment intent', async () => {
       setupPaymentIntentSucceededClaim();
-      // 2. Escrow lookup → no rows (entitlement-only payment or already funded)
-      mockDb.query.mockResolvedValueOnce({
-        rows: [],
-        rowCount: 0,
-      } as never);
+      // 2. Escrow SELECT FOR UPDATE → no rows (entitlement-only or already funded)
+      primeTxEscrowSelect([]);
       // 3. Final success UPDATE
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
 
@@ -362,11 +384,8 @@ describe('processStripeEventJob', () => {
 
     it('throws and marks event failed when EscrowService.fund returns an error', async () => {
       setupPaymentIntentSucceededClaim();
-      // 2. Escrow lookup → returns a PENDING escrow
-      mockDb.query.mockResolvedValueOnce({
-        rows: [{ id: 'escrow-1' }],
-        rowCount: 1,
-      } as never);
+      // 2. Escrow SELECT FOR UPDATE → PENDING escrow found
+      primeTxEscrowSelect([{ id: 'escrow-1' }]);
       // EscrowService.fund returns failure
       vi.mocked(EscrowService.fund).mockResolvedValueOnce({
         success: false,
@@ -382,11 +401,8 @@ describe('processStripeEventJob', () => {
 
     it('on transient error: sets claimed_at=NULL and result=failed, does NOT set processed_at', async () => {
       setupPaymentIntentSucceededClaim();
-      // Escrow lookup → PENDING escrow
-      mockDb.query.mockResolvedValueOnce({
-        rows: [{ id: 'escrow-1' }],
-        rowCount: 1,
-      } as never);
+      // Escrow SELECT FOR UPDATE → PENDING escrow
+      primeTxEscrowSelect([{ id: 'escrow-1' }]);
       // EscrowService.fund throws a transient error
       vi.mocked(EscrowService.fund).mockRejectedValueOnce(new Error('DB connection timeout'));
       // Error UPDATE — capture what was called
@@ -408,8 +424,8 @@ describe('processStripeEventJob', () => {
 
     it('on success: sets processed_at via the success UPDATE (not in catch)', async () => {
       setupPaymentIntentSucceededClaim();
-      // Escrow lookup → no PENDING escrow (simple success path)
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+      // Escrow SELECT FOR UPDATE → no PENDING escrow (simple success path)
+      primeTxEscrowSelect([]);
       // Success UPDATE
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
 
@@ -425,10 +441,7 @@ describe('processStripeEventJob', () => {
     it('after error: BullMQ can re-claim because claimed_at is reset to NULL', async () => {
       // Simulate first attempt: fails with transient error
       setupPaymentIntentSucceededClaim();
-      mockDb.query.mockResolvedValueOnce({
-        rows: [{ id: 'escrow-1' }],
-        rowCount: 1,
-      } as never);
+      primeTxEscrowSelect([{ id: 'escrow-1' }]);
       vi.mocked(EscrowService.fund).mockRejectedValueOnce(new Error('transient error'));
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
 
@@ -443,7 +456,7 @@ describe('processStripeEventJob', () => {
       // Simulate second attempt (BullMQ retry): claim succeeds because claimed_at IS NULL
       vi.clearAllMocks();
       setupPaymentIntentSucceededClaim();
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+      primeTxEscrowSelect([]);
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
 
       // Should succeed on retry without throwing
@@ -455,8 +468,8 @@ describe('processStripeEventJob', () => {
     it('also calls processEntitlementPurchase alongside escrow funding', async () => {
       const { processEntitlementPurchase } = await import('../../src/services/StripeEntitlementProcessor.js');
       setupPaymentIntentSucceededClaim();
-      // Escrow lookup → PENDING escrow
-      mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'escrow-1' }], rowCount: 1 } as never);
+      // Escrow SELECT FOR UPDATE → PENDING escrow
+      primeTxEscrowSelect([{ id: 'escrow-1' }]);
       // Final success UPDATE
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
 

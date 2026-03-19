@@ -181,6 +181,12 @@ const T = {
 describe('RED-TEAM: BullMQ Queue Attack Surface', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Default db.transaction() implementation: call the callback with db.query
+    // as the trx function so that existing db.query mock sequences continue to
+    // work after the critical-section FOR UPDATE was moved inside db.transaction().
+    (db.transaction as ReturnType<typeof vi.fn>).mockImplementation(
+      async (fn: (q: typeof db.query) => Promise<unknown>) => fn(db.query as typeof db.query)
+    );
   });
 
   // =========================================================================
@@ -361,7 +367,9 @@ describe('RED-TEAM: BullMQ Queue Attack Surface', () => {
      * and the UPDATE affects 0 rows.
      */
     it('concurrent second release loses optimistic lock (rowCount=0 → log + return)', async () => {
-      // First call: SELECT FOR UPDATE (no transfer yet)
+      // First call: SELECT FOR UPDATE (no transfer yet). The `amount` field is
+      // included in the row so handleReleaseRequest can read escrow.amount directly
+      // without a separate SELECT — removed in v2.0 to reduce query count.
       (db.query as any)
         .mockResolvedValueOnce({
           rows: [{
@@ -374,9 +382,9 @@ describe('RED-TEAM: BullMQ Queue Attack Surface', () => {
         // task lookup
         .mockResolvedValueOnce({ rows: [{ worker_id: 'w1' }], rowCount: 1 })
         // user stripe_connect_id
-        .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_1' }], rowCount: 1 })
-        // escrow amount
-        .mockResolvedValueOnce({ rows: [{ amount: 5000 }], rowCount: 1 });
+        .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_1' }], rowCount: 1 });
+      // NOTE: no "SELECT amount FROM escrows" mock — v2.0 reads escrow.amount
+      // from the FOR UPDATE row directly, eliminating that extra round-trip.
 
       (StripeService.createTransfer as any).mockResolvedValueOnce({
         success: true,
@@ -791,11 +799,12 @@ describe('RED-TEAM: BullMQ Queue Attack Surface', () => {
       const payloadB = makeSignedPayload({ escrow_id: E.e10, task_id: T.t10, reason: 'race B' });
 
       // --- Process A path (wins) ---
+      // NOTE: v2.0 reads escrow.amount from the FOR UPDATE row directly — no
+      // separate "SELECT amount FROM escrows" query is needed.
       (db.query as any)
-        .mockResolvedValueOnce({ rows: [escrowState], rowCount: 1 }) // SELECT
+        .mockResolvedValueOnce({ rows: [escrowState], rowCount: 1 }) // SELECT FOR UPDATE
         .mockResolvedValueOnce({ rows: [{ worker_id: 'w1' }], rowCount: 1 })
-        .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_1' }], rowCount: 1 })
-        .mockResolvedValueOnce({ rows: [{ amount: 5000 }], rowCount: 1 });
+        .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_1' }], rowCount: 1 });
 
       (StripeService.createTransfer as any).mockResolvedValueOnce({
         success: true, data: { transferId: 'tr_winner' },
@@ -809,14 +818,18 @@ describe('RED-TEAM: BullMQ Queue Attack Surface', () => {
       await processEscrowActionJob(jobA as any);
       expect(StripeService.createTransfer).toHaveBeenCalledTimes(1);
 
+      // Re-establish the db.transaction passthrough after vi.clearAllMocks()
+      // because clearAllMocks() resets mock implementations.
       vi.clearAllMocks();
+      (db.transaction as ReturnType<typeof vi.fn>).mockImplementation(
+        async (fn: (q: typeof db.query) => Promise<unknown>) => fn(db.query as typeof db.query)
+      );
 
       // --- Process B path (loses version race) ---
       (db.query as any)
-        .mockResolvedValueOnce({ rows: [escrowState], rowCount: 1 }) // SELECT (same stale version)
+        .mockResolvedValueOnce({ rows: [escrowState], rowCount: 1 }) // SELECT FOR UPDATE (same stale version)
         .mockResolvedValueOnce({ rows: [{ worker_id: 'w1' }], rowCount: 1 })
-        .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_1' }], rowCount: 1 })
-        .mockResolvedValueOnce({ rows: [{ amount: 5000 }], rowCount: 1 });
+        .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_1' }], rowCount: 1 });
 
       (StripeService.createTransfer as any).mockResolvedValueOnce({
         success: true, data: { transferId: 'tr_loser' },

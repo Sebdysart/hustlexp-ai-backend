@@ -83,6 +83,7 @@ vi.mock('../../src/auth-cache', () => ({
 // ---------------------------------------------------------------------------
 
 import { db } from '../../src/db';
+import { firebaseAuth } from '../../src/auth/firebase';
 import { userRouter } from '../../src/routers/user';
 import { XPService } from '../../src/services/XPService';
 import { EarnedVerificationUnlockService } from '../../src/services/EarnedVerificationUnlockService';
@@ -90,6 +91,7 @@ import { GDPRService } from '../../src/services/GDPRService';
 import { invalidateAuthCacheForUser } from '../../src/auth-cache';
 
 const mockDb = vi.mocked(db);
+const mockFirebaseAuth = vi.mocked(firebaseAuth);
 const mockXPService = vi.mocked(XPService);
 const mockEVUService = vi.mocked(EarnedVerificationUnlockService);
 const mockGDPRService = vi.mocked(GDPRService);
@@ -538,9 +540,12 @@ describe('user.badges', () => {
 describe('user.register', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Default: token verifies successfully and UID matches validInput.firebaseUid
+    mockFirebaseAuth.verifyIdToken.mockResolvedValue({ uid: 'fb-new-user' } as any);
   });
 
   const validInput = {
+    idToken: 'valid-firebase-id-token',
     firebaseUid: 'fb-new-user',
     email: 'newuser@hustlexp.com',
     fullName: 'New User',
@@ -672,6 +677,55 @@ describe('user.register', () => {
           dateOfBirth: 'not-a-date',
         })
       ).rejects.toThrow();
+    });
+  });
+
+  describe('Firebase token ownership verification', () => {
+    it('rejects registration when idToken fails verification', async () => {
+      mockFirebaseAuth.verifyIdToken.mockRejectedValueOnce(new Error('Token expired'));
+
+      await expect(
+        makePublicCaller().register(validInput)
+      ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+    });
+
+    it('rejects registration when decoded UID does not match firebaseUid', async () => {
+      // Token is valid but belongs to a different user
+      mockFirebaseAuth.verifyIdToken.mockResolvedValueOnce({ uid: 'attacker-uid' } as any);
+
+      await expect(
+        makePublicCaller().register(validInput)
+      ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+    });
+
+    it('allows registration when decoded UID matches firebaseUid', async () => {
+      mockFirebaseAuth.verifyIdToken.mockResolvedValueOnce({ uid: 'fb-new-user' } as any);
+
+      const newUser = makeFakeUser({
+        id: 'new-user-id',
+        firebase_uid: 'fb-new-user',
+      });
+
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // ban check
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // existing check
+      mockDb.query.mockResolvedValueOnce({ rows: [newUser], rowCount: 1 } as any); // INSERT
+      setupStatsQuery();
+
+      const result = await makePublicCaller().register(validInput);
+      expect(result).toHaveProperty('id', 'new-user-id');
+    });
+
+    it('calls firebaseAuth.verifyIdToken with the provided idToken', async () => {
+      const newUser = makeFakeUser();
+
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+      mockDb.query.mockResolvedValueOnce({ rows: [newUser], rowCount: 1 } as any);
+      setupStatsQuery();
+
+      await makePublicCaller().register(validInput);
+
+      expect(mockFirebaseAuth.verifyIdToken).toHaveBeenCalledWith('valid-firebase-id-token');
     });
   });
 

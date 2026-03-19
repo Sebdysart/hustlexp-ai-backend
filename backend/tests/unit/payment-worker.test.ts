@@ -66,6 +66,7 @@ vi.mock('../../src/jobs/queues.js', () => ({
 
 import { db } from '../../src/db';
 import { processPaymentJob } from '../../src/jobs/payment-worker';
+import { RevenueService } from '../../src/services/RevenueService.js';
 import type { Job } from 'bullmq';
 
 const mockDb = { query: mockQuery, transaction: vi.mocked(db.transaction) };
@@ -457,6 +458,134 @@ describe('processPaymentJob', () => {
       const allSqls = mockQuery.mock.calls.map(c => c[0] as string);
       const skipSql = allSqls.find(s => s.includes("result = 'skipped'"));
       expect(skipSql).toBeDefined();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // charge.refunded — BUG FIX: revenue ledger entry must be written on refund
+  // -------------------------------------------------------------------------
+  describe('charge.refunded — revenue ledger platform_fee_reversal (bug fix)', () => {
+    /**
+     * Before the fix: handleChargeRefunded updated escrow state but never called
+     * RevenueService.logEvent.  P&L was inaccurate — platform fees appeared earned
+     * even after the charge was fully refunded.
+     *
+     * Fix: After the escrow UPDATE, call RevenueService.logEvent with
+     *   eventType: 'platform_fee_reversal' and amountCents = -(platform fee).
+     *
+     * This mirrors the pattern used by handleTransferFailed for failed_transfer entries.
+     */
+
+    /**
+     * Set up mock sequence for a successful charge.refunded path.
+     * Sequence (all through shared mockQuery):
+     *   1. Claim UPDATE → row
+     *   2. Inside db.transaction: SELECT escrows FOR UPDATE → FUNDED escrow (with amount)
+     *   3. Inside db.transaction: UPDATE escrows SET state='REFUNDED' → updated row
+     *   4. TaskService.advanceProgress (mocked globally)
+     *   5. RevenueService.logEvent (mocked globally)
+     *   6. writeToOutbox (mocked globally)
+     *   7. UPDATE stripe_events SET processed_at=NOW(), result='success' (db.query)
+     */
+    function setupSuccessfulChargeRefunded(escrowId = 'escrow-refund-1', escrowAmount = 5000) {
+      const charge = {
+        id: 'ch_abc',
+        metadata: { escrow_id: escrowId },
+        refunds: { data: [{ id: 'ref_abc' }] },
+        payment_intent: 'pi_abc',
+      };
+
+      // 1. Claim
+      setupClaim('charge.refunded', charge, 'evt_charge_refunded');
+
+      // 2. Escrow SELECT inside transaction — FUNDED state, with amount field
+      mockQuery.mockResolvedValueOnce({
+        rows: [{ id: escrowId, task_id: 'task-ref-1', state: 'FUNDED', version: 2, amount: escrowAmount, stripe_refund_id: null }],
+        rowCount: 1,
+      } as never);
+
+      // 3. Escrow UPDATE → REFUNDED
+      mockQuery.mockResolvedValueOnce({
+        rows: [{ id: escrowId, state: 'REFUNDED', version: 3 }],
+        rowCount: 1,
+      } as never);
+
+      // 4. TaskService.advanceProgress — globally mocked
+      // 5. RevenueService.logEvent — globally mocked
+      // 6. writeToOutbox — globally mocked
+
+      // 7. Final success UPDATE
+      mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+      return { charge, escrowId, escrowAmount };
+    }
+
+    it('calls RevenueService.logEvent after a successful charge.refunded', async () => {
+      setupSuccessfulChargeRefunded();
+
+      await processPaymentJob(makeJob('charge.refunded', 'evt_charge_refunded'));
+
+      expect(vi.mocked(RevenueService.logEvent)).toHaveBeenCalledOnce();
+    });
+
+    it('logs platform_fee_reversal with negative amountCents proportional to escrow amount', async () => {
+      const escrowAmount = 10000; // $100 escrow
+      setupSuccessfulChargeRefunded('escrow-refund-2', escrowAmount);
+
+      await processPaymentJob(makeJob('charge.refunded', 'evt_charge_refunded'));
+
+      const logEventCall = vi.mocked(RevenueService.logEvent).mock.calls[0][0];
+      expect(logEventCall.eventType).toBe('platform_fee_reversal');
+      // Platform fee = 15% of 10000 = 1500, reversed = -1500
+      expect(logEventCall.amountCents).toBe(-1500);
+      expect(logEventCall.escrowId).toBe('escrow-refund-2');
+    });
+
+    it('revenue ledger entry includes stripeEventId and stripeChargeId for audit trail', async () => {
+      setupSuccessfulChargeRefunded('escrow-refund-3', 5000);
+
+      await processPaymentJob(makeJob('charge.refunded', 'evt_charge_refunded'));
+
+      const logEventCall = vi.mocked(RevenueService.logEvent).mock.calls[0][0];
+      expect(logEventCall.stripeEventId).toBe('evt_charge_refunded');
+      expect(logEventCall.stripeChargeId).toBe('ch_abc');
+    });
+
+    it('does NOT call RevenueService.logEvent when escrow is already terminal (skipped path)', async () => {
+      const charge = {
+        id: 'ch_skip',
+        metadata: { escrow_id: 'escrow-skip' },
+        refunds: { data: [{ id: 'ref_skip' }] },
+        payment_intent: 'pi_skip',
+      };
+
+      // 1. Claim
+      setupClaim('charge.refunded', charge, 'evt_charge_skip');
+
+      // 2. Escrow SELECT → already REFUNDED (terminal skip path)
+      mockQuery.mockResolvedValueOnce({
+        rows: [{ id: 'escrow-skip', task_id: 'task-skip', state: 'REFUNDED', version: 5, amount: 3000, stripe_refund_id: 'ref_old' }],
+        rowCount: 1,
+      } as never);
+
+      // 3. stripe_events UPDATE (skipped inside transaction)
+      mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+      await processPaymentJob(makeJob('charge.refunded', 'evt_charge_skip'));
+
+      // RevenueService.logEvent must NOT be called on the skip path
+      expect(vi.mocked(RevenueService.logEvent)).not.toHaveBeenCalled();
+    });
+
+    it('charge.refunded succeeds end-to-end (processed_at set, result=success)', async () => {
+      setupSuccessfulChargeRefunded('escrow-refund-4', 5000);
+
+      await processPaymentJob(makeJob('charge.refunded', 'evt_charge_refunded'));
+
+      const calls = mockQuery.mock.calls;
+      const successUpdateSql: string = calls[calls.length - 1][0] as string;
+      expect(successUpdateSql).toContain('processed_at = NOW()');
+      expect(successUpdateSql).toContain("result = 'success'");
     });
   });
 });

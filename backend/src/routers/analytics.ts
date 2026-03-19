@@ -36,7 +36,9 @@ export const analyticsRouter = router({
       deviceId: z.string().uuid(),
       taskId: Schemas.uuid.optional(),
       taskCategory: z.string().optional(),
-      trustTier: z.number().int().min(0).max(10).optional(),
+      // trustTier is intentionally NOT accepted from the request body —
+      // it is always derived from ctx.user.trust_tier (server-authoritative)
+      // to prevent callers from poisoning analytics dashboards.
       properties: z.record(z.any()).optional(), // Optional event properties
       platform: z.enum(['ios', 'android', 'web']), // Required in schema
       appVersion: z.string().optional(),
@@ -56,7 +58,7 @@ export const analyticsRouter = router({
         deviceId: input.deviceId,
         taskId: input.taskId,
         taskCategory: input.taskCategory,
-        trustTier: input.trustTier,
+        trustTier: ctx.user.trust_tier, // server-authoritative — never from request body
         properties: input.properties,
         platform: input.platform,
         appVersion: input.appVersion,
@@ -90,7 +92,7 @@ export const analyticsRouter = router({
         deviceId: z.string().uuid(),
         taskId: Schemas.uuid.optional(),
         taskCategory: z.string().optional(),
-        trustTier: z.number().int().min(0).max(10).optional(),
+        // trustTier is intentionally NOT accepted from the request body — server-authoritative
         properties: z.record(z.any()).optional(),
         platform: z.enum(['ios', 'android', 'web']),
         appVersion: z.string().optional(),
@@ -111,7 +113,7 @@ export const analyticsRouter = router({
         deviceId: event.deviceId,
         taskId: event.taskId,
         taskCategory: event.taskCategory,
-        trustTier: event.trustTier,
+        trustTier: ctx.user.trust_tier, // server-authoritative — never from request body
         properties: event.properties,
         platform: event.platform,
         appVersion: event.appVersion,

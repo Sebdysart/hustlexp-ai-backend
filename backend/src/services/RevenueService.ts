@@ -37,7 +37,8 @@ export type RevenueEventType =
   | 'chargeback'            // Negative entry: Stripe dispute loss
   | 'chargeback_reversal'   // Positive entry: Dispute won, funds recovered
   | 'failed_transfer'       // Negative entry: Stripe transfer to worker failed
-  | 'failed_payout';        // Negative entry: Stripe payout to bank failed
+  | 'failed_payout'         // Negative entry: Stripe payout to bank failed
+  | 'platform_fee_reversal'; // Negative entry: Platform fee reversed on refund
 
 interface LogEventParams {
   eventType: RevenueEventType;

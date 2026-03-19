@@ -21,6 +21,8 @@ import { AIDecisionService } from './AIDecisionService.js';
 import { aiLogger } from '../logger.js';
 import { scrubPII } from '../lib/pii-scrubber.js';
 import { z } from 'zod';
+import { AIClient } from './AIClient.js';
+import { PromptInjectionGuard } from '../ai/PromptInjectionGuard.js';
 
 const log = aiLogger.child({ service: 'OnboardingAIService' });
 
@@ -103,58 +105,63 @@ export const OnboardingAIService = {
       // 3. Start job processing
       await AIJobService.start(jobResult.data.id);
       
-      // Real implementation: Call Anthropic Claude for role inference
+      // Real implementation: Call AI for role inference via AIClient (budget gates, circuit breaker, output validation)
       let inference: InferenceResult = {
         roleConfidenceWorker: 0.5,
         roleConfidencePoster: 0.5,
         certaintyTier: 'WEAK' as CertaintyTier,
       };
 
-      const anthropicKey = process.env.ANTHROPIC_API_KEY ?? '';
-      if (anthropicKey) {
+      if (AIClient.isConfigured()) {
         try {
-          const aiResponse = await fetch('https://api.anthropic.com/v1/messages', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'x-api-key': anthropicKey,
-              'anthropic-version': '2023-06-01',
-            },
-            body: JSON.stringify({
-              model: 'claude-3-5-haiku-20241022',
-              max_tokens: 200,
-              messages: [{
-                role: 'user',
-                content: `You are a role inference engine for a gig marketplace app.
-Based on this user's onboarding response, determine if they want to be a Worker (do tasks for money) or a Poster (pay others to do tasks).
-User response: "${scrubPII(calibrationPrompt)}"
-Respond with JSON only: {"worker": 0.0-1.0, "poster": 0.0-1.0, "certainty": "STRONG"|"MODERATE"|"WEAK"}`,
-              }],
-            }),
-          });
+          // ── Prompt Injection Guard ─────────────────────────────────────────
+          // Scan the raw calibration prompt BEFORE it reaches any AI provider.
+          // BLOCK: score >= 80 → reject entirely (too high risk)
+          // FLAG:  score >= 50 → continue with sanitized input + log warning
+          const guardResult = PromptInjectionGuard.analyze(calibrationPrompt);
 
-          if (aiResponse.ok) {
-            const aiData = await aiResponse.json() as { content?: Array<{ text?: string }> };
-            const content = aiData.content?.[0]?.text || '';
-            const jsonMatch = content.match(/\{[\s\S]*\}/);
-            if (jsonMatch) {
-              const parsed = JSON.parse(jsonMatch[0]);
-              const validated = OnboardingAIResponseSchema.safeParse(parsed);
-              if (validated.success) {
-                inference = {
-                  roleConfidenceWorker: validated.data.worker,
-                  roleConfidencePoster: validated.data.poster,
-                  certaintyTier: validated.data.certainty,
-                };
-              } else {
-                log.warn({ userId, error: validated.error.message }, 'OnboardingAI: invalid LLM response shape, using default inference');
-                // Leave inference as the default balanced inference
-              }
+          if (guardResult.score >= 80) {
+            log.warn(
+              { userId, injectionScore: guardResult.score, matchedPatterns: guardResult.matchedPatterns },
+              'OnboardingAI: prompt injection blocked (score >= 80) — using default inference'
+            );
+          } else {
+            // Use sanitized input for FLAG range (50–79), raw (PII-scrubbed) for ALLOW
+            const safePrompt = guardResult.score >= 50 && guardResult.sanitizedInput
+              ? guardResult.sanitizedInput
+              : scrubPII(calibrationPrompt);
+
+            if (guardResult.score >= 50) {
+              log.warn(
+                { userId, injectionScore: guardResult.score, matchedPatterns: guardResult.matchedPatterns },
+                'OnboardingAI: prompt injection flagged (score >= 50) — continuing with sanitized input'
+              );
             }
+
+            const prompt = `You are a role inference engine for a gig marketplace app.
+Based on this user's onboarding response, determine if they want to be a Worker (do tasks for money) or a Poster (pay others to do tasks).
+User response: "${safePrompt}"
+Respond with JSON only: {"worker": 0.0-1.0, "poster": 0.0-1.0, "certainty": "STRONG"|"MODERATE"|"WEAK"}`;
+
+            const aiResult = await AIClient.callJSON({
+              route: 'safety', // Anthropic Claude — designated for high-stakes inference
+              prompt,
+              maxTokens: 200,
+              temperature: 0,
+              enableCache: false, // calibration prompts are unique per user; don't cache
+              userId,
+              schema: OnboardingAIResponseSchema,
+            });
+
+            inference = {
+              roleConfidenceWorker: aiResult.data.worker,
+              roleConfidencePoster: aiResult.data.poster,
+              certaintyTier: aiResult.data.certainty,
+            };
           }
         } catch (aiError) {
-          log.error({ err: aiError instanceof Error ? aiError.message : String(aiError), userId }, 'Anthropic API error during role inference');
-          // Fallback to balanced inference
+          log.error({ err: aiError instanceof Error ? aiError.message : String(aiError), userId }, 'AIClient error during role inference — using default inference');
+          // Fallback to balanced inference; do not propagate AI failure to the caller
         }
       }
 
