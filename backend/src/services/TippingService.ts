@@ -206,6 +206,24 @@ export const TippingService = {
         [tipId, stripePaymentIntentId]
       );
 
+      if (result.rowCount === 0) {
+        // LL9: Idempotency — if the UPDATE matched 0 rows, check whether the tip
+        // is already in completed status (concurrent call already confirmed it).
+        const existing = await db.query<{ status: string; id: string }>(
+          'SELECT status, id FROM tips WHERE id = $1',
+          [tipId]
+        );
+        if (existing.rows[0]?.status === 'completed') {
+          // Fetch the full row to return the canonical response
+          const existingFull = await db.query<Tip>(
+            'SELECT * FROM tips WHERE id = $1',
+            [tipId]
+          );
+          return { success: true, data: existingFull.rows[0] };
+        }
+        return { success: false, error: { code: 'NOT_FOUND', message: 'Tip not found' } };
+      }
+
       if (result.rows.length === 0) {
         return { success: false, error: { code: 'NOT_FOUND', message: 'Tip not found' } };
       }

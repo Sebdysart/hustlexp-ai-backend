@@ -794,6 +794,11 @@ describe('task.submitProof', () => {
   it('returns { task, proof } on success', async () => {
     const proof = makeProofRow();
     const task = makeTaskRow({ state: 'PROOF_SUBMITTED' });
+    // KK4: ownership check
+    mockDb.query.mockResolvedValueOnce({ rows: [{ worker_id: USER_ID }], rowCount: 1 } as any);
+    // MM1: transaction BEGIN / COMMIT
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // BEGIN
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // COMMIT
     mockProofService.submit.mockResolvedValueOnce({ success: true, data: proof as any });
     mockTaskService.submitProof.mockResolvedValueOnce({ success: true, data: task as any });
 
@@ -809,6 +814,11 @@ describe('task.submitProof', () => {
   });
 
   it('passes extended fields to ProofService.submit', async () => {
+    // KK4: ownership check
+    mockDb.query.mockResolvedValueOnce({ rows: [{ worker_id: USER_ID }], rowCount: 1 } as any);
+    // MM1: transaction BEGIN / COMMIT
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // BEGIN
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // COMMIT
     mockProofService.submit.mockResolvedValueOnce({
       success: true,
       data: makeProofRow() as any,
@@ -842,6 +852,11 @@ describe('task.submitProof', () => {
   });
 
   it('falls back to notes when description is not provided', async () => {
+    // KK4: ownership check
+    mockDb.query.mockResolvedValueOnce({ rows: [{ worker_id: USER_ID }], rowCount: 1 } as any);
+    // MM1: transaction BEGIN / COMMIT
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // BEGIN
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // COMMIT
     mockProofService.submit.mockResolvedValueOnce({
       success: true,
       data: makeProofRow() as any,
@@ -864,6 +879,12 @@ describe('task.submitProof', () => {
   });
 
   it('throws BAD_REQUEST when ProofService.submit fails', async () => {
+    // KK4: ownership check passes
+    mockDb.query.mockResolvedValueOnce({ rows: [{ worker_id: USER_ID }], rowCount: 1 } as any);
+    // MM1: BEGIN, then explicit ROLLBACK on ProofService failure, then defensive ROLLBACK
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // BEGIN
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // explicit ROLLBACK
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // defensive ROLLBACK
     mockProofService.submit.mockResolvedValueOnce({
       success: false,
       error: { code: 'PROOF_ERROR', message: 'Proof failed' },
@@ -875,6 +896,12 @@ describe('task.submitProof', () => {
   });
 
   it('throws BAD_REQUEST when TaskService.submitProof fails', async () => {
+    // KK4: ownership check passes
+    mockDb.query.mockResolvedValueOnce({ rows: [{ worker_id: USER_ID }], rowCount: 1 } as any);
+    // MM1: BEGIN, then explicit ROLLBACK on TaskService failure, then defensive ROLLBACK
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // BEGIN
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // explicit ROLLBACK
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // defensive ROLLBACK
     mockProofService.submit.mockResolvedValueOnce({
       success: true,
       data: makeProofRow() as any,
@@ -2041,6 +2068,11 @@ describe('task.submitProof — video URLs branch', () => {
 
   it('attaches video URLs to proof when videoUrls provided', async () => {
     const proofRow = makeProofRow();
+    // KK4: ownership check
+    mockDb.query.mockResolvedValueOnce({ rows: [{ worker_id: USER_ID }], rowCount: 1 } as any);
+    // MM1: transaction BEGIN / COMMIT
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // BEGIN
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // COMMIT
     mockProofService.submit.mockResolvedValueOnce({
       success: true,
       data: proofRow as any,
@@ -2072,6 +2104,11 @@ describe('task.submitProof — video URLs branch', () => {
 
   it('does not call addVideo when no videoUrls provided', async () => {
     const proofRow = makeProofRow();
+    // KK4: ownership check
+    mockDb.query.mockResolvedValueOnce({ rows: [{ worker_id: USER_ID }], rowCount: 1 } as any);
+    // MM1: transaction BEGIN / COMMIT
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // BEGIN
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // COMMIT
     mockProofService.submit.mockResolvedValueOnce({
       success: true,
       data: proofRow as any,
@@ -2092,6 +2129,11 @@ describe('task.submitProof — video URLs branch', () => {
 
   it('continues submission when addVideo fails (non-blocking)', async () => {
     const proofRow = makeProofRow();
+    // KK4: ownership check
+    mockDb.query.mockResolvedValueOnce({ rows: [{ worker_id: USER_ID }], rowCount: 1 } as any);
+    // MM1: transaction BEGIN / COMMIT
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // BEGIN
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // COMMIT
     mockProofService.submit.mockResolvedValueOnce({
       success: true,
       data: proofRow as any,

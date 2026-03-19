@@ -565,6 +565,18 @@ async function handlePartialRefundRequest(
         throw new Error('Transfer creation failed (injected failure for testing)');
       }
 
+      // LL3: Apply the platform fee to the release amount before transferring
+      // to the worker. The non-dispute release path (handleReleaseRequest) already
+      // deducts the fee — this path previously passed the raw releaseAmount,
+      // bypassing the fee entirely in the SPLIT dispute resolution path.
+      const platformFeePercent = (config.stripe?.platformFeePercent ?? 15);
+      const netReleaseCents = Math.round(releaseAmount * (1 - platformFeePercent / 100));
+
+      log.info(
+        { escrowId: escrow.id, releaseAmount, platformFeePercent, netReleaseCents },
+        'Platform fee applied to partial release transfer'
+      );
+
       // Bug 1 Fix: Catch non-retryable Stripe account restriction codes.
       // Lock escrow for admin review; do NOT rethrow so BullMQ skips retry.
       let partialTransferResult: Awaited<ReturnType<typeof StripeService.createTransfer>>;
@@ -574,7 +586,7 @@ async function handlePartialRefundRequest(
           taskId,
           workerId: task.worker_id,
           workerStripeAccountId: worker.stripe_connect_id,
-          amount: releaseAmount,
+          amount: netReleaseCents,
           description: `Dispute resolution: ${reason}`,
         });
       } catch (stripeError) {

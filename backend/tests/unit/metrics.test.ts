@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from 'vitest';
 
 // Mock prom-client
 vi.mock('prom-client', () => {
@@ -49,6 +49,21 @@ import {
 } from '../../src/monitoring/metrics';
 
 describe('Prometheus Metrics', () => {
+  let originalInternalApiKey: string | undefined;
+
+  beforeAll(() => {
+    originalInternalApiKey = process.env.INTERNAL_API_KEY;
+    process.env.INTERNAL_API_KEY = 'test-key';
+  });
+
+  afterAll(() => {
+    if (originalInternalApiKey === undefined) {
+      delete process.env.INTERNAL_API_KEY;
+    } else {
+      process.env.INTERNAL_API_KEY = originalInternalApiKey;
+    }
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -131,6 +146,9 @@ describe('Prometheus Metrics', () => {
       // Get the handler function
       const handler = mockApp.get.mock.calls[0][1];
       const mockC = {
+        req: {
+          header: vi.fn().mockReturnValue('Bearer test-key'),
+        },
         text: vi.fn().mockReturnValue('response'),
       };
 

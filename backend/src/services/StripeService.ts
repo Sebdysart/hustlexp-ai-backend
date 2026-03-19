@@ -188,7 +188,7 @@ export const StripeService = {
           },
           description: description || `HustleXP Task ${taskId}`,
         },
-        { idempotencyKey: `pi_create_${taskId}` }
+        { idempotencyKey: `pi_create_${taskId}_${amount}` }
       ));
 
       return {

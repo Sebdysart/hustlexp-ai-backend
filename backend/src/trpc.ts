@@ -88,7 +88,7 @@ export async function createContext(opts: {
   }
 
   try {
-    const decoded = await firebaseAuth.verifyIdToken(token);
+    const decoded = await firebaseAuth.verifyIdToken(token, true); // checkRevoked = true (explicit, not relying on default)
 
     // Get user from database
     const result = await db.query<User>(

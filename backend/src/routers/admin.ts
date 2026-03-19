@@ -22,6 +22,7 @@ import { z } from 'zod';
 import { EscrowService } from '../services/EscrowService.js';
 import { forceDisconnectUser } from '../realtime/connection-registry.js';
 import { revokeUserSessions } from '../auth/middleware.js';
+import { writeToOutbox } from '../lib/outbox-helpers.js';
 
 // ============================================================================
 // ROUTER
@@ -165,17 +166,57 @@ export const adminRouter = router({
       if (input.banned) {
         forceDisconnectUser(input.userId);
 
-        // FIX: Refund all FUNDED escrows where the banned user is poster or worker,
-        // and cancel their OPEN tasks — otherwise workers are left with stranded funds.
-        const fundedEscrows = await db.query<{ id: string }>(
-          `SELECT e.id FROM escrows e
+        // LL6 FIX: Split FUNDED escrows into two buckets based on task state.
+        //
+        // Bucket A — task is idle (OPEN/PENDING/CANCELLED): safe to refund immediately
+        //   because no worker has started meaningful work.
+        //
+        // Bucket B — task is active (ACCEPTED/IN_PROGRESS/PROOF_SUBMITTED/COMPLETED):
+        //   a worker has done (or is doing) real work. Refunding them $0 is wrong.
+        //   Instead, lock the escrow as LOCKED_DISPUTE with reason='user_banned' and
+        //   emit an outbox event so an admin can adjudicate the correct payout.
+
+        // Bucket A: idle tasks — refund
+        const refundableEscrows = await db.query<{ id: string }>(
+          `SELECT e.id
+           FROM escrows e
            JOIN tasks t ON t.id = e.task_id
-           WHERE (t.poster_id = $1 OR t.worker_id = $1)
-           AND e.state = 'FUNDED'`,
+           WHERE (e.poster_id = $1 OR e.worker_id = $1)
+             AND e.state = 'FUNDED'
+             AND t.state NOT IN ('ACCEPTED', 'IN_PROGRESS', 'PROOF_SUBMITTED', 'COMPLETED')`,
           [input.userId]
         );
-        for (const escrow of fundedEscrows.rows) {
+        for (const escrow of refundableEscrows.rows) {
           await EscrowService.refund({ escrowId: escrow.id });
+        }
+
+        // Bucket B: active tasks — lock for dispute and emit outbox event for admin review
+        const activeEscrows = await db.query<{ id: string }>(
+          `SELECT e.id
+           FROM escrows e
+           JOIN tasks t ON t.id = e.task_id
+           WHERE (e.poster_id = $1 OR e.worker_id = $1)
+             AND e.state = 'FUNDED'
+             AND t.state IN ('ACCEPTED', 'IN_PROGRESS', 'PROOF_SUBMITTED', 'COMPLETED')`,
+          [input.userId]
+        );
+        for (const escrow of activeEscrows.rows) {
+          const lockResult = await EscrowService.lockForDispute(escrow.id, { adminOverride: true });
+          if (lockResult.success) {
+            await writeToOutbox({
+              eventType: 'escrow.locked_on_ban',
+              aggregateType: 'escrow',
+              aggregateId: escrow.id,
+              eventVersion: 1,
+              payload: {
+                escrow_id: escrow.id,
+                banned_user_id: input.userId,
+                reason: 'user_banned',
+                admin_id: ctx.user.id,
+              },
+              queueName: 'critical_payments',
+            });
+          }
         }
 
         // Cancel any OPEN tasks belonging to the banned user (poster or worker)
@@ -189,6 +230,91 @@ export const adminRouter = router({
       }
 
       return result.rows[0];
+    }),
+
+  // --------------------------------------------------------------------------
+  // ADMIN ROLE MANAGEMENT
+  // --------------------------------------------------------------------------
+
+  /**
+   * Grant an admin role to a user.
+   *
+   * KK2 FIX: After inserting the admin_roles row the auth cache is invalidated
+   * so the next request picks up the new is_admin=true status immediately
+   * rather than waiting up to 5 minutes for the in-process TTL.
+   */
+  grantAdminRole: adminProcedure
+    .input(z.object({
+      userId: Schemas.uuid,
+      role: z.string().min(1).max(100),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      // Upsert so a duplicate grant is idempotent
+      await db.query(
+        `INSERT INTO admin_roles (user_id, role)
+         VALUES ($1, $2)
+         ON CONFLICT (user_id, role) DO NOTHING`,
+        [input.userId, input.role]
+      );
+
+      await db.query(
+        `INSERT INTO admin_actions (admin_id, action_type, target_id, reason, metadata)
+         VALUES ($1, 'admin_role_grant', $2, NULL, $3)`,
+        [ctx.user.id, input.userId, JSON.stringify({ role: input.role })]
+      );
+
+      // KK2 FIX: Invalidate the auth cache so the granted role takes effect
+      // immediately — the cached is_admin value would otherwise persist for
+      // up to 5 minutes.
+      const fbRow = await db.query<{ firebase_uid: string }>(
+        'SELECT firebase_uid FROM users WHERE id = $1',
+        [input.userId]
+      );
+      const firebaseUid = fbRow.rows[0]?.firebase_uid;
+      await invalidateAuthCacheForUser(input.userId, firebaseUid);
+
+      return { userId: input.userId, role: input.role };
+    }),
+
+  /**
+   * Revoke an admin role from a user.
+   *
+   * KK2 FIX: After deleting the admin_roles row the auth cache is invalidated
+   * so the revoked role takes effect immediately — without this, a removed
+   * admin retains adminOverride=true access for up to 5 minutes.
+   */
+  revokeAdminRole: adminProcedure
+    .input(z.object({
+      userId: Schemas.uuid,
+      role: z.string().min(1).max(100),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const result = await db.query<{ user_id: string }>(
+        `DELETE FROM admin_roles WHERE user_id = $1 AND role = $2 RETURNING user_id`,
+        [input.userId, input.role]
+      );
+
+      if (result.rows.length === 0) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Admin role not found for this user' });
+      }
+
+      await db.query(
+        `INSERT INTO admin_actions (admin_id, action_type, target_id, reason, metadata)
+         VALUES ($1, 'admin_role_revoke', $2, NULL, $3)`,
+        [ctx.user.id, input.userId, JSON.stringify({ role: input.role })]
+      );
+
+      // KK2 FIX: Invalidate the auth cache immediately after role removal so
+      // the revoked admin cannot continue to trigger adminOverride=true paths
+      // until the 5-minute TTL expires.
+      const fbRow = await db.query<{ firebase_uid: string }>(
+        'SELECT firebase_uid FROM users WHERE id = $1',
+        [input.userId]
+      );
+      const firebaseUid = fbRow.rows[0]?.firebase_uid;
+      await invalidateAuthCacheForUser(input.userId, firebaseUid);
+
+      return { userId: input.userId, role: input.role };
     }),
 
   // --------------------------------------------------------------------------

@@ -246,7 +246,11 @@ export const notificationRouter = router({
       pushEnabled: z.boolean().optional(),
       emailEnabled: z.boolean().optional(),
       smsEnabled: z.boolean().optional(),
-      categoryPreferences: z.record(z.any()).optional(), // JSONB - per-category preferences
+      categoryPreferences: z.record(z.string().max(64), z.boolean()).superRefine((val, ctx) => {
+        if (Object.keys(val).length > 20) {
+          ctx.addIssue({ code: 'too_big', type: 'array', maximum: 20, inclusive: true, message: 'categoryPreferences must have at most 20 entries' });
+        }
+      }).optional(), // JSONB - per-category enable/disable flags (max 20 keys)
     }))
     .mutation(async ({ input, ctx }) => {
       if (!ctx.user) {
@@ -369,7 +373,7 @@ export const notificationRouter = router({
    */
   unregisterDeviceToken: protectedProcedure
     .input(z.object({
-      fcmToken: z.string().min(1),
+      fcmToken: z.string().min(1).max(1024),
     }))
     .mutation(async ({ input, ctx }) => {
       if (!ctx.user) {

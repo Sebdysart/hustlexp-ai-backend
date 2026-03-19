@@ -40,6 +40,7 @@ vi.mock('../../src/services/EscrowService', () => ({
   EscrowService: {
     release: vi.fn(),
     refund: vi.fn(),
+    lockForDispute: vi.fn(),
   },
 }));
 
@@ -96,7 +97,11 @@ describe('admin.setUserBan branches', () => {
     } as any);
     // INSERT admin_actions
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
-    // SELECT funded escrows (none)
+    // GG1 fix: SELECT firebase_uid for Redis revocation key namespace
+    mockDb.query.mockResolvedValueOnce({ rows: [{ firebase_uid: 'firebase-test-uid' }], rowCount: 1 } as any);
+    // LL6 fix — Bucket A: SELECT idle FUNDED escrows (task NOT in active states) → refund
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+    // LL6 fix — Bucket B: SELECT active FUNDED escrows (task IN active states) → lockForDispute
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
     // UPDATE tasks SET state = 'CANCELLED' for OPEN tasks
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
@@ -148,7 +153,11 @@ describe('admin.setUserBan branches', () => {
     } as any);
     // INSERT admin_actions
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
-    // SELECT funded escrows (none)
+    // GG1 fix: SELECT firebase_uid for Redis revocation key namespace
+    mockDb.query.mockResolvedValueOnce({ rows: [{ firebase_uid: 'firebase-test-uid' }], rowCount: 1 } as any);
+    // LL6 fix — Bucket A: SELECT idle FUNDED escrows (task NOT in active states) → refund
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+    // LL6 fix — Bucket B: SELECT active FUNDED escrows (task IN active states) → lockForDispute
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
     // UPDATE tasks SET state = 'CANCELLED' for OPEN tasks
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);

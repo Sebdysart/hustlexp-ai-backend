@@ -524,8 +524,9 @@ export const TaskService = {
           state: string;
           worker_id: string | null;
           poster_id: string;
+          trust_tier_required: number | null;
         }>(
-          `SELECT risk_level, instant_mode, sensitive, price, state, worker_id, poster_id
+          `SELECT risk_level, instant_mode, sensitive, price, state, worker_id, poster_id, trust_tier_required
            FROM tasks WHERE id = $1 FOR UPDATE`,
           [taskId]
         );
@@ -591,6 +592,39 @@ export const TaskService = {
               details: eligibilityResult.details,
             },
           };
+        }
+
+        // MM2 FIX: Enforce poster-specified trust_tier_required on the direct-accept
+        // path. EligibilityGuard maps risk_level → a system trust tier floor, but
+        // it never reads tasks.trust_tier_required. A poster can set
+        // trust_tier_required=3 and a VERIFIED-tier (tier 2) worker would previously
+        // bypass it. We fetch the worker's trust_tier here (the instant-mode branch
+        // below also fetches it; this pre-check covers the non-instant path and
+        // acts as an early exit before any further expensive checks).
+        if (task.trust_tier_required !== null && task.trust_tier_required !== undefined) {
+          const workerTierResult = await query<{ trust_tier: number }>(
+            `SELECT trust_tier FROM users WHERE id = $1`,
+            [workerId]
+          );
+          if (workerTierResult.rowCount === 0) {
+            return {
+              success: false,
+              error: {
+                code: ErrorCodes.NOT_FOUND,
+                message: `Worker ${workerId} not found`,
+              },
+            };
+          }
+          const workerTrustTier = workerTierResult.rows[0].trust_tier;
+          if (workerTrustTier < task.trust_tier_required) {
+            return {
+              success: false,
+              error: {
+                code: ErrorCodes.INSTANT_TASK_TRUST_INSUFFICIENT,
+                message: `Task requires trust tier ${task.trust_tier_required}. Your tier: ${workerTrustTier}`,
+              },
+            };
+          }
         }
 
         // Trust-Tier Tightening: Enforce minimum trust tier for Instant tasks
@@ -1114,19 +1148,25 @@ export const TaskService = {
   },
 
   /**
-   * Cancel task: OPEN/ACCEPTED → CANCELLED
+   * Cancel task: OPEN/MATCHING/ACCEPTED → CANCELLED
    *
    * RACE CONDITION FIX: Wrapped in transaction with SELECT FOR UPDATE to prevent
    * simultaneous accept+cancel producing both an ACCEPTED and CANCELLED record.
    * The FOR UPDATE lock is acquired before the state check and held through the
    * final UPDATE, so only one concurrent caller can proceed.
+   *
+   * MM8/MM10 FIX: MATCHING state added to the cancel allow-list. The state machine
+   * declares MATCHING → CANCELLED as a valid transition (instant-mode tasks awaiting
+   * a worker match). The code previously only allowed OPEN and ACCEPTED, making it
+   * impossible to cancel a task once it entered the matchmaker queue. MATCHING tasks
+   * have a funded escrow and must trigger the same full-refund path as OPEN tasks.
    */
   cancel: async (taskId: string): Promise<ServiceResult<Task>> => {
     try {
       return await db.transaction(async (query) => {
         // Acquire row-level lock before reading state
-        const lockResult = await query<{ state: string }>(
-          `SELECT state FROM tasks WHERE id = $1 FOR UPDATE`,
+        const lockResult = await query<{ state: string; late_cancel_pct: number | null; cancellation_window_hours: number | null; accepted_at: Date | null }>(
+          `SELECT state, late_cancel_pct, cancellation_window_hours, accepted_at FROM tasks WHERE id = $1 FOR UPDATE`,
           [taskId]
         );
 
@@ -1152,7 +1192,9 @@ export const TaskService = {
           };
         }
 
-        if (!['OPEN', 'ACCEPTED'].includes(currentState)) {
+        // MM8/MM10: MATCHING added — instant-mode tasks in the matchmaker queue
+        // must be cancellable, and MATCHING → CANCELLED is a declared valid transition.
+        if (!['OPEN', 'MATCHING', 'ACCEPTED'].includes(currentState)) {
           return {
             success: false,
             error: {
@@ -1167,7 +1209,7 @@ export const TaskService = {
            SET state = 'CANCELLED',
                cancelled_at = NOW()
            WHERE id = $1
-             AND state IN ('OPEN', 'ACCEPTED')
+             AND state IN ('OPEN', 'MATCHING', 'ACCEPTED')
            RETURNING *`,
           [taskId]
         );
@@ -1187,25 +1229,72 @@ export const TaskService = {
         // event in the same transaction. Without this, cancelling a task with a
         // funded escrow strands the poster's funds — no automatic refund trigger
         // exists and they would need to file a manual support request.
+        //
+        // MM4 FIX: When the task is in ACCEPTED state, respect late_cancel_pct.
+        // Previously the code always emitted a full refund. If late_cancel_pct > 0
+        // and the cancellation window has expired, the worker is owed their cut —
+        // emit escrow.partial_refund_requested so the payment worker splits the
+        // escrow. If we are still within the cancellation window (or the task was
+        // not ACCEPTED / has no late_cancel_pct), a full refund is correct.
+        // MATCHING and OPEN cancellations always get a full refund — no worker
+        // was assigned so there is nobody to compensate.
         const escrowResult = await query<{ id: string; state: string }>(
           `SELECT id, state FROM escrows WHERE task_id = $1 AND state = 'FUNDED'`,
           [taskId]
         );
         if (escrowResult.rows.length > 0) {
           const escrowId = escrowResult.rows[0].id;
-          await writeToOutbox(
-            {
-              eventType: 'escrow.refund_requested',
-              aggregateType: 'escrow',
-              aggregateId: escrowId,
-              eventVersion: 1,
-              payload: { escrowId, reason: 'task_cancelled', taskId },
-              queueName: 'critical_payments',
-              idempotencyKey: `escrow.refund_on_cancel:${escrowId}:${taskId}`,
-            },
-            query
-          );
-          log.info({ escrowId, taskId }, 'Escrow refund requested on task cancellation');
+
+          const lateCancelPct = lockResult.rows[0].late_cancel_pct ?? 0;
+          const windowHours = lockResult.rows[0].cancellation_window_hours ?? 0;
+          const acceptedAt = lockResult.rows[0].accepted_at;
+
+          // Determine whether this is a late ACCEPTED-state cancellation that
+          // triggers a partial payout to the worker.
+          const isLateAcceptedCancel =
+            currentState === 'ACCEPTED' &&
+            lateCancelPct > 0 &&
+            acceptedAt !== null &&
+            windowHours >= 0 &&
+            (Date.now() - new Date(acceptedAt).getTime()) > windowHours * 60 * 60 * 1000;
+
+          if (isLateAcceptedCancel) {
+            // Partial refund: worker receives late_cancel_pct of escrow amount.
+            // The payment worker resolves the exact split from the escrow record.
+            await writeToOutbox(
+              {
+                eventType: 'escrow.partial_refund_requested',
+                aggregateType: 'escrow',
+                aggregateId: escrowId,
+                eventVersion: 1,
+                payload: {
+                  escrowId,
+                  reason: 'task_cancelled_late',
+                  taskId,
+                  workerPercent: lateCancelPct,
+                },
+                queueName: 'critical_payments',
+                idempotencyKey: `escrow.partial_refund_on_late_cancel:${escrowId}:${taskId}`,
+              },
+              query
+            );
+            log.info({ escrowId, taskId, lateCancelPct }, 'Partial escrow refund requested on late ACCEPTED-state cancellation');
+          } else {
+            // Full refund: OPEN, MATCHING, or within-window ACCEPTED cancellation.
+            await writeToOutbox(
+              {
+                eventType: 'escrow.refund_requested',
+                aggregateType: 'escrow',
+                aggregateId: escrowId,
+                eventVersion: 1,
+                payload: { escrowId, reason: 'task_cancelled', taskId },
+                queueName: 'critical_payments',
+                idempotencyKey: `escrow.refund_on_cancel:${escrowId}:${taskId}`,
+              },
+              query
+            );
+            log.info({ escrowId, taskId }, 'Escrow refund requested on task cancellation');
+          }
         }
 
         return { success: true, data: result.rows[0] };

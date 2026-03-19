@@ -121,30 +121,34 @@ describe('rateLimitMiddleware', () => {
     expect(responseHeaders.get('X-RateLimit-Reset')).toBe('1234567890');
   });
 
-  it('extracts Firebase UID from Bearer token for rate limit identity', async () => {
+  it('uses IP-based bucket even when a Bearer token is present', async () => {
     mockCheckRateLimit.mockResolvedValue({ allowed: true, remaining: 99 });
 
-    // Create a fake JWT with sub claim
+    // Even with a valid-looking JWT, the middleware must NOT inspect it.
+    // It should fall back to the trusted client IP (rightmost XFF entry).
     const payload = Buffer.from(JSON.stringify({ sub: 'firebase-uid-abc123' })).toString('base64url');
     const fakeToken = `header.${payload}.signature`;
 
     const middleware = rateLimitMiddleware('general');
     const { ctx } = createMockContext({
-      headers: { authorization: `Bearer ${fakeToken}` },
+      headers: {
+        authorization: `Bearer ${fakeToken}`,
+        'x-forwarded-for': '203.0.113.99',
+      },
     });
     const next = vi.fn().mockResolvedValue(undefined);
 
     await middleware(ctx as any, next);
 
     expect(mockCheckRateLimit).toHaveBeenCalledWith(
-      'user:firebase-uid-abc123',
+      'ip:203.0.113.99',
       'general',
       120,
       60,
     );
   });
 
-  it('falls back to IP when no auth header is present', async () => {
+  it('uses IP-based bucket when no auth header is present', async () => {
     mockCheckRateLimit.mockResolvedValue({ allowed: true, remaining: 99 });
 
     const middleware = rateLimitMiddleware('mutation');
@@ -194,24 +198,27 @@ describe('rateLimitMiddleware', () => {
     }
   });
 
-  it('falls back to hashed token when JWT payload has no uid', async () => {
+  it('uses IP-based bucket when JWT has no recognisable UID claim', async () => {
     mockCheckRateLimit.mockResolvedValue({ allowed: true, remaining: 99 });
 
-    // A JWT with no sub or user_id claim
+    // A JWT with no sub or user_id claim — the middleware does not inspect
+    // the payload at all, so it must still fall back to the trusted IP.
     const payload = Buffer.from(JSON.stringify({ iss: 'firebase' })).toString('base64url');
     const fakeToken = `header.${payload}.signature`;
 
     const middleware = rateLimitMiddleware('general');
     const { ctx } = createMockContext({
-      headers: { authorization: `Bearer ${fakeToken}` },
+      headers: {
+        authorization: `Bearer ${fakeToken}`,
+        'x-forwarded-for': '198.51.100.7',
+      },
     });
     const next = vi.fn().mockResolvedValue(undefined);
 
     await middleware(ctx as any, next);
 
-    // Should use anon:hash format since no UID was extractable
     expect(mockCheckRateLimit).toHaveBeenCalledWith(
-      expect.stringMatching(/^anon:[a-f0-9]{32}$/),
+      'ip:198.51.100.7',
       'general',
       120,
       60,

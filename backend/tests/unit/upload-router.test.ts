@@ -132,7 +132,7 @@ describe('upload.getPresignedUrl', () => {
     expect(result.key).toContain('proofs/');
   });
 
-  it('includes task ID and user ID in key', async () => {
+  it('includes user ID in key with opaque hex filename', async () => {
     mockParticipantCheck('user-123');
     const result = await makeCaller('user-123').getPresignedUrl({
       taskId: TEST_UUID,
@@ -141,8 +141,8 @@ describe('upload.getPresignedUrl', () => {
       fileSize: 1024,
     });
 
-    expect(result.key).toContain(TEST_UUID);
     expect(result.key).toContain('user-123');
+    expect(result.key).toMatch(/^proofs\/[^/]+\/[a-f0-9]{32}\./);
   });
 
   it('rejects invalid content type', async () => {
@@ -166,7 +166,7 @@ describe('upload.getPresignedUrl', () => {
     ).rejects.toThrow();
   });
 
-  it('accepts image/webp content type', async () => {
+  it('accepts image/webp content type and preserves extension in key', async () => {
     mockParticipantCheck();
     const result = await makeCaller().getPresignedUrl({
       taskId: TEST_UUID,
@@ -175,7 +175,7 @@ describe('upload.getPresignedUrl', () => {
       fileSize: 1024,
     });
 
-    expect(result.key).toContain('photo.webp');
+    expect(result.key).toMatch(/\.webp$/);
   });
 
   it('rejects filenames with invalid characters', async () => {

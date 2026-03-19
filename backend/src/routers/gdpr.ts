@@ -30,7 +30,11 @@ export const gdprRouter = router({
       requestType: z.enum(['export', 'deletion', 'rectification', 'restriction']),
       exportFormat: z.enum(['json', 'csv', 'pdf']).optional(), // Required for 'export'
       scope: z.array(z.string().max(50)).max(20).optional(), // Optional: specific data categories for export
-      requestDetails: z.record(z.any()).optional(), // Optional JSONB details
+      requestDetails: z.record(z.string().max(64), z.string().max(512)).superRefine((val, ctx) => {
+        if (Object.keys(val).length > 10) {
+          ctx.addIssue({ code: 'too_big', type: 'array', maximum: 10, inclusive: true, message: 'requestDetails must have at most 10 entries' });
+        }
+      }).optional(), // Optional JSONB details — bounded keys/values
     }))
     .mutation(async ({ input, ctx }) => {
       if (!ctx.user) {

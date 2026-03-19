@@ -143,6 +143,7 @@ function wireSuccessfulAward(baseXP: number, userOverrides = {}) {
     const txQuery = vi.fn()
       .mockResolvedValueOnce({ rows: [userRow(userOverrides)] })  // user SELECT
       .mockResolvedValueOnce({ rows: [{ mode: 'STANDARD' }] })    // task mode
+      .mockResolvedValueOnce({ rows: [{ count: '0' }] })          // MM3: in-tx velocity re-check
       .mockResolvedValueOnce({ rows: [lr] })                       // INSERT ledger
       .mockResolvedValueOnce({ rowCount: 1 });                     // UPDATE user XP
     return fn(txQuery);
@@ -573,6 +574,7 @@ describe('ATTACK 9 — Velocity detection bypass: slow-roll exploit', () => {
       const txQuery = vi.fn()
         .mockResolvedValueOnce({ rows: [userRow()] })
         .mockResolvedValueOnce({ rows: [{ mode: 'STANDARD' }] })
+        .mockResolvedValueOnce({ rows: [{ count: '0' }] })          // MM3: in-tx velocity re-check
         .mockResolvedValueOnce({ rows: [lr] })
         .mockResolvedValueOnce({ rowCount: 1 });
       return fn(txQuery);

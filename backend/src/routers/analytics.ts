@@ -30,20 +30,24 @@ export const analyticsRouter = router({
    */
   trackEvent: protectedProcedure
     .input(z.object({
-      eventType: z.string().min(1).max(100), // Allow custom event types
+      eventType: z.string().min(1).max(128), // Allow custom event types
       eventCategory: z.enum(['user_action', 'system_event', 'error', 'performance']),
       sessionId: z.string().uuid(),
       deviceId: z.string().uuid(),
       taskId: Schemas.uuid.optional(),
-      taskCategory: z.string().optional(),
+      taskCategory: z.string().max(128).optional(),
       // trustTier is intentionally NOT accepted from the request body —
       // it is always derived from ctx.user.trust_tier (server-authoritative)
       // to prevent callers from poisoning analytics dashboards.
-      properties: z.record(z.any()).optional(), // Optional event properties
+      properties: z.record(z.string().max(64), z.union([z.string().max(256), z.number(), z.boolean()])).superRefine((val, ctx) => {
+        if (Object.keys(val).length > 20) {
+          ctx.addIssue({ code: 'too_big', type: 'array', maximum: 20, inclusive: true, message: 'properties must have at most 20 entries' });
+        }
+      }).optional(), // Optional event properties — bounded
       platform: z.enum(['ios', 'android', 'web']), // Required in schema
-      appVersion: z.string().optional(),
-      abTestId: z.string().optional(),
-      abVariant: z.string().optional(),
+      appVersion: z.string().max(20).optional(),
+      abTestId: z.string().max(128).optional(),
+      abVariant: z.string().max(512).optional(),
       eventTimestamp: z.string().datetime().optional(), // Optional - defaults to NOW()
     }))
     .mutation(async ({ input, ctx }) => {
@@ -86,18 +90,22 @@ export const analyticsRouter = router({
   trackBatch: protectedProcedure
     .input(z.object({
       events: z.array(z.object({
-        eventType: z.string().min(1).max(100),
+        eventType: z.string().min(1).max(128),
         eventCategory: z.enum(['user_action', 'system_event', 'error', 'performance']),
         sessionId: z.string().uuid(),
         deviceId: z.string().uuid(),
         taskId: Schemas.uuid.optional(),
-        taskCategory: z.string().optional(),
+        taskCategory: z.string().max(128).optional(),
         // trustTier is intentionally NOT accepted from the request body — server-authoritative
-        properties: z.record(z.any()).optional(),
+        properties: z.record(z.string().max(64), z.union([z.string().max(256), z.number(), z.boolean()])).superRefine((val, ctx) => {
+          if (Object.keys(val).length > 20) {
+            ctx.addIssue({ code: 'too_big', type: 'array', maximum: 20, inclusive: true, message: 'properties must have at most 20 entries' });
+          }
+        }).optional(),
         platform: z.enum(['ios', 'android', 'web']),
-        appVersion: z.string().optional(),
-        abTestId: z.string().optional(),
-        abVariant: z.string().optional(),
+        appVersion: z.string().max(20).optional(),
+        abTestId: z.string().max(128).optional(),
+        abVariant: z.string().max(512).optional(),
         eventTimestamp: z.string().datetime().optional(),
       })).min(1).max(100), // Batch limit
     }))

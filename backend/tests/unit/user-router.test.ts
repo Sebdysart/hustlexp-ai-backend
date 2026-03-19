@@ -725,7 +725,7 @@ describe('user.register', () => {
 
       await makePublicCaller().register(validInput);
 
-      expect(mockFirebaseAuth.verifyIdToken).toHaveBeenCalledWith('valid-firebase-id-token');
+      expect(mockFirebaseAuth.verifyIdToken).toHaveBeenCalledWith('valid-firebase-id-token', true);
     });
   });
 

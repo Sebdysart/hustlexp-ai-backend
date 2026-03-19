@@ -37,6 +37,7 @@ vi.mock('../../src/logger', () => {
   return {
     logger: base,
     escrowLogger: base,
+    stripeLogger: base,
     taskLogger: base,
     aiLogger: base,
   };

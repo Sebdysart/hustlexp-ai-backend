@@ -458,40 +458,41 @@ export const taskRouter = router({
   acceptWithConsent: hustlerProcedure
     .input(Schemas.acceptWithConsent)
     .mutation(async ({ ctx, input }) => {
-      // Validate template outside the transaction — this is a read-only, stateless
-      // lookup and does not need to be part of the locking sequence.
-      const templateSlugResult = await db.query<{ template_slug: string; poster_id: string }>(
-        `SELECT template_slug, poster_id FROM tasks WHERE id = $1`,
-        [input.taskId]
-      );
-      if (!templateSlugResult.rows[0]) {
-        throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
-      }
-      // Self-dealing guard: a poster cannot accept their own task as a worker.
-      if (templateSlugResult.rows[0].poster_id === ctx.user.id) {
-        throw new TRPCError({
-          code: 'FORBIDDEN',
-          message: 'You cannot accept a task that you posted',
-        });
-      }
-      const template = getTemplate(templateSlugResult.rows[0].template_slug) ?? (() => {
-        throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: 'Unknown template on task' });
-      })();
-      if (!template.requiresMutualConsent) {
-        throw new TRPCError({
-          code: 'BAD_REQUEST',
-          message: 'This template does not require consent checklist',
-        });
-      }
-
-      // Lock + update in a single transaction
+      // MM6 FIX: All reads (template_slug, poster_id) moved INSIDE the transaction,
+      // AFTER the SELECT FOR UPDATE lock, to eliminate the TOCTOU window where a
+      // concurrent actor could change poster_id or template_slug between the pre-lock
+      // read and the locked update.
       await db.transaction(async (query) => {
-        // FOR UPDATE acquires a row-level lock held until COMMIT
-        const lockResult = await query<{ state: string }>(
-          `SELECT state FROM tasks WHERE id = $1 FOR UPDATE`,
+        // FOR UPDATE acquires a row-level lock held until COMMIT.
+        // Fetch template_slug and poster_id from the locked row — values are
+        // authoritative because no other writer can modify this row until we commit.
+        const lockResult = await query<{ state: string; template_slug: string; poster_id: string }>(
+          `SELECT state, template_slug, poster_id FROM tasks WHERE id = $1 FOR UPDATE`,
           [input.taskId]
         );
-        if (!lockResult.rows[0] || lockResult.rows[0].state !== 'OPEN') {
+        if (!lockResult.rows[0]) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
+        }
+
+        // Self-dealing guard: a poster cannot accept their own task as a worker.
+        if (lockResult.rows[0].poster_id === ctx.user.id) {
+          throw new TRPCError({
+            code: 'FORBIDDEN',
+            message: 'You cannot accept a task that you posted',
+          });
+        }
+
+        const template = getTemplate(lockResult.rows[0].template_slug) ?? (() => {
+          throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: 'Unknown template on task' });
+        })();
+        if (!template.requiresMutualConsent) {
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message: 'This template does not require consent checklist',
+          });
+        }
+
+        if (lockResult.rows[0].state !== 'OPEN') {
           throw new TRPCError({
             code: 'PRECONDITION_FAILED',
             message: 'Task is no longer available for claiming',
@@ -659,25 +660,74 @@ export const taskRouter = router({
       biometricHash: z.string().max(256).optional(),
     }))
     .mutation(async ({ ctx, input }) => {
-      // Create proof (pass extended fields as description fallback)
-      const proofResult = await ProofService.submit({
-        taskId: input.taskId,
-        submitterId: ctx.user.id,
-        description: input.description || input.notes,
-        photoUrls: input.photoUrls,
-        gpsLatitude: input.gpsLatitude,
-        gpsLongitude: input.gpsLongitude,
-        biometricHash: input.biometricHash,
-      });
-
-      if (!proofResult.success) {
-        throw new TRPCError({
-          code: 'BAD_REQUEST',
-          message: proofResult.error.message,
-        });
+      // KK4 FIX: Router-layer ownership check. ProofService has its own check
+      // but verifying here at the router boundary avoids hitting ProofService
+      // at all for non-assigned workers, and makes the authorization boundary
+      // explicit at the procedure layer.
+      const taskOwnership = await db.query<{ worker_id: string | null }>(
+        'SELECT worker_id FROM tasks WHERE id = $1',
+        [input.taskId]
+      );
+      if (!taskOwnership.rows[0] || taskOwnership.rows[0].worker_id !== ctx.user.id) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'Only the assigned worker can submit proof' });
       }
 
-      // Attach video proof URLs to the proof
+      // MM1 FIX: ProofService.submit() and TaskService.submitProof() must be
+      // atomic. If TaskService.submitProof() fails after ProofService.submit()
+      // succeeds, the proof row is orphaned: future submissions are blocked with
+      // "already pending" but the task stays in ACCEPTED state, locking the worker
+      // out permanently. Wrapping both in a transaction ensures either both
+      // succeed or both roll back.
+      //
+      // Video attachments (addVideo) are outside the core atomicity boundary:
+      // they are best-effort metadata and a failure there should not roll back
+      // the proof or the task state transition. They run after the commit.
+      let proofResult: Awaited<ReturnType<typeof ProofService.submit>>;
+      let taskResult: Awaited<ReturnType<typeof TaskService.submitProof>>;
+
+      try {
+        await db.query('BEGIN');
+
+        proofResult = await ProofService.submit({
+          taskId: input.taskId,
+          submitterId: ctx.user.id,
+          description: input.description || input.notes,
+          photoUrls: input.photoUrls,
+          gpsLatitude: input.gpsLatitude,
+          gpsLongitude: input.gpsLongitude,
+          biometricHash: input.biometricHash,
+        });
+
+        if (!proofResult.success) {
+          await db.query('ROLLBACK');
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message: proofResult.error.message,
+          });
+        }
+
+        // Transition task to PROOF_SUBMITTED inside the same transaction
+        taskResult = await TaskService.submitProof(input.taskId);
+
+        if (!taskResult.success) {
+          await db.query('ROLLBACK');
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message: taskResult.error.message,
+          });
+        }
+
+        await db.query('COMMIT');
+      } catch (err) {
+        // If we haven't already rolled back (e.g. TRPCError thrown above already
+        // called ROLLBACK), attempt a defensive rollback — pg ignores ROLLBACK
+        // when no transaction is active, so this is safe.
+        try { await db.query('ROLLBACK'); } catch { /* ignore */ }
+        throw err;
+      }
+
+      // Video attachments are best-effort: run after commit so a video failure
+      // does not roll back the proof or the task state transition.
       if (input.videoUrls?.length) {
         for (const url of input.videoUrls) {
           const videoResult = await ProofService.addVideo({
@@ -686,21 +736,11 @@ export const taskRouter = router({
             contentType: 'video/mp4',
           });
           if (!videoResult.success) {
-            // Log but do not fail the whole submission; proof is already created
             logger.child({ service: 'task' }).warn({ proofId: proofResult.data.id, url }, 'Failed to add video to proof');
           }
         }
       }
 
-      // Transition task to PROOF_SUBMITTED
-      const taskResult = await TaskService.submitProof(input.taskId);
-      
-      if (!taskResult.success) {
-        throw new TRPCError({
-          code: 'BAD_REQUEST',
-          message: taskResult.error.message,
-        });
-      }
       await invalidateTask(input.taskId);
       return {
         task: taskResult.data,

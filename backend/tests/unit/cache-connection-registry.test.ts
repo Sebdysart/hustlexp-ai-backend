@@ -36,8 +36,9 @@ const {
   mockSrem,
   mockScard,
   mockDel,
-  mockLpush,
+  mockRpush,
   mockLtrim,
+  mockExpire,
   mockPipelineExec,
   mockPipeline,
 } = vi.hoisted(() => {
@@ -49,8 +50,9 @@ const {
   const mockSrem = vi.fn();
   const mockScard = vi.fn().mockResolvedValue(0);
   const mockDel = vi.fn().mockResolvedValue(1);
-  const mockLpush = vi.fn().mockResolvedValue(1);
+  const mockRpush = vi.fn().mockResolvedValue(1);
   const mockLtrim = vi.fn().mockResolvedValue('OK');
+  const mockExpire = vi.fn().mockResolvedValue(1);
   const mockPipelineExec = vi.fn().mockResolvedValue([1, 1, 1, 0]);
 
   const mockPipeline = {
@@ -72,8 +74,9 @@ const {
     mockSrem,
     mockScard,
     mockDel,
-    mockLpush,
+    mockRpush,
     mockLtrim,
+    mockExpire,
     mockPipelineExec,
     mockPipeline,
   };
@@ -93,8 +96,9 @@ vi.mock('@upstash/redis', () => ({
     this.srem = mockSrem;
     this.scard = mockScard;
     this.del = mockDel;
-    this.lpush = mockLpush;
+    this.rpush = mockRpush;
     this.ltrim = mockLtrim;
+    this.expire = mockExpire;
     this.pipeline = vi.fn().mockReturnValue(mockPipeline);
   },
 }));
@@ -184,8 +188,9 @@ beforeEach(() => {
   mockPublish.mockResolvedValue(1);
   mockScard.mockResolvedValue(0);
   mockDel.mockResolvedValue(1);
-  mockLpush.mockResolvedValue(1);
+  mockRpush.mockResolvedValue(1);
   mockLtrim.mockResolvedValue('OK');
+  mockExpire.mockResolvedValue(1);
 });
 
 // ===========================================================================
@@ -450,19 +455,21 @@ describe('broadcastToUser', () => {
 
   it('publishes event and stores in outbox when user has connections', async () => {
     mockSmembers.mockResolvedValue(['conn-a', 'conn-b']);
-    mockLpush.mockResolvedValue(2);
+    mockRpush.mockResolvedValue(2);
     mockLtrim.mockResolvedValue('OK');
 
     const count = await broadcastToUser('user-active', { type: 'task-update' });
 
     expect(count).toBe(2);
     expect(mockPublish).toHaveBeenCalled();
-    expect(mockLpush).toHaveBeenCalledWith(
+    expect(mockRpush).toHaveBeenCalledWith(
       'outbox:user-active',
       expect.any(String),
     );
-    // ltrim limits outbox to 100 items
-    expect(mockLtrim).toHaveBeenCalledWith('outbox:user-active', 0, 99);
+    // ltrim keeps 100 most-recent messages (FIFO)
+    expect(mockLtrim).toHaveBeenCalledWith('outbox:user-active', -100, -1);
+    // outbox key gets a 24-hour TTL so it is reclaimed if the user never reconnects
+    expect(mockExpire).toHaveBeenCalledWith('outbox:user-active', 86400);
   });
 });
 

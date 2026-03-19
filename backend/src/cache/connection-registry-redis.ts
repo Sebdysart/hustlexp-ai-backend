@@ -331,17 +331,19 @@ export async function broadcastToUser(
   await publishEvent(`user:${userId}`, event);
   
   // Also store in outbox for offline delivery
-  await redis.lpush(
-    `outbox:${userId}`,
+  const outboxKey = `outbox:${userId}`;
+  await redis.rpush(
+    outboxKey,
     JSON.stringify({
       event,
       timestamp: Date.now(),
       attempts: 0,
     })
   );
-  
-  // Trim outbox to prevent unbounded growth
-  await redis.ltrim(`outbox:${userId}`, 0, 99);
+  // Cap outbox to 100 most-recent messages and set a 24-hour TTL so the
+  // list is reclaimed automatically if the user never reconnects.
+  await redis.ltrim(outboxKey, -100, -1);
+  await redis.expire(outboxKey, 86400);
   
   registryLog.debug({ userId, connectionCount: connections.length }, 'Broadcast to user');
   

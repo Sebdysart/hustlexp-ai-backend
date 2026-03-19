@@ -246,7 +246,7 @@ export const userRouter = router({
       // --------------------------------------------------------------------------
       let decodedToken;
       try {
-        decodedToken = await firebaseAuth.verifyIdToken(input.idToken);
+        decodedToken = await firebaseAuth.verifyIdToken(input.idToken, true); // checkRevoked = true (explicit, not relying on default)
       } catch {
         throw new TRPCError({
           code: 'UNAUTHORIZED',
@@ -294,6 +294,10 @@ export const userRouter = router({
 
       // FIX 3: Ban evasion via new Firebase account — phone number cross-reference.
       // A banned user with phone A registering with email B is detected here.
+      // NOTE: Phone ban check only runs when phone is provided. A banned user can evade by
+      // re-registering without a phone number. Accepted mitigation: phone-less accounts
+      // receive trust_tier=0 which restricts access to high-value task categories.
+      // Product decision: phone requirement deferred post-beta.
       if (input.phone) {
         const bannedPhone = await db.query<{ id: string }>(
           `SELECT id FROM users WHERE phone = $1 AND is_banned = true`,

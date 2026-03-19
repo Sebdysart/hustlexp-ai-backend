@@ -543,7 +543,11 @@ describe('escrow.confirmFunding', () => {
         id: 'pi_test_fund',
         status: 'succeeded',
         amount: 5000,
+        metadata: { task_id: TASK_ID },
+        latest_charge: { refunded: false },
       });
+      // LL1-C: dedup check — no other escrow uses this PI
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
       mockEscrowService.fund.mockResolvedValueOnce({
         success: true,
         data: fundedEscrow as any,
@@ -615,7 +619,11 @@ describe('escrow.confirmFunding', () => {
         id: 'pi_test_fund',
         status: 'succeeded',
         amount: 5000,
+        metadata: { task_id: TASK_ID },
+        latest_charge: { refunded: false },
       });
+      // LL1-C: dedup check — no other escrow uses this PI
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
       mockEscrowService.fund.mockResolvedValueOnce({
         success: false,
         error: { code: 'INVALID_STATE', message: 'Cannot fund: wrong state' },
@@ -639,7 +647,11 @@ describe('escrow.confirmFunding', () => {
         id: 'pi_test_delegate',
         status: 'succeeded',
         amount: 5000,
+        metadata: { task_id: TASK_ID },
+        latest_charge: { refunded: false },
       });
+      // LL1-C: dedup check — no other escrow uses this PI
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
       mockEscrowService.fund.mockResolvedValueOnce({
         success: true,
         data: makeEscrow({ state: 'FUNDED' }) as any,
@@ -675,7 +687,7 @@ describe('escrow.release', () => {
         data: makeEscrow({ state: 'FUNDED' }) as any,
       });
       // Stripe verification: transfer exists and amount is valid (platform fee applied: 4250/5000)
-      mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_test_123', amount: 4250 });
+      mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_test_123', amount: 4250, metadata: { escrow_id: ESCROW_ID } });
       mockEscrowService.release.mockResolvedValueOnce({
         success: true,
         data: releasedEscrow as any,
@@ -721,7 +733,7 @@ describe('escrow.release', () => {
         success: true,
         data: makeEscrow() as any,
       });
-      mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_test_123', amount: 4250 });
+      mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_test_123', amount: 4250, metadata: { escrow_id: ESCROW_ID } });
       mockEscrowService.release.mockResolvedValueOnce({
         success: true,
         data: releasedEscrow as any,
@@ -750,7 +762,7 @@ describe('escrow.release', () => {
         success: true,
         data: makeEscrow() as any,
       });
-      mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_test_123', amount: 4250 });
+      mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_test_123', amount: 4250, metadata: { escrow_id: ESCROW_ID } });
       mockEscrowService.release.mockResolvedValueOnce({
         success: false,
         error: { code: 'HX201', message: 'Escrow release requires completed task' },
@@ -766,7 +778,7 @@ describe('escrow.release', () => {
         success: true,
         data: makeEscrow() as any,
       });
-      mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_test_123', amount: 4250 });
+      mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_test_123', amount: 4250, metadata: { escrow_id: ESCROW_ID } });
       mockEscrowService.release.mockResolvedValueOnce({
         success: false,
         error: { code: 'INVALID_STATE', message: 'Wrong state' },
@@ -784,7 +796,7 @@ describe('escrow.release', () => {
         success: true,
         data: makeEscrow() as any,
       });
-      mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_test_123', amount: 4250 });
+      mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_test_123', amount: 4250, metadata: { escrow_id: ESCROW_ID } });
       mockEscrowService.release.mockResolvedValueOnce({
         success: true,
         data: makeEscrow({ state: 'RELEASED' }) as any,
@@ -829,8 +841,7 @@ describe('escrow.refund', () => {
         success: true,
         data: makeEscrow() as any,
       });
-      // HH2 fix: router checks task state before allowing refund
-      mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'OPEN' }], rowCount: 1 } as any);
+      // LL4 fix: task state check moved into EscrowService.refund() — no router-level db.query needed
       mockEscrowService.refund.mockResolvedValueOnce({
         success: true,
         data: refundedEscrow as any,
@@ -888,8 +899,7 @@ describe('escrow.refund', () => {
         success: true,
         data: makeEscrow() as any,
       });
-      // HH2 fix: router checks task state first (OPEN = refundable)
-      mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'OPEN' }], rowCount: 1 } as any);
+      // LL4 fix: task state check moved into EscrowService.refund() — no router-level db.query needed
       mockEscrowService.refund.mockResolvedValueOnce({
         success: false,
         error: { code: 'INVALID_STATE', message: 'Cannot refund: wrong state' },
@@ -907,8 +917,7 @@ describe('escrow.refund', () => {
         success: true,
         data: makeEscrow() as any,
       });
-      // HH2 fix: router checks task state first (OPEN = refundable)
-      mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'OPEN' }], rowCount: 1 } as any);
+      // LL4 fix: task state check moved into EscrowService.refund() — no router-level db.query needed
       mockEscrowService.refund.mockResolvedValueOnce({
         success: true,
         data: makeEscrow({ state: 'REFUNDED' }) as any,
@@ -1328,7 +1337,7 @@ describe('Financial Safety — cross-cutting', () => {
       success: true,
       data: makeEscrow() as any,
     });
-    mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_test_123', amount: 4250 });
+    mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_test_123', amount: 4250, metadata: { escrow_id: ESCROW_ID } });
     mockEscrowService.release.mockResolvedValueOnce({
       success: false,
       error: { code: 'HX201', message: 'Task must be COMPLETED' },
@@ -1472,7 +1481,11 @@ describe('SECURITY FIX v2.9.4 — confirmFunding: Stripe PI verification', () =>
       id: 'pi_real_succeeded',
       status: 'succeeded',
       amount: 5000,
+      metadata: { task_id: TASK_ID },
+      latest_charge: { refunded: false },
     });
+    // LL1-C: dedup check — no other escrow uses this PI
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
     mockEscrowService.fund.mockResolvedValueOnce({
       success: true,
       data: makeEscrow({ state: 'FUNDED' }) as any,
@@ -1562,7 +1575,7 @@ describe('SECURITY FIX v2.9.4 — release: Stripe transfer verification', () => 
       data: makeEscrow({ state: 'FUNDED' }) as any,
     });
     // Valid transfer: amount is 4250 (platform fee 15% deducted from 5000)
-    mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_real_123', amount: 4250 });
+    mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_real_123', amount: 4250, metadata: { escrow_id: ESCROW_ID } });
     mockEscrowService.release.mockResolvedValueOnce({
       success: true,
       data: makeEscrow({ state: 'RELEASED' }) as any,
@@ -1587,7 +1600,7 @@ describe('SECURITY FIX v2.9.4 — release: Stripe transfer verification', () => 
       success: true,
       data: makeEscrow({ state: 'FUNDED', amount: 5000 }) as any,
     });
-    mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_full', amount: 5000 });
+    mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_full', amount: 5000, metadata: { escrow_id: ESCROW_ID } });
     mockEscrowService.release.mockResolvedValueOnce({
       success: true,
       data: makeEscrow({ state: 'RELEASED' }) as any,

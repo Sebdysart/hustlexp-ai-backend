@@ -9,7 +9,6 @@
  */
 
 import { Context, Next } from 'hono';
-import { createHash } from 'crypto';
 import { checkRateLimit, redis } from '../cache/redis.js';
 import { config } from '../config.js';
 
@@ -114,47 +113,28 @@ const RATE_LIMITS = {
 type RateLimitCategory = keyof typeof RATE_LIMITS;
 
 /**
- * Decodes the Firebase UID from a JWT token without full verification.
- * Safe for rate-limiting purposes only — auth verification is done separately.
- * Using the Firebase UID (stable identity) instead of hashing the raw token
- * ensures rate limit buckets persist across token refreshes.
- */
-function extractFirebaseUid(token: string): string | null {
-  try {
-    const parts = token.split('.');
-    if (parts.length !== 3) return null;
-    // Base64url-decode the payload segment
-    const payload = JSON.parse(
-      Buffer.from(parts[1], 'base64url').toString('utf8')
-    ) as Record<string, unknown>;
-    // Firebase ID tokens use 'sub' (same as 'user_id') for the UID
-    const uid = payload['sub'] ?? payload['user_id'];
-    return typeof uid === 'string' && uid.length > 0 ? uid : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
  * Creates a rate-limiting middleware for the given category.
- * Extracts user ID from the Firebase auth context or falls back to IP.
+ *
+ * Bucket key strategy
+ * -------------------
+ * We deliberately do NOT decode the JWT payload here to extract a user ID.
+ * Decoding without verifying the signature lets an attacker forge arbitrary
+ * `sub` / `user_id` claims and cycle through unlimited fresh rate-limit
+ * buckets with no cost.  The verified user identity is only available after
+ * Firebase token verification (in the tRPC auth middleware), which runs
+ * inside the procedure handler — too late for HTTP-layer rate limiting.
+ *
+ * Therefore this middleware uses the trusted client IP (rightmost XFF entry,
+ * set by our reverse proxy) as the bucket key for all requests.  This is
+ * spoofing-resistant and requires no JWT inspection.
+ *
+ * Per-user rate limiting (using the verified ctx.user.id) can be added at
+ * the tRPC procedure level where the verified identity is already available.
  */
 export function rateLimitMiddleware(category: RateLimitCategory) {
   return async (c: Context, next: Next) => {
-    // Extract user identifier: prefer stable Firebase UID from token, fall back to IP
-    const authHeader = c.req.header('authorization');
-    let identifier: string;
-
-    if (authHeader?.startsWith('Bearer ')) {
-      const token = authHeader.slice(7);
-      // Decode (not verify) Firebase UID from JWT payload for stable rate-limit identity.
-      // Token refresh no longer resets the bucket — same user = same bucket.
-      const uid = extractFirebaseUid(token);
-      identifier = uid ? `user:${uid}` : `anon:${hashIdentifier(token)}`;
-    } else {
-      // Use the trusted client IP (rightmost XFF entry — cannot be spoofed)
-      identifier = `ip:${getTrustedClientIP(c)}`;
-    }
+    // Always use the trusted client IP — avoids unverified-JWT sub spoofing.
+    const identifier = `ip:${getTrustedClientIP(c)}`;
 
     const { limit, windowSeconds } = RATE_LIMITS[category];
     const result = await checkRateLimit(identifier, category, limit, windowSeconds);
@@ -253,16 +233,14 @@ export async function aiRateLimitMiddleware(provider: keyof typeof AI_RATE_LIMIT
     }
     
     const key = `ratelimit:ai:${provider}:${userId}`;
-    const current = await redis.incr(key);
-
-    // Set TTL only on the first request in a window (when current === 1).
-    // This implements a fixed window rather than a sliding window — setting
-    // the TTL on every request would reset the expiry on each hit, allowing
-    // a user to send one request per (windowMs - 1ms) forever without
-    // ever triggering the limit.
-    if (current === 1) {
-      await redis.expire(key, limits.windowMs / 1000);
-    }
+    // Use the atomic Lua-based helper to INCR and conditionally EXPIRE in a
+    // single Redis round-trip.  A plain INCR followed by a separate EXPIRE
+    // has a crash-window between the two calls: if the process dies after INCR
+    // but before EXPIRE the key gets no TTL and the user is permanently
+    // rate-limited ("immortal key").  The Lua script sets EXPIRE only on first
+    // creation (current === 1) so the window is not reset on every request.
+    const windowSeconds = limits.windowMs / 1000;
+    const current = await redis.incrWithTtl(key, windowSeconds);
     
     if (current > limits.requests) {
       c.header('X-RateLimit-Limit', limits.requests.toString());
@@ -335,12 +313,10 @@ export function publicIpRateLimitMiddleware() {
     const key = `rate:public:ip:${rawIp}`;
 
     try {
-      const current = await redis.incr(key);
-
-      if (current === 1) {
-        // First request in this window — set TTL.
-        await redis.expire(key, PUBLIC_IP_WINDOW_SECONDS);
-      }
+      // Atomic INCR + conditional EXPIRE via Lua script (see redis.incrWithTtl).
+      // A non-atomic INCR then EXPIRE pair risks leaving an immortal key if the
+      // process crashes between the two calls — permanently blocking the IP.
+      const current = await redis.incrWithTtl(key, PUBLIC_IP_WINDOW_SECONDS);
 
       const remaining = Math.max(0, PUBLIC_IP_RATE_LIMIT - current);
       c.header('X-RateLimit-Limit', String(PUBLIC_IP_RATE_LIMIT));
@@ -372,17 +348,3 @@ export function publicIpRateLimitMiddleware() {
   };
 }
 
-// ============================================================================
-// HELPERS
-// ============================================================================
-
-/**
- * SHA-256 hash for rate-limit identifiers.
- * Replaces weak 32-bit integer hash with cryptographic hash.
- */
-function hashIdentifier(str: string): string {
-  return createHash('sha256')
-    .update(str)
-    .digest('hex')
-    .slice(0, 32);
-}

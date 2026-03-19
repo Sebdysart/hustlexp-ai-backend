@@ -160,6 +160,49 @@ export async function expire(key: string, ttl: number): Promise<void> {
   }
 }
 
+/**
+ * Atomically increment a counter and set its TTL on first creation.
+ *
+ * Uses a Lua script so that the INCR and the conditional EXPIRE are executed
+ * as a single atomic operation on the Redis server.  This prevents the
+ * "immortal key" race where a process crash between a bare INCR and a
+ * subsequent EXPIRE leaves a key with no expiry, permanently rate-limiting
+ * the affected user/IP.
+ *
+ * The EXPIRE is applied only when current === 1 (i.e. the key was just
+ * created).  Setting it on every call would reset the window on each
+ * request, allowing unlimited throughput at (windowSeconds - ε) intervals.
+ *
+ * @param key          Redis key to increment.
+ * @param windowSeconds TTL to apply on first creation, in seconds.
+ * @returns The post-increment counter value, or 1 on Redis errors (fail-open
+ *          for non-production environments; callers that need fail-closed
+ *          behaviour must check the return value against the limit).
+ */
+export async function incrWithTtl(key: string, windowSeconds: number): Promise<number> {
+  const client = getClient();
+  if (!client) return 1;
+
+  // Lua script: INCR the key, then EXPIRE only if this is the first increment
+  // (current === 1).  Executed atomically — no race window between the two
+  // Redis commands.
+  const luaScript = `
+    local current = redis.call('INCR', KEYS[1])
+    if current == 1 then
+      redis.call('EXPIRE', KEYS[1], ARGV[1])
+    end
+    return current
+  `;
+
+  try {
+    const result = await client.eval(luaScript, [key], [String(windowSeconds)]);
+    return typeof result === 'number' ? result : Number(result);
+  } catch (error) {
+    redisLog.error({ err: error, key }, 'Redis incrWithTtl (Lua) error');
+    return 1;
+  }
+}
+
 export async function zadd(
   key: string,
   score: number,
@@ -253,6 +296,7 @@ export const redis = {
   exists,
   incr,
   expire,
+  incrWithTtl,
   zadd,
   zrange,
   zrevrange,

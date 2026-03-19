@@ -241,6 +241,36 @@ export const escrowRouter = router({
         });
       }
 
+      // LL1-A: Verify the PI was created for this specific task — prevents cross-task PI reuse.
+      if (pi.metadata?.task_id !== (escrow.data as { task_id: string }).task_id) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'Payment intent was not created for this task',
+        });
+      }
+
+      // LL1-B: Reject refunded PIs. A refunded PI retains status=succeeded but
+      // has no money — using it would fund an escrow with no real backing.
+      const latestCharge = (pi as Stripe.PaymentIntent & { latest_charge?: { refunded?: boolean } }).latest_charge;
+      if (latestCharge?.refunded === true) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'Payment intent has already been refunded and cannot be reused',
+        });
+      }
+
+      // LL1-C: DB dedup — reject if this PI is already linked to a different escrow.
+      const piDedupResult = await db.query<{ id: string }>(
+        `SELECT id FROM escrows WHERE stripe_payment_intent_id = $1 AND id != $2`,
+        [input.stripePaymentIntentId, input.escrowId]
+      );
+      if (piDedupResult.rows.length > 0) {
+        throw new TRPCError({
+          code: 'CONFLICT',
+          message: 'Payment intent is already associated with another escrow',
+        });
+      }
+
       const result = await EscrowService.fund({
         escrowId: input.escrowId,
         stripePaymentIntentId: input.stripePaymentIntentId,
@@ -318,6 +348,16 @@ export const escrowRouter = router({
         });
       }
 
+      // LL2: Verify the transfer metadata ties back to this specific escrow.
+      // A poster supplying a transfer from a different escrow would otherwise
+      // mark this escrow as RELEASED while the worker for THIS escrow receives nothing.
+      if (transfer.metadata?.escrow_id !== input.escrowId) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'Stripe transfer was not created for this escrow',
+        });
+      }
+
       const result = await EscrowService.release({
         escrowId: input.escrowId,
         stripeTransferId: input.stripeTransferId,
@@ -350,24 +390,9 @@ export const escrowRouter = router({
         throw new TRPCError({ code: 'FORBIDDEN', message: 'Only the escrow creator can request a refund' });
       }
 
-      // SECURITY FIX (HH2): Block refunds once a worker has been assigned.
-      // Without this guard a poster can call escrow.refund after the worker
-      // completes the task (task=COMPLETED, escrow=FUNDED) and steal the
-      // worker's payment.
-      const taskRow = await db.query<{ state: string }>(
-        `SELECT state FROM tasks WHERE id = $1`,
-        [(escrow.data as { task_id: string }).task_id]
-      );
-      if (taskRow.rows.length > 0) {
-        const taskState = taskRow.rows[0].state;
-        const workerAssignedStates = ['ACCEPTED', 'MATCHING', 'IN_PROGRESS', 'PROOF_SUBMITTED', 'COMPLETED'];
-        if (workerAssignedStates.includes(taskState)) {
-          throw new TRPCError({
-            code: 'PRECONDITION_FAILED',
-            message: 'Cannot refund escrow for a task that has been accepted by a worker',
-          });
-        }
-      }
+      // LL4: Task state validation is performed INSIDE EscrowService.refund()
+      // within a FOR UPDATE transaction, eliminating the TOCTOU race window
+      // that existed when the check ran here outside the transaction.
 
       const result = await EscrowService.refund({
         escrowId: input.escrowId,

@@ -153,6 +153,9 @@ function getSurgeMultiplier(surgeLevel: number): number {
  *
  * SPEC FORMULA: effective_xp = base_xp × streak_multiplier × trust_multiplier × live_mode_multiplier × surge_multiplier
  * Rounding: truncate toward zero
+ *
+ * MM11: Combined multiplier is capped at 5.0× to prevent runaway XP awards from
+ * fully-stacked params (streak 2.0 × trust 2.0 × live 1.25 × surge 2.0 = 10.0×).
  */
 function calculateEffectiveXP(
   baseXP: number,
@@ -161,7 +164,10 @@ function calculateEffectiveXP(
   liveModeMultiplier: number = 1.0,
   surgeMultiplier: number = 1.0
 ): number {
-  return Math.floor(baseXP * streakMultiplier * trustMultiplier * liveModeMultiplier * surgeMultiplier);
+  const MAX_COMBINED_MULTIPLIER = 5.0; // max 5× regardless of stacking
+  const rawMultiplier = streakMultiplier * trustMultiplier * liveModeMultiplier * surgeMultiplier;
+  const effectiveMultiplier = Math.min(rawMultiplier, MAX_COMBINED_MULTIPLIER);
+  return Math.floor(baseXP * effectiveMultiplier);
 }
 
 /**
@@ -327,6 +333,27 @@ export const XPService = {
         const liveModeMultiplier = getLiveModeMultiplier(isLiveMode);
         const surgeMultiplier = getSurgeMultiplier(surgeLevel);
         const effectiveXP = calculateEffectiveXP(baseXP, streakMultiplier, trustMultiplier, liveModeMultiplier, surgeMultiplier);
+
+        // MM3: Re-check velocity INSIDE the serializable transaction so that concurrent
+        // requests cannot all see the pre-commit count and all proceed. The FOR UPDATE
+        // row lock above ensures serialized user access; this COUNT sees committed rows
+        // under the same SERIALIZABLE isolation, making the velocity gate race-free.
+        const VELOCITY_BLOCK_THRESHOLD = 3000;
+        const inTxVelocityResult = await query<{ count: string }>(
+          `SELECT COUNT(*) as count FROM xp_ledger
+           WHERE user_id = $1 AND awarded_at > NOW() - INTERVAL '1 hour'`,
+          [userId]
+        );
+        const inTxRecentEvents = parseInt(inTxVelocityResult.rows[0]?.count ?? '0', 10);
+        if (inTxRecentEvents > 5 && baseXP > VELOCITY_BLOCK_THRESHOLD) {
+          return {
+            success: false as const,
+            error: {
+              code: 'XP_VELOCITY_EXCEEDED',
+              message: 'XP_VELOCITY_EXCEEDED: Award blocked due to suspicious velocity pattern',
+            },
+          };
+        }
 
         // Anti-farming: Check daily XP cap using effectiveXP (post-multiplier) so cap
         // cannot be exceeded when streak/trust/live multipliers inflate the award.
@@ -549,10 +576,15 @@ export const XPService = {
     if (!redis) {
       // Redis absent — fall back to DB query so cap is always enforced
       try {
+        // MM7: Use explicit UTC date truncation so the DB day boundary matches the
+        // UTC-keyed Redis date string. CURRENT_DATE reflects the DB server's local
+        // timezone which may differ from UTC, causing split-brain between Redis and DB.
         const result = await db.query<{ total: string }>(
           `SELECT COALESCE(SUM(effective_xp), 0) as total
            FROM xp_ledger
-           WHERE user_id = $1 AND awarded_at::date = CURRENT_DATE`,
+           WHERE user_id = $1
+             AND awarded_at >= DATE_TRUNC('day', NOW() AT TIME ZONE 'UTC')
+             AND awarded_at <  DATE_TRUNC('day', NOW() AT TIME ZONE 'UTC') + INTERVAL '1 day'`,
           [userId]
         );
         const totalToday = parseInt(result.rows[0]?.total ?? '0', 10);
@@ -587,7 +619,12 @@ export const XPService = {
       // Because INCRBY is atomic, no other concurrent call can observe an intermediate
       // state — this eliminates the TOCTOU gap between the old GET + later INCRBY pattern.
       const newTotal = Number(await redis.incrby(key, xpAmount));
-      await redis.expire(key, 86400);
+      // MM7: Use EXPIREAT at next UTC midnight instead of EXPIRE 86400 so that the TTL
+      // always aligns with the calendar day boundary regardless of when the key was first
+      // written. A rolling 86400s window would let a key created at 23:59 survive until
+      // 23:59 the next day, accumulating two days worth of XP under one cap.
+      const nextMidnightUtc = Math.floor(new Date(new Date().toISOString().split('T')[0] + 'T24:00:00.000Z').getTime() / 1000);
+      await redis.expireat(key, nextMidnightUtc);
 
       if (newTotal > DAILY_XP_CAP) {
         // Roll back: this award would exceed the cap — undo the increment
@@ -638,8 +675,12 @@ export const XPService = {
       );
       const recentEvents = parseInt(result.rows[0]?.count || '0', 10);
       return { suspicious: recentEvents > 5, recentEvents };
-    } catch {
-      return { suspicious: false, recentEvents: 0 };
+    } catch (err) {
+      // MM5: Fail CLOSED — returning suspicious:false on DB error would disable velocity
+      // enforcement during DB stress, allowing unlimited XP farming. Return suspicious:true
+      // so the caller blocks large awards until the DB recovers.
+      logger.error('checkVelocity DB error — failing closed', { err, userId });
+      return { suspicious: true, recentEvents: 999 };
     }
   },
 

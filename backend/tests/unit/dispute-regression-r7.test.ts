@@ -41,6 +41,7 @@ vi.mock('../../src/db', () => {
 vi.mock('../../src/logger', () => ({
   escrowLogger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
   stripeLogger: {
+    info: vi.fn(), warn: vi.fn(), error: vi.fn(),
     child: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
   },
   logger: {

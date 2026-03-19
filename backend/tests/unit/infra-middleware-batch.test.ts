@@ -309,18 +309,21 @@ describe('rateLimitMiddleware', () => {
     );
   });
 
-  it('extracts Firebase UID from a valid JWT Bearer token for stable bucket identity', async () => {
+  it('uses IP-based bucket even when a Bearer token with a sub claim is present', async () => {
     vi.mocked(checkRateLimit).mockResolvedValue({ allowed: true, remaining: 19, resetAt: null });
 
-    // Build a minimal fake JWT with sub field
+    // The middleware no longer inspects the JWT payload to extract a UID.
+    // It must always use the trusted client IP (rightmost XFF entry).
     const payload = Buffer.from(JSON.stringify({ sub: 'uid-abc-123' })).toString('base64url');
     const fakeJwt = `header.${payload}.sig`;
 
     const c = makeCtx({
       req: {
-        header: vi.fn().mockImplementation((h: string) =>
-          h === 'authorization' ? `Bearer ${fakeJwt}` : undefined,
-        ),
+        header: vi.fn().mockImplementation((h: string) => {
+          if (h === 'authorization') return `Bearer ${fakeJwt}`;
+          if (h === 'x-forwarded-for') return '10.20.30.40';
+          return undefined;
+        }),
         method: 'GET',
         url: 'https://api.hustlexp.io',
         path: '/',
@@ -331,9 +334,9 @@ describe('rateLimitMiddleware', () => {
     const middleware = rateLimitMiddleware('auth');
     await middleware(c as never, mockNext);
 
-    // Verify the identifier passed to checkRateLimit starts with "user:"
+    // Identifier must be the trusted IP, never the JWT sub claim.
     const [identifierArg] = vi.mocked(checkRateLimit).mock.calls[0];
-    expect(identifierArg).toBe('user:uid-abc-123');
+    expect(identifierArg).toBe('ip:10.20.30.40');
   });
 
   it('falls back to IP identifier when no Authorization header is present', async () => {
@@ -556,7 +559,7 @@ describe('requireAuth', () => {
     expect(result).toEqual(fakeUser);
   });
 
-  it('returns 401 response when authentication fails', async () => {
+  it('throws HTTPException(401) when authentication fails', async () => {
     vi.mocked(redisCache.get).mockResolvedValue(null);
     vi.mocked(adminAuth.verifyIdToken).mockRejectedValue(new Error('bad token'));
 
@@ -564,8 +567,9 @@ describe('requireAuth', () => {
       req: { header: vi.fn().mockReturnValue('Bearer invalidtokenvalue123') },
     });
 
-    await requireAuth(c as never);
-    expect(c.json).toHaveBeenCalledWith({ error: 'Unauthorized' }, 401);
+    await expect(requireAuth(c as never)).rejects.toThrow();
+    // Verify it is specifically an HTTPException with status 401
+    await expect(requireAuth(c as never)).rejects.toMatchObject({ status: 401 });
   });
 });
 
@@ -582,7 +586,7 @@ describe('revokeUserSessions', () => {
     expect(redisCache.set).toHaveBeenCalledWith(
       'auth:revoked:uid-xyz',
       expect.any(String),
-      360, // REVOCATION_MARKER_TTL_SECONDS
+      720, // REVOCATION_MARKER_TTL_SECONDS = TOKEN_CACHE_TTL_SECONDS * 2 + 120 = 300*2+120
     );
   });
 });

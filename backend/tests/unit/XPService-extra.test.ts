@@ -271,6 +271,7 @@ describe('XPService.awardXP', () => {
       const txQuery = vi.fn()
         .mockResolvedValueOnce({ rows: [{ xp_total: 0, current_level: 1, current_streak: 0, trust_tier: 1 }] })
         .mockResolvedValueOnce({ rows: [{ mode: 'STANDARD' }] })
+        .mockResolvedValueOnce({ rows: [{ count: '0' }] }) // MM3: in-tx velocity re-check
         .mockResolvedValueOnce({ rows: [ledgerRow] })
         .mockResolvedValueOnce({ rowCount: 1 });
       return fn(txQuery);
@@ -358,6 +359,7 @@ describe('XPService.awardXP', () => {
       const txQuery = vi.fn()
         .mockResolvedValueOnce({ rows: [{ xp_total: 50, current_level: 1, current_streak: 0, trust_tier: 1 }] })
         .mockResolvedValueOnce({ rows: [{ mode: 'STANDARD' }] })
+        .mockResolvedValueOnce({ rows: [{ count: '0' }] }) // MM3: in-tx velocity re-check
         .mockResolvedValueOnce({ rows: [ledgerRow] })
         .mockResolvedValueOnce({ rowCount: 1 });
       return fn(txQuery);
@@ -381,6 +383,7 @@ describe('XPService.awardXP', () => {
       const txQuery = vi.fn()
         .mockResolvedValueOnce({ rows: [{ xp_total: 0, current_level: 1, current_streak: 0, trust_tier: 1 }] })
         .mockResolvedValueOnce({ rows: [{ mode: 'STANDARD' }] })
+        .mockResolvedValueOnce({ rows: [{ count: '0' }] }) // MM3: in-tx velocity re-check
         .mockResolvedValueOnce({ rows: [ledgerRow] })
         .mockResolvedValueOnce({ rowCount: 1 });
       return fn(txQuery);
@@ -402,6 +405,7 @@ describe('XPService.awardXP', () => {
       const txQuery = vi.fn()
         .mockResolvedValueOnce({ rows: [{ xp_total: 0, current_level: 1, current_streak: 0, trust_tier: 1 }] })
         .mockResolvedValueOnce({ rows: [{ mode: 'STANDARD' }] })
+        .mockResolvedValueOnce({ rows: [{ count: '0' }] }) // MM3: in-tx velocity re-check
         .mockResolvedValueOnce({ rows: [ledgerRow] })
         .mockResolvedValueOnce({ rowCount: 1 });
       return fn(txQuery);
@@ -426,6 +430,7 @@ describe('XPService.awardXP', () => {
       const txQuery = vi.fn()
         .mockResolvedValueOnce({ rows: [{ xp_total: 0, current_level: 1, current_streak: 0, trust_tier: 1 }] })
         .mockResolvedValueOnce({ rows: [{ mode: 'STANDARD' }] })
+        .mockResolvedValueOnce({ rows: [{ count: '0' }] }) // MM3: in-tx velocity re-check
         .mockResolvedValueOnce({ rows: [ledgerRow] })
         .mockResolvedValueOnce({ rowCount: 1 });
       return fn(txQuery);
@@ -565,12 +570,12 @@ describe('XPService.checkVelocity', () => {
     expect(result.recentEvents).toBe(6);
   });
 
-  it('returns suspicious=false on DB error (fail open)', async () => {
+  it('returns suspicious=true on DB error (fail closed — MM5)', async () => {
     mockQuery.mockRejectedValueOnce(new Error('DB error'));
 
     const result = await XPService.checkVelocity('user-1');
-    expect(result.suspicious).toBe(false);
-    expect(result.recentEvents).toBe(0);
+    expect(result.suspicious).toBe(true);
+    expect(result.recentEvents).toBe(999);
   });
 
   it('handles missing count field gracefully (defaults to 0)', async () => {

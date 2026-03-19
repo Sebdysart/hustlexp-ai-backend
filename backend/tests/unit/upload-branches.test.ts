@@ -256,7 +256,7 @@ describe('upload.getPresignedUrl — R2 configured (presigned URL path)', () => 
     expect(result.key).not.toContain('messages/');
   });
 
-  it('accepts image/heic content type', async () => {
+  it('accepts image/heic content type and preserves extension in key', async () => {
     mocks.mockGetSignedUrl.mockResolvedValue('https://presigned.example.com?sig=heic');
 
     const result = await makeCaller().getPresignedUrl({
@@ -266,7 +266,7 @@ describe('upload.getPresignedUrl — R2 configured (presigned URL path)', () => 
       fileSize: 3000000,
     });
 
-    expect(result.key).toContain('photo.heic');
+    expect(result.key).toMatch(/\.heic$/);
     expect(mocks.mockGetSignedUrl).toHaveBeenCalledTimes(1);
   });
 

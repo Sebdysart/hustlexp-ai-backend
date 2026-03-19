@@ -18,6 +18,8 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
 import { db } from '../db.js';
+import { randomBytes } from 'crypto';
+import path from 'path';
 
 const log = logger.child({ router: 'upload' });
 
@@ -76,7 +78,11 @@ export const uploadRouter = router({
       }
 
       const prefix = input.purpose === 'message' ? 'messages' : 'proofs';
-      const key = `${prefix}/${input.taskId}/${ctx.user.id}/${Date.now()}_${input.filename}`;
+      // BUG010: Use an opaque cryptographic key — never embed user-supplied filename in
+      // the storage path, as Date.now() + filename makes URLs predictable and enumerable.
+      const ext = path.extname(input.filename).toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 4);
+      const opaqueKey = `${prefix}/${ctx.user.id}/${randomBytes(16).toString('hex')}${ext ? '.' + ext : ''}`;
+      const key = opaqueKey;
       const baseUrl = process.env.R2_PUBLIC_URL || `https://${r2Config.bucketName}.r2.dev`;
 
       // Generate real presigned URL if R2 is configured
@@ -89,6 +95,7 @@ export const uploadRouter = router({
           Metadata: {
             'uploaded-by': ctx.user.id,
             'task-id': input.taskId,
+            'original-filename': input.filename, // preserved as metadata only — not used in key
           },
         });
 

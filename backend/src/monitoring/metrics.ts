@@ -69,7 +69,24 @@ const escrowTotalValue = new Gauge({
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function createMetricsEndpoint(app: Hono<any>): void {
+  const internalApiKey = process.env.INTERNAL_API_KEY;
+
+  if (!internalApiKey) {
+    console.warn(
+      '[metrics] INTERNAL_API_KEY is not configured — /metrics endpoint will NOT be registered. ' +
+      'Set INTERNAL_API_KEY to enable Prometheus scraping.'
+    );
+    return;
+  }
+
   app.get('/metrics', async (c) => {
+    const authHeader = c.req.header('Authorization');
+    const expectedHeader = `Bearer ${internalApiKey}`;
+
+    if (!authHeader || authHeader !== expectedHeader) {
+      return c.text('Unauthorized', 401);
+    }
+
     const metrics = await registry.metrics();
     return c.text(metrics, 200, {
       'Content-Type': registry.contentType,

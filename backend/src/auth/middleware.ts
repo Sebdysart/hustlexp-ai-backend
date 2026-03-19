@@ -1,6 +1,7 @@
 // backend/auth/middleware.ts
 
 import { Context } from "hono";
+import { HTTPException } from "hono/http-exception";
 import { adminAuth } from "./firebase.js";
 import { redis, CACHE_KEYS } from "../cache/redis.js";
 import { authLogger } from "../logger.js";
@@ -83,8 +84,7 @@ export async function requireAuth(c: Context): Promise<AuthenticatedUser> {
   const user = await authenticateRequest(c);
 
   if (!user) {
-    // IMPORTANT: Throwing errors breaks Hono in prod — return proper response instead.
-    return c.json({ error: "Unauthorized" }, 401) as unknown as AuthenticatedUser;
+    throw new HTTPException(401, { message: "Unauthorized" });
   }
 
   return user;

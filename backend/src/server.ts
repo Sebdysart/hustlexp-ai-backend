@@ -68,6 +68,7 @@ type AppVariables = {
 import { compress } from 'hono/compress';
 import { bodyLimit } from 'hono/body-limit';
 import { logger as pinoLogger } from './logger.js';
+import { createHmac, timingSafeEqual } from 'crypto';
 
 // ============================================================================
 // APP INITIALIZATION
@@ -256,8 +257,21 @@ app.get('/health/liveness', (c) => {
   return c.json({ alive: true, uptime: process.uptime() });
 });
 
-// Detailed health for monitoring
+// Detailed health for monitoring — internal only, requires INTERNAL_API_KEY
 app.get('/health/detailed', async (c) => {
+  // Gate behind internal API key to prevent leaking circuit breaker states,
+  // DB pool config, memory usage, and uptime to unauthenticated callers.
+  const internalApiKey = process.env.INTERNAL_API_KEY;
+  if (!internalApiKey) {
+    pinoLogger.warn('INTERNAL_API_KEY is not configured — /health/detailed is disabled');
+    return c.json({ error: 'Service Unavailable', message: 'Internal API key not configured' }, 503);
+  }
+  const authHeader = c.req.header('Authorization');
+  const provided = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  if (!provided || provided !== internalApiKey) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
+
   const checks: Record<string, { status: string; latency?: number; error?: string }> = {};
   
   // Database check
@@ -658,7 +672,11 @@ const violationSchema = z.object({
   type: z.string().min(1).max(100),
   rule: z.string().min(1).max(200),
   component: z.string().min(1).max(200).optional(),
-  context: z.record(z.unknown()).optional(),
+  context: z.record(z.string().max(128), z.string().max(512)).superRefine((val, ctx) => {
+    if (Object.keys(val).length > 10) {
+      ctx.addIssue({ code: z.ZodIssueCode.too_big, maximum: 10, type: 'array', inclusive: true, message: 'context may have at most 10 keys' });
+    }
+  }).optional(),
   severity: z.enum(['ERROR', 'WARNING', 'INFO']).default('ERROR'),
 });
 
@@ -776,7 +794,49 @@ app.post('/webhooks/stripe', async (c) => {
 // ============================================================================
 
 app.post('/webhooks/checkr', async (c) => {
-  const rawBody = await c.req.json().catch(() => null);
+  // SECURITY: Verify Checkr HMAC-SHA256 signature before processing any payload.
+  // Checkr signs the raw request body using the webhook secret and sends the
+  // hex digest in the X-Checkr-Signature header.
+  const checkrWebhookSecret = process.env.CHECKR_WEBHOOK_SECRET;
+  if (!checkrWebhookSecret) {
+    pinoLogger.warn('CHECKR_WEBHOOK_SECRET is not configured — rejecting Checkr webhook');
+    return c.json({ error: 'Service Unavailable', message: 'Webhook secret not configured' }, 503);
+  }
+
+  // Read raw body as text so the HMAC is computed over the exact bytes Checkr signed.
+  const rawBodyText = await c.req.text().catch(() => null);
+  if (rawBodyText === null) {
+    return c.json({ error: 'Invalid webhook payload' }, 400);
+  }
+
+  const providedSig = c.req.header('X-Checkr-Signature');
+  if (!providedSig) {
+    return c.json({ error: 'Missing signature header' }, 401);
+  }
+
+  const expectedSig = createHmac('sha256', checkrWebhookSecret)
+    .update(rawBodyText, 'utf8')
+    .digest('hex');
+
+  // Use timingSafeEqual to prevent timing-attack enumeration of the secret.
+  const expectedBuf = Buffer.from(expectedSig, 'hex');
+  const providedBuf = Buffer.from(providedSig, 'hex');
+  const signaturesMatch =
+    expectedBuf.length === providedBuf.length &&
+    timingSafeEqual(expectedBuf, providedBuf);
+
+  if (!signaturesMatch) {
+    pinoLogger.warn({ providedSig }, 'Checkr webhook signature verification failed');
+    return c.json({ error: 'Invalid signature' }, 401);
+  }
+
+  // Parse JSON only after signature is confirmed valid.
+  let rawBody: Record<string, unknown>;
+  try {
+    rawBody = JSON.parse(rawBodyText);
+  } catch {
+    return c.json({ error: 'Invalid JSON payload' }, 400);
+  }
 
   if (!rawBody || !rawBody.type) {
     return c.json({ error: 'Invalid webhook payload' }, 400);
@@ -785,10 +845,14 @@ app.post('/webhooks/checkr', async (c) => {
   const { updateBackgroundCheckStatus } = await import('./services/BackgroundCheckService');
 
   try {
-    const { type, data } = rawBody;
+    const { type, data } = rawBody as { type: string; data?: { object?: { id?: string; result?: string } } };
     const reportId = data?.object?.id;
 
     if (type === 'report.completed' || type === 'report.suspended' || type === 'report.disputed') {
+      if (!reportId) {
+        pinoLogger.warn({ type }, 'Checkr webhook missing report ID — skipping status update');
+        return c.json({ received: true, processed: false, reason: 'missing report id' }, 200);
+      }
       const statusMap: Record<string, 'IN_PROGRESS' | 'CLEAR' | 'CONSIDER' | 'FAILED'> = {
         'report.completed': 'CLEAR',
         'report.suspended': 'CONSIDER',

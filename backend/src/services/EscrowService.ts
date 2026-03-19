@@ -22,6 +22,7 @@ import { XPTaxService } from './XPTaxService.js';
 import { XPService } from './XPService.js';
 import { SelfInsurancePoolService } from './SelfInsurancePoolService.js';
 import { RevenueService } from './RevenueService.js';
+import { StripeService } from './StripeService.js';
 import type {
   Escrow,
   EscrowState,
@@ -698,6 +699,8 @@ export const EscrowService = {
     let refundedEscrow: Escrow;
     let refundWorkerId: string | null = null;
     let escrowStateBefore: string = 'FUNDED';
+    let stripePaymentIntentId: string | null = null;
+    let refundAmount: number = 0;
 
     try {
       // RACE CONDITION FIX: Wrap SELECT FOR UPDATE + UPDATE in a transaction so
@@ -706,8 +709,8 @@ export const EscrowService = {
       // immediately after the SELECT, allowing a concurrent refund() to slip
       // through and trigger a double-refund.
       const txResult = await db.transaction(async (query) => {
-        const escrowPreCheck = await query<{ task_id: string; version: number; state: string }>(
-          `SELECT task_id, version, state FROM escrows WHERE id = $1 FOR UPDATE`,
+        const escrowPreCheck = await query<{ task_id: string; version: number; state: string; stripe_payment_intent_id: string | null; amount: number }>(
+          `SELECT task_id, version, state, stripe_payment_intent_id, amount FROM escrows WHERE id = $1 FOR UPDATE`,
           [escrowId]
         );
         const refundTaskId = escrowPreCheck.rows[0]?.task_id;
@@ -726,11 +729,27 @@ export const EscrowService = {
         }
 
         if (refundTaskId) {
-          const taskRow = await query<{ worker_id: string | null }>(
-            `SELECT worker_id FROM tasks WHERE id = $1`,
+          // LL4: Check task state inside the transaction (FOR UPDATE lock held) to
+          // eliminate the TOCTOU race window. A refund is blocked if a worker has
+          // already been assigned (task is ACCEPTED, IN_PROGRESS, PROOF_SUBMITTED,
+          // or COMPLETED) — the router pre-check was removed in favour of this
+          // in-transaction guard.
+          const taskRow = await query<{ worker_id: string | null; state: string }>(
+            `SELECT worker_id, state FROM tasks WHERE id = $1`,
             [refundTaskId]
           );
           refundWorkerId = taskRow.rows[0]?.worker_id ?? null;
+          const taskState = taskRow.rows[0]?.state;
+          const workerAssignedStates = ['ACCEPTED', 'MATCHING', 'IN_PROGRESS', 'PROOF_SUBMITTED', 'COMPLETED'];
+          if (taskState && workerAssignedStates.includes(taskState)) {
+            return {
+              success: false,
+              error: {
+                code: ErrorCodes.INVALID_STATE,
+                message: 'Cannot refund escrow for a task that has been accepted by a worker',
+              },
+            } as ServiceResult<Escrow>;
+          }
         }
 
         // Allow FUNDED → REFUNDED normally; LOCKED_DISPUTE → REFUNDED only with adminOverride
@@ -775,6 +794,8 @@ export const EscrowService = {
         }
 
         escrowStateBefore = currentState ?? 'FUNDED';
+        stripePaymentIntentId = escrowPreCheck.rows[0]?.stripe_payment_intent_id ?? null;
+        refundAmount = escrowPreCheck.rows[0]?.amount ?? 0;
         refundedEscrow = result.rows[0];
         return { success: true, data: result.rows[0] } as ServiceResult<Escrow>;
       });
@@ -791,6 +812,32 @@ export const EscrowService = {
         adminOverride ? 'admin' : 'system',
         adminOverride && reason ? { adminOverride: true, reason } : {}
       );
+
+      // LL5: Issue the actual Stripe refund AFTER the DB transaction commits
+      // successfully. Previously the DB was updated to REFUNDED but Stripe was
+      // never called — poster's money stayed captured while the escrow showed
+      // as refunded, causing a financial discrepancy.
+      if (stripePaymentIntentId) {
+        try {
+          await StripeService.createRefund({
+            paymentIntentId: stripePaymentIntentId,
+            escrowId,
+            amount: refundAmount,
+            reason: 'requested_by_customer',
+          });
+        } catch (stripeRefundError) {
+          // Non-fatal: DB is already REFUNDED — log the error for ops to
+          // manually issue the Stripe refund. Do not roll back the DB state.
+          escrowLogger.error(
+            {
+              err: stripeRefundError instanceof Error ? stripeRefundError.message : String(stripeRefundError),
+              escrowId,
+              stripePaymentIntentId,
+            },
+            'Stripe refund call failed after DB REFUNDED — manual Stripe refund required'
+          );
+        }
+      }
 
       // FIX 3: Clawback XP if the worker had already been awarded XP for this escrow
       if (refundWorkerId) {
