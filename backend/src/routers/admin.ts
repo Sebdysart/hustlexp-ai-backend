@@ -20,6 +20,7 @@ import { router, adminProcedure, Schemas, invalidateAuthCacheForUser } from '../
 import { db } from '../db.js';
 import { z } from 'zod';
 import { EscrowService } from '../services/EscrowService.js';
+import { forceDisconnectUser } from '../realtime/connection-registry.js';
 
 // ============================================================================
 // ROUTER
@@ -133,6 +134,34 @@ export const adminRouter = router({
       // Evict any cached auth entries for this user so the ban takes effect
       // immediately rather than waiting up to 5 minutes for the cache TTL to expire.
       invalidateAuthCacheForUser(input.userId);
+
+      // Bug 1 fix: if the user was just banned, immediately close any open SSE
+      // connections so the stream does not persist after the ban is applied.
+      if (input.banned) {
+        forceDisconnectUser(input.userId);
+
+        // FIX: Refund all FUNDED escrows where the banned user is poster or worker,
+        // and cancel their OPEN tasks — otherwise workers are left with stranded funds.
+        const fundedEscrows = await db.query<{ id: string }>(
+          `SELECT e.id FROM escrows e
+           JOIN tasks t ON t.id = e.task_id
+           WHERE (t.poster_id = $1 OR t.worker_id = $1)
+           AND e.state = 'FUNDED'`,
+          [input.userId]
+        );
+        for (const escrow of fundedEscrows.rows) {
+          await EscrowService.refund({ escrowId: escrow.id });
+        }
+
+        // Cancel any OPEN tasks belonging to the banned user (poster or worker)
+        await db.query(
+          `UPDATE tasks
+           SET state = 'CANCELLED', updated_at = NOW()
+           WHERE (poster_id = $1 OR worker_id = $1)
+           AND state = 'OPEN'`,
+          [input.userId]
+        );
+      }
 
       return result.rows[0];
     }),
@@ -351,7 +380,11 @@ export const adminRouter = router({
           reason: input.reason,
         });
       } else {
-        serviceResult = await EscrowService.refund({ escrowId: input.escrowId });
+        serviceResult = await EscrowService.refund({
+          escrowId: input.escrowId,
+          adminOverride: true,
+          reason: input.reason,
+        });
       }
 
       if (!serviceResult.success) {

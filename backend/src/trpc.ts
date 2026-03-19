@@ -11,81 +11,29 @@
 
 import { initTRPC, TRPCError } from '@trpc/server';
 import { z } from 'zod';
-import { createHash } from 'crypto';
 import { firebaseAuth } from './auth/firebase.js';
 import { db } from './db.js';
 import type { User } from './types.js';
 import { logger } from './logger.js';
+import { authCacheGet, authCacheSet } from './auth-cache.js';
+import { redis } from './cache/redis.js';
+
+// Matches the revocation marker key written by invalidateAuthCacheForUser
+// (auth-cache.ts) and revokeUserSessions (auth/middleware.ts).
+const REDIS_REVOKED_KEY = (uid: string) => `auth:revoked:${uid}`;
+
+// Re-export so existing callers (admin.ts etc.) don't need to change their import.
+export { invalidateAuthCacheForUser } from './auth-cache.js';
 
 const log = logger.child({ module: 'trpc' });
 
 // ============================================================================
 // FIREBASE TOKEN VERIFICATION CACHE
 // ============================================================================
-// Eliminates the Firebase SDK + DB round-trip on every tRPC request.
-// Research-backed: 5-minute TTL captures 93–97% of redundant verifications
-// while keeping revocation exposure to an operationally acceptable window.
-//
-// Security properties:
-//  - Keys are SHA-256(token), never raw tokens
-//  - Fixed-window expiry (updateAgeOnGet=false) — no TTL extension on access
-//  - TTL clamped to token's own `exp` claim minus 30s safety margin
-//  - Max 10,000 entries; LRU eviction (Map insertion-order FIFO approximation)
-//  - Cache miss on any error — fails open to full verification
-
-type CachedAuth = {
-  user: User;
-  firebaseUid: string;
-  expiresAt: number; // Unix ms
-};
-
-const AUTH_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
-const AUTH_CACHE_MAX  = 10_000;           // ~20-30 MB peak (decoded token objects)
-
-const authCache = new Map<string, CachedAuth>();
-
-function authCacheKey(token: string): string {
-  return createHash('sha256').update(token).digest('hex');
-}
-
-function authCacheGet(token: string): CachedAuth | null {
-  const entry = authCache.get(authCacheKey(token));
-  if (!entry) return null;
-  if (Date.now() > entry.expiresAt) {
-    authCache.delete(authCacheKey(token));
-    return null;
-  }
-  return entry;
-}
-
-/**
- * Invalidate all auth cache entries for a given user ID.
- * Call this immediately after banning a user so the cached user row
- * (with is_banned=false) is evicted before the 5-minute TTL expires.
- */
-export function invalidateAuthCacheForUser(userId: string): void {
-  for (const [key, entry] of authCache.entries()) {
-    if (entry.user.id === userId) {
-      authCache.delete(key);
-    }
-  }
-}
-
-function authCacheSet(token: string, value: { user: User; firebaseUid: string }, tokenExp: number): void {
-  // Evict oldest entry when at capacity (Map preserves insertion order)
-  if (authCache.size >= AUTH_CACHE_MAX) {
-    const oldestKey = authCache.keys().next().value;
-    if (oldestKey !== undefined) authCache.delete(oldestKey);
-  }
-  // Clamp effective TTL to token's remaining validity minus 30s clock-skew margin
-  const tokenRemainingMs = tokenExp * 1000 - Date.now() - 30_000;
-  const effectiveTtlMs  = Math.min(AUTH_CACHE_TTL_MS, Math.max(0, tokenRemainingMs));
-  if (effectiveTtlMs <= 0) return; // Token already too close to expiry — don't cache
-  authCache.set(authCacheKey(token), {
-    ...value,
-    expiresAt: Date.now() + effectiveTtlMs,
-  });
-}
+// The cache implementation lives in auth-cache.ts (isolated module so services
+// can call invalidateAuthCacheForUser without importing Firebase/db side-effects).
+// See auth-cache.ts for security properties and eviction policy.
+// ============================================================================
 
 // ============================================================================
 // CONTEXT
@@ -113,7 +61,18 @@ export async function createContext(opts: {
   // ── Cache-first: skip Firebase SDK + DB on warm requests (~93-97% hit rate) ──
   const cached = authCacheGet(token);
   if (cached) {
-    return { user: cached.user, firebaseUid: cached.firebaseUid };
+    // Cross-invalidation check: if a Redis revocation marker exists (written by
+    // invalidateAuthCacheForUser or revokeUserSessions) the in-process cache
+    // entry is stale — evict it and fall through to Firebase re-verification.
+    const revokedAt = await redis.get<string>(REDIS_REVOKED_KEY(cached.firebaseUid));
+    if (revokedAt) {
+      log.info({ uid: cached.firebaseUid }, 'tRPC cache hit invalidated by Redis revocation marker');
+      // The in-process entry was already evicted by invalidateAuthCacheForUser,
+      // but guard against the case where it was set again before we got here.
+      // Fall through to Firebase re-verification below.
+    } else {
+      return { user: cached.user, firebaseUid: cached.firebaseUid };
+    }
   }
 
   try {
@@ -127,14 +86,26 @@ export async function createContext(opts: {
 
     const user = result.rows[0] ?? null;
 
-    // Cache only when we have a valid user — unauthenticated misses are not cached
     if (user) {
+      // Populate is_admin from admin_roles table so escrow and other routers can use ctx.user.is_admin
+      const adminResult = await db.query(
+        'SELECT 1 FROM admin_roles WHERE user_id = $1 LIMIT 1',
+        [user.id]
+      );
+      user.is_admin = adminResult.rows.length > 0;
+
+      // Cache only when we have a valid user — unauthenticated misses are not cached
       authCacheSet(token, { user, firebaseUid: decoded.uid }, decoded.exp);
     }
 
     return { user, firebaseUid: decoded.uid };
   } catch (error) {
-    log.error({ err: (error as Error).message }, 'Firebase token verification failed');
+    // SECURITY FIX (v2.9.4): Firebase Admin SDK error messages sometimes embed
+    // the raw JWT in their text. Strip any JWT-shaped segments before logging to
+    // prevent token leakage into log streams.
+    const rawMsg = (error as Error).message ?? '';
+    const safeMsg = rawMsg.replace(/eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]*/g, '[REDACTED_TOKEN]');
+    log.error({ err: safeMsg }, 'Firebase token verification failed');
     return { user: null, firebaseUid: null };
   }
 }
@@ -169,7 +140,12 @@ const isAuthenticated = t.middleware(async ({ ctx, next }) => {
   // still holds the pre-ban user row (cache TTL up to 5 min after ban is set).
   // Also block SUSPENDED accounts — FraudDetectionService sets account_status
   // before (or instead of) flipping is_banned. Both must block API access.
-  if (ctx.user.is_banned || ctx.user.account_status === 'SUSPENDED') {
+  // Also block DELETED accounts — GDPR erasure sets account_status='DELETED'.
+  if (
+    ctx.user.is_banned ||
+    ctx.user.account_status === 'SUSPENDED' ||
+    ctx.user.account_status === 'DELETED'
+  ) {
     throw new TRPCError({
       code: 'UNAUTHORIZED',
       message: 'Account suspended.',
@@ -188,20 +164,32 @@ const isAdmin = t.middleware(async ({ ctx, next }) => {
       message: 'Authentication required',
     });
   }
-  
+
+  // Banned/suspended/deleted admins must not retain admin access.
+  if (
+    ctx.user.is_banned ||
+    ctx.user.account_status === 'SUSPENDED' ||
+    ctx.user.account_status === 'DELETED'
+  ) {
+    throw new TRPCError({
+      code: 'UNAUTHORIZED',
+      message: 'Account suspended.',
+    });
+  }
+
   // Check admin role
   const adminResult = await db.query(
     'SELECT role FROM admin_roles WHERE user_id = $1',
     [ctx.user.id]
   );
-  
+
   if (adminResult.rows.length === 0) {
     throw new TRPCError({
       code: 'FORBIDDEN',
       message: 'Admin access required',
     });
   }
-  
+
   return next({ ctx: { ...ctx, user: ctx.user } });
 });
 
@@ -213,6 +201,17 @@ const isHustler = t.middleware(async ({ ctx, next }) => {
     throw new TRPCError({
       code: 'UNAUTHORIZED',
       message: 'Authentication required',
+    });
+  }
+  // Banned/suspended/deleted users must not access role-gated endpoints.
+  if (
+    ctx.user.is_banned ||
+    ctx.user.account_status === 'SUSPENDED' ||
+    ctx.user.account_status === 'DELETED'
+  ) {
+    throw new TRPCError({
+      code: 'UNAUTHORIZED',
+      message: 'Account suspended.',
     });
   }
   if (ctx.user.default_mode !== 'worker') {
@@ -232,6 +231,17 @@ const isPoster = t.middleware(async ({ ctx, next }) => {
     throw new TRPCError({
       code: 'UNAUTHORIZED',
       message: 'Authentication required',
+    });
+  }
+  // Banned/suspended/deleted users must not access role-gated endpoints.
+  if (
+    ctx.user.is_banned ||
+    ctx.user.account_status === 'SUSPENDED' ||
+    ctx.user.account_status === 'DELETED'
+  ) {
+    throw new TRPCError({
+      code: 'UNAUTHORIZED',
+      message: 'Account suspended.',
     });
   }
   if (ctx.user.default_mode !== 'poster') {
@@ -256,7 +266,7 @@ export const Schemas = {
   // Task
   createTask: z.object({
     title: z.string().min(1).max(255),
-    description: z.string().min(1).max(5000),
+    description: z.string().trim().min(10).max(5000),
     price: z.number().int().positive().max(99999900), // USD cents, max $999,999
     requirements: z.string().max(2000).optional(),
     location: z.string().max(500).optional(),
@@ -270,20 +280,20 @@ export const Schemas = {
     instantMode: z.boolean().default(false),
     // Template system fields
     templateSlug: z.string().max(50).optional(),
-    wildcardFlags: z.array(z.string()).optional(),
+    wildcardFlags: z.array(z.string().max(100)).max(20).optional(),
     insideHome: z.boolean().optional(),
     peoplePresent: z.boolean().optional(),
     petsPresent: z.boolean().optional(),
     // FIX 7: Accept these fields in the schema so callers can provide them,
     // but the router will immediately reject them (features not yet implemented).
     prorate_on_abort: z.boolean().optional(),
-    proof_steps: z.array(z.unknown()).optional(),
+    proof_steps: z.array(z.object({ step: z.string().max(500) }).strict()).max(50).optional(),
   }),
 
   evaluateDraft: z.object({
     description: z.string().min(10).max(5000),
     templateSlug: z.string().max(50).optional(),
-    wildcardFlags: z.array(z.string()).optional(),
+    wildcardFlags: z.array(z.string().max(100)).max(20).optional(),
   }),
 
   acceptWithConsent: z.object({
@@ -294,12 +304,16 @@ export const Schemas = {
   // Escrow
   fundEscrow: z.object({
     escrowId: z.string().uuid(),
-    stripePaymentIntentId: z.string().max(255),
+    stripePaymentIntentId: z.string().min(1).max(255),
   }),
 
   releaseEscrow: z.object({
     escrowId: z.string().uuid(),
-    stripeTransferId: z.string().max(255).optional(),
+    // stripeTransferId is required for poster-initiated releases so the caller
+    // must have already created the Stripe transfer before marking escrow as
+    // released.  Admin override releases use the separate adminRelease procedure
+    // where this field remains optional.
+    stripeTransferId: z.string().min(1).max(255),
   }),
   
   // Proof
@@ -315,10 +329,11 @@ export const Schemas = {
   }),
   
   // XP
+  // SECURITY FIX: baseXP removed from user-facing schema — derived server-side
+  // from the escrow amount to prevent caller-controlled XP inflation.
   awardXP: z.object({
     taskId: z.string().uuid(),
     escrowId: z.string().uuid(),
-    baseXP: z.number().int().positive().max(10000),
   }),
   
   // Offset-based pagination (legacy — for admin/internal endpoints where drift is acceptable)

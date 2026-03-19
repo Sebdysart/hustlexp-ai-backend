@@ -71,8 +71,8 @@ async function checkBudget(agent: string, userId: string): Promise<{ allowed: bo
     const spent = Number(await getRedis().get(budgetKey) ?? 0);
     return { allowed: spent < config.dailyBudgetPerUser, spent, limit: config.dailyBudgetPerUser };
   } catch (error) {
-    console.warn(`[AI Router] Failed to check budget:`, error);
-    return { allowed: true, spent: 0, limit: config.dailyBudgetPerUser };
+    console.warn(`[AI Router] Failed to check budget (fail-closed):`, error);
+    return { allowed: false, spent: 0, limit: config.dailyBudgetPerUser };
   }
 }
 

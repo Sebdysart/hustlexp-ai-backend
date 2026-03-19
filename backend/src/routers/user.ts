@@ -238,13 +238,19 @@ export const userRouter = router({
       // Users 13-17 are allowed but flagged as minors for consent tracking.
       // --------------------------------------------------------------------------
       const dob = new Date(input.dateOfBirth);
+      if (isNaN(dob.getTime()) || dob.toISOString().slice(0, 10) !== input.dateOfBirth) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: 'Invalid date of birth — date does not exist in calendar',
+        });
+      }
       const now = new Date();
       const ageDiff = now.getFullYear() - dob.getFullYear();
       const monthDiff = now.getMonth() - dob.getMonth();
       const dayDiff = now.getDate() - dob.getDate();
       const age = monthDiff < 0 || (monthDiff === 0 && dayDiff < 0) ? ageDiff - 1 : ageDiff;
 
-      if (isNaN(dob.getTime()) || age < 0 || age > 150) {
+      if (age < 0 || age > 150) {
         throw new TRPCError({
           code: 'BAD_REQUEST',
           message: 'Invalid date of birth',
@@ -268,6 +274,21 @@ export const userRouter = router({
         if (bannedPhone.rows.length > 0) {
           throw new TRPCError({ code: 'FORBIDDEN', message: 'Account registration not permitted.' });
         }
+      }
+
+      // FIX 4: Ban evasion via fresh Firebase UID — check if this Firebase UID
+      // has a prior record in the DB that is banned or deleted. A banned user
+      // who deletes their Firebase account and creates a new one will present a
+      // new UID, but the email cross-reference below catches most of those cases.
+      // Also guard against the case where phone is omitted entirely (no phone check
+      // above), by assigning trust_tier=0 (UNVERIFIED) so the account is restricted
+      // until phone verification is completed.
+      const bannedByEmail = await db.query<{ id: string }>(
+        `SELECT id FROM users WHERE email = $1 AND is_banned = true`,
+        [input.email]
+      );
+      if (bannedByEmail.rows.length > 0) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'Account registration not permitted.' });
       }
 
       // Normalize role: iOS sends "hustler" but DB stores "worker"
@@ -296,11 +317,16 @@ export const userRouter = router({
         }
       }
 
+      // Phone-less registrations start at trust_tier=0 (UNVERIFIED) to restrict
+      // account capabilities until phone verification is completed. This limits
+      // the usefulness of burner-email ban evasion without a phone number.
+      const initialTrustTier = input.phone ? 1 : 0;
+
       const result = await db.query<User>(
-        `INSERT INTO users (firebase_uid, email, full_name, default_mode, date_of_birth, is_minor)
-         VALUES ($1, $2, $3, $4, $5, $6)
+        `INSERT INTO users (firebase_uid, email, full_name, default_mode, date_of_birth, is_minor, trust_tier)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
          RETURNING *`,
-        [input.firebaseUid, input.email, input.fullName, dbMode, input.dateOfBirth, age < 18]
+        [input.firebaseUid, input.email, input.fullName, dbMode, input.dateOfBirth, age < 18, initialTrustTier]
       );
 
       return await toMobileUser(result.rows[0]);

@@ -40,23 +40,73 @@ const DEACTIVATION_ERROR_CODES = [
 ];
 
 // ============================================================================
+// LOCATION SANITIZATION
+// ============================================================================
+
+/**
+ * GPS coordinate pattern: matches decimal lat/lng pairs anywhere in text.
+ * Covers forms like:
+ *   "37.7749, -122.4194"
+ *   "lat: 37.7749 lng: -122.4194"
+ *   "-33.8688° S, 151.2093° E"
+ */
+const GPS_COORDINATE_PATTERN =
+  /(-?\d{1,3}\.\d{4,})[°\s]*[NSns]?[,\s]+(-?\d{1,3}\.\d{4,})[°\s]*[EWew]?/g;
+
+/**
+ * Street address heuristic: sequences that look like "123 Some Street, City"
+ * Anchored on a leading house number to reduce false positives.
+ */
+const STREET_ADDRESS_PATTERN =
+  /\b\d{1,5}\s+[A-Za-z0-9 .,'#-]{5,60}(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Drive|Dr|Lane|Ln|Way|Court|Ct|Place|Pl|Circle|Cir|Highway|Hwy)[^\n,]*/gi;
+
+/**
+ * Sanitize a push notification body before delivery.
+ *
+ * Rules (applied in order):
+ *  1. If `sensitive` flag is set → replace entire body with generic message.
+ *  2. Strip any GPS coordinate pairs → "[location protected]".
+ *  3. Strip street-level addresses → "[location protected]".
+ *
+ * @param body   Raw notification body
+ * @param sensitive Whether the originating entity is marked sensitive
+ * @returns Sanitized body safe for push delivery
+ */
+export function sanitizePushBody(body: string, sensitive = false): string {
+  if (sensitive) {
+    return 'You have a new notification. Open the app for details.';
+  }
+
+  let sanitized = body.replace(GPS_COORDINATE_PATTERN, '[location protected]');
+  sanitized = sanitized.replace(STREET_ADDRESS_PATTERN, '[location protected]');
+
+  return sanitized;
+}
+
+// ============================================================================
 // SERVICE
 // ============================================================================
 
 /**
  * Send push notification to all active device tokens for a user
  *
- * @param userId Target user ID
- * @param title Notification title
- * @param body Notification body text
- * @param data Optional key-value data payload
+ * The `body` is sanitized before delivery: GPS coordinates and street-level
+ * addresses are replaced with "[location protected]". Pass `sensitive: true`
+ * to suppress all location context entirely.
+ *
+ * @param userId    Target user ID
+ * @param title     Notification title
+ * @param body      Notification body text (will be sanitized)
+ * @param data      Optional key-value data payload
+ * @param sensitive When true, body is replaced with a generic message
  * @returns Delivery result with sent/failed counts
  */
 export async function sendPushNotification(
   userId: string,
   title: string,
   body: string,
-  data?: Record<string, string>
+  data?: Record<string, string>,
+  sensitive = false
 ): Promise<PushResult> {
   // Guard: If Firebase messaging not initialized, return gracefully
   if (!messaging) {
@@ -67,7 +117,12 @@ export async function sendPushNotification(
   try {
     // Query active device tokens for user
     const tokenResult = await db.query<{ fcm_token: string }>(
-      `SELECT fcm_token FROM device_tokens WHERE user_id = $1 AND is_active = true`,
+      `SELECT dt.fcm_token FROM device_tokens dt
+       JOIN users u ON u.id = dt.user_id
+       WHERE dt.user_id = $1
+       AND dt.is_active = true
+       AND u.is_banned = false
+       AND u.account_status NOT IN ('DELETED', 'SUSPENDED')`,
       [userId]
     );
 
@@ -78,10 +133,13 @@ export async function sendPushNotification(
       return { success: true, sent: 0, failed: 0 };
     }
 
+    // Sanitize body: strip GPS coordinates / addresses; honour sensitive flag
+    const safeBody = sanitizePushBody(body, sensitive);
+
     // Send multicast via FCM
     const response = await messaging.sendEachForMulticast({
       tokens,
-      notification: { title, body },
+      notification: { title, body: safeBody },
       data: data || undefined,
     });
 

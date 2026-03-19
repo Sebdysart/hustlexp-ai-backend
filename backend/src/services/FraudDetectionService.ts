@@ -20,6 +20,8 @@ import { ErrorCodes } from '../types.js';
 import { NotificationService } from './NotificationService.js';
 import { notifyAdmins } from './AdminNotificationHelper.js';
 import { logger } from '../logger.js';
+import { invalidateAuthCacheForUser } from '../auth-cache.js';
+import { forceDisconnectUser } from '../realtime/connection-registry.js';
 
 const log = logger.child({ service: 'FraudDetectionService' });
 
@@ -468,12 +470,17 @@ export const FraudDetectionService = {
         // CRITICAL patterns: Auto-suspend accounts, alert admins
         for (const userId of userIds) {
           await db.query(
-            `UPDATE users 
+            `UPDATE users
              SET account_status = 'SUSPENDED', paused_at = NOW()
              WHERE id = $1 AND account_status != 'SUSPENDED'`,
             [userId]
           );
-          
+
+          // Immediately evict auth cache and terminate SSE connections so the
+          // suspended user is blocked without waiting for the 5-min cache TTL.
+          invalidateAuthCacheForUser(userId);
+          forceDisconnectUser(userId);
+
           // Create high-priority risk score for suspended user
           await FraudDetectionService.calculateRiskScore({
             entityType: 'user',

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { db } from '../db.js';
 import { AIClient } from './AIClient.js';
+import { PromptInjectionGuard } from '../ai/PromptInjectionGuard.js';
 import { logger } from '../logger.js';
 import { scrubPII } from '../lib/pii-scrubber.js';
 
@@ -55,13 +56,18 @@ const HARD_BLOCK_PATTERNS = [
   /discreet\s+(only|delivery|service)/i,
   /with\s+benefits/i,
   /adult\s+(service|entertainment|modeling)/i,
-  /happy\s+ending/i,
+  /happy\s*ending/i,
   /erotic|sexual\s+service/i,
   /unlicensed\s+(medical|legal|therapy)/i,
   /no\s+address.{0,20}deliver/i,
   /\b(buy|sell|score|source|obtain|get\s+me|find\s+me).{0,30}(drugs?|weed|meth|cocaine|heroin|pills?|controlled\s+substances?|narcotics?)\b/i,
-  /\b(lockpick(ing)?|pick\s+the\s+lock|break\s+in|breaking\s+and\s+entering|b\s*&\s*e|b\s*and\s*e)\b/i,
-  /\bdon'?t\s+(need\s+to\s+know|ask|tell\s+me).{0,20}(inside|contents?|what\s+it\s+is)\b/i,
+  /\b(lockpick(ing)?|pick\s+the\s+lock|break\s+in|breaking\s+and\s+entering|b\s*and\s*e)\b/i,
+  // "don't/no need to know what's inside" — drug-mule / contraband concealment signal
+  /\b(don'?t|no)\s+(need\s+to\s+know|ask|tell\s+me).{0,20}(inside|contents?|what\s+(it\s+is|is\s+inside|s\s+inside))\b/i,
+  // "no need for details" — anonymous drop/pickup signal
+  /\bno\s+(need|requirement)\s+for\s+(the\s+)?(details|specifics|information|info)\b/i,
+  // "address (info) not needed" — anonymous drop-off signal
+  /\baddress\s+(info(rmation)?\s+)?(is\s+)?(not\s+needed|unnecessary|not\s+required|doesnt\s+matter|not\s+important)\b/i,
 ];
 
 // Weapon transport patterns — evaluated via _weaponPatternCheck() to support negator carveout
@@ -80,6 +86,8 @@ const SOFT_FLAG_PATTERNS = [
   { pattern: /(notary|legal\s+document).{0,30}(home|house)/i, rule: 'unlicensed_legal', score: 40 },
   { pattern: /medical.{0,20}(advice|treatment|injection)/i, rule: 'unlicensed_medical', score: 50 },
   { pattern: /cash\s+only.{0,20}no\s+record/i, rule: 'unreported_payment', score: 45 },
+  // Broader cash + no-record variant: "cash payment only, no records needed" (ATK-18)
+  { pattern: /\bcash\s+(payment|payments?)\b.{0,40}\bno\s+(records?|receipts?|documentation|trace)\b/i, rule: 'unreported_payment', score: 45 },
   { pattern: /\b(gfe|girlfriend\s+experience|full\s+service(?!\s*(car|auto|vehicle|detailing|cleaning|wardrobe|consultation|menu|buffet|spa|salon|wash|wax|oil\s+change|repair|maintenance))|intimate\s+service|companionship\s+service)\b/i, score: 50, rule: 'sex_work_coded_language' },
   { pattern: /\b(escort(?!\s*(to\b|service\s+dog|vehicle|my|her|his|their|our|your|someone|a\s+person|the\s+patient|the\s+guest))|private\s+escort)\b/i, score: 45, rule: 'escort_ambiguous' },
   { pattern: /\b(controlled\s+substances?|pharmacolog\w*|score\s+some)\b/i, score: 40, rule: 'drug_reference' },
@@ -110,13 +118,23 @@ export const FLAGGED_PATTERNS: string[] = [
   'bring it just leave it',
   'no address needed',
   'package for a friend no details',
+  // Additional coded phrases (v2.8.5)
+  'package for a friend',        // ATK-20: fragmented version still signals anonymous delivery
+  'no need for details',         // ATK-17: variant of "drop it off no details"
+  'no further details',          // ATK-20: "no further details" = same intent
+  'friend of mine no need',      // ATK-17: "friend of mine, no need for details"
 ];
 
 // Override: if description contains license-affirming words, suppress soft flags
 const LICENSE_AFFIRMERS = [/licensed/i, /certified/i, /credentials/i, /professional/i, /therapist/i, /practitioner/i];
 
-// Homoglyph map: common visual lookalikes (Cyrillic + accented Latin → ASCII)
+// Homoglyph map: common visual lookalikes (Cyrillic + accented Latin + Greek + Armenian → ASCII)
+// IMPORTANT: This map is applied BEFORE the replace(/[^\w\s]/g, ' ') strip step.
+// JavaScript \w only covers [A-Za-z0-9_], so Greek/Armenian letters would otherwise be
+// stripped to spaces rather than mapped to their ASCII equivalents, silently breaking
+// pattern detection (e.g. "nο questions asked" with Greek ο → "n questions asked" → no match).
 const HOMOGLYPH_MAP: Record<string, string> = {
+  // ── Cyrillic lookalikes ──────────────────────────────────────────────────
   '\u0456': 'i',  // Cyrillic і → i
   '\u0430': 'a',  // Cyrillic а → a
   '\u0435': 'e',  // Cyrillic е → e
@@ -124,11 +142,47 @@ const HOMOGLYPH_MAP: Record<string, string> = {
   '\u0440': 'r',  // Cyrillic р → r
   '\u0441': 'c',  // Cyrillic с → c
   '\u0445': 'x',  // Cyrillic х → x
-  '\u00E8': 'e',  // è → e (accented Latin)
+  // ── Accented Latin ──────────────────────────────────────────────────────
+  '\u00E8': 'e',  // è → e
   '\u00E9': 'e',  // é → e
   '\u00E0': 'a',  // à → a
   '\u00F3': 'o',  // ó → o
   '\u00FA': 'u',  // ú → u
+  // ── Greek lowercase lookalikes ───────────────────────────────────────────
+  '\u03B1': 'a',  // α (alpha)   → a
+  '\u03B2': 'b',  // β (beta)    → b
+  '\u03B5': 'e',  // ε (epsilon) → e
+  '\u03B9': 'i',  // ι (iota)    → i
+  '\u03BA': 'k',  // κ (kappa)   → k
+  '\u03BD': 'n',  // ν (nu)      → n
+  '\u03BF': 'o',  // ο (omicron) → o   ← key bypass character
+  '\u03C1': 'r',  // ρ (rho)     → r
+  '\u03C4': 't',  // τ (tau)     → t
+  '\u03C5': 'u',  // υ (upsilon) → u
+  '\u03C7': 'x',  // χ (chi)     → x
+  // ── Greek uppercase lookalikes ───────────────────────────────────────────
+  '\u0391': 'A',  // Α (Alpha)   → A
+  '\u0392': 'B',  // Β (Beta)    → B
+  '\u0395': 'E',  // Ε (Epsilon) → E
+  '\u0399': 'I',  // Ι (Iota)    → I
+  '\u039A': 'K',  // Κ (Kappa)   → K
+  '\u039C': 'M',  // Μ (Mu)      → M
+  '\u039D': 'N',  // Ν (Nu)      → N
+  '\u039F': 'O',  // Ο (Omicron) → O
+  '\u03A1': 'R',  // Ρ (Rho)     → R
+  '\u03A4': 'T',  // Τ (Tau)     → T
+  '\u03A5': 'Y',  // Υ (Upsilon) → Y
+  '\u03A7': 'X',  // Χ (Chi)     → X
+  '\u0396': 'Z',  // Ζ (Zeta)    → Z
+  // ── Armenian lowercase lookalikes ────────────────────────────────────────
+  '\u0570': 'h',  // հ (he)   → h
+  '\u0578': 'o',  // ո (vo)   → o
+  '\u0561': 'a',  // ա (ayb)  → a
+  '\u0565': 'e',  // ե (yech) → e
+  '\u056B': 'i',  // ի (ini)  → i
+  '\u0576': 'n',  // ն (now)  → n
+  '\u057D': 's',  // ս (seh)  → s
+  '\u057F': 't',  // տ (tiwn) → t
 };
 
 const SUGGESTED_ALTERNATIVES: Record<string, string> = {
@@ -306,12 +360,16 @@ export const ComplianceGuardianService = {
   },
 
   _normalizeDescription: (description: string): string => {
-    // Step 1: Replace known homoglyphs (Cyrillic lookalikes, accented Latin)
-    let normalized = description;
+    // Step 0a: Pre-normalize abbreviations that normalization would destroy.
+    // "b&e" / "B&E" (breaking & entering) → expand before & is stripped to space.
+    let normalized = description.replace(/\bb\s*&\s*e\b/gi, 'breaking and entering');
+
+    // Step 0b: Replace known homoglyphs (Cyrillic lookalikes, accented Latin)
     for (const [char, replacement] of Object.entries(HOMOGLYPH_MAP)) {
       normalized = normalized.split(char).join(replacement);
     }
-    return normalized
+
+    normalized = normalized
       .normalize('NFKC')              // normalize ligatures, fullwidth, superscripts, etc.
       .toLowerCase()
       .replace(/['\u2019\u2018`]/g, '') // strip apostrophes/smart quotes (contractions: don't → dont)
@@ -319,6 +377,16 @@ export const ComplianceGuardianService = {
       .replace(/[^\w\s]/g, ' ')       // punctuation/remaining non-ASCII → spaces (FIX 1: space not empty)
       .replace(/\s+/g, ' ')           // collapse whitespace
       .trim();
+
+    // Step N: Collapse letter-spaced words — e.g. "h a p p y e n d i n g" → "happyending"
+    // A run of 3+ consecutive single-character tokens is characteristic of letter-spacing
+    // evasion (e.g. "h a p p y e n d i n g"). Collapse by stripping the spaces within
+    // each run so the underlying word reassembles and can be matched by normal patterns.
+    // Note: runs of 2 are intentionally excluded to avoid false positives (e.g. "I o" or
+    // common abbreviated speech). Only 3+ consecutive single-char tokens are collapsed.
+    normalized = normalized.replace(/\b(\w)( \w){2,}\b/g, (match) => match.replace(/ /g, ''));
+
+    return normalized;
   },
 
   _codeLevelPatternMatch: async (
@@ -389,11 +457,41 @@ export const ComplianceGuardianService = {
       ? '\nTEMPLATE CONTEXT: This task was submitted under the wildcard_bizarre template. The Poster intentionally classified it as a custom or unusual one-off gig. Use this as context when evaluating is_genuinely_bizarre — the Poster has already signalled they expect this to be unusual.\n'
       : '';
 
-    // FIX 3: Truncate description before sending to LLM to prevent cost DoS
+    // FIX 3: Truncate description before sending to LLM to prevent cost DoS.
+    // Use Array.from / spread iteration (Unicode scalar values) instead of substring()
+    // to avoid splitting surrogate pairs at the truncation boundary, which would produce
+    // a dangling high surrogate that can cause JSON serialization failures.
     let truncatedDesc = description;
-    if (description.length > MAX_DESCRIPTION_LENGTH) {
+    if ([...description].length > MAX_DESCRIPTION_LENGTH) {
       log.warn({ userId, originalLength: description.length }, 'compliance: description truncated before AI check');
-      truncatedDesc = description.substring(0, MAX_DESCRIPTION_LENGTH) + '…';
+      truncatedDesc = [...description].slice(0, MAX_DESCRIPTION_LENGTH).join('') + '…';
+    }
+
+    // FIX 1 (HIGH): Guard against prompt injection before sending user-supplied text to LLM.
+    const injectionResult = PromptInjectionGuard.analyze(truncatedDesc);
+    if (injectionResult.decision === 'BLOCK') {
+      log.warn(
+        { userId, injectionScore: injectionResult.score, matchedPatterns: injectionResult.matchedPatterns },
+        'compliance: prompt injection attempt blocked — returning max score without LLM call'
+      );
+      return {
+        score: 100,
+        triggeredRules: [...heuristic.triggeredRules, 'prompt_injection_blocked'],
+        deception_detected: false,
+        is_genuinely_bizarre: false,
+      };
+    }
+
+    // On FLAG: use sanitized input to strip injection markers but still run the AI check.
+    const safeDesc = injectionResult.decision === 'FLAG'
+      ? (injectionResult.sanitizedInput ?? truncatedDesc)
+      : truncatedDesc;
+
+    if (injectionResult.decision === 'FLAG') {
+      log.warn(
+        { userId, injectionScore: injectionResult.score, matchedPatterns: injectionResult.matchedPatterns },
+        'compliance: suspicious input flagged — using sanitizedInput for AI check'
+      );
     }
 
     const response = await AIClient.callJSON<{
@@ -438,7 +536,7 @@ Set is_genuinely_bizarre: true ONLY IF (Rule1 OR Rule3 OR Rule4) AND (Rule2 OR R
 Rule 2 and Rule 5 alone cannot satisfy the threshold.
 
 Return JSON: { "score": number, "rules": string[], "deception_detected": boolean, "is_genuinely_bizarre": boolean }`,
-      prompt: scrubPII(truncatedDesc),
+      prompt: scrubPII(safeDesc),
     });
 
     // FIX 1 & 2: Validate and clamp LLM response via Zod — reject non-numeric / out-of-range scores.

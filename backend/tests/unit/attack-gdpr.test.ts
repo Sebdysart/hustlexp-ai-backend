@@ -84,6 +84,10 @@ vi.mock('../../src/services/SelfInsurancePoolService', () => ({
   SelfInsurancePoolService: { recordContribution: vi.fn().mockResolvedValue(undefined) },
 }));
 
+vi.mock('../../src/services/RevenueService', () => ({
+  RevenueService: { logEvent: vi.fn().mockResolvedValue({ success: true, data: { id: 'rev-1' } }) },
+}));
+
 vi.mock('../../src/services/AlphaInstrumentation', () => ({
   AlphaInstrumentation: { emitTrustDeltaApplied: vi.fn().mockResolvedValue(undefined) },
 }));
@@ -94,6 +98,14 @@ vi.mock('../../src/services/StreakService', () => ({
 
 vi.mock('../../src/jobs/queues', () => ({
   generateIdempotencyKey: vi.fn((type: string, id: string, v: number) => `${type}:${id}:${v}`),
+}));
+
+vi.mock('../../src/auth-cache', () => ({
+  invalidateAuthCacheForUser: vi.fn(),
+}));
+
+vi.mock('../../src/realtime/connection-registry', () => ({
+  forceDisconnectUser: vi.fn(),
 }));
 
 import { db } from '../../src/db';
@@ -164,7 +176,7 @@ describe('Attack 1: Delete while escrow is FUNDED', () => {
       // step 2: fetch task — worker_id is NULL (GDPR deleted the worker)
       .mockResolvedValueOnce({ rows: [{ worker_id: null, price: 5000 }], rowCount: 1 });
 
-    const result = await EscrowService.release({ escrowId });
+    const result = await EscrowService.release({ escrowId, stripeTransferId: 'tr_test_gdpr' });
 
     // EXPECTED: error because worker is gone — escrow is stranded
     expect(result.success).toBe(false);
@@ -630,7 +642,7 @@ describe('Attack 7: Deletion timing — task completes, XP queued, deletion race
       // logEscrowEvent
       .mockResolvedValueOnce({ rows: [], rowCount: 1 });
 
-    const result = await EscrowService.release({ escrowId });
+    const result = await EscrowService.release({ escrowId, stripeTransferId: 'tr_test_gdpr' });
 
     // FINDING: release() SUCCEEDS even though XP award failed silently
     expect(result.success).toBe(true);

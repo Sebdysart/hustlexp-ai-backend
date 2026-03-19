@@ -28,6 +28,14 @@ vi.mock('../../src/services/AdminNotificationHelper', () => ({
   notifyAdmins: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock('../../src/auth-cache', () => ({
+  invalidateAuthCacheForUser: vi.fn(),
+}));
+
+vi.mock('../../src/realtime/connection-registry', () => ({
+  forceDisconnectUser: vi.fn(),
+}));
+
 import { db } from '../../src/db';
 import { FraudDetectionService } from '../../src/services/FraudDetectionService';
 

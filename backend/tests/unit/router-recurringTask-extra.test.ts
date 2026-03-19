@@ -34,6 +34,7 @@ vi.mock('../../src/logger', () => ({
     warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn(),
   },
   escrowLogger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
+  stripeLogger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
 }));
 
 // ---------------------------------------------------------------------------
@@ -302,7 +303,8 @@ describe('recurringTask.cancel', () => {
     mockDb.transaction.mockImplementationOnce(async (fn: any) => {
       const txQuery = vi.fn()
         .mockResolvedValueOnce({ rows: [{ id: SERIES_UUID }], rowCount: 1 }) // UPDATE series
-        .mockResolvedValueOnce({ rows: [], rowCount: 3 }); // UPDATE occurrences
+        .mockResolvedValueOnce({ rows: [], rowCount: 3 })                    // UPDATE scheduled occurrences
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 });                   // SELECT active/in_progress occurrences (none)
       return fn(txQuery);
     });
 

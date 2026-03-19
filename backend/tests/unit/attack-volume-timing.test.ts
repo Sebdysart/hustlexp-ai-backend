@@ -831,7 +831,7 @@ describe('PROOF/COMPLETION GAMING', () => {
 describe('FLAGGED_PATTERNS completeness', () => {
 
   it('all 12 FLAGGED_PATTERNS are defined and non-empty strings', () => {
-    expect(FLAGGED_PATTERNS).toHaveLength(12); // 12 patterns defined in source
+    expect(FLAGGED_PATTERNS).toHaveLength(16); // 16 patterns defined in source
     for (const pattern of FLAGGED_PATTERNS) {
       expect(typeof pattern).toBe('string');
       expect(pattern.length).toBeGreaterThan(0);

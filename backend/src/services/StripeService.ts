@@ -161,17 +161,35 @@ export const StripeService = {
       // Calculate platform fee (PRODUCT_SPEC §9: 15% platform fee)
       const platformFee = Math.floor(amount * (config.stripe.platformFeePercent / 100));
 
-      const paymentIntent = await stripeBreaker.execute(() => stripe!.paymentIntents.create({
-        amount,
-        currency: 'usd',
-        automatic_payment_methods: { enabled: true },
-        metadata: {
-          task_id: taskId,
-          poster_id: posterId,
-          platform_fee: platformFee.toString(),
+      // NOTE on application_fee_amount (FIX 2 analysis):
+      // `application_fee_amount` only works on Connect charges where the payment
+      // destination is a connected account (i.e. when `on_behalf_of` or
+      // `transfer_data.destination` is set on the PaymentIntent).  In HustleXP's
+      // architecture, the poster's payment goes to the *platform* account first
+      // (standard Stripe charge), and the worker payout is executed as a separate
+      // Stripe Transfer via StripeService.createTransfer().  Setting
+      // `application_fee_amount` here would cause a Stripe API error ("You cannot
+      // pass `application_fee_amount` on a non-Connect charge").
+      // The platform fee is therefore collected via the manual reconciliation
+      // approach: the fee amount is stored in metadata so EscrowService.release()
+      // can calculate and record it in the revenue ledger via RevenueService.logEvent().
+      // If the architecture is ever changed to route payments through a connected
+      // account (on_behalf_of + transfer_data), `application_fee_amount: platformFee`
+      // should be added here and the manual RevenueService.logEvent() call removed.
+      const paymentIntent = await stripeBreaker.execute(() => stripe!.paymentIntents.create(
+        {
+          amount,
+          currency: 'usd',
+          automatic_payment_methods: { enabled: true },
+          metadata: {
+            task_id: taskId,
+            poster_id: posterId,
+            platform_fee: platformFee.toString(),
+          },
+          description: description || `HustleXP Task ${taskId}`,
         },
-        description: description || `HustleXP Task ${taskId}`,
-      }));
+        { idempotencyKey: `pi_create_${taskId}` }
+      ));
 
       return {
         success: true,

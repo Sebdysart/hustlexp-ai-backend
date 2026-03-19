@@ -20,6 +20,7 @@
  *  - redis export — is an object with all expected methods
  */
 
+import { createHash } from 'crypto';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // ===========================================================================
@@ -179,8 +180,14 @@ describe('CACHE_KEYS', () => {
     expect(CACHE_KEYS.userStats('user-99')).toBe('user:stats:user-99');
   });
 
-  it('sessionToken returns correct key', () => {
-    expect(CACHE_KEYS.sessionToken('tok-abc')).toBe('session:tok-abc');
+  it('sessionToken hashes the token with SHA-256 before embedding in key', () => {
+    // Security fix: raw bearer tokens must never appear in Redis key names.
+    // The key must be session:<sha256hex(token)> — not session:<rawToken>.
+    const token = 'tok-abc';
+    const expectedHash = createHash('sha256').update(token).digest('hex');
+    expect(CACHE_KEYS.sessionToken(token)).toBe(`session:${expectedHash}`);
+    // Verify the raw token is not used as the key
+    expect(CACHE_KEYS.sessionToken(token)).not.toBe(`session:${token}`);
   });
 
   it('rateLimit returns correct key', () => {

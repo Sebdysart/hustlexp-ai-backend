@@ -253,7 +253,7 @@ RULES:
 
 Return JSON: { "summary": string, "factors": string[], "estimatedEarnings": number, "estimatedDuration": string }`,
             prompt: `Task: "${task.title}"
-Description: ${task.description}
+Description: ${scrubPII([...task.description].slice(0, 2000).join(''))}
 Category: ${task.category || 'general'}
 Location: ${task.location || 'not specified'}
 Price: $${(task.price / 100).toFixed(2)}
@@ -334,6 +334,8 @@ Worker profile:
       }
 
       // Step 3: Low confidence heuristic - try AI enhancement
+      // Truncate to 2000 Unicode code points to bound token consumption
+      const truncatedDesc = [...taskDescription].slice(0, 2000).join('');
       if (AIClient.isConfigured()) {
         try {
           const aiResult = await AIClient.callJSON({
@@ -358,7 +360,7 @@ CATEGORY BENCHMARKS (approximate):
 - Pet care: $25-$50
 
 Return JSON: { "suggested_price_cents": number, "range_low_cents": number, "range_high_cents": number, "reasoning": string, "confidence": number }`,
-            prompt: `Task: ${taskDescription}
+            prompt: `Task: ${truncatedDesc}
 Category: ${category || 'unknown'}
 Location: ${location || 'not specified'}`,
           });

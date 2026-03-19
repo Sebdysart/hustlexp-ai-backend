@@ -181,3 +181,52 @@ describe('Escrow Router', () => {
     });
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FIX 1: awardXP — baseXP must be derived server-side, not caller-supplied
+// Verifies that the Schemas.awardXP Zod schema does NOT include baseXP,
+// ensuring any client attempting to pass an inflated value is rejected at
+// the input validation layer.
+// ─────────────────────────────────────────────────────────────────────────────
+import { Schemas } from '../../../src/trpc';
+import { z } from 'zod';
+
+describe('awardXP schema — server-side baseXP derivation (FIX 1)', () => {
+  it('Schemas.awardXP does NOT contain a baseXP field', () => {
+    // The schema shape must not expose baseXP to callers.
+    const shape = (Schemas.awardXP as z.ZodObject<Record<string, z.ZodTypeAny>>).shape;
+    expect(shape).not.toHaveProperty('baseXP');
+  });
+
+  it('Schemas.awardXP only accepts taskId and escrowId', () => {
+    const shape = (Schemas.awardXP as z.ZodObject<Record<string, z.ZodTypeAny>>).shape;
+    const keys = Object.keys(shape);
+    expect(keys).toEqual(expect.arrayContaining(['taskId', 'escrowId']));
+    expect(keys).not.toContain('baseXP');
+  });
+
+  it('valid input without baseXP passes Zod parsing', () => {
+    const result = Schemas.awardXP.safeParse({
+      taskId: '00000000-0000-0000-0000-000000000001',
+      escrowId: '00000000-0000-0000-0000-000000000002',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('caller-supplied baseXP is stripped/rejected by Zod schema', () => {
+    // In strict mode an extra key would fail; in passthrough it would be passed.
+    // Either way, the resolved type must not carry baseXP to the router.
+    const result = Schemas.awardXP.safeParse({
+      taskId: '00000000-0000-0000-0000-000000000001',
+      escrowId: '00000000-0000-0000-0000-000000000002',
+      baseXP: 10000, // attacker-supplied value
+    });
+    if (result.success) {
+      // If Zod parsed it (passthrough/strip mode), baseXP must NOT appear in output.
+      expect((result.data as Record<string, unknown>).baseXP).toBeUndefined();
+    } else {
+      // If Zod rejected it (strict mode), that is also correct.
+      expect(result.success).toBe(false);
+    }
+  });
+});

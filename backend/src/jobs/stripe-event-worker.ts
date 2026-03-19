@@ -19,6 +19,7 @@
 import { db } from '../db.js';
 import { processSubscriptionEvent } from '../services/StripeSubscriptionProcessor.js';
 import { processEntitlementPurchase } from '../services/StripeEntitlementProcessor.js';
+import { EscrowService } from '../services/EscrowService.js';
 import { RevenueService } from '../services/RevenueService.js';
 import { ChargebackService } from '../services/ChargebackService.js';
 import type { Job } from 'bullmq';
@@ -100,9 +101,10 @@ export async function processStripeEventJob(job: Job<StripeEventJobData>): Promi
         break;
 
       case 'payment_intent.succeeded':
-        // Note: Phase D handles escrow funding for payment_intent.succeeded
-        // This handler is for per-task entitlements (Step 9-D) - separate concern
+        // Step 1: Process per-task entitlements (Step 9-D)
         await processEntitlementPurchase(event, stripeEventId);
+        // Step 2: Fund escrow — PENDING → FUNDED (idempotent: state='PENDING' guard)
+        await fundEscrowForPaymentIntent(event);
         break;
 
       case 'invoice.payment_failed':
@@ -160,25 +162,67 @@ export async function processStripeEventJob(job: Job<StripeEventJobData>): Promi
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
 
-    // Mark as failed (S-2: DB NOW() is authoritative)
+    // Release the claim so BullMQ retries can re-claim this event.
+    // CRITICAL: Do NOT set processed_at here — that would prevent all retries.
+    // processed_at is a terminal tombstone and must only be set on success or
+    // after BullMQ exhausts all retry attempts.
     await db.query(
       `
       UPDATE stripe_events
       SET result = 'failed',
-          processed_at = NOW(),
+          claimed_at = NULL,
           error_message = $2
       WHERE stripe_event_id = $1
       `,
       [stripeEventId, errorMessage]
     );
 
-    log.error({ type, stripeEventId, err: errorMessage }, 'Stripe event failed');
+    log.error({ type, stripeEventId, err: errorMessage }, 'Stripe event failed — claim released for retry');
     throw error; // Re-throw for BullMQ retry logic
   }
 }
 
 function getEventObject<T = Record<string, unknown>>(event: StripeEventEnvelope): T | null {
   return (event?.data?.object as T) || null;
+}
+
+/**
+ * Fund any PENDING escrow linked to this payment intent.
+ *
+ * This is the critical PENDING → FUNDED transition that was previously missing.
+ * It is idempotent: the WHERE state = 'PENDING' guard ensures we only act once;
+ * subsequent webhook deliveries for the same event are safe no-ops.
+ */
+async function fundEscrowForPaymentIntent(event: StripeEventEnvelope): Promise<void> {
+  const paymentIntent = getEventObject<{ id: string }>(event);
+  if (!paymentIntent?.id) {
+    log.warn({ eventId: event.id }, 'payment_intent.succeeded: missing payment intent id, skipping escrow funding');
+    return;
+  }
+
+  const paymentIntentId = paymentIntent.id;
+
+  // Look up a PENDING escrow for this payment intent
+  const escrowResult = await db.query<{ id: string }>(
+    `SELECT id FROM escrows WHERE stripe_payment_intent_id = $1 AND state = 'PENDING'`,
+    [paymentIntentId]
+  );
+
+  if (escrowResult.rows.length === 0) {
+    // No PENDING escrow — either there is no escrow for this payment intent
+    // (entitlement-only payment) or it was already funded (idempotent replay).
+    log.info({ paymentIntentId }, 'payment_intent.succeeded: no PENDING escrow found, skipping escrow funding');
+    return;
+  }
+
+  const escrowId = escrowResult.rows[0].id;
+  const result = await EscrowService.fund({ escrowId, stripePaymentIntentId: paymentIntentId });
+
+  if (!result.success) {
+    throw new Error(`Failed to fund escrow ${escrowId} for payment_intent ${paymentIntentId}: ${result.error.message}`);
+  }
+
+  log.info({ escrowId, paymentIntentId }, 'Escrow funded via payment_intent.succeeded (PENDING → FUNDED)');
 }
 
 async function handleCheckoutSessionCompleted(
@@ -299,15 +343,44 @@ async function handleInvoicePaid(event: StripeEventEnvelope): Promise<void> {
     throw new Error('invoice.paid missing invoice object');
   }
 
-  const userId = (invoice.metadata as Record<string, string> | undefined)?.user_id;
+  let userId = (invoice.metadata as Record<string, string> | undefined)?.user_id;
   const amountPaid = invoice.amount_paid as number | undefined;
+  const customerId = invoice.customer as string | null | undefined;
 
-  if (userId && amountPaid && amountPaid > 0) {
+  // If user_id is not in metadata (subscription created before metadata was
+  // added, or metadata was stripped), attempt to resolve via stripe_customer_id.
+  if (!userId && customerId) {
+    const userResult = await db.query<{ id: string }>(
+      `SELECT id FROM users WHERE stripe_customer_id = $1 LIMIT 1`,
+      [customerId]
+    );
+    userId = userResult.rows[0]?.id;
+  }
+
+  if (!(amountPaid && amountPaid > 0)) {
+    return;
+  }
+
+  if (userId) {
     await RevenueService.logEvent({
       eventType: 'subscription',
       userId,
       amountCents: amountPaid,
       stripeEventId: event.id,
+    });
+  } else {
+    // Could not resolve user — log with 'system' so revenue is still captured
+    // and ops can reconcile via customer_id in metadata.
+    log.warn(
+      { invoiceId: event.id, amountPaid, customerId: customerId ?? null },
+      'invoice.paid: could not resolve user_id, logging revenue with system'
+    );
+    await RevenueService.logEvent({
+      eventType: 'subscription',
+      userId: 'system',
+      amountCents: amountPaid,
+      stripeEventId: event.id,
+      metadata: { customer_id: customerId ?? null, unresolved_user: true },
     });
   }
 }

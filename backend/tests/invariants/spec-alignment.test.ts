@@ -14,16 +14,19 @@ import { EscrowService } from '../../src/services/EscrowService';
 import { TaskService } from '../../src/services/TaskService';
 
 // Mock database for unit tests
-vi.mock('../../src/db', () => ({
-  db: {
-    query: vi.fn(),
-    transaction: vi.fn(),
-    serializableTransaction: vi.fn(),
-  },
-  isInvariantViolation: vi.fn(),
-  isUniqueViolation: vi.fn(),
-  getErrorMessage: vi.fn((code: string) => `Error: ${code}`),
-}));
+vi.mock('../../src/db', () => {
+  const queryFn = vi.fn();
+  return {
+    db: {
+      query: queryFn,
+      transaction: vi.fn((fn: (q: typeof queryFn) => Promise<unknown>) => fn(queryFn)),
+      serializableTransaction: vi.fn((fn: (q: typeof queryFn) => Promise<unknown>) => fn(queryFn)),
+    },
+    isInvariantViolation: vi.fn(),
+    isUniqueViolation: vi.fn(),
+    getErrorMessage: vi.fn((code: string) => `Error: ${code}`),
+  };
+});
 
 // Mock ScoperAIService to prevent actual AI calls during unit tests
 vi.mock('../../src/services/ScoperAIService', () => ({
@@ -40,6 +43,11 @@ vi.mock('../../src/services/PlanService', () => ({
   PlanService: {
     canCreateTaskWithRisk: vi.fn().mockResolvedValue({ allowed: true }),
   },
+}));
+
+// Mock RevenueService — wired into EscrowService.release() by Fix 1B
+vi.mock('../../src/services/RevenueService', () => ({
+  RevenueService: { logEvent: vi.fn().mockResolvedValue({ success: true, data: { id: 'rev-1' } }) },
 }));
 
 const { db } = await import('../../src/db');
@@ -386,7 +394,7 @@ describe('SPEC ALIGNMENT: Escrow State Machine (PRODUCT_SPEC §4.2, §4.3)', () 
       // Mock 5+: Downstream service calls (earnings tracking, XP, etc.)
       db.query.mockResolvedValue({ rowCount: 0, rows: [] });
 
-      const result = await EscrowService.release({ escrowId: 'escrow-1' });
+      const result = await EscrowService.release({ escrowId: 'escrow-1', stripeTransferId: 'tr_test_spec_align' });
       expect(result.success).toBe(true);
       expect(result.data?.state).toBe('RELEASED');
     });
@@ -423,7 +431,7 @@ describe('SPEC ALIGNMENT: Escrow State Machine (PRODUCT_SPEC §4.2, §4.3)', () 
       // Mock 5+: Downstream service calls
       db.query.mockResolvedValue({ rowCount: 0, rows: [] });
 
-      await EscrowService.release({ escrowId: 'escrow-1' });
+      await EscrowService.release({ escrowId: 'escrow-1', stripeTransferId: 'tr_test_locked_disp' });
 
       // The UPDATE query is the 4th db.query call (index 3) after adding KYC gate
       const updateSql = db.query.mock.calls[3][0];

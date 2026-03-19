@@ -232,16 +232,18 @@ ${input.location ? `Location: ${input.location.city}, ${input.location.state}` :
    * Refine task description (remove slop, standardize format)
    */
   refineTaskDescription: async (rawDescription: string): Promise<string> => {
+    const MAX_INPUT_CHARS = 2000; // Prevent token cost DoS
     // Try AI-based refinement (fast route for low latency), fall back to basic cleanup
     if (AIClient.isConfigured() && rawDescription.length > 10) {
       try {
+        const truncatedInput = [...rawDescription].slice(0, MAX_INPUT_CHARS).join('');
         const result = await AIClient.call({
           route: 'fast',
           temperature: 0.3,
           timeoutMs: 5000,
           maxTokens: 300,
           systemPrompt: 'Clean and structure the following task description. Fix grammar, remove filler words, and standardize format. Keep it concise (max 300 chars). Return ONLY the cleaned description, no extra commentary.',
-          prompt: scrubPII(rawDescription), // GDPR: Scrub PII before AI processing
+          prompt: scrubPII(truncatedInput), // GDPR: Scrub PII before AI processing
         });
         return result.content.trim().slice(0, 500);
       } catch {

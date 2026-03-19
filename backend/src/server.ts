@@ -21,7 +21,7 @@ import { trpcServer } from '@hono/trpc-server';
 import { appRouter } from './routers/index.js';
 import { createContext } from './trpc.js';
 import { config } from './config.js';
-import { securityHeaders, rateLimitMiddleware } from './middleware/security.js';
+import { securityHeaders, rateLimitMiddleware, publicIpRateLimitMiddleware } from './middleware/security.js';
 import { requestIdMiddleware, serverTimingMiddleware } from './middleware/request-id.js';
 import { httpMetricsMiddleware } from './monitoring/http-metrics.js';
 import { createMetricsEndpoint } from './monitoring/metrics.js';
@@ -173,6 +173,11 @@ app.use('/trpc/disputeAI.*', rateLimitMiddleware('ai'));           // 20/min —
 app.use('/trpc/matchmaker.*', rateLimitMiddleware('ai'));          // 20/min — AI matchmaking
 app.use('/trpc/taskDiscovery.getAISuggestions', rateLimitMiddleware('ai')); // 20/min — AI task suggestions
 
+// Tier 3b: Public browse (30/min, IP-based) — DoS protection for unauthenticated endpoint.
+// Must precede the general /trpc/* catch-all and the taskDiscovery.* pattern below
+// so that this tighter limit wins for the no-auth browse endpoint.
+app.use('/trpc/taskDiscovery.browseTasks', rateLimitMiddleware('browse')); // 30/min — public task browse
+
 // Tier 4: Domain-specific
 app.use('/trpc/escrow.*', rateLimitMiddleware('escrow'));           // 30/min — other escrow ops
 app.use('/trpc/task.*', rateLimitMiddleware('task'));               // 60/min — core task ops
@@ -189,7 +194,12 @@ app.use('/trpc/dispute.*', rateLimitMiddleware('mutation'));        // 60/min �
 app.use('/trpc/xpTax.*', rateLimitMiddleware('mutation'));          // 60/min — XP tax mutations
 app.use('/trpc/incidents.*', rateLimitMiddleware('mutation'));      // 60/min — incident reporting (admin-authed separately)
 
-// Tier 6: General (120/min) — catch-all for remaining tRPC and REST routes
+// Tier 6: Public IP rate limit (60/min) — unauthenticated tRPC requests only.
+// Runs before the user-bucket catch-all; skipped automatically when a Bearer
+// token is present (publicIpRateLimitMiddleware bails out early in that case).
+app.use('/trpc/*', publicIpRateLimitMiddleware());                 // 60/min per IP — public/unauthenticated access
+
+// Tier 7: General (120/min) — catch-all for remaining tRPC and REST routes
 app.use('/trpc/*', rateLimitMiddleware('general'));                 // 120/min — all other tRPC routes
 app.use('/api/*', rateLimitMiddleware('general'));                  // 120/min — REST endpoints
 
@@ -363,6 +373,56 @@ app.get('/privacy', serveStatic('privacy-policy.html'));
 app.get('/terms-of-service', serveStatic('terms-of-service.html'));
 app.get('/terms', serveStatic('terms-of-service.html'));
 app.get('/legal', serveStatic('index.html'));
+
+// ============================================================================
+// tRPC BATCH SIZE GUARD
+// ============================================================================
+// tRPC batches are encoded as comma-separated procedure paths in the URL, e.g.:
+//   GET /trpc/task.getById,task.listOpen,user.getProfile,...
+// Without a limit an attacker can craft a single HTTP request with hundreds of
+// operations, bypassing per-procedure rate limits and exhausting the DB pool.
+// We cap at 10 operations per request — enough for any legitimate UI use-case.
+//
+// POST BODY BATCHING — FALSE ALARM (URL-path check already covers it):
+// tRPC v11 uses the @trpc/server fetchRequestHandler which always derives the
+// procedure path(s) from url.pathname, never from the POST body.
+// Source: node_modules/@trpc/server/dist/adapters/fetch/index.mjs
+//   const path = trimSlashes(pathname.slice(endpoint.length));
+// Source: node_modules/@trpc/server/dist/resolveResponse-BVDlNZwN.mjs
+//   const isBatchCall = opts.searchParams.get("batch") === "1";
+//   const paths = isBatchCall ? opts.path.split(",") : [opts.path];
+// Both GET and POST batches encode all procedure names comma-separated in the
+// URL path (e.g. /trpc/a,b,c?batch=1). The POST body only carries per-procedure
+// input payloads indexed by position — it does NOT introduce additional
+// procedures that bypass the URL. Therefore this URL-path comma-count check
+// is the single correct and sufficient guard for all batch modes.
+
+const TRPC_MAX_BATCH_SIZE = 10;
+
+app.use('/trpc/*', async (c, next) => {
+  // The tRPC path after "/trpc/" may contain comma-separated procedure names
+  // (batch) or a single name (non-batch). Extract it from the raw URL.
+  // NOTE: POST body batching in tRPC v11 also encodes procedures in the URL
+  // path — see comment block above. This check covers all batch modes.
+  const rawPath = c.req.path; // e.g. "/trpc/task.getById,user.getProfile"
+  const trpcPath = rawPath.replace(/^\/trpc\//, ''); // strip leading "/trpc/"
+
+  // Split on commas to count distinct operations in this batch request
+  const operationCount = trpcPath.split(',').length;
+
+  if (operationCount > TRPC_MAX_BATCH_SIZE) {
+    return c.json(
+      {
+        error: 'Batch Too Large',
+        message: `tRPC batch requests are limited to ${TRPC_MAX_BATCH_SIZE} operations. Received ${operationCount}.`,
+        maxBatchSize: TRPC_MAX_BATCH_SIZE,
+      },
+      400,
+    );
+  }
+
+  await next();
+});
 
 // ============================================================================
 // tRPC HANDLER

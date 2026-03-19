@@ -24,8 +24,39 @@ import { AIClient } from './AIClient.js';
 import { DisputeAnalysisSchema, EvidenceRequestSchema } from '../lib/ai-response-schemas.js';
 import { scrubPII } from '../lib/pii-scrubber.js';
 import { aiLogger } from '../logger.js';
+import { PromptInjectionGuard } from '../ai/PromptInjectionGuard.js';
+import type { Logger } from 'pino';
 
 const log = aiLogger.child({ service: 'DisputeAIService' });
+
+// ============================================================================
+// PROMPT SAFETY HELPERS
+// ============================================================================
+
+/**
+ * Scan a user-supplied field for prompt injection.
+ * BLOCK → replace with redaction placeholder.
+ * FLAG  → use the sanitized version from PromptInjectionGuard.
+ * ALLOW → return original text unchanged.
+ */
+function sanitizeForPrompt(text: string, fieldName: string, logger: Logger): string {
+  const result = PromptInjectionGuard.analyze(text);
+  if (result.decision === 'BLOCK') {
+    logger.warn(
+      { fieldName, score: result.score, patterns: result.matchedPatterns },
+      'DisputeAI: prompt injection blocked in dispute field',
+    );
+    return '[CONTENT REDACTED: injection attempt detected]';
+  }
+  if (result.decision === 'FLAG') {
+    logger.warn(
+      { fieldName, score: result.score, patterns: result.matchedPatterns },
+      'DisputeAI: suspicious content flagged in dispute field, using sanitized version',
+    );
+    return result.sanitizedInput ?? text;
+  }
+  return text;
+}
 
 // ============================================================================
 // TYPES
@@ -412,6 +443,20 @@ export const DisputeAIService = {
             ? ctx.evidence.map(e => `[${e.uploader_user_id === ctx.dispute.poster_id ? 'Poster' : 'Worker'}] ${e.content_type} uploaded ${new Date(e.created_at).toISOString()}`).join('\n')
             : 'No evidence submitted yet.';
 
+          // Sanitize user-supplied fields before interpolation into AI prompt
+          const safeDisputeReason = sanitizeForPrompt(ctx.dispute.reason ?? '', 'dispute.reason', log);
+          const safeDisputeDesc = sanitizeForPrompt(
+            [...(ctx.dispute.description ?? '')].slice(0, 2000).join(''),
+            'dispute.description',
+            log,
+          );
+          const safeTaskTitle = sanitizeForPrompt(ctx.task.title ?? '', 'task.title', log);
+          const safeTaskDesc = sanitizeForPrompt(
+            [...(ctx.task.description ?? '')].slice(0, 2000).join(''),
+            'task.description',
+            log,
+          );
+
           const aiResult = await AIClient.callJSON<DisputeAnalysis>({
             route: 'reasoning',
             schema: DisputeAnalysisSchema,
@@ -444,14 +489,14 @@ Return JSON with EXACTLY these fields:
 
 DISPUTE:
 - ID: ${ctx.dispute.id}
-- Reason: ${ctx.dispute.reason}
-- Description: ${ctx.dispute.description}
+- Reason: ${safeDisputeReason}
+- Description: ${safeDisputeDesc}
 - Initiated by: ${ctx.dispute.initiated_by === ctx.dispute.poster_id ? 'POSTER' : 'WORKER'}
 - State: ${ctx.dispute.state}
 
 TASK:
-- Title: ${ctx.task.title}
-- Description: ${ctx.task.description}
+- Title: ${safeTaskTitle}
+- Description: ${safeTaskDesc}
 - Price: $${(ctx.task.price / 100).toFixed(2)}
 - State: ${ctx.task.state}
 - Completed: ${ctx.task.completed_at ? 'Yes' : 'No'}
@@ -543,6 +588,20 @@ USER HISTORIES:
 
       if (AIClient.isConfigured()) {
         try {
+          // Sanitize user-supplied fields before interpolation into AI prompt
+          const safeDisputeReason = sanitizeForPrompt(ctx.dispute.reason ?? '', 'dispute.reason', log);
+          const safeDisputeDesc = sanitizeForPrompt(
+            [...(ctx.dispute.description ?? '')].slice(0, 2000).join(''),
+            'dispute.description',
+            log,
+          );
+          const safeTaskTitle = sanitizeForPrompt(ctx.task.title ?? '', 'task.title', log);
+          const safeTaskDesc = sanitizeForPrompt(
+            [...(ctx.task.description ?? '')].slice(0, 2000).join(''),
+            'task.description',
+            log,
+          );
+
           const aiResult = await AIClient.callJSON<EvidenceRequest>({
             route: 'fast',
             schema: EvidenceRequestSchema,
@@ -563,9 +622,9 @@ Questions should be:
 - Actionable (ask for concrete evidence: photos, timestamps, messages)`,
             prompt: scrubPII(`Generate evidence request questions for this dispute:
 
-Dispute reason: ${ctx.dispute.reason}
-Description: ${ctx.dispute.description}
-Task: "${ctx.task.title}" — ${ctx.task.description}
+Dispute reason: ${safeDisputeReason}
+Description: ${safeDisputeDesc}
+Task: "${safeTaskTitle}" — ${safeTaskDesc}
 Task price: $${(ctx.task.price / 100).toFixed(2)}
 Initiated by: ${ctx.dispute.initiated_by === ctx.dispute.poster_id ? 'POSTER' : 'WORKER'}
 Evidence already submitted: ${ctx.evidence.length} items`),

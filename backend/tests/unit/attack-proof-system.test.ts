@@ -18,16 +18,19 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Mocks — shared across ProofService and EscrowService suites
 // ---------------------------------------------------------------------------
 
-vi.mock('../../src/db', () => ({
-  db: {
-    query: vi.fn(),
-    transaction: vi.fn(),
-    serializableTransaction: vi.fn(),
-  },
-  isInvariantViolation: vi.fn(() => false),
-  isUniqueViolation: vi.fn(() => false),
-  getErrorMessage: vi.fn((code: string) => `Error ${code}`),
-}));
+vi.mock('../../src/db', () => {
+  const queryFn = vi.fn();
+  return {
+    db: {
+      query: queryFn,
+      transaction: vi.fn((fn: (q: typeof queryFn) => Promise<unknown>) => fn(queryFn)),
+      serializableTransaction: vi.fn((fn: (q: typeof queryFn) => Promise<unknown>) => fn(queryFn)),
+    },
+    isInvariantViolation: vi.fn(() => false),
+    isUniqueViolation: vi.fn(() => false),
+    getErrorMessage: vi.fn((code: string) => `Error ${code}`),
+  };
+});
 
 vi.mock('../../src/logger', () => ({
   escrowLogger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
@@ -99,6 +102,10 @@ vi.mock('../../src/services/XPService', () => ({
 
 vi.mock('../../src/services/SelfInsurancePoolService.js', () => ({
   SelfInsurancePoolService: { recordContribution: vi.fn().mockResolvedValue({ success: true }) },
+}));
+
+vi.mock('../../src/services/RevenueService', () => ({
+  RevenueService: { logEvent: vi.fn().mockResolvedValue({ success: true, data: { id: 'rev-1' } }) },
 }));
 
 // Mocks needed when TaskService is imported (it pulls in ScoperAIService → AIClient)
@@ -469,7 +476,7 @@ describe('Attack #8 — Abort after completing 2 of 3 steps to maximize prorate 
       .mockResolvedValueOnce({ rows: [workerKyc], rowCount: 1 } as never)   // KYC check
       .mockResolvedValueOnce({ rows: [released], rowCount: 1 } as never);   // UPDATE released
 
-    const result = await EscrowService.release({ escrowId: 'esc-1' });
+    const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_proof' });
 
     // Service succeeds — but the prorate calculation was NEVER applied
     expect(result.success).toBe(true);
@@ -500,7 +507,7 @@ describe('Attack #9 — Abort before any steps with prorate_on_abort=true', () =
       .mockResolvedValueOnce({ rows: [workerKyc], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [released], rowCount: 1 } as never);
 
-    const result = await EscrowService.release({ escrowId: 'esc-1' });
+    const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_proof' });
     expect(result.success).toBe(true);
     // VULNERABLE: 6000 released despite 0 steps completed
   });
@@ -525,7 +532,7 @@ describe('Attack #10 — Abort on final step (2/3 completed)', () => {
       .mockResolvedValueOnce({ rows: [workerKyc], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [released], rowCount: 1 } as never);
 
-    const result = await EscrowService.release({ escrowId: 'esc-1' });
+    const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_proof' });
     expect(result.success).toBe(true);
     // VULNERABLE: full 3000 released even though step 3 was aborted
   });
@@ -570,7 +577,7 @@ describe('Attack #11 — prorate_on_abort=false, abort mid-task (should get $0)'
       // getById fallback returns REFUNDED state
       .mockResolvedValueOnce({ rows: [makeEscrow({ state: 'REFUNDED', poster_id: 'poster-1', worker_id: 'hustler-1' })], rowCount: 1 } as never);
 
-    const releaseResult = await EscrowService.release({ escrowId: 'esc-1' });
+    const releaseResult = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_proof' });
     expect(releaseResult.success).toBe(false);
     if (!releaseResult.success) expect(releaseResult.error.code).toBe('HX002'); // ESCROW_TERMINAL
   });
@@ -869,7 +876,7 @@ describe('Attack #19 — Double release (idempotency check)', () => {
       .mockResolvedValueOnce({ rows: [workerKyc], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [released], rowCount: 1 } as never);
 
-    const first = await EscrowService.release({ escrowId: 'esc-1' });
+    const first = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_proof' });
     expect(first.success).toBe(true);
 
     // Reset mock queue between the two release() calls (resetAllMocks clears queued values)
@@ -887,7 +894,7 @@ describe('Attack #19 — Double release (idempotency check)', () => {
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)                                   // UPDATE (no FUNDED row matched)
       .mockResolvedValueOnce({ rows: [makeEscrow({ state: 'RELEASED', poster_id: 'poster-1', worker_id: 'hustler-1' })], rowCount: 1 } as never); // getById
 
-    const second = await EscrowService.release({ escrowId: 'esc-1' });
+    const second = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_proof' });
     expect(second.success).toBe(false);
     if (!second.success) expect(second.error.code).toBe('HX002'); // ESCROW_TERMINAL
   });
@@ -922,7 +929,7 @@ describe('Attack #20 — Release escrow for wrong beneficiary (worker_id mismatc
       .mockResolvedValueOnce({ rows: [released], rowCount: 1 } as never);
 
     // release() has no hustlerId parameter — attacker cannot inject one
-    const result = await EscrowService.release({ escrowId: 'esc-1' });
+    const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_proof' });
 
     expect(result.success).toBe(true);
     // Verify XP was awarded to the correct worker

@@ -35,6 +35,16 @@ vi.mock('../../src/logger', () => ({
     warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn(),
   },
   escrowLogger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
+  aiLogger: {
+    child: () => ({ warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() }),
+    warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn(),
+  },
+}));
+
+vi.mock('../../src/services/ComplianceGuardianService', () => ({
+  ComplianceGuardianService: {
+    evaluate: vi.fn().mockResolvedValue({ tier: 'clean', score: 0, triggeredRules: [] }),
+  },
 }));
 
 // ---------------------------------------------------------------------------

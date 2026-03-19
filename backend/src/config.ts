@@ -172,8 +172,13 @@ export const config = {
   },
 
   // Job Queue Security
+  // SECURITY: No hardcoded fallback. In production the validator enforces this is set.
+  // In dev/test a clearly-labeled non-production value is used so the queue still functions locally.
   queue: {
-    hmacSecret: process.env.QUEUE_HMAC_SECRET || 'dev-queue-hmac-secret-not-for-production',
+    hmacSecret: process.env.QUEUE_HMAC_SECRET ||
+      (process.env.NODE_ENV === 'production'
+        ? '' // will be caught by validateConfig() → process.exit(1)
+        : 'dev-only-hmac-secret-local-use'),
   },
 
   // Application
@@ -229,6 +234,19 @@ export function validateConfig(): { valid: boolean; errors: string[]; warnings: 
     } else if (!/^[0-9a-fA-F]{64}$/.test(config.tax.encryptionKey)) {
       errors.push('TAX_TIN_ENCRYPTION_KEY must be exactly 64 hex characters (32 bytes) for AES-256-GCM — generate with: openssl rand -hex 32');
     }
+  }
+
+  // SECURITY FIX (v2.9.4): In production, fatal config errors must crash the
+  // process immediately rather than silently continuing. A misconfigured
+  // deployment (e.g. missing Firebase credentials) would otherwise serve every
+  // authenticated request as a 401 with no alerting.
+  if (config.app.isProduction && errors.length > 0) {
+    // eslint-disable-next-line no-console
+    console.error(
+      '[FATAL] Production startup aborted — missing required configuration:\n' +
+        errors.map(e => `  • ${e}`).join('\n')
+    );
+    process.exit(1);
   }
 
   return { valid: errors.length === 0, errors, warnings };

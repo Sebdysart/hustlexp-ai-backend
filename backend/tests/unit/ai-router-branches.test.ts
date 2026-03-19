@@ -152,16 +152,16 @@ beforeEach(() => {
 // approach because that test uses a fresh module but this tests the singleton path)
 // ===========================================================================
 
-describe('callAI — Redis fail-open (checkBudget catch branch)', () => {
-  it('allows the call when Redis.get throws during agent budget check', async () => {
-    // Redis.get rejects → checkBudget() catch block → returns { allowed: true }
+describe('callAI — Redis fail-closed (checkBudget catch branch)', () => {
+  it('blocks the call (TRPCError) when Redis.get throws during agent budget check', async () => {
+    // Redis.get rejects → checkBudget() catch block → returns { allowed: false }
+    // This is fail-CLOSED behavior: Redis outage must not silently allow unlimited AI spend.
     mockGet.mockRejectedValue(new Error('Redis connection refused'));
 
-    const result = await callAI('judge', USER_ID, 'test prompt');
-
-    expect(result.text).toBe('groq response');
-    expect(result.provider).toBe('groq');
-    expect(result.attempts).toBe(1);
+    await expect(callAI('judge', USER_ID, 'test prompt')).rejects.toMatchObject({
+      code: 'TOO_MANY_REQUESTS',
+      message: expect.stringContaining('HX701'),
+    });
   });
 });
 

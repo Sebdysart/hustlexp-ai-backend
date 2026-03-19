@@ -40,9 +40,19 @@ const connections = new Map<string, Set<SSEConnection>>();
 export const MAX_CONNECTIONS_PER_USER = 5;
 
 /**
+ * Reconnect flood protection: track per-user connection timestamps (epoch ms).
+ * Enforces a maximum of RECONNECT_LIMIT attempts within RECONNECT_WINDOW_MS.
+ */
+const reconnectTracker = new Map<string, number[]>();
+const RECONNECT_LIMIT = 10;
+const RECONNECT_WINDOW_MS = 60_000; // 60 seconds
+
+/**
  * Add SSE connection to registry.
  * Throws SSE_CONNECTION_LIMIT if the user already has MAX_CONNECTIONS_PER_USER
  * active connections — caller (sse-handler) must catch and return 429.
+ * Throws SSE_CONNECTION_LIMIT if the user has reconnected more than
+ * RECONNECT_LIMIT times within RECONNECT_WINDOW_MS — caller must return 429.
  */
 export function addConnection(userId: string, conn: SSEConnection): void {
   const existing = connections.get(userId);
@@ -51,6 +61,24 @@ export function addConnection(userId: string, conn: SSEConnection): void {
       `SSE_CONNECTION_LIMIT: User ${userId} has reached the maximum of ${MAX_CONNECTIONS_PER_USER} concurrent connections`
     );
   }
+
+  // Reconnect flood check: count connection attempts within the sliding window
+  const now = Date.now();
+  const windowStart = now - RECONNECT_WINDOW_MS;
+  const timestamps = (reconnectTracker.get(userId) ?? []).filter(t => t > windowStart);
+  if (timestamps.length >= RECONNECT_LIMIT) {
+    throw new Error(
+      `SSE_CONNECTION_LIMIT: User ${userId} has exceeded the reconnect rate limit of ${RECONNECT_LIMIT} connections per ${RECONNECT_WINDOW_MS / 1000}s`
+    );
+  }
+  timestamps.push(now);
+  // Clean up map entries whose window has fully expired to prevent unbounded growth.
+  if (timestamps.length === 0) {
+    reconnectTracker.delete(userId);
+  } else {
+    reconnectTracker.set(userId, timestamps);
+  }
+
   if (!existing) {
     connections.set(userId, new Set());
   }
@@ -96,4 +124,42 @@ export function getConnectionCount(userId?: string): number {
     total += set.size;
   }
   return total;
+}
+
+/**
+ * Clear the reconnect tracker for a given user (or all users).
+ * Intended for use in tests to reset state between test cases.
+ */
+export function clearReconnectTracker(userId?: string): void {
+  if (userId) {
+    reconnectTracker.delete(userId);
+  } else {
+    reconnectTracker.clear();
+  }
+}
+
+/**
+ * Force-close all SSE connections for a user (e.g. after a ban).
+ *
+ * Closes every ReadableStreamDefaultController for the user, marks each
+ * connection as closed, and removes the user from the registry entirely.
+ * The client will receive a stream end and can attempt to reconnect — at
+ * which point the banned-user check in the auth layer will reject them.
+ */
+export function forceDisconnectUser(userId: string): void {
+  const set = connections.get(userId);
+  if (!set) return;
+
+  for (const conn of set) {
+    conn.closed = true;
+    try {
+      conn.controller.close();
+    } catch {
+      // Controller may already be closed — safe to ignore
+    }
+  }
+
+  connections.delete(userId);
+  // Clear reconnect timestamps so the flood window resets (ban wipes history)
+  reconnectTracker.delete(userId);
 }

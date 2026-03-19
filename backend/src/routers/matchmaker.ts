@@ -184,8 +184,8 @@ export const matchmakerRouter = router({
    */
   suggestPrice: protectedProcedure
     .input(z.object({
-      title: z.string(),
-      description: z.string(),
+      title: z.string().min(3).max(200).trim(),
+      description: z.string().max(2000).trim(),
       category: z.string().optional(),
     }))
     .query(async ({ input }) => {

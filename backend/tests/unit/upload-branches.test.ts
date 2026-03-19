@@ -118,6 +118,7 @@ describe('upload.getPresignedUrl — R2 configured (presigned URL path)', () => 
       taskId: T_UUID,
       filename: 'upload.jpg',
       contentType: 'image/jpeg',
+      fileSize: 1024,
     });
 
     expect(mocks.mockGetSignedUrl).toHaveBeenCalledTimes(1);
@@ -140,18 +141,18 @@ describe('upload.getPresignedUrl — R2 configured (presigned URL path)', () => 
     expect(ctorArgs.ContentLength).toBe(2048);
   });
 
-  it('omits ContentLength from PutObjectCommand when fileSize is absent', async () => {
+  it('always includes ContentLength in PutObjectCommand (fileSize is required)', async () => {
     mocks.mockGetSignedUrl.mockResolvedValue('https://presigned.example.com?sig=nosz');
 
     await makeCaller().getPresignedUrl({
       taskId: T_UUID,
       filename: 'small.jpg',
       contentType: 'image/jpeg',
-      // fileSize intentionally omitted
+      fileSize: 512,
     });
 
     const ctorArgs = mocks.mockPutObjectCommandCtor.mock.calls[0][0];
-    expect(ctorArgs.ContentLength).toBeUndefined();
+    expect(ctorArgs.ContentLength).toBe(512);
   });
 
   it('publicUrl contains the bucket name when R2_PUBLIC_URL is not set', async () => {
@@ -165,6 +166,7 @@ describe('upload.getPresignedUrl — R2 configured (presigned URL path)', () => 
         taskId: T_UUID,
         filename: 'pub.jpg',
         contentType: 'image/jpeg',
+        fileSize: 1024,
       });
 
       expect(result.publicUrl).toContain('hustlexp-bucket');
@@ -184,6 +186,7 @@ describe('upload.getPresignedUrl — R2 configured (presigned URL path)', () => 
         taskId: T_UUID,
         filename: 'cdn.jpg',
         contentType: 'image/jpeg',
+        fileSize: 1024,
       });
 
       expect(result.publicUrl).toContain('https://cdn.hustlexp.com');
@@ -200,6 +203,7 @@ describe('upload.getPresignedUrl — R2 configured (presigned URL path)', () => 
       taskId: T_UUID,
       filename: 'meta.jpg',
       contentType: 'image/jpeg',
+      fileSize: 1024,
     });
 
     const ctorArgs = mocks.mockPutObjectCommandCtor.mock.calls[0][0];
@@ -215,6 +219,7 @@ describe('upload.getPresignedUrl — R2 configured (presigned URL path)', () => 
       filename: 'chat.jpg',
       contentType: 'image/jpeg',
       purpose: 'message',
+      fileSize: 2048,
     });
 
     expect(result.key).toContain('messages/');
@@ -231,6 +236,7 @@ describe('upload.getPresignedUrl — R2 configured (presigned URL path)', () => 
       filename: 'proof.jpg',
       contentType: 'image/jpeg',
       purpose: 'proof',
+      fileSize: 1024,
     });
 
     expect(result.key).toContain('proofs/');
@@ -244,6 +250,7 @@ describe('upload.getPresignedUrl — R2 configured (presigned URL path)', () => 
       taskId: T_UUID,
       filename: 'photo.heic',
       contentType: 'image/heic',
+      fileSize: 3000000,
     });
 
     expect(result.key).toContain('photo.heic');
@@ -258,6 +265,7 @@ describe('upload.getPresignedUrl — R2 configured (presigned URL path)', () => 
       taskId: T_UUID,
       filename: 'exp.jpg',
       contentType: 'image/jpeg',
+      fileSize: 1024,
     });
 
     const expiresAt = new Date(result.expiresAt).getTime();
@@ -271,6 +279,7 @@ describe('upload.getPresignedUrl — R2 configured (presigned URL path)', () => 
       taskId: T_UUID,
       filename: 'img.webp',
       contentType: 'image/webp',
+      fileSize: 1024,
     });
 
     const ctorArgs = mocks.mockPutObjectCommandCtor.mock.calls[0][0];
@@ -284,6 +293,7 @@ describe('upload.getPresignedUrl — R2 configured (presigned URL path)', () => 
       taskId: T_UUID,
       filename: 'bkt.jpg',
       contentType: 'image/jpeg',
+      fileSize: 1024,
     });
 
     const ctorArgs = mocks.mockPutObjectCommandCtor.mock.calls[0][0];

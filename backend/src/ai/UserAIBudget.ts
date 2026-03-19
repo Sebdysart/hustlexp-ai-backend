@@ -35,7 +35,9 @@ export async function checkUserBudget(userId: string): Promise<{ allowed: boolea
     const spent = Number(await getRedis().get(key) ?? 0);
     return { allowed: spent < USER_DAILY_CEILING_CENTS, spent, limit: USER_DAILY_CEILING_CENTS };
   } catch {
-    return { allowed: true, spent: 0, limit: USER_DAILY_CEILING_CENTS };
+    // Fail closed: if Redis is unavailable, deny AI requests to prevent unbounded spending.
+    // Ops must restore Redis connectivity to re-enable AI features.
+    return { allowed: false, spent: 0, limit: USER_DAILY_CEILING_CENTS };
   }
 }
 
@@ -55,7 +57,9 @@ export async function checkGlobalBudget(): Promise<{ allowed: boolean; spent: nu
     const spent = Number(await getRedis().get(key) ?? 0);
     return { allowed: spent < GLOBAL_DAILY_CEILING_CENTS, spent, limit: GLOBAL_DAILY_CEILING_CENTS };
   } catch {
-    return { allowed: true, spent: 0, limit: GLOBAL_DAILY_CEILING_CENTS };
+    // Fail closed: if Redis is unavailable, deny AI requests to prevent unbounded spending.
+    // Ops must restore Redis connectivity to re-enable AI features.
+    return { allowed: false, spent: 0, limit: GLOBAL_DAILY_CEILING_CENTS };
   }
 }
 

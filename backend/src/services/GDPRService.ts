@@ -21,6 +21,8 @@ import { NotificationService } from './NotificationService.js';
 import { EscrowService } from './EscrowService.js';
 import { TaskService } from './TaskService.js';
 import { logger } from '../logger.js';
+import { invalidateAuthCacheForUser } from '../auth-cache.js';
+import { forceDisconnectUser } from '../realtime/connection-registry.js';
 
 const log = logger.child({ service: 'GDPRService' });
 
@@ -626,9 +628,15 @@ export const GDPRService = {
         return deletionResult;
       }
       
+      // Immediately evict auth cache and force-disconnect SSE streams for the
+      // deleted user so the cached pre-deletion user row cannot be reused and
+      // any live connections are terminated without waiting for TTL expiry.
+      invalidateAuthCacheForUser(userId);
+      forceDisconnectUser(userId);
+
       const completedAt = new Date();
       const deletedAt = completedAt;
-      
+
       // Update request as completed
       await db.query<GDPRDataRequest>(
         `UPDATE gdpr_data_requests
@@ -1105,7 +1113,8 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
              stripe_customer_id = NULL,
              stripe_connect_id = NULL,
              avatar_url = NULL,
-             bio = NULL
+             bio = NULL,
+             flagged_phrase_counter = '{}'::jsonb
          WHERE id = $3`,
         [anonymizedEmail, deletedAt, userId]
       );
@@ -1133,6 +1142,30 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
         [userId]
       );
       
+      // Anonymize proofs where the user was the submitter
+      // Only SET columns that actually exist on the proofs table
+      await query(
+        `UPDATE proofs
+         SET submitter_id = $1,
+             description = '[deleted]'
+         WHERE submitter_id = $2`,
+        [anonymizedId, userId]
+      );
+
+      // Anonymize proof_submissions for the same user — GPS and biometric fields
+      // are PII that live on proof_submissions, not proofs
+      await query(
+        `UPDATE proof_submissions
+         SET gps_coordinates = NULL,
+             gps_accuracy_meters = NULL,
+             biometric_verified = FALSE,
+             biometric_confidence = NULL,
+             face_match_score = NULL,
+             liveness_score = NULL
+         WHERE user_id = $1`,
+        [userId]
+      );
+
       // Anonymize task messages (sender_id and recipient_id are NOT NULL in schema)
       // Since user record is anonymized (not deleted), foreign keys remain valid
       // We anonymize content and remove photos for privacy
@@ -1199,11 +1232,39 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
         [anonymizedId, userId]
       );
       
+      // Bug 3: Remove referral_codes linkage
+      await query(
+        `DELETE FROM referral_codes WHERE user_id = $1`,
+        [userId]
+      );
+
+      // Anonymize referral_redemptions to remove user linkage
+      await query(
+        `UPDATE referral_redemptions SET referrer_id = NULL WHERE referrer_id = $1`,
+        [userId]
+      );
+      await query(
+        `UPDATE referral_redemptions SET referred_id = NULL WHERE referred_id = $1`,
+        [userId]
+      );
+
       // Anonymize content moderation queue (keep moderation records but remove user reference)
       await query(
         `UPDATE content_moderation_queue
          SET user_id = NULL
          WHERE user_id = $1`,
+        [userId]
+      );
+
+      // FIX: Anonymize admin_actions — keep rows for financial audit trail, but
+      // clear the free-text reason field and mark metadata with gdpr_deleted so
+      // it's clear the subject has been deleted. Do NOT delete rows (audit trail).
+      // The target_id UUID is retained as a legal gray area for audit purposes.
+      await query(
+        `UPDATE admin_actions
+         SET metadata = metadata || '{"gdpr_deleted": true}'::jsonb,
+             reason = '[deleted]'
+         WHERE target_id = $1`,
         [userId]
       );
     });

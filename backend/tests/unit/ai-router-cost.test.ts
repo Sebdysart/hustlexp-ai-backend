@@ -246,17 +246,19 @@ describe('callAI — provider fallback', () => {
 });
 
 // ---------------------------------------------------------------------------
-// callAI — Redis failure (budget check fallback to "allow")
+// callAI — Redis failure (budget check fails CLOSED)
 // ---------------------------------------------------------------------------
 
 describe('callAI — Redis unavailable', () => {
-  it('allows the call when Redis is unavailable during budget check', async () => {
-    // Simulate Redis.get throwing
+  it('denies the call when Redis is unavailable during agent-level budget check', async () => {
+    // Simulate Redis.get throwing for the agent-level checkBudget
     mockGet.mockRejectedValue(new Error('Redis connection refused'));
 
-    // Should still succeed (fail-open)
-    const result = await callAI('judge', USER_ID, 'test');
-    expect(result.text).toBe('AI response');
+    // Should deny (fail-closed) — throws TOO_MANY_REQUESTS for budget exceeded
+    await expect(callAI('judge', USER_ID, 'test')).rejects.toMatchObject({
+      code: 'TOO_MANY_REQUESTS',
+      message: expect.stringContaining('HX701'),
+    });
   });
 });
 

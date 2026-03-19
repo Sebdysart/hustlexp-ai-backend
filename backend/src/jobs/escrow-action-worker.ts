@@ -22,11 +22,68 @@
 import { db } from '../db.js';
 import { StripeService } from '../services/StripeService.js';
 import { TaskService } from '../services/TaskService.js';
+import { notifyAdmins } from '../services/AdminNotificationHelper.js';
 import { workerLogger } from '../logger.js';
 import { config } from '../config.js';
 import { verifyJobSignature } from './queues.js';
 import { z } from 'zod';
 import type { Job } from 'bullmq';
+
+// ============================================================================
+// STRIPE ACCOUNT RESTRICTION ERROR CODES (Bug 1)
+// These codes represent non-retryable Stripe Connect account states.
+// When encountered, the escrow must be locked for admin review rather
+// than retried — retrying will never succeed.
+// ============================================================================
+const STRIPE_ACCOUNT_RESTRICTION_CODES = new Set([
+  'account_closed',
+  'account_invalid',
+  'account_deauthorized',
+  'transfer_not_reversible',
+]);
+
+function isStripeAccountRestrictionError(error: unknown): boolean {
+  if (error instanceof Error && 'code' in error) {
+    const stripeError = error as Error & { code?: string };
+    return STRIPE_ACCOUNT_RESTRICTION_CODES.has(stripeError.code ?? '');
+  }
+  return false;
+}
+
+async function lockEscrowForStripeRestriction(escrowId: string, workerId: string, stripeCode: string): Promise<void> {
+  // Transition escrow to LOCKED_DISPUTE with a stripe_account_restricted reason.
+  // This is a non-retryable state — admin must manually resolve.
+  await db.query(
+    `UPDATE escrows
+     SET state = 'LOCKED_DISPUTE',
+         version = version + 1
+     WHERE id = $1
+       AND state IN ('FUNDED', 'LOCKED_DISPUTE')`,
+    [escrowId],
+  );
+
+  await db.query(
+    `INSERT INTO escrow_events (escrow_id, from_state, to_state, actor_id, actor_type, metadata)
+     VALUES ($1, 'FUNDED', 'LOCKED_DISPUTE', NULL, 'system', $2)`,
+    [escrowId, JSON.stringify({ reason: 'stripe_account_restricted', stripe_code: stripeCode, worker_id: workerId })],
+  );
+
+  try {
+    await notifyAdmins({
+      title: 'Escrow Locked: Stripe Account Restricted',
+      body: `Escrow ${escrowId} could not be released — worker Stripe account is restricted (code: ${stripeCode}). Manual admin review required.`,
+      deepLink: `/admin/escrows/${escrowId}`,
+      priority: 'CRITICAL',
+      metadata: { escrow_id: escrowId, worker_id: workerId, stripe_code: stripeCode },
+    });
+  } catch (notifyError) {
+    // Non-fatal: notification failure must not mask the core lock action
+    log.error(
+      { err: notifyError instanceof Error ? notifyError.message : String(notifyError), escrowId },
+      'Failed to notify admins of stripe account restriction — escrow is locked regardless',
+    );
+  }
+}
 
 const log = workerLogger.child({ worker: 'escrow-action' });
 
@@ -181,7 +238,9 @@ async function handleReleaseRequest(
     throw new Error(`Task ${taskId} has no worker_id`);
   }
 
-  // Get worker's Stripe Connect ID
+  // Bug 2 Fix: Re-fetch stripe_connect_id from DB immediately before calling
+  // createTransfer(). The job payload may have captured a stale account ID if
+  // the worker updated their Connect account between queue time and execution.
   const workerResult = await db.query<{ stripe_connect_id: string | null }>(
     'SELECT stripe_connect_id FROM users WHERE id = $1',
     [task.worker_id]
@@ -216,15 +275,33 @@ async function handleReleaseRequest(
 
   log.info({ escrowId: escrow.id, escrowAmount, platformFeeCents, netPayoutCents }, 'Platform fee applied to transfer');
 
-  // Create Stripe transfer
-  const transferResult = await StripeService.createTransfer({
-    escrowId: escrow.id,
-    taskId,
-    workerId: task.worker_id,
-    workerStripeAccountId: worker.stripe_connect_id,
-    amount: netPayoutCents,
-    description: `Dispute resolution: ${reason}`,
-  });
+  // Bug 1 Fix: Wrap createTransfer in a try/catch that detects non-retryable
+  // Stripe account restriction codes. When detected, lock the escrow for admin
+  // review and return without rethrowing so BullMQ does NOT retry the job.
+  let transferResult: Awaited<ReturnType<typeof StripeService.createTransfer>>;
+  try {
+    transferResult = await StripeService.createTransfer({
+      escrowId: escrow.id,
+      taskId,
+      workerId: task.worker_id,
+      workerStripeAccountId: worker.stripe_connect_id,
+      amount: netPayoutCents,
+      description: `Dispute resolution: ${reason}`,
+    });
+  } catch (stripeError) {
+    if (isStripeAccountRestrictionError(stripeError)) {
+      const code = (stripeError as Error & { code?: string }).code ?? 'unknown';
+      log.error(
+        { escrowId: escrow.id, workerId: task.worker_id, stripeCode: code },
+        'CRITICAL: Stripe account restricted — locking escrow, NOT retrying',
+      );
+      await lockEscrowForStripeRestriction(escrow.id, task.worker_id, code);
+      // Return without rethrowing — BullMQ must not retry this job
+      return;
+    }
+    // Unknown Stripe error — rethrow for normal BullMQ retry
+    throw stripeError;
+  }
 
   if (!transferResult.success) {
     throw new Error(`Failed to create transfer: ${transferResult.error.message}`);
@@ -302,6 +379,23 @@ async function handleRefundRequest(
 
 /**
  * Handle SPLIT: Create refund + transfer, store both IDs, set REFUND_PARTIAL (MVP-authoritative)
+ *
+ * ATOMICITY DESIGN:
+ * The two Stripe calls (refund + transfer) cannot be wrapped in a single DB transaction
+ * because they are external API calls. The idempotency strategy is:
+ *
+ *   1. Before calling Stripe refund, check escrow_events for an existing
+ *      'partial_refund_pending' record. If found, reuse its stripe_refund_id
+ *      and skip the Stripe refund call entirely (idempotent retry).
+ *   2. After Stripe refund succeeds, immediately INSERT a 'partial_refund_pending'
+ *      escrow_events row with the stripe_refund_id. This is the durable checkpoint.
+ *      If the process crashes or the transfer fails afterward, the next BullMQ
+ *      retry will find this record and skip re-issuing the refund.
+ *   3. The final DB UPDATE only runs after both Stripe calls succeed.
+ *
+ * This prevents the double-refund bug:
+ *   Stripe refund ✓  →  [crash / transfer fails]  →  BullMQ retry
+ *   Retry detects 'partial_refund_pending' event  →  skips Stripe refund  →  retries transfer only
  */
 async function handlePartialRefundRequest(
   escrow: { id: string; version: number; amount: number; stripe_payment_intent_id: string | null; stripe_transfer_id: string | null; stripe_refund_id: string | null },
@@ -332,8 +426,40 @@ async function handlePartialRefundRequest(
 
   const task = taskResult.rows[0];
 
+  // ── Idempotency checkpoint: check for a previously-issued refund that was
+  //    not yet written to escrow.stripe_refund_id (i.e., the transfer failed
+  //    on the prior attempt after the refund was already created). ──
+  let pendingRefundId: string | null = null;
+  if (refundAmount > 0 && !escrow.stripe_refund_id) {
+    const pendingEvent = await db.query<{ metadata: string }>(
+      `SELECT metadata
+       FROM escrow_events
+       WHERE escrow_id = $1
+         AND actor_type = 'system'
+         AND metadata::jsonb->>'event_type' = 'partial_refund_pending'
+         AND metadata::jsonb->>'stripe_refund_id' IS NOT NULL
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [escrow.id]
+    );
+    if (pendingEvent.rows.length > 0) {
+      try {
+        const meta = JSON.parse(pendingEvent.rows[0].metadata) as Record<string, unknown>;
+        pendingRefundId = typeof meta['stripe_refund_id'] === 'string' ? meta['stripe_refund_id'] : null;
+      } catch {
+        // Malformed metadata — treat as no checkpoint found
+      }
+      if (pendingRefundId) {
+        log.info(
+          { escrowId: escrow.id, refundId: pendingRefundId },
+          'Found partial_refund_pending checkpoint — reusing existing refund ID, skipping Stripe refund call',
+        );
+      }
+    }
+  }
+
   // Create refund if refund_amount > 0
-  let refundId: string | null = escrow.stripe_refund_id;
+  let refundId: string | null = escrow.stripe_refund_id ?? pendingRefundId;
   if (refundAmount > 0) {
     if (!refundId) {
       if (!escrow.stripe_payment_intent_id) {
@@ -353,6 +479,17 @@ async function handlePartialRefundRequest(
 
       refundId = refundResult.data.refundId;
       log.info({ escrowId: escrow.id, refundId, amount: refundAmount }, 'Partial refund created for escrow');
+
+      // ── Durability checkpoint: persist refund ID before attempting the transfer.
+      //    If the transfer call below fails and BullMQ retries this job, the query
+      //    above will find this row and reuse the refund ID, preventing a double-refund.
+      //    Uses the existing escrow_events schema (metadata JSONB) rather than a new column. ──
+      await db.query(
+        `INSERT INTO escrow_events (escrow_id, from_state, to_state, actor_id, actor_type, metadata)
+         VALUES ($1, 'LOCKED_DISPUTE', 'LOCKED_DISPUTE', NULL, 'system', $2)`,
+        [escrow.id, JSON.stringify({ event_type: 'partial_refund_pending', stripe_refund_id: refundId })]
+      );
+      log.info({ escrowId: escrow.id, refundId }, 'Persisted partial_refund_pending checkpoint');
     }
   }
 
@@ -364,7 +501,9 @@ async function handlePartialRefundRequest(
         throw new Error(`Task ${taskId} has no worker_id`);
       }
 
-      // Get worker's Stripe Connect ID
+      // Bug 2 Fix: Re-fetch stripe_connect_id from DB immediately before transfer.
+      // The job payload may carry a stale account ID if the worker updated their
+      // Connect account after the job was enqueued.
       const workerResult = await db.query<{ stripe_connect_id: string | null }>(
         'SELECT stripe_connect_id FROM users WHERE id = $1',
         [task.worker_id]
@@ -385,20 +524,37 @@ async function handlePartialRefundRequest(
         throw new Error('Transfer creation failed (injected failure for testing)');
       }
 
-      const transferResult = await StripeService.createTransfer({
-        escrowId: escrow.id,
-        taskId,
-        workerId: task.worker_id,
-        workerStripeAccountId: worker.stripe_connect_id,
-        amount: releaseAmount,
-        description: `Dispute resolution: ${reason}`,
-      });
-
-      if (!transferResult.success) {
-        throw new Error(`Failed to create transfer: ${transferResult.error.message}`);
+      // Bug 1 Fix: Catch non-retryable Stripe account restriction codes.
+      // Lock escrow for admin review; do NOT rethrow so BullMQ skips retry.
+      let partialTransferResult: Awaited<ReturnType<typeof StripeService.createTransfer>>;
+      try {
+        partialTransferResult = await StripeService.createTransfer({
+          escrowId: escrow.id,
+          taskId,
+          workerId: task.worker_id,
+          workerStripeAccountId: worker.stripe_connect_id,
+          amount: releaseAmount,
+          description: `Dispute resolution: ${reason}`,
+        });
+      } catch (stripeError) {
+        if (isStripeAccountRestrictionError(stripeError)) {
+          const code = (stripeError as Error & { code?: string }).code ?? 'unknown';
+          log.error(
+            { escrowId: escrow.id, workerId: task.worker_id, stripeCode: code },
+            'CRITICAL: Stripe account restricted (partial refund path) — locking escrow, NOT retrying',
+          );
+          await lockEscrowForStripeRestriction(escrow.id, task.worker_id, code);
+          // Return without rethrowing — BullMQ must not retry this job
+          return;
+        }
+        throw stripeError;
       }
 
-      transferId = transferResult.data.transferId;
+      if (!partialTransferResult.success) {
+        throw new Error(`Failed to create transfer: ${partialTransferResult.error.message}`);
+      }
+
+      transferId = partialTransferResult.data.transferId;
       log.info({ escrowId: escrow.id, transferId, amount: releaseAmount }, 'Partial transfer created for escrow');
     }
   }

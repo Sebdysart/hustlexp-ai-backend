@@ -56,8 +56,7 @@ export const uploadRouter = router({
       }),
       fileSize: z.number()
         .min(1, 'File cannot be empty')
-        .max(MAX_FILE_SIZE, `File size must be under ${MAX_FILE_SIZE / 1024 / 1024}MB`)
-        .optional(), // Optional for backward compat with iOS client
+        .max(MAX_FILE_SIZE, `File size must be under ${MAX_FILE_SIZE / 1024 / 1024}MB`),
       purpose: z.enum(['proof', 'message']).optional().default('proof'),
     }))
     .mutation(async ({ ctx, input }) => {
@@ -71,7 +70,7 @@ export const uploadRouter = router({
           Bucket: r2Config.bucketName,
           Key: key,
           ContentType: input.contentType,
-          ...(input.fileSize ? { ContentLength: input.fileSize } : {}),
+          ContentLength: input.fileSize,
           Metadata: {
             'uploaded-by': ctx.user.id,
             'task-id': input.taskId,

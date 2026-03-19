@@ -3,9 +3,18 @@ import { ScoperAIService } from '../../src/services/ScoperAIService.js';
 import { TEMPLATE_SLUGS } from '../../src/services/TaskTemplateRegistry.js';
 import type { ComplianceResult } from '../../src/services/ComplianceGuardianService.js';
 
+// Hoisted mock controls — shared across all describe blocks
+const { mockAICall, mockAIIsConfigured } = vi.hoisted(() => ({
+  mockAICall: vi.fn(),
+  mockAIIsConfigured: vi.fn().mockReturnValue(false),
+}));
+
 // Mock AI and DB
 vi.mock('../../src/services/AIClient.js', () => ({
-  AIClient: { isConfigured: () => false },
+  AIClient: {
+    isConfigured: mockAIIsConfigured,
+    call: mockAICall,
+  },
 }));
 vi.mock('../../src/db.js', () => ({
   db: { query: vi.fn() },
@@ -155,5 +164,51 @@ describe('ScoperAI wildcard multiplier — no AI signals (ai_signals_computed=fa
     // Without AI signals, cap should NOT apply. travel+performance = 0.40x on base ~7500
     // = 7500 * 1.40 = 10500. Should be > 1.1x cap of 8250.
     expect(result.data.suggested_price_cents).toBeGreaterThan(8250);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// refineTaskDescription — input length cap (security fix)
+// ---------------------------------------------------------------------------
+
+describe('ScoperAI refineTaskDescription — input length cap', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('truncates a 5000-char description to 2000 chars before sending to AI', async () => {
+    // Enable AI for this test
+    mockAIIsConfigured.mockReturnValue(true);
+    mockAICall.mockResolvedValue({ content: 'Cleaned description' });
+
+    const longDescription = 'a'.repeat(5000);
+    await ScoperAIService.refineTaskDescription(longDescription);
+
+    expect(mockAICall).toHaveBeenCalledTimes(1);
+    const callArg = mockAICall.mock.calls[0][0] as { prompt: string };
+    // prompt is scrubPII(truncatedInput); scrubPII should be a no-op on 'a' chars
+    expect(callArg.prompt.length).toBeLessThanOrEqual(2000);
+  });
+
+  it('passes short descriptions through without truncation', async () => {
+    mockAIIsConfigured.mockReturnValue(true);
+    mockAICall.mockResolvedValue({ content: 'Short cleaned' });
+
+    const shortDescription = 'Fix my leaky faucet ASAP';
+    await ScoperAIService.refineTaskDescription(shortDescription);
+
+    expect(mockAICall).toHaveBeenCalledTimes(1);
+    const callArg = mockAICall.mock.calls[0][0] as { prompt: string };
+    expect(callArg.prompt).toContain('Fix my leaky faucet ASAP');
+  });
+
+  it('falls back to basic cleanup when AI is not configured', async () => {
+    mockAIIsConfigured.mockReturnValue(false);
+
+    const description = '  hello   world  ';
+    const result = await ScoperAIService.refineTaskDescription(description);
+
+    expect(mockAICall).not.toHaveBeenCalled();
+    expect(result).toBe('hello world');
   });
 });

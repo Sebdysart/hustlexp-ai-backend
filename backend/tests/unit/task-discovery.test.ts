@@ -167,7 +167,7 @@ describe('TaskDiscoveryService', () => {
       expect(result.success).toBe(false);
       if (!result.success) {
         expect(result.error.code).toBe('DB_ERROR');
-        expect(result.error.message).toBe('DB error');
+        expect(result.error.message).toBe('Database error');
       }
     });
   });

@@ -239,7 +239,10 @@ export const TaskService = {
     
     try {
       let sql = `
-        SELECT * FROM tasks 
+        SELECT id, title, description, price, state, category, location,
+               template_slug, trust_tier_required, created_at, expires_at,
+               estimated_duration_minutes, is_remote
+        FROM tasks
         WHERE state = 'OPEN'
       `;
       const params: unknown[] = [];
@@ -782,35 +785,66 @@ export const TaskService = {
 
   /**
    * Submit proof: ACCEPTED → PROOF_SUBMITTED
+   *
+   * RACE CONDITION FIX: Wrapped in transaction with SELECT FOR UPDATE so the
+   * row-level lock is held from the state read through the UPDATE COMMIT.
+   * Without the transaction, two concurrent submitProof() calls could both
+   * read state='ACCEPTED' and both write state='PROOF_SUBMITTED', producing
+   * duplicate proof-submission events.
    */
   submitProof: async (taskId: string): Promise<ServiceResult<Task>> => {
     try {
-      const result = await db.query<Task>(
-        `UPDATE tasks 
-         SET state = 'PROOF_SUBMITTED',
-             proof_submitted_at = NOW()
-         WHERE id = $1 
-           AND state = 'ACCEPTED'
-         RETURNING *`,
-        [taskId]
-      );
-      
-      if (result.rowCount === 0) {
-        const existing = await TaskService.getById(taskId);
-        if (!existing.success) {
-          return existing;
+      return await db.transaction(async (query) => {
+        // Acquire row-level lock before reading state
+        const lockResult = await query<{ state: string }>(
+          `SELECT state FROM tasks WHERE id = $1 FOR UPDATE`,
+          [taskId]
+        );
+
+        if (lockResult.rows.length === 0) {
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.NOT_FOUND,
+              message: `Task ${taskId} not found`,
+            },
+          };
         }
-        
-        return {
-          success: false,
-          error: {
-            code: ErrorCodes.INVALID_STATE,
-            message: `Cannot submit proof: current state is ${existing.data.state}, expected ACCEPTED`,
-          },
-        };
-      }
-      
-      return { success: true, data: result.rows[0] };
+
+        const currentState = lockResult.rows[0].state;
+
+        if (currentState !== 'ACCEPTED') {
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.INVALID_STATE,
+              message: `Cannot submit proof: current state is ${currentState}, expected ACCEPTED`,
+            },
+          };
+        }
+
+        const result = await query<Task>(
+          `UPDATE tasks
+           SET state = 'PROOF_SUBMITTED',
+               proof_submitted_at = NOW()
+           WHERE id = $1
+             AND state = 'ACCEPTED'
+           RETURNING *`,
+          [taskId]
+        );
+
+        if (result.rowCount === 0) {
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.INVALID_STATE,
+              message: `Cannot submit proof: state changed unexpectedly`,
+            },
+          };
+        }
+
+        return { success: true, data: result.rows[0] };
+      });
     } catch (error) {
       return {
         success: false,
@@ -824,48 +858,78 @@ export const TaskService = {
 
   /**
    * Complete task: PROOF_SUBMITTED → COMPLETED
-   * 
+   *
    * INV-3: COMPLETED requires ACCEPTED proof
    * The database trigger enforces this — we catch the error.
+   *
+   * RACE CONDITION FIX: Wrapped in transaction with SELECT FOR UPDATE to prevent
+   * a simultaneous proof-rejection racing a completion call, which could otherwise
+   * transition the task from PROOF_SUBMITTED to both COMPLETED and ACCEPTED in
+   * separate connections. The FOR UPDATE lock serialises these callers.
    */
   complete: async (taskId: string): Promise<ServiceResult<Task>> => {
     try {
-      const result = await db.query<Task>(
-        `UPDATE tasks 
-         SET state = 'COMPLETED',
-             completed_at = NOW()
-         WHERE id = $1 
-           AND state = 'PROOF_SUBMITTED'
-         RETURNING *`,
-        [taskId]
-      );
-      
-      if (result.rowCount === 0) {
-        const existing = await TaskService.getById(taskId);
-        if (!existing.success) {
-          return existing;
+      return await db.transaction(async (query) => {
+        // Acquire row-level lock before reading state
+        const lockResult = await query<{ state: string }>(
+          `SELECT state FROM tasks WHERE id = $1 FOR UPDATE`,
+          [taskId]
+        );
+
+        if (lockResult.rows.length === 0) {
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.NOT_FOUND,
+              message: `Task ${taskId} not found`,
+            },
+          };
         }
-        
-        if (isTerminalState(existing.data.state)) {
+
+        const currentState = lockResult.rows[0].state;
+
+        if (isTerminalState(currentState as TaskState)) {
           return {
             success: false,
             error: {
               code: ErrorCodes.TASK_TERMINAL,
-              message: `Task ${taskId} is in terminal state ${existing.data.state}`,
+              message: `Task ${taskId} is in terminal state ${currentState}`,
             },
           };
         }
-        
-        return {
-          success: false,
-          error: {
-            code: ErrorCodes.INVALID_STATE,
-            message: `Cannot complete task: current state is ${existing.data.state}, expected PROOF_SUBMITTED`,
-          },
-        };
-      }
-      
-      return { success: true, data: result.rows[0] };
+
+        if (currentState !== 'PROOF_SUBMITTED') {
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.INVALID_STATE,
+              message: `Cannot complete task: current state is ${currentState}, expected PROOF_SUBMITTED`,
+            },
+          };
+        }
+
+        const result = await query<Task>(
+          `UPDATE tasks
+           SET state = 'COMPLETED',
+               completed_at = NOW()
+           WHERE id = $1
+             AND state = 'PROOF_SUBMITTED'
+           RETURNING *`,
+          [taskId]
+        );
+
+        if (result.rowCount === 0) {
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.INVALID_STATE,
+              message: `Cannot complete task: state changed unexpectedly`,
+            },
+          };
+        }
+
+        return { success: true, data: result.rows[0] };
+      });
     } catch (error) {
       // Check for INV-3 violation from trigger
       if (isInvariantViolation(error)) {
@@ -881,7 +945,7 @@ export const TaskService = {
           };
         }
       }
-      
+
       return {
         success: false,
         error: {
@@ -894,36 +958,67 @@ export const TaskService = {
 
   /**
    * Reject proof: PROOF_SUBMITTED → ACCEPTED
+   *
+   * RACE CONDITION FIX: Wrapped in transaction with SELECT FOR UPDATE so the
+   * row-level lock is held from the state read through the UPDATE COMMIT.
+   * Without the transaction, a concurrent complete() call could read
+   * state='PROOF_SUBMITTED' and race the rejectProof() UPDATE, causing the
+   * task to transition to both COMPLETED and ACCEPTED on separate connections.
    */
   rejectProof: async (taskId: string, _reason: string): Promise<ServiceResult<Task>> => {
     try {
-      // Note: In a full implementation, we'd update the proof record too
-      const result = await db.query<Task>(
-        `UPDATE tasks 
-         SET state = 'ACCEPTED',
-             proof_submitted_at = NULL
-         WHERE id = $1 
-           AND state = 'PROOF_SUBMITTED'
-         RETURNING *`,
-        [taskId]
-      );
-      
-      if (result.rowCount === 0) {
-        const existing = await TaskService.getById(taskId);
-        if (!existing.success) {
-          return existing;
+      return await db.transaction(async (query) => {
+        // Acquire row-level lock before reading state
+        const lockResult = await query<{ state: string }>(
+          `SELECT state FROM tasks WHERE id = $1 FOR UPDATE`,
+          [taskId]
+        );
+
+        if (lockResult.rows.length === 0) {
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.NOT_FOUND,
+              message: `Task ${taskId} not found`,
+            },
+          };
         }
-        
-        return {
-          success: false,
-          error: {
-            code: ErrorCodes.INVALID_STATE,
-            message: `Cannot reject proof: current state is ${existing.data.state}, expected PROOF_SUBMITTED`,
-          },
-        };
-      }
-      
-      return { success: true, data: result.rows[0] };
+
+        const currentState = lockResult.rows[0].state;
+
+        if (currentState !== 'PROOF_SUBMITTED') {
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.INVALID_STATE,
+              message: `Cannot reject proof: current state is ${currentState}, expected PROOF_SUBMITTED`,
+            },
+          };
+        }
+
+        // Note: In a full implementation, we'd update the proof record too
+        const result = await query<Task>(
+          `UPDATE tasks
+           SET state = 'ACCEPTED',
+               proof_submitted_at = NULL
+           WHERE id = $1
+             AND state = 'PROOF_SUBMITTED'
+           RETURNING *`,
+          [taskId]
+        );
+
+        if (result.rowCount === 0) {
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.INVALID_STATE,
+              message: `Cannot reject proof: state changed unexpectedly`,
+            },
+          };
+        }
+
+        return { success: true, data: result.rows[0] };
+      });
     } catch (error) {
       return {
         success: false,
@@ -937,34 +1032,65 @@ export const TaskService = {
 
   /**
    * Open dispute: PROOF_SUBMITTED → DISPUTED
+   *
+   * RACE CONDITION FIX: Wrapped in transaction with SELECT FOR UPDATE so the
+   * row-level lock is held from the state read through the UPDATE COMMIT.
+   * Without the transaction, a concurrent complete() or rejectProof() call
+   * could read state='PROOF_SUBMITTED' and race the openDispute() UPDATE,
+   * producing conflicting terminal states on separate connections.
    */
   openDispute: async (taskId: string): Promise<ServiceResult<Task>> => {
     try {
-      const result = await db.query<Task>(
-        `UPDATE tasks 
-         SET state = 'DISPUTED'
-         WHERE id = $1 
-           AND state = 'PROOF_SUBMITTED'
-         RETURNING *`,
-        [taskId]
-      );
-      
-      if (result.rowCount === 0) {
-        const existing = await TaskService.getById(taskId);
-        if (!existing.success) {
-          return existing;
+      return await db.transaction(async (query) => {
+        // Acquire row-level lock before reading state
+        const lockResult = await query<{ state: string }>(
+          `SELECT state FROM tasks WHERE id = $1 FOR UPDATE`,
+          [taskId]
+        );
+
+        if (lockResult.rows.length === 0) {
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.NOT_FOUND,
+              message: `Task ${taskId} not found`,
+            },
+          };
         }
-        
-        return {
-          success: false,
-          error: {
-            code: ErrorCodes.INVALID_STATE,
-            message: `Cannot open dispute: current state is ${existing.data.state}, expected PROOF_SUBMITTED`,
-          },
-        };
-      }
-      
-      return { success: true, data: result.rows[0] };
+
+        const currentState = lockResult.rows[0].state;
+
+        if (currentState !== 'PROOF_SUBMITTED') {
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.INVALID_STATE,
+              message: `Cannot open dispute: current state is ${currentState}, expected PROOF_SUBMITTED`,
+            },
+          };
+        }
+
+        const result = await query<Task>(
+          `UPDATE tasks
+           SET state = 'DISPUTED'
+           WHERE id = $1
+             AND state = 'PROOF_SUBMITTED'
+           RETURNING *`,
+          [taskId]
+        );
+
+        if (result.rowCount === 0) {
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.INVALID_STATE,
+              message: `Cannot open dispute: state changed unexpectedly`,
+            },
+          };
+        }
+
+        return { success: true, data: result.rows[0] };
+      });
     } catch (error) {
       return {
         success: false,
@@ -978,45 +1104,101 @@ export const TaskService = {
 
   /**
    * Cancel task: OPEN/ACCEPTED → CANCELLED
+   *
+   * RACE CONDITION FIX: Wrapped in transaction with SELECT FOR UPDATE to prevent
+   * simultaneous accept+cancel producing both an ACCEPTED and CANCELLED record.
+   * The FOR UPDATE lock is acquired before the state check and held through the
+   * final UPDATE, so only one concurrent caller can proceed.
    */
   cancel: async (taskId: string): Promise<ServiceResult<Task>> => {
     try {
-      const result = await db.query<Task>(
-        `UPDATE tasks 
-         SET state = 'CANCELLED',
-             cancelled_at = NOW()
-         WHERE id = $1 
-           AND state IN ('OPEN', 'ACCEPTED')
-         RETURNING *`,
-        [taskId]
-      );
-      
-      if (result.rowCount === 0) {
-        const existing = await TaskService.getById(taskId);
-        if (!existing.success) {
-          return existing;
+      return await db.transaction(async (query) => {
+        // Acquire row-level lock before reading state
+        const lockResult = await query<{ state: string }>(
+          `SELECT state FROM tasks WHERE id = $1 FOR UPDATE`,
+          [taskId]
+        );
+
+        if (lockResult.rows.length === 0) {
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.NOT_FOUND,
+              message: `Task ${taskId} not found`,
+            },
+          };
         }
-        
-        if (isTerminalState(existing.data.state)) {
+
+        const currentState = lockResult.rows[0].state;
+
+        if (isTerminalState(currentState as TaskState)) {
           return {
             success: false,
             error: {
               code: ErrorCodes.TASK_TERMINAL,
-              message: `Task ${taskId} is in terminal state ${existing.data.state}`,
+              message: `Task ${taskId} is in terminal state ${currentState}`,
             },
           };
         }
-        
-        return {
-          success: false,
-          error: {
-            code: ErrorCodes.INVALID_STATE,
-            message: `Cannot cancel task: current state is ${existing.data.state}`,
-          },
-        };
-      }
-      
-      return { success: true, data: result.rows[0] };
+
+        if (!['OPEN', 'ACCEPTED'].includes(currentState)) {
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.INVALID_STATE,
+              message: `Cannot cancel task: current state is ${currentState}`,
+            },
+          };
+        }
+
+        const result = await query<Task>(
+          `UPDATE tasks
+           SET state = 'CANCELLED',
+               cancelled_at = NOW()
+           WHERE id = $1
+             AND state IN ('OPEN', 'ACCEPTED')
+           RETURNING *`,
+          [taskId]
+        );
+
+        if (result.rowCount === 0) {
+          // Should be unreachable given the FOR UPDATE lock above, but guard anyway
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.INVALID_STATE,
+              message: `Cannot cancel task: state changed unexpectedly`,
+            },
+          };
+        }
+
+        // FIX (HIGH): Check for a FUNDED escrow and emit an atomic refund outbox
+        // event in the same transaction. Without this, cancelling a task with a
+        // funded escrow strands the poster's funds — no automatic refund trigger
+        // exists and they would need to file a manual support request.
+        const escrowResult = await query<{ id: string; state: string }>(
+          `SELECT id, state FROM escrows WHERE task_id = $1 AND state = 'FUNDED'`,
+          [taskId]
+        );
+        if (escrowResult.rows.length > 0) {
+          const escrowId = escrowResult.rows[0].id;
+          await writeToOutbox(
+            {
+              eventType: 'escrow.refund_requested',
+              aggregateType: 'escrow',
+              aggregateId: escrowId,
+              eventVersion: 1,
+              payload: { escrowId, reason: 'task_cancelled', taskId },
+              queueName: 'critical_payments',
+              idempotencyKey: `escrow.refund_on_cancel:${escrowId}:${taskId}`,
+            },
+            query
+          );
+          log.info({ escrowId, taskId }, 'Escrow refund requested on task cancellation');
+        }
+
+        return { success: true, data: result.rows[0] };
+      });
     } catch (error) {
       return {
         success: false,
@@ -1034,11 +1216,11 @@ export const TaskService = {
   expire: async (taskId: string): Promise<ServiceResult<Task>> => {
     try {
       const result = await db.query<Task>(
-        `UPDATE tasks 
+        `UPDATE tasks
          SET state = 'EXPIRED',
              expired_at = NOW()
-         WHERE id = $1 
-           AND state NOT IN ('COMPLETED', 'CANCELLED', 'EXPIRED')
+         WHERE id = $1
+           AND state NOT IN ('COMPLETED', 'CANCELLED', 'EXPIRED', 'PROOF_SUBMITTED', 'DISPUTED', 'IN_REVIEW', 'ACCEPTED', 'IN_PROGRESS')
            AND deadline < NOW()
          RETURNING *`,
         [taskId]

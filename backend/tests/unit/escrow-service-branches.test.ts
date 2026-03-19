@@ -30,7 +30,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // ---------------------------------------------------------------------------
 
 vi.mock('../../src/db', () => ({
-  db: { query: vi.fn() },
+  db: { query: vi.fn(), transaction: vi.fn() },
   isInvariantViolation: vi.fn(() => false),
   isUniqueViolation: vi.fn(() => false),
   getErrorMessage: vi.fn((code: string) => `Error: ${code}`),
@@ -63,6 +63,14 @@ vi.mock('../../src/services/XPService', () => ({
   XPService: {
     awardXP: vi.fn().mockResolvedValue(undefined),
   },
+}));
+
+vi.mock('../../src/services/RevenueService', () => ({
+  RevenueService: { logEvent: vi.fn().mockResolvedValue({ success: true, data: { id: 'rev-1' } }) },
+}));
+
+vi.mock('../../src/services/SelfInsurancePoolService.js', () => ({
+  SelfInsurancePoolService: { recordContribution: vi.fn().mockResolvedValue({ success: true }) },
 }));
 
 // ---------------------------------------------------------------------------
@@ -115,6 +123,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockIsInvariant.mockReturnValue(false);
   vi.mocked(XPService.awardXP).mockResolvedValue(undefined);
+  // Make db.transaction call through so queries inside the transaction use the mockQuery queue
+  vi.mocked((db as any).transaction).mockImplementation((fn: (q: typeof db.query) => Promise<unknown>) => fn(db.query));
 });
 
 // ===========================================================================
@@ -161,7 +171,7 @@ describe('EscrowService.release — escrow not found', () => {
     // 1st query: SELECT escrow by id → empty
     mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
 
-    const result = await EscrowService.release({ escrowId: 'nonexistent-esc' });
+    const result = await EscrowService.release({ escrowId: 'nonexistent-esc', stripeTransferId: 'tr_test_branch' });
 
     expect(result.success).toBe(false);
     expect(result.error?.code).toBe('NOT_FOUND');
@@ -185,7 +195,7 @@ describe('EscrowService.release — no worker assigned', () => {
       rowCount: 1,
     } as never);
 
-    const result = await EscrowService.release({ escrowId: 'esc-1' });
+    const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_branch' });
 
     expect(result.success).toBe(false);
     expect(result.error?.code).toBe('INVALID_STATE');
@@ -200,7 +210,7 @@ describe('EscrowService.release — no worker assigned', () => {
     // task select → empty
     mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
 
-    const result = await EscrowService.release({ escrowId: 'esc-1' });
+    const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_branch' });
 
     expect(result.success).toBe(false);
     expect(result.error?.code).toBe('INVALID_STATE');
@@ -223,7 +233,7 @@ describe('EscrowService.release — KYC gate', () => {
     // 3: worker KYC → not found
     mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
 
-    const result = await EscrowService.release({ escrowId: 'esc-1' });
+    const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_branch' });
 
     expect(result.success).toBe(false);
     expect(result.error?.code).toBe('NOT_FOUND');
@@ -236,7 +246,7 @@ describe('EscrowService.release — KYC gate', () => {
       .mockResolvedValueOnce({ rows: [{ worker_id: 'worker-1', price: 5000 }], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [makeWorkerKyc({ stripe_connect_id: null })], rowCount: 1 } as never);
 
-    const result = await EscrowService.release({ escrowId: 'esc-1' });
+    const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_branch' });
 
     expect(result.success).toBe(false);
     expect(result.error?.code).toBe('INVALID_STATE');
@@ -249,7 +259,7 @@ describe('EscrowService.release — KYC gate', () => {
       .mockResolvedValueOnce({ rows: [{ worker_id: 'worker-1', price: 5000 }], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [makeWorkerKyc({ payouts_enabled: false, stripe_connect_status: 'pending' })], rowCount: 1 } as never);
 
-    const result = await EscrowService.release({ escrowId: 'esc-1' });
+    const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_branch' });
 
     expect(result.success).toBe(false);
     expect(result.error?.code).toBe('INVALID_STATE');
@@ -280,7 +290,7 @@ describe('EscrowService.release — UPDATE rowCount=0 branches', () => {
         rowCount: 1,
       } as never);
 
-    const result = await EscrowService.release({ escrowId: 'esc-1' });
+    const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_branch' });
 
     expect(result.success).toBe(false);
     expect(result.error?.code).toBe('HX002'); // ErrorCodes.ESCROW_TERMINAL
@@ -296,7 +306,7 @@ describe('EscrowService.release — UPDATE rowCount=0 branches', () => {
         rowCount: 1,
       } as never);
 
-    const result = await EscrowService.release({ escrowId: 'esc-1' });
+    const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_branch' });
 
     expect(result.success).toBe(false);
     expect(result.error?.code).toBe('INVALID_STATE');
@@ -324,7 +334,7 @@ describe('EscrowService.release — XP error handling', () => {
       new Error('XP-TAX-BLOCK: offline payment tax unpaid')
     );
 
-    const result = await EscrowService.release({ escrowId: 'esc-1' });
+    const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_branch' });
 
     // Escrow release itself still succeeds — XP block is non-fatal
     expect(result.success).toBe(true);
@@ -336,7 +346,7 @@ describe('EscrowService.release — XP error handling', () => {
       new Error('Unexpected XP DB error')
     );
 
-    const result = await EscrowService.release({ escrowId: 'esc-1' });
+    const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_branch' });
 
     expect(result.success).toBe(true);
   });
@@ -450,9 +460,11 @@ describe('EscrowService.partialRefund', () => {
   });
 
   it('returns INVALID_STATE when escrow is not LOCKED_DISPUTE', async () => {
-    // UPDATE rowCount=0
+    // 1st: SELECT version, state FROM escrows FOR UPDATE
+    mockQuery.mockResolvedValueOnce({ rows: [makeEscrow({ state: 'FUNDED', version: 1 })], rowCount: 1 } as never);
+    // 2nd: UPDATE rowCount=0 (WHERE state = 'LOCKED_DISPUTE' does not match FUNDED)
     mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
-    // getById → FUNDED (not LOCKED_DISPUTE)
+    // 3rd: getById fallback → FUNDED (not LOCKED_DISPUTE)
     mockQuery.mockResolvedValueOnce({ rows: [makeEscrow({ state: 'FUNDED' })], rowCount: 1 } as never);
 
     const result = await EscrowService.partialRefund({
@@ -469,8 +481,9 @@ describe('EscrowService.partialRefund', () => {
   it('succeeds when escrow is LOCKED_DISPUTE and percentages sum to 100', async () => {
     const updated = makeEscrow({ state: 'REFUND_PARTIAL' });
     mockQuery
-      .mockResolvedValueOnce({ rows: [updated], rowCount: 1 } as never)  // UPDATE
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);          // logEscrowEvent
+      .mockResolvedValueOnce({ rows: [makeEscrow({ state: 'LOCKED_DISPUTE', version: 1 })], rowCount: 1 } as never) // SELECT FOR UPDATE
+      .mockResolvedValueOnce({ rows: [updated], rowCount: 1 } as never)  // UPDATE succeeds
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);          // logEscrowEvent INSERT
 
     const result = await EscrowService.partialRefund({
       escrowId: 'esc-1',

@@ -20,6 +20,9 @@ import { Queue, QueueOptions, Worker, WorkerOptions, Job } from 'bullmq';
 import Redis from 'ioredis';
 import { createHmac } from 'crypto';
 import { config } from '../config.js';
+import { logger as rootLogger } from '../logger.js';
+
+const dlqLog = rootLogger.child({ subsystem: 'dlq-monitor' });
 
 // ============================================================================
 // REDIS CONNECTION (Upstash)
@@ -354,26 +357,87 @@ export function parseIdempotencyKey(key: string): {
 // ============================================================================
 
 /**
- * Create a BullMQ worker for a queue
- * Workers should be created in a separate process (worker.ts)
+ * Create a BullMQ worker for a queue.
+ *
+ * Bug 3 Fix — DLQ monitoring:
+ * Every worker now attaches a 'failed' event listener that fires when a job
+ * exhausts all retry attempts. The listener emits a CRITICAL-level log with
+ * the queue name, job ID, job name, attempt count, and error message so that
+ * on-call engineers are alerted immediately via log aggregation / alerting.
+ *
+ * The critical_payments queue additionally enforces removeOnFail: false so
+ * that exhausted financial jobs are always preserved for post-mortem audit —
+ * they must never be silently deleted from Redis.
+ *
+ * Workers should be created in a separate process (worker.ts).
  */
 export function createWorker(
   queueName: QueueName,
   processor: (job: Job) => Promise<void>,
   options?: Partial<WorkerOptions>
 ): Worker {
-  const config = QUEUE_CONFIGS[queueName];
+  const queueConfig = QUEUE_CONFIGS[queueName];
   const connection = createRedisConnection();
-  
-  return new Worker(
+
+  // For the critical_payments queue, override removeOnFail so that any job
+  // that exhausts all retries is preserved indefinitely in Redis for audit and
+  // manual replay. { count: 0 } is BullMQ's convention for "keep all".
+  // Other queues keep their configured age-based retention.
+  const removeOnFailOverride: Partial<WorkerOptions> =
+    queueName === 'critical_payments' ? { removeOnFail: { count: 0 } } : {};
+
+  const worker = new Worker(
     queueName,
     processor,
     {
       connection: connection as unknown as WorkerOptions['connection'],
-      ...config.workerOptions,
+      ...queueConfig.workerOptions,
+      ...removeOnFailOverride,
       ...options,
     }
   );
+
+  // DLQ monitoring: log a CRITICAL alert whenever a job exhausts all retries.
+  // This fires only on the final failure (attemptsMade === job.opts.attempts).
+  worker.on('failed', (job: Job | undefined, error: Error) => {
+    if (!job) {
+      dlqLog.error({ queue: queueName, err: error.message }, 'CRITICAL: BullMQ job failed — no job context available (possible stalled job)');
+      return;
+    }
+
+    const maxAttempts = job.opts?.attempts ?? 1;
+    const isExhausted = job.attemptsMade >= maxAttempts;
+
+    if (isExhausted) {
+      dlqLog.error(
+        {
+          queue: queueName,
+          jobId: job.id,
+          jobName: job.name,
+          attemptsMade: job.attemptsMade,
+          maxAttempts,
+          err: error.message,
+          errorStack: error.stack,
+        },
+        `CRITICAL: Job ${job.id} (${job.name}) in queue "${queueName}" has exhausted all ${maxAttempts} retries and moved to DLQ. Manual intervention required.`,
+      );
+    } else {
+      // Transient failure — will be retried; log at warn level only
+      dlqLog.warn(
+        {
+          queue: queueName,
+          jobId: job.id,
+          jobName: job.name,
+          attemptsMade: job.attemptsMade,
+          maxAttempts,
+          err: error.message,
+        },
+        `Job ${job.id} (${job.name}) failed attempt ${job.attemptsMade}/${maxAttempts} — will retry`,
+      );
+    }
+  });
+
+  return worker;
 }
 
 // ============================================================================

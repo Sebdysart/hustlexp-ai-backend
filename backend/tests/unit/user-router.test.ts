@@ -553,6 +553,8 @@ describe('user.register', () => {
         default_mode: 'worker',
       });
 
+      // Email ban check → not banned
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
       // Check existing → no rows
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
       // INSERT RETURNING
@@ -571,14 +573,16 @@ describe('user.register', () => {
 
     it('normalizes hustler to worker in the INSERT', async () => {
       const newUser = makeFakeUser({ default_mode: 'worker' });
+      // Email ban check → not banned
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
       mockDb.query.mockResolvedValueOnce({ rows: [newUser], rowCount: 1 } as any);
       setupStatsQuery();
 
       await makePublicCaller().register(validInput);
 
-      // The INSERT call is the second db.query call
-      const [, params] = (mockDb.query as any).mock.calls[1];
+      // The INSERT call is the third db.query call (index 2)
+      const [, params] = (mockDb.query as any).mock.calls[2];
       expect(params).toContain('worker');
     });
   });
@@ -590,9 +594,9 @@ describe('user.register', () => {
         email: 'newuser@hustlexp.com',
       });
 
-      // Check existing → found
-      mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'existing-user-id' }], rowCount: 1 } as any);
-      // Re-fetch full user
+      // Email ban check → not banned
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+      // Check existing → found (returns full user row directly)
       mockDb.query.mockResolvedValueOnce({ rows: [existingUser], rowCount: 1 } as any);
       // toMobileUser stats query
       setupStatsQuery();
@@ -621,6 +625,8 @@ describe('user.register', () => {
       const fifteenYearsAgo = `${now.getFullYear() - 15}-01-01`;
 
       const newUser = makeFakeUser();
+      // Email ban check → not banned
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
       mockDb.query.mockResolvedValueOnce({ rows: [newUser], rowCount: 1 } as any);
       setupStatsQuery();
@@ -632,13 +638,15 @@ describe('user.register', () => {
 
       expect(result).toHaveProperty('id');
 
-      // Verify is_minor=true was passed to INSERT
-      const [, params] = (mockDb.query as any).mock.calls[1];
+      // Verify is_minor=true was passed to INSERT (third db.query call, index 2)
+      const [, params] = (mockDb.query as any).mock.calls[2];
       expect(params).toContain(true); // is_minor
     });
 
     it('allows adults (is_minor=false)', async () => {
       const newUser = makeFakeUser();
+      // Email ban check → not banned
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
       mockDb.query.mockResolvedValueOnce({ rows: [newUser], rowCount: 1 } as any);
       setupStatsQuery();
@@ -648,7 +656,7 @@ describe('user.register', () => {
         dateOfBirth: '1990-05-15',
       });
 
-      const [, params] = (mockDb.query as any).mock.calls[1];
+      const [, params] = (mockDb.query as any).mock.calls[2];
       expect(params).toContain(false); // is_minor
     });
 

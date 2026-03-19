@@ -14,6 +14,7 @@
 import { db } from '../db.js';
 import { logger } from '../logger.js';
 import { AlphaInstrumentation } from './AlphaInstrumentation.js';
+import { invalidateAuthCacheForUser } from '../auth-cache.js';
 
 const log = logger.child({ service: 'TrustTierService' });
 
@@ -367,12 +368,15 @@ export const TrustTierService = {
 
     // Apply promotion in transaction
     await db.query(
-      `UPDATE users 
+      `UPDATE users
        SET trust_tier = $1, updated_at = NOW()
        WHERE id = $2
          AND trust_tier = $3`,
       [targetTier, userId, currentTier]
     );
+
+    // Invalidate auth cache so the new tier is visible immediately
+    invalidateAuthCacheForUser(userId);
 
     // Log transition (if trust_ledger exists)
     try {

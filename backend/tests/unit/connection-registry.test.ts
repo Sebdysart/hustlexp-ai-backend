@@ -1,10 +1,13 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   addConnection,
   removeConnection,
   getConnections,
   getAllConnections,
   getConnectionCount,
+  forceDisconnectUser,
+  clearReconnectTracker,
+  MAX_CONNECTIONS_PER_USER,
   type SSEConnection,
 } from '../../src/realtime/connection-registry';
 
@@ -23,13 +26,15 @@ function createMockConnection(userId: string): SSEConnection {
 
 describe('Connection Registry', () => {
   beforeEach(() => {
-    // Clean registry by getting all connections and removing them
+    // Clean connections registry
     const all = getAllConnections();
     for (const [userId, conns] of all) {
       for (const conn of conns) {
         removeConnection(userId, conn);
       }
     }
+    // Clean reconnect tracker so flood tests don't bleed into each other
+    clearReconnectTracker();
   });
 
   // ===========================================================================
@@ -170,6 +175,127 @@ describe('Connection Registry', () => {
 
     it('returns 0 for user with no connections', () => {
       expect(getConnectionCount('nobody')).toBe(0);
+    });
+  });
+
+  // ===========================================================================
+  // forceDisconnectUser — Bug 1 fix
+  // ===========================================================================
+  describe('forceDisconnectUser', () => {
+    it('closes all controllers for a user and removes them from the registry', () => {
+      const closeSpy1 = vi.fn();
+      const closeSpy2 = vi.fn();
+
+      const conn1: SSEConnection = {
+        userId: 'ban-user',
+        controller: { enqueue: vi.fn(), close: closeSpy1, desiredSize: 1, error: vi.fn() } as unknown as ReadableStreamDefaultController<Uint8Array>,
+        closed: false,
+      };
+      const conn2: SSEConnection = {
+        userId: 'ban-user',
+        controller: { enqueue: vi.fn(), close: closeSpy2, desiredSize: 1, error: vi.fn() } as unknown as ReadableStreamDefaultController<Uint8Array>,
+        closed: false,
+      };
+
+      addConnection('ban-user', conn1);
+      addConnection('ban-user', conn2);
+
+      forceDisconnectUser('ban-user');
+
+      expect(conn1.closed).toBe(true);
+      expect(conn2.closed).toBe(true);
+      expect(closeSpy1).toHaveBeenCalledOnce();
+      expect(closeSpy2).toHaveBeenCalledOnce();
+      expect(getConnections('ban-user')).toBeUndefined();
+    });
+
+    it('is a no-op when the user has no connections', () => {
+      expect(() => forceDisconnectUser('no-such-user')).not.toThrow();
+    });
+
+    it('does not affect other users connections', () => {
+      const connA = createMockConnection('userA-force');
+      const connB = createMockConnection('userB-force');
+      addConnection('userA-force', connA);
+      addConnection('userB-force', connB);
+
+      forceDisconnectUser('userA-force');
+
+      expect(getConnections('userA-force')).toBeUndefined();
+      expect(getConnections('userB-force')?.size).toBe(1);
+    });
+
+    it('swallows errors thrown by controller.close()', () => {
+      const conn: SSEConnection = {
+        userId: 'close-throws',
+        controller: {
+          enqueue: vi.fn(),
+          close: vi.fn(() => { throw new Error('already closed'); }),
+          desiredSize: 1,
+          error: vi.fn(),
+        } as unknown as ReadableStreamDefaultController<Uint8Array>,
+        closed: false,
+      };
+      addConnection('close-throws', conn);
+      expect(() => forceDisconnectUser('close-throws')).not.toThrow();
+    });
+  });
+
+  // ===========================================================================
+  // Reconnect flood guard — Bug 2 fix
+  // ===========================================================================
+  describe('reconnect flood guard', () => {
+    it('allows up to 10 connections within 60 seconds', () => {
+      for (let i = 0; i < 10; i++) {
+        expect(() => addConnection('flood-user', createMockConnection('flood-user'))).not.toThrow();
+        // Remove after adding so MAX_CONNECTIONS_PER_USER is not hit
+        const conns = getConnections('flood-user');
+        if (conns) {
+          for (const c of conns) removeConnection('flood-user', c);
+        }
+      }
+    });
+
+    it('throws SSE_CONNECTION_LIMIT on the 11th reconnect within 60 seconds', () => {
+      for (let i = 0; i < 10; i++) {
+        const conn = createMockConnection('flood-user2');
+        addConnection('flood-user2', conn);
+        removeConnection('flood-user2', conn);
+      }
+
+      expect(() => addConnection('flood-user2', createMockConnection('flood-user2'))).toThrowError(
+        /SSE_CONNECTION_LIMIT/
+      );
+    });
+
+    it('allows reconnection again after the 60-second window has passed', () => {
+      // Simulate timestamps older than 60 seconds by manipulating Date.now via vi.useFakeTimers
+      vi.useFakeTimers();
+
+      const userId = 'flood-window-user';
+      for (let i = 0; i < 10; i++) {
+        const conn = createMockConnection(userId);
+        addConnection(userId, conn);
+        removeConnection(userId, conn);
+      }
+
+      // Advance time by 61 seconds — all previous timestamps fall outside the window
+      vi.advanceTimersByTime(61_000);
+
+      expect(() => addConnection(userId, createMockConnection(userId))).not.toThrow();
+
+      vi.useRealTimers();
+    });
+
+    it('does not share flood counters across different users', () => {
+      for (let i = 0; i < 10; i++) {
+        const conn = createMockConnection('flood-a');
+        addConnection('flood-a', conn);
+        removeConnection('flood-a', conn);
+      }
+
+      // flood-b is unaffected — should still be allowed
+      expect(() => addConnection('flood-b', createMockConnection('flood-b'))).not.toThrow();
     });
   });
 });

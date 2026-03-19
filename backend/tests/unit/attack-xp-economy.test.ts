@@ -561,9 +561,8 @@ describe('ATTACK 9 — Velocity detection bypass: slow-roll exploit', () => {
     const threshold = 5;
     expect(threshold).toBe(5);
 
-    // At exactly 5 events (not suspicious), awardXP proceeds normally
-    // Order: cap DB query first, then velocity query
-    mockQuery.mockResolvedValueOnce({ rows: [{ total: '0' }] });    // cap check (0 XP today)
+    // At exactly 5 events (not suspicious), awardXP proceeds normally.
+    // checkVelocity runs FIRST (before transaction), cap check is inside transaction.
     mockQuery.mockResolvedValueOnce({ rows: [{ count: '5' }] });    // velocity: exactly at threshold (not suspicious)
 
     const lr = { id: 'xp-1', user_id: 'slow-roller', task_id: 'task-5th-of-hour', escrow_id: 'escrow-5',
@@ -592,16 +591,16 @@ describe('ATTACK 9 — Velocity detection bypass: slow-roll exploit', () => {
   });
 
   it('6th event per hour with large award (>1000 XP) is now HARD BLOCKED (FIX 2)', async () => {
-    // FIX 2: suspicious=true AND baseXP > VELOCITY_BLOCK_THRESHOLD (1000) → throw
-    // Order: cap DB query first, then velocity query
-    mockQuery.mockResolvedValueOnce({ rows: [{ total: '0' }] });    // cap check
-    mockQuery.mockResolvedValueOnce({ rows: [{ count: '6' }] });    // velocity: suspicious
+    // FIX 2: suspicious=true AND baseXP > VELOCITY_BLOCK_THRESHOLD (3000) → early return
+    // checkVelocity runs FIRST (before transaction), so velocity mock comes first.
+    // Only one mock needed — velocity block fires early return before transaction starts.
+    mockQuery.mockResolvedValueOnce({ rows: [{ count: '6' }] });    // velocity: 6 events/hr → suspicious
 
     const result = await XPService.awardXP({
       userId: 'slow-roller',
       taskId: 'task-6th-of-hour',
       escrowId: 'escrow-6',
-      baseXP: 5000, // > VELOCITY_BLOCK_THRESHOLD (1000) → hard block
+      baseXP: 5000, // > VELOCITY_BLOCK_THRESHOLD (3000) → hard block
     });
     expect(result.success).toBe(false);
     if (!result.success) {

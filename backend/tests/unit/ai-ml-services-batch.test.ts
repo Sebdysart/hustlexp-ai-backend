@@ -1580,10 +1580,13 @@ describe('DisputeService', () => {
         success: true,
         data: makeTask() as never,
       });
-      mockEscrowService.getById.mockResolvedValueOnce({
-        success: true,
-        data: makeEscrow({ state: 'RELEASED' }) as never,
-      });
+      // EscrowService.getById is no longer called outside the transaction.
+      // The escrow state check now happens inside the transaction via SELECT FOR UPDATE.
+      // query 1 (inside transaction): SELECT escrow FOR UPDATE → returns RELEASED escrow
+      mockDb.query.mockResolvedValueOnce({
+        rows: [makeEscrow({ state: 'RELEASED' })],
+        rowCount: 1,
+      } as never);
 
       const svc = await getService();
       const result = await svc.create({
@@ -1607,15 +1610,16 @@ describe('DisputeService', () => {
         success: true,
         data: makeTask() as never,
       });
-      mockEscrowService.getById.mockResolvedValueOnce({
-        success: true,
-        data: makeEscrow() as never,
-      });
-
+      // EscrowService.getById is no longer called outside the transaction.
       // Inside the transaction:
-      // query 1: UPDATE escrows ... LOCKED_DISPUTE
-      // query 2: INSERT INTO disputes
+      // query 1: SELECT escrow FOR UPDATE (state check + lock)
+      // query 2: UPDATE escrows ... LOCKED_DISPUTE
+      // query 3: INSERT INTO disputes
       mockDb.query
+        .mockResolvedValueOnce({
+          rows: [makeEscrow({ state: 'FUNDED' })],
+          rowCount: 1,
+        } as never)
         .mockResolvedValueOnce({
           rows: [makeEscrow({ state: 'LOCKED_DISPUTE' })],
           rowCount: 1,

@@ -37,9 +37,17 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // Mocks — must come before any imports that transitively touch these modules
 // ---------------------------------------------------------------------------
 
-vi.mock('../../src/db', () => ({
-  db: { query: vi.fn() },
-}));
+vi.mock('../../src/db', () => {
+  const queryFn = vi.fn();
+  return {
+    db: {
+      query: queryFn,
+      // Delegate to the callback with the same queryFn so mockResolvedValueOnce
+      // sequences set up on db.query work seamlessly inside transactions.
+      transaction: vi.fn((fn: (q: typeof queryFn) => Promise<unknown>) => fn(queryFn)),
+    },
+  };
+});
 
 vi.mock('../../src/auth/firebase', () => ({
   firebaseAuth: { verifyIdToken: vi.fn() },
@@ -151,6 +159,12 @@ vi.mock('../../src/services/TaskRiskClassifier', () => ({
   },
 }));
 
+// Mock Redis so rate-limit checks are controlled in tests.
+// Default: allowed=true (no rate limiting). Individual tests can override.
+vi.mock('../../src/cache/redis', () => ({
+  checkRateLimit: vi.fn().mockResolvedValue({ allowed: true, remaining: 10 }),
+}));
+
 // ---------------------------------------------------------------------------
 // Imports
 // ---------------------------------------------------------------------------
@@ -160,7 +174,10 @@ import { TaskService } from '../../src/services/TaskService';
 import { ProofService } from '../../src/services/ProofService';
 import { ComplianceGuardianService } from '../../src/services/ComplianceGuardianService';
 import { getTemplate } from '../../src/services/TaskTemplateRegistry';
-import { taskRouter, draftEvalCalls } from '../../src/routers/task';
+import { taskRouter } from '../../src/routers/task';
+import { checkRateLimit } from '../../src/cache/redis';
+
+const mockCheckRateLimit = vi.mocked(checkRateLimit);
 
 const mockDb = vi.mocked(db);
 const mockTaskService = vi.mocked(TaskService);
@@ -683,8 +700,9 @@ describe('task.start', () => {
 
   it('returns task row when worker is assigned and state is ACCEPTED', async () => {
     const task = makeTaskRow({ state: 'ACCEPTED', worker_id: USER_ID });
+    // First getById: ownership/state check; second getById: return after invalidation
     mockTaskService.getById.mockResolvedValueOnce({ success: true, data: task as any });
-    mockDb.query.mockResolvedValueOnce({ rows: [task], rowCount: 1 } as any);
+    mockTaskService.getById.mockResolvedValueOnce({ success: true, data: task as any });
 
     const result = await makeCaller().start({ taskId: TASK_ID });
 
@@ -1186,12 +1204,10 @@ describe('task.applyForTask', () => {
   it('returns application data on success', async () => {
     // Task exists and is POSTED
     mockDb.query.mockResolvedValueOnce({
-      rows: [{ id: TASK_ID, state: 'POSTED', poster_id: OTHER_USER_ID }],
+      rows: [{ id: TASK_ID, state: 'POSTED', poster_id: OTHER_USER_ID, trust_tier_required: null }],
       rowCount: 1,
     } as any);
-    // No existing application
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
-    // Insert returns new application
+    // Insert returns new application (ON CONFLICT DO NOTHING path — rowCount > 0)
     const now = new Date();
     mockDb.query.mockResolvedValueOnce({
       rows: [{
@@ -1229,7 +1245,7 @@ describe('task.applyForTask', () => {
 
   it('throws PRECONDITION_FAILED when task is not in POSTED state', async () => {
     mockDb.query.mockResolvedValueOnce({
-      rows: [{ id: TASK_ID, state: 'ACCEPTED', poster_id: OTHER_USER_ID }],
+      rows: [{ id: TASK_ID, state: 'ACCEPTED', poster_id: OTHER_USER_ID, trust_tier_required: null }],
       rowCount: 1,
     } as any);
 
@@ -1240,7 +1256,7 @@ describe('task.applyForTask', () => {
 
   it('throws BAD_REQUEST when applying for own task', async () => {
     mockDb.query.mockResolvedValueOnce({
-      rows: [{ id: TASK_ID, state: 'POSTED', poster_id: USER_ID }],
+      rows: [{ id: TASK_ID, state: 'POSTED', poster_id: USER_ID, trust_tier_required: null }],
       rowCount: 1,
     } as any);
 
@@ -1251,13 +1267,11 @@ describe('task.applyForTask', () => {
 
   it('throws CONFLICT when already applied', async () => {
     mockDb.query.mockResolvedValueOnce({
-      rows: [{ id: TASK_ID, state: 'POSTED', poster_id: OTHER_USER_ID }],
+      rows: [{ id: TASK_ID, state: 'POSTED', poster_id: OTHER_USER_ID, trust_tier_required: null }],
       rowCount: 1,
     } as any);
-    mockDb.query.mockResolvedValueOnce({
-      rows: [{ id: 'existing-app' }],
-      rowCount: 1,
-    } as any);
+    // ON CONFLICT DO NOTHING — rowCount 0 means a conflicting row already exists
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
 
     await expect(
       makeCaller().applyForTask({ taskId: TASK_ID })
@@ -1266,10 +1280,10 @@ describe('task.applyForTask', () => {
 
   it('accepts optional message', async () => {
     mockDb.query.mockResolvedValueOnce({
-      rows: [{ id: TASK_ID, state: 'POSTED', poster_id: OTHER_USER_ID }],
+      rows: [{ id: TASK_ID, state: 'POSTED', poster_id: OTHER_USER_ID, trust_tier_required: null }],
       rowCount: 1,
     } as any);
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+    // INSERT with ON CONFLICT DO NOTHING — message is null when not provided
     mockDb.query.mockResolvedValueOnce({
       rows: [{
         id: APP_ID,
@@ -1381,24 +1395,30 @@ describe('task.assignWorker', () => {
     vi.clearAllMocks();
   });
 
-  it('assigns worker and returns task', async () => {
-    // Task lookup
-    mockDb.query.mockResolvedValueOnce({
-      rows: [{ id: TASK_ID, state: 'POSTED', poster_id: USER_ID }],
-      rowCount: 1,
-    } as any);
-    // Application check
-    mockDb.query.mockResolvedValueOnce({
-      rows: [{ id: APP_ID }],
-      rowCount: 1,
-    } as any);
-    // Accept application update
+  // NOTE: The new assignWorker implementation wraps all 5 DB ops in db.transaction()
+  // with a SELECT FOR UPDATE as the first statement inside the transaction.
+  // Mock sequence (all via db.query since transaction delegates to the same fn):
+  //   [1] Pre-tx: SELECT template_slug FROM tasks WHERE id = $1
+  //   [2] In-tx:  SELECT id, state, poster_id FROM tasks WHERE id = $1 FOR UPDATE
+  //   [3] In-tx:  SELECT id FROM task_applications WHERE task_id = $1 AND hustler_id = $2 AND status = 'pending'
+  //   [4] In-tx:  UPDATE task_applications SET status = 'accepted'
+  //   [5] In-tx:  UPDATE task_applications SET status = 'rejected'
+  //   [6] In-tx:  UPDATE tasks SET state = 'ACCEPTED' ... RETURNING id, state, worker_id
+
+  it('assigns worker and returns the accepted task row', async () => {
+    const acceptedTask = { id: TASK_ID, state: 'ACCEPTED', worker_id: OTHER_USER_ID };
+    // [1] Pre-tx template_slug lookup
+    mockDb.query.mockResolvedValueOnce({ rows: [{ template_slug: 'standard_physical' }], rowCount: 1 } as any);
+    // [2] In-tx FOR UPDATE
+    mockDb.query.mockResolvedValueOnce({ rows: [{ id: TASK_ID, state: 'POSTED', poster_id: USER_ID }], rowCount: 1 } as any);
+    // [3] Application check
+    mockDb.query.mockResolvedValueOnce({ rows: [{ id: APP_ID }], rowCount: 1 } as any);
+    // [4] Accept application update
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
-    // Reject other applications
+    // [5] Reject other applications
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
-    // TaskService.accept
-    const acceptedTask = makeTaskRow({ state: 'ACCEPTED', worker_id: OTHER_USER_ID });
-    mockTaskService.accept.mockResolvedValueOnce({ success: true, data: acceptedTask as any });
+    // [6] UPDATE tasks RETURNING
+    mockDb.query.mockResolvedValueOnce({ rows: [acceptedTask], rowCount: 1 } as any);
 
     const result = await makeCallerAsPoster().assignWorker({
       taskId: TASK_ID,
@@ -1406,13 +1426,12 @@ describe('task.assignWorker', () => {
     });
 
     expect(result).toEqual(acceptedTask);
-    expect(mockTaskService.accept).toHaveBeenCalledWith({
-      taskId: TASK_ID,
-      workerId: OTHER_USER_ID,
-    });
+    // TaskService.accept is no longer called — the state change happens directly inside the tx
+    expect(mockTaskService.accept).not.toHaveBeenCalled();
   });
 
-  it('throws NOT_FOUND when task does not exist', async () => {
+  it('throws NOT_FOUND when task does not exist (pre-tx template slug lookup)', async () => {
+    // Pre-tx SELECT returns no rows
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
 
     await expect(
@@ -1420,7 +1439,10 @@ describe('task.assignWorker', () => {
     ).rejects.toThrow('Task not found');
   });
 
-  it('throws FORBIDDEN when user is not the poster', async () => {
+  it('throws FORBIDDEN when user is not the poster (checked inside transaction)', async () => {
+    // [1] Pre-tx template_slug lookup — returns task owned by a DIFFERENT poster
+    mockDb.query.mockResolvedValueOnce({ rows: [{ template_slug: 'standard_physical' }], rowCount: 1 } as any);
+    // [2] In-tx FOR UPDATE — poster_id is OTHER_USER_ID, not the caller
     mockDb.query.mockResolvedValueOnce({
       rows: [{ id: TASK_ID, state: 'POSTED', poster_id: OTHER_USER_ID }],
       rowCount: 1,
@@ -1431,7 +1453,10 @@ describe('task.assignWorker', () => {
     ).rejects.toThrow('Only the task poster can assign workers');
   });
 
-  it('throws PRECONDITION_FAILED when task is not POSTED', async () => {
+  it('throws PRECONDITION_FAILED when task is not POSTED (checked inside transaction)', async () => {
+    // [1] Pre-tx template_slug lookup
+    mockDb.query.mockResolvedValueOnce({ rows: [{ template_slug: 'standard_physical' }], rowCount: 1 } as any);
+    // [2] In-tx FOR UPDATE — task state already ACCEPTED (e.g. concurrent caller won)
     mockDb.query.mockResolvedValueOnce({
       rows: [{ id: TASK_ID, state: 'ACCEPTED', poster_id: USER_ID }],
       rowCount: 1,
@@ -1443,10 +1468,11 @@ describe('task.assignWorker', () => {
   });
 
   it('throws NOT_FOUND when no pending application for worker', async () => {
-    mockDb.query.mockResolvedValueOnce({
-      rows: [{ id: TASK_ID, state: 'POSTED', poster_id: USER_ID }],
-      rowCount: 1,
-    } as any);
+    // [1] Pre-tx template_slug lookup
+    mockDb.query.mockResolvedValueOnce({ rows: [{ template_slug: 'standard_physical' }], rowCount: 1 } as any);
+    // [2] In-tx FOR UPDATE
+    mockDb.query.mockResolvedValueOnce({ rows: [{ id: TASK_ID, state: 'POSTED', poster_id: USER_ID }], rowCount: 1 } as any);
+    // [3] Application check — no pending application found
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
 
     await expect(
@@ -1454,25 +1480,23 @@ describe('task.assignWorker', () => {
     ).rejects.toThrow('No pending application found for this worker');
   });
 
-  it('throws BAD_REQUEST when TaskService.accept fails', async () => {
-    mockDb.query.mockResolvedValueOnce({
-      rows: [{ id: TASK_ID, state: 'POSTED', poster_id: USER_ID }],
-      rowCount: 1,
-    } as any);
-    mockDb.query.mockResolvedValueOnce({
-      rows: [{ id: APP_ID }],
-      rowCount: 1,
-    } as any);
+  it('throws PRECONDITION_FAILED when UPDATE tasks affects 0 rows (concurrent assignment detected)', async () => {
+    // [1] Pre-tx template_slug lookup
+    mockDb.query.mockResolvedValueOnce({ rows: [{ template_slug: 'standard_physical' }], rowCount: 1 } as any);
+    // [2] In-tx FOR UPDATE
+    mockDb.query.mockResolvedValueOnce({ rows: [{ id: TASK_ID, state: 'POSTED', poster_id: USER_ID }], rowCount: 1 } as any);
+    // [3] Application check
+    mockDb.query.mockResolvedValueOnce({ rows: [{ id: APP_ID }], rowCount: 1 } as any);
+    // [4] Accept application update
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
+    // [5] Reject other applications
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
-    mockTaskService.accept.mockResolvedValueOnce({
-      success: false,
-      error: { code: 'ERR', message: 'Accept failed' },
-    });
+    // [6] UPDATE tasks → 0 rows (state changed between FOR UPDATE check and UPDATE)
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
 
     await expect(
       makeCallerAsPoster().assignWorker({ taskId: TASK_ID, workerId: OTHER_USER_ID })
-    ).rejects.toThrow('Accept failed');
+    ).rejects.toThrow('concurrent assignment detected');
   });
 });
 
@@ -1727,6 +1751,9 @@ describe('task.evaluateDraft', () => {
 // ===========================================================================
 // task.evaluateDraft — per-user rate limit (5/min)
 // ===========================================================================
+// The rate limit is now Redis-backed (checkRateLimit from cache/redis.ts).
+// Tests control the limit by mocking checkRateLimit's return value.
+// ===========================================================================
 
 describe('task.evaluateDraft rate limit', () => {
   const RATE_LIMIT_USER = 'ffffffff-ffff-ffff-ffff-ffffffffffff';
@@ -1747,18 +1774,18 @@ describe('task.evaluateDraft rate limit', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    // Clear the rate-limit map so each test starts with a clean slate
-    draftEvalCalls.clear();
+    // Default: allow all rate-limit checks
+    mockCheckRateLimit.mockResolvedValue({ allowed: true, remaining: 10 });
   });
 
   afterEach(() => {
-    draftEvalCalls.clear();
     vi.useRealTimers();
   });
 
-  it('allows the first 5 calls within a 1-minute window', async () => {
+  it('allows calls when checkRateLimit returns allowed=true', async () => {
     const caller = makeCallerAsPoster(RATE_LIMIT_USER);
     mockCompliance.evaluate.mockResolvedValue(cleanResult);
+    mockCheckRateLimit.mockResolvedValue({ allowed: true, remaining: 4 });
 
     for (let i = 0; i < 5; i++) {
       await expect(
@@ -1769,65 +1796,71 @@ describe('task.evaluateDraft rate limit', () => {
     expect(mockCompliance.evaluate).toHaveBeenCalledTimes(5);
   });
 
-  it('throws TOO_MANY_REQUESTS on the 6th call within the window', async () => {
+  it('throws TOO_MANY_REQUESTS when checkRateLimit returns allowed=false', async () => {
     const caller = makeCallerAsPoster(RATE_LIMIT_USER);
-    // First 5 succeed
     mockCompliance.evaluate.mockResolvedValue(cleanResult);
-    for (let i = 0; i < 5; i++) {
-      await caller.evaluateDraft({ description: 'Help move boxes' });
-    }
+    // Simulate Redis returning rate-limited on first call
+    mockCheckRateLimit.mockResolvedValue({ allowed: false, remaining: 0 });
 
-    // 6th call must be rate-limited — compliance should not even be called
     await expect(
       caller.evaluateDraft({ description: 'Help move boxes' })
     ).rejects.toMatchObject({ code: 'TOO_MANY_REQUESTS' });
 
-    // Compliance was never called for the blocked 6th attempt
-    expect(mockCompliance.evaluate).toHaveBeenCalledTimes(5);
+    // Compliance was never called — rate limit fired first
+    expect(mockCompliance.evaluate).not.toHaveBeenCalled();
   });
 
-  it('resets the window after 1 minute and allows calls again', async () => {
-    vi.useFakeTimers();
+  it('allows calls after rate limit window resets (allowed=true again)', async () => {
     const caller = makeCallerAsPoster(RATE_LIMIT_USER);
     mockCompliance.evaluate.mockResolvedValue(cleanResult);
 
-    // Exhaust the limit
-    for (let i = 0; i < 5; i++) {
-      await caller.evaluateDraft({ description: 'Help move boxes' });
-    }
-
-    // 6th call is blocked
+    // Simulate exhausted limit
+    mockCheckRateLimit.mockResolvedValue({ allowed: false, remaining: 0 });
     await expect(
       caller.evaluateDraft({ description: 'Help move boxes' })
     ).rejects.toMatchObject({ code: 'TOO_MANY_REQUESTS' });
 
-    // Advance time by 61 seconds so the window expires
-    vi.advanceTimersByTime(61_000);
-
-    // Now calls should succeed again
+    // Window resets — Redis now allows again
+    mockCheckRateLimit.mockResolvedValue({ allowed: true, remaining: 5 });
     await expect(
       caller.evaluateDraft({ description: 'Help move boxes after reset' })
     ).resolves.toBeDefined();
   });
 
-  it('tracks limits independently per user', async () => {
+  it('tracks limits independently per user (Redis uses per-user keys)', async () => {
     const userA = 'aaaaaaaa-aaaa-aaaa-aaaa-000000000001';
     const userB = 'aaaaaaaa-aaaa-aaaa-aaaa-000000000002';
     mockCompliance.evaluate.mockResolvedValue(cleanResult);
 
-    // Exhaust user A's limit
+    // checkRateLimit is called with (userId, action, limit, window).
+    // Simulate user A exhausted, user B not.
+    mockCheckRateLimit.mockImplementation(async (userId: string) => {
+      if (userId === userA) return { allowed: false, remaining: 0 };
+      return { allowed: true, remaining: 5 };
+    });
+
+    // User A is rate-limited
     const callerA = makeCallerAsPoster(userA);
-    for (let i = 0; i < 5; i++) {
-      await callerA.evaluateDraft({ description: 'Help move boxes' });
-    }
     await expect(
       callerA.evaluateDraft({ description: 'Help move boxes' })
     ).rejects.toMatchObject({ code: 'TOO_MANY_REQUESTS' });
 
-    // User B's limit is unaffected
+    // User B is unaffected
     const callerB = makeCallerAsPoster(userB);
     await expect(
       callerB.evaluateDraft({ description: 'Help move boxes' })
+    ).resolves.toBeDefined();
+  });
+
+  it('fails open when Redis throws (allows the request with a warning log)', async () => {
+    const caller = makeCallerAsPoster(RATE_LIMIT_USER);
+    mockCompliance.evaluate.mockResolvedValue(cleanResult);
+    // Simulate Redis connection error
+    mockCheckRateLimit.mockRejectedValue(new Error('Redis ECONNREFUSED'));
+
+    // Should NOT throw — rate limiting fails open
+    await expect(
+      caller.evaluateDraft({ description: 'Help move boxes' })
     ).resolves.toBeDefined();
   });
 });
@@ -1865,15 +1898,26 @@ describe('task.acceptWithConsent', () => {
 
   beforeEach(() => {
     vi.resetAllMocks();
+    // Make db.transaction call through so queries inside use the mockDb.query queue
+    vi.mocked((mockDb as any).transaction).mockImplementation((fn: (q: typeof mockDb.query) => Promise<unknown>) => fn(mockDb.query));
   });
 
   it('successfully accepts a wildcard task with mutual consent', async () => {
     mockDb.query
       .mockResolvedValueOnce({
+        // Pre-transaction: get template_slug + state
         rows: [{ template_slug: 'wildcard_bizarre', state: 'posted' }],
         rowCount: 1,
       } as any)
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
+      .mockResolvedValueOnce({
+        // Inside transaction: SELECT state FOR UPDATE
+        rows: [{ state: 'posted' }],
+        rowCount: 1,
+      } as any)
+      .mockResolvedValueOnce({
+        // Inside transaction: UPDATE tasks SET ... WHERE state = 'posted'
+        rows: [], rowCount: 1,
+      } as any);
 
     mockGetTemplate.mockReturnValueOnce(CONSENT_TEMPLATE as any);
 
@@ -1915,10 +1959,15 @@ describe('task.acceptWithConsent', () => {
   it('throws PRECONDITION_FAILED when task is no longer available', async () => {
     mockDb.query
       .mockResolvedValueOnce({
+        // Pre-transaction: get template_slug + state
         rows: [{ template_slug: 'wildcard_bizarre', state: 'claimed' }],
         rowCount: 1,
       } as any)
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // UPDATE matched no rows
+      .mockResolvedValueOnce({
+        // Inside transaction: SELECT state FOR UPDATE → returns claimed (not 'posted')
+        rows: [{ state: 'claimed' }],
+        rowCount: 1,
+      } as any);
 
     mockGetTemplate.mockReturnValueOnce(CONSENT_TEMPLATE as any);
 
@@ -1951,7 +2000,7 @@ describe('task.getComplianceStatus', () => {
     };
 
     mockDb.query.mockResolvedValueOnce({
-      rows: [{ illegal_risk_score: 45, compliance_guardian_notes: notes }],
+      rows: [{ poster_id: USER_ID, worker_id: null, illegal_risk_score: 45, compliance_guardian_notes: notes }],
       rowCount: 1,
     } as any);
 
@@ -1971,7 +2020,7 @@ describe('task.getComplianceStatus', () => {
 
   it('returns clean score for a newly created task', async () => {
     mockDb.query.mockResolvedValueOnce({
-      rows: [{ illegal_risk_score: 0, compliance_guardian_notes: { tier: 'clean' } }],
+      rows: [{ poster_id: USER_ID, worker_id: null, illegal_risk_score: 0, compliance_guardian_notes: { tier: 'clean' } }],
       rowCount: 1,
     } as any);
 

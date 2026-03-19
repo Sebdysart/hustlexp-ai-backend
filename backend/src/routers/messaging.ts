@@ -68,7 +68,7 @@ export const messagingRouter = router({
     .input(z.object({
       taskId: Schemas.uuid,
       messageType: z.enum(['TEXT', 'AUTO']),
-      content: z.string().max(500).optional(), // Required for TEXT
+      content: z.string().trim().min(1).max(500).optional(), // Required for TEXT
       autoMessageTemplate: z.enum(['on_my_way', 'running_late', 'completed', 'question']).optional(), // Required for AUTO
     }))
     .mutation(async ({ input, ctx }) => {
@@ -166,11 +166,15 @@ export const messagingRouter = router({
   // --------------------------------------------------------------------------
   
   /**
-   * Get messages for a task
+   * Get messages for a task (paginated, max 100 per page)
+   *
+   * Returns { messages, hasMore } — clients should request the next page
+   * with offset += 100 while hasMore === true.
    */
   getTaskMessages: protectedProcedure
     .input(z.object({
       taskId: Schemas.uuid,
+      offset: z.number().int().nonnegative().default(0),
     }))
     .query(async ({ input, ctx }) => {
       if (!ctx.user) {
@@ -179,12 +183,13 @@ export const messagingRouter = router({
           message: 'Authentication required',
         });
       }
-      
+
       const result = await MessagingService.getMessagesForTask(
         input.taskId,
-        ctx.user.id
+        ctx.user.id,
+        input.offset
       );
-      
+
       if (!result.success) {
         throw new TRPCError({
           code: result.error.code === 'NOT_FOUND' || result.error.code === 'FORBIDDEN'
@@ -193,8 +198,8 @@ export const messagingRouter = router({
           message: result.error.message,
         });
       }
-      
-      return result.data;
+
+      return result.data; // { messages: TaskMessage[], hasMore: boolean }
     }),
   
   /**

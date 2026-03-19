@@ -51,7 +51,13 @@ const mockEscrowService = vi.mocked(EscrowService);
 const mockIsInvariant = vi.mocked(isInvariantViolation);
 const mockIsUnique = vi.mocked(isUniqueViolation);
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  // Default: db.transaction delegates callback with db.query so inner query mocks work
+  mockDb.transaction.mockImplementation(async (fn: (q: typeof db.query) => Promise<unknown>) =>
+    fn(db.query)
+  );
+});
 
 describe('DisputeService.getByTaskId', () => {
   it('returns disputes on success', async () => {
@@ -156,10 +162,12 @@ describe('DisputeService.create', () => {
       success: true,
       data: { id: 't1', completed_at: new Date() } as any,
     });
-    mockEscrowService.getById.mockResolvedValueOnce({
-      success: true,
-      data: { state: 'RELEASED' } as any,
-    });
+    // EscrowService.getById is no longer called outside the transaction.
+    // The state check now happens via SELECT FOR UPDATE inside the transaction.
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ id: 'e1', state: 'RELEASED' }],
+      rowCount: 1,
+    } as any);
 
     const result = await DisputeService.create(baseParams);
     expect(result.success).toBe(false);

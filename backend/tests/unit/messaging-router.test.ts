@@ -407,7 +407,7 @@ describe('messaging.sendPhotoMessage', () => {
       const photoMsg = makeMessage({
         message_type: 'PHOTO',
         content: 'Look at this',
-        photo_urls: ['https://r2.example.com/photo1.jpg'],
+        photo_urls: ['https://pub-abc123def456.r2.dev/photo1.jpg'],
         photo_count: 1,
       });
       mockMessaging.sendPhotoMessage.mockResolvedValueOnce({
@@ -417,7 +417,7 @@ describe('messaging.sendPhotoMessage', () => {
 
       const result = await makeUserCaller().sendPhotoMessage({
         taskId: TASK_ID,
-        photoUrls: ['https://r2.example.com/photo1.jpg'],
+        photoUrls: ['https://pub-abc123def456.r2.dev/photo1.jpg'],
         caption: 'Look at this',
       });
 
@@ -432,7 +432,7 @@ describe('messaging.sendPhotoMessage', () => {
 
       await makeUserCaller('worker-abc').sendPhotoMessage({
         taskId: TASK_ID,
-        photoUrls: ['https://r2.example.com/photo1.jpg'],
+        photoUrls: ['https://pub-abc123def456.r2.dev/photo1.jpg'],
       });
 
       expect(mockMessaging.sendPhotoMessage).toHaveBeenCalledWith(
@@ -442,9 +442,9 @@ describe('messaging.sendPhotoMessage', () => {
 
     it('supports multiple photos (up to 3)', async () => {
       const urls = [
-        'https://r2.example.com/p1.jpg',
-        'https://r2.example.com/p2.jpg',
-        'https://r2.example.com/p3.jpg',
+        'https://pub-abc123def456.r2.dev/p1.jpg',
+        'https://pub-abc123def456.r2.dev/p2.jpg',
+        'https://pub-abc123def456.r2.dev/p3.jpg',
       ];
       mockMessaging.sendPhotoMessage.mockResolvedValueOnce({
         success: true,
@@ -467,7 +467,7 @@ describe('messaging.sendPhotoMessage', () => {
 
       const result = await makeUserCaller().sendPhotoMessage({
         taskId: TASK_ID,
-        photoUrls: ['https://r2.example.com/p1.jpg'],
+        photoUrls: ['https://pub-abc123def456.r2.dev/p1.jpg'],
       });
 
       expect(mockMessaging.sendPhotoMessage).toHaveBeenCalledWith(
@@ -492,10 +492,10 @@ describe('messaging.sendPhotoMessage', () => {
         makeUserCaller().sendPhotoMessage({
           taskId: TASK_ID,
           photoUrls: [
-            'https://r2.example.com/p1.jpg',
-            'https://r2.example.com/p2.jpg',
-            'https://r2.example.com/p3.jpg',
-            'https://r2.example.com/p4.jpg',
+            'https://pub-abc123def456.r2.dev/p1.jpg',
+            'https://pub-abc123def456.r2.dev/p2.jpg',
+            'https://pub-abc123def456.r2.dev/p3.jpg',
+            'https://pub-abc123def456.r2.dev/p4.jpg',
           ],
         }),
       ).rejects.toThrow();
@@ -514,7 +514,7 @@ describe('messaging.sendPhotoMessage', () => {
       await expect(
         makeUserCaller().sendPhotoMessage({
           taskId: 'bad-uuid',
-          photoUrls: ['https://r2.example.com/p1.jpg'],
+          photoUrls: ['https://pub-abc123def456.r2.dev/p1.jpg'],
         }),
       ).rejects.toThrow();
     });
@@ -523,7 +523,7 @@ describe('messaging.sendPhotoMessage', () => {
       await expect(
         makeUserCaller().sendPhotoMessage({
           taskId: TASK_ID,
-          photoUrls: ['https://r2.example.com/p1.jpg'],
+          photoUrls: ['https://pub-abc123def456.r2.dev/p1.jpg'],
           caption: 'x'.repeat(201),
         }),
       ).rejects.toThrow();
@@ -540,7 +540,7 @@ describe('messaging.sendPhotoMessage', () => {
       await expect(
         makeUserCaller().sendPhotoMessage({
           taskId: TASK_ID,
-          photoUrls: ['https://r2.example.com/p1.jpg'],
+          photoUrls: ['https://pub-abc123def456.r2.dev/p1.jpg'],
         }),
       ).rejects.toThrow(/Task not found/);
     });
@@ -554,7 +554,7 @@ describe('messaging.sendPhotoMessage', () => {
       await expect(
         makeUserCaller().sendPhotoMessage({
           taskId: TASK_ID,
-          photoUrls: ['https://r2.example.com/p1.jpg'],
+          photoUrls: ['https://pub-abc123def456.r2.dev/p1.jpg'],
         }),
       ).rejects.toThrow(/You are not a participant/);
     });
@@ -568,7 +568,7 @@ describe('messaging.sendPhotoMessage', () => {
       await expect(
         makeUserCaller().sendPhotoMessage({
           taskId: TASK_ID,
-          photoUrls: ['https://r2.example.com/p1.jpg'],
+          photoUrls: ['https://pub-abc123def456.r2.dev/p1.jpg'],
         }),
       ).rejects.toThrow(/Task is CANCELLED/);
     });
@@ -579,7 +579,7 @@ describe('messaging.sendPhotoMessage', () => {
       await expect(
         makeAnonCaller().sendPhotoMessage({
           taskId: TASK_ID,
-          photoUrls: ['https://r2.example.com/p1.jpg'],
+          photoUrls: ['https://pub-abc123def456.r2.dev/p1.jpg'],
         }),
       ).rejects.toThrow();
     });
@@ -596,39 +596,56 @@ describe('messaging.getTaskMessages', () => {
   });
 
   describe('happy path', () => {
-    it('returns array of messages for the task', async () => {
+    it('returns paginated messages object for the task', async () => {
       const messages = [
         makeMessage({ id: 'msg-1', content: 'Hello' }),
         makeMessage({ id: 'msg-2', content: 'Hi there', sender_id: WORKER_ID, receiver_id: USER_ID }),
       ];
       mockMessaging.getMessagesForTask.mockResolvedValueOnce({
         success: true,
-        data: messages,
+        data: { messages, hasMore: false },
       } as any);
 
       const result = await makeUserCaller().getTaskMessages({ taskId: TASK_ID });
 
-      expect(Array.isArray(result)).toBe(true);
-      expect(result).toHaveLength(2);
-      expect(result[0].id).toBe('msg-1');
-      expect(result[1].id).toBe('msg-2');
+      expect(Array.isArray((result as any).messages)).toBe(true);
+      expect((result as any).messages).toHaveLength(2);
+      expect((result as any).messages[0].id).toBe('msg-1');
+      expect((result as any).messages[1].id).toBe('msg-2');
+      expect((result as any).hasMore).toBe(false);
     });
 
-    it('returns empty array when no messages exist', async () => {
+    it('returns empty messages array with hasMore=false when no messages exist', async () => {
       mockMessaging.getMessagesForTask.mockResolvedValueOnce({
         success: true,
-        data: [],
+        data: { messages: [], hasMore: false },
       } as any);
 
       const result = await makeUserCaller().getTaskMessages({ taskId: TASK_ID });
 
-      expect(result).toHaveLength(0);
+      expect((result as any).messages).toHaveLength(0);
+      expect((result as any).hasMore).toBe(false);
     });
 
-    it('passes userId from context to MessagingService for access control', async () => {
+    it('returns hasMore=true when a full page (100) is returned', async () => {
+      const messages = Array.from({ length: 100 }, (_, i) =>
+        makeMessage({ id: `msg-${i}`, content: `Message ${i}` })
+      );
       mockMessaging.getMessagesForTask.mockResolvedValueOnce({
         success: true,
-        data: [],
+        data: { messages, hasMore: true },
+      } as any);
+
+      const result = await makeUserCaller().getTaskMessages({ taskId: TASK_ID });
+
+      expect((result as any).messages).toHaveLength(100);
+      expect((result as any).hasMore).toBe(true);
+    });
+
+    it('passes userId and default offset=0 from context to MessagingService', async () => {
+      mockMessaging.getMessagesForTask.mockResolvedValueOnce({
+        success: true,
+        data: { messages: [], hasMore: false },
       } as any);
 
       await makeUserCaller('specific-user').getTaskMessages({ taskId: TASK_ID });
@@ -636,6 +653,22 @@ describe('messaging.getTaskMessages', () => {
       expect(mockMessaging.getMessagesForTask).toHaveBeenCalledWith(
         TASK_ID,
         'specific-user',
+        0,
+      );
+    });
+
+    it('passes non-zero offset to service when provided', async () => {
+      mockMessaging.getMessagesForTask.mockResolvedValueOnce({
+        success: true,
+        data: { messages: [], hasMore: false },
+      } as any);
+
+      await makeUserCaller().getTaskMessages({ taskId: TASK_ID, offset: 100 });
+
+      expect(mockMessaging.getMessagesForTask).toHaveBeenCalledWith(
+        TASK_ID,
+        expect.any(String),
+        100,
       );
     });
   });

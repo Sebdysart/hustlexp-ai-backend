@@ -622,6 +622,9 @@ describe('notificationRouter', () => {
         created_at: new Date(),
         updated_at: new Date(),
       };
+      // First query: SELECT COUNT(*) for token cap check (returns 0 active tokens)
+      mockDb.query.mockResolvedValueOnce({ rows: [{ count: '0' }], rowCount: 1 } as any);
+      // Second query: INSERT ... ON CONFLICT UPSERT
       mockDb.query.mockResolvedValueOnce({ rows: [fakeRow], rowCount: 1 } as any);
 
       const caller = notificationRouter.createCaller(makeProtectedCtx());
@@ -633,7 +636,7 @@ describe('notificationRouter', () => {
       });
 
       expect(result).toEqual(fakeRow);
-      const [sql, params] = (mockDb.query as any).mock.calls[0];
+      const [sql, params] = (mockDb.query as any).mock.calls[1];
       expect(sql).toContain('ON CONFLICT');
       expect(params).toContain('user-123');
       expect(params).toContain('fcm-abc-123');

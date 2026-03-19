@@ -19,6 +19,7 @@ import { router, posterProcedure, Schemas } from '../trpc.js';
 import { db } from '../db.js';
 import { logger } from '../logger.js';
 import { generateOccurrencesForSeries } from '../services/RecurringTaskService.js';
+import { EscrowService } from '../services/EscrowService.js';
 
 const log = logger.child({ router: 'recurringTask' });
 
@@ -278,7 +279,12 @@ export const recurringTaskRouter = router({
   cancel: posterProcedure
     .input(z.object({ id: Schemas.uuid }))
     .mutation(async ({ ctx, input }) => {
-      return await db.transaction(async (query) => {
+      // Collect funded escrow IDs for tasks being cancelled — refunds are issued
+      // after the transaction commits because EscrowService.refund() opens its
+      // own transaction with a FOR UPDATE lock.
+      const escrowIdsToRefund: string[] = [];
+
+      await db.transaction(async (query) => {
         const result = await query(
           `UPDATE recurring_task_series SET status = 'cancelled', updated_at = NOW()
            WHERE id = $1 AND poster_id = $2 AND status IN ('active', 'paused')
@@ -288,14 +294,65 @@ export const recurringTaskRouter = router({
         if (result.rows.length === 0) {
           throw new TRPCError({ code: 'NOT_FOUND', message: 'Series not found' });
         }
+
         // Cancel all scheduled occurrences
         await query(
           `UPDATE recurring_task_occurrences SET status = 'cancelled'
            WHERE series_id = $1 AND status = 'scheduled'`,
           [input.id]
         );
-        return { success: true };
+
+        // Cancel active/in_progress occurrences that have an associated task
+        // in a cancellable state (OPEN, ACCEPTED, IN_PROGRESS).
+        const activeOccurrences = await query<{ task_id: string }>(
+          `SELECT task_id FROM recurring_task_occurrences
+           WHERE series_id = $1
+             AND status IN ('active', 'in_progress')
+             AND task_id IS NOT NULL`,
+          [input.id]
+        );
+
+        if (activeOccurrences.rows.length > 0) {
+          const taskIds = activeOccurrences.rows.map((r) => r.task_id);
+
+          // Cancel the underlying tasks (any non-terminal state)
+          await query(
+            `UPDATE tasks
+             SET state = 'CANCELLED', cancelled_at = NOW()
+             WHERE id = ANY($1::uuid[])
+               AND state NOT IN ('COMPLETED', 'CANCELLED', 'EXPIRED')`,
+            [taskIds]
+          );
+
+          // Mark occurrences as cancelled
+          await query(
+            `UPDATE recurring_task_occurrences SET status = 'cancelled'
+             WHERE series_id = $1 AND status IN ('active', 'in_progress')`,
+            [input.id]
+          );
+
+          // Identify FUNDED escrows for these tasks so we can refund after commit
+          const escrowResult = await query<{ id: string }>(
+            `SELECT id FROM escrows
+             WHERE task_id = ANY($1::uuid[])
+               AND state = 'FUNDED'`,
+            [taskIds]
+          );
+          for (const row of escrowResult.rows) {
+            escrowIdsToRefund.push(row.id);
+          }
+        }
       });
+
+      // Refund escrows outside the transaction (each call opens its own FOR UPDATE tx)
+      for (const escrowId of escrowIdsToRefund) {
+        const refundResult = await EscrowService.refund({ escrowId });
+        if (!refundResult.success) {
+          log.warn({ escrowId, error: refundResult.error }, 'Failed to refund escrow during recurring task series cancel');
+        }
+      }
+
+      return { success: true };
     }),
 
   // --------------------------------------------------------------------------

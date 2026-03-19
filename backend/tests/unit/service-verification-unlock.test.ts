@@ -66,6 +66,8 @@ describe('EarnedVerificationUnlockService.recordEarnings', () => {
     } as never);
     // INSERT ledger
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+    // UPDATE verification_earnings_tracking SET earned_unlock_achieved = true (dedup guard)
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
     // INSERT notification (fire-and-forget)
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
 
@@ -78,8 +80,8 @@ describe('EarnedVerificationUnlockService.recordEarnings', () => {
     // Wait for the fire-and-forget notification promise to settle
     await new Promise(r => setTimeout(r, 10));
 
-    // Should have made 3 query calls (tracking, ledger insert, notification)
-    expect(mockDb.query).toHaveBeenCalledTimes(3);
+    // Should have made 4 query calls (tracking, ledger insert, dedup UPDATE, notification)
+    expect(mockDb.query).toHaveBeenCalledTimes(4);
   });
 
   it('exactly at threshold (4000 before, 0 after) does NOT trigger notification', async () => {
@@ -135,6 +137,8 @@ describe('EarnedVerificationUnlockService.recordEarnings', () => {
       rows: [{ total_net_earnings_cents: 3000 }],
       rowCount: 1,
     } as never);
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+    // Dedup UPDATE succeeds (first to set earned_unlock_achieved = true)
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
     // Notification query fails
     mockDb.query.mockRejectedValueOnce(new Error('Notification table error'));

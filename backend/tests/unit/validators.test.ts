@@ -188,8 +188,10 @@ describe('Schemas.releaseEscrow', () => {
     expect(() => Schemas.releaseEscrow.parse(valid)).not.toThrow();
   });
 
-  it('should accept without optional stripeTransferId', () => {
-    expect(() => Schemas.releaseEscrow.parse({ escrowId: validUUID })).not.toThrow();
+  it('should reject when stripeTransferId is omitted (now required — Fix 1A)', () => {
+    // stripeTransferId is required for poster-initiated releases to ensure a Stripe
+    // transfer has been created before the escrow is marked as released.
+    expect(() => Schemas.releaseEscrow.parse({ escrowId: validUUID })).toThrow();
   });
 
   it('should reject stripeTransferId at 256 chars', () => {
@@ -263,30 +265,38 @@ describe('Schemas.reviewProof', () => {
 describe('Schemas.awardXP', () => {
   const validUUID1 = '550e8400-e29b-41d4-a716-446655440000';
   const validUUID2 = '550e8400-e29b-41d4-a716-446655440001';
-  const valid = { taskId: validUUID1, escrowId: validUUID2, baseXP: 100 };
+  // SECURITY FIX: baseXP removed from user-facing schema — derived server-side.
+  const valid = { taskId: validUUID1, escrowId: validUUID2 };
 
-  it('should accept valid input', () => {
+  it('should accept valid input (taskId + escrowId only)', () => {
     expect(() => Schemas.awardXP.parse(valid)).not.toThrow();
   });
 
-  it('should reject baseXP over 10000', () => {
-    expect(() => Schemas.awardXP.parse({ ...valid, baseXP: 10001 })).toThrow();
+  it('should NOT contain baseXP in the schema shape', () => {
+    const shape = (Schemas.awardXP as import('zod').ZodObject<Record<string, import('zod').ZodTypeAny>>).shape;
+    expect(shape).not.toHaveProperty('baseXP');
   });
 
-  it('should accept baseXP at 10000 (boundary)', () => {
-    expect(() => Schemas.awardXP.parse({ ...valid, baseXP: 10000 })).not.toThrow();
+  it('caller-supplied baseXP is silently stripped (not passed to router logic)', () => {
+    // Zod strip mode (default): extra keys are removed from the parsed output.
+    // This ensures an attacker who sends baseXP receives no inflation.
+    const result = Schemas.awardXP.safeParse({ ...valid, baseXP: 10000 });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect((result.data as Record<string, unknown>).baseXP).toBeUndefined();
+    }
   });
 
-  it('should reject negative baseXP', () => {
-    expect(() => Schemas.awardXP.parse({ ...valid, baseXP: -1 })).toThrow();
+  it('should reject missing taskId', () => {
+    expect(() => Schemas.awardXP.parse({ escrowId: validUUID2 })).toThrow();
   });
 
-  it('should reject zero baseXP', () => {
-    expect(() => Schemas.awardXP.parse({ ...valid, baseXP: 0 })).toThrow();
+  it('should reject missing escrowId', () => {
+    expect(() => Schemas.awardXP.parse({ taskId: validUUID1 })).toThrow();
   });
 
-  it('should reject non-integer baseXP', () => {
-    expect(() => Schemas.awardXP.parse({ ...valid, baseXP: 1.5 })).toThrow();
+  it('should reject invalid UUID for taskId', () => {
+    expect(() => Schemas.awardXP.parse({ taskId: 'not-a-uuid', escrowId: validUUID2 })).toThrow();
   });
 });
 

@@ -35,7 +35,9 @@ export type RevenueEventType =
   | 'per_task_fee'
   | 'referral_payout'
   | 'chargeback'            // Negative entry: Stripe dispute loss
-  | 'chargeback_reversal';  // Positive entry: Dispute won, funds recovered
+  | 'chargeback_reversal'   // Positive entry: Dispute won, funds recovered
+  | 'failed_transfer'       // Negative entry: Stripe transfer to worker failed
+  | 'failed_payout';        // Negative entry: Stripe payout to bank failed
 
 interface LogEventParams {
   eventType: RevenueEventType;
@@ -114,6 +116,17 @@ export const RevenueService = {
    *   amountCents = what was charged
    */
   logEvent: async (params: LogEventParams): Promise<ServiceResult<{ id: string }>> => {
+    const POSITIVE_ONLY_EVENTS = ['platform_fee', 'subscription', 'tip_fee'];
+    if (POSITIVE_ONLY_EVENTS.includes(params.eventType) && params.amountCents <= 0) {
+      log.error({ params }, 'RevenueService.logEvent: positive-only event type received non-positive amountCents — rejecting');
+      return {
+        success: false,
+        error: {
+          code: 'INVALID_AMOUNT',
+          message: `Event type '${params.eventType}' requires a positive amountCents value`,
+        },
+      };
+    }
     try {
       const result = await db.query<{ id: string }>(
         `INSERT INTO revenue_ledger

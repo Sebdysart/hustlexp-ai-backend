@@ -15,9 +15,11 @@ vi.mock('../../src/logger', () => ({
 
 const mockGetConnections = vi.fn();
 const mockGetAllConnections = vi.fn();
+const mockForceDisconnectUser = vi.fn();
 vi.mock('../../src/realtime/connection-registry', () => ({
   getConnections: (...args: unknown[]) => mockGetConnections(...args),
   getAllConnections: (...args: unknown[]) => mockGetAllConnections(...args),
+  forceDisconnectUser: (...args: unknown[]) => mockForceDisconnectUser(...args),
 }));
 
 const mockCanReceiveProgressEvent = vi.fn();
@@ -33,6 +35,11 @@ import {
   dispatchNewMessage,
   dispatchFlagChanged,
 } from '../../src/realtime/realtime-dispatcher';
+
+/** Return a not-banned DB row for the ban-check query */
+function mockNotBanned() {
+  (db.query as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ rows: [{ is_banned: false }] });
+}
 
 function createMockEvent(overrides = {}) {
   return {
@@ -89,6 +96,9 @@ describe('Realtime Dispatcher', () => {
       (db.query as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
         rows: [{ poster_id: 'poster-1', worker_id: 'worker-1', risk_level: 'low' }],
       });
+      // ban check: poster not banned, worker not banned
+      mockNotBanned();
+      mockNotBanned();
 
       const posterConn = createMockConn();
       const workerConn = createMockConn();
@@ -109,6 +119,8 @@ describe('Realtime Dispatcher', () => {
       (db.query as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
         rows: [{ poster_id: 'poster-1', worker_id: null, risk_level: 'low' }],
       });
+      // ban check: poster not banned
+      mockNotBanned();
 
       mockGetConnections.mockReturnValue(undefined);
 
@@ -119,6 +131,8 @@ describe('Realtime Dispatcher', () => {
       (db.query as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
         rows: [{ poster_id: 'poster-1', worker_id: null, risk_level: 'low' }],
       });
+      // ban check: poster not banned
+      mockNotBanned();
 
       const closedConn = createMockConn(true);
       mockGetConnections.mockReturnValue(new Set([closedConn]));
@@ -131,6 +145,8 @@ describe('Realtime Dispatcher', () => {
       (db.query as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
         rows: [{ poster_id: 'poster-1', worker_id: null, risk_level: 'low' }],
       });
+      // ban check: poster not banned
+      mockNotBanned();
 
       const badConn = {
         userId: 'poster-1',
@@ -154,7 +170,24 @@ describe('Realtime Dispatcher', () => {
       mockGetConnections.mockReturnValue(new Set([posterConn]));
 
       await dispatchTaskProgress(createMockEvent());
-      // Poster was filtered out by PlanService
+      // Poster was filtered out by PlanService (ban check is not reached when PlanService returns false)
+      expect(posterConn._enqueue).not.toHaveBeenCalled();
+    });
+
+    it('skips banned users and does not write to their connections', async () => {
+      (db.query as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        rows: [{ poster_id: 'poster-banned', worker_id: null, risk_level: 'low' }],
+      });
+      // ban check: poster IS banned
+      (db.query as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ rows: [{ is_banned: true }] });
+
+      const posterConn = createMockConn();
+      mockGetConnections.mockReturnValue(new Set([posterConn]));
+
+      await dispatchTaskProgress(createMockEvent());
+
+      // forceDisconnectUser called and no enqueue sent
+      expect(mockForceDisconnectUser).toHaveBeenCalledWith('poster-banned');
       expect(posterConn._enqueue).not.toHaveBeenCalled();
     });
   });
@@ -164,6 +197,9 @@ describe('Realtime Dispatcher', () => {
   // ===========================================================================
   describe('dispatchNewMessage', () => {
     it('sends message to recipient connections', async () => {
+      // ban check: recipient not banned
+      mockNotBanned();
+
       const conn = createMockConn();
       mockGetConnections.mockReturnValue(new Set([conn]));
 
@@ -180,6 +216,9 @@ describe('Realtime Dispatcher', () => {
     });
 
     it('does nothing when recipient has no connections', async () => {
+      // ban check: recipient not banned
+      mockNotBanned();
+
       mockGetConnections.mockReturnValue(undefined);
 
       await expect(
@@ -194,6 +233,9 @@ describe('Realtime Dispatcher', () => {
     });
 
     it('skips closed connections', async () => {
+      // ban check: recipient not banned
+      mockNotBanned();
+
       const conn = createMockConn(true);
       mockGetConnections.mockReturnValue(new Set([conn]));
 
@@ -205,6 +247,25 @@ describe('Realtime Dispatcher', () => {
         createdAt: new Date().toISOString(),
       });
 
+      expect(conn._enqueue).not.toHaveBeenCalled();
+    });
+
+    it('does not deliver to a banned recipient and force-disconnects them', async () => {
+      // ban check: recipient IS banned
+      (db.query as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ rows: [{ is_banned: true }] });
+
+      const conn = createMockConn();
+      mockGetConnections.mockReturnValue(new Set([conn]));
+
+      await dispatchNewMessage({
+        messageId: 'msg-4',
+        taskId: 'task-4',
+        senderId: 's4',
+        recipientId: 'banned-recipient',
+        createdAt: new Date().toISOString(),
+      });
+
+      expect(mockForceDisconnectUser).toHaveBeenCalledWith('banned-recipient');
       expect(conn._enqueue).not.toHaveBeenCalled();
     });
   });

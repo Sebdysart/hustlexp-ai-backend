@@ -39,13 +39,18 @@ export const escrowRouter = router({
       }
 
       // Authorization: only poster or worker can view escrow details
-      if (result.data.poster_id !== ctx.user.id && result.data.worker_id !== ctx.user.id) {
+      if (result.data.poster_id !== ctx.user.id && result.data.worker_id !== ctx.user.id && !ctx.user.is_admin) {
         throw new TRPCError({
           code: 'FORBIDDEN',
           message: 'You do not have access to this escrow',
         });
       }
 
+      // Strip Stripe-internal identifiers for non-admin callers
+      if (!ctx.user.is_admin) {
+        const { stripe_payment_intent_id, stripe_transfer_id, ...safeEscrow } = result.data as typeof result.data & { stripe_payment_intent_id?: string; stripe_transfer_id?: string };
+        return safeEscrow;
+      }
       return result.data;
     }),
   
@@ -94,6 +99,11 @@ export const escrowRouter = router({
         throw new TRPCError({ code: 'FORBIDDEN', message: 'You do not have access to this escrow' });
       }
 
+      // Strip Stripe-internal identifiers for non-admin callers
+      if (!ctx.user.is_admin) {
+        const { stripe_payment_intent_id, stripe_transfer_id, ...safeEscrow } = result.data as typeof result.data & { stripe_payment_intent_id?: string; stripe_transfer_id?: string };
+        return safeEscrow;
+      }
       return result.data;
     }),
   
@@ -319,15 +329,34 @@ export const escrowRouter = router({
    * Award XP after escrow release
    * INV-1: Will fail if escrow is not RELEASED
    * INV-5: Will fail if XP already awarded for this escrow
+   *
+   * SECURITY FIX: baseXP is derived server-side from the escrow amount.
+   * Callers cannot supply an inflated baseXP value.
    */
   awardXP: hustlerProcedure
     .input(Schemas.awardXP)
     .mutation(async ({ ctx, input }) => {
+      // Derive baseXP from the escrow record — caller cannot supply it.
+      const escrowResult = await db.query<{ amount: number; worker_id: string }>(
+        `SELECT amount, worker_id FROM escrows WHERE id = $1 AND state = 'RELEASED'`,
+        [input.escrowId]
+      );
+      if (escrowResult.rows.length === 0) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Released escrow not found' });
+      }
+      const escrow = escrowResult.rows[0];
+      // Verify the calling user is the worker on this escrow
+      if (escrow.worker_id !== ctx.user.id) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'You are not the worker for this escrow' });
+      }
+      // Derive baseXP from amount (amount is in cents; $1 = 10 XP)
+      const derivedBaseXP = Math.round(escrow.amount / 10);
+
       const result = await XPService.awardXP({
         userId: ctx.user.id,
         taskId: input.taskId,
         escrowId: input.escrowId,
-        baseXP: input.baseXP,
+        baseXP: derivedBaseXP,
       });
       
       if (!result.success) {

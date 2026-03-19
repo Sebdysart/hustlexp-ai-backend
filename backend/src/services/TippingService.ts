@@ -75,6 +75,10 @@ export const TippingService = {
         return { success: false, error: { code: 'UNAUTHORIZED', message: 'Only the poster can tip' } };
       }
 
+      if (task.worker_id && task.worker_id === posterId) {
+        return { success: false, error: { code: 'SELF_TIP_NOT_ALLOWED', message: 'Cannot tip yourself' } };
+      }
+
       // Validate amount
       if (amountCents < MIN_TIP_CENTS) {
         return { success: false, error: { code: 'INVALID_AMOUNT', message: `Minimum tip is $${MIN_TIP_CENTS / 100}` } };
@@ -171,6 +175,27 @@ export const TippingService = {
 
       if (payment.status !== 'succeeded') {
         return { success: false, error: { code: 'PAYMENT_NOT_SUCCEEDED', message: `Payment status: ${payment.status}` } };
+      }
+
+      // FIX 4: Verify the PaymentIntent amount matches the tip record amount.
+      // Without this check an attacker could reuse a different (smaller)
+      // PaymentIntent to confirm a larger tip, crediting the worker more than
+      // was actually charged to the poster.
+      const tipRecord = await db.query<{ amount_cents: number }>(
+        'SELECT amount_cents FROM tips WHERE id = $1',
+        [tipId]
+      );
+      if (tipRecord.rows.length === 0) {
+        return { success: false, error: { code: 'NOT_FOUND', message: 'Tip not found' } };
+      }
+      if (payment.amount !== tipRecord.rows[0].amount_cents) {
+        return {
+          success: false,
+          error: {
+            code: 'PAYMENT_AMOUNT_MISMATCH',
+            message: `Payment amount (${payment.amount}) does not match tip amount (${tipRecord.rows[0].amount_cents})`,
+          },
+        };
       }
 
       const result = await db.query<Tip>(

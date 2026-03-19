@@ -60,6 +60,18 @@ function makeCaller() {
   return healthRouter.createCaller({} as any);
 }
 
+function makeProtectedCaller() {
+  return healthRouter.createCaller({ user: { id: 'user-123' }, firebaseUid: 'firebase-uid-123' } as any);
+}
+
+function seedAdminRoleCheck() {
+  mockDb.query.mockResolvedValueOnce({ rows: [{ role: 'admin' }], rowCount: 1 } as any);
+}
+
+function makeAdminCaller() {
+  return healthRouter.createCaller({ user: { id: 'admin-user-123' }, firebaseUid: 'firebase-uid-admin' } as any);
+}
+
 // All expected tables, triggers, views from the router source
 const ALL_TABLES = [
   'schema_versions', 'users', 'tasks', 'escrows', 'proofs', 'proof_photos', 'proof_videos',
@@ -120,7 +132,7 @@ describe('health.status', () => {
       latencyMs: 5,
     });
 
-    const result = await makeCaller().status();
+    const result = await makeProtectedCaller().status();
 
     expect(result.status).toBe('healthy');
     expect(result.services.database.connected).toBe(true);
@@ -135,7 +147,7 @@ describe('health.status', () => {
       latencyMs: 0,
     });
 
-    const result = await makeCaller().status();
+    const result = await makeProtectedCaller().status();
 
     expect(result.status).toBe('degraded');
     expect(result.services.database.connected).toBe(false);
@@ -146,7 +158,7 @@ describe('health.status', () => {
       connected: true, schemaVersion: '1.1.0', latencyMs: 3,
     });
 
-    const result = await makeCaller().status();
+    const result = await makeProtectedCaller().status();
 
     expect(result.services.stripe).toBeDefined();
     expect(result.services.firebase).toBeDefined();
@@ -161,7 +173,7 @@ describe('health.status', () => {
       connected: true, schemaVersion: null, latencyMs: 2,
     });
 
-    const result = await makeCaller().status();
+    const result = await makeProtectedCaller().status();
 
     expect(result.environment).toBe('test');
   });
@@ -175,17 +187,19 @@ describe('health.verifySchema', () => {
   beforeEach(() => vi.clearAllMocks());
 
   it('returns valid=false and error message when DB not connected', async () => {
+    seedAdminRoleCheck();
     (mockDb.healthCheck as any).mockResolvedValueOnce({
       connected: false, schemaVersion: null, latencyMs: 0,
     });
 
-    const result = await makeCaller().verifySchema();
+    const result = await makeAdminCaller().verifySchema();
 
     expect(result.valid).toBe(false);
     expect((result as any).error).toBe('Database not connected');
   });
 
   it('returns valid=true when all tables, triggers, and views present', async () => {
+    seedAdminRoleCheck();
     (mockDb.healthCheck as any).mockResolvedValueOnce({
       connected: true, schemaVersion: '1.1.0', latencyMs: 4,
     });
@@ -205,7 +219,7 @@ describe('health.verifySchema', () => {
       rowCount: ALL_VIEWS.length,
     } as any);
 
-    const result = await makeCaller().verifySchema();
+    const result = await makeAdminCaller().verifySchema();
 
     expect(result.valid).toBe(true);
     expect((result as any).tables.missing).toEqual([]);
@@ -214,6 +228,7 @@ describe('health.verifySchema', () => {
   });
 
   it('reports missing tables', async () => {
+    seedAdminRoleCheck();
     (mockDb.healthCheck as any).mockResolvedValueOnce({
       connected: true, schemaVersion: '1.1.0', latencyMs: 4,
     });
@@ -234,7 +249,7 @@ describe('health.verifySchema', () => {
       rowCount: ALL_VIEWS.length,
     } as any);
 
-    const result = await makeCaller().verifySchema();
+    const result = await makeAdminCaller().verifySchema();
 
     expect(result.valid).toBe(false);
     expect((result as any).tables.missing).toContain('users');
@@ -242,6 +257,7 @@ describe('health.verifySchema', () => {
   });
 
   it('reports missing triggers', async () => {
+    seedAdminRoleCheck();
     (mockDb.healthCheck as any).mockResolvedValueOnce({
       connected: true, schemaVersion: '1.1.0', latencyMs: 4,
     });
@@ -260,13 +276,14 @@ describe('health.verifySchema', () => {
       rowCount: ALL_VIEWS.length,
     } as any);
 
-    const result = await makeCaller().verifySchema();
+    const result = await makeAdminCaller().verifySchema();
 
     expect(result.valid).toBe(false);
     expect((result as any).triggers.missing).toContain('task_terminal_guard');
   });
 
   it('reports missing views', async () => {
+    seedAdminRoleCheck();
     (mockDb.healthCheck as any).mockResolvedValueOnce({
       connected: true, schemaVersion: '1.1.0', latencyMs: 4,
     });
@@ -285,13 +302,14 @@ describe('health.verifySchema', () => {
       rowCount: presentViews.length,
     } as any);
 
-    const result = await makeCaller().verifySchema();
+    const result = await makeAdminCaller().verifySchema();
 
     expect(result.valid).toBe(false);
     expect((result as any).views.missing).toContain('poster_reputation');
   });
 
   it('returns expected/actual counts for tables', async () => {
+    seedAdminRoleCheck();
     (mockDb.healthCheck as any).mockResolvedValueOnce({
       connected: true, schemaVersion: '1.1.0', latencyMs: 4,
     });
@@ -308,7 +326,7 @@ describe('health.verifySchema', () => {
       rowCount: ALL_VIEWS.length,
     } as any);
 
-    const result = await makeCaller().verifySchema();
+    const result = await makeAdminCaller().verifySchema();
 
     expect((result as any).tables.expected).toBe(ALL_TABLES.length);
     expect((result as any).tables.actual).toBe(ALL_TABLES.length);

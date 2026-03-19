@@ -36,6 +36,13 @@ vi.mock('@upstash/redis', () => ({
     publish = mockRedisPublish;
   },
 }));
+// Stub out the cache/redis helpers used by sendMessage's rate limit
+vi.mock('../../src/cache/redis', () => ({
+  incr: vi.fn().mockResolvedValue(1),   // first message in window — always allowed
+  expire: vi.fn().mockResolvedValue(undefined),
+  redis: {},
+  checkRateLimit: vi.fn(),
+}));
 vi.mock('../../src/config', () => ({
   config: { redis: { restUrl: 'https://test.upstash.io', restToken: 'token' } },
 }));

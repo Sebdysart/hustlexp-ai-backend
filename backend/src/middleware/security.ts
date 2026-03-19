@@ -14,6 +14,47 @@ import { checkRateLimit, redis } from '../cache/redis.js';
 import { config } from '../config.js';
 
 // ============================================================================
+// TRUSTED IP RESOLUTION
+// ============================================================================
+
+/**
+ * Resolve the canonical client IP from an incoming request, safe against
+ * X-Forwarded-For spoofing.
+ *
+ * The X-Forwarded-For header is formatted as:
+ *   "client, proxy1, proxy2"
+ * Each hop appends its own entry.  Our trusted reverse proxy (Fly.io /
+ * Cloudflare) always appends the rightmost entry, so an attacker cannot forge
+ * that position — any value they inject is pushed further left by the proxy.
+ *
+ * Rules:
+ *   1. If XFF is present, take the RIGHTMOST (last) entry — set by our proxy.
+ *   2. Otherwise fall back to Cloudflare's cf-connecting-ip, then x-real-ip.
+ *   3. If none of the above are available, return 'unknown'.
+ *
+ * This function must be used for ALL IP-based rate limiting.  Using the raw
+ * header (or its leftmost entry) allows an attacker to supply an arbitrary IP
+ * and receive a fresh rate-limit bucket on every request.
+ */
+function getTrustedClientIP(c: Context): string {
+  const xff = c.req.header('x-forwarded-for');
+  if (xff) {
+    const ips = xff.split(',').map((ip) => ip.trim()).filter(Boolean);
+    // The rightmost entry is appended by our own trusted reverse proxy
+    // and cannot be injected by the client.
+    if (ips.length > 0) {
+      return ips[ips.length - 1];
+    }
+  }
+  // Fallback: Cloudflare's canonical header, then a generic real-ip header
+  return (
+    c.req.header('cf-connecting-ip') ||
+    c.req.header('x-real-ip') ||
+    'unknown'
+  );
+}
+
+// ============================================================================
 // SECURITY HEADERS
 // ============================================================================
 
@@ -60,6 +101,7 @@ export async function securityHeaders(c: Context, next: Next) {
 const RATE_LIMITS = {
   ai: { limit: 20, windowSeconds: 60 },         // 20 AI requests/min
   auth: { limit: 20, windowSeconds: 60 },        // 20 auth attempts/min (brute force protection)
+  browse: { limit: 30, windowSeconds: 60 },      // 30 public browse requests/min — IP-based DoS protection
   escrow: { limit: 30, windowSeconds: 60 },      // 30 escrow ops/min
   financial: { limit: 10, windowSeconds: 60 },   // 10 financial ops/min (escrow release, stripe)
   mutation: { limit: 60, windowSeconds: 60 },    // 60 mutation ops/min (write-heavy routes)
@@ -109,8 +151,8 @@ export function rateLimitMiddleware(category: RateLimitCategory) {
       const uid = extractFirebaseUid(token);
       identifier = uid ? `user:${uid}` : `anon:${hashIdentifier(token)}`;
     } else {
-      // Use forwarded IP or connecting IP
-      identifier = `ip:${c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown'}`;
+      // Use the trusted client IP (rightmost XFF entry — cannot be spoofed)
+      identifier = `ip:${getTrustedClientIP(c)}`;
     }
 
     const { limit, windowSeconds } = RATE_LIMITS[category];
@@ -247,6 +289,81 @@ export function sanitizeInput(input: string, maxLength = 10000): string {
   }
 
   return sanitized.trim();
+}
+
+// ============================================================================
+// PUBLIC (UNAUTHENTICATED) IP RATE LIMITER
+// ============================================================================
+
+const PUBLIC_IP_RATE_LIMIT = 60;       // requests
+const PUBLIC_IP_WINDOW_SECONDS = 60;   // per minute
+
+/**
+ * IP-based rate limiter for unauthenticated (public) tRPC routes.
+ *
+ * Uses Redis INCR + EXPIRE to maintain a per-IP counter with a 60-second
+ * rolling window.  Key format: `rate:public:ip:{ip}`.
+ *
+ * If the request already carries a valid Bearer token the user-level bucket
+ * in rateLimitMiddleware already applies, so this middleware is skipped to
+ * avoid double-counting authenticated users.
+ *
+ * Behaviour when Redis is unavailable:
+ *   - Production: FAIL CLOSED (429) — same posture as checkRateLimit.
+ *   - Development: ALLOW with warning.
+ */
+export function publicIpRateLimitMiddleware() {
+  return async (c: Context, next: Next) => {
+    // Skip when the request is authenticated — the user-bucket limiter handles it.
+    const authHeader = c.req.header('authorization');
+    if (authHeader?.startsWith('Bearer ')) {
+      await next();
+      return;
+    }
+
+    // Derive client IP using trusted resolution (rightmost XFF entry, set by
+    // our reverse proxy — not the leftmost, which is client-supplied and
+    // trivially spoofable).
+    const rawIp = getTrustedClientIP(c);
+
+    const key = `rate:public:ip:${rawIp}`;
+
+    try {
+      const current = await redis.incr(key);
+
+      if (current === 1) {
+        // First request in this window — set TTL.
+        await redis.expire(key, PUBLIC_IP_WINDOW_SECONDS);
+      }
+
+      const remaining = Math.max(0, PUBLIC_IP_RATE_LIMIT - current);
+      c.header('X-RateLimit-Limit', String(PUBLIC_IP_RATE_LIMIT));
+      c.header('X-RateLimit-Remaining', String(remaining));
+
+      if (current > PUBLIC_IP_RATE_LIMIT) {
+        return c.json(
+          {
+            error: 'Too Many Requests',
+            message: `Rate limit exceeded. Try again in ${PUBLIC_IP_WINDOW_SECONDS} seconds.`,
+            retryAfter: PUBLIC_IP_WINDOW_SECONDS,
+          },
+          429,
+        );
+      }
+    } catch (err) {
+      // Redis error — fail closed in production, open in dev.
+      if (config.app.isProduction) {
+        return c.json(
+          { error: 'Too Many Requests', message: 'Rate limiting unavailable', retryAfter: PUBLIC_IP_WINDOW_SECONDS },
+          429,
+        );
+      }
+      // Development: log and allow.
+      console.warn('[publicIpRateLimit] Redis error — allowing request in dev mode', err);
+    }
+
+    await next();
+  };
 }
 
 // ============================================================================

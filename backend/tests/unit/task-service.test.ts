@@ -761,7 +761,9 @@ describe('TaskService.accept', () => {
 describe('TaskService.submitProof', () => {
   it('transitions ACCEPTED → PROOF_SUBMITTED successfully', async () => {
     const submitted = makeTask({ state: 'PROOF_SUBMITTED' });
-    mockQuery.mockResolvedValueOnce({ rows: [submitted], rowCount: 1 } as never);
+    mockQuery
+      .mockResolvedValueOnce({ rows: [makeTask({ state: 'ACCEPTED' })], rowCount: 1 } as never) // SELECT FOR UPDATE
+      .mockResolvedValueOnce({ rows: [submitted], rowCount: 1 } as never); // UPDATE
 
     const result = await TaskService.submitProof('task-1');
 
@@ -770,9 +772,7 @@ describe('TaskService.submitProof', () => {
   });
 
   it('returns INVALID_STATE when task is in wrong state', async () => {
-    // UPDATE returns rowCount 0 — task was not in ACCEPTED state
-    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
-    // getById fallback
+    // SELECT FOR UPDATE returns task in wrong state → early return INVALID_STATE (no UPDATE needed)
     mockQuery.mockResolvedValueOnce({ rows: [makeTask({ state: 'OPEN' })], rowCount: 1 } as never);
 
     const result = await TaskService.submitProof('task-1');
@@ -782,10 +782,9 @@ describe('TaskService.submitProof', () => {
     expect(result.error?.message).toContain('ACCEPTED');
   });
 
-  it('returns NOT_FOUND when getById also misses', async () => {
-    mockQuery
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // UPDATE misses
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // getById misses
+  it('returns NOT_FOUND when task row is missing', async () => {
+    // SELECT FOR UPDATE returns empty rows → NOT_FOUND immediately
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
 
     const result = await TaskService.submitProof('missing');
 
@@ -800,7 +799,9 @@ describe('TaskService.submitProof', () => {
 describe('TaskService.complete', () => {
   it('transitions PROOF_SUBMITTED → COMPLETED successfully', async () => {
     const completed = makeTask({ state: 'COMPLETED' });
-    mockQuery.mockResolvedValueOnce({ rows: [completed], rowCount: 1 } as never);
+    mockQuery
+      .mockResolvedValueOnce({ rows: [makeTask({ state: 'PROOF_SUBMITTED' })], rowCount: 1 } as never) // SELECT FOR UPDATE
+      .mockResolvedValueOnce({ rows: [completed], rowCount: 1 } as never); // UPDATE
 
     const result = await TaskService.complete('task-1');
 
@@ -809,9 +810,8 @@ describe('TaskService.complete', () => {
   });
 
   it('returns INVALID_STATE when task is in wrong non-terminal state', async () => {
-    mockQuery
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
-      .mockResolvedValueOnce({ rows: [makeTask({ state: 'OPEN' })], rowCount: 1 } as never);
+    // SELECT FOR UPDATE returns wrong state → early return INVALID_STATE
+    mockQuery.mockResolvedValueOnce({ rows: [makeTask({ state: 'OPEN' })], rowCount: 1 } as never);
 
     const result = await TaskService.complete('task-1');
 
@@ -820,9 +820,8 @@ describe('TaskService.complete', () => {
   });
 
   it('returns TASK_TERMINAL when task is already in terminal state', async () => {
-    mockQuery
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
-      .mockResolvedValueOnce({ rows: [makeTask({ state: 'CANCELLED' })], rowCount: 1 } as never);
+    // SELECT FOR UPDATE returns terminal state → early return TASK_TERMINAL
+    mockQuery.mockResolvedValueOnce({ rows: [makeTask({ state: 'CANCELLED' })], rowCount: 1 } as never);
 
     const result = await TaskService.complete('task-1');
 
@@ -837,7 +836,9 @@ describe('TaskService.complete', () => {
 describe('TaskService.rejectProof', () => {
   it('transitions PROOF_SUBMITTED → ACCEPTED (proof rejected)', async () => {
     const reverted = makeTask({ state: 'ACCEPTED' });
-    mockQuery.mockResolvedValueOnce({ rows: [reverted], rowCount: 1 } as never);
+    mockQuery
+      .mockResolvedValueOnce({ rows: [makeTask({ state: 'PROOF_SUBMITTED' })], rowCount: 1 } as never) // SELECT FOR UPDATE
+      .mockResolvedValueOnce({ rows: [reverted], rowCount: 1 } as never); // UPDATE
 
     const result = await TaskService.rejectProof('task-1', 'Not complete');
 
@@ -846,9 +847,8 @@ describe('TaskService.rejectProof', () => {
   });
 
   it('returns INVALID_STATE when task is not in PROOF_SUBMITTED state', async () => {
-    mockQuery
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
-      .mockResolvedValueOnce({ rows: [makeTask({ state: 'DISPUTED' })], rowCount: 1 } as never);
+    // SELECT FOR UPDATE returns wrong state → early return INVALID_STATE
+    mockQuery.mockResolvedValueOnce({ rows: [makeTask({ state: 'DISPUTED' })], rowCount: 1 } as never);
 
     const result = await TaskService.rejectProof('task-1', 'reason');
 
@@ -864,7 +864,9 @@ describe('TaskService.rejectProof', () => {
 describe('TaskService.openDispute', () => {
   it('transitions PROOF_SUBMITTED → DISPUTED successfully', async () => {
     const disputed = makeTask({ state: 'DISPUTED' });
-    mockQuery.mockResolvedValueOnce({ rows: [disputed], rowCount: 1 } as never);
+    mockQuery
+      .mockResolvedValueOnce({ rows: [makeTask({ state: 'PROOF_SUBMITTED' })], rowCount: 1 } as never) // SELECT FOR UPDATE
+      .mockResolvedValueOnce({ rows: [disputed], rowCount: 1 } as never); // UPDATE
 
     const result = await TaskService.openDispute('task-1');
 
@@ -873,9 +875,8 @@ describe('TaskService.openDispute', () => {
   });
 
   it('returns INVALID_STATE when task is not in PROOF_SUBMITTED', async () => {
-    mockQuery
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
-      .mockResolvedValueOnce({ rows: [makeTask({ state: 'OPEN' })], rowCount: 1 } as never);
+    // SELECT FOR UPDATE returns wrong state → early return INVALID_STATE
+    mockQuery.mockResolvedValueOnce({ rows: [makeTask({ state: 'OPEN' })], rowCount: 1 } as never);
 
     const result = await TaskService.openDispute('task-1');
 
@@ -888,9 +889,12 @@ describe('TaskService.openDispute', () => {
 // 13. cancel
 // ===========================================================================
 describe('TaskService.cancel', () => {
-  it('cancels an OPEN task successfully', async () => {
+  it('cancels an OPEN task successfully (no funded escrow)', async () => {
     const cancelled = makeTask({ state: 'CANCELLED' });
-    mockQuery.mockResolvedValueOnce({ rows: [cancelled], rowCount: 1 } as never);
+    mockQuery
+      .mockResolvedValueOnce({ rows: [makeTask({ state: 'OPEN' })], rowCount: 1 } as never) // SELECT FOR UPDATE
+      .mockResolvedValueOnce({ rows: [cancelled], rowCount: 1 } as never)                   // UPDATE tasks
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);                           // SELECT escrows (none)
 
     const result = await TaskService.cancel('task-1');
 
@@ -898,19 +902,68 @@ describe('TaskService.cancel', () => {
     expect(result.data?.state).toBe('CANCELLED');
   });
 
-  it('cancels an ACCEPTED task successfully', async () => {
+  it('cancels an ACCEPTED task successfully (no funded escrow)', async () => {
     const cancelled = makeTask({ state: 'CANCELLED' });
-    mockQuery.mockResolvedValueOnce({ rows: [cancelled], rowCount: 1 } as never);
+    mockQuery
+      .mockResolvedValueOnce({ rows: [makeTask({ state: 'ACCEPTED' })], rowCount: 1 } as never) // SELECT FOR UPDATE
+      .mockResolvedValueOnce({ rows: [cancelled], rowCount: 1 } as never)                       // UPDATE tasks
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);                               // SELECT escrows (none)
 
     const result = await TaskService.cancel('task-1');
 
     expect(result.success).toBe(true);
   });
 
-  it('returns TASK_TERMINAL when task is already in a terminal state', async () => {
+  it('FIX-2: emits escrow.refund_requested outbox event when a FUNDED escrow exists on cancellation', async () => {
+    // writeToOutbox is mocked at module level — it does NOT call db.query internally.
+    // So we only need 3 mockQuery entries: FOR UPDATE, UPDATE tasks, SELECT escrows.
+    const { writeToOutbox } = await import('../../src/lib/outbox-helpers');
+    const mockWriteToOutbox = vi.mocked(writeToOutbox);
+    mockWriteToOutbox.mockClear();
+
+    const cancelled = makeTask({ state: 'CANCELLED' });
     mockQuery
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
-      .mockResolvedValueOnce({ rows: [makeTask({ state: 'COMPLETED' })], rowCount: 1 } as never);
+      .mockResolvedValueOnce({ rows: [makeTask({ state: 'OPEN' })], rowCount: 1 } as never)          // SELECT FOR UPDATE
+      .mockResolvedValueOnce({ rows: [cancelled], rowCount: 1 } as never)                            // UPDATE tasks → CANCELLED
+      .mockResolvedValueOnce({ rows: [{ id: 'escrow-99', state: 'FUNDED' }], rowCount: 1 } as never); // SELECT escrows → FUNDED
+
+    const result = await TaskService.cancel('task-1');
+
+    expect(result.success).toBe(true);
+    // writeToOutbox should have been called with the escrow refund event (intercepted by mock)
+    expect(mockWriteToOutbox).toHaveBeenCalledOnce();
+    const [outboxInput] = mockWriteToOutbox.mock.calls[0];
+    expect(outboxInput.eventType).toBe('escrow.refund_requested');
+    expect(outboxInput.aggregateId).toBe('escrow-99');
+    expect(outboxInput.queueName).toBe('critical_payments');
+    expect(outboxInput.payload).toMatchObject({
+      escrowId: 'escrow-99',
+      reason: 'task_cancelled',
+      taskId: 'task-1',
+    });
+    expect(outboxInput.idempotencyKey).toBe('escrow.refund_on_cancel:escrow-99:task-1');
+  });
+
+  it('FIX-2: does NOT emit outbox event when no funded escrow exists', async () => {
+    const { writeToOutbox } = await import('../../src/lib/outbox-helpers');
+    const mockWriteToOutbox = vi.mocked(writeToOutbox);
+    mockWriteToOutbox.mockClear();
+
+    const cancelled = makeTask({ state: 'CANCELLED' });
+    mockQuery
+      .mockResolvedValueOnce({ rows: [makeTask({ state: 'OPEN' })], rowCount: 1 } as never) // SELECT FOR UPDATE
+      .mockResolvedValueOnce({ rows: [cancelled], rowCount: 1 } as never)                   // UPDATE tasks → CANCELLED
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);                           // SELECT escrows → none
+
+    const result = await TaskService.cancel('task-1');
+
+    expect(result.success).toBe(true);
+    expect(mockWriteToOutbox).not.toHaveBeenCalled();
+  });
+
+  it('returns TASK_TERMINAL when task is already in a terminal state', async () => {
+    // SELECT FOR UPDATE returns terminal state → early return TASK_TERMINAL
+    mockQuery.mockResolvedValueOnce({ rows: [makeTask({ state: 'COMPLETED' })], rowCount: 1 } as never);
 
     const result = await TaskService.cancel('task-1');
 
@@ -919,9 +972,8 @@ describe('TaskService.cancel', () => {
   });
 
   it('returns INVALID_STATE when task is in PROOF_SUBMITTED (cannot cancel)', async () => {
-    mockQuery
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
-      .mockResolvedValueOnce({ rows: [makeTask({ state: 'PROOF_SUBMITTED' })], rowCount: 1 } as never);
+    // SELECT FOR UPDATE returns PROOF_SUBMITTED → early return INVALID_STATE (not in OPEN/ACCEPTED)
+    mockQuery.mockResolvedValueOnce({ rows: [makeTask({ state: 'PROOF_SUBMITTED' })], rowCount: 1 } as never);
 
     const result = await TaskService.cancel('task-1');
 

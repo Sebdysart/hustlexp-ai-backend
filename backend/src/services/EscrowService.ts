@@ -21,6 +21,7 @@ import { EarnedVerificationUnlockService } from './EarnedVerificationUnlockServi
 import { XPTaxService } from './XPTaxService.js';
 import { XPService } from './XPService.js';
 import { SelfInsurancePoolService } from './SelfInsurancePoolService.js';
+import { RevenueService } from './RevenueService.js';
 import type {
   Escrow,
   EscrowState,
@@ -54,6 +55,10 @@ interface ReleaseEscrowParams {
 
 interface RefundEscrowParams {
   escrowId: string;
+  /** When true, allows refunding a LOCKED_DISPUTE escrow (admin override). */
+  adminOverride?: boolean;
+  /** Optional reason recorded in escrow_events metadata (used with adminOverride). */
+  reason?: string;
 }
 
 interface PartialRefundParams {
@@ -230,41 +235,84 @@ export const EscrowService = {
   /**
    * Fund escrow: PENDING → FUNDED
    * Called when Stripe payment_intent.succeeded
+   *
+   * RACE CONDITION FIX: Wrapped in transaction with SELECT FOR UPDATE so the
+   * row-level lock is held from the state read through the UPDATE COMMIT.
+   * Without the transaction, two concurrent Stripe webhook deliveries for the
+   * same payment_intent.succeeded event could both read state='PENDING' and
+   * both execute the UPDATE, double-funding the escrow.
+   * The AND version = $3 / version = version + 1 guard provides a secondary
+   * optimistic-lock safety net: even if two transactions serialise on the same
+   * initial version, only the first COMMIT increments the version — the second
+   * UPDATE hits version already incremented → 0 rows → clean INVALID_STATE error.
    */
   fund: async (params: FundEscrowParams): Promise<ServiceResult<Escrow>> => {
     const { escrowId, stripePaymentIntentId } = params;
-    
+
     try {
-      const result = await db.query<Escrow>(
-        `UPDATE escrows 
-         SET state = 'FUNDED',
-             stripe_payment_intent_id = $2,
-             funded_at = NOW()
-         WHERE id = $1 
-           AND state = 'PENDING'
-         RETURNING *`,
-        [escrowId, stripePaymentIntentId]
-      );
-      
-      if (result.rowCount === 0) {
-        // Either not found or wrong state
-        const existing = await EscrowService.getById(escrowId);
-        if (!existing.success) {
-          return existing;
+      const txResult = await db.transaction(async (query) => {
+        // Lock the escrow row for the duration of the transaction
+        const lockResult = await query<{ state: string; version: number }>(
+          `SELECT state, version FROM escrows WHERE id = $1 FOR UPDATE`,
+          [escrowId]
+        );
+
+        if (lockResult.rows.length === 0) {
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.NOT_FOUND,
+              message: `Escrow ${escrowId} not found`,
+            },
+          } as ServiceResult<Escrow>;
         }
-        
-        return {
-          success: false,
-          error: {
-            code: ErrorCodes.INVALID_STATE,
-            message: `Cannot fund escrow: current state is ${existing.data.state}, expected PENDING`,
-          },
-        };
+
+        const { state, version } = lockResult.rows[0];
+
+        if (state !== 'PENDING') {
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.INVALID_STATE,
+              message: `Cannot fund escrow: current state is ${state}, expected PENDING`,
+            },
+          } as ServiceResult<Escrow>;
+        }
+
+        const result = await query<Escrow>(
+          `UPDATE escrows
+           SET state = 'FUNDED',
+               stripe_payment_intent_id = $2,
+               funded_at = NOW(),
+               version = version + 1,
+               updated_at = NOW()
+           WHERE id = $1
+             AND state = 'PENDING'
+             AND version = $3
+           RETURNING *`,
+          [escrowId, stripePaymentIntentId, version]
+        );
+
+        if (result.rowCount === 0) {
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.INVALID_STATE,
+              message: `Cannot fund escrow: state changed unexpectedly`,
+            },
+          } as ServiceResult<Escrow>;
+        }
+
+        return { success: true, data: result.rows[0] } as ServiceResult<Escrow>;
+      });
+
+      if (!txResult.success) {
+        return txResult;
       }
 
       await logEscrowEvent(escrowId, 'PENDING', 'FUNDED');
 
-      return { success: true, data: result.rows[0] };
+      return txResult;
     } catch (error) {
       return {
         success: false,
@@ -294,152 +342,267 @@ export const EscrowService = {
   release: async (params: ReleaseEscrowParams): Promise<ServiceResult<Escrow>> => {
     const { escrowId, stripeTransferId, adminOverride = false, reason } = params;
 
+    // FIX 1A: Require stripeTransferId for non-admin releases.
+    // Without this guard a poster can mark an escrow as released without
+    // having ever created a Stripe transfer, producing a $0 payout.
+    if (!adminOverride && !stripeTransferId) {
+      return {
+        success: false,
+        error: {
+          code: ErrorCodes.INVALID_STATE,
+          message: 'stripeTransferId is required to release escrow — create the Stripe transfer first',
+        },
+      };
+    }
+
+    // Variables populated inside the transaction, used by post-commit side effects
+    let releasedEscrow: Escrow;
+    let workerId: string;
+    let grossPayoutCents: number;
+    let netPayoutCents: number;
+    let taskId: string;
+    let paymentMethod: string;
+    let escrowStateBefore: string;
+    let adminManualPayoutRequired = false;
+
     try {
-      // 1. Get escrow and task details for payment method and worker
-      const escrowResult = await db.query<{
-        id: string;
-        task_id: string;
-        amount: number;
-        state: string;
-      }>(
-        `SELECT id, task_id, amount, state FROM escrows WHERE id = $1`,
-        [escrowId]
-      );
-
-      if (escrowResult.rows.length === 0) {
-        return {
-          success: false,
-          error: {
-            code: ErrorCodes.NOT_FOUND,
-            message: `Escrow ${escrowId} not found`,
-          },
-        };
-      }
-
-      const escrow = escrowResult.rows[0];
-
-      // Get task details for worker_id and price
-      const taskResult = await db.query<{
-        worker_id: string | null;
-        price: number;
-      }>(
-        `SELECT worker_id, price FROM tasks WHERE id = $1`,
-        [escrow.task_id]
-      );
-
-      if (taskResult.rows.length === 0 || !taskResult.rows[0].worker_id) {
-        return {
-          success: false,
-          error: {
-            code: ErrorCodes.INVALID_STATE,
-            message: `Task ${escrow.task_id} has no assigned worker`,
-          },
-        };
-      }
-
-      const task = taskResult.rows[0];
-      const workerId = task.worker_id!;
-      const paymentMethod: string = 'escrow'; // All tasks use escrow payment flow
-      const grossPayoutCents = escrow.amount;
-
-      // KYC GATE: Verify worker has completed Stripe Connect onboarding
-      // before releasing funds (FinCEN/BSA compliance).
-      // Skipped when adminOverride=true (admin force-release path) — but fee/XP/insurance still run.
-      if (!adminOverride) {
-        const workerKycResult = await db.query<{
-          payouts_enabled: boolean;
-          stripe_connect_id: string | null;
-          stripe_connect_status: string | null;
+      // RACE CONDITION FIX: Wrap the entire read-check-write sequence in a
+      // transaction. SELECT FOR UPDATE acquires a row-level lock and holds it
+      // until COMMIT/ROLLBACK. Without the transaction wrapper, db.query()
+      // releases the connection (and the lock) immediately after the SELECT,
+      // so two concurrent calls could both pass the state check and both UPDATE.
+      const txResult = await db.transaction(async (query) => {
+        // 1. Lock the escrow row for the duration of the transaction
+        const escrowResult = await query<{
+          id: string;
+          task_id: string;
+          amount: number;
+          state: string;
+          version: number;
         }>(
-          `SELECT payouts_enabled, stripe_connect_id, stripe_connect_status FROM users WHERE id = $1`,
-          [workerId]
+          `SELECT id, task_id, amount, state, version FROM escrows WHERE id = $1 FOR UPDATE`,
+          [escrowId]
         );
 
-        if (workerKycResult.rows.length === 0) {
+        if (escrowResult.rows.length === 0) {
           return {
             success: false,
             error: {
               code: ErrorCodes.NOT_FOUND,
-              message: `Worker ${workerId} not found`,
+              message: `Escrow ${escrowId} not found`,
             },
-          };
+          } as ServiceResult<Escrow>;
         }
 
-        const workerKyc = workerKycResult.rows[0];
+        const escrow = escrowResult.rows[0];
 
-        if (!workerKyc.stripe_connect_id) {
+        // Get task details for worker_id and price
+        const taskResult = await query<{
+          worker_id: string | null;
+          price: number;
+        }>(
+          `SELECT worker_id, price FROM tasks WHERE id = $1`,
+          [escrow.task_id]
+        );
+
+        if (taskResult.rows.length === 0 || !taskResult.rows[0].worker_id) {
           return {
             success: false,
             error: {
               code: ErrorCodes.INVALID_STATE,
-              message: `Worker has not set up Stripe Connect — cannot release payout`,
+              message: `Task ${escrow.task_id} has no assigned worker`,
             },
-          };
+          } as ServiceResult<Escrow>;
         }
 
-        if (!workerKyc.payouts_enabled) {
+        const task = taskResult.rows[0];
+        const resolvedWorkerId = task.worker_id!;
+        const resolvedPaymentMethod: string = 'escrow';
+        const resolvedGross = escrow.amount;
+
+        // KYC GATE: Verify worker has completed Stripe Connect onboarding
+        // before releasing funds (FinCEN/BSA compliance).
+        // Skipped when adminOverride=true (admin force-release path) — but fee/XP/insurance still run.
+        if (!adminOverride) {
+          const workerKycResult = await query<{
+            payouts_enabled: boolean;
+            stripe_connect_id: string | null;
+            stripe_connect_status: string | null;
+          }>(
+            `SELECT payouts_enabled, stripe_connect_id, stripe_connect_status FROM users WHERE id = $1`,
+            [resolvedWorkerId]
+          );
+
+          if (workerKycResult.rows.length === 0) {
+            return {
+              success: false,
+              error: {
+                code: ErrorCodes.NOT_FOUND,
+                message: `Worker ${resolvedWorkerId} not found`,
+              },
+            } as ServiceResult<Escrow>;
+          }
+
+          const workerKyc = workerKycResult.rows[0];
+
+          if (!workerKyc.stripe_connect_id) {
+            return {
+              success: false,
+              error: {
+                code: ErrorCodes.INVALID_STATE,
+                message: `Worker has not set up Stripe Connect — cannot release payout`,
+              },
+            } as ServiceResult<Escrow>;
+          }
+
+          if (!workerKyc.payouts_enabled) {
+            return {
+              success: false,
+              error: {
+                code: ErrorCodes.INVALID_STATE,
+                message: `Worker KYC incomplete — payouts not enabled (status: ${workerKyc.stripe_connect_status ?? 'unknown'})`,
+              },
+            } as ServiceResult<Escrow>;
+          }
+        } else {
+          // FIX 3: adminOverride skips the KYC gate above, but we still need to
+          // know whether the worker has a Stripe Connect account so ops can be
+          // alerted when a manual payout is required.
+          const adminWorkerRow = await query<{ stripe_connect_id: string | null }>(
+            `SELECT stripe_connect_id FROM users WHERE id = $1`,
+            [resolvedWorkerId]
+          );
+          const adminStripeConnectId = adminWorkerRow.rows[0]?.stripe_connect_id ?? null;
+          if (!adminStripeConnectId) {
+            // Worker has no Stripe Connect account — money cannot be transferred
+            // automatically. Log a CRITICAL warning so ops acts promptly.
+            escrowLogger.error(
+              { workerId: resolvedWorkerId, escrowId, adminOverride: true },
+              'CRITICAL: adminOverride release but worker has no stripe_connect_id — manual payout required'
+            );
+            // Stash flag in the metadata object so logEscrowEvent records it
+            // and ops tooling can surface it for reconciliation.
+            adminManualPayoutRequired = true;
+          }
+        }
+
+        // Calculate platform fee (from config - default 15%)
+        // SECURITY FIX (v2.9.3): Clamp to [0, 100] — a negative env var must not
+        // produce a negative fee (which would overpay the worker).
+        const platformFeePercent = Math.min(100, Math.max(0, config.stripe.platformFeePercent ?? 15));
+        const platformFeeCents = Math.round(resolvedGross * (platformFeePercent / 100));
+        const resolvedNet = resolvedGross - platformFeeCents;
+
+        // 2. Release escrow (SPEC FIX: Allow release from both FUNDED and LOCKED_DISPUTE states)
+        // The version = $3 optimistic-lock guard is a secondary safety net: if somehow
+        // two transactions serialise on the same version (e.g. after a retry), the
+        // second UPDATE hits version already incremented → 0 rows → clean error.
+        const result = await query<Escrow>(
+          `UPDATE escrows
+           SET state = 'RELEASED',
+               stripe_transfer_id = $2,
+               released_at = NOW(),
+               version = version + 1,
+               updated_at = NOW()
+           WHERE id = $1
+             AND state IN ('FUNDED', 'LOCKED_DISPUTE')
+             AND version = $3
+           RETURNING *`,
+          [escrowId, stripeTransferId ?? null, escrow.version]
+        );
+
+        if (result.rowCount === 0) {
+          const existing = await EscrowService.getById(escrowId);
+          if (!existing.success) {
+            return existing;
+          }
+
+          if (isTerminalState(existing.data.state)) {
+            return {
+              success: false,
+              error: {
+                code: ErrorCodes.ESCROW_TERMINAL,
+                message: `Escrow ${escrowId} is in terminal state ${existing.data.state}`,
+              },
+            } as ServiceResult<Escrow>;
+          }
+
           return {
             success: false,
             error: {
               code: ErrorCodes.INVALID_STATE,
-              message: `Worker KYC incomplete — payouts not enabled (status: ${workerKyc.stripe_connect_status ?? 'unknown'})`,
+              message: `Cannot release escrow: current state is ${existing.data.state}, expected FUNDED or LOCKED_DISPUTE`,
             },
-          };
+          } as ServiceResult<Escrow>;
         }
+
+        // Capture for post-commit side effects
+        workerId = resolvedWorkerId;
+        grossPayoutCents = resolvedGross;
+        netPayoutCents = resolvedNet;
+        taskId = escrow.task_id;
+        paymentMethod = resolvedPaymentMethod;
+        escrowStateBefore = escrow.state;
+        releasedEscrow = result.rows[0];
+
+        return { success: true, data: result.rows[0] } as ServiceResult<Escrow>;
+      });
+
+      if (!txResult.success) {
+        return txResult;
       }
 
-      // Calculate platform fee (from config - default 15%)
-      // SECURITY FIX (v2.9.3): Clamp to [0, 100] — a negative env var must not
-      // produce a negative fee (which would overpay the worker).
-      const platformFeePercent = Math.min(100, Math.max(0, config.stripe.platformFeePercent ?? 15));
-      const platformFeeCents = Math.round(grossPayoutCents * (platformFeePercent / 100));
-      const netPayoutCents = grossPayoutCents - platformFeeCents;
-
-      // 2. Release escrow (SPEC FIX: Allow release from both FUNDED and LOCKED_DISPUTE states)
-      const result = await db.query<Escrow>(
-        `UPDATE escrows
-         SET state = 'RELEASED',
-             stripe_transfer_id = $2,
-             released_at = NOW()
-         WHERE id = $1
-           AND state IN ('FUNDED', 'LOCKED_DISPUTE')
-         RETURNING *`,
-        [escrowId, stripeTransferId ?? null]
+      await logEscrowEvent(
+        escrowId,
+        escrowStateBefore!,
+        'RELEASED',
+        undefined,
+        adminOverride ? 'admin' : 'system',
+        {
+          ...(adminOverride && reason ? { adminOverride: true, reason } : {}),
+          ...(adminManualPayoutRequired ? { admin_manual_payout_required: true } : {}),
+        }
       );
 
-      if (result.rowCount === 0) {
-        const existing = await EscrowService.getById(escrowId);
-        if (!existing.success) {
-          return existing;
-        }
-
-        if (isTerminalState(existing.data.state)) {
-          return {
-            success: false,
-            error: {
-              code: ErrorCodes.ESCROW_TERMINAL,
-              message: `Escrow ${escrowId} is in terminal state ${existing.data.state}`,
-            },
-          };
-        }
-
-        return {
-          success: false,
-          error: {
-            code: ErrorCodes.INVALID_STATE,
-            message: `Cannot release escrow: current state is ${existing.data.state}, expected FUNDED or LOCKED_DISPUTE`,
+      // FIX 1B: Write revenue ledger entry for this escrow payout.
+      // Previously no ledger entry was created on escrow release, making P&L
+      // unreconcilable.  platform_fee is the correct event type — it captures
+      // the full financial decomposition (gross, fee, net) per RevenueService v2 spec.
+      try {
+        const platformFeePercent = Math.min(100, Math.max(0, config.stripe.platformFeePercent ?? 15));
+        const platformFeeCents = Math.round(grossPayoutCents! * (platformFeePercent / 100));
+        await RevenueService.logEvent({
+          eventType: 'platform_fee',
+          userId: workerId!,
+          taskId: taskId!,
+          amountCents: platformFeeCents,
+          grossAmountCents: grossPayoutCents!,
+          platformFeeCents,
+          netAmountCents: netPayoutCents!,
+          feeBasisPoints: Math.round(platformFeePercent * 100),
+          escrowId,
+          stripeTransferId: stripeTransferId ?? undefined,
+          metadata: {
+            event: 'escrow_release',
+            adminOverride,
+            ...(adminManualPayoutRequired ? { admin_manual_payout_required: true } : {}),
           },
-        };
+        });
+      } catch (revenueError) {
+        // Non-fatal: ledger write failure must not block payout confirmation.
+        // Ops can backfill from escrow_events table if needed.
+        escrowLogger.error(
+          { err: revenueError instanceof Error ? revenueError.message : String(revenueError), workerId, escrowId },
+          'Failed to write revenue ledger entry for escrow release — requires manual reconciliation'
+        );
       }
-
-      await logEscrowEvent(escrowId, escrow.state, 'RELEASED', undefined, adminOverride ? 'admin' : 'system', adminOverride && reason ? { adminOverride: true, reason } : {});
 
       // v1.x: Record 2% self-insurance contribution from worker earnings
       try {
         const insuranceContributionCents = Math.round(grossPayoutCents * 0.02);
         await SelfInsurancePoolService.recordContribution(
-          escrow.task_id,
-          workerId,
+          taskId!,
+          workerId!,
           insuranceContributionCents,
         );
       } catch (insuranceError) {
@@ -453,27 +616,27 @@ export const EscrowService = {
       // 3. v1.8.0: Record earnings for verification unlock tracking
       // This is idempotent via UNIQUE constraint on escrow_id
       await EarnedVerificationUnlockService.recordEarnings(
-        workerId,
-        escrow.task_id,
+        workerId!,
+        taskId!,
         escrowId,
-        netPayoutCents
+        netPayoutCents!
       );
 
       // 4. v1.8.0: Handle offline payment tax if applicable
-      if (paymentMethod === 'offline_cash' || paymentMethod === 'offline_venmo' || paymentMethod === 'offline_cashapp') {
+      if (paymentMethod! === 'offline_cash' || paymentMethod! === 'offline_venmo' || paymentMethod! === 'offline_cashapp') {
         await XPTaxService.recordOfflinePayment(
-          workerId,
-          escrow.task_id,
-          paymentMethod as 'offline_cash' | 'offline_venmo' | 'offline_cashapp',
-          grossPayoutCents
+          workerId!,
+          taskId!,
+          paymentMethod! as 'offline_cash' | 'offline_venmo' | 'offline_cashapp',
+          grossPayoutCents!
         );
       }
 
       // 5. v1.8.0: Attempt to award XP (may be blocked by tax trigger)
       // XP award formula: price / 10 (e.g., $50 task = 500 XP)
-      const xpAmount = Math.round(grossPayoutCents / 10);
+      const xpAmount = Math.round(grossPayoutCents! / 10);
       try {
-        await XPService.awardXP({ userId: workerId, taskId: escrow.task_id, escrowId, baseXP: xpAmount });
+        await XPService.awardXP({ userId: workerId!, taskId: taskId!, escrowId, baseXP: xpAmount });
       } catch (xpError) {
         // Check if XP was blocked by tax trigger (HX201)
         if (xpError instanceof Error && xpError.message.includes('XP-TAX-BLOCK')) {
@@ -491,7 +654,7 @@ export const EscrowService = {
         }
       }
 
-      return { success: true, data: result.rows[0] };
+      return { success: true, data: releasedEscrow! };
     } catch (error) {
       // Check for INV-2 violation from trigger
       if (isInvariantViolation(error)) {
@@ -519,83 +682,128 @@ export const EscrowService = {
   },
 
   /**
-   * Refund escrow: FUNDED → REFUNDED
+   * Refund escrow: FUNDED → REFUNDED (or LOCKED_DISPUTE → REFUNDED with adminOverride)
    *
-   * SECURITY FIX (v2.9.3): LOCKED_DISPUTE removed from the allowed states.
-   * A poster cannot call refund() while a worker's dispute is active.
-   * LOCKED_DISPUTE escrows can only be resolved via the dispute resolution
-   * path (admin partialRefund or release), not by a direct poster refund.
+   * SECURITY FIX (v2.9.3): LOCKED_DISPUTE is NOT allowed for poster-initiated
+   * refunds. A poster cannot call refund() while a worker's dispute is active.
+   * LOCKED_DISPUTE escrows can only be refunded via adminOverride=true (the admin
+   * force_refund path), ensuring dispute resolution logic is never bypassed without
+   * explicit admin intent.
    */
   refund: async (params: RefundEscrowParams): Promise<ServiceResult<Escrow>> => {
-    const { escrowId } = params;
+    const { escrowId, adminOverride = false, reason } = params;
+
+    let refundedEscrow: Escrow;
+    let refundWorkerId: string | null = null;
+    let escrowStateBefore: string = 'FUNDED';
 
     try {
-      // FIX 3: Fetch worker_id before refunding so we can clawback XP
-      const escrowPreCheck = await db.query<{ task_id: string }>(
-        `SELECT task_id FROM escrows WHERE id = $1`,
-        [escrowId]
-      );
-      const taskId = escrowPreCheck.rows[0]?.task_id;
-      let workerId: string | null = null;
-      if (taskId) {
-        const taskRow = await db.query<{ worker_id: string | null }>(
-          `SELECT worker_id FROM tasks WHERE id = $1`,
-          [taskId]
+      // RACE CONDITION FIX: Wrap SELECT FOR UPDATE + UPDATE in a transaction so
+      // the row-level lock is held from SELECT through COMMIT. Without the
+      // transaction wrapper, db.query() releases the connection (and the lock)
+      // immediately after the SELECT, allowing a concurrent refund() to slip
+      // through and trigger a double-refund.
+      const txResult = await db.transaction(async (query) => {
+        const escrowPreCheck = await query<{ task_id: string; version: number; state: string }>(
+          `SELECT task_id, version, state FROM escrows WHERE id = $1 FOR UPDATE`,
+          [escrowId]
         );
-        workerId = taskRow.rows[0]?.worker_id ?? null;
-      }
+        const refundTaskId = escrowPreCheck.rows[0]?.task_id;
+        const escrowVersion = escrowPreCheck.rows[0]?.version;
+        const currentState = escrowPreCheck.rows[0]?.state;
 
-      const result = await db.query<Escrow>(
-        `UPDATE escrows
-         SET state = 'REFUNDED',
-             refunded_at = NOW()
-         WHERE id = $1
-           AND state = 'FUNDED'
-         RETURNING *`,
-        [escrowId]
-      );
-
-      if (result.rowCount === 0) {
-        const existing = await EscrowService.getById(escrowId);
-        if (!existing.success) {
-          return existing;
-        }
-
-        if (isTerminalState(existing.data.state)) {
+        // Guard: LOCKED_DISPUTE refund requires adminOverride
+        if (currentState === 'LOCKED_DISPUTE' && !adminOverride) {
           return {
             success: false,
             error: {
-              code: ErrorCodes.ESCROW_TERMINAL,
-              message: `Escrow ${escrowId} is in terminal state ${existing.data.state}`,
+              code: ErrorCodes.INVALID_STATE,
+              message: `Cannot refund escrow: state is LOCKED_DISPUTE — admin override required to refund a disputed escrow`,
             },
-          };
+          } as ServiceResult<Escrow>;
         }
 
-        return {
-          success: false,
-          error: {
-            code: ErrorCodes.INVALID_STATE,
-            message: `Cannot refund escrow: current state is ${existing.data.state}`,
-          },
-        };
+        if (refundTaskId) {
+          const taskRow = await query<{ worker_id: string | null }>(
+            `SELECT worker_id FROM tasks WHERE id = $1`,
+            [refundTaskId]
+          );
+          refundWorkerId = taskRow.rows[0]?.worker_id ?? null;
+        }
+
+        // Allow FUNDED → REFUNDED normally; LOCKED_DISPUTE → REFUNDED only with adminOverride
+        const allowedStates = adminOverride ? `'FUNDED', 'LOCKED_DISPUTE'` : `'FUNDED'`;
+
+        const result = await query<Escrow>(
+          `UPDATE escrows
+           SET state = 'REFUNDED',
+               refunded_at = NOW(),
+               version = version + 1,
+               updated_at = NOW()
+           WHERE id = $1
+             AND state IN (${allowedStates})
+             AND version = $2
+           RETURNING *`,
+          [escrowId, escrowVersion]
+        );
+
+        if (result.rowCount === 0) {
+          const existing = await EscrowService.getById(escrowId);
+          if (!existing.success) {
+            return existing;
+          }
+
+          if (isTerminalState(existing.data.state)) {
+            return {
+              success: false,
+              error: {
+                code: ErrorCodes.ESCROW_TERMINAL,
+                message: `Escrow ${escrowId} is in terminal state ${existing.data.state}`,
+              },
+            } as ServiceResult<Escrow>;
+          }
+
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.INVALID_STATE,
+              message: `Cannot refund escrow: current state is ${existing.data.state}`,
+            },
+          } as ServiceResult<Escrow>;
+        }
+
+        escrowStateBefore = currentState ?? 'FUNDED';
+        refundedEscrow = result.rows[0];
+        return { success: true, data: result.rows[0] } as ServiceResult<Escrow>;
+      });
+
+      if (!txResult.success) {
+        return txResult;
       }
 
-      await logEscrowEvent(escrowId, 'FUNDED', 'REFUNDED');
+      await logEscrowEvent(
+        escrowId,
+        escrowStateBefore,
+        'REFUNDED',
+        undefined,
+        adminOverride ? 'admin' : 'system',
+        adminOverride && reason ? { adminOverride: true, reason } : {}
+      );
 
       // FIX 3: Clawback XP if the worker had already been awarded XP for this escrow
-      if (workerId) {
+      if (refundWorkerId) {
         try {
-          await XPService.clawbackXP(workerId, escrowId, 'task_refunded');
+          await XPService.clawbackXP(refundWorkerId, escrowId, 'task_refunded');
         } catch (clawbackError) {
           // Non-fatal: clawback failure must not block the refund
           escrowLogger.error(
-            { err: clawbackError instanceof Error ? clawbackError.message : String(clawbackError), workerId, escrowId },
+            { err: clawbackError instanceof Error ? clawbackError.message : String(clawbackError), workerId: refundWorkerId, escrowId },
             'XP clawback failed during refund — refund proceeds'
           );
         }
       }
 
-      return { success: true, data: result.rows[0] };
+      return { success: true, data: refundedEscrow! };
     } catch (error) {
       return {
         success: false,
@@ -615,74 +823,85 @@ export const EscrowService = {
    */
   lockForDispute: async (escrowId: string, options?: { adminOverride?: boolean }): Promise<ServiceResult<Escrow>> => {
     try {
-      // FIX 5: Fetch the associated task to enforce the challenge window
-      const windowCheck = await db.query<{
-        completed_at: Date | null;
-        challenge_window_hours: number | null;
-      }>(
-        `SELECT t.completed_at, t.challenge_window_hours
-         FROM escrows e
-         JOIN tasks t ON t.id = e.task_id
-         WHERE e.id = $1`,
-        [escrowId]
-      );
+      // RACE CONDITION FIX: Entire check + update wrapped in a transaction so the
+      // FOR UPDATE row-level lock is held from SELECT through COMMIT. Without the
+      // transaction, a concurrent release() could transition the escrow to RELEASED
+      // between the window check and the UPDATE, causing a stale-read bug.
+      return await db.transaction(async (query) => {
+        const windowCheck = await query<{
+          completed_at: Date | null;
+          challenge_window_hours: number | null;
+          version: number;
+        }>(
+          `SELECT t.completed_at, t.challenge_window_hours, e.version
+           FROM escrows e
+           JOIN tasks t ON t.id = e.task_id
+           WHERE e.id = $1
+           FOR UPDATE OF e`,
+          [escrowId]
+        );
 
-      if (windowCheck.rows.length > 0) {
-        const { completed_at, challenge_window_hours } = windowCheck.rows[0];
+        if (windowCheck.rows.length > 0) {
+          const { completed_at, challenge_window_hours } = windowCheck.rows[0];
 
-        // SECURITY FIX (v2.9.3): A dispute may only be filed on a completed task.
-        // Previously, null completed_at silently skipped the window guard, allowing
-        // any authenticated user to lock an in-progress task's escrow indefinitely.
-        // REG-5 FIX: adminOverride bypasses this check so admins can lock mid-task
-        // escrows for fraud investigation (completed_at=null).
-        if (completed_at == null && !options?.adminOverride) {
-          throw new TRPCError({
-            code: 'BAD_REQUEST',
-            message: 'Cannot dispute a task that has not been completed',
-          });
-        }
-
-        // Only enforce challenge window when the task has a completion timestamp.
-        // If completed_at is null and adminOverride=true, skip the window check entirely.
-        if (completed_at != null) {
-          const windowMs = (challenge_window_hours ?? 6) * 60 * 60 * 1000;
-          const deadlineAt = new Date(new Date(completed_at).getTime() + windowMs);
-          if (new Date() > deadlineAt) {
+          // SECURITY FIX (v2.9.3): A dispute may only be filed on a completed task.
+          // Previously, null completed_at silently skipped the window guard, allowing
+          // any authenticated user to lock an in-progress task's escrow indefinitely.
+          // REG-5 FIX: adminOverride bypasses this check so admins can lock mid-task
+          // escrows for fraud investigation (completed_at=null).
+          if (completed_at == null && !options?.adminOverride) {
             throw new TRPCError({
-              code: 'PRECONDITION_FAILED',
-              message: `Dispute window has closed. Tasks must be disputed within ${challenge_window_hours ?? 6} hours of completion.`,
+              code: 'BAD_REQUEST',
+              message: 'Cannot dispute a task that has not been completed',
             });
           }
+
+          // Only enforce challenge window when the task has a completion timestamp.
+          // If completed_at is null and adminOverride=true, skip the window check entirely.
+          if (completed_at != null) {
+            const windowMs = (challenge_window_hours ?? 6) * 60 * 60 * 1000;
+            const deadlineAt = new Date(new Date(completed_at).getTime() + windowMs);
+            if (new Date() > deadlineAt) {
+              throw new TRPCError({
+                code: 'PRECONDITION_FAILED',
+                message: `Dispute window has closed. Tasks must be disputed within ${challenge_window_hours ?? 6} hours of completion.`,
+              });
+            }
+          }
         }
-      }
 
-      const result = await db.query<Escrow>(
-        `UPDATE escrows
-         SET state = 'LOCKED_DISPUTE'
-         WHERE id = $1
-           AND state = 'FUNDED'
-         RETURNING *`,
-        [escrowId]
-      );
-      
-      if (result.rowCount === 0) {
-        const existing = await EscrowService.getById(escrowId);
-        if (!existing.success) {
-          return existing;
+        const escrowVersion = windowCheck.rows[0]?.version;
+        const result = await query<Escrow>(
+          `UPDATE escrows
+           SET state = 'LOCKED_DISPUTE',
+               version = version + 1,
+               updated_at = NOW()
+           WHERE id = $1
+             AND state = 'FUNDED'
+             AND version = $2
+           RETURNING *`,
+          [escrowId, escrowVersion]
+        );
+
+        if (result.rowCount === 0) {
+          const existing = await EscrowService.getById(escrowId);
+          if (!existing.success) {
+            return existing;
+          }
+
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.INVALID_STATE,
+              message: `Cannot lock escrow: current state is ${existing.data.state}, expected FUNDED`,
+            },
+          };
         }
-        
-        return {
-          success: false,
-          error: {
-            code: ErrorCodes.INVALID_STATE,
-            message: `Cannot lock escrow: current state is ${existing.data.state}, expected FUNDED`,
-          },
-        };
-      }
 
-      await logEscrowEvent(escrowId, 'FUNDED', 'LOCKED_DISPUTE');
+        await logEscrowEvent(escrowId, 'FUNDED', 'LOCKED_DISPUTE');
 
-      return { success: true, data: result.rows[0] };
+        return { success: true, data: result.rows[0] };
+      });
     } catch (error) {
       // Re-throw TRPCErrors (e.g. challenge window PRECONDITION_FAILED) — do not swallow
       if (error instanceof TRPCError) {
@@ -705,6 +924,15 @@ export const EscrowService = {
     const { escrowId, workerPercent, posterPercent } = params;
     
     // Validate percentages
+    if (workerPercent < 0 || workerPercent > 100 || posterPercent < 0 || posterPercent > 100) {
+      return {
+        success: false,
+        error: {
+          code: 'INVALID_PERCENT',
+          message: 'Percentages must be between 0 and 100',
+        },
+      };
+    }
     if (workerPercent + posterPercent !== 100) {
       return {
         success: false,
@@ -715,30 +943,54 @@ export const EscrowService = {
       };
     }
     
+    let partialRefundEscrow: Escrow;
+
     try {
-      const result = await db.query<Escrow>(
-        `UPDATE escrows 
-         SET state = 'REFUND_PARTIAL',
-             refunded_at = NOW()
-         WHERE id = $1 
-           AND state = 'LOCKED_DISPUTE'
-         RETURNING *`,
-        [escrowId]
-      );
-      
-      if (result.rowCount === 0) {
-        const existing = await EscrowService.getById(escrowId);
-        if (!existing.success) {
-          return existing;
+      // RACE CONDITION FIX: Wrap SELECT FOR UPDATE + UPDATE in a transaction.
+      // Without the transaction, the FOR UPDATE lock is released as soon as the
+      // SELECT completes, allowing two admin callers to both see
+      // state='LOCKED_DISPUTE' and both execute the UPDATE on the same escrow.
+      const txResult = await db.transaction(async (query) => {
+        const lockResult = await query<{ version: number; state: string }>(
+          `SELECT version, state FROM escrows WHERE id = $1 FOR UPDATE`,
+          [escrowId]
+        );
+        const escrowVersion = lockResult.rows[0]?.version;
+
+        const result = await query<Escrow>(
+          `UPDATE escrows
+           SET state = 'REFUND_PARTIAL',
+               refunded_at = NOW(),
+               version = version + 1,
+               updated_at = NOW()
+           WHERE id = $1
+             AND state = 'LOCKED_DISPUTE'
+             AND version = $2
+           RETURNING *`,
+          [escrowId, escrowVersion]
+        );
+
+        if (result.rowCount === 0) {
+          const existing = await EscrowService.getById(escrowId);
+          if (!existing.success) {
+            return existing;
+          }
+
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.INVALID_STATE,
+              message: `Cannot partially refund: current state is ${existing.data.state}, expected LOCKED_DISPUTE`,
+            },
+          } as ServiceResult<Escrow>;
         }
-        
-        return {
-          success: false,
-          error: {
-            code: ErrorCodes.INVALID_STATE,
-            message: `Cannot partially refund: current state is ${existing.data.state}, expected LOCKED_DISPUTE`,
-          },
-        };
+
+        partialRefundEscrow = result.rows[0];
+        return { success: true, data: result.rows[0] } as ServiceResult<Escrow>;
+      });
+
+      if (!txResult.success) {
+        return txResult;
       }
 
       await logEscrowEvent(escrowId, 'LOCKED_DISPUTE', 'REFUND_PARTIAL');
@@ -764,7 +1016,7 @@ export const EscrowService = {
         }
       }
 
-      return { success: true, data: result.rows[0] };
+      return { success: true, data: partialRefundEscrow! };
     } catch (error) {
       return {
         success: false,

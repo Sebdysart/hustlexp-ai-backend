@@ -282,13 +282,13 @@ describe('REG-5 — FIXED: Admin can lock mid-task escrows (adminOverride bypass
 
 describe('REG-9 — FIXED: Velocity block threshold raised from 1000 to 3000', () => {
   it('FIXED — $150 task (1500 XP) is allowed when velocity is suspicious', async () => {
-    // checkDailyXPCap: allowed
-    mockXPService.checkDailyXPCap.mockResolvedValueOnce({
-      allowed: true, earned: 0, cap: 10000, remaining: 10000,
-    });
-    // checkVelocity: suspicious (>5 events in last hour)
-    mockXPService.checkVelocity.mockResolvedValueOnce({ suspicious: true, recentEvents: 6 });
-    // awardXP proceeds (below new 3000 threshold)
+    // Router now derives baseXP server-side from escrow (SECURITY FIX: caller cannot supply it).
+    // $150 task → amount = 15000 cents → derivedBaseXP = 1500
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ amount: 15000, worker_id: WORKER_ID }],
+      rowCount: 1,
+    } as any);
+    // awardXP proceeds (1500 < 3000 threshold — not blocked)
     mockXPService.awardXP.mockResolvedValueOnce({
       success: true,
       data: {
@@ -309,7 +309,6 @@ describe('REG-9 — FIXED: Velocity block threshold raised from 1000 to 3000', (
     const result = await workerCaller.awardXP({
       taskId: TASK_ID,
       escrowId: ESCROW_ID,
-      baseXP: 1500,
     });
 
     expect(result).toHaveProperty('base_xp', 1500);
@@ -317,11 +316,12 @@ describe('REG-9 — FIXED: Velocity block threshold raised from 1000 to 3000', (
   });
 
   it('FIXED — $350 task (3500 XP) is still blocked when velocity is suspicious', async () => {
-    mockXPService.checkDailyXPCap.mockResolvedValueOnce({
-      allowed: true, earned: 0, cap: 10000, remaining: 10000,
-    });
-    mockXPService.checkVelocity.mockResolvedValueOnce({ suspicious: true, recentEvents: 6 });
-    // 3500 > 3000 threshold — awardXP returns velocity block
+    // $350 task → amount = 35000 cents → derivedBaseXP = 3500 > 3000 threshold
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ amount: 35000, worker_id: WORKER_ID }],
+      rowCount: 1,
+    } as any);
+    // XPService returns velocity block for 3500 XP
     mockXPService.awardXP.mockResolvedValueOnce({
       success: false,
       error: { code: 'XP_VELOCITY_EXCEEDED', message: 'XP_VELOCITY_EXCEEDED: Award blocked due to suspicious velocity pattern' },
@@ -332,7 +332,7 @@ describe('REG-9 — FIXED: Velocity block threshold raised from 1000 to 3000', (
       firebaseUid: `fb-${WORKER_ID}`,
     });
 
-    await expect(workerCaller.awardXP({ taskId: TASK_ID, escrowId: ESCROW_ID, baseXP: 3500 }))
+    await expect(workerCaller.awardXP({ taskId: TASK_ID, escrowId: ESCROW_ID }))
       .rejects.toMatchObject({ code: 'BAD_REQUEST' });
   });
 });

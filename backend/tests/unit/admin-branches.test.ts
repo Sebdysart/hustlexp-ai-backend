@@ -89,10 +89,17 @@ describe('admin.setUserBan branches', () => {
 
   it('returns updated row on success (ban=true)', async () => {
     prependAdminCheck();
+    // UPDATE users SET is_banned
     mockDb.query.mockResolvedValueOnce({
       rows: [{ id: USER_UUID, is_banned: true }],
       rowCount: 1,
     } as any);
+    // INSERT admin_actions
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
+    // SELECT funded escrows (none)
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+    // UPDATE tasks SET state = 'CANCELLED' for OPEN tasks
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
 
     const result = await makeAdminCaller().setUserBan({
       userId: USER_UUID,
@@ -129,10 +136,17 @@ describe('admin.setUserBan branches', () => {
 
   it('includes optional reason in call', async () => {
     prependAdminCheck();
+    // UPDATE users SET is_banned
     mockDb.query.mockResolvedValueOnce({
       rows: [{ id: USER_UUID, is_banned: true }],
       rowCount: 1,
     } as any);
+    // INSERT admin_actions
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
+    // SELECT funded escrows (none)
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+    // UPDATE tasks SET state = 'CANCELLED' for OPEN tasks
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
 
     // Should not throw — reason is optional
     const result = await makeAdminCaller().setUserBan({
@@ -320,7 +334,36 @@ describe('admin.escrowOverride branches', () => {
     });
 
     expect(result.state).toBe('REFUNDED');
-    expect(mockEscrowService.refund).toHaveBeenCalledWith({ escrowId: ESC_UUID });
+    // Admin force_refund passes adminOverride:true so LOCKED_DISPUTE escrows can be refunded
+    expect(mockEscrowService.refund).toHaveBeenCalledWith({
+      escrowId: ESC_UUID,
+      adminOverride: true,
+      reason: 'Refund requested',
+    });
+  });
+
+  it('force_refund on a LOCKED_DISPUTE escrow succeeds when adminOverride=true is passed', async () => {
+    prependAdminCheck();
+    // EscrowService.refund receives adminOverride=true and returns REFUNDED successfully
+    mockEscrowService.refund.mockResolvedValueOnce({
+      success: true,
+      data: { id: ESC_UUID, state: 'REFUNDED', amount: 7500 },
+    } as any);
+    // admin_actions audit INSERT
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
+
+    const result = await makeAdminCaller().escrowOverride({
+      escrowId: ESC_UUID,
+      action: 'force_refund',
+      reason: 'Admin override: dispute resolved in poster favour',
+    });
+
+    expect(result.state).toBe('REFUNDED');
+    expect(mockEscrowService.refund).toHaveBeenCalledWith({
+      escrowId: ESC_UUID,
+      adminOverride: true,
+      reason: 'Admin override: dispute resolved in poster favour',
+    });
   });
 
   it('throws NOT_FOUND when EscrowService returns failure', async () => {

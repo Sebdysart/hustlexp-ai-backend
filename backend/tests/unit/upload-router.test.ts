@@ -84,6 +84,7 @@ describe('upload.getPresignedUrl', () => {
       taskId: TEST_UUID,
       filename: 'photo.jpg',
       contentType: 'image/jpeg',
+      fileSize: 1024,
     });
 
     expect(result).toHaveProperty('uploadUrl');
@@ -100,6 +101,7 @@ describe('upload.getPresignedUrl', () => {
       filename: 'chat-photo.png',
       contentType: 'image/png',
       purpose: 'message',
+      fileSize: 2048,
     });
 
     expect(result.key).toContain('messages/');
@@ -110,6 +112,7 @@ describe('upload.getPresignedUrl', () => {
       taskId: TEST_UUID,
       filename: 'proof.jpg',
       contentType: 'image/jpeg',
+      fileSize: 512,
     });
 
     expect(result.key).toContain('proofs/');
@@ -120,6 +123,7 @@ describe('upload.getPresignedUrl', () => {
       taskId: TEST_UUID,
       filename: 'photo.jpg',
       contentType: 'image/jpeg',
+      fileSize: 1024,
     });
 
     expect(result.key).toContain(TEST_UUID);
@@ -136,11 +140,22 @@ describe('upload.getPresignedUrl', () => {
     ).rejects.toThrow();
   });
 
+  it('rejects missing fileSize (required since R2 fix)', async () => {
+    await expect(
+      makeCaller().getPresignedUrl({
+        taskId: TEST_UUID,
+        filename: 'photo.jpg',
+        contentType: 'image/jpeg',
+      } as any)
+    ).rejects.toThrow();
+  });
+
   it('accepts image/webp content type', async () => {
     const result = await makeCaller().getPresignedUrl({
       taskId: TEST_UUID,
       filename: 'photo.webp',
       contentType: 'image/webp',
+      fileSize: 1024,
     });
 
     expect(result.key).toContain('photo.webp');
@@ -186,6 +201,7 @@ describe('upload.getPresignedUrl', () => {
       taskId: TEST_UUID,
       filename: 'photo.jpg',
       contentType: 'image/jpeg',
+      fileSize: 1024,
     });
 
     const expiresAt = new Date(result.expiresAt);

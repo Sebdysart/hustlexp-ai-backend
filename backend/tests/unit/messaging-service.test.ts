@@ -20,6 +20,13 @@ vi.mock('@upstash/redis', () => ({
   Redis: vi.fn().mockImplementation(() => ({ publish: vi.fn().mockResolvedValue(1) })),
 }));
 vi.mock('../../src/config', () => ({ config: { redis: { restUrl: null, restToken: null } } }));
+// Stub out the cache/redis helpers used by sendMessage's rate limit
+vi.mock('../../src/cache/redis', () => ({
+  incr: vi.fn().mockResolvedValue(1),   // first message in window — always allowed
+  expire: vi.fn().mockResolvedValue(undefined),
+  redis: {},
+  checkRateLimit: vi.fn(),
+}));
 vi.mock('../../src/logger', () => {
   const child = () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() });
   return { logger: { child } };
@@ -75,7 +82,10 @@ describe('MessagingService.getMessagesForTask', () => {
       .mockResolvedValueOnce({ rows: [msg] });
     const result = await MessagingService.getMessagesForTask('task-1', 'poster-1');
     expect(result.success).toBe(true);
-    expect(result.data).toHaveLength(1);
+    if (result.success) {
+      expect(result.data.messages).toHaveLength(1);
+      expect(result.data.hasMore).toBe(false);
+    }
   });
 
   it('returns messages when user is the worker', async () => {
@@ -84,7 +94,10 @@ describe('MessagingService.getMessagesForTask', () => {
       .mockResolvedValueOnce({ rows: [msg, msg] });
     const result = await MessagingService.getMessagesForTask('task-1', 'worker-1');
     expect(result.success).toBe(true);
-    expect(result.data).toHaveLength(2);
+    if (result.success) {
+      expect(result.data.messages).toHaveLength(2);
+      expect(result.data.hasMore).toBe(false);
+    }
   });
 
   it('returns error when db throws', async () => {

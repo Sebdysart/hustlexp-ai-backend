@@ -6,6 +6,9 @@
  * - charge.dispute.created  → ChargebackService.handleDisputeCreated
  * - charge.dispute.updated  → ChargebackService.handleDisputeUpdated
  * - charge.dispute.closed   → ChargebackService.handleDisputeClosed
+ *
+ * Critical bug fix (payment_intent.succeeded escrow funding):
+ * - payment_intent.succeeded → EscrowService.fund (PENDING → FUNDED)
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -47,10 +50,17 @@ vi.mock('../../src/services/ChargebackService.js', () => ({
   },
 }));
 
+vi.mock('../../src/services/EscrowService.js', () => ({
+  EscrowService: {
+    fund: vi.fn().mockResolvedValue({ success: true, data: { id: 'escrow-1', state: 'FUNDED' } }),
+  },
+}));
+
 import { db } from '../../src/db';
 import { processStripeEventJob } from '../../src/jobs/stripe-event-worker';
 import { RevenueService } from '../../src/services/RevenueService.js';
 import { ChargebackService } from '../../src/services/ChargebackService.js';
+import { EscrowService } from '../../src/services/EscrowService.js';
 import type { Job } from 'bullmq';
 
 const mockDb = vi.mocked(db);
@@ -109,8 +119,82 @@ describe('processStripeEventJob', () => {
       expect(RevenueService.logEvent).not.toHaveBeenCalled();
     });
 
-    it('skips logEvent when user_id metadata is missing', async () => {
-      const invoice = { metadata: {}, amount_paid: 999 };
+    it('resolves user via stripe_customer_id when user_id metadata is absent', async () => {
+      const invoice = { metadata: {}, amount_paid: 999, customer: 'cus_abc' };
+      // claim query → event
+      mockDb.query.mockResolvedValueOnce({
+        rows: [{ payload_json: { id: 'evt_test_123', data: { object: invoice } }, type: 'invoice.paid' }],
+        rowCount: 1,
+      } as never);
+      // customer lookup → found
+      mockDb.query.mockResolvedValueOnce({
+        rows: [{ id: 'user-from-customer' }],
+        rowCount: 1,
+      } as never);
+      // success UPDATE
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+      await processStripeEventJob(makeJob('invoice.paid', invoice));
+
+      expect(RevenueService.logEvent).toHaveBeenCalledWith({
+        eventType: 'subscription',
+        userId: 'user-from-customer',
+        amountCents: 999,
+        stripeEventId: 'evt_test_123',
+      });
+    });
+
+    it('logs revenue with system userId when user_id missing and customer lookup finds no match', async () => {
+      const invoice = { metadata: {}, amount_paid: 999, customer: 'cus_unknown' };
+      // claim query → event
+      mockDb.query.mockResolvedValueOnce({
+        rows: [{ payload_json: { id: 'evt_test_123', data: { object: invoice } }, type: 'invoice.paid' }],
+        rowCount: 1,
+      } as never);
+      // customer lookup → not found
+      mockDb.query.mockResolvedValueOnce({
+        rows: [],
+        rowCount: 0,
+      } as never);
+      // success UPDATE
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+      await processStripeEventJob(makeJob('invoice.paid', invoice));
+
+      expect(RevenueService.logEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          eventType: 'subscription',
+          userId: 'system',
+          amountCents: 999,
+          stripeEventId: 'evt_test_123',
+          metadata: expect.objectContaining({ unresolved_user: true }),
+        })
+      );
+    });
+
+    it('logs revenue with system userId when user_id and customer are both absent', async () => {
+      // No customer field — no DB lookup, goes straight to system fallback
+      const invoice = { metadata: {}, amount_paid: 500 };
+      // claim query → event
+      mockDb.query.mockResolvedValueOnce({
+        rows: [{ payload_json: { id: 'evt_test_123', data: { object: invoice } }, type: 'invoice.paid' }],
+        rowCount: 1,
+      } as never);
+      // success UPDATE (no customer lookup in between)
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+      await processStripeEventJob(makeJob('invoice.paid', invoice));
+
+      expect(RevenueService.logEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          userId: 'system',
+          amountCents: 500,
+        })
+      );
+    });
+
+    it('skips logEvent when amount_paid is 0 even with metadata present', async () => {
+      const invoice = { metadata: { user_id: 'user-abc' }, amount_paid: 0 };
       setupClaim('invoice.paid', invoice);
 
       await processStripeEventJob(makeJob('invoice.paid', invoice));
@@ -226,6 +310,160 @@ describe('processStripeEventJob', () => {
       expect(ChargebackService.handleDisputeClosed).toHaveBeenCalledWith(
         expect.objectContaining({ status: 'lost' })
       );
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // payment_intent.succeeded — escrow PENDING → FUNDED (critical bug fix)
+  // -------------------------------------------------------------------------
+  describe('payment_intent.succeeded', () => {
+    const paymentIntent = { id: 'pi_test_abc', amount: 5000 };
+
+    function setupPaymentIntentSucceededClaim() {
+      // 1. Atomic claim UPDATE → returns event row
+      mockDb.query.mockResolvedValueOnce({
+        rows: [{ payload_json: { id: 'evt_pi_1', data: { object: paymentIntent } }, type: 'payment_intent.succeeded' }],
+        rowCount: 1,
+      } as never);
+    }
+
+    it('calls EscrowService.fund with the correct escrowId and paymentIntentId when a PENDING escrow exists', async () => {
+      setupPaymentIntentSucceededClaim();
+      // 2. Escrow lookup → returns a PENDING escrow
+      mockDb.query.mockResolvedValueOnce({
+        rows: [{ id: 'escrow-1' }],
+        rowCount: 1,
+      } as never);
+      // 3. Final success UPDATE
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+      await processStripeEventJob(makeJob('payment_intent.succeeded', paymentIntent));
+
+      expect(EscrowService.fund).toHaveBeenCalledWith({
+        escrowId: 'escrow-1',
+        stripePaymentIntentId: 'pi_test_abc',
+      });
+    });
+
+    it('skips EscrowService.fund (no-op) when no PENDING escrow exists for the payment intent', async () => {
+      setupPaymentIntentSucceededClaim();
+      // 2. Escrow lookup → no rows (entitlement-only payment or already funded)
+      mockDb.query.mockResolvedValueOnce({
+        rows: [],
+        rowCount: 0,
+      } as never);
+      // 3. Final success UPDATE
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+      await processStripeEventJob(makeJob('payment_intent.succeeded', paymentIntent));
+
+      expect(EscrowService.fund).not.toHaveBeenCalled();
+    });
+
+    it('throws and marks event failed when EscrowService.fund returns an error', async () => {
+      setupPaymentIntentSucceededClaim();
+      // 2. Escrow lookup → returns a PENDING escrow
+      mockDb.query.mockResolvedValueOnce({
+        rows: [{ id: 'escrow-1' }],
+        rowCount: 1,
+      } as never);
+      // EscrowService.fund returns failure
+      vi.mocked(EscrowService.fund).mockResolvedValueOnce({
+        success: false,
+        error: { code: 'INVALID_STATE', message: 'Cannot fund escrow: current state is FUNDED, expected PENDING' },
+      });
+      // 3. Error UPDATE (claimed_at = NULL, result = 'failed') — no processed_at
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+      await expect(
+        processStripeEventJob(makeJob('payment_intent.succeeded', paymentIntent))
+      ).rejects.toThrow('Cannot fund escrow: current state is FUNDED, expected PENDING');
+    });
+
+    it('on transient error: sets claimed_at=NULL and result=failed, does NOT set processed_at', async () => {
+      setupPaymentIntentSucceededClaim();
+      // Escrow lookup → PENDING escrow
+      mockDb.query.mockResolvedValueOnce({
+        rows: [{ id: 'escrow-1' }],
+        rowCount: 1,
+      } as never);
+      // EscrowService.fund throws a transient error
+      vi.mocked(EscrowService.fund).mockRejectedValueOnce(new Error('DB connection timeout'));
+      // Error UPDATE — capture what was called
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+      await expect(
+        processStripeEventJob(makeJob('payment_intent.succeeded', paymentIntent))
+      ).rejects.toThrow('DB connection timeout');
+
+      // The last db.query call must be the error UPDATE
+      const calls = mockDb.query.mock.calls;
+      const errorUpdateCall = calls[calls.length - 1];
+      const sql: string = errorUpdateCall[0] as string;
+      // Must reset claimed_at to NULL so BullMQ retries can re-claim
+      expect(sql).toContain('claimed_at = NULL');
+      // Must NOT tombstone with processed_at — that would silently drop all retries
+      expect(sql).not.toContain('processed_at');
+    });
+
+    it('on success: sets processed_at via the success UPDATE (not in catch)', async () => {
+      setupPaymentIntentSucceededClaim();
+      // Escrow lookup → no PENDING escrow (simple success path)
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+      // Success UPDATE
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+      await processStripeEventJob(makeJob('payment_intent.succeeded', paymentIntent));
+
+      const calls = mockDb.query.mock.calls;
+      const successUpdateCall = calls[calls.length - 1];
+      const sql: string = successUpdateCall[0] as string;
+      expect(sql).toContain('processed_at = NOW()');
+      expect(sql).toContain("result = 'success'");
+    });
+
+    it('after error: BullMQ can re-claim because claimed_at is reset to NULL', async () => {
+      // Simulate first attempt: fails with transient error
+      setupPaymentIntentSucceededClaim();
+      mockDb.query.mockResolvedValueOnce({
+        rows: [{ id: 'escrow-1' }],
+        rowCount: 1,
+      } as never);
+      vi.mocked(EscrowService.fund).mockRejectedValueOnce(new Error('transient error'));
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+      await expect(
+        processStripeEventJob(makeJob('payment_intent.succeeded', paymentIntent))
+      ).rejects.toThrow('transient error');
+
+      // Verify claimed_at was reset (so next attempt can claim)
+      const firstErrorUpdate = mockDb.query.mock.calls[mockDb.query.mock.calls.length - 1];
+      expect((firstErrorUpdate[0] as string)).toContain('claimed_at = NULL');
+
+      // Simulate second attempt (BullMQ retry): claim succeeds because claimed_at IS NULL
+      vi.clearAllMocks();
+      setupPaymentIntentSucceededClaim();
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+      // Should succeed on retry without throwing
+      await expect(
+        processStripeEventJob(makeJob('payment_intent.succeeded', paymentIntent))
+      ).resolves.toBeUndefined();
+    });
+
+    it('also calls processEntitlementPurchase alongside escrow funding', async () => {
+      const { processEntitlementPurchase } = await import('../../src/services/StripeEntitlementProcessor.js');
+      setupPaymentIntentSucceededClaim();
+      // Escrow lookup → PENDING escrow
+      mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'escrow-1' }], rowCount: 1 } as never);
+      // Final success UPDATE
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+      await processStripeEventJob(makeJob('payment_intent.succeeded', paymentIntent));
+
+      expect(processEntitlementPurchase).toHaveBeenCalled();
+      expect(EscrowService.fund).toHaveBeenCalled();
     });
   });
 

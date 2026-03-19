@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { config } from '../config.js';
 import { Redis } from '@upstash/redis';
 import { Ratelimit } from '@upstash/ratelimit';
@@ -58,7 +59,8 @@ export const CACHE_KEYS = {
   aiCache: (hash: string) => `ai:cache:${hash}`,
   taskDetails: (taskId: string) => `task:details:${taskId}`,
   userStats: (userId: string) => `user:stats:${userId}`,
-  sessionToken: (token: string) => `session:${token}`,
+  sessionToken: (token: string) =>
+    `session:${createHash('sha256').update(token).digest('hex')}`,
   rateLimit: (userId: string, action: string) => `ratelimit:${userId}:${action}`,
 } as const;
 

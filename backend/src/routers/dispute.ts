@@ -58,6 +58,14 @@ export const disputeRouter = router({
 
       const task = taskResult.data;
 
+      // Validate that a worker is assigned — disputes require two parties.
+      if (!task.worker_id) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: 'Cannot open dispute on task with no assigned worker',
+        });
+      }
+
       // Resolve the escrow for this task.
       const escrowResult = await EscrowService.getByTaskId(input.taskId);
       if (!escrowResult.success) {
@@ -72,7 +80,7 @@ export const disputeRouter = router({
         escrowId: escrowResult.data.id,
         initiatedBy: userId,
         posterId: task.poster_id,
-        workerId: task.worker_id ?? '',
+        workerId: task.worker_id,
         reason: input.reason,
         description: input.description,
       });

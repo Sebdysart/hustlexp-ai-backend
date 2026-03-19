@@ -1,16 +1,22 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Mock db module
-vi.mock('../../src/db', () => ({
-  db: {
-    query: vi.fn(),
-    transaction: vi.fn(),
-    serializableTransaction: vi.fn(),
-  },
-  isInvariantViolation: vi.fn(() => false),
-  isUniqueViolation: vi.fn(() => false),
-  getErrorMessage: vi.fn((code: string) => `Error: ${code}`),
-}));
+// transaction() and serializableTransaction() call the provided callback with
+// the same `query` spy so mockResolvedValueOnce sequences work seamlessly
+// inside and outside transactions.
+vi.mock('../../src/db', () => {
+  const queryFn = vi.fn();
+  return {
+    db: {
+      query: queryFn,
+      transaction: vi.fn((fn: (q: typeof queryFn) => Promise<unknown>) => fn(queryFn)),
+      serializableTransaction: vi.fn((fn: (q: typeof queryFn) => Promise<unknown>) => fn(queryFn)),
+    },
+    isInvariantViolation: vi.fn(() => false),
+    isUniqueViolation: vi.fn(() => false),
+    getErrorMessage: vi.fn((code: string) => `Error: ${code}`),
+  };
+});
 
 vi.mock('../../src/logger', () => ({
   escrowLogger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -27,6 +33,10 @@ vi.mock('../../src/services/XPTaxService', () => ({
 
 vi.mock('../../src/services/XPService', () => ({
   XPService: { awardXP: vi.fn() },
+}));
+
+vi.mock('../../src/services/RevenueService', () => ({
+  RevenueService: { logEvent: vi.fn().mockResolvedValue({ success: true, data: { id: 'rev-1' } }) },
 }));
 
 vi.mock('../../src/config', () => ({
@@ -62,6 +72,10 @@ describe('EscrowService', () => {
 
   describe('fund', () => {
     it('should fund PENDING escrow', async () => {
+      // fund() is now wrapped in db.transaction():
+      //   1st query: SELECT state, version FOR UPDATE → lock row
+      //   2nd query: UPDATE escrows ... RETURNING *   → funded row
+      (db.query as any).mockResolvedValueOnce({ rows: [{ state: 'PENDING', version: 0 }], rowCount: 1 });
       (db.query as any).mockResolvedValueOnce({ rows: [{ id: 'e1', state: 'FUNDED' }], rowCount: 1 });
       const result = await EscrowService.fund({ escrowId: 'e1', stripePaymentIntentId: 'pi_123' });
       expect(result.success).toBe(true);
@@ -122,7 +136,7 @@ describe('EscrowService', () => {
         rowCount: 1,
       });
 
-      const result = await EscrowService.release({ escrowId: 'e-surge' });
+      const result = await EscrowService.release({ escrowId: 'e-surge', stripeTransferId: 'tr_test_surge' });
 
       expect(result.success).toBe(true);
 

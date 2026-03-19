@@ -184,7 +184,8 @@ describe('TippingService', () => {
   // --------------------------------------------------------------------------
   describe('confirmTip', () => {
     it('confirms tip when payment succeeded', async () => {
-      mockPaymentIntentsRetrieve.mockResolvedValueOnce({ status: 'succeeded' });
+      // Fix 4: payment.amount must match tip amount_cents (500 = 500)
+      mockPaymentIntentsRetrieve.mockResolvedValueOnce({ status: 'succeeded', amount: 500 });
 
       const tip = {
         id: 'tip-1',
@@ -199,6 +200,7 @@ describe('TippingService', () => {
       };
 
       mockDb.query
+        .mockResolvedValueOnce({ rows: [{ amount_cents: 500 }], rowCount: 1 } as never) // Fix 4: SELECT amount_cents
         .mockResolvedValueOnce({ rows: [tip], rowCount: 1 } as never) // UPDATE tip
         .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // INSERT notification
 
@@ -207,8 +209,19 @@ describe('TippingService', () => {
       expect(result.success).toBe(true);
     });
 
+    it('returns PAYMENT_AMOUNT_MISMATCH when PI amount does not match tip amount (Fix 4)', async () => {
+      // Fix 4: payment.amount=1000 does NOT match tip amount_cents=500
+      mockPaymentIntentsRetrieve.mockResolvedValueOnce({ status: 'succeeded', amount: 1000 });
+      mockDb.query.mockResolvedValueOnce({ rows: [{ amount_cents: 500 }], rowCount: 1 } as never); // SELECT amount_cents
+
+      const result = await TippingService.confirmTip('tip-1', 'pi_123');
+
+      expect(result.success).toBe(false);
+      if (!result.success) expect(result.error.code).toBe('PAYMENT_AMOUNT_MISMATCH');
+    });
+
     it('returns error when payment not succeeded', async () => {
-      mockPaymentIntentsRetrieve.mockResolvedValueOnce({ status: 'requires_payment_method' });
+      mockPaymentIntentsRetrieve.mockResolvedValueOnce({ status: 'requires_payment_method', amount: 500 });
 
       const result = await TippingService.confirmTip('tip-1', 'pi_123');
 
@@ -216,8 +229,9 @@ describe('TippingService', () => {
       if (!result.success) expect(result.error.code).toBe('PAYMENT_NOT_SUCCEEDED');
     });
 
-    it('returns NOT_FOUND when tip record not found', async () => {
-      mockPaymentIntentsRetrieve.mockResolvedValueOnce({ status: 'succeeded' });
+    it('returns NOT_FOUND when tip record not found (Fix 4: amount check query returns empty)', async () => {
+      mockPaymentIntentsRetrieve.mockResolvedValueOnce({ status: 'succeeded', amount: 500 });
+      // Fix 4: SELECT amount_cents returns empty — tip not found at amount check stage
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
 
       const result = await TippingService.confirmTip('tip-1', 'pi_123');

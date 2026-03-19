@@ -608,3 +608,71 @@ describe('XPService.getDailyLeaderboard', () => {
     }
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// clawbackXP — FIX 2: idempotency on retry (unique constraint)
+// ═══════════════════════════════════════════════════════════════════════════
+describe('XPService.clawbackXP', () => {
+  it('deducts XP when original award exists', async () => {
+    // 1st query: find the original award
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ id: 'xp-1', effective_xp: 500, task_id: 'task-1' }],
+    });
+    // 2nd query: INSERT ... ON CONFLICT ... RETURNING — new row inserted
+    mockQuery.mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'xp-clawback-1' }] });
+    // 3rd query: UPDATE users SET xp_total
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ xp_total: 0, current_level: 1 }],
+    });
+
+    await expect(
+      XPService.clawbackXP('user-1', 'escrow-1', 'refund')
+    ).resolves.not.toThrow();
+
+    // The INSERT must have been called with ON CONFLICT clause
+    const insertCall = mockQuery.mock.calls[1];
+    expect(insertCall[0]).toContain('ON CONFLICT');
+    expect(insertCall[0]).toContain('DO NOTHING');
+  });
+
+  it('is idempotent — second clawback call is a no-op (rowCount=0)', async () => {
+    // 1st query: find the original award
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ id: 'xp-1', effective_xp: 500, task_id: 'task-1' }],
+    });
+    // 2nd query: INSERT conflicts — rowCount=0 (already applied)
+    mockQuery.mockResolvedValueOnce({ rowCount: 0, rows: [] });
+    // No UPDATE should follow — if it does, the mock will return undefined and the
+    // test will still pass, but we assert the UPDATE was NOT called.
+
+    await expect(
+      XPService.clawbackXP('user-1', 'escrow-1', 'refund')
+    ).resolves.not.toThrow();
+
+    // Only 2 queries: SELECT award + INSERT (no UPDATE since rowCount=0)
+    expect(mockQuery).toHaveBeenCalledTimes(2);
+  });
+
+  it('skips entirely when no XP award exists for the escrow', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [] }); // no award found
+
+    await expect(
+      XPService.clawbackXP('user-1', 'escrow-none', 'refund')
+    ).resolves.not.toThrow();
+
+    expect(mockQuery).toHaveBeenCalledTimes(1); // only the SELECT
+  });
+
+  it('skips when xpToDeduct rounds to 0 (partial fraction of tiny award)', async () => {
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ id: 'xp-1', effective_xp: 1, task_id: 'task-1' }],
+    });
+
+    // fraction=0 means nothing to deduct — returns early before INSERT
+    await expect(
+      XPService.clawbackXP('user-1', 'escrow-1', 'refund', 0)
+    ).resolves.not.toThrow();
+
+    expect(mockQuery).toHaveBeenCalledTimes(1); // only the SELECT
+  });
+});

@@ -17,11 +17,16 @@ vi.mock('../../src/db', () => ({
   default: { query: vi.fn() },
 }));
 
+// Stable child logger so tests can inspect its calls (especially error).
+// Must be hoisted so the vi.mock factory (which runs before variable init) can
+// reference it.
+const mockChildLogger = vi.hoisted(() => ({
+  warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn(), fatal: vi.fn(),
+}));
+
 vi.mock('../../src/logger', () => ({
   logger: {
-    child: () => ({
-      warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn(), fatal: vi.fn(),
-    }),
+    child: () => mockChildLogger,
   },
 }));
 
@@ -76,11 +81,17 @@ describe('createContext', () => {
 
   it('returns user when valid Bearer token and user found in db', async () => {
     mockVerifyIdToken.mockResolvedValueOnce({ uid: 'uid-1', exp: Math.floor(Date.now() / 1000) + 3600 });
-    mockDbQuery.mockResolvedValueOnce({ rows: [mockUser], rowCount: 1 });
+    mockDbQuery
+      .mockResolvedValueOnce({ rows: [mockUser], rowCount: 1 })  // SELECT * FROM users
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 });           // SELECT 1 FROM admin_roles
 
     const ctx = await createContext({ req: makeRequest('Bearer valid-token'), resHeaders: new Headers() });
 
-    expect(ctx.user).toEqual(mockUser);
+    expect(ctx.user).toEqual(expect.objectContaining({
+      id: mockUser.id,
+      email: mockUser.email,
+      firebase_uid: mockUser.firebase_uid,
+    }));
     expect(ctx.firebaseUid).toBe('uid-1');
     expect(mockVerifyIdToken).toHaveBeenCalledWith('valid-token');
     expect(mockDbQuery).toHaveBeenCalledWith(
@@ -108,9 +119,27 @@ describe('createContext', () => {
     expect(ctx.firebaseUid).toBeNull();
   });
 
+  it('sanitizes JWT tokens from Firebase error messages before logging (SECURITY FIX v2.9.4)', async () => {
+    // Firebase Admin SDK sometimes embeds the raw token in error messages.
+    // Verify that the logger never receives the JWT-shaped string.
+    const jwtLike = 'eyJhbGciOiJSUzI1NiJ9.eyJ1aWQiOiJ1c2VyLTEifQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c';
+    const errorMsg = `Firebase ID token has invalid signature. Token: ${jwtLike}`;
+    mockVerifyIdToken.mockRejectedValueOnce(new Error(errorMsg));
+
+    await createContext({ req: makeRequest('Bearer some-token'), resHeaders: new Headers() });
+
+    // mockChildLogger.error is the stable mock used by the trpc module's child logger
+    expect(mockChildLogger.error).toHaveBeenCalled();
+    const loggedArg = mockChildLogger.error.mock.calls[0][0] as { err: string };
+    expect(loggedArg.err).not.toContain(jwtLike);
+    expect(loggedArg.err).toContain('[REDACTED_TOKEN]');
+  });
+
   it('strips Bearer prefix before calling verifyIdToken', async () => {
     mockVerifyIdToken.mockResolvedValueOnce({ uid: 'uid-1', exp: Math.floor(Date.now() / 1000) + 3600 });
-    mockDbQuery.mockResolvedValueOnce({ rows: [mockUser], rowCount: 1 });
+    mockDbQuery
+      .mockResolvedValueOnce({ rows: [mockUser], rowCount: 1 })  // SELECT * FROM users
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 });           // SELECT 1 FROM admin_roles
 
     await createContext({ req: makeRequest('Bearer my-actual-token'), resHeaders: new Headers() });
 
@@ -133,15 +162,17 @@ describe('createContext', () => {
   it('caches successful auth to avoid redundant firebase calls', async () => {
     const uniqueToken = `Bearer cache-test-token-${Date.now()}`;
     mockVerifyIdToken.mockResolvedValue({ uid: 'uid-cache', exp: Math.floor(Date.now() / 1000) + 3600 });
-    mockDbQuery.mockResolvedValue({ rows: [mockUser], rowCount: 1 });
+    mockDbQuery
+      .mockResolvedValueOnce({ rows: [mockUser], rowCount: 1 })  // SELECT * FROM users (first call only)
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 });           // SELECT 1 FROM admin_roles (first call only)
 
     // First call — should go to firebase
     const ctx1 = await createContext({ req: makeRequest(uniqueToken), resHeaders: new Headers() });
     // Second call with same token — should use cache
     const ctx2 = await createContext({ req: makeRequest(uniqueToken), resHeaders: new Headers() });
 
-    expect(ctx1.user).toEqual(mockUser);
-    expect(ctx2.user).toEqual(mockUser);
+    expect(ctx1.user).toEqual(expect.objectContaining({ id: mockUser.id }));
+    expect(ctx2.user).toEqual(expect.objectContaining({ id: mockUser.id }));
     // Firebase called once (cache hit on second)
     expect(mockVerifyIdToken).toHaveBeenCalledTimes(1);
   });
@@ -153,6 +184,7 @@ describe('createContext', () => {
       uid: 'uid-expiring',
       exp: Math.floor(Date.now() / 1000) - 1, // already expired
     });
+    // Both calls hit the DB (not cached): users query + admin_roles query per call
     mockDbQuery.mockResolvedValue({ rows: [mockUser], rowCount: 1 });
 
     await createContext({ req: makeRequest(nearExpiryToken), resHeaders: new Headers() });
@@ -213,17 +245,17 @@ describe('Schemas.createTask', () => {
   });
 
   it('accepts mode LIVE', () => {
-    const result = Schemas.createTask.parse({ title: 'T', description: 'D', price: 1500, mode: 'LIVE' });
+    const result = Schemas.createTask.parse({ title: 'T', description: 'Valid description text', price: 1500, mode: 'LIVE' });
     expect(result.mode).toBe('LIVE');
   });
 
   it('rejects invalid mode', () => {
-    expect(() => Schemas.createTask.parse({ title: 'T', description: 'D', price: 1000, mode: 'INVALID' })).toThrow();
+    expect(() => Schemas.createTask.parse({ title: 'T', description: 'Valid description text', price: 1000, mode: 'INVALID' })).toThrow();
   });
 
   it('accepts optional deadline as datetime string', () => {
     const result = Schemas.createTask.parse({
-      title: 'T', description: 'D', price: 1000, deadline: '2026-12-31T00:00:00Z',
+      title: 'T', description: 'Valid description text', price: 1000, deadline: '2026-12-31T00:00:00Z',
     });
     expect(result.deadline).toBe('2026-12-31T00:00:00Z');
   });
@@ -245,11 +277,12 @@ describe('Schemas.fundEscrow', () => {
 });
 
 describe('Schemas.releaseEscrow', () => {
-  it('accepts with optional stripeTransferId', () => {
+  it('accepts with required stripeTransferId', () => {
     const result = Schemas.releaseEscrow.parse({
       escrowId: '550e8400-e29b-41d4-a716-446655440000',
+      stripeTransferId: 'tr_123',
     });
-    expect(result.stripeTransferId).toBeUndefined();
+    expect(result.stripeTransferId).toBe('tr_123');
   });
 
   it('accepts with provided stripeTransferId', () => {
@@ -312,28 +345,38 @@ describe('Schemas.reviewProof', () => {
 });
 
 describe('Schemas.awardXP', () => {
-  it('accepts valid XP award', () => {
+  // SECURITY FIX: baseXP removed from user-facing schema — derived server-side
+  // from the escrow record to prevent caller-controlled XP inflation.
+  it('accepts valid XP award without baseXP (server-side derivation)', () => {
     const result = Schemas.awardXP.parse({
       taskId: '550e8400-e29b-41d4-a716-446655440000',
       escrowId: '550e8400-e29b-41d4-a716-446655440001',
-      baseXP: 100,
     });
-    expect(result.baseXP).toBe(100);
+    expect((result as Record<string, unknown>).baseXP).toBeUndefined();
   });
 
-  it('rejects non-positive baseXP', () => {
-    expect(() => Schemas.awardXP.parse({
+  it('caller-supplied baseXP is stripped (not trusted)', () => {
+    // Zod strip mode: extra keys are silently dropped — attacker cannot inject baseXP
+    const result = Schemas.awardXP.safeParse({
       taskId: '550e8400-e29b-41d4-a716-446655440000',
       escrowId: '550e8400-e29b-41d4-a716-446655440001',
-      baseXP: 0,
+      baseXP: 10000,
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect((result.data as Record<string, unknown>).baseXP).toBeUndefined();
+    }
+  });
+
+  it('rejects missing taskId', () => {
+    expect(() => Schemas.awardXP.parse({
+      escrowId: '550e8400-e29b-41d4-a716-446655440001',
     })).toThrow();
   });
 
-  it('rejects baseXP over 10000', () => {
+  it('rejects missing escrowId', () => {
     expect(() => Schemas.awardXP.parse({
       taskId: '550e8400-e29b-41d4-a716-446655440000',
-      escrowId: '550e8400-e29b-41d4-a716-446655440001',
-      baseXP: 10001,
     })).toThrow();
   });
 });

@@ -146,6 +146,9 @@ export interface User {
 
   // Account suspension
   is_banned?: boolean;
+
+  // Admin flag (populated in tRPC context — not a DB column, set via admin_roles lookup)
+  is_admin?: boolean;
   
   // Stripe
   stripe_customer_id?: string;

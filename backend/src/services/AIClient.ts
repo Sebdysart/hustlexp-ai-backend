@@ -28,6 +28,7 @@ import {
   deepseekBreaker,
   anthropicBreaker,
 } from '../middleware/circuit-breaker.js';
+import { validateAIOutput } from '../middleware/ai-guard.js';
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -43,6 +44,7 @@ export interface AICallOptions {
   timeoutMs?: number;         // default: 30000
   enableCache?: boolean;      // default: true
   fallbackChain?: AIRoute[];  // default: auto-generated from route
+  userId?: string;            // optional: namespaces cache key per user to prevent cache poisoning
 }
 
 export interface AICallResult {
@@ -153,9 +155,13 @@ const FALLBACK_CHAINS: Record<AIRoute, AIRoute[]> = {
 
 // ─── Cache Helpers ─────────────────────────────────────────────────────────
 
-function hashPrompt(systemPrompt: string | undefined, prompt: string, model: string): string {
-  const input = `${systemPrompt || ''}|${prompt}|${model}`;
-  return crypto.createHash('sha256').update(input).digest('hex').slice(0, 16);
+function hashPrompt(systemPrompt: string | undefined, prompt: string, model: string, userId?: string): string {
+  // Namespace by userId to prevent cross-user cache poisoning.
+  // Use the full 64-char SHA-256 hex (no truncation) to prevent collision attacks.
+  const input = userId
+    ? `${userId}|${systemPrompt || ''}|${prompt}|${model}`
+    : `${systemPrompt || ''}|${prompt}|${model}`;
+  return crypto.createHash('sha256').update(input).digest('hex');
 }
 
 // ─── Circuit Breaker Mapping ─────────────────────────────────────────────
@@ -236,7 +242,7 @@ export async function call(options: AICallOptions): Promise<AICallResult> {
 
   // 1. Check cache
   if (enableCache) {
-    const cacheHash = hashPrompt(options.systemPrompt, options.prompt, routeConfig.model);
+    const cacheHash = hashPrompt(options.systemPrompt, options.prompt, routeConfig.model, options.userId);
     const cacheKey = CACHE_KEYS.aiCache(cacheHash);
     const cached = await redis.get<string>(cacheKey);
     if (cached) {
@@ -257,11 +263,18 @@ export async function call(options: AICallOptions): Promise<AICallResult> {
   for (const route of chain) {
     const cfg = ROUTE_CONFIG[route];
     try {
-      const content = await callProvider(cfg, options);
+      let content = await callProvider(cfg, options);
 
-      // 3. Cache successful response
+      // 3. Validate and sanitize AI output before caching or returning
+      const validation = validateAIOutput(content);
+      if (!validation.valid) {
+        log.warn({ violations: validation.violations }, 'AIClient: AI output failed validation');
+        content = validation.sanitized ?? content;
+      }
+
+      // 4. Cache successful response
       if (enableCache) {
-        const cacheHash = hashPrompt(options.systemPrompt, options.prompt, cfg.model);
+        const cacheHash = hashPrompt(options.systemPrompt, options.prompt, cfg.model, options.userId);
         const cacheKey = CACHE_KEYS.aiCache(cacheHash);
         await redis.set(cacheKey, content, CACHE_TTL.aiCache);
       }
@@ -296,6 +309,13 @@ export async function callJSON<T = unknown>(
     ...callOptions,
     responseFormat: 'json',
   });
+
+  // Validate and sanitize the raw string before JSON parsing
+  const jsonValidation = validateAIOutput(result.content);
+  if (!jsonValidation.valid) {
+    log.warn({ violations: jsonValidation.violations }, 'AIClient: callJSON raw output failed validation');
+    result.content = jsonValidation.sanitized ?? result.content;
+  }
 
   let parsed: unknown;
   try {

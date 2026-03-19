@@ -246,19 +246,7 @@ export const XPService = {
   awardXP: async (params: AwardXPParams): Promise<ServiceResult<XPLedgerEntry>> => {
     const { userId, taskId, escrowId, baseXP } = params;
 
-    // Anti-farming: Check daily XP cap (pass xpAmount so DB-fallback cap check is accurate)
-    const capCheck = await XPService.checkDailyXPCap(userId, baseXP);
-    if (!capCheck.allowed) {
-      return {
-        success: false,
-        error: {
-          code: 'XP_DAILY_CAP',
-          message: `Daily XP cap reached (${capCheck.cap} XP). Try again tomorrow.`,
-        },
-      };
-    }
-
-    // Anti-farming: Check velocity
+    // Anti-farming: Check velocity (cap check moved inside transaction — see below)
     // FIX 2: Hard-block large awards when velocity is suspicious
     // REG-9 FIX: Raised from 1000 to 3000 — a $150 task (1500 XP) must not be blocked.
     const VELOCITY_BLOCK_THRESHOLD = 3000;
@@ -316,6 +304,20 @@ export const XPService = {
         const trustMultiplier = getTrustMultiplier(user.trust_tier);
         const liveModeMultiplier = getLiveModeMultiplier(isLiveMode);
         const effectiveXP = calculateEffectiveXP(baseXP, streakMultiplier, trustMultiplier, liveModeMultiplier);
+
+        // Anti-farming: Check daily XP cap using effectiveXP (post-multiplier) so cap
+        // cannot be exceeded when streak/trust/live multipliers inflate the award.
+        // FIX: was checking baseXP pre-multiplier — cap could be bypassed up to 5×.
+        const capCheck = await XPService.checkDailyXPCap(userId, effectiveXP);
+        if (!capCheck.allowed) {
+          return {
+            success: false as const,
+            error: {
+              code: 'XP_DAILY_CAP',
+              message: `Daily XP cap reached (${capCheck.cap} XP). Try again tomorrow.`,
+            },
+          };
+        }
 
         const newXPTotal = user.xp_total + effectiveXP;
         const newLevel = calculateLevel(newXPTotal);
@@ -544,7 +546,8 @@ export const XPService = {
         remaining: Math.max(0, DAILY_XP_CAP - earned),
       };
     } catch {
-      return { allowed: true, earned: 0, cap: DAILY_XP_CAP, remaining: DAILY_XP_CAP };
+      // FIX: Fail CLOSED on Redis error — fail open allowed unlimited XP farming during outage.
+      return { allowed: false, earned: 0, cap: DAILY_XP_CAP, remaining: 0, reason: 'redis_error' };
     }
   },
 
@@ -612,8 +615,12 @@ export const XPService = {
     if (xpToDeduct === 0) return;
     const taskId = award.rows[0].task_id;
 
-    // Insert a debit entry (negative effective_xp) to preserve ledger immutability (INV-4)
-    await db.query(
+    // Insert a debit entry (negative effective_xp) to preserve ledger immutability (INV-4).
+    // SECURITY FIX: ON CONFLICT DO NOTHING RETURNING makes this idempotent — if the
+    // (user_id, escrow_id, reason) clawback row already exists (e.g. on retry), the
+    // INSERT silently no-ops and rowCount=0 signals "already applied" rather than
+    // swallowing a real unique-constraint error as a false success.
+    const clawbackInsert = await db.query<{ id: string }>(
       `INSERT INTO xp_ledger (
         user_id, task_id, escrow_id,
         base_xp, streak_multiplier, trust_multiplier, live_mode_multiplier, effective_xp,
@@ -631,15 +638,35 @@ export const XPService = {
         user_streak_at_award
       FROM xp_ledger
       WHERE user_id = $1 AND escrow_id = $2
-      ORDER BY awarded_at DESC LIMIT 1`,
+      ORDER BY awarded_at DESC LIMIT 1
+      ON CONFLICT (user_id, escrow_id, reason) DO NOTHING
+      RETURNING id`,
       [userId, escrowId, taskId, reason]
     );
 
-    // Update the user's running XP total (floor at 0)
-    await db.query(
-      `UPDATE users SET xp_total = GREATEST(0, xp_total - $1), updated_at = NOW() WHERE id = $2`,
+    if (clawbackInsert.rowCount === 0) {
+      // Clawback row already exists — idempotent success, no XP deducted again.
+      log.info({ userId, escrowId, reason }, 'XP clawback: already applied (idempotent), skipping deduction');
+      return;
+    }
+
+    // Update the user's running XP total (floor at 0) and recalculate current_level
+    const afterResult = await db.query<{ xp_total: number; current_level: number }>(
+      `UPDATE users SET xp_total = GREATEST(0, xp_total - $1), updated_at = NOW() WHERE id = $2
+       RETURNING xp_total, current_level`,
       [xpToDeduct, userId]
     );
+
+    if (afterResult.rows.length > 0) {
+      const newXPTotal = afterResult.rows[0].xp_total;
+      const newLevel = calculateLevel(newXPTotal);
+      if (newLevel !== afterResult.rows[0].current_level) {
+        await db.query(
+          `UPDATE users SET current_level = $1, updated_at = NOW() WHERE id = $2`,
+          [newLevel, userId]
+        );
+      }
+    }
 
     log.info({ userId, xpDeducted: xpToDeduct, reason, escrowId }, 'XP clawback applied');
   },

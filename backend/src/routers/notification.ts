@@ -294,7 +294,38 @@ export const notificationRouter = router({
         });
       }
 
+      const DEVICE_TOKEN_CAP = 10;
+
       try {
+        // ----------------------------------------------------------------
+        // Token cap enforcement: max DEVICE_TOKEN_CAP active tokens per user.
+        // If the incoming token is already in the table this will be a no-op
+        // UPSERT, so we only need to evict when it is a genuinely new token
+        // that would push the user over the cap.
+        // ----------------------------------------------------------------
+        const existingCheck = await db.query<{ count: string }>(
+          `SELECT COUNT(*) AS count
+           FROM device_tokens
+           WHERE user_id = $1 AND is_active = true AND fcm_token != $2`,
+          [ctx.user.id, input.fcmToken]
+        );
+
+        const activeCount = parseInt(existingCheck.rows[0]?.count ?? '0', 10);
+
+        if (activeCount >= DEVICE_TOKEN_CAP) {
+          // Delete the oldest active token to make room for the new one
+          await db.query(
+            `DELETE FROM device_tokens
+             WHERE id = (
+               SELECT id FROM device_tokens
+               WHERE user_id = $1 AND is_active = true AND fcm_token != $2
+               ORDER BY created_at ASC
+               LIMIT 1
+             )`,
+            [ctx.user.id, input.fcmToken]
+          );
+        }
+
         const result = await db.query<{
           id: string;
           user_id: string;

@@ -266,16 +266,18 @@ describe('SECTION 1 — Admin Privilege Escalation', () => {
     } as ReturnType<typeof firebaseAuth.verifyIdToken> extends Promise<infer T> ? T : never);
 
     vi.mocked(db.query)
-      .mockResolvedValueOnce({ rows: [mockUser], rowCount: 1 } as ReturnType<typeof db.query> extends Promise<infer T> ? T : never); // users query in createContext
+      .mockResolvedValueOnce({ rows: [mockUser], rowCount: 1 } as ReturnType<typeof db.query> extends Promise<infer T> ? T : never) // users query in createContext
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as ReturnType<typeof db.query> extends Promise<infer T> ? T : never); // admin_roles lookup in createContext
 
     const ctx = await createContext({
       req: makeMockRequest(`Bearer ${mockToken}`),
       resHeaders: new Headers(),
     });
 
-    // ctx.user.is_admin does not exist — the user row has no is_admin field used by isAdmin middleware
-    // isAdmin always does a fresh DB query to admin_roles, not ctx.user
-    expect((ctx.user as Record<string, unknown>)?.['is_admin']).toBeUndefined();
+    // ctx.user.is_admin is set to false (not a DB column, populated via admin_roles lookup)
+    // isAdmin middleware still does a FRESH DB query to admin_roles on every adminProcedure call
+    // — it does NOT rely on the cached ctx.user.is_admin value.
+    expect((ctx.user as Record<string, unknown>)?.['is_admin']).toBe(false);
     expect(ctx.user?.id).toBe('attacker-id');
   });
 
@@ -680,6 +682,16 @@ describe('SECTION 4 — Admin Audit Trail', () => {
       rows: [],
       rowCount: 1,
     } as ReturnType<typeof db.query> extends Promise<infer T> ? T : never);
+    // Fourth call: SELECT funded escrows for the banned user (none)
+    mockDbQuery.mockResolvedValueOnce({
+      rows: [],
+      rowCount: 0,
+    } as ReturnType<typeof db.query> extends Promise<infer T> ? T : never);
+    // Fifth call: UPDATE tasks SET state = 'CANCELLED' for OPEN tasks
+    mockDbQuery.mockResolvedValueOnce({
+      rows: [],
+      rowCount: 0,
+    } as ReturnType<typeof db.query> extends Promise<infer T> ? T : never);
 
     // Import the admin router and call setUserBan
     const { adminRouter } = await import('../../src/routers/admin.js');
@@ -691,8 +703,8 @@ describe('SECTION 4 — Admin Audit Trail', () => {
 
     await caller.setUserBan({ userId: '00000000-0000-0000-0000-000000000001', banned: true, reason: 'fraud' });
 
-    // db.query was called three times: isAdmin check + UPDATE users + INSERT admin_actions
-    expect(mockDbQuery).toHaveBeenCalledTimes(3);
+    // db.query was called five times: isAdmin check + UPDATE users + INSERT admin_actions + SELECT funded escrows + UPDATE open tasks
+    expect(mockDbQuery).toHaveBeenCalledTimes(5);
     // First call: isAdmin admin_roles check
     expect(mockDbQuery.mock.calls[0][0]).toContain('admin_roles');
     // Second call: the ban UPDATE

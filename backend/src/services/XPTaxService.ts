@@ -168,13 +168,17 @@ export const XPTaxService = {
   /**
    * Pay accumulated XP tax via Stripe
    * Releases held XP after payment confirmed
+   *
+   * IDEMPOTENCY: If stripePaymentIntentId has already been recorded as a paid
+   * tax entry, this call returns immediately with success to prevent double-charging
+   * on network retries or iOS re-submissions of the same intent.
    */
   payTax: async (
     userId: string,
     stripePaymentIntentId: string
   ): Promise<ServiceResult<{ xp_released: number }>> => {
     try {
-      // FIX 4: Hard-block if Stripe is not configured — never process tax payments without verification
+      // FIX: Hard-block if Stripe is not configured — never process tax payments without verification
       if (!StripeService.isConfigured()) {
         return {
           success: false,
@@ -183,6 +187,20 @@ export const XPTaxService = {
             message: 'XP_TAX_PAYMENT_UNAVAILABLE: Stripe is not configured. Cannot process tax payment.',
           },
         };
+      }
+
+      // IDEMPOTENCY CHECK: Return early if this Stripe payment intent was already processed.
+      // This prevents double-charging when the client retries a request (e.g. network error
+      // after Stripe succeeded but before the server responded).
+      const existingPayment = await db.query<{ id: string }>(
+        `SELECT id FROM xp_tax_ledger
+         WHERE stripe_payment_intent_id = $1 AND tax_paid = TRUE
+         LIMIT 1`,
+        [stripePaymentIntentId]
+      );
+      if (existingPayment.rows.length > 0) {
+        log.info({ userId, stripePaymentIntentId }, 'payTax: idempotent replay — intent already processed');
+        return { success: true, data: { xp_released: 0 } };
       }
 
       // Verify Stripe payment succeeded
@@ -242,15 +260,17 @@ export const XPTaxService = {
       // Pay taxes in FIFO order
       for (const tax of unpaidTaxes.rows) {
         if (remainingPayment >= tax.tax_amount_cents) {
-          // Mark tax as paid and release held XP
+          // Mark tax as paid and release held XP, recording the Stripe intent ID
+          // for idempotency (prevents double-charge on retry).
           await db.query(
             `UPDATE xp_tax_ledger
              SET tax_paid = TRUE,
                  tax_paid_at = NOW(),
                  xp_released = TRUE,
-                 xp_released_at = NOW()
+                 xp_released_at = NOW(),
+                 stripe_payment_intent_id = $2
              WHERE id = $1`,
-            [tax.id]
+            [tax.id, stripePaymentIntentId]
           );
 
           // Calculate held XP to release (100 XP per $1 of gross payout)

@@ -20,8 +20,19 @@ import { AIProposalService } from './AIProposalService.js';
 import { AIDecisionService } from './AIDecisionService.js';
 import { aiLogger } from '../logger.js';
 import { scrubPII } from '../lib/pii-scrubber.js';
+import { z } from 'zod';
 
 const log = aiLogger.child({ service: 'OnboardingAIService' });
+
+// ============================================================================
+// VALIDATION SCHEMAS
+// ============================================================================
+
+const OnboardingAIResponseSchema = z.object({
+  worker: z.number().min(0).max(1).default(0.5),
+  poster: z.number().min(0).max(1).default(0.5),
+  certainty: z.enum(['STRONG', 'MODERATE', 'WEAK']).default('MODERATE'),
+});
 
 // ============================================================================
 // TYPES
@@ -128,11 +139,17 @@ Respond with JSON only: {"worker": 0.0-1.0, "poster": 0.0-1.0, "certainty": "STR
             const jsonMatch = content.match(/\{[\s\S]*\}/);
             if (jsonMatch) {
               const parsed = JSON.parse(jsonMatch[0]);
-              inference = {
-                roleConfidenceWorker: parsed.worker ?? 0.5,
-                roleConfidencePoster: parsed.poster ?? 0.5,
-                certaintyTier: (parsed.certainty || 'MODERATE') as CertaintyTier,
-              };
+              const validated = OnboardingAIResponseSchema.safeParse(parsed);
+              if (validated.success) {
+                inference = {
+                  roleConfidenceWorker: validated.data.worker,
+                  roleConfidencePoster: validated.data.poster,
+                  certaintyTier: validated.data.certainty,
+                };
+              } else {
+                log.warn({ userId, error: validated.error.message }, 'OnboardingAI: invalid LLM response shape, using default inference');
+                // Leave inference as the default balanced inference
+              }
             }
           }
         } catch (aiError) {

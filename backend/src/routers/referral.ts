@@ -7,6 +7,63 @@ import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
 import { router, hustlerProcedure } from '../trpc.js';
 import { db } from '../db.js';
+import { logger } from '../logger.js';
+
+const referralLog = logger.child({ service: 'ReferralRouter' });
+
+// Maximum number of referral reward payouts a single referrer can receive
+const REFERRAL_REWARD_CAP = 20;
+
+/**
+ * Issue a referral reward for the referrer when a referred user completes
+ * their first task and the redemption is marked qualified.
+ *
+ * Enforces a lifetime cap of REFERRAL_REWARD_CAP paid rewards per referrer.
+ * If the cap is already reached the reward is silently skipped (logged at warn).
+ *
+ * @param redemptionId - The referral_redemptions.id to mark as paid
+ * @param referrerId   - The user_id of the referrer (for cap check)
+ * @param rewardCents  - The reward amount in cents to record
+ * @returns { issued: boolean; reason?: string }
+ */
+export async function issueReferralReward(
+  redemptionId: string,
+  referrerId: string,
+  rewardCents: number,
+): Promise<{ issued: boolean; reason?: string }> {
+  // --- Cap check: count already-paid rewards for this referrer ---
+  const capCheck = await db.query<{ count: string }>(
+    `SELECT COUNT(*) AS count
+     FROM referral_redemptions
+     WHERE referrer_id = $1 AND referrer_reward_paid = TRUE`,
+    [referrerId],
+  );
+  const paidCount = parseInt(capCheck.rows[0]?.count || '0', 10);
+
+  if (paidCount >= REFERRAL_REWARD_CAP) {
+    referralLog.warn(
+      { referrerId, paidCount, cap: REFERRAL_REWARD_CAP, redemptionId },
+      'Referral reward skipped — lifetime cap reached',
+    );
+    return { issued: false, reason: 'lifetime_cap_reached' };
+  }
+
+  // --- Mark the redemption as qualified and paid ---
+  await db.query(
+    `UPDATE referral_redemptions
+     SET qualified = TRUE,
+         referrer_reward_paid = TRUE,
+         referrer_reward_cents = $1
+     WHERE id = $2 AND referrer_id = $3 AND referrer_reward_paid = FALSE`,
+    [rewardCents, redemptionId, referrerId],
+  );
+
+  referralLog.info(
+    { referrerId, redemptionId, rewardCents, paidCount: paidCount + 1 },
+    'Referral reward issued',
+  );
+  return { issued: true };
+}
 
 // Generate a random referral code
 function generateReferralCode(): string {
@@ -138,5 +195,42 @@ export const referralRouter = router({
         qualifiedReferrals: parseInt(stats.rows[0]?.qualified_referrals || '0', 10),
         totalEarnedCents: parseInt(stats.rows[0]?.total_earned || '0', 10),
       };
+    }),
+
+  /**
+   * Called by the task-completion flow when a referred user finishes their
+   * first task.  Enforces the REFERRAL_REWARD_CAP before issuing the payout.
+   *
+   * Input:
+   *   redemptionId  — referral_redemptions.id
+   *   rewardCents   — reward amount (defaults to 500 = $5)
+   */
+  issueReward: hustlerProcedure
+    .input(
+      z.object({
+        redemptionId: z.string().uuid(),
+        rewardCents: z.number().int().positive().default(500),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      // Fetch referrer_id from the redemption row
+      const redemption = await db.query<{ referrer_id: string }>(
+        'SELECT referrer_id FROM referral_redemptions WHERE id = $1',
+        [input.redemptionId],
+      );
+
+      if (redemption.rows.length === 0) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Referral redemption not found' });
+      }
+
+      const referrerId = redemption.rows[0].referrer_id;
+
+      const result = await issueReferralReward(
+        input.redemptionId,
+        referrerId,
+        input.rewardCents,
+      );
+
+      return result;
     }),
 });

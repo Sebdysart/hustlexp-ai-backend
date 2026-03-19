@@ -92,12 +92,12 @@ describe('checkUserBudget', () => {
     expect(result.allowed).toBe(false);
   });
 
-  it('fails-open (allowed=true) when Redis throws', async () => {
+  it('fails-closed (allowed=false) when Redis throws', async () => {
     mockGet.mockRejectedValue(new Error('Redis down'));
 
     const result = await checkUserBudget('user-1');
 
-    expect(result.allowed).toBe(true);
+    expect(result.allowed).toBe(false);
     expect(result.spent).toBe(0);
   });
 
@@ -204,12 +204,12 @@ describe('checkGlobalBudget', () => {
     expect(calledKey).toContain(today);
   });
 
-  it('fails-open (allowed=true) when Redis throws', async () => {
+  it('fails-closed (allowed=false) when Redis throws', async () => {
     mockGet.mockRejectedValue(new Error('Redis down'));
 
     const result = await checkGlobalBudget();
 
-    expect(result.allowed).toBe(true);
+    expect(result.allowed).toBe(false);
     expect(result.spent).toBe(0);
   });
 });

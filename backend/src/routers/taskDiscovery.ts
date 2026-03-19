@@ -68,7 +68,7 @@ export const taskDiscoveryRouter = router({
   browseTasks: publicProcedure
     .input(z.object({
       limit: z.number().int().min(1).max(100).default(20),
-      offset: z.number().int().min(0).max(10000).default(0),
+      offset: z.number().int().min(0).max(500).default(0),
       category: z.string().optional(),
       min_price: z.number().int().nonnegative().optional(),
       max_price: z.number().int().positive().optional(),

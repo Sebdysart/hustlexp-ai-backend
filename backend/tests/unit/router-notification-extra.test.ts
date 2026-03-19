@@ -390,6 +390,9 @@ describe('notification.registerDeviceToken', () => {
       created_at: new Date(),
       updated_at: new Date(),
     };
+    // First call: COUNT query for token cap check (0 existing → no eviction)
+    mockDb.query.mockResolvedValueOnce({ rows: [{ count: '0' }], rowCount: 1 } as any);
+    // Second call: UPSERT
     mockDb.query.mockResolvedValueOnce({ rows: [row], rowCount: 1 } as any);
 
     const result = await makeCaller().registerDeviceToken({
@@ -416,6 +419,9 @@ describe('notification.registerDeviceToken', () => {
       created_at: new Date(),
       updated_at: new Date(),
     };
+    // First call: COUNT query for token cap check (0 other active tokens)
+    mockDb.query.mockResolvedValueOnce({ rows: [{ count: '0' }], rowCount: 1 } as any);
+    // Second call: UPSERT
     mockDb.query.mockResolvedValueOnce({ rows: [row], rowCount: 1 } as any);
 
     const result = await makeCaller().registerDeviceToken({
@@ -423,7 +429,8 @@ describe('notification.registerDeviceToken', () => {
       deviceType: 'android',
     });
 
-    const [sql] = (mockDb.query as any).mock.calls[0];
+    // calls[1] is the UPSERT (calls[0] is the COUNT)
+    const [sql] = (mockDb.query as any).mock.calls[1];
     expect(sql).toContain('ON CONFLICT');
     expect(result.is_active).toBe(true);
   });
@@ -434,11 +441,15 @@ describe('notification.registerDeviceToken', () => {
       device_name: null, app_version: null, is_active: true,
       created_at: new Date(), updated_at: new Date(),
     };
+    // First call: COUNT query for token cap check (0 existing → no eviction)
+    mockDb.query.mockResolvedValueOnce({ rows: [{ count: '0' }], rowCount: 1 } as any);
+    // Second call: UPSERT
     mockDb.query.mockResolvedValueOnce({ rows: [row], rowCount: 1 } as any);
 
     await makeCaller().registerDeviceToken({ fcmToken: 'tok' });
 
-    const [, params] = (mockDb.query as any).mock.calls[0];
+    // calls[1] is the UPSERT (calls[0] is the COUNT); params are positional
+    const [, params] = (mockDb.query as any).mock.calls[1];
     expect(params[3]).toBeNull(); // deviceName
     expect(params[4]).toBeNull(); // appVersion
   });

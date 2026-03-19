@@ -17,6 +17,7 @@ import { ErrorCodes } from '../types.js';
 import { ContentModerationService } from './ContentModerationService.js';
 import { NotificationService } from './NotificationService.js';
 import { logger } from '../logger.js';
+import { incr, expire } from '../cache/redis.js';
 
 const log = logger.child({ service: 'MessagingService' });
 
@@ -84,14 +85,22 @@ export const MessagingService = {
   // --------------------------------------------------------------------------
   
   /**
-   * Get all messages for a task
-   * 
-   * Messages are visible to task participants (poster + worker) and admins (for disputes)
+   * Get messages for a task with pagination (max 100 per page)
+   *
+   * Messages are visible to task participants (poster + worker) and admins (for disputes).
+   *
+   * @param taskId   - The task whose messages to fetch
+   * @param userId   - Requesting user (must be poster or worker)
+   * @param offset   - Zero-based offset for pagination (default 0)
+   * @returns        - { messages, hasMore } — hasMore=true when there are additional pages
    */
   getMessagesForTask: async (
     taskId: string,
-    userId: string
-  ): Promise<ServiceResult<TaskMessage[]>> => {
+    userId: string,
+    offset = 0
+  ): Promise<ServiceResult<{ messages: TaskMessage[]; hasMore: boolean }>> => {
+    const PAGE_SIZE = 100;
+
     try {
       // Verify user is a participant in the task
       const taskResult = await db.query<{
@@ -102,7 +111,7 @@ export const MessagingService = {
         'SELECT poster_id, worker_id, state FROM tasks WHERE id = $1',
         [taskId]
       );
-      
+
       if (taskResult.rows.length === 0) {
         return {
           success: false,
@@ -112,9 +121,9 @@ export const MessagingService = {
           },
         };
       }
-      
+
       const task = taskResult.rows[0];
-      
+
       // Verify user is poster or worker
       if (task.poster_id !== userId && task.worker_id !== userId) {
         return {
@@ -125,23 +134,27 @@ export const MessagingService = {
           },
         };
       }
-      
-      // Get messages (ordered by created_at ascending)
+
+      // Get paginated messages (max PAGE_SIZE rows, ordered by created_at ascending)
       const messagesResult = await db.query<TaskMessage>(
-        `SELECT 
+        `SELECT
           id, task_id, sender_id, receiver_id, message_type, content,
           auto_message_template, photo_urls, photo_count,
           location_latitude, location_longitude, location_expires_at,
           read_at, moderation_status, moderation_flags, created_at, updated_at
         FROM task_messages
         WHERE task_id = $1
-        ORDER BY created_at ASC`,
-        [taskId]
+        ORDER BY created_at ASC
+        LIMIT $2 OFFSET $3`,
+        [taskId, PAGE_SIZE, offset]
       );
-      
+
       return {
         success: true,
-        data: messagesResult.rows,
+        data: {
+          messages: messagesResult.rows,
+          hasMore: messagesResult.rows.length === PAGE_SIZE,
+        },
       };
     } catch (error) {
       return {
@@ -252,6 +265,27 @@ export const MessagingService = {
         };
       }
       
+      // Per-sender-per-task rate limit: 30 messages per minute per conversation.
+      // Uses Redis INCR + EXPIRE to maintain a sliding counter.
+      // If Redis is unavailable the incr() helper returns 1, so the check is
+      // always allowed — same fail-open behaviour as the rest of the cache layer.
+      const MSG_RATE_LIMIT = 30;
+      const MSG_RATE_WINDOW_SECONDS = 60;
+      const rateLimitKey = `msg_rate:${senderId}:${taskId}`;
+      const msgCount = await incr(rateLimitKey);
+      if (msgCount === 1) {
+        await expire(rateLimitKey, MSG_RATE_WINDOW_SECONDS);
+      }
+      if (msgCount > MSG_RATE_LIMIT) {
+        return {
+          success: false,
+          error: {
+            code: ErrorCodes.RATE_LIMIT_EXCEEDED,
+            message: `Message rate limit exceeded. You can send at most ${MSG_RATE_LIMIT} messages per minute per conversation.`,
+          },
+        };
+      }
+
       // Determine recipient
       const recipientId = task.poster_id === senderId ? task.worker_id : task.poster_id;
       
@@ -345,7 +379,7 @@ export const MessagingService = {
       // Content moderation (MESSAGING_SPEC.md §2.1)
       // - Basic pattern detection (links, phone, email) → flag immediately
       // - Full AI moderation will happen asynchronously via ContentModerationService
-      if (messageType === 'TEXT' && content) {
+      if (content && content.trim()) {
         const detectedPatterns = detectForbiddenPatterns(content);
         
         if (detectedPatterns.length > 0) {

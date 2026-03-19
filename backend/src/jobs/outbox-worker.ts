@@ -71,13 +71,16 @@ export async function processOutboxEvents(batchSize: number = 100): Promise<{
   let failed = 0;
   
   try {
-    // Fetch pending outbox events (ordered by creation time for FIFO)
+    // Fetch pending outbox events (ordered by creation time for FIFO).
+    // No FOR UPDATE SKIP LOCKED here — the actual concurrency guard is the
+    // CAS pattern on the UPDATE below (AND status = 'pending' + rowCount check).
+    // FOR UPDATE outside an explicit transaction releases the lock immediately
+    // after the SELECT, providing zero protection and misleading readers.
     const result = await db.query<OutboxEvent>(
       `SELECT * FROM outbox_events
        WHERE status = 'pending'
        ORDER BY created_at ASC
-       LIMIT $1
-       FOR UPDATE SKIP LOCKED`, // Skip locked rows (parallel worker safety)
+       LIMIT $1`,
       [batchSize]
     );
     
@@ -132,16 +135,25 @@ export async function processOutboxEvents(batchSize: number = 100): Promise<{
         failed++;
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
         errors.push({ eventId: event.id, error: errorMessage });
-        
-        // Mark outbox event as failed (but keep for retry)
+
+        const MAX_OUTBOX_ATTEMPTS = 5;
+        // If below max attempts, reset to pending for retry on next poll.
+        // If at max, permanently fail and require ops intervention.
         await db.query(
           `UPDATE outbox_events
-           SET status = 'failed',
-               error_message = $1,
+           SET status = CASE WHEN attempts + 1 < $1 THEN 'pending' ELSE 'failed' END,
+               error_message = $2,
                attempts = attempts + 1
-           WHERE id = $2`,
-          [errorMessage, event.id]
+           WHERE id = $3`,
+          [MAX_OUTBOX_ATTEMPTS, errorMessage, event.id]
         );
+
+        if (event.attempts + 1 >= MAX_OUTBOX_ATTEMPTS) {
+          log.error(
+            { eventId: event.id, eventType: event.event_type, attempts: event.attempts + 1 },
+            'Outbox event permanently failed after max attempts — requires ops intervention'
+          );
+        }
       }
     }
     

@@ -16,16 +16,19 @@ import { TaskService } from '../../src/services/TaskService';
 // ============================================================================
 
 // Mock database
-vi.mock('../../src/db', () => ({
-  db: {
-    query: vi.fn(),
-    transaction: vi.fn(),
-    serializableTransaction: vi.fn(),
-  },
-  isInvariantViolation: vi.fn(),
-  isUniqueViolation: vi.fn(),
-  getErrorMessage: vi.fn((code: string) => `Error: ${code}`),
-}));
+vi.mock('../../src/db', () => {
+  const queryFn = vi.fn();
+  return {
+    db: {
+      query: queryFn,
+      transaction: vi.fn((fn: (q: typeof queryFn) => Promise<unknown>) => fn(queryFn)),
+      serializableTransaction: vi.fn((fn: (q: typeof queryFn) => Promise<unknown>) => fn(queryFn)),
+    },
+    isInvariantViolation: vi.fn(),
+    isUniqueViolation: vi.fn(),
+    getErrorMessage: vi.fn((code: string) => `Error: ${code}`),
+  };
+});
 
 // Mock ScoperAIService
 vi.mock('../../src/services/ScoperAIService', () => ({
@@ -42,6 +45,11 @@ vi.mock('../../src/services/PlanService', () => ({
   PlanService: {
     canCreateTaskWithRisk: vi.fn().mockResolvedValue({ allowed: true }),
   },
+}));
+
+// Mock RevenueService — added when Fix 1B wired RevenueService.logEvent into EscrowService.release()
+vi.mock('../../src/services/RevenueService', () => ({
+  RevenueService: { logEvent: vi.fn().mockResolvedValue({ success: true, data: { id: 'rev-1' } }) },
 }));
 
 const { db, isInvariantViolation } = await import('../../src/db');
@@ -69,7 +77,13 @@ describe('Money Path: Escrow Lifecycle', () => {
     });
 
     it('should fund escrow transitioning PENDING → FUNDED', async () => {
-      // fund() does UPDATE ... WHERE state = 'PENDING' RETURNING * (single query)
+      // fund() is now wrapped in db.transaction():
+      //   1st query: SELECT state, version FOR UPDATE → lock row
+      //   2nd query: UPDATE escrows ... RETURNING *   → funded row
+      db.query.mockResolvedValueOnce({
+        rowCount: 1,
+        rows: [{ state: 'PENDING', version: 0 }],
+      });
       db.query.mockResolvedValueOnce({
         rowCount: 1,
         rows: [{ id: 'escrow-1', task_id: 'task-1', amount: 5000, state: 'FUNDED', stripe_payment_intent_id: 'pi_test123', funded_at: new Date() }],
@@ -113,7 +127,7 @@ describe('Money Path: Escrow Lifecycle', () => {
       db.query.mockResolvedValueOnce({ rowCount: 0, rows: [] });
       db.query.mockResolvedValueOnce({ rowCount: 0, rows: [] });
 
-      const result = await EscrowService.release({ escrowId: 'escrow-1' });
+      const result = await EscrowService.release({ escrowId: 'escrow-1', stripeTransferId: 'tr_test_happy' });
       expect(result.success).toBe(true);
       expect(result.data?.state).toBe('RELEASED');
     });
@@ -145,17 +159,17 @@ describe('Money Path: Escrow Lifecycle', () => {
         rows: [{ id: 'escrow-1', task_id: 'task-1', amount: 5000, state: 'RELEASED' }],
       });
 
-      const result = await EscrowService.release({ escrowId: 'escrow-1' });
+      const result = await EscrowService.release({ escrowId: 'escrow-1', stripeTransferId: 'tr_test_double' });
       expect(result.success).toBe(false);
     });
 
     it('should prevent funding already-funded escrow', async () => {
-      // Mock 1: UPDATE returns 0 rows (WHERE state = 'PENDING' doesn't match)
-      db.query.mockResolvedValueOnce({ rowCount: 0, rows: [] });
-      // Mock 2: getById SELECT for error message
+      // fund() is now wrapped in db.transaction(). The SELECT FOR UPDATE returns
+      // the row with state='FUNDED', which immediately returns INVALID_STATE.
+      // No getById fallback is needed — the state check happens on the lock row.
       db.query.mockResolvedValueOnce({
         rowCount: 1,
-        rows: [{ id: 'escrow-1', task_id: 'task-1', amount: 5000, state: 'FUNDED' }],
+        rows: [{ state: 'FUNDED', version: 1 }],
       });
 
       const result = await EscrowService.fund({
@@ -210,7 +224,7 @@ describe('Money Path: Escrow Lifecycle', () => {
       db.query.mockResolvedValueOnce({ rowCount: 0, rows: [] });
       db.query.mockResolvedValueOnce({ rowCount: 0, rows: [] });
 
-      const result = await EscrowService.release({ escrowId: 'escrow-1' });
+      const result = await EscrowService.release({ escrowId: 'escrow-1', stripeTransferId: 'tr_test_dispute_win' });
       expect(result.success).toBe(true);
       expect(result.data?.state).toBe('RELEASED');
     });

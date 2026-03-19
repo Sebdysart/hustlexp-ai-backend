@@ -18,6 +18,7 @@ import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { router, protectedProcedure, hustlerProcedure, posterProcedure, Schemas } from '../trpc.js';
 import { db } from '../db.js';
+import { ComplianceGuardianService } from '../services/ComplianceGuardianService.js';
 
 // Trust tier gate: Only Elite (tier 4) can create/join squads
 const REQUIRED_TRUST_TIER = 4;
@@ -505,6 +506,19 @@ export const squadRouter = router({
           throw new TRPCError({
             code: 'BAD_REQUEST',
             message: 'Total price too low for required workers (min $1 per worker)',
+          });
+        }
+
+        // Run compliance check — hard blocks throw before any DB write
+        const compliance = await ComplianceGuardianService.evaluate({
+          description: input.description,
+          userId: ctx.user.id,
+          templateSlug: 'standard_physical',
+        });
+        if (compliance.tier === 'hard_block') {
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message: 'Task blocked by compliance check. HustleXP only allows legal IRL tasks.',
           });
         }
 

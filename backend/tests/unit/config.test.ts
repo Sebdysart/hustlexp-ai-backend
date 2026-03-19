@@ -371,6 +371,19 @@ describe('config — beta geo', () => {
 // ============================================================================
 
 describe('validateConfig', () => {
+  // SECURITY FIX (v2.9.4): validateConfig now calls process.exit(1) in
+  // production when fatal errors are present. Mock process.exit so the test
+  // process does not actually exit; verify it is called where expected.
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {}) as () => never);
+  });
+
+  afterEach(() => {
+    exitSpy.mockRestore();
+  });
+
   it('returns valid=false with DATABASE_URL error when not set', async () => {
     delete process.env.DATABASE_URL;
     process.env.NODE_ENV = 'test';
@@ -379,6 +392,8 @@ describe('validateConfig', () => {
     const result = validateConfig();
     expect(result.valid).toBe(false);
     expect(result.errors).toContain('DATABASE_URL is required');
+    // Non-production: process.exit must NOT be called
+    expect(exitSpy).not.toHaveBeenCalled();
   });
 
   it('returns valid=true when DATABASE_URL is set in non-production', async () => {
@@ -389,6 +404,7 @@ describe('validateConfig', () => {
     const result = validateConfig();
     expect(result.valid).toBe(true);
     expect(result.errors).toHaveLength(0);
+    expect(exitSpy).not.toHaveBeenCalled();
   });
 
   it('returns production errors when NODE_ENV=production and required vars missing', async () => {
@@ -404,11 +420,42 @@ describe('validateConfig', () => {
     delete process.env.TAX_TIN_ENCRYPTION_KEY;
     vi.resetModules();
     const { validateConfig } = await import('../../src/config');
+    // process.exit is mocked — validateConfig continues after the call
     const result = validateConfig();
+    expect(exitSpy).toHaveBeenCalledWith(1);
     expect(result.valid).toBe(false);
     expect(result.errors.some(e => e.includes('FIREBASE_PROJECT_ID'))).toBe(true);
     expect(result.errors.some(e => e.includes('STRIPE_SECRET_KEY'))).toBe(true);
     expect(result.errors.some(e => e.includes('TAX_TIN_ENCRYPTION_KEY'))).toBe(true);
+  });
+
+  it('calls process.exit(1) in production when Firebase config is missing', async () => {
+    process.env.DATABASE_URL = 'postgres://prod';
+    process.env.NODE_ENV = 'production';
+    delete process.env.FIREBASE_PROJECT_ID;
+    delete process.env.FIREBASE_PRIVATE_KEY;
+    delete process.env.FIREBASE_CLIENT_EMAIL;
+    process.env.STRIPE_SECRET_KEY = 'sk_live_real_key';
+    process.env.UPSTASH_REDIS_REST_URL = 'https://redis.upstash.io';
+    process.env.UPSTASH_REDIS_URL = 'redis://upstash:6379';
+    process.env.QUEUE_HMAC_SECRET = 'real-hmac-secret';
+    process.env.TAX_TIN_ENCRYPTION_KEY = 'a'.repeat(64);
+    vi.resetModules();
+    const { validateConfig } = await import('../../src/config');
+    validateConfig();
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
+  it('does NOT call process.exit in development when Firebase config is missing', async () => {
+    process.env.DATABASE_URL = 'postgres://localhost:5432/dev';
+    process.env.NODE_ENV = 'development';
+    delete process.env.FIREBASE_PROJECT_ID;
+    delete process.env.FIREBASE_PRIVATE_KEY;
+    delete process.env.FIREBASE_CLIENT_EMAIL;
+    vi.resetModules();
+    const { validateConfig } = await import('../../src/config');
+    validateConfig();
+    expect(exitSpy).not.toHaveBeenCalled();
   });
 
   it('validates TAX_TIN_ENCRYPTION_KEY format (64 hex chars)', async () => {
@@ -425,6 +472,7 @@ describe('validateConfig', () => {
     vi.resetModules();
     const { validateConfig } = await import('../../src/config');
     const result = validateConfig();
+    expect(exitSpy).toHaveBeenCalledWith(1);
     expect(result.errors.some(e => e.includes('64 hex characters'))).toBe(true);
   });
 
@@ -437,10 +485,13 @@ describe('validateConfig', () => {
     process.env.STRIPE_SECRET_KEY = 'sk_live_real_key';
     process.env.UPSTASH_REDIS_REST_URL = 'https://redis.upstash.io';
     process.env.UPSTASH_REDIS_URL = 'redis://upstash:6379';
+    process.env.QUEUE_HMAC_SECRET = 'real-hmac-secret';
     process.env.TAX_TIN_ENCRYPTION_KEY = 'a'.repeat(64); // 64 'a's = valid hex
     vi.resetModules();
     const { validateConfig } = await import('../../src/config');
     const result = validateConfig();
+    // All required vars present — process.exit must NOT be called
+    expect(exitSpy).not.toHaveBeenCalled();
     const taxErrors = result.errors.filter(e => e.includes('TAX_TIN_ENCRYPTION_KEY'));
     expect(taxErrors).toHaveLength(0);
   });
@@ -454,6 +505,7 @@ describe('validateConfig', () => {
     process.env.STRIPE_SECRET_KEY = 'sk_live_real';
     process.env.UPSTASH_REDIS_REST_URL = 'https://redis.upstash.io';
     process.env.UPSTASH_REDIS_URL = 'redis://upstash:6379';
+    process.env.QUEUE_HMAC_SECRET = 'real-hmac-secret';
     process.env.TAX_TIN_ENCRYPTION_KEY = 'a'.repeat(64);
     delete process.env.R2_ACCOUNT_ID;
     delete process.env.R2_ACCESS_KEY_ID;
@@ -461,6 +513,8 @@ describe('validateConfig', () => {
     vi.resetModules();
     const { validateConfig } = await import('../../src/config');
     const result = validateConfig();
+    // R2 absence is a warning, not a fatal error — process.exit must NOT be called
+    expect(exitSpy).not.toHaveBeenCalled();
     expect(result.warnings.some(w => w.includes('R2'))).toBe(true);
   });
 
@@ -473,11 +527,14 @@ describe('validateConfig', () => {
     process.env.STRIPE_SECRET_KEY = 'sk_live_real';
     process.env.UPSTASH_REDIS_REST_URL = 'https://redis.upstash.io';
     process.env.UPSTASH_REDIS_URL = 'redis://upstash:6379';
+    process.env.QUEUE_HMAC_SECRET = 'real-hmac-secret';
     process.env.TAX_TIN_ENCRYPTION_KEY = 'a'.repeat(64);
     delete process.env.SENDGRID_API_KEY;
     vi.resetModules();
     const { validateConfig } = await import('../../src/config');
     const result = validateConfig();
+    // SendGrid absence is a warning, not a fatal error — process.exit must NOT be called
+    expect(exitSpy).not.toHaveBeenCalled();
     expect(result.warnings.some(w => w.includes('SendGrid'))).toBe(true);
   });
 
@@ -490,6 +547,7 @@ describe('validateConfig', () => {
     expect(Array.isArray(result.errors)).toBe(true);
     expect(Array.isArray(result.warnings)).toBe(true);
     expect(typeof result.valid).toBe('boolean');
+    expect(exitSpy).not.toHaveBeenCalled();
   });
 
   it('flags STRIPE_SECRET_KEY with placeholder as error in production', async () => {
@@ -505,7 +563,53 @@ describe('validateConfig', () => {
     vi.resetModules();
     const { validateConfig } = await import('../../src/config');
     const result = validateConfig();
+    expect(exitSpy).toHaveBeenCalledWith(1);
     expect(result.errors.some(e => e.includes('STRIPE_SECRET_KEY'))).toBe(true);
+  });
+});
+
+// ============================================================================
+// QUEUE_HMAC_SECRET — security-specific tests (Bug 1 fix)
+// ============================================================================
+
+describe('config — QUEUE_HMAC_SECRET security', () => {
+  it('uses env var value when QUEUE_HMAC_SECRET is set', async () => {
+    process.env.NODE_ENV = 'development';
+    process.env.QUEUE_HMAC_SECRET = 'my-secret-value';
+    vi.resetModules();
+    const { config } = await import('../../src/config');
+    expect(config.queue.hmacSecret).toBe('my-secret-value');
+  });
+
+  it('uses dev-only fallback in development when QUEUE_HMAC_SECRET is missing', async () => {
+    process.env.NODE_ENV = 'development';
+    delete process.env.QUEUE_HMAC_SECRET;
+    vi.resetModules();
+    const { config } = await import('../../src/config');
+    // Must NOT be the old committed string that is now a known-public value
+    expect(config.queue.hmacSecret).not.toBe('dev-queue-hmac-secret-not-for-production');
+    // Must be labeled as dev-only so it is recognizable as non-production
+    expect(config.queue.hmacSecret).toMatch(/dev-only/);
+  });
+
+  it('uses dev-only fallback in test environment when QUEUE_HMAC_SECRET is missing', async () => {
+    process.env.NODE_ENV = 'test';
+    delete process.env.QUEUE_HMAC_SECRET;
+    vi.resetModules();
+    const { config } = await import('../../src/config');
+    expect(config.queue.hmacSecret).not.toBe('dev-queue-hmac-secret-not-for-production');
+    expect(config.queue.hmacSecret).toMatch(/dev-only/);
+  });
+
+  it('returns empty string in production when QUEUE_HMAC_SECRET is missing (validateConfig exits)', async () => {
+    process.env.NODE_ENV = 'production';
+    delete process.env.QUEUE_HMAC_SECRET;
+    vi.resetModules();
+    const { config } = await import('../../src/config');
+    // The production branch yields '' which triggers validateConfig() → process.exit(1)
+    expect(config.queue.hmacSecret).toBe('');
+    // The old committed fallback must never appear in any environment
+    expect(config.queue.hmacSecret).not.toBe('dev-queue-hmac-secret-not-for-production');
   });
 });
 

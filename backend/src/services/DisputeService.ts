@@ -215,23 +215,26 @@ export const DisputeService = {
         };
       }
       
-      // Precondition: Escrow must be FUNDED
-      const escrowResult = await EscrowService.getById(escrowId);
-      if (!escrowResult.success) return escrowResult;
-      const escrow = escrowResult.data;
-      
-      if (escrow.state !== 'FUNDED') {
-        return {
-          success: false,
-          error: {
-            code: ErrorCodes.INVALID_STATE,
-            message: `Escrow must be FUNDED to open dispute (current: ${escrow.state})`,
-          },
-        };
-      }
-      
       // Transaction: Create dispute + lock escrow + outbox event
+      // BUG FIX: Escrow state check moved INSIDE the transaction with FOR UPDATE
+      // to eliminate TOCTOU race between the state check and the locking UPDATE.
       const result = await db.transaction(async (query) => {
+        // Lock escrow row first to prevent concurrent state changes
+        const escrowSelect = await query<Escrow>(
+          `SELECT * FROM escrows WHERE id = $1 FOR UPDATE`,
+          [escrowId]
+        );
+
+        if (escrowSelect.rows.length === 0) {
+          throw Object.assign(new Error(`Escrow ${escrowId} not found`), { code: ErrorCodes.NOT_FOUND });
+        }
+
+        const escrow = escrowSelect.rows[0];
+
+        if (escrow.state !== 'FUNDED') {
+          throw Object.assign(new Error(`Escrow must be FUNDED to open dispute (current: ${escrow.state})`), { code: ErrorCodes.INVALID_STATE });
+        }
+
         // Lock escrow: FUNDED → LOCKED_DISPUTE (versioned)
         const escrowUpdate = await query<Escrow>(
           `UPDATE escrows
@@ -241,7 +244,7 @@ export const DisputeService = {
            RETURNING *`,
           [escrowId]
         );
-        
+
         if (escrowUpdate.rowCount === 0) {
           throw new Error('Failed to lock escrow (may have been locked by another process)');
         }
@@ -298,6 +301,17 @@ export const DisputeService = {
           },
         };
       }
+      // Surface typed errors thrown inside the transaction (NOT_FOUND, INVALID_STATE)
+      const errCode = (error as { code?: string }).code;
+      if (errCode === ErrorCodes.NOT_FOUND || errCode === ErrorCodes.INVALID_STATE) {
+        return {
+          success: false,
+          error: {
+            code: errCode,
+            message: error instanceof Error ? error.message : 'Unknown error',
+          },
+        };
+      }
       return {
         success: false,
         error: {
@@ -307,45 +321,46 @@ export const DisputeService = {
       };
     }
   },
-  
+
   /**
    * Request evidence for a dispute
    */
   requestEvidence: async (disputeId: string): Promise<ServiceResult<Dispute>> => {
     try {
-      const currentResult = await db.query<Dispute>(
-        'SELECT * FROM disputes WHERE id = $1',
-        [disputeId]
-      );
-      
-      if (currentResult.rows.length === 0) {
-        return {
-          success: false,
-          error: {
-            code: ErrorCodes.NOT_FOUND,
-            message: `Dispute ${disputeId} not found`,
-          },
-        };
-      }
-      
-      const current = currentResult.rows[0];
-      
-      if (!isValidTransition(current.state, 'EVIDENCE_REQUESTED')) {
-        return {
-          success: false,
-          error: {
-            code: ErrorCodes.INVALID_TRANSITION,
-            message: `Cannot transition dispute from ${current.state} to EVIDENCE_REQUESTED`,
-          },
-        };
-      }
-      
-      const result = await db.query<Dispute>(
-        `UPDATE disputes SET state = 'EVIDENCE_REQUESTED' WHERE id = $1 RETURNING *`,
-        [disputeId]
-      );
-      
-      return { success: true, data: result.rows[0] };
+      const updated = await db.transaction(async (query) => {
+        // Lock the row to prevent concurrent state transitions
+        const currentResult = await query<Dispute>(
+          'SELECT * FROM disputes WHERE id = $1 FOR UPDATE',
+          [disputeId]
+        );
+
+        if (currentResult.rows.length === 0) {
+          throw Object.assign(new Error(`Dispute ${disputeId} not found`), { code: ErrorCodes.NOT_FOUND });
+        }
+
+        const current = currentResult.rows[0];
+
+        if (!isValidTransition(current.state, 'EVIDENCE_REQUESTED')) {
+          throw Object.assign(
+            new Error(`Cannot transition dispute from ${current.state} to EVIDENCE_REQUESTED`),
+            { code: ErrorCodes.INVALID_TRANSITION }
+          );
+        }
+
+        // CAS update: only succeeds if state hasn't changed since the FOR UPDATE select
+        const result = await query<Dispute>(
+          `UPDATE disputes SET state = 'EVIDENCE_REQUESTED' WHERE id = $1 AND state = $2 RETURNING *`,
+          [disputeId, current.state]
+        );
+
+        if (result.rowCount === 0) {
+          throw Object.assign(new Error('Dispute state changed concurrently — please retry'), { code: ErrorCodes.INVALID_STATE });
+        }
+
+        return result.rows[0];
+      });
+
+      return { success: true, data: updated };
     } catch (error) {
       if (isInvariantViolation(error)) {
         return {
@@ -353,6 +368,16 @@ export const DisputeService = {
           error: {
             code: error.code || 'INVARIANT_VIOLATION',
             message: getErrorMessage(error.code || ''),
+          },
+        };
+      }
+      const errCode = (error as { code?: string }).code;
+      if (errCode === ErrorCodes.NOT_FOUND || errCode === ErrorCodes.INVALID_TRANSITION || errCode === ErrorCodes.INVALID_STATE) {
+        return {
+          success: false,
+          error: {
+            code: errCode,
+            message: error instanceof Error ? error.message : 'Unknown error',
           },
         };
       }
@@ -633,39 +658,40 @@ export const DisputeService = {
    */
   escalate: async (disputeId: string): Promise<ServiceResult<Dispute>> => {
     try {
-      const currentResult = await db.query<Dispute>(
-        'SELECT * FROM disputes WHERE id = $1',
-        [disputeId]
-      );
-      
-      if (currentResult.rows.length === 0) {
-        return {
-          success: false,
-          error: {
-            code: ErrorCodes.NOT_FOUND,
-            message: `Dispute ${disputeId} not found`,
-          },
-        };
-      }
-      
-      const current = currentResult.rows[0];
-      
-      if (!isValidTransition(current.state, 'ESCALATED')) {
-        return {
-          success: false,
-          error: {
-            code: ErrorCodes.INVALID_TRANSITION,
-            message: `Cannot escalate dispute from ${current.state}`,
-          },
-        };
-      }
-      
-      const result = await db.query<Dispute>(
-        `UPDATE disputes SET state = 'ESCALATED' WHERE id = $1 RETURNING *`,
-        [disputeId]
-      );
-      
-      return { success: true, data: result.rows[0] };
+      const updated = await db.transaction(async (query) => {
+        // Lock the row to prevent concurrent state transitions
+        const currentResult = await query<Dispute>(
+          'SELECT * FROM disputes WHERE id = $1 FOR UPDATE',
+          [disputeId]
+        );
+
+        if (currentResult.rows.length === 0) {
+          throw Object.assign(new Error(`Dispute ${disputeId} not found`), { code: ErrorCodes.NOT_FOUND });
+        }
+
+        const current = currentResult.rows[0];
+
+        if (!isValidTransition(current.state, 'ESCALATED')) {
+          throw Object.assign(
+            new Error(`Cannot escalate dispute from ${current.state}`),
+            { code: ErrorCodes.INVALID_TRANSITION }
+          );
+        }
+
+        // CAS update: only succeeds if state hasn't changed since the FOR UPDATE select
+        const result = await query<Dispute>(
+          `UPDATE disputes SET state = 'ESCALATED' WHERE id = $1 AND state = $2 RETURNING *`,
+          [disputeId, current.state]
+        );
+
+        if (result.rowCount === 0) {
+          throw Object.assign(new Error('Dispute state changed concurrently — please retry'), { code: ErrorCodes.INVALID_STATE });
+        }
+
+        return result.rows[0];
+      });
+
+      return { success: true, data: updated };
     } catch (error) {
       if (isInvariantViolation(error)) {
         return {
@@ -673,6 +699,16 @@ export const DisputeService = {
           error: {
             code: error.code || 'INVARIANT_VIOLATION',
             message: getErrorMessage(error.code || ''),
+          },
+        };
+      }
+      const errCode = (error as { code?: string }).code;
+      if (errCode === ErrorCodes.NOT_FOUND || errCode === ErrorCodes.INVALID_TRANSITION || errCode === ErrorCodes.INVALID_STATE) {
+        return {
+          success: false,
+          error: {
+            code: errCode,
+            message: error instanceof Error ? error.message : 'Unknown error',
           },
         };
       }

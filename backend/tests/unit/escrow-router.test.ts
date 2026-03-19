@@ -596,7 +596,7 @@ describe('escrow.release', () => {
       });
 
       const caller = makeCaller(POSTER_ID);
-      const result = await caller.release({ escrowId: ESCROW_ID });
+      const result = await caller.release({ escrowId: ESCROW_ID, stripeTransferId: 'tr_test_123' });
 
       expect(result).toHaveProperty('state', 'RELEASED');
       expect(result).toHaveProperty('id', ESCROW_ID);
@@ -611,7 +611,7 @@ describe('escrow.release', () => {
       });
 
       const caller = makeCaller(WORKER_ID);
-      await expect(caller.release({ escrowId: ESCROW_ID }))
+      await expect(caller.release({ escrowId: ESCROW_ID, stripeTransferId: 'tr_test_123' }))
         .rejects.toMatchObject({
           code: 'FORBIDDEN',
           message: 'Only the escrow creator can release funds',
@@ -625,7 +625,7 @@ describe('escrow.release', () => {
       });
 
       const caller = makeCaller(OTHER_USER_ID);
-      await expect(caller.release({ escrowId: ESCROW_ID }))
+      await expect(caller.release({ escrowId: ESCROW_ID, stripeTransferId: 'tr_test_123' }))
         .rejects.toMatchObject({ code: 'FORBIDDEN' });
     });
 
@@ -641,7 +641,7 @@ describe('escrow.release', () => {
       });
 
       const caller = makeCaller(POSTER_ID);
-      const result = await caller.release({ escrowId: ESCROW_ID });
+      const result = await caller.release({ escrowId: ESCROW_ID, stripeTransferId: 'tr_test_123' });
       expect(result.state).toBe('RELEASED');
     });
   });
@@ -654,7 +654,7 @@ describe('escrow.release', () => {
       });
 
       const caller = makeCaller(POSTER_ID);
-      await expect(caller.release({ escrowId: ESCROW_ID }))
+      await expect(caller.release({ escrowId: ESCROW_ID, stripeTransferId: 'tr_test_123' }))
         .rejects.toMatchObject({ code: 'NOT_FOUND' });
     });
 
@@ -669,7 +669,7 @@ describe('escrow.release', () => {
       });
 
       const caller = makeCaller(POSTER_ID);
-      await expect(caller.release({ escrowId: ESCROW_ID }))
+      await expect(caller.release({ escrowId: ESCROW_ID, stripeTransferId: 'tr_test_123' }))
         .rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
     });
 
@@ -684,7 +684,7 @@ describe('escrow.release', () => {
       });
 
       const caller = makeCaller(POSTER_ID);
-      await expect(caller.release({ escrowId: ESCROW_ID }))
+      await expect(caller.release({ escrowId: ESCROW_ID, stripeTransferId: 'tr_test_123' }))
         .rejects.toMatchObject({ code: 'BAD_REQUEST' });
     });
   });
@@ -711,21 +711,14 @@ describe('escrow.release', () => {
       });
     });
 
-    it('allows stripeTransferId to be omitted', async () => {
-      mockEscrowService.getById.mockResolvedValueOnce({
-        success: true,
-        data: makeEscrow() as any,
-      });
-      mockEscrowService.release.mockResolvedValueOnce({
-        success: true,
-        data: makeEscrow({ state: 'RELEASED' }) as any,
-      });
+    it('stripeTransferId is required — omitting it throws BAD_REQUEST (Zod validation)', async () => {
+      // Fix 1A: stripeTransferId is now required in the router schema.
+      // Omitting it should produce a Zod validation error before the service is called.
+      const caller = makeCaller(POSTER_ID);
+      await expect(caller.release({ escrowId: ESCROW_ID } as any))
+        .rejects.toMatchObject({ code: 'BAD_REQUEST' });
 
-      await makeCaller(POSTER_ID).release({ escrowId: ESCROW_ID });
-
-      expect(mockEscrowService.release).toHaveBeenCalledWith({
-        escrowId: ESCROW_ID,
-      });
+      expect(mockEscrowService.release).not.toHaveBeenCalled();
     });
   });
 });
@@ -1021,6 +1014,17 @@ describe('escrow.getHistory', () => {
 // =============================================================================
 
 describe('escrow.awardXP', () => {
+  // Helper: mock the DB query that the router now uses to derive baseXP server-side.
+  // The escrow has amount=5000 cents, so derivedBaseXP = Math.round(5000/10) = 500.
+  function mockReleasedEscrow(overrides: { amount?: number; worker_id?: string } = {}) {
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{
+        amount: overrides.amount ?? 5000,
+        worker_id: overrides.worker_id ?? WORKER_ID,
+      }],
+    });
+  }
+
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -1029,7 +1033,7 @@ describe('escrow.awardXP', () => {
     it('returns XP award data on success', async () => {
       const xpData = {
         id: 'xp-ledger-1',
-        user_id: POSTER_ID,
+        user_id: WORKER_ID,
         task_id: TASK_ID,
         escrow_id: ESCROW_ID,
         base_xp: 500,
@@ -1040,16 +1044,17 @@ describe('escrow.awardXP', () => {
         user_level_before: 3,
         user_level_after: 3,
       };
+      mockReleasedEscrow(); // amount=5000, worker_id=WORKER_ID
       mockXPService.awardXP.mockResolvedValueOnce({
         success: true,
         data: xpData as any,
       });
 
+      // SECURITY FIX: caller does NOT supply baseXP — derived server-side
       const caller = makeWorkerCaller();
       const result = await caller.awardXP({
         taskId: TASK_ID,
         escrowId: ESCROW_ID,
-        baseXP: 500,
       });
 
       expect(result).toHaveProperty('effective_xp', 650);
@@ -1058,7 +1063,35 @@ describe('escrow.awardXP', () => {
   });
 
   describe('error handling', () => {
+    it('throws NOT_FOUND when escrow is not in RELEASED state', async () => {
+      // db.query returns no rows — escrow not found in RELEASED state
+      mockDb.query.mockResolvedValueOnce({ rows: [] });
+
+      const caller = makeWorkerCaller();
+      await expect(caller.awardXP({
+        taskId: TASK_ID,
+        escrowId: ESCROW_ID,
+      })).rejects.toMatchObject({ code: 'NOT_FOUND' });
+
+      // XPService must NOT be called if escrow lookup fails
+      expect(mockXPService.awardXP).not.toHaveBeenCalled();
+    });
+
+    it('throws FORBIDDEN when caller is not the worker on this escrow', async () => {
+      // Escrow has a different worker_id
+      mockReleasedEscrow({ worker_id: 'different-worker-id' });
+
+      const caller = makeWorkerCaller(WORKER_ID);
+      await expect(caller.awardXP({
+        taskId: TASK_ID,
+        escrowId: ESCROW_ID,
+      })).rejects.toMatchObject({ code: 'FORBIDDEN' });
+
+      expect(mockXPService.awardXP).not.toHaveBeenCalled();
+    });
+
     it('throws PRECONDITION_FAILED for INV-1 violation (HX101)', async () => {
+      mockReleasedEscrow();
       mockXPService.awardXP.mockResolvedValueOnce({
         success: false,
         error: { code: 'HX101', message: 'XP requires released escrow' },
@@ -1068,11 +1101,11 @@ describe('escrow.awardXP', () => {
       await expect(caller.awardXP({
         taskId: TASK_ID,
         escrowId: ESCROW_ID,
-        baseXP: 500,
       })).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
     });
 
     it('throws CONFLICT for INV-5 violation (duplicate XP, 23505)', async () => {
+      mockReleasedEscrow();
       mockXPService.awardXP.mockResolvedValueOnce({
         success: false,
         error: { code: '23505', message: 'XP already awarded for this escrow' },
@@ -1082,11 +1115,11 @@ describe('escrow.awardXP', () => {
       await expect(caller.awardXP({
         taskId: TASK_ID,
         escrowId: ESCROW_ID,
-        baseXP: 500,
       })).rejects.toMatchObject({ code: 'CONFLICT' });
     });
 
     it('throws BAD_REQUEST for other XP errors', async () => {
+      mockReleasedEscrow();
       mockXPService.awardXP.mockResolvedValueOnce({
         success: false,
         error: { code: 'OTHER_ERROR', message: 'Something else failed' },
@@ -1096,13 +1129,14 @@ describe('escrow.awardXP', () => {
       await expect(caller.awardXP({
         taskId: TASK_ID,
         escrowId: ESCROW_ID,
-        baseXP: 500,
       })).rejects.toMatchObject({ code: 'BAD_REQUEST' });
     });
   });
 
-  describe('service delegation', () => {
-    it('passes userId from context and input params to XPService', async () => {
+  describe('server-side baseXP derivation (FIX 1 — security)', () => {
+    it('derives baseXP from escrow amount (amount/10) and passes it to XPService', async () => {
+      // amount=5000 cents → derivedBaseXP=500
+      mockReleasedEscrow({ amount: 5000 });
       mockXPService.awardXP.mockResolvedValueOnce({
         success: true,
         data: { id: 'xp-1' } as any,
@@ -1111,15 +1145,34 @@ describe('escrow.awardXP', () => {
       await makeWorkerCaller(WORKER_ID).awardXP({
         taskId: TASK_ID,
         escrowId: ESCROW_ID,
-        baseXP: 750,
       });
 
       expect(mockXPService.awardXP).toHaveBeenCalledWith({
         userId: WORKER_ID,
         taskId: TASK_ID,
         escrowId: ESCROW_ID,
-        baseXP: 750,
+        baseXP: 500, // derived: Math.round(5000/10) = 500
       });
+    });
+
+    it('an inflated caller-supplied baseXP has no effect on the actual award', async () => {
+      // Even if an attacker somehow passes baseXP in the payload, Zod strips it,
+      // and the router re-derives it from the escrow amount.
+      mockReleasedEscrow({ amount: 1000 }); // $10 task → 100 XP
+      mockXPService.awardXP.mockResolvedValueOnce({
+        success: true,
+        data: { id: 'xp-1' } as any,
+      });
+
+      await makeWorkerCaller(WORKER_ID).awardXP({
+        taskId: TASK_ID,
+        escrowId: ESCROW_ID,
+        // baseXP: 10000 — Zod strips this; not part of schema
+      } as any);
+
+      expect(mockXPService.awardXP).toHaveBeenCalledWith(
+        expect.objectContaining({ baseXP: 100 }) // derived from amount=1000/10=100, NOT 10000
+      );
     });
   });
 });
@@ -1140,7 +1193,7 @@ describe('Financial Safety — cross-cutting', () => {
     });
 
     const caller = makeCaller(WORKER_ID);
-    await expect(caller.release({ escrowId: ESCROW_ID }))
+    await expect(caller.release({ escrowId: ESCROW_ID, stripeTransferId: 'tr_test_123' }))
       .rejects.toMatchObject({ code: 'FORBIDDEN' });
 
     expect(mockEscrowService.release).not.toHaveBeenCalled();
@@ -1184,11 +1237,15 @@ describe('Financial Safety — cross-cutting', () => {
       error: { code: 'HX201', message: 'Task must be COMPLETED' },
     });
 
-    await expect(makeCaller(POSTER_ID).release({ escrowId: ESCROW_ID }))
+    await expect(makeCaller(POSTER_ID).release({ escrowId: ESCROW_ID, stripeTransferId: 'tr_test_123' }))
       .rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
   });
 
   it('INV-5: double XP award blocked (23505 maps to CONFLICT)', async () => {
+    // Router now queries DB to derive baseXP — mock the escrow lookup first
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ amount: 5000, worker_id: WORKER_ID }],
+    });
     mockXPService.awardXP.mockResolvedValueOnce({
       success: false,
       error: { code: '23505', message: 'duplicate key' },
@@ -1197,7 +1254,6 @@ describe('Financial Safety — cross-cutting', () => {
     await expect(makeWorkerCaller().awardXP({
       taskId: TASK_ID,
       escrowId: ESCROW_ID,
-      baseXP: 500,
     })).rejects.toMatchObject({ code: 'CONFLICT' });
   });
 

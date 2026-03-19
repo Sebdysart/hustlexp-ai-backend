@@ -17,7 +17,7 @@
  */
 
 import { db } from '../db.js';
-import { getConnections, getAllConnections, type SSEConnection } from './connection-registry.js';
+import { getConnections, getAllConnections, forceDisconnectUser, type SSEConnection } from './connection-registry.js';
 import { PlanService } from '../services/PlanService.js';
 import type { TaskProgressState } from '../types.js';
 import { logger } from '../logger.js';
@@ -44,6 +44,32 @@ interface OutboxEvent {
   aggregate_type: string;
   aggregate_id: string;
   payload: TaskProgressUpdatedPayload;
+}
+
+// ============================================================================
+// HELPERS
+// ============================================================================
+
+/**
+ * Check whether a user is currently banned.
+ *
+ * Called before every fanout write so that a ban takes effect on the next
+ * pushed event even if the SSE connection was already open at ban time.
+ * If the user is banned their stream is force-closed here as a side-effect,
+ * so subsequent events skip them automatically.
+ */
+async function checkAndEvictBannedUser(userId: string): Promise<boolean> {
+  const result = await db.query<{ is_banned: boolean }>(
+    'SELECT COALESCE(is_banned, false) as is_banned FROM users WHERE id = $1',
+    [userId]
+  );
+  if (result.rows.length === 0) return true; // user deleted — treat as banned
+  if (result.rows[0].is_banned) {
+    forceDisconnectUser(userId);
+    log.info({ userId }, 'Evicted banned user from SSE during fanout');
+    return true;
+  }
+  return false;
 }
 
 // ============================================================================
@@ -108,6 +134,10 @@ export async function dispatchTaskProgress(event: OutboxEvent): Promise<void> {
   // Fan out to active connections
   let fanoutCount = 0;
   for (const userId of recipients) {
+    // Bug 1 fix: re-check ban status on every fanout so streams opened before
+    // a ban do not continue receiving events.
+    if (await checkAndEvictBannedUser(userId)) continue;
+
     const conns = getConnections(userId);
     if (!conns) continue;
 
@@ -149,6 +179,11 @@ export async function dispatchNewMessage(payload: {
   createdAt: string;
 }): Promise<void> {
   const { recipientId } = payload;
+
+  // Bug 1 fix: re-check ban status so a banned recipient's stream is closed
+  // even if the connection was opened before the ban was applied.
+  if (await checkAndEvictBannedUser(recipientId)) return;
+
   const conns = getConnections(recipientId);
   if (!conns) return;
 

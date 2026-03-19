@@ -1230,6 +1230,8 @@ describe('XPTaxService.payTax', () => {
   });
 
   it('returns PAYMENT_NOT_SUCCEEDED when Stripe PI status is not succeeded', async () => {
+    // Idempotency check: no existing payment with this intent ID
+    mockDb.query.mockResolvedValueOnce({ rows: [] });
     mockStripe.verifyPaymentIntent.mockResolvedValueOnce({
       success: true,
       data: {
@@ -1248,6 +1250,8 @@ describe('XPTaxService.payTax', () => {
   });
 
   it('returns INVALID_PAYMENT_TYPE when PI metadata type is wrong', async () => {
+    // Idempotency check: no existing payment with this intent ID
+    mockDb.query.mockResolvedValueOnce({ rows: [] });
     mockStripe.verifyPaymentIntent.mockResolvedValueOnce({
       success: true,
       data: {
@@ -1266,6 +1270,8 @@ describe('XPTaxService.payTax', () => {
   });
 
   it('returns error on db failure', async () => {
+    // Idempotency check: no existing payment with this intent ID
+    mockDb.query.mockResolvedValueOnce({ rows: [] });
     mockStripe.verifyPaymentIntent.mockRejectedValueOnce(new Error('Stripe crash'));
 
     const result = await XPTaxService.payTax('user-1', 'pi_test_123');

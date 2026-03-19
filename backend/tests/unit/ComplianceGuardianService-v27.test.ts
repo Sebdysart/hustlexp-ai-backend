@@ -13,8 +13,10 @@ vi.mock('../../src/db.js', () => ({
 }));
 
 describe('FLAGGED_PATTERNS', () => {
-  it('contains exactly 12 patterns', () => {
-    expect(FLAGGED_PATTERNS).toHaveLength(12);
+  it('contains exactly 16 patterns', () => {
+    // Updated from 12 → 16 when v2.8.5 added: 'package for a friend',
+    // 'no need for details', 'no further details', 'friend of mine no need'
+    expect(FLAGGED_PATTERNS).toHaveLength(16);
   });
 
   it('all patterns are lowercase normalized', () => {

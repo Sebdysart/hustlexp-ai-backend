@@ -90,17 +90,26 @@ export const EarnedVerificationUnlockService = {
 
       // Trigger handles updating verification_earnings_tracking
       // Gap 12: Check if threshold just crossed → send $1 upgrade push notification
+      // Use a conditional UPDATE so only the first concurrent caller fires the notification
       if (cumulativeBefore < 4000 && cumulativeAfter >= 4000) {
-        log.info({ userId, cumulativeBefore, cumulativeAfter }, 'User crossed $40 threshold, triggering $1 verification offer');
-        // Fire-and-forget notification (don't block earnings recording)
-        db.query(
-          `INSERT INTO notifications (user_id, type, title, body, data, created_at)
-           VALUES ($1, 'EARNED_VERIFICATION_UNLOCKED',
-                   '🎉 Free Verification Unlocked!',
-                   'You''ve earned enough to unlock identity verification for just $1. Tap to upgrade and access premium tasks!',
-                   $2, NOW())`,
-          [userId, JSON.stringify({ action: 'OPEN_VERIFICATION', fee_cents: 100 })]
-        ).catch(err => log.error({ err: err instanceof Error ? err.message : String(err), userId }, 'Notification insert failed'));
+        const claimResult = await db.query(
+          `UPDATE verification_earnings_tracking
+           SET earned_unlock_achieved = true, unlock_notified_at = NOW()
+           WHERE user_id = $1 AND earned_unlock_achieved = false`,
+          [userId]
+        );
+        if ((claimResult.rowCount ?? 0) > 0) {
+          log.info({ userId, cumulativeBefore, cumulativeAfter }, 'User crossed $40 threshold, triggering $1 verification offer');
+          // Fire-and-forget notification (don't block earnings recording)
+          db.query(
+            `INSERT INTO notifications (user_id, type, title, body, data, created_at)
+             VALUES ($1, 'EARNED_VERIFICATION_UNLOCKED',
+                     '🎉 Free Verification Unlocked!',
+                     'You''ve earned enough to unlock identity verification for just $1. Tap to upgrade and access premium tasks!',
+                     $2, NOW())`,
+            [userId, JSON.stringify({ action: 'OPEN_VERIFICATION', fee_cents: 100 })]
+          ).catch(err => log.error({ err: err instanceof Error ? err.message : String(err), userId }, 'Notification insert failed'));
+        }
       }
 
       return { success: true, data: undefined };

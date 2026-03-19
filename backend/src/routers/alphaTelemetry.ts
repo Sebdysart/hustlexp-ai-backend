@@ -216,7 +216,9 @@ export const alphaTelemetryRouter = router({
     .input(z.object({
       state: z.enum(['E1_NO_TASKS_AVAILABLE', 'E2_ELIGIBILITY_MISMATCH', 'E3_TRUST_TIER_LOCKED']),
       role: z.enum(['hustler', 'poster']),
-      trust_tier: z.number().int(),
+      // SECURITY FIX (v2.9.4): trust_tier removed from client input — use server-authoritative
+      // ctx.user.trust_tier instead. Accepting a caller-supplied value allowed any authenticated
+      // user to write an arbitrary tier (e.g. 999) into the analytics store.
       location_radius_miles: z.number().optional(),
       instant_mode_enabled: z.boolean(),
       edge_state_version: z.string().default('v1'),
@@ -226,7 +228,7 @@ export const alphaTelemetryRouter = router({
         user_id: ctx.user.id,
         role: input.role,
         state: input.state,
-        trust_tier: input.trust_tier,
+        trust_tier: ctx.user.trust_tier,   // server-authoritative value, not client-supplied
         location_radius_miles: input.location_radius_miles,
         instant_mode_enabled: input.instant_mode_enabled,
         timestamp: new Date(),

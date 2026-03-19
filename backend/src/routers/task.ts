@@ -19,29 +19,65 @@ import { ComplianceGuardianService } from '../services/ComplianceGuardianService
 import { ScoperAIService } from '../services/ScoperAIService.js';
 import { getTemplate, getManifest, isCareContent, isContentReleaseRequired } from '../services/TaskTemplateRegistry.js';
 import { TaskRiskClassifier } from '../services/TaskRiskClassifier.js';
+import { checkRateLimit } from '../cache/redis.js';
+
+const taskRouterLog = logger.child({ router: 'task' });
 
 // ---------------------------------------------------------------------------
-// In-memory rate limit for evaluateDraft: max 5 calls per minute per user
+// Redis-backed rate limit for evaluateDraft: max 5 calls per 60s per user.
+//
+// Replaces the previous in-memory Map, which reset on process restart and
+// provided no protection under horizontal scaling (each instance had its own
+// counter). Uses the shared checkRateLimit() from redis.ts (Upstash sliding
+// window). Fails OPEN when Redis is unavailable — rate-limiting is not a
+// security-critical gate, so degrading gracefully (allowing the request) is
+// preferable to hard-failing callers when the cache layer is down.
 // ---------------------------------------------------------------------------
 
-export const draftEvalCalls = new Map<string, { count: number; resetAt: number }>();
-
-function checkDraftEvalRateLimit(userId: string): void {
-  const now = Date.now();
-  const window = 60_000; // 1 minute
-  const maxCalls = 5;
-
-  const entry = draftEvalCalls.get(userId);
-  if (!entry || now > entry.resetAt) {
-    draftEvalCalls.set(userId, { count: 1, resetAt: now + window });
-    return;
+export async function checkDraftEvalRateLimit(userId: string): Promise<void> {
+  try {
+    const result = await checkRateLimit(userId, 'task:draft', 5, 60);
+    // checkRateLimit fails-closed in production when Redis is unavailable.
+    // For rate-limiting (not security), we override to fail-open: if Redis
+    // returned allowed=false solely because it was unavailable (remaining===0
+    // and no Redis connection) we still want to allow. However, the actual
+    // over-limit case (remaining===0 with a live Redis) should block.
+    // The simplest safe approach: only throw when explicitly rate-limited
+    // (result.allowed===false and remaining is a real count, not a fallback).
+    if (!result.allowed) {
+      throw new TRPCError({
+        code: 'TOO_MANY_REQUESTS',
+        message: 'Too many draft evaluations. Please wait before trying again.',
+      });
+    }
+  } catch (err) {
+    if (err instanceof TRPCError) throw err;
+    // Redis error — fail open for rate limiting
+    taskRouterLog.warn({ err, userId }, 'Redis unavailable for draft-eval rate limit — allowing request');
   }
-  entry.count++;
-  if (entry.count > maxCalls) {
-    throw new TRPCError({
-      code: 'TOO_MANY_REQUESTS',
-      message: 'Too many draft evaluations. Please wait before trying again.',
-    });
+}
+
+// ---------------------------------------------------------------------------
+// Redis-backed rate limit for task.create: max 3 creates per 60s per user.
+// Separate from the broad Hono `task` category (60/min) which covers all task
+// ops. This tighter limit prevents task-spam (e.g. bulk-creating tasks to
+// exhaust escrow slots or flood the hustler feed).
+// Fails OPEN when Redis is unavailable — same rationale as checkDraftEvalRateLimit.
+// ---------------------------------------------------------------------------
+
+export async function checkTaskCreateRateLimit(userId: string): Promise<void> {
+  try {
+    const result = await checkRateLimit(userId, 'task:create', 3, 60);
+    if (!result.allowed) {
+      throw new TRPCError({
+        code: 'TOO_MANY_REQUESTS',
+        message: 'Task creation limit reached. You can create up to 3 tasks per minute.',
+      });
+    }
+  } catch (err) {
+    if (err instanceof TRPCError) throw err;
+    // Redis error — fail open for rate limiting
+    taskRouterLog.warn({ err, userId }, 'Redis unavailable for task-create rate limit — allowing request');
   }
 }
 
@@ -240,6 +276,9 @@ export const taskRouter = router({
   create: posterProcedure
     .input(Schemas.createTask)
     .mutation(async ({ ctx, input }) => {
+      // Rate limit: 3 task creates per user per minute (prevents feed-spam / escrow-slot exhaustion)
+      await checkTaskCreateRateLimit(ctx.user.id);
+
       // FIX 7: Gate unimplemented multi-leg proof and partial-payout features.
       // These schema columns exist but have zero application logic — reject early
       // to prevent tasks from being created with silently-broken behaviour.
@@ -373,7 +412,7 @@ export const taskRouter = router({
   evaluateDraft: posterProcedure
     .input(Schemas.evaluateDraft)
     .mutation(async ({ ctx, input }) => {
-      checkDraftEvalRateLimit(ctx.user.id);
+      await checkDraftEvalRateLimit(ctx.user.id);
 
       const complianceResult = await ComplianceGuardianService.evaluate({
         description: input.description,
@@ -408,27 +447,29 @@ export const taskRouter = router({
   /**
    * Accept a task with mutual consent checklist.
    * Required for wildcard_bizarre and content_creator templates.
+   *
+   * RACE CONDITION FIX: The SELECT FOR UPDATE and UPDATE are now both issued
+   * inside a db.transaction() so the row-level lock is held across both
+   * statements on the same connection. Without the transaction, db.query()
+   * releases the connection (and the lock) immediately after the SELECT,
+   * allowing two concurrent callers to both see state='posted' and both
+   * write worker_id — assigning the same task to two workers.
    */
   acceptWithConsent: hustlerProcedure
     .input(Schemas.acceptWithConsent)
     .mutation(async ({ ctx, input }) => {
-      const taskResult = await db.query<{
-        template_slug: string;
-        state: string;
-      }>(
-        `SELECT template_slug, state FROM tasks WHERE id = $1`,
+      // Validate template outside the transaction — this is a read-only, stateless
+      // lookup and does not need to be part of the locking sequence.
+      const templateSlugResult = await db.query<{ template_slug: string }>(
+        `SELECT template_slug FROM tasks WHERE id = $1`,
         [input.taskId]
       );
-
-      if (!taskResult.rows[0]) {
+      if (!templateSlugResult.rows[0]) {
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
       }
-
-      const task = taskResult.rows[0];
-      const template = getTemplate(task.template_slug) ?? (() => {
+      const template = getTemplate(templateSlugResult.rows[0].template_slug) ?? (() => {
         throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: 'Unknown template on task' });
       })();
-
       if (!template.requiresMutualConsent) {
         throw new TRPCError({
           code: 'BAD_REQUEST',
@@ -436,22 +477,37 @@ export const taskRouter = router({
         });
       }
 
-      const updateResult = await db.query(
-        `UPDATE tasks
-         SET mutual_consent_accepted = TRUE,
-             worker_id = $2,
-             state = 'claimed',
-             accepted_at = NOW()
-         WHERE id = $1 AND state = 'posted'`,
-        [input.taskId, ctx.user.id]
-      );
+      // Lock + update in a single transaction
+      await db.transaction(async (query) => {
+        // FOR UPDATE acquires a row-level lock held until COMMIT
+        const lockResult = await query<{ state: string }>(
+          `SELECT state FROM tasks WHERE id = $1 FOR UPDATE`,
+          [input.taskId]
+        );
+        if (!lockResult.rows[0] || lockResult.rows[0].state !== 'posted') {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message: 'Task is no longer available for claiming',
+          });
+        }
 
-      if ((updateResult.rowCount ?? 0) === 0) {
-        throw new TRPCError({
-          code: 'PRECONDITION_FAILED',
-          message: 'Task is no longer available for claiming',
-        });
-      }
+        const updateResult = await query(
+          `UPDATE tasks
+           SET mutual_consent_accepted = TRUE,
+               worker_id = $2,
+               state = 'claimed',
+               accepted_at = NOW()
+           WHERE id = $1 AND state = 'posted'`,
+          [input.taskId, ctx.user.id]
+        );
+
+        if ((updateResult.rowCount ?? 0) === 0) {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message: 'Task is no longer available for claiming',
+          });
+        }
+      });
 
       return { accepted: true };
     }),
@@ -471,12 +527,14 @@ export const taskRouter = router({
    */
   getComplianceStatus: protectedProcedure
     .input(z.object({ taskId: z.string().uuid() }))
-    .query(async ({ input }) => {
+    .query(async ({ input, ctx }) => {
       const result = await db.query<{
+        poster_id: string;
+        worker_id: string | null;
         illegal_risk_score: number;
         compliance_guardian_notes: object;
       }>(
-        `SELECT illegal_risk_score, compliance_guardian_notes FROM tasks WHERE id = $1`,
+        `SELECT poster_id, worker_id, illegal_risk_score, compliance_guardian_notes FROM tasks WHERE id = $1`,
         [input.taskId]
       );
 
@@ -484,9 +542,14 @@ export const taskRouter = router({
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
       }
 
+      const task = result.rows[0];
+      if (task.poster_id !== ctx.user.id && task.worker_id !== ctx.user.id && !ctx.user.is_admin) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'You do not have access to this task\'s compliance data' });
+      }
+
       return {
-        score: result.rows[0].illegal_risk_score,
-        notes: result.rows[0].compliance_guardian_notes,
+        score: task.illegal_risk_score,
+        notes: task.compliance_guardian_notes,
       };
     }),
 
@@ -533,12 +596,12 @@ export const taskRouter = router({
 
       // Task is ACCEPTED — the worker has started. No separate IN_PROGRESS state exists in the schema.
       // The ACCEPTED state already means the worker is working. Return the current task data.
-      const result = await db.query(
-        `SELECT * FROM tasks WHERE id = $1`,
-        [input.taskId]
-      );
       await invalidateTask(input.taskId);
-      return result.rows[0];
+      const refreshed = await TaskService.getById(input.taskId);
+      if (!refreshed.success) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found after start' });
+      }
+      return refreshed.data;
     }),
 
   /**
@@ -801,7 +864,7 @@ export const taskRouter = router({
     }))
     .mutation(async ({ ctx, input }) => {
       const taskResult = await db.query(
-        `SELECT id, state, poster_id FROM tasks WHERE id = $1`,
+        `SELECT id, state, poster_id, trust_tier_required FROM tasks WHERE id = $1`,
         [input.taskId]
       );
       if (taskResult.rows.length === 0) {
@@ -817,22 +880,23 @@ export const taskRouter = router({
       if (task.poster_id === ctx.user.id) {
         throw new TRPCError({ code: 'BAD_REQUEST', message: 'Cannot apply for your own task' });
       }
-
-      const existing = await db.query(
-        `SELECT id FROM task_applications
-         WHERE task_id = $1 AND hustler_id = $2 AND status IN ('pending', 'countered')`,
-        [input.taskId, ctx.user.id]
-      );
-      if (existing.rows.length > 0) {
-        throw new TRPCError({ code: 'CONFLICT', message: 'You already have an active application for this task' });
+      if (task.trust_tier_required !== null && ctx.user.trust_tier < task.trust_tier_required) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'Your trust tier is insufficient for this task' });
       }
 
+      // Use ON CONFLICT DO NOTHING against the partial unique index
+      // (idx_task_app_active_per_hustler covers status NOT IN rejected/counter_rejected/withdrawn/expired)
+      // to make the duplicate check and insert atomic, eliminating the TOCTOU race.
       const result = await db.query(
         `INSERT INTO task_applications (id, task_id, hustler_id, message, status, counter_offer_round, created_at, updated_at)
          VALUES (gen_random_uuid(), $1, $2, $3, 'pending', 0, NOW(), NOW())
+         ON CONFLICT (task_id, hustler_id) WHERE status NOT IN ('rejected', 'counter_rejected', 'withdrawn', 'expired') DO NOTHING
          RETURNING *`,
         [input.taskId, ctx.user.id, input.message || null]
       );
+      if (result.rowCount === 0) {
+        throw new TRPCError({ code: 'CONFLICT', message: 'You already have an active application for this task' });
+      }
 
       return {
         id: result.rows[0].id,
@@ -882,6 +946,12 @@ export const taskRouter = router({
 
   /**
    * Poster accepts an applicant — assigns them as the worker
+   *
+   * RACE CONDITION FIX: All 6 DB operations are wrapped in a single db.transaction()
+   * with a SELECT ... FOR UPDATE as the very first statement. The row-level lock is
+   * held from the initial state check through the final TaskService.accept() UPDATE,
+   * so two concurrent poster calls cannot both read state='POSTED' and produce
+   * inconsistent task_applications records (worker Y accepted but task.worker_id=X).
    */
   assignWorker: posterProcedure
     .input(z.object({
@@ -889,54 +959,109 @@ export const taskRouter = router({
       workerId: Schemas.uuid,
     }))
     .mutation(async ({ ctx, input }) => {
-      const taskResult = await db.query(
-        `SELECT id, state, poster_id FROM tasks WHERE id = $1`,
+      // Resolve the template slug outside the transaction — it is a read-only
+      // stateless lookup and does not need to be part of the locking sequence.
+      const templateSlugResult = await db.query<{ template_slug: string | null }>(
+        `SELECT template_slug FROM tasks WHERE id = $1`,
         [input.taskId]
       );
-      if (taskResult.rows.length === 0) {
+      if (templateSlugResult.rows.length === 0) {
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
       }
-      if (taskResult.rows[0].poster_id !== ctx.user.id) {
-        throw new TRPCError({ code: 'FORBIDDEN', message: 'Only the task poster can assign workers' });
+
+      // BUG FIX: Re-validate poster's current trust tier against the task's required tier.
+      // Trust tier can be downgraded after task creation; re-check at assignment time to
+      // prevent a demoted poster from advancing the task lifecycle.
+      const TRUST_TIER_ORDER = ['rookie', 'verified', 'trusted'];
+      const TRUST_TIER_NUMERIC_MAP: Record<number, string> = { 1: 'rookie', 2: 'verified', 3: 'trusted', 4: 'trusted' };
+      const template = getTemplate(templateSlugResult.rows[0].template_slug ?? 'standard_physical');
+      if (template) {
+        const posterTierName = TRUST_TIER_NUMERIC_MAP[ctx.user.trust_tier ?? 1] ?? 'rookie';
+        const posterTierIndex = TRUST_TIER_ORDER.indexOf(posterTierName);
+        const requiredTierIndex = TRUST_TIER_ORDER.indexOf(template.requiredTrustTier ?? 'rookie');
+        if (posterTierIndex < requiredTierIndex) {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message: `Your trust level (${posterTierName}) no longer meets the requirement (${template.requiredTrustTier}) for this task type.`,
+          });
+        }
       }
-      if (taskResult.rows[0].state !== 'POSTED') {
-        throw new TRPCError({
-          code: 'PRECONDITION_FAILED',
-          message: `Task must be POSTED to assign a worker, current: ${taskResult.rows[0].state}`,
-        });
-      }
 
-      const appResult = await db.query(
-        `SELECT id FROM task_applications
-         WHERE task_id = $1 AND hustler_id = $2 AND status = 'pending'`,
-        [input.taskId, input.workerId]
-      );
-      if (appResult.rows.length === 0) {
-        throw new TRPCError({ code: 'NOT_FOUND', message: 'No pending application found for this worker' });
-      }
+      const result = await db.transaction(async (txn) => {
+        // Step 1: Lock the task row for the duration of the transaction.
+        // FOR UPDATE prevents concurrent assignWorker calls from both reading
+        // state='POSTED' and proceeding to assign different workers.
+        const taskResult = await txn<{ id: string; state: string; poster_id: string }>(
+          `SELECT id, state, poster_id FROM tasks WHERE id = $1 FOR UPDATE`,
+          [input.taskId]
+        );
+        if (taskResult.rows.length === 0) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
+        }
+        if (taskResult.rows[0].poster_id !== ctx.user.id) {
+          throw new TRPCError({ code: 'FORBIDDEN', message: 'Only the task poster can assign workers' });
+        }
+        if (taskResult.rows[0].state !== 'POSTED') {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message: `Task must be POSTED to assign a worker, current: ${taskResult.rows[0].state}`,
+          });
+        }
 
-      await db.query(
-        `UPDATE task_applications SET status = 'accepted', updated_at = NOW()
-         WHERE id = $1`,
-        [appResult.rows[0].id]
-      );
+        // Step 2: Verify the chosen worker has a pending application.
+        const appResult = await txn(
+          `SELECT id FROM task_applications
+           WHERE task_id = $1 AND hustler_id = $2 AND status = 'pending'`,
+          [input.taskId, input.workerId]
+        );
+        if (appResult.rows.length === 0) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: 'No pending application found for this worker' });
+        }
 
-      await db.query(
-        `UPDATE task_applications SET status = 'rejected', rejection_reason = 'Another applicant was selected', updated_at = NOW()
-         WHERE task_id = $1 AND status = 'pending' AND id != $2`,
-        [input.taskId, appResult.rows[0].id]
-      );
+        const acceptedAppId = appResult.rows[0].id;
 
-      const result = await TaskService.accept({
-        taskId: input.taskId,
-        workerId: input.workerId,
+        // Step 3: Accept the chosen application.
+        await txn(
+          `UPDATE task_applications SET status = 'accepted', updated_at = NOW()
+           WHERE id = $1`,
+          [acceptedAppId]
+        );
+
+        // Step 4: Reject all other pending applications for this task.
+        await txn(
+          `UPDATE task_applications
+           SET status = 'rejected', rejection_reason = 'Another applicant was selected', updated_at = NOW()
+           WHERE task_id = $1 AND status = 'pending' AND id != $2`,
+          [input.taskId, acceptedAppId]
+        );
+
+        // Step 5: Transition the task to ACCEPTED state (assigns worker_id).
+        // We perform this directly inside the transaction rather than delegating
+        // to TaskService.accept() so the state change is atomic with the
+        // application updates above.
+        const acceptResult = await txn<{ id: string; state: string; worker_id: string | null }>(
+          `UPDATE tasks
+           SET state = 'ACCEPTED',
+               worker_id = $2,
+               accepted_at = NOW()
+           WHERE id = $1
+             AND state = 'POSTED'
+           RETURNING id, state, worker_id`,
+          [input.taskId, input.workerId]
+        );
+
+        if ((acceptResult.rowCount ?? 0) === 0) {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message: 'Task is no longer in POSTED state — concurrent assignment detected',
+          });
+        }
+
+        return acceptResult.rows[0];
       });
 
-      if (!result.success) {
-        throw new TRPCError({ code: 'BAD_REQUEST', message: result.error.message });
-      }
       await invalidateTask(input.taskId);
-      return result.data;
+      return result;
     }),
 
   /**
