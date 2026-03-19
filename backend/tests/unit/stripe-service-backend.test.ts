@@ -146,7 +146,7 @@ describe('StripeService.createPaymentIntent (backend)', () => {
   });
 
   it('returns STRIPE_NOT_CONFIGURED for createTaxPaymentIntent as well', async () => {
-    const result = await StripeService.createTaxPaymentIntent('user-1', 500);
+    const result = await StripeService.createTaxPaymentIntent('user-1', 500, Date.now());
     expect(result.success).toBe(false);
     if (!result.success) {
       expect(result.error.code).toBe('STRIPE_NOT_CONFIGURED');
@@ -160,7 +160,7 @@ describe('StripeService.createPaymentIntent (backend)', () => {
 
 describe('StripeService.createTaxPaymentIntent (backend)', () => {
   it('returns STRIPE_NOT_CONFIGURED', async () => {
-    const result = await StripeService.createTaxPaymentIntent('user-2', 200);
+    const result = await StripeService.createTaxPaymentIntent('user-2', 200, Date.now());
     expect(result.success).toBe(false);
     if (!result.success) expect(result.error.code).toBe('STRIPE_NOT_CONFIGURED');
   });

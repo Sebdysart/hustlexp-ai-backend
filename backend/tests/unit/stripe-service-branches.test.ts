@@ -73,7 +73,7 @@ describe('StripeService branch coverage', () => {
 
   describe('createTaxPaymentIntent', () => {
     it('returns STRIPE_NOT_CONFIGURED', async () => {
-      const result = await StripeService.createTaxPaymentIntent('user-1', 100);
+      const result = await StripeService.createTaxPaymentIntent('user-1', 100, Date.now());
       expect(result.success).toBe(false);
       if (!result.success) expect(result.error.code).toBe('STRIPE_NOT_CONFIGURED');
     });

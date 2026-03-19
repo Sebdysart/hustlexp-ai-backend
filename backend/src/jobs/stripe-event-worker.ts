@@ -267,6 +267,21 @@ function getEventObject<T = Record<string, unknown>>(event: StripeEventEnvelope)
  * This is the critical PENDING → FUNDED transition that was previously missing.
  * It is idempotent: the WHERE state = 'PENDING' guard ensures we only act once;
  * subsequent webhook deliveries for the same event are safe no-ops.
+ *
+ * NOTE: We intentionally do NOT wrap this in an outer db.transaction(). The
+ * previous approach used an outer transaction with FOR UPDATE to guard the
+ * SELECT, then called EscrowService.fund() inside that same transaction.
+ * EscrowService.fund() opens its OWN transaction with FOR UPDATE on the same
+ * escrow row. This creates a deadlock: Connection A (outer tx) holds the row
+ * lock and waits for EscrowService.fund() to return; Connection B (EscrowService
+ * tx) blocks waiting for Connection A to release the lock. PostgreSQL kills one
+ * connection, causing every payment_intent.succeeded event to fail.
+ *
+ * The fix: perform a plain (non-transactional) SELECT without FOR UPDATE to
+ * find the escrow ID, then delegate all locking and state transition to
+ * EscrowService.fund(). EscrowService.fund() already handles the concurrent-fund
+ * race internally via its own FOR UPDATE transaction. The AND state = 'PENDING'
+ * guard below prevents us from passing an already-funded escrow ID to fund().
  */
 async function fundEscrowForPaymentIntent(event: StripeEventEnvelope): Promise<void> {
   const paymentIntent = getEventObject<{ id: string }>(event);
@@ -277,33 +292,26 @@ async function fundEscrowForPaymentIntent(event: StripeEventEnvelope): Promise<v
 
   const paymentIntentId = paymentIntent.id;
 
-  // Wrap the SELECT + fund in a transaction with FOR UPDATE so that two concurrent
-  // payment_intent.succeeded webhooks for the same payment intent cannot both pass the
-  // PENDING check and both call EscrowService.fund. The FOR UPDATE row-lock means the
-  // second concurrent transaction blocks until the first commits, at which point the
-  // escrow state is already FUNDED and the WHERE state = 'PENDING' clause returns no rows.
-  await db.transaction(async (query) => {
-    const escrowResult = await query<{ id: string }>(
-      `SELECT id FROM escrows WHERE stripe_payment_intent_id = $1 AND state = 'PENDING' FOR UPDATE`,
-      [paymentIntentId]
-    );
+  const escrowResult = await db.query<{ id: string }>(
+    `SELECT id FROM escrows WHERE stripe_payment_intent_id = $1 AND state = 'PENDING'`,
+    [paymentIntentId]
+  );
 
-    if (escrowResult.rows.length === 0) {
-      // No PENDING escrow — either there is no escrow for this payment intent
-      // (entitlement-only payment) or it was already funded (idempotent replay).
-      log.info({ paymentIntentId }, 'payment_intent.succeeded: no PENDING escrow found, skipping escrow funding');
-      return;
-    }
+  if (escrowResult.rows.length === 0) {
+    // No PENDING escrow — either there is no escrow for this payment intent
+    // (entitlement-only payment) or it was already funded (idempotent replay).
+    log.info({ paymentIntentId }, 'payment_intent.succeeded: no PENDING escrow found, skipping escrow funding');
+    return;
+  }
 
-    const escrowId = escrowResult.rows[0].id;
-    const result = await EscrowService.fund({ escrowId, stripePaymentIntentId: paymentIntentId });
+  const escrowId = escrowResult.rows[0].id;
+  const result = await EscrowService.fund({ escrowId, stripePaymentIntentId: paymentIntentId });
 
-    if (!result.success) {
-      throw new Error(`Failed to fund escrow ${escrowId} for payment_intent ${paymentIntentId}: ${result.error.message}`);
-    }
+  if (!result.success) {
+    throw new Error(`Failed to fund escrow ${escrowId} for payment_intent ${paymentIntentId}: ${result.error.message}`);
+  }
 
-    log.info({ escrowId, paymentIntentId }, 'Escrow funded via payment_intent.succeeded (PENDING → FUNDED)');
-  });
+  log.info({ escrowId, paymentIntentId }, 'Escrow funded via payment_intent.succeeded (PENDING → FUNDED)');
 }
 
 async function handleCheckoutSessionCompleted(

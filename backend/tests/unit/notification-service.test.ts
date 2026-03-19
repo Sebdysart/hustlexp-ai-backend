@@ -146,11 +146,9 @@ describe('NotificationService', () => {
         .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
         // INSERT notification
         .mockResolvedValueOnce({ rows: [notification], rowCount: 1 } as never)
-        // queueNotificationChannels: check for existing push outbox event
-        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
-        // queueNotificationChannels: INSERT outbox_events
+        // queuePushNotification: single INSERT ON CONFLICT DO NOTHING (no prior SELECT)
         .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
-        // queueNotificationChannels: UPDATE notifications SET sent_at
+        // queueNotificationChannels: UPDATE notifications SET sent_at (only when successCount > 0)
         .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
 
       const result = await NotificationService.createNotification({
@@ -181,11 +179,9 @@ describe('NotificationService', () => {
         .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
         // INSERT notification
         .mockResolvedValueOnce({ rows: [notification], rowCount: 1 } as never)
-        // push outbox check
-        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
-        // INSERT outbox_events
+        // queuePushNotification: single INSERT ON CONFLICT DO NOTHING (no prior SELECT)
         .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
-        // UPDATE sent_at
+        // queueNotificationChannels: UPDATE notifications SET sent_at (only when successCount > 0)
         .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
 
       const result = await NotificationService.createNotification({
@@ -326,11 +322,9 @@ describe('NotificationService', () => {
         } as never)
         // INSERT notification
         .mockResolvedValueOnce({ rows: [notification], rowCount: 1 } as never)
-        // push outbox check
-        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
-        // INSERT outbox_events
+        // queuePushNotification: single INSERT ON CONFLICT DO NOTHING (no prior SELECT)
         .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
-        // UPDATE sent_at
+        // queueNotificationChannels: UPDATE notifications SET sent_at (only when successCount > 0)
         .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
 
       const result = await NotificationService.createNotification({

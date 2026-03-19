@@ -207,10 +207,15 @@ export const StripeService = {
    * Create payment intent for XP tax payments.
    * Unlike escrow funding, tax payments have no minimum task value
    * (Stripe minimum is 50 cents).
+   *
+   * @param timestamp - A per-call Unix ms timestamp (pass Date.now()). Included
+   * in the Stripe idempotency key to prevent key collisions when the same user
+   * owes the same tax amount twice within Stripe's 24-hour idempotency window.
    */
   createTaxPaymentIntent: async (
     userId: string,
     amountCents: number,
+    timestamp: number,
   ): Promise<ServiceResult<CreatePaymentIntentResult>> => {
     if (!stripe) {
       return {
@@ -237,7 +242,7 @@ export const StripeService = {
           user_id: userId,
         },
         description: `HustleXP XP Tax Payment`,
-      }, { idempotencyKey: `xp_tax_pi_${userId}_${amountCents}` }));
+      }, { idempotencyKey: `xp_tax_pi_${userId}_${amountCents}_${timestamp}` }));
 
       return {
         success: true,

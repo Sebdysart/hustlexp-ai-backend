@@ -133,7 +133,9 @@ export const TaskService = {
 
   /**
    * Get tasks by poster — cursor-paginated.
-   * Cursor = ISO timestamp of the last-seen task's created_at.
+   * Cursor = compound "ISO-timestamp|uuid" encoding of the last-seen task's
+   * (created_at, id) pair. Using both columns eliminates the tie-drop bug
+   * that occurred when multiple tasks share the same created_at timestamp.
    * Returns up to `limit` tasks + a nextCursor to fetch the next page.
    */
   getByPoster: async (
@@ -145,27 +147,32 @@ export const TaskService = {
     const fetchLimit = limit + 1;
 
     try {
-      const result = cursor
-        ? await db.query<Task>(
-            `SELECT * FROM tasks
-             WHERE poster_id = $1
-               AND created_at < $2::timestamptz
-             ORDER BY created_at DESC
-             LIMIT $3`,
-            [posterId, cursor, fetchLimit]
-          )
-        : await db.query<Task>(
-            `SELECT * FROM tasks
-             WHERE poster_id = $1
-             ORDER BY created_at DESC
-             LIMIT $2`,
-            [posterId, fetchLimit]
-          );
+      let result: Awaited<ReturnType<typeof db.query<Task>>>;
+      if (cursor) {
+        const [cursorTs, cursorId] = cursor.split('|');
+        result = await db.query<Task>(
+          `SELECT * FROM tasks
+           WHERE poster_id = $1
+             AND (created_at, id) < ($2::timestamptz, $3::uuid)
+           ORDER BY created_at DESC, id DESC
+           LIMIT $4`,
+          [posterId, cursorTs, cursorId, fetchLimit]
+        );
+      } else {
+        result = await db.query<Task>(
+          `SELECT * FROM tasks
+           WHERE poster_id = $1
+           ORDER BY created_at DESC, id DESC
+           LIMIT $2`,
+          [posterId, fetchLimit]
+        );
+      }
 
       const hasMore = result.rows.length > limit;
       const tasks = hasMore ? result.rows.slice(0, limit) : result.rows;
+      const lastTask = tasks[tasks.length - 1] as Task & { created_at: string | Date };
       const nextCursor = hasMore
-        ? (tasks[tasks.length - 1] as Task & { created_at: string | Date }).created_at?.toString()
+        ? `${new Date(lastTask.created_at).toISOString()}|${lastTask.id}`
         : undefined;
 
       return { success: true, data: { tasks, nextCursor } };
@@ -182,7 +189,9 @@ export const TaskService = {
 
   /**
    * Get tasks by worker — cursor-paginated.
-   * Cursor = ISO timestamp of the last-seen task's created_at.
+   * Cursor = compound "ISO-timestamp|uuid" encoding of the last-seen task's
+   * (created_at, id) pair. Using both columns eliminates the tie-drop bug
+   * that occurred when multiple tasks share the same created_at timestamp.
    */
   getByWorker: async (
     workerId: string,
@@ -192,27 +201,32 @@ export const TaskService = {
     const fetchLimit = limit + 1;
 
     try {
-      const result = cursor
-        ? await db.query<Task>(
-            `SELECT * FROM tasks
-             WHERE worker_id = $1
-               AND created_at < $2::timestamptz
-             ORDER BY created_at DESC
-             LIMIT $3`,
-            [workerId, cursor, fetchLimit]
-          )
-        : await db.query<Task>(
-            `SELECT * FROM tasks
-             WHERE worker_id = $1
-             ORDER BY created_at DESC
-             LIMIT $2`,
-            [workerId, fetchLimit]
-          );
+      let result: Awaited<ReturnType<typeof db.query<Task>>>;
+      if (cursor) {
+        const [cursorTs, cursorId] = cursor.split('|');
+        result = await db.query<Task>(
+          `SELECT * FROM tasks
+           WHERE worker_id = $1
+             AND (created_at, id) < ($2::timestamptz, $3::uuid)
+           ORDER BY created_at DESC, id DESC
+           LIMIT $4`,
+          [workerId, cursorTs, cursorId, fetchLimit]
+        );
+      } else {
+        result = await db.query<Task>(
+          `SELECT * FROM tasks
+           WHERE worker_id = $1
+           ORDER BY created_at DESC, id DESC
+           LIMIT $2`,
+          [workerId, fetchLimit]
+        );
+      }
 
       const hasMore = result.rows.length > limit;
       const tasks = hasMore ? result.rows.slice(0, limit) : result.rows;
+      const lastTask = tasks[tasks.length - 1] as Task & { created_at: string | Date };
       const nextCursor = hasMore
-        ? (tasks[tasks.length - 1] as Task & { created_at: string | Date }).created_at?.toString()
+        ? `${new Date(lastTask.created_at).toISOString()}|${lastTask.id}`
         : undefined;
 
       return { success: true, data: { tasks, nextCursor } };

@@ -905,48 +905,60 @@ async function batchNotification(
         },
       };
     }
-    
-    const existingNotification = recentNotificationResult.rows[0];
-    
-    // Update existing notification metadata to include batched item
-    const existingMetadata = existingNotification.metadata || {};
-    const batchedItems = (existingMetadata.batched_items as Array<{
-      title: string;
-      body: string;
-      deepLink: string;
-      taskId?: string | null;
-      timestamp: string;
-    }>) || [];
-    
-    // Add current notification to batched items
-    batchedItems.push({
-      title: notificationData.title,
-      body: notificationData.body,
-      deepLink: notificationData.deepLink,
-      taskId: notificationData.taskId || undefined,
-      timestamp: new Date().toISOString(),
+
+    const groupId = recentNotificationResult.rows[0].id;
+
+    // Wrap the read-modify-write in a transaction with FOR UPDATE so that
+    // concurrent batchNotification calls serialize on this row and cannot
+    // overwrite each other's appended items.
+    const updateResult = await db.transaction(async (txQuery) => {
+      const lockedResult = await txQuery<Notification>(
+        `SELECT id, title, body, metadata FROM notifications WHERE id = $1 FOR UPDATE`,
+        [groupId]
+      );
+
+      const existingNotification = lockedResult.rows[0];
+
+      // Update existing notification metadata to include batched item
+      const existingMetadata = existingNotification.metadata || {};
+      const batchedItems = (existingMetadata.batched_items as Array<{
+        title: string;
+        body: string;
+        deepLink: string;
+        taskId?: string | null;
+        timestamp: string;
+      }>) || [];
+
+      // Add current notification to batched items
+      batchedItems.push({
+        title: notificationData.title,
+        body: notificationData.body,
+        deepLink: notificationData.deepLink,
+        taskId: notificationData.taskId || undefined,
+        timestamp: new Date().toISOString(),
+      });
+
+      // Update notification with batched items
+      const updatedMetadata = {
+        ...existingMetadata,
+        batched_items: batchedItems,
+        batched_count: batchedItems.length,
+        last_batched_at: new Date().toISOString(),
+      };
+
+      // Update notification title/body to reflect batching
+      const updatedTitle = `${existingNotification.title} (${batchedItems.length + 1} new)`;
+      const updatedBody = `${existingNotification.body}\n\nPlus ${batchedItems.length} more ${category} notification(s)`;
+
+      return txQuery<Notification>(
+        `UPDATE notifications
+         SET title = $1, body = $2, metadata = $3::JSONB, updated_at = NOW()
+         WHERE id = $4
+         RETURNING *`,
+        [updatedTitle, updatedBody, JSON.stringify(updatedMetadata), existingNotification.id]
+      );
     });
-    
-    // Update notification with batched items
-    const updatedMetadata = {
-      ...existingMetadata,
-      batched_items: batchedItems,
-      batched_count: batchedItems.length,
-      last_batched_at: new Date().toISOString(),
-    };
-    
-    // Update notification title/body to reflect batching
-    const updatedTitle = `${existingNotification.title} (${batchedItems.length + 1} new)`;
-    const updatedBody = `${existingNotification.body}\n\nPlus ${batchedItems.length} more ${category} notification(s)`;
-    
-    const updateResult = await db.query<Notification>(
-      `UPDATE notifications
-       SET title = $1, body = $2, metadata = $3::JSONB, updated_at = NOW()
-       WHERE id = $4
-       RETURNING *`,
-      [updatedTitle, updatedBody, JSON.stringify(updatedMetadata), existingNotification.id]
-    );
-    
+
     return {
       success: true,
       data: updateResult.rows[0],
@@ -1126,29 +1138,23 @@ async function queueNotificationChannels(
     }
     
     // Wait for all queuing operations to complete (or fail gracefully)
-    await Promise.allSettled(queuePromises);
-    
-    // Mark notification as queued (all channels queued)
-    // Note: sent_at will be updated when workers actually deliver
-    await db.query(
-      `UPDATE notifications
-       SET sent_at = NOW()  -- Mark as "sent to queue" (not "delivered")
-       WHERE id = $1`,
-      [notification.id]
-    );
+    const results = await Promise.allSettled(queuePromises);
+    const successCount = results.filter(r => r.status === 'fulfilled').length;
+
+    // Only stamp sent_at when at least one channel was successfully queued.
+    // If every write failed the notification is silently lost; do NOT mark it
+    // as delivered — the caller can detect the gap via missing sent_at.
+    if (successCount > 0) {
+      await db.query(
+        `UPDATE notifications
+         SET sent_at = NOW()  -- Mark as "sent to queue" (not "delivered")
+         WHERE id = $1`,
+        [notification.id]
+      );
+    }
   } catch (error) {
     // Log error but don't fail notification creation
     log.error({ err: error instanceof Error ? error.message : String(error), notificationId: notification.id }, 'Failed to queue notification via channels');
-    
-    // Still mark as queued (attempted) - queue failures are logged separately
-    await db.query(
-      `UPDATE notifications
-       SET sent_at = NOW()
-       WHERE id = $1`,
-      [notification.id]
-    ).catch(() => {
-      // Ignore errors marking as queued
-    });
   }
 }
 
@@ -1303,23 +1309,16 @@ async function queuePushNotification(notification: Notification): Promise<void> 
   const aggregateId = notification.task_id || notification.id;
   const idempotencyKey = `push.send_requested:${notification.category}:${notification.user_id}:${aggregateId}:1`;
 
-  // Check for duplicate (idempotency)
-  const existingOutbox = await db.query(
-    `SELECT id FROM outbox_events WHERE idempotency_key = $1`,
-    [idempotencyKey]
-  );
-
-  if (existingOutbox.rows.length > 0) {
-    // Already queued - skip (idempotent)
-    return;
-  }
-
-  // Write outbox_event (push.send_requested)
-  await db.query(
+  // Write outbox_event (push.send_requested) — ON CONFLICT DO NOTHING for idempotency.
+  // A single atomic INSERT eliminates the racy SELECT+INSERT pattern: two concurrent
+  // callers with the same idempotency_key will both attempt the INSERT but only one
+  // will produce a row; the other gets rowCount === 0 and returns early.
+  const insertResult = await db.query(
     `INSERT INTO outbox_events (
       event_type, aggregate_type, aggregate_id, event_version,
       idempotency_key, payload, queue_name, status
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending')`,
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending')
+    ON CONFLICT (idempotency_key) DO NOTHING`,
     [
       'push.send_requested',
       'push',
@@ -1336,6 +1335,11 @@ async function queuePushNotification(notification: Notification): Promise<void> 
       'user_notifications',
     ]
   );
+
+  if ((insertResult.rowCount ?? 0) === 0) {
+    // Already queued - skip (idempotent)
+    return;
+  }
 
   // Push queued successfully (will be processed by push worker)
   log.info({ notificationId: notification.id, userId: notification.user_id, channel: 'push' }, 'Push notification queued');

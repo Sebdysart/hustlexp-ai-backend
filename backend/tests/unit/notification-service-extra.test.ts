@@ -21,6 +21,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('../../src/db', () => ({
   db: {
     query: vi.fn(),
+    transaction: vi.fn(),
+    serializableTransaction: vi.fn(),
   },
   isInvariantViolation: vi.fn(() => false),
   isUniqueViolation: vi.fn(() => false),
@@ -181,10 +183,17 @@ describe('NotificationService (extra coverage)', () => {
       mockDb.query
         // getPreferences
         .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
-        // batchNotification: find recent notification
+        // batchNotification: find recent notification (bare SELECT, before transaction)
+        .mockResolvedValueOnce({ rows: [existingNotif], rowCount: 1 } as never);
+
+      // batchNotification now wraps the SELECT FOR UPDATE + UPDATE in db.transaction().
+      // Mock transaction to call the callback with a txQuery fn that returns the expected results.
+      const txQuery = vi.fn()
+        // SELECT ... FOR UPDATE inside transaction
         .mockResolvedValueOnce({ rows: [existingNotif], rowCount: 1 } as never)
-        // batchNotification: UPDATE notification
+        // UPDATE notification inside transaction
         .mockResolvedValueOnce({ rows: [updatedNotif], rowCount: 1 } as never);
+      mockDb.transaction.mockImplementationOnce(async (cb: (q: typeof txQuery) => Promise<unknown>) => cb(txQuery));
 
       const result = await NotificationService.createNotification({
         userId: USER_ID,

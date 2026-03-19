@@ -84,7 +84,7 @@ export const xpTaxRouter = router({
         throw new TRPCError({ code: 'BAD_REQUEST', message: 'No tax balance to pay' });
       }
       // Create real Stripe PaymentIntent for XP tax payment
-      const piResult = await StripeService.createTaxPaymentIntent(ctx.user.id, amountCents);
+      const piResult = await StripeService.createTaxPaymentIntent(ctx.user.id, amountCents, Date.now());
 
       if (!piResult.success || !piResult.data) {
         // Fallback: if Stripe is not configured (dev), return mock intent
