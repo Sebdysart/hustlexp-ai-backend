@@ -254,22 +254,6 @@ export const TrustTierService = {
       const accountAgeDays = Math.floor(userAgeResult.rows[0]?.account_age_days || 0);
 
       // Get task completion stats
-      // DIAGNOSTIC: Log the query context before executing
-      const queryContext = await query<{
-        current_database: string;
-        current_schema: string;
-        worker_id_exists: boolean;
-      }>(
-        `SELECT
-          current_database(),
-          current_schema(),
-          EXISTS (
-            SELECT 1 FROM information_schema.columns
-            WHERE table_name = 'tasks' AND column_name = 'worker_id'
-          ) as worker_id_exists`
-      );
-      log.warn({ queryContext: queryContext.rows[0] }, 'IN_HOME evaluation query context');
-
       const statsResult = await query<{
         completed_count: string;
       }>(

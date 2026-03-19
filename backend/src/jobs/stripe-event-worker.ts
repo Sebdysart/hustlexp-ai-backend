@@ -344,7 +344,19 @@ async function handleInvoicePaymentFailed(event: StripeEventEnvelope): Promise<v
     throw new Error('invoice.payment_failed missing invoice object');
   }
 
-  const userId = (invoice.metadata as Record<string, string> | undefined)?.user_id;
+  let userId = (invoice.metadata as Record<string, string> | undefined)?.user_id;
+  const customerId = invoice.customer as string | null | undefined;
+
+  // If user_id is not in metadata (subscription created before metadata was
+  // added, or metadata was stripped), attempt to resolve via stripe_customer_id.
+  if (!userId && customerId) {
+    const customerLookup = await db.query<{ id: string }>(
+      `SELECT id FROM users WHERE stripe_customer_id = $1 LIMIT 1`,
+      [customerId]
+    );
+    userId = customerLookup.rows[0]?.id;
+  }
+
   if (!userId) {
     throw new Error('invoice.payment_failed missing user_id metadata');
   }

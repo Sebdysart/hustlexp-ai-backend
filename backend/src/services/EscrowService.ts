@@ -1208,6 +1208,9 @@ export const EscrowService = {
       }
 
       // Worker portion — Stripe transfer to connected account (runs SECOND)
+      // Hoisted so the same rounded value is reused in the revenue ledger block below,
+      // preventing divergence from a second independent Math.round() call.
+      let netWorkerCents = 0;
       if (workerCents > 0) {
         if (txExistingTransferId) {
           // Idempotency: transfer already recorded from a prior attempt — skip.
@@ -1230,7 +1233,7 @@ export const EscrowService = {
             `partialRefund: worker ${txWorkerId} has no stripe_connect_id — cannot issue worker transfer of ${workerCents} cents. Escrow remains LOCKED_DISPUTE for manual ops recovery.`
           );
         } else {
-          const netWorkerCents = Math.round(workerCents * (1 - platformFeePercent / 100));
+          netWorkerCents = Math.round(workerCents * (1 - platformFeePercent / 100));
           const transferResult = await StripeService.createTransfer({
             escrowId,
             taskId: txTaskId!,
@@ -1301,7 +1304,10 @@ export const EscrowService = {
       // Log platform fee to revenue ledger for the worker's partial payout.
       // Non-fatal: ledger write failure must not block the partial refund confirmation.
       if (workerCents > 0 && resolvedTransferId) {
-        const netWorkerCentsForLedger = Math.round(workerCents * (1 - platformFeePercent / 100));
+        // Reuse the same netWorkerCents computed for the Stripe transfer (line ~1233) to
+        // guarantee the ledger records the exact amount transferred — not an independently
+        // rounded value that could diverge with non-integer fee percentages.
+        const netWorkerCentsForLedger = netWorkerCents;
         const feeCents = workerCents - netWorkerCentsForLedger;
         if (feeCents > 0) {
           try {

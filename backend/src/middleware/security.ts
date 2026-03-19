@@ -234,7 +234,7 @@ const AI_RATE_LIMITS = {
  * handlers — it is never populated at the HTTP middleware layer, so it is
  * always undefined, making the middleware permanently return 401.
  */
-export async function aiRateLimitMiddleware(provider: keyof typeof AI_RATE_LIMITS) {
+export function aiRateLimitMiddleware(provider: keyof typeof AI_RATE_LIMITS) {
   const limits = AI_RATE_LIMITS[provider];
 
   return async (c: Context, next: Next) => {

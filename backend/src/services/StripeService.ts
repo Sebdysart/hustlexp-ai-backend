@@ -393,9 +393,7 @@ export const StripeService = {
     }
 
     try {
-      const idempotencyKey = amount
-        ? `re_create_${paymentIntentId}_${amount}`
-        : `re_create_${paymentIntentId}`;
+      const idempotencyKey = `re_create_${paymentIntentId}_${amount ?? 'full'}`;
 
       const refund = await stripeBreaker.execute(() => stripe!.refunds.create(
         {

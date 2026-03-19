@@ -17,6 +17,7 @@
 
 import { TRPCError } from '@trpc/server';
 import { router, adminProcedure, Schemas, invalidateAuthCacheForUser } from '../trpc.js';
+import { authCache } from '../auth-cache.js';
 import { db } from '../db.js';
 import { z } from 'zod';
 import { EscrowService } from '../services/EscrowService.js';
@@ -143,10 +144,24 @@ export const adminRouter = router({
       );
       const firebaseUid = fbRow.rows[0]?.firebase_uid;
 
-      // Evict any cached auth entries for this user so the ban takes effect
-      // immediately rather than waiting up to 5 minutes for the cache TTL to expire.
-      // BUG GG3 FIX: await the call (was fire-and-forget) so Redis errors surface.
-      await invalidateAuthCacheForUser(input.userId, firebaseUid);
+      // Evict any cached auth entries for this user.
+      // On ban: call invalidateAuthCacheForUser which also writes a Redis
+      // revocation marker — correct, prevents re-authentication.
+      // On unban: evict the in-process Map entries only. Do NOT call
+      // invalidateAuthCacheForUser because that would write a new Redis
+      // revocation marker, permanently locking out the now-unbanned user
+      // (Firebase refresh tokens were already revoked during the original ban,
+      // so a new Redis marker makes re-authentication impossible).
+      if (input.banned) {
+        await invalidateAuthCacheForUser(input.userId, firebaseUid);
+      } else {
+        // In-process eviction only — no Redis side effects.
+        for (const [key, entry] of authCache.entries()) {
+          if (entry.user.id === input.userId) {
+            authCache.delete(key);
+          }
+        }
+      }
 
       // BUG GG2 FIX: call revokeUserSessions so Firebase refresh tokens are
       // revoked and the Redis revocation marker is also written for the Hono

@@ -444,11 +444,13 @@ export const RatingService = {
       // first-time rating requests from both passing the duplicate check and
       // both computing is_blind from a stale count.
       const { insertedRating, updatedRatingsCount } = await db.transaction(async (txQuery) => {
-        // Advisory lock serializes concurrent ratings for the same
-        // (task, rater, ratee) triple. Released automatically at tx end.
+        // Advisory lock serializes ALL concurrent ratings for the same task.
+        // Keyed on taskId only so that opposite-direction submissions (poster→worker
+        // and worker→poster) contend on the same lock and cannot both read
+        // existingRatingsCount === 0 simultaneously. Released automatically at tx end.
         await txQuery(
           `SELECT pg_advisory_xact_lock(hashtext($1))`,
-          [`rating:${taskId}:${raterId}:${rateeId}`]
+          [`rating:${taskId}`]
         );
 
         // Re-check for duplicate inside the transaction

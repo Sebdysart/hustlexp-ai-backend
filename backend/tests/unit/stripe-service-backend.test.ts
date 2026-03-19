@@ -344,7 +344,7 @@ describe('StripeService.createRefund (backend)', () => {
     vi.resetModules();
   });
 
-  it('passes idempotency key for full refund: re_create_{piId} (no amount suffix)', async () => {
+  it('passes idempotency key for full refund: re_create_{piId}_full', async () => {
     vi.resetModules();
 
     vi.doMock('../../src/config', () => ({
@@ -398,10 +398,10 @@ describe('StripeService.createRefund (backend)', () => {
     });
 
     expect(result.success).toBe(true);
-    // FFF-03: full refund key has no amount suffix — prevents double-refund on BullMQ retry
+    // FFF-03: full refund key uses '_full' suffix to distinguish from partial refunds
     expect(localRefundsCreate).toHaveBeenCalledWith(
       expect.objectContaining({ payment_intent: 'pi_full_xyz', amount: undefined }),
-      { idempotencyKey: 're_create_pi_full_xyz' }
+      { idempotencyKey: 're_create_pi_full_xyz_full' }
     );
 
     vi.resetModules();
