@@ -424,11 +424,12 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     
     // Get email record idempotency key for logging (may be null if error before SELECT)
-    // Use idempotencyKey as fallback
-    let outboxKey = idempotencyKey;
+    // Do NOT fall back to job.id — that is a BullMQ job ID, not the DB idempotency_key.
+    // markOutboxEventFailed/Processed keyed on job.id silently finds no row.
+    let outboxKey: string | null = null;
     let currentAttempts = 0;
     let maxAttempts = 3;
-    
+
     try {
       // Try to get current state for logging
       const currentState = await db.query<{
@@ -441,9 +442,9 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
         `SELECT idempotency_key, attempts, max_attempts, status, user_id FROM email_outbox WHERE id = $1`,
         [emailId]
       );
-      
+
       if (currentState.rows.length > 0) {
-        outboxKey = currentState.rows[0].idempotency_key || idempotencyKey;
+        outboxKey = currentState.rows[0].idempotency_key || null;
         currentAttempts = currentState.rows[0].attempts;
         maxAttempts = currentState.rows[0].max_attempts;
         userId = userId || currentState.rows[0].user_id || undefined;

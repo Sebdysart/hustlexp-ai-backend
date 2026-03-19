@@ -24,6 +24,9 @@ import { EscrowService } from '../services/EscrowService.js';
 import { forceDisconnectUser } from '../realtime/connection-registry.js';
 import { revokeUserSessions } from '../auth/middleware.js';
 import { writeToOutbox } from '../lib/outbox-helpers.js';
+import { logger } from '../logger.js';
+
+const log = logger.child({ router: 'admin' });
 
 // ============================================================================
 // ROUTER
@@ -256,6 +259,55 @@ export const adminRouter = router({
       return result.rows[0];
     }),
 
+  /**
+   * Suspend or unsuspend a user (reversible, unlike setUserBan).
+   *
+   * Banned users are excluded — use setUserBan for permanent bans.
+   * On suspend: full session revocation + SSE disconnect.
+   * On unsuspend: local in-process cache eviction only (no Redis marker written).
+   */
+  setSuspension: adminProcedure
+    .input(z.object({
+      userId: Schemas.uuid,
+      suspended: z.boolean(),
+      reason: z.string().max(500).optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const newStatus = input.suspended ? 'SUSPENDED' : 'ACTIVE';
+      const result = await db.query<{ id: string; firebase_uid: string | null }>(
+        `UPDATE users SET account_status = $1, updated_at = NOW() WHERE id = $2 AND is_banned = false RETURNING id, firebase_uid`,
+        [newStatus, input.userId]
+      );
+      if (result.rows.length === 0) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'User not found or user is banned (use setUserBan instead)' });
+      }
+      // Audit log
+      await db.query(
+        `INSERT INTO admin_actions (admin_id, action_type, target_id, reason, metadata)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [ctx.user.id, input.suspended ? 'user_suspend' : 'user_unsuspend',
+         input.userId, input.reason ?? null, JSON.stringify({ suspended: input.suspended })]
+      ).catch(err => log.warn({ err }, 'Failed to write setSuspension audit log'));
+
+      if (input.suspended) {
+        // Full session revocation
+        await invalidateAuthCacheForUser(input.userId);
+        const firebaseUid = result.rows[0].firebase_uid;
+        if (firebaseUid) {
+          await revokeUserSessions(firebaseUid).catch(err =>
+            log.warn({ err }, '[admin.setSuspension] revokeUserSessions failed')
+          );
+        }
+        forceDisconnectUser(input.userId);
+      } else {
+        // Unsuspend: evict in-process cache only (no Redis revocation marker)
+        for (const [key, entry] of authCache.entries()) {
+          if (entry.user?.id === input.userId) authCache.delete(key);
+        }
+      }
+      return { success: true, userId: input.userId, suspended: input.suspended };
+    }),
+
   // --------------------------------------------------------------------------
   // ADMIN ROLE MANAGEMENT
   // --------------------------------------------------------------------------
@@ -290,11 +342,19 @@ export const adminRouter = router({
       // KK2 FIX: Invalidate the auth cache so the granted role takes effect
       // immediately — the cached is_admin value would otherwise persist for
       // up to 5 minutes.
-      const fbRow = await db.query<{ firebase_uid: string }>(
+      const fbRow = await db.query<{ firebase_uid: string | null }>(
         'SELECT firebase_uid FROM users WHERE id = $1',
         [input.userId]
       );
       const firebaseUid = fbRow.rows[0]?.firebase_uid;
+
+      if (!firebaseUid) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'Cannot modify admin role for user without a Firebase UID',
+        });
+      }
+
       await invalidateAuthCacheForUser(input.userId, firebaseUid);
 
       return { userId: input.userId, role: input.role };
@@ -338,9 +398,10 @@ export const adminRouter = router({
       const firebaseUid = fbRow.rows[0]?.firebase_uid ?? undefined;
 
       if (!firebaseUid) {
-        // User not found or firebase_uid is NULL — local cache eviction still
-        // fires below, but other replicas retain cached is_admin=true until TTL.
-        console.warn(`[admin.revokeAdminRole] firebase_uid is null/undefined for userId=${input.userId} — Firebase token revocation skipped; remote replicas may retain is_admin=true for up to 5 min`);
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'Cannot modify admin role for user without a Firebase UID',
+        });
       }
 
       await invalidateAuthCacheForUser(input.userId, firebaseUid);
@@ -570,10 +631,31 @@ export const adminRouter = router({
       }
 
       if (!serviceResult.success) {
-        throw new TRPCError({
-          code: 'NOT_FOUND',
-          message: serviceResult.error.message,
-        });
+        // Best-effort audit log of the FAILED attempt — write before throwing
+        // so the failure is always recorded even if the caller never retries.
+        void Promise.resolve(db.query(
+          `INSERT INTO admin_actions (admin_id, action_type, target_id, reason, metadata)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [
+            ctx.user.id,
+            'escrow_override_failed',
+            input.escrowId,
+            input.reason ?? null,
+            JSON.stringify({ override_type: input.action, error: serviceResult.error?.message ?? 'unknown' }),
+          ]
+        )).catch(err => log.warn({ err }, 'Failed to write escrowOverride failure audit log'));
+
+        const errCode = serviceResult.error?.code;
+        // Map internal ErrorCodes to tRPC error codes.
+        // NOT_FOUND → 'NOT_FOUND'
+        // INVALID_STATE / INVALID_TRANSITION / HX002 (ESCROW_TERMINAL) → 'PRECONDITION_FAILED'
+        // Everything else → 'BAD_REQUEST'
+        const tRPCCode: 'NOT_FOUND' | 'PRECONDITION_FAILED' | 'BAD_REQUEST' =
+          errCode === 'NOT_FOUND' ? 'NOT_FOUND' :
+          errCode === 'INVALID_STATE' || errCode === 'INVALID_TRANSITION' || errCode === 'HX002' ? 'PRECONDITION_FAILED' :
+          'BAD_REQUEST';
+
+        throw new TRPCError({ code: tRPCCode, message: serviceResult.error?.message ?? 'Override failed' });
       }
 
       // Bug 3 fix: if the escrow was LOCKED_DISPUTE, close any open dispute row so

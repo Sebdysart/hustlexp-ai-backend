@@ -103,9 +103,10 @@ describe('TaxReportingService', () => {
       expect(result.data![0].total_earnings_cents).toBe(60000);
 
       // Verify the query was called with the threshold constant (60000 cents)
-      // and uses net earnings (after platform fee deduction) for the 1099 threshold check
+      // and uses net earnings (after platform fee deduction) for the 1099 threshold check.
+      // The platform fee is a fixed 15% constant — no per-row column reference.
       const [sql, params] = mockDb.query.mock.calls[0] as [string, unknown[]];
-      expect(sql).toContain('HAVING SUM(ROUND(e.amount * (1.0 - COALESCE(e.platform_fee_percent, 15) / 100.0)))');
+      expect(sql).toContain('HAVING SUM(ROUND(e.amount * (1.0 - 15 / 100.0)))');
       expect(params).toContain(60000);
     });
 

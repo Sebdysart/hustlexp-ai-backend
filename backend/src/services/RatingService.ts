@@ -614,18 +614,28 @@ export const RatingService = {
 
       // Batch insert all auto-ratings in a single query (eliminates N+1)
       // Generate both directions: poster→worker and worker→poster
+      // BUG FIX: Use SELECT...FROM tasks WHERE state='COMPLETED' as the row source
+      // so that if a task is cancelled between the SELECT above and this INSERT, the
+      // INSERT row is silently skipped (the subquery returns no rows) rather than
+      // writing an auto-rating for a non-completed task.
       const values: unknown[] = [];
-      const placeholders: string[] = [];
+      const selectRows: string[] = [];
       let paramIdx = 1;
 
       for (const task of validTasks) {
-        // Poster → Worker
-        placeholders.push(`($${paramIdx}, $${paramIdx + 1}, $${paramIdx + 2}, 5, 'No rating submitted (auto-rated)', ARRAY[]::TEXT[], true, false, true)`);
+        // Poster → Worker (state re-verified at insert time)
+        selectRows.push(
+          `SELECT $${paramIdx}::uuid, $${paramIdx + 1}::uuid, $${paramIdx + 2}::uuid, 5, 'No rating submitted (auto-rated)', ARRAY[]::TEXT[], true, false, true` +
+          ` FROM tasks WHERE id = $${paramIdx}::uuid AND state = 'COMPLETED'`
+        );
         values.push(task.id, task.poster_id, task.worker_id);
         paramIdx += 3;
 
-        // Worker → Poster
-        placeholders.push(`($${paramIdx}, $${paramIdx + 1}, $${paramIdx + 2}, 5, 'No rating submitted (auto-rated)', ARRAY[]::TEXT[], true, false, true)`);
+        // Worker → Poster (state re-verified at insert time)
+        selectRows.push(
+          `SELECT $${paramIdx}::uuid, $${paramIdx + 1}::uuid, $${paramIdx + 2}::uuid, 5, 'No rating submitted (auto-rated)', ARRAY[]::TEXT[], true, false, true` +
+          ` FROM tasks WHERE id = $${paramIdx}::uuid AND state = 'COMPLETED'`
+        );
         values.push(task.id, task.worker_id, task.poster_id);
         paramIdx += 3;
       }
@@ -634,7 +644,7 @@ export const RatingService = {
         `INSERT INTO task_ratings (
           task_id, rater_id, ratee_id, stars, comment, tags, is_public, is_blind, is_auto_rated
         )
-        VALUES ${placeholders.join(', ')}
+        ${selectRows.join(' UNION ALL ')}
         ON CONFLICT DO NOTHING`,
         values
       );

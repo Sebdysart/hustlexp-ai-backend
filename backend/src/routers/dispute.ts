@@ -58,6 +58,12 @@ export const disputeRouter = router({
 
       const task = taskResult.data;
 
+      // Early participant check — non-participants receive NOT_FOUND (not FORBIDDEN)
+      // so task existence and lifecycle state are not leaked to unrelated callers.
+      if (task.poster_id !== userId && task.worker_id !== userId) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
+      }
+
       // Validate that a worker is assigned — disputes require two parties.
       if (!task.worker_id) {
         throw new TRPCError({

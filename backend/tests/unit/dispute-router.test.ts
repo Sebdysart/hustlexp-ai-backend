@@ -182,17 +182,16 @@ describe('dispute.create', () => {
     ).rejects.toThrow('No escrow found');
   });
 
-  it('throws FORBIDDEN when service returns FORBIDDEN', async () => {
+  it('throws NOT_FOUND when caller is not a task participant (hides task existence)', async () => {
+    // Bug 1 fix: non-participants receive NOT_FOUND (not FORBIDDEN) so task
+    // existence and lifecycle state are not leaked via differentiated errors.
     mockTask.getById.mockResolvedValueOnce({ success: true, data: fakeTask } as any);
-    mockEscrow.getByTaskId.mockResolvedValueOnce({ success: true, data: { id: ESCROW_UUID } } as any);
-    mockDispute.create.mockResolvedValueOnce({
-      success: false,
-      error: { code: 'FORBIDDEN', message: 'Only poster or worker can initiate disputes' },
-    } as any);
 
     await expect(
       makeCaller('other-user').create({ taskId: TASK_UUID, reason: 'test', description: 'test' })
-    ).rejects.toThrow('Only poster or worker can initiate disputes');
+    ).rejects.toThrow('Task not found');
+    // DisputeService.create must never be reached for non-participants.
+    expect(mockDispute.create).not.toHaveBeenCalled();
   });
 
   it('throws PRECONDITION_FAILED when service returns INVALID_STATE', async () => {

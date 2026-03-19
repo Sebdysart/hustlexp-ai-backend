@@ -304,18 +304,27 @@ const PUBLIC_IP_RATE_LIMIT = 60;       // requests
 const PUBLIC_IP_WINDOW_SECONDS = 60;   // per minute
 
 /**
- * IP-based rate limiter for unauthenticated (public) tRPC routes.
+ * IP-based rate limiter applied to ALL requests — authenticated and unauthenticated.
  *
- * Uses Redis INCR + EXPIRE to maintain a per-IP counter with a 60-second
- * rolling window.  Key format: `rate:public:ip:{ip}`.
+ * Uses Redis fixed-window INCR + EXPIRE (via `redis.incrWithTtl`) to maintain
+ * a per-IP counter.  Key format: `rate:public:ip:{ip}`.
+ * Window: 60 seconds / 60 requests.
  *
- * If the request already carries a valid Bearer token the user-level bucket
- * in rateLimitMiddleware already applies, so this middleware is skipped to
- * avoid double-counting authenticated users.
+ * Authenticated requests are NOT skipped.  Applying this limiter to all
+ * requests is intentional (defence in depth): without it, any attacker holding
+ * a valid Firebase token — including a free throwaway account — could bypass
+ * the IP-level limit entirely.  Per-user limits enforced by `rateLimitMiddleware`
+ * on protected routes are additive on top of this IP limit.
+ *
+ * Note: this uses a fixed-window counter, not a sliding window.  A 2× burst
+ * at the window boundary is theoretically possible (N requests at the end of
+ * window 1 + N at the start of window 2).  The AI-specific limiter
+ * (`aiRateLimitMiddleware`) uses a sliding window where burst prevention is
+ * more critical.
  *
  * Behaviour when Redis is unavailable:
- *   - Production: FAIL CLOSED (429) — same posture as checkRateLimit.
- *   - Development: ALLOW with warning.
+ *   - Production: FAIL CLOSED (429) — prevents bypass via Redis outage.
+ *   - Development: ALLOW with a console warning.
  */
 export function publicIpRateLimitMiddleware() {
   return async (c: Context, next: Next) => {

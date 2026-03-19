@@ -262,6 +262,11 @@ export const ratingRouter = router({
       // tasks (LIMIT 500 is intentional to bound per-batch DB load). A backlog
       // of >500 would drain only one page per scheduled run, taking multiple
       // days instead of one. Drain in a loop until a batch returns autoRated=0.
+      // BUG FIX: Cap iterations to prevent an infinite loop under a data anomaly
+      // where every batch re-selects the same rows (e.g. ON CONFLICT fails silently
+      // but the SELECT keeps returning the same unrated tasks).
+      const MAX_DRAIN_ITERATIONS = 200;
+      let iterations = 0;
       let result;
       let totalAutoRated = 0;
       do {
@@ -275,6 +280,11 @@ export const ratingRouter = router({
         }
 
         totalAutoRated += result.data.autoRated ?? 0;
+        iterations++;
+        if (iterations >= MAX_DRAIN_ITERATIONS) {
+          log.error({ iterations }, 'processAutoRatings drain loop hit max iterations — aborting to prevent runaway');
+          break;
+        }
       } while ((result.data?.autoRated ?? 0) > 0);
 
       log.info({ totalAutoRated }, 'processAutoRatings drain complete');

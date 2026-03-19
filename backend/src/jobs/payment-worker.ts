@@ -587,7 +587,7 @@ async function handleChargeRefunded(charge: Stripe.Charge, stripeEventId: string
   const platformFeeCents = Math.round(escrow.amount * (platformFeePercent / 100));
   await RevenueService.logEvent({
     eventType: 'platform_fee_reversal',
-    userId: 'system',
+    userId: null,
     amountCents: -platformFeeCents,
     escrowId: escrow.id,
     stripeEventId,
@@ -749,7 +749,7 @@ async function handleTransferFailed(transfer: Stripe.Transfer, stripeEventId: st
   // Insert failed_transfer ledger entry
   await RevenueService.logEvent({
     eventType: 'failed_transfer',
-    userId: 'system', // Worker user_id is not directly on escrow; ops will reconcile
+    userId: workerId,
     amountCents: -escrow.amount,
     escrowId: escrow.id,
     stripeEventId,
@@ -1038,7 +1038,7 @@ async function handlePayoutFailed(payout: Stripe.Payout, stripeEventId: string):
   // Amount is negative (funds did not reach the worker's bank)
   await RevenueService.logEvent({
     eventType: 'failed_payout',
-    userId: userId ?? 'system',
+    userId: userId ?? null,
     amountCents: -payoutAmount,
     stripeEventId,
     metadata: {

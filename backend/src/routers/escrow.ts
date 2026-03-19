@@ -351,16 +351,16 @@ export const escrowRouter = router({
         });
       }
 
-      // SECURITY FIX (HH3): Enforce a minimum transfer floor of 50% of escrow.
-      // Without this check any positive amount passes (e.g. $0.01), allowing a
-      // poster to supply a trivial Stripe transfer and leave the worker with nothing.
-      // The platform takes a 15% fee, so the absolute minimum legitimate transfer
-      // is floored at 50% of escrow as protection against clear abuse.
-      const minimumTransferFloor = Math.floor(escrowAmount * 0.50);
+      // SECURITY FIX (HH3): Enforce a minimum transfer floor of 80% of escrow.
+      // The platform takes a 15% fee, so the worker should receive ~85% of the
+      // escrow amount. A 5% tolerance band is allowed for rounding, giving a floor
+      // of 80%. This prevents a malicious poster from supplying a trivial Stripe
+      // transfer that leaves the worker severely underpaid.
+      const minimumTransferFloor = Math.floor(escrowAmount * 0.80);
       if (transfer.amount < minimumTransferFloor) {
         throw new TRPCError({
           code: 'PRECONDITION_FAILED',
-          message: 'Stripe transfer amount is insufficient for the escrow amount',
+          message: 'Transfer amount must be at least 80% of escrow amount',
         });
       }
 

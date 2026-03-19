@@ -490,7 +490,7 @@ async function handleInvoicePaid(event: StripeEventEnvelope): Promise<void> {
     );
     await RevenueService.logEvent({
       eventType: 'subscription',
-      userId: 'system',
+      userId: null,
       amountCents: amountPaid,
       stripeEventId: event.id,
       metadata: { customer_id: customerId ?? null, unresolved_user: true },

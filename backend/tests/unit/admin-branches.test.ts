@@ -380,11 +380,15 @@ describe('admin.escrowOverride branches', () => {
     });
   });
 
-  it('throws NOT_FOUND when EscrowService returns failure', async () => {
+  it('throws NOT_FOUND when EscrowService returns NOT_FOUND failure', async () => {
+    // Bug 2 fix: error code is now mapped correctly — NOT_FOUND code → tRPC NOT_FOUND.
     prependAdminCheck();
+    // The failure audit log INSERT also fires (fire-and-forget) — mock it so the
+    // db mock queue is not left in an unexpected state.
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
     mockEscrowService.release.mockResolvedValueOnce({
       success: false,
-      error: { message: 'Escrow not found or not in overridable state' },
+      error: { code: 'NOT_FOUND', message: 'Escrow not found or not in overridable state' },
     } as any);
 
     await expect(

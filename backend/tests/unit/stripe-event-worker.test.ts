@@ -160,7 +160,7 @@ describe('processStripeEventJob', () => {
       });
     });
 
-    it('logs revenue with system userId when user_id missing and customer lookup finds no match', async () => {
+    it('logs revenue with null userId when user_id missing and customer lookup finds no match', async () => {
       const invoice = { metadata: {}, amount_paid: 999, customer: 'cus_unknown' };
       // claim query → event
       mockDb.query.mockResolvedValueOnce({
@@ -180,7 +180,7 @@ describe('processStripeEventJob', () => {
       expect(RevenueService.logEvent).toHaveBeenCalledWith(
         expect.objectContaining({
           eventType: 'subscription',
-          userId: 'system',
+          userId: null,
           amountCents: 999,
           stripeEventId: 'evt_test_123',
           metadata: expect.objectContaining({ unresolved_user: true }),
@@ -188,8 +188,8 @@ describe('processStripeEventJob', () => {
       );
     });
 
-    it('logs revenue with system userId when user_id and customer are both absent', async () => {
-      // No customer field — no DB lookup, goes straight to system fallback
+    it('logs revenue with null userId when user_id and customer are both absent', async () => {
+      // No customer field — no DB lookup, goes straight to null fallback
       const invoice = { metadata: {}, amount_paid: 500 };
       // claim query → event
       mockDb.query.mockResolvedValueOnce({
@@ -203,7 +203,7 @@ describe('processStripeEventJob', () => {
 
       expect(RevenueService.logEvent).toHaveBeenCalledWith(
         expect.objectContaining({
-          userId: 'system',
+          userId: null,
           amountCents: 500,
         })
       );

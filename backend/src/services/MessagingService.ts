@@ -266,27 +266,6 @@ export const MessagingService = {
           },
         };
       }
-      
-      // Per-sender-per-task rate limit: 30 messages per minute per conversation.
-      // Uses Redis INCR + EXPIRE to maintain a sliding counter.
-      // If Redis is unavailable the incr() helper returns 1, so the check is
-      // always allowed — same fail-open behaviour as the rest of the cache layer.
-      const MSG_RATE_LIMIT = 30;
-      const MSG_RATE_WINDOW_SECONDS = 60;
-      const rateLimitKey = `msg_rate:${senderId}:${taskId}`;
-      const msgCount = await incr(rateLimitKey);
-      if (msgCount === 1) {
-        await expire(rateLimitKey, MSG_RATE_WINDOW_SECONDS);
-      }
-      if (msgCount > MSG_RATE_LIMIT) {
-        return {
-          success: false,
-          error: {
-            code: ErrorCodes.RATE_LIMIT_EXCEEDED,
-            message: `Message rate limit exceeded. You can send at most ${MSG_RATE_LIMIT} messages per minute per conversation.`,
-          },
-        };
-      }
 
       // Determine recipient
       const recipientId = task.poster_id === senderId ? task.worker_id : task.poster_id;
@@ -341,7 +320,31 @@ export const MessagingService = {
         // Discard any client-supplied content to prevent moderation bypass.
         content = AUTO_MESSAGE_TEMPLATES[autoMessageTemplate];
       }
-      
+
+      // Per-sender-per-task rate limit: 30 messages per minute per conversation.
+      // BUG FIX: Rate limit is checked AFTER content validation so that invalid-content
+      // requests (which return early above) do not burn the sender's quota. A client
+      // sending N invalid messages would otherwise exhaust their own rate limit.
+      // Uses Redis INCR + EXPIRE to maintain a sliding counter.
+      // If Redis is unavailable the incr() helper returns 1, so the check is
+      // always allowed — same fail-open behaviour as the rest of the cache layer.
+      const MSG_RATE_LIMIT = 30;
+      const MSG_RATE_WINDOW_SECONDS = 60;
+      const rateLimitKey = `msg_rate:${senderId}:${taskId}`;
+      const msgCount = await incr(rateLimitKey);
+      if (msgCount === 1) {
+        await expire(rateLimitKey, MSG_RATE_WINDOW_SECONDS);
+      }
+      if (msgCount > MSG_RATE_LIMIT) {
+        return {
+          success: false,
+          error: {
+            code: ErrorCodes.RATE_LIMIT_EXCEEDED,
+            message: `Message rate limit exceeded. You can send at most ${MSG_RATE_LIMIT} messages per minute per conversation.`,
+          },
+        };
+      }
+
       // Create message (moderation_status defaults to 'pending' in schema)
       const messageResult = await db.query<TaskMessage>(
         `INSERT INTO task_messages (
@@ -775,10 +778,13 @@ export const MessagingService = {
       // Mark all unread messages as read.
       // NOTE: RETURNING COUNT(*) is invalid in PostgreSQL DML — it returns no rows.
       // Use rowCount from the query result instead, which is the actual affected count.
+      // BUG FIX: Exclude quarantined/flagged messages so that a message that is later
+      // approved does not appear as already-read (mirrors the filter in markAsRead).
       const result = await db.query(
         `UPDATE task_messages
          SET read_at = NOW(), updated_at = NOW()
-         WHERE task_id = $1 AND receiver_id = $2 AND read_at IS NULL`,
+         WHERE task_id = $1 AND receiver_id = $2 AND read_at IS NULL
+           AND (moderation_status IS NULL OR moderation_status NOT IN ('quarantined', 'flagged'))`,
         [taskId, userId]
       );
 

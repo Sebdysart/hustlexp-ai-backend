@@ -17,6 +17,7 @@ import { logger } from '../logger.js';
 import { AlphaInstrumentation } from './AlphaInstrumentation.js';
 import { invalidateAuthCacheForUser } from '../auth-cache.js';
 import { revokeUserSessions } from '../auth/middleware.js';
+import { forceDisconnectUser } from '../realtime/connection-registry.js';
 import { writeToOutbox } from '../lib/outbox-helpers.js';
 
 const log = logger.child({ service: 'TrustTierService' });
@@ -561,6 +562,14 @@ export const TrustTierService = {
       // A Firebase failure must not block the ban — the Redis marker still
       // provides short-term protection via the cache TTL.
       log.error({ err: revokeErr instanceof Error ? revokeErr.message : String(revokeErr), userId }, '[TrustTierService] banUser: revokeUserSessions failed');
+    }
+
+    // Close any open SSE connections immediately so the stream does not persist
+    // after the ban is applied.
+    try {
+      forceDisconnectUser(userId);
+    } catch {
+      // fire-and-forget
     }
 
     // Emit escrow refund outbox events for any funded escrows on active tasks

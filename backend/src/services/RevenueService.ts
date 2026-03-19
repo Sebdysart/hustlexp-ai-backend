@@ -42,7 +42,7 @@ export type RevenueEventType =
 
 interface LogEventParams {
   eventType: RevenueEventType;
-  userId: string;
+  userId: string | null;
   taskId?: string;
   amountCents: number; // positive = revenue, negative = payout/loss
 

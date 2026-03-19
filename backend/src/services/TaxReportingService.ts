@@ -50,7 +50,7 @@ export const TaxReportingService = {
     try {
       const result = await db.query<WorkerEarnings>(
         `SELECT t.worker_id as user_id,
-                SUM(ROUND(e.amount * (1.0 - COALESCE(e.platform_fee_percent, 15) / 100.0)))::BIGINT as total_earnings_cents,
+                SUM(ROUND(e.amount * (1.0 - 15 / 100.0)))::BIGINT as total_earnings_cents,
                 COUNT(DISTINCT t.id)::INTEGER as task_count
          FROM tasks t
          JOIN escrows e ON e.task_id = t.id
@@ -58,7 +58,7 @@ export const TaxReportingService = {
            AND EXTRACT(YEAR FROM e.released_at) = $1
            AND t.worker_id IS NOT NULL
          GROUP BY t.worker_id
-         HAVING SUM(ROUND(e.amount * (1.0 - COALESCE(e.platform_fee_percent, 15) / 100.0))) >= $2
+         HAVING SUM(ROUND(e.amount * (1.0 - 15 / 100.0))) >= $2
          ORDER BY total_earnings_cents DESC`,
         [taxYear, REPORTING_THRESHOLD_CENTS]
       );
@@ -217,7 +217,7 @@ export const TaxReportingService = {
       const year = taxYear || new Date().getFullYear();
 
       const result = await db.query<{ total_earnings_cents: string }>(
-        `SELECT COALESCE(SUM(ROUND(e.amount * (1.0 - COALESCE(e.platform_fee_percent, 15) / 100.0))), 0)::BIGINT as total_earnings_cents
+        `SELECT COALESCE(SUM(ROUND(e.amount * (1.0 - 15 / 100.0))), 0)::BIGINT as total_earnings_cents
          FROM tasks t
          JOIN escrows e ON e.task_id = t.id
          WHERE e.state = 'RELEASED'

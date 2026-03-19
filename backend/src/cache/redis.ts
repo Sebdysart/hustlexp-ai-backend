@@ -181,7 +181,12 @@ export async function expire(key: string, ttl: number): Promise<void> {
  */
 export async function incrWithTtl(key: string, windowSeconds: number): Promise<number> {
   const client = getClient();
-  if (!client) return 1;
+  if (!client) {
+    if (config.app.isProduction) {
+      throw new Error('Redis unavailable — rate limiting fail-closed');
+    }
+    return 1; // dev/test: allow
+  }
 
   // Lua script: INCR the key, then EXPIRE only if this is the first increment
   // (current === 1).  Executed atomically — no race window between the two
