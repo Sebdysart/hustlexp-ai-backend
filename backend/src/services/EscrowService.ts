@@ -1025,6 +1025,11 @@ export const EscrowService = {
     }
     
     let partialRefundEscrow: Escrow;
+    let txTaskId: string = '';
+    let txAmount: number = 0;
+    let txStripePaymentIntentId: string | null = null;
+    let txWorkerId: string | null = null;
+    let txWorkerStripeConnectId: string | null = null;
 
     try {
       // RACE CONDITION FIX: Wrap SELECT FOR UPDATE + UPDATE in a transaction.
@@ -1032,11 +1037,37 @@ export const EscrowService = {
       // SELECT completes, allowing two admin callers to both see
       // state='LOCKED_DISPUTE' and both execute the UPDATE on the same escrow.
       const txResult = await db.transaction(async (query) => {
-        const lockResult = await query<{ version: number; state: string }>(
-          `SELECT version, state FROM escrows WHERE id = $1 FOR UPDATE`,
+        const lockResult = await query<{
+          version: number;
+          state: string;
+          task_id: string;
+          amount: number;
+          stripe_payment_intent_id: string | null;
+        }>(
+          `SELECT version, state, task_id, amount, stripe_payment_intent_id FROM escrows WHERE id = $1 FOR UPDATE`,
           [escrowId]
         );
         const escrowVersion = lockResult.rows[0]?.version;
+        txTaskId = lockResult.rows[0]?.task_id;
+        txAmount = lockResult.rows[0]?.amount;
+        txStripePaymentIntentId = lockResult.rows[0]?.stripe_payment_intent_id ?? null;
+
+        // Fetch worker_id and stripe_connect_id inside the transaction
+        if (txTaskId) {
+          const taskRow = await query<{ worker_id: string | null }>(
+            `SELECT t.worker_id FROM tasks t WHERE t.id = $1`,
+            [txTaskId]
+          );
+          txWorkerId = taskRow.rows[0]?.worker_id ?? null;
+
+          if (txWorkerId) {
+            const workerRow = await query<{ stripe_connect_id: string | null }>(
+              `SELECT stripe_connect_id FROM users WHERE id = $1`,
+              [txWorkerId]
+            );
+            txWorkerStripeConnectId = workerRow.rows[0]?.stripe_connect_id ?? null;
+          }
+        }
 
         const result = await query<Escrow>(
           `UPDATE escrows
@@ -1076,14 +1107,89 @@ export const EscrowService = {
 
       await logEscrowEvent(escrowId, 'LOCKED_DISPUTE', 'REFUND_PARTIAL');
 
+      // BBB-02 FIX: Issue actual Stripe calls after DB commit.
+      // Previously the DB transitioned to REFUND_PARTIAL but no money moved.
+      // Worker transfer and poster refund are executed here, matching the
+      // pattern used by refund() (LL5) and handlePartialRefundRequest().
+      const partialAmount = txAmount!;
+      const workerCents = Math.round(partialAmount * (workerPercent / 100));
+      const posterCents = Math.round(partialAmount * (posterPercent / 100));
+      const platformFeePercent = Math.min(100, Math.max(0, config.stripe.platformFeePercent ?? 15));
+
+      // Worker portion — Stripe transfer to connected account
+      if (workerCents > 0) {
+        try {
+          if (!txWorkerId!) {
+            escrowLogger.error(
+              { escrowId },
+              'partialRefund: no worker_id — cannot issue worker transfer'
+            );
+          } else if (!txWorkerStripeConnectId!) {
+            escrowLogger.error(
+              { escrowId, workerId: txWorkerId },
+              'partialRefund: worker has no stripe_connect_id — cannot issue worker transfer, manual payout required'
+            );
+          } else {
+            const netWorkerCents = Math.round(workerCents * (1 - platformFeePercent / 100));
+            const transferResult = await StripeService.createTransfer({
+              escrowId,
+              taskId: txTaskId!,
+              workerId: txWorkerId,
+              workerStripeAccountId: txWorkerStripeConnectId,
+              amount: netWorkerCents,
+              description: `Dispute partial resolution: worker ${workerPercent}%`,
+            });
+            if (!transferResult.success) {
+              escrowLogger.error(
+                { escrowId, workerId: txWorkerId, err: transferResult.error.message },
+                'partialRefund: Stripe transfer failed — manual transfer required'
+              );
+            }
+          }
+        } catch (transferError) {
+          // Non-fatal: DB is already REFUND_PARTIAL. Log for ops manual recovery.
+          escrowLogger.error(
+            { err: transferError instanceof Error ? transferError.message : String(transferError), escrowId },
+            'partialRefund: Stripe transfer call threw — manual transfer required'
+          );
+        }
+      }
+
+      // Poster portion — Stripe refund on the original payment intent
+      if (posterCents > 0) {
+        try {
+          if (!txStripePaymentIntentId!) {
+            escrowLogger.error(
+              { escrowId },
+              'partialRefund: no stripe_payment_intent_id — cannot issue poster refund, manual refund required'
+            );
+          } else {
+            const refundResult = await StripeService.createRefund({
+              paymentIntentId: txStripePaymentIntentId,
+              escrowId,
+              amount: posterCents,
+              reason: 'requested_by_customer',
+            });
+            if (!refundResult.success) {
+              escrowLogger.error(
+                { escrowId, err: refundResult.error.message },
+                'partialRefund: Stripe refund failed — manual refund required'
+              );
+            }
+          }
+        } catch (refundError) {
+          // Non-fatal: DB is already REFUND_PARTIAL. Log for ops manual recovery.
+          escrowLogger.error(
+            { err: refundError instanceof Error ? refundError.message : String(refundError), escrowId },
+            'partialRefund: Stripe refund call threw — manual refund required'
+          );
+        }
+      }
+
       // FIX 3: Clawback XP when dispute resolves against the worker (posterPercent > 0)
       if (posterPercent > 0) {
         try {
-          const disputeTaskRow = await db.query<{ worker_id: string | null }>(
-            `SELECT t.worker_id FROM escrows e JOIN tasks t ON t.id = e.task_id WHERE e.id = $1`,
-            [escrowId]
-          );
-          const disputeWorkerId = disputeTaskRow.rows[0]?.worker_id ?? null;
+          const disputeWorkerId = txWorkerId ?? null;
           if (disputeWorkerId) {
             const posterFraction = posterPercent / 100;
             await XPService.clawbackXP(disputeWorkerId, escrowId, 'dispute_lost', posterFraction);

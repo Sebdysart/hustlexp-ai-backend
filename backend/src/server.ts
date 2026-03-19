@@ -248,7 +248,7 @@ app.get('/health/liveness', (c) => {
 });
 
 // Detailed health for monitoring — internal only, requires INTERNAL_API_KEY
-app.get('/health/detailed', async (c) => {
+app.get('/health/detailed', rateLimitMiddleware('auth'), async (c) => {
   // Gate behind internal API key to prevent leaking circuit breaker states,
   // DB pool config, memory usage, and uptime to unauthenticated callers.
   const internalApiKey = process.env.INTERNAL_API_KEY;
@@ -258,7 +258,11 @@ app.get('/health/detailed', async (c) => {
   }
   const authHeader = c.req.header('Authorization');
   const provided = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
-  if (!provided || provided !== internalApiKey) {
+  const providedBuf = Buffer.from(provided || '', 'utf8');
+  const expectedBuf = Buffer.from(internalApiKey, 'utf8');
+  const match = providedBuf.length === expectedBuf.length &&
+    timingSafeEqual(providedBuf, expectedBuf);
+  if (!provided || !match) {
     return c.json({ error: 'Unauthorized' }, 401);
   }
 
@@ -462,7 +466,7 @@ async function getAuthUser(c: Context): Promise<User | null> {
   try {
     const decoded = await firebaseAuth.verifyIdToken(token, true); // checkRevoked = true
     const result = await db.query<User>(
-      'SELECT * FROM users WHERE firebase_uid = $1',
+      'SELECT id, firebase_uid, email, full_name, is_banned, account_status, default_mode, role FROM users WHERE firebase_uid = $1',
       [decoded.uid]
     );
     const user = result.rows[0] || null;

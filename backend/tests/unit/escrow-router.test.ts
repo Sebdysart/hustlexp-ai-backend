@@ -150,7 +150,7 @@ function makeEscrow(overrides: Record<string, unknown> = {}) {
 
 function makeCaller(userId: string = POSTER_ID, role: string = 'user', defaultMode: 'worker' | 'poster' = 'poster') {
   return escrowRouter.createCaller({
-    user: { id: userId, role, default_mode: defaultMode } as any,
+    user: { id: userId, role, is_admin: role === 'admin', default_mode: defaultMode } as any,
     firebaseUid: `fb-${userId}`,
   });
 }

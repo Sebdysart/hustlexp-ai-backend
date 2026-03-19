@@ -87,6 +87,7 @@ vi.mock('../../src/services/TaskService', () => ({
     create: vi.fn(),
     accept: vi.fn(),
     submitProof: vi.fn(),
+    rejectProof: vi.fn(),
     complete: vi.fn(),
     cancel: vi.fn(),
   },
@@ -1007,12 +1008,18 @@ describe('task.reviewProof', () => {
       success: true,
       data: makeProofRow({ state: 'REJECTED' }) as any,
     });
+    // CCC-01: REJECTED decision triggers TaskService.rejectProof to revert task to ACCEPTED
+    mockTaskService.rejectProof.mockResolvedValueOnce({
+      success: true,
+      data: makeTaskRow({ state: 'ACCEPTED' }) as any,
+    });
 
     await makeCallerAsPoster().reviewProof({ taskId: TASK_ID, approved: false });
 
     expect(mockProofService.review).toHaveBeenCalledWith(
       expect.objectContaining({ decision: 'REJECTED' })
     );
+    expect(mockTaskService.rejectProof).toHaveBeenCalledWith(TASK_ID, expect.any(String));
   });
 
   it('throws BAD_REQUEST when neither proofId nor taskId is given', async () => {
@@ -1075,6 +1082,66 @@ describe('task.reviewProof', () => {
     await expect(
       makeCallerAsPoster().reviewProof({ proofId: PROOF_ID, decision: 'ACCEPTED' })
     ).rejects.toThrow('Cannot transition');
+  });
+
+  // CCC-01: REJECTED decision must call TaskService.rejectProof() to revert task to ACCEPTED
+  it('CCC-01: calls TaskService.rejectProof when decision is REJECTED', async () => {
+    const proof = makeProofRow({ task_id: TASK_ID });
+    const task = makeTaskRow({ poster_id: USER_ID });
+    const rejectedProof = makeProofRow({ state: 'REJECTED', reviewed_by: USER_ID });
+    const revertedTask = makeTaskRow({ state: 'ACCEPTED' });
+
+    mockProofService.getById.mockResolvedValueOnce({ success: true, data: proof as any });
+    mockTaskService.getById.mockResolvedValueOnce({ success: true, data: task as any });
+    mockProofService.review.mockResolvedValueOnce({ success: true, data: rejectedProof as any });
+    mockTaskService.rejectProof.mockResolvedValueOnce({ success: true, data: revertedTask as any });
+
+    const result = await makeCallerAsPoster().reviewProof({
+      proofId: PROOF_ID,
+      decision: 'REJECTED',
+      reason: 'Work is incomplete',
+    });
+
+    expect(result).toEqual(rejectedProof);
+    expect(mockTaskService.rejectProof).toHaveBeenCalledWith(
+      TASK_ID,
+      'Work is incomplete'
+    );
+  });
+
+  it('CCC-01: does NOT call TaskService.rejectProof when decision is ACCEPTED', async () => {
+    const proof = makeProofRow({ task_id: TASK_ID });
+    const task = makeTaskRow({ poster_id: USER_ID });
+    const acceptedProof = makeProofRow({ state: 'ACCEPTED', reviewed_by: USER_ID });
+
+    mockProofService.getById.mockResolvedValueOnce({ success: true, data: proof as any });
+    mockTaskService.getById.mockResolvedValueOnce({ success: true, data: task as any });
+    mockProofService.review.mockResolvedValueOnce({ success: true, data: acceptedProof as any });
+
+    await makeCallerAsPoster().reviewProof({
+      proofId: PROOF_ID,
+      decision: 'ACCEPTED',
+    });
+
+    expect(mockTaskService.rejectProof).not.toHaveBeenCalled();
+  });
+
+  it('CCC-01: throws INTERNAL_SERVER_ERROR when TaskService.rejectProof fails after proof REJECTED', async () => {
+    const proof = makeProofRow({ task_id: TASK_ID });
+    const task = makeTaskRow({ poster_id: USER_ID });
+    const rejectedProof = makeProofRow({ state: 'REJECTED', reviewed_by: USER_ID });
+
+    mockProofService.getById.mockResolvedValueOnce({ success: true, data: proof as any });
+    mockTaskService.getById.mockResolvedValueOnce({ success: true, data: task as any });
+    mockProofService.review.mockResolvedValueOnce({ success: true, data: rejectedProof as any });
+    mockTaskService.rejectProof.mockResolvedValueOnce({
+      success: false,
+      error: { code: 'INVALID_STATE', message: 'Task already in terminal state' },
+    });
+
+    await expect(
+      makeCallerAsPoster().reviewProof({ proofId: PROOF_ID, decision: 'REJECTED' })
+    ).rejects.toThrow('Proof marked rejected but task state could not be reverted');
   });
 });
 

@@ -356,9 +356,9 @@ async function handleAccountUpdated(event: StripeEventEnvelope): Promise<void> {
   const accountId = account.id as string;
   if (!accountId) throw new Error('account.updated missing account.id');
 
-  // Look up user by stripe_connect_account_id
+  // Look up user by stripe_connect_id
   const userResult = await db.query<{ id: string }>(
-    'SELECT id FROM users WHERE stripe_connect_account_id = $1',
+    'SELECT id FROM users WHERE stripe_connect_id = $1',
     [accountId]
   );
 

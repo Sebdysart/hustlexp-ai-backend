@@ -80,19 +80,23 @@ export async function processOutboxEvents(batchSize: number = 100): Promise<{
   let failed = 0;
   
   try {
-    // Fetch pending outbox events (ordered by creation time for FIFO).
-    // No FOR UPDATE SKIP LOCKED here — the actual concurrency guard is the
-    // CAS pattern on the UPDATE below (AND status = 'pending' + rowCount check).
-    // FOR UPDATE outside an explicit transaction releases the lock immediately
-    // after the SELECT, providing zero protection and misleading readers.
-    const result = await db.query<OutboxEvent>(
-      `SELECT * FROM outbox_events
-       WHERE status = 'pending'
-       ORDER BY created_at ASC
-       LIMIT $1`,
-      [batchSize]
-    );
-    
+    // Fetch pending outbox events inside a transaction so that FOR UPDATE SKIP
+    // LOCKED actually holds row-level locks for the duration of the SELECT +
+    // UPDATE pair.  Without an explicit transaction the lock is released
+    // immediately after the SELECT, leaving a window where two workers can read
+    // the same rows, both call queue.add(), and both see rowCount=0 on the
+    // subsequent CAS UPDATE — permanently stranding the event in 'pending'.
+    const result = await db.transaction(async (txQuery) => {
+      return txQuery<OutboxEvent>(
+        `SELECT * FROM outbox_events
+         WHERE status = 'pending'
+         ORDER BY created_at ASC
+         LIMIT $1
+         FOR UPDATE SKIP LOCKED`,
+        [batchSize]
+      );
+    });
+
     for (const event of result.rows) {
       try {
         // Get the appropriate queue
@@ -119,9 +123,11 @@ export async function processOutboxEvents(batchSize: number = 100): Promise<{
             attempts: 3, // Default attempts (queue config may override)
           }
         );
-        
-        // Mark outbox event as enqueued (with WHERE status = 'pending' to prevent double-enqueue)
-        // Only update if still pending (prevents race condition if two workers both locked the same row)
+
+        // CAS guard: only update if still pending.  FOR UPDATE SKIP LOCKED
+        // already ensures no other worker holds these rows, but the guard
+        // remains as a belt-and-suspenders safety net (e.g. a worker that
+        // crashed mid-flight between SELECT and UPDATE on a prior cycle).
         const updateResult = await db.query(
           `UPDATE outbox_events
            SET status = 'enqueued',
@@ -132,13 +138,13 @@ export async function processOutboxEvents(batchSize: number = 100): Promise<{
              AND status = 'pending'`, // CRITICAL: Only update if still pending (prevents double-enqueue)
           [job.id || event.idempotency_key, event.id]
         );
-        
+
         // If update affected 0 rows, another worker already processed this event
         if (updateResult.rowCount === 0) {
           log.warn({ eventId: event.id }, 'Outbox event already processed by another worker, skipping');
           continue; // Skip to next event
         }
-        
+
         processed++;
       } catch (error) {
         failed++;
@@ -165,7 +171,7 @@ export async function processOutboxEvents(batchSize: number = 100): Promise<{
         }
       }
     }
-    
+
     return { processed, failed, errors };
   } catch (error) {
     log.error({ err: error }, 'Outbox worker fatal error');

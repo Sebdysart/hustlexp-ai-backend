@@ -74,6 +74,13 @@ vi.mock('../../src/services/SelfInsurancePoolService.js', () => ({
   SelfInsurancePoolService: { recordContribution: vi.fn().mockResolvedValue({ success: true }) },
 }));
 
+vi.mock('../../src/services/StripeService', () => ({
+  StripeService: {
+    createRefund: vi.fn().mockResolvedValue({ success: true, data: { refundId: 're_test', amount: 5000, status: 'succeeded' } }),
+    createTransfer: vi.fn().mockResolvedValue({ success: true, data: { transferId: 'tr_test', amount: 3000 } }),
+  },
+}));
+
 // ---------------------------------------------------------------------------
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
@@ -465,11 +472,18 @@ describe('EscrowService.partialRefund', () => {
   });
 
   it('returns INVALID_STATE when escrow is not LOCKED_DISPUTE', async () => {
-    // 1st: SELECT version, state FROM escrows FOR UPDATE
-    mockQuery.mockResolvedValueOnce({ rows: [makeEscrow({ state: 'FUNDED', version: 1 })], rowCount: 1 } as never);
-    // 2nd: UPDATE rowCount=0 (WHERE state = 'LOCKED_DISPUTE' does not match FUNDED)
+    // 1st: SELECT version, state, task_id, amount, stripe_payment_intent_id FROM escrows FOR UPDATE
+    mockQuery.mockResolvedValueOnce({
+      rows: [makeEscrow({ state: 'FUNDED', version: 1, task_id: 'task-1', amount: 5000, stripe_payment_intent_id: 'pi_test' })],
+      rowCount: 1,
+    } as never);
+    // 2nd: SELECT worker_id FROM tasks (inside transaction)
+    mockQuery.mockResolvedValueOnce({ rows: [{ worker_id: 'worker-1' }], rowCount: 1 } as never);
+    // 3rd: SELECT stripe_connect_id FROM users (inside transaction)
+    mockQuery.mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_test' }], rowCount: 1 } as never);
+    // 4th: UPDATE rowCount=0 (WHERE state = 'LOCKED_DISPUTE' does not match FUNDED)
     mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
-    // 3rd: getById fallback → FUNDED (not LOCKED_DISPUTE)
+    // 5th: getById fallback — SELECT e.*, t.poster_id, t.worker_id FROM escrows JOIN tasks → FUNDED
     mockQuery.mockResolvedValueOnce({ rows: [makeEscrow({ state: 'FUNDED' })], rowCount: 1 } as never);
 
     const result = await EscrowService.partialRefund({
@@ -486,9 +500,20 @@ describe('EscrowService.partialRefund', () => {
   it('succeeds when escrow is LOCKED_DISPUTE and percentages sum to 100', async () => {
     const updated = makeEscrow({ state: 'REFUND_PARTIAL' });
     mockQuery
-      .mockResolvedValueOnce({ rows: [makeEscrow({ state: 'LOCKED_DISPUTE', version: 1 })], rowCount: 1 } as never) // SELECT FOR UPDATE
-      .mockResolvedValueOnce({ rows: [updated], rowCount: 1 } as never)  // UPDATE succeeds
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);          // logEscrowEvent INSERT
+      // 1st: SELECT version, state, task_id, amount, stripe_payment_intent_id FOR UPDATE
+      .mockResolvedValueOnce({
+        rows: [makeEscrow({ state: 'LOCKED_DISPUTE', version: 1, task_id: 'task-1', amount: 5000, stripe_payment_intent_id: 'pi_test' })],
+        rowCount: 1,
+      } as never)
+      // 2nd: SELECT worker_id FROM tasks (inside transaction)
+      .mockResolvedValueOnce({ rows: [{ worker_id: 'worker-1' }], rowCount: 1 } as never)
+      // 3rd: SELECT stripe_connect_id FROM users (inside transaction)
+      .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_test' }], rowCount: 1 } as never)
+      // 4th: UPDATE succeeds
+      .mockResolvedValueOnce({ rows: [updated], rowCount: 1 } as never)
+      // 5th: logEscrowEvent INSERT
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+    // Post-commit: StripeService.createTransfer + createRefund are mocked via vi.mock above.
 
     const result = await EscrowService.partialRefund({
       escrowId: 'esc-1',

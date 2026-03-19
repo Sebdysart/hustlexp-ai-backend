@@ -15,6 +15,7 @@ import { db } from '../db.js';
 import { logger } from '../logger.js';
 import { AlphaInstrumentation } from './AlphaInstrumentation.js';
 import { invalidateAuthCacheForUser } from '../auth-cache.js';
+import { writeToOutbox } from '../lib/outbox-helpers.js';
 
 const log = logger.child({ service: 'TrustTierService' });
 
@@ -348,7 +349,7 @@ export const TrustTierService = {
     userId: string,
     targetTier: TrustTier,
     source: 'system' | 'admin'
-  ): Promise<void> => {
+  ): Promise<{ success: true; alreadyApplied?: boolean }> => {
     const currentTier = await TrustTierService.getTrustTier(userId);
 
     // Guards
@@ -366,14 +367,19 @@ export const TrustTierService = {
       throw new Error(`Promotion preconditions not met: ${eligibility.reasons.join(', ')}`);
     }
 
-    // Apply promotion in transaction
-    await db.query(
+    // Apply promotion in transaction (optimistic CAS: only matches if tier hasn't changed)
+    const updateResult = await db.query(
       `UPDATE users
        SET trust_tier = $1, updated_at = NOW()
        WHERE id = $2
          AND trust_tier = $3`,
       [targetTier, userId, currentTier]
     );
+
+    if (updateResult.rowCount === 0) {
+      // Concurrent promotion already applied — silently return, don't fire events
+      return { success: true, alreadyApplied: true };
+    }
 
     // Invalidate auth cache so the new tier is visible immediately
     // BUG GG3 FIX: await the call (was fire-and-forget) so Redis errors surface.
@@ -429,6 +435,8 @@ export const TrustTierService = {
       // Silent fail - instrumentation should not break core flow
       log.warn({ err: error instanceof Error ? error.message : String(error), userId, targetTier }, 'Failed to emit trust_delta_applied for promotion');
     }
+
+    return { success: true };
   },
 
   /**
@@ -453,6 +461,30 @@ export const TrustTierService = {
        WHERE id = $2`,
       [TrustTier.BANNED, userId]
     );
+
+    // Emit escrow refund outbox events for any funded escrows on active tasks
+    // before cancelling them, so escrows are not stranded on ban.
+    const activeTasks = await db.query<{ id: string }>(
+      `SELECT id FROM tasks WHERE worker_id = $1 AND state IN ('ACCEPTED', 'IN_PROGRESS', 'PROOF_SUBMITTED')`,
+      [userId]
+    );
+    for (const task of activeTasks.rows) {
+      const escrow = await db.query<{ id: string }>(
+        `SELECT id FROM escrows WHERE task_id = $1 AND state = 'FUNDED'`,
+        [task.id]
+      );
+      if (escrow.rows[0]) {
+        await writeToOutbox({
+          eventType: 'escrow.refund_requested',
+          aggregateType: 'escrow',
+          aggregateId: escrow.rows[0].id,
+          eventVersion: 1,
+          payload: { escrowId: escrow.rows[0].id, reason: 'worker_banned', taskId: task.id },
+          queueName: 'critical_payments',
+          idempotencyKey: `ban_refund:${task.id}`,
+        });
+      }
+    }
 
     // Cancel active tasks
     await db.query(

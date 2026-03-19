@@ -461,7 +461,7 @@ export const escrowRouter = router({
       const rows = result.rows as (Record<string, unknown> & { stripe_payment_intent_id?: string; stripe_transfer_id?: string })[];
       return rows.map((row) => {
         const { stripe_payment_intent_id, stripe_transfer_id, ...safe } = row;
-        return ctx.user.role === 'admin' ? row : safe;
+        return ctx.user.is_admin === true ? row : safe;
       });
     }),
 

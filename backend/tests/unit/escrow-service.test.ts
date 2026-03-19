@@ -54,6 +54,7 @@ vi.mock('../../src/services/RevenueService', () => ({
 vi.mock('../../src/services/StripeService', () => ({
   StripeService: {
     createRefund: vi.fn().mockResolvedValue({ success: true, data: { refundId: 're_test', amount: 5000, status: 'succeeded' } }),
+    createTransfer: vi.fn().mockResolvedValue({ success: true, data: { transferId: 'tr_test', amount: 3000 } }),
   },
 }));
 
@@ -420,10 +421,21 @@ describe('EscrowService', () => {
     it('partial refunds from LOCKED_DISPUTE with valid percentages', async () => {
       const partial = makeEscrow({ state: 'REFUND_PARTIAL' });
       // partialRefund() is wrapped in db.transaction():
-      //   1st query: SELECT version, state FOR UPDATE → lock row
-      //   2nd query: UPDATE escrows ... RETURNING *   → updated row
-      mockDb.query.mockResolvedValueOnce({ rows: [{ version: 0, state: 'LOCKED_DISPUTE' }], rowCount: 1 } as never);
+      //   1st query: SELECT version, state, task_id, amount, stripe_payment_intent_id FOR UPDATE
+      //   2nd query: SELECT worker_id FROM tasks (inside transaction)
+      //   3rd query: SELECT stripe_connect_id FROM users (inside transaction)
+      //   4th query: UPDATE escrows ... RETURNING *
+      //   5th query: INSERT INTO escrow_events (logEscrowEvent)
+      // Post-commit Stripe calls use mocked StripeService (createTransfer, createRefund).
+      mockDb.query.mockResolvedValueOnce({
+        rows: [{ version: 0, state: 'LOCKED_DISPUTE', task_id: 'task-1', amount: 5000, stripe_payment_intent_id: 'pi_test' }],
+        rowCount: 1,
+      } as never);
+      mockDb.query.mockResolvedValueOnce({ rows: [{ worker_id: 'worker-1' }], rowCount: 1 } as never);
+      mockDb.query.mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_test' }], rowCount: 1 } as never);
       mockDb.query.mockResolvedValueOnce({ rows: [partial], rowCount: 1 } as never);
+      // logEscrowEvent INSERT
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
 
       const result = await EscrowService.partialRefund({
         escrowId: 'esc-1', workerPercent: 60, posterPercent: 40,

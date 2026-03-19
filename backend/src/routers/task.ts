@@ -807,13 +807,32 @@ export const taskRouter = router({
         decision,
         reason,
       });
-      
+
       if (!reviewResult.success) {
         throw new TRPCError({
           code: 'BAD_REQUEST',
           message: reviewResult.error.message,
         });
       }
+
+      // CCC-01 FIX: When proof is REJECTED the task must transition back to
+      // ACCEPTED so the worker can resubmit.  Without this call the task is
+      // permanently stuck in PROOF_SUBMITTED — the worker cannot resubmit
+      // (PROOF_SUBMITTED is not in their allowed-from list) and the poster
+      // cannot cancel, creating a deadlock.
+      if (decision === 'REJECTED') {
+        const rejectTaskResult = await TaskService.rejectProof(
+          proofResult.data.task_id,
+          reason ?? 'Proof rejected by poster'
+        );
+        if (!rejectTaskResult.success) {
+          throw new TRPCError({
+            code: 'INTERNAL_SERVER_ERROR',
+            message: `Proof marked rejected but task state could not be reverted: ${rejectTaskResult.error.message}`,
+          });
+        }
+      }
+
       await invalidateTask(proofResult.data.task_id);
       return reviewResult.data;
     }),

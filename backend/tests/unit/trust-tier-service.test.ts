@@ -22,6 +22,10 @@ vi.mock('../../src/services/AlphaInstrumentation', () => ({
   },
 }));
 
+vi.mock('../../src/lib/outbox-helpers', () => ({
+  writeToOutbox: vi.fn().mockResolvedValue({ id: 'outbox-1', idempotencyKey: 'key-1' }),
+}));
+
 import { TrustTierService, TrustTier } from '../../src/services/TrustTierService';
 import { db } from '../../src/db';
 
@@ -213,16 +217,34 @@ describe('TrustTierService.applyPromotion', () => {
       rows: [{ is_verified: true, verified_at: new Date(), phone: '+1234', stripe_customer_id: 'cus_1' }],
       rowCount: 1,
     });
-    // UPDATE users SET trust_tier
-    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'u1', trust_tier: 2 }] });
+    // UPDATE users SET trust_tier (rowCount=1 means the CAS matched)
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'u1', trust_tier: 2 }], rowCount: 1 });
     // INSERT trust_ledger
     mockQuery.mockResolvedValueOnce({ rows: [] });
     // SELECT default_mode for instrumentation
     mockQuery.mockResolvedValueOnce({ rows: [{ default_mode: 'worker' }] });
 
-    await expect(
-      TrustTierService.applyPromotion('u1', TrustTier.VERIFIED, 'system'),
-    ).resolves.toBeUndefined();
+    const result = await TrustTierService.applyPromotion('u1', TrustTier.VERIFIED, 'system');
+    expect(result).toEqual({ success: true });
+  });
+
+  it('returns alreadyApplied when concurrent promotion beats CAS', async () => {
+    // getTrustTier for applyPromotion
+    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }], rowCount: 1 });
+    // evaluatePromotion -> getTrustTier
+    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }], rowCount: 1 });
+    // evaluatePromotion -> user details
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ is_verified: true, verified_at: new Date(), phone: '+1234', stripe_customer_id: 'cus_1' }],
+      rowCount: 1,
+    });
+    // UPDATE users SET trust_tier — rowCount=0: concurrent promotion already applied
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+
+    const result = await TrustTierService.applyPromotion('u1', TrustTier.VERIFIED, 'system');
+    expect(result).toEqual({ success: true, alreadyApplied: true });
+    // No further queries (trust_ledger, instrumentation) should be fired
+    expect(mockQuery).toHaveBeenCalledTimes(4);
   });
 });
 
@@ -230,11 +252,13 @@ describe('TrustTierService.applyPromotion', () => {
 // banUser
 // ============================================================================
 describe('TrustTierService.banUser', () => {
-  it('bans a normal user', async () => {
+  it('bans a normal user with no active tasks', async () => {
     // getTrustTier
     mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 2 }], rowCount: 1 });
     // UPDATE users SET trust_tier = BANNED
     mockQuery.mockResolvedValueOnce({ rows: [] });
+    // SELECT active tasks — none
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
     // UPDATE tasks (cancel active)
     mockQuery.mockResolvedValueOnce({ rows: [] });
     // SELECT default_mode for instrumentation
@@ -256,12 +280,67 @@ describe('TrustTierService.banUser', () => {
   it('cancels active tasks on ban', async () => {
     mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 3 }], rowCount: 1 });
     mockQuery.mockResolvedValueOnce({ rows: [] }); // update users
-    mockQuery.mockResolvedValueOnce({ rows: [] }); // cancel tasks
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // select active tasks — none
+    mockQuery.mockResolvedValueOnce({ rows: [] }); // cancel tasks UPDATE
     mockQuery.mockResolvedValueOnce({ rows: [{ default_mode: 'poster' }] }); // instrumentation
 
     await TrustTierService.banUser('u1', 'abuse');
-    // The third call should be the cancel tasks query
-    const cancelCall = mockQuery.mock.calls[2];
+    // The fourth call (index 3) should be the cancel tasks query
+    const cancelCall = mockQuery.mock.calls[3];
     expect(cancelCall[0]).toContain('CANCELLED');
+  });
+
+  it('emits escrow refund outbox events for funded escrows on active tasks', async () => {
+    const { writeToOutbox: mockWriteToOutbox } = await import('../../src/lib/outbox-helpers');
+    const mockWrite = mockWriteToOutbox as ReturnType<typeof vi.fn>;
+
+    // getTrustTier
+    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 2 }], rowCount: 1 });
+    // UPDATE users SET trust_tier = BANNED
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    // SELECT active tasks — one task with id 'task-1'
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'task-1' }], rowCount: 1 });
+    // SELECT escrow for task-1 — funded escrow exists
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'escrow-1' }], rowCount: 1 });
+    // UPDATE tasks (cancel active)
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    // SELECT default_mode for instrumentation
+    mockQuery.mockResolvedValueOnce({ rows: [{ default_mode: 'hustler' }] });
+
+    await TrustTierService.banUser('u1', 'fraud');
+
+    expect(mockWrite).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: 'escrow.refund_requested',
+        aggregateType: 'escrow',
+        aggregateId: 'escrow-1',
+        queueName: 'critical_payments',
+        idempotencyKey: 'ban_refund:task-1',
+        payload: expect.objectContaining({ escrowId: 'escrow-1', taskId: 'task-1', reason: 'worker_banned' }),
+      })
+    );
+  });
+
+  it('skips outbox event when active task has no funded escrow', async () => {
+    const { writeToOutbox: mockWriteToOutbox } = await import('../../src/lib/outbox-helpers');
+    const mockWrite = mockWriteToOutbox as ReturnType<typeof vi.fn>;
+    mockWrite.mockClear();
+
+    // getTrustTier
+    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 2 }], rowCount: 1 });
+    // UPDATE users SET trust_tier = BANNED
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    // SELECT active tasks — one task with id 'task-2'
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'task-2' }], rowCount: 1 });
+    // SELECT escrow for task-2 — no funded escrow
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+    // UPDATE tasks (cancel active)
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    // SELECT default_mode for instrumentation
+    mockQuery.mockResolvedValueOnce({ rows: [{ default_mode: 'hustler' }] });
+
+    await TrustTierService.banUser('u1', 'fraud');
+
+    expect(mockWrite).not.toHaveBeenCalled();
   });
 });

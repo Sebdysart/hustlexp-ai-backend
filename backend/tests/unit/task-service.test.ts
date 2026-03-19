@@ -1139,22 +1139,73 @@ describe('TaskService.cancel', () => {
 // UU-03 FIX: expire() now runs inside a transaction.  The query sequence is:
 //   1. SELECT state … FOR UPDATE  (lock + read pre-expire state)
 //   2. UPDATE … RETURNING *        (expire the task)
-//   3. SELECT id FROM escrows …    (only executed when state was MATCHING)
-//   writeToOutbox is called atomically for MATCHING tasks with a funded escrow.
+//   3. SELECT id FROM escrows …    (executed when state was MATCHING or OPEN)
+//   writeToOutbox is called atomically for MATCHING/OPEN tasks with a funded escrow.
+// CCC-02 FIX: OPEN tasks can also have funded escrows; the escrow query now runs
+//   for both MATCHING and OPEN pre-expire states.
 describe('TaskService.expire', () => {
-  it('expires a non-MATCHING task successfully (no escrow refund)', async () => {
+  it('expires a non-MATCHING/non-OPEN task successfully (no escrow query)', async () => {
+    const expired = makeTask({ state: 'EXPIRED' });
+
+    // 1. FOR UPDATE → task is in ACCEPTED state (has a worker, no funded escrow to refund)
+    mockQuery.mockResolvedValueOnce({ rows: [makeTask({ state: 'ACCEPTED' })], rowCount: 1 } as never);
+    // 2. UPDATE → task expired
+    mockQuery.mockResolvedValueOnce({ rows: [expired], rowCount: 1 } as never);
+    // No escrow query because pre-expire state was ACCEPTED (not MATCHING or OPEN).
+
+    const result = await TaskService.expire('task-1');
+
+    expect(result.success).toBe(true);
+    expect(result.data?.state).toBe('EXPIRED');
+  });
+
+  // CCC-02: OPEN tasks with a funded escrow must also emit a refund outbox event on expiry
+  it('CCC-02: expires an OPEN task with funded escrow and emits refund outbox event', async () => {
+    const { writeToOutbox } = await import('../../src/lib/outbox-helpers');
+    const mockWriteToOutbox = vi.mocked(writeToOutbox);
+    mockWriteToOutbox.mockClear();
+
     const expired = makeTask({ state: 'EXPIRED' });
 
     // 1. FOR UPDATE → task is in OPEN state
     mockQuery.mockResolvedValueOnce({ rows: [makeTask({ state: 'OPEN' })], rowCount: 1 } as never);
     // 2. UPDATE → task expired
     mockQuery.mockResolvedValueOnce({ rows: [expired], rowCount: 1 } as never);
-    // No escrow query because pre-expire state was OPEN, not MATCHING.
+    // 3. SELECT escrow → funded escrow found
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'escrow-open-1' }], rowCount: 1 } as never);
 
     const result = await TaskService.expire('task-1');
 
     expect(result.success).toBe(true);
     expect(result.data?.state).toBe('EXPIRED');
+    expect(mockWriteToOutbox).toHaveBeenCalledOnce();
+    expect(mockWriteToOutbox).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: 'escrow.refund_requested',
+        payload: expect.objectContaining({ reason: 'task_expired', taskId: 'task-1' }),
+      }),
+      expect.any(Function)
+    );
+  });
+
+  it('CCC-02: expires an OPEN task with NO funded escrow without emitting outbox event', async () => {
+    const { writeToOutbox } = await import('../../src/lib/outbox-helpers');
+    const mockWriteToOutbox = vi.mocked(writeToOutbox);
+    mockWriteToOutbox.mockClear();
+
+    const expired = makeTask({ state: 'EXPIRED' });
+
+    // 1. FOR UPDATE → task is in OPEN state
+    mockQuery.mockResolvedValueOnce({ rows: [makeTask({ state: 'OPEN' })], rowCount: 1 } as never);
+    // 2. UPDATE → task expired
+    mockQuery.mockResolvedValueOnce({ rows: [expired], rowCount: 1 } as never);
+    // 3. SELECT escrow → no funded escrow (poster never pre-funded)
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+
+    const result = await TaskService.expire('task-1');
+
+    expect(result.success).toBe(true);
+    expect(mockWriteToOutbox).not.toHaveBeenCalled();
   });
 
   it('expires a MATCHING task and emits escrow refund outbox event', async () => {

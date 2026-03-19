@@ -1396,10 +1396,13 @@ export const TaskService = {
           };
         }
 
-        // UU-03: If the task was in MATCHING state, it had a funded escrow
-        // and no worker — emit a full refund outbox event so the payment
-        // worker returns the poster's funds.
-        if (preExpireState === 'MATCHING') {
+        // CCC-02 FIX: If the task was in MATCHING or OPEN state it may have had
+        // a funded escrow.  MATCHING tasks have a funded escrow held by the
+        // matchmaker.  OPEN tasks can also have a funded escrow if the poster
+        // pre-funded before a worker was ever matched.  In both cases we must
+        // emit a refund outbox event so the payment worker returns the poster's
+        // funds; without this the escrow is permanently stranded.
+        if (preExpireState === 'MATCHING' || preExpireState === 'OPEN') {
           const escrowResult = await query<{ id: string }>(
             `SELECT id FROM escrows WHERE task_id = $1 AND state = 'FUNDED'`,
             [taskId]
@@ -1418,7 +1421,7 @@ export const TaskService = {
               },
               query
             );
-            log.info({ escrowId, taskId }, 'Escrow refund requested on MATCHING task expiry');
+            log.info({ escrowId, taskId }, `Escrow refund requested on ${preExpireState} task expiry`);
           }
         }
 

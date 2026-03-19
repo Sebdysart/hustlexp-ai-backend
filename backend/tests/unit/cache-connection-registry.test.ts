@@ -21,7 +21,7 @@
  *  - startHeartbeatManager() — verifies setInterval is called
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // ===========================================================================
 // vi.hoisted — build reusable mock objects before factory closures run
@@ -612,5 +612,142 @@ describe('startHeartbeatManager', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// ===========================================================================
+// Unconfigured Redis (DDD-02 guard path)
+// When UPSTASH_REDIS_REST_URL/TOKEN are missing, every exported function must
+// degrade gracefully (log warn, return safe defaults) without throwing.
+// ===========================================================================
+
+describe('when Redis is NOT configured (null credentials)', () => {
+  // Re-import the module with a config that has null/empty credentials so the
+  // lazy-init guard skips Redis construction.
+  async function importUnconfigured() {
+    vi.resetModules();
+
+    vi.doMock('@upstash/redis', () => ({
+      Redis: function MockRedis(this: Record<string, unknown>) {
+        this.get = mockGet;
+        this.setex = mockSetex;
+        this.publish = mockPublish;
+        this.smembers = mockSmembers;
+        this.sadd = mockSadd;
+        this.srem = mockSrem;
+        this.scard = mockScard;
+        this.del = mockDel;
+        this.rpush = mockRpush;
+        this.ltrim = mockLtrim;
+        this.expire = mockExpire;
+        this.pipeline = vi.fn().mockReturnValue(mockPipeline);
+      },
+    }));
+
+    vi.doMock('../../src/config', () => ({
+      config: {
+        redis: {
+          restUrl: '',
+          restToken: '',
+        },
+      },
+    }));
+
+    vi.doMock('../../src/logger', () => ({
+      logger: {
+        child: vi.fn(() => ({
+          info: vi.fn(),
+          warn: vi.fn(),
+          error: vi.fn(),
+          debug: vi.fn(),
+        })),
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+        debug: vi.fn(),
+      },
+    }));
+
+    return import('../../src/cache/connection-registry-redis');
+  }
+
+  afterEach(() => {
+    vi.resetModules();
+  });
+
+  it('registerConnection resolves without touching Redis', async () => {
+    const mod = await importUnconfigured();
+    await expect(mod.registerConnection('c', 'u', 'i')).resolves.toBeUndefined();
+    expect(mockPipelineExec).not.toHaveBeenCalled();
+  });
+
+  it('unregisterConnection resolves without touching Redis', async () => {
+    const mod = await importUnconfigured();
+    await expect(mod.unregisterConnection('c', 'i')).resolves.toBeUndefined();
+    expect(mockGet).not.toHaveBeenCalled();
+  });
+
+  it('updateHeartbeat resolves without touching Redis', async () => {
+    const mod = await importUnconfigured();
+    await expect(mod.updateHeartbeat('c', 'i')).resolves.toBeUndefined();
+    expect(mockGet).not.toHaveBeenCalled();
+  });
+
+  it('getUserConnections returns empty array', async () => {
+    const mod = await importUnconfigured();
+    await expect(mod.getUserConnections('u')).resolves.toEqual([]);
+    expect(mockSmembers).not.toHaveBeenCalled();
+  });
+
+  it('getConnection returns null', async () => {
+    const mod = await importUnconfigured();
+    await expect(mod.getConnection('c')).resolves.toBeNull();
+    expect(mockGet).not.toHaveBeenCalled();
+  });
+
+  it('getUserPresence returns offline defaults', async () => {
+    const mod = await importUnconfigured();
+    await expect(mod.getUserPresence('u')).resolves.toEqual({
+      online: false,
+      lastSeen: 0,
+      connections: 0,
+    });
+    expect(mockGet).not.toHaveBeenCalled();
+  });
+
+  it('subscribeToChannel resolves without touching Redis', async () => {
+    const mod = await importUnconfigured();
+    await expect(mod.subscribeToChannel('c', 'ch')).resolves.toBeUndefined();
+    expect(mockGet).not.toHaveBeenCalled();
+  });
+
+  it('unsubscribeFromChannel resolves without touching Redis', async () => {
+    const mod = await importUnconfigured();
+    await expect(mod.unsubscribeFromChannel('c', 'ch')).resolves.toBeUndefined();
+    expect(mockGet).not.toHaveBeenCalled();
+  });
+
+  it('publishEvent resolves without touching Redis', async () => {
+    const mod = await importUnconfigured();
+    await expect(mod.publishEvent('ch', { type: 'test' })).resolves.toBeUndefined();
+    expect(mockPublish).not.toHaveBeenCalled();
+  });
+
+  it('broadcastToUser returns 0 without touching Redis', async () => {
+    const mod = await importUnconfigured();
+    await expect(mod.broadcastToUser('u', { type: 'test' })).resolves.toBe(0);
+    expect(mockPublish).not.toHaveBeenCalled();
+  });
+
+  it('getInstanceConnections returns empty array', async () => {
+    const mod = await importUnconfigured();
+    await expect(mod.getInstanceConnections('i')).resolves.toEqual([]);
+    expect(mockSmembers).not.toHaveBeenCalled();
+  });
+
+  it('cleanupInstance returns 0 without touching Redis', async () => {
+    const mod = await importUnconfigured();
+    await expect(mod.cleanupInstance('i')).resolves.toBe(0);
+    expect(mockDel).not.toHaveBeenCalled();
   });
 });
