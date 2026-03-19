@@ -1208,9 +1208,11 @@ export const EscrowService = {
       }
 
       // Worker portion — Stripe transfer to connected account (runs SECOND)
+      // Computed unconditionally so that idempotent retries (txExistingTransferId
+      // already set) still produce the correct value for the revenue ledger below.
       // Hoisted so the same rounded value is reused in the revenue ledger block below,
       // preventing divergence from a second independent Math.round() call.
-      let netWorkerCents = 0;
+      const netWorkerCents = Math.round(workerCents * (1 - platformFeePercent / 100));
       if (workerCents > 0) {
         if (txExistingTransferId) {
           // Idempotency: transfer already recorded from a prior attempt — skip.
@@ -1233,7 +1235,6 @@ export const EscrowService = {
             `partialRefund: worker ${txWorkerId} has no stripe_connect_id — cannot issue worker transfer of ${workerCents} cents. Escrow remains LOCKED_DISPUTE for manual ops recovery.`
           );
         } else {
-          netWorkerCents = Math.round(workerCents * (1 - platformFeePercent / 100));
           const transferResult = await StripeService.createTransfer({
             escrowId,
             taskId: txTaskId!,

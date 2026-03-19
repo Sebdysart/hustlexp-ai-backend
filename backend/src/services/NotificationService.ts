@@ -285,7 +285,7 @@ export const NotificationService = {
           };
         }
 
-        if (dailyCount > limits.perDay) {
+        if (dailyCount >= limits.perDay + 1) {
           return {
             success: false,
             error: {
