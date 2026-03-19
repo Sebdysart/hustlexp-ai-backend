@@ -742,8 +742,8 @@ export const XPService = {
       }
 
       // Now read the original award inside the transaction (consistent with the lock).
-      const award = await txQuery<{ id: string; base_xp: number; effective_xp: number; task_id: string }>(
-        `SELECT id, base_xp, effective_xp, task_id FROM xp_ledger
+      const award = await txQuery<{ id: string; base_xp: number; effective_xp: number; task_id: string; surge_multiplier: number }>(
+        `SELECT id, base_xp, effective_xp, task_id, surge_multiplier FROM xp_ledger
          WHERE user_id = $1 AND escrow_id = $2
          ORDER BY awarded_at DESC LIMIT 1`,
         [userId, escrowId]
@@ -775,7 +775,7 @@ export const XPService = {
       const clawbackInsert = await txQuery<{ id: string }>(
         `INSERT INTO xp_ledger (
           user_id, task_id, escrow_id,
-          base_xp, streak_multiplier, trust_multiplier, live_mode_multiplier, effective_xp,
+          base_xp, streak_multiplier, trust_multiplier, live_mode_multiplier, surge_multiplier, effective_xp,
           reason,
           user_xp_before, user_xp_after,
           user_level_before, user_level_after,
@@ -783,7 +783,7 @@ export const XPService = {
         )
         SELECT
           $1, $3, $2,
-          $5, streak_multiplier, trust_multiplier, live_mode_multiplier, $6,
+          $5, streak_multiplier, trust_multiplier, live_mode_multiplier, surge_multiplier, $6,
           $4,
           user_xp_after, GREATEST(0, user_xp_after - $7),
           user_level_after, user_level_before,

@@ -275,6 +275,137 @@ describe('StripeService.createRefund (backend)', () => {
     expect(result.success).toBe(false);
     if (!result.success) expect(result.error.code).toBe('STRIPE_NOT_CONFIGURED');
   });
+
+  // FFF-03: Verify idempotency key is passed to refunds.create to prevent double-refund on retry.
+  // Uses vi.resetModules() + dynamic re-import to load StripeService with a live stripe key,
+  // since the module-level stripe singleton is initialized at import time.
+  it('passes idempotency key for partial refund: re_create_{piId}_{amount}', async () => {
+    vi.resetModules();
+
+    // Re-mock dependencies with a live stripe key for this test
+    vi.doMock('../../src/config', () => ({
+      config: {
+        stripe: {
+          secretKey: 'sk_test_live_for_idempotency',
+          webhookSecret: 'whsec_test_backend',
+          platformFeePercent: 15,
+          minimumTaskValueCents: 500,
+        },
+      },
+    }));
+
+    const localRefundsCreate = vi.fn().mockResolvedValue({
+      id: 're_partial_123',
+      amount: 2000,
+      status: 'succeeded',
+    });
+
+    // Must use a regular function (not arrow) — `new Stripe(...)` requires a constructor.
+    vi.doMock('stripe', () => ({
+      default: vi.fn(function StripeConstructor() {
+        return {
+          paymentIntents: { create: vi.fn(), retrieve: vi.fn() },
+          transfers: { create: vi.fn() },
+          refunds: { create: localRefundsCreate },
+          webhooks: { constructEvent: vi.fn() },
+        };
+      }),
+    }));
+
+    vi.doMock('../../src/middleware/circuit-breaker', () => ({
+      stripeBreaker: { execute: vi.fn((fn: () => Promise<unknown>) => fn()) },
+      CircuitBreaker: vi.fn(),
+      CircuitOpenError: class extends Error { retryAfterMs = 0; },
+    }));
+
+    vi.doMock('../../src/logger', () => ({
+      stripeLogger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      logger: { child: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }) },
+    }));
+
+    vi.doMock('../../src/db', () => ({ db: { query: vi.fn() } }));
+
+    const { StripeService: LiveStripeService } = await import('../../src/services/StripeService');
+
+    const result = await LiveStripeService.createRefund({
+      paymentIntentId: 'pi_partial_abc',
+      escrowId: 'esc-partial',
+      amount: 2000,
+      reason: 'requested_by_customer',
+    });
+
+    expect(result.success).toBe(true);
+    // FFF-03: partial refund key includes amount to distinguish from full refund
+    expect(localRefundsCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ payment_intent: 'pi_partial_abc', amount: 2000 }),
+      { idempotencyKey: 're_create_pi_partial_abc_2000' }
+    );
+
+    vi.resetModules();
+  });
+
+  it('passes idempotency key for full refund: re_create_{piId} (no amount suffix)', async () => {
+    vi.resetModules();
+
+    vi.doMock('../../src/config', () => ({
+      config: {
+        stripe: {
+          secretKey: 'sk_test_live_for_idempotency',
+          webhookSecret: 'whsec_test_backend',
+          platformFeePercent: 15,
+          minimumTaskValueCents: 500,
+        },
+      },
+    }));
+
+    const localRefundsCreate = vi.fn().mockResolvedValue({
+      id: 're_full_456',
+      amount: 10000,
+      status: 'succeeded',
+    });
+
+    // Must use a regular function (not arrow) — `new Stripe(...)` requires a constructor.
+    vi.doMock('stripe', () => ({
+      default: vi.fn(function StripeConstructor() {
+        return {
+          paymentIntents: { create: vi.fn(), retrieve: vi.fn() },
+          transfers: { create: vi.fn() },
+          refunds: { create: localRefundsCreate },
+          webhooks: { constructEvent: vi.fn() },
+        };
+      }),
+    }));
+
+    vi.doMock('../../src/middleware/circuit-breaker', () => ({
+      stripeBreaker: { execute: vi.fn((fn: () => Promise<unknown>) => fn()) },
+      CircuitBreaker: vi.fn(),
+      CircuitOpenError: class extends Error { retryAfterMs = 0; },
+    }));
+
+    vi.doMock('../../src/logger', () => ({
+      stripeLogger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      logger: { child: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }) },
+    }));
+
+    vi.doMock('../../src/db', () => ({ db: { query: vi.fn() } }));
+
+    const { StripeService: LiveStripeService } = await import('../../src/services/StripeService');
+
+    const result = await LiveStripeService.createRefund({
+      paymentIntentId: 'pi_full_xyz',
+      escrowId: 'esc-full',
+      // no amount = full refund
+    });
+
+    expect(result.success).toBe(true);
+    // FFF-03: full refund key has no amount suffix — prevents double-refund on BullMQ retry
+    expect(localRefundsCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ payment_intent: 'pi_full_xyz', amount: undefined }),
+      { idempotencyKey: 're_create_pi_full_xyz' }
+    );
+
+    vi.resetModules();
+  });
 });
 
 // ---------------------------------------------------------------------------

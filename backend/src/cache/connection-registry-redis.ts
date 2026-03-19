@@ -410,7 +410,13 @@ export async function broadcastToUser(
   
   // Publish to broadcast channel
   await publishEvent(`user:${userId}`, event);
-  
+
+  // Explicit null guard before direct Redis calls — publishEvent already has its own guard,
+  // but the rpush/ltrim/expire block below accesses `redis` directly. The early return at
+  // the top of this function handles the empty-connections case, but does not guard against
+  // a null redis reference here. Add the guard to satisfy the null-safety invariant.
+  if (!redis) return 0;
+
   // Also store in outbox for offline delivery
   const outboxKey = `outbox:${userId}`;
   await redis.rpush(

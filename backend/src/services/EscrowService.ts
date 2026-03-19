@@ -1030,6 +1030,8 @@ export const EscrowService = {
     let txStripePaymentIntentId: string | null = null;
     let txWorkerId: string | null = null;
     let txWorkerStripeConnectId: string | null = null;
+    let txExistingTransferId: string | null = null;
+    let txExistingRefundId: string | null = null;
 
     try {
       // RACE CONDITION FIX: Wrap SELECT FOR UPDATE + UPDATE in a transaction.
@@ -1043,14 +1045,18 @@ export const EscrowService = {
           task_id: string;
           amount: number;
           stripe_payment_intent_id: string | null;
+          stripe_transfer_id: string | null;
+          stripe_refund_id: string | null;
         }>(
-          `SELECT version, state, task_id, amount, stripe_payment_intent_id FROM escrows WHERE id = $1 FOR UPDATE`,
+          `SELECT version, state, task_id, amount, stripe_payment_intent_id, stripe_transfer_id, stripe_refund_id FROM escrows WHERE id = $1 FOR UPDATE`,
           [escrowId]
         );
         const escrowVersion = lockResult.rows[0]?.version;
         txTaskId = lockResult.rows[0]?.task_id;
         txAmount = lockResult.rows[0]?.amount;
         txStripePaymentIntentId = lockResult.rows[0]?.stripe_payment_intent_id ?? null;
+        txExistingTransferId = lockResult.rows[0]?.stripe_transfer_id ?? null;
+        txExistingRefundId = lockResult.rows[0]?.stripe_refund_id ?? null;
 
         // Fetch worker_id and stripe_connect_id inside the transaction
         if (txTaskId) {
@@ -1119,7 +1125,13 @@ export const EscrowService = {
       // Worker portion — Stripe transfer to connected account
       if (workerCents > 0) {
         try {
-          if (!txWorkerId!) {
+          if (txExistingTransferId) {
+            // Idempotency: transfer already recorded from a prior attempt — skip.
+            escrowLogger.info(
+              { escrowId, stripeTransferId: txExistingTransferId },
+              'partialRefund: stripe_transfer_id already set — skipping duplicate Stripe transfer'
+            );
+          } else if (!txWorkerId!) {
             escrowLogger.error(
               { escrowId },
               'partialRefund: no worker_id — cannot issue worker transfer'
@@ -1144,6 +1156,12 @@ export const EscrowService = {
                 { escrowId, workerId: txWorkerId, err: transferResult.error.message },
                 'partialRefund: Stripe transfer failed — manual transfer required'
               );
+            } else {
+              // Record transfer ID so retries skip the Stripe call.
+              await db.query(
+                `UPDATE escrows SET stripe_transfer_id = $1, updated_at = NOW() WHERE id = $2`,
+                [transferResult.data.transferId, escrowId]
+              );
             }
           }
         } catch (transferError) {
@@ -1158,7 +1176,13 @@ export const EscrowService = {
       // Poster portion — Stripe refund on the original payment intent
       if (posterCents > 0) {
         try {
-          if (!txStripePaymentIntentId!) {
+          if (txExistingRefundId) {
+            // Idempotency: refund already recorded from a prior attempt — skip.
+            escrowLogger.info(
+              { escrowId, stripeRefundId: txExistingRefundId },
+              'partialRefund: stripe_refund_id already set — skipping duplicate Stripe refund'
+            );
+          } else if (!txStripePaymentIntentId!) {
             escrowLogger.error(
               { escrowId },
               'partialRefund: no stripe_payment_intent_id — cannot issue poster refund, manual refund required'
@@ -1174,6 +1198,12 @@ export const EscrowService = {
               escrowLogger.error(
                 { escrowId, err: refundResult.error.message },
                 'partialRefund: Stripe refund failed — manual refund required'
+              );
+            } else {
+              // Record refund ID so retries skip the Stripe call.
+              await db.query(
+                `UPDATE escrows SET stripe_refund_id = $1, updated_at = NOW() WHERE id = $2`,
+                [refundResult.data.refundId, escrowId]
               );
             }
           }

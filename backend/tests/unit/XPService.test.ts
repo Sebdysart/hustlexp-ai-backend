@@ -77,7 +77,7 @@ describe('XPService', () => {
       mockDb.transaction.mockImplementationOnce(async (fn: TxFn) => {
         const txQuery = vi.fn()
           .mockResolvedValueOnce({ rows: [{ xp_total: 1000, current_level: 3 }], rowCount: 1 }) // FOR UPDATE
-          .mockResolvedValueOnce({ rows: [{ id: 'ledger-1', base_xp: 1000, effective_xp: 1000, task_id: taskId }], rowCount: 1 }) // SELECT award
+          .mockResolvedValueOnce({ rows: [{ id: 'ledger-1', base_xp: 1000, effective_xp: 1000, task_id: taskId, surge_multiplier: 1 }], rowCount: 1 }) // SELECT award
           .mockImplementationOnce((_sql: string, params: unknown[]) => {
             capturedInsertParams = params;
             return Promise.resolve({ rows: [{ id: 'ledger-cb-1' }], rowCount: 1 });
@@ -103,7 +103,7 @@ describe('XPService', () => {
       mockDb.transaction.mockImplementationOnce(async (fn: TxFn) => {
         const txQuery = vi.fn()
           .mockResolvedValueOnce({ rows: [{ xp_total: 750, current_level: 2 }], rowCount: 1 }) // FOR UPDATE
-          .mockResolvedValueOnce({ rows: [{ id: 'ledger-1', base_xp: 500, effective_xp: 750, task_id: taskId }], rowCount: 1 }) // SELECT award
+          .mockResolvedValueOnce({ rows: [{ id: 'ledger-1', base_xp: 500, effective_xp: 750, task_id: taskId, surge_multiplier: 1.5 }], rowCount: 1 }) // SELECT award
           .mockImplementationOnce((_sql: string, params: unknown[]) => {
             capturedInsertParams = params;
             return Promise.resolve({ rows: [{ id: 'ledger-cb-1' }], rowCount: 1 });
@@ -129,7 +129,7 @@ describe('XPService', () => {
       mockDb.transaction.mockImplementationOnce(async (fn: TxFn) => {
         const txQuery = vi.fn()
           .mockResolvedValueOnce({ rows: [{ xp_total: 1000, current_level: 3 }], rowCount: 1 }) // FOR UPDATE
-          .mockResolvedValueOnce({ rows: [{ id: 'ledger-1', base_xp: 400, effective_xp: 1000, task_id: taskId }], rowCount: 1 }) // SELECT award
+          .mockResolvedValueOnce({ rows: [{ id: 'ledger-1', base_xp: 400, effective_xp: 1000, task_id: taskId, surge_multiplier: 2.5 }], rowCount: 1 }) // SELECT award
           .mockImplementationOnce((_sql: string, params: unknown[]) => {
             capturedInsertParams = params;
             return Promise.resolve({ rows: [{ id: 'ledger-cb-1' }], rowCount: 1 });
@@ -171,7 +171,7 @@ describe('XPService', () => {
       mockDb.transaction.mockImplementationOnce(async (fn: TxFn) => {
         const txQuery = vi.fn()
           .mockResolvedValueOnce({ rows: [{ xp_total: 100, current_level: 1 }], rowCount: 1 }) // FOR UPDATE
-          .mockResolvedValueOnce({ rows: [{ id: 'ledger-1', base_xp: 1, effective_xp: 1, task_id: taskId }], rowCount: 1 }); // SELECT award
+          .mockResolvedValueOnce({ rows: [{ id: 'ledger-1', base_xp: 1, effective_xp: 1, task_id: taskId, surge_multiplier: 1 }], rowCount: 1 }); // SELECT award
         return fn(txQuery);
       });
 
@@ -187,7 +187,7 @@ describe('XPService', () => {
       mockDb.transaction.mockImplementationOnce(async (fn: TxFn) => {
         const txQuery = vi.fn()
           .mockResolvedValueOnce({ rows: [{ xp_total: 200, current_level: 2 }], rowCount: 1 }) // FOR UPDATE
-          .mockResolvedValueOnce({ rows: [{ id: 'ledger-1', base_xp: 200, effective_xp: 200, task_id: taskId }], rowCount: 1 }) // SELECT award
+          .mockResolvedValueOnce({ rows: [{ id: 'ledger-1', base_xp: 200, effective_xp: 200, task_id: taskId, surge_multiplier: 1 }], rowCount: 1 }) // SELECT award
           .mockResolvedValueOnce({ rows: [], rowCount: 0 }); // INSERT conflicts — already applied
         const result = await fn(txQuery);
         txQueryCallCount = txQuery.mock.calls.length;

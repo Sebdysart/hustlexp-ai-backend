@@ -50,7 +50,7 @@ async function getAuthUser(c: Context): Promise<User | null> {
   try {
     const decoded = await firebaseAuth.verifyIdToken(token, true);
     const result = await db.query<User>(
-      'SELECT * FROM users WHERE firebase_uid = $1',
+      'SELECT id, is_banned, account_status FROM users WHERE firebase_uid = $1',
       [decoded.uid]
     );
     const user = result.rows[0] || null;

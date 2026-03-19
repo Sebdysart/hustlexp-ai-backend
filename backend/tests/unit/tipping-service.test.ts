@@ -213,6 +213,12 @@ describe('TippingService', () => {
         expect(result.data.clientSecret).toBe('pi_test_123_secret_xxx');
         expect(result.data.tipId).toBe('tip-1');
       }
+
+      // FFF-01: Verify idempotency key is passed to prevent orphaned PIs on retry
+      expect(mockPaymentIntentsCreate).toHaveBeenCalledWith(
+        expect.objectContaining({ amount: 500, currency: 'usd' }),
+        { idempotencyKey: 'tip_pi_task-1_poster-1_500' }
+      );
     });
 
     it('cancels orphaned Stripe PI when tip INSERT fails (TT-06)', async () => {

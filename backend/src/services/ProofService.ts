@@ -369,25 +369,30 @@ export const ProofService = {
     } = params;
     
     try {
-      // Get next sequence number if not provided
-      let seqNum = sequenceNumber;
-      if (seqNum === undefined) {
-        const countResult = await db.query<{ count: string }>(
-          'SELECT COUNT(*) as count FROM proof_photos WHERE proof_id = $1',
-          [proofId]
+      // FIX GGG-04: Wrap the count SELECT + INSERT in a transaction with FOR UPDATE so
+      // concurrent addPhoto() calls cannot both read the same count and produce duplicate
+      // sequence numbers. The FOR UPDATE on proof_photos locks the existing rows for this
+      // proof_id, serializing concurrent inserts.
+      const result = await db.transaction(async (txQuery) => {
+        let seqNum = sequenceNumber;
+        if (seqNum === undefined) {
+          const countResult = await txQuery<{ count: string }>(
+            'SELECT COUNT(*) FROM proof_photos WHERE proof_id = $1 FOR UPDATE',
+            [proofId]
+          );
+          seqNum = parseInt(countResult.rows[0].count, 10) + 1;
+        }
+
+        return txQuery<ProofPhoto>(
+          `INSERT INTO proof_photos (
+            proof_id, storage_key, content_type, file_size_bytes,
+            checksum_sha256, capture_time, sequence_number
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+          RETURNING *`,
+          [proofId, storageKey, contentType, fileSizeBytes, checksumSha256, captureTime, seqNum]
         );
-        seqNum = parseInt(countResult.rows[0].count, 10) + 1;
-      }
-      
-      const result = await db.query<ProofPhoto>(
-        `INSERT INTO proof_photos (
-          proof_id, storage_key, content_type, file_size_bytes,
-          checksum_sha256, capture_time, sequence_number
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
-        RETURNING *`,
-        [proofId, storageKey, contentType, fileSizeBytes, checksumSha256, captureTime, seqNum]
-      );
-      
+      });
+
       return { success: true, data: result.rows[0] };
     } catch (error) {
       return {
@@ -414,23 +419,29 @@ export const ProofService = {
     } = params;
 
     try {
-      let seqNum = sequenceNumber;
-      if (seqNum === undefined) {
-        const countResult = await db.query<{ count: string }>(
-          'SELECT COUNT(*) as count FROM proof_videos WHERE proof_id = $1',
-          [proofId]
-        );
-        seqNum = parseInt(countResult.rows[0].count, 10) + 1;
-      }
+      // FIX GGG-04: Wrap the count SELECT + INSERT in a transaction with FOR UPDATE so
+      // concurrent addVideo() calls cannot both read the same count and produce duplicate
+      // sequence numbers. The FOR UPDATE on proof_videos locks the existing rows for this
+      // proof_id, serializing concurrent inserts.
+      const result = await db.transaction(async (txQuery) => {
+        let seqNum = sequenceNumber;
+        if (seqNum === undefined) {
+          const countResult = await txQuery<{ count: string }>(
+            'SELECT COUNT(*) FROM proof_videos WHERE proof_id = $1 FOR UPDATE',
+            [proofId]
+          );
+          seqNum = parseInt(countResult.rows[0].count, 10) + 1;
+        }
 
-      const result = await db.query<ProofVideo>(
-        `INSERT INTO proof_videos (
-          proof_id, storage_key, content_type, file_size_bytes,
-          duration_seconds, sequence_number
-        ) VALUES ($1, $2, $3, $4, $5, $6)
-        RETURNING *`,
-        [proofId, storageKey, contentType, fileSizeBytes ?? null, durationSeconds ?? null, seqNum]
-      );
+        return txQuery<ProofVideo>(
+          `INSERT INTO proof_videos (
+            proof_id, storage_key, content_type, file_size_bytes,
+            duration_seconds, sequence_number
+          ) VALUES ($1, $2, $3, $4, $5, $6)
+          RETURNING *`,
+          [proofId, storageKey, contentType, fileSizeBytes ?? null, durationSeconds ?? null, seqNum]
+        );
+      });
 
       return { success: true, data: result.rows[0] };
     } catch (error) {

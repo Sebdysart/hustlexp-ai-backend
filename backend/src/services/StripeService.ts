@@ -395,15 +395,22 @@ export const StripeService = {
     }
 
     try {
-      const refund = await stripeBreaker.execute(() => stripe!.refunds.create({
-        payment_intent: paymentIntentId,
-        amount, // undefined = full refund
-        reason,
-        metadata: {
-          escrow_id: escrowId,
-          payment_intent_id: paymentIntentId,
+      const idempotencyKey = amount
+        ? `re_create_${paymentIntentId}_${amount}`
+        : `re_create_${paymentIntentId}`;
+
+      const refund = await stripeBreaker.execute(() => stripe!.refunds.create(
+        {
+          payment_intent: paymentIntentId,
+          amount, // undefined = full refund
+          reason,
+          metadata: {
+            escrow_id: escrowId,
+            payment_intent_id: paymentIntentId,
+          },
         },
-      }));
+        { idempotencyKey }
+      ));
 
       return {
         success: true,

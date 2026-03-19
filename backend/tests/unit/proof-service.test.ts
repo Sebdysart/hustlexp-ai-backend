@@ -117,6 +117,20 @@ function makePhoto(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function makeVideo(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'video-1',
+    proof_id: 'proof-1',
+    storage_key: 'proofs/video1.mp4',
+    content_type: 'video/mp4',
+    file_size_bytes: 500000,
+    duration_seconds: 30,
+    sequence_number: 1,
+    created_at: new Date(),
+    ...overrides,
+  };
+}
+
 // ============================================================================
 // TESTS
 // ============================================================================
@@ -310,9 +324,11 @@ describe('ProofService', () => {
       expect(mockDb.query).toHaveBeenCalledTimes(1); // No count query
     });
 
-    it('auto-calculates sequence number if not provided', async () => {
+    it('auto-calculates sequence number via FOR UPDATE transaction if not provided', async () => {
+      // The transaction mock delegates to mockDb.query, so two mockDb.query calls are needed:
+      // call 0: COUNT FOR UPDATE (returns count=2), call 1: INSERT (returns photo row with seqNum=3)
       mockDb.query
-        .mockResolvedValueOnce({ rows: [{ count: '2' }], rowCount: 1 } as never) // COUNT
+        .mockResolvedValueOnce({ rows: [{ count: '2' }], rowCount: 1 } as never) // COUNT FOR UPDATE
         .mockResolvedValueOnce({ rows: [makePhoto({ sequence_number: 3 })], rowCount: 1 } as never); // INSERT
 
       const result = await ProofService.addPhoto({
@@ -336,6 +352,62 @@ describe('ProofService', () => {
         contentType: 'image/png',
         fileSizeBytes: 1,
         checksumSha256: 'hash',
+        sequenceNumber: 1,
+      });
+
+      expect(result.success).toBe(false);
+      if (!result.success) expect(result.error.code).toBe('DB_ERROR');
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // addVideo
+  // --------------------------------------------------------------------------
+  describe('addVideo', () => {
+    it('adds video with explicit sequence number', async () => {
+      const video = makeVideo();
+      mockDb.query.mockResolvedValueOnce({ rows: [video], rowCount: 1 } as never);
+
+      const result = await ProofService.addVideo({
+        proofId: 'proof-1',
+        storageKey: 'proofs/video1.mp4',
+        contentType: 'video/mp4',
+        fileSizeBytes: 500000,
+        durationSeconds: 30,
+        sequenceNumber: 1,
+      });
+
+      expect(result.success).toBe(true);
+      expect(mockDb.query).toHaveBeenCalledTimes(1); // No count query when sequenceNumber is provided
+    });
+
+    it('auto-calculates sequence number via FOR UPDATE transaction if not provided', async () => {
+      // The transaction mock delegates to mockDb.query, so two mockDb.query calls are needed:
+      // call 0: COUNT query (returns count=1), call 1: INSERT (returns video row with seqNum=2)
+      mockDb.query
+        .mockResolvedValueOnce({ rows: [{ count: '1' }], rowCount: 1 } as never) // COUNT FOR UPDATE
+        .mockResolvedValueOnce({ rows: [makeVideo({ sequence_number: 2 })], rowCount: 1 } as never); // INSERT
+
+      const result = await ProofService.addVideo({
+        proofId: 'proof-1',
+        storageKey: 'proofs/video2.mp4',
+        fileSizeBytes: 250000,
+        durationSeconds: 15,
+      });
+
+      expect(result.success).toBe(true);
+      if (result.success) expect(result.data.sequence_number).toBe(2);
+      expect(mockDb.query).toHaveBeenCalledTimes(2);
+    });
+
+    it('returns DB_ERROR on failure', async () => {
+      mockDb.query.mockRejectedValueOnce(new Error('insert failed'));
+
+      const result = await ProofService.addVideo({
+        proofId: 'proof-1',
+        storageKey: 'key',
+        contentType: 'video/mp4',
+        fileSizeBytes: 1,
         sequenceNumber: 1,
       });
 

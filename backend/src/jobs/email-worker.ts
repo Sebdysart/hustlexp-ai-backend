@@ -428,11 +428,47 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
     log.error({ emailId, jobId: job.id, idempotencyKey: outboxKey, err: errorMessage, attempt: currentAttempts }, 'Email send error');
     
     // Handle SendGrid suppression errors (bounces, complaints, unsubscribes)
-    const isSuppressionError = errorMessage.includes('suppressed') ||
-                               errorMessage.includes('bounce') ||
-                               errorMessage.includes('complaint') ||
-                               errorMessage.includes('unsubscribe');
-    
+    // Only treat as a hard suppression when SendGrid returns a structured delivery-failure
+    // status code. Raw string matching on errorMessage risks permanently silencing a user
+    // on a transient error whose message coincidentally contains "bounce" or "suppressed".
+    //
+    // SendGrid permanent-failure codes:
+    //   550  — Mailbox does not exist / hard bounce
+    //   551  — User not local / forwarding failed
+    //   552  — Mailbox full (treated as hard bounce by SG)
+    //   553  — Mailbox name not allowed
+    //   554  — Transaction failed / permanent rejection
+    //   421  — (transient) — NOT a suppression signal
+    //
+    // The @sendgrid/mail client wraps HTTP errors as objects with a `code` field and
+    // a nested `response.body.errors[].message`. We inspect the structured code first,
+    // then fall back to checking the top-level error code property.
+    const sgError = error as Record<string, unknown>;
+    const sgCode = typeof sgError.code === 'number' ? sgError.code : NaN;
+    // HTTP 400 from SendGrid on known suppression list membership
+    const sgBody = sgError.response as Record<string, unknown> | undefined;
+    const sgResponseBody = sgBody?.body as Record<string, unknown> | undefined;
+    const sgErrors: Array<{ message?: string }> = Array.isArray(sgResponseBody?.errors)
+      ? (sgResponseBody!.errors as Array<{ message?: string }>)
+      : [];
+
+    // Structured suppression: HTTP 4xx hard-bounce codes or explicit suppression list hit
+    const HARD_BOUNCE_HTTP_CODES = new Set([550, 551, 552, 553, 554]);
+    const isSgHardBounce = HARD_BOUNCE_HTTP_CODES.has(sgCode);
+    // SendGrid returns HTTP 400 with error messages referencing suppression lists
+    const SUPPRESSION_ERROR_MESSAGES = [
+      'The from address does not match a verified Sender Identity',
+    ] as const;
+    // Only match exact known SendGrid suppression list error messages — not substring
+    const isSgSuppressionListError = sgCode === 400 && sgErrors.some(e =>
+      typeof e.message === 'string' && SUPPRESSION_ERROR_MESSAGES.some(known => e.message === known)
+    );
+
+    const isSuppressionError = isSgHardBounce || isSgSuppressionListError;
+
+    // Truncate suppressed_reason to 500 chars before storing — prevent oversized DB writes
+    const suppressedReason = errorMessage.substring(0, 500);
+
     if (isSuppressionError && userId) {
       // Mark user as do_not_email
       await db.query(
@@ -444,8 +480,8 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
       ).catch(dbError => {
         log.error({ userId, err: dbError instanceof Error ? dbError.message : 'Unknown error' }, 'Suppression user update failed');
       });
-      
-      // Update email_outbox with suppression reason
+
+      // Update email_outbox with suppression reason (truncated to 500 chars)
       await db.query(
         `UPDATE email_outbox
          SET status = 'suppressed',
@@ -453,10 +489,10 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
              suppressed_at = NOW(),
              updated_at = NOW()
          WHERE id = $2`,
-        [errorMessage, emailId]
+        [suppressedReason, emailId]
       );
-      
-      log.info({ emailId, jobId: job.id, idempotencyKey: outboxKey, suppressedReason: errorMessage, userId }, 'Email suppressed due to bounce/complaint');
+
+      log.info({ emailId, jobId: job.id, idempotencyKey: outboxKey, suppressedReason, userId, sgCode }, 'Email suppressed due to hard bounce/complaint');
     } else {
       // Update email_outbox with error (for retry)
       // Check current attempts to determine if we should mark as failed (poison message)

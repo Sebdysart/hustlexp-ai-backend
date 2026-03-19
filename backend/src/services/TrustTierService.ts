@@ -464,8 +464,11 @@ export const TrustTierService = {
 
     // Emit escrow refund outbox events for any funded escrows on active tasks
     // before cancelling them, so escrows are not stranded on ban.
+    // MATCHING, ACCEPTED, IN_PROGRESS, PROOF_SUBMITTED are all states where a
+    // worker has an active assignment. DISPUTED tasks have LOCKED_DISPUTE escrows
+    // handled separately and are intentionally excluded here.
     const activeTasks = await db.query<{ id: string }>(
-      `SELECT id FROM tasks WHERE worker_id = $1 AND state IN ('ACCEPTED', 'IN_PROGRESS', 'PROOF_SUBMITTED')`,
+      `SELECT id FROM tasks WHERE worker_id = $1 AND state IN ('MATCHING', 'ACCEPTED', 'IN_PROGRESS', 'PROOF_SUBMITTED')`,
       [userId]
     );
     for (const task of activeTasks.rows) {
@@ -486,12 +489,12 @@ export const TrustTierService = {
       }
     }
 
-    // Cancel active tasks
+    // Cancel active tasks — must match exactly the state set used for escrow refund queries above.
     await db.query(
       `UPDATE tasks
        SET state = 'CANCELLED', updated_at = NOW()
        WHERE worker_id = $1
-         AND state IN ('ACCEPTED', 'PROOF_SUBMITTED', 'WORKING')`,
+         AND state IN ('MATCHING', 'ACCEPTED', 'IN_PROGRESS', 'PROOF_SUBMITTED')`,
       [userId]
     );
 

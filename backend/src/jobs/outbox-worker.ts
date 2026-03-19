@@ -80,14 +80,25 @@ export async function processOutboxEvents(batchSize: number = 100): Promise<{
   let failed = 0;
   
   try {
-    // Fetch pending outbox events inside a transaction so that FOR UPDATE SKIP
-    // LOCKED actually holds row-level locks for the duration of the SELECT +
-    // UPDATE pair.  Without an explicit transaction the lock is released
+    // Fetch pending outbox events and mark them as 'enqueued' inside a single
+    // transaction so that the FOR UPDATE SKIP LOCKED lock is held for the
+    // entire SELECT + UPDATE pair.  Without this, the lock is released
     // immediately after the SELECT, leaving a window where two workers can read
     // the same rows, both call queue.add(), and both see rowCount=0 on the
     // subsequent CAS UPDATE — permanently stranding the event in 'pending'.
-    const result = await db.transaction(async (txQuery) => {
-      return txQuery<OutboxEvent>(
+    //
+    // Strategy:
+    //   1. SELECT … FOR UPDATE SKIP LOCKED  — lock the batch
+    //   2. For each event: UPDATE status='enqueued' (CAS on status='pending')
+    //      inside the same transaction so the lock covers both statements.
+    //   3. COMMIT — release the locks.
+    //   4. Enqueue to BullMQ outside the transaction (network I/O must not
+    //      hold a DB lock — that would risk long-held locks and deadlocks).
+    //
+    // The CAS WHERE clause remains as a belt-and-suspenders guard for workers
+    // that crashed mid-flight between SELECT and UPDATE on a prior cycle.
+    const claimedEvents = await db.transaction(async (txQuery) => {
+      const selectResult = await txQuery<OutboxEvent>(
         `SELECT * FROM outbox_events
          WHERE status = 'pending'
          ORDER BY created_at ASC
@@ -95,9 +106,28 @@ export async function processOutboxEvents(batchSize: number = 100): Promise<{
          FOR UPDATE SKIP LOCKED`,
         [batchSize]
       );
+
+      const claimed: OutboxEvent[] = [];
+      for (const event of selectResult.rows) {
+        const updateResult = await txQuery(
+          `UPDATE outbox_events
+           SET status = 'enqueued',
+               enqueued_at = NOW(),
+               attempts = attempts + 1
+           WHERE id = $1
+             AND status = 'pending'`, // CAS guard (belt-and-suspenders)
+          [event.id]
+        );
+        if (updateResult.rowCount > 0) {
+          claimed.push(event);
+        } else {
+          log.warn({ eventId: event.id }, 'Outbox event already processed by another worker, skipping');
+        }
+      }
+      return claimed;
     });
 
-    for (const event of result.rows) {
+    for (const event of claimedEvents) {
       try {
         // Get the appropriate queue
         const queue = getQueue(event.queue_name);
@@ -109,7 +139,7 @@ export async function processOutboxEvents(batchSize: number = 100): Promise<{
           jobPayload = { ...event.payload, _sig: signature };
         }
 
-        // Enqueue job with idempotency key
+        // Enqueue job with idempotency key (outside the transaction — no DB lock held)
         const job = await queue.add(
           event.event_type,
           {
@@ -124,26 +154,13 @@ export async function processOutboxEvents(batchSize: number = 100): Promise<{
           }
         );
 
-        // CAS guard: only update if still pending.  FOR UPDATE SKIP LOCKED
-        // already ensures no other worker holds these rows, but the guard
-        // remains as a belt-and-suspenders safety net (e.g. a worker that
-        // crashed mid-flight between SELECT and UPDATE on a prior cycle).
-        const updateResult = await db.query(
+        // Persist the BullMQ job ID now that we have it (row already 'enqueued')
+        await db.query(
           `UPDATE outbox_events
-           SET status = 'enqueued',
-               enqueued_at = NOW(),
-               bullmq_job_id = $1,
-               attempts = attempts + 1
-           WHERE id = $2
-             AND status = 'pending'`, // CRITICAL: Only update if still pending (prevents double-enqueue)
+           SET bullmq_job_id = $1
+           WHERE id = $2`,
           [job.id || event.idempotency_key, event.id]
         );
-
-        // If update affected 0 rows, another worker already processed this event
-        if (updateResult.rowCount === 0) {
-          log.warn({ eventId: event.id }, 'Outbox event already processed by another worker, skipping');
-          continue; // Skip to next event
-        }
 
         processed++;
       } catch (error) {
@@ -152,13 +169,15 @@ export async function processOutboxEvents(batchSize: number = 100): Promise<{
         errors.push({ eventId: event.id, error: errorMessage });
 
         const MAX_OUTBOX_ATTEMPTS = 5;
-        // If below max attempts, reset to pending for retry on next poll.
-        // If at max, permanently fail and require ops intervention.
+        // The transaction already incremented attempts and set status='enqueued'.
+        // queue.add() failed, so roll back the status: if still below the max,
+        // reset to 'pending' so the next poll will retry; otherwise mark 'failed'.
+        // Note: `event.attempts` reflects the value at SELECT time (before the +1
+        // the transaction applied), so after the transaction attempts = event.attempts + 1.
         await db.query(
           `UPDATE outbox_events
-           SET status = CASE WHEN attempts + 1 < $1 THEN 'pending' ELSE 'failed' END,
-               error_message = $2,
-               attempts = attempts + 1
+           SET status = CASE WHEN attempts < $1 THEN 'pending' ELSE 'failed' END,
+               error_message = $2
            WHERE id = $3`,
           [MAX_OUTBOX_ATTEMPTS, errorMessage, event.id]
         );

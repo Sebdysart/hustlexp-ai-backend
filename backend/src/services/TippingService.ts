@@ -144,23 +144,26 @@ export const TippingService = {
 
       // Step 2 — Create Stripe PI outside any DB transaction.
       //   If the subsequent INSERT fails we cancel the PI to avoid orphaning it.
-      const paymentIntent = await stripe!.paymentIntents.create({
-        amount: amountCents,
-        currency: 'usd',
-        automatic_payment_methods: { enabled: true },
-        metadata: {
-          type: 'tip',
-          task_id: taskId,
-          poster_id: posterId,
-          worker_id: task.worker_id,
-        },
-        ...(checkResult.workerStripeId ? {
-          transfer_data: {
-            destination: checkResult.workerStripeId,
+      const paymentIntent = await stripe!.paymentIntents.create(
+        {
+          amount: amountCents,
+          currency: 'usd',
+          automatic_payment_methods: { enabled: true },
+          metadata: {
+            type: 'tip',
+            task_id: taskId,
+            poster_id: posterId,
+            worker_id: task.worker_id,
           },
-        } : {}),
-        description: `HustleXP Tip for Task ${taskId}`,
-      });
+          ...(checkResult.workerStripeId ? {
+            transfer_data: {
+              destination: checkResult.workerStripeId,
+            },
+          } : {}),
+          description: `HustleXP Tip for Task ${taskId}`,
+        },
+        { idempotencyKey: `tip_pi_${taskId}_${posterId}_${amountCents}` }
+      );
 
       // Step 3 — Insert the tip row referencing the newly created PI.
       //   On failure, cancel the PI to keep Stripe clean.

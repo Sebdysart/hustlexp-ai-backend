@@ -196,6 +196,13 @@ app.use('/trpc/dispute.*', rateLimitMiddleware('mutation'));        // 60/min �
 app.use('/trpc/xpTax.*', rateLimitMiddleware('mutation'));          // 60/min — XP tax mutations
 app.use('/trpc/incidents.*', rateLimitMiddleware('mutation'));      // 60/min — incident reporting (admin-authed separately)
 
+// Tier 5b: Sensitive user mutations — explicit limits to prevent queue flooding
+// user.requestErasure gets auth tier (20/min) — GDPR erasure queue flood protection
+// Must precede the general /trpc/* catch-all so this tighter limit wins.
+app.use('/trpc/user.requestErasure', rateLimitMiddleware('auth'));        // 20/min — GDPR erasure queue flood protection
+app.use('/trpc/user.updateProfile', rateLimitMiddleware('mutation'));     // 60/min — profile write mutations
+app.use('/trpc/user.completeOnboarding', rateLimitMiddleware('mutation')); // 60/min — onboarding write mutations
+
 // Tier 6: Public IP rate limit (60/min) — unauthenticated tRPC requests only.
 // Runs before the user-bucket catch-all; skipped automatically when a Bearer
 // token is present (publicIpRateLimitMiddleware bails out early in that case).
@@ -697,13 +704,13 @@ app.post('/api/ui/violations', async (c) => {
 
   try {
     await db.query(
-      `INSERT INTO admin_actions (admin_user_id, admin_role, action_type, action_details, result)
-       VALUES ($1, 'user', 'UI_VIOLATION', $2, 'logged')`,
+      `INSERT INTO admin_actions (admin_id, action_type, target_id, reason, metadata)
+       VALUES ($1, 'UI_VIOLATION', NULL, $2, $3)`,
       [
         user.id,
+        body.rule,
         JSON.stringify({
           violationType: body.type,
-          rule: body.rule,
           component: body.component,
           context: body.context,
           severity: body.severity,
