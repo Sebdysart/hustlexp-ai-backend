@@ -15,6 +15,7 @@
  */
 
 import { Context } from 'hono';
+import { HTTPException } from 'hono/http-exception';
 import { addConnection, removeConnection, type SSEConnection } from './connection-registry.js';
 import { firebaseAuth } from '../auth/firebase.js';
 import { db } from '../db.js';
@@ -47,13 +48,18 @@ async function getAuthUser(c: Context): Promise<User | null> {
   
   const token = authHeader.slice(7);
   try {
-    const decoded = await firebaseAuth.verifyIdToken(token);
+    const decoded = await firebaseAuth.verifyIdToken(token, true);
     const result = await db.query<User>(
       'SELECT * FROM users WHERE firebase_uid = $1',
       [decoded.uid]
     );
-    return result.rows[0] || null;
-  } catch {
+    const user = result.rows[0] || null;
+    if (user && (user.is_banned || user.account_status === 'SUSPENDED' || user.account_status === 'DELETED')) {
+      throw new HTTPException(403, { message: 'Account suspended' });
+    }
+    return user;
+  } catch (err) {
+    if (err instanceof HTTPException) throw err;
     return null;
   }
 }

@@ -10,6 +10,7 @@ import { createHash } from 'crypto';
 import type { User } from './types.js';
 import { redis } from './cache/redis.js';
 import { REVOCATION_MARKER_TTL_SECONDS } from './auth/constants.js';
+import { db } from './db.js';
 
 // Matches the REVOKED_KEY pattern used in auth/middleware.ts.
 // Must be kept in sync if that constant is ever renamed.
@@ -65,6 +66,26 @@ export async function invalidateAuthCacheForUser(userId: string, firebaseUid?: s
     if (entry.user.id === userId) {
       collectedFirebaseUids.add(entry.firebaseUid);
       authCache.delete(key);
+    }
+  }
+
+  // 1b. If no firebaseUid was supplied and none was collected from the
+  //     in-process cache (e.g. this replica never saw the user, or all
+  //     entries had already expired), fall back to a DB lookup so the
+  //     Redis revocation marker is still written on every replica that
+  //     handles the ban/suspend/delete operation.
+  if (collectedFirebaseUids.size === 0 && userId) {
+    try {
+      const row = await db.query<{ firebase_uid: string }>(
+        'SELECT firebase_uid FROM users WHERE id = $1',
+        [userId]
+      );
+      if (row.rows[0]) collectedFirebaseUids.add(row.rows[0].firebase_uid);
+    } catch (err) {
+      console.error(
+        `[auth-cache] Failed to fetch firebase_uid for userId=${userId} during invalidation:`,
+        err,
+      );
     }
   }
 

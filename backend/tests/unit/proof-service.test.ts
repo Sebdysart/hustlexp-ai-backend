@@ -6,12 +6,19 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-vi.mock('../../src/db', () => ({
-  db: { query: vi.fn() },
-  isInvariantViolation: vi.fn(() => false),
-  isUniqueViolation: vi.fn(() => false),
-  getErrorMessage: vi.fn((code: string) => `Error ${code}`),
-}));
+vi.mock('../../src/db', () => {
+  const queryFn = vi.fn();
+  return {
+    db: {
+      query: queryFn,
+      transaction: vi.fn((fn: (q: typeof queryFn) => Promise<unknown>) => fn(queryFn)),
+      serializableTransaction: vi.fn((fn: (q: typeof queryFn) => Promise<unknown>) => fn(queryFn)),
+    },
+    isInvariantViolation: vi.fn(() => false),
+    isUniqueViolation: vi.fn(() => false),
+    getErrorMessage: vi.fn((code: string) => `Error ${code}`),
+  };
+});
 
 vi.mock('../../src/logger', () => ({
   logger: {
@@ -358,8 +365,9 @@ describe('ProofService', () => {
       const rejectedProof = makeProof({ state: 'REJECTED', reviewed_by: 'admin-1', rejection_reason: 'Bad quality' });
 
       mockDb.query
-        .mockResolvedValueOnce({ rows: [proof], rowCount: 1 } as never) // SELECT proof
-        .mockResolvedValueOnce({ rows: [rejectedProof], rowCount: 1 } as never); // UPDATE
+        .mockResolvedValueOnce({ rows: [proof], rowCount: 1 } as never)                      // SELECT proof (outside tx)
+        .mockResolvedValueOnce({ rows: [{ state: 'SUBMITTED' }], rowCount: 1 } as never)     // SELECT state FOR UPDATE (inside tx)
+        .mockResolvedValueOnce({ rows: [rejectedProof], rowCount: 1 } as never);             // UPDATE (inside tx)
 
       const result = await ProofService.review({
         proofId: 'proof-1',
@@ -377,9 +385,10 @@ describe('ProofService', () => {
       const acceptedProof = makeProof({ state: 'ACCEPTED', reviewed_by: 'admin-1' });
 
       mockDb.query
-        .mockResolvedValueOnce({ rows: [proof], rowCount: 1 } as never) // SELECT proof
-        .mockResolvedValueOnce({ rows: [{ description: 'Fix pipe', before_photo_url: null }], rowCount: 1 } as never) // SELECT task desc
-        .mockResolvedValueOnce({ rows: [acceptedProof], rowCount: 1 } as never); // UPDATE
+        .mockResolvedValueOnce({ rows: [proof], rowCount: 1 } as never)                                               // SELECT proof (outside tx)
+        .mockResolvedValueOnce({ rows: [{ description: 'Fix pipe', before_photo_url: null }], rowCount: 1 } as never) // SELECT task desc (AI pipeline)
+        .mockResolvedValueOnce({ rows: [{ state: 'SUBMITTED' }], rowCount: 1 } as never)                             // SELECT state FOR UPDATE (inside tx)
+        .mockResolvedValueOnce({ rows: [acceptedProof], rowCount: 1 } as never);                                     // UPDATE (inside tx)
 
       vi.mocked(JudgeAIService.synthesizeVerdict).mockResolvedValueOnce({
         success: true,
@@ -407,8 +416,9 @@ describe('ProofService', () => {
       const proof = makeProof({ state: 'SUBMITTED' });
 
       mockDb.query
-        .mockResolvedValueOnce({ rows: [proof], rowCount: 1 } as never) // SELECT proof
-        .mockResolvedValueOnce({ rows: [{ description: 'Clean house', before_photo_url: null }], rowCount: 1 } as never); // SELECT task desc
+        .mockResolvedValueOnce({ rows: [proof], rowCount: 1 } as never)                                                   // SELECT proof (outside tx)
+        .mockResolvedValueOnce({ rows: [{ description: 'Clean house', before_photo_url: null }], rowCount: 1 } as never); // SELECT task desc (AI pipeline)
+      // JUDGE_REJECTED path — no transaction/UPDATE reached
 
       vi.mocked(JudgeAIService.synthesizeVerdict).mockResolvedValueOnce({
         success: true,
@@ -437,9 +447,10 @@ describe('ProofService', () => {
       const acceptedProof = makeProof({ state: 'ACCEPTED', reviewed_by: 'admin-1' });
 
       mockDb.query
-        .mockResolvedValueOnce({ rows: [proof], rowCount: 1 } as never)
-        .mockResolvedValueOnce({ rows: [{ description: 'Yard work', before_photo_url: null }], rowCount: 1 } as never)
-        .mockResolvedValueOnce({ rows: [acceptedProof], rowCount: 1 } as never);
+        .mockResolvedValueOnce({ rows: [proof], rowCount: 1 } as never)                                              // SELECT proof (outside tx)
+        .mockResolvedValueOnce({ rows: [{ description: 'Yard work', before_photo_url: null }], rowCount: 1 } as never) // SELECT task desc (AI pipeline)
+        .mockResolvedValueOnce({ rows: [{ state: 'SUBMITTED' }], rowCount: 1 } as never)                            // SELECT state FOR UPDATE (inside tx)
+        .mockResolvedValueOnce({ rows: [acceptedProof], rowCount: 1 } as never);                                    // UPDATE (inside tx)
 
       vi.mocked(JudgeAIService.synthesizeVerdict).mockResolvedValueOnce({
         success: true,
@@ -467,9 +478,10 @@ describe('ProofService', () => {
       const acceptedProof = makeProof({ state: 'ACCEPTED', reviewed_by: 'admin-1' });
 
       mockDb.query
-        .mockResolvedValueOnce({ rows: [proof], rowCount: 1 } as never)
-        .mockResolvedValueOnce({ rows: [{ description: 'task', before_photo_url: null }], rowCount: 1 } as never)
-        .mockResolvedValueOnce({ rows: [acceptedProof], rowCount: 1 } as never);
+        .mockResolvedValueOnce({ rows: [proof], rowCount: 1 } as never)                                             // SELECT proof (outside tx)
+        .mockResolvedValueOnce({ rows: [{ description: 'task', before_photo_url: null }], rowCount: 1 } as never)  // SELECT task desc (AI pipeline)
+        .mockResolvedValueOnce({ rows: [{ state: 'SUBMITTED' }], rowCount: 1 } as never)                           // SELECT state FOR UPDATE (inside tx)
+        .mockResolvedValueOnce({ rows: [acceptedProof], rowCount: 1 } as never);                                   // UPDATE (inside tx)
 
       vi.mocked(JudgeAIService.synthesizeVerdict).mockResolvedValueOnce({
         success: false,
@@ -496,10 +508,11 @@ describe('ProofService', () => {
       const acceptedProof = makeProof({ state: 'ACCEPTED' });
 
       mockDb.query
-        .mockResolvedValueOnce({ rows: [proof], rowCount: 1 } as never) // SELECT proof + submissions
-        .mockResolvedValueOnce({ rows: [{ location_lat: 40.7128, location_lng: -74.006 }], rowCount: 1 } as never) // task location
-        .mockResolvedValueOnce({ rows: [{ description: 'task', before_photo_url: 'https://r2.dev/before.jpg' }], rowCount: 1 } as never) // task desc
-        .mockResolvedValueOnce({ rows: [acceptedProof], rowCount: 1 } as never); // UPDATE
+        .mockResolvedValueOnce({ rows: [proof], rowCount: 1 } as never)                                                                   // SELECT proof (outside tx)
+        .mockResolvedValueOnce({ rows: [{ location_lat: 40.7128, location_lng: -74.006 }], rowCount: 1 } as never)                        // task location (GPS pipeline)
+        .mockResolvedValueOnce({ rows: [{ description: 'task', before_photo_url: 'https://r2.dev/before.jpg' }], rowCount: 1 } as never)  // task desc (photo pipeline)
+        .mockResolvedValueOnce({ rows: [{ state: 'SUBMITTED' }], rowCount: 1 } as never)                                                  // SELECT state FOR UPDATE (inside tx)
+        .mockResolvedValueOnce({ rows: [acceptedProof], rowCount: 1 } as never);                                                          // UPDATE (inside tx)
 
       vi.mocked(BiometricVerificationService.analyzeProofSubmission).mockResolvedValueOnce({
         success: true,
@@ -544,12 +557,13 @@ describe('ProofService', () => {
     it('handles invariant violation during review', async () => {
       const proof = makeProof({ state: 'SUBMITTED' });
 
-      mockDb.query.mockResolvedValueOnce({ rows: [proof], rowCount: 1 } as never);
-
-      // For REJECTED decision, no AI pipeline runs — goes straight to UPDATE
       const invariantError = { code: 'HX003', message: 'invariant' };
-      mockDb.query.mockRejectedValueOnce(invariantError);
       mockIsInvariantViolation.mockReturnValueOnce(true);
+
+      mockDb.query
+        .mockResolvedValueOnce({ rows: [proof], rowCount: 1 } as never)              // SELECT proof (outside tx)
+        .mockResolvedValueOnce({ rows: [{ state: 'SUBMITTED' }], rowCount: 1 } as never) // SELECT state FOR UPDATE (inside tx)
+        .mockRejectedValueOnce(invariantError);                                       // UPDATE throws invariant violation (inside tx)
 
       const result = await ProofService.review({
         proofId: 'proof-1',

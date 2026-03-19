@@ -56,6 +56,51 @@ vi.mock('../../src/jobs/queues', () => ({
   generateIdempotencyKey: vi.fn(() => 'idempotency-key-test-123'),
 }));
 
+vi.mock('../../src/config', () => ({
+  config: {
+    stripe: { secretKey: 'sk_test_fake123' },
+  },
+}));
+
+// vi.hoisted() runs before vi.mock() hoisting, so these refs are safe to use
+// inside the MockStripe class initializer even though vi.mock is hoisted.
+const { mockPaymentIntentsCancel } = vi.hoisted(() => ({
+  mockPaymentIntentsCancel: vi.fn(),
+}));
+
+vi.mock('stripe', () => ({
+  default: class MockStripe {
+    paymentIntents = {
+      cancel: mockPaymentIntentsCancel,
+    };
+  },
+}));
+
+vi.mock('../../src/services/EscrowService', () => ({
+  EscrowService: {
+    refund: vi.fn().mockResolvedValue({ success: true }),
+    partialRefund: vi.fn().mockResolvedValue({ success: true }),
+  },
+}));
+
+vi.mock('../../src/services/TaskService', () => ({
+  TaskService: {
+    cancel: vi.fn().mockResolvedValue({ success: true }),
+  },
+}));
+
+vi.mock('../../src/auth-cache', () => ({
+  invalidateAuthCacheForUser: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock('../../src/realtime/connection-registry', () => ({
+  forceDisconnectUser: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock('../../src/auth/middleware', () => ({
+  revokeUserSessions: vi.fn().mockResolvedValue(undefined),
+}));
+
 // ---------------------------------------------------------------------------
 // Imports
 // ---------------------------------------------------------------------------
@@ -63,12 +108,18 @@ vi.mock('../../src/jobs/queues', () => ({
 import { db } from '../../src/db';
 import { GDPRService, collectUserDataForExport } from '../../src/services/GDPRService';
 import { NotificationService } from '../../src/services/NotificationService';
+import { EscrowService } from '../../src/services/EscrowService';
+import { TaskService } from '../../src/services/TaskService';
 
 const mockDb = vi.mocked(db);
 const mockNotification = vi.mocked(NotificationService);
+const mockEscrowService = vi.mocked(EscrowService);
+const mockTaskService = vi.mocked(TaskService);
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockPaymentIntentsCancel.mockReset();
+  mockPaymentIntentsCancel.mockResolvedValue({ id: 'pi_test', status: 'canceled' });
 });
 
 // ===========================================================================
@@ -431,6 +482,139 @@ describe('GDPRService.executeDeletion', () => {
 
     // Notification failure should NOT fail the deletion
     expect(result.success).toBe(true);
+  });
+
+  // TT-04: PENDING escrow PI cancellation
+  it('cancels Stripe PaymentIntent and refunds PENDING escrow on poster task deletion', async () => {
+    const pastDeadline = new Date(Date.now() - 86400000);
+
+    // 1. Fetch request
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ id: 'req-1', user_id: 'user-1', status: 'pending', request_type: 'deletion', deadline: pastDeadline }],
+      rowCount: 1,
+    } as never);
+    // 2. UPDATE to processing
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+    // 3. SELECT firebase_uid (BUG GG1 FIX — fetched before deleteAndAnonymizeUserData)
+    mockDb.query.mockResolvedValueOnce({ rows: [{ firebase_uid: 'firebase-uid-1' }], rowCount: 1 } as never);
+    // 4. (inside deleteAndAnonymizeUserData) SELECT open poster tasks — one task returned
+    mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'task-poster-1' }], rowCount: 1 } as never);
+    // 5. SELECT escrows for poster task — PENDING escrow with PI id
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ id: 'escrow-pending-1', state: 'PENDING', stripe_payment_intent_id: 'pi_test_pending' }],
+      rowCount: 1,
+    } as never);
+    // 6. SELECT worker escrows (none)
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+    // 7. serializableTransaction
+    const serializableQuery = vi.fn().mockResolvedValue({ rows: [], rowCount: 0 } as never);
+    mockDb.serializableTransaction.mockImplementation(async (fn) => fn(serializableQuery) as Promise<unknown>);
+    // 8. UPDATE to completed
+    mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'req-1', status: 'completed' }], rowCount: 1 } as never);
+    mockNotification.createNotification.mockResolvedValue({ success: true } as never);
+
+    const result = await GDPRService.executeDeletion('req-1');
+
+    expect(result.success).toBe(true);
+    // Stripe PI should have been cancelled
+    expect(mockPaymentIntentsCancel).toHaveBeenCalledWith('pi_test_pending');
+    // EscrowService.refund should have been called for the PENDING escrow
+    expect(mockEscrowService.refund).toHaveBeenCalledWith({ escrowId: 'escrow-pending-1' });
+  });
+
+  it('does not cancel Stripe PI for PENDING escrow without a stripe_payment_intent_id', async () => {
+    const pastDeadline = new Date(Date.now() - 86400000);
+
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ id: 'req-1', user_id: 'user-1', status: 'pending', request_type: 'deletion', deadline: pastDeadline }],
+      rowCount: 1,
+    } as never);
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // processing
+    mockDb.query.mockResolvedValueOnce({ rows: [{ firebase_uid: null }], rowCount: 1 } as never); // firebase_uid
+    mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'task-poster-2' }], rowCount: 1 } as never); // poster tasks
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ id: 'escrow-pending-2', state: 'PENDING', stripe_payment_intent_id: null }],
+      rowCount: 1,
+    } as never); // escrows
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // worker escrows
+    mockDb.serializableTransaction.mockImplementation(async (fn) => {
+      const q = vi.fn().mockResolvedValue({ rows: [], rowCount: 0 } as never);
+      return fn(q) as Promise<unknown>;
+    });
+    mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'req-1', status: 'completed' }] } as never);
+    mockNotification.createNotification.mockResolvedValue({ success: true } as never);
+
+    const result = await GDPRService.executeDeletion('req-1');
+
+    expect(result.success).toBe(true);
+    expect(mockPaymentIntentsCancel).not.toHaveBeenCalled();
+    expect(mockEscrowService.refund).toHaveBeenCalledWith({ escrowId: 'escrow-pending-2' });
+  });
+
+  it('continues when Stripe PI cancellation throws for PENDING escrow', async () => {
+    const pastDeadline = new Date(Date.now() - 86400000);
+
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ id: 'req-1', user_id: 'user-1', status: 'pending', request_type: 'deletion', deadline: pastDeadline }],
+      rowCount: 1,
+    } as never);
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // processing
+    mockDb.query.mockResolvedValueOnce({ rows: [{ firebase_uid: null }], rowCount: 1 } as never); // firebase_uid
+    mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'task-poster-3' }], rowCount: 1 } as never); // poster tasks
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ id: 'escrow-pending-3', state: 'PENDING', stripe_payment_intent_id: 'pi_already_cancelled' }],
+      rowCount: 1,
+    } as never); // escrows
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // worker escrows
+    mockDb.serializableTransaction.mockImplementation(async (fn) => {
+      const q = vi.fn().mockResolvedValue({ rows: [], rowCount: 0 } as never);
+      return fn(q) as Promise<unknown>;
+    });
+    mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'req-1', status: 'completed' }] } as never);
+    mockNotification.createNotification.mockResolvedValue({ success: true } as never);
+
+    // Stripe throws (PI already cancelled on Stripe side)
+    mockPaymentIntentsCancel.mockRejectedValueOnce(new Error('PaymentIntent cannot be canceled'));
+
+    const result = await GDPRService.executeDeletion('req-1');
+
+    // Deletion should still succeed — PI failure is warn-and-continue
+    expect(result.success).toBe(true);
+    expect(mockEscrowService.refund).toHaveBeenCalledWith({ escrowId: 'escrow-pending-3' });
+  });
+
+  // TT-04: LOCKED_DISPUTE where poster is the deleted user
+  it('calls partialRefund (0/100) for LOCKED_DISPUTE escrow on poster task deletion', async () => {
+    const pastDeadline = new Date(Date.now() - 86400000);
+
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ id: 'req-1', user_id: 'user-1', status: 'pending', request_type: 'deletion', deadline: pastDeadline }],
+      rowCount: 1,
+    } as never);
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // processing
+    mockDb.query.mockResolvedValueOnce({ rows: [{ firebase_uid: null }], rowCount: 1 } as never); // firebase_uid
+    mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'task-poster-4' }], rowCount: 1 } as never); // poster tasks
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ id: 'escrow-dispute-1', state: 'LOCKED_DISPUTE', stripe_payment_intent_id: null }],
+      rowCount: 1,
+    } as never); // escrows
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // worker escrows
+    mockDb.serializableTransaction.mockImplementation(async (fn) => {
+      const q = vi.fn().mockResolvedValue({ rows: [], rowCount: 0 } as never);
+      return fn(q) as Promise<unknown>;
+    });
+    mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'req-1', status: 'completed' }] } as never);
+    mockNotification.createNotification.mockResolvedValue({ success: true } as never);
+
+    const result = await GDPRService.executeDeletion('req-1');
+
+    expect(result.success).toBe(true);
+    expect(mockEscrowService.partialRefund).toHaveBeenCalledWith({
+      escrowId: 'escrow-dispute-1',
+      workerPercent: 0,
+      posterPercent: 100,
+    });
+    expect(mockEscrowService.refund).not.toHaveBeenCalled();
   });
 });
 

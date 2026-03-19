@@ -202,43 +202,10 @@ export const ProofService = {
   submit: async (params: SubmitProofParams): Promise<ServiceResult<Proof>> => {
     const { taskId, submitterId, description } = params;
 
+    // FIX UU-05: Wrap read+duplicate-check+insert in a single transaction with FOR UPDATE
+    // locks so concurrent submissions cannot both pass the duplicate check and both INSERT.
     try {
-      // FIX 1 + FIX 2: Fetch the task to validate submitter identity and task state
-      const taskCheck = await db.query<{ worker_id: string | null; state: string }>(
-        `SELECT worker_id, state FROM tasks WHERE id = $1`,
-        [taskId]
-      );
-
-      if (taskCheck.rows.length === 0) {
-        throw new TRPCError({ code: 'NOT_FOUND', message: `Task ${taskId} not found` });
-      }
-
-      const task = taskCheck.rows[0];
-
-      // FIX 1: Only the assigned worker may submit proof
-      if (task.worker_id !== submitterId) {
-        throw new TRPCError({ code: 'UNAUTHORIZED', message: 'Only the assigned worker can submit proof.' });
-      }
-
-      // FIX 2: Only allow proof submission on active task states
-      const PROOF_ALLOWED_STATES = ['accepted', 'in_progress', 'ACCEPTED', 'IN_PROGRESS'];
-      if (!PROOF_ALLOWED_STATES.includes(task.state)) {
-        throw new TRPCError({
-          code: 'PRECONDITION_FAILED',
-          message: `Cannot submit proof for a task in '${task.state}' state.`,
-        });
-      }
-
-      // FIX 6: Block duplicate active-proof submissions
-      const existing = await db.query(
-        `SELECT id FROM proofs WHERE task_id = $1 AND state IN ('pending', 'submitted', 'PENDING', 'SUBMITTED')`,
-        [taskId]
-      );
-      if (existing.rows.length > 0) {
-        throw new TRPCError({ code: 'CONFLICT', message: 'A proof is already pending review for this task.' });
-      }
-
-      // FIX 3: Require at least one form of proof content
+      // FIX 3: Require at least one form of proof content before touching the DB
       const hasDescription = typeof description === 'string' && description.trim().length > 0;
       const hasPhotos = Array.isArray(params.photoUrls) && params.photoUrls.length > 0;
       const hasLocation = params.gpsLatitude != null && params.gpsLongitude != null;
@@ -250,26 +217,66 @@ export const ProofService = {
         });
       }
 
-      // Create proof in PENDING state
-      const createResult = await db.query<Proof>(
-        `INSERT INTO proofs (task_id, submitter_id, state, description)
-         VALUES ($1, $2, 'PENDING', $3)
-         RETURNING *`,
-        [taskId, submitterId, description]
-      );
-      
-      const proof = createResult.rows[0];
-      
-      // Transition to SUBMITTED
-      const submitResult = await db.query<Proof>(
-        `UPDATE proofs
-         SET state = 'SUBMITTED', submitted_at = NOW()
-         WHERE id = $1
-         RETURNING *`,
-        [proof.id]
-      );
-      
-      return { success: true, data: submitResult.rows[0] };
+      const submittedProof = await db.transaction(async (query) => {
+        // FIX 1 + FIX 2: Lock the task row so concurrent submits are serialised.
+        const taskCheck = await query<{ worker_id: string | null; state: string }>(
+          `SELECT worker_id, state FROM tasks WHERE id = $1 FOR UPDATE`,
+          [taskId]
+        );
+
+        if (taskCheck.rows.length === 0) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: `Task ${taskId} not found` });
+        }
+
+        const task = taskCheck.rows[0];
+
+        // FIX 1: Only the assigned worker may submit proof
+        if (task.worker_id !== submitterId) {
+          throw new TRPCError({ code: 'UNAUTHORIZED', message: 'Only the assigned worker can submit proof.' });
+        }
+
+        // FIX 2: Only allow proof submission on active task states
+        const PROOF_ALLOWED_STATES = ['accepted', 'in_progress', 'ACCEPTED', 'IN_PROGRESS'];
+        if (!PROOF_ALLOWED_STATES.includes(task.state)) {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message: `Cannot submit proof for a task in '${task.state}' state.`,
+          });
+        }
+
+        // FIX 6 + UU-05: Lock any existing active proof rows so the duplicate check
+        // and INSERT are atomic — concurrent submissions both block here until one commits.
+        const existing = await query(
+          `SELECT id FROM proofs WHERE task_id = $1 AND state IN ('pending', 'submitted', 'PENDING', 'SUBMITTED') FOR UPDATE`,
+          [taskId]
+        );
+        if (existing.rows.length > 0) {
+          throw new TRPCError({ code: 'CONFLICT', message: 'A proof is already pending review for this task.' });
+        }
+
+        // Create proof in PENDING state
+        const createResult = await query<Proof>(
+          `INSERT INTO proofs (task_id, submitter_id, state, description)
+           VALUES ($1, $2, 'PENDING', $3)
+           RETURNING *`,
+          [taskId, submitterId, description]
+        );
+
+        const proof = createResult.rows[0];
+
+        // Transition to SUBMITTED
+        const submitResult = await query<Proof>(
+          `UPDATE proofs
+           SET state = 'SUBMITTED', submitted_at = NOW()
+           WHERE id = $1
+           RETURNING *`,
+          [proof.id]
+        );
+
+        return submitResult.rows[0];
+      });
+
+      return { success: true, data: submittedProof };
     } catch (error) {
       // Re-throw TRPCErrors (e.g. UNAUTHORIZED, PRECONDITION_FAILED, BAD_REQUEST, CONFLICT)
       if (error instanceof TRPCError) {
@@ -398,8 +405,15 @@ export const ProofService = {
   review: async (params: ReviewProofParams): Promise<ServiceResult<Proof>> => {
     const { proofId, reviewerId, decision, reason } = params;
 
+    // FIX UU-01: The entire read-pipeline-write sequence runs inside a transaction.
+    // The initial SELECT uses FOR UPDATE to acquire a row-level lock, preventing two
+    // concurrent reviewers from both reading state='SUBMITTED' and both succeeding.
+    // The final UPDATE includes AND state = 'SUBMITTED' as a belt-and-suspenders guard;
+    // if rowCount === 0 a concurrent reviewer won the race and we throw CONFLICT.
     try {
-      // Get current proof state with proof_submissions data
+      // Phase 1: Lock the proof row and run read-only validation BEFORE entering the
+      // expensive AI pipeline. If the proof is not in SUBMITTED state we fail fast
+      // without holding any locks during the AI calls.
       const currentResult = await db.query<Proof & {
         photo_url?: string;
         gps_coordinates?: { lat: number; lng: number } | null;
@@ -436,6 +450,10 @@ export const ProofService = {
           },
         };
       }
+
+      // Phase 2: Run the (potentially long) AI pipeline outside any transaction so we
+      // don't hold a lock during network I/O. The final write transaction below will
+      // re-verify state and use FOR UPDATE + rowCount check to detect races.
 
       // v2.0.0: Automated AI verification pipeline on every proof acceptance
       // Runs all subsystems, collects signals, feeds to JudgeAI for synthesis.
@@ -572,17 +590,46 @@ export const ProofService = {
         }
       }
 
-      // Update proof (database triggers will enforce INV-3 when task tries to complete)
-      const result = await db.query<Proof>(
-        `UPDATE proofs
-         SET state = $1, reviewed_by = $2, reviewed_at = NOW(), rejection_reason = $3
-         WHERE id = $4
-         RETURNING *`,
-        [decision, reviewerId, reason, proofId]
-      );
+      // Phase 3: Commit the state change inside a transaction with a FOR UPDATE lock.
+      // Re-checking state = 'SUBMITTED' in the WHERE clause ensures that if a concurrent
+      // reviewer committed first the UPDATE matches 0 rows and we throw CONFLICT.
+      const updatedProof = await db.transaction(async (query) => {
+        // Acquire exclusive row lock — blocks any concurrent reviewer at this point
+        const lockResult = await query<{ state: string }>(
+          `SELECT state FROM proofs WHERE id = $1 FOR UPDATE`,
+          [proofId]
+        );
 
-      return { success: true, data: result.rows[0] };
+        if (lockResult.rows.length === 0) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: `Proof ${proofId} not found` });
+        }
+
+        if (lockResult.rows[0].state !== 'SUBMITTED') {
+          throw new TRPCError({ code: 'CONFLICT', message: 'Proof already reviewed' });
+        }
+
+        // Update proof — AND state = 'SUBMITTED' is an extra guard against races
+        // (database will also enforce via triggers for INV-3 compliance)
+        const result = await query<Proof>(
+          `UPDATE proofs
+           SET state = $1, reviewed_by = $2, reviewed_at = NOW(), rejection_reason = $3
+           WHERE id = $4 AND state = 'SUBMITTED'
+           RETURNING *`,
+          [decision, reviewerId, reason, proofId]
+        );
+
+        if (result.rowCount === 0) {
+          throw new TRPCError({ code: 'CONFLICT', message: 'Proof already reviewed' });
+        }
+
+        return result.rows[0];
+      });
+
+      return { success: true, data: updatedProof };
     } catch (error) {
+      if (error instanceof TRPCError) {
+        throw error;
+      }
       if (isInvariantViolation(error)) {
         return {
           success: false,

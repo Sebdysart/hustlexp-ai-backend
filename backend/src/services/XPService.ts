@@ -750,60 +750,78 @@ export const XPService = {
     const adjustedBaseXP = -Math.round(award.rows[0].base_xp * clampedFraction);
     const adjustedEffectiveXP = -xpToDeduct;
 
-    // Insert a debit entry (negative effective_xp) to preserve ledger immutability (INV-4).
-    // SECURITY FIX: ON CONFLICT DO NOTHING RETURNING makes this idempotent — if the
-    // (user_id, escrow_id, reason) clawback row already exists (e.g. on retry), the
-    // INSERT silently no-ops and rowCount=0 signals "already applied" rather than
-    // swallowing a real unique-constraint error as a false success.
-    const clawbackInsert = await db.query<{ id: string }>(
-      `INSERT INTO xp_ledger (
-        user_id, task_id, escrow_id,
-        base_xp, streak_multiplier, trust_multiplier, live_mode_multiplier, effective_xp,
-        reason,
-        user_xp_before, user_xp_after,
-        user_level_before, user_level_after,
-        user_streak_at_award
-      )
-      SELECT
-        $1, $3, $2,
-        $5, streak_multiplier, trust_multiplier, live_mode_multiplier, $6,
-        $4,
-        user_xp_after, GREATEST(0, user_xp_after - $7),
-        user_level_after, user_level_before,
-        user_streak_at_award
-      FROM xp_ledger
-      WHERE user_id = $1 AND escrow_id = $2
-      ORDER BY awarded_at DESC LIMIT 1
-      ON CONFLICT ON CONSTRAINT xp_ledger_escrow_reason_unique DO NOTHING
-      RETURNING id`,
-      [userId, escrowId, taskId, reason, adjustedBaseXP, adjustedEffectiveXP, xpToDeduct]
-    );
-
-    if (clawbackInsert.rowCount === 0) {
-      // Clawback row already exists — idempotent success, no XP deducted again.
-      log.info({ userId, escrowId, reason }, 'XP clawback: already applied (idempotent), skipping deduction');
-      return;
-    }
-
-    // Update the user's running XP total (floor at 0) and recalculate current_level
-    const afterResult = await db.query<{ xp_total: number; current_level: number }>(
-      `UPDATE users SET xp_total = GREATEST(0, xp_total - $1), updated_at = NOW() WHERE id = $2
-       RETURNING xp_total, current_level`,
-      [xpToDeduct, userId]
-    );
-
-    if (afterResult.rows.length > 0) {
-      const newXPTotal = afterResult.rows[0].xp_total;
-      const newLevel = calculateLevel(newXPTotal);
-      if (newLevel !== afterResult.rows[0].current_level) {
-        await db.query(
-          `UPDATE users SET current_level = $1, updated_at = NOW() WHERE id = $2`,
-          [newLevel, userId]
-        );
+    // BUG UU-06 FIX: Wrap the ledger insert and both user updates in a single transaction
+    // with a FOR UPDATE lock on the user row. Without this, a concurrent awardXP() between
+    // the xp_total UPDATE and the current_level UPDATE could corrupt current_level.
+    await db.transaction(async (txQuery) => {
+      // Lock the user row for the duration of this transaction so no concurrent
+      // awardXP() can slip between the xp_total and current_level updates.
+      const lockResult = await txQuery<{ xp_total: number; current_level: number }>(
+        `SELECT xp_total, current_level FROM users WHERE id = $1 FOR UPDATE`,
+        [userId]
+      );
+      if (lockResult.rows.length === 0) {
+        // User row disappeared between the outer SELECT and this transaction — nothing to do.
+        log.warn({ userId, escrowId, reason }, 'XP clawback: user row not found inside transaction, skipping');
+        return;
       }
-    }
 
-    log.info({ userId, xpDeducted: xpToDeduct, reason, escrowId }, 'XP clawback applied');
+      // Insert a debit entry (negative effective_xp) to preserve ledger immutability (INV-4).
+      // SECURITY FIX: ON CONFLICT DO NOTHING RETURNING makes this idempotent — if the
+      // (user_id, escrow_id, reason) clawback row already exists (e.g. on retry), the
+      // INSERT silently no-ops and rowCount=0 signals "already applied" rather than
+      // swallowing a real unique-constraint error as a false success.
+      const clawbackInsert = await txQuery<{ id: string }>(
+        `INSERT INTO xp_ledger (
+          user_id, task_id, escrow_id,
+          base_xp, streak_multiplier, trust_multiplier, live_mode_multiplier, effective_xp,
+          reason,
+          user_xp_before, user_xp_after,
+          user_level_before, user_level_after,
+          user_streak_at_award
+        )
+        SELECT
+          $1, $3, $2,
+          $5, streak_multiplier, trust_multiplier, live_mode_multiplier, $6,
+          $4,
+          user_xp_after, GREATEST(0, user_xp_after - $7),
+          user_level_after, user_level_before,
+          user_streak_at_award
+        FROM xp_ledger
+        WHERE user_id = $1 AND escrow_id = $2
+        ORDER BY awarded_at DESC LIMIT 1
+        ON CONFLICT ON CONSTRAINT xp_ledger_escrow_reason_unique DO NOTHING
+        RETURNING id`,
+        [userId, escrowId, taskId, reason, adjustedBaseXP, adjustedEffectiveXP, xpToDeduct]
+      );
+
+      if (clawbackInsert.rowCount === 0) {
+        // Clawback row already exists — idempotent success, no XP deducted again.
+        log.info({ userId, escrowId, reason }, 'XP clawback: already applied (idempotent), skipping deduction');
+        return;
+      }
+
+      // Update the user's running XP total (floor at 0) and recalculate current_level.
+      // Both updates are inside this transaction so no concurrent write can interleave.
+      const afterResult = await txQuery<{ xp_total: number; current_level: number }>(
+        `UPDATE users SET xp_total = GREATEST(0, xp_total - $1), updated_at = NOW() WHERE id = $2
+         RETURNING xp_total, current_level`,
+        [xpToDeduct, userId]
+      );
+
+      if (afterResult.rows.length > 0) {
+        const newXPTotal = afterResult.rows[0].xp_total;
+        const newLevel = calculateLevel(newXPTotal);
+        if (newLevel !== afterResult.rows[0].current_level) {
+          await txQuery(
+            `UPDATE users SET current_level = $1, updated_at = NOW() WHERE id = $2`,
+            [newLevel, userId]
+          );
+        }
+      }
+
+      log.info({ userId, xpDeducted: xpToDeduct, reason, escrowId }, 'XP clawback applied');
+    });
   },
 
   /**

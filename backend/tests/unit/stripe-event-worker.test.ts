@@ -481,6 +481,35 @@ describe('processStripeEventJob', () => {
   });
 
   // -------------------------------------------------------------------------
+  // Allowlist guard — unrecognized event types must be skipped
+  // -------------------------------------------------------------------------
+  describe('allowlist guard', () => {
+    it('skips and marks result=skipped for an unrecognized event type', async () => {
+      // claim query → returns the unknown event
+      mockDb.query.mockResolvedValueOnce({
+        rows: [{ payload_json: { id: 'evt_test_123', data: { object: {} } }, type: 'payment_intent.unknown_future_type' }],
+        rowCount: 1,
+      } as never);
+      // skipped UPDATE
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+      await processStripeEventJob(makeJob('payment_intent.unknown_future_type', {}));
+
+      // No handler should have been called
+      expect(RevenueService.logEvent).not.toHaveBeenCalled();
+      expect(ChargebackService.handleDisputeCreated).not.toHaveBeenCalled();
+      expect(EscrowService.fund).not.toHaveBeenCalled();
+
+      // The second DB call must be the 'skipped' UPDATE with processed_at
+      const calls = mockDb.query.mock.calls;
+      const skipUpdateCall = calls[calls.length - 1];
+      const sql: string = skipUpdateCall[0] as string;
+      expect(sql).toContain("result = 'skipped'");
+      expect(sql).toContain('processed_at = NOW()');
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // Already processed — no-op
   // -------------------------------------------------------------------------
   it('returns early when event is already claimed', async () => {

@@ -12,6 +12,9 @@ import { Context, Next } from 'hono';
 import { checkRateLimit, redis } from '../cache/redis.js';
 import { config } from '../config.js';
 import { firebaseAuth } from '../auth/firebase.js';
+import { logger } from '../logger.js';
+
+const securityLog = logger.child({ module: 'security' });
 
 // ============================================================================
 // TRUSTED IP RESOLUTION
@@ -258,8 +261,17 @@ export async function aiRateLimitMiddleware(provider: keyof typeof AI_RATE_LIMIT
     // rate-limited ("immortal key").  The Lua script sets EXPIRE only on first
     // creation (current === 1) so the window is not reset on every request.
     const windowSeconds = limits.windowMs / 1000;
-    const current = await redis.incrWithTtl(key, windowSeconds);
-    
+    let current: number;
+    try {
+      current = await redis.incrWithTtl(key, windowSeconds);
+    } catch (err) {
+      securityLog.error({ err }, 'aiRateLimitMiddleware: Redis error');
+      if (config.app.isProduction) {
+        return c.json({ error: 'Service temporarily unavailable' }, 503);
+      }
+      current = 0; // fail open in dev
+    }
+
     if (current > limits.requests) {
       c.header('X-RateLimit-Limit', limits.requests.toString());
       c.header('X-RateLimit-Remaining', '0');

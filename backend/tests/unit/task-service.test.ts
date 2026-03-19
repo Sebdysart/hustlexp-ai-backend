@@ -796,11 +796,13 @@ describe('TaskService.submitProof', () => {
 // ===========================================================================
 // 10. complete
 // ===========================================================================
+// UU-02 FIX: complete() now accepts an optional posterId and verifies
+// ownership inside the FOR UPDATE transaction to prevent TOCTOU.
 describe('TaskService.complete', () => {
-  it('transitions PROOF_SUBMITTED → COMPLETED successfully', async () => {
+  it('transitions PROOF_SUBMITTED → COMPLETED successfully (no posterId check)', async () => {
     const completed = makeTask({ state: 'COMPLETED' });
     mockQuery
-      .mockResolvedValueOnce({ rows: [makeTask({ state: 'PROOF_SUBMITTED' })], rowCount: 1 } as never) // SELECT FOR UPDATE
+      .mockResolvedValueOnce({ rows: [makeTask({ state: 'PROOF_SUBMITTED', poster_id: 'poster-1' })], rowCount: 1 } as never) // SELECT FOR UPDATE
       .mockResolvedValueOnce({ rows: [completed], rowCount: 1 } as never); // UPDATE
 
     const result = await TaskService.complete('task-1');
@@ -809,9 +811,35 @@ describe('TaskService.complete', () => {
     expect(result.data?.state).toBe('COMPLETED');
   });
 
+  it('transitions PROOF_SUBMITTED → COMPLETED successfully when posterId matches', async () => {
+    const completed = makeTask({ state: 'COMPLETED' });
+    mockQuery
+      .mockResolvedValueOnce({ rows: [makeTask({ state: 'PROOF_SUBMITTED', poster_id: 'poster-1' })], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [completed], rowCount: 1 } as never);
+
+    const result = await TaskService.complete('task-1', 'poster-1');
+
+    expect(result.success).toBe(true);
+    expect(result.data?.state).toBe('COMPLETED');
+  });
+
+  it('returns FORBIDDEN when posterId does not match poster_id on task', async () => {
+    // SELECT FOR UPDATE returns task owned by a different poster
+    mockQuery.mockResolvedValueOnce({
+      rows: [makeTask({ state: 'PROOF_SUBMITTED', poster_id: 'poster-1' })],
+      rowCount: 1,
+    } as never);
+
+    const result = await TaskService.complete('task-1', 'other-poster');
+
+    expect(result.success).toBe(false);
+    expect(result.error?.code).toBe('FORBIDDEN');
+    expect(result.error?.message).toContain('poster');
+  });
+
   it('returns INVALID_STATE when task is in wrong non-terminal state', async () => {
     // SELECT FOR UPDATE returns wrong state → early return INVALID_STATE
-    mockQuery.mockResolvedValueOnce({ rows: [makeTask({ state: 'OPEN' })], rowCount: 1 } as never);
+    mockQuery.mockResolvedValueOnce({ rows: [makeTask({ state: 'OPEN', poster_id: 'poster-1' })], rowCount: 1 } as never);
 
     const result = await TaskService.complete('task-1');
 
@@ -821,7 +849,7 @@ describe('TaskService.complete', () => {
 
   it('returns TASK_TERMINAL when task is already in terminal state', async () => {
     // SELECT FOR UPDATE returns terminal state → early return TASK_TERMINAL
-    mockQuery.mockResolvedValueOnce({ rows: [makeTask({ state: 'CANCELLED' })], rowCount: 1 } as never);
+    mockQuery.mockResolvedValueOnce({ rows: [makeTask({ state: 'CANCELLED', poster_id: 'poster-1' })], rowCount: 1 } as never);
 
     const result = await TaskService.complete('task-1');
 
@@ -1066,10 +1094,20 @@ describe('TaskService.cancel', () => {
 // ===========================================================================
 // 14. expire
 // ===========================================================================
+// UU-03 FIX: expire() now runs inside a transaction.  The query sequence is:
+//   1. SELECT state … FOR UPDATE  (lock + read pre-expire state)
+//   2. UPDATE … RETURNING *        (expire the task)
+//   3. SELECT id FROM escrows …    (only executed when state was MATCHING)
+//   writeToOutbox is called atomically for MATCHING tasks with a funded escrow.
 describe('TaskService.expire', () => {
-  it('expires a non-terminal task successfully', async () => {
+  it('expires a non-MATCHING task successfully (no escrow refund)', async () => {
     const expired = makeTask({ state: 'EXPIRED' });
+
+    // 1. FOR UPDATE → task is in OPEN state
+    mockQuery.mockResolvedValueOnce({ rows: [makeTask({ state: 'OPEN' })], rowCount: 1 } as never);
+    // 2. UPDATE → task expired
     mockQuery.mockResolvedValueOnce({ rows: [expired], rowCount: 1 } as never);
+    // No escrow query because pre-expire state was OPEN, not MATCHING.
 
     const result = await TaskService.expire('task-1');
 
@@ -1077,7 +1115,68 @@ describe('TaskService.expire', () => {
     expect(result.data?.state).toBe('EXPIRED');
   });
 
-  it('returns INVALID_STATE when task is already terminal or deadline has not passed', async () => {
+  it('expires a MATCHING task and emits escrow refund outbox event', async () => {
+    const { writeToOutbox } = await import('../../src/lib/outbox-helpers');
+    const mockWriteToOutbox = vi.mocked(writeToOutbox);
+    mockWriteToOutbox.mockClear();
+
+    const expired = makeTask({ state: 'EXPIRED' });
+
+    // 1. FOR UPDATE → task is in MATCHING state
+    mockQuery.mockResolvedValueOnce({ rows: [makeTask({ state: 'MATCHING' })], rowCount: 1 } as never);
+    // 2. UPDATE → task expired
+    mockQuery.mockResolvedValueOnce({ rows: [expired], rowCount: 1 } as never);
+    // 3. SELECT escrow → funded escrow found
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'escrow-1' }], rowCount: 1 } as never);
+
+    const result = await TaskService.expire('task-1');
+
+    expect(result.success).toBe(true);
+    expect(result.data?.state).toBe('EXPIRED');
+    expect(mockWriteToOutbox).toHaveBeenCalledOnce();
+    expect(mockWriteToOutbox).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: 'escrow.refund_requested',
+        payload: expect.objectContaining({ reason: 'task_expired', taskId: 'task-1' }),
+      }),
+      expect.any(Function)
+    );
+  });
+
+  it('expires a MATCHING task with no funded escrow without emitting outbox event', async () => {
+    const { writeToOutbox } = await import('../../src/lib/outbox-helpers');
+    const mockWriteToOutbox = vi.mocked(writeToOutbox);
+    mockWriteToOutbox.mockClear();
+
+    const expired = makeTask({ state: 'EXPIRED' });
+
+    // 1. FOR UPDATE → task is in MATCHING state
+    mockQuery.mockResolvedValueOnce({ rows: [makeTask({ state: 'MATCHING' })], rowCount: 1 } as never);
+    // 2. UPDATE → task expired
+    mockQuery.mockResolvedValueOnce({ rows: [expired], rowCount: 1 } as never);
+    // 3. SELECT escrow → no funded escrow
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+
+    const result = await TaskService.expire('task-1');
+
+    expect(result.success).toBe(true);
+    expect(mockWriteToOutbox).not.toHaveBeenCalled();
+  });
+
+  it('returns INVALID_STATE when task is not found (FOR UPDATE returns empty)', async () => {
+    // 1. FOR UPDATE → task not found
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+
+    const result = await TaskService.expire('task-1');
+
+    expect(result.success).toBe(false);
+    expect(result.error?.code).toBe('INVALID_STATE');
+  });
+
+  it('returns INVALID_STATE when UPDATE returns no rows (deadline not passed or already terminal)', async () => {
+    // 1. FOR UPDATE → task found in some non-terminal state
+    mockQuery.mockResolvedValueOnce({ rows: [makeTask({ state: 'OPEN' })], rowCount: 1 } as never);
+    // 2. UPDATE → 0 rows (deadline not yet reached or state already terminal)
     mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
 
     const result = await TaskService.expire('task-1');
@@ -1087,7 +1186,7 @@ describe('TaskService.expire', () => {
     expect(result.error?.message).toContain('deadline');
   });
 
-  it('returns DB_ERROR when query throws', async () => {
+  it('returns DB_ERROR when transaction throws', async () => {
     mockQuery.mockRejectedValueOnce(new Error('connection lost') as never);
 
     const result = await TaskService.expire('task-1');

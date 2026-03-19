@@ -1095,25 +1095,30 @@ describe('task.reviewProof', () => {
 // task.complete
 // ===========================================================================
 
+// UU-02 FIX: poster ownership check moved inside TaskService.complete() under
+// the FOR UPDATE lock.  The router no longer calls getById for auth — it passes
+// ctx.user.id directly to complete() and the service returns NOT_FOUND /
+// FORBIDDEN as ServiceResult error codes when appropriate.
 describe('task.complete', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
   it('returns completed task when poster calls', async () => {
-    const task = makeTaskRow({ poster_id: USER_ID, state: 'PROOF_SUBMITTED' });
     const completed = makeTaskRow({ state: 'COMPLETED' });
 
-    mockTaskService.getById.mockResolvedValueOnce({ success: true, data: task as any });
+    // No getById call — complete() handles auth + state check atomically.
     mockTaskService.complete.mockResolvedValueOnce({ success: true, data: completed as any });
 
     const result = await makeCallerAsPoster().complete({ taskId: TASK_ID });
 
     expect(result).toEqual(completed);
+    // Verify posterId was forwarded into the service call.
+    expect(mockTaskService.complete).toHaveBeenCalledWith(TASK_ID, USER_ID);
   });
 
-  it('throws NOT_FOUND when task does not exist', async () => {
-    mockTaskService.getById.mockResolvedValueOnce({
+  it('throws NOT_FOUND when service returns NOT_FOUND', async () => {
+    mockTaskService.complete.mockResolvedValueOnce({
       success: false,
       error: { code: 'NOT_FOUND', message: 'Task not found' },
     });
@@ -1121,9 +1126,11 @@ describe('task.complete', () => {
     await expect(makeCallerAsPoster().complete({ taskId: TASK_ID })).rejects.toThrow('Task not found');
   });
 
-  it('throws FORBIDDEN when user is not the poster', async () => {
-    const task = makeTaskRow({ poster_id: OTHER_USER_ID });
-    mockTaskService.getById.mockResolvedValueOnce({ success: true, data: task as any });
+  it('throws FORBIDDEN when service returns FORBIDDEN (user is not poster)', async () => {
+    mockTaskService.complete.mockResolvedValueOnce({
+      success: false,
+      error: { code: 'FORBIDDEN', message: 'Only the task poster can mark it complete' },
+    });
 
     await expect(makeCallerAsPoster().complete({ taskId: TASK_ID })).rejects.toThrow(
       'Only the task poster can mark it complete'
@@ -1131,8 +1138,6 @@ describe('task.complete', () => {
   });
 
   it('throws PRECONDITION_FAILED for HX301 errors (INV-3)', async () => {
-    const task = makeTaskRow({ poster_id: USER_ID });
-    mockTaskService.getById.mockResolvedValueOnce({ success: true, data: task as any });
     mockTaskService.complete.mockResolvedValueOnce({
       success: false,
       error: { code: 'HX301', message: 'Proof must be accepted' },
@@ -1144,8 +1149,6 @@ describe('task.complete', () => {
   });
 
   it('throws BAD_REQUEST for other errors', async () => {
-    const task = makeTaskRow({ poster_id: USER_ID });
-    mockTaskService.getById.mockResolvedValueOnce({ success: true, data: task as any });
     mockTaskService.complete.mockResolvedValueOnce({
       success: false,
       error: { code: 'OTHER', message: 'Something else' },

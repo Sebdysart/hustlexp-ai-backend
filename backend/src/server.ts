@@ -217,22 +217,16 @@ createMetricsEndpoint(app);
 
 app.get('/health', async (c) => {
   try {
-    // Check database
-    const dbResult = await db.query('SELECT version FROM schema_versions ORDER BY applied_at DESC LIMIT 1');
-    const schemaVersion = dbResult.rows[0]?.version || 'unknown';
-    
+    // Verify database is reachable without leaking schema internals to unauthenticated callers
+    await db.query('SELECT 1');
     return c.json({
       status: 'healthy',
       timestamp: new Date().toISOString(),
-      version: '1.0.0',
-      schema: schemaVersion,
-      environment: config.app.env,
     });
   } catch (error) {
     return c.json({
       status: 'unhealthy',
       timestamp: new Date().toISOString(),
-      error: error instanceof Error ? error.message : 'Unknown error',
     }, 503);
   }
 });
@@ -241,12 +235,8 @@ app.get('/health', async (c) => {
 // Returns 200 only if database is reachable (critical dependency)
 app.get('/health/readiness', async (c) => {
   try {
-    const start = Date.now();
     await db.query('SELECT 1');
-    return c.json({
-      ready: true,
-      dbLatencyMs: Date.now() - start,
-    });
+    return c.json({ ready: true });
   } catch {
     return c.json({ ready: false }, 503);
   }

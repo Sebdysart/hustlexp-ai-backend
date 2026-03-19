@@ -357,9 +357,20 @@ export const userRouter = router({
       const result = await db.query<User>(
         `INSERT INTO users (firebase_uid, email, full_name, default_mode, date_of_birth, is_minor, trust_tier)
          VALUES ($1, $2, $3, $4, $5, $6, $7)
+         ON CONFLICT (firebase_uid) DO NOTHING
          RETURNING *`,
         [input.firebaseUid, input.email, input.fullName, dbMode, input.dateOfBirth, age < 18, initialTrustTier]
       );
+
+      if (result.rows.length === 0) {
+        // Concurrent registration — another request inserted the same firebase_uid first.
+        // Fetch the row that won the race and return it.
+        const existing = await db.query<User>(
+          'SELECT * FROM users WHERE firebase_uid = $1',
+          [input.firebaseUid]
+        );
+        return await toMobileUser(existing.rows[0]);
+      }
 
       return await toMobileUser(result.rows[0]);
     }),

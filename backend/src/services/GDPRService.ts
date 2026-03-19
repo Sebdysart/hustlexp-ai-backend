@@ -14,6 +14,7 @@
  */
 
 import { randomUUID } from 'crypto';
+import Stripe from 'stripe';
 import { db, isInvariantViolation, getErrorMessage } from '../db.js';
 import type { ServiceResult } from '../types.js';
 import { ErrorCodes } from '../types.js';
@@ -21,9 +22,17 @@ import { NotificationService } from './NotificationService.js';
 import { EscrowService } from './EscrowService.js';
 import { TaskService } from './TaskService.js';
 import { logger } from '../logger.js';
+import { config } from '../config.js';
 import { invalidateAuthCacheForUser } from '../auth-cache.js';
 import { forceDisconnectUser } from '../realtime/connection-registry.js';
 import { revokeUserSessions } from '../auth/middleware.js';
+
+// Module-level Stripe singleton — only instantiated when a real key is present.
+// Matches the pattern used in TippingService.ts.
+let stripe: Stripe | null = null;
+if (config.stripe.secretKey && !config.stripe.secretKey.includes('placeholder')) {
+  stripe = new Stripe(config.stripe.secretKey, { apiVersion: '2025-11-17.clover' });
+}
 
 const log = logger.child({ service: 'GDPRService' });
 
@@ -957,20 +966,26 @@ export async function collectUserDataForExport(userId: string): Promise<Record<s
     
     // 10. Notification preferences
     const notificationPrefsResult = await db.query(
-      `SELECT * FROM notification_preferences WHERE user_id = $1`,
+      `SELECT push_enabled, email_enabled, sms_enabled,
+              quiet_hours_enabled, quiet_hours_start, quiet_hours_end,
+              category_preferences, created_at, updated_at
+       FROM notification_preferences WHERE user_id = $1`,
       [userId]
     );
     
     // 11. GDPR consent history
     const consentHistoryResult = await db.query(
-      `SELECT * FROM user_consents WHERE user_id = $1
+      `SELECT consent_type, purpose, granted, granted_at, withdrawn_at,
+              ip_address, user_agent, created_at, updated_at
+       FROM user_consents WHERE user_id = $1
        ORDER BY created_at DESC`,
       [userId]
     );
     
     // 12. Saved searches
     const savedSearchesResult = await db.query(
-      `SELECT * FROM saved_searches WHERE user_id = $1
+      `SELECT id, name, query, filters, sort_by, created_at
+       FROM saved_searches WHERE user_id = $1
        ORDER BY created_at DESC`,
       [userId]
     );
@@ -1035,15 +1050,40 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
       if (!cancelResult.success) {
         log.warn({ taskId: row.id, userId, err: cancelResult.error?.message }, 'GDPR: could not cancel poster task — continuing');
       }
-      // Refund any FUNDED escrow attached to this task
-      const escrowResult = await db.query<{ id: string }>(
-        `SELECT id FROM escrows WHERE task_id = $1 AND state = 'FUNDED'`,
+      // Refund any FUNDED or PENDING escrow attached to this task.
+      // PENDING escrows have a PaymentIntent created but not yet confirmed by
+      // Stripe — cancel the PI first so money never moves, then refund the
+      // escrow record. If Stripe later confirms the PI, the cancellation
+      // prevents a stranded charge.
+      // Also handle LOCKED_DISPUTE escrows where the poster is the deleted
+      // user — return the full amount to the poster (100%) since the worker
+      // cannot be paid to a deleted account's task.
+      const escrowResult = await db.query<{ id: string; state: string; stripe_payment_intent_id: string | null }>(
+        `SELECT id, state, stripe_payment_intent_id FROM escrows WHERE task_id = $1 AND state IN ('FUNDED', 'PENDING', 'LOCKED_DISPUTE')`,
         [row.id]
       );
       for (const escrow of escrowResult.rows) {
-        const refundResult = await EscrowService.refund({ escrowId: escrow.id });
-        if (!refundResult.success) {
-          log.warn({ escrowId: escrow.id, taskId: row.id, userId, err: refundResult.error?.message }, 'GDPR: could not refund poster task escrow — continuing');
+        if (escrow.state === 'PENDING' && escrow.stripe_payment_intent_id) {
+          try {
+            if (stripe) {
+              await stripe.paymentIntents.cancel(escrow.stripe_payment_intent_id);
+            }
+          } catch (stripeErr) {
+            log.warn({ escrowId: escrow.id, paymentIntentId: escrow.stripe_payment_intent_id, taskId: row.id, userId, err: stripeErr instanceof Error ? stripeErr.message : String(stripeErr) }, 'GDPR: could not cancel Stripe PaymentIntent for PENDING escrow — continuing with refund');
+          }
+        }
+        if (escrow.state === 'LOCKED_DISPUTE') {
+          // Poster is being deleted — return full amount to poster account
+          // (100% poster, 0% worker) since the poster's task is being cleaned up.
+          const refundResult = await EscrowService.partialRefund({ escrowId: escrow.id, workerPercent: 0, posterPercent: 100 });
+          if (!refundResult.success) {
+            log.warn({ escrowId: escrow.id, taskId: row.id, userId, err: refundResult.error?.message }, 'GDPR: could not partialRefund poster LOCKED_DISPUTE escrow — continuing');
+          }
+        } else {
+          const refundResult = await EscrowService.refund({ escrowId: escrow.id });
+          if (!refundResult.success) {
+            log.warn({ escrowId: escrow.id, taskId: row.id, userId, err: refundResult.error?.message }, 'GDPR: could not refund poster task escrow — continuing');
+          }
         }
       }
     }

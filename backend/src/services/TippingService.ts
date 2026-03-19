@@ -104,12 +104,15 @@ export const TippingService = {
         return { success: false, error: { code: 'STRIPE_NOT_CONFIGURED', message: 'Stripe not configured' } };
       }
 
-      // H1 FIX: Wrap the duplicate-check + insert in a transaction with
-      // SELECT ... FOR UPDATE so concurrent callers serialize on the row lock.
-      // Any concurrent call that passes the pre-transaction checks will block
-      // here until the first transaction commits, then see the existing row
-      // and return DUPLICATE instead of creating a second Stripe PaymentIntent.
-      const tipResult = await db.transaction(async (query) => {
+      // TT-06 FIX: Split the original combined transaction into three steps so
+      // that the Stripe PaymentIntent is created OUTSIDE any DB transaction.
+      // If the PI was created inside the transaction and the INSERT rolled back,
+      // the PI would be orphaned in Stripe with no corresponding DB record.
+      //
+      // Step 1 — Short transaction: duplicate check + worker Stripe account.
+      //   Commits immediately after the FOR UPDATE lock is released, so the
+      //   concurrent-duplicate guard (H1 FIX) is preserved.
+      const checkResult = await db.transaction(async (query) => {
         // Lock on (task_id, poster_id) — prevents concurrent tip creation for
         // the same task by the same poster.
         const lockResult = await query<{ id: string }>(
@@ -128,44 +131,65 @@ export const TippingService = {
         );
 
         const workerStripeId = workerResult.rows[0]?.stripe_connect_id ?? undefined;
+        return { duplicate: false as const, workerStripeId };
+      });
 
-        const paymentIntent = await stripe!.paymentIntents.create({
-          amount: amountCents,
-          currency: 'usd',
-          automatic_payment_methods: { enabled: true },
-          metadata: {
-            type: 'tip',
-            task_id: taskId,
-            poster_id: posterId,
-            worker_id: task.worker_id,
+      if (checkResult.duplicate) {
+        return { success: false, error: { code: 'DUPLICATE', message: 'Already tipped for this task' } };
+      }
+
+      // Step 2 — Create Stripe PI outside any DB transaction.
+      //   If the subsequent INSERT fails we cancel the PI to avoid orphaning it.
+      const paymentIntent = await stripe!.paymentIntents.create({
+        amount: amountCents,
+        currency: 'usd',
+        automatic_payment_methods: { enabled: true },
+        metadata: {
+          type: 'tip',
+          task_id: taskId,
+          poster_id: posterId,
+          worker_id: task.worker_id,
+        },
+        ...(checkResult.workerStripeId ? {
+          transfer_data: {
+            destination: checkResult.workerStripeId,
           },
-          ...(workerStripeId ? {
-            transfer_data: {
-              destination: workerStripeId,
-            },
-          } : {}),
-          description: `HustleXP Tip for Task ${taskId}`,
-        });
+        } : {}),
+        description: `HustleXP Tip for Task ${taskId}`,
+      });
 
-        const insertResult = await query<Tip>(
+      // Step 3 — Insert the tip row referencing the newly created PI.
+      //   On failure, cancel the PI to keep Stripe clean.
+      let insertedTip: Tip;
+      let clientSecret: string;
+      try {
+        const insertResult = await db.query<Tip>(
           `INSERT INTO tips (task_id, poster_id, worker_id, amount_cents, stripe_payment_intent_id, status)
            VALUES ($1, $2, $3, $4, $5, 'pending')
            RETURNING *`,
           [taskId, posterId, task.worker_id, amountCents, paymentIntent.id]
         );
-
-        return { duplicate: false as const, tip: insertResult.rows[0], clientSecret: paymentIntent.client_secret! };
-      });
-
-      if (tipResult.duplicate) {
-        return { success: false, error: { code: 'DUPLICATE', message: 'Already tipped for this task' } };
+        insertedTip = insertResult.rows[0];
+        clientSecret = paymentIntent.client_secret!;
+      } catch (insertError) {
+        // Attempt to cancel the orphaned PI before re-throwing.
+        try {
+          await stripe!.paymentIntents.cancel(paymentIntent.id);
+          log.warn({ piId: paymentIntent.id, taskId }, 'Cancelled orphaned Stripe PI after tip INSERT failure');
+        } catch (cancelError) {
+          log.error(
+            { piId: paymentIntent.id, err: cancelError instanceof Error ? cancelError.message : String(cancelError) },
+            'Failed to cancel orphaned Stripe PI — manual cleanup required'
+          );
+        }
+        throw insertError;
       }
 
       return {
         success: true,
         data: {
-          clientSecret: tipResult.clientSecret,
-          tipId: tipResult.tip.id,
+          clientSecret,
+          tipId: insertedTip.id,
           amountCents,
         }
       };
@@ -197,17 +221,39 @@ export const TippingService = {
         return { success: false, error: { code: 'PAYMENT_NOT_SUCCEEDED', message: `Payment status: ${payment.status}` } };
       }
 
-      // FIX 4: Verify the PaymentIntent amount matches the tip record amount.
-      // Without this check an attacker could reuse a different (smaller)
-      // PaymentIntent to confirm a larger tip, crediting the worker more than
-      // was actually charged to the poster.
-      const tipRecord = await db.query<{ amount_cents: number }>(
-        'SELECT amount_cents FROM tips WHERE id = $1',
+      // TT-02 FIX: Verify PI metadata.type === 'tip' before treating it as a tip.
+      // Without this check an escrow PI (or any other PI) that happens to have
+      // status=succeeded and a matching amount could be passed to confirm a tip,
+      // bypassing the financial isolation between payment types.
+      if (payment.metadata?.type !== 'tip') {
+        return { success: false, error: { code: 'INVALID_PAYMENT_INTENT', message: 'Payment intent is not a tip' } };
+      }
+
+      // Fetch tip record for amount and task_id cross-checks.
+      const tipRecord = await db.query<{ amount_cents: number; task_id: string }>(
+        'SELECT amount_cents, task_id FROM tips WHERE id = $1',
         [tipId]
       );
       if (tipRecord.rows.length === 0) {
         return { success: false, error: { code: 'NOT_FOUND', message: 'Tip not found' } };
       }
+
+      // TT-02 FIX: Verify PI metadata.task_id matches the tip's task_id.
+      // Prevents an attacker from reusing a tip PI for a different task.
+      if (payment.metadata?.task_id !== tipRecord.rows[0].task_id) {
+        return {
+          success: false,
+          error: {
+            code: 'INVALID_PAYMENT_INTENT',
+            message: 'Payment intent task_id does not match tip task_id',
+          },
+        };
+      }
+
+      // FIX 4: Verify the PaymentIntent amount matches the tip record amount.
+      // Without this check an attacker could reuse a different (smaller)
+      // PaymentIntent to confirm a larger tip, crediting the worker more than
+      // was actually charged to the poster.
       if (payment.amount !== tipRecord.rows[0].amount_cents) {
         return {
           success: false,

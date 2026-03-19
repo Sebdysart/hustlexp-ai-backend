@@ -28,6 +28,32 @@ import { workerLogger } from '../logger.js';
 const log = workerLogger.child({ worker: 'stripe-event' });
 
 // ============================================================================
+// ALLOWLIST
+// ============================================================================
+
+/**
+ * Explicit allowlist of Stripe event types this worker is authorised to process.
+ *
+ * Any event type NOT in this set is rejected before the dispatch switch with a
+ * warning log and a 'skipped' result. This prevents accidental execution if a
+ * future developer adds a dangerous handler or if Stripe introduces new event
+ * types that have not been reviewed yet.
+ */
+const ALLOWED_STRIPE_EVENT_TYPES = new Set([
+  'customer.subscription.created',
+  'customer.subscription.updated',
+  'customer.subscription.deleted',
+  'checkout.session.completed',
+  'payment_intent.succeeded',
+  'invoice.payment_failed',
+  'invoice.paid',
+  'charge.dispute.created',
+  'charge.dispute.updated',
+  'charge.dispute.closed',
+  'account.updated',
+]);
+
+// ============================================================================
 // TYPES
 // ============================================================================
 
@@ -114,6 +140,24 @@ export async function processStripeEventJob(job: Job<StripeEventJobData>): Promi
   const event = payload_json as unknown as StripeEventEnvelope;
 
   try {
+    // Allowlist guard — reject any event type that is not explicitly handled.
+    // This must run before the dispatch switch so that an unrecognised type
+    // cannot reach any handler, even if a developer accidentally adds one.
+    if (!ALLOWED_STRIPE_EVENT_TYPES.has(type)) {
+      log.warn({ type, stripeEventId }, 'stripe-event-worker: unrecognized event type, skipping');
+      await db.query(
+        `
+        UPDATE stripe_events
+        SET result = 'skipped',
+            processed_at = NOW(),
+            error_message = 'Unrecognized event type (not in allowlist)'
+        WHERE stripe_event_id = $1
+        `,
+        [stripeEventId]
+      );
+      return;
+    }
+
     // Dispatch by type (SKELETON ONLY - no business logic here)
     switch (type) {
       case 'customer.subscription.created':

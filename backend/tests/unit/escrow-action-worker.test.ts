@@ -119,6 +119,7 @@ function makeEscrowRow(overrides: Partial<{
  *   transaction #1 — critical-section lock (FOR UPDATE SELECT inside trx)
  *   query #1       — SELECT worker_id FROM tasks
  *   query #2       — SELECT stripe_connect_id FROM users
+ *   query #3       — TT-03 fresh re-read: SELECT stripe_transfer_id FROM escrows
  *   transaction #2 — version-checked UPDATE escrows (store transfer_id)
  */
 function setupReleaseMocks(escrowAmountCents = 10_000, escrowOverrides = {}) {
@@ -142,12 +143,14 @@ function setupReleaseMocks(escrowAmountCents = 10_000, escrowOverrides = {}) {
     return fn(trxQuery);
   });
 
-  // After both transactions: auxiliary db.query calls
+  // After both transactions: auxiliary db.query calls (in execution order)
   dbQuery
     // SELECT worker_id FROM tasks
     .mockResolvedValueOnce({ rows: [{ worker_id: WORKER_ID }], rowCount: 1 } as never)
     // SELECT stripe_connect_id FROM users
-    .mockResolvedValueOnce({ rows: [{ stripe_connect_id: STRIPE_CONNECT_ID }], rowCount: 1 } as never);
+    .mockResolvedValueOnce({ rows: [{ stripe_connect_id: STRIPE_CONNECT_ID }], rowCount: 1 } as never)
+    // TT-03: fresh re-read — no transfer yet on this attempt
+    .mockResolvedValueOnce({ rows: [{ stripe_transfer_id: null }], rowCount: 1 } as never);
 }
 
 /**
@@ -287,7 +290,9 @@ describe('escrow-action-worker — FOR UPDATE runs inside db.transaction()', () 
     });
     vi.mocked(db.query)
       .mockResolvedValueOnce({ rows: [{ worker_id: WORKER_ID }], rowCount: 1 } as never)
-      .mockResolvedValueOnce({ rows: [{ stripe_connect_id: STRIPE_CONNECT_ID }], rowCount: 1 } as never);
+      .mockResolvedValueOnce({ rows: [{ stripe_connect_id: STRIPE_CONNECT_ID }], rowCount: 1 } as never)
+      // TT-03: fresh re-read — no transfer yet
+      .mockResolvedValueOnce({ rows: [{ stripe_transfer_id: null }], rowCount: 1 } as never);
 
     await processEscrowActionJob(makeJob('escrow.release_requested',
       makeSignedPayload({ escrow_id: ESCROW_ID, task_id: TASK_ID, reason: 'test order' }),
@@ -321,7 +326,9 @@ describe('escrow-action-worker — FOR UPDATE runs inside db.transaction()', () 
 
     vi.mocked(db.query)
       .mockResolvedValueOnce({ rows: [{ worker_id: WORKER_ID }], rowCount: 1 } as never)
-      .mockResolvedValueOnce({ rows: [{ stripe_connect_id: STRIPE_CONNECT_ID }], rowCount: 1 } as never);
+      .mockResolvedValueOnce({ rows: [{ stripe_connect_id: STRIPE_CONNECT_ID }], rowCount: 1 } as never)
+      // TT-03: fresh re-read — no transfer yet
+      .mockResolvedValueOnce({ rows: [{ stripe_transfer_id: null }], rowCount: 1 } as never);
 
     await processEscrowActionJob(makeJob('escrow.release_requested',
       makeSignedPayload({ escrow_id: ESCROW_ID, task_id: TASK_ID, reason: 'trx check' }),
@@ -340,6 +347,8 @@ describe('escrow-action-worker — FOR UPDATE runs inside db.transaction()', () 
       // Provide data for the auxiliary reads that legitimately use db.query
       if (sql.includes('worker_id')) return { rows: [{ worker_id: WORKER_ID }], rowCount: 1 } as never;
       if (sql.includes('stripe_connect_id')) return { rows: [{ stripe_connect_id: STRIPE_CONNECT_ID }], rowCount: 1 } as never;
+      // TT-03: fresh re-read (SELECT stripe_transfer_id FROM escrows) returns null so Stripe call proceeds
+      if (sql.includes('stripe_transfer_id')) return { rows: [{ stripe_transfer_id: null }], rowCount: 1 } as never;
       return { rows: [], rowCount: 0 } as never;
     });
 
@@ -374,7 +383,9 @@ describe('escrow-action-worker — FOR UPDATE runs inside db.transaction()', () 
 
     vi.mocked(db.query)
       .mockResolvedValueOnce({ rows: [{ worker_id: WORKER_ID }], rowCount: 1 } as never)
-      .mockResolvedValueOnce({ rows: [{ stripe_connect_id: STRIPE_CONNECT_ID }], rowCount: 1 } as never);
+      .mockResolvedValueOnce({ rows: [{ stripe_connect_id: STRIPE_CONNECT_ID }], rowCount: 1 } as never)
+      // TT-03: fresh re-read — no transfer yet
+      .mockResolvedValueOnce({ rows: [{ stripe_transfer_id: null }], rowCount: 1 } as never);
 
     await processEscrowActionJob(makeJob('escrow.release_requested',
       makeSignedPayload({ escrow_id: ESCROW_ID, task_id: TASK_ID, reason: 'update txn check' }),

@@ -203,10 +203,11 @@ describe('DynamicPricingService.bumpASAPPrice', () => {
   it('bumps price by $3 and increments bump count (transactional)', async () => {
     // Bug 2 fix: bumpASAPPrice now uses db.transaction with FOR UPDATE.
     // The mock transaction executes the callback with the same mockQuery fn,
-    // so we set up sequences: SELECT FOR UPDATE returns task, then UPDATE returns rowCount=1.
+    // so we set up sequences: SELECT FOR UPDATE → UPDATE tasks → UPDATE escrows.
     mockQuery
       .mockResolvedValueOnce({ rows: [{ price: 5000, surge_multiplier: 1.0, asap_bump_count: 0 }] })
-      .mockResolvedValueOnce({ rowCount: 1 }); // conditional UPDATE succeeds
+      .mockResolvedValueOnce({ rowCount: 1 })  // conditional UPDATE tasks succeeds
+      .mockResolvedValueOnce({ rowCount: 1 }); // UPDATE escrows (PENDING guard)
 
     const result = await DynamicPricingService.bumpASAPPrice('task-1');
     expect(result.success).toBe(true);
@@ -224,6 +225,28 @@ describe('DynamicPricingService.bumpASAPPrice', () => {
       expect.stringContaining('asap_bump_count < $4'),
       [5300, 1, 'task-1', 3]
     );
+    // Verify escrow amount is synced — only for PENDING escrows (BUG UU-04 fix)
+    expect(mockQuery).toHaveBeenCalledWith(
+      expect.stringContaining("state = 'PENDING'"),
+      [5300, 'task-1']
+    );
+  });
+
+  it('syncs escrow amount only for PENDING state (skips FUNDED)', async () => {
+    // The escrow UPDATE targets only PENDING rows. If escrow is FUNDED the UPDATE
+    // matches zero rows and returns silently — no error, no wrong amount written.
+    mockQuery
+      .mockResolvedValueOnce({ rows: [{ price: 5000, surge_multiplier: 1.0, asap_bump_count: 1 }] })
+      .mockResolvedValueOnce({ rowCount: 1 })  // UPDATE tasks succeeds
+      .mockResolvedValueOnce({ rowCount: 0 }); // UPDATE escrows matches 0 rows (already FUNDED)
+
+    const result = await DynamicPricingService.bumpASAPPrice('task-1');
+    // Result is still success — FUNDED escrow not bumping is expected behaviour, not an error
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.new_price_cents).toBe(5300);
+      expect(result.data.bump_count).toBe(2);
+    }
   });
 
   it('returns NOT_FOUND when task not found', async () => {

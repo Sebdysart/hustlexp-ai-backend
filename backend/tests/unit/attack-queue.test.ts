@@ -382,7 +382,9 @@ describe('RED-TEAM: BullMQ Queue Attack Surface', () => {
         // task lookup
         .mockResolvedValueOnce({ rows: [{ worker_id: 'w1' }], rowCount: 1 })
         // user stripe_connect_id
-        .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_1' }], rowCount: 1 });
+        .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_1' }], rowCount: 1 })
+        // TT-03: fresh re-read — no transfer yet on this attempt
+        .mockResolvedValueOnce({ rows: [{ stripe_transfer_id: null }], rowCount: 1 });
       // NOTE: no "SELECT amount FROM escrows" mock — v2.0 reads escrow.amount
       // from the FOR UPDATE row directly, eliminating that extra round-trip.
 
@@ -804,7 +806,9 @@ describe('RED-TEAM: BullMQ Queue Attack Surface', () => {
       (db.query as any)
         .mockResolvedValueOnce({ rows: [escrowState], rowCount: 1 }) // SELECT FOR UPDATE
         .mockResolvedValueOnce({ rows: [{ worker_id: 'w1' }], rowCount: 1 })
-        .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_1' }], rowCount: 1 });
+        .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_1' }], rowCount: 1 })
+        // TT-03: fresh re-read — no transfer yet when A runs
+        .mockResolvedValueOnce({ rows: [{ stripe_transfer_id: null }], rowCount: 1 });
 
       (StripeService.createTransfer as any).mockResolvedValueOnce({
         success: true, data: { transferId: 'tr_winner' },
@@ -826,25 +830,23 @@ describe('RED-TEAM: BullMQ Queue Attack Surface', () => {
       );
 
       // --- Process B path (loses version race) ---
+      // TT-03: B's fresh re-read returns 'tr_winner' (A already committed) →
+      // B skips Stripe entirely. This is the TT-03 double-transfer prevention.
       (db.query as any)
         .mockResolvedValueOnce({ rows: [escrowState], rowCount: 1 }) // SELECT FOR UPDATE (same stale version)
         .mockResolvedValueOnce({ rows: [{ worker_id: 'w1' }], rowCount: 1 })
-        .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_1' }], rowCount: 1 });
-
-      (StripeService.createTransfer as any).mockResolvedValueOnce({
-        success: true, data: { transferId: 'tr_loser' },
-      });
-
-      // Process B's UPDATE returns 0 rows (version already incremented by A)
-      (db.query as any).mockResolvedValueOnce({ rowCount: 0 });
+        .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_1' }], rowCount: 1 })
+        // TT-03: fresh re-read — A already committed 'tr_winner', B sees it and skips Stripe
+        .mockResolvedValueOnce({ rows: [{ stripe_transfer_id: 'tr_winner' }], rowCount: 1 });
 
       const jobB = makeJob('escrow.release_requested', { payload: payloadB }, 'job-B');
 
-      // Process B completes without error (logs version mismatch warning)
+      // Process B completes without error — TT-03 fresh re-read sees 'tr_winner' and skips Stripe
       await expect(processEscrowActionJob(jobB as any)).resolves.toBeUndefined();
 
-      // Only one Stripe transfer issued across both processes
-      expect(StripeService.createTransfer).toHaveBeenCalledTimes(1);
+      // Process B issued zero Stripe calls — TT-03 fresh re-read short-circuited before createTransfer.
+      // (vi.clearAllMocks() above reset Process A's call count; this assertion is for B alone.)
+      expect(StripeService.createTransfer).toHaveBeenCalledTimes(0);
     });
   });
 

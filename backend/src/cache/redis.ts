@@ -175,9 +175,9 @@ export async function expire(key: string, ttl: number): Promise<void> {
  *
  * @param key          Redis key to increment.
  * @param windowSeconds TTL to apply on first creation, in seconds.
- * @returns The post-increment counter value, or 1 on Redis errors (fail-open
- *          for non-production environments; callers that need fail-closed
- *          behaviour must check the return value against the limit).
+ * @returns The post-increment counter value.
+ * @throws  Re-throws any Redis error — callers are responsible for deciding
+ *          whether to fail-open (dev) or fail-closed (production).
  */
 export async function incrWithTtl(key: string, windowSeconds: number): Promise<number> {
   const client = getClient();
@@ -199,7 +199,7 @@ export async function incrWithTtl(key: string, windowSeconds: number): Promise<n
     return typeof result === 'number' ? result : Number(result);
   } catch (error) {
     redisLog.error({ err: error, key }, 'Redis incrWithTtl (Lua) error');
-    return 1;
+    throw error; // Let callers decide fail-open vs fail-closed
   }
 }
 

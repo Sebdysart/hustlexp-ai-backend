@@ -403,6 +403,44 @@ describe('aiRateLimitMiddleware', () => {
       429,
     );
   });
+
+  it('returns 503 when Redis throws and isProduction=true (fail closed)', async () => {
+    const uid = 'uid-prod-redis-error';
+    mockFirebaseAuth.verifyIdToken.mockResolvedValue({ uid } as any);
+    mockRedis.incrWithTtl.mockRejectedValue(new Error('Redis connection lost'));
+
+    // Temporarily override config to simulate production
+    const { config } = await import('../../src/config');
+    const originalIsProduction = config.app.isProduction;
+    (config.app as any).isProduction = true;
+
+    const middleware = await aiRateLimitMiddleware('openai');
+    const { ctx } = createMockContext({ headers: { authorization: 'Bearer valid.token' } });
+    const next = vi.fn();
+
+    await middleware(ctx as any, next);
+
+    (config.app as any).isProduction = originalIsProduction;
+
+    expect(ctx.json).toHaveBeenCalledWith({ error: 'Service temporarily unavailable' }, 503);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('allows request (count=0) when Redis throws and isProduction=false (fail open)', async () => {
+    const uid = 'uid-dev-redis-error';
+    mockFirebaseAuth.verifyIdToken.mockResolvedValue({ uid } as any);
+    mockRedis.incrWithTtl.mockRejectedValue(new Error('Redis connection lost'));
+
+    // config mock already sets isProduction=false in this test file
+    const middleware = await aiRateLimitMiddleware('openai');
+    const { ctx } = createMockContext({ headers: { authorization: 'Bearer valid.token' } });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await middleware(ctx as any, next);
+
+    expect(next).toHaveBeenCalledOnce();
+    expect(ctx.json).not.toHaveBeenCalled();
+  });
 });
 
 // ============================================================================

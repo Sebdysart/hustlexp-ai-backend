@@ -5,6 +5,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('../../src/db', () => ({
   db: {
     query: vi.fn(),
+    transaction: vi.fn(),
     serializableTransaction: vi.fn(),
   },
   isInvariantViolation: vi.fn(() => false),
@@ -44,6 +45,7 @@ import { AlphaInstrumentation } from '../../src/services/AlphaInstrumentation';
 
 const mockQuery = db.query as ReturnType<typeof vi.fn>;
 const mockTx = db.serializableTransaction as ReturnType<typeof vi.fn>;
+const mockDbTx = db.transaction as ReturnType<typeof vi.fn>;
 const mockIsInvariant = isInvariantViolation as ReturnType<typeof vi.fn>;
 const mockIsUnique = isUniqueViolation as ReturnType<typeof vi.fn>;
 
@@ -653,18 +655,25 @@ describe('XPService.getDailyLeaderboard', () => {
 
 // ═══════════════════════════════════════════════════════════════════════════
 // clawbackXP — FIX 2: idempotency on retry (unique constraint)
+//              BUG UU-06 FIX: atomicity via db.transaction + FOR UPDATE lock
 // ═══════════════════════════════════════════════════════════════════════════
 describe('XPService.clawbackXP', () => {
   it('deducts XP when original award exists', async () => {
-    // 1st query: find the original award
+    // Outer query: find the original award
     mockQuery.mockResolvedValueOnce({
-      rows: [{ id: 'xp-1', effective_xp: 500, task_id: 'task-1' }],
+      rows: [{ id: 'xp-1', base_xp: 500, effective_xp: 500, task_id: 'task-1' }],
     });
-    // 2nd query: INSERT ... ON CONFLICT ... RETURNING — new row inserted
-    mockQuery.mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'xp-clawback-1' }] });
-    // 3rd query: UPDATE users SET xp_total
-    mockQuery.mockResolvedValueOnce({
-      rows: [{ xp_total: 0, current_level: 1 }],
+    // Transaction callback receives a txQuery mock
+    let capturedInsertSql = '';
+    mockDbTx.mockImplementationOnce(async (fn: (q: unknown) => Promise<unknown>) => {
+      const txQuery = vi.fn()
+        .mockResolvedValueOnce({ rows: [{ xp_total: 500, current_level: 2 }], rowCount: 1 }) // FOR UPDATE
+        .mockImplementationOnce((sql: string) => {
+          capturedInsertSql = sql;
+          return Promise.resolve({ rowCount: 1, rows: [{ id: 'xp-clawback-1' }] }); // INSERT
+        })
+        .mockResolvedValueOnce({ rows: [{ xp_total: 0, current_level: 1 }], rowCount: 1 }); // UPDATE xp_total
+      return fn(txQuery);
     });
 
     await expect(
@@ -672,27 +681,33 @@ describe('XPService.clawbackXP', () => {
     ).resolves.not.toThrow();
 
     // The INSERT must have been called with ON CONFLICT clause
-    const insertCall = mockQuery.mock.calls[1];
-    expect(insertCall[0]).toContain('ON CONFLICT');
-    expect(insertCall[0]).toContain('DO NOTHING');
+    expect(capturedInsertSql).toContain('ON CONFLICT');
+    expect(capturedInsertSql).toContain('DO NOTHING');
   });
 
   it('is idempotent — second clawback call is a no-op (rowCount=0)', async () => {
-    // 1st query: find the original award
+    // Outer query: find the original award
     mockQuery.mockResolvedValueOnce({
-      rows: [{ id: 'xp-1', effective_xp: 500, task_id: 'task-1' }],
+      rows: [{ id: 'xp-1', base_xp: 500, effective_xp: 500, task_id: 'task-1' }],
     });
-    // 2nd query: INSERT conflicts — rowCount=0 (already applied)
-    mockQuery.mockResolvedValueOnce({ rowCount: 0, rows: [] });
-    // No UPDATE should follow — if it does, the mock will return undefined and the
-    // test will still pass, but we assert the UPDATE was NOT called.
+    // Transaction: FOR UPDATE lock + INSERT conflicts (rowCount=0) — no UPDATE follows
+    let txQueryCallCount = 0;
+    mockDbTx.mockImplementationOnce(async (fn: (q: unknown) => Promise<unknown>) => {
+      const txQuery = vi.fn()
+        .mockResolvedValueOnce({ rows: [{ xp_total: 500, current_level: 2 }], rowCount: 1 }) // FOR UPDATE
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }); // INSERT conflicts — already applied
+      const result = await fn(txQuery);
+      txQueryCallCount = txQuery.mock.calls.length;
+      return result;
+    });
 
     await expect(
       XPService.clawbackXP('user-1', 'escrow-1', 'refund')
     ).resolves.not.toThrow();
 
-    // Only 2 queries: SELECT award + INSERT (no UPDATE since rowCount=0)
-    expect(mockQuery).toHaveBeenCalledTimes(2);
+    // Inside transaction: only FOR UPDATE + INSERT (no UPDATE users since rowCount=0)
+    expect(txQueryCallCount).toBe(2);
+    expect(mockDbTx).toHaveBeenCalledTimes(1);
   });
 
   it('skips entirely when no XP award exists for the escrow', async () => {
@@ -702,19 +717,22 @@ describe('XPService.clawbackXP', () => {
       XPService.clawbackXP('user-1', 'escrow-none', 'refund')
     ).resolves.not.toThrow();
 
-    expect(mockQuery).toHaveBeenCalledTimes(1); // only the SELECT
+    // Only the outer SELECT — transaction never entered
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+    expect(mockDbTx).not.toHaveBeenCalled();
   });
 
   it('skips when xpToDeduct rounds to 0 (partial fraction of tiny award)', async () => {
     mockQuery.mockResolvedValueOnce({
-      rows: [{ id: 'xp-1', effective_xp: 1, task_id: 'task-1' }],
+      rows: [{ id: 'xp-1', base_xp: 1, effective_xp: 1, task_id: 'task-1' }],
     });
 
-    // fraction=0 means nothing to deduct — returns early before INSERT
+    // fraction=0 means nothing to deduct — returns early before entering transaction
     await expect(
       XPService.clawbackXP('user-1', 'escrow-1', 'refund', 0)
     ).resolves.not.toThrow();
 
-    expect(mockQuery).toHaveBeenCalledTimes(1); // only the SELECT
+    expect(mockQuery).toHaveBeenCalledTimes(1); // only the outer SELECT
+    expect(mockDbTx).not.toHaveBeenCalled();
   });
 });

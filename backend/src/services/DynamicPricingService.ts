@@ -287,6 +287,16 @@ export const DynamicPricingService = {
           return { found: true, maxBumps: true } as const;
         }
 
+        // Sync the escrow amount to the bumped price — but only for PENDING escrows.
+        // A FUNDED escrow means Stripe has already captured the original amount; the
+        // poster would need to pay the difference out-of-band, which is a separate
+        // flow. Updating the DB amount on a FUNDED escrow would cause a display/
+        // release divergence (escrow.amount > actual collected funds), so we skip it.
+        await query(
+          `UPDATE escrows SET amount = $1 WHERE task_id = $2 AND state = 'PENDING'`,
+          [newPrice, taskId]
+        );
+
         return { found: true, maxBumps: false, newPrice, newBumpCount } as const;
       });
 

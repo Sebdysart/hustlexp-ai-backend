@@ -309,6 +309,22 @@ async function handleReleaseRequest(
     throw new Error(`Worker ${task.worker_id} has no stripe_connect_id`);
   }
 
+  // TT-03: Re-read stripe_transfer_id from the DB after the first transaction committed
+  // (the FOR UPDATE lock was released at commit). Two BullMQ workers can both see
+  // stripe_transfer_id = null in their stale escrow snapshots and both pass the
+  // idempotency check above; the re-read below is the second line of defence.
+  const freshEscrowResult = await db.query<{ stripe_transfer_id: string | null }>(
+    'SELECT stripe_transfer_id FROM escrows WHERE id = $1',
+    [escrow.id]
+  );
+  if (freshEscrowResult.rows[0]?.stripe_transfer_id) {
+    log.info(
+      { escrowId: escrow.id, transferId: freshEscrowResult.rows[0].stripe_transfer_id },
+      'Fresh DB re-read: transfer already created on a prior attempt — skipping Stripe call',
+    );
+    return;
+  }
+
   // Deduct platform fee before paying out to worker (PRODUCT_SPEC §9: 15% default)
   const platformFeePercent = config.stripe.platformFeePercent ?? 15;
   const platformFeeCents = Math.round(escrow.amount * (platformFeePercent / 100));
@@ -391,7 +407,10 @@ async function handleRefundRequest(
   }
 
   // Use refund_amount from job payload when provided; fall back to full escrow amount.
-  const amountToRefund = refundAmount !== undefined ? refundAmount : escrow.amount;
+  // Clamp to escrow.amount to prevent overage that would cause an infinite Stripe reject+retry loop.
+  const amountToRefund = refundAmount !== undefined
+    ? Math.min(refundAmount, escrow.amount)
+    : escrow.amount;
 
   // Create Stripe refund
   const refundResult = await StripeService.createRefund({
@@ -541,6 +560,22 @@ async function handlePartialRefundRequest(
   // Create transfer if release_amount > 0
   let transferId: string | null = escrow.stripe_transfer_id;
   if (releaseAmount > 0) {
+    // TT-03: Re-read stripe_transfer_id from the DB after the first transaction committed.
+    // Two concurrent BullMQ retries can both see stripe_transfer_id = null in their stale
+    // snapshots; this fresh read is the second line of defence against double transfer.
+    if (!transferId) {
+      const freshTransferResult = await db.query<{ stripe_transfer_id: string | null }>(
+        'SELECT stripe_transfer_id FROM escrows WHERE id = $1',
+        [escrow.id]
+      );
+      if (freshTransferResult.rows[0]?.stripe_transfer_id) {
+        transferId = freshTransferResult.rows[0].stripe_transfer_id;
+        log.info(
+          { escrowId: escrow.id, transferId },
+          'Fresh DB re-read (partial): transfer already created on a prior attempt — skipping Stripe call',
+        );
+      }
+    }
     if (!transferId) {
       if (!task.worker_id) {
         throw new Error(`Task ${taskId} has no worker_id`);

@@ -912,12 +912,16 @@ export const TaskService = {
    * transition the task from PROOF_SUBMITTED to both COMPLETED and ACCEPTED in
    * separate connections. The FOR UPDATE lock serialises these callers.
    */
-  complete: async (taskId: string): Promise<ServiceResult<Task>> => {
+  complete: async (taskId: string, posterId?: string): Promise<ServiceResult<Task>> => {
     try {
       return await db.transaction(async (query) => {
-        // Acquire row-level lock before reading state
-        const lockResult = await query<{ state: string }>(
-          `SELECT state FROM tasks WHERE id = $1 FOR UPDATE`,
+        // Acquire row-level lock before reading state.
+        // Also fetch poster_id so ownership can be verified inside the same
+        // transaction that holds the FOR UPDATE lock (prevents TOCTOU: a task
+        // cannot be transferred to a different poster between the auth check
+        // and the state-transition UPDATE).
+        const lockResult = await query<{ state: string; poster_id: string }>(
+          `SELECT state, poster_id FROM tasks WHERE id = $1 FOR UPDATE`,
           [taskId]
         );
 
@@ -927,6 +931,18 @@ export const TaskService = {
             error: {
               code: ErrorCodes.NOT_FOUND,
               message: `Task ${taskId} not found`,
+            },
+          };
+        }
+
+        // UU-02 FIX: verify poster ownership inside the lock so the auth
+        // check and the state update are atomic.
+        if (posterId !== undefined && lockResult.rows[0].poster_id !== posterId) {
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.FORBIDDEN,
+              message: 'Only the task poster can mark it complete',
             },
           };
         }
@@ -1312,31 +1328,89 @@ export const TaskService = {
 
   /**
    * Expire task: * → EXPIRED (called by cron job)
+   *
+   * UU-03 FIX: When a MATCHING-state task expires the poster's escrow is
+   * stranded unless we emit a refund outbox event in the same transaction.
+   * MATCHING tasks have a funded escrow (the matchmaker was holding it) and
+   * no worker was ever assigned, so a full refund is always correct — the
+   * same path used by cancel() for OPEN/MATCHING tasks.
+   *
+   * The method is now wrapped in a transaction so the UPDATE and the outbox
+   * write are atomic.  If the task was not in MATCHING state (e.g. it was
+   * OPEN) there is no escrow to refund and the extra escrow query returns
+   * zero rows, so the path is a no-op.
    */
   expire: async (taskId: string): Promise<ServiceResult<Task>> => {
     try {
-      const result = await db.query<Task>(
-        `UPDATE tasks
-         SET state = 'EXPIRED',
-             expired_at = NOW()
-         WHERE id = $1
-           AND state NOT IN ('COMPLETED', 'CANCELLED', 'EXPIRED', 'PROOF_SUBMITTED', 'DISPUTED', 'IN_REVIEW', 'ACCEPTED', 'IN_PROGRESS')
-           AND deadline < NOW()
-         RETURNING *`,
-        [taskId]
-      );
-      
-      if (result.rowCount === 0) {
-        return {
-          success: false,
-          error: {
-            code: ErrorCodes.INVALID_STATE,
-            message: 'Task cannot be expired (already terminal or deadline not passed)',
-          },
-        };
-      }
-      
-      return { success: true, data: result.rows[0] };
+      return await db.transaction(async (query) => {
+        // Read current state under a row-level lock so the expiry and any
+        // subsequent outbox write are fully serialised.
+        const lockResult = await query<{ state: string }>(
+          `SELECT state FROM tasks WHERE id = $1 FOR UPDATE`,
+          [taskId]
+        );
+
+        if (lockResult.rows.length === 0) {
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.INVALID_STATE,
+              message: 'Task cannot be expired (already terminal or deadline not passed)',
+            },
+          };
+        }
+
+        const preExpireState = lockResult.rows[0].state;
+
+        const result = await query<Task>(
+          `UPDATE tasks
+           SET state = 'EXPIRED',
+               expired_at = NOW()
+           WHERE id = $1
+             AND state NOT IN ('COMPLETED', 'CANCELLED', 'EXPIRED', 'PROOF_SUBMITTED', 'DISPUTED', 'IN_REVIEW', 'ACCEPTED', 'IN_PROGRESS')
+             AND deadline < NOW()
+           RETURNING *`,
+          [taskId]
+        );
+
+        if (result.rowCount === 0) {
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.INVALID_STATE,
+              message: 'Task cannot be expired (already terminal or deadline not passed)',
+            },
+          };
+        }
+
+        // UU-03: If the task was in MATCHING state, it had a funded escrow
+        // and no worker — emit a full refund outbox event so the payment
+        // worker returns the poster's funds.
+        if (preExpireState === 'MATCHING') {
+          const escrowResult = await query<{ id: string }>(
+            `SELECT id FROM escrows WHERE task_id = $1 AND state = 'FUNDED'`,
+            [taskId]
+          );
+          if (escrowResult.rows.length > 0) {
+            const escrowId = escrowResult.rows[0].id;
+            await writeToOutbox(
+              {
+                eventType: 'escrow.refund_requested',
+                aggregateType: 'escrow',
+                aggregateId: escrowId,
+                eventVersion: 1,
+                payload: { escrowId, reason: 'task_expired', taskId },
+                queueName: 'critical_payments',
+                idempotencyKey: `escrow.refund_on_expire:${escrowId}:${taskId}`,
+              },
+              query
+            );
+            log.info({ escrowId, taskId }, 'Escrow refund requested on MATCHING task expiry');
+          }
+        }
+
+        return { success: true, data: result.rows[0] };
+      });
     } catch (error) {
       return {
         success: false,

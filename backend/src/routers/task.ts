@@ -12,6 +12,7 @@ import { TaskService } from '../services/TaskService.js';
 import { ProofService } from '../services/ProofService.js';
 import { db } from '../db.js';
 import type { Proof } from '../types.js';
+import { ErrorCodes } from '../types.js';
 import { cachedDbQuery, invalidateTask, CACHE_KEYS, CACHE_TTL, CACHE_TAGS } from '../cache/db-cache.js';
 import { logger } from '../logger.js';
 import { z } from 'zod';
@@ -834,32 +835,38 @@ export const taskRouter = router({
    * Complete task (after proof accepted)
    * INV-3: Will fail if proof is not ACCEPTED
    * SECURITY: Only the poster can mark a task as complete
+   *
+   * UU-02 FIX: The poster ownership check is now performed inside
+   * TaskService.complete() under the FOR UPDATE row lock.  The previous
+   * pattern read poster_id via a separate getById() call outside the
+   * transaction, creating a TOCTOU window where a concurrent ownership
+   * transfer could race between the auth read and the UPDATE.  Passing
+   * ctx.user.id as posterId into the service collapses both checks into a
+   * single atomic transaction.
    */
   complete: posterProcedure
     .input(z.object({ taskId: Schemas.uuid }))
     .mutation(async ({ ctx, input }) => {
-      // Authorization: only the poster can complete a task
-      const taskResult = await TaskService.getById(input.taskId);
-      if (!taskResult.success) {
-        throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
-      }
-      if (taskResult.data.poster_id !== ctx.user.id) {
-        throw new TRPCError({ code: 'FORBIDDEN', message: 'Only the task poster can mark it complete' });
-      }
-
-      const result = await TaskService.complete(input.taskId);
+      const result = await TaskService.complete(input.taskId, ctx.user.id);
 
       if (!result.success) {
-        const code = result.error.code === 'HX301' ? 'PRECONDITION_FAILED' : 'BAD_REQUEST';
-        throw new TRPCError({
-          code,
-          message: result.error.message,
-        });
+        const errCode = result.error.code;
+        let code: 'NOT_FOUND' | 'FORBIDDEN' | 'PRECONDITION_FAILED' | 'BAD_REQUEST';
+        if (errCode === ErrorCodes.NOT_FOUND) {
+          code = 'NOT_FOUND';
+        } else if (errCode === ErrorCodes.FORBIDDEN) {
+          code = 'FORBIDDEN';
+        } else if (errCode === 'HX301' || errCode === ErrorCodes.INV_3_VIOLATION) {
+          code = 'PRECONDITION_FAILED';
+        } else {
+          code = 'BAD_REQUEST';
+        }
+        throw new TRPCError({ code, message: result.error.message });
       }
       await invalidateTask(input.taskId);
       return result.data;
     }),
-  
+
   /**
    * Cancel task
    */
