@@ -335,7 +335,7 @@ export const StripeService = {
           },
           description: description || `HustleXP Payout ${escrowId}`,
         },
-        { idempotencyKey: `tr_create_${escrowId}_${workerId}_${amount}` }
+        { idempotencyKey: `tr_create_${escrowId}` }
       ));
 
       return {

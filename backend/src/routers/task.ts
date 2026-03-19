@@ -756,7 +756,7 @@ export const taskRouter = router({
       if (!proofId && input.taskId) {
         // Look up latest proof for this task
         const proofLookup = await db.query<{ id: string }>(
-          `SELECT id FROM proofs WHERE task_id = $1 ORDER BY created_at DESC LIMIT 1`,
+          `SELECT id FROM proofs WHERE task_id = $1 AND state = 'SUBMITTED' ORDER BY created_at DESC LIMIT 1`,
           [input.taskId]
         );
         if (proofLookup.rows.length === 0) {

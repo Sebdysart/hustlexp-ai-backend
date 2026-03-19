@@ -445,7 +445,17 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
     
     // Structured log: error occurred
     log.error({ emailId, jobId: job.id, idempotencyKey: outboxKey, err: errorMessage, attempt: currentAttempts }, 'Email send error');
-    
+
+    // Suppression early-exit: the email_outbox row already has status='suppressed' (or a
+    // suppressed_reason set). The throw inside the transaction is intentional — it exits
+    // cleanly and signals "do not send". Without this guard, the error would fall through
+    // to the retry path below and reset status to 'pending'/'failed', causing an infinite
+    // BullMQ retry loop until max_attempts is exhausted.
+    if (errorMessage.includes('Email is suppressed')) {
+      log.info({ emailId, jobId: job.id, idempotencyKey: outboxKey, error: errorMessage }, 'Email suppressed, skipping retry');
+      return;
+    }
+
     // Handle SendGrid suppression errors (bounces, complaints, unsubscribes)
     // Only treat as a hard suppression when SendGrid returns a structured delivery-failure
     // status code. Raw string matching on errorMessage risks permanently silencing a user

@@ -15,7 +15,6 @@ import { db, isInvariantViolation, isUniqueViolation, getErrorMessage } from '..
 import type { ServiceResult, Dispute, DisputeState, Escrow } from '../types.js';
 import { ErrorCodes } from '../types.js';
 import { writeToOutbox } from '../lib/outbox-helpers.js';
-import { TaskService } from './TaskService.js';
 import { EscrowService } from './EscrowService.js';
 
 // ============================================================================
@@ -185,41 +184,43 @@ export const DisputeService = {
         };
       }
       
-      // Precondition: Get task (check completed_at exists and within 48h)
-      const taskResult = await TaskService.getById(taskId);
-      if (!taskResult.success) return taskResult;
-      const task = taskResult.data;
-      
-      if (!task.completed_at) {
-        return {
-          success: false,
-          error: {
-            code: ErrorCodes.INVALID_STATE,
-            message: 'Disputes can only be opened for completed tasks',
-          },
-        };
-      }
-      
-      const disputeWindowHours = 48;
-      const disputeWindowMs = disputeWindowHours * 60 * 60 * 1000;
-      const now = new Date();
-      const completedAt = new Date(task.completed_at);
-      
-      if (now.getTime() - completedAt.getTime() > disputeWindowMs) {
-        return {
-          success: false,
-          error: {
-            code: ErrorCodes.INVALID_STATE,
-            message: `Disputes must be opened within ${disputeWindowHours} hours of task completion`,
-          },
-        };
-      }
-      
-      // Transaction: Create dispute + lock escrow + outbox event
-      // BUG FIX: Escrow state check moved INSIDE the transaction with FOR UPDATE
-      // to eliminate TOCTOU race between the state check and the locking UPDATE.
+      // Transaction: Create dispute + lock task + lock escrow + outbox event
+      // Task fetch and 48h window check are performed INSIDE the transaction under
+      // a FOR UPDATE lock to eliminate the TOCTOU race where a concurrent
+      // completed_at update between the pre-check and the lock could allow
+      // disputes outside the intended window.
       const result = await db.transaction(async (query) => {
-        // Lock escrow row first to prevent concurrent state changes
+        // Lock task row first to prevent concurrent completed_at changes
+        const taskSelect = await query(
+          `SELECT * FROM tasks WHERE id = $1 FOR UPDATE`,
+          [taskId]
+        );
+
+        if (taskSelect.rows.length === 0) {
+          throw Object.assign(new Error(`Task ${taskId} not found`), { code: ErrorCodes.NOT_FOUND });
+        }
+
+        const task = taskSelect.rows[0];
+
+        if (!task.completed_at) {
+          throw Object.assign(
+            new Error('Disputes can only be opened for completed tasks'),
+            { code: ErrorCodes.INVALID_STATE }
+          );
+        }
+
+        const disputeWindowHours = 48;
+        const disputeWindowMs = disputeWindowHours * 60 * 60 * 1000;
+        const completedAt = new Date(task.completed_at);
+
+        if (Date.now() - completedAt.getTime() > disputeWindowMs) {
+          throw Object.assign(
+            new Error(`Disputes must be opened within ${disputeWindowHours} hours of task completion`),
+            { code: ErrorCodes.INVALID_STATE }
+          );
+        }
+
+        // Lock escrow row to prevent concurrent state changes
         const escrowSelect = await query<Escrow>(
           `SELECT * FROM escrows WHERE id = $1 FOR UPDATE`,
           [escrowId]

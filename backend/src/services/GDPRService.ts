@@ -339,14 +339,28 @@ export const GDPRService = {
       }
       
       // Cancel request (schema uses 'cancelled', lowercase)
+      // CAS guard: only cancel if still in a cancellable state. This prevents a race
+      // where a concurrent export completion transitions the row to 'completed' between
+      // the status check above and this UPDATE, which would overwrite 'completed' with
+      // 'cancelled' (export file exists in R2 but user is told the request was cancelled).
       const result = await db.query<GDPRDataRequest>(
         `UPDATE gdpr_data_requests
          SET status = 'cancelled', processed_at = NOW()
-         WHERE id = $1 AND user_id = $2
+         WHERE id = $1 AND user_id = $2 AND status IN ('pending', 'processing')
          RETURNING *`,
         [requestId, userId]
       );
-      
+
+      if (result.rowCount === 0) {
+        return {
+          success: false,
+          error: {
+            code: ErrorCodes.INVALID_STATE,
+            message: 'Cannot cancel request: status has already changed (request may have completed concurrently)',
+          },
+        };
+      }
+
       return {
         success: true,
         data: result.rows[0],
@@ -1289,22 +1303,14 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
         [userId]
       );
       
-      // Anonymize XP ledger (keep XP data but anonymize user reference)
-      await query(
-        `UPDATE xp_ledger
-         SET user_id = $1  -- Replace with anonymized ID
-         WHERE user_id = $2`,
-        [anonymizedId, userId]
-      );
-      
-      // Anonymize trust ledger (keep trust data but anonymize user reference)
-      await query(
-        `UPDATE trust_ledger
-         SET user_id = $1  -- Replace with anonymized ID
-         WHERE user_id = $2`,
-        [anonymizedId, userId]
-      );
-      
+      // NOTE: xp_ledger and trust_ledger rows are financial audit records.
+      // Their user_id columns are UUID FKs referencing users(id).
+      // We do NOT update user_id here — the users row itself is already anonymized
+      // (name, email, phone, etc. nulled out above), so these ledger rows remain
+      // linked to the now-anonymized user row without violating FK constraints.
+      // Attempting to set user_id = anonymizedId (a non-UUID string) would cause
+      // a FK constraint violation and roll back the entire anonymization transaction.
+
       // Anonymize disputes (poster_id, worker_id, initiated_by are NOT NULL in schema)
       // Since user record is anonymized (not deleted), foreign keys remain valid
       // We anonymize description content for privacy

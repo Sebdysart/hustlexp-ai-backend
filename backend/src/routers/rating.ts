@@ -159,9 +159,14 @@ export const ratingRouter = router({
       }
       
       // Get ratings where this user is the rater (schema uses rater_id)
+      // RATE-8: Exclude blind/pending-reveal ratings — only return rows where
+      // is_blind = false so the rater cannot see their own rating before both
+      // parties have submitted (or the 7-day window has expired and auto-reveal
+      // has run).
       const result = await db.query(
         `SELECT * FROM task_ratings
          WHERE rater_id = $1
+           AND is_blind = false
          ORDER BY created_at DESC
          LIMIT $2 OFFSET $3`,
         [ctx.user.id, input.limit, input.offset]

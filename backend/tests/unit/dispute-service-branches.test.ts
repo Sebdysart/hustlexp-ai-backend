@@ -135,10 +135,11 @@ describe('DisputeService.create', () => {
   });
 
   it('rejects when task is not completed', async () => {
-    mockTaskService.getById.mockResolvedValueOnce({
-      success: true,
-      data: { id: 't1', completed_at: null } as any,
-    });
+    // Inside transaction: SELECT task FOR UPDATE → task with no completed_at
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ id: 't1', completed_at: null }],
+      rowCount: 1,
+    } as any);
 
     const result = await DisputeService.create(baseParams);
     expect(result.success).toBe(false);
@@ -147,10 +148,11 @@ describe('DisputeService.create', () => {
 
   it('rejects when outside dispute window (>48h)', async () => {
     const oldDate = new Date(Date.now() - 49 * 60 * 60 * 1000);
-    mockTaskService.getById.mockResolvedValueOnce({
-      success: true,
-      data: { id: 't1', completed_at: oldDate } as any,
-    });
+    // Inside transaction: SELECT task FOR UPDATE → task with old completed_at
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ id: 't1', completed_at: oldDate }],
+      rowCount: 1,
+    } as any);
 
     const result = await DisputeService.create(baseParams);
     expect(result.success).toBe(false);
@@ -158,12 +160,13 @@ describe('DisputeService.create', () => {
   });
 
   it('rejects when escrow is not FUNDED', async () => {
-    mockTaskService.getById.mockResolvedValueOnce({
-      success: true,
-      data: { id: 't1', completed_at: new Date() } as any,
-    });
-    // EscrowService.getById is no longer called outside the transaction.
-    // The state check now happens via SELECT FOR UPDATE inside the transaction.
+    // Inside transaction:
+    // Query 1: SELECT task FOR UPDATE → completed task
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ id: 't1', completed_at: new Date() }],
+      rowCount: 1,
+    } as any);
+    // Query 2: SELECT escrow FOR UPDATE → RELEASED escrow (fails state check)
     mockDb.query.mockResolvedValueOnce({
       rows: [{ id: 'e1', state: 'RELEASED' }],
       rowCount: 1,

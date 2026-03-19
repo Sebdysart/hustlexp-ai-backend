@@ -319,7 +319,9 @@ export const messagingRouter = router({
         LEFT JOIN users pu ON pu.id = t.poster_id
         LEFT JOIN LATERAL (
           SELECT content, created_at FROM task_messages
-          WHERE task_id = t.id ORDER BY created_at DESC LIMIT 1
+          WHERE task_id = t.id
+            AND (moderation_status IS NULL OR moderation_status NOT IN ('quarantined'))
+          ORDER BY created_at DESC LIMIT 1
         ) m ON true
         LEFT JOIN LATERAL (
           SELECT COUNT(*)::int as cnt FROM task_messages
