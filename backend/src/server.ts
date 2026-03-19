@@ -459,6 +459,7 @@ import { db } from './db.js';
 import type { User } from './types.js';
 import { sseHandler } from './realtime/sse-handler.js';
 import { z } from 'zod';
+import { HTTPException } from 'hono/http-exception';
 
 // Helper to get authenticated user from Bearer token
 async function getAuthUser(c: Context): Promise<User | null> {
@@ -466,16 +467,23 @@ async function getAuthUser(c: Context): Promise<User | null> {
   if (!authHeader?.startsWith('Bearer ')) {
     return null;
   }
-  
+
   const token = authHeader.slice(7);
   try {
-    const decoded = await firebaseAuth.verifyIdToken(token);
+    const decoded = await firebaseAuth.verifyIdToken(token, true); // checkRevoked = true
     const result = await db.query<User>(
       'SELECT * FROM users WHERE firebase_uid = $1',
       [decoded.uid]
     );
-    return result.rows[0] || null;
-  } catch {
+    const user = result.rows[0] || null;
+    if (user && (user.is_banned || user.account_status === 'SUSPENDED' || user.account_status === 'DELETED')) {
+      throw new HTTPException(403, { message: 'Account suspended' });
+    }
+    return user;
+  } catch (err) {
+    if (err instanceof HTTPException) {
+      throw err;
+    }
     return null;
   }
 }

@@ -116,10 +116,16 @@ export async function unregisterConnection(
     return;
   }
   
-  const connection: ConnectionMetadata = JSON.parse(connData);
-  
+  let connection: ConnectionMetadata;
+  try {
+    connection = JSON.parse(connData);
+  } catch (e) {
+    registryLog.warn({ key: KEYS.connection(connectionId), raw: connData }, 'connection-registry: failed to parse Redis value, skipping');
+    return;
+  }
+
   const pipeline = redis.pipeline();
-  
+
   // Remove connection details
   pipeline.del(KEYS.connection(connectionId));
   
@@ -171,7 +177,13 @@ export async function updateHeartbeat(
     return;
   }
   
-  const connection: ConnectionMetadata = JSON.parse(connData);
+  let connection: ConnectionMetadata;
+  try {
+    connection = JSON.parse(connData);
+  } catch (e) {
+    registryLog.warn({ key: KEYS.connection(connectionId), raw: connData }, 'connection-registry: failed to parse Redis value, skipping');
+    return;
+  }
   connection.lastHeartbeat = Date.now();
   
   const pipeline = redis.pipeline();
@@ -215,7 +227,13 @@ export async function getUserConnections(userId: string): Promise<string[]> {
 // ============================================================================
 export async function getConnection(connectionId: string): Promise<ConnectionMetadata | null> {
   const data = await redis.get<string>(KEYS.connection(connectionId));
-  return data ? JSON.parse(data) : null;
+  if (!data) return null;
+  try {
+    return JSON.parse(data) as ConnectionMetadata;
+  } catch (e) {
+    registryLog.warn({ key: KEYS.connection(connectionId), raw: data }, 'connection-registry: failed to parse Redis value, skipping');
+    return null;
+  }
 }
 
 // ============================================================================
@@ -229,9 +247,13 @@ export async function getUserPresence(userId: string): Promise<{
   const data = await redis.get<string>(KEYS.userPresence(userId));
   
   if (data) {
-    return JSON.parse(data);
+    try {
+      return JSON.parse(data) as { online: boolean; lastSeen: number; connections: number };
+    } catch (e) {
+      registryLog.warn({ key: KEYS.userPresence(userId), raw: data }, 'connection-registry: failed to parse Redis value, skipping');
+    }
   }
-  
+
   return {
     online: false,
     lastSeen: 0,
@@ -252,8 +274,14 @@ export async function subscribeToChannel(
     throw new Error('Connection not found');
   }
   
-  const connection: ConnectionMetadata = JSON.parse(connData);
-  
+  let connection: ConnectionMetadata;
+  try {
+    connection = JSON.parse(connData);
+  } catch (e) {
+    registryLog.warn({ key: KEYS.connection(connectionId), raw: connData }, 'connection-registry: failed to parse Redis value, skipping');
+    throw new Error('Connection data is corrupted');
+  }
+
   if (!connection.channels.includes(channel)) {
     connection.channels.push(channel);
     
@@ -280,7 +308,13 @@ export async function unsubscribeFromChannel(
     return;
   }
   
-  const connection: ConnectionMetadata = JSON.parse(connData);
+  let connection: ConnectionMetadata;
+  try {
+    connection = JSON.parse(connData);
+  } catch (e) {
+    registryLog.warn({ key: KEYS.connection(connectionId), raw: connData }, 'connection-registry: failed to parse Redis value, skipping');
+    return;
+  }
   connection.channels = connection.channels.filter((c) => c !== channel);
   
   await redis.setex(

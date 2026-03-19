@@ -6,9 +6,24 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-vi.mock('../../src/db', () => ({
-  db: { query: vi.fn() },
+// vi.hoisted() runs before vi.mock() hoisting, so these refs are safe to use
+// inside the MockStripe class initializer even though vi.mock is hoisted.
+const { mockPaymentIntentsCreate, mockPaymentIntentsRetrieve } = vi.hoisted(() => ({
+  mockPaymentIntentsCreate: vi.fn(),
+  mockPaymentIntentsRetrieve: vi.fn(),
 }));
+
+vi.mock('../../src/db', () => {
+  const queryFn = vi.fn();
+  return {
+    db: {
+      query: queryFn,
+      // Pass the same queryFn into the transaction callback so that
+      // mockResolvedValueOnce sequences flow through seamlessly.
+      transaction: vi.fn((fn: (q: typeof queryFn) => Promise<unknown>) => fn(queryFn)),
+    },
+  };
+});
 
 vi.mock('../../src/logger', () => ({
   logger: {
@@ -21,9 +36,6 @@ vi.mock('../../src/config', () => ({
     stripe: { secretKey: 'sk_test_fake123' },
   },
 }));
-
-const mockPaymentIntentsCreate = vi.fn();
-const mockPaymentIntentsRetrieve = vi.fn();
 
 vi.mock('stripe', () => {
   return {
@@ -131,11 +143,13 @@ describe('TippingService', () => {
 
     it('returns DUPLICATE when tip already exists', async () => {
       mockDb.query
+        // 1. Task validation (outside transaction)
         .mockResolvedValueOnce({
           rows: [{ state: 'COMPLETED', poster_id: 'poster-1', worker_id: 'worker-1', price: 5000 }],
           rowCount: 1,
         } as never)
-        .mockResolvedValueOnce({ rows: [{ id: 'tip-existing' }], rowCount: 1 } as never); // Existing tip
+        // 2. SELECT ... FOR UPDATE inside transaction — existing tip found
+        .mockResolvedValueOnce({ rows: [{ id: 'tip-existing' }], rowCount: 1 } as never);
 
       const result = await TippingService.createTip({
         taskId: 'task-1',
@@ -149,16 +163,20 @@ describe('TippingService', () => {
 
     it('creates tip with Stripe payment intent', async () => {
       mockDb.query
+        // 1. Task validation (outside transaction)
         .mockResolvedValueOnce({
           rows: [{ state: 'COMPLETED', poster_id: 'poster-1', worker_id: 'worker-1', price: 5000 }],
           rowCount: 1,
-        } as never) // Task check
-        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // No existing tip
-        .mockResolvedValueOnce({ rows: [{ stripe_account_id: 'acct_worker' }], rowCount: 1 } as never) // Worker account
+        } as never)
+        // 2. SELECT ... FOR UPDATE inside transaction — no existing tip
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+        // 3. Worker Stripe Connect account (inside transaction)
+        .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_worker' }], rowCount: 1 } as never)
+        // 4. INSERT tip (inside transaction)
         .mockResolvedValueOnce({
           rows: [{ id: 'tip-1', task_id: 'task-1', poster_id: 'poster-1', worker_id: 'worker-1', amount_cents: 500 }],
           rowCount: 1,
-        } as never); // Tip insert
+        } as never);
 
       mockPaymentIntentsCreate.mockResolvedValueOnce({
         id: 'pi_test_123',

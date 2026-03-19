@@ -1038,8 +1038,8 @@ export const taskRouter = router({
         // Step 1: Lock the task row for the duration of the transaction.
         // FOR UPDATE prevents concurrent assignWorker calls from both reading
         // state='POSTED' and proceeding to assign different workers.
-        const taskResult = await txn<{ id: string; state: string; poster_id: string }>(
-          `SELECT id, state, poster_id FROM tasks WHERE id = $1 FOR UPDATE`,
+        const taskResult = await txn<{ id: string; state: string; poster_id: string; trust_tier_required: number | null }>(
+          `SELECT id, state, poster_id, trust_tier_required FROM tasks WHERE id = $1 FOR UPDATE`,
           [input.taskId]
         );
         if (taskResult.rows.length === 0) {
@@ -1053,6 +1053,28 @@ export const taskRouter = router({
             code: 'PRECONDITION_FAILED',
             message: `Task must be POSTED to assign a worker, current: ${taskResult.rows[0].state}`,
           });
+        }
+
+        // Step 1b: Enforce trust_tier_required on the admin-assign path.
+        // The self-accept path (TaskService.accept) performs this check, but the
+        // poster-driven assignWorker bypassed it, allowing a poster to force-assign
+        // a worker whose trust tier is below the task's requirement.
+        const trustTierRequired = taskResult.rows[0].trust_tier_required;
+        if (trustTierRequired !== null && trustTierRequired !== undefined) {
+          const workerTierResult = await txn<{ trust_tier: number }>(
+            `SELECT trust_tier FROM users WHERE id = $1`,
+            [input.workerId]
+          );
+          if (workerTierResult.rows.length === 0) {
+            throw new TRPCError({ code: 'NOT_FOUND', message: 'Worker not found' });
+          }
+          const workerTrustTier = workerTierResult.rows[0].trust_tier;
+          if (workerTrustTier < trustTierRequired) {
+            throw new TRPCError({
+              code: 'FORBIDDEN',
+              message: `Task requires trust tier ${trustTierRequired}. Worker's tier: ${workerTrustTier}`,
+            });
+          }
         }
 
         // Step 2: Verify the chosen worker has a pending application.

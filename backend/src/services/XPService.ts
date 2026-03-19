@@ -47,6 +47,7 @@ export interface XPLedgerEntry {
   streak_multiplier: number;
   trust_multiplier: number;      // SPEC ALIGNMENT: replaced decay_factor
   live_mode_multiplier: number;  // SPEC ALIGNMENT: 1.25× for Live tasks
+  surge_multiplier: number;      // M5 FIX: stored for full audit trail
   effective_xp: number;
   reason: string;
   user_xp_before: number;
@@ -358,13 +359,20 @@ export const XPService = {
         // Anti-farming: Check daily XP cap using effectiveXP (post-multiplier) so cap
         // cannot be exceeded when streak/trust/live multipliers inflate the award.
         // FIX: was checking baseXP pre-multiplier — cap could be bypassed up to 5×.
-        const capCheck = await XPService.checkDailyXPCap(userId, effectiveXP);
-        if (!capCheck.allowed) {
+        //
+        // H6 FIX: Use a read-only probe (xpAmount=0) here so that no Redis INCRBY
+        // fires inside the serializable transaction. On a serializable retry the INCRBY
+        // was firing again for the same logical award, double-counting the cap.
+        // The actual INCRBY is deferred to after db.serializableTransaction() returns
+        // successfully, ensuring at-most-once semantics even under retry.
+        const capProbe = await XPService.checkDailyXPCap(userId, 0);
+        const wouldExceedCap = capProbe.earned + effectiveXP > DAILY_XP_CAP;
+        if (wouldExceedCap) {
           return {
             success: false as const,
             error: {
               code: 'XP_DAILY_CAP',
-              message: `Daily XP cap reached (${capCheck.cap} XP). Try again tomorrow.`,
+              message: `Daily XP cap reached (${capProbe.cap} XP). Try again tomorrow.`,
             },
           };
         }
@@ -378,19 +386,20 @@ export const XPService = {
         // Insert XP ledger entry
         // INV-1: Trigger will check escrow is RELEASED
         // INV-5: UNIQUE constraint will prevent duplicates
+        // M5 FIX: surge_multiplier is now stored so every award is fully auditable.
         const ledgerResult = await query<XPLedgerEntry>(
           `INSERT INTO xp_ledger (
             user_id, task_id, escrow_id,
-            base_xp, streak_multiplier, trust_multiplier, live_mode_multiplier, effective_xp,
+            base_xp, streak_multiplier, trust_multiplier, live_mode_multiplier, surge_multiplier, effective_xp,
             reason,
             user_xp_before, user_xp_after,
             user_level_before, user_level_after,
             user_streak_at_award
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
           RETURNING *`,
           [
             userId, taskId, escrowId,
-            baseXP, streakMultiplier, trustMultiplier, liveModeMultiplier, effectiveXP,
+            baseXP, streakMultiplier, trustMultiplier, liveModeMultiplier, surgeMultiplier, effectiveXP,
             'task_completion',
             user.xp_total, newXPTotal,
             user.current_level, newLevel,
@@ -414,6 +423,26 @@ export const XPService = {
         return { success: true as const, data: ledgerResult.rows[0] };
       });
       
+      // H6 FIX: Commit the Redis daily-cap INCRBY AFTER the DB transaction has
+      // committed successfully. This prevents double-counting on serializable retries —
+      // the INCRBY now fires at most once per logical award event.
+      // Only runs when Redis is configured; DB-fallback path needs no action here
+      // because the xp_ledger INSERT (now committed) is already counted by the
+      // DB-fallback SUM query used in subsequent cap probes.
+      if (result.success && effectiveXPAwarded > 0) {
+        const redis = getXPRedis();
+        if (redis) {
+          try {
+            await XPService.checkDailyXPCap(userId, effectiveXPAwarded);
+          } catch {
+            // Non-fatal: cap counter may be slightly off if Redis is flaky.
+            // The DB-fallback inside checkDailyXPCap will compensate on the
+            // next award attempt if Redis is unavailable at that point.
+            log.warn({ userId, effectiveXPAwarded }, 'Post-commit Redis cap INCRBY failed — cap may be under-counted');
+          }
+        }
+      }
+
       // Alpha Instrumentation: Emit trust delta applied for XP
       // Note: This happens outside the transaction to avoid blocking XP award
       // The try-catch ensures silent failure

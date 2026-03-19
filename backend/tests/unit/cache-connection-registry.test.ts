@@ -263,6 +263,12 @@ describe('unregisterConnection', () => {
     expect(mockSetex).not.toHaveBeenCalled();
     expect(mockPublish).not.toHaveBeenCalled();
   });
+
+  it('returns early without throwing when Redis data is malformed JSON', async () => {
+    mockGet.mockResolvedValue('not-valid-json{{{');
+    await expect(unregisterConnection('conn-bad-json', 'inst-1')).resolves.toBeUndefined();
+    expect(mockPipelineExec).not.toHaveBeenCalled();
+  });
 });
 
 // ===========================================================================
@@ -290,6 +296,12 @@ describe('updateHeartbeat', () => {
     expect(mockPipeline.expire).toHaveBeenCalledWith('conn:user:user-1', 300);
     expect(mockPipeline.expire).toHaveBeenCalledWith('conn:instance:inst-1', 300);
     expect(mockPipelineExec).toHaveBeenCalledOnce();
+  });
+
+  it('returns early without throwing when Redis data is malformed JSON', async () => {
+    mockGet.mockResolvedValue('not-valid-json{{{');
+    await expect(updateHeartbeat('conn-bad-json', 'inst-1')).resolves.toBeUndefined();
+    expect(mockPipelineExec).not.toHaveBeenCalled();
   });
 });
 
@@ -330,6 +342,12 @@ describe('getConnection', () => {
     expect(result!.userId).toBe('user-42');
     expect(result!.channels).toEqual(['ch-1']);
   });
+
+  it('returns null and does not throw when Redis data is malformed JSON', async () => {
+    mockGet.mockResolvedValue('not-valid-json{{{');
+    const result = await getConnection('conn-bad-json');
+    expect(result).toBeNull();
+  });
 });
 
 // ===========================================================================
@@ -350,6 +368,12 @@ describe('getUserPresence', () => {
     expect(presence.online).toBe(true);
     expect(presence.lastSeen).toBe(1234567890);
     expect(presence.connections).toBe(2);
+  });
+
+  it('returns default offline presence and does not throw when Redis data is malformed JSON', async () => {
+    mockGet.mockResolvedValue('not-valid-json{{{');
+    const presence = await getUserPresence('user-bad-json');
+    expect(presence).toEqual({ online: false, lastSeen: 0, connections: 0 });
   });
 });
 
@@ -384,6 +408,12 @@ describe('subscribeToChannel', () => {
 
     expect(mockSetex).not.toHaveBeenCalled();
   });
+
+  it('throws and does not call setex when Redis data is malformed JSON', async () => {
+    mockGet.mockResolvedValue('not-valid-json{{{');
+    await expect(subscribeToChannel('conn-bad-json', 'ch-1')).rejects.toThrow();
+    expect(mockSetex).not.toHaveBeenCalled();
+  });
 });
 
 // ===========================================================================
@@ -413,6 +443,12 @@ describe('unsubscribeFromChannel', () => {
       300,
       expect.stringContaining('ch-keep'),
     );
+  });
+
+  it('returns early without throwing when Redis data is malformed JSON', async () => {
+    mockGet.mockResolvedValue('not-valid-json{{{');
+    await expect(unsubscribeFromChannel('conn-bad-json', 'ch-1')).resolves.toBeUndefined();
+    expect(mockSetex).not.toHaveBeenCalled();
   });
 });
 

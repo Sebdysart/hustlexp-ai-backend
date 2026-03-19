@@ -1255,7 +1255,7 @@ export const TaskService = {
             currentState === 'ACCEPTED' &&
             lateCancelPct > 0 &&
             acceptedAt !== null &&
-            windowHours >= 0 &&
+            windowHours > 0 &&
             (Date.now() - new Date(acceptedAt).getTime()) > windowHours * 60 * 60 * 1000;
 
           if (isLateAcceptedCancel) {

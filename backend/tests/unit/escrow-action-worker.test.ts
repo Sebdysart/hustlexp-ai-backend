@@ -482,6 +482,33 @@ describe('escrow-action-worker — refund_requested handler', () => {
     ).rejects.toThrow('stripe_payment_intent_id');
   });
 
+  it('uses refund_amount from job payload when provided (partial refund, BUG H4)', async () => {
+    setupRefundMocks();
+
+    // Provide a refund_amount smaller than the full escrow amount (10_000)
+    await processEscrowActionJob(makeJob('escrow.refund_requested',
+      makeSignedPayload({ escrow_id: ESCROW_ID, task_id: TASK_ID, reason: 'partial refund', refund_amount: 4_000 }),
+    ) as never);
+
+    expect(StripeService.createRefund).toHaveBeenCalledOnce();
+    const refundCall = vi.mocked(StripeService.createRefund).mock.calls[0][0];
+    // Must use the job payload amount, NOT the full escrow amount
+    expect(refundCall.amount).toBe(4_000);
+    expect(refundCall.amount).not.toBe(10_000);
+  });
+
+  it('falls back to full escrow amount when refund_amount is absent (BUG H4 — no regression)', async () => {
+    setupRefundMocks();
+
+    await processEscrowActionJob(makeJob('escrow.refund_requested',
+      makeSignedPayload({ escrow_id: ESCROW_ID, task_id: TASK_ID, reason: 'full refund no amount field' }),
+    ) as never);
+
+    expect(StripeService.createRefund).toHaveBeenCalledOnce();
+    const refundCall = vi.mocked(StripeService.createRefund).mock.calls[0][0];
+    expect(refundCall.amount).toBe(10_000); // full escrow amount
+  });
+
   it('FOR UPDATE runs inside db.transaction() for refund path (not bare db.query)', async () => {
     let forUpdateSql = '';
     const dbTransaction = vi.mocked(db.transaction);

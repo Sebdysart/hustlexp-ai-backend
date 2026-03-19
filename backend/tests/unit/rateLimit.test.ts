@@ -20,6 +20,7 @@ vi.mock('../../src/cache/redis', () => ({
     zrange: vi.fn(),
     zrevrange: vi.fn(),
     checkRateLimit: vi.fn(),
+    incrWithTtl: vi.fn(),
   },
 }));
 
@@ -33,10 +34,20 @@ vi.mock('../../src/config', () => ({
   },
 }));
 
-import { rateLimitMiddleware, securityHeaders, sanitizeAIInput, sanitizeInput } from '../../src/middleware/security';
-import { checkRateLimit } from '../../src/cache/redis';
+// Mock Firebase auth
+vi.mock('../../src/auth/firebase', () => ({
+  firebaseAuth: {
+    verifyIdToken: vi.fn(),
+  },
+}));
+
+import { rateLimitMiddleware, securityHeaders, sanitizeAIInput, sanitizeInput, aiRateLimitMiddleware, publicIpRateLimitMiddleware } from '../../src/middleware/security';
+import { checkRateLimit, redis } from '../../src/cache/redis';
+import { firebaseAuth } from '../../src/auth/firebase';
 
 const mockCheckRateLimit = vi.mocked(checkRateLimit);
+const mockRedis = vi.mocked(redis);
+const mockFirebaseAuth = vi.mocked(firebaseAuth);
 
 // Helper to create a minimal Hono-like context
 function createMockContext(overrides: {
@@ -294,5 +305,205 @@ describe('sanitizeInput', () => {
   it('returns empty string for non-string input', () => {
     expect(sanitizeInput(null as any)).toBe('');
     expect(sanitizeInput(undefined as any)).toBe('');
+  });
+});
+
+// ============================================================================
+// M1 BUG FIX: aiRateLimitMiddleware — JWT-based identity extraction
+// ============================================================================
+
+describe('aiRateLimitMiddleware', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('returns 401 when no Authorization header is present', async () => {
+    const middleware = await aiRateLimitMiddleware('openai');
+    const { ctx } = createMockContext({ headers: {} });
+    const next = vi.fn();
+
+    await middleware(ctx as any, next);
+
+    expect(ctx.json).toHaveBeenCalledWith({ error: 'Authentication required' }, 401);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('returns 401 when Authorization header is not Bearer format', async () => {
+    const middleware = await aiRateLimitMiddleware('openai');
+    const { ctx } = createMockContext({ headers: { authorization: 'Basic dXNlcjpwYXNz' } });
+    const next = vi.fn();
+
+    await middleware(ctx as any, next);
+
+    expect(ctx.json).toHaveBeenCalledWith({ error: 'Authentication required' }, 401);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('returns 401 when Bearer token fails Firebase verification', async () => {
+    mockFirebaseAuth.verifyIdToken.mockRejectedValue(new Error('invalid token'));
+
+    const middleware = await aiRateLimitMiddleware('groq');
+    const { ctx } = createMockContext({ headers: { authorization: 'Bearer garbage.token.here' } });
+    const next = vi.fn();
+
+    await middleware(ctx as any, next);
+
+    expect(ctx.json).toHaveBeenCalledWith({ error: 'Authentication required' }, 401);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('allows request and uses verified uid as bucket key when token is valid', async () => {
+    const uid = 'firebase-uid-abc123';
+    mockFirebaseAuth.verifyIdToken.mockResolvedValue({ uid } as any);
+    mockRedis.incrWithTtl.mockResolvedValue(1);
+
+    const middleware = await aiRateLimitMiddleware('openai');
+    const { ctx } = createMockContext({ headers: { authorization: 'Bearer valid.firebase.token' } });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await middleware(ctx as any, next);
+
+    expect(mockFirebaseAuth.verifyIdToken).toHaveBeenCalledWith('valid.firebase.token');
+    expect(mockRedis.incrWithTtl).toHaveBeenCalledWith(`ratelimit:ai:openai:${uid}`, 60);
+    expect(next).toHaveBeenCalledOnce();
+  });
+
+  it('returns 429 when AI rate limit is exceeded for a verified user', async () => {
+    const uid = 'firebase-uid-xyz';
+    mockFirebaseAuth.verifyIdToken.mockResolvedValue({ uid } as any);
+    // Simulate 21 requests for openai (limit = 20)
+    mockRedis.incrWithTtl.mockResolvedValue(21);
+
+    const middleware = await aiRateLimitMiddleware('openai');
+    const { ctx } = createMockContext({ headers: { authorization: 'Bearer valid.token' } });
+    const next = vi.fn();
+
+    await middleware(ctx as any, next);
+
+    expect(ctx.json).toHaveBeenCalledWith(
+      expect.objectContaining({ error: 'AI rate limit exceeded', retryAfter: 60 }),
+      429,
+    );
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('uses provider-specific limits (anthropic: 15 req/min)', async () => {
+    const uid = 'uid-anthropic-test';
+    mockFirebaseAuth.verifyIdToken.mockResolvedValue({ uid } as any);
+    mockRedis.incrWithTtl.mockResolvedValue(16); // over anthropic limit of 15
+
+    const middleware = await aiRateLimitMiddleware('anthropic');
+    const { ctx } = createMockContext({ headers: { authorization: 'Bearer tok' } });
+    const next = vi.fn();
+
+    await middleware(ctx as any, next);
+
+    expect(ctx.json).toHaveBeenCalledWith(
+      expect.objectContaining({ error: 'AI rate limit exceeded' }),
+      429,
+    );
+  });
+});
+
+// ============================================================================
+// M2 BUG FIX: publicIpRateLimitMiddleware — token must be verified before skip
+// ============================================================================
+
+describe('publicIpRateLimitMiddleware', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('applies IP rate limiting when no Authorization header is present', async () => {
+    mockRedis.incrWithTtl.mockResolvedValue(1);
+
+    const middleware = publicIpRateLimitMiddleware();
+    const { ctx } = createMockContext({ headers: { 'x-forwarded-for': '203.0.113.5' } });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await middleware(ctx as any, next);
+
+    expect(mockFirebaseAuth.verifyIdToken).not.toHaveBeenCalled();
+    expect(mockRedis.incrWithTtl).toHaveBeenCalledWith('rate:public:ip:203.0.113.5', 60);
+    expect(next).toHaveBeenCalledOnce();
+  });
+
+  it('skips IP rate limiting when a valid Bearer token is present', async () => {
+    mockFirebaseAuth.verifyIdToken.mockResolvedValue({ uid: 'real-user-uid' } as any);
+
+    const middleware = publicIpRateLimitMiddleware();
+    const { ctx } = createMockContext({
+      headers: {
+        authorization: 'Bearer valid.firebase.token',
+        'x-forwarded-for': '203.0.113.99',
+      },
+    });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await middleware(ctx as any, next);
+
+    // Token was verified — IP bucket must NOT be touched
+    expect(mockFirebaseAuth.verifyIdToken).toHaveBeenCalledWith('valid.firebase.token');
+    expect(mockRedis.incrWithTtl).not.toHaveBeenCalled();
+    expect(next).toHaveBeenCalledOnce();
+  });
+
+  it('falls through to IP rate limiting when Bearer token is garbage (invalid)', async () => {
+    mockFirebaseAuth.verifyIdToken.mockRejectedValue(new Error('token invalid'));
+    mockRedis.incrWithTtl.mockResolvedValue(5);
+
+    const middleware = publicIpRateLimitMiddleware();
+    const { ctx } = createMockContext({
+      headers: {
+        authorization: 'Bearer garbage',
+        'x-forwarded-for': '198.51.100.10',
+      },
+    });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await middleware(ctx as any, next);
+
+    // Garbage token must not bypass — IP rate limit must be checked
+    expect(mockFirebaseAuth.verifyIdToken).toHaveBeenCalledWith('garbage');
+    expect(mockRedis.incrWithTtl).toHaveBeenCalledWith('rate:public:ip:198.51.100.10', 60);
+    expect(next).toHaveBeenCalledOnce();
+  });
+
+  it('returns 429 when IP rate limit is exceeded (even with garbage Bearer token)', async () => {
+    mockFirebaseAuth.verifyIdToken.mockRejectedValue(new Error('invalid'));
+    mockRedis.incrWithTtl.mockResolvedValue(61); // over the 60-request limit
+
+    const middleware = publicIpRateLimitMiddleware();
+    const { ctx } = createMockContext({
+      headers: {
+        authorization: 'Bearer garbage',
+        'x-forwarded-for': '10.10.10.10',
+      },
+    });
+    const next = vi.fn();
+
+    await middleware(ctx as any, next);
+
+    expect(ctx.json).toHaveBeenCalledWith(
+      expect.objectContaining({ error: 'Too Many Requests', retryAfter: 60 }),
+      429,
+    );
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('returns 429 when IP rate limit is exceeded for unauthenticated request', async () => {
+    mockRedis.incrWithTtl.mockResolvedValue(61);
+
+    const middleware = publicIpRateLimitMiddleware();
+    const { ctx } = createMockContext({ headers: { 'x-forwarded-for': '1.2.3.4' } });
+    const next = vi.fn();
+
+    await middleware(ctx as any, next);
+
+    expect(ctx.json).toHaveBeenCalledWith(
+      expect.objectContaining({ error: 'Too Many Requests', retryAfter: 60 }),
+      429,
+    );
+    expect(next).not.toHaveBeenCalled();
   });
 });

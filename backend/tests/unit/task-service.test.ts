@@ -961,6 +961,87 @@ describe('TaskService.cancel', () => {
     expect(mockWriteToOutbox).not.toHaveBeenCalled();
   });
 
+  it('C3 FIX: emits full refund (not partial) when windowHours=0 on ACCEPTED task with late_cancel_pct set', async () => {
+    // BUG C3: windowHours >= 0 was always true, triggering partial refund even when no window was configured.
+    // With the fix (windowHours > 0), windowHours=0 correctly skips to full refund.
+    const { writeToOutbox } = await import('../../src/lib/outbox-helpers');
+    const mockWriteToOutbox = vi.mocked(writeToOutbox);
+    mockWriteToOutbox.mockClear();
+
+    const acceptedAt = new Date(Date.now() - 2 * 60 * 60 * 1000); // accepted 2 hours ago
+    const cancelled = makeTask({ state: 'CANCELLED' });
+    mockQuery
+      .mockResolvedValueOnce({
+        rows: [{ state: 'ACCEPTED', late_cancel_pct: 50, cancellation_window_hours: 0, accepted_at: acceptedAt }],
+        rowCount: 1,
+      } as never)                                                                                      // SELECT FOR UPDATE
+      .mockResolvedValueOnce({ rows: [cancelled], rowCount: 1 } as never)                             // UPDATE tasks → CANCELLED
+      .mockResolvedValueOnce({ rows: [{ id: 'escrow-c3', state: 'FUNDED' }], rowCount: 1 } as never); // SELECT escrows → FUNDED
+
+    const result = await TaskService.cancel('task-1');
+
+    expect(result.success).toBe(true);
+    // windowHours=0 means no cancellation window was configured — must issue full refund
+    expect(mockWriteToOutbox).toHaveBeenCalledOnce();
+    const [outboxInput] = mockWriteToOutbox.mock.calls[0];
+    expect(outboxInput.eventType).toBe('escrow.refund_requested');
+    expect(outboxInput.payload).toMatchObject({ reason: 'task_cancelled' });
+  });
+
+  it('C3 FIX: emits partial refund when cancellation window has expired (windowHours > 0, elapsed > window)', async () => {
+    const { writeToOutbox } = await import('../../src/lib/outbox-helpers');
+    const mockWriteToOutbox = vi.mocked(writeToOutbox);
+    mockWriteToOutbox.mockClear();
+
+    // Accepted 25 hours ago; window is 24 hours → window expired → late cancel
+    const acceptedAt = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    const cancelled = makeTask({ state: 'CANCELLED' });
+    mockQuery
+      .mockResolvedValueOnce({
+        rows: [{ state: 'ACCEPTED', late_cancel_pct: 50, cancellation_window_hours: 24, accepted_at: acceptedAt }],
+        rowCount: 1,
+      } as never)
+      .mockResolvedValueOnce({ rows: [cancelled], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [{ id: 'escrow-late', state: 'FUNDED' }], rowCount: 1 } as never);
+
+    const result = await TaskService.cancel('task-1');
+
+    expect(result.success).toBe(true);
+    expect(mockWriteToOutbox).toHaveBeenCalledOnce();
+    const [outboxInput] = mockWriteToOutbox.mock.calls[0];
+    expect(outboxInput.eventType).toBe('escrow.partial_refund_requested');
+    expect(outboxInput.payload).toMatchObject({
+      escrowId: 'escrow-late',
+      reason: 'task_cancelled_late',
+      workerPercent: 50,
+    });
+  });
+
+  it('C3 FIX: emits full refund when still within cancellation window (windowHours > 0, elapsed < window)', async () => {
+    const { writeToOutbox } = await import('../../src/lib/outbox-helpers');
+    const mockWriteToOutbox = vi.mocked(writeToOutbox);
+    mockWriteToOutbox.mockClear();
+
+    // Accepted 1 hour ago; window is 24 hours → still within window → full refund
+    const acceptedAt = new Date(Date.now() - 1 * 60 * 60 * 1000);
+    const cancelled = makeTask({ state: 'CANCELLED' });
+    mockQuery
+      .mockResolvedValueOnce({
+        rows: [{ state: 'ACCEPTED', late_cancel_pct: 50, cancellation_window_hours: 24, accepted_at: acceptedAt }],
+        rowCount: 1,
+      } as never)
+      .mockResolvedValueOnce({ rows: [cancelled], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [{ id: 'escrow-early', state: 'FUNDED' }], rowCount: 1 } as never);
+
+    const result = await TaskService.cancel('task-1');
+
+    expect(result.success).toBe(true);
+    expect(mockWriteToOutbox).toHaveBeenCalledOnce();
+    const [outboxInput] = mockWriteToOutbox.mock.calls[0];
+    expect(outboxInput.eventType).toBe('escrow.refund_requested');
+    expect(outboxInput.payload).toMatchObject({ reason: 'task_cancelled' });
+  });
+
   it('returns TASK_TERMINAL when task is already in a terminal state', async () => {
     // SELECT FOR UPDATE returns terminal state → early return TASK_TERMINAL
     mockQuery.mockResolvedValueOnce({ rows: [makeTask({ state: 'COMPLETED' })], rowCount: 1 } as never);

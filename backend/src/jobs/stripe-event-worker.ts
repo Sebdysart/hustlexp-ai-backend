@@ -62,21 +62,27 @@ export async function processStripeEventJob(job: Job<StripeEventJobData>): Promi
   const { stripeEventId } = job.data;
 
   // HMAC signature verification (Attack 12 — Redis injection defence)
-  // stripe.event_received jobs dispatched via the outbox carry a _sig field inside
-  // job.data.payload. Verify it when present; direct-dispatch jobs (without _sig) are
-  // allowed through so that legacy callers are not broken.
+  // stripe.event_received jobs dispatched via the outbox must carry a _sig field inside
+  // job.data.payload. A missing or empty _sig is rejected immediately — it indicates
+  // a job that was enqueued without going through the signed-dispatch path, which is
+  // the exact attack vector this guard is designed to block.
   const outerPayload = (job.data as Record<string, unknown>).payload;
   if (outerPayload && typeof outerPayload === 'object') {
     const p = outerPayload as Record<string, unknown>;
-    if ('_sig' in p) {
-      const { _sig, ...payloadWithoutSig } = p;
-      if (!verifyJobSignature(payloadWithoutSig, _sig as string)) {
-        log.error(
-          { jobId: job.id, stripeEventId },
-          'Job signature verification failed — possible Redis injection attack',
-        );
-        throw new Error('JOB_SIGNATURE_INVALID: Payload signature verification failed');
-      }
+    if (!p['_sig']) {
+      log.error(
+        { jobId: job.id, stripeEventId },
+        'Missing job signature — job rejected (possible Redis injection attack)',
+      );
+      throw new Error('Missing job signature — job rejected');
+    }
+    const { _sig, ...payloadWithoutSig } = p;
+    if (!verifyJobSignature(payloadWithoutSig, _sig as string)) {
+      log.error(
+        { jobId: job.id, stripeEventId },
+        'Job signature verification failed — possible Redis injection attack',
+      );
+      throw new Error('JOB_SIGNATURE_INVALID: Payload signature verification failed');
     }
   }
 

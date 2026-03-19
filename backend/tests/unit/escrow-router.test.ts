@@ -1068,6 +1068,27 @@ describe('escrow.getHistory', () => {
 
       expect(result).toEqual([]);
     });
+
+    it('strips stripe_payment_intent_id for non-admin callers', async () => {
+      const rows = [makeEscrow({ id: 'esc-1', stripe_payment_intent_id: 'pi_secret_123' })];
+      mockDb.query.mockResolvedValueOnce({ rows, rowCount: rows.length } as any);
+
+      const result = await makeCaller(POSTER_ID, 'user').getHistory({ limit: 50 });
+
+      expect(result).toHaveLength(1);
+      expect(result[0]).not.toHaveProperty('stripe_payment_intent_id');
+      expect(result[0]).toHaveProperty('id', 'esc-1');
+    });
+
+    it('includes stripe_payment_intent_id for admin callers', async () => {
+      const rows = [makeEscrow({ id: 'esc-1', stripe_payment_intent_id: 'pi_secret_123' })];
+      mockDb.query.mockResolvedValueOnce({ rows, rowCount: rows.length } as any);
+
+      const result = await makeCaller(POSTER_ID, 'admin').getHistory({ limit: 50 });
+
+      expect(result).toHaveLength(1);
+      expect(result[0]).toHaveProperty('stripe_payment_intent_id', 'pi_secret_123');
+    });
   });
 
   describe('pagination', () => {

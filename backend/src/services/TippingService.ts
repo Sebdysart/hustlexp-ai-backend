@@ -19,6 +19,14 @@ import { db } from '../db.js';
 import type { ServiceResult } from '../types.js';
 import { logger } from '../logger.js';
 
+// H3 FIX: Module-level Stripe singleton — instantiated once, not per request.
+// Matches the pattern used in StripeService.ts. Per-request instantiation
+// bypasses the circuit breaker and creates unnecessary overhead.
+let stripe: Stripe | null = null;
+if (config.stripe.secretKey && !config.stripe.secretKey.includes('placeholder')) {
+  stripe = new Stripe(config.stripe.secretKey, { apiVersion: '2025-11-17.clover' });
+}
+
 const log = logger.child({ service: 'TippingService' });
 
 interface Tip {
@@ -84,67 +92,80 @@ export const TippingService = {
         return { success: false, error: { code: 'INVALID_AMOUNT', message: `Minimum tip is $${MIN_TIP_CENTS / 100}` } };
       }
 
-      const maxTip = Math.floor(task.price * MAX_TIP_PERCENT);
-      if (amountCents > maxTip) {
-        return { success: false, error: { code: 'INVALID_AMOUNT', message: `Maximum tip is $${(maxTip / 100).toFixed(2)} (50% of task price)` } };
+      // H2 FIX: When task.price is null, treat it as no cap (null-safe guard).
+      // Previously `null * 0.5` evaluated to 0, blocking all tips on null-price tasks.
+      const cap = task.price != null ? Math.floor(task.price * MAX_TIP_PERCENT) : null;
+      if (cap !== null && amountCents > cap) {
+        return { success: false, error: { code: 'INVALID_AMOUNT', message: `Maximum tip is $${(cap / 100).toFixed(2)} (50% of task price)` } };
       }
 
-      // Check for existing tip
-      const existingTip = await db.query(
-        'SELECT id FROM tips WHERE task_id = $1 AND poster_id = $2',
-        [taskId, posterId]
-      );
-
-      if (existingTip.rows.length > 0) {
-        return { success: false, error: { code: 'DUPLICATE', message: 'Already tipped for this task' } };
-      }
-
-      // Create Stripe PaymentIntent (no platform fee on tips — 100% to worker)
-      if (!config.stripe.secretKey || config.stripe.secretKey.includes('placeholder')) {
+      // H3 FIX: Use module-level Stripe singleton (initialized at module load).
+      if (!stripe) {
         return { success: false, error: { code: 'STRIPE_NOT_CONFIGURED', message: 'Stripe not configured' } };
       }
 
-      const stripe = new Stripe(config.stripe.secretKey, { apiVersion: '2025-11-17.clover' });
+      // H1 FIX: Wrap the duplicate-check + insert in a transaction with
+      // SELECT ... FOR UPDATE so concurrent callers serialize on the row lock.
+      // Any concurrent call that passes the pre-transaction checks will block
+      // here until the first transaction commits, then see the existing row
+      // and return DUPLICATE instead of creating a second Stripe PaymentIntent.
+      const tipResult = await db.transaction(async (query) => {
+        // Lock on (task_id, poster_id) — prevents concurrent tip creation for
+        // the same task by the same poster.
+        const lockResult = await query<{ id: string }>(
+          'SELECT id FROM tips WHERE task_id = $1 AND poster_id = $2 FOR UPDATE',
+          [taskId, posterId]
+        );
 
-      // Get worker's Stripe Connect account (tips go 100% to worker)
-      const workerResult = await db.query<{ stripe_connect_id: string | null }>(
-        'SELECT stripe_connect_id FROM users WHERE id = $1',
-        [task.worker_id]
-      );
+        if (lockResult.rows.length > 0) {
+          return { duplicate: true as const, existingId: lockResult.rows[0].id };
+        }
 
-      const workerStripeId = workerResult.rows[0]?.stripe_connect_id ?? undefined;
+        // Get worker's Stripe Connect account (tips go 100% to worker)
+        const workerResult = await query<{ stripe_connect_id: string | null }>(
+          'SELECT stripe_connect_id FROM users WHERE id = $1',
+          [task.worker_id]
+        );
 
-      const paymentIntent = await stripe.paymentIntents.create({
-        amount: amountCents,
-        currency: 'usd',
-        automatic_payment_methods: { enabled: true },
-        metadata: {
-          type: 'tip',
-          task_id: taskId,
-          poster_id: posterId,
-          worker_id: task.worker_id,
-        },
-        ...(workerStripeId ? {
-          transfer_data: {
-            destination: workerStripeId,
+        const workerStripeId = workerResult.rows[0]?.stripe_connect_id ?? undefined;
+
+        const paymentIntent = await stripe!.paymentIntents.create({
+          amount: amountCents,
+          currency: 'usd',
+          automatic_payment_methods: { enabled: true },
+          metadata: {
+            type: 'tip',
+            task_id: taskId,
+            poster_id: posterId,
+            worker_id: task.worker_id,
           },
-        } : {}),
-        description: `HustleXP Tip for Task ${taskId}`,
+          ...(workerStripeId ? {
+            transfer_data: {
+              destination: workerStripeId,
+            },
+          } : {}),
+          description: `HustleXP Tip for Task ${taskId}`,
+        });
+
+        const insertResult = await query<Tip>(
+          `INSERT INTO tips (task_id, poster_id, worker_id, amount_cents, stripe_payment_intent_id, status)
+           VALUES ($1, $2, $3, $4, $5, 'pending')
+           RETURNING *`,
+          [taskId, posterId, task.worker_id, amountCents, paymentIntent.id]
+        );
+
+        return { duplicate: false as const, tip: insertResult.rows[0], clientSecret: paymentIntent.client_secret! };
       });
 
-      // Insert tip record
-      const tipResult = await db.query<Tip>(
-        `INSERT INTO tips (task_id, poster_id, worker_id, amount_cents, stripe_payment_intent_id, status)
-         VALUES ($1, $2, $3, $4, $5, 'pending')
-         RETURNING *`,
-        [taskId, posterId, task.worker_id, amountCents, paymentIntent.id]
-      );
+      if (tipResult.duplicate) {
+        return { success: false, error: { code: 'DUPLICATE', message: 'Already tipped for this task' } };
+      }
 
       return {
         success: true,
         data: {
-          clientSecret: paymentIntent.client_secret!,
-          tipId: tipResult.rows[0].id,
+          clientSecret: tipResult.clientSecret,
+          tipId: tipResult.tip.id,
           amountCents,
         }
       };
@@ -165,12 +186,11 @@ export const TippingService = {
    */
   confirmTip: async (tipId: string, stripePaymentIntentId: string): Promise<ServiceResult<Tip>> => {
     try {
-      // Verify payment succeeded
-      if (!config.stripe.secretKey || config.stripe.secretKey.includes('placeholder')) {
+      // H3 FIX: Use module-level Stripe singleton (initialized at module load).
+      if (!stripe) {
         return { success: false, error: { code: 'STRIPE_NOT_CONFIGURED', message: 'Stripe not configured' } };
       }
 
-      const stripe = new Stripe(config.stripe.secretKey, { apiVersion: '2025-11-17.clover' });
       const payment = await stripe.paymentIntents.retrieve(stripePaymentIntentId);
 
       if (payment.status !== 'succeeded') {

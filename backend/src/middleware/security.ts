@@ -11,6 +11,7 @@
 import { Context, Next } from 'hono';
 import { checkRateLimit, redis } from '../cache/redis.js';
 import { config } from '../config.js';
+import { firebaseAuth } from '../auth/firebase.js';
 
 // ============================================================================
 // TRUSTED IP RESOLUTION
@@ -222,16 +223,33 @@ const AI_RATE_LIMITS = {
 /**
  * AI per-minute rate limiter per user
  * Prevents cost abuse while allowing legitimate usage
+ *
+ * Identity strategy: extract the Firebase Bearer token from the Authorization
+ * header and verify it cryptographically before using the resulting uid as the
+ * rate-limit bucket key.  Reading a Hono context variable (c.get('userId'))
+ * does NOT work here because that variable is only set inside tRPC procedure
+ * handlers — it is never populated at the HTTP middleware layer, so it is
+ * always undefined, making the middleware permanently return 401.
  */
 export async function aiRateLimitMiddleware(provider: keyof typeof AI_RATE_LIMITS) {
   const limits = AI_RATE_LIMITS[provider];
-  
+
   return async (c: Context, next: Next) => {
-    const userId = c.get('userId');
-    if (!userId) {
+    const authHeader = c.req.header('authorization');
+    const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
+
+    if (!token) {
       return c.json({ error: 'Authentication required' }, 401);
     }
-    
+
+    let userId: string;
+    try {
+      const decoded = await firebaseAuth.verifyIdToken(token);
+      userId = decoded.uid;
+    } catch {
+      return c.json({ error: 'Authentication required' }, 401);
+    }
+
     const key = `ratelimit:ai:${provider}:${userId}`;
     // Use the atomic Lua-based helper to INCR and conditionally EXPIRE in a
     // single Redis round-trip.  A plain INCR followed by a separate EXPIRE
@@ -298,11 +316,21 @@ const PUBLIC_IP_WINDOW_SECONDS = 60;   // per minute
  */
 export function publicIpRateLimitMiddleware() {
   return async (c: Context, next: Next) => {
-    // Skip when the request is authenticated — the user-bucket limiter handles it.
+    // Skip IP rate limiting only when the request carries a *verified* Bearer
+    // token.  Checking for the header alone (without verification) allows an
+    // attacker to send `Authorization: Bearer garbage` and bypass IP limits
+    // entirely — an unauthenticated DoS vector.
     const authHeader = c.req.header('authorization');
     if (authHeader?.startsWith('Bearer ')) {
-      await next();
-      return;
+      const token = authHeader.slice(7);
+      try {
+        await firebaseAuth.verifyIdToken(token);
+        // Token is valid — the per-user bucket in rateLimitMiddleware applies.
+        await next();
+        return;
+      } catch {
+        // Token is invalid/garbage — fall through to IP-based rate limiting.
+      }
     }
 
     // Derive client IP using trusted resolution (rightmost XFF entry, set by

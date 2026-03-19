@@ -492,4 +492,39 @@ describe('processStripeEventJob', () => {
     expect(RevenueService.logEvent).not.toHaveBeenCalled();
     expect(ChargebackService.handleDisputeCreated).not.toHaveBeenCalled();
   });
+
+  // -------------------------------------------------------------------------
+  // BUG H7 — missing _sig must be rejected immediately (Redis injection defence)
+  // -------------------------------------------------------------------------
+  describe('_sig mandatory enforcement (BUG H7)', () => {
+    function makeJobWithPayload(type: string, payload: Record<string, unknown>): Job {
+      return { data: { stripeEventId: 'evt_test_123', type, payload } } as unknown as Job;
+    }
+
+    it('throws "Missing job signature" when payload exists but _sig is absent', async () => {
+      const job = makeJobWithPayload('invoice.paid', { some_field: 'some_value' });
+      await expect(processStripeEventJob(job)).rejects.toThrow('Missing job signature — job rejected');
+      // No DB claim must have been attempted
+      expect(mockDb.query).not.toHaveBeenCalled();
+    });
+
+    it('throws "Missing job signature" when _sig is an empty string', async () => {
+      const job = makeJobWithPayload('invoice.paid', { some_field: 'some_value', _sig: '' });
+      await expect(processStripeEventJob(job)).rejects.toThrow('Missing job signature — job rejected');
+      expect(mockDb.query).not.toHaveBeenCalled();
+    });
+
+    it('throws JOB_SIGNATURE_INVALID when _sig is present but tampered', async () => {
+      const job = makeJobWithPayload('invoice.paid', { some_field: 'some_value', _sig: 'a'.repeat(64) });
+      await expect(processStripeEventJob(job)).rejects.toThrow('JOB_SIGNATURE_INVALID');
+      expect(mockDb.query).not.toHaveBeenCalled();
+    });
+
+    it('does not reject jobs without a payload object (direct-dispatch path)', async () => {
+      // Direct-dispatch jobs have no payload wrapper — the guard must not block them
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+      const job = makeJob('invoice.paid', {});
+      await expect(processStripeEventJob(job)).resolves.toBeUndefined();
+    });
+  });
 });
