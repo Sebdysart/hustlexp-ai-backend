@@ -646,10 +646,12 @@ export const EscrowService = {
           );
           // Continue - escrow is released, but XP is held back until tax paid
         } else {
-          // Unexpected XP error - log but don't fail escrow release
-          escrowLogger.error(
+          // Unexpected XP error — escrow release still succeeds, but the worker
+          // did not receive XP. Logged at WARN so ops can detect the gap.
+          // The worker may retry via the manual escrow.awardXP endpoint.
+          escrowLogger.warn(
             { err: xpError instanceof Error ? xpError.message : String(xpError), workerId, escrowId },
-            'Failed to award XP'
+            'Auto-award XP failed after escrow release — worker can retry via escrow.awardXP'
           );
         }
       }

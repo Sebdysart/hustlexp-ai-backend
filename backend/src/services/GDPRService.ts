@@ -23,6 +23,7 @@ import { TaskService } from './TaskService.js';
 import { logger } from '../logger.js';
 import { invalidateAuthCacheForUser } from '../auth-cache.js';
 import { forceDisconnectUser } from '../realtime/connection-registry.js';
+import { revokeUserSessions } from '../auth/middleware.js';
 
 const log = logger.child({ service: 'GDPRService' });
 
@@ -610,8 +611,18 @@ export const GDPRService = {
       
       // Execute data deletion/anonymization (GDPR_COMPLIANCE_SPEC.md §3.1, §3.2, §3.3)
       const userId = request.user_id;
+
+      // Look up firebase_uid BEFORE deletion so we can write the Redis revocation
+      // marker using the correct key namespace (auth:revoked:<firebaseUid>).
+      // BUG GG1 FIX: marker must be keyed on firebaseUid, not DB UUID.
+      const fbRow = await db.query<{ firebase_uid: string | null }>(
+        'SELECT firebase_uid FROM users WHERE id = $1',
+        [userId]
+      );
+      const firebaseUid = fbRow.rows[0]?.firebase_uid ?? undefined;
+
       const deletionResult = await deleteAndAnonymizeUserData(userId);
-      
+
       if (!deletionResult.success) {
         // Mark request as failed
         // TypeScript should narrow this to { success: false; error: ServiceError }
@@ -624,15 +635,25 @@ export const GDPRService = {
            WHERE id = $2`,
           [errorMessage, requestId]
         );
-        
+
         return deletionResult;
       }
-      
+
       // Immediately evict auth cache and force-disconnect SSE streams for the
       // deleted user so the cached pre-deletion user row cannot be reused and
       // any live connections are terminated without waiting for TTL expiry.
-      invalidateAuthCacheForUser(userId);
+      // BUG GG3 FIX: await the call (was fire-and-forget) so Redis errors surface.
+      await invalidateAuthCacheForUser(userId, firebaseUid);
       forceDisconnectUser(userId);
+
+      // BUG GG2 FIX: revoke Firebase refresh tokens and write the Redis revocation
+      // marker for the Hono middleware path.  This was never called on GDPR deletion,
+      // meaning deleted users could re-authenticate immediately.
+      if (firebaseUid) {
+        await revokeUserSessions(firebaseUid).catch(err => {
+          log.error({ err: err instanceof Error ? err.message : String(err), userId }, 'revokeUserSessions failed during GDPR deletion — user may be able to re-authenticate');
+        });
+      }
 
       const completedAt = new Date();
       const deletedAt = completedAt;

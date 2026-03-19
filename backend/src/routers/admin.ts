@@ -21,6 +21,7 @@ import { db } from '../db.js';
 import { z } from 'zod';
 import { EscrowService } from '../services/EscrowService.js';
 import { forceDisconnectUser } from '../realtime/connection-registry.js';
+import { revokeUserSessions } from '../auth/middleware.js';
 
 // ============================================================================
 // ROUTER
@@ -131,9 +132,33 @@ export const adminRouter = router({
         ]
       );
 
+      // Look up firebase_uid so the Redis revocation marker uses the same key
+      // namespace that trpc.ts and auth/middleware.ts read (auth:revoked:<firebaseUid>).
+      // BUG GG1 FIX: previously the marker was keyed on the DB UUID which trpc.ts
+      // never looked up, so banned users remained authenticated across replicas.
+      const fbRow = await db.query<{ firebase_uid: string }>(
+        'SELECT firebase_uid FROM users WHERE id = $1',
+        [input.userId]
+      );
+      const firebaseUid = fbRow.rows[0]?.firebase_uid;
+
       // Evict any cached auth entries for this user so the ban takes effect
       // immediately rather than waiting up to 5 minutes for the cache TTL to expire.
-      invalidateAuthCacheForUser(input.userId);
+      // BUG GG3 FIX: await the call (was fire-and-forget) so Redis errors surface.
+      await invalidateAuthCacheForUser(input.userId, firebaseUid);
+
+      // BUG GG2 FIX: call revokeUserSessions so Firebase refresh tokens are
+      // revoked and the Redis revocation marker is also written for the Hono
+      // middleware path.  This was never called on ban/suspend, meaning users
+      // could re-authenticate immediately after being banned.
+      if (input.banned && firebaseUid) {
+        await revokeUserSessions(firebaseUid).catch(err => {
+          // Log but do not fail the ban operation if Firebase revocation errors.
+          const msg = err instanceof Error ? err.message : String(err);
+          void msg; // consumed below
+          console.error(`[admin.setUserBan] revokeUserSessions failed for uid=${firebaseUid}:`, err);
+        });
+      }
 
       // Bug 1 fix: if the user was just banned, immediately close any open SSE
       // connections so the stream does not persist after the ban is applied.

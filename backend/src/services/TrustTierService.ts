@@ -376,7 +376,8 @@ export const TrustTierService = {
     );
 
     // Invalidate auth cache so the new tier is visible immediately
-    invalidateAuthCacheForUser(userId);
+    // BUG GG3 FIX: await the call (was fire-and-forget) so Redis errors surface.
+    await invalidateAuthCacheForUser(userId);
 
     // Log transition (if trust_ledger exists)
     try {

@@ -305,6 +305,19 @@ export const escrowRouter = router({
         });
       }
 
+      // SECURITY FIX (HH3): Enforce a minimum transfer floor of 50% of escrow.
+      // Without this check any positive amount passes (e.g. $0.01), allowing a
+      // poster to supply a trivial Stripe transfer and leave the worker with nothing.
+      // The platform takes a 15% fee, so the absolute minimum legitimate transfer
+      // is floored at 50% of escrow as protection against clear abuse.
+      const minimumTransferFloor = Math.floor(escrowAmount * 0.50);
+      if (transfer.amount < minimumTransferFloor) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'Stripe transfer amount is insufficient for the escrow amount',
+        });
+      }
+
       const result = await EscrowService.release({
         escrowId: input.escrowId,
         stripeTransferId: input.stripeTransferId,
@@ -335,6 +348,25 @@ export const escrowRouter = router({
       }
       if (escrow.data.poster_id !== ctx.user.id) {
         throw new TRPCError({ code: 'FORBIDDEN', message: 'Only the escrow creator can request a refund' });
+      }
+
+      // SECURITY FIX (HH2): Block refunds once a worker has been assigned.
+      // Without this guard a poster can call escrow.refund after the worker
+      // completes the task (task=COMPLETED, escrow=FUNDED) and steal the
+      // worker's payment.
+      const taskRow = await db.query<{ state: string }>(
+        `SELECT state FROM tasks WHERE id = $1`,
+        [(escrow.data as { task_id: string }).task_id]
+      );
+      if (taskRow.rows.length > 0) {
+        const taskState = taskRow.rows[0].state;
+        const workerAssignedStates = ['ACCEPTED', 'MATCHING', 'IN_PROGRESS', 'PROOF_SUBMITTED', 'COMPLETED'];
+        if (workerAssignedStates.includes(taskState)) {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message: 'Cannot refund escrow for a task that has been accepted by a worker',
+          });
+        }
       }
 
       const result = await EscrowService.refund({
@@ -371,7 +403,7 @@ export const escrowRouter = router({
         });
       }
 
-      const result = await EscrowService.lockForDispute(input.escrowId, { adminOverride: ctx.user.is_admin });
+      const result = await EscrowService.lockForDispute(input.escrowId, { adminOverride: ctx.user.is_admin, initiatedBy: ctx.user.id });
 
       if (!result.success) {
         throw new TRPCError({
@@ -409,9 +441,14 @@ export const escrowRouter = router({
   // --------------------------------------------------------------------------
   
   /**
-   * Award XP after escrow release
+   * Award XP after escrow release — MANUAL RETRY PATH.
+   *
+   * This endpoint exists as a fallback for when EscrowService.release() auto-awards
+   * XP but the XP call fails silently (the release still succeeds). In that case the
+   * failure is logged at WARN level and the worker can call this endpoint to retry.
+   *
    * INV-1: Will fail if escrow is not RELEASED
-   * INV-5: Will fail if XP already awarded for this escrow
+   * INV-5: Unique constraint prevents double-award — safe to retry idempotently.
    *
    * SECURITY FIX: baseXP is derived server-side from the escrow amount.
    * Callers cannot supply an inflated baseXP value.

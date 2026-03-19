@@ -112,10 +112,15 @@ describe('admin.setUserBan branches', () => {
 
   it('returns updated row on success (ban=false)', async () => {
     prependAdminCheck();
+    // UPDATE users SET is_banned
     mockDb.query.mockResolvedValueOnce({
       rows: [{ id: USER_UUID, is_banned: false }],
       rowCount: 1,
     } as any);
+    // INSERT admin_actions audit log
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
+    // GG1 fix: SELECT firebase_uid for Redis revocation key
+    mockDb.query.mockResolvedValueOnce({ rows: [{ firebase_uid: 'firebase-test-uid' }], rowCount: 1 } as any);
 
     const result = await makeAdminCaller().setUserBan({
       userId: USER_UUID,

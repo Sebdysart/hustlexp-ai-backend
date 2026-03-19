@@ -478,7 +478,8 @@ export const FraudDetectionService = {
 
           // Immediately evict auth cache and terminate SSE connections so the
           // suspended user is blocked without waiting for the 5-min cache TTL.
-          invalidateAuthCacheForUser(userId);
+          // BUG GG3 FIX: await the call (was fire-and-forget) so Redis errors surface.
+          await invalidateAuthCacheForUser(userId);
           forceDisconnectUser(userId);
 
           // Create high-priority risk score for suspended user

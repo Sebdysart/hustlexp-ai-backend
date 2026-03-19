@@ -53,6 +53,14 @@ vi.mock('../../src/services/NotificationService', () => ({
   NotificationService: { createNotification: vi.fn().mockResolvedValue({ success: true, data: {} }) },
 }));
 
+// GG1 fix: GDPRService now imports revokeUserSessions from auth/middleware.
+// Mock auth/middleware to prevent firebase.ts from crashing at module load
+// time (firebase.ts reads config.firebase.projectId which is not set in tests).
+vi.mock('../../src/auth/middleware.js', () => ({
+  revokeUserSessions: vi.fn().mockResolvedValue(undefined),
+  authMiddleware: vi.fn(),
+}));
+
 // Mock TaskService to avoid pulling in ScoperAIService → AIClient → config.ai chain.
 // GDPRService calls TaskService.cancel() — the mock returns success so deletion proceeds.
 // EscrowService is NOT mocked so Attack 1 test 1 and Attack 7 can test real release logic.

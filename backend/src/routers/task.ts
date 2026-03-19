@@ -491,7 +491,7 @@ export const taskRouter = router({
           `SELECT state FROM tasks WHERE id = $1 FOR UPDATE`,
           [input.taskId]
         );
-        if (!lockResult.rows[0] || lockResult.rows[0].state !== 'posted') {
+        if (!lockResult.rows[0] || lockResult.rows[0].state !== 'OPEN') {
           throw new TRPCError({
             code: 'PRECONDITION_FAILED',
             message: 'Task is no longer available for claiming',
@@ -502,9 +502,9 @@ export const taskRouter = router({
           `UPDATE tasks
            SET mutual_consent_accepted = TRUE,
                worker_id = $2,
-               state = 'claimed',
+               state = 'ACCEPTED',
                accepted_at = NOW()
-           WHERE id = $1 AND state = 'posted'`,
+           WHERE id = $1 AND state = 'OPEN'`,
           [input.taskId, ctx.user.id]
         );
 

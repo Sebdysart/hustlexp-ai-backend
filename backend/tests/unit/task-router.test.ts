@@ -1906,16 +1906,16 @@ describe('task.acceptWithConsent', () => {
     mockDb.query
       .mockResolvedValueOnce({
         // Pre-transaction: get template_slug + state
-        rows: [{ template_slug: 'wildcard_bizarre', state: 'posted' }],
+        rows: [{ template_slug: 'wildcard_bizarre', state: 'OPEN' }],
         rowCount: 1,
       } as any)
       .mockResolvedValueOnce({
         // Inside transaction: SELECT state FOR UPDATE
-        rows: [{ state: 'posted' }],
+        rows: [{ state: 'OPEN' }],
         rowCount: 1,
       } as any)
       .mockResolvedValueOnce({
-        // Inside transaction: UPDATE tasks SET ... WHERE state = 'posted'
+        // Inside transaction: UPDATE tasks SET ... WHERE state = 'OPEN'
         rows: [], rowCount: 1,
       } as any);
 

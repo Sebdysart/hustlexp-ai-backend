@@ -829,6 +829,8 @@ describe('escrow.refund', () => {
         success: true,
         data: makeEscrow() as any,
       });
+      // HH2 fix: router checks task state before allowing refund
+      mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'OPEN' }], rowCount: 1 } as any);
       mockEscrowService.refund.mockResolvedValueOnce({
         success: true,
         data: refundedEscrow as any,
@@ -886,6 +888,8 @@ describe('escrow.refund', () => {
         success: true,
         data: makeEscrow() as any,
       });
+      // HH2 fix: router checks task state first (OPEN = refundable)
+      mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'OPEN' }], rowCount: 1 } as any);
       mockEscrowService.refund.mockResolvedValueOnce({
         success: false,
         error: { code: 'INVALID_STATE', message: 'Cannot refund: wrong state' },
@@ -903,6 +907,8 @@ describe('escrow.refund', () => {
         success: true,
         data: makeEscrow() as any,
       });
+      // HH2 fix: router checks task state first (OPEN = refundable)
+      mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'OPEN' }], rowCount: 1 } as any);
       mockEscrowService.refund.mockResolvedValueOnce({
         success: true,
         data: makeEscrow({ state: 'REFUNDED' }) as any,

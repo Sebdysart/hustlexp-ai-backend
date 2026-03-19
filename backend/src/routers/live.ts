@@ -92,9 +92,9 @@ export const liveRouter = router({
    */
   listBroadcasts: hustlerProcedure
     .input(z.object({
-      latitude: z.number(),
-      longitude: z.number(),
-      radiusMiles: z.number().default(5),
+      latitude: z.number().min(-90).max(90),
+      longitude: z.number().min(-180).max(180),
+      radiusMiles: z.number().positive().max(100).default(5),
       limit: z.number().int().min(1).max(100).default(50).optional(),
       offset: z.number().int().min(0).default(0).optional(),
     }))

@@ -180,6 +180,7 @@ app.use('/trpc/taskDiscovery.browseTasks', rateLimitMiddleware('browse')); // 30
 
 // Tier 4: Domain-specific
 app.use('/trpc/escrow.*', rateLimitMiddleware('escrow'));           // 30/min — other escrow ops
+app.use('/trpc/live.*', rateLimitMiddleware('live'));               // 20/min — live mode (multi-table JOIN, geo amplification risk)
 app.use('/trpc/task.*', rateLimitMiddleware('task'));               // 60/min — core task ops
 
 // Tier 5: Mutation (60/min) — write-heavy routes
@@ -598,14 +599,19 @@ app.get('/api/tasks/:taskId/state', async (c) => {
   }
 
   try {
-    const result = await db.query<{ state: string }>(
-      `SELECT state FROM tasks WHERE id = $1`,
+    const result = await db.query<{ state: string; poster_id: string; worker_id: string | null }>(
+      `SELECT state, poster_id, worker_id FROM tasks WHERE id = $1`,
       [taskId]
     );
     if (result.rows.length === 0) {
       return c.json({ error: 'Task not found' }, 404);
     }
-    return c.json({ state: result.rows[0].state });
+    const task = result.rows[0];
+    if (task.poster_id !== user.id && task.worker_id !== user.id) {
+      // Return 404 to avoid leaking existence to unauthorized callers
+      return c.json({ error: 'Task not found' }, 404);
+    }
+    return c.json({ state: task.state });
   } catch (err) {
     pinoLogger.error({ err, taskId }, 'Failed to fetch task state');
     return c.json({ error: 'Internal server error' }, 500);
@@ -624,14 +630,22 @@ app.get('/api/escrows/:escrowId/state', async (c) => {
   }
 
   try {
-    const result = await db.query<{ state: string }>(
-      `SELECT state FROM escrows WHERE id = $1`,
+    const result = await db.query<{ state: string; poster_id: string; worker_id: string | null }>(
+      `SELECT e.state, t.poster_id, t.worker_id
+       FROM escrows e
+       INNER JOIN tasks t ON t.id = e.task_id
+       WHERE e.id = $1`,
       [escrowId]
     );
     if (result.rows.length === 0) {
       return c.json({ error: 'Escrow not found' }, 404);
     }
-    return c.json({ state: result.rows[0].state });
+    const escrow = result.rows[0];
+    if (escrow.poster_id !== user.id && escrow.worker_id !== user.id) {
+      // Return 404 to avoid leaking existence to unauthorized callers
+      return c.json({ error: 'Escrow not found' }, 404);
+    }
+    return c.json({ state: escrow.state });
   } catch (err) {
     pinoLogger.error({ err, escrowId }, 'Failed to fetch escrow state');
     return c.json({ error: 'Internal server error' }, 500);

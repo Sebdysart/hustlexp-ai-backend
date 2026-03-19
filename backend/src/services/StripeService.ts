@@ -331,16 +331,19 @@ export const StripeService = {
     }
 
     try {
-      const transfer = await stripeBreaker.execute(() => stripe!.transfers.create({
-        amount,
-        currency: 'usd',
-        destination: workerStripeAccountId,
-        metadata: {
-          escrow_id: escrowId,
-          worker_id: workerId,
+      const transfer = await stripeBreaker.execute(() => stripe!.transfers.create(
+        {
+          amount,
+          currency: 'usd',
+          destination: workerStripeAccountId,
+          metadata: {
+            escrow_id: escrowId,
+            worker_id: workerId,
+          },
+          description: description || `HustleXP Payout ${escrowId}`,
         },
-        description: description || `HustleXP Payout ${escrowId}`,
-      }));
+        { idempotencyKey: `tr_create_${escrowId}_${workerId}` }
+      ));
 
       return {
         success: true,

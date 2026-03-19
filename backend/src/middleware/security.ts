@@ -104,6 +104,7 @@ const RATE_LIMITS = {
   browse: { limit: 30, windowSeconds: 60 },      // 30 public browse requests/min — IP-based DoS protection
   escrow: { limit: 30, windowSeconds: 60 },      // 30 escrow ops/min
   financial: { limit: 10, windowSeconds: 60 },   // 10 financial ops/min (escrow release, stripe)
+  live: { limit: 20, windowSeconds: 60 },        // 20 live mode requests/min — multi-table JOIN, geo amplification risk
   mutation: { limit: 60, windowSeconds: 60 },    // 60 mutation ops/min (write-heavy routes)
   task: { limit: 60, windowSeconds: 60 },         // 60 task ops/min
   general: { limit: 120, windowSeconds: 60 },     // 120 general requests/min
@@ -254,12 +255,14 @@ export async function aiRateLimitMiddleware(provider: keyof typeof AI_RATE_LIMIT
     const key = `ratelimit:ai:${provider}:${userId}`;
     const current = await redis.incr(key);
 
-    // Always refresh TTL after INCR to prevent immortal keys.
-    // If the process crashes between INCR and EXPIRE the key would otherwise
-    // accumulate indefinitely.  Calling EXPIRE unconditionally makes this
-    // a sliding window (TTL resets on each request) — an acceptable trade-off
-    // for eliminating the non-atomic race.
-    await redis.expire(key, limits.windowMs / 1000);
+    // Set TTL only on the first request in a window (when current === 1).
+    // This implements a fixed window rather than a sliding window — setting
+    // the TTL on every request would reset the expiry on each hit, allowing
+    // a user to send one request per (windowMs - 1ms) forever without
+    // ever triggering the limit.
+    if (current === 1) {
+      await redis.expire(key, limits.windowMs / 1000);
+    }
     
     if (current > limits.requests) {
       c.header('X-RateLimit-Limit', limits.requests.toString());

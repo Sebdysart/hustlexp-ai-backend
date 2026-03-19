@@ -682,12 +682,17 @@ describe('SECTION 4 — Admin Audit Trail', () => {
       rows: [],
       rowCount: 1,
     } as ReturnType<typeof db.query> extends Promise<infer T> ? T : never);
-    // Fourth call: SELECT funded escrows for the banned user (none)
+    // Fourth call: GG1 fix — SELECT firebase_uid for Redis revocation key namespace
+    mockDbQuery.mockResolvedValueOnce({
+      rows: [{ firebase_uid: 'firebase-target-user' }],
+      rowCount: 1,
+    } as ReturnType<typeof db.query> extends Promise<infer T> ? T : never);
+    // Fifth call: SELECT funded escrows for the banned user (none)
     mockDbQuery.mockResolvedValueOnce({
       rows: [],
       rowCount: 0,
     } as ReturnType<typeof db.query> extends Promise<infer T> ? T : never);
-    // Fifth call: UPDATE tasks SET state = 'CANCELLED' for OPEN tasks
+    // Sixth call: UPDATE tasks SET state = 'CANCELLED' for OPEN tasks
     mockDbQuery.mockResolvedValueOnce({
       rows: [],
       rowCount: 0,
@@ -703,8 +708,8 @@ describe('SECTION 4 — Admin Audit Trail', () => {
 
     await caller.setUserBan({ userId: '00000000-0000-0000-0000-000000000001', banned: true, reason: 'fraud' });
 
-    // db.query was called five times: isAdmin check + UPDATE users + INSERT admin_actions + SELECT funded escrows + UPDATE open tasks
-    expect(mockDbQuery).toHaveBeenCalledTimes(5);
+    // db.query was called six times: isAdmin check + UPDATE users + INSERT admin_actions + SELECT firebase_uid + SELECT funded escrows + UPDATE open tasks
+    expect(mockDbQuery).toHaveBeenCalledTimes(6);
     // First call: isAdmin admin_roles check
     expect(mockDbQuery.mock.calls[0][0]).toContain('admin_roles');
     // Second call: the ban UPDATE

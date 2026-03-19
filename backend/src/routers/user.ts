@@ -448,7 +448,8 @@ export const userRouter = router({
       // SEC-FIX: Evict the in-process auth token cache so the new default_mode
       // is enforced immediately rather than after the 5-minute TTL expires.
       // This matches the pattern used by ban, GDPR deletion, and trust-tier changes.
-      invalidateAuthCacheForUser(ctx.user.id);
+      // BUG GG3 FIX: await the call (was fire-and-forget) so Redis errors surface.
+      await invalidateAuthCacheForUser(ctx.user.id);
       return await toMobileUser(result.rows[0]);
     }),
   
