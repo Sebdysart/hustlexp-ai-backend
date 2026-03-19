@@ -151,7 +151,8 @@ describe('MessagingService.markAllAsRead', () => {
   it('successfully marks all messages as read', async () => {
     mockDb.query
       .mockResolvedValueOnce({ rows: [{ poster_id: 'poster-1', worker_id: 'worker-1' }] }) // task
-      .mockResolvedValueOnce({ rows: [{ count: '3' }] });                                   // UPDATE
+      // Fix Bug 1: rowCount (not RETURNING COUNT(*)) is the source of truth
+      .mockResolvedValueOnce({ rows: [], rowCount: 3 });                                     // UPDATE
 
     const result = await MessagingService.markAllAsRead('task-1', 'worker-1');
     expect(result.success).toBe(true);
@@ -231,8 +232,11 @@ describe('MessagingService.sendMessage (extra)', () => {
     }
   });
 
-  it('sends AUTO message with custom content overriding template', async () => {
-    const autoMsg = { ...msg, message_type: 'AUTO', content: 'Custom on-my-way text', auto_message_template: 'on_my_way' };
+  it('AUTO message uses server template text even when client supplies content (Bug 2 fix)', async () => {
+    // SECURITY FIX: client-supplied content for AUTO messages must be discarded.
+    // The server must always use the template text to prevent moderation bypass.
+    const templateText = "I'm on my way to the task location. ETA: ~X minutes.";
+    const autoMsg = { ...msg, message_type: 'AUTO', content: templateText, auto_message_template: 'on_my_way' };
     mockDb.query
       .mockResolvedValueOnce({ rows: [taskRow] })
       .mockResolvedValueOnce({ rows: [autoMsg] });
@@ -240,12 +244,17 @@ describe('MessagingService.sendMessage (extra)', () => {
     const result = await MessagingService.sendMessage({
       taskId: 'task-1', senderId: 'worker-1', messageType: 'AUTO',
       autoMessageTemplate: 'on_my_way',
-      content: 'Custom on-my-way text', // overrides default template
+      content: 'Attacker-supplied content attempting to bypass moderation',
     });
     expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.data.content).toBe('Custom on-my-way text');
-    }
+    // The INSERT must use the server template, not the client-supplied content
+    const insertCall = mockDb.query.mock.calls.find((call: any[]) =>
+      typeof call[0] === 'string' && call[0].includes('INSERT INTO task_messages')
+    );
+    expect(insertCall).toBeDefined();
+    const contentParam = insertCall![1][4];
+    expect(contentParam).toBe(templateText);
+    expect(contentParam).not.toBe('Attacker-supplied content attempting to bypass moderation');
   });
 
   it('flags message with phone number and calls ContentModerationService', async () => {

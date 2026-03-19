@@ -69,6 +69,7 @@ interface XPCalculation {
   streakMultiplier: number;
   trustMultiplier: number;       // SPEC ALIGNMENT: replaced decayFactor
   liveModeMultiplier: number;    // SPEC ALIGNMENT: 1.25× for Live tasks
+  surgeMultiplier: number;       // Bug 3b fix: Instant Surge Level 2+ bonus (up to 2.0×)
   effectiveXP: number;
 }
 
@@ -133,18 +134,34 @@ function getLiveModeMultiplier(isLiveMode: boolean): number {
 }
 
 /**
+ * Instant Surge XP multiplier (Instant Surge Incentives v1)
+ *
+ * Bug 3b fix: Surge Level 2 awards 2.0× XP as the XP boost incentive for hustlers
+ * who accept a task that has been waiting 120+ seconds for a match.
+ * Surge Level 1 and 0 award no bonus (1.0×).
+ * Surge Level 3 is a graceful-fail transition to OPEN — no XP bonus needed.
+ *
+ * @see instant-surge-worker.ts — surge_level 2 comment: "XP boost increase to 2.0x cap"
+ */
+function getSurgeMultiplier(surgeLevel: number): number {
+  if (surgeLevel >= 2) return 2.0;
+  return 1.0;
+}
+
+/**
  * Calculate effective XP (PRODUCT_SPEC §5.2)
  *
- * SPEC FORMULA: effective_xp = base_xp × streak_multiplier × trust_multiplier
+ * SPEC FORMULA: effective_xp = base_xp × streak_multiplier × trust_multiplier × live_mode_multiplier × surge_multiplier
  * Rounding: truncate toward zero
  */
 function calculateEffectiveXP(
   baseXP: number,
   streakMultiplier: number,
   trustMultiplier: number,
-  liveModeMultiplier: number = 1.0
+  liveModeMultiplier: number = 1.0,
+  surgeMultiplier: number = 1.0
 ): number {
-  return Math.floor(baseXP * streakMultiplier * trustMultiplier * liveModeMultiplier);
+  return Math.floor(baseXP * streakMultiplier * trustMultiplier * liveModeMultiplier * surgeMultiplier);
 }
 
 /**
@@ -197,21 +214,24 @@ export const XPService = {
 
       const user = userResult.rows[0];
 
-      // Check if task is Live Mode (for 1.25× multiplier)
+      // Check if task is Live Mode (for 1.25× multiplier) and surge_level (for surge bonus)
       let isLiveMode = false;
+      let surgeLevel = 0;
       if (taskId) {
-        const taskResult = await db.query<{ mode: string }>(
-          'SELECT mode FROM tasks WHERE id = $1',
+        const taskResult = await db.query<{ mode: string; surge_level: number }>(
+          'SELECT mode, COALESCE(surge_level, 0) AS surge_level FROM tasks WHERE id = $1',
           [taskId]
         );
         isLiveMode = taskResult.rows[0]?.mode === 'LIVE';
+        surgeLevel = taskResult.rows[0]?.surge_level ?? 0;
       }
 
-      // SPEC FORMULA: effective_xp = base_xp × streak_multiplier × trust_multiplier
+      // SPEC FORMULA: effective_xp = base_xp × streak_multiplier × trust_multiplier × live_mode_multiplier × surge_multiplier
       const streakMultiplier = getStreakMultiplier(user.current_streak);
       const trustMultiplier = getTrustMultiplier(user.trust_tier);
       const liveModeMultiplier = getLiveModeMultiplier(isLiveMode);
-      const effectiveXP = calculateEffectiveXP(baseXP, streakMultiplier, trustMultiplier, liveModeMultiplier);
+      const surgeMultiplier = getSurgeMultiplier(surgeLevel);
+      const effectiveXP = calculateEffectiveXP(baseXP, streakMultiplier, trustMultiplier, liveModeMultiplier, surgeMultiplier);
 
       return {
         success: true,
@@ -220,6 +240,7 @@ export const XPService = {
           streakMultiplier,
           trustMultiplier,
           liveModeMultiplier,
+          surgeMultiplier,
           effectiveXP,
         },
       };
@@ -292,18 +313,20 @@ export const XPService = {
 
         const user = userResult.rows[0];
 
-        // Check if task is Live Mode (for 1.25× multiplier)
-        const taskResult = await query<{ mode: string }>(
-          'SELECT mode FROM tasks WHERE id = $1',
+        // Check if task is Live Mode (for 1.25× multiplier) and surge_level (for surge bonus)
+        const taskResult = await query<{ mode: string; surge_level: number }>(
+          'SELECT mode, COALESCE(surge_level, 0) AS surge_level FROM tasks WHERE id = $1',
           [taskId]
         );
         const isLiveMode = taskResult.rows[0]?.mode === 'LIVE';
+        const surgeLevel = taskResult.rows[0]?.surge_level ?? 0;
 
-        // SPEC FORMULA: effective_xp = base_xp × streak_multiplier × trust_multiplier × live_mode_multiplier
+        // SPEC FORMULA: effective_xp = base_xp × streak_multiplier × trust_multiplier × live_mode_multiplier × surge_multiplier
         const streakMultiplier = getStreakMultiplier(user.current_streak);
         const trustMultiplier = getTrustMultiplier(user.trust_tier);
         const liveModeMultiplier = getLiveModeMultiplier(isLiveMode);
-        const effectiveXP = calculateEffectiveXP(baseXP, streakMultiplier, trustMultiplier, liveModeMultiplier);
+        const surgeMultiplier = getSurgeMultiplier(surgeLevel);
+        const effectiveXP = calculateEffectiveXP(baseXP, streakMultiplier, trustMultiplier, liveModeMultiplier, surgeMultiplier);
 
         // Anti-farming: Check daily XP cap using effectiveXP (post-multiplier) so cap
         // cannot be exceeded when streak/trust/live multipliers inflate the award.

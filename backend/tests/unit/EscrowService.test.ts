@@ -99,6 +99,7 @@ describe('EscrowService', () => {
       // FIX 5: lockForDispute now does a window-check query first.
       // Return no rows so the window guard is skipped (no completed_at to check).
       (db.query as any).mockResolvedValueOnce({ rows: [], rowCount: 0 }); // window check
+      (db.query as any).mockResolvedValueOnce({ rows: [{ count: '0' }], rowCount: 1 }); // dup dispute check
       (db.query as any).mockResolvedValueOnce({ rows: [{ id: 'e1', state: 'LOCKED_DISPUTE' }], rowCount: 1 });
       const result = await EscrowService.lockForDispute('e1');
       expect(result.success).toBe(true);

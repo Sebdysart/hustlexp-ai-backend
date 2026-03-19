@@ -29,10 +29,13 @@ export const instantRouter = router({
         title: string;
         description: string;
         price: number;
-        location: string | null;
+        latitude: number | null;
+        longitude: number | null;
         created_at: Date;
       }>(
-        `SELECT id, title, description, price, location, created_at
+        // Bug-AA1/5: Select only lat/lng columns — never address/street/full_address —
+        // so unassigned workers see only ~1km-precision approximate location.
+        `SELECT id, title, description, price, latitude, longitude, created_at
          FROM tasks
          WHERE mode = 'LIVE'
            AND state = 'OPEN'
@@ -47,7 +50,9 @@ export const instantRouter = router({
         title: task.title,
         description: task.description,
         price: task.price,
-        location: task.location,
+        // Round to 2 decimal places (~1.1 km precision) — full address revealed only after accept
+        approximateLat: task.latitude !== null ? Math.round(task.latitude * 100) / 100 : null,
+        approximateLng: task.longitude !== null ? Math.round(task.longitude * 100) / 100 : null,
         createdAt: task.created_at,
         waitingSeconds: Math.floor((Date.now() - task.created_at.getTime()) / 1000),
       }));

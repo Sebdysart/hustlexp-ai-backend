@@ -193,6 +193,43 @@ describe('XPService.calculateAward', () => {
       expect(result.data.trustMultiplier).toBe(1.0);
     }
   });
+
+  // Bug 3b fix: surge multiplier
+  it('applies 2.0x surge multiplier for surge_level >= 2', async () => {
+    mockQuery
+      .mockResolvedValueOnce({ rows: [{ current_streak: 0, trust_tier: 1 }] })
+      .mockResolvedValueOnce({ rows: [{ mode: 'STANDARD', surge_level: 2 }] });
+
+    const result = await XPService.calculateAward('user-1', 100, 'task-surge');
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.surgeMultiplier).toBe(2.0);
+      expect(result.data.effectiveXP).toBe(200); // 100 * 1.0 * 1.0 * 1.0 * 2.0
+    }
+  });
+
+  it('does not apply surge bonus for surge_level 0 or 1', async () => {
+    mockQuery
+      .mockResolvedValueOnce({ rows: [{ current_streak: 0, trust_tier: 1 }] })
+      .mockResolvedValueOnce({ rows: [{ mode: 'STANDARD', surge_level: 1 }] });
+
+    const result = await XPService.calculateAward('user-1', 100, 'task-surge1');
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.surgeMultiplier).toBe(1.0);
+      expect(result.data.effectiveXP).toBe(100);
+    }
+  });
+
+  it('returns 1.0x surge multiplier when no taskId provided', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ current_streak: 0, trust_tier: 1 }] });
+
+    const result = await XPService.calculateAward('user-1', 100);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.surgeMultiplier).toBe(1.0);
+    }
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════

@@ -632,10 +632,12 @@ describe('Attack #13 — Dispute submitted after challenge window expires', () =
   it('SAFE — lockForDispute rejects late dispute with PRECONDITION_FAILED', async () => {
     const completedAt = new Date(Date.now() - 8 * 60 * 60 * 1000); // 8 hours ago
     // First query: window check JOIN
-    mockDb.query.mockResolvedValueOnce({
-      rows: [{ completed_at: completedAt, challenge_window_hours: 6 }],
-      rowCount: 1,
-    } as never);
+    mockDb.query
+      .mockResolvedValueOnce({
+        rows: [{ completed_at: completedAt, challenge_window_hours: 6 }],
+        rowCount: 1,
+      } as never)
+      .mockResolvedValueOnce({ rows: [{ count: '0' }], rowCount: 1 } as never); // dup dispute check
 
     await expect(
       EscrowService.lockForDispute('esc-1')
@@ -647,6 +649,7 @@ describe('Attack #13 — Dispute submitted after challenge window expires', () =
     const locked = makeEscrow({ state: 'LOCKED_DISPUTE' });
     mockDb.query
       .mockResolvedValueOnce({ rows: [{ completed_at: completedAt, challenge_window_hours: 6 }], rowCount: 1 } as never) // window check
+      .mockResolvedValueOnce({ rows: [{ count: '0' }], rowCount: 1 } as never) // dup dispute check
       .mockResolvedValueOnce({ rows: [locked], rowCount: 1 } as never); // UPDATE
 
     const result = await EscrowService.lockForDispute('esc-1');
@@ -666,6 +669,7 @@ describe('Attack #14 — Dispute after escrow auto-released', () => {
   it('SAFE — lockForDispute fails on RELEASED escrow', async () => {
     mockDb.query
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)  // window check — no rows (skips window guard)
+      .mockResolvedValueOnce({ rows: [{ count: '0' }], rowCount: 1 } as never)  // dup dispute check
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)  // UPDATE — no FUNDED row
       .mockResolvedValueOnce({
         rows: [makeEscrow({ state: 'RELEASED', poster_id: 'poster-1', worker_id: 'hustler-1' })],
@@ -833,6 +837,7 @@ describe('Attack #18 — XP retained after dispute loss', () => {
   it('SAFE — dispute cannot be filed on RELEASED escrow (state machine enforces ordering)', async () => {
     mockDb.query
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)  // window check — no rows (skips window guard)
+      .mockResolvedValueOnce({ rows: [{ count: '0' }], rowCount: 1 } as never)  // dup dispute check
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)  // lockForDispute UPDATE — no FUNDED row
       .mockResolvedValueOnce({
         rows: [makeEscrow({ state: 'RELEASED', poster_id: 'poster-1', worker_id: 'hustler-1' })],

@@ -334,15 +334,10 @@ export const MessagingService = {
             },
           };
         }
-        
-        // Use template as fallback content, or allow user-provided custom content
-        const templateContent = AUTO_MESSAGE_TEMPLATES[autoMessageTemplate];
-        if (!content) {
-          // No custom content provided — use default template text
-          content = templateContent;
-        }
-        // If content IS provided by the user, it overrides the template text
-        // (the auto_message_template field still records which template was selected)
+
+        // SECURITY: AUTO message content must always come from server-side templates.
+        // Discard any client-supplied content to prevent moderation bypass.
+        content = AUTO_MESSAGE_TEMPLATES[autoMessageTemplate];
       }
       
       // Create message (moderation_status defaults to 'pending' in schema)
@@ -762,19 +757,20 @@ export const MessagingService = {
         };
       }
       
-      // Mark all unread messages as read
-      const result = await db.query<{ count: string }>(
+      // Mark all unread messages as read.
+      // NOTE: RETURNING COUNT(*) is invalid in PostgreSQL DML — it returns no rows.
+      // Use rowCount from the query result instead, which is the actual affected count.
+      const result = await db.query(
         `UPDATE task_messages
          SET read_at = NOW(), updated_at = NOW()
-         WHERE task_id = $1 AND receiver_id = $2 AND read_at IS NULL
-         RETURNING COUNT(*) as count`,
+         WHERE task_id = $1 AND receiver_id = $2 AND read_at IS NULL`,
         [taskId, userId]
       );
-      
+
       return {
         success: true,
         data: {
-          marked: parseInt(result.rows[0]?.count || '0', 10),
+          marked: result.rowCount ?? 0,
         },
       };
     } catch (error) {

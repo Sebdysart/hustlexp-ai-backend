@@ -283,7 +283,7 @@ export const adminRouter = router({
            COALESCE(SUM(CASE WHEN e.state = 'RELEASED' THEN e.platform_fee ELSE 0 END), 0)::text as total_platform_fees,
            COUNT(DISTINCT e.task_id)::text as task_count
          FROM escrows e
-         WHERE e.created_at >= NOW() - ($1 || ' days')::INTERVAL`,
+         WHERE e.created_at >= NOW() - ($1 * INTERVAL '1 day')`,
         [input.days]
       );
 
@@ -316,7 +316,7 @@ export const adminRouter = router({
            COUNT(*)::text as total_requests,
            COALESCE(AVG(cost_cents), 0)::text as avg_cost_cents
          FROM ai_decisions
-         WHERE created_at >= NOW() - ($1 || ' days')::INTERVAL`,
+         WHERE created_at >= NOW() - ($1 * INTERVAL '1 day')`,
         [input.days]
       );
 
@@ -331,7 +331,7 @@ export const adminRouter = router({
            COUNT(*)::text as request_count,
            COALESCE(SUM(cost_cents), 0)::text as total_cost
          FROM ai_decisions
-         WHERE created_at >= NOW() - ($1 || ' days')::INTERVAL
+         WHERE created_at >= NOW() - ($1 * INTERVAL '1 day')
          GROUP BY model
          ORDER BY total_cost DESC`,
         [input.days]
@@ -393,6 +393,18 @@ export const adminRouter = router({
           message: serviceResult.error.message,
         });
       }
+
+      // Bug 3 fix: if the escrow was LOCKED_DISPUTE, close any open dispute row so
+      // it does not remain as an orphaned open dispute after the admin override.
+      await db.query(
+        `UPDATE disputes
+         SET state = 'RESOLVED',
+             resolved_at = NOW(),
+             resolution_notes = CONCAT('Admin override: escrow ', $2)
+         WHERE escrow_id = $1
+           AND state != 'RESOLVED'`,
+        [input.escrowId, input.action]
+      );
 
       await db.query(
         `INSERT INTO admin_actions (admin_id, action_type, target_id, reason, metadata)

@@ -7,7 +7,7 @@
 
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
-import { router, posterProcedure } from '../trpc.js';
+import { router, posterProcedure, hustlerProcedure } from '../trpc.js';
 import { DynamicPricingService } from '../services/DynamicPricingService.js';
 import { SmartPricingService } from '../services/SmartPricingService.js';
 
@@ -64,7 +64,8 @@ export const pricingRouter = router({
     }),
 
   // Update worker's price modifier (IC Compliance)
-  updateMyModifier: posterProcedure
+  // Bug 4 fix: was posterProcedure — only hustlers (workers) should update their own modifier
+  updateMyModifier: hustlerProcedure
     .input(z.object({
       modifierPercent: z.number().int().min(-25).max(50),
     }))

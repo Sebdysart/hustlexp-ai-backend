@@ -821,7 +821,7 @@ export const EscrowService = {
    * FIX 5: Enforces challenge_window_hours. A poster cannot file a dispute after
    * the challenge window (measured from task.completed_at) has elapsed.
    */
-  lockForDispute: async (escrowId: string, options?: { adminOverride?: boolean }): Promise<ServiceResult<Escrow>> => {
+  lockForDispute: async (escrowId: string, options?: { adminOverride?: boolean; initiatedBy?: string }): Promise<ServiceResult<Escrow>> => {
     try {
       // RACE CONDITION FIX: Entire check + update wrapped in a transaction so the
       // FOR UPDATE row-level lock is held from SELECT through COMMIT. Without the
@@ -840,6 +840,38 @@ export const EscrowService = {
            FOR UPDATE OF e`,
           [escrowId]
         );
+
+        // Bug 2 fix (part A): Reject if an open dispute already exists for this escrow.
+        // Checked inside the transaction so the FOR UPDATE lock prevents a race between
+        // two concurrent dispute-open requests on the same escrow.
+        const existingDisputeCheck = await query<{ count: string }>(
+          `SELECT COUNT(*) as count FROM disputes WHERE escrow_id = $1 AND state != 'RESOLVED'`,
+          [escrowId]
+        );
+        if (parseInt(existingDisputeCheck.rows[0]?.count ?? '0', 10) > 0) {
+          throw new TRPCError({
+            code: 'CONFLICT',
+            message: 'Dispute already open for this escrow',
+          });
+        }
+
+        // Bug 2 fix (part B): Per-user dispute flood guard — max 3 open disputes per 24 h.
+        if (options?.initiatedBy) {
+          const userFloodCheck = await query<{ count: string }>(
+            `SELECT COUNT(*) as count FROM disputes
+             WHERE created_by = $1
+               AND state != 'RESOLVED'
+               AND created_at > NOW() - INTERVAL '24 hours'`,
+            [options.initiatedBy]
+          );
+          const openCount = parseInt(userFloodCheck.rows[0]?.count ?? '0', 10);
+          if (openCount >= 3) {
+            throw new TRPCError({
+              code: 'TOO_MANY_REQUESTS',
+              message: 'Dispute rate limit exceeded: maximum 3 open disputes per 24 hours',
+            });
+          }
+        }
 
         if (windowCheck.rows.length > 0) {
           const { completed_at, challenge_window_hours } = windowCheck.rows[0];

@@ -401,9 +401,7 @@ describe('ChargebackService (extra coverage)', () => {
       } as never);
       // increment dispute_lost_count
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
-      // Other open disputes = 1 (no unlock)
-      mockDb.query.mockResolvedValueOnce({ rows: [{ count: '1' }], rowCount: 1 } as never);
-      // Mark resolved
+      // Mark resolved (no other-disputes query — lost branch never unlocks payouts)
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
 
       const result = await ChargebackService.handleDisputeClosed({
@@ -413,7 +411,7 @@ describe('ChargebackService (extra coverage)', () => {
 
       expect(result.success).toBe(true);
 
-      // Verify payouts were NOT unlocked
+      // Payouts remain locked because the lost branch never calls unfreezePayouts()
       const unlockCall = mockDb.query.mock.calls.find(
         (call) => typeof call[0] === 'string' && call[0].includes('payouts_locked = FALSE')
       );

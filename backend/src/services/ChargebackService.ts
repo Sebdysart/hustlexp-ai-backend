@@ -486,25 +486,16 @@ export const ChargebackService = {
             [dispute.user_id]
           );
 
-          // 3. Unlock payouts if no OTHER open disputes (even on loss, we don't perma-lock)
-          const otherOpenDisputes = await db.query<{ count: string }>(
-            `SELECT COUNT(*) as count FROM payment_disputes
-             WHERE user_id = $1
-               AND id != $2
-               AND status NOT IN ('won', 'lost', 'closed')`,
-            [dispute.user_id, dispute.id]
+          // Bug 4 fix: Do NOT unlock payouts when the chargeback is LOST.
+          // A lost chargeback means the platform was fined — the user's account must
+          // remain frozen and require admin manual review before payouts are reinstated.
+          // Previously this branch unconditionally unlocked payouts on loss, which
+          // allowed fraudulent posters to immediately receive payouts after losing a
+          // chargeback, defeating the payout freeze entirely.
+          log.warn(
+            { stripeDisputeId, userId: dispute.user_id, amountCents: dispute.amount_cents },
+            'Chargeback lost — payouts remain frozen, manual admin review required to reinstate'
           );
-
-          if (parseInt(otherOpenDisputes.rows[0].count, 10) === 0) {
-            await db.query(
-              `UPDATE users
-               SET payouts_locked = FALSE,
-                   payouts_locked_at = NULL,
-                   payouts_locked_reason = NULL
-               WHERE id = $1`,
-              [dispute.user_id]
-            );
-          }
         }
 
         log.warn({ stripeDisputeId, amountCents: dispute.amount_cents, resolution: 'lost' }, 'Dispute lost - funds lost permanently');

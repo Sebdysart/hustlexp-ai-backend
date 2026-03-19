@@ -310,6 +310,7 @@ describe('ATTACK 4: Concurrent release + dispute (TOCTOU race)', () => {
     // window check returns no rows
     mockDb.query
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // window check
+      .mockResolvedValueOnce({ rows: [{ count: '0' }], rowCount: 1 } as never) // dup dispute check
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // UPDATE — 0 rows (PENDING, not FUNDED)
       .mockResolvedValueOnce({ rows: [makeEscrow({ state: 'PENDING' })], rowCount: 1 } as never); // getById
 
@@ -866,7 +867,8 @@ describe('ATTACK 18: Dispute window bypass — lockForDispute after window expir
   it('lockForDispute on escrow with null completed_at now throws BAD_REQUEST — exploit closed', async () => {
     // Window check returns completed_at = null → new guard fires BAD_REQUEST
     mockDb.query
-      .mockResolvedValueOnce({ rows: [{ completed_at: null, challenge_window_hours: 6 }], rowCount: 1 } as never);
+      .mockResolvedValueOnce({ rows: [{ completed_at: null, challenge_window_hours: 6 }], rowCount: 1 } as never)  // window check
+      .mockResolvedValueOnce({ rows: [{ count: '0' }], rowCount: 1 } as never); // dup dispute check
 
     await expect(EscrowService.lockForDispute('esc-1')).rejects.toMatchObject({
       code: 'BAD_REQUEST',

@@ -257,10 +257,8 @@ describe('ChargebackService', () => {
       } as never);
       // increment dispute_lost_count
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
-      // check other open disputes
-      mockDb.query.mockResolvedValueOnce({ rows: [{ count: '0' }], rowCount: 1 } as never);
-      // unlock payouts
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      // Bug 4 fix: LOST path no longer checks other open disputes or unlocks payouts.
+      // Payouts remain frozen and require admin manual review.
       // mark resolved
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
 

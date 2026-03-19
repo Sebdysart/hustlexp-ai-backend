@@ -85,12 +85,35 @@ export async function sseHandler(c: Context): Promise<Response> {
         closed: false,
       };
 
-      // Register connection
-      addConnection(user.id, conn);
-      
+      // SECURITY: Register connection. addConnection() throws SSE_CONNECTION_LIMIT when the
+      // per-user or reconnect-rate limit is exceeded. At this point the 200 response headers
+      // have already been committed (the Response was constructed before this callback runs),
+      // so we cannot return a 429. Instead: send an error event and close the stream
+      // gracefully so the client receives a clean termination rather than an unhandled
+      // exception crashing the process.
+      try {
+        addConnection(user.id, conn);
+      } catch (limitErr) {
+        conn.closed = true;
+        log.warn({ userId: user.id, err: limitErr instanceof Error ? limitErr.message : String(limitErr) }, 'SSE connection limit reached; closing stream gracefully');
+        const encoder = new TextEncoder();
+        try {
+          const errEvent = JSON.stringify({ type: 'error', code: 'CONNECTION_LIMIT', message: 'Too many concurrent connections' });
+          controller.enqueue(encoder.encode(`data: ${errEvent}\n\n`));
+        } catch {
+          // Enqueue may already fail if controller was closed — safe to ignore
+        }
+        try {
+          controller.close();
+        } catch {
+          // Already closed — safe to ignore
+        }
+        return;
+      }
+
       // Subscribe to user's personal room (for direct messages)
       subscribeToRoom(user.id, getUserRoomKey(user.id));
-      
+
       // Send initial connection message with connection ID
       const encoder = new TextEncoder();
       try {

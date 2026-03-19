@@ -388,6 +388,7 @@ describe('admin.escrowOverride branches', () => {
       success: true,
       data: { id: ESC_UUID, state: 'RELEASED', amount: 1000 },
     } as any);
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // close orphaned disputes
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
 
     await makeAdminCaller().escrowOverride({
@@ -396,8 +397,8 @@ describe('admin.escrowOverride branches', () => {
       reason: 'Test',
     });
 
-    // Second db.query call is the admin_actions INSERT (first is isAdmin check)
-    const [sql, params] = (mockDb.query as any).mock.calls[1];
+    // Third db.query call is the admin_actions INSERT (first is isAdmin check, second is UPDATE disputes)
+    const [sql, params] = (mockDb.query as any).mock.calls[2];
     expect(sql).toContain('admin_actions');
     expect(params[0]).toBe(ADMIN_UUID); // admin_id
     expect(params[2]).toBe(ESC_UUID);   // target_id

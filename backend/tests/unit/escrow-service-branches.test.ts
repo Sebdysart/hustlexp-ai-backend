@@ -415,6 +415,8 @@ describe('EscrowService.lockForDispute — rowCount=0', () => {
   it('returns INVALID_STATE when escrow is not FUNDED (e.g. PENDING)', async () => {
     // Window check — no rows (skips time gate)
     mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+    // dup dispute check
+    mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }], rowCount: 1 } as never);
     // UPDATE rowCount=0
     mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
     // getById → PENDING
@@ -430,6 +432,8 @@ describe('EscrowService.lockForDispute — rowCount=0', () => {
   it('returns getById error when getById fails', async () => {
     // Window check — no rows (skips time gate)
     mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+    // dup dispute check
+    mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }], rowCount: 1 } as never);
     // UPDATE rowCount=0
     mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
     // getById DB error
