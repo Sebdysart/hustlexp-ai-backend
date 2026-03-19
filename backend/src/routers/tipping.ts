@@ -97,7 +97,7 @@ export const tippingRouter = router({
     }),
 
   /** Tips the current user has sent (as poster) */
-  getMyTipsSent: hustlerProcedure
+  getMyTipsSent: posterProcedure
     .input(z.object({
       limit: z.number().int().min(1).max(100).default(50),
       offset: z.number().int().min(0).default(0),

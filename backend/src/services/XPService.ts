@@ -840,16 +840,16 @@ export const XPService = {
    */
   getDailyLeaderboard: async (limit: number = 25): Promise<ServiceResult<Array<{ userId: string; name: string; xpEarned: number; rank: number }>>> => {
     try {
-      const today = new Date().toISOString().split('T')[0];
       const result = await db.query<{ user_id: string; name: string; xp_earned: string }>(
         `SELECT xl.user_id, u.full_name as name, SUM(xl.effective_xp)::INTEGER as xp_earned
          FROM xp_ledger xl
          JOIN users u ON u.id = xl.user_id
-         WHERE xl.awarded_at::DATE = $1::DATE
+         WHERE xl.awarded_at AT TIME ZONE 'UTC' >= DATE_TRUNC('day', NOW() AT TIME ZONE 'UTC')
+           AND xl.awarded_at AT TIME ZONE 'UTC' < DATE_TRUNC('day', NOW() AT TIME ZONE 'UTC') + INTERVAL '1 day'
          GROUP BY xl.user_id, u.full_name
          ORDER BY xp_earned DESC
-         LIMIT $2`,
-        [today, limit]
+         LIMIT $1`,
+        [limit]
       );
 
       return {

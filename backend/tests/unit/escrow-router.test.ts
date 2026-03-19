@@ -1549,7 +1549,7 @@ describe('SECURITY FIX v2.9.4 — confirmFunding: Stripe PI verification', () =>
       stripePaymentIntentId: 'pi_real_succeeded',
     });
 
-    expect(mockStripePaymentIntentsRetrieve).toHaveBeenCalledWith('pi_real_succeeded');
+    expect(mockStripePaymentIntentsRetrieve).toHaveBeenCalledWith('pi_real_succeeded', { expand: ['latest_charge'] });
     expect(mockEscrowService.fund).toHaveBeenCalledWith({
       escrowId: ESCROW_ID,
       stripePaymentIntentId: 'pi_real_succeeded',

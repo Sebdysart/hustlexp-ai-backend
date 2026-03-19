@@ -350,33 +350,62 @@ export const TrustTierService = {
     targetTier: TrustTier,
     source: 'system' | 'admin'
   ): Promise<{ success: true; alreadyApplied?: boolean }> => {
-    const currentTier = await TrustTierService.getTrustTier(userId);
+    // Quick pre-flight guards outside the transaction (cheap, non-blocking)
+    const preLockTier = await TrustTierService.getTrustTier(userId);
 
-    // Guards
-    if (currentTier === TrustTier.BANNED) {
+    if (preLockTier === TrustTier.BANNED) {
       throw new Error('Cannot promote banned user');
     }
 
-    if (targetTier <= currentTier) {
-      throw new Error(`Cannot promote to tier ${targetTier} (current: ${currentTier})`);
+    if (targetTier <= preLockTier) {
+      throw new Error(`Cannot promote to tier ${targetTier} (current: ${preLockTier})`);
     }
 
-    // Re-validate preconditions inside transaction
-    const eligibility = await TrustTierService.evaluatePromotion(userId);
-    if (!eligibility.eligible || eligibility.targetTier !== targetTier) {
-      throw new Error(`Promotion preconditions not met: ${eligibility.reasons.join(', ')}`);
-    }
+    // Run eligibility check and CAS UPDATE under a single serializable transaction
+    // with a FOR UPDATE row lock so a concurrent dispute filing cannot sneak in
+    // between evaluation and the write.
+    let updateRowCount = 0;
+    let currentTier: TrustTier = preLockTier;
 
-    // Apply promotion in transaction (optimistic CAS: only matches if tier hasn't changed)
-    const updateResult = await db.query(
-      `UPDATE users
-       SET trust_tier = $1, updated_at = NOW()
-       WHERE id = $2
-         AND trust_tier = $3`,
-      [targetTier, userId, currentTier]
-    );
+    await db.serializableTransaction(async (txQuery) => {
+      // Lock the user row for the duration of this transaction
+      const lockResult = await txQuery<{ trust_tier: number }>(
+        `SELECT trust_tier FROM users WHERE id = $1 FOR UPDATE`,
+        [userId]
+      );
 
-    if (updateResult.rowCount === 0) {
+      if (lockResult.rowCount === 0) {
+        throw new Error(`User ${userId} not found`);
+      }
+
+      currentTier = lockResult.rows[0].trust_tier as unknown as TrustTier;
+
+      // If the tier changed since the pre-flight check, abort
+      if (currentTier !== preLockTier) {
+        updateRowCount = 0;
+        return;
+      }
+
+      // Re-evaluate eligibility inside the lock so concurrent state changes
+      // (e.g. a dispute filing) are visible before we commit the promotion.
+      const eligibility = await TrustTierService.evaluatePromotion(userId);
+      if (!eligibility.eligible || eligibility.targetTier !== targetTier) {
+        throw new Error(`Promotion preconditions not met: ${eligibility.reasons.join(', ')}`);
+      }
+
+      // CAS UPDATE — tier must still match what we read under the lock
+      const updateResult = await txQuery(
+        `UPDATE users
+         SET trust_tier = $1, updated_at = NOW()
+         WHERE id = $2
+           AND trust_tier = $3`,
+        [targetTier, userId, currentTier]
+      );
+
+      updateRowCount = updateResult.rowCount;
+    });
+
+    if (updateRowCount === 0) {
       // Concurrent promotion already applied — silently return, don't fire events
       return { success: true, alreadyApplied: true };
     }

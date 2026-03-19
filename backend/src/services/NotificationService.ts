@@ -846,8 +846,8 @@ export const NotificationService = {
         `SELECT COUNT(*) as count
          FROM notifications
          WHERE user_id = $1 AND category = $2
-           AND created_at >= NOW() - INTERVAL '${minutes} minutes'`,
-        [userId, category]
+           AND created_at >= NOW() - ($3 * INTERVAL '1 minute')`,
+        [userId, category, minutes]
       );
       
       return parseInt(result.rows[0]?.count || '0', 10);

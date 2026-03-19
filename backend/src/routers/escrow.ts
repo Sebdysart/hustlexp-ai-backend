@@ -235,7 +235,7 @@ export const escrowRouter = router({
       // to FUNDED with no real money backing it — causing platform reserve leakage on release.
       let pi: Stripe.PaymentIntent;
       try {
-        pi = await getStripe().paymentIntents.retrieve(input.stripePaymentIntentId);
+        pi = await getStripe().paymentIntents.retrieve(input.stripePaymentIntentId, { expand: ['latest_charge'] });
       } catch {
         throw new TRPCError({
           code: 'PRECONDITION_FAILED',

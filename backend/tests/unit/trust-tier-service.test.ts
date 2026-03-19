@@ -5,10 +5,34 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+// serializableTransaction runs the callback with a txQuery that delegates to db.query,
+// so all query calls (both txQuery and db.query) share the same mock queue.
+const { mockSerializableTransaction } = vi.hoisted(() => {
+  const mockSerializableTransaction = vi.fn().mockImplementation(
+    async (fn: (txQuery: typeof import('../../src/db').db.query) => Promise<void>) => {
+      const { db: mockDb } = await import('../../src/db');
+      return fn(mockDb.query as typeof mockDb.query);
+    }
+  );
+  return { mockSerializableTransaction };
+});
+
 vi.mock('../../src/db', () => ({
-  db: { query: vi.fn() },
+  db: {
+    query: vi.fn(),
+    serializableTransaction: mockSerializableTransaction,
+  },
   isInvariantViolation: vi.fn(() => false),
   getErrorMessage: vi.fn((code: string) => `Error ${code}`),
+}));
+
+// Mock auth-cache so invalidateAuthCacheForUser doesn't make extra db.query calls
+vi.mock('../../src/auth-cache', () => ({
+  invalidateAuthCacheForUser: vi.fn().mockResolvedValue(undefined),
+  authCache: new Map(),
+  authCacheKey: vi.fn(),
+  authCacheGet: vi.fn().mockReturnValue(null),
+  authCacheSet: vi.fn(),
 }));
 
 vi.mock('../../src/logger', () => {
@@ -192,11 +216,13 @@ describe('TrustTierService.applyPromotion', () => {
   });
 
   it('throws when preconditions not met', async () => {
-    // getTrustTier for applyPromotion
+    // getTrustTier for applyPromotion (pre-flight)
     mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }], rowCount: 1 });
-    // evaluatePromotion -> getTrustTier
+    // serializableTransaction → txQuery: SELECT trust_tier FOR UPDATE
     mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }], rowCount: 1 });
-    // evaluatePromotion -> user details (missing verification)
+    // evaluatePromotion -> getTrustTier (inside transaction)
+    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }], rowCount: 1 });
+    // evaluatePromotion -> user details (missing verification — not eligible)
     mockQuery.mockResolvedValueOnce({
       rows: [{ is_verified: false, verified_at: null, phone: null, stripe_customer_id: null }],
       rowCount: 1,
@@ -208,20 +234,22 @@ describe('TrustTierService.applyPromotion', () => {
   });
 
   it('successfully promotes when eligible', async () => {
-    // getTrustTier for applyPromotion
+    // getTrustTier for applyPromotion (pre-flight)
     mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }], rowCount: 1 });
-    // evaluatePromotion -> getTrustTier
+    // serializableTransaction → txQuery: SELECT trust_tier FOR UPDATE
     mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }], rowCount: 1 });
-    // evaluatePromotion -> user details
+    // evaluatePromotion -> getTrustTier (inside transaction)
+    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }], rowCount: 1 });
+    // evaluatePromotion -> user details (inside transaction)
     mockQuery.mockResolvedValueOnce({
       rows: [{ is_verified: true, verified_at: new Date(), phone: '+1234', stripe_customer_id: 'cus_1' }],
       rowCount: 1,
     });
-    // UPDATE users SET trust_tier (rowCount=1 means the CAS matched)
+    // serializableTransaction → txQuery: UPDATE users SET trust_tier (CAS matched → rowCount=1)
     mockQuery.mockResolvedValueOnce({ rows: [{ id: 'u1', trust_tier: 2 }], rowCount: 1 });
     // INSERT trust_ledger
     mockQuery.mockResolvedValueOnce({ rows: [] });
-    // SELECT default_mode for instrumentation
+    // SELECT default_mode for AlphaInstrumentation
     mockQuery.mockResolvedValueOnce({ rows: [{ default_mode: 'worker' }] });
 
     const result = await TrustTierService.applyPromotion('u1', TrustTier.VERIFIED, 'system');
@@ -229,22 +257,24 @@ describe('TrustTierService.applyPromotion', () => {
   });
 
   it('returns alreadyApplied when concurrent promotion beats CAS', async () => {
-    // getTrustTier for applyPromotion
+    // getTrustTier for applyPromotion (pre-flight)
     mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }], rowCount: 1 });
-    // evaluatePromotion -> getTrustTier
+    // serializableTransaction → txQuery: SELECT trust_tier FOR UPDATE
     mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }], rowCount: 1 });
-    // evaluatePromotion -> user details
+    // evaluatePromotion -> getTrustTier (inside transaction)
+    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }], rowCount: 1 });
+    // evaluatePromotion -> user details (inside transaction)
     mockQuery.mockResolvedValueOnce({
       rows: [{ is_verified: true, verified_at: new Date(), phone: '+1234', stripe_customer_id: 'cus_1' }],
       rowCount: 1,
     });
-    // UPDATE users SET trust_tier — rowCount=0: concurrent promotion already applied
+    // serializableTransaction → txQuery: UPDATE users SET trust_tier — rowCount=0: concurrent promotion already applied
     mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
 
     const result = await TrustTierService.applyPromotion('u1', TrustTier.VERIFIED, 'system');
     expect(result).toEqual({ success: true, alreadyApplied: true });
     // No further queries (trust_ledger, instrumentation) should be fired
-    expect(mockQuery).toHaveBeenCalledTimes(4);
+    expect(mockQuery).toHaveBeenCalledTimes(5);
   });
 });
 

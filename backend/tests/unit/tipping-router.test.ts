@@ -273,7 +273,7 @@ describe('tipping.getMyTipsSent', () => {
     const data = [{ id: TEST_UUID, amountCents: 500, taskId: TEST_UUID_2 }];
     mockService.getTipsSentByUser.mockResolvedValueOnce({ success: true, data } as any);
 
-    const result = await makeCaller().getMyTipsSent({ limit: 10, offset: 0 });
+    const result = await makePosterCaller().getMyTipsSent({ limit: 10, offset: 0 });
 
     expect(result).toEqual(data);
     expect(mockService.getTipsSentByUser).toHaveBeenCalledWith('test-uid', 10, 0);
@@ -282,7 +282,7 @@ describe('tipping.getMyTipsSent', () => {
   it('uses default limit and offset', async () => {
     mockService.getTipsSentByUser.mockResolvedValueOnce({ success: true, data: [] } as any);
 
-    await makeCaller().getMyTipsSent({});
+    await makePosterCaller().getMyTipsSent({});
 
     expect(mockService.getTipsSentByUser).toHaveBeenCalledWith('test-uid', 50, 0);
   });
@@ -293,6 +293,6 @@ describe('tipping.getMyTipsSent', () => {
       error: { message: 'Failed to get tips sent' },
     } as any);
 
-    await expect(makeCaller().getMyTipsSent({})).rejects.toThrow('Failed to get tips sent');
+    await expect(makePosterCaller().getMyTipsSent({})).rejects.toThrow('Failed to get tips sent');
   });
 });

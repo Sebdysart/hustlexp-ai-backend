@@ -488,19 +488,8 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
     // Truncate suppressed_reason to 500 chars before storing — prevent oversized DB writes
     const suppressedReason = errorMessage.substring(0, 500);
 
-    if (isSuppressionError && userId) {
-      // Mark user as do_not_email
-      await db.query(
-        `UPDATE users
-         SET do_not_email = true,
-             updated_at = NOW()
-         WHERE id = $1`,
-        [userId]
-      ).catch(dbError => {
-        log.error({ userId, err: dbError instanceof Error ? dbError.message : 'Unknown error' }, 'Suppression user update failed');
-      });
-
-      // Update email_outbox with suppression reason (truncated to 500 chars)
+    if (isSuppressionError) {
+      // Always update email_outbox status to suppressed regardless of whether we have a userId
       await db.query(
         `UPDATE email_outbox
          SET status = 'suppressed',
@@ -510,6 +499,22 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
          WHERE id = $2`,
         [suppressedReason, emailId]
       );
+
+      // Only set do_not_email flag if we can resolve a user ID.
+      // Note: userId was already updated above in the currentState fetch block
+      // (userId = userId || currentState.rows[0].user_id || undefined), so it
+      // already incorporates any user_id resolved from the email_outbox record.
+      if (userId) {
+        await db.query(
+          `UPDATE users
+           SET do_not_email = true,
+               updated_at = NOW()
+           WHERE id = $1`,
+          [userId]
+        ).catch(dbError => {
+          log.error({ userId, err: dbError instanceof Error ? dbError.message : 'Unknown error' }, 'Suppression user update failed');
+        });
+      }
 
       log.info({ emailId, jobId: job.id, idempotencyKey: outboxKey, suppressedReason, userId, sgCode }, 'Email suppressed due to hard bounce/complaint');
     } else {

@@ -931,7 +931,8 @@ describe('NotificationService', () => {
       const [sql, params] = mockDb.query.mock.calls[0];
       expect(params).toContain(USER_ID);
       expect(params).toContain('badge_earned');
-      expect(sql).toContain('30 minutes');
+      expect(params).toContain(30);
+      expect(sql).toContain("INTERVAL '1 minute'");
     });
   });
 });

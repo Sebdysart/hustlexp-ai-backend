@@ -637,13 +637,25 @@ export const GDPRService = {
         };
       }
       
-      // Update status to processing
-      await db.query(
+      // CAS update: atomically transition from 'pending' → 'processing'.
+      // If another worker already started processing, rowCount will be 0 and we bail
+      // immediately — preventing concurrent deleteAndAnonymizeUserData calls.
+      const casResult = await db.query<{ id: string }>(
         `UPDATE gdpr_data_requests
          SET status = 'processing', processed_at = NOW()
-         WHERE id = $1`,
+         WHERE id = $1 AND status = 'pending'
+         RETURNING id`,
         [requestId]
       );
+      if (casResult.rowCount === 0) {
+        return {
+          success: false,
+          error: {
+            code: ErrorCodes.INVALID_STATE,
+            message: 'Erasure request is already being processed by another worker',
+          },
+        };
+      }
       
       // Execute data deletion/anonymization (GDPR_COMPLIANCE_SPEC.md §3.1, §3.2, §3.3)
       const userId = request.user_id;

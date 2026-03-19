@@ -558,7 +558,13 @@ export const MessagingService = {
       // Store photos in evidence table for audit/dispute trail (MESSAGING_SPEC.md §2.3)
       for (const photoUrl of photoUrls) {
         // Extract storage key from URL (R2 URL format: https://.../{bucket}/{key})
-        const storageKey = photoUrl.includes('/') ? photoUrl.split('/').slice(-2).join('/') : photoUrl;
+        const storageKey = (() => {
+          try {
+            return new URL(photoUrl).pathname.slice(1); // removes leading '/'
+          } catch {
+            return photoUrl; // fallback for non-URL values
+          }
+        })();
         db.query(
           `INSERT INTO evidence (task_id, uploader_user_id, storage_key, content_type, access_scope)
            VALUES ($1, $2, $3, 'image', 'messaging')

@@ -326,7 +326,8 @@ export const messagingRouter = router({
           WHERE task_id = t.id AND sender_id != $1 AND read_at IS NULL
         ) unread ON true
         WHERE (t.poster_id = $1 OR t.worker_id = $1)
-          AND t.state IN ('ACCEPTED', 'PROOF_SUBMITTED', 'DISPUTED')
+          AND t.state IN ('ACCEPTED', 'PROOF_SUBMITTED', 'DISPUTED', 'COMPLETED', 'CANCELLED')
+          AND (t.state NOT IN ('COMPLETED', 'CANCELLED') OR t.updated_at >= NOW() - INTERVAL '7 days')
         ORDER BY t.id, m.created_at DESC NULLS LAST`,
         [ctx.user.id]
       );
