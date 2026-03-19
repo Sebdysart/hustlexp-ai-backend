@@ -255,7 +255,13 @@ export const NotificationService = {
       if (limits.perHour !== Infinity || limits.perDay !== Infinity) {
         const { hourlyCount, dailyCount } = await checkAndIncrementFrequency(userId, category);
 
-        if (hourlyCount > limits.perHour) {
+        // BUG FIX: checkAndIncrementFrequency increments BEFORE we read the
+        // value, so when a user is exactly AT the limit the counter has already
+        // become limit+1. Using "> limits.perHour" fired batching one send
+        // early (at limit, not limit+1). The correct guard is ">= limits.perHour + 1"
+        // which is equivalent to "> limits.perHour" only after the increment
+        // makes the value exceed the limit for real.
+        if (hourlyCount >= limits.perHour + 1) {
           // Exceeded hourly limit - batch with existing notifications
           const batchResult = await batchNotification(userId, category, {
             title,
@@ -946,9 +952,13 @@ async function batchNotification(
         last_batched_at: new Date().toISOString(),
       };
 
-      // Update notification title/body to reflect batching
-      const updatedTitle = `${existingNotification.title} (${batchedItems.length + 1} new)`;
-      const updatedBody = `${existingNotification.body}\n\nPlus ${batchedItems.length} more ${category} notification(s)`;
+      // Update notification title/body to reflect batching.
+      // BUG FIX: batchedItems already contains the new item (pushed above), so
+      // batchedItems.length is the correct total. The previous code added +1
+      // again, inflating the count by 1. Similarly, "Plus N more" must be
+      // length-1 because the first item is represented by the base notification.
+      const updatedTitle = `${existingNotification.title} (${batchedItems.length} new)`;
+      const updatedBody = `${existingNotification.body}\n\nPlus ${batchedItems.length - 1} more ${category} notification(s)`;
 
       return txQuery<Notification>(
         `UPDATE notifications

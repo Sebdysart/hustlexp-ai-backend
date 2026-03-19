@@ -1150,50 +1150,23 @@ export const EscrowService = {
       // against duplicate Stripe calls on retries.
       // -----------------------------------------------------------------------
       const partialAmount = txAmount!;
+      // BUG 1 FIX: compute posterCents as the exact complement of workerCents so
+      // that workerCents + posterCents === partialAmount always (no residual cent).
       const workerCents = Math.round(partialAmount * (workerPercent / 100));
-      const posterCents = Math.round(partialAmount * (posterPercent / 100));
+      const posterCents = partialAmount - workerCents;
       const platformFeePercent = Math.min(100, Math.max(0, config.stripe.platformFeePercent ?? 15));
 
       let resolvedTransferId: string | null = txExistingTransferId;
       let resolvedRefundId: string | null = txExistingRefundId;
 
-      // Worker portion — Stripe transfer to connected account
-      if (workerCents > 0) {
-        if (txExistingTransferId) {
-          // Idempotency: transfer already recorded from a prior attempt — skip.
-          escrowLogger.info(
-            { escrowId, stripeTransferId: txExistingTransferId },
-            'partialRefund: stripe_transfer_id already set — skipping duplicate Stripe transfer'
-          );
-        } else if (!txWorkerId!) {
-          escrowLogger.error(
-            { escrowId },
-            'partialRefund: no worker_id — cannot issue worker transfer'
-          );
-        } else if (!txWorkerStripeConnectId!) {
-          escrowLogger.error(
-            { escrowId, workerId: txWorkerId },
-            'partialRefund: worker has no stripe_connect_id — cannot issue worker transfer, manual payout required'
-          );
-        } else {
-          const netWorkerCents = Math.round(workerCents * (1 - platformFeePercent / 100));
-          const transferResult = await StripeService.createTransfer({
-            escrowId,
-            taskId: txTaskId!,
-            workerId: txWorkerId,
-            workerStripeAccountId: txWorkerStripeConnectId,
-            amount: netWorkerCents,
-            description: `Dispute partial resolution: worker ${workerPercent}%`,
-          });
-          if (!transferResult.success) {
-            // Fatal: throw so the caller can retry while the escrow is still LOCKED_DISPUTE.
-            throw new Error(`partialRefund: Stripe transfer failed — ${transferResult.error.message}`);
-          }
-          resolvedTransferId = transferResult.data.transferId;
-        }
-      }
+      // BUG 2 FIX: Issue the poster refund FIRST, then the worker transfer.
+      // Rationale: if the refund succeeds but the transfer fails, a BullMQ retry can
+      // safely re-issue the transfer (txExistingRefundId idempotency guard skips it).
+      // The prior order (transfer first) meant a crash between the two calls left
+      // stripe_transfer_id un-persisted, so a retry read null from the DB and issued
+      // a second transfer — double-paying the worker.
 
-      // Poster portion — Stripe refund on the original payment intent
+      // Poster portion — Stripe refund on the original payment intent (runs FIRST)
       if (posterCents > 0) {
         if (txExistingRefundId) {
           // Idempotency: refund already recorded from a prior attempt — skip.
@@ -1218,6 +1191,46 @@ export const EscrowService = {
             throw new Error(`partialRefund: Stripe refund failed — ${refundResult.error.message}`);
           }
           resolvedRefundId = refundResult.data.refundId;
+        }
+      }
+
+      // Worker portion — Stripe transfer to connected account (runs SECOND)
+      if (workerCents > 0) {
+        if (txExistingTransferId) {
+          // Idempotency: transfer already recorded from a prior attempt — skip.
+          escrowLogger.info(
+            { escrowId, stripeTransferId: txExistingTransferId },
+            'partialRefund: stripe_transfer_id already set — skipping duplicate Stripe transfer'
+          );
+        } else if (!txWorkerId!) {
+          escrowLogger.error(
+            { escrowId },
+            'partialRefund: no worker_id — cannot issue worker transfer'
+          );
+        } else if (!txWorkerStripeConnectId!) {
+          // BUG 3 FIX: worker has cents owed but no Stripe Connect account — throw
+          // instead of falling through silently.  Throwing here keeps the escrow in
+          // LOCKED_DISPUTE so ops can intervene via the admin recovery path
+          // (AdminService.forceEscrowState / manual Stripe transfer).
+          // Compare: handleReleaseRequest throws in the equivalent branch.
+          throw new Error(
+            `partialRefund: worker ${txWorkerId} has no stripe_connect_id — cannot issue worker transfer of ${workerCents} cents. Escrow remains LOCKED_DISPUTE for manual ops recovery.`
+          );
+        } else {
+          const netWorkerCents = Math.round(workerCents * (1 - platformFeePercent / 100));
+          const transferResult = await StripeService.createTransfer({
+            escrowId,
+            taskId: txTaskId!,
+            workerId: txWorkerId,
+            workerStripeAccountId: txWorkerStripeConnectId,
+            amount: netWorkerCents,
+            description: `Dispute partial resolution: worker ${workerPercent}%`,
+          });
+          if (!transferResult.success) {
+            // Fatal: throw so the caller can retry while the escrow is still LOCKED_DISPUTE.
+            throw new Error(`partialRefund: Stripe transfer failed — ${transferResult.error.message}`);
+          }
+          resolvedTransferId = transferResult.data.transferId;
         }
       }
 

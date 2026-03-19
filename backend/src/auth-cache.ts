@@ -80,7 +80,10 @@ export async function invalidateAuthCacheForUser(userId: string, firebaseUid?: s
         'SELECT firebase_uid FROM users WHERE id = $1',
         [userId]
       );
-      if (row.rows[0]) collectedFirebaseUids.add(row.rows[0].firebase_uid);
+      if (row.rows[0]) {
+        const fuid = row.rows[0].firebase_uid;
+        if (fuid) collectedFirebaseUids.add(fuid);
+      }
     } catch (err) {
       console.error(
         `[auth-cache] Failed to fetch firebase_uid for userId=${userId} during invalidation:`,

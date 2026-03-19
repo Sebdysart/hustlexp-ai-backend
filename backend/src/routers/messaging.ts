@@ -329,7 +329,7 @@ export const messagingRouter = router({
             WHERE task_id = t.id
               AND sender_id != $1
               AND read_at IS NULL
-              AND (moderation_status IS NULL OR moderation_status != 'quarantined')
+              AND (moderation_status IS NULL OR moderation_status NOT IN ('quarantined', 'flagged'))
           ) unread ON true
           WHERE (t.poster_id = $1 OR t.worker_id = $1)
             AND t.state IN ('ACCEPTED', 'PROOF_SUBMITTED', 'DISPUTED', 'COMPLETED', 'CANCELLED')

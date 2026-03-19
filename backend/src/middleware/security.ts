@@ -273,12 +273,13 @@ export async function aiRateLimitMiddleware(provider: keyof typeof AI_RATE_LIMIT
     }
 
     if (current > limits.requests) {
+      const resetAt = Math.floor(Date.now() / 1000) + Math.ceil(limits.windowMs / 1000);
       c.header('X-RateLimit-Limit', limits.requests.toString());
       c.header('X-RateLimit-Remaining', '0');
-      c.header('X-RateLimit-Reset', (60).toString());
+      c.header('X-RateLimit-Reset', resetAt.toString());
       return c.json({
         error: 'AI rate limit exceeded',
-        retryAfter: 60
+        retryAfter: Math.ceil(limits.windowMs / 1000)
       }, 429);
     }
     

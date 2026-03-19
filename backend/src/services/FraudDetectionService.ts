@@ -432,20 +432,22 @@ export const FraudDetectionService = {
       evidence = {},
     } = params;
     
+    // Validate: At least one user required
+    if (!userIds || userIds.length === 0) {
+      return {
+        success: false,
+        error: {
+          code: ErrorCodes.INVALID_INPUT,
+          message: 'At least one user_id is required for fraud pattern',
+        },
+      };
+    }
+
+    // Outer try/catch: INSERT only. A failure here means nothing was committed,
+    // so returning DB_ERROR and retrying is safe.
+    let result: Awaited<ReturnType<typeof db.query<FraudPattern>>>;
     try {
-      // Validate: At least one user required
-      if (!userIds || userIds.length === 0) {
-        return {
-          success: false,
-          error: {
-            code: ErrorCodes.INVALID_INPUT,
-            message: 'At least one user_id is required for fraud pattern',
-          },
-        };
-      }
-      
-      // Create fraud pattern
-      const result = await db.query<FraudPattern>(
+      result = await db.query<FraudPattern>(
         `INSERT INTO fraud_patterns (
           pattern_type, pattern_description, user_ids, task_ids, transaction_ids,
           evidence, status
@@ -461,11 +463,24 @@ export const FraudDetectionService = {
           JSON.stringify(evidence),
         ]
       );
-      
+    } catch (error) {
+      return {
+        success: false,
+        error: {
+          code: 'DB_ERROR',
+          message: error instanceof Error ? error.message : 'Unknown error',
+        },
+      };
+    }
+
+    // Inner try/catch: side-effects only. The INSERT already committed, so
+    // side-effect failures must NOT return DB_ERROR (which would cause callers
+    // to retry and duplicate the suspension). Log and return success instead.
+    try {
       // Trigger automated actions based on pattern type
       // Determine risk level from pattern type
       const riskLevel = determinePatternRiskLevel(patternType);
-      
+
       // Apply automated actions based on risk level
       if (riskLevel === 'CRITICAL') {
         // CRITICAL patterns: Auto-suspend accounts, alert admins
@@ -587,20 +602,20 @@ export const FraudDetectionService = {
           });
         }
       }
-      
-      return {
-        success: true,
-        data: result.rows[0],
-      };
-    } catch (error) {
-      return {
-        success: false,
-        error: {
-          code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
-        },
-      };
+    } catch (sideEffectError) {
+      // Side-effect failure after a committed INSERT — log but do NOT return
+      // DB_ERROR, which would cause the caller to retry and duplicate the
+      // suspension record.
+      log.error(
+        { err: sideEffectError instanceof Error ? sideEffectError.message : String(sideEffectError), patternType, userIds },
+        '[FraudDetection] side-effect failed after INSERT committed — pattern recorded, side-effects partially applied'
+      );
     }
+
+    return {
+      success: true,
+      data: result.rows[0],
+    };
   },
   
   /**

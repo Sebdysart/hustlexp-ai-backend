@@ -475,6 +475,12 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
       } catch (dbErr) {
         log.error({ emailId, err: dbErr }, 'Failed to mark email as suppressed');
       }
+      // BUG FIX: mark the outbox_events row done so the poller never re-enqueues
+      // this email. Without this call the row stays 'enqueued' indefinitely,
+      // causing an infinite re-enqueue storm.
+      if (outboxKey) {
+        await markOutboxEventFailed(outboxKey, errorMessage);
+      }
       return;
     }
 

@@ -64,20 +64,24 @@ function isStripeAccountRestrictionError(error: unknown): boolean {
 async function lockEscrowForStripeRestriction(escrowId: string, workerId: string, stripeCode: string): Promise<void> {
   // Transition escrow to LOCKED_DISPUTE with a stripe_account_restricted reason.
   // This is a non-retryable state — admin must manually resolve.
-  await db.query(
-    `UPDATE escrows
-     SET state = 'LOCKED_DISPUTE',
-         version = version + 1
-     WHERE id = $1
-       AND state IN ('FUNDED', 'LOCKED_DISPUTE')`,
-    [escrowId],
-  );
+  // BUG FIX: wrap both DML statements in a transaction so a crash between the
+  // UPDATE and the INSERT cannot leave the escrow locked with no audit record.
+  await db.transaction(async (txQuery) => {
+    await txQuery(
+      `UPDATE escrows
+       SET state = 'LOCKED_DISPUTE',
+           version = version + 1
+       WHERE id = $1
+         AND state IN ('FUNDED', 'LOCKED_DISPUTE')`,
+      [escrowId],
+    );
 
-  await db.query(
-    `INSERT INTO escrow_events (escrow_id, from_state, to_state, actor_id, actor_type, metadata)
-     VALUES ($1, 'FUNDED', 'LOCKED_DISPUTE', NULL, 'system', $2)`,
-    [escrowId, JSON.stringify({ reason: 'stripe_account_restricted', stripe_code: stripeCode, worker_id: workerId })],
-  );
+    await txQuery(
+      `INSERT INTO escrow_events (escrow_id, from_state, to_state, actor_id, actor_type, metadata)
+       VALUES ($1, 'FUNDED', 'LOCKED_DISPUTE', NULL, 'system', $2)`,
+      [escrowId, JSON.stringify({ reason: 'stripe_account_restricted', stripe_code: stripeCode, worker_id: workerId })],
+    );
+  });
 
   try {
     await notifyAdmins({
@@ -409,6 +413,23 @@ async function handleRefundRequest(
 
   if (!escrow.stripe_payment_intent_id) {
     throw new Error(`Escrow ${escrow.id} has no stripe_payment_intent_id`);
+  }
+
+  // TT-04: Re-read stripe_refund_id from the DB after the FOR UPDATE transaction
+  // committed (the lock was released at commit). Two BullMQ workers can both see
+  // stripe_refund_id = null in their stale escrow snapshots and both pass the
+  // idempotency check above; this fresh re-read is the second line of defence,
+  // mirroring the TT-03 pattern in handleReleaseRequest.
+  const freshRefundCheck = await db.query<{ stripe_refund_id: string | null }>(
+    'SELECT stripe_refund_id FROM escrows WHERE id = $1',
+    [escrow.id]
+  );
+  if (freshRefundCheck.rows[0]?.stripe_refund_id) {
+    log.info(
+      { escrowId: escrow.id, refundId: freshRefundCheck.rows[0].stripe_refund_id },
+      'Fresh DB re-read: refund already issued on a prior attempt (concurrent retry) — skipping Stripe call',
+    );
+    return;
   }
 
   // Use refund_amount from job payload when provided; fall back to full escrow amount.

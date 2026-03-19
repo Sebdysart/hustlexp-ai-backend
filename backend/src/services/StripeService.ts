@@ -502,6 +502,19 @@ export const StripeService = {
       await handler();
       return { success: true, data: undefined };
     } catch (error) {
+      // Roll back the idempotency row so Stripe's retry delivery can re-claim
+      // the event.  Without this DELETE, the INSERT above is already committed;
+      // the next delivery attempt sees the existing row, returns claimed=false,
+      // and skips the event permanently — causing silent data loss.
+      try {
+        await db.query(
+          'DELETE FROM processed_stripe_events WHERE event_id = $1',
+          [eventId]
+        );
+        stripeLogger.warn({ eventId }, 'Handler failed — rolled back idempotency row so retry can re-claim');
+      } catch (deleteError) {
+        stripeLogger.error({ eventId, deleteError }, 'Failed to roll back idempotency row — event may be permanently skipped');
+      }
       return {
         success: false,
         error: {

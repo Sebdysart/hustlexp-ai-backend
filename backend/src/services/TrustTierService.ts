@@ -401,7 +401,12 @@ export const TrustTierService = {
         throw new Error(`User ${userId} not found`);
       }
 
-      currentTier = lockResult.rows[0].trust_tier as unknown as TrustTier;
+      const rawTier = lockResult.rows[0].trust_tier;
+      currentTier = rawTier === 9 ? TrustTier.BANNED
+        : rawTier >= 4 ? TrustTier.ELITE
+        : rawTier >= 3 ? TrustTier.TRUSTED
+        : rawTier >= 2 ? TrustTier.VERIFIED
+        : TrustTier.ROOKIE;
 
       // If the tier changed since the pre-flight check, abort
       if (currentTier !== preLockTier) {

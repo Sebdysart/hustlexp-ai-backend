@@ -15,7 +15,7 @@ import { firebaseAuth } from './auth/firebase.js';
 import { db } from './db.js';
 import type { User } from './types.js';
 import { logger } from './logger.js';
-import { authCacheGet, authCacheSet } from './auth-cache.js';
+import { authCache, authCacheKey, authCacheGet, authCacheSet } from './auth-cache.js';
 import { redis } from './cache/redis.js';
 
 // Matches the revocation marker key written by invalidateAuthCacheForUser
@@ -79,8 +79,9 @@ export async function createContext(opts: {
     const revokedAt = await redis.get<string>(REDIS_REVOKED_KEY(cached.firebaseUid));
     if (revokedAt) {
       log.info({ uid: cached.firebaseUid }, 'tRPC cache hit invalidated by Redis revocation marker');
-      // The in-process entry was already evicted by invalidateAuthCacheForUser,
-      // but guard against the case where it was set again before we got here.
+      // Evict the stale in-process cache entry immediately so it cannot be
+      // served again on this replica before the 5-minute TTL expires.
+      authCache.delete(authCacheKey(token));
       // Fall through to Firebase re-verification below.
     } else {
       return { user: cached.user, firebaseUid: cached.firebaseUid, ip: extractIp(opts.req) };

@@ -579,6 +579,11 @@ export const RatingService = {
         worker_id: string | null;
         completed_at: Date;
       }>(
+        // BUG FIX: without LIMIT this fetches every unrated completed task in
+        // the database, which OOMs Node.js on large datasets and also causes the
+        // batch INSERT to exceed PostgreSQL's 65 535-parameter limit at ~10 923+
+        // tasks (3 params × 2 directions × N tasks). Process in batches of 500;
+        // the caller should loop until autoRated === 0 to drain the backlog.
         `SELECT t.id, t.poster_id, t.worker_id, t.completed_at
          FROM tasks t
          WHERE t.state = 'COMPLETED'
@@ -593,7 +598,8 @@ export const RatingService = {
                SELECT 1 FROM task_ratings r2
                WHERE r2.task_id = t.id AND r2.rater_id = t.worker_id AND r2.ratee_id = t.poster_id
              )
-           )`,
+           )
+         LIMIT 500`,
         [RATING_WINDOW_DAYS]
       );
       
