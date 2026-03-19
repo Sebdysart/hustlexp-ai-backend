@@ -465,7 +465,7 @@ export const DisputeService = {
         
         // Precondition: Validate SPLIT amounts
         if (outcomeEscrowAction === 'SPLIT') {
-          if (!refundAmount || !releaseAmount) {
+          if (refundAmount === undefined || refundAmount === null || releaseAmount === undefined || releaseAmount === null) {
             throw new Error('SPLIT resolution requires refund_amount and release_amount');
           }
           if (refundAmount < 0 || releaseAmount < 0) {

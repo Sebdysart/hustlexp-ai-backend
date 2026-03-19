@@ -164,7 +164,7 @@ export const ratingRouter = router({
       // parties have submitted (or the 7-day window has expired and auto-reveal
       // has run).
       const result = await db.query(
-        `SELECT * FROM task_ratings
+        `SELECT id, task_id, ratee_id, stars, comment, tags, created_at FROM task_ratings
          WHERE rater_id = $1
            AND is_blind = false
          ORDER BY created_at DESC

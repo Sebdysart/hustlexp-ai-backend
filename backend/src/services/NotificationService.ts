@@ -384,7 +384,11 @@ export const NotificationService = {
       
       // Queue notifications via enabled channels (non-blocking, async via outbox)
       // Use filtered channels if preferences exist, otherwise use requested channels
-      const channelsToUse = enabledChannels;
+      // During quiet hours: restrict to in_app only, skip push/email/SMS
+      let channelsToUse = enabledChannels;
+      if (isQuietHours && !shouldBypassDND) {
+        channelsToUse = channelsToUse.filter(ch => ch === 'in_app');
+      }
       await queueNotificationChannels(notification, channelsToUse);
       
       return {
@@ -1007,7 +1011,7 @@ async function findGroupableNotification(
           success: true,
           data: {
             groupId: group.group_id,
-            groupPosition: groupSize + 1, // Next position in group
+            groupPosition: group.max_position + 1, // Next position: MAX(group_position)+1 to avoid duplicates if items were deleted
           },
         };
       }

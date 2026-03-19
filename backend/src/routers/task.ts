@@ -833,6 +833,14 @@ export const taskRouter = router({
         });
       }
 
+      const taskForReview = await TaskService.getById(proofResult.data.task_id);
+      if (!taskForReview.success || taskForReview.data.state !== 'PROOF_SUBMITTED') {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: `Cannot review proof: task is in ${taskForReview.success ? taskForReview.data.state : 'unknown'} state, expected PROOF_SUBMITTED`,
+        });
+      }
+
       // Review proof
       const reviewResult = await ProofService.review({
         proofId,

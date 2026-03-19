@@ -1052,11 +1052,15 @@ export const EscrowService = {
     let txExistingRefundId: string | null = null;
 
     try {
-      // RACE CONDITION FIX: Wrap SELECT FOR UPDATE + UPDATE in a transaction.
-      // Without the transaction, the FOR UPDATE lock is released as soon as the
-      // SELECT completes, allowing two admin callers to both see
-      // state='LOCKED_DISPUTE' and both execute the UPDATE on the same escrow.
-      const txResult = await db.transaction(async (query) => {
+      // -----------------------------------------------------------------------
+      // Transaction 1 (read-only lock): SELECT FOR UPDATE to read state and
+      // validate preconditions. We do NOT commit the state change here.
+      // This keeps the lock tight and ensures we read the most recent data
+      // without allowing a concurrent caller to race past the state check.
+      // -----------------------------------------------------------------------
+      let escrowVersion: number;
+
+      const readResult = await db.transaction(async (query) => {
         const lockResult = await query<{
           version: number;
           state: string;
@@ -1069,12 +1073,31 @@ export const EscrowService = {
           `SELECT version, state, task_id, amount, stripe_payment_intent_id, stripe_transfer_id, stripe_refund_id FROM escrows WHERE id = $1 FOR UPDATE`,
           [escrowId]
         );
-        const escrowVersion = lockResult.rows[0]?.version;
-        txTaskId = lockResult.rows[0]?.task_id;
-        txAmount = lockResult.rows[0]?.amount;
-        txStripePaymentIntentId = lockResult.rows[0]?.stripe_payment_intent_id ?? null;
-        txExistingTransferId = lockResult.rows[0]?.stripe_transfer_id ?? null;
-        txExistingRefundId = lockResult.rows[0]?.stripe_refund_id ?? null;
+
+        const row = lockResult.rows[0];
+        if (!row) {
+          return {
+            success: false,
+            error: { code: ErrorCodes.NOT_FOUND, message: `Escrow ${escrowId} not found` },
+          } as ServiceResult<Escrow>;
+        }
+
+        if (row.state !== 'LOCKED_DISPUTE') {
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.INVALID_STATE,
+              message: `Cannot partially refund: current state is ${row.state}, expected LOCKED_DISPUTE`,
+            },
+          } as ServiceResult<Escrow>;
+        }
+
+        escrowVersion = row.version;
+        txTaskId = row.task_id;
+        txAmount = row.amount;
+        txStripePaymentIntentId = row.stripe_payment_intent_id ?? null;
+        txExistingTransferId = row.stripe_transfer_id ?? null;
+        txExistingRefundId = row.stripe_refund_id ?? null;
 
         // Fetch worker_id and stripe_connect_id inside the transaction
         if (txTaskId) {
@@ -1093,30 +1116,127 @@ export const EscrowService = {
           }
         }
 
+        return { success: true } as unknown as ServiceResult<Escrow>;
+      });
+
+      if (!readResult.success) {
+        return readResult;
+      }
+
+      // -----------------------------------------------------------------------
+      // Stripe calls: issue BEFORE terminalizing the DB state so that if they
+      // fail the escrow is still LOCKED_DISPUTE and the caller can retry.
+      // Idempotency checks (txExistingTransferId / txExistingRefundId) protect
+      // against duplicate Stripe calls on retries.
+      // -----------------------------------------------------------------------
+      const partialAmount = txAmount!;
+      const workerCents = Math.round(partialAmount * (workerPercent / 100));
+      const posterCents = Math.round(partialAmount * (posterPercent / 100));
+      const platformFeePercent = Math.min(100, Math.max(0, config.stripe.platformFeePercent ?? 15));
+
+      let resolvedTransferId: string | null = txExistingTransferId;
+      let resolvedRefundId: string | null = txExistingRefundId;
+
+      // Worker portion — Stripe transfer to connected account
+      if (workerCents > 0) {
+        if (txExistingTransferId) {
+          // Idempotency: transfer already recorded from a prior attempt — skip.
+          escrowLogger.info(
+            { escrowId, stripeTransferId: txExistingTransferId },
+            'partialRefund: stripe_transfer_id already set — skipping duplicate Stripe transfer'
+          );
+        } else if (!txWorkerId!) {
+          escrowLogger.error(
+            { escrowId },
+            'partialRefund: no worker_id — cannot issue worker transfer'
+          );
+        } else if (!txWorkerStripeConnectId!) {
+          escrowLogger.error(
+            { escrowId, workerId: txWorkerId },
+            'partialRefund: worker has no stripe_connect_id — cannot issue worker transfer, manual payout required'
+          );
+        } else {
+          const netWorkerCents = Math.round(workerCents * (1 - platformFeePercent / 100));
+          const transferResult = await StripeService.createTransfer({
+            escrowId,
+            taskId: txTaskId!,
+            workerId: txWorkerId,
+            workerStripeAccountId: txWorkerStripeConnectId,
+            amount: netWorkerCents,
+            description: `Dispute partial resolution: worker ${workerPercent}%`,
+          });
+          if (!transferResult.success) {
+            // Fatal: throw so the caller can retry while the escrow is still LOCKED_DISPUTE.
+            throw new Error(`partialRefund: Stripe transfer failed — ${transferResult.error.message}`);
+          }
+          resolvedTransferId = transferResult.data.transferId;
+        }
+      }
+
+      // Poster portion — Stripe refund on the original payment intent
+      if (posterCents > 0) {
+        if (txExistingRefundId) {
+          // Idempotency: refund already recorded from a prior attempt — skip.
+          escrowLogger.info(
+            { escrowId, stripeRefundId: txExistingRefundId },
+            'partialRefund: stripe_refund_id already set — skipping duplicate Stripe refund'
+          );
+        } else if (!txStripePaymentIntentId!) {
+          escrowLogger.error(
+            { escrowId },
+            'partialRefund: no stripe_payment_intent_id — cannot issue poster refund, manual refund required'
+          );
+        } else {
+          const refundResult = await StripeService.createRefund({
+            paymentIntentId: txStripePaymentIntentId,
+            escrowId,
+            amount: posterCents,
+            reason: 'requested_by_customer',
+          });
+          if (!refundResult.success) {
+            // Fatal: throw so the caller can retry while the escrow is still LOCKED_DISPUTE.
+            throw new Error(`partialRefund: Stripe refund failed — ${refundResult.error.message}`);
+          }
+          resolvedRefundId = refundResult.data.refundId;
+        }
+      }
+
+      // -----------------------------------------------------------------------
+      // Transaction 2 (terminalize): atomically commit state = REFUND_PARTIAL
+      // plus both Stripe IDs. Only runs after both Stripe calls succeed.
+      // -----------------------------------------------------------------------
+      const termResult = await db.transaction(async (query) => {
         const result = await query<Escrow>(
           `UPDATE escrows
            SET state = 'REFUND_PARTIAL',
                refunded_at = NOW(),
+               stripe_transfer_id = COALESCE($3, stripe_transfer_id),
+               stripe_refund_id = COALESCE($4, stripe_refund_id),
                version = version + 1,
                updated_at = NOW()
            WHERE id = $1
-             AND state = 'LOCKED_DISPUTE'
              AND version = $2
            RETURNING *`,
-          [escrowId, escrowVersion]
+          [escrowId, escrowVersion!, resolvedTransferId, resolvedRefundId]
         );
 
         if (result.rowCount === 0) {
-          const existing = await EscrowService.getById(escrowId);
-          if (!existing.success) {
+          // Concurrent modification — check if it's a safe replay.
+          const checkResult = await query<{ state: string }>(
+            `SELECT state FROM escrows WHERE id = $1`,
+            [escrowId]
+          );
+          const currentState = checkResult.rows[0]?.state;
+          if (currentState === 'REFUND_PARTIAL') {
+            // Already terminalized by a concurrent caller — treat as success.
+            const existing = await EscrowService.getById(escrowId);
             return existing;
           }
-
           return {
             success: false,
             error: {
               code: ErrorCodes.INVALID_STATE,
-              message: `Cannot partially refund: current state is ${existing.data.state}, expected LOCKED_DISPUTE`,
+              message: `partialRefund: concurrent modification detected (state=${currentState ?? 'unknown'})`,
             },
           } as ServiceResult<Escrow>;
         }
@@ -1125,114 +1245,11 @@ export const EscrowService = {
         return { success: true, data: result.rows[0] } as ServiceResult<Escrow>;
       });
 
-      if (!txResult.success) {
-        return txResult;
+      if (!termResult.success) {
+        return termResult;
       }
 
       await logEscrowEvent(escrowId, 'LOCKED_DISPUTE', 'REFUND_PARTIAL');
-
-      // BBB-02 FIX: Issue actual Stripe calls after DB commit.
-      // Previously the DB transitioned to REFUND_PARTIAL but no money moved.
-      // Worker transfer and poster refund are executed here, matching the
-      // pattern used by refund() (LL5) and handlePartialRefundRequest().
-      const partialAmount = txAmount!;
-      const workerCents = Math.round(partialAmount * (workerPercent / 100));
-      const posterCents = Math.round(partialAmount * (posterPercent / 100));
-      const platformFeePercent = Math.min(100, Math.max(0, config.stripe.platformFeePercent ?? 15));
-
-      // Worker portion — Stripe transfer to connected account
-      if (workerCents > 0) {
-        try {
-          if (txExistingTransferId) {
-            // Idempotency: transfer already recorded from a prior attempt — skip.
-            escrowLogger.info(
-              { escrowId, stripeTransferId: txExistingTransferId },
-              'partialRefund: stripe_transfer_id already set — skipping duplicate Stripe transfer'
-            );
-          } else if (!txWorkerId!) {
-            escrowLogger.error(
-              { escrowId },
-              'partialRefund: no worker_id — cannot issue worker transfer'
-            );
-          } else if (!txWorkerStripeConnectId!) {
-            escrowLogger.error(
-              { escrowId, workerId: txWorkerId },
-              'partialRefund: worker has no stripe_connect_id — cannot issue worker transfer, manual payout required'
-            );
-          } else {
-            const netWorkerCents = Math.round(workerCents * (1 - platformFeePercent / 100));
-            const transferResult = await StripeService.createTransfer({
-              escrowId,
-              taskId: txTaskId!,
-              workerId: txWorkerId,
-              workerStripeAccountId: txWorkerStripeConnectId,
-              amount: netWorkerCents,
-              description: `Dispute partial resolution: worker ${workerPercent}%`,
-            });
-            if (!transferResult.success) {
-              escrowLogger.error(
-                { escrowId, workerId: txWorkerId, err: transferResult.error.message },
-                'partialRefund: Stripe transfer failed — manual transfer required'
-              );
-            } else {
-              // Record transfer ID so retries skip the Stripe call.
-              await db.query(
-                `UPDATE escrows SET stripe_transfer_id = $1, updated_at = NOW() WHERE id = $2`,
-                [transferResult.data.transferId, escrowId]
-              );
-            }
-          }
-        } catch (transferError) {
-          // Non-fatal: DB is already REFUND_PARTIAL. Log for ops manual recovery.
-          escrowLogger.error(
-            { err: transferError instanceof Error ? transferError.message : String(transferError), escrowId },
-            'partialRefund: Stripe transfer call threw — manual transfer required'
-          );
-        }
-      }
-
-      // Poster portion — Stripe refund on the original payment intent
-      if (posterCents > 0) {
-        try {
-          if (txExistingRefundId) {
-            // Idempotency: refund already recorded from a prior attempt — skip.
-            escrowLogger.info(
-              { escrowId, stripeRefundId: txExistingRefundId },
-              'partialRefund: stripe_refund_id already set — skipping duplicate Stripe refund'
-            );
-          } else if (!txStripePaymentIntentId!) {
-            escrowLogger.error(
-              { escrowId },
-              'partialRefund: no stripe_payment_intent_id — cannot issue poster refund, manual refund required'
-            );
-          } else {
-            const refundResult = await StripeService.createRefund({
-              paymentIntentId: txStripePaymentIntentId,
-              escrowId,
-              amount: posterCents,
-              reason: 'requested_by_customer',
-            });
-            if (!refundResult.success) {
-              escrowLogger.error(
-                { escrowId, err: refundResult.error.message },
-                'partialRefund: Stripe refund failed — manual refund required'
-              );
-            } else {
-              // Record refund ID so retries skip the Stripe call.
-              await db.query(
-                `UPDATE escrows SET stripe_refund_id = $1, updated_at = NOW() WHERE id = $2`,
-                [refundResult.data.refundId, escrowId]
-              );
-            }
-          }
-        } catch (refundError) {
-          // Non-fatal: DB is already REFUND_PARTIAL. Log for ops manual recovery.
-          escrowLogger.error(
-            { err: refundError instanceof Error ? refundError.message : String(refundError), escrowId },
-            'partialRefund: Stripe refund call threw — manual refund required'
-          );
-        }
-      }
 
       // FIX 3: Clawback XP when dispute resolves against the worker (posterPercent > 0)
       if (posterPercent > 0) {

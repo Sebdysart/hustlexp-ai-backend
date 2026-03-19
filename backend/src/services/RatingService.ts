@@ -630,7 +630,7 @@ export const RatingService = {
         values
       );
 
-      const autoRated = batchResult.rowCount;
+      const autoRated = batchResult.rowCount ?? 0;
       
       return {
         success: true,

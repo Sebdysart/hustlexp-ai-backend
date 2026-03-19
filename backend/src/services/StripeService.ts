@@ -237,7 +237,7 @@ export const StripeService = {
           user_id: userId,
         },
         description: `HustleXP XP Tax Payment`,
-      }));
+      }, { idempotencyKey: `xp_tax_pi_${userId}_${amountCents}` }));
 
       return {
         success: true,

@@ -1003,6 +1003,7 @@ describe('task.reviewProof', () => {
 
     mockProofService.getById.mockResolvedValueOnce({ success: true, data: proof as any });
     mockTaskService.getById.mockResolvedValueOnce({ success: true, data: task as any });
+    mockTaskService.getById.mockResolvedValueOnce({ success: true, data: { ...task, state: 'PROOF_SUBMITTED' } as any });
     mockProofService.review.mockResolvedValueOnce({ success: true, data: reviewedProof as any });
 
     const result = await makeCallerAsPoster().reviewProof({
@@ -1033,6 +1034,10 @@ describe('task.reviewProof', () => {
     mockTaskService.getById.mockResolvedValueOnce({
       success: true,
       data: makeTaskRow({ poster_id: USER_ID }) as any,
+    });
+    mockTaskService.getById.mockResolvedValueOnce({
+      success: true,
+      data: makeTaskRow({ poster_id: USER_ID, state: 'PROOF_SUBMITTED' }) as any,
     });
     mockProofService.review.mockResolvedValueOnce({
       success: true,
@@ -1067,6 +1072,10 @@ describe('task.reviewProof', () => {
     mockTaskService.getById.mockResolvedValueOnce({
       success: true,
       data: makeTaskRow({ poster_id: USER_ID }) as any,
+    });
+    mockTaskService.getById.mockResolvedValueOnce({
+      success: true,
+      data: makeTaskRow({ poster_id: USER_ID, state: 'PROOF_SUBMITTED' }) as any,
     });
     mockProofService.review.mockResolvedValueOnce({
       success: true,
@@ -1138,6 +1147,10 @@ describe('task.reviewProof', () => {
       success: true,
       data: makeTaskRow({ poster_id: USER_ID }) as any,
     });
+    mockTaskService.getById.mockResolvedValueOnce({
+      success: true,
+      data: makeTaskRow({ poster_id: USER_ID, state: 'PROOF_SUBMITTED' }) as any,
+    });
     mockProofService.review.mockResolvedValueOnce({
       success: false,
       error: { code: 'INVALID_TRANSITION', message: 'Cannot transition' },
@@ -1157,6 +1170,7 @@ describe('task.reviewProof', () => {
 
     mockProofService.getById.mockResolvedValueOnce({ success: true, data: proof as any });
     mockTaskService.getById.mockResolvedValueOnce({ success: true, data: task as any });
+    mockTaskService.getById.mockResolvedValueOnce({ success: true, data: { ...task, state: 'PROOF_SUBMITTED' } as any });
     mockProofService.review.mockResolvedValueOnce({ success: true, data: rejectedProof as any });
     mockTaskService.rejectProof.mockResolvedValueOnce({ success: true, data: revertedTask as any });
 
@@ -1180,6 +1194,7 @@ describe('task.reviewProof', () => {
 
     mockProofService.getById.mockResolvedValueOnce({ success: true, data: proof as any });
     mockTaskService.getById.mockResolvedValueOnce({ success: true, data: task as any });
+    mockTaskService.getById.mockResolvedValueOnce({ success: true, data: { ...task, state: 'PROOF_SUBMITTED' } as any });
     mockProofService.review.mockResolvedValueOnce({ success: true, data: acceptedProof as any });
 
     await makeCallerAsPoster().reviewProof({
@@ -1197,6 +1212,7 @@ describe('task.reviewProof', () => {
 
     mockProofService.getById.mockResolvedValueOnce({ success: true, data: proof as any });
     mockTaskService.getById.mockResolvedValueOnce({ success: true, data: task as any });
+    mockTaskService.getById.mockResolvedValueOnce({ success: true, data: { ...task, state: 'PROOF_SUBMITTED' } as any });
     mockProofService.review.mockResolvedValueOnce({ success: true, data: rejectedProof as any });
     mockTaskService.rejectProof.mockResolvedValueOnce({
       success: false,

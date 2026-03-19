@@ -424,15 +424,23 @@ describe('EscrowService', () => {
   describe('partialRefund', () => {
     it('partial refunds from LOCKED_DISPUTE with valid percentages', async () => {
       const partial = makeEscrow({ state: 'REFUND_PARTIAL' });
-      // partialRefund() is wrapped in db.transaction():
-      //   1st query: SELECT version, state, task_id, amount, stripe_payment_intent_id, stripe_transfer_id, stripe_refund_id FOR UPDATE
-      //   2nd query: SELECT worker_id FROM tasks (inside transaction)
-      //   3rd query: SELECT stripe_connect_id FROM users (inside transaction)
-      //   4th query: UPDATE escrows ... RETURNING *
-      //   5th query: INSERT INTO escrow_events (logEscrowEvent)
-      // Post-commit Stripe calls use mocked StripeService (createTransfer, createRefund).
-      //   6th query: UPDATE escrows SET stripe_transfer_id (after successful transfer)
-      //   7th query: UPDATE escrows SET stripe_refund_id (after successful refund)
+      // partialRefund() uses TWO db.transaction() calls (R22 Stripe-first pattern):
+      //
+      // Transaction 1 (read-lock — no UPDATE):
+      //   1st query: SELECT version, state, task_id, amount, stripe_payment_intent_id,
+      //              stripe_transfer_id, stripe_refund_id FROM escrows FOR UPDATE
+      //   2nd query: SELECT worker_id FROM tasks (inside Tx1)
+      //   3rd query: SELECT stripe_connect_id FROM users (inside Tx1)
+      //
+      // Stripe calls (outside DB transactions):
+      //   StripeService.createTransfer → mocked (returns tr_test)
+      //   StripeService.createRefund   → mocked (returns re_test)
+      //
+      // Transaction 2 (terminalize — single UPDATE with both Stripe IDs):
+      //   4th query: UPDATE escrows SET state='REFUND_PARTIAL', stripe_transfer_id=...,
+      //              stripe_refund_id=... WHERE version=$V RETURNING *
+      //
+      //   5th query: INSERT INTO escrow_events (logEscrowEvent — outside Tx2)
       mockDb.query.mockResolvedValueOnce({
         rows: [{ version: 0, state: 'LOCKED_DISPUTE', task_id: 'task-1', amount: 5000, stripe_payment_intent_id: 'pi_test', stripe_transfer_id: null, stripe_refund_id: null }],
         rowCount: 1,
@@ -442,43 +450,39 @@ describe('EscrowService', () => {
       mockDb.query.mockResolvedValueOnce({ rows: [partial], rowCount: 1 } as never);
       // logEscrowEvent INSERT
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
-      // UPDATE escrows SET stripe_transfer_id
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
-      // UPDATE escrows SET stripe_refund_id
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+      const { StripeService: MockStripe } = await import('../../src/services/StripeService');
 
       const result = await EscrowService.partialRefund({
         escrowId: 'esc-1', workerPercent: 60, posterPercent: 40,
       });
       expect(result.success).toBe(true);
 
-      // Verify DB was updated with both Stripe IDs
+      // Verify Stripe was called with the correct amounts (60% worker, 40% poster)
+      expect(vi.mocked(MockStripe.createTransfer)).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(MockStripe.createRefund)).toHaveBeenCalledTimes(1);
+
+      // Verify the terminalizing UPDATE carries both Stripe IDs via COALESCE
       const updateCalls = mockDb.query.mock.calls.filter(
-        (c) => typeof c[0] === 'string' && (c[0] as string).includes('SET stripe_transfer_id')
+        (c) => typeof c[0] === 'string' && (c[0] as string).includes("SET state = 'REFUND_PARTIAL'")
       );
       expect(updateCalls).toHaveLength(1);
-      expect(updateCalls[0][1]).toEqual(['tr_test', 'esc-1']);
-
-      const refundCalls = mockDb.query.mock.calls.filter(
-        (c) => typeof c[0] === 'string' && (c[0] as string).includes('SET stripe_refund_id')
-      );
-      expect(refundCalls).toHaveLength(1);
-      expect(refundCalls[0][1]).toEqual(['re_test', 'esc-1']);
+      // params: [escrowId, version, resolvedTransferId, resolvedRefundId]
+      expect(updateCalls[0][1]).toEqual(['esc-1', 0, 'tr_test', 're_test']);
     });
 
     it('skips Stripe transfer when stripe_transfer_id already recorded (idempotency)', async () => {
       const partial = makeEscrow({ state: 'REFUND_PARTIAL', stripe_transfer_id: 'tr_existing' });
-      // SELECT FOR UPDATE returns existing stripe_transfer_id — transfer already done
+      // Tx1: SELECT FOR UPDATE returns existing stripe_transfer_id — transfer already done
       mockDb.query.mockResolvedValueOnce({
         rows: [{ version: 1, state: 'LOCKED_DISPUTE', task_id: 'task-1', amount: 5000, stripe_payment_intent_id: 'pi_test', stripe_transfer_id: 'tr_existing', stripe_refund_id: null }],
         rowCount: 1,
       } as never);
       mockDb.query.mockResolvedValueOnce({ rows: [{ worker_id: 'worker-1' }], rowCount: 1 } as never);
       mockDb.query.mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_test' }], rowCount: 1 } as never);
+      // Tx2: terminalizing UPDATE (both Stripe IDs passed via COALESCE)
       mockDb.query.mockResolvedValueOnce({ rows: [partial], rowCount: 1 } as never);
       // logEscrowEvent INSERT
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
-      // UPDATE escrows SET stripe_refund_id (transfer skipped, refund still runs)
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
 
       const { StripeService: MockStripe } = await import('../../src/services/StripeService');
@@ -488,25 +492,24 @@ describe('EscrowService', () => {
       });
       expect(result.success).toBe(true);
 
-      // createTransfer must NOT have been called
+      // createTransfer must NOT have been called (idempotency: already recorded)
       expect(vi.mocked(MockStripe.createTransfer)).not.toHaveBeenCalled();
-      // createRefund must still have been called
+      // createRefund must still have been called (refund side not yet done)
       expect(vi.mocked(MockStripe.createRefund)).toHaveBeenCalledTimes(1);
     });
 
     it('skips Stripe refund when stripe_refund_id already recorded (idempotency)', async () => {
       const partial = makeEscrow({ state: 'REFUND_PARTIAL', stripe_refund_id: 're_existing' });
-      // SELECT FOR UPDATE returns existing stripe_refund_id — refund already done
+      // Tx1: SELECT FOR UPDATE returns existing stripe_refund_id — refund already done
       mockDb.query.mockResolvedValueOnce({
         rows: [{ version: 1, state: 'LOCKED_DISPUTE', task_id: 'task-1', amount: 5000, stripe_payment_intent_id: 'pi_test', stripe_transfer_id: null, stripe_refund_id: 're_existing' }],
         rowCount: 1,
       } as never);
       mockDb.query.mockResolvedValueOnce({ rows: [{ worker_id: 'worker-1' }], rowCount: 1 } as never);
       mockDb.query.mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_test' }], rowCount: 1 } as never);
+      // Tx2: terminalizing UPDATE (both Stripe IDs passed via COALESCE)
       mockDb.query.mockResolvedValueOnce({ rows: [partial], rowCount: 1 } as never);
       // logEscrowEvent INSERT
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
-      // UPDATE escrows SET stripe_transfer_id (transfer still runs, refund skipped)
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
 
       const { StripeService: MockStripe } = await import('../../src/services/StripeService');
@@ -516,9 +519,9 @@ describe('EscrowService', () => {
       });
       expect(result.success).toBe(true);
 
-      // createTransfer must still have been called
+      // createTransfer must still have been called (transfer side not yet done)
       expect(vi.mocked(MockStripe.createTransfer)).toHaveBeenCalledTimes(1);
-      // createRefund must NOT have been called
+      // createRefund must NOT have been called (idempotency: already recorded)
       expect(vi.mocked(MockStripe.createRefund)).not.toHaveBeenCalled();
     });
 

@@ -2,7 +2,7 @@
 
 import { Context } from "hono";
 import { HTTPException } from "hono/http-exception";
-import { adminAuth } from "./firebase.js";
+import { adminAuth, revokeFirebaseRefreshTokens } from "./firebase.js";
 import { redis, CACHE_KEYS } from "../cache/redis.js";
 import { authLogger } from "../logger.js";
 import { TOKEN_CACHE_TTL_SECONDS, REVOCATION_MARKER_TTL_SECONDS } from "./constants.js";
@@ -103,4 +103,12 @@ export async function requireAuth(c: Context): Promise<AuthenticatedUser> {
 export async function revokeUserSessions(uid: string): Promise<void> {
   await redis.set(REVOKED_KEY(uid), new Date().toISOString(), REVOCATION_MARKER_TTL_SECONDS); // 6 min (> 5 min cache TTL)
   authLogger.info({ uid }, "User sessions revoked");
+
+  // Also revoke Firebase refresh tokens so checkRevoked=true works after Redis TTL expires
+  try {
+    await revokeFirebaseRefreshTokens(uid);
+  } catch (firebaseErr) {
+    // Log but don't fail — Redis marker provides short-term protection
+    authLogger.warn({ uid, err: firebaseErr }, 'Failed to revoke Firebase refresh tokens — Redis marker still active');
+  }
 }

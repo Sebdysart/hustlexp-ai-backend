@@ -472,19 +472,14 @@ describe('EscrowService.partialRefund', () => {
   });
 
   it('returns INVALID_STATE when escrow is not LOCKED_DISPUTE', async () => {
-    // 1st: SELECT version, state, task_id, amount, stripe_payment_intent_id FROM escrows FOR UPDATE
+    // R22 Stripe-first pattern: Transaction 1 (read-lock) reads the escrow state and
+    // returns early with INVALID_STATE if it is not LOCKED_DISPUTE — no further queries run.
+    //
+    // Only 1 query consumed: SELECT ... FOR UPDATE (returns FUNDED row → early exit)
     mockQuery.mockResolvedValueOnce({
       rows: [makeEscrow({ state: 'FUNDED', version: 1, task_id: 'task-1', amount: 5000, stripe_payment_intent_id: 'pi_test' })],
       rowCount: 1,
     } as never);
-    // 2nd: SELECT worker_id FROM tasks (inside transaction)
-    mockQuery.mockResolvedValueOnce({ rows: [{ worker_id: 'worker-1' }], rowCount: 1 } as never);
-    // 3rd: SELECT stripe_connect_id FROM users (inside transaction)
-    mockQuery.mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_test' }], rowCount: 1 } as never);
-    // 4th: UPDATE rowCount=0 (WHERE state = 'LOCKED_DISPUTE' does not match FUNDED)
-    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
-    // 5th: getById fallback — SELECT e.*, t.poster_id, t.worker_id FROM escrows JOIN tasks → FUNDED
-    mockQuery.mockResolvedValueOnce({ rows: [makeEscrow({ state: 'FUNDED' })], rowCount: 1 } as never);
 
     const result = await EscrowService.partialRefund({
       escrowId: 'esc-1',

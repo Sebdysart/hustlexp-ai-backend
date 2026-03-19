@@ -144,6 +144,7 @@ export const MessagingService = {
           read_at, moderation_status, moderation_flags, created_at, updated_at
         FROM task_messages
         WHERE task_id = $1
+          AND (moderation_status IS NULL OR moderation_status != 'quarantined')
         ORDER BY created_at ASC
         LIMIT $2 OFFSET $3`,
         [taskId, PAGE_SIZE, offset]
@@ -175,7 +176,8 @@ export const MessagingService = {
       const result = await db.query<{ count: string }>(
         `SELECT COUNT(*) as count
          FROM task_messages
-         WHERE receiver_id = $1 AND read_at IS NULL`,
+         WHERE receiver_id = $1 AND read_at IS NULL
+           AND (moderation_status IS NULL OR moderation_status != 'quarantined')`,
         [userId]
       );
       
