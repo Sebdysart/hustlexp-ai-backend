@@ -239,12 +239,16 @@ export const adminRouter = router({
           }
         }
 
-        // Cancel any OPEN tasks belonging to the banned user (poster or worker)
+        // Cancel any open or active tasks belonging to the banned user (poster or worker).
+        // Includes MATCHING, ACCEPTED, IN_PROGRESS, and PROOF_SUBMITTED so that tasks
+        // with a banned poster/worker are not left stuck in an un-completable state.
+        // This runs AFTER the escrow bucketing above so locked-dispute escrows are
+        // already written before the task state changes.
         await db.query(
           `UPDATE tasks
            SET state = 'CANCELLED', updated_at = NOW()
            WHERE (poster_id = $1 OR worker_id = $1)
-           AND state = 'OPEN'`,
+           AND state IN ('OPEN', 'MATCHING', 'ACCEPTED', 'IN_PROGRESS', 'PROOF_SUBMITTED')`,
           [input.userId]
         );
       }

@@ -13,6 +13,9 @@ import { z } from 'zod';
 import { router, protectedProcedure, adminProcedure, Schemas } from '../trpc.js';
 import { RatingService } from '../services/RatingService.js';
 import { db } from '../db.js';
+import { logger } from '../logger.js';
+
+const log = logger.child({ router: 'rating' });
 
 export const ratingRouter = router({
   // --------------------------------------------------------------------------
@@ -255,15 +258,27 @@ export const ratingRouter = router({
   processAutoRatings: adminProcedure
     .input(z.void())
     .mutation(async () => {
-      const result = await RatingService.processAutoRatings();
-      
-      if (!result.success) {
-        throw new TRPCError({
-          code: 'INTERNAL_SERVER_ERROR',
-          message: result.error.message,
-        });
-      }
-      
-      return result.data;
+      // BUG FIX: A single call to processAutoRatings processes at most 500
+      // tasks (LIMIT 500 is intentional to bound per-batch DB load). A backlog
+      // of >500 would drain only one page per scheduled run, taking multiple
+      // days instead of one. Drain in a loop until a batch returns autoRated=0.
+      let result;
+      let totalAutoRated = 0;
+      do {
+        result = await RatingService.processAutoRatings();
+
+        if (!result.success) {
+          throw new TRPCError({
+            code: 'INTERNAL_SERVER_ERROR',
+            message: result.error.message,
+          });
+        }
+
+        totalAutoRated += result.data.autoRated ?? 0;
+      } while ((result.data?.autoRated ?? 0) > 0);
+
+      log.info({ totalAutoRated }, 'processAutoRatings drain complete');
+
+      return { autoRated: totalAutoRated };
     }),
 });

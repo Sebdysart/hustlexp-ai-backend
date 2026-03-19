@@ -159,6 +159,9 @@ export function forceDisconnectUser(userId: string): void {
   }
 
   connections.delete(userId);
-  // Clear reconnect timestamps so the flood window resets (ban wipes history)
-  reconnectTracker.delete(userId);
+  // Do NOT clear reconnectTracker here. Wiping the tracker on a forced
+  // disconnect (e.g. after a ban) would give the banned user a fresh flood
+  // budget immediately, allowing them to hammer the SSE endpoint before auth
+  // rejection kicks in. The tracker entries expire naturally via the sliding-
+  // window filter in addConnection, so unbounded growth is not a concern.
 }

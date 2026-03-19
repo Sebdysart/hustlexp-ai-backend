@@ -253,39 +253,29 @@ export function aiRateLimitMiddleware(provider: keyof typeof AI_RATE_LIMITS) {
       return c.json({ error: 'Authentication required' }, 401);
     }
 
-    const key = `ratelimit:ai:${provider}:${userId}`;
-    // Use the atomic Lua-based helper to INCR and conditionally EXPIRE in a
-    // single Redis round-trip.  A plain INCR followed by a separate EXPIRE
-    // has a crash-window between the two calls: if the process dies after INCR
-    // but before EXPIRE the key gets no TTL and the user is permanently
-    // rate-limited ("immortal key").  The Lua script sets EXPIRE only on first
-    // creation (current === 1) so the window is not reset on every request.
+    // Use the sliding-window checkRateLimit (Upstash) instead of the fixed-window
+    // incrWithTtl approach. Fixed windows allow a 2x burst at the window boundary
+    // (N requests at the end of window 1 + N at the start of window 2 = 2N in ~0s).
+    // Sliding windows prevent this by counting requests across a rolling period.
+    // The identifier encodes both provider and userId so limits are enforced per
+    // user per provider independently.
+    const identifier = `ai:${provider}:${userId}`;
     const windowSeconds = limits.windowMs / 1000;
-    let current: number;
-    try {
-      current = await redis.incrWithTtl(key, windowSeconds);
-    } catch (err) {
-      securityLog.error({ err }, 'aiRateLimitMiddleware: Redis error');
-      if (config.app.isProduction) {
-        return c.json({ error: 'Service temporarily unavailable' }, 503);
-      }
-      current = 0; // fail open in dev
+    const result = await checkRateLimit(identifier, 'ai', limits.requests, windowSeconds);
+
+    c.header('X-RateLimit-Limit', limits.requests.toString());
+    c.header('X-RateLimit-Remaining', Math.max(0, result.remaining).toString());
+    if (result.resetAt) {
+      c.header('X-RateLimit-Reset', result.resetAt.toString());
     }
 
-    if (current > limits.requests) {
-      const resetAt = Math.floor(Date.now() / 1000) + Math.ceil(limits.windowMs / 1000);
-      c.header('X-RateLimit-Limit', limits.requests.toString());
-      c.header('X-RateLimit-Remaining', '0');
-      c.header('X-RateLimit-Reset', resetAt.toString());
+    if (!result.allowed) {
       return c.json({
         error: 'AI rate limit exceeded',
-        retryAfter: Math.ceil(limits.windowMs / 1000)
+        retryAfter: windowSeconds,
       }, 429);
     }
-    
-    c.header('X-RateLimit-Limit', limits.requests.toString());
-    c.header('X-RateLimit-Remaining', Math.max(0, limits.requests - current).toString());
-    
+
     await next();
   };
 }

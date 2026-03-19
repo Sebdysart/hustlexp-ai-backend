@@ -444,6 +444,23 @@ export const escrowRouter = router({
         });
       }
 
+      // Task state guard: disputes can only be filed on active tasks.
+      // Prevents locking escrow money with no dispute record on OPEN/CANCELLED tasks.
+      const taskRow = await db.query<{ state: string }>(
+        `SELECT t.state FROM tasks t
+         JOIN escrows e ON e.task_id = t.id
+         WHERE e.id = $1`,
+        [input.escrowId]
+      );
+      const taskState = taskRow.rows[0]?.state;
+      const allowedTaskStates = ['ACCEPTED', 'IN_PROGRESS', 'PROOF_SUBMITTED', 'DISPUTED'];
+      if (!allowedTaskStates.includes(taskState)) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'Can only file a dispute on an active task (accepted or in-progress)',
+        });
+      }
+
       const result = await EscrowService.lockForDispute(input.escrowId, { adminOverride: ctx.user.is_admin, initiatedBy: ctx.user.id });
 
       if (!result.success) {

@@ -68,17 +68,15 @@ async function lockEscrowForStripeRestriction(escrowId: string, workerId: string
   // UPDATE and the INSERT cannot leave the escrow locked with no audit record.
   await db.transaction(async (txQuery) => {
     await txQuery(
-      `UPDATE escrows
-       SET state = 'LOCKED_DISPUTE',
-           version = version + 1
-       WHERE id = $1
-         AND state IN ('FUNDED', 'LOCKED_DISPUTE')`,
-      [escrowId],
-    );
-
-    await txQuery(
-      `INSERT INTO escrow_events (escrow_id, from_state, to_state, actor_id, actor_type, metadata)
-       VALUES ($1, 'FUNDED', 'LOCKED_DISPUTE', NULL, 'system', $2)`,
+      `WITH pre AS (SELECT state FROM escrows WHERE id = $1 FOR UPDATE),
+            upd AS (
+              UPDATE escrows SET state = 'LOCKED_DISPUTE', version = version + 1, updated_at = NOW()
+              WHERE id = $1 AND state IN ('FUNDED', 'LOCKED_DISPUTE')
+              RETURNING id
+            )
+       INSERT INTO escrow_events (escrow_id, from_state, to_state, actor_id, actor_type, metadata)
+       SELECT $1, pre.state, 'LOCKED_DISPUTE', NULL, 'system', $2 FROM pre
+       WHERE EXISTS (SELECT 1 FROM upd)`,
       [escrowId, JSON.stringify({ reason: 'stripe_account_restricted', stripe_code: stripeCode, worker_id: workerId })],
     );
   });

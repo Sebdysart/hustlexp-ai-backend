@@ -241,6 +241,8 @@ describe('REG-5 — FIXED: Admin can lock mid-task escrows (adminOverride bypass
       success: true,
       data: makeEscrow({ poster_id: POSTER_ID }) as any,
     });
+    // Task state guard: db.query for task state (IN_PROGRESS is allowed)
+    mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'IN_PROGRESS' }], rowCount: 1 } as any);
     // Service call succeeds
     mockEscrowService.lockForDispute.mockResolvedValueOnce({
       success: true,
@@ -258,23 +260,20 @@ describe('REG-5 — FIXED: Admin can lock mid-task escrows (adminOverride bypass
     );
   });
 
-  it('FIXED — non-admin caller still gets BAD_REQUEST when task not completed', async () => {
+  it('FIXED — non-admin caller gets PRECONDITION_FAILED when task is in OPEN state', async () => {
     // Auth check passes (poster is participant)
     mockEscrowService.getById.mockResolvedValueOnce({
       success: true,
       data: makeEscrow({ poster_id: POSTER_ID }) as any,
     });
-    // Service throws TRPCError BAD_REQUEST (completed_at=null, no adminOverride)
-    const { TRPCError } = await import('@trpc/server');
-    mockEscrowService.lockForDispute.mockRejectedValueOnce(
-      new TRPCError({ code: 'BAD_REQUEST', message: 'Cannot dispute a task that has not been completed' })
-    );
+    // Task state guard: db.query returns OPEN task — router rejects before service call
+    mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'OPEN' }], rowCount: 1 } as any);
 
     const caller = makePosterCaller(POSTER_ID);
     await expect(caller.lockForDispute({ escrowId: ESCROW_ID }))
       .rejects.toMatchObject({
-        code: 'BAD_REQUEST',
-        message: 'Cannot dispute a task that has not been completed',
+        code: 'PRECONDITION_FAILED',
+        message: 'Can only file a dispute on an active task (accepted or in-progress)',
       });
   });
 });

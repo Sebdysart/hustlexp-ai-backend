@@ -485,50 +485,51 @@ export const FraudDetectionService = {
       if (riskLevel === 'CRITICAL') {
         // CRITICAL patterns: Auto-suspend accounts, alert admins
         for (const userId of userIds) {
-          await db.query(
-            `UPDATE users
-             SET account_status = 'SUSPENDED', paused_at = NOW()
-             WHERE id = $1 AND account_status != 'SUSPENDED'`,
-            [userId]
-          );
-
-          // Immediately evict auth cache and terminate SSE connections so the
-          // suspended user is blocked without waiting for the 5-min cache TTL.
-          // BUG GG3 FIX: await the call (was fire-and-forget) so Redis errors surface.
-          await invalidateAuthCacheForUser(userId);
-
-          // Revoke Firebase refresh tokens so the user cannot re-authenticate after
-          // the Redis revocation marker expires. Look up firebase_uid for the revocation
-          // call, which requires a Firebase UID (not the DB UUID).
           try {
-            const fbRow = await db.query<{ firebase_uid: string | null }>(
-              'SELECT firebase_uid FROM users WHERE id = $1',
+            await db.query(
+              `UPDATE users
+               SET account_status = 'SUSPENDED', paused_at = NOW()
+               WHERE id = $1 AND account_status != 'SUSPENDED'`,
               [userId]
             );
-            const firebaseUid = fbRow.rows[0]?.firebase_uid;
-            if (firebaseUid) {
-              await revokeUserSessions(firebaseUid);
-            } else {
-              log.warn({ userId }, '[FraudDetection] auto-suspension: firebase_uid is null — Firebase token revocation skipped, Redis marker still active');
-            }
-          } catch (revokeErr) {
-            // A Firebase failure must not block the suspension — the Redis marker
-            // still provides short-term protection via the cache TTL.
-            log.error({ err: revokeErr instanceof Error ? revokeErr.message : String(revokeErr), userId }, '[FraudDetection] auto-suspension: revokeUserSessions failed');
+
+            // Create high-priority risk score for suspended user
+            await FraudDetectionService.calculateRiskScore({
+              entityType: 'user',
+              entityId: userId,
+              riskScore: 0.95, // CRITICAL risk
+              componentScores: {
+                pattern_detection: 0.95,
+              },
+              flags: [`fraud_pattern_${patternType}`, 'auto_suspended'],
+            });
+
+            // Immediately evict auth cache and terminate SSE connections so the
+            // suspended user is blocked without waiting for the 5-min cache TTL.
+            // BUG GG3 FIX: await the call (was fire-and-forget) so Redis errors surface.
+            try { await invalidateAuthCacheForUser(userId); } catch (e) { log.warn({ e, userId }, 'cache invalidation failed'); }
+
+            // Revoke Firebase refresh tokens so the user cannot re-authenticate after
+            // the Redis revocation marker expires. Look up firebase_uid for the revocation
+            // call, which requires a Firebase UID (not the DB UUID).
+            try {
+              const fbRow = await db.query<{ firebase_uid: string | null }>(
+                'SELECT firebase_uid FROM users WHERE id = $1',
+                [userId]
+              );
+              const firebaseUid = fbRow.rows[0]?.firebase_uid;
+              if (firebaseUid) {
+                await revokeUserSessions(firebaseUid);
+              } else {
+                log.warn({ userId }, '[FraudDetection] auto-suspension: firebase_uid is null — Firebase token revocation skipped, Redis marker still active');
+              }
+            } catch (e) { log.warn({ e, userId }, 'session revocation failed'); }
+
+            try { forceDisconnectUser(userId); } catch (e) { /* fire-and-forget */ }
+          } catch (err) {
+            log.error({ err, userId }, '[FraudDetection] failed to suspend user in fraud ring — continuing');
+            // DO NOT rethrow — process remaining users
           }
-
-          forceDisconnectUser(userId);
-
-          // Create high-priority risk score for suspended user
-          await FraudDetectionService.calculateRiskScore({
-            entityType: 'user',
-            entityId: userId,
-            riskScore: 0.95, // CRITICAL risk
-            componentScores: {
-              pattern_detection: 0.95,
-            },
-            flags: [`fraud_pattern_${patternType}`, 'auto_suspended'],
-          });
         }
         
         // Alert admins (send notification to admin team)

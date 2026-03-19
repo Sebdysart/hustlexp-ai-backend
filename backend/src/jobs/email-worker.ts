@@ -24,6 +24,7 @@ import { markOutboxEventProcessed, markOutboxEventFailed } from './outbox-worker
 import { workerLogger } from '../logger.js';
 import type { Job } from 'bullmq';
 import { sendgridBreaker } from '../middleware/circuit-breaker.js';
+import { notifyAdmins } from '../services/AdminNotificationHelper.js';
 
 const log = workerLogger.child({ worker: 'email' });
 
@@ -571,6 +572,23 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
       
       if (shouldMarkFailed) {
         log.error({ emailId, jobId: job.id, idempotencyKey: outboxKey, attempts: currentAttempts, maxAttempts, err: errorMessage }, 'Email poison message: max attempts exceeded');
+
+        // BUG FIX: Dead-lettered emails were silently dropped with no admin
+        // visibility. Send a non-fatal admin alert so the failure is surfaced
+        // for manual review. Errors here must not interfere with the normal
+        // error-handling / retry path below.
+        const emailType = job.data?.payload?.template ?? 'unknown';
+        try {
+          await notifyAdmins({
+            title: 'Email delivery permanently failed',
+            body: `emailId ${emailId} (type: ${emailType}) exhausted all retries. Manual review required.`,
+            deepLink: 'app://admin/email-outbox',
+            priority: 'HIGH',
+            metadata: { emailId, emailType, attempts: currentAttempts, maxAttempts, lastError: errorMessage },
+          });
+        } catch (alertErr) {
+          log.error({ alertErr }, 'Failed to send dead-letter admin alert');
+        }
       }
     }
     

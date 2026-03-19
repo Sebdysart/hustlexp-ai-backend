@@ -255,12 +255,26 @@ export const NotificationService = {
       if (limits.perHour !== Infinity || limits.perDay !== Infinity) {
         const { hourlyCount, dailyCount } = await checkAndIncrementFrequency(userId, category);
 
-        // BUG FIX: checkAndIncrementFrequency increments BEFORE we read the
-        // value, so when a user is exactly AT the limit the counter has already
-        // become limit+1. Using "> limits.perHour" fired batching one send
-        // early (at limit, not limit+1). The correct guard is ">= limits.perHour + 1"
-        // which is equivalent to "> limits.perHour" only after the increment
-        // makes the value exceed the limit for real.
+        // BUG FIX (order): Check daily limit BEFORE hourly. Previously the
+        // hourly check fired first; for categories where perHour <= perDay
+        // (all current categories) the daily limit was dead code — the hourly
+        // check always triggered first and the daily guard was unreachable.
+        // Checking the broader (daily) window first ensures it is independently
+        // enforced even when the hourly limit has not yet been reached.
+        //
+        // BUG FIX (threshold): checkAndIncrementFrequency increments BEFORE we
+        // read the value, so when a user is exactly AT the limit the counter has
+        // already become limit+1. The correct guard is ">= limits.perXxx + 1".
+        if (dailyCount >= limits.perDay + 1) {
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.RATE_LIMIT_EXCEEDED,
+              message: `Daily limit exceeded for category ${category}. Maximum ${limits.perDay} per day`,
+            },
+          };
+        }
+
         if (hourlyCount >= limits.perHour + 1) {
           // Exceeded hourly limit - batch with existing notifications
           const batchResult = await batchNotification(userId, category, {
@@ -281,16 +295,6 @@ export const NotificationService = {
             error: {
               code: ErrorCodes.RATE_LIMIT_EXCEEDED,
               message: `Frequency limit exceeded for category ${category}. Maximum ${limits.perHour} per hour`,
-            },
-          };
-        }
-
-        if (dailyCount >= limits.perDay + 1) {
-          return {
-            success: false,
-            error: {
-              code: ErrorCodes.RATE_LIMIT_EXCEEDED,
-              message: `Daily limit exceeded for category ${category}. Maximum ${limits.perDay} per day`,
             },
           };
         }
@@ -891,37 +895,25 @@ async function batchNotification(
   }
 ): Promise<ServiceResult<Notification>> {
   try {
-    // Find the most recent notification of the same category (within last hour)
-    const recentNotificationResult = await db.query<Notification>(
-      `SELECT * FROM notifications
-       WHERE user_id = $1 AND category = $2
-       AND created_at > NOW() - INTERVAL '1 hour'
-       ORDER BY created_at DESC
-       LIMIT 1`,
-      [userId, category]
-    );
-    
-    if (recentNotificationResult.rows.length === 0) {
-      // No recent notification to batch with - cannot batch
-      return {
-        success: false,
-        error: {
-          code: 'NO_BATCH_TARGET',
-          message: 'No recent notification found to batch with',
-        },
-      };
-    }
-
-    const groupId = recentNotificationResult.rows[0].id;
-
-    // Wrap the read-modify-write in a transaction with FOR UPDATE so that
-    // concurrent batchNotification calls serialize on this row and cannot
-    // overwrite each other's appended items.
+    // BUG FIX: Previously the "find most recent notification" SELECT ran
+    // outside the transaction. Between that SELECT and the inner FOR UPDATE
+    // a concurrent insert could add a newer notification, causing the batch to
+    // update a stale older row. Fix: move the search inside the transaction and
+    // lock the chosen row atomically with FOR UPDATE from the start.
     const updateResult = await db.transaction(async (txQuery) => {
+      // Find AND lock the most recent notification atomically
       const lockedResult = await txQuery<Notification>(
-        `SELECT id, title, body, metadata FROM notifications WHERE id = $1 FOR UPDATE`,
-        [groupId]
+        `SELECT id, title, body, metadata FROM notifications
+         WHERE user_id = $1 AND category = $2
+           AND created_at > NOW() - INTERVAL '1 hour'
+         ORDER BY created_at DESC LIMIT 1
+         FOR UPDATE`,
+        [userId, category]
       );
+
+      if (lockedResult.rows.length === 0) {
+        return null;
+      }
 
       const existingNotification = lockedResult.rows[0];
 
@@ -970,6 +962,17 @@ async function batchNotification(
         [updatedTitle, updatedBody, JSON.stringify(updatedMetadata), existingNotification.id]
       );
     });
+
+    if (updateResult === null) {
+      // No recent notification found to batch with (detected inside transaction)
+      return {
+        success: false,
+        error: {
+          code: 'NO_BATCH_TARGET',
+          message: 'No recent notification found to batch with',
+        },
+      };
+    }
 
     return {
       success: true,
@@ -1317,9 +1320,14 @@ async function queuePushNotification(notification: Notification): Promise<void> 
     data.taskId = notification.task_id;
   }
 
-  // Generate deterministic idempotency key
-  const aggregateId = notification.task_id || notification.id;
-  const idempotencyKey = `push.send_requested:${notification.category}:${notification.user_id}:${aggregateId}:1`;
+  // Generate deterministic idempotency key.
+  // BUG FIX: Previously used task_id as the stable part, which collapsed all
+  // push notifications for the same (user, category, task) into a single key.
+  // Only the first push was ever delivered; all subsequent ones were silently
+  // dropped by ON CONFLICT DO NOTHING. Using notification.id (unique per
+  // notification) ensures each notification gets its own push while still
+  // providing retry deduplication (same notification.id on retry = same key).
+  const idempotencyKey = `push.send_requested:${notification.category}:${notification.user_id}:${notification.id}:1`;
 
   // Write outbox_event (push.send_requested) — ON CONFLICT DO NOTHING for idempotency.
   // A single atomic INSERT eliminates the racy SELECT+INSERT pattern: two concurrent

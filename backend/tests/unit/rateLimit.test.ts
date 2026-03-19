@@ -355,7 +355,8 @@ describe('aiRateLimitMiddleware', () => {
   it('allows request and uses verified uid as bucket key when token is valid', async () => {
     const uid = 'firebase-uid-abc123';
     mockFirebaseAuth.verifyIdToken.mockResolvedValue({ uid } as any);
-    mockRedis.incrWithTtl.mockResolvedValue(1);
+    // Sliding-window checkRateLimit returns allowed:true when under limit
+    mockCheckRateLimit.mockResolvedValue({ allowed: true, remaining: 19 });
 
     const middleware = await aiRateLimitMiddleware('openai');
     const { ctx } = createMockContext({ headers: { authorization: 'Bearer valid.firebase.token' } });
@@ -364,15 +365,16 @@ describe('aiRateLimitMiddleware', () => {
     await middleware(ctx as any, next);
 
     expect(mockFirebaseAuth.verifyIdToken).toHaveBeenCalledWith('valid.firebase.token', true);
-    expect(mockRedis.incrWithTtl).toHaveBeenCalledWith(`ratelimit:ai:openai:${uid}`, 60);
+    // New implementation uses checkRateLimit with identifier `ai:${provider}:${uid}`
+    expect(mockCheckRateLimit).toHaveBeenCalledWith(`ai:openai:${uid}`, 'ai', 20, 60);
     expect(next).toHaveBeenCalledOnce();
   });
 
   it('returns 429 when AI rate limit is exceeded for a verified user', async () => {
     const uid = 'firebase-uid-xyz';
     mockFirebaseAuth.verifyIdToken.mockResolvedValue({ uid } as any);
-    // Simulate 21 requests for openai (limit = 20)
-    mockRedis.incrWithTtl.mockResolvedValue(21);
+    // Sliding-window checkRateLimit returns allowed:false when over limit
+    mockCheckRateLimit.mockResolvedValue({ allowed: false, remaining: 0 });
 
     const middleware = await aiRateLimitMiddleware('openai');
     const { ctx } = createMockContext({ headers: { authorization: 'Bearer valid.token' } });
@@ -390,7 +392,8 @@ describe('aiRateLimitMiddleware', () => {
   it('uses provider-specific limits (anthropic: 15 req/min)', async () => {
     const uid = 'uid-anthropic-test';
     mockFirebaseAuth.verifyIdToken.mockResolvedValue({ uid } as any);
-    mockRedis.incrWithTtl.mockResolvedValue(16); // over anthropic limit of 15
+    // Sliding-window returns allowed:false for anthropic over its 15 req/min limit
+    mockCheckRateLimit.mockResolvedValue({ allowed: false, remaining: 0 });
 
     const middleware = await aiRateLimitMiddleware('anthropic');
     const { ctx } = createMockContext({ headers: { authorization: 'Bearer tok' } });
@@ -404,15 +407,11 @@ describe('aiRateLimitMiddleware', () => {
     );
   });
 
-  it('returns 503 when Redis throws and isProduction=true (fail closed)', async () => {
+  it('returns 429 when checkRateLimit fails closed (production Redis error)', async () => {
     const uid = 'uid-prod-redis-error';
     mockFirebaseAuth.verifyIdToken.mockResolvedValue({ uid } as any);
-    mockRedis.incrWithTtl.mockRejectedValue(new Error('Redis connection lost'));
-
-    // Temporarily override config to simulate production
-    const { config } = await import('../../src/config');
-    const originalIsProduction = config.app.isProduction;
-    (config.app as any).isProduction = true;
+    // checkRateLimit fails closed in production — returns allowed:false, remaining:0
+    mockCheckRateLimit.mockResolvedValue({ allowed: false, remaining: 0 });
 
     const middleware = await aiRateLimitMiddleware('openai');
     const { ctx } = createMockContext({ headers: { authorization: 'Bearer valid.token' } });
@@ -420,18 +419,19 @@ describe('aiRateLimitMiddleware', () => {
 
     await middleware(ctx as any, next);
 
-    (config.app as any).isProduction = originalIsProduction;
-
-    expect(ctx.json).toHaveBeenCalledWith({ error: 'Service temporarily unavailable' }, 503);
+    expect(ctx.json).toHaveBeenCalledWith(
+      expect.objectContaining({ error: 'AI rate limit exceeded', retryAfter: 60 }),
+      429,
+    );
     expect(next).not.toHaveBeenCalled();
   });
 
-  it('allows request (count=0) when Redis throws and isProduction=false (fail open)', async () => {
+  it('allows request when checkRateLimit returns allowed=true (dev fail-open)', async () => {
     const uid = 'uid-dev-redis-error';
     mockFirebaseAuth.verifyIdToken.mockResolvedValue({ uid } as any);
-    mockRedis.incrWithTtl.mockRejectedValue(new Error('Redis connection lost'));
+    // checkRateLimit allows in dev when Redis is unavailable
+    mockCheckRateLimit.mockResolvedValue({ allowed: true, remaining: 20 });
 
-    // config mock already sets isProduction=false in this test file
     const middleware = await aiRateLimitMiddleware('openai');
     const { ctx } = createMockContext({ headers: { authorization: 'Bearer valid.token' } });
     const next = vi.fn().mockResolvedValue(undefined);

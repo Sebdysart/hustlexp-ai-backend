@@ -464,6 +464,16 @@ async function handleInvoicePaid(event: StripeEventEnvelope): Promise<void> {
     return;
   }
 
+  // Idempotency guard: prevent double-counting subscription revenue on BullMQ retry
+  const existingRevenue = await db.query(
+    `SELECT id FROM revenue_ledger WHERE stripe_event_id = $1 AND event_type = 'subscription' LIMIT 1`,
+    [event.id]
+  );
+  if (existingRevenue.rows.length > 0) {
+    log.info({ stripeEventId: event.id }, '[stripe-event-worker] handleInvoicePaid: revenue already logged, skipping duplicate');
+    return; // idempotent — already processed
+  }
+
   if (userId) {
     await RevenueService.logEvent({
       eventType: 'subscription',

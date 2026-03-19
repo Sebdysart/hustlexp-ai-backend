@@ -960,6 +960,8 @@ describe('escrow.lockForDispute', () => {
         success: true,
         data: makeEscrow() as any,
       });
+      // Task state guard: db.query for task state
+      mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'ACCEPTED' }], rowCount: 1 } as any);
       mockEscrowService.lockForDispute.mockResolvedValueOnce({
         success: true,
         data: lockedEscrow as any,
@@ -1006,6 +1008,8 @@ describe('escrow.lockForDispute', () => {
         success: true,
         data: makeEscrow() as any,
       });
+      // Task state guard: db.query for task state
+      mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'ACCEPTED' }], rowCount: 1 } as any);
       mockEscrowService.lockForDispute.mockResolvedValueOnce({
         success: false,
         error: { code: 'INVALID_STATE', message: 'Cannot lock: wrong state' },
@@ -1023,6 +1027,8 @@ describe('escrow.lockForDispute', () => {
         success: true,
         data: makeEscrow() as any,
       });
+      // Task state guard: db.query for task state
+      mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'ACCEPTED' }], rowCount: 1 } as any);
       mockEscrowService.lockForDispute.mockResolvedValueOnce({
         success: true,
         data: makeEscrow({ state: 'LOCKED_DISPUTE' }) as any,

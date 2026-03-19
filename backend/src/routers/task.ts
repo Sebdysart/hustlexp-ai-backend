@@ -839,6 +839,21 @@ export const taskRouter = router({
         if (ownerCheck.rows[0].poster_id !== ctx.user.id) {
           throw new TRPCError({ code: 'FORBIDDEN', message: 'Only the task poster can review proof' });
         }
+
+        // Validate proof is in SUBMITTED state before allowing review.
+        // The taskId path already enforces this via the SUBMITTED filter in the SQL lookup,
+        // but the proofId-only path has no such guard — a poster could review an
+        // already-ACCEPTED or REJECTED proof, causing ProofService to throw an opaque error.
+        const proofStateRow = await db.query<{ state: string }>(
+          `SELECT state FROM proofs WHERE id = $1`,
+          [proofId]
+        );
+        if (proofStateRow.rows[0]?.state !== 'SUBMITTED') {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message: 'Proof is not in SUBMITTED state',
+          });
+        }
       }
 
       // Get proof to find task (needed when proofId was supplied directly)
@@ -1039,7 +1054,11 @@ export const taskRouter = router({
    * Poster lists applicants for their task
    */
   listApplicants: posterProcedure
-    .input(z.object({ taskId: Schemas.uuid }))
+    .input(z.object({
+      taskId: Schemas.uuid,
+      limit: z.number().int().min(1).max(100).default(50),
+      offset: z.number().int().min(0).default(0),
+    }))
     .query(async ({ ctx, input }) => {
       const taskResult = await db.query(
         `SELECT poster_id FROM tasks WHERE id = $1`,
@@ -1065,8 +1084,9 @@ export const taskRouter = router({
          FROM task_applications ta
          LEFT JOIN users u ON u.id = ta.hustler_id
          WHERE ta.task_id = $1 AND ta.status = 'pending'
-         ORDER BY ta.created_at ASC`,
-        [input.taskId]
+         ORDER BY ta.created_at ASC
+         LIMIT $2 OFFSET $3`,
+        [input.taskId, input.limit, input.offset]
       );
 
       return result.rows;

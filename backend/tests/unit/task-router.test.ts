@@ -1001,8 +1001,9 @@ describe('task.reviewProof', () => {
     const task = makeTaskRow({ poster_id: USER_ID, state: 'PROOF_SUBMITTED' });
     const reviewedProof = makeProofRow({ state: 'ACCEPTED', reviewed_by: USER_ID });
 
-    // New order: db.query (IDOR ownership pre-check) → ProofService.getById → TaskService.getById (state)
+    // New order: db.query (IDOR ownership pre-check) → db.query (proof state check) → ProofService.getById → TaskService.getById (state)
     mockDb.query.mockResolvedValueOnce({ rows: [{ poster_id: USER_ID }], rowCount: 1 } as any);
+    mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'SUBMITTED' }], rowCount: 1 } as any);
     mockProofService.getById.mockResolvedValueOnce({ success: true, data: proof as any });
     mockTaskService.getById.mockResolvedValueOnce({ success: true, data: task as any });
     mockProofService.review.mockResolvedValueOnce({ success: true, data: reviewedProof as any });
@@ -1142,8 +1143,9 @@ describe('task.reviewProof', () => {
   });
 
   it('throws BAD_REQUEST when ProofService.review fails', async () => {
-    // proofId path: db.query (IDOR pre-check) → ProofService.getById → TaskService.getById (state)
+    // proofId path: db.query (IDOR pre-check) → db.query (proof state check) → ProofService.getById → TaskService.getById (state)
     mockDb.query.mockResolvedValueOnce({ rows: [{ poster_id: USER_ID }], rowCount: 1 } as any);
+    mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'SUBMITTED' }], rowCount: 1 } as any);
     mockProofService.getById.mockResolvedValueOnce({
       success: true,
       data: makeProofRow({ task_id: TASK_ID }) as any,
@@ -1169,8 +1171,9 @@ describe('task.reviewProof', () => {
     const rejectedProof = makeProofRow({ state: 'REJECTED', reviewed_by: USER_ID });
     const revertedTask = makeTaskRow({ state: 'ACCEPTED' });
 
-    // proofId path: db.query (IDOR pre-check) → ProofService.getById → TaskService.getById (state)
+    // proofId path: db.query (IDOR pre-check) → db.query (proof state check) → ProofService.getById → TaskService.getById (state)
     mockDb.query.mockResolvedValueOnce({ rows: [{ poster_id: USER_ID }], rowCount: 1 } as any);
+    mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'SUBMITTED' }], rowCount: 1 } as any);
     mockProofService.getById.mockResolvedValueOnce({ success: true, data: proof as any });
     mockTaskService.getById.mockResolvedValueOnce({ success: true, data: task as any });
     mockProofService.review.mockResolvedValueOnce({ success: true, data: rejectedProof as any });
@@ -1194,8 +1197,9 @@ describe('task.reviewProof', () => {
     const task = makeTaskRow({ poster_id: USER_ID, state: 'PROOF_SUBMITTED' });
     const acceptedProof = makeProofRow({ state: 'ACCEPTED', reviewed_by: USER_ID });
 
-    // proofId path: db.query (IDOR pre-check) → ProofService.getById → TaskService.getById (state)
+    // proofId path: db.query (IDOR pre-check) → db.query (proof state check) → ProofService.getById → TaskService.getById (state)
     mockDb.query.mockResolvedValueOnce({ rows: [{ poster_id: USER_ID }], rowCount: 1 } as any);
+    mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'SUBMITTED' }], rowCount: 1 } as any);
     mockProofService.getById.mockResolvedValueOnce({ success: true, data: proof as any });
     mockTaskService.getById.mockResolvedValueOnce({ success: true, data: task as any });
     mockProofService.review.mockResolvedValueOnce({ success: true, data: acceptedProof as any });
@@ -1213,8 +1217,9 @@ describe('task.reviewProof', () => {
     const task = makeTaskRow({ poster_id: USER_ID, state: 'PROOF_SUBMITTED' });
     const rejectedProof = makeProofRow({ state: 'REJECTED', reviewed_by: USER_ID });
 
-    // proofId path: db.query (IDOR pre-check) → ProofService.getById → TaskService.getById (state)
+    // proofId path: db.query (IDOR pre-check) → db.query (proof state check) → ProofService.getById → TaskService.getById (state)
     mockDb.query.mockResolvedValueOnce({ rows: [{ poster_id: USER_ID }], rowCount: 1 } as any);
+    mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'SUBMITTED' }], rowCount: 1 } as any);
     mockProofService.getById.mockResolvedValueOnce({ success: true, data: proof as any });
     mockTaskService.getById.mockResolvedValueOnce({ success: true, data: task as any });
     mockProofService.review.mockResolvedValueOnce({ success: true, data: rejectedProof as any });

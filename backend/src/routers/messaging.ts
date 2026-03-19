@@ -297,11 +297,17 @@ export const messagingRouter = router({
    * Returns one entry per task with latest message and unread count
    */
   getConversations: protectedProcedure
-    .input(z.void())
-    .query(async ({ ctx }) => {
+    .input(z.object({
+      limit: z.number().int().min(1).max(50).default(20),
+      offset: z.number().int().min(0).default(0),
+    }).optional())
+    .query(async ({ ctx, input }) => {
       if (!ctx.user) {
         throw new TRPCError({ code: 'UNAUTHORIZED', message: 'Authentication required' });
       }
+
+      const limit = input?.limit ?? 20;
+      const offset = input?.offset ?? 0;
 
       const result = await db.query(
         `SELECT * FROM (
@@ -336,8 +342,9 @@ export const messagingRouter = router({
             AND (t.state NOT IN ('COMPLETED', 'CANCELLED') OR t.updated_at >= NOW() - INTERVAL '7 days')
           ORDER BY t.id, m.created_at DESC NULLS LAST
         ) conversations
-        ORDER BY "lastMessageAt" DESC NULLS LAST, "taskId"`,
-        [ctx.user.id]
+        ORDER BY "lastMessageAt" DESC NULLS LAST, "taskId"
+        LIMIT $2 OFFSET $3`,
+        [ctx.user.id, limit, offset]
       );
 
       return result.rows;

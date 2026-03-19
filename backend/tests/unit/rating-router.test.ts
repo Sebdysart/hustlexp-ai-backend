@@ -356,12 +356,17 @@ describe('rating router', () => {
     it('calls service and returns data on success', async () => {
       // Admin check
       mockDb.query.mockResolvedValueOnce({ rows: [{ role: 'admin' }], rowCount: 1 } as any);
-      mockRatingService.processAutoRatings.mockResolvedValue({ success: true, data: { processed: 5 } } as any);
+      // BUG FIX (Bug 6): Router now drains in a loop until autoRated === 0.
+      // Mock: first call returns 5 auto-rated, second call returns 0 to stop loop.
+      mockRatingService.processAutoRatings
+        .mockResolvedValueOnce({ success: true, data: { autoRated: 5 } } as any)
+        .mockResolvedValueOnce({ success: true, data: { autoRated: 0 } } as any);
 
       const caller = makeAdminCaller();
       const result = await caller.processAutoRatings();
 
-      expect(result).toEqual({ processed: 5 });
+      // Router aggregates total across all drain iterations
+      expect(result).toEqual({ autoRated: 5 });
     });
 
     it('throws on service failure', async () => {

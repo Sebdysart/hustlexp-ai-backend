@@ -662,12 +662,17 @@ export const MessagingService = {
     userId: string
   ): Promise<ServiceResult<TaskMessage>> => {
     try {
-      // Verify user is the receiver
+      // Verify user is the receiver.
+      // BUG FIX: Also filter quarantined/flagged messages so that a message
+      // that is later approved does not appear as already-read. Only messages
+      // visible to the user (not quarantined or flagged) can be marked read.
       const verifyResult = await db.query<{ receiver_id: string }>(
-        'SELECT receiver_id FROM task_messages WHERE id = $1',
+        `SELECT receiver_id FROM task_messages
+         WHERE id = $1
+           AND (moderation_status IS NULL OR moderation_status NOT IN ('quarantined', 'flagged'))`,
         [messageId]
       );
-      
+
       if (verifyResult.rows.length === 0) {
         return {
           success: false,
@@ -677,7 +682,7 @@ export const MessagingService = {
           },
         };
       }
-      
+
       if (verifyResult.rows[0].receiver_id !== userId) {
         return {
           success: false,
@@ -687,13 +692,15 @@ export const MessagingService = {
           },
         };
       }
-      
-      // Mark as read
+
+      // Mark as read (same moderation filter on the UPDATE prevents a race
+      // where the message is quarantined between the SELECT above and here).
       const result = await db.query<TaskMessage>(
         `UPDATE task_messages
          SET read_at = NOW(), updated_at = NOW()
          WHERE id = $1 AND receiver_id = $2 AND read_at IS NULL
-         RETURNING 
+           AND (moderation_status IS NULL OR moderation_status NOT IN ('quarantined', 'flagged'))
+         RETURNING
            id, task_id, sender_id, receiver_id, message_type, content,
            auto_message_template, photo_urls, photo_count,
            location_latitude, location_longitude, location_expires_at,

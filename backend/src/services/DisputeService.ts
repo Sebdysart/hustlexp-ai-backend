@@ -477,8 +477,8 @@ export const DisputeService = {
               { code: 'BAD_REQUEST' }
             );
           }
-          if (refundAmount + releaseAmount !== escrow.amount) {
-            throw new Error(`SPLIT amounts (${refundAmount} + ${releaseAmount} = ${refundAmount + releaseAmount}) must sum to escrow amount (${escrow.amount})`);
+          if (Math.round(refundAmount) + Math.round(releaseAmount) !== escrow.amount) {
+            throw new Error(`SPLIT amounts (${Math.round(refundAmount)} + ${Math.round(releaseAmount)} = ${Math.round(refundAmount) + Math.round(releaseAmount)}) must sum to escrow amount (${escrow.amount})`);
           }
         }
         
