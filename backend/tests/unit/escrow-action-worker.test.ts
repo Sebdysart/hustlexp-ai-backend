@@ -138,8 +138,8 @@ function setupReleaseMocks(escrowAmountCents = 10_000, escrowOverrides = {}) {
       });
       return fn(trxQuery);
     }
-    // Second transaction: version-checked UPDATE. Execute the UPDATE and return.
-    const trxQuery = vi.fn().mockResolvedValueOnce({ rowCount: 1, rows: [] });
+    // Second transaction: version-checked UPDATE with RETURNING id. Return the updated row.
+    const trxQuery = vi.fn().mockResolvedValueOnce({ rowCount: 1, rows: [{ id: ESCROW_ID }] });
     return fn(trxQuery);
   });
 
@@ -173,7 +173,8 @@ function setupRefundMocks(overrides = {}) {
       });
       return fn(trxQuery);
     }
-    const trxQuery = vi.fn().mockResolvedValueOnce({ rowCount: 1, rows: [] });
+    // Second transaction: version-checked UPDATE with RETURNING id. Return the updated row.
+    const trxQuery = vi.fn().mockResolvedValueOnce({ rowCount: 1, rows: [{ id: ESCROW_ID }] });
     return fn(trxQuery);
   });
 }
@@ -281,7 +282,7 @@ describe('escrow-action-worker — FOR UPDATE runs inside db.transaction()', () 
       callOrder.push('transaction');
       const trxQuery = vi.fn()
         .mockResolvedValueOnce({ rows: [makeEscrowRow()], rowCount: 1 })
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] });
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: ESCROW_ID }] });
       return fn(trxQuery);
     });
     vi.mocked(StripeService.createTransfer).mockImplementation(async (..._args) => {
@@ -320,7 +321,7 @@ describe('escrow-action-worker — FOR UPDATE runs inside db.transaction()', () 
         });
         return fn(trxQuery);
       }
-      const trxQuery = vi.fn().mockResolvedValueOnce({ rowCount: 1, rows: [] });
+      const trxQuery = vi.fn().mockResolvedValueOnce({ rowCount: 1, rows: [{ id: ESCROW_ID }] });
       return fn(trxQuery);
     });
 
@@ -373,10 +374,10 @@ describe('escrow-action-worker — FOR UPDATE runs inside db.transaction()', () 
         const trxQuery = vi.fn().mockResolvedValueOnce({ rows: [makeEscrowRow()], rowCount: 1 });
         return fn(trxQuery);
       }
-      // Second transaction: capture the UPDATE SQL
+      // Second transaction: capture the UPDATE SQL (RETURNING id — must return a row)
       const trxQuery = vi.fn().mockImplementation(async (sql: string) => {
         updateSql = sql;
-        return { rowCount: 1, rows: [] };
+        return { rowCount: 1, rows: [{ id: ESCROW_ID }] };
       });
       return fn(trxQuery);
     });
@@ -534,7 +535,7 @@ describe('escrow-action-worker — refund_requested handler', () => {
         });
         return fn(trxQuery);
       }
-      return fn(vi.fn().mockResolvedValueOnce({ rowCount: 1, rows: [] }));
+      return fn(vi.fn().mockResolvedValueOnce({ rowCount: 1, rows: [{ id: ESCROW_ID }] }));
     });
 
     await processEscrowActionJob(makeJob('escrow.refund_requested',

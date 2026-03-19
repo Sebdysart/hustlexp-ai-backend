@@ -328,22 +328,12 @@ const PUBLIC_IP_WINDOW_SECONDS = 60;   // per minute
  */
 export function publicIpRateLimitMiddleware() {
   return async (c: Context, next: Next) => {
-    // Skip IP rate limiting only when the request carries a *verified* Bearer
-    // token.  Checking for the header alone (without verification) allows an
-    // attacker to send `Authorization: Bearer garbage` and bypass IP limits
-    // entirely — an unauthenticated DoS vector.
-    const authHeader = c.req.header('authorization');
-    if (authHeader?.startsWith('Bearer ')) {
-      const token = authHeader.slice(7);
-      try {
-        await firebaseAuth.verifyIdToken(token, true);
-        // Token is valid — the per-user bucket in rateLimitMiddleware applies.
-        await next();
-        return;
-      } catch {
-        // Token is invalid/garbage — fall through to IP-based rate limiting.
-      }
-    }
+    // Always apply IP rate limiting regardless of auth status.
+    // Authenticated users are still subject to the IP-level limit as a
+    // defence-in-depth layer; their per-user limits are enforced separately
+    // by rateLimitMiddleware on protected routes.  An early-return bypass here
+    // would allow any attacker with a valid Firebase token (including a free
+    // account) to make unlimited requests from a single IP.
 
     // Derive client IP using trusted resolution (rightmost XFF entry, set by
     // our reverse proxy — not the leftmost, which is client-supplied and

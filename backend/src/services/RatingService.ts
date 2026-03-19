@@ -583,13 +583,15 @@ export const RatingService = {
          WHERE t.state = 'COMPLETED'
            AND t.completed_at < NOW() - INTERVAL '${RATING_WINDOW_DAYS} days'
            AND t.worker_id IS NOT NULL
-           AND NOT EXISTS (
-             SELECT 1 FROM task_ratings r1
-             WHERE r1.task_id = t.id AND r1.rater_id = t.poster_id AND r1.ratee_id = t.worker_id
-           )
-           AND NOT EXISTS (
-             SELECT 1 FROM task_ratings r2
-             WHERE r2.task_id = t.id AND r2.rater_id = t.worker_id AND r2.ratee_id = t.poster_id
+           AND (
+             NOT EXISTS (
+               SELECT 1 FROM task_ratings r1
+               WHERE r1.task_id = t.id AND r1.rater_id = t.poster_id AND r1.ratee_id = t.worker_id
+             )
+             OR NOT EXISTS (
+               SELECT 1 FROM task_ratings r2
+               WHERE r2.task_id = t.id AND r2.rater_id = t.worker_id AND r2.ratee_id = t.poster_id
+             )
            )`,
         []
       );

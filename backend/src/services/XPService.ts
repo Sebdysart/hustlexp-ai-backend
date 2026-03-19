@@ -433,7 +433,17 @@ export const XPService = {
         const redis = getXPRedis();
         if (redis) {
           try {
-            await XPService.checkDailyXPCap(userId, effectiveXPAwarded);
+            const capResult = await XPService.checkDailyXPCap(userId, effectiveXPAwarded);
+            if (!capResult.allowed) {
+              // Overage detected — checkDailyXPCap already rolled back Redis via DECRBY.
+              // Log a warning so we can detect race conditions that slipped past the
+              // in-transaction probe (e.g. two concurrent awards both committed before
+              // either post-commit INCRBY fired).
+              log.warn(
+                { userId, effectiveXPAwarded, earned: capResult.earned, cap: capResult.cap },
+                'XP cap overage detected post-commit — Redis corrected via DECRBY rollback'
+              );
+            }
           } catch {
             // Non-fatal: cap counter may be slightly off if Redis is flaky.
             // The DB-fallback inside checkDailyXPCap will compensate on the

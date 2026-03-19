@@ -466,8 +466,8 @@ describe('publicIpRateLimitMiddleware', () => {
     expect(next).toHaveBeenCalledOnce();
   });
 
-  it('skips IP rate limiting when a valid Bearer token is present', async () => {
-    mockFirebaseAuth.verifyIdToken.mockResolvedValue({ uid: 'real-user-uid' } as any);
+  it('does not skip IP rate limiting for authenticated users', async () => {
+    mockRedis.incrWithTtl.mockResolvedValue(1);
 
     const middleware = publicIpRateLimitMiddleware();
     const { ctx } = createMockContext({
@@ -480,14 +480,14 @@ describe('publicIpRateLimitMiddleware', () => {
 
     await middleware(ctx as any, next);
 
-    // Token was verified — IP bucket must NOT be touched
-    expect(mockFirebaseAuth.verifyIdToken).toHaveBeenCalledWith('valid.firebase.token', true);
-    expect(mockRedis.incrWithTtl).not.toHaveBeenCalled();
+    // Authenticated users are still subject to the IP rate limit —
+    // the token is NOT verified and the IP bucket IS incremented.
+    expect(mockFirebaseAuth.verifyIdToken).not.toHaveBeenCalled();
+    expect(mockRedis.incrWithTtl).toHaveBeenCalledWith('rate:public:ip:203.0.113.99', 60);
     expect(next).toHaveBeenCalledOnce();
   });
 
-  it('falls through to IP rate limiting when Bearer token is garbage (invalid)', async () => {
-    mockFirebaseAuth.verifyIdToken.mockRejectedValue(new Error('token invalid'));
+  it('applies IP rate limiting when Bearer token is present but invalid', async () => {
     mockRedis.incrWithTtl.mockResolvedValue(5);
 
     const middleware = publicIpRateLimitMiddleware();
@@ -501,8 +501,9 @@ describe('publicIpRateLimitMiddleware', () => {
 
     await middleware(ctx as any, next);
 
-    // Garbage token must not bypass — IP rate limit must be checked
-    expect(mockFirebaseAuth.verifyIdToken).toHaveBeenCalledWith('garbage', true);
+    // The middleware never inspects or verifies the token —
+    // all requests go through the IP rate limit unconditionally.
+    expect(mockFirebaseAuth.verifyIdToken).not.toHaveBeenCalled();
     expect(mockRedis.incrWithTtl).toHaveBeenCalledWith('rate:public:ip:198.51.100.10', 60);
     expect(next).toHaveBeenCalledOnce();
   });

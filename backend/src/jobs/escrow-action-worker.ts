@@ -372,13 +372,17 @@ async function handleReleaseRequest(
   // just for the UPDATE statement itself, which is sufficient to prevent concurrent
   // double-write from two workers that both passed the idempotency check above.)
   await db.transaction(async (trx: QueryFn) => {
-    await trx(
+    const updateResult = await trx<{ id: string }>(
       `UPDATE escrows
        SET stripe_transfer_id = $1,
            version = version + 1
-       WHERE id = $2 AND version = $3`,
+       WHERE id = $2 AND version = $3
+       RETURNING id`,
       [transferId, escrow.id, escrow.version]
     );
+    if (!updateResult.rows.length) {
+      throw new Error(`Concurrent version conflict storing transfer ${transferId} for escrow ${escrow.id} — retry`);
+    }
   });
 
   log.info({ escrowId: escrow.id, transferId }, 'Transfer created for escrow');
@@ -428,13 +432,17 @@ async function handleRefundRequest(
 
   // Store refund_id on escrow atomically (version-checked)
   await db.transaction(async (trx: QueryFn) => {
-    await trx(
+    const updateResult = await trx<{ id: string }>(
       `UPDATE escrows
        SET stripe_refund_id = $1,
            version = version + 1
-       WHERE id = $2 AND version = $3`,
+       WHERE id = $2 AND version = $3
+       RETURNING id`,
       [refundId, escrow.id, escrow.version]
     );
+    if (!updateResult.rows.length) {
+      throw new Error(`Concurrent version conflict storing refund ${refundId} for escrow ${escrow.id} — retry`);
+    }
   });
 
   log.info({ escrowId: escrow.id, refundId }, 'Refund created for escrow');

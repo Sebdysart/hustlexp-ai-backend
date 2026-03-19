@@ -69,7 +69,7 @@ export const messagingRouter = router({
       taskId: Schemas.uuid,
       messageType: z.enum(['TEXT', 'AUTO']),
       content: z.string().trim().min(1).max(500).optional(), // Required for TEXT
-      autoMessageTemplate: z.enum(['on_my_way', 'running_late', 'completed', 'question']).optional(), // Required for AUTO
+      autoMessageTemplate: z.enum(['on_my_way', 'running_late', 'completed', 'need_clarification']).optional(), // Required for AUTO
     }))
     .mutation(async ({ input, ctx }) => {
       if (!ctx.user) {

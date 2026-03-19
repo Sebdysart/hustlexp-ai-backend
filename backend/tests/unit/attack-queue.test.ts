@@ -366,7 +366,7 @@ describe('RED-TEAM: BullMQ Queue Attack Surface', () => {
      * The second concurrent job loses the optimistic lock (version mismatch)
      * and the UPDATE affects 0 rows.
      */
-    it('concurrent second release loses optimistic lock (rowCount=0 → log + return)', async () => {
+    it('concurrent second release loses optimistic lock (rowCount=0 → throw)', async () => {
       // First call: SELECT FOR UPDATE (no transfer yet). The `amount` field is
       // included in the row so handleReleaseRequest can read escrow.amount directly
       // without a separate SELECT — removed in v2.0 to reduce query count.
@@ -393,16 +393,16 @@ describe('RED-TEAM: BullMQ Queue Attack Surface', () => {
         data: { transferId: 'tr_new' },
       });
 
-      // UPDATE with version check returns 0 rows (another worker already updated)
-      (db.query as any).mockResolvedValueOnce({ rowCount: 0 });
+      // UPDATE with version check returns 0 rows (another worker already updated) — now throws
+      (db.query as any).mockResolvedValueOnce({ rowCount: 0, rows: [] });
 
       const payloadFields = { escrow_id: E.e4, task_id: T.t4, reason: 'race' };
       const job = makeJob('escrow.release_requested', {
         payload: makeSignedPayload(payloadFields),
       });
 
-      // Should complete without throwing (no-op, Stripe called once only)
-      await expect(processEscrowActionJob(job as any)).resolves.toBeUndefined();
+      // Version conflict now throws with "Concurrent version conflict" message
+      await expect(processEscrowActionJob(job as any)).rejects.toThrow('Concurrent version conflict');
       expect(StripeService.createTransfer).toHaveBeenCalledTimes(1);
     });
   });
@@ -814,8 +814,8 @@ describe('RED-TEAM: BullMQ Queue Attack Surface', () => {
         success: true, data: { transferId: 'tr_winner' },
       });
 
-      // Process A's UPDATE succeeds (rowCount: 1)
-      (db.query as any).mockResolvedValueOnce({ rowCount: 1 });
+      // Process A's UPDATE succeeds (rowCount: 1, RETURNING id returns the updated row)
+      (db.query as any).mockResolvedValueOnce({ rowCount: 1, rows: [{ id: E.e10 }] });
 
       const jobA = makeJob('escrow.release_requested', { payload: payloadA }, 'job-A');
 

@@ -613,7 +613,16 @@ export const GDPRService = {
           },
         };
       }
-      
+      if (request.status === 'rejected') {
+        return {
+          success: false,
+          error: {
+            code: ErrorCodes.INVALID_STATE,
+            message: 'Erasure request failed and requires admin reset before retry',
+          },
+        };
+      }
+
       // Verify deadline has passed (grace period expired)
       const now = new Date();
       const deadline = new Date(request.deadline);
@@ -716,10 +725,10 @@ export const GDPRService = {
         data: { deletedAt },
       };
     } catch (error) {
-      // Mark request as failed
+      // Mark request as failed (use schema-valid 'rejected' status)
       await db.query(
         `UPDATE gdpr_data_requests
-         SET status = 'FAILED',
+         SET status = 'rejected',
              error_message = $1,
              updated_at = NOW()
          WHERE id = $2`,

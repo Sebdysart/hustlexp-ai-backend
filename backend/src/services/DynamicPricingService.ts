@@ -200,7 +200,7 @@ export const DynamicPricingService = {
             surge: surgedPrice - basePriceCents,
             urgency: urgencyPremiumCents,
             worker_modifier: workerModifierCents,
-            total: finalPrice,
+            total: Math.max(finalPrice, 500), // matches final_price_cents floor
           },
         },
       };

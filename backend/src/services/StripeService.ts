@@ -301,8 +301,8 @@ export const StripeService = {
   ): Promise<ServiceResult<CreateTransferResult>> => {
     const { escrowId, workerId, workerStripeAccountId, amount, description } = params;
 
-    // Stripe stubbing for tests (Evil Test A)
-    if (process.env.HX_STRIPE_STUB === '1') {
+    // Stripe stubbing for tests (Evil Test A) — never active in production
+    if (process.env.HX_STRIPE_STUB === '1' && process.env.NODE_ENV !== 'production') {
       const crypto = await import('crypto');
       return {
         success: true,
@@ -364,8 +364,8 @@ export const StripeService = {
   ): Promise<ServiceResult<CreateRefundResult>> => {
     const { paymentIntentId, escrowId, amount, reason } = params;
 
-    // Stripe stubbing for tests (Evil Test A)
-    if (process.env.HX_STRIPE_STUB === '1') {
+    // Stripe stubbing for tests (Evil Test A) — never active in production
+    if (process.env.HX_STRIPE_STUB === '1' && process.env.NODE_ENV !== 'production') {
       const crypto = await import('crypto');
       return {
         success: true,

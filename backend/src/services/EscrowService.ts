@@ -771,7 +771,7 @@ export const EscrowService = {
         }
 
         // Allow FUNDED → REFUNDED normally; LOCKED_DISPUTE → REFUNDED only with adminOverride
-        const allowedStates = adminOverride ? `'FUNDED', 'LOCKED_DISPUTE'` : `'FUNDED'`;
+        const allowedStates = adminOverride ? ['FUNDED', 'LOCKED_DISPUTE'] : ['FUNDED'];
 
         const result = await query<Escrow>(
           `UPDATE escrows
@@ -780,10 +780,10 @@ export const EscrowService = {
                version = version + 1,
                updated_at = NOW()
            WHERE id = $1
-             AND state IN (${allowedStates})
+             AND state = ANY($3::text[])
              AND version = $2
            RETURNING *`,
-          [escrowId, escrowVersion]
+          [escrowId, escrowVersion, allowedStates]
         );
 
         if (result.rowCount === 0) {
