@@ -575,8 +575,8 @@ export const taskRouter = router({
       workerId: Schemas.uuid,
     }))
     .mutation(async ({ ctx, input }) => {
-      const taskResult = await db.query(
-        `SELECT id, state, poster_id FROM tasks WHERE id = $1`,
+      const taskResult = await db.query<{ id: string; state: string; poster_id: string; trust_tier_required: number | null }>(
+        `SELECT id, state, poster_id, trust_tier_required FROM tasks WHERE id = $1`,
         [input.taskId]
       );
       if (taskResult.rows.length === 0) {
@@ -590,6 +590,20 @@ export const taskRouter = router({
           code: 'PRECONDITION_FAILED',
           message: `Task must be POSTED to assign a worker, current: ${taskResult.rows[0].state}`,
         });
+      }
+
+      if (taskResult.rows[0].trust_tier_required != null) {
+        const workerTierResult = await db.query<{ trust_tier: number }>(
+          'SELECT trust_tier FROM users WHERE id = $1',
+          [input.workerId]
+        );
+        const workerTier = workerTierResult.rows[0]?.trust_tier ?? 1;
+        if (workerTier < taskResult.rows[0].trust_tier_required) {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message: `Worker trust tier ${workerTier} does not meet required tier ${taskResult.rows[0].trust_tier_required}`,
+          });
+        }
       }
 
       const appResult = await db.query(

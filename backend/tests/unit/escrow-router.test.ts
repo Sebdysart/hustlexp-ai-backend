@@ -902,6 +902,22 @@ describe('escrow.getHistory', () => {
 
       expect(result).toEqual([]);
     });
+
+    it('strips stripe_payment_intent_id from response (M4)', async () => {
+      const rows = [
+        makeEscrow({ id: 'esc-1', stripe_payment_intent_id: 'pi_secret_123' }),
+      ];
+      mockDb.query.mockResolvedValueOnce({
+        rows,
+        rowCount: rows.length,
+      } as any);
+
+      const caller = makeCaller(POSTER_ID, 'user');
+      const result = await caller.getHistory({ limit: 50 });
+
+      expect(result[0]).not.toHaveProperty('stripe_payment_intent_id');
+      expect(result[0]).toHaveProperty('id', 'esc-1');
+    });
   });
 
   describe('pagination', () => {

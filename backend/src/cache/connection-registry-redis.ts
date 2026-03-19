@@ -116,7 +116,13 @@ export async function unregisterConnection(
     return;
   }
   
-  const connection: ConnectionMetadata = JSON.parse(connData);
+  let connection: ConnectionMetadata;
+  try {
+    connection = JSON.parse(connData);
+  } catch (parseErr) {
+    registryLog.warn({ connectionId, err: parseErr instanceof Error ? parseErr.message : String(parseErr) }, 'Malformed connection data in Redis, skipping unregister');
+    return;
+  }
   
   const pipeline = redis.pipeline();
   
@@ -171,7 +177,13 @@ export async function updateHeartbeat(
     return;
   }
   
-  const connection: ConnectionMetadata = JSON.parse(connData);
+  let connection: ConnectionMetadata;
+  try {
+    connection = JSON.parse(connData);
+  } catch (parseErr) {
+    registryLog.warn({ connectionId, err: parseErr instanceof Error ? parseErr.message : String(parseErr) }, 'Malformed connection data in Redis, skipping heartbeat');
+    return;
+  }
   connection.lastHeartbeat = Date.now();
   
   const pipeline = redis.pipeline();
@@ -215,7 +227,13 @@ export async function getUserConnections(userId: string): Promise<string[]> {
 // ============================================================================
 export async function getConnection(connectionId: string): Promise<ConnectionMetadata | null> {
   const data = await redis.get<string>(KEYS.connection(connectionId));
-  return data ? JSON.parse(data) : null;
+  if (!data) return null;
+  try {
+    return JSON.parse(data);
+  } catch {
+    registryLog.warn({ connectionId }, 'Malformed connection data in Redis');
+    return null;
+  }
 }
 
 // ============================================================================
@@ -229,7 +247,11 @@ export async function getUserPresence(userId: string): Promise<{
   const data = await redis.get<string>(KEYS.userPresence(userId));
   
   if (data) {
-    return JSON.parse(data);
+    try {
+      return JSON.parse(data);
+    } catch {
+      registryLog.warn({ userId }, 'Malformed presence data in Redis');
+    }
   }
   
   return {
@@ -252,7 +274,12 @@ export async function subscribeToChannel(
     throw new Error('Connection not found');
   }
   
-  const connection: ConnectionMetadata = JSON.parse(connData);
+  let connection: ConnectionMetadata;
+  try {
+    connection = JSON.parse(connData);
+  } catch {
+    throw new Error('Malformed connection data');
+  }
   
   if (!connection.channels.includes(channel)) {
     connection.channels.push(channel);
@@ -280,7 +307,13 @@ export async function unsubscribeFromChannel(
     return;
   }
   
-  const connection: ConnectionMetadata = JSON.parse(connData);
+  let connection: ConnectionMetadata;
+  try {
+    connection = JSON.parse(connData);
+  } catch {
+    registryLog.warn({ connectionId, channel }, 'Malformed connection data in Redis, skipping unsubscribe');
+    return;
+  }
   connection.channels = connection.channels.filter((c) => c !== channel);
   
   await redis.setex(

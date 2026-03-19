@@ -171,6 +171,8 @@ export const StripeService = {
           platform_fee: platformFee.toString(),
         },
         description: description || `HustleXP Task ${taskId}`,
+      }, {
+        idempotencyKey: `pi_create_${taskId}_${posterId}_${amount}`,
       }));
 
       return {

@@ -386,12 +386,15 @@ async function getAuthUser(c: Context): Promise<User | null> {
   
   const token = authHeader.slice(7);
   try {
-    const decoded = await firebaseAuth.verifyIdToken(token);
-    const result = await db.query<User>(
-      'SELECT * FROM users WHERE firebase_uid = $1',
+    const decoded = await firebaseAuth.verifyIdToken(token, true);
+    const result = await db.query<User & { is_banned: boolean }>(
+      'SELECT *, is_banned FROM users WHERE firebase_uid = $1',
       [decoded.uid]
     );
-    return result.rows[0] || null;
+    const user = result.rows[0];
+    if (!user) return null;
+    if (user.is_banned) return null;
+    return user;
   } catch {
     return null;
   }

@@ -290,12 +290,13 @@ export const XPService = {
 
         const user = userResult.rows[0];
 
-        // Check if task is Live Mode (for 1.25× multiplier)
-        const taskResult = await query<{ mode: string }>(
-          'SELECT mode FROM tasks WHERE id = $1',
+        // Check if task is Live Mode (for 1.25× multiplier) and fetch surge_multiplier for ledger audit
+        const taskResult = await query<{ mode: string; surge_multiplier: number | null }>(
+          'SELECT mode, surge_multiplier FROM tasks WHERE id = $1',
           [taskId]
         );
         const isLiveMode = taskResult.rows[0]?.mode === 'LIVE';
+        const surgeMultiplier = taskResult.rows[0]?.surge_multiplier ?? 1.0;
 
         // SPEC FORMULA: effective_xp = base_xp × streak_multiplier × trust_multiplier × live_mode_multiplier
         const streakMultiplier = getStreakMultiplier(user.current_streak);
@@ -309,22 +310,22 @@ export const XPService = {
         // Store effectiveXP for instrumentation (outside transaction)
         effectiveXPAwarded = effectiveXP;
 
-        // Insert XP ledger entry
+        // Insert XP ledger entry with surge_multiplier for audit trail
         // INV-1: Trigger will check escrow is RELEASED
         // INV-5: UNIQUE constraint will prevent duplicates
         const ledgerResult = await query<XPLedgerEntry>(
           `INSERT INTO xp_ledger (
             user_id, task_id, escrow_id,
-            base_xp, streak_multiplier, trust_multiplier, live_mode_multiplier, effective_xp,
+            base_xp, streak_multiplier, trust_multiplier, live_mode_multiplier, surge_multiplier, effective_xp,
             reason,
             user_xp_before, user_xp_after,
             user_level_before, user_level_after,
             user_streak_at_award
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
           RETURNING *`,
           [
             userId, taskId, escrowId,
-            baseXP, streakMultiplier, trustMultiplier, liveModeMultiplier, effectiveXP,
+            baseXP, streakMultiplier, trustMultiplier, liveModeMultiplier, surgeMultiplier, effectiveXP,
             'task_completion',
             user.xp_total, newXPTotal,
             user.current_level, newLevel,
@@ -463,7 +464,7 @@ export const XPService = {
   },
 
   /**
-   * Check daily XP cap for anti-farming
+   * Check daily XP cap for anti-farming (read-only, no side effects)
    */
   checkDailyXPCap: async (userId: string): Promise<{ allowed: boolean; earned: number; cap: number }> => {
     const redis = getXPRedis();
@@ -480,7 +481,9 @@ export const XPService = {
   },
 
   /**
-   * Track daily XP earned
+   * Track daily XP earned — MUST only be called AFTER the DB transaction
+   * has committed successfully. Calling before commit risks double-counting
+   * on serializable retries.
    */
   trackDailyXP: async (userId: string, xpAmount: number): Promise<void> => {
     const redis = getXPRedis();
@@ -489,8 +492,11 @@ export const XPService = {
     const dateKey = new Date().toISOString().split('T')[0];
     const key = `xp:daily:${userId}:${dateKey}`;
     try {
-      await redis.incrby(key, xpAmount);
+      const newTotal = await redis.incrby(key, xpAmount);
       await redis.expire(key, 86400);
+      if (newTotal > DAILY_XP_CAP) {
+        log.warn({ userId, newTotal, cap: DAILY_XP_CAP }, 'Daily XP cap exceeded after commit — cap enforcement is advisory');
+      }
     } catch {
       // Non-fatal
     }

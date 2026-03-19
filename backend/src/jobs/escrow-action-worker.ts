@@ -89,7 +89,7 @@ export async function processEscrowActionJob(job: Job<EscrowActionJobData>): Pro
         break;
 
       case 'escrow.refund_requested':
-        await handleRefundRequest(escrow, dispute_id, reason);
+        await handleRefundRequest(escrow, dispute_id, reason, refund_amount);
         break;
 
       case 'escrow.partial_refund_requested':
@@ -205,7 +205,8 @@ async function handleReleaseRequest(
 async function handleRefundRequest(
   escrow: { id: string; version: number; stripe_payment_intent_id: string | null; stripe_refund_id: string | null },
   _disputeId: string | undefined,
-  _reason: string
+  _reason: string,
+  refundAmount?: number
 ): Promise<void> {
   // Idempotency: If refund_id already exists, skip
   if (escrow.stripe_refund_id) {
@@ -217,23 +218,25 @@ async function handleRefundRequest(
     throw new Error(`Escrow ${escrow.id} has no stripe_payment_intent_id`);
   }
 
-  // Get escrow amount
-  const escrowAmountResult = await db.query<{ amount: number }>(
-    'SELECT amount FROM escrows WHERE id = $1',
-    [escrow.id]
-  );
+  // Use payload refund_amount if provided; otherwise fall back to full escrow amount
+  let amountToRefund = refundAmount;
+  if (amountToRefund == null) {
+    const escrowAmountResult = await db.query<{ amount: number }>(
+      'SELECT amount FROM escrows WHERE id = $1',
+      [escrow.id]
+    );
 
-  if (escrowAmountResult.rows.length === 0) {
-    throw new Error(`Escrow ${escrow.id} not found`);
+    if (escrowAmountResult.rows.length === 0) {
+      throw new Error(`Escrow ${escrow.id} not found`);
+    }
+    amountToRefund = escrowAmountResult.rows[0].amount;
   }
-
-  const escrowAmount = escrowAmountResult.rows[0].amount;
 
   // Create Stripe refund
   const refundResult = await StripeService.createRefund({
     paymentIntentId: escrow.stripe_payment_intent_id,
     escrowId: escrow.id,
-    amount: escrowAmount, // Full refund
+    amount: amountToRefund,
     reason: 'requested_by_customer',
   });
 

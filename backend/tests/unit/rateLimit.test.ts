@@ -209,9 +209,9 @@ describe('rateLimitMiddleware', () => {
 
     await middleware(ctx as any, next);
 
-    // Should use anon:hash format since no UID was extractable
+    // M2 fix: garbage token with no valid UID falls back to IP rate limiting
     expect(mockCheckRateLimit).toHaveBeenCalledWith(
-      expect.stringMatching(/^anon:[a-f0-9]{32}$/),
+      expect.stringMatching(/^ip:/),
       'general',
       120,
       60,

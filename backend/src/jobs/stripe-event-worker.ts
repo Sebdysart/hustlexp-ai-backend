@@ -30,6 +30,7 @@ const log = workerLogger.child({ worker: 'stripe-event' });
 interface StripeEventJobData {
   stripeEventId: string;
   type: string;
+  _sig?: string;
 }
 
 interface StripeEventEnvelope {
@@ -55,7 +56,12 @@ interface StripeEventEnvelope {
  * - Not application Date.now()
  */
 export async function processStripeEventJob(job: Job<StripeEventJobData>): Promise<void> {
-  const { stripeEventId } = job.data;
+  const { stripeEventId, _sig } = job.data;
+
+  if (!_sig) {
+    log.error({ stripeEventId }, 'Stripe event job missing _sig — rejecting to prevent injection');
+    throw new Error('Stripe event job missing required _sig field');
+  }
 
   // Atomic claim (prevents double processing - S-1)
   const claim = await db.query<{

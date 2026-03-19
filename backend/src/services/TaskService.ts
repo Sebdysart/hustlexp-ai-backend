@@ -962,42 +962,48 @@ export const TaskService = {
 
   /**
    * Cancel task: OPEN/ACCEPTED → CANCELLED
+   * Late cancels (after acceptance window) incur a penalty flag.
    */
   cancel: async (taskId: string): Promise<ServiceResult<Task>> => {
     try {
+      const taskCheck = await db.query<{ state: string; accepted_at: Date | null }>(
+        'SELECT state, accepted_at FROM tasks WHERE id = $1',
+        [taskId]
+      );
+
+      if (taskCheck.rows.length === 0) {
+        return { success: false, error: { code: ErrorCodes.NOT_FOUND, message: `Task ${taskId} not found` } };
+      }
+
+      const current = taskCheck.rows[0];
+      if (isTerminalState(current.state as TaskState)) {
+        return { success: false, error: { code: ErrorCodes.TASK_TERMINAL, message: `Task ${taskId} is in terminal state ${current.state}` } };
+      }
+      if (current.state !== 'OPEN' && current.state !== 'ACCEPTED') {
+        return { success: false, error: { code: ErrorCodes.INVALID_STATE, message: `Cannot cancel task: current state is ${current.state}` } };
+      }
+
+      let isLateCancelPenalty = false;
+      if (current.state === 'ACCEPTED' && current.accepted_at) {
+        const hoursSinceAccept = (Date.now() - new Date(current.accepted_at).getTime()) / (1000 * 60 * 60);
+        if (hoursSinceAccept > 0) {
+          isLateCancelPenalty = true;
+        }
+      }
+
       const result = await db.query<Task>(
         `UPDATE tasks 
          SET state = 'CANCELLED',
-             cancelled_at = NOW()
+             cancelled_at = NOW(),
+             late_cancel_penalty = $2
          WHERE id = $1 
            AND state IN ('OPEN', 'ACCEPTED')
          RETURNING *`,
-        [taskId]
+        [taskId, isLateCancelPenalty]
       );
       
       if (result.rowCount === 0) {
-        const existing = await TaskService.getById(taskId);
-        if (!existing.success) {
-          return existing;
-        }
-        
-        if (isTerminalState(existing.data.state)) {
-          return {
-            success: false,
-            error: {
-              code: ErrorCodes.TASK_TERMINAL,
-              message: `Task ${taskId} is in terminal state ${existing.data.state}`,
-            },
-          };
-        }
-        
-        return {
-          success: false,
-          error: {
-            code: ErrorCodes.INVALID_STATE,
-            message: `Cannot cancel task: current state is ${existing.data.state}`,
-          },
-        };
+        return { success: false, error: { code: ErrorCodes.INVALID_STATE, message: `Cannot cancel task: state changed concurrently` } };
       }
       
       return { success: true, data: result.rows[0] };

@@ -890,7 +890,9 @@ describe('TaskService.openDispute', () => {
 describe('TaskService.cancel', () => {
   it('cancels an OPEN task successfully', async () => {
     const cancelled = makeTask({ state: 'CANCELLED' });
-    mockQuery.mockResolvedValueOnce({ rows: [cancelled], rowCount: 1 } as never);
+    mockQuery
+      .mockResolvedValueOnce({ rows: [{ state: 'OPEN', accepted_at: null }], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [cancelled], rowCount: 1 } as never);
 
     const result = await TaskService.cancel('task-1');
 
@@ -900,7 +902,9 @@ describe('TaskService.cancel', () => {
 
   it('cancels an ACCEPTED task successfully', async () => {
     const cancelled = makeTask({ state: 'CANCELLED' });
-    mockQuery.mockResolvedValueOnce({ rows: [cancelled], rowCount: 1 } as never);
+    mockQuery
+      .mockResolvedValueOnce({ rows: [{ state: 'ACCEPTED', accepted_at: new Date() }], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [cancelled], rowCount: 1 } as never);
 
     const result = await TaskService.cancel('task-1');
 
@@ -909,24 +913,45 @@ describe('TaskService.cancel', () => {
 
   it('returns TASK_TERMINAL when task is already in a terminal state', async () => {
     mockQuery
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
-      .mockResolvedValueOnce({ rows: [makeTask({ state: 'COMPLETED' })], rowCount: 1 } as never);
+      .mockResolvedValueOnce({ rows: [{ state: 'COMPLETED', accepted_at: null }], rowCount: 1 } as never);
 
     const result = await TaskService.cancel('task-1');
 
     expect(result.success).toBe(false);
-    expect(result.error?.code).toBe('HX001'); // ErrorCodes.TASK_TERMINAL
+    expect(result.error?.code).toBe('HX001');
   });
 
   it('returns INVALID_STATE when task is in PROOF_SUBMITTED (cannot cancel)', async () => {
     mockQuery
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
-      .mockResolvedValueOnce({ rows: [makeTask({ state: 'PROOF_SUBMITTED' })], rowCount: 1 } as never);
+      .mockResolvedValueOnce({ rows: [{ state: 'PROOF_SUBMITTED', accepted_at: null }], rowCount: 1 } as never);
 
     const result = await TaskService.cancel('task-1');
 
     expect(result.success).toBe(false);
     expect(result.error?.code).toBe('INVALID_STATE');
+  });
+
+  it('returns NOT_FOUND when task does not exist', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+
+    const result = await TaskService.cancel('task-nonexistent');
+
+    expect(result.success).toBe(false);
+    expect(result.error?.code).toBe('NOT_FOUND');
+  });
+
+  it('sets late_cancel_penalty=true for ACCEPTED tasks with elapsed time', async () => {
+    const pastDate = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    const cancelled = makeTask({ state: 'CANCELLED' });
+    mockQuery
+      .mockResolvedValueOnce({ rows: [{ state: 'ACCEPTED', accepted_at: pastDate }], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [cancelled], rowCount: 1 } as never);
+
+    const result = await TaskService.cancel('task-1');
+
+    expect(result.success).toBe(true);
+    const updateCall = mockQuery.mock.calls[1];
+    expect(updateCall[1]).toContain(true);
   });
 });
 

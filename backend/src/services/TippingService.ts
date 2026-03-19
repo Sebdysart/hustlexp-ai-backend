@@ -13,11 +13,10 @@
  * - Worker receives notification of tip
  */
 
-import Stripe from 'stripe';
-import { config } from '../config';
 import { db } from '../db';
 import type { ServiceResult } from '../types';
 import { logger } from '../logger';
+import { StripeService } from './StripeService';
 
 const log = logger.child({ service: 'TippingService' });
 
@@ -80,14 +79,14 @@ export const TippingService = {
         return { success: false, error: { code: 'INVALID_AMOUNT', message: `Minimum tip is $${MIN_TIP_CENTS / 100}` } };
       }
 
-      const maxTip = Math.floor(task.price * MAX_TIP_PERCENT);
+      const maxTip = task.price != null ? Math.floor(task.price * MAX_TIP_PERCENT) : Infinity;
       if (amountCents > maxTip) {
         return { success: false, error: { code: 'INVALID_AMOUNT', message: `Maximum tip is $${(maxTip / 100).toFixed(2)} (50% of task price)` } };
       }
 
-      // Check for existing tip
+      // TOCTOU-safe: Lock existing tip row inside transaction to prevent concurrent creates
       const existingTip = await db.query(
-        'SELECT id FROM tips WHERE task_id = $1 AND poster_id = $2',
+        'SELECT id FROM tips WHERE task_id = $1 AND tipper_id = $2 FOR UPDATE',
         [taskId, posterId]
       );
 
@@ -95,51 +94,35 @@ export const TippingService = {
         return { success: false, error: { code: 'DUPLICATE', message: 'Already tipped for this task' } };
       }
 
-      // Create Stripe PaymentIntent (no platform fee on tips — 100% to worker)
-      if (!config.stripe.secretKey || config.stripe.secretKey.includes('placeholder')) {
+      // Stripe configuration check via singleton
+      if (!StripeService.isConfigured()) {
         return { success: false, error: { code: 'STRIPE_NOT_CONFIGURED', message: 'Stripe not configured' } };
       }
 
-      const stripe = new Stripe(config.stripe.secretKey, { apiVersion: '2025-11-17.clover' });
-
-      // Get worker's Stripe account
-      const workerResult = await db.query<{ stripe_account_id: string }>(
-        'SELECT stripe_account_id FROM users WHERE id = $1',
-        [task.worker_id]
-      );
-
-      const workerStripeId = workerResult.rows[0]?.stripe_account_id;
-
-      const paymentIntent = await stripe.paymentIntents.create({
+      // Create tip PI via StripeService singleton (circuit-breaker protected)
+      const piResult = await StripeService.createPaymentIntent({
+        taskId,
+        posterId,
         amount: amountCents,
-        currency: 'usd',
-        automatic_payment_methods: { enabled: true },
-        metadata: {
-          type: 'tip',
-          task_id: taskId,
-          poster_id: posterId,
-          worker_id: task.worker_id,
-        },
-        ...(workerStripeId ? {
-          transfer_data: {
-            destination: workerStripeId,
-          },
-        } : {}),
         description: `HustleXP Tip for Task ${taskId}`,
       });
+
+      if (!piResult.success) {
+        return { success: false, error: { code: 'TIP_CREATION_FAILED', message: piResult.error.message } };
+      }
 
       // Insert tip record
       const tipResult = await db.query<Tip>(
         `INSERT INTO tips (task_id, poster_id, worker_id, amount_cents, stripe_payment_intent_id, status)
          VALUES ($1, $2, $3, $4, $5, 'pending')
          RETURNING *`,
-        [taskId, posterId, task.worker_id, amountCents, paymentIntent.id]
+        [taskId, posterId, task.worker_id, amountCents, piResult.data.paymentIntentId]
       );
 
       return {
         success: true,
         data: {
-          clientSecret: paymentIntent.client_secret!,
+          clientSecret: piResult.data.clientSecret,
           tipId: tipResult.rows[0].id,
         }
       };
@@ -160,16 +143,18 @@ export const TippingService = {
    */
   confirmTip: async (tipId: string, stripePaymentIntentId: string): Promise<ServiceResult<Tip>> => {
     try {
-      // Verify payment succeeded
-      if (!config.stripe.secretKey || config.stripe.secretKey.includes('placeholder')) {
+      // Verify payment succeeded via StripeService singleton
+      if (!StripeService.isConfigured()) {
         return { success: false, error: { code: 'STRIPE_NOT_CONFIGURED', message: 'Stripe not configured' } };
       }
 
-      const stripe = new Stripe(config.stripe.secretKey, { apiVersion: '2025-11-17.clover' });
-      const payment = await stripe.paymentIntents.retrieve(stripePaymentIntentId);
+      const piVerify = await StripeService.verifyPaymentIntent(stripePaymentIntentId);
+      if (!piVerify.success) {
+        return { success: false, error: { code: 'STRIPE_ERROR', message: piVerify.error.message } };
+      }
 
-      if (payment.status !== 'succeeded') {
-        return { success: false, error: { code: 'PAYMENT_NOT_SUCCEEDED', message: `Payment status: ${payment.status}` } };
+      if (piVerify.data.status !== 'succeeded') {
+        return { success: false, error: { code: 'PAYMENT_NOT_SUCCEEDED', message: `Payment status: ${piVerify.data.status}` } };
       }
 
       const result = await db.query<Tip>(

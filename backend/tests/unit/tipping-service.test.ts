@@ -22,19 +22,17 @@ vi.mock('../../src/config', () => ({
   },
 }));
 
-const mockPaymentIntentsCreate = vi.fn();
-const mockPaymentIntentsRetrieve = vi.fn();
+const mockCreatePaymentIntent = vi.fn();
+const mockVerifyPaymentIntent = vi.fn();
+const mockIsConfigured = vi.fn().mockReturnValue(true);
 
-vi.mock('stripe', () => {
-  return {
-    default: class MockStripe {
-      paymentIntents = {
-        create: mockPaymentIntentsCreate,
-        retrieve: mockPaymentIntentsRetrieve,
-      };
-    },
-  };
-});
+vi.mock('../../src/services/StripeService', () => ({
+  StripeService: {
+    isConfigured: (...args: unknown[]) => mockIsConfigured(...args),
+    createPaymentIntent: (...args: unknown[]) => mockCreatePaymentIntent(...args),
+    verifyPaymentIntent: (...args: unknown[]) => mockVerifyPaymentIntent(...args),
+  },
+}));
 
 import { db } from '../../src/db';
 import { TippingService } from '../../src/services/TippingService';
@@ -43,8 +41,9 @@ const mockDb = vi.mocked(db);
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockPaymentIntentsCreate.mockReset();
-  mockPaymentIntentsRetrieve.mockReset();
+  mockCreatePaymentIntent.mockReset();
+  mockVerifyPaymentIntent.mockReset();
+  mockIsConfigured.mockReturnValue(true);
 });
 
 describe('TippingService', () => {
@@ -153,16 +152,19 @@ describe('TippingService', () => {
           rows: [{ state: 'completed', poster_id: 'poster-1', worker_id: 'worker-1', price: 5000 }],
           rowCount: 1,
         } as never) // Task check
-        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // No existing tip
-        .mockResolvedValueOnce({ rows: [{ stripe_account_id: 'acct_worker' }], rowCount: 1 } as never) // Worker account
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // No existing tip (FOR UPDATE)
         .mockResolvedValueOnce({
           rows: [{ id: 'tip-1', task_id: 'task-1', poster_id: 'poster-1', worker_id: 'worker-1', amount_cents: 500 }],
           rowCount: 1,
         } as never); // Tip insert
 
-      mockPaymentIntentsCreate.mockResolvedValueOnce({
-        id: 'pi_test_123',
-        client_secret: 'pi_test_123_secret_xxx',
+      mockCreatePaymentIntent.mockResolvedValueOnce({
+        success: true,
+        data: {
+          paymentIntentId: 'pi_test_123',
+          clientSecret: 'pi_test_123_secret_xxx',
+          amount: 500,
+        },
       });
 
       const result = await TippingService.createTip({
@@ -177,6 +179,32 @@ describe('TippingService', () => {
         expect(result.data.tipId).toBe('tip-1');
       }
     });
+
+    it('allows tipping when task.price is null (H2: cap becomes Infinity)', async () => {
+      mockDb.query
+        .mockResolvedValueOnce({
+          rows: [{ state: 'completed', poster_id: 'poster-1', worker_id: 'worker-1', price: null }],
+          rowCount: 1,
+        } as never)
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+        .mockResolvedValueOnce({
+          rows: [{ id: 'tip-2', task_id: 'task-1', poster_id: 'poster-1', worker_id: 'worker-1', amount_cents: 2000 }],
+          rowCount: 1,
+        } as never);
+
+      mockCreatePaymentIntent.mockResolvedValueOnce({
+        success: true,
+        data: { paymentIntentId: 'pi_null', clientSecret: 'cs_null', amount: 2000 },
+      });
+
+      const result = await TippingService.createTip({
+        taskId: 'task-1',
+        posterId: 'poster-1',
+        amountCents: 2000,
+      });
+
+      expect(result.success).toBe(true);
+    });
   });
 
   // --------------------------------------------------------------------------
@@ -184,7 +212,10 @@ describe('TippingService', () => {
   // --------------------------------------------------------------------------
   describe('confirmTip', () => {
     it('confirms tip when payment succeeded', async () => {
-      mockPaymentIntentsRetrieve.mockResolvedValueOnce({ status: 'succeeded' });
+      mockVerifyPaymentIntent.mockResolvedValueOnce({
+        success: true,
+        data: { status: 'succeeded', amountCents: 500, metadata: {} },
+      });
 
       const tip = {
         id: 'tip-1',
@@ -208,7 +239,10 @@ describe('TippingService', () => {
     });
 
     it('returns error when payment not succeeded', async () => {
-      mockPaymentIntentsRetrieve.mockResolvedValueOnce({ status: 'requires_payment_method' });
+      mockVerifyPaymentIntent.mockResolvedValueOnce({
+        success: true,
+        data: { status: 'requires_payment_method', amountCents: 500, metadata: {} },
+      });
 
       const result = await TippingService.confirmTip('tip-1', 'pi_123');
 
@@ -217,7 +251,10 @@ describe('TippingService', () => {
     });
 
     it('returns NOT_FOUND when tip record not found', async () => {
-      mockPaymentIntentsRetrieve.mockResolvedValueOnce({ status: 'succeeded' });
+      mockVerifyPaymentIntent.mockResolvedValueOnce({
+        success: true,
+        data: { status: 'succeeded', amountCents: 500, metadata: {} },
+      });
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
 
       const result = await TippingService.confirmTip('tip-1', 'pi_123');

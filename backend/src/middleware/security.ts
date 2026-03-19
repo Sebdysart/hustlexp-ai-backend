@@ -103,12 +103,13 @@ export function rateLimitMiddleware(category: RateLimitCategory) {
 
     if (authHeader?.startsWith('Bearer ')) {
       const token = authHeader.slice(7);
-      // Decode (not verify) Firebase UID from JWT payload for stable rate-limit identity.
-      // Token refresh no longer resets the bucket — same user = same bucket.
       const uid = extractFirebaseUid(token);
-      identifier = uid ? `user:${uid}` : `anon:${hashIdentifier(token)}`;
+      if (uid) {
+        identifier = `user:${uid}`;
+      } else {
+        identifier = `ip:${c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown'}`;
+      }
     } else {
-      // Use forwarded IP or connecting IP
       identifier = `ip:${c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown'}`;
     }
 
@@ -197,13 +198,18 @@ const AI_RATE_LIMITS = {
 
 /**
  * AI per-minute rate limiter per user
- * Prevents cost abuse while allowing legitimate usage
+ * Prevents cost abuse while allowing legitimate usage.
+ * Extracts user identity from the JWT Bearer token (same source as other auth middlewares).
  */
-export async function aiRateLimitMiddleware(provider: keyof typeof AI_RATE_LIMITS) {
+export function aiRateLimitMiddleware(provider: keyof typeof AI_RATE_LIMITS) {
   const limits = AI_RATE_LIMITS[provider];
   
   return async (c: Context, next: Next) => {
-    const userId = c.get('userId');
+    const authHeader = c.req.header('authorization');
+    let userId: string | null = null;
+    if (authHeader?.startsWith('Bearer ')) {
+      userId = extractFirebaseUid(authHeader.slice(7));
+    }
     if (!userId) {
       return c.json({ error: 'Authentication required' }, 401);
     }
@@ -256,7 +262,7 @@ export function sanitizeInput(input: string, maxLength = 10000): string {
  * SHA-256 hash for rate-limit identifiers.
  * Replaces weak 32-bit integer hash with cryptographic hash.
  */
-function hashIdentifier(str: string): string {
+function _hashIdentifier(str: string): string {
   return createHash('sha256')
     .update(str)
     .digest('hex')

@@ -269,7 +269,10 @@ export const escrowRouter = router({
         [ctx.user.id, input?.limit || 50]
       );
 
-      return result.rows;
+      return result.rows.map((row: Record<string, unknown>) => {
+        const { stripe_payment_intent_id: _stripped, ...safe } = row;
+        return safe;
+      });
     }),
 
   // --------------------------------------------------------------------------
