@@ -208,21 +208,23 @@ export async function updateHeartbeat(
   }
   connection.lastHeartbeat = Date.now();
   
+  const connectionCount = await redis.scard(KEYS.userConnections(connection.userId));
+
   const pipeline = redis.pipeline();
-  
+
   // Update connection TTL
   pipeline.setex(
     KEYS.connection(connectionId),
     CONNECTION_TTL,
     JSON.stringify(connection)
   );
-  
+
   // Update user connection set TTL
   pipeline.expire(KEYS.userConnections(connection.userId), CONNECTION_TTL);
-  
+
   // Update instance connection set TTL
   pipeline.expire(KEYS.instanceConnections(instanceId), CONNECTION_TTL);
-  
+
   // Update user presence
   pipeline.setex(
     KEYS.userPresence(connection.userId),
@@ -230,7 +232,7 @@ export async function updateHeartbeat(
     JSON.stringify({
       online: true,
       lastSeen: Date.now(),
-      connections: await redis.scard(KEYS.userConnections(connection.userId)),
+      connections: connectionCount,
     })
   );
   

@@ -599,11 +599,6 @@ async function handlePartialRefundRequest(
         throw new Error(`Worker ${task.worker_id} has no stripe_connect_id`);
       }
 
-      // Failure injection for testing (Evil Test A)
-      if (process.env.HX_FAIL_STRIPE_TRANSFER === '1') {
-        throw new Error('Transfer creation failed (injected failure for testing)');
-      }
-
       // LL3: Apply the platform fee to the release amount before transferring
       // to the worker. The non-dispute release path (handleReleaseRequest) already
       // deducts the fee — this path previously passed the raw releaseAmount,
