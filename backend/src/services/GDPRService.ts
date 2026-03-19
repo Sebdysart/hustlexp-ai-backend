@@ -595,6 +595,24 @@ export const GDPRService = {
           },
         };
       }
+      if (request.status === 'completed') {
+        return {
+          success: false,
+          error: {
+            code: ErrorCodes.INVALID_STATE,
+            message: 'Erasure request already completed',
+          },
+        };
+      }
+      if (request.status === 'processing') {
+        return {
+          success: false,
+          error: {
+            code: ErrorCodes.INVALID_STATE,
+            message: 'Erasure request is already being processed',
+          },
+        };
+      }
       
       // Verify deadline has passed (grace period expired)
       const now = new Date();

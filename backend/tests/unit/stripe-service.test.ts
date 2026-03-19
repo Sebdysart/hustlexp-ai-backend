@@ -134,8 +134,8 @@ describe('StripeService', () => {
   // -------------------------------------------------------------------------
   describe('processWebhookEvent', () => {
     it('skips already-processed events', async () => {
-      // isEventProcessed returns true
-      mockDb.query.mockResolvedValueOnce({ rows: [{ id: '1' }], rowCount: 1 } as never);
+      // markEventProcessedAtomic → INSERT ON CONFLICT DO NOTHING → 0 rows (already exists)
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
 
       const handler = vi.fn();
       const result = await StripeService.processWebhookEvent('evt_123', 'payment_intent.succeeded', 'pi_123', handler);
@@ -145,9 +145,7 @@ describe('StripeService', () => {
     });
 
     it('processes new events and marks as processed', async () => {
-      // isEventProcessed returns false
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
-      // markEventProcessed
+      // markEventProcessedAtomic → INSERT succeeds → rowCount: 1 (new event, we claimed it)
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
 
       const handler = vi.fn().mockResolvedValue(undefined);
@@ -158,7 +156,8 @@ describe('StripeService', () => {
     });
 
     it('returns error when handler throws', async () => {
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+      // markEventProcessedAtomic → INSERT succeeds → rowCount: 1 (we claimed it)
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
 
       const handler = vi.fn().mockRejectedValue(new Error('handler boom'));
       const result = await StripeService.processWebhookEvent('evt_err', 'payment_intent.succeeded', 'pi_123', handler);

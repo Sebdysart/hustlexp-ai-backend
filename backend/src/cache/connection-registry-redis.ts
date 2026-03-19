@@ -156,8 +156,9 @@ export async function unregisterConnection(
   pipeline.scard(KEYS.userConnections(connection.userId));
   
   const results = await pipeline.exec();
-  const remainingConnections = results?.[3] as number;
-  
+  const scardResult = results?.[3];
+  const remainingConnections = (scardResult != null && typeof scardResult === 'number') ? scardResult : 0;
+
   // Update user presence if no more connections
   if (remainingConnections === 0) {
     await redis.setex(

@@ -134,8 +134,8 @@ const FinancialJobPayloadSchema = z.object({
   task_id: z.string().uuid(),
   dispute_id: z.string().uuid().optional(),
   reason: z.string().min(1),
-  refund_amount: z.number().nonnegative().optional(),
-  release_amount: z.number().nonnegative().optional(),
+  refund_amount: z.number().int().nonnegative().optional(),
+  release_amount: z.number().int().nonnegative().optional(),
   _sig: z.string().length(64), // SHA256 hex = 64 chars
 });
 
@@ -474,7 +474,7 @@ async function handlePartialRefundRequest(
     throw new Error('SPLIT amounts must be non-negative');
   }
 
-  if (refundAmount + releaseAmount !== escrow.amount) {
+  if (Math.round(refundAmount) + Math.round(releaseAmount) !== escrow.amount) {
     throw new Error(`SPLIT amounts (${refundAmount} + ${releaseAmount} = ${refundAmount + releaseAmount}) must sum to escrow amount (${escrow.amount})`);
   }
 

@@ -268,6 +268,24 @@ export const EscrowService = {
           } as ServiceResult<Escrow>;
         }
 
+        // TOCTOU FIX: Check that this PI is not already linked to a *different* escrow.
+        // This query runs inside the transaction after acquiring the FOR UPDATE row lock,
+        // so two concurrent fund() calls for different escrows with the same PI cannot
+        // both pass this check before either commits.
+        const piConflictResult = await query<{ id: string }>(
+          `SELECT id FROM escrows WHERE stripe_payment_intent_id = $1 AND id != $2`,
+          [stripePaymentIntentId, escrowId]
+        );
+        if (piConflictResult.rows.length > 0) {
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.INVALID_STATE,
+              message: `Payment intent ${stripePaymentIntentId} is already linked to a different escrow`,
+            },
+          } as ServiceResult<Escrow>;
+        }
+
         const { state, version } = lockResult.rows[0];
 
         if (state !== 'PENDING') {

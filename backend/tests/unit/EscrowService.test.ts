@@ -75,8 +75,10 @@ describe('EscrowService', () => {
     it('should fund PENDING escrow', async () => {
       // fund() is now wrapped in db.transaction():
       //   1st query: SELECT state, version FOR UPDATE → lock row
-      //   2nd query: UPDATE escrows ... RETURNING *   → funded row
+      //   2nd query: cross-escrow PI dedup check → no conflict
+      //   3rd query: UPDATE escrows ... RETURNING *   → funded row
       (db.query as any).mockResolvedValueOnce({ rows: [{ state: 'PENDING', version: 0 }], rowCount: 1 });
+      (db.query as any).mockResolvedValueOnce({ rows: [], rowCount: 0 });
       (db.query as any).mockResolvedValueOnce({ rows: [{ id: 'e1', state: 'FUNDED' }], rowCount: 1 });
       const result = await EscrowService.fund({ escrowId: 'e1', stripePaymentIntentId: 'pi_123' });
       expect(result.success).toBe(true);

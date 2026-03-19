@@ -390,7 +390,7 @@ export const TrustTierService = {
       // trust_ledger requires old_tier >= 1, but we might have UNVERIFIED (0) or BANNED (9)
       // Only log if both tiers are in valid range (1-4)
       if (currentTier >= 1 && currentTier <= 4 && targetTier >= 1 && targetTier <= 4) {
-        const idempotencyKey = `trust_promotion:${userId}:${targetTier}:${Date.now()}`;
+        const idempotencyKey = `trust_promotion:${userId}:${targetTier}`;
         await db.query(
           `INSERT INTO trust_ledger (user_id, old_tier, new_tier, reason, changed_by, idempotency_key, event_source)
            VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -454,13 +454,20 @@ export const TrustTierService = {
       return; // Already banned
     }
 
-    // Apply ban in transaction
-    await db.query(
-      `UPDATE users 
+    // Apply ban with CAS guard: only update if trust_tier != BANNED to prevent
+    // concurrent ban calls from double-emitting outbox events.
+    const banResult = await db.query(
+      `UPDATE users
        SET trust_tier = $1, updated_at = NOW()
-       WHERE id = $2`,
+       WHERE id = $2 AND trust_tier != $1`,
       [TrustTier.BANNED, userId]
     );
+
+    if (banResult.rowCount === 0) {
+      // Another concurrent call already applied the ban — return early without
+      // touching outbox or tasks to prevent duplicate events.
+      return;
+    }
 
     // Emit escrow refund outbox events for any funded escrows on active tasks
     // before cancelling them, so escrows are not stranded on ban.

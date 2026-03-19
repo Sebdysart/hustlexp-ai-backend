@@ -439,9 +439,56 @@ export const RatingService = {
       }
       
       // RATE-5: One rating per pair per task (DB UNIQUE constraint will enforce)
-      // Check if rating already exists
-      const existingResult = await RatingService.hasRated(taskId, raterId, rateeId);
-      if (existingResult.success && existingResult.data) {
+      // Wrap the duplicate check, existingRatingsCount read, and INSERT in a
+      // single transaction with an advisory lock. This prevents two concurrent
+      // first-time rating requests from both passing the duplicate check and
+      // both computing is_blind from a stale count.
+      const { insertedRating, updatedRatingsCount } = await db.transaction(async (txQuery) => {
+        // Advisory lock serializes concurrent ratings for the same
+        // (task, rater, ratee) triple. Released automatically at tx end.
+        await txQuery(
+          `SELECT pg_advisory_xact_lock(hashtext($1))`,
+          [`rating:${taskId}:${raterId}:${rateeId}`]
+        );
+
+        // Re-check for duplicate inside the transaction
+        const dupCheck = await txQuery<{ id: string }>(
+          `SELECT id FROM task_ratings WHERE task_id = $1 AND rater_id = $2 AND ratee_id = $3`,
+          [taskId, raterId, rateeId]
+        );
+        if (dupCheck.rows.length > 0) {
+          return { insertedRating: null, updatedRatingsCount: 0 };
+        }
+
+        // Re-read existingRatingsCount inside the transaction so it is
+        // consistent with the lock — prevents is_blind corruption under concurrency.
+        const bothRatingsResult = await txQuery<{ count: string }>(
+          `SELECT COUNT(*) as count FROM task_ratings
+           WHERE task_id = $1 AND (rater_id = $2 OR rater_id = $3)`,
+          [taskId, task.poster_id, task.worker_id]
+        );
+
+        const existingRatingsCount = parseInt(bothRatingsResult.rows[0]?.count || '0', 10);
+        const isBlind = existingRatingsCount === 0; // Blind until both parties rate
+        const isPublic = existingRatingsCount >= 1; // Public after at least one rating
+
+        // Create rating
+        const ratingResult = await txQuery<TaskRating>(
+          `INSERT INTO task_ratings (
+            task_id, rater_id, ratee_id, stars, comment, tags, is_public, is_blind, is_auto_rated
+          )
+          VALUES ($1, $2, $3, $4, $5, $6::TEXT[], $7, $8, false)
+          RETURNING *`,
+          [taskId, raterId, rateeId, stars, comment || null, tags || [], isPublic, isBlind]
+        );
+
+        return {
+          insertedRating: ratingResult.rows[0],
+          updatedRatingsCount: existingRatingsCount + 1,
+        };
+      });
+
+      if (!insertedRating) {
         return {
           success: false,
           error: {
@@ -450,30 +497,10 @@ export const RatingService = {
           },
         };
       }
-      
-      // Check if both parties have rated (to determine if rating should be blind)
-      const bothRatingsResult = await db.query<{ count: string }>(
-        `SELECT COUNT(*) as count FROM task_ratings
-         WHERE task_id = $1 AND (rater_id = $2 OR rater_id = $3)`,
-        [taskId, task.poster_id, task.worker_id]
-      );
-      
-      const existingRatingsCount = parseInt(bothRatingsResult.rows[0]?.count || '0', 10);
-      const isBlind = existingRatingsCount === 0; // Blind until both parties rate
-      const isPublic = existingRatingsCount >= 1; // Public after at least one rating (will become public after both)
-      
-      // Create rating
-      const ratingResult = await db.query<TaskRating>(
-        `INSERT INTO task_ratings (
-          task_id, rater_id, ratee_id, stars, comment, tags, is_public, is_blind, is_auto_rated
-        )
-        VALUES ($1, $2, $3, $4, $5, $6::TEXT[], $7, $8, false)
-        RETURNING *`,
-        [taskId, raterId, rateeId, stars, comment || null, tags || [], isPublic, isBlind]
-      );
-      
-      // Check if both parties have now rated (update is_public and is_blind)
-      const updatedRatingsCount = existingRatingsCount + 1;
+
+      // Check if both parties have now rated (update is_public and is_blind).
+      // This UPDATE runs outside the advisory-lock transaction intentionally —
+      // it is idempotent and does not need to be serialized with the INSERT.
       if (updatedRatingsCount === 2) {
         // Both parties have rated - make all ratings public and not blind
         await db.query(
@@ -482,22 +509,22 @@ export const RatingService = {
            WHERE task_id = $1`,
           [taskId]
         );
-        
+
         // Re-fetch rating to get updated values
         const updatedResult = await db.query<TaskRating>(
           'SELECT * FROM task_ratings WHERE id = $1',
-          [ratingResult.rows[0].id]
+          [insertedRating.id]
         );
-        
+
         return {
           success: true,
           data: updatedResult.rows[0],
         };
       }
-      
+
       return {
         success: true,
-        data: ratingResult.rows[0],
+        data: insertedRating,
       };
     } catch (error) {
       // Check for RATE-5 violation (duplicate rating)

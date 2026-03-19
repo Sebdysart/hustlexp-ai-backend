@@ -171,7 +171,8 @@ describe('StripeService branch coverage', () => {
 
   describe('processWebhookEvent', () => {
     it('returns success when event already processed', async () => {
-      mockDb.query.mockResolvedValueOnce({ rows: [{ id: '1' }], rowCount: 1 } as never);
+      // markEventProcessedAtomic → INSERT ON CONFLICT DO NOTHING → 0 rows (already exists)
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
 
       const handler = vi.fn();
       const result = await StripeService.processWebhookEvent('evt_dup', 'type', 'obj', handler);
@@ -181,7 +182,7 @@ describe('StripeService branch coverage', () => {
     });
 
     it('processes new event and marks processed', async () => {
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+      // markEventProcessedAtomic → INSERT succeeds → rowCount: 1 (new event)
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
 
       const handler = vi.fn().mockResolvedValue(undefined);
@@ -192,7 +193,8 @@ describe('StripeService branch coverage', () => {
     });
 
     it('returns WEBHOOK_PROCESSING_ERROR when handler throws Error', async () => {
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+      // markEventProcessedAtomic → INSERT succeeds → rowCount: 1 (we claimed it)
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
 
       const handler = vi.fn().mockRejectedValue(new Error('handler fail'));
       const result = await StripeService.processWebhookEvent('evt_err', 'type', 'obj', handler);
@@ -205,7 +207,8 @@ describe('StripeService branch coverage', () => {
     });
 
     it('returns Unknown error when handler throws non-Error', async () => {
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+      // markEventProcessedAtomic → INSERT succeeds → rowCount: 1 (we claimed it)
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
 
       const handler = vi.fn().mockRejectedValue('string error');
       const result = await StripeService.processWebhookEvent('evt_str', 'type', 'obj', handler);

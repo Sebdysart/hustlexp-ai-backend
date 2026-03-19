@@ -178,9 +178,25 @@ export const escrowRouter = router({
         });
       }
 
+      // Look up the existing escrow for this task to scope the PI idempotency key.
+      // Each escrow has exactly one PI; scoping to escrowId prevents a refunded
+      // escrow from replaying a previously-succeeded PI via Stripe's idempotency cache.
+      const escrowRow = await db.query<{ id: string }>(
+        `SELECT id FROM escrows WHERE task_id = $1 AND state = 'PENDING' ORDER BY created_at DESC LIMIT 1`,
+        [input.taskId]
+      );
+      if (escrowRow.rows.length === 0) {
+        throw new TRPCError({
+          code: 'NOT_FOUND',
+          message: 'No pending escrow found for this task — create the escrow first',
+        });
+      }
+      const escrowId = escrowRow.rows[0].id;
+
       const result = await StripeService.createPaymentIntent({
         taskId: input.taskId,
         posterId: ctx.user.id,
+        escrowId,
         amount,
       });
       

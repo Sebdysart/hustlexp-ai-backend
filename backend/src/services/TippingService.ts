@@ -117,6 +117,16 @@ export const TippingService = {
       //   Commits immediately after the FOR UPDATE lock is released, so the
       //   concurrent-duplicate guard (H1 FIX) is preserved.
       const checkResult = await db.transaction(async (query) => {
+        // Advisory lock keyed on (task_id, poster_id) — serializes concurrent
+        // first-time tip requests for this pair. pg_advisory_xact_lock is
+        // released automatically when the transaction ends.
+        // Without this, two concurrent requests both see 0 rows from the
+        // SELECT FOR UPDATE below and both proceed to create Stripe PIs.
+        await query(
+          `SELECT pg_advisory_xact_lock(hashtext($1))`,
+          [`tip:${taskId}:${posterId}`]
+        );
+
         // Lock on (task_id, poster_id) — prevents concurrent tip creation for
         // the same task by the same poster.
         const lockResult = await query<{ id: string }>(

@@ -6,12 +6,20 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-vi.mock('../../src/db', () => ({
-  db: { query: vi.fn() },
-  isInvariantViolation: vi.fn(() => false),
-  isUniqueViolation: vi.fn(() => false),
-  getErrorMessage: vi.fn((code: string) => `Error ${code}`),
-}));
+vi.mock('../../src/db', () => {
+  const queryFn = vi.fn();
+  return {
+    db: {
+      query: queryFn,
+      // transaction passes the same queryFn so mockResolvedValueOnce sequences
+      // flow through seamlessly for tests that use db.transaction internally.
+      transaction: vi.fn((fn: (q: typeof queryFn) => Promise<unknown>) => fn(queryFn)),
+    },
+    isInvariantViolation: vi.fn(() => false),
+    isUniqueViolation: vi.fn(() => false),
+    getErrorMessage: vi.fn((code: string) => `Error ${code}`),
+  };
+});
 
 vi.mock('../../src/logger', () => ({
   logger: {
@@ -26,7 +34,7 @@ import { db, isUniqueViolation, isInvariantViolation } from '../../src/db';
 const mockQuery = db.query as ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  vi.resetAllMocks();
 });
 
 // ============================================================================
@@ -217,11 +225,14 @@ describe('RatingService.submitRating', () => {
   });
 
   it('rejects duplicate rating', async () => {
+    // 1. Task fetch (outside transaction)
     mockQuery.mockResolvedValueOnce({
       rows: [{ id: 't1', poster_id: 'u1', worker_id: 'u2', state: 'COMPLETED', completed_at: completedAt }],
     });
-    // hasRated check
-    mockQuery.mockResolvedValueOnce({ rows: [{ count: '1' }] });
+    // 2. Advisory lock (first call inside transaction — result is discarded)
+    mockQuery.mockResolvedValueOnce({ rows: [{}], rowCount: 1 });
+    // 3. Duplicate check inside transaction — existing rating found
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'r_existing' }] });
 
     const result = await RatingService.submitRating({
       taskId: 't1', raterId: 'u1', stars: 5,
@@ -231,14 +242,17 @@ describe('RatingService.submitRating', () => {
   });
 
   it('successfully submits first rating (blind)', async () => {
+    // 1. Task fetch (outside transaction)
     mockQuery.mockResolvedValueOnce({
       rows: [{ id: 't1', poster_id: 'u1', worker_id: 'u2', state: 'COMPLETED', completed_at: completedAt }],
     });
-    // hasRated -> false
+    // 2. Advisory lock (first call inside transaction — result is discarded)
+    mockQuery.mockResolvedValueOnce({ rows: [{}], rowCount: 1 });
+    // 3. Duplicate check inside transaction — no existing rating
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    // 4. Existing ratings count (inside transaction) — 0 existing
     mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] });
-    // bothRatingsResult -> 0 existing
-    mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] });
-    // INSERT rating
+    // 5. INSERT rating (inside transaction)
     const newRating = { id: 'r1', task_id: 't1', rater_id: 'u1', ratee_id: 'u2', stars: 5, is_blind: true };
     mockQuery.mockResolvedValueOnce({ rows: [newRating] });
 
@@ -250,14 +264,22 @@ describe('RatingService.submitRating', () => {
   });
 
   it('makes all ratings public when both parties rate', async () => {
+    // 1. Task fetch (outside transaction)
     mockQuery.mockResolvedValueOnce({
       rows: [{ id: 't1', poster_id: 'u1', worker_id: 'u2', state: 'COMPLETED', completed_at: completedAt }],
     });
-    mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] }); // hasRated
-    mockQuery.mockResolvedValueOnce({ rows: [{ count: '1' }] }); // 1 existing rating
-    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'r2', is_blind: false, is_public: true }] }); // insert
-    mockQuery.mockResolvedValueOnce({ rows: [] }); // update all to public
-    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'r2', is_public: true, is_blind: false }] }); // re-fetch
+    // 2. Advisory lock (first call inside transaction — result is discarded)
+    mockQuery.mockResolvedValueOnce({ rows: [{}], rowCount: 1 });
+    // 3. Duplicate check inside transaction — no existing rating
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    // 4. Existing ratings count (inside transaction) — 1 existing (first party already rated)
+    mockQuery.mockResolvedValueOnce({ rows: [{ count: '1' }] });
+    // 5. INSERT rating (inside transaction)
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'r2', is_blind: false, is_public: true }] });
+    // 6. UPDATE all to public (outside transaction, updatedRatingsCount === 2)
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    // 7. Re-fetch updated rating (outside transaction)
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'r2', is_public: true, is_blind: false }] });
 
     const result = await RatingService.submitRating({
       taskId: 't1', raterId: 'u2', stars: 4,
@@ -276,11 +298,17 @@ describe('RatingService.submitRating', () => {
   });
 
   it('handles unique violation (RATE-5)', async () => {
+    // 1. Task fetch (outside transaction)
     mockQuery.mockResolvedValueOnce({
       rows: [{ id: 't1', poster_id: 'u1', worker_id: 'u2', state: 'COMPLETED', completed_at: completedAt }],
     });
+    // 2. Advisory lock (first call inside transaction — result is discarded)
+    mockQuery.mockResolvedValueOnce({ rows: [{}], rowCount: 1 });
+    // 3. Duplicate check inside transaction — no existing rating
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    // 4. Existing ratings count (inside transaction)
     mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] });
-    mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] });
+    // 5. INSERT rating — DB unique violation
     const uniqueErr = Object.assign(new Error('duplicate key'), { code: '23505' });
     mockQuery.mockRejectedValueOnce(uniqueErr);
     (isUniqueViolation as ReturnType<typeof vi.fn>).mockReturnValueOnce(true);

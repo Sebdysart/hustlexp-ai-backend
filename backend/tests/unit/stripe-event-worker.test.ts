@@ -66,11 +66,17 @@ vi.mock('../../src/services/EscrowService.js', () => ({
   },
 }));
 
+vi.mock('../../src/jobs/queues.js', () => ({
+  verifyJobSignature: vi.fn(() => true),
+  signJobPayload: vi.fn((payload: Record<string, unknown>) => ({ ...payload, _sig: 'test-sig' })),
+}));
+
 import { db } from '../../src/db';
 import { processStripeEventJob } from '../../src/jobs/stripe-event-worker';
 import { RevenueService } from '../../src/services/RevenueService.js';
 import { ChargebackService } from '../../src/services/ChargebackService.js';
 import { EscrowService } from '../../src/services/EscrowService.js';
+import { verifyJobSignature } from '../../src/jobs/queues.js';
 import type { Job } from 'bullmq';
 
 const mockDb = vi.mocked(db);
@@ -80,7 +86,7 @@ const mockDb = vi.mocked(db);
 // ---------------------------------------------------------------------------
 
 function makeJob(type: string, eventObject: Record<string, unknown>): Job {
-  return { data: { stripeEventId: 'evt_test_123', type } } as unknown as Job;
+  return { data: { stripeEventId: 'evt_test_123', type, payload: { _sig: 'test-sig' } } } as unknown as Job;
 }
 
 function setupClaim(type: string, eventObject: Record<string, unknown>) {
@@ -530,30 +536,32 @@ describe('processStripeEventJob', () => {
       return { data: { stripeEventId: 'evt_test_123', type, payload } } as unknown as Job;
     }
 
-    it('throws "Missing job signature" when payload exists but _sig is absent', async () => {
+    it('throws "Missing _sig — job signature required" when payload exists but _sig is absent', async () => {
       const job = makeJobWithPayload('invoice.paid', { some_field: 'some_value' });
-      await expect(processStripeEventJob(job)).rejects.toThrow('Missing job signature — job rejected');
+      await expect(processStripeEventJob(job)).rejects.toThrow('Missing _sig — job signature required');
       // No DB claim must have been attempted
       expect(mockDb.query).not.toHaveBeenCalled();
     });
 
-    it('throws "Missing job signature" when _sig is an empty string', async () => {
+    it('throws "Missing _sig — job signature required" when _sig is an empty string', async () => {
       const job = makeJobWithPayload('invoice.paid', { some_field: 'some_value', _sig: '' });
-      await expect(processStripeEventJob(job)).rejects.toThrow('Missing job signature — job rejected');
+      await expect(processStripeEventJob(job)).rejects.toThrow('Missing _sig — job signature required');
       expect(mockDb.query).not.toHaveBeenCalled();
     });
 
     it('throws JOB_SIGNATURE_INVALID when _sig is present but tampered', async () => {
+      // Override the mock to simulate a failed HMAC verification for this test only
+      vi.mocked(verifyJobSignature).mockReturnValueOnce(false);
       const job = makeJobWithPayload('invoice.paid', { some_field: 'some_value', _sig: 'a'.repeat(64) });
       await expect(processStripeEventJob(job)).rejects.toThrow('JOB_SIGNATURE_INVALID');
       expect(mockDb.query).not.toHaveBeenCalled();
     });
 
-    it('does not reject jobs without a payload object (direct-dispatch path)', async () => {
-      // Direct-dispatch jobs have no payload wrapper — the guard must not block them
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
-      const job = makeJob('invoice.paid', {});
-      await expect(processStripeEventJob(job)).resolves.toBeUndefined();
+    it('rejects jobs without a payload object (unsigned direct-inject path)', async () => {
+      // Jobs without payload wrapper are unsigned — must be rejected (Redis injection defence)
+      const job = { data: { stripeEventId: 'evt_test_123', type: 'invoice.paid' } } as unknown as Job;
+      await expect(processStripeEventJob(job)).rejects.toThrow('Missing or invalid job payload');
+      expect(mockDb.query).not.toHaveBeenCalled();
     });
   });
 });

@@ -383,11 +383,17 @@ describe('ATTACK 6: Fund escrow twice (double-funding)', () => {
    * VERDICT: SAFE — state machine prevents double-funding.
    */
   it('second fund() call on FUNDED escrow returns INVALID_STATE', async () => {
-    // fund() is now wrapped in db.transaction(). The SELECT FOR UPDATE returns
-    // the row with state='FUNDED' — state check fires before any UPDATE.
+    // fund() is now wrapped in db.transaction():
+    //   1st: SELECT FOR UPDATE → row with state='FUNDED'
+    //   2nd: cross-escrow PI dedup check → no conflict (runs before the state check)
+    //   state check then fires and returns INVALID_STATE
     mockDb.query.mockResolvedValueOnce({
       rows: [{ state: 'FUNDED', version: 1 }],
       rowCount: 1,
+    } as never);
+    mockDb.query.mockResolvedValueOnce({
+      rows: [],
+      rowCount: 0,
     } as never);
 
     const result = await EscrowService.fund({ escrowId: 'esc-1', stripePaymentIntentId: 'pi_second' });
@@ -628,8 +634,10 @@ describe('ATTACK 11: Refund amount vs original charge amount', () => {
     const funded = makeEscrow({ state: 'FUNDED', amount: 5000 });
     // fund() is wrapped in db.transaction():
     //   1st query: SELECT state, version FOR UPDATE → lock row with state=PENDING
-    //   2nd query: UPDATE escrows ... RETURNING *   → funded row with unchanged amount
+    //   2nd query: cross-escrow PI dedup check → no conflict
+    //   3rd query: UPDATE escrows ... RETURNING *   → funded row with unchanged amount
     mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'PENDING', version: 0 }], rowCount: 1 } as never);
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
     mockDb.query.mockResolvedValueOnce({ rows: [funded], rowCount: 1 } as never);
 
     const result = await EscrowService.fund({ escrowId: 'esc-1', stripePaymentIntentId: 'pi_123' });

@@ -56,10 +56,7 @@ import { TippingService } from '../../src/services/TippingService';
 const mockDb = vi.mocked(db);
 
 beforeEach(() => {
-  vi.clearAllMocks();
-  mockPaymentIntentsCreate.mockReset();
-  mockPaymentIntentsRetrieve.mockReset();
-  mockPaymentIntentsCancel.mockReset();
+  vi.resetAllMocks();
 });
 
 describe('TippingService', () => {
@@ -167,7 +164,9 @@ describe('TippingService', () => {
           rows: [{ state: 'COMPLETED', poster_id: 'poster-1', worker_id: 'worker-1', price: 5000 }],
           rowCount: 1,
         } as never)
-        // 2. SELECT ... FOR UPDATE inside transaction — existing tip found
+        // 2. Advisory lock (first call inside transaction — result is discarded)
+        .mockResolvedValueOnce({ rows: [{}], rowCount: 1 } as never)
+        // 3. SELECT ... FOR UPDATE inside transaction — existing tip found
         .mockResolvedValueOnce({ rows: [{ id: 'tip-existing' }], rowCount: 1 } as never);
 
       const result = await TippingService.createTip({
@@ -187,11 +186,13 @@ describe('TippingService', () => {
           rows: [{ state: 'COMPLETED', poster_id: 'poster-1', worker_id: 'worker-1', price: 5000 }],
           rowCount: 1,
         } as never)
-        // 2. SELECT ... FOR UPDATE inside transaction — no existing tip
+        // 2. Advisory lock (first call inside transaction — result is discarded)
+        .mockResolvedValueOnce({ rows: [{}], rowCount: 1 } as never)
+        // 3. SELECT ... FOR UPDATE inside transaction — no existing tip
         .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
-        // 3. Worker Stripe Connect account (inside transaction)
+        // 4. Worker Stripe Connect account (inside transaction)
         .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_worker' }], rowCount: 1 } as never)
-        // 4. INSERT tip — now a plain db.query() OUTSIDE the transaction (TT-06 fix)
+        // 5. INSERT tip — plain db.query() OUTSIDE the transaction (TT-06 fix)
         .mockResolvedValueOnce({
           rows: [{ id: 'tip-1', task_id: 'task-1', poster_id: 'poster-1', worker_id: 'worker-1', amount_cents: 500 }],
           rowCount: 1,
@@ -228,11 +229,13 @@ describe('TippingService', () => {
           rows: [{ state: 'COMPLETED', poster_id: 'poster-1', worker_id: 'worker-1', price: 5000 }],
           rowCount: 1,
         } as never)
-        // 2. SELECT ... FOR UPDATE — no duplicate
+        // 2. Advisory lock (first call inside transaction — result is discarded)
+        .mockResolvedValueOnce({ rows: [{}], rowCount: 1 } as never)
+        // 3. SELECT ... FOR UPDATE — no duplicate
         .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
-        // 3. Worker Stripe Connect account
+        // 4. Worker Stripe Connect account
         .mockResolvedValueOnce({ rows: [{ stripe_connect_id: null }], rowCount: 1 } as never)
-        // 4. INSERT tip — DB failure after PI created
+        // 5. INSERT tip — DB failure after PI created (outside transaction, TT-06 fix)
         .mockRejectedValueOnce(new Error('unique_violation') as never);
 
       mockPaymentIntentsCreate.mockResolvedValueOnce({

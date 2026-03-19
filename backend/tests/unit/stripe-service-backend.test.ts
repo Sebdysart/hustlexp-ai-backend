@@ -426,8 +426,8 @@ describe('StripeService.verifyWebhook (backend)', () => {
 
 describe('StripeService.processWebhookEvent (backend)', () => {
   it('returns success without calling handler for already-processed events', async () => {
-    // isEventProcessed returns true (rows.length > 0)
-    mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'existing' }], rowCount: 1 });
+    // markEventProcessedAtomic → INSERT ON CONFLICT DO NOTHING → 0 rows (already exists)
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
 
     const handler = vi.fn();
     const result = await StripeService.processWebhookEvent(
@@ -439,9 +439,7 @@ describe('StripeService.processWebhookEvent (backend)', () => {
   });
 
   it('calls handler and marks event processed for new events', async () => {
-    // isEventProcessed returns false (no rows)
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-    // markEventProcessed INSERT
+    // markEventProcessedAtomic → INSERT succeeds → rowCount: 1 (new event, we claimed it)
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 });
 
     const handler = vi.fn().mockResolvedValue(undefined);
@@ -451,16 +449,17 @@ describe('StripeService.processWebhookEvent (backend)', () => {
 
     expect(result.success).toBe(true);
     expect(handler).toHaveBeenCalledOnce();
-    // Verify markEventProcessed was called with correct args
+    // Verify markEventProcessedAtomic was called with correct args (INSERT first)
     expect(mockDb.query).toHaveBeenNthCalledWith(
-      2,
+      1,
       expect.stringContaining('INSERT INTO processed_stripe_events'),
       ['evt_new', 'transfer.created', 'tr_new'],
     );
   });
 
   it('returns WEBHOOK_PROCESSING_ERROR when handler throws', async () => {
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // not processed
+    // markEventProcessedAtomic → INSERT succeeds → rowCount: 1 (we claimed it)
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 });
 
     const handler = vi.fn().mockRejectedValue(new Error('Handler exploded'));
     const result = await StripeService.processWebhookEvent(
@@ -475,7 +474,8 @@ describe('StripeService.processWebhookEvent (backend)', () => {
   });
 
   it('returns WEBHOOK_PROCESSING_ERROR when handler throws with non-Error object', async () => {
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+    // markEventProcessedAtomic → INSERT succeeds → rowCount: 1 (we claimed it)
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 });
 
     const handler = vi.fn().mockRejectedValue('string-error');
     const result = await StripeService.processWebhookEvent(
@@ -489,20 +489,20 @@ describe('StripeService.processWebhookEvent (backend)', () => {
     }
   });
 
-  it('calls markEventProcessed with correct event metadata', async () => {
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // not processed
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 }); // mark processed
+  it('calls markEventProcessedAtomic with correct event metadata (INSERT first)', async () => {
+    // markEventProcessedAtomic → INSERT succeeds → rowCount: 1 (new event)
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 });
 
     const handler = vi.fn().mockResolvedValue(undefined);
     await StripeService.processWebhookEvent(
       'evt_mark_test', 'customer.updated', 'cus_123', handler,
     );
 
-    // Check the SELECT query for idempotency
+    // Verify the atomic INSERT query is the FIRST (and only) DB call
     expect(mockDb.query).toHaveBeenNthCalledWith(
       1,
-      'SELECT id FROM processed_stripe_events WHERE event_id = $1',
-      ['evt_mark_test'],
+      expect.stringContaining('INSERT INTO processed_stripe_events'),
+      ['evt_mark_test', 'customer.updated', 'cus_123'],
     );
   });
 });

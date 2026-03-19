@@ -79,10 +79,15 @@ describe('Money Path: Escrow Lifecycle', () => {
     it('should fund escrow transitioning PENDING → FUNDED', async () => {
       // fund() is now wrapped in db.transaction():
       //   1st query: SELECT state, version FOR UPDATE → lock row
-      //   2nd query: UPDATE escrows ... RETURNING *   → funded row
+      //   2nd query: cross-escrow PI dedup check → no conflict
+      //   3rd query: UPDATE escrows ... RETURNING *   → funded row
       db.query.mockResolvedValueOnce({
         rowCount: 1,
         rows: [{ state: 'PENDING', version: 0 }],
+      });
+      db.query.mockResolvedValueOnce({
+        rowCount: 0,
+        rows: [],
       });
       db.query.mockResolvedValueOnce({
         rowCount: 1,
@@ -165,11 +170,16 @@ describe('Money Path: Escrow Lifecycle', () => {
 
     it('should prevent funding already-funded escrow', async () => {
       // fund() is now wrapped in db.transaction(). The SELECT FOR UPDATE returns
-      // the row with state='FUNDED', which immediately returns INVALID_STATE.
-      // No getById fallback is needed — the state check happens on the lock row.
+      // the row with state='FUNDED'. The PI dedup check runs next (query 2),
+      // then the state check fires and returns INVALID_STATE.
       db.query.mockResolvedValueOnce({
         rowCount: 1,
         rows: [{ state: 'FUNDED', version: 1 }],
+      });
+      // cross-escrow PI dedup check → no conflict
+      db.query.mockResolvedValueOnce({
+        rowCount: 0,
+        rows: [],
       });
 
       const result = await EscrowService.fund({

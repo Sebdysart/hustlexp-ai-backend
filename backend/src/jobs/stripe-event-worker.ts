@@ -93,23 +93,28 @@ export async function processStripeEventJob(job: Job<StripeEventJobData>): Promi
   // a job that was enqueued without going through the signed-dispatch path, which is
   // the exact attack vector this guard is designed to block.
   const outerPayload = (job.data as Record<string, unknown>).payload;
-  if (outerPayload && typeof outerPayload === 'object') {
-    const p = outerPayload as Record<string, unknown>;
-    if (!p['_sig']) {
-      log.error(
-        { jobId: job.id, stripeEventId },
-        'Missing job signature — job rejected (possible Redis injection attack)',
-      );
-      throw new Error('Missing job signature — job rejected');
-    }
-    const { _sig, ...payloadWithoutSig } = p;
-    if (!verifyJobSignature(payloadWithoutSig, _sig as string)) {
-      log.error(
-        { jobId: job.id, stripeEventId },
-        'Job signature verification failed — possible Redis injection attack',
-      );
-      throw new Error('JOB_SIGNATURE_INVALID: Payload signature verification failed');
-    }
+  if (!outerPayload || typeof outerPayload !== 'object') {
+    log.error(
+      { jobId: job.id, stripeEventId },
+      'Missing or invalid job payload — rejecting unsigned job (possible Redis injection attack)',
+    );
+    throw new Error('Missing or invalid job payload — rejecting unsigned job');
+  }
+  const p = outerPayload as Record<string, unknown>;
+  if (!p['_sig']) {
+    log.error(
+      { jobId: job.id, stripeEventId },
+      'Missing job signature — job rejected (possible Redis injection attack)',
+    );
+    throw new Error('Missing _sig — job signature required');
+  }
+  const { _sig, ...payloadWithoutSig } = p;
+  if (!verifyJobSignature(payloadWithoutSig, _sig as string)) {
+    log.error(
+      { jobId: job.id, stripeEventId },
+      'Job signature verification failed — possible Redis injection attack',
+    );
+    throw new Error('JOB_SIGNATURE_INVALID: Payload signature verification failed');
   }
 
   // Atomic claim (prevents double processing - S-1)

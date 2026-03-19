@@ -574,18 +574,18 @@ export const NotificationService = {
     userId: string
   ): Promise<ServiceResult<{ marked: number }>> => {
     try {
-      const result = await db.query<{ count: string }>(
+      const result = await db.query(
         `UPDATE notifications
          SET read_at = NOW()
-         WHERE user_id = $1 AND read_at IS NULL AND (expires_at IS NULL OR expires_at > NOW())
-         RETURNING COUNT(*) as count`,
+         WHERE user_id = $1 AND read_at IS NULL AND (expires_at IS NULL OR expires_at > NOW())`,
         [userId]
       );
-      
+      const count = result.rowCount ?? 0;
+
       return {
         success: true,
         data: {
-          marked: parseInt(result.rows[0]?.count || '0', 10),
+          marked: count,
         },
       };
     } catch (error) {
@@ -805,17 +805,17 @@ export const NotificationService = {
   cleanupExpiredNotifications: async (): Promise<ServiceResult<{ deleted: number }>> => {
     try {
       // Delete notifications expired more than 30 days ago
-      const result = await db.query<{ count: string }>(
+      const result = await db.query(
         `DELETE FROM notifications
          WHERE expires_at IS NOT NULL
-           AND expires_at < NOW() - INTERVAL '30 days'
-         RETURNING COUNT(*) as count`
+           AND expires_at < NOW() - INTERVAL '30 days'`
       );
-      
+      const count = result.rowCount ?? 0;
+
       return {
         success: true,
         data: {
-          deleted: parseInt(result.rows[0]?.count || '0', 10),
+          deleted: count,
         },
       };
     } catch (error) {

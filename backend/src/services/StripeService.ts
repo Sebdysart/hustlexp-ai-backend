@@ -43,6 +43,7 @@ if (config.stripe.secretKey && !config.stripe.secretKey.includes('placeholder'))
 interface CreatePaymentIntentParams {
   taskId: string;
   posterId: string;
+  escrowId: string;
   amount: number; // USD cents
   description?: string;
 }
@@ -92,30 +93,22 @@ interface WebhookEvent {
 // ============================================================================
 
 /**
- * Check if Stripe event already processed
+ * Atomically claim a Stripe event for processing.
+ * Returns true if this caller won the INSERT race (event not yet processed),
+ * false if another worker already claimed it (ON CONFLICT → 0 rows returned).
  */
-async function isEventProcessed(eventId: string): Promise<boolean> {
-  const result = await db.query(
-    'SELECT id FROM processed_stripe_events WHERE event_id = $1',
-    [eventId]
-  );
-  return result.rows.length > 0;
-}
-
-/**
- * Mark Stripe event as processed
- */
-async function markEventProcessed(
+async function markEventProcessedAtomic(
   eventId: string,
   eventType: string,
   objectId: string
-): Promise<void> {
-  await db.query(
+): Promise<boolean> {
+  const result = await db.query(
     `INSERT INTO processed_stripe_events (event_id, event_type, object_id)
      VALUES ($1, $2, $3)
      ON CONFLICT (event_id) DO NOTHING`,
     [eventId, eventType, objectId]
   );
+  return (result.rowCount ?? 0) === 1;
 }
 
 // ============================================================================
@@ -144,7 +137,7 @@ export const StripeService = {
       };
     }
 
-    const { taskId, posterId, amount, description } = params;
+    const { taskId, posterId, escrowId, amount, description } = params;
 
     // PRODUCT_SPEC §9: Minimum task value $5.00 (500 cents)
     if (amount < config.stripe.minimumTaskValueCents) {
@@ -188,7 +181,7 @@ export const StripeService = {
           },
           description: description || `HustleXP Task ${taskId}`,
         },
-        { idempotencyKey: `pi_create_${taskId}_${posterId}_${amount}` }
+        { idempotencyKey: `pi_create_${escrowId}` }
       ));
 
       return {
@@ -489,14 +482,19 @@ export const StripeService = {
     objectId: string,
     handler: () => Promise<void>
   ): Promise<ServiceResult<void>> => {
-    // Check idempotency
-    if (await isEventProcessed(eventId)) {
+    // Atomically claim the event — INSERT first, process only if we won the race.
+    // This eliminates the TOCTOU window between isEventProcessed (SELECT) and
+    // markEventProcessed (INSERT): two concurrent deliveries both attempting the
+    // INSERT will have exactly one succeed (rowCount === 1) and one be silently
+    // ignored by ON CONFLICT DO NOTHING. Only the winner proceeds to call handler().
+    const claimed = await markEventProcessedAtomic(eventId, eventType, objectId);
+    if (!claimed) {
+      stripeLogger.info({ eventId }, 'Webhook event already processed, skipping');
       return { success: true, data: undefined };
     }
 
     try {
       await handler();
-      await markEventProcessed(eventId, eventType, objectId);
       return { success: true, data: undefined };
     } catch (error) {
       return {

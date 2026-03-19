@@ -88,6 +88,11 @@ vi.mock('../../src/services/NotificationService', () => ({
   },
 }));
 
+vi.mock('../../src/jobs/queues.js', () => ({
+  verifyJobSignature: vi.fn(() => true),
+  signJobPayload: vi.fn((payload: Record<string, unknown>) => ({ ...payload, _sig: 'test-sig' })),
+}));
+
 vi.mock('../../src/services/PushNotificationService', () => ({
   sendPushNotification: vi.fn().mockResolvedValue(undefined),
 }));
@@ -147,9 +152,10 @@ function makeStripeEvent(overrides: Partial<{
   };
 }
 
-// Minimal BullMQ Job stub
+// Minimal BullMQ Job stub — injects signed payload wrapper required by the HMAC guard
 function makeJob(data: object) {
-  return { data, id: 'job-1', opts: {} } as Parameters<typeof processStripeEventJob>[0];
+  const dataWithPayload = { payload: { _sig: 'test-sig' }, ...(data as Record<string, unknown>) };
+  return { data: dataWithPayload, id: 'job-1', opts: {} } as Parameters<typeof processStripeEventJob>[0];
 }
 
 // Build payment-worker job payload (wraps data in { payload: ... })

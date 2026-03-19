@@ -179,7 +179,9 @@ describe('EscrowService', () => {
       const funded = makeEscrow({ state: 'FUNDED', funded_at: new Date() });
       // 1st: SELECT FOR UPDATE → lock row with state=PENDING, version=0
       mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'PENDING', version: 0 }], rowCount: 1 } as never);
-      // 2nd: UPDATE → funded row
+      // 2nd: cross-escrow PI dedup check → no conflict (happy path)
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+      // 3rd: UPDATE → funded row
       mockDb.query.mockResolvedValueOnce({ rows: [funded], rowCount: 1 } as never);
 
       const result = await EscrowService.fund({ escrowId: 'esc-1', stripePaymentIntentId: 'pi_123' });
@@ -188,8 +190,10 @@ describe('EscrowService', () => {
     });
 
     it('fails when not in PENDING state', async () => {
-      // SELECT FOR UPDATE → row with wrong state
+      // 1st: SELECT FOR UPDATE → row with wrong state
       mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'FUNDED', version: 1 }], rowCount: 1 } as never);
+      // 2nd: cross-escrow PI dedup check → no conflict (runs before the state check)
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
 
       const result = await EscrowService.fund({ escrowId: 'esc-1', stripePaymentIntentId: 'pi_123' });
       expect(result.success).toBe(false);
@@ -197,7 +201,7 @@ describe('EscrowService', () => {
     });
 
     it('returns NOT_FOUND when escrow does not exist', async () => {
-      // SELECT FOR UPDATE → no rows
+      // SELECT FOR UPDATE → no rows → early return, no PI dedup check needed
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
 
       const result = await EscrowService.fund({ escrowId: 'esc-1', stripePaymentIntentId: 'pi_123' });

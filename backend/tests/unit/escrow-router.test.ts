@@ -374,6 +374,8 @@ describe('escrow.createPaymentIntent', () => {
       mockStripeService.isConfigured.mockReturnValue(true);
       // Router queries task price first
       mockDb.query.mockResolvedValueOnce({ rows: [{ price: 5000 }], rowCount: 1 } as any);
+      // Router then looks up the pending escrow for this task
+      mockDb.query.mockResolvedValueOnce({ rows: [{ id: ESCROW_ID }], rowCount: 1 } as any);
       mockStripeService.createPaymentIntent.mockResolvedValueOnce({
         success: true,
         data: {
@@ -398,6 +400,8 @@ describe('escrow.createPaymentIntent', () => {
       mockStripeService.isConfigured.mockReturnValue(true);
       // Router queries task price first (used as the amount when none provided)
       mockDb.query.mockResolvedValueOnce({ rows: [{ price: 7500 }], rowCount: 1 } as any);
+      // Router then looks up the pending escrow for this task
+      mockDb.query.mockResolvedValueOnce({ rows: [{ id: ESCROW_ID }], rowCount: 1 } as any);
       mockStripeService.createPaymentIntent.mockResolvedValueOnce({
         success: true,
         data: {
@@ -451,6 +455,8 @@ describe('escrow.createPaymentIntent', () => {
       // Confirm the SQL ownership clause receives ctx.user.id as $2
       mockStripeService.isConfigured.mockReturnValue(true);
       mockDb.query.mockResolvedValueOnce({ rows: [{ price: 3000 }], rowCount: 1 } as any);
+      // Router then looks up the pending escrow for this task
+      mockDb.query.mockResolvedValueOnce({ rows: [{ id: ESCROW_ID }], rowCount: 1 } as any);
       mockStripeService.createPaymentIntent.mockResolvedValueOnce({
         success: true,
         data: { paymentIntentId: 'pi_own', clientSecret: 'cs_own', amount: 3000 },
@@ -491,6 +497,8 @@ describe('escrow.createPaymentIntent', () => {
     it('throws INTERNAL_SERVER_ERROR when Stripe call fails', async () => {
       mockStripeService.isConfigured.mockReturnValue(true);
       mockDb.query.mockResolvedValueOnce({ rows: [{ price: 5000 }], rowCount: 1 } as any);
+      // Router then looks up the pending escrow for this task
+      mockDb.query.mockResolvedValueOnce({ rows: [{ id: ESCROW_ID }], rowCount: 1 } as any);
       mockStripeService.createPaymentIntent.mockResolvedValueOnce({
         success: false,
         error: { code: 'STRIPE_ERROR', message: 'Card declined' },
@@ -503,9 +511,11 @@ describe('escrow.createPaymentIntent', () => {
   });
 
   describe('service delegation', () => {
-    it('passes posterId from context to StripeService', async () => {
+    it('passes posterId and escrowId from context to StripeService', async () => {
       mockStripeService.isConfigured.mockReturnValue(true);
       mockDb.query.mockResolvedValueOnce({ rows: [{ price: 1000 }], rowCount: 1 } as any);
+      // Router looks up the pending escrow to get escrowId for PI idempotency scoping
+      mockDb.query.mockResolvedValueOnce({ rows: [{ id: ESCROW_ID }], rowCount: 1 } as any);
       mockStripeService.createPaymentIntent.mockResolvedValueOnce({
         success: true,
         data: { paymentIntentId: 'pi_x', clientSecret: 'cs_x', amount: 1000 },
@@ -516,6 +526,7 @@ describe('escrow.createPaymentIntent', () => {
       expect(mockStripeService.createPaymentIntent).toHaveBeenCalledWith({
         taskId: TASK_ID,
         posterId: POSTER_ID,
+        escrowId: ESCROW_ID,
         amount: 1000,
       });
     });
