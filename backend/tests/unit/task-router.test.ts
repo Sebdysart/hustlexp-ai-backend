@@ -998,12 +998,12 @@ describe('task.reviewProof', () => {
 
   it('reviews proof by proofId + decision (original schema)', async () => {
     const proof = makeProofRow({ task_id: TASK_ID });
-    const task = makeTaskRow({ poster_id: USER_ID });
+    const task = makeTaskRow({ poster_id: USER_ID, state: 'PROOF_SUBMITTED' });
     const reviewedProof = makeProofRow({ state: 'ACCEPTED', reviewed_by: USER_ID });
 
+    // New order: ProofService.getById → TaskService.getById (ownership + state, one call)
     mockProofService.getById.mockResolvedValueOnce({ success: true, data: proof as any });
     mockTaskService.getById.mockResolvedValueOnce({ success: true, data: task as any });
-    mockTaskService.getById.mockResolvedValueOnce({ success: true, data: { ...task, state: 'PROOF_SUBMITTED' } as any });
     mockProofService.review.mockResolvedValueOnce({ success: true, data: reviewedProof as any });
 
     const result = await makeCallerAsPoster().reviewProof({
@@ -1022,6 +1022,11 @@ describe('task.reviewProof', () => {
   });
 
   it('reviews proof by taskId + approved (iOS schema)', async () => {
+    // New order: TaskService.getById (ownership+state) → db.query (proof lookup) → ProofService.getById
+    mockTaskService.getById.mockResolvedValueOnce({
+      success: true,
+      data: makeTaskRow({ poster_id: USER_ID, state: 'PROOF_SUBMITTED' }) as any,
+    });
     // proofLookup via db.query
     mockDb.query.mockResolvedValueOnce({
       rows: [{ id: PROOF_ID }],
@@ -1030,14 +1035,6 @@ describe('task.reviewProof', () => {
     mockProofService.getById.mockResolvedValueOnce({
       success: true,
       data: makeProofRow({ task_id: TASK_ID }) as any,
-    });
-    mockTaskService.getById.mockResolvedValueOnce({
-      success: true,
-      data: makeTaskRow({ poster_id: USER_ID }) as any,
-    });
-    mockTaskService.getById.mockResolvedValueOnce({
-      success: true,
-      data: makeTaskRow({ poster_id: USER_ID, state: 'PROOF_SUBMITTED' }) as any,
     });
     mockProofService.review.mockResolvedValueOnce({
       success: true,
@@ -1061,6 +1058,11 @@ describe('task.reviewProof', () => {
   });
 
   it('maps approved=false to REJECTED decision', async () => {
+    // New order: TaskService.getById (ownership+state) → db.query (proof lookup) → ProofService.getById
+    mockTaskService.getById.mockResolvedValueOnce({
+      success: true,
+      data: makeTaskRow({ poster_id: USER_ID, state: 'PROOF_SUBMITTED' }) as any,
+    });
     mockDb.query.mockResolvedValueOnce({
       rows: [{ id: PROOF_ID }],
       rowCount: 1,
@@ -1068,14 +1070,6 @@ describe('task.reviewProof', () => {
     mockProofService.getById.mockResolvedValueOnce({
       success: true,
       data: makeProofRow({ task_id: TASK_ID }) as any,
-    });
-    mockTaskService.getById.mockResolvedValueOnce({
-      success: true,
-      data: makeTaskRow({ poster_id: USER_ID }) as any,
-    });
-    mockTaskService.getById.mockResolvedValueOnce({
-      success: true,
-      data: makeTaskRow({ poster_id: USER_ID, state: 'PROOF_SUBMITTED' }) as any,
     });
     mockProofService.review.mockResolvedValueOnce({
       success: true,
@@ -1095,19 +1089,31 @@ describe('task.reviewProof', () => {
     expect(mockTaskService.rejectProof).toHaveBeenCalledWith(TASK_ID, expect.any(String));
   });
 
-  it('throws BAD_REQUEST when neither proofId nor taskId is given', async () => {
-    await expect(makeCallerAsPoster().reviewProof({})).rejects.toThrow('proofId or taskId is required');
+  it('throws BAD_REQUEST when neither decision nor approved is given (no taskId)', async () => {
+    // decision/approved is checked first (before proofId/taskId validation)
+    await expect(makeCallerAsPoster().reviewProof({})).rejects.toThrow('decision or approved is required');
   });
 
-  it('throws BAD_REQUEST when neither decision nor approved is given', async () => {
-    // Note: the code checks for decision before calling any services,
-    // so no service mocks are needed here.
+  it('throws BAD_REQUEST when neither proofId nor taskId is given (decision provided)', async () => {
+    // Once decision is valid, the code checks for proofId/taskId
+    await expect(
+      makeCallerAsPoster().reviewProof({ decision: 'ACCEPTED' })
+    ).rejects.toThrow('proofId or taskId is required');
+  });
+
+  it('throws BAD_REQUEST when neither decision nor approved is given (proofId provided)', async () => {
+    // decision/approved is checked first — no service mocks needed
     await expect(
       makeCallerAsPoster().reviewProof({ proofId: PROOF_ID })
     ).rejects.toThrow('decision or approved is required');
   });
 
   it('throws NOT_FOUND when no proof found for taskId', async () => {
+    // Ownership + state check happens before the proof lookup
+    mockTaskService.getById.mockResolvedValueOnce({
+      success: true,
+      data: makeTaskRow({ poster_id: USER_ID, state: 'PROOF_SUBMITTED' }) as any,
+    });
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
 
     await expect(
@@ -1139,13 +1145,10 @@ describe('task.reviewProof', () => {
   });
 
   it('throws BAD_REQUEST when ProofService.review fails', async () => {
+    // proofId path: ProofService.getById first, then one TaskService.getById (ownership+state)
     mockProofService.getById.mockResolvedValueOnce({
       success: true,
       data: makeProofRow({ task_id: TASK_ID }) as any,
-    });
-    mockTaskService.getById.mockResolvedValueOnce({
-      success: true,
-      data: makeTaskRow({ poster_id: USER_ID }) as any,
     });
     mockTaskService.getById.mockResolvedValueOnce({
       success: true,
@@ -1164,13 +1167,13 @@ describe('task.reviewProof', () => {
   // CCC-01: REJECTED decision must call TaskService.rejectProof() to revert task to ACCEPTED
   it('CCC-01: calls TaskService.rejectProof when decision is REJECTED', async () => {
     const proof = makeProofRow({ task_id: TASK_ID });
-    const task = makeTaskRow({ poster_id: USER_ID });
+    const task = makeTaskRow({ poster_id: USER_ID, state: 'PROOF_SUBMITTED' });
     const rejectedProof = makeProofRow({ state: 'REJECTED', reviewed_by: USER_ID });
     const revertedTask = makeTaskRow({ state: 'ACCEPTED' });
 
+    // proofId path: ProofService.getById first, then one TaskService.getById (ownership+state)
     mockProofService.getById.mockResolvedValueOnce({ success: true, data: proof as any });
     mockTaskService.getById.mockResolvedValueOnce({ success: true, data: task as any });
-    mockTaskService.getById.mockResolvedValueOnce({ success: true, data: { ...task, state: 'PROOF_SUBMITTED' } as any });
     mockProofService.review.mockResolvedValueOnce({ success: true, data: rejectedProof as any });
     mockTaskService.rejectProof.mockResolvedValueOnce({ success: true, data: revertedTask as any });
 
@@ -1189,12 +1192,12 @@ describe('task.reviewProof', () => {
 
   it('CCC-01: does NOT call TaskService.rejectProof when decision is ACCEPTED', async () => {
     const proof = makeProofRow({ task_id: TASK_ID });
-    const task = makeTaskRow({ poster_id: USER_ID });
+    const task = makeTaskRow({ poster_id: USER_ID, state: 'PROOF_SUBMITTED' });
     const acceptedProof = makeProofRow({ state: 'ACCEPTED', reviewed_by: USER_ID });
 
+    // proofId path: ProofService.getById first, then one TaskService.getById (ownership+state)
     mockProofService.getById.mockResolvedValueOnce({ success: true, data: proof as any });
     mockTaskService.getById.mockResolvedValueOnce({ success: true, data: task as any });
-    mockTaskService.getById.mockResolvedValueOnce({ success: true, data: { ...task, state: 'PROOF_SUBMITTED' } as any });
     mockProofService.review.mockResolvedValueOnce({ success: true, data: acceptedProof as any });
 
     await makeCallerAsPoster().reviewProof({
@@ -1207,12 +1210,12 @@ describe('task.reviewProof', () => {
 
   it('CCC-01: throws INTERNAL_SERVER_ERROR when TaskService.rejectProof fails after proof REJECTED', async () => {
     const proof = makeProofRow({ task_id: TASK_ID });
-    const task = makeTaskRow({ poster_id: USER_ID });
+    const task = makeTaskRow({ poster_id: USER_ID, state: 'PROOF_SUBMITTED' });
     const rejectedProof = makeProofRow({ state: 'REJECTED', reviewed_by: USER_ID });
 
+    // proofId path: ProofService.getById first, then one TaskService.getById (ownership+state)
     mockProofService.getById.mockResolvedValueOnce({ success: true, data: proof as any });
     mockTaskService.getById.mockResolvedValueOnce({ success: true, data: task as any });
-    mockTaskService.getById.mockResolvedValueOnce({ success: true, data: { ...task, state: 'PROOF_SUBMITTED' } as any });
     mockProofService.review.mockResolvedValueOnce({ success: true, data: rejectedProof as any });
     mockTaskService.rejectProof.mockResolvedValueOnce({
       success: false,

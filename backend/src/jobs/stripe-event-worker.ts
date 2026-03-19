@@ -237,22 +237,28 @@ export async function processStripeEventJob(job: Job<StripeEventJobData>): Promi
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
 
-    // Release the claim so BullMQ retries can re-claim this event.
-    // CRITICAL: Do NOT set processed_at here — that would prevent all retries.
-    // processed_at is a terminal tombstone and must only be set on success or
-    // after BullMQ exhausts all retry attempts.
+    // Do NOT reset claimed_at here. Clearing claimed_at would re-enable
+    // the "claimed_at IS NULL" pick-up condition and allow concurrent workers
+    // to race to re-claim the same event before BullMQ retries, defeating
+    // the atomic-claim idempotency guarantee (Invariant S-1).
+    //
+    // Retries are driven by BullMQ re-enqueueing this job. A separate
+    // pick-up condition handles stale claims with errors:
+    //   claimed_at IS NOT NULL AND processed_at IS NULL
+    //   AND error_message IS NOT NULL
+    //   AND claimed_at < NOW() - INTERVAL '5 minutes'
+    // That path is intentionally handled at the worker-pool level, not here.
     await db.query(
       `
       UPDATE stripe_events
       SET result = 'failed',
-          claimed_at = NULL,
           error_message = $2
       WHERE stripe_event_id = $1
       `,
       [stripeEventId, errorMessage]
     );
 
-    log.error({ type, stripeEventId, err: errorMessage }, 'Stripe event failed — claim released for retry');
+    log.error({ type, stripeEventId, err: errorMessage }, 'Stripe event failed — claim retained, BullMQ will retry');
     throw error; // Re-throw for BullMQ retry logic
   }
 }

@@ -330,7 +330,14 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
         );
         
         log.info({ emailId, jobId: job.id, idempotencyKey: emailRecord.idempotency_key, userId: userId || emailRecord.user_id }, 'Email suppressed: user do_not_email flag');
-        
+
+        // Mark the outbox event processed so the row does not remain stuck as
+        // 'enqueued' and the poller never re-enqueues this suppressed email.
+        const suppressionOutboxKey = emailRecord.idempotency_key || idempotencyKey;
+        if (suppressionOutboxKey) {
+          await markOutboxEventProcessed(suppressionOutboxKey);
+        }
+
         return; // Exit without sending
       }
     }

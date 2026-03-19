@@ -482,9 +482,34 @@ export const RatingService = {
           [taskId, raterId, rateeId, stars, comment || null, tags || [], isPublic, isBlind]
         );
 
+        const newCount = existingRatingsCount + 1;
+
+        // If both parties have now rated, make all ratings for this task
+        // public and not blind — INSIDE the advisory-lock transaction so
+        // there is no window where the first rating stays is_public=false.
+        if (newCount === 2) {
+          await txQuery(
+            `UPDATE task_ratings
+             SET is_public = true, is_blind = false, updated_at = NOW()
+             WHERE task_id = $1`,
+            [taskId]
+          );
+
+          // Re-fetch inside tx so the returned row reflects the UPDATE.
+          const updatedResult = await txQuery<TaskRating>(
+            'SELECT * FROM task_ratings WHERE id = $1',
+            [ratingResult.rows[0].id]
+          );
+
+          return {
+            insertedRating: updatedResult.rows[0],
+            updatedRatingsCount: newCount,
+          };
+        }
+
         return {
           insertedRating: ratingResult.rows[0],
-          updatedRatingsCount: existingRatingsCount + 1,
+          updatedRatingsCount: newCount,
         };
       });
 
@@ -495,30 +520,6 @@ export const RatingService = {
             code: ErrorCodes.INVALID_STATE,
             message: 'You have already rated this user for this task',
           },
-        };
-      }
-
-      // Check if both parties have now rated (update is_public and is_blind).
-      // This UPDATE runs outside the advisory-lock transaction intentionally —
-      // it is idempotent and does not need to be serialized with the INSERT.
-      if (updatedRatingsCount === 2) {
-        // Both parties have rated - make all ratings public and not blind
-        await db.query(
-          `UPDATE task_ratings
-           SET is_public = true, is_blind = false, updated_at = NOW()
-           WHERE task_id = $1`,
-          [taskId]
-        );
-
-        // Re-fetch rating to get updated values
-        const updatedResult = await db.query<TaskRating>(
-          'SELECT * FROM task_ratings WHERE id = $1',
-          [insertedRating.id]
-        );
-
-        return {
-          success: true,
-          data: updatedResult.rows[0],
         };
       }
 

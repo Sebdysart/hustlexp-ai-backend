@@ -181,10 +181,11 @@ describe('TaskService.getByPoster — cursor pagination', () => {
 
   it('uses cursor-based query when cursor is provided', async () => {
     const cursorTs = '2024-01-14T10:00:00.000Z';
+    const cursorId = 'task-2';
     const tasks = [makeTask({ id: 'task-2', created_at: new Date('2024-01-13T10:00:00Z') })];
     mockQuery.mockResolvedValueOnce({ rows: tasks, rowCount: 1 } as never);
 
-    const result = await TaskService.getByPoster('poster-1', { cursor: cursorTs, limit: 20 });
+    const result = await TaskService.getByPoster('poster-1', { cursor: `${cursorTs}|${cursorId}`, limit: 20 });
 
     expect(result.success).toBe(true);
     expect(result.data?.tasks).toHaveLength(1);
@@ -227,9 +228,10 @@ describe('TaskService.getByWorker — cursor pagination', () => {
 
   it('uses cursor-based query when cursor is provided', async () => {
     const cursorTs = '2024-01-13T10:00:00.000Z';
+    const cursorId = 'task-3';
     mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
 
-    await TaskService.getByWorker('worker-1', { cursor: cursorTs, limit: 20 });
+    await TaskService.getByWorker('worker-1', { cursor: `${cursorTs}|${cursorId}`, limit: 20 });
 
     const callArgs = mockQuery.mock.calls[0];
     expect(callArgs[1]).toContain(cursorTs);

@@ -784,10 +784,35 @@ export const taskRouter = router({
       feedback: z.string().max(1000).optional(),
     }))
     .mutation(async ({ ctx, input }) => {
+      // Resolve decision: from original field or from iOS boolean
+      const decision = input.decision || (input.approved === true ? 'ACCEPTED' : input.approved === false ? 'REJECTED' : undefined);
+      if (!decision) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'decision or approved is required' });
+      }
+      const reason = input.reason || input.feedback;
+
+      // When taskId is provided, perform ownership check BEFORE any proof lookup
+      // to prevent non-owning posters from enumerating proof existence / UUIDs.
+      if (input.taskId) {
+        const taskOwnerResult = await TaskService.getById(input.taskId);
+        if (!taskOwnerResult.success) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
+        }
+        if (taskOwnerResult.data.poster_id !== ctx.user.id) {
+          throw new TRPCError({ code: 'FORBIDDEN', message: 'Only the task poster can review proof' });
+        }
+        if (taskOwnerResult.data.state !== 'PROOF_SUBMITTED') {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message: `Cannot review proof: task is in ${taskOwnerResult.data.state} state, expected PROOF_SUBMITTED`,
+          });
+        }
+      }
+
       // Resolve proofId: either from input directly or by looking up via taskId
       let proofId = input.proofId;
       if (!proofId && input.taskId) {
-        // Look up latest proof for this task
+        // Look up latest proof for this task (ownership already verified above)
         const proofLookup = await db.query<{ id: string }>(
           `SELECT id FROM proofs WHERE task_id = $1 AND state = 'SUBMITTED' ORDER BY created_at DESC LIMIT 1`,
           [input.taskId]
@@ -801,14 +826,7 @@ export const taskRouter = router({
         throw new TRPCError({ code: 'BAD_REQUEST', message: 'proofId or taskId is required' });
       }
 
-      // Resolve decision: from original field or from iOS boolean
-      const decision = input.decision || (input.approved === true ? 'ACCEPTED' : input.approved === false ? 'REJECTED' : undefined);
-      if (!decision) {
-        throw new TRPCError({ code: 'BAD_REQUEST', message: 'decision or approved is required' });
-      }
-      const reason = input.reason || input.feedback;
-
-      // Get proof to find task
+      // Get proof to find task (needed when proofId was supplied directly)
       const proofResult = await ProofService.getById(proofId);
       if (!proofResult.success) {
         throw new TRPCError({
@@ -817,28 +835,21 @@ export const taskRouter = router({
         });
       }
 
-      // Verify reviewer is the poster
-      const taskResult = await TaskService.getById(proofResult.data.task_id);
-      if (!taskResult.success) {
-        throw new TRPCError({
-          code: 'NOT_FOUND',
-          message: 'Task not found',
-        });
-      }
-
-      if (taskResult.data.poster_id !== ctx.user.id) {
-        throw new TRPCError({
-          code: 'FORBIDDEN',
-          message: 'Only the task poster can review proof',
-        });
-      }
-
-      const taskForReview = await TaskService.getById(proofResult.data.task_id);
-      if (!taskForReview.success || taskForReview.data.state !== 'PROOF_SUBMITTED') {
-        throw new TRPCError({
-          code: 'PRECONDITION_FAILED',
-          message: `Cannot review proof: task is in ${taskForReview.success ? taskForReview.data.state : 'unknown'} state, expected PROOF_SUBMITTED`,
-        });
+      // When proofId was supplied directly (no taskId path), verify ownership now
+      if (!input.taskId) {
+        const taskResult = await TaskService.getById(proofResult.data.task_id);
+        if (!taskResult.success) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
+        }
+        if (taskResult.data.poster_id !== ctx.user.id) {
+          throw new TRPCError({ code: 'FORBIDDEN', message: 'Only the task poster can review proof' });
+        }
+        if (taskResult.data.state !== 'PROOF_SUBMITTED') {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message: `Cannot review proof: task is in ${taskResult.data.state} state, expected PROOF_SUBMITTED`,
+          });
+        }
       }
 
       // Review proof

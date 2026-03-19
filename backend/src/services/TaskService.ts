@@ -149,6 +149,15 @@ export const TaskService = {
     try {
       let result: Awaited<ReturnType<typeof db.query<Task>>>;
       if (cursor) {
+        if (!cursor.includes('|')) {
+          return {
+            success: false,
+            error: {
+              code: 'BAD_REQUEST',
+              message: 'Invalid cursor format',
+            },
+          };
+        }
         const [cursorTs, cursorId] = cursor.split('|');
         result = await db.query<Task>(
           `SELECT * FROM tasks
@@ -203,6 +212,15 @@ export const TaskService = {
     try {
       let result: Awaited<ReturnType<typeof db.query<Task>>>;
       if (cursor) {
+        if (!cursor.includes('|')) {
+          return {
+            success: false,
+            error: {
+              code: 'BAD_REQUEST',
+              message: 'Invalid cursor format',
+            },
+          };
+        }
         const [cursorTs, cursorId] = cursor.split('|');
         result = await db.query<Task>(
           `SELECT * FROM tasks

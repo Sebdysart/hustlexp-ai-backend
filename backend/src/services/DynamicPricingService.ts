@@ -178,7 +178,8 @@ export const DynamicPricingService = {
         );
         if (workerResult.rows[0]) {
           const modifierPercent = workerResult.rows[0].price_modifier_percent;
-          workerModifierCents = Math.round(basePriceCents * (modifierPercent / 100));
+          const clampedModifier = Math.max(-25, Math.min(50, modifierPercent));
+          workerModifierCents = Math.round(basePriceCents * (clampedModifier / 100));
         }
       }
 

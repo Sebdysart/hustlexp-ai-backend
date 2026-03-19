@@ -321,7 +321,7 @@ export const messagingRouter = router({
           LEFT JOIN LATERAL (
             SELECT content, created_at FROM task_messages
             WHERE task_id = t.id
-              AND (moderation_status IS NULL OR moderation_status NOT IN ('quarantined'))
+              AND (moderation_status IS NULL OR moderation_status NOT IN ('quarantined', 'flagged'))
             ORDER BY created_at DESC LIMIT 1
           ) m ON true
           LEFT JOIN LATERAL (

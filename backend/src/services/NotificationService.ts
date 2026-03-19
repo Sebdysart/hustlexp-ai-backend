@@ -369,7 +369,7 @@ export const NotificationService = {
           deepLink,
           taskId || null,
           JSON.stringify(metadata || {}),
-          channels,
+          enabledChannels,
           priority,
           expiresAt || null,
           groupId,

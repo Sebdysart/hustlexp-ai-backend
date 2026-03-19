@@ -12,6 +12,7 @@
  */
 
 import { db } from '../db.js';
+import type { QueryFn } from '../db.js';
 import { logger } from '../logger.js';
 import { AlphaInstrumentation } from './AlphaInstrumentation.js';
 import { invalidateAuthCacheForUser } from '../auth-cache.js';
@@ -82,9 +83,31 @@ export const TrustTierService = {
 
   /**
    * Evaluate promotion eligibility (pure evaluation, no writes)
+   *
+   * @param userId - The user to evaluate
+   * @param queryFn - Optional query function to use instead of the module-level db.
+   *                  Pass the txQuery from a serializable transaction to ensure
+   *                  the eligibility re-check runs on the same connection and sees
+   *                  the same snapshot as the surrounding transaction.
    */
-  evaluatePromotion: async (userId: string): Promise<PromotionEligibility> => {
-    const currentTier = await TrustTierService.getTrustTier(userId);
+  evaluatePromotion: async (
+    userId: string,
+    queryFn?: QueryFn
+  ): Promise<PromotionEligibility> => {
+    const query: QueryFn = queryFn ?? ((sql: string, params?: unknown[]) => db.query(sql, params));
+    const currentTier = await (async () => {
+      const result = await query<{ trust_tier: number }>(
+        `SELECT trust_tier FROM users WHERE id = $1`,
+        [userId]
+      );
+      if (result.rowCount === 0) throw new Error(`User ${userId} not found`);
+      const tier = result.rows[0].trust_tier;
+      if (tier === 9) return TrustTier.BANNED;
+      if (tier >= 4) return TrustTier.ELITE;
+      if (tier >= 3) return TrustTier.TRUSTED;
+      if (tier >= 2) return TrustTier.VERIFIED;
+      return TrustTier.ROOKIE;
+    })();
 
     // Cannot promote if banned
     if (currentTier === TrustTier.BANNED) {
@@ -108,14 +131,14 @@ export const TrustTierService = {
     // Evaluate VERIFIED (ROOKIE → VERIFIED) - PRODUCT_SPEC §8.2: 5 tasks + ID verified
     if (currentTier === TrustTier.ROOKIE) {
       // Check verification requirements
-      const userResult = await db.query<{
+      const userResult = await query<{
         is_verified: boolean;
         verified_at: Date | null;
         phone: string | null;
         stripe_customer_id: string | null;
       }>(
-        `SELECT is_verified, verified_at, phone, stripe_customer_id 
-         FROM users 
+        `SELECT is_verified, verified_at, phone, stripe_customer_id
+         FROM users
          WHERE id = $1`,
         [userId]
       );
@@ -147,7 +170,7 @@ export const TrustTierService = {
     // Evaluate TRUSTED (VERIFIED → TRUSTED) - PRODUCT_SPEC §8.2: 20 tasks, 95%+ approval
     else if (currentTier === TrustTier.VERIFIED) {
       // Get user account age
-      const userAgeResult = await db.query<{ account_age_days: number }>(
+      const userAgeResult = await query<{ account_age_days: number }>(
         `SELECT EXTRACT(EPOCH FROM (NOW() - created_at)) / 86400 as account_age_days
          FROM users
          WHERE id = $1`,
@@ -156,7 +179,7 @@ export const TrustTierService = {
       const accountAgeDays = Math.floor(userAgeResult.rows[0]?.account_age_days || 0);
 
       // Get task completion stats
-      const statsResult = await db.query<{
+      const statsResult = await query<{
         completed_count: string;
         dispute_count: string;
         on_time_count: string;
@@ -183,7 +206,7 @@ export const TrustTierService = {
       const totalCount = parseInt(stats?.total_count || '0', 10);
 
       // Check risk tier constraint: only Tier 0-1 tasks
-      const riskCheckResult = await db.query<{ count: string }>(
+      const riskCheckResult = await query<{ count: string }>(
         `SELECT COUNT(*) as count
          FROM tasks t
          WHERE t.worker_id = $1
@@ -221,7 +244,7 @@ export const TrustTierService = {
     // Evaluate ELITE (TRUSTED → ELITE) - PRODUCT_SPEC §8.2: 100+ tasks, <1% dispute, 4.8+ rating
     else if (currentTier === TrustTier.TRUSTED) {
       // Get user account age
-      const userAgeResult = await db.query<{ account_age_days: number }>(
+      const userAgeResult = await query<{ account_age_days: number }>(
         `SELECT EXTRACT(EPOCH FROM (NOW() - created_at)) / 86400 as account_age_days
          FROM users
          WHERE id = $1`,
@@ -231,22 +254,22 @@ export const TrustTierService = {
 
       // Get task completion stats
       // DIAGNOSTIC: Log the query context before executing
-      const queryContext = await db.query<{
+      const queryContext = await query<{
         current_database: string;
         current_schema: string;
         worker_id_exists: boolean;
       }>(
-        `SELECT 
+        `SELECT
           current_database(),
           current_schema(),
           EXISTS (
-            SELECT 1 FROM information_schema.columns 
+            SELECT 1 FROM information_schema.columns
             WHERE table_name = 'tasks' AND column_name = 'worker_id'
           ) as worker_id_exists`
       );
       log.warn({ queryContext: queryContext.rows[0] }, 'IN_HOME evaluation query context');
-      
-      const statsResult = await db.query<{
+
+      const statsResult = await query<{
         completed_count: string;
       }>(
         `SELECT COUNT(*) FILTER (WHERE t.state = 'COMPLETED' AND t.worker_id = $1) as completed_count
@@ -261,7 +284,7 @@ export const TrustTierService = {
       // Get distinct poster reviews (5-star only)
       // Note: Assuming reviews are stored in a reviews table or derived from task completion
       // For alpha, we'll check for 5 distinct posters with completed tasks
-      const _reviewsResult = await db.query<{ distinct_posters: string }>(
+      const _reviewsResult = await query<{ distinct_posters: string }>(
         `SELECT COUNT(DISTINCT t.poster_id)::text as distinct_posters
          FROM public.tasks t
          WHERE t.worker_id = $1
@@ -273,7 +296,7 @@ export const TrustTierService = {
       // Check security deposit (escrow)
       // For alpha, we'll check if user has a security deposit locked
       // Escrows table references tasks, so we join through tasks to get worker_id
-      const _depositResult = await db.query<{ has_deposit: boolean }>(
+      const _depositResult = await query<{ has_deposit: boolean }>(
         `SELECT EXISTS(
            SELECT 1 FROM escrows e
            JOIN tasks t ON e.task_id = t.id
@@ -291,7 +314,7 @@ export const TrustTierService = {
       }
 
       // Get dispute rate for ELITE (must be <1%)
-      const disputeStatsResult = await db.query<{
+      const disputeStatsResult = await query<{
         total_tasks: string;
         dispute_count: string;
       }>(
@@ -313,7 +336,7 @@ export const TrustTierService = {
       }
 
       // Get average rating for ELITE (must be 4.8+)
-      const ratingResult = await db.query<{ avg_rating: string }>(
+      const ratingResult = await query<{ avg_rating: string }>(
         `SELECT AVG(r.score)::text as avg_rating
          FROM ratings r
          JOIN tasks t ON r.task_id = t.id
@@ -388,7 +411,9 @@ export const TrustTierService = {
 
       // Re-evaluate eligibility inside the lock so concurrent state changes
       // (e.g. a dispute filing) are visible before we commit the promotion.
-      const eligibility = await TrustTierService.evaluatePromotion(userId);
+      // Pass txQuery so the re-check runs on the same serializable connection
+      // instead of opening a separate connection via the module-level db.
+      const eligibility = await TrustTierService.evaluatePromotion(userId, txQuery);
       if (!eligibility.eligible || eligibility.targetTier !== targetTier) {
         throw new Error(`Promotion preconditions not met: ${eligibility.reasons.join(', ')}`);
       }

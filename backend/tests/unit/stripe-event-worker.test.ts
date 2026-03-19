@@ -399,7 +399,7 @@ describe('processStripeEventJob', () => {
       ).rejects.toThrow('Cannot fund escrow: current state is FUNDED, expected PENDING');
     });
 
-    it('on transient error: sets claimed_at=NULL and result=failed, does NOT set processed_at', async () => {
+    it('on transient error: sets result=failed but does NOT reset claimed_at and does NOT set processed_at', async () => {
       setupPaymentIntentSucceededClaim();
       // 2. Escrow SELECT → PENDING escrow found
       primeEscrowSelect([{ id: 'escrow-1' }]);
@@ -416,10 +416,14 @@ describe('processStripeEventJob', () => {
       const calls = mockDb.query.mock.calls;
       const errorUpdateCall = calls[calls.length - 1];
       const sql: string = errorUpdateCall[0] as string;
-      // Must reset claimed_at to NULL so BullMQ retries can re-claim
-      expect(sql).toContain('claimed_at = NULL');
+      // Must NOT reset claimed_at to NULL — clearing the claim would allow concurrent
+      // workers to race to re-claim before BullMQ retries, breaking idempotency (S-1).
+      // BullMQ drives retries by re-enqueueing the job, not by clearing claimed_at.
+      expect(sql).not.toContain('claimed_at');
       // Must NOT tombstone with processed_at — that would silently drop all retries
       expect(sql).not.toContain('processed_at');
+      // Must record the failure
+      expect(sql).toContain("result = 'failed'");
     });
 
     it('on success: sets processed_at via the success UPDATE (not in catch)', async () => {
@@ -438,7 +442,7 @@ describe('processStripeEventJob', () => {
       expect(sql).toContain("result = 'success'");
     });
 
-    it('after error: BullMQ can re-claim because claimed_at is reset to NULL', async () => {
+    it('after error: error UPDATE retains claimed_at so duplicate-processing race is prevented', async () => {
       // Simulate first attempt: fails with transient error
       setupPaymentIntentSucceededClaim();
       primeEscrowSelect([{ id: 'escrow-1' }]);
@@ -449,20 +453,18 @@ describe('processStripeEventJob', () => {
         processStripeEventJob(makeJob('payment_intent.succeeded', paymentIntent))
       ).rejects.toThrow('transient error');
 
-      // Verify claimed_at was reset (so next attempt can claim)
+      // Verify claimed_at was NOT cleared — clearing it would re-enable the pick-up
+      // condition and allow concurrent workers to race against BullMQ's retry, which
+      // breaks the atomic-claim idempotency guarantee (Invariant S-1).
       const firstErrorUpdate = mockDb.query.mock.calls[mockDb.query.mock.calls.length - 1];
-      expect((firstErrorUpdate[0] as string)).toContain('claimed_at = NULL');
+      expect((firstErrorUpdate[0] as string)).not.toContain('claimed_at');
 
-      // Simulate second attempt (BullMQ retry): claim succeeds because claimed_at IS NULL
-      vi.clearAllMocks();
-      setupPaymentIntentSucceededClaim();
-      primeEscrowSelect([]);
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
-
-      // Should succeed on retry without throwing
-      await expect(
-        processStripeEventJob(makeJob('payment_intent.succeeded', paymentIntent))
-      ).resolves.toBeUndefined();
+      // BullMQ drives the retry by re-enqueueing this job. The existing
+      // "claimed_at IS NULL" atomic claim guard in the claim SELECT will return
+      // rowCount=0 for the stale row; a separate stale-claim+error pick-up path
+      // (claimed_at IS NOT NULL AND processed_at IS NULL AND error_message IS NOT NULL
+      //  AND claimed_at < NOW() - INTERVAL '5 minutes') handles recovery at the
+      // worker-pool level rather than by resetting the claim here.
     });
 
     it('also calls processEntitlementPurchase alongside escrow funding', async () => {
