@@ -5,7 +5,7 @@
 
 import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
-import { router, hustlerProcedure } from '../trpc.js';
+import { router, hustlerProcedure, adminProcedure } from '../trpc.js';
 import { db } from '../db.js';
 import { logger } from '../logger.js';
 
@@ -205,7 +205,7 @@ export const referralRouter = router({
    *   redemptionId  — referral_redemptions.id
    *   rewardCents   — reward amount (defaults to 500 = $5)
    */
-  issueReward: hustlerProcedure
+  issueReward: adminProcedure
     .input(
       z.object({
         redemptionId: z.string().uuid(),

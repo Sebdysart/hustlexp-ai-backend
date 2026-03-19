@@ -799,7 +799,21 @@ export const squadRouter = router({
           throw new TRPCError({ code: 'FORBIDDEN', message: 'Not a member of this squad' });
         }
 
-        // 3. Insert worker (UNIQUE constraint prevents duplicates)
+        // 3. Self-dealing guard: organizer cannot accept their own squad task
+        const taskCreatorResult = await query<{ poster_id: string }>(
+          `SELECT t.poster_id FROM tasks t
+           JOIN squad_task_assignments sta ON sta.task_id = t.id
+           WHERE sta.id = $1`,
+          [input.squadTaskId]
+        );
+        if (taskCreatorResult.rows.length > 0 && taskCreatorResult.rows[0].poster_id === ctx.user.id) {
+          throw new TRPCError({
+            code: 'FORBIDDEN',
+            message: 'Organizer cannot accept their own squad task',
+          });
+        }
+
+        // 4. Insert worker (UNIQUE constraint prevents duplicates)
         const workerResult = await query(
           `INSERT INTO squad_task_workers (squad_task_id, worker_id)
            VALUES ($1, $2)
@@ -807,7 +821,7 @@ export const squadRouter = router({
           [input.squadTaskId, ctx.user.id]
         );
 
-        // 4. Check if now fully recruited → update status to 'ready'
+        // 5. Check if now fully recruited → update status to 'ready'
         const countResult = await query<CountRow>(
           `SELECT COUNT(*) as count FROM squad_task_workers WHERE squad_task_id = $1`,
           [input.squadTaskId]

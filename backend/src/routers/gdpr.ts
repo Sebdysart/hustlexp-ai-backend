@@ -198,11 +198,20 @@ export const gdprRouter = router({
    */
   updateConsent: protectedProcedure
     .input(z.object({
-      consentType: z.string().min(1).max(50), // VARCHAR(50) in schema
+      consentType: z.enum([
+        'marketing',
+        'analytics',
+        'location',
+        'notifications',
+        'profiling',
+        'account_creation',
+        'email_notifications',
+        'biometric_data',
+      ]), // Restricted to known valid types — prevents consent record pollution
       purpose: z.string().min(1), // Required in schema (TEXT)
       granted: z.boolean(), // true = grant, false = revoke/withdraw
-      ipAddress: z.string().optional(), // Optional IP address for audit
       userAgent: z.string().optional(), // Optional user agent for audit
+      // ipAddress intentionally removed from input — derived server-side from ctx.ip
     }))
     .mutation(async ({ input, ctx }) => {
       if (!ctx.user) {
@@ -211,13 +220,13 @@ export const gdprRouter = router({
           message: 'Authentication required',
         });
       }
-      
+
       const result = await GDPRService.updateConsent({
         userId: ctx.user.id,
         consentType: input.consentType,
         purpose: input.purpose,
         granted: input.granted,
-        ipAddress: input.ipAddress,
+        ipAddress: ctx.ip ?? undefined, // Server-derived, never caller-supplied
         userAgent: input.userAgent,
       });
       

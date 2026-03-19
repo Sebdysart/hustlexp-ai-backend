@@ -479,6 +479,8 @@ describe('squad.acceptTask', () => {
           rowCount: 1,
         })
         .mockResolvedValueOnce({ rows: [{ id: 'member-row' }], rowCount: 1 })
+        // Self-dealing guard: poster_id is different from the caller → allowed
+        .mockResolvedValueOnce({ rows: [{ poster_id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' }], rowCount: 1 })
         .mockResolvedValueOnce({ rows: [{ id: 'worker-row', accepted_at: new Date() }], rowCount: 1 })
         .mockResolvedValueOnce({ rows: [{ count: '1' }], rowCount: 1 }); // count < required
       return fn(txQuery);
@@ -496,6 +498,8 @@ describe('squad.acceptTask', () => {
           rowCount: 1,
         })
         .mockResolvedValueOnce({ rows: [{ id: 'member-row' }], rowCount: 1 })
+        // Self-dealing guard: poster_id is different from the caller → allowed
+        .mockResolvedValueOnce({ rows: [{ poster_id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' }], rowCount: 1 })
         .mockResolvedValueOnce({ rows: [{ id: 'worker-row', accepted_at: new Date() }], rowCount: 1 })
         .mockResolvedValueOnce({ rows: [{ count: '2' }], rowCount: 1 }) // count >= required
         .mockResolvedValueOnce({ rows: [], rowCount: 1 }); // UPDATE status to ready

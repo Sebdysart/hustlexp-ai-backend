@@ -57,7 +57,10 @@ vi.mock('@aws-sdk/s3-request-presigner', () => ({
 // Imports
 // ---------------------------------------------------------------------------
 
+import { db } from '../../src/db';
 import { uploadRouter } from '../../src/routers/upload';
+
+const mockDb = vi.mocked(db);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -76,10 +79,19 @@ function makeCaller(userId = 'test-uid') {
 // Tests
 // ---------------------------------------------------------------------------
 
+// Shared helper: mock a successful participant check (caller is poster)
+function mockParticipantCheck(userId = 'test-uid') {
+  mockDb.query.mockResolvedValueOnce({
+    rows: [{ poster_id: userId, worker_id: 'some-worker' }],
+    rowCount: 1,
+  } as any);
+}
+
 describe('upload.getPresignedUrl', () => {
   beforeEach(() => vi.clearAllMocks());
 
   it('returns mock presigned URL when R2 not configured', async () => {
+    mockParticipantCheck();
     const result = await makeCaller().getPresignedUrl({
       taskId: TEST_UUID,
       filename: 'photo.jpg',
@@ -96,6 +108,7 @@ describe('upload.getPresignedUrl', () => {
   });
 
   it('uses messages prefix for message purpose', async () => {
+    mockParticipantCheck();
     const result = await makeCaller().getPresignedUrl({
       taskId: TEST_UUID,
       filename: 'chat-photo.png',
@@ -108,6 +121,7 @@ describe('upload.getPresignedUrl', () => {
   });
 
   it('uses proofs prefix by default', async () => {
+    mockParticipantCheck();
     const result = await makeCaller().getPresignedUrl({
       taskId: TEST_UUID,
       filename: 'proof.jpg',
@@ -119,6 +133,7 @@ describe('upload.getPresignedUrl', () => {
   });
 
   it('includes task ID and user ID in key', async () => {
+    mockParticipantCheck('user-123');
     const result = await makeCaller('user-123').getPresignedUrl({
       taskId: TEST_UUID,
       filename: 'photo.jpg',
@@ -131,6 +146,7 @@ describe('upload.getPresignedUrl', () => {
   });
 
   it('rejects invalid content type', async () => {
+    // Zod validation fires before db query — no participant check mock needed
     await expect(
       makeCaller().getPresignedUrl({
         taskId: TEST_UUID,
@@ -151,6 +167,7 @@ describe('upload.getPresignedUrl', () => {
   });
 
   it('accepts image/webp content type', async () => {
+    mockParticipantCheck();
     const result = await makeCaller().getPresignedUrl({
       taskId: TEST_UUID,
       filename: 'photo.webp',
@@ -197,6 +214,7 @@ describe('upload.getPresignedUrl', () => {
   });
 
   it('expiresAt is in the future', async () => {
+    mockParticipantCheck();
     const result = await makeCaller().getPresignedUrl({
       taskId: TEST_UUID,
       filename: 'photo.jpg',
@@ -206,5 +224,56 @@ describe('upload.getPresignedUrl', () => {
 
     const expiresAt = new Date(result.expiresAt);
     expect(expiresAt.getTime()).toBeGreaterThan(Date.now());
+  });
+
+  // =========================================================================
+  // IDOR checks (Bug 3 fix)
+  // =========================================================================
+
+  it('allows the worker of a task to get a presigned URL', async () => {
+    // Participant check: caller is worker
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ poster_id: 'some-poster', worker_id: 'test-uid' }],
+      rowCount: 1,
+    } as any);
+
+    const result = await makeCaller().getPresignedUrl({
+      taskId: TEST_UUID,
+      filename: 'proof.jpg',
+      contentType: 'image/jpeg',
+      fileSize: 2048,
+    });
+
+    expect(result).toHaveProperty('uploadUrl');
+  });
+
+  it('throws FORBIDDEN when caller is not a participant in the task', async () => {
+    // Participant check: caller is a random third party
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ poster_id: 'other-poster', worker_id: 'other-worker' }],
+      rowCount: 1,
+    } as any);
+
+    await expect(
+      makeCaller().getPresignedUrl({
+        taskId: TEST_UUID,
+        filename: 'photo.jpg',
+        contentType: 'image/jpeg',
+        fileSize: 1024,
+      })
+    ).rejects.toThrow('Not authorized to upload files for this task');
+  });
+
+  it('throws NOT_FOUND when task does not exist', async () => {
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+
+    await expect(
+      makeCaller().getPresignedUrl({
+        taskId: TEST_UUID,
+        filename: 'photo.jpg',
+        contentType: 'image/jpeg',
+        fileSize: 1024,
+      })
+    ).rejects.toThrow('Task not found');
   });
 });

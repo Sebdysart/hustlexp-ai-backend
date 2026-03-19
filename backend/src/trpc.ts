@@ -42,6 +42,18 @@ const log = logger.child({ module: 'trpc' });
 export interface Context extends Record<string, unknown> {
   user: User | null;
   firebaseUid: string | null;
+  /** Server-derived client IP — extracted from x-forwarded-for / x-real-ip headers. Never caller-supplied. */
+  ip: string | null;
+}
+
+function extractIp(req: Request): string | null {
+  const xff = req.headers.get('x-forwarded-for');
+  if (xff) {
+    // Take the last entry — outermost proxy appends; last is the trusted edge
+    const parts = xff.split(',');
+    return parts[parts.length - 1]?.trim() || null;
+  }
+  return req.headers.get('x-real-ip') || null;
 }
 
 export async function createContext(opts: {
@@ -53,7 +65,7 @@ export async function createContext(opts: {
   const authHeader = opts.req.headers.get('authorization');
 
   if (!authHeader?.startsWith('Bearer ')) {
-    return { user: null, firebaseUid: null };
+    return { user: null, firebaseUid: null, ip: extractIp(opts.req) };
   }
 
   const token = authHeader.slice(7);
@@ -71,7 +83,7 @@ export async function createContext(opts: {
       // but guard against the case where it was set again before we got here.
       // Fall through to Firebase re-verification below.
     } else {
-      return { user: cached.user, firebaseUid: cached.firebaseUid };
+      return { user: cached.user, firebaseUid: cached.firebaseUid, ip: extractIp(opts.req) };
     }
   }
 
@@ -110,7 +122,7 @@ export async function createContext(opts: {
       }
     }
 
-    return { user, firebaseUid: decoded.uid };
+    return { user, firebaseUid: decoded.uid, ip: extractIp(opts.req) };
   } catch (error) {
     // SECURITY FIX (v2.9.4): Firebase Admin SDK error messages sometimes embed
     // the raw JWT in their text. Strip any JWT-shaped segments before logging to
@@ -118,7 +130,7 @@ export async function createContext(opts: {
     const rawMsg = (error as Error).message ?? '';
     const safeMsg = rawMsg.replace(/eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]*/g, '[REDACTED_TOKEN]');
     log.error({ err: safeMsg }, 'Firebase token verification failed');
-    return { user: null, firebaseUid: null };
+    return { user: null, firebaseUid: null, ip: extractIp(opts.req) };
   }
 }
 

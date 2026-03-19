@@ -88,7 +88,24 @@ export const ratingRouter = router({
     .input(z.object({
       taskId: Schemas.uuid,
     }))
-    .query(async ({ input }) => {
+    .query(async ({ input, ctx }) => {
+      // IDOR fix: only task participants (poster/worker) or admins may view ratings
+      const taskCheck = await db.query<{ poster_id: string; worker_id: string | null }>(
+        'SELECT poster_id, worker_id FROM tasks WHERE id = $1',
+        [input.taskId],
+      );
+      if (taskCheck.rows.length === 0) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
+      }
+      const { poster_id, worker_id } = taskCheck.rows[0];
+      if (
+        ctx.user.id !== poster_id &&
+        ctx.user.id !== worker_id &&
+        !ctx.user.is_admin
+      ) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'Not authorized to view ratings for this task' });
+      }
+
       const result = await RatingService.getRatingsForTask(input.taskId);
       
       if (!result.success) {

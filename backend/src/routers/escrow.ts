@@ -10,12 +10,29 @@
  */
 
 import { TRPCError } from '@trpc/server';
+import Stripe from 'stripe';
 import { router, protectedProcedure, hustlerProcedure, posterProcedure, Schemas } from '../trpc.js';
 import { EscrowService } from '../services/EscrowService.js';
 import { StripeService } from '../services/StripeService.js';
 import { XPService } from '../services/XPService.js';
 import { db } from '../db.js';
+import { config } from '../config.js';
 import { z } from 'zod';
+
+// Module-level Stripe instance — reused across requests (same pattern as StripeService.ts)
+let _stripe: Stripe | null = null;
+function getStripe(): Stripe {
+  if (!_stripe) {
+    if (!config.stripe.secretKey || config.stripe.secretKey.includes('placeholder')) {
+      throw new TRPCError({
+        code: 'PRECONDITION_FAILED',
+        message: 'Payment processing is not configured',
+      });
+    }
+    _stripe = new Stripe(config.stripe.secretKey, { apiVersion: '2025-11-17.clover' });
+  }
+  return _stripe;
+}
 
 export const escrowRouter = router({
   // --------------------------------------------------------------------------
@@ -180,6 +197,10 @@ export const escrowRouter = router({
   /**
    * Confirm escrow funding (after Stripe payment succeeds)
    * SECURITY: Only the poster who created the escrow can confirm funding
+   * SECURITY FIX (v2.9.4): stripePaymentIntentId is verified against Stripe before
+   * transitioning the escrow to FUNDED. A caller supplying a fabricated PI ID will
+   * receive PRECONDITION_FAILED — the escrow never transitions without a real, succeeded,
+   * correctly-sized payment backing it.
    */
   confirmFunding: posterProcedure
     .input(Schemas.fundEscrow)
@@ -191,6 +212,33 @@ export const escrowRouter = router({
       }
       if (escrow.data.poster_id !== ctx.user.id) {
         throw new TRPCError({ code: 'FORBIDDEN', message: 'Only the escrow creator can confirm funding' });
+      }
+
+      // SECURITY FIX: Verify the payment intent against Stripe before funding the escrow.
+      // Without this check a poster can pass a fabricated PI ID and the escrow transitions
+      // to FUNDED with no real money backing it — causing platform reserve leakage on release.
+      let pi: Stripe.PaymentIntent;
+      try {
+        pi = await getStripe().paymentIntents.retrieve(input.stripePaymentIntentId);
+      } catch {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'Payment intent not found or could not be verified',
+        });
+      }
+
+      if (pi.status !== 'succeeded') {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: `Payment intent has not succeeded (status: ${pi.status})`,
+        });
+      }
+
+      if (pi.amount !== (escrow.data as { amount: number }).amount) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'Payment intent amount does not match escrow amount',
+        });
       }
 
       const result = await EscrowService.fund({
@@ -212,6 +260,15 @@ export const escrowRouter = router({
    * Release escrow to worker
    * INV-2: Will fail if task is not COMPLETED
    * SECURITY: Only the poster who created the escrow can release funds
+   *
+   * NOTE: The primary payment flow goes through the Stripe webhook handler
+   * (transfer.created → payment-worker.ts handleTransferCreated). This endpoint
+   * is used as a fallback for cases where the transfer was created server-side
+   * but the webhook was not processed, or for manual/off-platform releases.
+   *
+   * SECURITY FIX (v2.9.4): The stripeTransferId supplied by the poster is verified
+   * against Stripe before accepting it. A caller providing a fabricated transfer ID
+   * would previously mark the escrow as RELEASED while the worker receives nothing.
    */
   release: posterProcedure
     .input(Schemas.releaseEscrow)
@@ -223,6 +280,29 @@ export const escrowRouter = router({
       }
       if (escrow.data.poster_id !== ctx.user.id) {
         throw new TRPCError({ code: 'FORBIDDEN', message: 'Only the escrow creator can release funds' });
+      }
+
+      // SECURITY FIX: Verify the Stripe transfer exists before accepting the caller-supplied
+      // stripeTransferId. A poster providing a fabricated ID would otherwise mark the escrow
+      // as RELEASED with no corresponding funds reaching the worker.
+      let transfer: Stripe.Transfer;
+      try {
+        transfer = await getStripe().transfers.retrieve(input.stripeTransferId);
+      } catch {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'Stripe transfer not found or could not be verified',
+        });
+      }
+
+      // Sanity-check: transfer amount must be at least the escrow amount (platform fee
+      // may mean the transfer is slightly less, but it should never be zero or negative).
+      const escrowAmount = (escrow.data as { amount: number }).amount;
+      if (transfer.amount <= 0 || transfer.amount > escrowAmount) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'Stripe transfer amount is not consistent with escrow amount',
+        });
       }
 
       const result = await EscrowService.release({

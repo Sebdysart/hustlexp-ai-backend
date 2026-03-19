@@ -61,6 +61,39 @@ vi.mock('../../src/services/StripeService', () => ({
   },
 }));
 
+// ---------------------------------------------------------------------------
+// Stripe SDK mock — used by confirmFunding and release security checks
+//
+// vi.hoisted() is required because vi.mock() factories are hoisted to the top
+// of the file by Vitest, before const declarations. Without hoisting, the mock
+// factory closes over undefined variables.
+// ---------------------------------------------------------------------------
+const { mockStripePaymentIntentsRetrieve, mockStripeTransfersRetrieve } = vi.hoisted(() => ({
+  mockStripePaymentIntentsRetrieve: vi.fn(),
+  mockStripeTransfersRetrieve: vi.fn(),
+}));
+
+vi.mock('stripe', () => ({
+  default: vi.fn().mockImplementation(function StripeConstructor() {
+    return {
+      paymentIntents: { retrieve: mockStripePaymentIntentsRetrieve },
+      transfers: { retrieve: mockStripeTransfersRetrieve },
+    };
+  }),
+}));
+
+// Config mock: provide a non-empty, non-placeholder Stripe key so getStripe()
+// does not throw PRECONDITION_FAILED in tests (actual Stripe calls are mocked above).
+vi.mock('../../src/config', () => ({
+  config: {
+    stripe: {
+      secretKey: 'sk_test_mock_key_for_unit_tests',
+      platformFeePercent: 15,
+      minimumTaskValueCents: 500,
+    },
+  },
+}));
+
 vi.mock('../../src/services/XPService', () => ({
   XPService: {
     awardXP: vi.fn(),
@@ -505,6 +538,12 @@ describe('escrow.confirmFunding', () => {
         success: true,
         data: makeEscrow({ state: 'PENDING' }) as any,
       });
+      // Stripe verification: PI succeeded and amount matches escrow (5000 cents)
+      mockStripePaymentIntentsRetrieve.mockResolvedValueOnce({
+        id: 'pi_test_fund',
+        status: 'succeeded',
+        amount: 5000,
+      });
       mockEscrowService.fund.mockResolvedValueOnce({
         success: true,
         data: fundedEscrow as any,
@@ -571,6 +610,12 @@ describe('escrow.confirmFunding', () => {
         success: true,
         data: makeEscrow() as any,
       });
+      // Stripe check passes; EscrowService.fund then fails
+      mockStripePaymentIntentsRetrieve.mockResolvedValueOnce({
+        id: 'pi_test_fund',
+        status: 'succeeded',
+        amount: 5000,
+      });
       mockEscrowService.fund.mockResolvedValueOnce({
         success: false,
         error: { code: 'INVALID_STATE', message: 'Cannot fund: wrong state' },
@@ -589,6 +634,11 @@ describe('escrow.confirmFunding', () => {
       mockEscrowService.getById.mockResolvedValueOnce({
         success: true,
         data: makeEscrow() as any,
+      });
+      mockStripePaymentIntentsRetrieve.mockResolvedValueOnce({
+        id: 'pi_test_delegate',
+        status: 'succeeded',
+        amount: 5000,
       });
       mockEscrowService.fund.mockResolvedValueOnce({
         success: true,
@@ -624,6 +674,8 @@ describe('escrow.release', () => {
         success: true,
         data: makeEscrow({ state: 'FUNDED' }) as any,
       });
+      // Stripe verification: transfer exists and amount is valid (platform fee applied: 4250/5000)
+      mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_test_123', amount: 4250 });
       mockEscrowService.release.mockResolvedValueOnce({
         success: true,
         data: releasedEscrow as any,
@@ -669,6 +721,7 @@ describe('escrow.release', () => {
         success: true,
         data: makeEscrow() as any,
       });
+      mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_test_123', amount: 4250 });
       mockEscrowService.release.mockResolvedValueOnce({
         success: true,
         data: releasedEscrow as any,
@@ -697,6 +750,7 @@ describe('escrow.release', () => {
         success: true,
         data: makeEscrow() as any,
       });
+      mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_test_123', amount: 4250 });
       mockEscrowService.release.mockResolvedValueOnce({
         success: false,
         error: { code: 'HX201', message: 'Escrow release requires completed task' },
@@ -712,6 +766,7 @@ describe('escrow.release', () => {
         success: true,
         data: makeEscrow() as any,
       });
+      mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_test_123', amount: 4250 });
       mockEscrowService.release.mockResolvedValueOnce({
         success: false,
         error: { code: 'INVALID_STATE', message: 'Wrong state' },
@@ -729,6 +784,7 @@ describe('escrow.release', () => {
         success: true,
         data: makeEscrow() as any,
       });
+      mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_test_123', amount: 4250 });
       mockEscrowService.release.mockResolvedValueOnce({
         success: true,
         data: makeEscrow({ state: 'RELEASED' }) as any,
@@ -1266,6 +1322,7 @@ describe('Financial Safety — cross-cutting', () => {
       success: true,
       data: makeEscrow() as any,
     });
+    mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_test_123', amount: 4250 });
     mockEscrowService.release.mockResolvedValueOnce({
       success: false,
       error: { code: 'HX201', message: 'Task must be COMPLETED' },
@@ -1299,5 +1356,243 @@ describe('Financial Safety — cross-cutting', () => {
 
     await expect(makeCaller(OTHER_USER_ID).getById({ escrowId: ESCROW_ID }))
       .rejects.toMatchObject({ code: 'FORBIDDEN' });
+  });
+});
+
+// =============================================================================
+// SECURITY FIX v2.9.4: Stripe verification in confirmFunding and release
+// =============================================================================
+
+describe('SECURITY FIX v2.9.4 — confirmFunding: Stripe PI verification', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('throws PRECONDITION_FAILED when Stripe cannot find the payment intent (fabricated PI ID)', async () => {
+    mockEscrowService.getById.mockResolvedValueOnce({
+      success: true,
+      data: makeEscrow({ state: 'PENDING' }) as any,
+    });
+    // Simulate Stripe throwing for an unknown PI
+    mockStripePaymentIntentsRetrieve.mockRejectedValueOnce(
+      Object.assign(new Error('No such payment_intent: pi_fake_123'), { type: 'StripeInvalidRequestError' })
+    );
+
+    await expect(makeCaller(POSTER_ID).confirmFunding({
+      escrowId: ESCROW_ID,
+      stripePaymentIntentId: 'pi_fake_123',
+    })).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      message: 'Payment intent not found or could not be verified',
+    });
+
+    // EscrowService.fund must NOT be called — escrow stays PENDING
+    expect(mockEscrowService.fund).not.toHaveBeenCalled();
+  });
+
+  it('throws PRECONDITION_FAILED when PI status is not succeeded (e.g. requires_payment_method)', async () => {
+    mockEscrowService.getById.mockResolvedValueOnce({
+      success: true,
+      data: makeEscrow({ state: 'PENDING' }) as any,
+    });
+    mockStripePaymentIntentsRetrieve.mockResolvedValueOnce({
+      id: 'pi_test_pending',
+      status: 'requires_payment_method',
+      amount: 5000,
+    });
+
+    await expect(makeCaller(POSTER_ID).confirmFunding({
+      escrowId: ESCROW_ID,
+      stripePaymentIntentId: 'pi_test_pending',
+    })).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      message: expect.stringContaining('requires_payment_method'),
+    });
+
+    expect(mockEscrowService.fund).not.toHaveBeenCalled();
+  });
+
+  it('throws PRECONDITION_FAILED when PI status is processing (payment not yet confirmed)', async () => {
+    mockEscrowService.getById.mockResolvedValueOnce({
+      success: true,
+      data: makeEscrow({ state: 'PENDING' }) as any,
+    });
+    mockStripePaymentIntentsRetrieve.mockResolvedValueOnce({
+      id: 'pi_test_processing',
+      status: 'processing',
+      amount: 5000,
+    });
+
+    await expect(makeCaller(POSTER_ID).confirmFunding({
+      escrowId: ESCROW_ID,
+      stripePaymentIntentId: 'pi_test_processing',
+    })).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      message: expect.stringContaining('processing'),
+    });
+
+    expect(mockEscrowService.fund).not.toHaveBeenCalled();
+  });
+
+  it('throws PRECONDITION_FAILED when PI amount does not match escrow amount (underpayment attack)', async () => {
+    // Escrow amount is 5000 cents; attacker found a PI for 100 cents from another transaction
+    mockEscrowService.getById.mockResolvedValueOnce({
+      success: true,
+      data: makeEscrow({ state: 'PENDING', amount: 5000 }) as any,
+    });
+    mockStripePaymentIntentsRetrieve.mockResolvedValueOnce({
+      id: 'pi_recycled',
+      status: 'succeeded',
+      amount: 100, // $1 PI used to fund a $50 escrow
+    });
+
+    await expect(makeCaller(POSTER_ID).confirmFunding({
+      escrowId: ESCROW_ID,
+      stripePaymentIntentId: 'pi_recycled',
+    })).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      message: 'Payment intent amount does not match escrow amount',
+    });
+
+    expect(mockEscrowService.fund).not.toHaveBeenCalled();
+  });
+
+  it('proceeds to EscrowService.fund after Stripe verification passes', async () => {
+    mockEscrowService.getById.mockResolvedValueOnce({
+      success: true,
+      data: makeEscrow({ state: 'PENDING' }) as any,
+    });
+    mockStripePaymentIntentsRetrieve.mockResolvedValueOnce({
+      id: 'pi_real_succeeded',
+      status: 'succeeded',
+      amount: 5000,
+    });
+    mockEscrowService.fund.mockResolvedValueOnce({
+      success: true,
+      data: makeEscrow({ state: 'FUNDED' }) as any,
+    });
+
+    const result = await makeCaller(POSTER_ID).confirmFunding({
+      escrowId: ESCROW_ID,
+      stripePaymentIntentId: 'pi_real_succeeded',
+    });
+
+    expect(mockStripePaymentIntentsRetrieve).toHaveBeenCalledWith('pi_real_succeeded');
+    expect(mockEscrowService.fund).toHaveBeenCalledWith({
+      escrowId: ESCROW_ID,
+      stripePaymentIntentId: 'pi_real_succeeded',
+    });
+    expect(result).toHaveProperty('state', 'FUNDED');
+  });
+});
+
+describe('SECURITY FIX v2.9.4 — release: Stripe transfer verification', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('throws PRECONDITION_FAILED when Stripe cannot find the transfer (fabricated transfer ID)', async () => {
+    mockEscrowService.getById.mockResolvedValueOnce({
+      success: true,
+      data: makeEscrow({ state: 'FUNDED' }) as any,
+    });
+    // Simulate Stripe throwing for an unknown transfer
+    mockStripeTransfersRetrieve.mockRejectedValueOnce(
+      Object.assign(new Error('No such transfer: tr_fake_123'), { type: 'StripeInvalidRequestError' })
+    );
+
+    await expect(makeCaller(POSTER_ID).release({
+      escrowId: ESCROW_ID,
+      stripeTransferId: 'tr_fake_123',
+    })).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      message: 'Stripe transfer not found or could not be verified',
+    });
+
+    // EscrowService.release must NOT be called — escrow stays FUNDED
+    expect(mockEscrowService.release).not.toHaveBeenCalled();
+  });
+
+  it('throws PRECONDITION_FAILED when transfer amount is zero or negative', async () => {
+    mockEscrowService.getById.mockResolvedValueOnce({
+      success: true,
+      data: makeEscrow({ state: 'FUNDED' }) as any,
+    });
+    mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_zero', amount: 0 });
+
+    await expect(makeCaller(POSTER_ID).release({
+      escrowId: ESCROW_ID,
+      stripeTransferId: 'tr_zero',
+    })).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      message: 'Stripe transfer amount is not consistent with escrow amount',
+    });
+
+    expect(mockEscrowService.release).not.toHaveBeenCalled();
+  });
+
+  it('throws PRECONDITION_FAILED when transfer amount exceeds escrow amount (inflated transfer attack)', async () => {
+    // Escrow is 5000 cents; transfer claims 99999 cents — impossible without fraud
+    mockEscrowService.getById.mockResolvedValueOnce({
+      success: true,
+      data: makeEscrow({ state: 'FUNDED', amount: 5000 }) as any,
+    });
+    mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_inflated', amount: 99999 });
+
+    await expect(makeCaller(POSTER_ID).release({
+      escrowId: ESCROW_ID,
+      stripeTransferId: 'tr_inflated',
+    })).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      message: 'Stripe transfer amount is not consistent with escrow amount',
+    });
+
+    expect(mockEscrowService.release).not.toHaveBeenCalled();
+  });
+
+  it('proceeds to EscrowService.release after Stripe verification passes', async () => {
+    mockEscrowService.getById.mockResolvedValueOnce({
+      success: true,
+      data: makeEscrow({ state: 'FUNDED' }) as any,
+    });
+    // Valid transfer: amount is 4250 (platform fee 15% deducted from 5000)
+    mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_real_123', amount: 4250 });
+    mockEscrowService.release.mockResolvedValueOnce({
+      success: true,
+      data: makeEscrow({ state: 'RELEASED' }) as any,
+    });
+
+    const result = await makeCaller(POSTER_ID).release({
+      escrowId: ESCROW_ID,
+      stripeTransferId: 'tr_real_123',
+    });
+
+    expect(mockStripeTransfersRetrieve).toHaveBeenCalledWith('tr_real_123');
+    expect(mockEscrowService.release).toHaveBeenCalledWith({
+      escrowId: ESCROW_ID,
+      stripeTransferId: 'tr_real_123',
+    });
+    expect(result).toHaveProperty('state', 'RELEASED');
+  });
+
+  it('accepts transfer equal to full escrow amount (no platform fee deducted)', async () => {
+    // Some releases may transfer the full amount (dispute resolution, etc.)
+    mockEscrowService.getById.mockResolvedValueOnce({
+      success: true,
+      data: makeEscrow({ state: 'FUNDED', amount: 5000 }) as any,
+    });
+    mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_full', amount: 5000 });
+    mockEscrowService.release.mockResolvedValueOnce({
+      success: true,
+      data: makeEscrow({ state: 'RELEASED' }) as any,
+    });
+
+    const result = await makeCaller(POSTER_ID).release({
+      escrowId: ESCROW_ID,
+      stripeTransferId: 'tr_full',
+    });
+
+    expect(result).toHaveProperty('state', 'RELEASED');
+    expect(mockEscrowService.release).toHaveBeenCalled();
   });
 });
