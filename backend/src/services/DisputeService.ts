@@ -471,6 +471,15 @@ export const DisputeService = {
           if (refundAmount < 0 || releaseAmount < 0) {
             throw new Error('SPLIT amounts must be non-negative');
           }
+          if (refundAmount === 0 || releaseAmount === 0) {
+            return {
+              success: false,
+              error: {
+                code: 'BAD_REQUEST',
+                message: 'SPLIT requires both amounts to be positive. Use RELEASE or REFUND action for full payouts.',
+              },
+            };
+          }
           if (refundAmount + releaseAmount !== escrow.amount) {
             throw new Error(`SPLIT amounts (${refundAmount} + ${releaseAmount} = ${refundAmount + releaseAmount}) must sum to escrow amount (${escrow.amount})`);
           }

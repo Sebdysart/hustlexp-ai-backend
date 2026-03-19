@@ -145,7 +145,7 @@ export function rateLimitMiddleware(category: RateLimitCategory) {
 
     // Set rate-limit headers
     c.header('X-RateLimit-Limit', String(limit));
-    c.header('X-RateLimit-Remaining', String(result.remaining));
+    c.header('X-RateLimit-Remaining', String(Math.max(0, result.remaining)));
     if (result.resetAt) {
       c.header('X-RateLimit-Reset', String(result.resetAt));
     }

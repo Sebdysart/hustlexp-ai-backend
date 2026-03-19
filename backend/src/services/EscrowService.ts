@@ -591,6 +591,18 @@ export const EscrowService = {
       // Previously no ledger entry was created on escrow release, making P&L
       // unreconcilable.  platform_fee is the correct event type — it captures
       // the full financial decomposition (gross, fee, net) per RevenueService v2 spec.
+      //
+      // Zero-fee guard: RevenueService rejects amountCents <= 0 for 'platform_fee'
+      // events. When platformFeeCents is 0 (valid config — promotional period or
+      // test env), skip the ledger entry entirely. No fee was collected so there
+      // is nothing to record; the release event itself is already captured in
+      // escrow_events via logEscrowEvent above.
+      if (platformFeeCents === 0) {
+        escrowLogger.info(
+          { workerId, escrowId, platformFeePercent },
+          'Zero-fee release: skipping RevenueService.logEvent (no platform fee collected)'
+        );
+      } else {
       try {
         await RevenueService.logEvent({
           eventType: 'platform_fee',
@@ -617,6 +629,7 @@ export const EscrowService = {
           'Failed to write revenue ledger entry for escrow release — requires manual reconciliation'
         );
       }
+      } // end else (platformFeeCents > 0)
 
       // v1.x: Record 2% self-insurance contribution from worker earnings
       try {

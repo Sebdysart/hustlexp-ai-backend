@@ -957,8 +957,10 @@ async function batchNotification(
       // batchedItems.length is the correct total. The previous code added +1
       // again, inflating the count by 1. Similarly, "Plus N more" must be
       // length-1 because the first item is represented by the base notification.
-      const updatedTitle = `${existingNotification.title} (${batchedItems.length} new)`;
-      const updatedBody = `${existingNotification.body}\n\nPlus ${batchedItems.length - 1} more ${category} notification(s)`;
+      const baseTitle = existingNotification.title.replace(/ \(\d+ new\)$/, '');
+      const baseBody = existingNotification.body.replace(/\n\nPlus \d+ more notification.*$/s, '');
+      const updatedTitle = `${baseTitle} (${batchedItems.length} new)`;
+      const updatedBody = `${baseBody}\n\nPlus ${batchedItems.length - 1} more ${category} notification(s)`;
 
       return txQuery<Notification>(
         `UPDATE notifications

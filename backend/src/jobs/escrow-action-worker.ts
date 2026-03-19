@@ -589,9 +589,25 @@ async function handlePartialRefundRequest(
 
   // Create transfer if release_amount > 0
   let transferId: string | null = escrow.stripe_transfer_id;
+  // Fee variables are computed unconditionally when releaseAmount > 0 so that
+  // the RevenueService.logEvent call below always has the correct values — even
+  // on an idempotent retry where transferId is populated from the fresh DB re-read
+  // and the new-transfer block is skipped entirely.
   let netReleaseCents: number | undefined;
   let adjustedPlatformFeeCents: number | undefined;
   if (releaseAmount > 0) {
+    // Compute platform fee unconditionally — must happen before the transferId
+    // idempotency checks so these values are always defined when we reach the
+    // RevenueService.logEvent guard later, regardless of the retry path taken.
+    const platformFeePercent = Math.min(100, Math.max(0, config.stripe?.platformFeePercent ?? 15));
+    netReleaseCents = Math.round(releaseAmount * (1 - platformFeePercent / 100));
+    const rawPlatformFeeCents = releaseAmount - netReleaseCents;
+    // BUG 3 fix: assign any sub-cent rounding residual to the platform fee so
+    // all cents are accounted for (refundAmount + netReleaseCents + platformFeeCents
+    // must equal escrow.amount exactly).
+    const residual = escrow.amount - Math.round(refundAmount) - netReleaseCents - rawPlatformFeeCents;
+    adjustedPlatformFeeCents = rawPlatformFeeCents + residual;
+
     // TT-03: Re-read stripe_transfer_id from the DB after the first transaction committed.
     // Two concurrent BullMQ retries can both see stripe_transfer_id = null in their stale
     // snapshots; this fresh read is the second line of defence against double transfer.
@@ -630,22 +646,6 @@ async function handlePartialRefundRequest(
       if (!worker.stripe_connect_id) {
         throw new Error(`Worker ${task.worker_id} has no stripe_connect_id`);
       }
-
-      // LL3: Apply the platform fee to the release amount before transferring
-      // to the worker. The non-dispute release path (handleReleaseRequest) already
-      // deducts the fee — this path previously passed the raw releaseAmount,
-      // bypassing the fee entirely in the SPLIT dispute resolution path.
-      //
-      // BUG 3 fix: account for residual sub-cent rounding so all cents are
-      // accounted for: refundAmount + netReleaseCents + platformFeeCents must
-      // equal escrow.amount exactly. Math.round() can lose a cent — we assign
-      // any residual to the platform fee so no cent disappears.
-      const platformFeePercent = Math.min(100, Math.max(0, config.stripe?.platformFeePercent ?? 15));
-      netReleaseCents = Math.round(releaseAmount * (1 - platformFeePercent / 100));
-      const rawPlatformFeeCents = releaseAmount - netReleaseCents;
-      const residual = escrow.amount - Math.round(refundAmount) - netReleaseCents - rawPlatformFeeCents;
-      // Assign any residual cent to the platform fee (never to worker or refund)
-      adjustedPlatformFeeCents = rawPlatformFeeCents + residual;
 
       log.info(
         { escrowId: escrow.id, releaseAmount, platformFeePercent, netReleaseCents },

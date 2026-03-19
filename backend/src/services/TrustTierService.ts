@@ -524,7 +524,12 @@ export const TrustTierService = {
         return; // User not found — treat as no-op
       }
 
-      currentTier = lockResult.rows[0].trust_tier as unknown as TrustTier;
+      const rawTier = lockResult.rows[0].trust_tier;
+      currentTier = rawTier === 9 ? TrustTier.BANNED
+        : rawTier >= 4 ? TrustTier.ELITE
+        : rawTier >= 3 ? TrustTier.TRUSTED
+        : rawTier >= 2 ? TrustTier.VERIFIED
+        : TrustTier.ROOKIE;
 
       if (currentTier === TrustTier.BANNED) {
         return; // Already banned — early exit inside txn

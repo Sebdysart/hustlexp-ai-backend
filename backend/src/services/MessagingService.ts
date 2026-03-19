@@ -144,7 +144,7 @@ export const MessagingService = {
           read_at, moderation_status, moderation_flags, created_at, updated_at
         FROM task_messages
         WHERE task_id = $1
-          AND (moderation_status IS NULL OR moderation_status != 'quarantined')
+          AND (moderation_status IS NULL OR moderation_status NOT IN ('quarantined', 'flagged'))
         ORDER BY created_at ASC
         LIMIT $2 OFFSET $3`,
         [taskId, PAGE_SIZE, offset]
