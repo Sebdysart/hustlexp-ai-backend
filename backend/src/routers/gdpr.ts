@@ -29,7 +29,7 @@ export const gdprRouter = router({
     .input(z.object({
       requestType: z.enum(['export', 'deletion', 'rectification', 'restriction']),
       exportFormat: z.enum(['json', 'csv', 'pdf']).optional(), // Required for 'export'
-      scope: z.array(z.string()).optional(), // Optional: specific data categories for export
+      scope: z.array(z.string().max(50)).max(20).optional(), // Optional: specific data categories for export
       requestDetails: z.record(z.any()).optional(), // Optional JSONB details
     }))
     .mutation(async ({ input, ctx }) => {

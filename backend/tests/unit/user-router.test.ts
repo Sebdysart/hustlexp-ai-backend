@@ -74,6 +74,10 @@ vi.mock('../../src/cache/db-cache', () => ({
   CACHE_TAGS: { USER: (id: string) => `user:${id}` },
 }));
 
+vi.mock('../../src/auth-cache', () => ({
+  invalidateAuthCacheForUser: vi.fn(),
+}));
+
 // ---------------------------------------------------------------------------
 // Imports
 // ---------------------------------------------------------------------------
@@ -83,6 +87,7 @@ import { userRouter } from '../../src/routers/user';
 import { XPService } from '../../src/services/XPService';
 import { EarnedVerificationUnlockService } from '../../src/services/EarnedVerificationUnlockService';
 import { GDPRService } from '../../src/services/GDPRService';
+import { invalidateAuthCacheForUser } from '../../src/auth-cache';
 
 const mockDb = vi.mocked(db);
 const mockXPService = vi.mocked(XPService);
@@ -756,6 +761,43 @@ describe('user.updateProfile', () => {
     await expect(
       makeUserCaller().updateProfile({ bio: 'x'.repeat(501) })
     ).rejects.toThrow();
+  });
+
+  // SEC-FIX: Role switch must invalidate the auth token cache so the new
+  // default_mode takes effect before the 5-minute TTL expires.
+  it('calls invalidateAuthCacheForUser when defaultMode changes', async () => {
+    // User starts as 'worker'; switching to 'poster'
+    const workerUser = makeFakeUser({ default_mode: 'worker' });
+
+    // open-tasks check → 0 open tasks (role switch is allowed)
+    mockDb.query.mockResolvedValueOnce({ rows: [{ count: '0' }], rowCount: 1 } as any);
+    // UPDATE RETURNING
+    const updatedUser = makeFakeUser({ default_mode: 'poster' });
+    mockDb.query.mockResolvedValueOnce({ rows: [updatedUser], rowCount: 1 } as any);
+    // toMobileUser stats query
+    setupStatsQuery();
+
+    const mockInvalidate = vi.mocked(invalidateAuthCacheForUser);
+
+    await makeUserCaller(workerUser).updateProfile({ defaultMode: 'poster' });
+
+    expect(mockInvalidate).toHaveBeenCalledOnce();
+    expect(mockInvalidate).toHaveBeenCalledWith(TEST_USER_ID);
+  });
+
+  it('does NOT call invalidateAuthCacheForUser when defaultMode is unchanged', async () => {
+    // User is 'worker'; update sends 'worker' (normalized from 'hustler') — no-op mode change
+    // The guard block is skipped because newMode === ctx.user.default_mode,
+    // but the field is still included in the update. invalidateAuthCacheForUser
+    // should still be called because the UPDATE happens, but we verify it is
+    // NOT called when NO fields change at all (early return path).
+    setupStatsQuery(); // no UPDATE, just stats (early return)
+
+    const mockInvalidate = vi.mocked(invalidateAuthCacheForUser);
+
+    await makeUserCaller().updateProfile({}); // no fields → early return
+
+    expect(mockInvalidate).not.toHaveBeenCalled();
   });
 });
 

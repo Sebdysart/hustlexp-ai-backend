@@ -22,6 +22,7 @@ import { processEntitlementPurchase } from '../services/StripeEntitlementProcess
 import { EscrowService } from '../services/EscrowService.js';
 import { RevenueService } from '../services/RevenueService.js';
 import { ChargebackService } from '../services/ChargebackService.js';
+import { verifyJobSignature } from './queues.js';
 import type { Job } from 'bullmq';
 import { workerLogger } from '../logger.js';
 const log = workerLogger.child({ worker: 'stripe-event' });
@@ -59,6 +60,25 @@ interface StripeEventEnvelope {
  */
 export async function processStripeEventJob(job: Job<StripeEventJobData>): Promise<void> {
   const { stripeEventId } = job.data;
+
+  // HMAC signature verification (Attack 12 — Redis injection defence)
+  // stripe.event_received jobs dispatched via the outbox carry a _sig field inside
+  // job.data.payload. Verify it when present; direct-dispatch jobs (without _sig) are
+  // allowed through so that legacy callers are not broken.
+  const outerPayload = (job.data as Record<string, unknown>).payload;
+  if (outerPayload && typeof outerPayload === 'object') {
+    const p = outerPayload as Record<string, unknown>;
+    if ('_sig' in p) {
+      const { _sig, ...payloadWithoutSig } = p;
+      if (!verifyJobSignature(payloadWithoutSig, _sig as string)) {
+        log.error(
+          { jobId: job.id, stripeEventId },
+          'Job signature verification failed — possible Redis injection attack',
+        );
+        throw new Error('JOB_SIGNATURE_INVALID: Payload signature verification failed');
+      }
+    }
+  }
 
   // Atomic claim (prevents double processing - S-1)
   const claim = await db.query<{

@@ -120,7 +120,7 @@ app.use('*', async (c, next) => {
     path: c.req.path,
     status,
     duration,
-    ip: c.req.header('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown',
+    ip: (() => { const xff = c.req.header('x-forwarded-for'); if (!xff) return c.req.header('x-real-ip') || 'unknown'; const parts = xff.split(','); return parts[parts.length - 1]?.trim() || 'unknown'; })(),
   }, `${c.req.method} ${c.req.path} → ${status} (${duration}ms)`);
 });
 

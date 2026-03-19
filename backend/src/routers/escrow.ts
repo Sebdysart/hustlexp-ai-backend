@@ -129,9 +129,12 @@ export const escrowRouter = router({
       }
       
       // Resolve amount — if not provided, derive from task price
+      // SECURITY FIX: AND poster_id = $2 enforces ownership — callers cannot
+      // attach a payment to a task belonging to another poster. NOT_FOUND is
+      // returned (not FORBIDDEN) to avoid leaking whether the task exists.
       const taskRow = await db.query<{ price: number }>(
-        `SELECT price FROM tasks WHERE id = $1`,
-        [input.taskId]
+        `SELECT price FROM tasks WHERE id = $1 AND poster_id = $2`,
+        [input.taskId, ctx.user.id]
       );
       if (taskRow.rows.length === 0) {
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });

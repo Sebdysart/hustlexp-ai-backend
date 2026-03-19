@@ -13,6 +13,7 @@
 import { Job } from 'bullmq';
 import { db } from '../db.js';
 import { NotificationService } from '../services/NotificationService.js';
+import { verifyJobSignature } from './queues.js';
 import { workerLogger } from '../logger.js';
 const log = workerLogger.child({ worker: 'instant-notification' });
 
@@ -37,6 +38,21 @@ interface InstantNotificationJobData {
 export async function processInstantNotificationJob(
   job: Job<InstantNotificationJobData>
 ): Promise<void> {
+  // HMAC signature verification (Attack 12 — Redis injection defence)
+  // task.instant_available jobs dispatched via the outbox carry a _sig field
+  // inside job.data.payload. Verify it when present.
+  const outerPayload = (job.data as Record<string, unknown>).payload;
+  if (outerPayload && typeof outerPayload === 'object') {
+    const p = outerPayload as Record<string, unknown>;
+    if ('_sig' in p) {
+      const { _sig, ...payloadWithoutSig } = p;
+      if (!verifyJobSignature(payloadWithoutSig, _sig as string)) {
+        log.error({ jobId: job.id }, 'Job signature verification failed — possible Redis injection attack');
+        throw new Error('JOB_SIGNATURE_INVALID: Payload signature verification failed');
+      }
+    }
+  }
+
   const { taskId, hustlerId, location, riskLevel, sensitive } = job.data;
   const startTime = Date.now();
 

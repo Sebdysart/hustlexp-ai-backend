@@ -27,6 +27,15 @@ const FINANCIAL_EVENT_TYPES = new Set([
   'escrow.release_requested',
   'escrow.refund_requested',
   'escrow.partial_refund_requested',
+  // Stripe event forwarding — both job types route through critical_payments and can
+  // trigger real escrow state transitions (PENDING→FUNDED, FUNDED→RELEASED, etc.)
+  'payment.stripe_event_received',
+  'stripe.event_received',
+  // Instant task jobs — routed through critical_payments queue; signing prevents
+  // a compromised Redis node from injecting fraudulent matching/notification jobs
+  'task.instant_matching_started',
+  'task.instant_available',
+  'task.instant_surge_evaluate',
 ]);
 
 // ============================================================================
@@ -196,25 +205,33 @@ export async function markOutboxEventFailed(
   );
 }
 
+export interface OutboxWorkerHandles {
+  outboxInterval: NodeJS.Timeout;
+  surgeInterval: NodeJS.Timeout;
+  trustTierInterval: NodeJS.Timeout;
+}
+
 /**
  * Start outbox worker loop
  * Continuously polls outbox_events table and enqueues BullMQ jobs
- * 
+ *
  * Hard rule: Must run continuously to ensure no events are lost
- * 
+ *
+ * Returns all three interval handles so the caller can clearInterval() each
+ * one during graceful shutdown, preventing timer leaks on hot-reload.
+ *
  * @param intervalMs Polling interval in milliseconds (default: 5000ms)
  */
-export function startOutboxWorker(intervalMs: number = 5000): NodeJS.Timeout {
+export function startOutboxWorker(intervalMs: number = 5000): OutboxWorkerHandles {
   log.info({ intervalMs }, 'Starting outbox worker loop');
-  
+
   // Initial poll (immediate)
   processOutboxEvents(100).catch(error => {
     log.error({ err: error }, 'Outbox worker initial poll error');
   });
-  
-  // Set up polling interval
+
   // Start periodic surge evaluator (every 10 seconds)
-  setInterval(async () => {
+  const surgeInterval = setInterval(async () => {
     try {
       const { evaluateInstantSurges } = await import('./instant-surge-evaluator');
       await evaluateInstantSurges();
@@ -224,7 +241,7 @@ export function startOutboxWorker(intervalMs: number = 5000): NodeJS.Timeout {
   }, 10 * 1000); // Every 10 seconds
 
   // Pre-Alpha Prerequisite: Trust tier promotion worker (hourly)
-  setInterval(async () => {
+  const trustTierInterval = setInterval(async () => {
     try {
       const { processTrustTierPromotionJob } = await import('./trust-tier-promotion-worker');
       await processTrustTierPromotionJob();
@@ -233,7 +250,7 @@ export function startOutboxWorker(intervalMs: number = 5000): NodeJS.Timeout {
     }
   }, 60 * 60 * 1000); // Every hour
 
-  const interval = setInterval(async () => {
+  const outboxInterval = setInterval(async () => {
     try {
       const result = await processOutboxEvents(100);
       if (result.processed > 0 || result.failed > 0) {
@@ -246,6 +263,6 @@ export function startOutboxWorker(intervalMs: number = 5000): NodeJS.Timeout {
       log.error({ err: error }, 'Outbox worker fatal error');
     }
   }, intervalMs);
-  
-  return interval;
+
+  return { outboxInterval, surgeInterval, trustTierInterval };
 }

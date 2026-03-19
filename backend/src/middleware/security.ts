@@ -253,10 +253,13 @@ export async function aiRateLimitMiddleware(provider: keyof typeof AI_RATE_LIMIT
     
     const key = `ratelimit:ai:${provider}:${userId}`;
     const current = await redis.incr(key);
-    
-    if (current === 1) {
-      await redis.expire(key, limits.windowMs / 1000);
-    }
+
+    // Always refresh TTL after INCR to prevent immortal keys.
+    // If the process crashes between INCR and EXPIRE the key would otherwise
+    // accumulate indefinitely.  Calling EXPIRE unconditionally makes this
+    // a sliding window (TTL resets on each request) — an acceptable trade-off
+    // for eliminating the non-atomic race.
+    await redis.expire(key, limits.windowMs / 1000);
     
     if (current > limits.requests) {
       c.header('X-RateLimit-Limit', limits.requests.toString());

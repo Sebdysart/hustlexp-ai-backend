@@ -23,7 +23,7 @@ export const trackingRouter = router({
    */
   startSession: hustlerProcedure
     .input(z.object({
-      taskId: z.string(),
+      taskId: z.string().uuid(),
       initialLocation: GPSPointSchema,
     }))
     .mutation(async ({ ctx, input }) => {
@@ -45,7 +45,7 @@ export const trackingRouter = router({
    */
   updateLocation: hustlerProcedure
     .input(z.object({
-      sessionId: z.string(),
+      sessionId: z.string().uuid(),
       location: GPSPointSchema,
     }))
     .mutation(async ({ input }) => {
@@ -66,7 +66,7 @@ export const trackingRouter = router({
    */
   stopSession: hustlerProcedure
     .input(z.object({
-      sessionId: z.string(),
+      sessionId: z.string().uuid(),
     }))
     .mutation(async ({ input }) => {
       const result = await MovementTrackingService.stopSession(input.sessionId);
@@ -83,7 +83,7 @@ export const trackingRouter = router({
    */
   getStats: hustlerProcedure
     .input(z.object({
-      sessionId: z.string(),
+      sessionId: z.string().uuid(),
     }))
     .query(async ({ input }) => {
       const result = await MovementTrackingService.getSessionStats(input.sessionId);

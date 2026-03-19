@@ -14,6 +14,7 @@ import { db } from '../db.js';
 import { writeToOutbox } from '../lib/outbox-helpers.js';
 import { PlanService } from '../services/PlanService.js';
 import { MIN_INSTANT_TIER, MIN_SENSITIVE_INSTANT_TIER } from '../services/InstantTrustConfig.js';
+import { verifyJobSignature } from './queues.js';
 import { workerLogger } from '../logger.js';
 const log = workerLogger.child({ worker: 'instant-surge' });
 
@@ -34,6 +35,21 @@ interface InstantSurgeJobData {
 export async function processInstantSurgeJob(
   job: Job<InstantSurgeJobData>
 ): Promise<void> {
+  // HMAC signature verification (Attack 12 — Redis injection defence)
+  // task.instant_surge_evaluate jobs dispatched via the outbox carry a _sig field
+  // inside job.data.payload. Verify it when present.
+  const outerPayload = (job.data as Record<string, unknown>).payload;
+  if (outerPayload && typeof outerPayload === 'object') {
+    const p = outerPayload as Record<string, unknown>;
+    if ('_sig' in p) {
+      const { _sig, ...payloadWithoutSig } = p;
+      if (!verifyJobSignature(payloadWithoutSig, _sig as string)) {
+        log.error({ jobId: job.id }, 'Job signature verification failed — possible Redis injection attack');
+        throw new Error('JOB_SIGNATURE_INVALID: Payload signature verification failed');
+      }
+    }
+  }
+
   const { taskId, location, riskLevel, sensitive } = job.data;
   const startTime = Date.now();
 

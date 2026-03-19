@@ -460,12 +460,19 @@ export const taskRouter = router({
     .mutation(async ({ ctx, input }) => {
       // Validate template outside the transaction — this is a read-only, stateless
       // lookup and does not need to be part of the locking sequence.
-      const templateSlugResult = await db.query<{ template_slug: string }>(
-        `SELECT template_slug FROM tasks WHERE id = $1`,
+      const templateSlugResult = await db.query<{ template_slug: string; poster_id: string }>(
+        `SELECT template_slug, poster_id FROM tasks WHERE id = $1`,
         [input.taskId]
       );
       if (!templateSlugResult.rows[0]) {
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
+      }
+      // Self-dealing guard: a poster cannot accept their own task as a worker.
+      if (templateSlugResult.rows[0].poster_id === ctx.user.id) {
+        throw new TRPCError({
+          code: 'FORBIDDEN',
+          message: 'You cannot accept a task that you posted',
+        });
       }
       const template = getTemplate(templateSlugResult.rows[0].template_slug) ?? (() => {
         throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: 'Unknown template on task' });

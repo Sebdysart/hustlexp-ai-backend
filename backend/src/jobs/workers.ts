@@ -20,7 +20,7 @@
 
 import { fileURLToPath } from 'url';
 import { createWorker, getQueue } from './queues.js';
-import { startOutboxWorker } from './outbox-worker.js';
+import { startOutboxWorker, type OutboxWorkerHandles } from './outbox-worker.js';
 import { processExportJob } from './export-worker.js';
 import { processEmailJob } from './email-worker.js';
 import { processBiometricAnalysisJob } from './biometric-analyzer-worker.js';
@@ -29,8 +29,9 @@ import { processXPTaxReminderJob } from './xp-tax-reminder-worker.js';
 import { workerLogger as log } from '../logger.js';
 import type { Job, Worker } from 'bullmq';
 
-// Track all registered workers for graceful shutdown
+// Track all registered workers and outbox interval handles for graceful shutdown
 const activeWorkers: Worker[] = [];
+let outboxHandles: OutboxWorkerHandles | null = null;
 
 // ============================================================================
 // WORKER REGISTRATION
@@ -331,7 +332,7 @@ async function startWorkers(): Promise<void> {
     await registerScheduledJobs();
 
     // Start outbox poller loop (continuously reads outbox_events → enqueues BullMQ jobs)
-    startOutboxWorker(5000); // Poll every 5 seconds
+    outboxHandles = startOutboxWorker(5000); // Poll every 5 seconds
 
     log.info('Worker runtime started successfully — processing jobs');
 
@@ -357,6 +358,14 @@ async function gracefulShutdown(signal: string): Promise<void> {
 
   shutdownInProgress = true;
   log.info({ signal }, 'Received signal, shutting down gracefully...');
+
+  // Clear all outbox interval timers to prevent accumulation on hot-reload
+  if (outboxHandles) {
+    clearInterval(outboxHandles.outboxInterval);
+    clearInterval(outboxHandles.surgeInterval);
+    clearInterval(outboxHandles.trustTierInterval);
+    outboxHandles = null;
+  }
 
   // Close all BullMQ workers — each .close() waits for the current job to finish
   const closePromises = activeWorkers.map(async (worker, index) => {

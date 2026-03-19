@@ -70,20 +70,23 @@ const validLocation = {
 // Tests
 // ---------------------------------------------------------------------------
 
+const TASK_UUID = '00000000-0000-0000-0000-000000000001';
+const SESSION_UUID = '00000000-0000-0000-0000-000000000002';
+
 describe('tracking.startSession', () => {
   beforeEach(() => vi.clearAllMocks());
 
   it('starts a session and returns data', async () => {
-    const sessionData = { sessionId: 'sess-1', startedAt: new Date().toISOString() };
+    const sessionData = { sessionId: SESSION_UUID, startedAt: new Date().toISOString() };
     mockService.startSession.mockResolvedValueOnce({ success: true, data: sessionData } as any);
 
     const result = await makeCaller().startSession({
-      taskId: 'task-1',
+      taskId: TASK_UUID,
       initialLocation: validLocation,
     });
 
     expect(result).toEqual(sessionData);
-    expect(mockService.startSession).toHaveBeenCalledWith('task-1', 'test-uid', validLocation);
+    expect(mockService.startSession).toHaveBeenCalledWith(TASK_UUID, 'test-uid', validLocation);
   });
 
   it('throws when service returns failure', async () => {
@@ -93,13 +96,13 @@ describe('tracking.startSession', () => {
     } as any);
 
     await expect(
-      makeCaller().startSession({ taskId: 'task-1', initialLocation: validLocation })
+      makeCaller().startSession({ taskId: TASK_UUID, initialLocation: validLocation })
     ).rejects.toThrow('Task not found');
   });
 
   it('rejects unauthenticated users', async () => {
     await expect(
-      makeCaller(false).startSession({ taskId: 'task-1', initialLocation: validLocation })
+      makeCaller(false).startSession({ taskId: TASK_UUID, initialLocation: validLocation })
     ).rejects.toThrow();
   });
 });
@@ -111,13 +114,13 @@ describe('tracking.updateLocation', () => {
     mockService.updateLocation.mockResolvedValueOnce({ success: true } as any);
 
     const result = await makeCaller().updateLocation({
-      sessionId: 'sess-1',
+      sessionId: SESSION_UUID,
       location: validLocation,
     });
 
     expect(result).toEqual({ success: true });
     expect(mockService.updateLocation).toHaveBeenCalledWith({
-      sessionId: 'sess-1',
+      sessionId: SESSION_UUID,
       location: validLocation,
     });
   });
@@ -129,7 +132,7 @@ describe('tracking.updateLocation', () => {
     } as any);
 
     await expect(
-      makeCaller().updateLocation({ sessionId: 'sess-1', location: validLocation })
+      makeCaller().updateLocation({ sessionId: SESSION_UUID, location: validLocation })
     ).rejects.toThrow('Session not found');
   });
 });
@@ -141,10 +144,10 @@ describe('tracking.stopSession', () => {
     const stopData = { distance: 1500, duration: 3600 };
     mockService.stopSession.mockResolvedValueOnce({ success: true, data: stopData } as any);
 
-    const result = await makeCaller().stopSession({ sessionId: 'sess-1' });
+    const result = await makeCaller().stopSession({ sessionId: SESSION_UUID });
 
     expect(result).toEqual(stopData);
-    expect(mockService.stopSession).toHaveBeenCalledWith('sess-1');
+    expect(mockService.stopSession).toHaveBeenCalledWith(SESSION_UUID);
   });
 
   it('throws when service returns failure', async () => {
@@ -154,7 +157,7 @@ describe('tracking.stopSession', () => {
     } as any);
 
     await expect(
-      makeCaller().stopSession({ sessionId: 'sess-1' })
+      makeCaller().stopSession({ sessionId: SESSION_UUID })
     ).rejects.toThrow('Session already stopped');
   });
 });
@@ -166,10 +169,10 @@ describe('tracking.getStats', () => {
     const stats = { totalDistance: 5000, avgSpeed: 4.5 };
     mockService.getSessionStats.mockResolvedValueOnce({ success: true, data: stats } as any);
 
-    const result = await makeCaller().getStats({ sessionId: 'sess-1' });
+    const result = await makeCaller().getStats({ sessionId: SESSION_UUID });
 
     expect(result).toEqual(stats);
-    expect(mockService.getSessionStats).toHaveBeenCalledWith('sess-1');
+    expect(mockService.getSessionStats).toHaveBeenCalledWith(SESSION_UUID);
   });
 
   it('throws when service returns failure', async () => {
@@ -179,7 +182,7 @@ describe('tracking.getStats', () => {
     } as any);
 
     await expect(
-      makeCaller().getStats({ sessionId: 'sess-1' })
+      makeCaller().getStats({ sessionId: SESSION_UUID })
     ).rejects.toThrow('Stats unavailable');
   });
 });

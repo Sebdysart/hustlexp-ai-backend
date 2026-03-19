@@ -281,10 +281,10 @@ export const notificationRouter = router({
    */
   registerDeviceToken: protectedProcedure
     .input(z.object({
-      fcmToken: z.string().min(1),
+      fcmToken: z.string().min(1).max(1024),
       deviceType: z.enum(['ios', 'android']).default('ios'),
-      deviceName: z.string().optional(),
-      appVersion: z.string().optional(),
+      deviceName: z.string().max(100).optional(),
+      appVersion: z.string().max(20).optional(),
     }))
     .mutation(async ({ input, ctx }) => {
       if (!ctx.user) {

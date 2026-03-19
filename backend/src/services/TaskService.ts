@@ -813,6 +813,17 @@ export const TaskService = {
 
         const currentState = lockResult.rows[0].state;
 
+        // Idempotent recovery: if the task is already in PROOF_SUBMITTED, the proof INSERT
+        // already committed (ProofService.submit ran) but the task UPDATE failed or timed out.
+        // Treat this as success — return the current task so the router can respond correctly.
+        if (currentState === 'PROOF_SUBMITTED') {
+          const existingTask = await query<Task>(
+            `SELECT * FROM tasks WHERE id = $1`,
+            [taskId]
+          );
+          return { success: true, data: existingTask.rows[0] };
+        }
+
         if (currentState !== 'ACCEPTED') {
           return {
             success: false,

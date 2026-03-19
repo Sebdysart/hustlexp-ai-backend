@@ -57,9 +57,7 @@ function createRedisConnection(): Redis {
     enableReadyCheck: true,
     lazyConnect: true,
     // Upstash-specific settings: requires TLS for direct TCP connections
-    tls: redisUrl.includes('upstash.io') ? {
-      rejectUnauthorized: false, // Upstash uses self-signed certs
-    } : undefined,
+    tls: redisUrl.includes('upstash.io') ? {} : undefined,
   });
   
   return redis;

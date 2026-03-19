@@ -595,9 +595,10 @@ export const XPService = {
    * FIX 3: Closes the dispute-then-refund free-XP exploit.
    */
   clawbackXP: async (userId: string, escrowId: string, reason: string, fraction = 1.0): Promise<void> => {
-    // Find the original XP award for this escrow
-    const award = await db.query<{ id: string; effective_xp: number; task_id: string }>(
-      `SELECT id, effective_xp, task_id FROM xp_ledger
+    // Find the original XP award for this escrow — fetch base_xp too so we can
+    // record the fraction-adjusted debit accurately in the ledger.
+    const award = await db.query<{ id: string; base_xp: number; effective_xp: number; task_id: string }>(
+      `SELECT id, base_xp, effective_xp, task_id FROM xp_ledger
        WHERE user_id = $1 AND escrow_id = $2
        ORDER BY awarded_at DESC LIMIT 1`,
       [userId, escrowId]
@@ -615,6 +616,12 @@ export const XPService = {
     if (xpToDeduct === 0) return;
     const taskId = award.rows[0].task_id;
 
+    // BUG FIX: Compute fraction-adjusted base_xp for the ledger debit entry.
+    // Previously the INSERT used -base_xp (full amount) even for partial clawbacks,
+    // causing the ledger to record -1000 XP when only 600 XP was actually deducted.
+    const adjustedBaseXP = -Math.round(award.rows[0].base_xp * clampedFraction);
+    const adjustedEffectiveXP = -xpToDeduct;
+
     // Insert a debit entry (negative effective_xp) to preserve ledger immutability (INV-4).
     // SECURITY FIX: ON CONFLICT DO NOTHING RETURNING makes this idempotent — if the
     // (user_id, escrow_id, reason) clawback row already exists (e.g. on retry), the
@@ -631,9 +638,9 @@ export const XPService = {
       )
       SELECT
         $1, $3, $2,
-        -base_xp, streak_multiplier, trust_multiplier, live_mode_multiplier, -effective_xp,
+        $5, streak_multiplier, trust_multiplier, live_mode_multiplier, $6,
         $4,
-        user_xp_after, GREATEST(0, user_xp_after - effective_xp),
+        user_xp_after, GREATEST(0, user_xp_after - $7),
         user_level_after, user_level_before,
         user_streak_at_award
       FROM xp_ledger
@@ -641,7 +648,7 @@ export const XPService = {
       ORDER BY awarded_at DESC LIMIT 1
       ON CONFLICT (user_id, escrow_id, reason) DO NOTHING
       RETURNING id`,
-      [userId, escrowId, taskId, reason]
+      [userId, escrowId, taskId, reason, adjustedBaseXP, adjustedEffectiveXP, xpToDeduct]
     );
 
     if (clawbackInsert.rowCount === 0) {

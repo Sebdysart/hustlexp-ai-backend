@@ -34,7 +34,7 @@ export const config = {
     // non-numeric env var would silently pass through parseInt and could cause
     // the fee calculation to produce a negative value (overpaying the worker).
     platformFeePercent: (() => { const raw = parseInt(process.env.PLATFORM_FEE_PERCENT || '15', 10); return isNaN(raw) || raw < 0 ? 15 : Math.min(raw, 100); })(), // PRODUCT_SPEC §9: 15% platform fee
-    minimumTaskValueCents: parseInt(process.env.MIN_TASK_VALUE_CENTS || '500', 10), // PRODUCT_SPEC §9: $5.00 minimum
+    minimumTaskValueCents: (() => { const raw = parseInt(process.env.MIN_TASK_VALUE_CENTS || '500', 10); return isNaN(raw) || raw < 0 ? 500 : raw; })(), // PRODUCT_SPEC §9: $5.00 minimum
     plans: {
       premium: {
         monthlyPriceCents: 1499,

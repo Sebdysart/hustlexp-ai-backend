@@ -14,6 +14,7 @@ import { XPService } from '../services/XPService.js';
 import { EarnedVerificationUnlockService } from '../services/EarnedVerificationUnlockService.js';
 import type { User } from '../types.js';
 import { cachedDbQuery, invalidateUser, CACHE_KEYS, CACHE_TTL, CACHE_TAGS } from '../cache/db-cache.js';
+import { invalidateAuthCacheForUser } from '../auth-cache.js';
 import { getStreakStatus } from '../services/StreakService.js';
 import { z } from 'zod';
 
@@ -417,6 +418,10 @@ export const userRouter = router({
         values
       );
       await invalidateUser(ctx.user.id);
+      // SEC-FIX: Evict the in-process auth token cache so the new default_mode
+      // is enforced immediately rather than after the 5-minute TTL expires.
+      // This matches the pattern used by ban, GDPR deletion, and trust-tier changes.
+      invalidateAuthCacheForUser(ctx.user.id);
       return await toMobileUser(result.rows[0]);
     }),
   

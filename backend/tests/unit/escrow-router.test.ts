@@ -397,6 +397,40 @@ describe('escrow.createPaymentIntent', () => {
     });
   });
 
+  describe('authorization — SECURITY CRITICAL (poster ownership)', () => {
+    it('throws NOT_FOUND when the task belongs to another poster (ownership check)', async () => {
+      // The DB query now includes AND poster_id = $2.
+      // When a different poster calls createPaymentIntent for a task they don't own,
+      // the query returns 0 rows → NOT_FOUND (does not leak whether the task exists).
+      mockStripeService.isConfigured.mockReturnValue(true);
+      // Simulate: task exists but belongs to a different poster — 0 rows returned
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+
+      const caller = makeCaller(OTHER_USER_ID, 'user', 'poster');
+      await expect(caller.createPaymentIntent({ taskId: TASK_ID, amount: 5000 }))
+        .rejects.toMatchObject({
+          code: 'NOT_FOUND',
+          message: 'Task not found',
+        });
+    });
+
+    it('passes poster_id from context as the second query parameter (ownership enforcement)', async () => {
+      // Confirm the SQL ownership clause receives ctx.user.id as $2
+      mockStripeService.isConfigured.mockReturnValue(true);
+      mockDb.query.mockResolvedValueOnce({ rows: [{ price: 3000 }], rowCount: 1 } as any);
+      mockStripeService.createPaymentIntent.mockResolvedValueOnce({
+        success: true,
+        data: { paymentIntentId: 'pi_own', clientSecret: 'cs_own', amount: 3000 },
+      });
+
+      await makeCaller(POSTER_ID).createPaymentIntent({ taskId: TASK_ID, amount: 3000 });
+
+      // First db.query call is the task ownership SELECT
+      const taskQueryCall = mockDb.query.mock.calls[0];
+      expect(taskQueryCall[1]).toEqual([TASK_ID, POSTER_ID]);
+    });
+  });
+
   describe('error handling', () => {
     it('throws NOT_FOUND when task does not exist', async () => {
       mockStripeService.isConfigured.mockReturnValue(true);

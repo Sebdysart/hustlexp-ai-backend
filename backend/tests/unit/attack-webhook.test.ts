@@ -35,10 +35,16 @@ vi.mock('../../src/config', () => ({
   },
 }));
 
+// Shared query mock reused by both db.query and inside db.transaction callbacks.
+// db.transaction immediately invokes the callback with the same mockDbQuery so that
+// all mockResolvedValueOnce calls work in a single ordered queue regardless of
+// whether the code path uses db.query or db.transaction.
+const { mockDbQuery } = vi.hoisted(() => ({ mockDbQuery: vi.fn() }));
+
 vi.mock('../../src/db', () => ({
   db: {
-    query: vi.fn(),
-    transaction: vi.fn(),
+    query: mockDbQuery,
+    transaction: vi.fn((fn: (trx: typeof mockDbQuery) => Promise<unknown>) => fn(mockDbQuery)),
   },
   isInvariantViolation: vi.fn(() => false),
   isUniqueViolation: vi.fn(() => false),
@@ -167,6 +173,13 @@ beforeEach(() => {
   vi.resetAllMocks();
   // Restore the Stripe constructor mock after reset so processWebhook tests work.
   // The Stripe mock module returns a class — mockConstructEvent is used per-test.
+
+  // payment-worker handlers use db.transaction() to hold row locks atomically.
+  // The default passthrough executes the callback with db.query as the trx fn,
+  // so that mockResolvedValueOnce calls on db.query work inside transactions.
+  mockDb.transaction.mockImplementation(
+    (fn: (trx: typeof mockDb.query) => Promise<unknown>) => fn(mockDb.query)
+  );
 });
 
 // ===========================================================================
