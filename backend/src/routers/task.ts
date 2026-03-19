@@ -673,58 +673,45 @@ export const taskRouter = router({
         throw new TRPCError({ code: 'FORBIDDEN', message: 'Only the assigned worker can submit proof' });
       }
 
-      // MM1 FIX: ProofService.submit() and TaskService.submitProof() must be
-      // atomic. If TaskService.submitProof() fails after ProofService.submit()
-      // succeeds, the proof row is orphaned: future submissions are blocked with
-      // "already pending" but the task stays in ACCEPTED state, locking the worker
-      // out permanently. Wrapping both in a transaction ensures either both
-      // succeed or both roll back.
+      // YY-02 FIX: The previous implementation issued raw db.query('BEGIN') /
+      // db.query('COMMIT') / db.query('ROLLBACK') from the pool. Because pg-pool
+      // dispatches each query() call to whatever connection is currently idle,
+      // these control statements could land on a different pool connection than
+      // the queries inside ProofService.submit() and TaskService.submitProof(),
+      // making the outer "transaction" completely illusory.
       //
-      // Video attachments (addVideo) are outside the core atomicity boundary:
-      // they are best-effort metadata and a failure there should not roll back
-      // the proof or the task state transition. They run after the commit.
-      let proofResult: Awaited<ReturnType<typeof ProofService.submit>>;
-      let taskResult: Awaited<ReturnType<typeof TaskService.submitProof>>;
+      // Both services already manage their own internal db.transaction() calls
+      // (ProofService.submit via UU-05, TaskService.submitProof via the existing
+      // FOR UPDATE transaction). The idempotency recovery path in
+      // TaskService.submitProof() (PROOF_SUBMITTED → return success) handles the
+      // case where ProofService.submit committed but the task state update did not.
+      // Removing the outer raw BEGIN/COMMIT restores the intended semantics: each
+      // service operates on its own pinned connection inside its own transaction.
+      const proofResult = await ProofService.submit({
+        taskId: input.taskId,
+        submitterId: ctx.user.id,
+        description: input.description || input.notes,
+        photoUrls: input.photoUrls,
+        gpsLatitude: input.gpsLatitude,
+        gpsLongitude: input.gpsLongitude,
+        biometricHash: input.biometricHash,
+      });
 
-      try {
-        await db.query('BEGIN');
-
-        proofResult = await ProofService.submit({
-          taskId: input.taskId,
-          submitterId: ctx.user.id,
-          description: input.description || input.notes,
-          photoUrls: input.photoUrls,
-          gpsLatitude: input.gpsLatitude,
-          gpsLongitude: input.gpsLongitude,
-          biometricHash: input.biometricHash,
+      if (!proofResult.success) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: proofResult.error.message,
         });
+      }
 
-        if (!proofResult.success) {
-          await db.query('ROLLBACK');
-          throw new TRPCError({
-            code: 'BAD_REQUEST',
-            message: proofResult.error.message,
-          });
-        }
+      // Transition task to PROOF_SUBMITTED in its own internal transaction
+      const taskResult = await TaskService.submitProof(input.taskId);
 
-        // Transition task to PROOF_SUBMITTED inside the same transaction
-        taskResult = await TaskService.submitProof(input.taskId);
-
-        if (!taskResult.success) {
-          await db.query('ROLLBACK');
-          throw new TRPCError({
-            code: 'BAD_REQUEST',
-            message: taskResult.error.message,
-          });
-        }
-
-        await db.query('COMMIT');
-      } catch (err) {
-        // If we haven't already rolled back (e.g. TRPCError thrown above already
-        // called ROLLBACK), attempt a defensive rollback — pg ignores ROLLBACK
-        // when no transaction is active, so this is safe.
-        try { await db.query('ROLLBACK'); } catch { /* ignore */ }
-        throw err;
+      if (!taskResult.success) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: taskResult.error.message,
+        });
       }
 
       // Video attachments are best-effort: run after commit so a video failure
@@ -871,34 +858,28 @@ export const taskRouter = router({
    * Cancel task
    */
   cancel: posterProcedure
-    .input(z.object({ 
+    .input(z.object({
       taskId: Schemas.uuid,
       reason: z.string().max(1000).optional(),
     }))
     .mutation(async ({ ctx, input }) => {
-      // Verify user is poster
-      const taskResult = await TaskService.getById(input.taskId);
-      if (!taskResult.success) {
-        throw new TRPCError({
-          code: 'NOT_FOUND',
-          message: 'Task not found',
-        });
-      }
-      
-      if (taskResult.data.poster_id !== ctx.user.id) {
-        throw new TRPCError({
-          code: 'FORBIDDEN',
-          message: 'Only the task poster can cancel',
-        });
-      }
-      
-      const result = await TaskService.cancel(input.taskId);
-      
+      // YY-01 FIX: poster ownership is verified inside the FOR UPDATE transaction
+      // in TaskService.cancel() (same pattern as complete/UU-02). The previous
+      // pre-call TaskService.getById() check had a TOCTOU window between reading
+      // the poster_id and acquiring the lock in TaskService.cancel().
+      const result = await TaskService.cancel(input.taskId, ctx.user.id);
+
       if (!result.success) {
-        throw new TRPCError({
-          code: 'BAD_REQUEST',
-          message: result.error.message,
-        });
+        const errCode = result.error.code;
+        let code: 'NOT_FOUND' | 'FORBIDDEN' | 'BAD_REQUEST';
+        if (errCode === ErrorCodes.NOT_FOUND) {
+          code = 'NOT_FOUND';
+        } else if (errCode === ErrorCodes.FORBIDDEN) {
+          code = 'FORBIDDEN';
+        } else {
+          code = 'BAD_REQUEST';
+        }
+        throw new TRPCError({ code, message: result.error.message });
       }
       await invalidateTask(input.taskId);
       return result.data;

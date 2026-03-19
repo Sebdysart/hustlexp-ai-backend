@@ -656,18 +656,24 @@ describe('XPService.getDailyLeaderboard', () => {
 // ═══════════════════════════════════════════════════════════════════════════
 // clawbackXP — FIX 2: idempotency on retry (unique constraint)
 //              BUG UU-06 FIX: atomicity via db.transaction + FOR UPDATE lock
+//              BUG YY-04 FIX: award SELECT moved inside transaction (no outer query)
+//
+// Mock shape after YY-04 fix:
+//   mockDbTx call 0: callback receives txQuery mock with:
+//     txQuery call 0: SELECT users FOR UPDATE (lock user row)
+//     txQuery call 1: SELECT award from xp_ledger (now inside transaction)
+//     txQuery call 2: INSERT clawback row
+//     txQuery call 3: UPDATE users SET xp_total
+//     txQuery call 4 (optional): UPDATE users SET current_level
 // ═══════════════════════════════════════════════════════════════════════════
 describe('XPService.clawbackXP', () => {
   it('deducts XP when original award exists', async () => {
-    // Outer query: find the original award
-    mockQuery.mockResolvedValueOnce({
-      rows: [{ id: 'xp-1', base_xp: 500, effective_xp: 500, task_id: 'task-1' }],
-    });
-    // Transaction callback receives a txQuery mock
+    // No outer db.query — award SELECT is now txQuery call 1 (after FOR UPDATE)
     let capturedInsertSql = '';
     mockDbTx.mockImplementationOnce(async (fn: (q: unknown) => Promise<unknown>) => {
       const txQuery = vi.fn()
         .mockResolvedValueOnce({ rows: [{ xp_total: 500, current_level: 2 }], rowCount: 1 }) // FOR UPDATE
+        .mockResolvedValueOnce({ rows: [{ id: 'xp-1', base_xp: 500, effective_xp: 500, task_id: 'task-1' }], rowCount: 1 }) // SELECT award
         .mockImplementationOnce((sql: string) => {
           capturedInsertSql = sql;
           return Promise.resolve({ rowCount: 1, rows: [{ id: 'xp-clawback-1' }] }); // INSERT
@@ -686,15 +692,13 @@ describe('XPService.clawbackXP', () => {
   });
 
   it('is idempotent — second clawback call is a no-op (rowCount=0)', async () => {
-    // Outer query: find the original award
-    mockQuery.mockResolvedValueOnce({
-      rows: [{ id: 'xp-1', base_xp: 500, effective_xp: 500, task_id: 'task-1' }],
-    });
-    // Transaction: FOR UPDATE lock + INSERT conflicts (rowCount=0) — no UPDATE follows
+    // No outer db.query — award SELECT is txQuery call 1
+    // Transaction: FOR UPDATE + SELECT award + INSERT conflicts (rowCount=0) — no UPDATE follows
     let txQueryCallCount = 0;
     mockDbTx.mockImplementationOnce(async (fn: (q: unknown) => Promise<unknown>) => {
       const txQuery = vi.fn()
         .mockResolvedValueOnce({ rows: [{ xp_total: 500, current_level: 2 }], rowCount: 1 }) // FOR UPDATE
+        .mockResolvedValueOnce({ rows: [{ id: 'xp-1', base_xp: 500, effective_xp: 500, task_id: 'task-1' }], rowCount: 1 }) // SELECT award
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }); // INSERT conflicts — already applied
       const result = await fn(txQuery);
       txQueryCallCount = txQuery.mock.calls.length;
@@ -705,34 +709,45 @@ describe('XPService.clawbackXP', () => {
       XPService.clawbackXP('user-1', 'escrow-1', 'refund')
     ).resolves.not.toThrow();
 
-    // Inside transaction: only FOR UPDATE + INSERT (no UPDATE users since rowCount=0)
-    expect(txQueryCallCount).toBe(2);
+    // Inside transaction: FOR UPDATE + SELECT award + INSERT (no UPDATE users since rowCount=0)
+    expect(txQueryCallCount).toBe(3);
     expect(mockDbTx).toHaveBeenCalledTimes(1);
   });
 
   it('skips entirely when no XP award exists for the escrow', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [] }); // no award found
+    // Award SELECT is now inside the transaction — no outer db.query needed.
+    // Transaction enters for the user lock, finds no award in txQuery[1], returns early.
+    mockDbTx.mockImplementationOnce(async (fn: (q: unknown) => Promise<unknown>) => {
+      const txQuery = vi.fn()
+        .mockResolvedValueOnce({ rows: [{ xp_total: 0, current_level: 1 }], rowCount: 1 }) // FOR UPDATE
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 }); // SELECT award — none found
+      return fn(txQuery);
+    });
 
     await expect(
       XPService.clawbackXP('user-1', 'escrow-none', 'refund')
     ).resolves.not.toThrow();
 
-    // Only the outer SELECT — transaction never entered
-    expect(mockQuery).toHaveBeenCalledTimes(1);
-    expect(mockDbTx).not.toHaveBeenCalled();
+    // No outer db.query; transaction was entered once (for the user lock)
+    expect(mockQuery).not.toHaveBeenCalled();
+    expect(mockDbTx).toHaveBeenCalledTimes(1);
   });
 
   it('skips when xpToDeduct rounds to 0 (partial fraction of tiny award)', async () => {
-    mockQuery.mockResolvedValueOnce({
-      rows: [{ id: 'xp-1', base_xp: 1, effective_xp: 1, task_id: 'task-1' }],
+    // Award SELECT is inside the transaction; fraction=0 → xpToDeduct=0 → early return
+    mockDbTx.mockImplementationOnce(async (fn: (q: unknown) => Promise<unknown>) => {
+      const txQuery = vi.fn()
+        .mockResolvedValueOnce({ rows: [{ xp_total: 100, current_level: 1 }], rowCount: 1 }) // FOR UPDATE
+        .mockResolvedValueOnce({ rows: [{ id: 'xp-1', base_xp: 1, effective_xp: 1, task_id: 'task-1' }], rowCount: 1 }); // SELECT award
+      return fn(txQuery);
     });
 
-    // fraction=0 means nothing to deduct — returns early before entering transaction
+    // fraction=0 means nothing to deduct — returns early inside transaction after computing xpToDeduct=0
     await expect(
       XPService.clawbackXP('user-1', 'escrow-1', 'refund', 0)
     ).resolves.not.toThrow();
 
-    expect(mockQuery).toHaveBeenCalledTimes(1); // only the outer SELECT
-    expect(mockDbTx).not.toHaveBeenCalled();
+    expect(mockQuery).not.toHaveBeenCalled(); // no outer SELECT anymore
+    expect(mockDbTx).toHaveBeenCalledTimes(1);
   });
 });

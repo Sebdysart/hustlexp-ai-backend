@@ -930,6 +930,48 @@ describe('TaskService.cancel', () => {
     expect(result.data?.state).toBe('CANCELLED');
   });
 
+  // YY-01: posterId ownership check inside FOR UPDATE lock
+  it('YY-01: cancels when posterId matches poster_id (ownership verified inside lock)', async () => {
+    const cancelled = makeTask({ state: 'CANCELLED' });
+    // makeTask defaults poster_id to 'poster-1'
+    mockQuery
+      .mockResolvedValueOnce({ rows: [makeTask({ state: 'OPEN', poster_id: 'poster-1' })], rowCount: 1 } as never) // SELECT FOR UPDATE
+      .mockResolvedValueOnce({ rows: [cancelled], rowCount: 1 } as never)                                          // UPDATE tasks
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);                                                  // SELECT escrows (none)
+
+    const result = await TaskService.cancel('task-1', 'poster-1');
+
+    expect(result.success).toBe(true);
+    expect(result.data?.state).toBe('CANCELLED');
+  });
+
+  it('YY-01: returns FORBIDDEN when posterId does not match poster_id (inside FOR UPDATE lock)', async () => {
+    // Lock is acquired, then ownership check fails — no UPDATE query should be issued
+    mockQuery
+      .mockResolvedValueOnce({ rows: [makeTask({ state: 'OPEN', poster_id: 'poster-1' })], rowCount: 1 } as never); // SELECT FOR UPDATE
+
+    const result = await TaskService.cancel('task-1', 'different-user');
+
+    expect(result.success).toBe(false);
+    expect(result.error?.code).toBe('FORBIDDEN');
+    expect(result.error?.message).toBe('Not task owner');
+    // No UPDATE should have been issued after the ownership rejection
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it('YY-01: skips ownership check when posterId is undefined (backward compat)', async () => {
+    const cancelled = makeTask({ state: 'CANCELLED' });
+    mockQuery
+      .mockResolvedValueOnce({ rows: [makeTask({ state: 'OPEN' })], rowCount: 1 } as never) // SELECT FOR UPDATE
+      .mockResolvedValueOnce({ rows: [cancelled], rowCount: 1 } as never)                   // UPDATE tasks
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);                           // SELECT escrows (none)
+
+    // No posterId — ownership check must be skipped (same semantics as before YY-01)
+    const result = await TaskService.cancel('task-1', undefined);
+
+    expect(result.success).toBe(true);
+  });
+
   it('cancels an ACCEPTED task successfully (no funded escrow)', async () => {
     const cancelled = makeTask({ state: 'CANCELLED' });
     mockQuery

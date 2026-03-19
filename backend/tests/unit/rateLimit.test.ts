@@ -363,7 +363,7 @@ describe('aiRateLimitMiddleware', () => {
 
     await middleware(ctx as any, next);
 
-    expect(mockFirebaseAuth.verifyIdToken).toHaveBeenCalledWith('valid.firebase.token');
+    expect(mockFirebaseAuth.verifyIdToken).toHaveBeenCalledWith('valid.firebase.token', true);
     expect(mockRedis.incrWithTtl).toHaveBeenCalledWith(`ratelimit:ai:openai:${uid}`, 60);
     expect(next).toHaveBeenCalledOnce();
   });
@@ -481,7 +481,7 @@ describe('publicIpRateLimitMiddleware', () => {
     await middleware(ctx as any, next);
 
     // Token was verified — IP bucket must NOT be touched
-    expect(mockFirebaseAuth.verifyIdToken).toHaveBeenCalledWith('valid.firebase.token');
+    expect(mockFirebaseAuth.verifyIdToken).toHaveBeenCalledWith('valid.firebase.token', true);
     expect(mockRedis.incrWithTtl).not.toHaveBeenCalled();
     expect(next).toHaveBeenCalledOnce();
   });
@@ -502,7 +502,7 @@ describe('publicIpRateLimitMiddleware', () => {
     await middleware(ctx as any, next);
 
     // Garbage token must not bypass — IP rate limit must be checked
-    expect(mockFirebaseAuth.verifyIdToken).toHaveBeenCalledWith('garbage');
+    expect(mockFirebaseAuth.verifyIdToken).toHaveBeenCalledWith('garbage', true);
     expect(mockRedis.incrWithTtl).toHaveBeenCalledWith('rate:public:ip:198.51.100.10', 60);
     expect(next).toHaveBeenCalledOnce();
   });

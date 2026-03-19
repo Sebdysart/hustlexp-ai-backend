@@ -3,14 +3,23 @@
  * Processes annual 1099-NEC filings
  */
 
+import { z } from 'zod';
 import type { Job } from 'bullmq';
 import { TaxReportingService } from '../services/TaxReportingService.js';
 import { workerLogger } from '../logger.js';
 
 const log = workerLogger.child({ worker: 'tax-reporting' });
 
+const TaxReportingJobSchema = z.object({
+  taxYear: z.number().int().min(2000).max(2100),
+});
+
 export async function processTaxReportingJob(job: Job): Promise<void> {
-  const { taxYear } = job.data as { taxYear: number };
+  const parsed = TaxReportingJobSchema.safeParse(job.data);
+  if (!parsed.success) {
+    throw new Error(`Invalid tax reporting job payload: ${parsed.error.message}`);
+  }
+  const { taxYear } = parsed.data;
 
   log.info({ taxYear }, 'Starting tax reporting job');
 

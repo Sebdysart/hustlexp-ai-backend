@@ -89,6 +89,16 @@ vi.mock('../../src/services/PhotoVerificationService', () => ({
   },
 }));
 
+// Mock the Redis cache module used by the advisory lock (FIX YY-03).
+// Default: set() returns 'OK' (lock acquired) so all existing attack tests
+// pass through the AI pipeline as before. del() is a no-op.
+vi.mock('../../src/cache/redis', () => ({
+  getClient: vi.fn(() => ({
+    set: vi.fn().mockResolvedValue('OK'),
+    del: vi.fn().mockResolvedValue(1),
+  })),
+}));
+
 vi.mock('../../src/services/EarnedVerificationUnlockService', () => ({
   EarnedVerificationUnlockService: { recordEarnings: vi.fn().mockResolvedValue(undefined) },
 }));

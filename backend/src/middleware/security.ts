@@ -247,7 +247,7 @@ export async function aiRateLimitMiddleware(provider: keyof typeof AI_RATE_LIMIT
 
     let userId: string;
     try {
-      const decoded = await firebaseAuth.verifyIdToken(token);
+      const decoded = await firebaseAuth.verifyIdToken(token, true);
       userId = decoded.uid;
     } catch {
       return c.json({ error: 'Authentication required' }, 401);
@@ -336,7 +336,7 @@ export function publicIpRateLimitMiddleware() {
     if (authHeader?.startsWith('Bearer ')) {
       const token = authHeader.slice(7);
       try {
-        await firebaseAuth.verifyIdToken(token);
+        await firebaseAuth.verifyIdToken(token, true);
         // Token is valid — the per-user bucket in rateLimitMiddleware applies.
         await next();
         return;

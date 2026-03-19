@@ -326,7 +326,7 @@ async function handleReleaseRequest(
   }
 
   // Deduct platform fee before paying out to worker (PRODUCT_SPEC §9: 15% default)
-  const platformFeePercent = config.stripe.platformFeePercent ?? 15;
+  const platformFeePercent = Math.min(100, Math.max(0, config.stripe.platformFeePercent ?? 15));
   const platformFeeCents = Math.round(escrow.amount * (platformFeePercent / 100));
   const netPayoutCents = escrow.amount - platformFeeCents;
 
@@ -608,7 +608,7 @@ async function handlePartialRefundRequest(
       // to the worker. The non-dispute release path (handleReleaseRequest) already
       // deducts the fee — this path previously passed the raw releaseAmount,
       // bypassing the fee entirely in the SPLIT dispute resolution path.
-      const platformFeePercent = (config.stripe?.platformFeePercent ?? 15);
+      const platformFeePercent = Math.min(100, Math.max(0, config.stripe?.platformFeePercent ?? 15));
       const netReleaseCents = Math.round(releaseAmount * (1 - platformFeePercent / 100));
 
       log.info(

@@ -819,11 +819,13 @@ app.post('/webhooks/checkr', async (c) => {
   // Use timingSafeEqual to prevent timing-attack enumeration of the secret.
   const expectedBuf = Buffer.from(expectedSig, 'hex');
   const providedBuf = Buffer.from(providedSig, 'hex');
-  const signaturesMatch =
-    expectedBuf.length === providedBuf.length &&
-    timingSafeEqual(expectedBuf, providedBuf);
-
-  if (!signaturesMatch) {
+  // Guard against non-hex input producing a wrong-length buffer, which would
+  // cause timingSafeEqual to throw a RangeError (DoS via 500).
+  if (providedBuf.length !== expectedBuf.length) {
+    pinoLogger.warn('Checkr webhook signature verification failed: buffer length mismatch (non-hex input)');
+    return c.json({ error: 'Invalid signature' }, 401);
+  }
+  if (!timingSafeEqual(expectedBuf, providedBuf)) {
     pinoLogger.warn({ providedSig }, 'Checkr webhook signature verification failed');
     return c.json({ error: 'Invalid signature' }, 401);
   }
@@ -870,13 +872,9 @@ app.post('/webhooks/checkr', async (c) => {
 // 404 HANDLER
 // ============================================================================
 
-app.notFound((c) => {
-  return c.json({
-    error: 'Not Found',
-    path: c.req.path,
-    method: c.req.method,
-    requestId: c.get('requestId'),
-  }, 404);
+app.notFound((_c) => {
+  // Return only a static body — reflecting path/method/requestId enables log injection.
+  return _c.json({ error: 'Not Found' }, 404);
 });
 
 // ============================================================================

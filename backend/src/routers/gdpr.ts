@@ -212,7 +212,7 @@ export const gdprRouter = router({
         'email_notifications',
         'biometric_data',
       ]), // Restricted to known valid types — prevents consent record pollution
-      purpose: z.string().min(1), // Required in schema (TEXT)
+      purpose: z.string().min(1).max(500), // Required in schema (TEXT) — max 500 chars
       granted: z.boolean(), // true = grant, false = revoke/withdraw
       userAgent: z.string().optional(), // Optional user agent for audit
       // ipAddress intentionally removed from input — derived server-side from ctx.ip

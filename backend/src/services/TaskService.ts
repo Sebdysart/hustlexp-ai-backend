@@ -1177,12 +1177,12 @@ export const TaskService = {
    * impossible to cancel a task once it entered the matchmaker queue. MATCHING tasks
    * have a funded escrow and must trigger the same full-refund path as OPEN tasks.
    */
-  cancel: async (taskId: string): Promise<ServiceResult<Task>> => {
+  cancel: async (taskId: string, posterId?: string): Promise<ServiceResult<Task>> => {
     try {
       return await db.transaction(async (query) => {
         // Acquire row-level lock before reading state
-        const lockResult = await query<{ state: string; late_cancel_pct: number | null; cancellation_window_hours: number | null; accepted_at: Date | null }>(
-          `SELECT state, late_cancel_pct, cancellation_window_hours, accepted_at FROM tasks WHERE id = $1 FOR UPDATE`,
+        const lockResult = await query<{ state: string; poster_id: string; late_cancel_pct: number | null; cancellation_window_hours: number | null; accepted_at: Date | null }>(
+          `SELECT state, poster_id, late_cancel_pct, cancellation_window_hours, accepted_at FROM tasks WHERE id = $1 FOR UPDATE`,
           [taskId]
         );
 
@@ -1192,6 +1192,19 @@ export const TaskService = {
             error: {
               code: ErrorCodes.NOT_FOUND,
               message: `Task ${taskId} not found`,
+            },
+          };
+        }
+
+        // YY-01 FIX: verify poster ownership inside the FOR UPDATE lock so the
+        // auth check and the state-transition UPDATE are atomic (same TOCTOU fix
+        // applied to complete() in UU-02).
+        if (posterId !== undefined && lockResult.rows[0].poster_id !== posterId) {
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.FORBIDDEN,
+              message: 'Not task owner',
             },
           };
         }

@@ -53,6 +53,18 @@ vi.mock('../../src/services/PhotoVerificationService', () => ({
   },
 }));
 
+// Mock the Redis cache module used by the advisory lock (FIX YY-03).
+// By default the mock Redis client returns 'OK' for set() (lock acquired)
+// and resolves for del() (lock released). Individual tests can override
+// set() to return null to simulate lock contention.
+const mockRedisSet = vi.fn().mockResolvedValue('OK');
+const mockRedisDel = vi.fn().mockResolvedValue(1);
+const mockRedisClient = { set: mockRedisSet, del: mockRedisDel };
+
+vi.mock('../../src/cache/redis', () => ({
+  getClient: vi.fn(() => mockRedisClient),
+}));
+
 import { db, isInvariantViolation } from '../../src/db';
 import { ProofService } from '../../src/services/ProofService';
 import { BiometricVerificationService } from '../../src/services/BiometricVerificationService';
@@ -65,6 +77,9 @@ const mockIsInvariantViolation = vi.mocked(isInvariantViolation);
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Restore advisory lock defaults: set() returns 'OK' (acquired), del() resolves.
+  mockRedisSet.mockResolvedValue('OK');
+  mockRedisDel.mockResolvedValue(1);
 });
 
 // ============================================================================
@@ -344,6 +359,27 @@ describe('ProofService', () => {
 
       expect(result.success).toBe(false);
       if (!result.success) expect(result.error.code).toBe('NOT_FOUND');
+    });
+
+    it('throws CONFLICT when advisory lock is already held by another reviewer (FIX YY-03)', async () => {
+      // Phase 1 SELECT succeeds — proof is SUBMITTED and transition is valid
+      const proof = makeProof({ state: 'SUBMITTED' });
+      mockDb.query.mockResolvedValueOnce({ rows: [proof], rowCount: 1 } as never);
+
+      // Simulate lock contention: Redis SET NX returns null (key already exists)
+      mockRedisSet.mockResolvedValueOnce(null);
+
+      await expect(
+        ProofService.review({
+          proofId: 'proof-1',
+          reviewerId: 'admin-2',
+          decision: 'ACCEPTED',
+        })
+      ).rejects.toMatchObject({ code: 'CONFLICT' });
+
+      // AI pipeline must NOT have been invoked — that is the whole point of the fix
+      expect(JudgeAIService.synthesizeVerdict).not.toHaveBeenCalled();
+      expect(BiometricVerificationService.analyzeProofSubmission).not.toHaveBeenCalled();
     });
 
     it('rejects invalid state transition', async () => {

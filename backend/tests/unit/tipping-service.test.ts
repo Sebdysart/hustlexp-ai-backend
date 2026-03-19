@@ -112,6 +112,22 @@ describe('TippingService', () => {
       if (!result.success) expect(result.error.code).toBe('UNAUTHORIZED');
     });
 
+    it('returns NO_WORKER when task has no assigned worker', async () => {
+      mockDb.query.mockResolvedValueOnce({
+        rows: [{ state: 'COMPLETED', poster_id: 'poster-1', worker_id: null, price: 5000 }],
+        rowCount: 1,
+      } as never);
+
+      const result = await TippingService.createTip({
+        taskId: 'task-1',
+        posterId: 'poster-1',
+        amountCents: 500,
+      });
+
+      expect(result.success).toBe(false);
+      if (!result.success) expect(result.error.code).toBe('NO_WORKER');
+    });
+
     it('returns INVALID_AMOUNT when tip below minimum ($1)', async () => {
       mockDb.query.mockResolvedValueOnce({
         rows: [{ state: 'COMPLETED', poster_id: 'poster-1', worker_id: 'worker-1', price: 5000 }],

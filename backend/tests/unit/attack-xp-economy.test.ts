@@ -858,19 +858,15 @@ describe('clawbackXP — bug-fix regression suite', () => {
    */
 
   it('clawbackXP SQL uses ON CONFLICT ON CONSTRAINT xp_ledger_escrow_reason_unique (not composite columns)', async () => {
-    // Outer SELECT: award lookup
-    mockQuery.mockResolvedValueOnce({
-      rows: [{
-        id: 'xp-1', base_xp: 1000, effective_xp: 1000, task_id: 'task-clawback',
-        streak_multiplier: 1.0, trust_multiplier: 1.0, live_mode_multiplier: 1.0,
-        user_xp_after: 1000, user_level_after: 2, user_streak_at_award: 0,
-      }],
-    });
-    // Transaction: runs FOR UPDATE SELECT, INSERT, UPDATE users
+    // YY-04 FIX: No outer SELECT — award lookup is now txQuery call [1] inside the transaction.
+    // Transaction: FOR UPDATE (txQuery[0]), SELECT award (txQuery[1]), INSERT (txQuery[2]), UPDATE (txQuery[3])
     let capturedTxQuery: ReturnType<typeof vi.fn> | null = null;
     mockTxFn.mockImplementationOnce(async (fn: TxFn) => {
       const txQuery = vi.fn()
         .mockResolvedValueOnce({ rows: [{ xp_total: 1000, current_level: 2 }] }) // FOR UPDATE
+        .mockResolvedValueOnce({ rows: [{ // SELECT award (inside transaction)
+          id: 'xp-1', base_xp: 1000, effective_xp: 1000, task_id: 'task-clawback',
+        }], rowCount: 1 })
         .mockResolvedValueOnce({ rows: [{ id: 'xp-clawback-1' }], rowCount: 1 }) // INSERT
         .mockResolvedValueOnce({ rows: [{ xp_total: 0, current_level: 1 }] });   // UPDATE
       capturedTxQuery = txQuery;
@@ -879,90 +875,87 @@ describe('clawbackXP — bug-fix regression suite', () => {
 
     await XPService.clawbackXP('user-1', 'escrow-1', 'refund', 1.0);
 
-    // The INSERT is txQuery call index 1
-    const insertCall = capturedTxQuery!.mock.calls[1];
+    // The INSERT is now txQuery call index 2 (after FOR UPDATE and SELECT award)
+    const insertCall = capturedTxQuery!.mock.calls[2];
     const sql: string = insertCall[0] as string;
     expect(sql).toContain('ON CONFLICT ON CONSTRAINT xp_ledger_escrow_reason_unique');
     expect(sql).not.toContain('ON CONFLICT (user_id, escrow_id, reason)');
   });
 
   it('clawbackXP inserts NEGATIVE effective_xp (debit entry, not a no-op positive)', async () => {
-    mockQuery.mockResolvedValueOnce({
-      rows: [{ id: 'xp-2', base_xp: 500, effective_xp: 500, task_id: 'task-x',
-        streak_multiplier: 1.0, trust_multiplier: 1.0, live_mode_multiplier: 1.0,
-        user_xp_after: 500, user_level_after: 1, user_streak_at_award: 0 }],
-    });
+    // YY-04 FIX: No outer SELECT — award is txQuery[1]; INSERT is txQuery[2]
     let capturedTxQuery: ReturnType<typeof vi.fn> | null = null;
     mockTxFn.mockImplementationOnce(async (fn: TxFn) => {
       const txQuery = vi.fn()
-        .mockResolvedValueOnce({ rows: [{ xp_total: 500, current_level: 1 }] })
-        .mockResolvedValueOnce({ rows: [{ id: 'xp-clawback-2' }], rowCount: 1 })
-        .mockResolvedValueOnce({ rows: [{ xp_total: 0, current_level: 1 }] });
+        .mockResolvedValueOnce({ rows: [{ xp_total: 500, current_level: 1 }] }) // FOR UPDATE
+        .mockResolvedValueOnce({ rows: [{ id: 'xp-2', base_xp: 500, effective_xp: 500, task_id: 'task-x' }], rowCount: 1 }) // SELECT award
+        .mockResolvedValueOnce({ rows: [{ id: 'xp-clawback-2' }], rowCount: 1 }) // INSERT
+        .mockResolvedValueOnce({ rows: [{ xp_total: 0, current_level: 1 }] });   // UPDATE
       capturedTxQuery = txQuery;
       return fn(txQuery);
     });
 
     await XPService.clawbackXP('user-2', 'escrow-2', 'dispute_loss', 1.0);
 
-    // INSERT is txQuery call [1]; params: [userId, escrowId, taskId, reason, adjustedBaseXP, adjustedEffectiveXP, xpToDeduct]
-    const insertParams = capturedTxQuery!.mock.calls[1][1] as unknown[];
+    // INSERT is txQuery call [2]; params: [userId, escrowId, taskId, reason, adjustedBaseXP, adjustedEffectiveXP, xpToDeduct]
+    const insertParams = capturedTxQuery!.mock.calls[2][1] as unknown[];
     expect(insertParams[5]).toBe(-500); // adjustedEffectiveXP
     expect(insertParams[4]).toBe(-500); // adjustedBaseXP
   });
 
   it('clawbackXP partial fraction — stores proportional negative values', async () => {
     // 60% clawback of 1000 XP → -600 effective, -600 base
-    mockQuery.mockResolvedValueOnce({
-      rows: [{ id: 'xp-3', base_xp: 1000, effective_xp: 1000, task_id: 'task-partial',
-        streak_multiplier: 1.0, trust_multiplier: 1.0, live_mode_multiplier: 1.0,
-        user_xp_after: 1000, user_level_after: 2, user_streak_at_award: 0 }],
-    });
+    // YY-04 FIX: award SELECT is txQuery[1]; INSERT is txQuery[2]
     let capturedTxQuery: ReturnType<typeof vi.fn> | null = null;
     mockTxFn.mockImplementationOnce(async (fn: TxFn) => {
       const txQuery = vi.fn()
-        .mockResolvedValueOnce({ rows: [{ xp_total: 1000, current_level: 2 }] })
-        .mockResolvedValueOnce({ rows: [{ id: 'xp-clawback-3' }], rowCount: 1 })
-        .mockResolvedValueOnce({ rows: [{ xp_total: 400, current_level: 1 }] });
+        .mockResolvedValueOnce({ rows: [{ xp_total: 1000, current_level: 2 }] }) // FOR UPDATE
+        .mockResolvedValueOnce({ rows: [{ id: 'xp-3', base_xp: 1000, effective_xp: 1000, task_id: 'task-partial' }], rowCount: 1 }) // SELECT award
+        .mockResolvedValueOnce({ rows: [{ id: 'xp-clawback-3' }], rowCount: 1 }) // INSERT
+        .mockResolvedValueOnce({ rows: [{ xp_total: 400, current_level: 1 }] });  // UPDATE
       capturedTxQuery = txQuery;
       return fn(txQuery);
     });
 
     await XPService.clawbackXP('user-3', 'escrow-3', 'partial_dispute', 0.6);
 
-    const insertParams = capturedTxQuery!.mock.calls[1][1] as unknown[];
+    const insertParams = capturedTxQuery!.mock.calls[2][1] as unknown[];
     expect(insertParams[5]).toBe(-600); // adjustedEffectiveXP
     expect(insertParams[4]).toBe(-600); // adjustedBaseXP
     expect(insertParams[6]).toBe(600);  // xpToDeduct ($7)
   });
 
   it('clawbackXP is idempotent — rowCount=0 signals already applied, no double deduction', async () => {
-    mockQuery.mockResolvedValueOnce({
-      rows: [{ id: 'xp-4', base_xp: 800, effective_xp: 800, task_id: 'task-idem',
-        streak_multiplier: 1.0, trust_multiplier: 1.0, live_mode_multiplier: 1.0,
-        user_xp_after: 800, user_level_after: 2, user_streak_at_award: 0 }],
-    });
+    // YY-04 FIX: No outer SELECT — award is txQuery[1]; INSERT conflicts at txQuery[2]
     mockTxFn.mockImplementationOnce(async (fn: TxFn) => {
       const txQuery = vi.fn()
         .mockResolvedValueOnce({ rows: [{ xp_total: 800, current_level: 2 }] }) // FOR UPDATE
+        .mockResolvedValueOnce({ rows: [{ id: 'xp-4', base_xp: 800, effective_xp: 800, task_id: 'task-idem' }], rowCount: 1 }) // SELECT award
         .mockResolvedValueOnce({ rows: [], rowCount: 0 });                       // INSERT — already applied
       return fn(txQuery);
     });
 
     await XPService.clawbackXP('user-4', 'escrow-4', 'refund', 1.0);
 
-    // Transaction was entered once; outer SELECT called once; UPDATE users NOT called
-    expect(mockQuery).toHaveBeenCalledTimes(1);
+    // No outer db.query; transaction entered once; UPDATE users NOT called (rowCount=0)
+    expect(mockQuery).not.toHaveBeenCalled();
     expect(mockTxFn).toHaveBeenCalledTimes(1);
   });
 
   it('clawbackXP skips entirely when no XP award exists for the escrow', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [] });
+    // YY-04 FIX: No outer SELECT — transaction enters for the user lock, then finds no award.
+    mockTxFn.mockImplementationOnce(async (fn: TxFn) => {
+      const txQuery = vi.fn()
+        .mockResolvedValueOnce({ rows: [{ xp_total: 0, current_level: 1 }] }) // FOR UPDATE
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 });                     // SELECT award — none found
+      return fn(txQuery);
+    });
 
     await XPService.clawbackXP('user-5', 'escrow-5', 'refund', 1.0);
 
-    // Only 1 outer SELECT; transaction never entered
-    expect(mockQuery).toHaveBeenCalledTimes(1);
-    expect(mockTxFn).not.toHaveBeenCalled();
+    // No outer db.query; transaction entered once; returned early after finding no award
+    expect(mockQuery).not.toHaveBeenCalled();
+    expect(mockTxFn).toHaveBeenCalledTimes(1);
   });
 });
 

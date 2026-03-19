@@ -22,6 +22,7 @@ import type { ServiceResult } from '../types.js';
 import type { BiometricSignals, LogisticsSignals, PhotoVerificationSignals } from './JudgeAIService.js';
 import { ErrorCodes } from '../types.js';
 import { logger } from '../logger.js';
+import { getClient } from '../cache/redis.js';
 
 const log = logger.child({ service: 'ProofService' });
 
@@ -82,6 +83,58 @@ const VALID_TRANSITIONS: Record<ProofState, ProofState[]> = {
 
 function isValidTransition(from: ProofState, to: ProofState): boolean {
   return VALID_TRANSITIONS[from]?.includes(to) ?? false;
+}
+
+// ============================================================================
+// ADVISORY LOCK (YY-03)
+// ============================================================================
+
+/**
+ * Key pattern for the per-proof Redis advisory lock used to prevent concurrent
+ * reviewers from both entering the AI pipeline for the same proof.
+ * TTL of 300 s covers even a very slow AI pipeline with margin.
+ */
+const REVIEW_LOCK_KEY = (proofId: string) => `proof:reviewing:${proofId}`;
+const REVIEW_LOCK_TTL_SECONDS = 300;
+
+/**
+ * Attempt to acquire the advisory lock for a proof review.
+ *
+ * Uses SET NX EX so the lock is acquired and its TTL is set atomically.
+ * Returns true if the lock was acquired, false if another reviewer already
+ * holds it.  When Redis is unavailable the lock is skipped (fail-open) to
+ * avoid blocking all reviews during a Redis outage — Phase 3's FOR UPDATE
+ * transaction remains the authoritative serialisation point for data safety.
+ */
+async function acquireReviewLock(proofId: string): Promise<boolean> {
+  const client = getClient();
+  if (!client) {
+    // Redis not configured — skip advisory lock, rely on Phase 3 transaction
+    log.warn({ proofId }, 'Redis unavailable — skipping advisory review lock (Phase 3 transaction remains authoritative)');
+    return true;
+  }
+  try {
+    const result = await client.set(REVIEW_LOCK_KEY(proofId), '1', { ex: REVIEW_LOCK_TTL_SECONDS, nx: true });
+    // Upstash returns 'OK' on successful SET NX, null when key already exists
+    return result === 'OK';
+  } catch (err) {
+    log.warn({ proofId, err }, 'Redis error acquiring review lock — failing open');
+    return true; // fail-open: Phase 3 transaction protects data integrity
+  }
+}
+
+/**
+ * Release the advisory lock for a proof review.
+ * Fire-and-forget — a failure only means the TTL will eventually expire the lock.
+ */
+async function releaseReviewLock(proofId: string): Promise<void> {
+  const client = getClient();
+  if (!client) return;
+  try {
+    await client.del(REVIEW_LOCK_KEY(proofId));
+  } catch (err) {
+    log.warn({ proofId, err }, 'Redis error releasing review lock — lock will expire via TTL');
+  }
 }
 
 // ============================================================================
@@ -451,9 +504,26 @@ export const ProofService = {
         };
       }
 
-      // Phase 2: Run the (potentially long) AI pipeline outside any transaction so we
-      // don't hold a lock during network I/O. The final write transaction below will
+      // Phase 2: Acquire Redis advisory lock BEFORE the AI pipeline (FIX YY-03).
+      // This ensures only one reviewer runs the expensive AI pipeline for a given proof.
+      // Concurrent reviewers that already passed Phase 1's plain SELECT will be turned
+      // away here instead of duplicating all AI calls. Phase 3's FOR UPDATE transaction
+      // remains the definitive serialisation point — the lock is belt-and-suspenders
+      // against AI cost amplification, not against data corruption.
+      const lockAcquired = await acquireReviewLock(proofId);
+      if (!lockAcquired) {
+        throw new TRPCError({
+          code: 'CONFLICT',
+          message: 'Another reviewer is already processing this proof. Please try again shortly.',
+        });
+      }
+
+      // Run the (potentially long) AI pipeline outside any transaction so we
+      // don't hold a DB lock during network I/O. The final write transaction below will
       // re-verify state and use FOR UPDATE + rowCount check to detect races.
+      // The advisory lock acquired above is released in the finally block regardless
+      // of whether the AI pipeline or Phase 3 transaction succeeds or fails.
+      try {
 
       // v2.0.0: Automated AI verification pipeline on every proof acceptance
       // Runs all subsystems, collects signals, feeds to JudgeAI for synthesis.
@@ -626,6 +696,12 @@ export const ProofService = {
       });
 
       return { success: true, data: updatedProof };
+
+      } finally {
+        // Release the advisory lock whether the pipeline succeeded, failed, or threw.
+        // If the lock was never acquired (Redis down, fail-open), this is a no-op.
+        await releaseReviewLock(proofId);
+      }
     } catch (error) {
       if (error instanceof TRPCError) {
         throw error;

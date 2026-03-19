@@ -83,7 +83,11 @@ export const TippingService = {
         return { success: false, error: { code: 'UNAUTHORIZED', message: 'Only the poster can tip' } };
       }
 
-      if (task.worker_id && task.worker_id === posterId) {
+      if (!task.worker_id) {
+        return { success: false, error: { code: 'NO_WORKER', message: 'Task has no assigned worker — cannot accept tips' } };
+      }
+
+      if (task.worker_id === posterId) {
         return { success: false, error: { code: 'SELF_TIP_NOT_ALLOWED', message: 'Cannot tip yourself' } };
       }
 

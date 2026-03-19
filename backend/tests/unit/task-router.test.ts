@@ -791,14 +791,15 @@ describe('task.submitProof', () => {
     vi.clearAllMocks();
   });
 
+  // YY-02: raw BEGIN/COMMIT/ROLLBACK removed. ProofService.submit and
+  // TaskService.submitProof each manage their own internal db.transaction().
+  // The mock sequences no longer include BEGIN/COMMIT/ROLLBACK entries.
+
   it('returns { task, proof } on success', async () => {
     const proof = makeProofRow();
     const task = makeTaskRow({ state: 'PROOF_SUBMITTED' });
     // KK4: ownership check
     mockDb.query.mockResolvedValueOnce({ rows: [{ worker_id: USER_ID }], rowCount: 1 } as any);
-    // MM1: transaction BEGIN / COMMIT
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // BEGIN
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // COMMIT
     mockProofService.submit.mockResolvedValueOnce({ success: true, data: proof as any });
     mockTaskService.submitProof.mockResolvedValueOnce({ success: true, data: task as any });
 
@@ -816,9 +817,6 @@ describe('task.submitProof', () => {
   it('passes extended fields to ProofService.submit', async () => {
     // KK4: ownership check
     mockDb.query.mockResolvedValueOnce({ rows: [{ worker_id: USER_ID }], rowCount: 1 } as any);
-    // MM1: transaction BEGIN / COMMIT
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // BEGIN
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // COMMIT
     mockProofService.submit.mockResolvedValueOnce({
       success: true,
       data: makeProofRow() as any,
@@ -854,9 +852,6 @@ describe('task.submitProof', () => {
   it('falls back to notes when description is not provided', async () => {
     // KK4: ownership check
     mockDb.query.mockResolvedValueOnce({ rows: [{ worker_id: USER_ID }], rowCount: 1 } as any);
-    // MM1: transaction BEGIN / COMMIT
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // BEGIN
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // COMMIT
     mockProofService.submit.mockResolvedValueOnce({
       success: true,
       data: makeProofRow() as any,
@@ -881,10 +876,6 @@ describe('task.submitProof', () => {
   it('throws BAD_REQUEST when ProofService.submit fails', async () => {
     // KK4: ownership check passes
     mockDb.query.mockResolvedValueOnce({ rows: [{ worker_id: USER_ID }], rowCount: 1 } as any);
-    // MM1: BEGIN, then explicit ROLLBACK on ProofService failure, then defensive ROLLBACK
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // BEGIN
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // explicit ROLLBACK
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // defensive ROLLBACK
     mockProofService.submit.mockResolvedValueOnce({
       success: false,
       error: { code: 'PROOF_ERROR', message: 'Proof failed' },
@@ -898,10 +889,6 @@ describe('task.submitProof', () => {
   it('throws BAD_REQUEST when TaskService.submitProof fails', async () => {
     // KK4: ownership check passes
     mockDb.query.mockResolvedValueOnce({ rows: [{ worker_id: USER_ID }], rowCount: 1 } as any);
-    // MM1: BEGIN, then explicit ROLLBACK on TaskService failure, then defensive ROLLBACK
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // BEGIN
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // explicit ROLLBACK
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // defensive ROLLBACK
     mockProofService.submit.mockResolvedValueOnce({
       success: true,
       data: makeProofRow() as any,
@@ -1167,20 +1154,25 @@ describe('task.cancel', () => {
     vi.clearAllMocks();
   });
 
+  // YY-01: ownership check moved inside TaskService.cancel(). Router passes
+  // ctx.user.id as posterId and maps FORBIDDEN / NOT_FOUND error codes.
+
   it('returns cancelled task when poster calls', async () => {
-    const task = makeTaskRow({ poster_id: USER_ID, state: 'OPEN' });
     const cancelled = makeTaskRow({ state: 'CANCELLED' });
 
-    mockTaskService.getById.mockResolvedValueOnce({ success: true, data: task as any });
     mockTaskService.cancel.mockResolvedValueOnce({ success: true, data: cancelled as any });
 
     const result = await makeCallerAsPoster().cancel({ taskId: TASK_ID });
 
     expect(result).toEqual(cancelled);
+    // Ownership check is now inside TaskService.cancel — getById must not be called.
+    expect(mockTaskService.getById).not.toHaveBeenCalled();
+    // Poster id is forwarded to the service
+    expect(mockTaskService.cancel).toHaveBeenCalledWith(TASK_ID, USER_ID);
   });
 
-  it('throws NOT_FOUND when task does not exist', async () => {
-    mockTaskService.getById.mockResolvedValueOnce({
+  it('throws NOT_FOUND when TaskService.cancel returns NOT_FOUND', async () => {
+    mockTaskService.cancel.mockResolvedValueOnce({
       success: false,
       error: { code: 'NOT_FOUND', message: 'Task not found' },
     });
@@ -1188,18 +1180,16 @@ describe('task.cancel', () => {
     await expect(makeCallerAsPoster().cancel({ taskId: TASK_ID })).rejects.toThrow('Task not found');
   });
 
-  it('throws FORBIDDEN when user is not the poster', async () => {
-    const task = makeTaskRow({ poster_id: OTHER_USER_ID });
-    mockTaskService.getById.mockResolvedValueOnce({ success: true, data: task as any });
+  it('throws FORBIDDEN when TaskService.cancel returns FORBIDDEN (not task owner)', async () => {
+    mockTaskService.cancel.mockResolvedValueOnce({
+      success: false,
+      error: { code: 'FORBIDDEN', message: 'Not task owner' },
+    });
 
-    await expect(makeCallerAsPoster().cancel({ taskId: TASK_ID })).rejects.toThrow(
-      'Only the task poster can cancel'
-    );
+    await expect(makeCallerAsPoster().cancel({ taskId: TASK_ID })).rejects.toThrow('Not task owner');
   });
 
-  it('throws BAD_REQUEST when TaskService.cancel fails', async () => {
-    const task = makeTaskRow({ poster_id: USER_ID });
-    mockTaskService.getById.mockResolvedValueOnce({ success: true, data: task as any });
+  it('throws BAD_REQUEST when TaskService.cancel fails with a non-auth error', async () => {
     mockTaskService.cancel.mockResolvedValueOnce({
       success: false,
       error: { code: 'TERMINAL', message: 'Already completed' },
@@ -1208,17 +1198,15 @@ describe('task.cancel', () => {
     await expect(makeCallerAsPoster().cancel({ taskId: TASK_ID })).rejects.toThrow('Already completed');
   });
 
-  it('accepts optional reason', async () => {
-    const task = makeTaskRow({ poster_id: USER_ID });
+  it('accepts optional reason and still passes posterId to service', async () => {
     const cancelled = makeTaskRow({ state: 'CANCELLED' });
 
-    mockTaskService.getById.mockResolvedValueOnce({ success: true, data: task as any });
     mockTaskService.cancel.mockResolvedValueOnce({ success: true, data: cancelled as any });
 
-    // Should not throw — reason is optional in input schema
     const result = await makeCallerAsPoster().cancel({ taskId: TASK_ID, reason: 'Changed my mind' });
 
     expect(result).toEqual(cancelled);
+    expect(mockTaskService.cancel).toHaveBeenCalledWith(TASK_ID, USER_ID);
   });
 });
 
@@ -2134,9 +2122,7 @@ describe('task.submitProof — video URLs branch', () => {
     const proofRow = makeProofRow();
     // KK4: ownership check
     mockDb.query.mockResolvedValueOnce({ rows: [{ worker_id: USER_ID }], rowCount: 1 } as any);
-    // MM1: transaction BEGIN / COMMIT
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // BEGIN
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // COMMIT
+    // YY-02: no BEGIN/COMMIT — each service owns its own internal transaction
     mockProofService.submit.mockResolvedValueOnce({
       success: true,
       data: proofRow as any,
@@ -2170,9 +2156,7 @@ describe('task.submitProof — video URLs branch', () => {
     const proofRow = makeProofRow();
     // KK4: ownership check
     mockDb.query.mockResolvedValueOnce({ rows: [{ worker_id: USER_ID }], rowCount: 1 } as any);
-    // MM1: transaction BEGIN / COMMIT
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // BEGIN
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // COMMIT
+    // YY-02: no BEGIN/COMMIT — each service owns its own internal transaction
     mockProofService.submit.mockResolvedValueOnce({
       success: true,
       data: proofRow as any,
@@ -2195,9 +2179,7 @@ describe('task.submitProof — video URLs branch', () => {
     const proofRow = makeProofRow();
     // KK4: ownership check
     mockDb.query.mockResolvedValueOnce({ rows: [{ worker_id: USER_ID }], rowCount: 1 } as any);
-    // MM1: transaction BEGIN / COMMIT
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // BEGIN
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // COMMIT
+    // YY-02: no BEGIN/COMMIT — each service owns its own internal transaction
     mockProofService.submit.mockResolvedValueOnce({
       success: true,
       data: proofRow as any,

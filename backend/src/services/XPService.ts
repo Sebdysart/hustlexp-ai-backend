@@ -723,48 +723,49 @@ export const XPService = {
    * FIX 3: Closes the dispute-then-refund free-XP exploit.
    */
   clawbackXP: async (userId: string, escrowId: string, reason: string, fraction = 1.0): Promise<void> => {
-    // Find the original XP award for this escrow — fetch base_xp too so we can
-    // record the fraction-adjusted debit accurately in the ledger.
-    const award = await db.query<{ id: string; base_xp: number; effective_xp: number; task_id: string }>(
-      `SELECT id, base_xp, effective_xp, task_id FROM xp_ledger
-       WHERE user_id = $1 AND escrow_id = $2
-       ORDER BY awarded_at DESC LIMIT 1`,
-      [userId, escrowId]
-    );
-    if (award.rows.length === 0) {
-      // No XP was ever awarded for this escrow — nothing to clawback
-      log.info({ userId, escrowId, reason }, 'XP clawback: no award found for escrow, skipping');
-      return;
-    }
-
-    // REG-10 FIX: Apply fraction to support partial clawback (e.g. 60% for partial dispute).
-    // Clamp to [0, 1] to guard against bad callers.
-    const clampedFraction = Math.min(1, Math.max(0, fraction));
-    const xpToDeduct = Math.round(award.rows[0].effective_xp * clampedFraction);
-    if (xpToDeduct === 0) return;
-    const taskId = award.rows[0].task_id;
-
-    // BUG FIX: Compute fraction-adjusted base_xp for the ledger debit entry.
-    // Previously the INSERT used -base_xp (full amount) even for partial clawbacks,
-    // causing the ledger to record -1000 XP when only 600 XP was actually deducted.
-    const adjustedBaseXP = -Math.round(award.rows[0].base_xp * clampedFraction);
-    const adjustedEffectiveXP = -xpToDeduct;
-
-    // BUG UU-06 FIX: Wrap the ledger insert and both user updates in a single transaction
-    // with a FOR UPDATE lock on the user row. Without this, a concurrent awardXP() between
-    // the xp_total UPDATE and the current_level UPDATE could corrupt current_level.
+    // YY-04 FIX: Move the award SELECT inside the transaction so it is protected by the
+    // FOR UPDATE lock on the user row. Previously the SELECT ran outside the transaction,
+    // allowing a concurrent awardXP() to slip in between the SELECT and the transaction
+    // start, producing a stale base_xp/effective_xp in the clawback ledger entry.
+    //
+    // Both awardXP() and clawbackXP() now acquire FOR UPDATE on the user row first,
+    // so they serialize correctly — neither can see a partially-applied peer operation.
     await db.transaction(async (txQuery) => {
-      // Lock the user row for the duration of this transaction so no concurrent
-      // awardXP() can slip between the xp_total and current_level updates.
+      // Lock the user row FIRST so no concurrent awardXP() can slip in.
       const lockResult = await txQuery<{ xp_total: number; current_level: number }>(
         `SELECT xp_total, current_level FROM users WHERE id = $1 FOR UPDATE`,
         [userId]
       );
       if (lockResult.rows.length === 0) {
-        // User row disappeared between the outer SELECT and this transaction — nothing to do.
         log.warn({ userId, escrowId, reason }, 'XP clawback: user row not found inside transaction, skipping');
         return;
       }
+
+      // Now read the original award inside the transaction (consistent with the lock).
+      const award = await txQuery<{ id: string; base_xp: number; effective_xp: number; task_id: string }>(
+        `SELECT id, base_xp, effective_xp, task_id FROM xp_ledger
+         WHERE user_id = $1 AND escrow_id = $2
+         ORDER BY awarded_at DESC LIMIT 1`,
+        [userId, escrowId]
+      );
+      if (award.rows.length === 0) {
+        // No XP was ever awarded for this escrow — nothing to clawback.
+        log.info({ userId, escrowId, reason }, 'XP clawback: no award found for escrow, skipping');
+        return;
+      }
+
+      // REG-10 FIX: Apply fraction to support partial clawback (e.g. 60% for partial dispute).
+      // Clamp to [0, 1] to guard against bad callers.
+      const clampedFraction = Math.min(1, Math.max(0, fraction));
+      const xpToDeduct = Math.round(award.rows[0].effective_xp * clampedFraction);
+      if (xpToDeduct === 0) return;
+      const taskId = award.rows[0].task_id;
+
+      // BUG FIX: Compute fraction-adjusted base_xp for the ledger debit entry.
+      // Previously the INSERT used -base_xp (full amount) even for partial clawbacks,
+      // causing the ledger to record -1000 XP when only 600 XP was actually deducted.
+      const adjustedBaseXP = -Math.round(award.rows[0].base_xp * clampedFraction);
+      const adjustedEffectiveXP = -xpToDeduct;
 
       // Insert a debit entry (negative effective_xp) to preserve ledger immutability (INV-4).
       // SECURITY FIX: ON CONFLICT DO NOTHING RETURNING makes this idempotent — if the
