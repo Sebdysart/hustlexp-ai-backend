@@ -283,7 +283,7 @@ export async function aiRateLimitMiddleware(provider: keyof typeof AI_RATE_LIMIT
     }
     
     c.header('X-RateLimit-Limit', limits.requests.toString());
-    c.header('X-RateLimit-Remaining', (limits.requests - current).toString());
+    c.header('X-RateLimit-Remaining', Math.max(0, limits.requests - current).toString());
     
     await next();
   };

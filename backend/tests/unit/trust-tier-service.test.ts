@@ -5,22 +5,29 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// serializableTransaction runs the callback with a txQuery that delegates to db.query,
-// so all query calls (both txQuery and db.query) share the same mock queue.
-const { mockSerializableTransaction } = vi.hoisted(() => {
+// serializableTransaction and transaction both run the callback with a txQuery
+// that delegates to db.query, so all query calls share the same mock queue.
+const { mockSerializableTransaction, mockTransaction } = vi.hoisted(() => {
   const mockSerializableTransaction = vi.fn().mockImplementation(
     async (fn: (txQuery: typeof import('../../src/db').db.query) => Promise<void>) => {
       const { db: mockDb } = await import('../../src/db');
       return fn(mockDb.query as typeof mockDb.query);
     }
   );
-  return { mockSerializableTransaction };
+  const mockTransaction = vi.fn().mockImplementation(
+    async (fn: (txQuery: typeof import('../../src/db').db.query) => Promise<void>) => {
+      const { db: mockDb } = await import('../../src/db');
+      return fn(mockDb.query as typeof mockDb.query);
+    }
+  );
+  return { mockSerializableTransaction, mockTransaction };
 });
 
 vi.mock('../../src/db', () => ({
   db: {
     query: vi.fn(),
     serializableTransaction: mockSerializableTransaction,
+    transaction: mockTransaction,
   },
   isInvariantViolation: vi.fn(() => false),
   getErrorMessage: vi.fn((code: string) => `Error ${code}`),

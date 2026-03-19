@@ -22,6 +22,7 @@ import { notifyAdmins } from './AdminNotificationHelper.js';
 import { logger } from '../logger.js';
 import { invalidateAuthCacheForUser } from '../auth-cache.js';
 import { forceDisconnectUser } from '../realtime/connection-registry.js';
+import { revokeUserSessions } from '../auth/middleware.js';
 
 const log = logger.child({ service: 'FraudDetectionService' });
 
@@ -480,6 +481,27 @@ export const FraudDetectionService = {
           // suspended user is blocked without waiting for the 5-min cache TTL.
           // BUG GG3 FIX: await the call (was fire-and-forget) so Redis errors surface.
           await invalidateAuthCacheForUser(userId);
+
+          // Revoke Firebase refresh tokens so the user cannot re-authenticate after
+          // the Redis revocation marker expires. Look up firebase_uid for the revocation
+          // call, which requires a Firebase UID (not the DB UUID).
+          try {
+            const fbRow = await db.query<{ firebase_uid: string | null }>(
+              'SELECT firebase_uid FROM users WHERE id = $1',
+              [userId]
+            );
+            const firebaseUid = fbRow.rows[0]?.firebase_uid;
+            if (firebaseUid) {
+              await revokeUserSessions(firebaseUid);
+            } else {
+              log.warn({ userId }, '[FraudDetection] auto-suspension: firebase_uid is null — Firebase token revocation skipped, Redis marker still active');
+            }
+          } catch (revokeErr) {
+            // A Firebase failure must not block the suspension — the Redis marker
+            // still provides short-term protection via the cache TTL.
+            log.error({ err: revokeErr instanceof Error ? revokeErr.message : String(revokeErr), userId }, '[FraudDetection] auto-suspension: revokeUserSessions failed');
+          }
+
           forceDisconnectUser(userId);
 
           // Create high-priority risk score for suspended user

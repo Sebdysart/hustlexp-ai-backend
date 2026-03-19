@@ -287,7 +287,8 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
       if (casResult.rowCount === 0) {
         // Structured log for verification
         log.warn({ emailId, jobId: job.id, idempotencyKey: emailRecord.idempotency_key, currentStatus: emailRecord.status }, 'Email claim failed: already claimed or invalid status');
-        return { emailRecord, claimed: false, shouldReturn: true } satisfies EmailClaimResult;
+        const outboxKey = emailRecord.idempotency_key || idempotencyKey;
+        return { emailRecord, claimed: false, shouldReturn: true, outboxKey } satisfies EmailClaimResult;
       }
 
       const claimedEmail = casResult.rows[0];

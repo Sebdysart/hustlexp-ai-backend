@@ -237,28 +237,24 @@ export async function processStripeEventJob(job: Job<StripeEventJobData>): Promi
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
 
-    // Do NOT reset claimed_at here. Clearing claimed_at would re-enable
-    // the "claimed_at IS NULL" pick-up condition and allow concurrent workers
-    // to race to re-claim the same event before BullMQ retries, defeating
-    // the atomic-claim idempotency guarantee (Invariant S-1).
-    //
-    // Retries are driven by BullMQ re-enqueueing this job. A separate
-    // pick-up condition handles stale claims with errors:
-    //   claimed_at IS NOT NULL AND processed_at IS NULL
-    //   AND error_message IS NOT NULL
-    //   AND claimed_at < NOW() - INTERVAL '5 minutes'
-    // That path is intentionally handled at the worker-pool level, not here.
+    // Reset claimed_at to NULL so BullMQ retries can re-claim this event.
+    // The true idempotency guard is the processed_stripe_events INSERT ON CONFLICT,
+    // not claimed_at. claimed_at is a distributed lock to prevent concurrent
+    // processing — it must be released on failure so the next BullMQ retry
+    // can pass the "WHERE claimed_at IS NULL AND processed_at IS NULL" guard.
+    // Without this reset, retries exit as no-ops (R24 regression fix).
     await db.query(
       `
       UPDATE stripe_events
       SET result = 'failed',
+          claimed_at = NULL,
           error_message = $2
       WHERE stripe_event_id = $1
       `,
       [stripeEventId, errorMessage]
     );
 
-    log.error({ type, stripeEventId, err: errorMessage }, 'Stripe event failed — claim retained, BullMQ will retry');
+    log.error({ type, stripeEventId, err: errorMessage }, 'Stripe event failed — claimed_at reset for BullMQ retry');
     throw error; // Re-throw for BullMQ retry logic
   }
 }

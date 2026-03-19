@@ -484,7 +484,7 @@ async function handlePartialRefundRequest(
   }
 
   if (Math.round(refundAmount) + Math.round(releaseAmount) !== escrow.amount) {
-    throw new Error(`SPLIT amounts (${refundAmount} + ${releaseAmount} = ${refundAmount + releaseAmount}) must sum to escrow amount (${escrow.amount})`);
+    throw new Error(`SPLIT amounts (${Math.round(refundAmount)} + ${Math.round(releaseAmount)} = ${Math.round(refundAmount) + Math.round(releaseAmount)}) must sum to escrow amount (${escrow.amount})`);
   }
 
   // Get task to find worker_id
@@ -569,6 +569,7 @@ async function handlePartialRefundRequest(
   // Create transfer if release_amount > 0
   let transferId: string | null = escrow.stripe_transfer_id;
   let netReleaseCents: number | undefined;
+  let adjustedPlatformFeeCents: number | undefined;
   if (releaseAmount > 0) {
     // TT-03: Re-read stripe_transfer_id from the DB after the first transaction committed.
     // Two concurrent BullMQ retries can both see stripe_transfer_id = null in their stale
@@ -613,8 +614,17 @@ async function handlePartialRefundRequest(
       // to the worker. The non-dispute release path (handleReleaseRequest) already
       // deducts the fee — this path previously passed the raw releaseAmount,
       // bypassing the fee entirely in the SPLIT dispute resolution path.
+      //
+      // BUG 3 fix: account for residual sub-cent rounding so all cents are
+      // accounted for: refundAmount + netReleaseCents + platformFeeCents must
+      // equal escrow.amount exactly. Math.round() can lose a cent — we assign
+      // any residual to the platform fee so no cent disappears.
       const platformFeePercent = Math.min(100, Math.max(0, config.stripe?.platformFeePercent ?? 15));
       netReleaseCents = Math.round(releaseAmount * (1 - platformFeePercent / 100));
+      const rawPlatformFeeCents = releaseAmount - netReleaseCents;
+      const residual = escrow.amount - Math.round(refundAmount) - netReleaseCents - rawPlatformFeeCents;
+      // Assign any residual cent to the platform fee (never to worker or refund)
+      adjustedPlatformFeeCents = rawPlatformFeeCents + residual;
 
       log.info(
         { escrowId: escrow.id, releaseAmount, platformFeePercent, netReleaseCents },
@@ -703,9 +713,12 @@ async function handlePartialRefundRequest(
       log.info({ escrowId: escrow.id }, 'Escrow already in REFUND_PARTIAL, idempotent replay');
       return; // No-op: already terminal
     }
-    // Version mismatch: another process updated, treat as no-op
-    log.warn({ escrowId: escrow.id, expectedVersion: escrow.version }, 'Escrow version mismatch, treating as no-op');
-    return;
+    // Version mismatch: another process updated between the Stripe calls and the
+    // terminal UPDATE. The Stripe IDs are already stored in escrow_events (durability
+    // checkpoint) so a retry will find the idempotency checkpoint and skip re-issuing
+    // Stripe calls. Throw to trigger BullMQ retry so the UPDATE can succeed.
+    log.warn({ escrowId: escrow.id, expectedVersion: escrow.version }, 'Escrow version conflict on terminalization — retrying');
+    throw new Error('Version conflict on escrow terminalization — retrying');
   }
 
   // Step 4: Hook CLOSED transition (Pillar A - Realtime Tracking)
@@ -720,7 +733,10 @@ async function handlePartialRefundRequest(
   // Previously uncaptured: netReleaseCents deducts ~15% but RevenueService.logEvent() was never called.
   // Non-fatal: ledger write failure must not block dispute resolution confirmation.
   if (releaseAmount > 0 && netReleaseCents !== undefined) {
-    const platformFee = releaseAmount - netReleaseCents;
+    // Use adjustedPlatformFeeCents (residual-corrected) so all cents are accounted for.
+    // Fall back to raw difference if undefined (idempotent replay path where the
+    // new-transfer block was skipped — no residual to correct in that case).
+    const platformFee = adjustedPlatformFeeCents ?? (releaseAmount - netReleaseCents);
     try {
       await RevenueService.logEvent({
         eventType: 'platform_fee',

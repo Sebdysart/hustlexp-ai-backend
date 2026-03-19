@@ -177,7 +177,7 @@ export const MessagingService = {
         `SELECT COUNT(*) as count
          FROM task_messages
          WHERE receiver_id = $1 AND read_at IS NULL
-           AND (moderation_status IS NULL OR moderation_status != 'quarantined')`,
+           AND (moderation_status IS NULL OR moderation_status NOT IN ('quarantined', 'flagged'))`,
         [userId]
       );
       

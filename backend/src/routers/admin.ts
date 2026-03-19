@@ -159,6 +159,11 @@ export const adminRouter = router({
           void msg; // consumed below
           console.error(`[admin.setUserBan] revokeUserSessions failed for uid=${firebaseUid}:`, err);
         });
+      } else if (input.banned && !firebaseUid) {
+        // firebase_uid is NULL in the DB — Firebase token revocation is impossible,
+        // but we still write the Redis revocation marker via invalidateAuthCacheForUser
+        // (already called above) to block this replica's in-process cache.
+        console.warn(`[admin.setUserBan] firebase_uid is null for userId=${input.userId} — Firebase token revocation skipped, Redis marker still active`);
       }
 
       // Bug 1 fix: if the user was just banned, immediately close any open SSE
@@ -307,11 +312,18 @@ export const adminRouter = router({
       // KK2 FIX: Invalidate the auth cache immediately after role removal so
       // the revoked admin cannot continue to trigger adminOverride=true paths
       // until the 5-minute TTL expires.
-      const fbRow = await db.query<{ firebase_uid: string }>(
+      const fbRow = await db.query<{ firebase_uid: string | null }>(
         'SELECT firebase_uid FROM users WHERE id = $1',
         [input.userId]
       );
-      const firebaseUid = fbRow.rows[0]?.firebase_uid;
+      const firebaseUid = fbRow.rows[0]?.firebase_uid ?? undefined;
+
+      if (!firebaseUid) {
+        // User not found or firebase_uid is NULL — local cache eviction still
+        // fires below, but other replicas retain cached is_admin=true until TTL.
+        console.warn(`[admin.revokeAdminRole] firebase_uid is null/undefined for userId=${input.userId} — Firebase token revocation skipped; remote replicas may retain is_admin=true for up to 5 min`);
+      }
+
       await invalidateAuthCacheForUser(input.userId, firebaseUid);
 
       return { userId: input.userId, role: input.role };

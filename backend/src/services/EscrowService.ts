@@ -379,6 +379,8 @@ export const EscrowService = {
     let workerId: string;
     let grossPayoutCents: number;
     let netPayoutCents: number;
+    let platformFeeCents: number;
+    let platformFeePercent: number;
     let taskId: string;
     let paymentMethod: string;
     let escrowStateBefore: string;
@@ -508,8 +510,10 @@ export const EscrowService = {
         // Calculate platform fee (from config - default 15%)
         // SECURITY FIX (v2.9.3): Clamp to [0, 100] — a negative env var must not
         // produce a negative fee (which would overpay the worker).
-        const platformFeePercent = Math.min(100, Math.max(0, config.stripe.platformFeePercent ?? 15));
-        const platformFeeCents = Math.round(resolvedGross * (platformFeePercent / 100));
+        // Assign directly to outer let variables so they are available for
+        // post-commit side effects without a duplicate recalculation outside.
+        platformFeePercent = Math.min(100, Math.max(0, config.stripe.platformFeePercent ?? 15));
+        platformFeeCents = Math.round(resolvedGross * (platformFeePercent / 100));
         const resolvedNet = resolvedGross - platformFeeCents;
 
         // 2. Release escrow (SPEC FIX: Allow release from both FUNDED and LOCKED_DISPUTE states)
@@ -588,8 +592,6 @@ export const EscrowService = {
       // unreconcilable.  platform_fee is the correct event type — it captures
       // the full financial decomposition (gross, fee, net) per RevenueService v2 spec.
       try {
-        const platformFeePercent = Math.min(100, Math.max(0, config.stripe.platformFeePercent ?? 15));
-        const platformFeeCents = Math.round(grossPayoutCents! * (platformFeePercent / 100));
         await RevenueService.logEvent({
           eventType: 'platform_fee',
           userId: workerId!,
@@ -718,21 +720,31 @@ export const EscrowService = {
     let refundWorkerId: string | null = null;
     let escrowStateBefore: string = 'FUNDED';
     let stripePaymentIntentId: string | null = null;
+    let stripeRefundId: string | null = null;
     let refundAmount: number = 0;
+    let escrowVersion: number | undefined;
+    let allowedStates: string[];
 
     try {
-      // RACE CONDITION FIX: Wrap SELECT FOR UPDATE + UPDATE in a transaction so
-      // the row-level lock is held from SELECT through COMMIT. Without the
-      // transaction wrapper, db.query() releases the connection (and the lock)
-      // immediately after the SELECT, allowing a concurrent refund() to slip
-      // through and trigger a double-refund.
-      const txResult = await db.transaction(async (query) => {
-        const escrowPreCheck = await query<{ task_id: string; version: number; state: string; stripe_payment_intent_id: string | null; amount: number }>(
-          `SELECT task_id, version, state, stripe_payment_intent_id, amount FROM escrows WHERE id = $1 FOR UPDATE`,
+      // -----------------------------------------------------------------------
+      // Transaction 1 (read + validate): acquire FOR UPDATE lock, validate
+      // state and task guards, capture all values needed for the Stripe call.
+      // Does NOT commit any state change — escrow remains FUNDED after T1.
+      // -----------------------------------------------------------------------
+      const readResult = await db.transaction(async (query) => {
+        const escrowPreCheck = await query<{ task_id: string; version: number; state: string; stripe_payment_intent_id: string | null; stripe_refund_id: string | null; amount: number }>(
+          `SELECT task_id, version, state, stripe_payment_intent_id, stripe_refund_id, amount FROM escrows WHERE id = $1 FOR UPDATE`,
           [escrowId]
         );
+
+        if (escrowPreCheck.rows.length === 0) {
+          return {
+            success: false,
+            error: { code: ErrorCodes.NOT_FOUND, message: `Escrow ${escrowId} not found` },
+          } as ServiceResult<Escrow>;
+        }
+
         const refundTaskId = escrowPreCheck.rows[0]?.task_id;
-        const escrowVersion = escrowPreCheck.rows[0]?.version;
         const currentState = escrowPreCheck.rows[0]?.state;
 
         // Guard: LOCKED_DISPUTE refund requires adminOverride
@@ -770,28 +782,66 @@ export const EscrowService = {
           }
         }
 
-        // Allow FUNDED → REFUNDED normally; LOCKED_DISPUTE → REFUNDED only with adminOverride
-        const allowedStates = adminOverride ? ['FUNDED', 'LOCKED_DISPUTE'] : ['FUNDED'];
+        // Capture values for Stripe call and T2
+        escrowStateBefore = currentState ?? 'FUNDED';
+        escrowVersion = escrowPreCheck.rows[0]?.version;
+        stripePaymentIntentId = escrowPreCheck.rows[0]?.stripe_payment_intent_id ?? null;
+        stripeRefundId = escrowPreCheck.rows[0]?.stripe_refund_id ?? null;
+        refundAmount = escrowPreCheck.rows[0]?.amount ?? 0;
+        allowedStates = adminOverride ? ['FUNDED', 'LOCKED_DISPUTE'] : ['FUNDED'];
 
+        return { success: true } as unknown as ServiceResult<Escrow>;
+      });
+
+      if (!readResult.success) {
+        return readResult;
+      }
+
+      // -----------------------------------------------------------------------
+      // Stripe call: issue BEFORE committing DB state to REFUNDED.
+      // If Stripe throws, the escrow remains FUNDED and the caller can retry.
+      // Idempotency: if stripe_refund_id is already set, a prior attempt
+      // succeeded — skip the Stripe call and proceed directly to T2.
+      // -----------------------------------------------------------------------
+      if (stripePaymentIntentId && !stripeRefundId) {
+        // Fatal: rethrow so the caller retries while escrow is still FUNDED.
+        const refundResult = await StripeService.createRefund({
+          paymentIntentId: stripePaymentIntentId,
+          escrowId,
+          amount: refundAmount,
+          reason: 'requested_by_customer',
+        });
+        if (!refundResult.success) {
+          throw new Error(`Stripe refund failed — ${refundResult.error.message}`);
+        }
+        stripeRefundId = refundResult.data?.refundId ?? null;
+      }
+
+      // -----------------------------------------------------------------------
+      // Transaction 2 (terminalize): atomically commit state = REFUNDED and
+      // persist the stripe_refund_id. Only runs after the Stripe call succeeds.
+      // -----------------------------------------------------------------------
+      const termResult = await db.transaction(async (query) => {
         const result = await query<Escrow>(
           `UPDATE escrows
            SET state = 'REFUNDED',
                refunded_at = NOW(),
+               stripe_refund_id = COALESCE($3, stripe_refund_id),
                version = version + 1,
                updated_at = NOW()
            WHERE id = $1
-             AND state = ANY($3::text[])
+             AND state = ANY($4::text[])
              AND version = $2
            RETURNING *`,
-          [escrowId, escrowVersion, allowedStates]
+          [escrowId, escrowVersion, stripeRefundId, allowedStates!]
         );
 
         if (result.rowCount === 0) {
+          // Concurrent modification — classify via getById.
           const existing = await EscrowService.getById(escrowId);
           if (!existing.success) {
             return existing;
           }
-
           if (isTerminalState(existing.data.state)) {
             return {
               success: false,
@@ -801,25 +851,21 @@ export const EscrowService = {
               },
             } as ServiceResult<Escrow>;
           }
-
           return {
             success: false,
             error: {
               code: ErrorCodes.INVALID_STATE,
-              message: `Cannot refund escrow: current state is ${existing.data.state}`,
+              message: `Cannot refund escrow: concurrent modification detected (state=${existing.data.state ?? 'unknown'})`,
             },
           } as ServiceResult<Escrow>;
         }
 
-        escrowStateBefore = currentState ?? 'FUNDED';
-        stripePaymentIntentId = escrowPreCheck.rows[0]?.stripe_payment_intent_id ?? null;
-        refundAmount = escrowPreCheck.rows[0]?.amount ?? 0;
         refundedEscrow = result.rows[0];
         return { success: true, data: result.rows[0] } as ServiceResult<Escrow>;
       });
 
-      if (!txResult.success) {
-        return txResult;
+      if (!termResult.success) {
+        return termResult;
       }
 
       await logEscrowEvent(
@@ -830,32 +876,6 @@ export const EscrowService = {
         adminOverride ? 'admin' : 'system',
         adminOverride && reason ? { adminOverride: true, reason } : {}
       );
-
-      // LL5: Issue the actual Stripe refund AFTER the DB transaction commits
-      // successfully. Previously the DB was updated to REFUNDED but Stripe was
-      // never called — poster's money stayed captured while the escrow showed
-      // as refunded, causing a financial discrepancy.
-      if (stripePaymentIntentId) {
-        try {
-          await StripeService.createRefund({
-            paymentIntentId: stripePaymentIntentId,
-            escrowId,
-            amount: refundAmount,
-            reason: 'requested_by_customer',
-          });
-        } catch (stripeRefundError) {
-          // Non-fatal: DB is already REFUNDED — log the error for ops to
-          // manually issue the Stripe refund. Do not roll back the DB state.
-          escrowLogger.error(
-            {
-              err: stripeRefundError instanceof Error ? stripeRefundError.message : String(stripeRefundError),
-              escrowId,
-              stripePaymentIntentId,
-            },
-            'Stripe refund call failed after DB REFUNDED — manual Stripe refund required'
-          );
-        }
-      }
 
       // FIX 3: Clawback XP if the worker had already been awarded XP for this escrow
       if (refundWorkerId) {
@@ -1216,6 +1236,7 @@ export const EscrowService = {
                updated_at = NOW()
            WHERE id = $1
              AND version = $2
+             AND state = 'LOCKED_DISPUTE'
            RETURNING *`,
           [escrowId, escrowVersion!, resolvedTransferId, resolvedRefundId]
         );

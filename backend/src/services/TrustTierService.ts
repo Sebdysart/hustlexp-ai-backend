@@ -502,22 +502,44 @@ export const TrustTierService = {
    * Currently, both applyPromotion and banUser already emit this event correctly.
    */
   banUser: async (userId: string, reason: string): Promise<void> => {
-    const currentTier = await TrustTierService.getTrustTier(userId);
+    // Read the current tier and apply the CAS UPDATE atomically inside a single
+    // transaction with a FOR UPDATE row lock.  Without the lock there is a TOCTOU
+    // window: a concurrent promotion can commit between getTrustTier() and the
+    // UPDATE, making `currentTier` stale for the instrumentation delta.
+    let currentTier: TrustTier = TrustTier.ROOKIE; // placeholder; set inside txn
+    let banRowCount = 0;
+
+    await db.transaction(async (txQuery) => {
+      const lockResult = await txQuery<{ trust_tier: number }>(
+        `SELECT trust_tier FROM users WHERE id = $1 FOR UPDATE`,
+        [userId]
+      );
+
+      if (lockResult.rowCount === 0) {
+        return; // User not found — treat as no-op
+      }
+
+      currentTier = lockResult.rows[0].trust_tier as unknown as TrustTier;
+
+      if (currentTier === TrustTier.BANNED) {
+        return; // Already banned — early exit inside txn
+      }
+
+      const banResult = await txQuery(
+        `UPDATE users
+         SET trust_tier = $1, updated_at = NOW()
+         WHERE id = $2 AND trust_tier != $1`,
+        [TrustTier.BANNED, userId]
+      );
+
+      banRowCount = banResult.rowCount;
+    });
 
     if (currentTier === TrustTier.BANNED) {
       return; // Already banned
     }
 
-    // Apply ban with CAS guard: only update if trust_tier != BANNED to prevent
-    // concurrent ban calls from double-emitting outbox events.
-    const banResult = await db.query(
-      `UPDATE users
-       SET trust_tier = $1, updated_at = NOW()
-       WHERE id = $2 AND trust_tier != $1`,
-      [TrustTier.BANNED, userId]
-    );
-
-    if (banResult.rowCount === 0) {
+    if (banRowCount === 0) {
       // Another concurrent call already applied the ban — return early without
       // touching outbox or tasks to prevent duplicate events.
       return;

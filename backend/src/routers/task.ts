@@ -826,6 +826,21 @@ export const taskRouter = router({
         throw new TRPCError({ code: 'BAD_REQUEST', message: 'proofId or taskId is required' });
       }
 
+      // When proofId was supplied directly (no taskId path), verify ownership BEFORE
+      // calling ProofService.getById to prevent IDOR enumeration of proof UUIDs.
+      if (!input.taskId) {
+        const ownerCheck = await db.query<{ poster_id: string }>(
+          `SELECT t.poster_id FROM proofs p JOIN tasks t ON t.id = p.task_id WHERE p.id = $1`,
+          [proofId]
+        );
+        if (ownerCheck.rows.length === 0) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: 'Proof not found' });
+        }
+        if (ownerCheck.rows[0].poster_id !== ctx.user.id) {
+          throw new TRPCError({ code: 'FORBIDDEN', message: 'Only the task poster can review proof' });
+        }
+      }
+
       // Get proof to find task (needed when proofId was supplied directly)
       const proofResult = await ProofService.getById(proofId);
       if (!proofResult.success) {
@@ -835,14 +850,21 @@ export const taskRouter = router({
         });
       }
 
-      // When proofId was supplied directly (no taskId path), verify ownership now
+      // When BOTH proofId and taskId are supplied, verify the proof actually belongs
+      // to the supplied taskId — prevents cross-task review bypass where a poster
+      // passes their own taskId (ownership check passes) plus a proofId from a
+      // different task they do not own.
+      if (input.taskId && input.proofId) {
+        if (proofResult.data.task_id !== input.taskId) {
+          throw new TRPCError({ code: 'FORBIDDEN', message: 'Proof does not belong to the specified task' });
+        }
+      }
+
+      // When proofId was supplied directly (no taskId path), verify task state now
       if (!input.taskId) {
         const taskResult = await TaskService.getById(proofResult.data.task_id);
         if (!taskResult.success) {
           throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
-        }
-        if (taskResult.data.poster_id !== ctx.user.id) {
-          throw new TRPCError({ code: 'FORBIDDEN', message: 'Only the task poster can review proof' });
         }
         if (taskResult.data.state !== 'PROOF_SUBMITTED') {
           throw new TRPCError({

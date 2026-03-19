@@ -632,7 +632,23 @@ export const RatingService = {
       );
 
       const autoRated = batchResult.rowCount ?? 0;
-      
+
+      // Mutual-reveal: if one party had already submitted a genuine blind rating
+      // before the auto-rate ran, the auto-rate just filled the other direction,
+      // completing the pair.  Flip those genuine ratings to is_public=true so they
+      // are visible — mirrors the mutual-reveal logic in submitRating().
+      const processedTaskIds = validTasks.map(t => t.id);
+      await db.query(
+        `UPDATE task_ratings SET is_public = true, is_blind = false
+         WHERE task_id = ANY($1)
+           AND is_blind = true
+           AND is_public = false
+           AND task_id IN (
+             SELECT task_id FROM task_ratings GROUP BY task_id HAVING COUNT(*) = 2
+           )`,
+        [processedTaskIds]
+      );
+
       return {
         success: true,
         data: { autoRated },
