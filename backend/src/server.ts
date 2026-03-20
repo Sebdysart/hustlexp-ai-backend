@@ -845,8 +845,8 @@ app.post('/webhooks/stripe', async (c) => {
         result.error?.code === 'STRIPE_NOT_CONFIGURED') {
       return c.json({ error: result.error.message }, 400);
     }
-    // Return 500 for storage errors (retryable)
-    return c.json({ error: result.error?.message ?? 'Unknown webhook error' }, 500);
+    // Return 500 for storage errors (retryable) — do not expose internal error details
+    return c.json({ error: 'Webhook processing failed' }, 500);
   }
   
   // Always return 200 for successful ingestion (even if duplicate/replay)

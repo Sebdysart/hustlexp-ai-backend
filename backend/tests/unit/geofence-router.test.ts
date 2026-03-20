@@ -70,6 +70,8 @@ describe('geofence.checkProximity', () => {
 
   it('checks proximity for a task', async () => {
     const result_ = { withinRadius: true, distanceMeters: 50 };
+    // Participant check: caller is worker_id
+    mockDb.query.mockResolvedValueOnce({ rows: [{ poster_id: 'other-uid', worker_id: 'test-uid' }], rowCount: 1 } as any);
     mockService.checkProximity.mockResolvedValueOnce(result_ as any);
 
     const result = await makeCaller().checkProximity({
@@ -120,6 +122,8 @@ describe('geofence.verifyPresence', () => {
 
   it('verifies presence during task', async () => {
     const presence = { verified: true, durationMinutes: 45 };
+    // Participant check: caller is poster_id
+    mockDb.query.mockResolvedValueOnce({ rows: [{ poster_id: 'test-uid', worker_id: 'other-uid' }], rowCount: 1 } as any);
     mockService.verifyPresenceDuringTask.mockResolvedValueOnce(presence as any);
 
     const result = await makeCaller().verifyPresence({ taskId: TEST_UUID });

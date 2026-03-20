@@ -431,8 +431,15 @@ describe('squad.disband', () => {
   });
 
   it('updates status to disbanded and returns success', async () => {
+    // Organizer check (outside transaction)
     mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'org' }], rowCount: 1 } as any);
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any); // UPDATE
+    // R-04: disband now uses transaction — active tasks count + UPDATE
+    mockDb.transaction.mockImplementationOnce(async (fn: any) => {
+      const txQuery = vi.fn()
+        .mockResolvedValueOnce({ rows: [{ cnt: '0' }], rowCount: 1 }) // no active tasks
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 }); // UPDATE squads
+      return fn(txQuery);
+    });
 
     const result = await makeEliteCaller().disband({ squadId: SQUAD_UUID });
     expect(result.success).toBe(true);

@@ -19,6 +19,12 @@ export const geofenceRouter = router({
       lng: z.number().min(-180).max(180),
     }))
     .mutation(async ({ ctx, input }) => {
+      const taskResult = await db.query('SELECT poster_id, worker_id FROM tasks WHERE id = $1', [input.taskId]);
+      if (!taskResult.rows.length) throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
+      const task = taskResult.rows[0];
+      if (task.poster_id !== ctx.user.id && task.worker_id !== ctx.user.id) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'Access denied' });
+      }
       return GeofenceService.checkProximity(input.taskId, ctx.user.id, input.lat, input.lng);
     }),
 
@@ -39,6 +45,12 @@ export const geofenceRouter = router({
   verifyPresence: hustlerProcedure
     .input(z.object({ taskId: z.string().uuid() }))
     .query(async ({ ctx, input }) => {
+      const taskResult = await db.query('SELECT poster_id, worker_id FROM tasks WHERE id = $1', [input.taskId]);
+      if (!taskResult.rows.length) throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
+      const task = taskResult.rows[0];
+      if (task.poster_id !== ctx.user.id && task.worker_id !== ctx.user.id) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'Access denied' });
+      }
       return GeofenceService.verifyPresenceDuringTask(input.taskId, ctx.user.id);
     }),
 });

@@ -466,7 +466,7 @@ export const adminRouter = router({
         0
       );
       const targetRoleRank = ROLE_RANK[input.role] ?? 0;
-      if (targetRoleRank > callerMaxRank) {
+      if (targetRoleRank >= callerMaxRank) {
         throw new TRPCError({
           code: 'FORBIDDEN',
           message: `Insufficient rank to grant role '${input.role}'`,

@@ -53,7 +53,7 @@ export async function processInstantNotificationJob(
     }
   }
 
-  const { taskId, hustlerId, location, riskLevel, sensitive } = job.data;
+  const { taskId, hustlerId, location, riskLevel, sensitive, urgencyCopy, surgeLevel } = (job.data as Record<string, unknown>).payload as InstantNotificationJobData;
   const startTime = Date.now();
 
   try {
@@ -112,7 +112,7 @@ export async function processInstantNotificationJob(
   
   // Use surge urgency copy if provided, otherwise default
   const defaultTitle = 'Instant task nearby — first to accept gets it';
-  const title = job.data.urgencyCopy || defaultTitle;
+  const title = urgencyCopy || defaultTitle;
   const body = `${task.title} — $${priceDollars}${location ? ` • ${location}` : ''}`;
 
   // Short TTL: 5 minutes (instant tasks expire quickly)
@@ -130,7 +130,7 @@ export async function processInstantNotificationJob(
       riskLevel,
       sensitive: sensitive || false,
       location,
-      surgeLevel: job.data.surgeLevel || 0,
+      surgeLevel: surgeLevel || 0,
       // Track when notification was created for latency metrics
       notifiedAt: new Date().toISOString(),
     },
@@ -144,7 +144,7 @@ export async function processInstantNotificationJob(
     }
 
     const latency = Date.now() - startTime;
-    log.info({ taskId, hustlerId, surgeLevel: job.data.surgeLevel || 0, latency, stage: 'notification_delivery' }, 'Instant notification sent');
+    log.info({ taskId, hustlerId, surgeLevel: surgeLevel || 0, latency, stage: 'notification_delivery' }, 'Instant notification sent');
   } catch (error) {
     // Launch Hardening v1: Error containment - never crash the process
     const latency = Date.now() - startTime;

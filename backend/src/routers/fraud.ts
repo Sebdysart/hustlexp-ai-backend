@@ -236,7 +236,7 @@ export const fraudRouter = router({
       transactionIds: z.array(Schemas.uuid).max(100).optional(),
       evidence: z.record(z.any()).optional(), // Optional evidence data
     }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const result = await FraudDetectionService.detectPattern({
         patternType: input.patternType,
         patternDescription: input.patternDescription,
@@ -253,6 +253,26 @@ export const fraudRouter = router({
         log.error({ err: result.error.message, procedure: 'detectPattern' }, 'Fraud service error');
         throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: 'An internal error occurred. Contact support if this persists.' });
       }
+
+      // Audit log: record every fraud pattern detection so admin actions are traceable
+      await db.query(
+        `INSERT INTO admin_actions (admin_id, action_type, target_id, reason, metadata, created_at)
+         VALUES ($1, 'fraud_pattern_detected', $2, $3, $4, NOW())`,
+        [
+          ctx.user!.id,
+          null,
+          null,
+          JSON.stringify({
+            pattern_type: input.patternType,
+            pattern_description: input.patternDescription,
+            user_ids: input.userIds,
+            task_ids: input.taskIds ?? null,
+            transaction_ids: input.transactionIds ?? null,
+          }),
+        ],
+      ).catch(() => {
+        // Audit log failure must not block the pattern detection write — log only
+      });
 
       return result.data;
     }),

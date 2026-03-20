@@ -194,14 +194,21 @@ export const protectedProcedure = t.procedure.use(isAuthenticated);
 // Middleware: require admin role — composed on top of isAuthenticated (via protectedProcedure).
 // Ban/suspension/auth checks are already handled by isAuthenticated; this only does the role check.
 const isAdminCheck = t.middleware(async ({ ctx, next }) => {
-  // ctx.user is guaranteed non-null and not banned by isAuthenticated (already ran)
-  const VALID_ADMIN_ROLES = ['admin', 'support', 'finance', 'moderator', 'founder'];
-  const adminResult = await db.query(
-    'SELECT role FROM admin_roles WHERE user_id = $1 AND role = ANY($2::text[])',
-    [ctx.user!.id, VALID_ADMIN_ROLES]
-  );
+  // ctx.user is guaranteed non-null and not banned by isAuthenticated (already ran).
+  // createContext already populated user.is_admin from admin_roles — use that
+  // directly to avoid a redundant DB round-trip on every admin request.
+  // Only fall back to a DB query if is_admin is undefined (not yet populated).
+  let isAdmin = ctx.user!.is_admin;
+  if (isAdmin === undefined) {
+    const VALID_ADMIN_ROLES = ['admin', 'support', 'finance', 'moderator', 'founder'];
+    const adminResult = await db.query(
+      'SELECT role FROM admin_roles WHERE user_id = $1 AND role = ANY($2::text[])',
+      [ctx.user!.id, VALID_ADMIN_ROLES]
+    );
+    isAdmin = adminResult.rows.length > 0;
+  }
 
-  if (adminResult.rows.length === 0) {
+  if (!isAdmin) {
     throw new TRPCError({
       code: 'FORBIDDEN',
       message: 'Admin access required',

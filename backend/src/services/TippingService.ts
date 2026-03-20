@@ -16,6 +16,7 @@
 import Stripe from 'stripe';
 import { config } from '../config.js';
 import { db } from '../db.js';
+import { RevenueService } from './RevenueService.js';
 import type { ServiceResult } from '../types.js';
 import { logger } from '../logger.js';
 
@@ -315,8 +316,31 @@ export const TippingService = {
         return { success: false, error: { code: 'NOT_FOUND', message: 'Tip not found' } };
       }
 
-      // Notify worker (support both constitutional schema and legacy type/data columns)
+      // F-04 FIX: Write revenue ledger entry so tips appear in GetRevenueSummary.
+      // Tips are 100% to the worker — no platform fee. Use 'per_task_fee' event type
+      // with amountCents=0 (platform takes nothing) so the tip is visible in the ledger.
+      // tipId is included in metadata for dedup and cross-referencing.
       const tip = result.rows[0];
+      try {
+        await RevenueService.logEvent({
+          eventType: 'per_task_fee',
+          userId: tip.worker_id,
+          taskId: tip.task_id,
+          amountCents: 0, // Tips are 100% to the worker — no platform revenue
+          grossAmountCents: tip.amount_cents,
+          platformFeeCents: 0,
+          netAmountCents: tip.amount_cents,
+          stripePaymentIntentId: tip.stripe_payment_intent_id ?? undefined,
+          metadata: { tip_id: tip.id, event: 'tip_received' },
+        });
+      } catch (revenueErr) {
+        log.warn(
+          { err: revenueErr instanceof Error ? revenueErr.message : String(revenueErr), tipId: tip.id },
+          'confirmTip: revenue ledger write failed — tip confirmed but ledger entry missing; manual reconciliation required'
+        );
+      }
+
+      // Notify worker (support both constitutional schema and legacy type/data columns)
       const notifBody = `You received a $${(tip.amount_cents / 100).toFixed(2)} tip! Great job!`;
       const notifMeta = { task_id: tip.task_id, amount_cents: tip.amount_cents };
       try {

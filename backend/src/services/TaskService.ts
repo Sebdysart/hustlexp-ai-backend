@@ -512,7 +512,7 @@ export const TaskService = {
           eventVersion: 1,
           idempotencyKey: `task.instant_matching_started:${createdTask.id}`,
           payload: { taskId: createdTask.id, location, riskLevel },
-          queueName: 'critical_payments', // Use critical queue for instant tasks
+          queueName: 'user_notifications', // Instant matching is non-financial — use notification queue to avoid starving Stripe events
         });
       }
       

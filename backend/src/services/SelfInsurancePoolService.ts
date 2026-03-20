@@ -151,15 +151,25 @@ export const SelfInsurancePoolService = {
       // pool balance. The FOR UPDATE row lock serializes concurrent fileClaim()
       // calls through the balance check, ensuring only one at a time can read
       // the balance, validate it, and INSERT a new claim.
-      const coveredAmount = Math.round(claimAmountCents * (poolStatus.data.coverage_percentage / 100));
+      //
+      // F-06 FIX: coverage_percentage is now read INSIDE the transaction under
+      // FOR UPDATE so that coveredAmount is always computed from the same locked
+      // snapshot as available_balance_cents. An admin changing coverage_percentage
+      // between the outer getPoolStatus() call and this lock would previously produce
+      // a stale coveredAmount — now it is always fresh and consistent.
 
       const claimId = await db.transaction(async (query: QueryFn) => {
-        // Lock the pool row to serialize concurrent claim filings
-        const poolResult = await query<{ available_balance_cents: number }>(
-          'SELECT available_balance_cents FROM self_insurance_pool FOR UPDATE LIMIT 1'
+        // Lock the pool row to serialize concurrent claim filings and ensure
+        // both available_balance_cents and coverage_percentage are read atomically.
+        const poolResult = await query<{ available_balance_cents: number; coverage_percentage: number }>(
+          'SELECT available_balance_cents, coverage_percentage FROM self_insurance_pool FOR UPDATE LIMIT 1'
         );
 
         const availableBalanceCents = poolResult.rows[0]?.available_balance_cents ?? 0;
+        // Use freshly-locked coverage_percentage (F-06 fix); fall back to pre-checked value
+        // only when the pool row does not exist (already handled above by getPoolStatus check).
+        const freshCoveragePercentage = poolResult.rows[0]?.coverage_percentage ?? poolStatus.data.coverage_percentage;
+        const coveredAmount = Math.round(claimAmountCents * (freshCoveragePercentage / 100));
 
         // F-32: Check against live locked balance
         if (coveredAmount > availableBalanceCents) {

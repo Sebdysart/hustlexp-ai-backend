@@ -812,6 +812,14 @@ async function handlePartialRefundRequest(
     const residual = escrow.amount - Math.round(refundAmount) - netReleaseCents - rawPlatformFeeCents;
     adjustedPlatformFeeCents = rawPlatformFeeCents + residual;
 
+    // F-07 FIX: Deduct self-insurance contribution from the SPLIT transfer amount.
+    // handleReleaseRequest correctly withholds INSURANCE_RATE from the transfer and
+    // calls recordContribution. This path was missing both steps — the pool was
+    // underfunded on every split dispute resolution.
+    const INSURANCE_RATE = 0.02; // 2% — matches SelfInsurancePoolService default
+    const splitInsuranceContributionCents = Math.round(netReleaseCents * INSURANCE_RATE);
+    netReleaseCents = netReleaseCents - splitInsuranceContributionCents;
+
     // TT-03 (partial): The bare SELECT had a race window — two workers can both
     // see stripe_transfer_id=null and both proceed to Stripe. Fix: use FOR UPDATE
     // NOWAIT inside a transaction so the second worker blocks and re-reads the
@@ -896,6 +904,24 @@ async function handlePartialRefundRequest(
 
       transferId = partialTransferResult.data.transferId;
       log.info({ escrowId: escrow.id, transferId, amount: releaseAmount }, 'Partial transfer created for escrow');
+
+      // F-07 FIX: Record self-insurance pool contribution now that the transfer
+      // has succeeded. Non-fatal — pool contribution failure must not block
+      // payout confirmation (mirrors handleReleaseRequest pattern).
+      if (task.worker_id && splitInsuranceContributionCents > 0) {
+        try {
+          await SelfInsurancePoolService.recordContribution(
+            taskId,
+            task.worker_id,
+            splitInsuranceContributionCents,
+          );
+        } catch (insuranceError) {
+          log.warn(
+            { err: insuranceError instanceof Error ? insuranceError.message : String(insuranceError), escrowId: escrow.id },
+            'handlePartialRefundRequest: self-insurance pool contribution failed — SPLIT release proceeds'
+          );
+        }
+      }
     }
   }
 

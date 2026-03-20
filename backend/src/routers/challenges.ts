@@ -83,7 +83,7 @@ export const challengesRouter = router({
   updateProgress: hustlerProcedure
     .input(z.object({
       challengeId: z.string().uuid(),
-      progress: z.number().min(0),
+      progress: z.number().int().min(0).max(10000),
     }))
     .mutation(async ({ ctx, input }) => {
       const userId = ctx.user.id;
@@ -134,6 +134,10 @@ export const challengesRouter = router({
           input.progress,
           Number(actualProgress.rows[0].completed_tasks)
         );
+      } else {
+        // For unrecognized or server-verified challenge types (streak_maintain, etc.),
+        // reject self-reported progress — set to 0 and let server-side jobs update it
+        verifiedProgress = 0;
       }
 
       // Hard cap: progress cannot exceed the challenge's target value

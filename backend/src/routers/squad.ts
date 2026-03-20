@@ -487,12 +487,22 @@ export const squadRouter = router({
         throw new TRPCError({ code: 'FORBIDDEN', message: 'Only the organizer can disband' });
       }
 
-      await db.query(
-        `UPDATE squads SET status = 'disbanded', updated_at = NOW() WHERE id = $1`,
-        [input.squadId]
-      );
+      return await db.transaction(async (query) => {
+        const activeTasksResult = await query(
+          `SELECT COUNT(*) as cnt FROM squad_task_assignments WHERE squad_id = $1 AND status NOT IN ('completed', 'cancelled')`,
+          [input.squadId]
+        );
+        if (parseInt(activeTasksResult.rows[0].cnt, 10) > 0) {
+          throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Cannot disband squad with active tasks — complete or cancel all tasks first' });
+        }
 
-      return { success: true };
+        await query(
+          `UPDATE squads SET status = 'disbanded', updated_at = NOW() WHERE id = $1`,
+          [input.squadId]
+        );
+
+        return { success: true };
+      });
     }),
 
   // --------------------------------------------------------------------------

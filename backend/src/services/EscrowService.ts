@@ -855,6 +855,22 @@ export const EscrowService = {
       }
 
       // -----------------------------------------------------------------------
+      // F-05 FIX: Admin refund on RELEASED escrow with no stripe_payment_intent_id.
+      // When adminOverride=true and the escrow is RELEASED but has no PI on record,
+      // there is nothing to refund in Stripe. Silently marking as REFUNDED would
+      // return money that was never held — ops must handle this manually.
+      // -----------------------------------------------------------------------
+      if (adminOverride && escrowStateBefore === 'RELEASED' && !stripePaymentIntentId) {
+        return {
+          success: false,
+          error: {
+            code: 'MISSING_STRIPE_PI',
+            message: 'Cannot refund: no Stripe payment intent on record — manual refund required',
+          },
+        };
+      }
+
+      // -----------------------------------------------------------------------
       // Stripe call: issue BEFORE committing DB state to REFUNDED.
       // If Stripe throws, the escrow remains FUNDED and the caller can retry.
       // Idempotency: if stripe_refund_id is already set, a prior attempt
@@ -907,59 +923,51 @@ export const EscrowService = {
           // RACE RECOVERY: If the escrow transitioned to RELEASED between T1 and T2,
           // a concurrent release() won the race after our Stripe refund was already issued.
           // This is a double-spend: the worker received a transfer AND the poster got a refund.
-          // Best-effort recovery: attempt to cancel the just-issued Stripe refund.
+          // F-01 FIX: Instead of attempting fragile refund cancellation, log a CRITICAL alert
+          // with enough data for manual reconciliation and set manual_reconciliation_required=true
+          // on the escrow row so ops can track it. Use error code REFUND_RACE_CONDITION.
           if (existing.data.state === 'RELEASED' && stripeRefundId) {
+            const stripeChargeId = stripePaymentIntentId ?? 'unknown';
             escrowLogger.error(
-              { escrowId, stripeRefundId, escrowState: 'RELEASED' },
-              'CRITICAL: double-spend detected — escrow was RELEASED concurrently after Stripe refund was issued. Attempting refund cancellation.'
+              {
+                escrowId,
+                stripeRefundId,
+                stripeChargeId,
+                escrowState: 'RELEASED',
+                amountCents: refundAmount,
+              },
+              'CRITICAL: REFUND_RACE_CONDITION — release() won the race between T1 and T2. ' +
+              'Stripe refund already issued. Worker received transfer AND poster received refund. ' +
+              'Manual reconciliation required.'
             );
+            // Set manual_reconciliation_required flag so ops can query and track it.
             try {
-              const cancelResult = await StripeService.cancelRefund(stripeRefundId);
-              if (cancelResult.success) {
-                escrowLogger.warn(
-                  { escrowId, stripeRefundId },
-                  'Double-spend recovery: Stripe refund successfully cancelled — no financial loss.'
-                );
-              } else {
-                escrowLogger.error(
-                  { escrowId, stripeRefundId, cancelError: cancelResult.error.message },
-                  'CRITICAL: double-spend — Stripe refund cancellation failed. Escrow flagged for manual review.'
-                );
-                // BUG 5 FIX: Alert ops — cancellation failed means both the transfer and the
-                // refund succeeded (double-spend confirmed). Manual financial reconciliation required.
-                notifyAdmins({
-                  title: 'DOUBLE REFUND CONFIRMED',
-                  body: `Escrow ${escrowId} — Stripe refund ${stripeRefundId} could not be cancelled (already succeeded). Manual financial reconciliation required. Amount: ${refundAmount} cents.`,
-                  deepLink: `/admin/escrows/${escrowId}`,
-                  priority: 'CRITICAL',
-                  metadata: { escrow_id: escrowId, stripe_refund_id: stripeRefundId, amount_cents: refundAmount },
-                }).catch(notifyErr => escrowLogger.error(
-                  { err: notifyErr instanceof Error ? notifyErr.message : String(notifyErr), escrowId },
-                  'Failed to send admin notification for double-refund — manual intervention still required'
-                ));
-              }
-            } catch (cancelErr) {
-              escrowLogger.error(
-                { escrowId, stripeRefundId, err: cancelErr instanceof Error ? cancelErr.message : String(cancelErr) },
-                'CRITICAL: double-spend — exception during refund cancellation. Escrow flagged for manual review.'
+              await db.query(
+                `UPDATE escrows SET manual_reconciliation_required = true WHERE id = $1`,
+                [escrowId]
               );
-              // BUG 5 FIX: Alert ops on exception path too — outcome is unknown, ops must investigate.
-              notifyAdmins({
-                title: 'DOUBLE REFUND CONFIRMED',
-                body: `Escrow ${escrowId} — Stripe refund ${stripeRefundId} could not be cancelled (already succeeded). Manual financial reconciliation required. Amount: ${refundAmount} cents.`,
-                deepLink: `/admin/escrows/${escrowId}`,
-                priority: 'CRITICAL',
-                metadata: { escrow_id: escrowId, stripe_refund_id: stripeRefundId, amount_cents: refundAmount },
-              }).catch(notifyErr => escrowLogger.error(
-                { err: notifyErr instanceof Error ? notifyErr.message : String(notifyErr), escrowId },
-                'Failed to send admin notification for double-refund exception — manual intervention still required'
-              ));
+            } catch (flagErr) {
+              escrowLogger.error(
+                { escrowId, err: flagErr instanceof Error ? flagErr.message : String(flagErr) },
+                'CRITICAL: failed to set manual_reconciliation_required flag — ops must manually identify this escrow'
+              );
             }
+            // Notify ops for immediate action.
+            notifyAdmins({
+              title: 'REFUND RACE CONDITION — Manual Reconciliation Required',
+              body: `Escrow ${escrowId}: release() raced with refund(). Stripe refund ${stripeRefundId} already issued (charge: ${stripeChargeId}). Worker received transfer AND poster received refund. Amount: ${refundAmount} cents. Investigate immediately.`,
+              deepLink: `/admin/escrows/${escrowId}`,
+              priority: 'CRITICAL',
+              metadata: { escrow_id: escrowId, stripe_refund_id: stripeRefundId, stripe_charge_id: stripeChargeId, amount_cents: refundAmount },
+            }).catch(notifyErr => escrowLogger.error(
+              { err: notifyErr instanceof Error ? notifyErr.message : String(notifyErr), escrowId },
+              'Failed to send admin notification for REFUND_RACE_CONDITION — manual intervention still required'
+            ));
             return {
               success: false,
               error: {
-                code: ErrorCodes.INVALID_STATE,
-                message: `Cannot refund escrow: concurrent release detected (FUNDED→RELEASED race). Stripe refund cancellation attempted — check logs for outcome.`,
+                code: 'REFUND_RACE_CONDITION',
+                message: `Escrow ${escrowId}: concurrent release detected between T1 and T2. Stripe refund ${stripeRefundId} was already issued. Manual reconciliation required — escrow flagged.`,
               },
             } as ServiceResult<Escrow>;
           }

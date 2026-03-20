@@ -138,9 +138,14 @@ describe('challenges router', () => {
   // =========================================================================
   describe('updateProgress', () => {
     it('updates progress and returns completed=true when target reached', async () => {
-      // Challenge lookup
+      // Challenge lookup — use complete_task so server-side verification runs
       mockDb.query.mockResolvedValueOnce({
-        rows: [{ target_value: 3, xp_reward: 20 }],
+        rows: [{ target_value: 3, xp_reward: 20, challenge_type: 'complete_task' }],
+        rowCount: 1,
+      } as any);
+      // Server verification: 3 actual completed tasks today
+      mockDb.query.mockResolvedValueOnce({
+        rows: [{ completed_tasks: '3' }],
         rowCount: 1,
       } as any);
       // Upsert progress

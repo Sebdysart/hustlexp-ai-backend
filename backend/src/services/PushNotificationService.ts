@@ -33,6 +33,15 @@ interface PushResult {
   failed: number;
 }
 
+// Wrap a promise with a timeout to prevent BullMQ stall-induced duplicate sends
+const withTimeout = <T>(promise: Promise<T>, ms: number): Promise<T> =>
+  Promise.race([
+    promise,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`Timeout after ${ms}ms`)), ms)
+    ),
+  ]);
+
 // FCM error codes that indicate a token should be deactivated
 const DEACTIVATION_ERROR_CODES = [
   'messaging/registration-token-not-registered',
@@ -136,12 +145,15 @@ export async function sendPushNotification(
     // Sanitize body: strip GPS coordinates / addresses; honour sensitive flag
     const safeBody = sanitizePushBody(body, sensitive);
 
-    // Send multicast via FCM
-    const response = await messaging.sendEachForMulticast({
-      tokens,
-      notification: { title, body: safeBody },
-      data: data || undefined,
-    });
+    // Send multicast via FCM (25s timeout guards against BullMQ stall+duplicate-send)
+    const response = await withTimeout(
+      messaging.sendEachForMulticast({
+        tokens,
+        notification: { title, body: safeBody },
+        data: data || undefined,
+      }),
+      25_000
+    );
 
     // Process results: deactivate invalid tokens
     const sent = response.successCount;
