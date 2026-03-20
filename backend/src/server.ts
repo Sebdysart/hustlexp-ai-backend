@@ -835,8 +835,11 @@ app.get('/api/users/:userId/onboarding-status', async (c) => {
 // STRIPE WEBHOOKS (Raw body needed)
 // ============================================================================
 
-// A-06 FIX: Rate-limit all /webhooks/* routes to bound the compute cost of
+/// A-06 FIX: Rate-limit all /webhooks/* routes to bound the compute cost of
 // HMAC verification even though signatures are checked before DB writes.
+// A47-4 FIX: Also apply publicIpRateLimitMiddleware (60/min per IP) as
+// defence-in-depth, matching the protection applied to /trpc/* and /realtime/stream.
+app.use('/webhooks/*', publicIpRateLimitMiddleware());
 app.use('/webhooks/*', rateLimitMiddleware('general'));
 
 app.post('/webhooks/stripe', async (c) => {

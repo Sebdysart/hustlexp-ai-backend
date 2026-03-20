@@ -348,7 +348,7 @@ export function startOutboxWorker(intervalMs: number = 5000): OutboxWorkerHandle
           // matches this pod's LOCK_HOLDER_ID. Prevents Pod A (recovering after a
           // crash past the TTL) from deleting Pod B's freshly-acquired lock.
           const luaScript = `if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end`;
-          await redisClient.eval(luaScript, 1, TRUST_TIER_LOCK_KEY, LOCK_HOLDER_ID).catch(err => {
+          await redisClient.eval(luaScript, [TRUST_TIER_LOCK_KEY], [LOCK_HOLDER_ID]).catch(err => {
             log.warn({ err }, 'Failed to release trust tier promotion lock');
           });
         }

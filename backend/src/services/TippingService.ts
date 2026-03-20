@@ -157,6 +157,21 @@ export const TippingService = {
         return { success: false, error: { code: 'DUPLICATE', message: 'Already tipped for this task' } };
       }
 
+      // F47-5 FIX: Reject tip creation when the worker has no Stripe Connect account.
+      // Previously, a null workerStripeId caused the PaymentIntent to be created on the
+      // platform account with NO transfer_data — the poster was charged but the worker
+      // received nothing (funds silently pocketed by the platform). Return a clear error
+      // so the caller can prompt the worker to complete Stripe Connect onboarding.
+      if (!checkResult.workerStripeId) {
+        return {
+          success: false,
+          error: {
+            code: 'WORKER_NO_CONNECT_ACCOUNT',
+            message: 'Worker has not connected their Stripe account — tips cannot be sent until they complete Stripe Connect onboarding.',
+          },
+        };
+      }
+
       // Step 2 — Create Stripe PI outside any DB transaction.
       //   If the subsequent INSERT fails we cancel the PI to avoid orphaning it.
       const paymentIntent = await stripe!.paymentIntents.create(

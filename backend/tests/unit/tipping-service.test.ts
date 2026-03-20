@@ -222,6 +222,35 @@ describe('TippingService', () => {
       );
     });
 
+    it('returns WORKER_NO_CONNECT_ACCOUNT when worker has no Stripe account (F47-5)', async () => {
+      // F47-5 FIX: When worker has no Stripe Connect account, createTip must return an
+      // error BEFORE creating a PaymentIntent so the poster is never charged while the
+      // worker receives nothing (silent platform pocket).
+      mockDb.query
+        // 1. Task validation (outside transaction)
+        .mockResolvedValueOnce({
+          rows: [{ state: 'COMPLETED', poster_id: 'poster-1', worker_id: 'worker-1', price: 5000 }],
+          rowCount: 1,
+        } as never)
+        // 2. Advisory lock (first call inside transaction — result is discarded)
+        .mockResolvedValueOnce({ rows: [{}], rowCount: 1 } as never)
+        // 3. SELECT ... FOR UPDATE inside transaction — no existing tip
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+        // 4. Worker Stripe Connect account — null (not onboarded)
+        .mockResolvedValueOnce({ rows: [{ stripe_connect_id: null }], rowCount: 1 } as never);
+
+      const result = await TippingService.createTip({
+        taskId: 'task-1',
+        posterId: 'poster-1',
+        amountCents: 500,
+      });
+
+      // Must fail before Stripe PI creation
+      expect(mockPaymentIntentsCreate).not.toHaveBeenCalled();
+      expect(result.success).toBe(false);
+      if (!result.success) expect(result.error.code).toBe('WORKER_NO_CONNECT_ACCOUNT');
+    });
+
     it('cancels orphaned Stripe PI when tip INSERT fails (TT-06)', async () => {
       mockDb.query
         // 1. Task validation
@@ -233,8 +262,8 @@ describe('TippingService', () => {
         .mockResolvedValueOnce({ rows: [{}], rowCount: 1 } as never)
         // 3. SELECT ... FOR UPDATE — no duplicate
         .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
-        // 4. Worker Stripe Connect account
-        .mockResolvedValueOnce({ rows: [{ stripe_connect_id: null }], rowCount: 1 } as never)
+        // 4. Worker Stripe Connect account — has a valid Connect ID so PI creation proceeds
+        .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_worker_valid' }], rowCount: 1 } as never)
         // 5. INSERT tip — DB failure after PI created (outside transaction, TT-06 fix)
         .mockRejectedValueOnce(new Error('unique_violation') as never);
 

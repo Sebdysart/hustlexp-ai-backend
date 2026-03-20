@@ -1,3 +1,4 @@
+import { timingSafeEqual } from 'crypto';
 import { Hono } from 'hono';
 import { Registry, Histogram, Counter, Gauge, collectDefaultMetrics } from 'prom-client';
 
@@ -81,9 +82,21 @@ function createMetricsEndpoint(app: Hono<any>): void {
 
   app.get('/metrics', async (c) => {
     const authHeader = c.req.header('Authorization');
-    const expectedHeader = `Bearer ${internalApiKey}`;
+    const provided = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
 
-    if (!authHeader || authHeader !== expectedHeader) {
+    // A47-2 FIX: Use timingSafeEqual to prevent timing side-channel leaking
+    // the INTERNAL_API_KEY length/bytes. Pad both buffers to the same length
+    // (max of the two) before comparison — timingSafeEqual requires equal-length buffers.
+    const rawProvided = Buffer.from(provided || '', 'utf8');
+    const expectedBuf = Buffer.from(internalApiKey, 'utf8');
+    const maxLen = Math.max(rawProvided.length, expectedBuf.length);
+    const providedBuf = Buffer.alloc(maxLen);
+    const paddedExpected = Buffer.alloc(maxLen);
+    rawProvided.copy(providedBuf);
+    expectedBuf.copy(paddedExpected);
+    const match = timingSafeEqual(providedBuf, paddedExpected);
+
+    if (!provided || !match) {
       return c.text('Unauthorized', 401);
     }
 

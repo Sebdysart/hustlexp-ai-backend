@@ -136,7 +136,12 @@ export const SelfInsurancePoolService = {
         throw new Error('Failed to get pool status');
       }
 
-      if (claimAmountCents > poolStatus.data.max_claim_cents) {
+      // F47-6 FIX: Compare the estimated covered amount (not raw claim amount) against
+      // max_claim_cents. The actual debit is coverage_percentage% of the claim, so
+      // checking raw claimAmountCents was too strict — it rejected valid claims whose
+      // raw amount exceeds the cap but whose covered amount falls within it.
+      const estimatedCoveredCents = Math.round(claimAmountCents * ((poolStatus.data.coverage_percentage ?? 80) / 100));
+      if (estimatedCoveredCents > poolStatus.data.max_claim_cents) {
         return {
           success: false,
           error: {

@@ -112,6 +112,19 @@ export async function processInstantNotificationJob(
     [taskId, hustlerId]
   );
 
+  // W47-2 FIX: Idempotency guard — BullMQ retries (attempts:3) can fire this job
+  // more than once if a timeout occurs after the INSERT succeeds but before the
+  // worker returns. Check for an existing notification before inserting to prevent
+  // duplicate push notifications reaching the hustler for the same instant task.
+  const existingNotif = await db.query(
+    `SELECT id FROM notifications WHERE user_id = $1 AND task_id = $2 AND category = 'instant_task_available' LIMIT 1`,
+    [hustlerId, taskId]
+  );
+  if (existingNotif.rows.length > 0) {
+    log.info({ hustlerId, taskId }, 'processInstantNotificationJob: notification already exists — idempotent skip');
+    return;
+  }
+
   // Create CRITICAL priority notification
   const priceDollars = (task.price / 100).toFixed(2);
   

@@ -14,6 +14,8 @@ export interface AuthenticatedUser {
   email: string;
   emailVerified: boolean;
   name?: string;
+  is_banned?: boolean;
+  account_status?: string;
 }
 
 // Redis key for revoked tokens (set when user signs out or changes password)
@@ -56,7 +58,21 @@ export async function authenticateRequest(
         }
         // Fall through to Firebase verification with checkRevoked
       } else {
-        return user;
+        // A47-7 FIX: Check if the cached user has since been banned, suspended, or GDPR-deleted.
+        // The ban status is stored in the cached session (populated from DB at cache-write time).
+        // If the status is stale (user was banned after this cache entry was written), fall through
+        // to Firebase re-verification which will perform a fresh DB ban-check.
+        if (user.is_banned || user.account_status === 'SUSPENDED' || user.account_status === 'DELETED') {
+          authLogger.warn({ uid: user.uid, is_banned: user.is_banned, account_status: user.account_status }, '[auth] Cached session rejected — user is banned/suspended/deleted; invalidating cache and re-verifying');
+          try {
+            await redis.del(CACHE_KEYS.sessionToken(token));
+          } catch (err) {
+            authLogger.error({ err }, '[auth] Failed to delete banned/suspended/deleted user session from cache — continuing with Firebase re-verification');
+          }
+          // Fall through to Firebase verification (which will re-check DB ban status)
+        } else {
+          return user;
+        }
       }
     }
   }
@@ -72,7 +88,9 @@ export async function authenticateRequest(
       name: decoded.name || undefined,
     };
 
-    // Check DB for ban/suspension — ensures non-tRPC Hono routes also enforce these states
+    // Check DB for ban/suspension/deletion — ensures non-tRPC Hono routes also enforce these states
+    // Also populate is_banned/account_status on the user object so the warm-cache path (FIX A47-7)
+    // can detect freshly-banned users without a full Firebase re-verification.
     try {
       const { rows: userRows } = await db.query<{ is_banned: boolean; account_status: string }>(
         'SELECT is_banned, account_status FROM users WHERE firebase_uid = $1',
@@ -80,10 +98,13 @@ export async function authenticateRequest(
       );
       if (userRows.length > 0) {
         const dbUser = userRows[0];
-        if (dbUser.is_banned || dbUser.account_status === 'SUSPENDED') {
-          authLogger.warn({ uid: decoded.uid, is_banned: dbUser.is_banned, account_status: dbUser.account_status }, '[auth] Rejected banned/suspended user at Hono auth middleware');
+        if (dbUser.is_banned || dbUser.account_status === 'SUSPENDED' || dbUser.account_status === 'DELETED') {
+          authLogger.warn({ uid: decoded.uid, is_banned: dbUser.is_banned, account_status: dbUser.account_status }, '[auth] Rejected banned/suspended/deleted user at Hono auth middleware');
           return null; // Rejected — route will return 401
         }
+        // Store ban/status in the session so warm-cache checks (A47-7) can detect state changes.
+        user.is_banned = dbUser.is_banned;
+        user.account_status = dbUser.account_status;
       }
     } catch (err) {
       // INTENTIONAL FAIL-OPEN: DB errors must not block authentication — this is

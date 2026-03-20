@@ -153,18 +153,38 @@ describe('SelfInsurancePoolService', () => {
       if (result.success) expect(result.data).toBe('claim-1');
     });
 
-    it('rejects claim exceeding max amount (pre-flight check, no transaction)', async () => {
+    it('rejects claim where covered amount exceeds max (F47-6: checks covered not raw)', async () => {
+      // F47-6 FIX: The guard now computes estimatedCoveredCents = claimAmount * coverage%
+      // and compares THAT against max_claim_cents.
+      // 700000 * 80% = 560000 > 500000 max → CLAIM_EXCEEDS_MAX
       mockDb.query.mockResolvedValueOnce({
-        rows: [makePoolRow({ max_claim_cents: 500000 })],
+        rows: [makePoolRow({ max_claim_cents: 500000, coverage_percentage: 80 })],
         rowCount: 1,
       } as never);
+
+      const result = await SelfInsurancePoolService.fileClaim(
+        'task-1', 'hustler-1', 700000, 'Major damage', []
+      );
+
+      expect(result.success).toBe(false);
+      if (!result.success) expect(result.error.code).toBe('CLAIM_EXCEEDS_MAX');
+    });
+
+    it('allows claim where raw amount > max but covered amount <= max (F47-6)', async () => {
+      // F47-6 FIX: 600000 raw, 80% coverage → estimatedCoveredCents = 480000 < 500000 max
+      // Old bug: would have rejected this because 600000 > 500000.
+      // New behavior: pre-flight passes; subsequent balance check inside transaction is the gate.
+      mockDb.query
+        .mockResolvedValueOnce({ rows: [makePoolRow({ max_claim_cents: 500000, coverage_percentage: 80, available_balance_cents: 1000000 })], rowCount: 1 } as never) // getPoolStatus
+        .mockResolvedValueOnce({ rows: [{ available_balance_cents: 1000000, coverage_percentage: 80 }], rowCount: 1 } as never) // FOR UPDATE lock
+        .mockResolvedValueOnce({ rows: [{ id: 'claim-2' }], rowCount: 1 } as never); // INSERT
 
       const result = await SelfInsurancePoolService.fileClaim(
         'task-1', 'hustler-1', 600000, 'Major damage', []
       );
 
-      expect(result.success).toBe(false);
-      if (!result.success) expect(result.error.code).toBe('CLAIM_EXCEEDS_MAX');
+      expect(result.success).toBe(true);
+      if (result.success) expect(result.data).toBe('claim-2');
     });
 
     it('rejects claim when locked balance is insufficient', async () => {

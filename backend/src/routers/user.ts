@@ -355,7 +355,7 @@ export const userRouter = router({
       // above), by assigning trust_tier=0 (UNVERIFIED) so the account is restricted
       // until phone verification is completed.
       const bannedByEmail = await db.query<{ id: string }>(
-        `SELECT id FROM users WHERE email = $1 AND is_banned = true`,
+        `SELECT id FROM users WHERE email = $1 AND is_banned = true AND account_status != 'DELETED'`,
         [input.email]
       );
       if (bannedByEmail.rows.length > 0) {

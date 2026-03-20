@@ -610,6 +610,41 @@ describe('user.register', () => {
     });
   });
 
+  describe('ban check excludes GDPR-deleted rows', () => {
+    it('allows re-registration when the only matching banned row has account_status=DELETED', async () => {
+      // R47-5 regression: a GDPR-deleted banned row must NOT block re-registration.
+      // The fix adds `AND account_status != 'DELETED'` to the ban check query,
+      // so this mock returns no rows (simulating the fixed query finding nothing).
+      const newUser = makeFakeUser({
+        id: 'new-user-id',
+        firebase_uid: 'fb-new-user',
+        email: 'newuser@hustlexp.com',
+      });
+
+      // Email ban check → returns empty (DELETED row excluded by fix)
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+      // Existing user check → no active row found
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+      // INSERT RETURNING
+      mockDb.query.mockResolvedValueOnce({ rows: [newUser], rowCount: 1 } as any);
+      setupStatsQuery();
+
+      const result = await makePublicCaller().register(validInput);
+
+      expect(result).toHaveProperty('id', 'new-user-id');
+    });
+
+    it('still blocks re-registration when the matching banned row is ACTIVE', async () => {
+      // A non-deleted banned row must still throw FORBIDDEN.
+      // Simulate the ban check returning a row (active banned account).
+      mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'banned-user-id' }], rowCount: 1 } as any);
+
+      await expect(
+        makePublicCaller().register(validInput)
+      ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    });
+  });
+
   describe('existing user re-registration', () => {
     it('returns existing user instead of creating a duplicate', async () => {
       const existingUser = makeFakeUser({
