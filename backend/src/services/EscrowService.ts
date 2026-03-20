@@ -588,49 +588,18 @@ export const EscrowService = {
         }
       );
 
-      // FIX 1B: Write revenue ledger entry for this escrow payout.
-      // Previously no ledger entry was created on escrow release, making P&L
-      // unreconcilable.  platform_fee is the correct event type — it captures
-      // the full financial decomposition (gross, fee, net) per RevenueService v2 spec.
+      // F-10 FIX: Do NOT log platform_fee here. The platform_fee revenue ledger row
+      // MUST only be written by the payment-worker's handleTransferCreated() handler,
+      // which has the real Stripe transfer event ID (stripeEventId). That handler uses
+      // an idempotency guard of:
+      //   SELECT id FROM revenue_ledger WHERE stripe_event_id = $1 AND event_type = 'platform_fee'
+      // If we wrote a row here with stripe_event_id = NULL, that guard would never find
+      // it and would insert a second platform_fee row — every escrow release would be
+      // double-counted in the revenue ledger.
       //
-      // Zero-fee guard: RevenueService rejects amountCents <= 0 for 'platform_fee'
-      // events. When platformFeeCents is 0 (valid config — promotional period or
-      // test env), skip the ledger entry entirely. No fee was collected so there
-      // is nothing to record; the release event itself is already captured in
-      // escrow_events via logEscrowEvent above.
-      if (platformFeeCents === 0) {
-        escrowLogger.info(
-          { workerId, escrowId, platformFeePercent },
-          'Zero-fee release: skipping RevenueService.logEvent (no platform fee collected)'
-        );
-      } else {
-      try {
-        await RevenueService.logEvent({
-          eventType: 'platform_fee',
-          userId: workerId!,
-          taskId: taskId!,
-          amountCents: platformFeeCents,
-          grossAmountCents: grossPayoutCents!,
-          platformFeeCents,
-          netAmountCents: netPayoutCents!,
-          feeBasisPoints: Math.round(platformFeePercent * 100),
-          escrowId,
-          stripeTransferId: stripeTransferId ?? undefined,
-          metadata: {
-            event: 'escrow_release',
-            adminOverride,
-            ...(adminManualPayoutRequired ? { admin_manual_payout_required: true } : {}),
-          },
-        });
-      } catch (revenueError) {
-        // Non-fatal: ledger write failure must not block payout confirmation.
-        // Ops can backfill from escrow_events table if needed.
-        escrowLogger.error(
-          { err: revenueError instanceof Error ? revenueError.message : String(revenueError), workerId, escrowId },
-          'Failed to write revenue ledger entry for escrow release — requires manual reconciliation'
-        );
-      }
-      } // end else (platformFeeCents > 0)
+      // The release event itself is captured in escrow_events via logEscrowEvent above.
+      // The payment-worker's handleTransferCreated() is the single authoritative source
+      // for the platform_fee ledger entry, ensuring idempotency via stripe_event_id.
 
       // v1.x: Record 2% self-insurance contribution from worker earnings
       try {
@@ -824,7 +793,10 @@ export const EscrowService = {
           escrowId,
           amount: refundAmount,
           reason: 'requested_by_customer',
-          idempotencyKeySuffix: adminOverride ? 'admin_override' : 'escrow_refund',
+          // F-1 FIX: Use 'svc_refund' suffix to distinguish service-layer refunds
+          // from escrow-action-worker refunds ('wkr_refund'). Without distinct suffixes,
+          // both paths share the same Stripe idempotency key and one silently no-ops.
+          idempotencyKeySuffix: adminOverride ? 'admin_override' : 'svc_refund',
         });
         if (!refundResult.success) {
           throw new Error(`Stripe refund failed — ${refundResult.error.message}`);
@@ -1320,10 +1292,12 @@ export const EscrowService = {
             `partialRefund: worker ${txWorkerId} has no stripe_connect_id — cannot issue worker transfer of ${workerCents} cents. Escrow remains LOCKED_DISPUTE for manual ops recovery.`
           );
         } else {
-          // BUG 7 FIX: Pass 'escrow_partial_refund' suffix so this key is distinct from
-          // escrow-action-worker's 'dispute_release' suffix. Without distinct suffixes,
+          // BUG 7 FIX: Pass 'svc_partial_refund' suffix so this key is distinct from
+          // escrow-action-worker's 'wkr_partial_refund' suffix. Without distinct suffixes,
           // Stripe would see both calls as idempotent replays of the same transfer key
           // (tr_create_{escrowId}_{amount}), masking a real duplicate double-transfer.
+          // F-5 FIX: Renamed from 'escrow_partial_refund' to 'svc_partial_refund' to
+          // explicitly namespace service-layer vs worker-layer idempotency keys.
           const transferResult = await StripeService.createTransfer({
             escrowId,
             taskId: txTaskId!,
@@ -1331,7 +1305,7 @@ export const EscrowService = {
             workerStripeAccountId: txWorkerStripeConnectId,
             amount: netWorkerCents,
             description: `Dispute partial resolution: worker ${workerPercent}%`,
-            idempotencyKeySuffix: 'escrow_partial_refund',
+            idempotencyKeySuffix: 'svc_partial_refund',
           });
           if (!transferResult.success) {
             // Fatal: throw so the caller can retry while the escrow is still LOCKED_DISPUTE.

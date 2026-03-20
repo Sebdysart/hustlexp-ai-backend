@@ -568,12 +568,15 @@ async function handleRefundRequest(
     : escrow.amount;
 
   // Create Stripe refund
+  // F-1 FIX: Use 'wkr_refund' suffix to distinguish worker-layer refunds from
+  // EscrowService.refund() refunds ('svc_refund'). Without distinct suffixes,
+  // both paths share the same Stripe idempotency key and one silently no-ops.
   const refundResult = await StripeService.createRefund({
     paymentIntentId: escrow.stripe_payment_intent_id,
     escrowId: escrow.id,
     amount: amountToRefund,
     reason: 'requested_by_customer',
-    idempotencyKeySuffix: 'escrow_refund',
+    idempotencyKeySuffix: 'wkr_refund',
   });
 
   if (!refundResult.success) {
