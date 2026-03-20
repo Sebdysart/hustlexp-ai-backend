@@ -26,37 +26,45 @@ const securityLog = logger.child({ module: 'security' });
  *
  * The X-Forwarded-For header is formatted as:
  *   "client, proxy1, proxy2"
- * Each hop appends its own entry.  Our trusted reverse proxy (Fly.io /
- * Cloudflare) always appends the rightmost entry, so an attacker cannot forge
- * that position — any value they inject is pushed further left by the proxy.
+ * Each hop APPENDS its own entry to the right.  The leftmost entry is
+ * client-controlled — an attacker can set any value they want there before
+ * the request reaches the proxy.  The rightmost entry is appended by our
+ * trusted reverse proxy (Fly.io / Cloudflare) and cannot be forged.
  *
- * Rules:
- *   1. If XFF is present, take the LEFTMOST (first) entry — the original client IP.
- *   2. Otherwise fall back to Cloudflare's cf-connecting-ip, then x-real-ip.
- *   3. If none of the above are available, return 'unknown'.
+ * Rules (checked in priority order):
+ *   1. cf-connecting-ip — set by Cloudflare directly from the TCP connection,
+ *      cannot be forged by the client under any circumstances.
+ *   2. XFF rightmost — the entry appended by the trusted proxy; the client
+ *      cannot control this position because the proxy always appends after
+ *      any client-supplied values.
+ *   3. x-real-ip — set by nginx/other proxies from the connection address.
+ *   4. 'unknown' if none of the above are present.
  *
- * This function must be used for ALL IP-based rate limiting.  Using the
- * rightmost entry returns the edge proxy IP — shared across all users —
- * which means every user maps to the same rate-limit bucket, completely
- * bypassing per-client enforcement.  The leftmost entry is the original
- * client IP as reported by the first hop and is the correct key for
- * per-client rate limiting.
+ * A-22: NEVER use ips[0] (leftmost XFF) for rate-limit keys — doing so allows
+ * any attacker to spoof a different IP per request and bypass all IP-based
+ * limits entirely.
+ *
+ * This function must be used for ALL IP-based rate limiting.
  */
 function getTrustedClientIP(c: Context): string {
+  // cf-connecting-ip: set by Cloudflare from the raw TCP connection; cannot
+  // be forged by the client regardless of what they put in XFF.
+  const cfIp = c.req.header('cf-connecting-ip');
+  if (cfIp) return cfIp.trim();
+
+  // X-Forwarded-For: rightmost entry is proxy-appended — the proxy always
+  // appends AFTER any client-supplied entries, so it cannot be forged.
   const xff = c.req.header('x-forwarded-for');
   if (xff) {
     const ips = xff.split(',').map((ip) => ip.trim()).filter(Boolean);
-    // The leftmost entry is the original client IP.
-    if (ips.length > 0) {
-      return ips[0];
-    }
+    if (ips.length > 0) return ips[ips.length - 1]; // rightmost = proxy-confirmed
   }
-  // Fallback: Cloudflare's canonical header, then a generic real-ip header
-  return (
-    c.req.header('cf-connecting-ip') ||
-    c.req.header('x-real-ip') ||
-    'unknown'
-  );
+
+  // x-real-ip: set by nginx/proxies from the connection address.
+  const realIp = c.req.header('x-real-ip');
+  if (realIp) return realIp.trim();
+
+  return 'unknown';
 }
 
 // ============================================================================
@@ -85,7 +93,7 @@ export async function securityHeaders(c: Context, next: Next) {
   // Content Security Policy — API-only server, block everything except JSON responses
   c.header(
     'Content-Security-Policy',
-    "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+    "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
   );
 
   // Prevent cross-site scripting via cache sniffing
@@ -111,9 +119,9 @@ const RATE_LIMITS = {
   financial: { limit: 10, windowSeconds: 60 },   // 10 financial ops/min (escrow release, stripe)
   live: { limit: 20, windowSeconds: 60 },        // 20 live mode requests/min — multi-table JOIN, geo amplification risk
   mutation: { limit: 60, windowSeconds: 60 },    // 60 mutation ops/min (write-heavy routes)
-  task: { limit: 60, windowSeconds: 60 },         // 60 task ops/min
-  general: { limit: 120, windowSeconds: 60 },     // 120 general requests/min
-  sse: { limit: 10, windowSeconds: 60 },          // 10 SSE connection attempts/min (connection-flood protection)
+  task: { limit: 60, windowSeconds: 60 },        // 60 task ops/min
+  general: { limit: 120, windowSeconds: 60 },    // 120 general requests/min
+  sse: { limit: 10, windowSeconds: 60 },         // 10 SSE connection attempts/min (connection-flood protection)
 } as const;
 
 type RateLimitCategory = keyof typeof RATE_LIMITS;
@@ -130,9 +138,9 @@ type RateLimitCategory = keyof typeof RATE_LIMITS;
  * Firebase token verification (in the tRPC auth middleware), which runs
  * inside the procedure handler — too late for HTTP-layer rate limiting.
  *
- * Therefore this middleware uses the client IP (leftmost XFF entry,
- * the original client IP) as the bucket key for all requests.  This is
- * per-client and requires no JWT inspection.
+ * Therefore this middleware uses the trusted client IP (cf-connecting-ip
+ * first; rightmost XFF as fallback — both proxy-confirmed) as the bucket
+ * key for all requests.  This is per-client and requires no JWT inspection.
  *
  * Per-user rate limiting (using the verified ctx.user.id) can be added at
  * the tRPC procedure level where the verified identity is already available.
@@ -140,6 +148,7 @@ type RateLimitCategory = keyof typeof RATE_LIMITS;
 export function rateLimitMiddleware(category: RateLimitCategory) {
   return async (c: Context, next: Next) => {
     // Always use the trusted client IP — avoids unverified-JWT sub spoofing.
+    // A-22: getTrustedClientIP uses cf-connecting-ip / rightmost XFF, never leftmost.
     const identifier = `ip:${getTrustedClientIP(c)}`;
 
     const { limit, windowSeconds } = RATE_LIMITS[category];
@@ -339,9 +348,9 @@ export function publicIpRateLimitMiddleware() {
     // would allow any attacker with a valid Firebase token (including a free
     // account) to make unlimited requests from a single IP.
 
-    // Derive client IP using leftmost XFF entry (the original client IP).
-    // Using the rightmost entry returns the shared edge proxy IP, which would
-    // collapse all users into one rate-limit bucket.
+    // A-22: use getTrustedClientIP (cf-connecting-ip first, then rightmost XFF).
+    // The leftmost XFF entry is client-controlled and must never be used as a
+    // rate-limit key — an attacker can rotate it on every request to get fresh buckets.
     const rawIp = getTrustedClientIP(c);
 
     const key = `rate:public:ip:${rawIp}`;
@@ -384,3 +393,5 @@ export function publicIpRateLimitMiddleware() {
   };
 }
 
+// Suppress unused variable warning for securityLog — used by callers via module import
+void securityLog;

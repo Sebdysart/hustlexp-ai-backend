@@ -47,6 +47,7 @@ interface InsuranceClaim {
   review_notes: string | null;
   paid_at: Date | null;
   created_at: Date;
+  stripe_transfer_id: string | null; // F-31: null until Stripe transfer is confirmed
 }
 
 interface PoolStatus {
@@ -144,6 +145,19 @@ export const SelfInsurancePoolService = {
         };
       }
 
+      // F-32: Also check against live available balance using the same coverage percentage
+      // that payClaim() will apply, so we reject at filing time rather than at payout time.
+      const coveredAmount = Math.round(claimAmountCents * (poolStatus.data.coverage_percentage / 100));
+      if (coveredAmount > poolStatus.data.available_balance_cents) {
+        return {
+          success: false,
+          error: {
+            code: 'INSUFFICIENT_POOL_BALANCE',
+            message: `Pool has insufficient balance to cover this claim. Available: $${(poolStatus.data.available_balance_cents / 100).toFixed(2)}`
+          }
+        };
+      }
+
       // Insert claim
       const result = await db.query<{ id: string }>(
         `INSERT INTO insurance_claims (
@@ -236,8 +250,10 @@ export const SelfInsurancePoolService = {
 
       const claim = claimResult.rows[0];
 
-      // F-18: Idempotency — return early if already paid
-      if (claim.status === 'paid') {
+      // F-18 / F-31: Idempotency — return early only if paid AND Stripe transfer confirmed.
+      // If status='paid' but stripe_transfer_id is NULL, the DB transaction committed but
+      // the Stripe call failed — we must fall through and re-attempt the Stripe transfer.
+      if (claim.status === 'paid' && claim.stripe_transfer_id) {
         return { success: true, data: { already_paid: true, claim } };
       }
 
@@ -265,13 +281,20 @@ export const SelfInsurancePoolService = {
       // F-17: Wrap balance check + pool debit + claim status update in a single
       // transaction with SELECT FOR UPDATE to prevent concurrent double-drain.
       await db.transaction(async (query: QueryFn) => {
-        // F-25: Re-verify claim status under row lock to prevent concurrent double-pay
-        const claimCheck = await query<{ status: string }>(
-          'SELECT status FROM insurance_claims WHERE id = $1 FOR UPDATE',
+        // F-25 / F-31: Re-verify claim status under row lock to prevent concurrent double-pay.
+        // Only skip the DB debit if status='paid' AND stripe_transfer_id is set — meaning a
+        // previous call fully completed. If stripe_transfer_id is NULL, DB committed but Stripe
+        // failed; the outer idempotency check allows fall-through for Stripe retry, so here
+        // we just skip the DB portion (pool already debited) by returning early.
+        const claimCheck = await query<{ status: string; stripe_transfer_id: string | null }>(
+          'SELECT status, stripe_transfer_id FROM insurance_claims WHERE id = $1 FOR UPDATE',
           [claimId]
         );
-        if (!claimCheck.rows[0] || claimCheck.rows[0].status === 'paid') {
-          return; // Already paid by a concurrent call — idempotent no-op
+        if (!claimCheck.rows[0]) {
+          return; // Claim locked/deleted by concurrent call — safe to exit
+        }
+        if (claimCheck.rows[0].status === 'paid') {
+          return; // DB already committed (with or without Stripe) — skip debit, outer code retries Stripe if needed
         }
         if (claimCheck.rows[0].status !== 'approved') {
           throw new Error(`CLAIM_NOT_APPROVED:Claim status changed to ${claimCheck.rows[0].status}`);
@@ -334,7 +357,19 @@ export const SelfInsurancePoolService = {
                 'metadata[task_id]': claim.task_id,
               }).toString(),
             });
-            if (!transferResponse.ok) {
+            if (transferResponse.ok) {
+              // F-31: Record the transfer ID so the idempotency guard can confirm
+              // that the Stripe call succeeded. Without this, a process crash after
+              // DB commit but before Stripe completes leaves the claim in a
+              // status='paid'/stripe_transfer_id=NULL limbo that is un-retryable.
+              const transferData = await transferResponse.json() as { id?: string };
+              if (transferData.id) {
+                await db.query(
+                  'UPDATE insurance_claims SET stripe_transfer_id = $1 WHERE id = $2',
+                  [transferData.id, claimId]
+                );
+              }
+            } else {
               log.error({ claimId, taskId: claim.task_id, statusCode: transferResponse.status }, 'Stripe transfer failed for claim payout');
               await db.query(
                 `UPDATE insurance_claims SET review_notes = COALESCE(review_notes, '') || ' [STRIPE_TRANSFER_FAILED]' WHERE id = $1`,

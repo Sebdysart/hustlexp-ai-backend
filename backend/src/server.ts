@@ -121,7 +121,7 @@ app.use('*', async (c, next) => {
     path: c.req.path,
     status,
     duration,
-    ip: (() => { const xff = c.req.header('x-forwarded-for'); if (!xff) return c.req.header('x-real-ip') || 'unknown'; const parts = xff.split(','); return parts[0]?.trim() || 'unknown'; })(),
+    ip: (() => { const cfIp = c.req.header('cf-connecting-ip'); if (cfIp) return cfIp.trim(); const xff = c.req.header('x-forwarded-for'); if (xff) { const parts = xff.split(',').map((s) => s.trim()).filter(Boolean); if (parts.length > 0) return parts[parts.length - 1]; } return c.req.header('x-real-ip') || 'unknown'; })(),
   }, `${c.req.method} ${c.req.path} → ${status} (${duration}ms)`);
 });
 
@@ -453,12 +453,16 @@ app.use('/trpc/*', async (c, next) => {
   // already fires once for this request, so we only need the additional N-1 checks).
   if (operationCount > 1) {
     const identifier = `ip:${(() => {
+      // A-22: use proxy-confirmed IP (cf-connecting-ip first, then rightmost XFF).
+      // Never use leftmost XFF — it is client-controlled and trivially spoofable.
+      const cfIp = c.req.header('cf-connecting-ip');
+      if (cfIp) return cfIp.trim();
       const xff = c.req.header('x-forwarded-for');
       if (xff) {
         const ips = xff.split(',').map((ip) => ip.trim()).filter(Boolean);
-        if (ips.length > 0) return ips[0];
+        if (ips.length > 0) return ips[ips.length - 1]; // rightmost = proxy-confirmed
       }
-      return c.req.header('cf-connecting-ip') || c.req.header('x-real-ip') || 'unknown';
+      return c.req.header('x-real-ip') || 'unknown';
     })()}`;
     const { checkRateLimit } = await import('./cache/redis.js');
     for (let i = 1; i < operationCount; i++) {

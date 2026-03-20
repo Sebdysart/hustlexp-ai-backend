@@ -88,14 +88,15 @@ export const challengesRouter = router({
     .mutation(async ({ ctx, input }) => {
       const userId = ctx.user.id;
 
-      // Get challenge target
+      // Get challenge target — must be today's active challenge
       const challenge = await db.query<{ target_value: number; xp_reward: number; challenge_type: string }>(
-        'SELECT target_value, xp_reward, challenge_type FROM daily_challenges WHERE id = $1',
+        `SELECT target_value, xp_reward, challenge_type FROM daily_challenges
+         WHERE id = $1 AND challenge_date = CURRENT_DATE AND active = TRUE`,
         [input.challengeId]
       );
 
       if (challenge.rows.length === 0) {
-        throw new TRPCError({ code: 'NOT_FOUND', message: 'Challenge not found' });
+        throw new TRPCError({ code: 'NOT_FOUND', message: "Challenge not found or is not today's active challenge" });
       }
 
       // Server-side verification: cap progress at what the user has actually completed
@@ -105,16 +106,28 @@ export const challengesRouter = router({
       const challengeRow = challenge.rows[0] as { target_value: number; xp_reward: number; challenge_type?: string };
       let verifiedProgress = input.progress;
 
-      if (
-        challengeRow.challenge_type === 'complete_task' ||
-        challengeRow.challenge_type === 'fast_completion'
-      ) {
+      if (challengeRow.challenge_type === 'complete_task') {
         const actualProgress = await db.query<{ completed_tasks: string }>(
           `SELECT COUNT(*) as completed_tasks
            FROM tasks
            WHERE worker_id = $1 AND state = 'COMPLETED'
              AND updated_at >= CURRENT_DATE
              AND updated_at < CURRENT_DATE + INTERVAL '1 day'`,
+          [userId]
+        );
+        verifiedProgress = Math.min(
+          input.progress,
+          Number(actualProgress.rows[0].completed_tasks)
+        );
+      } else if (challengeRow.challenge_type === 'fast_completion') {
+        const actualProgress = await db.query<{ completed_tasks: string }>(
+          `SELECT COUNT(*) as completed_tasks
+           FROM tasks
+           WHERE worker_id = $1
+             AND state = 'COMPLETED'
+             AND updated_at >= CURRENT_DATE
+             AND updated_at < CURRENT_DATE + INTERVAL '1 day'
+             AND (updated_at - accepted_at) < INTERVAL '30 minutes'`,
           [userId]
         );
         verifiedProgress = Math.min(

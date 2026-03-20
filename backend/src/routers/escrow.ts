@@ -153,7 +153,11 @@ export const escrowRouter = router({
       if (taskRow.rows.length === 0) {
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
       }
-      const taskPriceCents = taskRow.rows[0].price;
+      // F-30 FIX: tasks.price is DECIMAL(10,2) dollars (e.g. 50.00 for a $50 task).
+      // Convert to cents so all downstream comparisons and Stripe calls use cents.
+      const taskPriceCents = taskRow.rows[0].price != null
+        ? Math.round(Number(taskRow.rows[0].price) * 100)
+        : null;
 
       // REG-2 FIX: Reject escrow creation if task has no price set.
       // Without this guard, null coerces to 0 and the floor check silently passes,
@@ -378,13 +382,16 @@ export const escrowRouter = router({
       // was null the fallback was escrowAmount (correct) but if price was 0 or NaN,
       // Math.floor(NaN * 0.80) = NaN and NaN < anything is false, silently bypassing
       // the floor check entirely.
-      if (!taskPrice || !Number.isFinite(taskPrice) || taskPrice <= 0) {
+      if (!taskPrice || !Number.isFinite(Number(taskPrice)) || Number(taskPrice) <= 0) {
         throw new TRPCError({
           code: 'INTERNAL_SERVER_ERROR',
           message: 'Task price is invalid — cannot compute release floor',
         });
       }
-      const minimumTransferFloor = Math.floor(taskPrice * 0.80);
+      // F-30 FIX: tasks.price is DECIMAL(10,2) dollars — convert to cents before
+      // computing the floor so the comparison to transfer.amount (always in cents) is valid.
+      const taskPriceCentsForFloor = Math.round(Number(taskPrice) * 100);
+      const minimumTransferFloor = Math.floor(taskPriceCentsForFloor * 0.80);
       if (transfer.amount < minimumTransferFloor) {
         throw new TRPCError({
           code: 'PRECONDITION_FAILED',

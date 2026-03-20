@@ -312,6 +312,11 @@ export const squadRouter = router({
         throw new TRPCError({ code: 'NOT_FOUND', message: 'User not found' });
       }
 
+      const inviteeTier = Number(invitee.rows[0].trust_tier);
+      if (isNaN(inviteeTier) || inviteeTier < REQUIRED_TRUST_TIER) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'Invitee does not meet Elite trust tier requirement' });
+      }
+
       const result = await db.query<{ id: string; status: string; expires_at: Date }>(
         `INSERT INTO squad_invites (squad_id, inviter_id, invitee_id)
          VALUES ($1, $2, $3)
@@ -451,7 +456,7 @@ export const squadRouter = router({
   // DISBAND SQUAD (organizer only)
   // --------------------------------------------------------------------------
 
-  disband: posterProcedure
+  disband: protectedProcedure
     .input(z.object({ squadId: Schemas.uuid }))
     .mutation(async ({ ctx, input }) => {
       const orgCheck = await db.query(

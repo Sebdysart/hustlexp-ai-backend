@@ -365,7 +365,8 @@ describe('escrow.createPaymentIntent', () => {
     it('returns payment intent data on success with explicit amount', async () => {
       mockStripeService.isConfigured.mockReturnValue(true);
       // Router queries task price first
-      mockDb.query.mockResolvedValueOnce({ rows: [{ price: 5000 }], rowCount: 1 } as any);
+      // F-30: tasks.price is DECIMAL dollars — mock with 50.00 (= $50 = 5000 cents)
+      mockDb.query.mockResolvedValueOnce({ rows: [{ price: 50.00 }], rowCount: 1 } as any);
       // Router then looks up the pending escrow for this task
       mockDb.query.mockResolvedValueOnce({ rows: [{ id: ESCROW_ID }], rowCount: 1 } as any);
       mockStripeService.createPaymentIntent.mockResolvedValueOnce({
@@ -391,7 +392,8 @@ describe('escrow.createPaymentIntent', () => {
     it('derives amount from task price when amount is omitted', async () => {
       mockStripeService.isConfigured.mockReturnValue(true);
       // Router queries task price first (used as the amount when none provided)
-      mockDb.query.mockResolvedValueOnce({ rows: [{ price: 7500 }], rowCount: 1 } as any);
+      // F-30: tasks.price is DECIMAL dollars — 75.00 = $75 = 7500 cents
+      mockDb.query.mockResolvedValueOnce({ rows: [{ price: 75.00 }], rowCount: 1 } as any);
       // Router then looks up the pending escrow for this task
       mockDb.query.mockResolvedValueOnce({ rows: [{ id: ESCROW_ID }], rowCount: 1 } as any);
       mockStripeService.createPaymentIntent.mockResolvedValueOnce({
@@ -446,7 +448,8 @@ describe('escrow.createPaymentIntent', () => {
     it('passes poster_id from context as the second query parameter (ownership enforcement)', async () => {
       // Confirm the SQL ownership clause receives ctx.user.id as $2
       mockStripeService.isConfigured.mockReturnValue(true);
-      mockDb.query.mockResolvedValueOnce({ rows: [{ price: 3000 }], rowCount: 1 } as any);
+      // F-30: tasks.price is DECIMAL dollars — 30.00 = $30 = 3000 cents
+      mockDb.query.mockResolvedValueOnce({ rows: [{ price: 30.00 }], rowCount: 1 } as any);
       // Router then looks up the pending escrow for this task
       mockDb.query.mockResolvedValueOnce({ rows: [{ id: ESCROW_ID }], rowCount: 1 } as any);
       mockStripeService.createPaymentIntent.mockResolvedValueOnce({
@@ -488,7 +491,8 @@ describe('escrow.createPaymentIntent', () => {
 
     it('throws INTERNAL_SERVER_ERROR when Stripe call fails', async () => {
       mockStripeService.isConfigured.mockReturnValue(true);
-      mockDb.query.mockResolvedValueOnce({ rows: [{ price: 5000 }], rowCount: 1 } as any);
+      // F-30: tasks.price is DECIMAL dollars — 50.00 = $50 = 5000 cents
+      mockDb.query.mockResolvedValueOnce({ rows: [{ price: 50.00 }], rowCount: 1 } as any);
       // Router then looks up the pending escrow for this task
       mockDb.query.mockResolvedValueOnce({ rows: [{ id: ESCROW_ID }], rowCount: 1 } as any);
       mockStripeService.createPaymentIntent.mockResolvedValueOnce({
@@ -505,7 +509,8 @@ describe('escrow.createPaymentIntent', () => {
   describe('service delegation', () => {
     it('passes posterId and escrowId from context to StripeService', async () => {
       mockStripeService.isConfigured.mockReturnValue(true);
-      mockDb.query.mockResolvedValueOnce({ rows: [{ price: 1000 }], rowCount: 1 } as any);
+      // F-30: tasks.price is DECIMAL dollars — 10.00 = $10 = 1000 cents
+      mockDb.query.mockResolvedValueOnce({ rows: [{ price: 10.00 }], rowCount: 1 } as any);
       // Router looks up the pending escrow to get escrowId for PI idempotency scoping
       mockDb.query.mockResolvedValueOnce({ rows: [{ id: ESCROW_ID }], rowCount: 1 } as any);
       mockStripeService.createPaymentIntent.mockResolvedValueOnce({
@@ -691,8 +696,8 @@ describe('escrow.release', () => {
       });
       // Stripe verification: transfer exists and amount is valid (platform fee applied: 4250/5000)
       mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_test_123', amount: 4250, metadata: { escrow_id: ESCROW_ID } });
-      // Task price lookup for 80% floor calculation (task price = escrow amount here)
-      mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'COMPLETED', price: 5000 }] });
+      // F-30: tasks.price is DECIMAL dollars — 50.00 = $50 = 5000 cents; floor = 4000 cents; 4250 >= 4000 ✓
+      mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'COMPLETED', price: 50.00 }] });
       mockEscrowService.release.mockResolvedValueOnce({
         success: true,
         data: releasedEscrow as any,
@@ -740,7 +745,7 @@ describe('escrow.release', () => {
       });
       mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_test_123', amount: 4250, metadata: { escrow_id: ESCROW_ID } });
       // Task price lookup for 80% floor calculation
-      mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'COMPLETED', price: 5000 }] });
+      mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'COMPLETED', price: 50.00 }] }); // F-30: DECIMAL dollars
       mockEscrowService.release.mockResolvedValueOnce({
         success: true,
         data: releasedEscrow as any,
@@ -771,7 +776,7 @@ describe('escrow.release', () => {
       });
       mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_test_123', amount: 4250, metadata: { escrow_id: ESCROW_ID } });
       // Task price lookup for 80% floor calculation
-      mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'COMPLETED', price: 5000 }] });
+      mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'COMPLETED', price: 50.00 }] }); // F-30: DECIMAL dollars
       mockEscrowService.release.mockResolvedValueOnce({
         success: false,
         error: { code: 'HX201', message: 'Escrow release requires completed task' },
@@ -789,7 +794,7 @@ describe('escrow.release', () => {
       });
       mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_test_123', amount: 4250, metadata: { escrow_id: ESCROW_ID } });
       // Task price lookup for 80% floor calculation
-      mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'COMPLETED', price: 5000 }] });
+      mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'COMPLETED', price: 50.00 }] }); // F-30: DECIMAL dollars
       mockEscrowService.release.mockResolvedValueOnce({
         success: false,
         error: { code: 'INVALID_STATE', message: 'Wrong state' },
@@ -809,7 +814,7 @@ describe('escrow.release', () => {
       });
       mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_test_123', amount: 4250, metadata: { escrow_id: ESCROW_ID } });
       // Task price lookup for 80% floor calculation
-      mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'COMPLETED', price: 5000 }] });
+      mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'COMPLETED', price: 50.00 }] }); // F-30: DECIMAL dollars
       mockEscrowService.release.mockResolvedValueOnce({
         success: true,
         data: makeEscrow({ state: 'RELEASED' }) as any,
@@ -1413,7 +1418,7 @@ describe('Financial Safety — cross-cutting', () => {
     });
     mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_test_123', amount: 4250, metadata: { escrow_id: ESCROW_ID } });
     // Task state + price lookup — return IN_PROGRESS state (not COMPLETED) to trigger the BUG-5 guard
-    mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'IN_PROGRESS', price: 5000 }] });
+    mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'IN_PROGRESS', price: 50.00 }] }); // F-30: DECIMAL dollars
     // Note: EscrowService.release is NOT called — router throws before reaching the service
 
     await expect(makeCaller(POSTER_ID).release({ escrowId: ESCROW_ID, stripeTransferId: 'tr_test_123' }))
@@ -1653,7 +1658,7 @@ describe('SECURITY FIX v2.9.4 — release: Stripe transfer verification', () => 
     // Valid transfer: amount is 4250 (platform fee 15% deducted from 5000)
     mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_real_123', amount: 4250, metadata: { escrow_id: ESCROW_ID } });
     // Task state + price lookup (router checks state=COMPLETED first, then price for 80% floor)
-    mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'COMPLETED', price: 5000 }] });
+    mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'COMPLETED', price: 50.00 }] }); // F-30: DECIMAL dollars
     mockEscrowService.release.mockResolvedValueOnce({
       success: true,
       data: makeEscrow({ state: 'RELEASED' }) as any,
@@ -1680,7 +1685,7 @@ describe('SECURITY FIX v2.9.4 — release: Stripe transfer verification', () => 
     });
     mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_full', amount: 5000, metadata: { escrow_id: ESCROW_ID } });
     // Task state + price lookup (router checks state=COMPLETED first, then price for 80% floor)
-    mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'COMPLETED', price: 5000 }] });
+    mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'COMPLETED', price: 50.00 }] }); // F-30: DECIMAL dollars
     mockEscrowService.release.mockResolvedValueOnce({
       success: true,
       data: makeEscrow({ state: 'RELEASED' }) as any,
