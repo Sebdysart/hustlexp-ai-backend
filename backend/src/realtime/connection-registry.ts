@@ -78,6 +78,17 @@ export function addConnection(userId: string, conn: SSEConnection): void {
   // branch is intentionally absent — the set always gets written back.
   reconnectTracker.set(userId, recentTimestamps);
 
+  // Periodically sweep expired entries from OTHER users (~1% of calls = roughly every 100 connections).
+  // Running on every call would be O(n) per connection; the probabilistic approach amortises the cost.
+  if (Math.random() < 0.01) {
+    const windowStart = Date.now() - RECONNECT_WINDOW_MS;
+    for (const [uid, timestamps] of reconnectTracker.entries()) {
+      if (timestamps.filter((t: number) => t > windowStart).length === 0) {
+        reconnectTracker.delete(uid);
+      }
+    }
+  }
+
   if (!existing) {
     connections.set(userId, new Set());
   }

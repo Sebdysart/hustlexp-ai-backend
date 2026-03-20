@@ -151,6 +151,7 @@ export function rateLimitMiddleware(category: RateLimitCategory) {
     }
 
     if (!result.allowed) {
+      c.header('Retry-After', String(windowSeconds));
       return c.json(
         {
           error: 'Too Many Requests',
@@ -270,6 +271,7 @@ export function aiRateLimitMiddleware(provider: keyof typeof AI_RATE_LIMITS) {
     }
 
     if (!result.allowed) {
+      c.header('Retry-After', String(windowSeconds));
       return c.json({
         error: 'AI rate limit exceeded',
         retryAfter: windowSeconds,
@@ -353,6 +355,7 @@ export function publicIpRateLimitMiddleware() {
       c.header('X-RateLimit-Remaining', String(remaining));
 
       if (current > PUBLIC_IP_RATE_LIMIT) {
+        c.header('Retry-After', String(PUBLIC_IP_WINDOW_SECONDS));
         return c.json(
           {
             error: 'Too Many Requests',
@@ -365,6 +368,7 @@ export function publicIpRateLimitMiddleware() {
     } catch (err) {
       // Redis error — fail closed in production, open in dev.
       if (config.app.isProduction) {
+        c.header('Retry-After', String(PUBLIC_IP_WINDOW_SECONDS));
         return c.json(
           { error: 'Too Many Requests', message: 'Rate limiting unavailable', retryAfter: PUBLIC_IP_WINDOW_SECONDS },
           429,

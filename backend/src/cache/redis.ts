@@ -115,12 +115,18 @@ export async function set(
 
 export async function del(key: string): Promise<void> {
   const client = getClient();
-  if (!client) return;
+  if (!client) {
+    if (config.app.isProduction) {
+      throw new Error('Redis unavailable — cache del fail-closed');
+    }
+    return;
+  }
 
   try {
     await client.del(key);
-  } catch (error) {
-    redisLog.error({ err: error, key }, 'Redis DEL error');
+  } catch (err) {
+    redisLog.error({ err, key }, 'Redis del failed');
+    throw err; // re-throw so callers can handle or log appropriately
   }
 }
 

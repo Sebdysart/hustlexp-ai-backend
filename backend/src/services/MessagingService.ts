@@ -647,20 +647,53 @@ export const MessagingService = {
             aiConfidence: detectedPatterns.includes('phone') || detectedPatterns.includes('email') ? 0.8 : 0.6,
             aiRecommendation: detectedPatterns.includes('phone') || detectedPatterns.includes('email') ? 'flag' : 'approve',
           });
-          
+
           // moderation_flags is TEXT[] in schema, cast array properly
           await db.query(
-            `UPDATE task_messages 
+            `UPDATE task_messages
              SET moderation_status = 'flagged', moderation_flags = $1::TEXT[]
              WHERE id = $2`,
             [detectedPatterns, message.id]
           );
-          
+
           message.moderation_status = 'flagged';
           message.moderation_flags = detectedPatterns;
         }
       }
-      
+
+      // Publish to Redis pub/sub for realtime delivery
+      try {
+        const { Redis } = await import('@upstash/redis');
+        const { config } = await import('../config');
+        if (config.redis.restUrl && config.redis.restToken) {
+          const redis = new Redis({ url: config.redis.restUrl, token: config.redis.restToken });
+          await redis.publish(`realtime:user:${recipientId}`, JSON.stringify({
+            event: 'message.new',
+            data: { messageId: message.id, taskId, senderId, content: message.content, createdAt: message.created_at },
+          }));
+        }
+      } catch (pubError) {
+        log.warn({ err: pubError instanceof Error ? pubError.message : String(pubError) }, 'Failed to publish photo message to realtime');
+      }
+
+      // Send notification to recipient
+      await NotificationService.createNotification({
+        userId: recipientId,
+        category: 'message_received',
+        title: 'New Message',
+        body: caption
+          ? (caption.length > 50 ? caption.substring(0, 50) + '...' : caption)
+          : 'You received a photo',
+        deepLink: `app://task/${taskId}/messages`,
+        taskId,
+        metadata: { messageId: message.id, messageType: 'PHOTO', senderId },
+        channels: ['in_app', 'push'],
+        priority: 'MEDIUM',
+      }).catch(error => {
+        // Log error but don't fail message creation
+        log.error({ err: error instanceof Error ? error.message : String(error), recipientId, taskId }, 'Failed to send photo message notification');
+      });
+
       return {
         success: true,
         data: message,

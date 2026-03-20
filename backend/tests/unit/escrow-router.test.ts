@@ -699,6 +699,8 @@ describe('escrow.release', () => {
       });
       // Stripe verification: transfer exists and amount is valid (platform fee applied: 4250/5000)
       mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_test_123', amount: 4250, metadata: { escrow_id: ESCROW_ID } });
+      // Task price lookup for 80% floor calculation (task price = escrow amount here)
+      mockDb.query.mockResolvedValueOnce({ rows: [{ price: 5000 }] });
       mockEscrowService.release.mockResolvedValueOnce({
         success: true,
         data: releasedEscrow as any,
@@ -745,6 +747,8 @@ describe('escrow.release', () => {
         data: makeEscrow() as any,
       });
       mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_test_123', amount: 4250, metadata: { escrow_id: ESCROW_ID } });
+      // Task price lookup for 80% floor calculation
+      mockDb.query.mockResolvedValueOnce({ rows: [{ price: 5000 }] });
       mockEscrowService.release.mockResolvedValueOnce({
         success: true,
         data: releasedEscrow as any,
@@ -774,6 +778,8 @@ describe('escrow.release', () => {
         data: makeEscrow() as any,
       });
       mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_test_123', amount: 4250, metadata: { escrow_id: ESCROW_ID } });
+      // Task price lookup for 80% floor calculation
+      mockDb.query.mockResolvedValueOnce({ rows: [{ price: 5000 }] });
       mockEscrowService.release.mockResolvedValueOnce({
         success: false,
         error: { code: 'HX201', message: 'Escrow release requires completed task' },
@@ -790,6 +796,8 @@ describe('escrow.release', () => {
         data: makeEscrow() as any,
       });
       mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_test_123', amount: 4250, metadata: { escrow_id: ESCROW_ID } });
+      // Task price lookup for 80% floor calculation
+      mockDb.query.mockResolvedValueOnce({ rows: [{ price: 5000 }] });
       mockEscrowService.release.mockResolvedValueOnce({
         success: false,
         error: { code: 'INVALID_STATE', message: 'Wrong state' },
@@ -808,6 +816,8 @@ describe('escrow.release', () => {
         data: makeEscrow() as any,
       });
       mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_test_123', amount: 4250, metadata: { escrow_id: ESCROW_ID } });
+      // Task price lookup for 80% floor calculation
+      mockDb.query.mockResolvedValueOnce({ rows: [{ price: 5000 }] });
       mockEscrowService.release.mockResolvedValueOnce({
         success: true,
         data: makeEscrow({ state: 'RELEASED' }) as any,
@@ -1397,6 +1407,8 @@ describe('Financial Safety — cross-cutting', () => {
       data: makeEscrow() as any,
     });
     mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_test_123', amount: 4250, metadata: { escrow_id: ESCROW_ID } });
+    // Task price lookup for 80% floor calculation
+    mockDb.query.mockResolvedValueOnce({ rows: [{ price: 5000 }] });
     mockEscrowService.release.mockResolvedValueOnce({
       success: false,
       error: { code: 'HX201', message: 'Task must be COMPLETED' },
@@ -1635,6 +1647,8 @@ describe('SECURITY FIX v2.9.4 — release: Stripe transfer verification', () => 
     });
     // Valid transfer: amount is 4250 (platform fee 15% deducted from 5000)
     mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_real_123', amount: 4250, metadata: { escrow_id: ESCROW_ID } });
+    // Task price lookup for 80% floor calculation (floor = 5000 * 0.80 = 4000; 4250 >= 4000 passes)
+    mockDb.query.mockResolvedValueOnce({ rows: [{ price: 5000 }] });
     mockEscrowService.release.mockResolvedValueOnce({
       success: true,
       data: makeEscrow({ state: 'RELEASED' }) as any,
@@ -1660,6 +1674,8 @@ describe('SECURITY FIX v2.9.4 — release: Stripe transfer verification', () => 
       data: makeEscrow({ state: 'FUNDED', amount: 5000 }) as any,
     });
     mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_full', amount: 5000, metadata: { escrow_id: ESCROW_ID } });
+    // Task price lookup for 80% floor calculation (floor = 5000 * 0.80 = 4000; 5000 >= 4000 passes)
+    mockDb.query.mockResolvedValueOnce({ rows: [{ price: 5000 }] });
     mockEscrowService.release.mockResolvedValueOnce({
       success: true,
       data: makeEscrow({ state: 'RELEASED' }) as any,

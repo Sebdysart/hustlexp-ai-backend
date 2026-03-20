@@ -79,6 +79,7 @@ export const TaxReportingService = {
          ON CONFLICT (user_id, tax_year, form_type) DO UPDATE SET
            total_earnings_cents = EXCLUDED.total_earnings_cents,
            updated_at = NOW()
+         WHERE tax_filings.status = 'pending'
          RETURNING *`,
         [userId, taxYear, totalEarningsCents]
       );

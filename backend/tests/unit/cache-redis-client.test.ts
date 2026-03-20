@@ -302,9 +302,9 @@ describe('del', () => {
     expect(mockRedisDel).toHaveBeenCalledWith('delete-me');
   });
 
-  it('does not throw on Redis error', async () => {
+  it('re-throws on Redis error so callers can handle fail-closed', async () => {
     mockRedisDel.mockRejectedValue(new Error('del failed'));
-    await expect(del('bad-del-key')).resolves.toBeUndefined();
+    await expect(del('bad-del-key')).rejects.toThrow('del failed');
   });
 });
 

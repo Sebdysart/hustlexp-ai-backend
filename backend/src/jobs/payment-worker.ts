@@ -563,11 +563,87 @@ async function handleChargeRefunded(charge: Stripe.Charge, stripeEventId: string
       throw new Error(`Escrow ${escrow.id} state or version changed during update (version mismatch or state changed)`);
     }
 
+    // BUG FIX (MEDIUM - Bug 3): Record the from_state and stripe_event_id in escrow_events
+    // so that the retry-recovery path in handleChargeRefunded can detect RELEASED→REFUNDED
+    // transitions and emit the platform_fee_reversal ledger entry if the original run failed
+    // after the DB commit (before logEvent could persist it).
+    if (escrow.state === 'RELEASED') {
+      await trx(
+        `INSERT INTO escrow_events (escrow_id, from_state, to_state, actor_id, actor_type, metadata)
+         VALUES ($1, 'RELEASED', 'REFUNDED', NULL, 'system', $2)`,
+        [escrow.id, JSON.stringify({ reason: 'charge_refunded', stripe_event_id: stripeEventId, charge_id: charge.id })]
+      );
+    }
+
     return { updatedEscrow: updateResult.rows[0], escrow, skipped: false };
   });
 
-  // Skipped paths: already handled inside the transaction
+  // Skipped paths: already handled inside the transaction.
+  // BUG FIX (MEDIUM - Bug 3 retry recovery): On BullMQ retry, the escrow is already REFUNDED
+  // (DB committed on the first attempt before a subsequent side-effect failure caused a re-throw).
+  // The terminal-skip guard fires above and skipped=true. If the original escrow state was RELEASED
+  // (platform fee was collected), the platform_fee_reversal may never have been logged.
+  // We recover here: check revenue_ledger for an existing entry with this stripeEventId.
+  // If not found, and the escrow_events history shows a RELEASED→REFUNDED transition for this
+  // stripe_event_id, emit the reversal now.
   if (skipped || !updatedEscrow) {
+    // BUG FIX (MEDIUM - Bug 3 retry recovery): When BullMQ retries after a side-effect
+    // failure (TaskService.advanceProgress or writeToOutbox threw), the DB transaction has
+    // already committed and the escrow is REFUNDED. The terminal-skip guard fires and we
+    // reach this branch. If the original transition was RELEASED→REFUNDED (platform fee was
+    // collected), the platform_fee_reversal ledger entry may not have been written yet.
+    // We recover by checking escrow_events (which records the from_state atomically inside
+    // the DB transaction) and revenue_ledger (which is the dedup key).
+    if (escrow && escrow.state === 'REFUNDED') {
+      try {
+        // Check if this Stripe event triggered a RELEASED→REFUNDED transition (retry recovery)
+        const reversalCheckResult = await db.query<{ id: string }>(
+          `SELECT id FROM revenue_ledger WHERE stripe_event_id = $1 AND event_type = 'platform_fee_reversal' LIMIT 1`,
+          [stripeEventId]
+        );
+        const reversalAlreadyLogged = (reversalCheckResult?.rows?.length ?? 0) > 0;
+
+        if (!reversalAlreadyLogged) {
+          // Check escrow_events to see if the prior transition was from RELEASED state
+          const priorStateCheckResult = await db.query<{ from_state: string }>(
+            `SELECT from_state FROM escrow_events
+             WHERE escrow_id = $1
+               AND to_state = 'REFUNDED'
+               AND metadata::jsonb->>'stripe_event_id' = $2
+             ORDER BY created_at DESC LIMIT 1`,
+            [escrow.id, stripeEventId]
+          );
+          const priorFromState = priorStateCheckResult?.rows?.[0]?.from_state;
+
+          // Only emit reversal if the transition was from RELEASED (fee was previously collected)
+          if (priorFromState === 'RELEASED') {
+            const platformFeePercent = config.stripe.platformFeePercent ?? 15;
+            const platformFeeCents = Math.round(escrow.amount * (platformFeePercent / 100));
+            await RevenueService.logEvent({
+              eventType: 'platform_fee_reversal',
+              userId: null,
+              amountCents: -platformFeeCents,
+              escrowId: escrow.id,
+              stripeEventId,
+              stripeChargeId: charge.id,
+              metadata: {
+                reason: 'charge_refunded_after_release',
+                escrow_amount_cents: escrow.amount,
+                platform_fee_percent: platformFeePercent,
+                refund_id: refundId,
+                retry_recovery: true,
+              },
+            }).catch(err => log.error({ err }, 'Failed to log platform_fee_reversal (retry recovery)'));
+          }
+        }
+      } catch (recoveryErr) {
+        // Non-fatal: retry recovery failure must not block the skip path return
+        log.warn(
+          { err: recoveryErr instanceof Error ? recoveryErr.message : String(recoveryErr), escrowId: escrow?.id, stripeEventId },
+          'handleChargeRefunded: retry recovery check failed — may need manual reconciliation',
+        );
+      }
+    }
     return;
   }
 
@@ -586,6 +662,17 @@ async function handleChargeRefunded(charge: Stripe.Charge, stripeEventId: string
   // A platform fee is only collected when escrow reaches RELEASED state (transfer to worker).
   // We must ONLY reverse the fee when the pre-transition escrow state was RELEASED —
   // for PENDING/FUNDED/LOCKED_DISPUTE states no fee was ever collected, so no reversal needed.
+  //
+  // Record platform fee reversal in revenue ledger for accurate P&L.
+  // A platform fee is only collected when escrow reaches RELEASED state (transfer to worker).
+  // We must ONLY reverse the fee when the pre-transition escrow state was RELEASED —
+  // for PENDING/FUNDED/LOCKED_DISPUTE states no fee was ever collected, so no reversal needed.
+  //
+  // BUG FIX (MEDIUM - Bug 3): stripeEventId is passed through so the revenue_ledger row
+  // carries a stable dedup key. If logEvent itself fails (DB transient), the .catch() swallows
+  // the error. The BullMQ retry path (terminal-skip recovery above) handles the case where
+  // the entire handler fails after the DB commit — it re-emits the reversal using the
+  // escrow_events audit row as the source of truth for the from_state.
   if (escrow.state === 'RELEASED') {
     const platformFeePercent = config.stripe.platformFeePercent ?? 15;
     const platformFeeCents = Math.round(escrow.amount * (platformFeePercent / 100));

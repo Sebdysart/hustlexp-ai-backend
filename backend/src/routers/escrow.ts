@@ -351,16 +351,21 @@ export const escrowRouter = router({
         });
       }
 
-      // SECURITY FIX (HH3): Enforce a minimum transfer floor of 80% of escrow.
-      // The platform takes a 15% fee, so the worker should receive ~85% of the
-      // escrow amount. A 5% tolerance band is allowed for rounding, giving a floor
-      // of 80%. This prevents a malicious poster from supplying a trivial Stripe
-      // transfer that leaves the worker severely underpaid.
-      const minimumTransferFloor = Math.floor(escrowAmount * 0.80);
+      // SECURITY FIX (HH3): Enforce a minimum transfer floor of 80% of task base price.
+      // The platform takes a 15% fee, so the worker should receive ~85% of the task price.
+      // A 5% tolerance band is allowed for rounding, giving a floor of 80%.
+      // The floor is computed against task price (not escrow amount) so a poster tip
+      // above the task price does not artificially inflate the minimum payout requirement.
+      const taskPriceRow = await db.query<{ price: number }>(
+        `SELECT t.price FROM tasks t JOIN escrows e ON e.task_id = t.id WHERE e.id = $1`,
+        [input.escrowId]
+      );
+      const taskPrice = taskPriceRow.rows[0]?.price ?? escrowAmount;
+      const minimumTransferFloor = Math.floor(taskPrice * 0.80);
       if (transfer.amount < minimumTransferFloor) {
         throw new TRPCError({
           code: 'PRECONDITION_FAILED',
-          message: 'Transfer amount must be at least 80% of escrow amount',
+          message: 'Transfer amount must be at least 80% of task base price',
         });
       }
 

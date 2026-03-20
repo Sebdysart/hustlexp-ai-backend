@@ -421,6 +421,13 @@ async function handleReleaseRequest(
  *
  * Same structural pattern as handleReleaseRequest: Stripe call happens outside
  * any DB transaction, then a short transaction writes the result back atomically.
+ *
+ * BUG FIX (HIGH): If the escrow was RELEASED before the dispute was filed,
+ * DisputeService.create() cleared stripe_transfer_id and stored the original
+ * transfer ID in an escrow_events row (event_type='dispute_locked_after_release').
+ * When the poster wins the dispute we must reverse that original transfer BEFORE
+ * issuing the charge refund, otherwise Stripe will reject the refund because the
+ * funds are still sitting in the worker's Connect balance.
  */
 async function handleRefundRequest(
   escrow: EscrowRow,
@@ -453,6 +460,53 @@ async function handleRefundRequest(
       'Fresh DB re-read: refund already issued on a prior attempt (concurrent retry) — skipping Stripe call',
     );
     return;
+  }
+
+  // BUG FIX (HIGH - Part B): Check whether a Stripe transfer was already sent to
+  // the worker before the dispute was filed (i.e., escrow was RELEASED then locked).
+  // DisputeService.create() stores the original transfer ID in escrow_events when it
+  // transitions RELEASED → LOCKED_DISPUTE. We must reverse that transfer first so
+  // that Stripe can process the charge refund (funds must return from Connect balance
+  // to platform before the refund can be issued to the poster).
+  const priorTransferEventResult = await db.query<{ metadata: string }>(
+    `SELECT metadata
+     FROM escrow_events
+     WHERE escrow_id = $1
+       AND actor_type = 'system'
+       AND metadata::jsonb->>'event_type' = 'dispute_locked_after_release'
+       AND metadata::jsonb->>'original_transfer_id' IS NOT NULL
+     ORDER BY created_at DESC
+     LIMIT 1`,
+    [escrow.id]
+  );
+
+  if (priorTransferEventResult.rows.length > 0) {
+    let originalTransferId: string | null = null;
+    try {
+      const meta = JSON.parse(priorTransferEventResult.rows[0].metadata) as Record<string, unknown>;
+      originalTransferId = typeof meta['original_transfer_id'] === 'string' ? meta['original_transfer_id'] : null;
+    } catch {
+      // Malformed metadata — continue without reversal attempt
+    }
+
+    if (originalTransferId) {
+      log.info(
+        { escrowId: escrow.id, originalTransferId },
+        'handleRefundRequest: escrow was previously RELEASED — reversing original transfer before refund',
+      );
+      const reversalResult = await StripeService.createTransferReversal(originalTransferId, escrow.id);
+      if (!reversalResult.success) {
+        log.error(
+          { escrowId: escrow.id, originalTransferId, err: reversalResult.error.message },
+          'handleRefundRequest: transfer reversal failed — cannot safely issue refund',
+        );
+        throw new Error(`Transfer reversal failed: ${reversalResult.error.message}`);
+      }
+      log.info(
+        { escrowId: escrow.id, originalTransferId, reversalId: reversalResult.data.reversalId },
+        'Transfer reversal completed — proceeding with charge refund',
+      );
+    }
   }
 
   // Use refund_amount from job payload when provided; fall back to full escrow amount.

@@ -314,7 +314,7 @@ describe('dispute.getMine', () => {
     const result = await makeCaller(WORKER_ID).getMine();
 
     expect(result).toHaveLength(1);
-    expect(mockDispute.getByUserId).toHaveBeenCalledWith(WORKER_ID);
+    expect(mockDispute.getByUserId).toHaveBeenCalledWith(WORKER_ID, 50, 0);
   });
 
   it('returns empty array when user has no disputes', async () => {

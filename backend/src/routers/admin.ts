@@ -313,6 +313,65 @@ export const adminRouter = router({
           );
         }
         forceDisconnectUser(input.userId);
+
+        // Escrow bucketing — same two-bucket logic as setUserBan but with
+        // reason='user_suspended' in outbox payloads. Active tasks have their
+        // escrows locked for dispute rather than refunded immediately, since the
+        // suspension is reversible and the worker may have already done real work.
+
+        // Bucket A: idle tasks — safe to refund immediately
+        const refundableEscrows = await db.query<{ id: string }>(
+          `SELECT e.id
+           FROM escrows e
+           JOIN tasks t ON t.id = e.task_id
+           WHERE (e.poster_id = $1 OR e.worker_id = $1)
+             AND e.state = 'FUNDED'
+             AND t.state NOT IN ('ACCEPTED', 'IN_PROGRESS', 'PROOF_SUBMITTED', 'COMPLETED')`,
+          [input.userId]
+        );
+        for (const escrow of refundableEscrows.rows) {
+          await EscrowService.refund({ escrowId: escrow.id });
+        }
+
+        // Bucket B: active tasks — lock for dispute and emit outbox event for admin review
+        const activeEscrows = await db.query<{ id: string }>(
+          `SELECT e.id
+           FROM escrows e
+           JOIN tasks t ON t.id = e.task_id
+           WHERE (e.poster_id = $1 OR e.worker_id = $1)
+             AND e.state = 'FUNDED'
+             AND t.state IN ('ACCEPTED', 'IN_PROGRESS', 'PROOF_SUBMITTED', 'COMPLETED')`,
+          [input.userId]
+        );
+        for (const escrow of activeEscrows.rows) {
+          const lockResult = await EscrowService.lockForDispute(escrow.id, { adminOverride: true });
+          if (lockResult.success) {
+            await writeToOutbox({
+              eventType: 'escrow.locked_on_suspension',
+              aggregateType: 'escrow',
+              aggregateId: escrow.id,
+              eventVersion: 1,
+              payload: {
+                escrow_id: escrow.id,
+                suspended_user_id: input.userId,
+                reason: 'user_suspended',
+                admin_id: ctx.user.id,
+              },
+              queueName: 'critical_payments',
+            });
+          }
+        }
+
+        // Cancel open/active tasks belonging to the suspended user (poster or worker).
+        // Runs AFTER escrow bucketing so locked-dispute escrows are already written
+        // before the task state changes.
+        await db.query(
+          `UPDATE tasks
+           SET state = 'CANCELLED', updated_at = NOW()
+           WHERE (poster_id = $1 OR worker_id = $1)
+           AND state IN ('OPEN', 'MATCHING', 'ACCEPTED', 'IN_PROGRESS', 'PROOF_SUBMITTED')`,
+          [input.userId]
+        );
       } else {
         // Unsuspend: evict in-process cache entries.
         for (const [key, entry] of authCache.entries()) {

@@ -428,6 +428,47 @@ export const StripeService = {
   },
 
   /**
+   * Reverse a Stripe transfer (used when a dispute reverses a previously-released escrow).
+   * Idempotent: if the reversal already exists (resource_already_exists), resolves successfully.
+   */
+  createTransferReversal: async (
+    transferId: string,
+    escrowId: string,
+  ): Promise<ServiceResult<{ reversalId: string }>> => {
+    if (!stripe) {
+      return {
+        success: false,
+        error: {
+          code: 'STRIPE_NOT_CONFIGURED',
+          message: 'Stripe is not configured',
+        },
+      };
+    }
+
+    const idempotencyKey = `tr_reversal_${escrowId}`;
+
+    try {
+      const reversal = await stripeBreaker.execute(() =>
+        stripe!.transfers.createReversal(transferId, {}, { idempotencyKey })
+      );
+      return { success: true, data: { reversalId: reversal.id } };
+    } catch (error) {
+      const stripeCode = (error as Error & { code?: string }).code;
+      if (stripeCode === 'resource_already_exists') {
+        // Reversal already issued on a prior attempt — safe to continue
+        return { success: true, data: { reversalId: 'already_reversed' } };
+      }
+      return {
+        success: false,
+        error: {
+          code: 'STRIPE_ERROR',
+          message: error instanceof Error ? error.message : 'Unknown Stripe error',
+        },
+      };
+    }
+  },
+
+  /**
    * Verify webhook signature
    */
   verifyWebhook: (

@@ -190,9 +190,14 @@ export const disputeRouter = router({
    * Fetch all disputes for the current user (as poster or worker).
    */
   getMine: protectedProcedure
-    .input(z.void())
-    .query(async ({ ctx }) => {
-      const result = await DisputeService.getByUserId(ctx.user!.id);
+    .input(z.object({
+      limit: z.number().int().min(1).max(100).default(50),
+      offset: z.number().int().min(0).default(0),
+    }).optional())
+    .query(async ({ ctx, input }) => {
+      const limit = input?.limit ?? 50;
+      const offset = input?.offset ?? 0;
+      const result = await DisputeService.getByUserId(ctx.user!.id, limit, offset);
 
       if (!result.success) {
         throw new TRPCError({

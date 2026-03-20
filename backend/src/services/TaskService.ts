@@ -1783,15 +1783,24 @@ export const TaskService = {
           });
         }
 
-        // Worker abandonment = full refund to poster. Emit in the same transaction
-        // so the outbox event and state change are atomic.
-        const escrowResult = await query<{ id: string; state: string }>(
-          `SELECT id, state FROM escrows WHERE task_id = $1 AND state = 'FUNDED'`,
+        // Worker abandonment = full refund to poster. Lock the escrow to
+        // LOCKED_DISPUTE state atomically before emitting the outbox event.
+        // This prevents a new worker from being assigned to the same escrow
+        // if the payment worker fails to process the refund in time.
+        // escrow-action-worker requires state=LOCKED_DISPUTE to process
+        // escrow.refund_requested events (see escrow-action-worker.ts:208).
+        const escrowLock = await query<{ id: string }>(
+          `UPDATE escrows
+           SET state = 'LOCKED_DISPUTE',
+               version = version + 1,
+               updated_at = NOW()
+           WHERE task_id = $1 AND state = 'FUNDED'
+           RETURNING id`,
           [taskId]
         );
 
-        if (escrowResult.rows.length > 0) {
-          const escrowId = escrowResult.rows[0].id;
+        if ((escrowLock.rowCount ?? 0) > 0) {
+          const escrowId = escrowLock.rows[0].id;
           await writeToOutbox(
             {
               eventType: 'escrow.refund_requested',
@@ -1804,7 +1813,7 @@ export const TaskService = {
             },
             query
           );
-          log.info({ escrowId, taskId, workerId }, 'Escrow refund requested on worker abandonment');
+          log.info({ escrowId, taskId, workerId }, 'Escrow locked (FUNDED→LOCKED_DISPUTE) and refund requested on worker abandonment');
         }
 
         return { success: true, data: result.rows[0] };

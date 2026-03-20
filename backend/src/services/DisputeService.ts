@@ -140,7 +140,7 @@ export const DisputeService = {
   /**
    * Get disputes for a user (as poster or worker)
    */
-  getByUserId: async (userId: string): Promise<ServiceResult<Dispute[]>> => {
+  getByUserId: async (userId: string, limit = 50, offset = 0): Promise<ServiceResult<Dispute[]>> => {
     try {
       // SECURITY FIX (MEDIUM): Removed `OR initiated_by = $1` clause.
       // An admin who initiates a dispute on behalf of a task they are not party to
@@ -151,10 +151,11 @@ export const DisputeService = {
       const result = await db.query<Dispute>(
         `SELECT * FROM disputes
          WHERE poster_id = $1 OR worker_id = $1
-         ORDER BY created_at DESC`,
-        [userId]
+         ORDER BY created_at DESC
+         LIMIT $2 OFFSET $3`,
+        [userId, limit, offset]
       );
-      
+
       return { success: true, data: result.rows };
     } catch (error) {
       return {
@@ -249,10 +250,17 @@ export const DisputeService = {
         }
 
         // Lock escrow: FUNDED or RELEASED → LOCKED_DISPUTE (versioned)
-        // The CTE captures the actual pre-update state so the audit event is accurate.
+        // BUG FIX (HIGH - Part A): When the escrow is RELEASED a Stripe transfer has
+        // already been sent to the worker. We clear stripe_transfer_id so that the
+        // escrow-action-worker's handleReleaseRequest idempotency guard (which checks
+        // for a non-null stripe_transfer_id) does NOT fire and skip payment if the
+        // dispute is later resolved in the worker's favour. The original transfer ID
+        // is preserved in an escrow_events row below so the refund path can reverse it
+        // if the poster wins.
         const escrowUpdate = await query<Escrow>(
           `UPDATE escrows
            SET state = 'LOCKED_DISPUTE',
+               stripe_transfer_id = NULL,
                version = version + 1
            WHERE id = $1 AND state IN ('FUNDED', 'RELEASED')
            RETURNING *`,
@@ -262,7 +270,22 @@ export const DisputeService = {
         if (escrowUpdate.rowCount === 0) {
           throw new Error('Failed to lock escrow (may have been locked by another process)');
         }
-        
+
+        // BUG FIX (HIGH - Part B): If the escrow was RELEASED, persist the original
+        // transfer ID into escrow_events so handleRefundRequest can reverse it if the
+        // poster wins the dispute. We use escrow_events (which has a JSONB metadata
+        // column) because the disputes table has no metadata column.
+        if (escrow.stripe_transfer_id) {
+          await query(
+            `INSERT INTO escrow_events (escrow_id, from_state, to_state, actor_id, actor_type, metadata)
+             VALUES ($1, 'RELEASED', 'LOCKED_DISPUTE', NULL, 'system', $2)`,
+            [escrowId, JSON.stringify({
+              event_type: 'dispute_locked_after_release',
+              original_transfer_id: escrow.stripe_transfer_id,
+            })]
+          );
+        }
+
         // Create dispute (version=1)
         const disputeResult = await query<Dispute>(
           `INSERT INTO disputes (
