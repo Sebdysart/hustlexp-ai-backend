@@ -112,112 +112,149 @@ beforeEach(() => {
 describe('processStripeEventJob', () => {
   // -------------------------------------------------------------------------
   // invoice.paid
+  // BUG 5 FIX: handleInvoicePaid now uses db.query with INSERT ON CONFLICT
+  // instead of RevenueService.logEvent, so tests verify db.query calls.
   // -------------------------------------------------------------------------
   describe('invoice.paid', () => {
     it('logs subscription renewal revenue when amount_paid > 0', async () => {
       const invoice = { metadata: { user_id: 'user-abc' }, amount_paid: 999 };
-      setupClaim('invoice.paid', invoice);
+      // 1. claim UPDATE
+      mockDb.query.mockResolvedValueOnce({
+        rows: [{ payload_json: { id: 'evt_test_123', data: { object: invoice } }, type: 'invoice.paid' }],
+        rowCount: 1,
+      } as never);
+      // 2. INSERT ON CONFLICT into revenue_ledger → new row inserted
+      mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'rev-1' }], rowCount: 1 } as never);
+      // 3. success UPDATE
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
 
       await processStripeEventJob(makeJob('invoice.paid', invoice));
 
-      expect(RevenueService.logEvent).toHaveBeenCalledWith({
-        eventType: 'subscription',
-        userId: 'user-abc',
-        amountCents: 999,
-        stripeEventId: 'evt_test_123',
-      });
+      // Verify revenue_ledger INSERT was called with correct params
+      const insertCall = mockDb.query.mock.calls.find(
+        (c) => typeof c[0] === 'string' && (c[0] as string).includes('revenue_ledger') && (c[0] as string).includes('ON CONFLICT')
+      );
+      expect(insertCall).toBeDefined();
+      const insertArgs = insertCall![1] as unknown[];
+      expect(insertArgs[0]).toBe('user-abc');   // userId
+      expect(insertArgs[1]).toBe(999);            // amountCents
+      expect(insertArgs[2]).toBe('evt_test_123'); // stripeEventId
     });
 
-    it('skips logEvent when amount_paid is 0', async () => {
+    it('skips revenue_ledger insert when amount_paid is 0', async () => {
       const invoice = { metadata: { user_id: 'user-abc' }, amount_paid: 0 };
       setupClaim('invoice.paid', invoice);
 
       await processStripeEventJob(makeJob('invoice.paid', invoice));
 
+      const insertCall = mockDb.query.mock.calls.find(
+        (c) => typeof c[0] === 'string' && (c[0] as string).includes('revenue_ledger')
+      );
+      expect(insertCall).toBeUndefined();
       expect(RevenueService.logEvent).not.toHaveBeenCalled();
     });
 
     it('resolves user via stripe_customer_id when user_id metadata is absent', async () => {
       const invoice = { metadata: {}, amount_paid: 999, customer: 'cus_abc' };
-      // claim query → event
+      // 1. claim UPDATE → event
       mockDb.query.mockResolvedValueOnce({
         rows: [{ payload_json: { id: 'evt_test_123', data: { object: invoice } }, type: 'invoice.paid' }],
         rowCount: 1,
       } as never);
-      // customer lookup → found
+      // 2. customer lookup → found
       mockDb.query.mockResolvedValueOnce({
         rows: [{ id: 'user-from-customer' }],
         rowCount: 1,
       } as never);
-      // success UPDATE
+      // 3. INSERT ON CONFLICT → inserted
+      mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'rev-1' }], rowCount: 1 } as never);
+      // 4. success UPDATE
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
 
       await processStripeEventJob(makeJob('invoice.paid', invoice));
 
-      expect(RevenueService.logEvent).toHaveBeenCalledWith({
-        eventType: 'subscription',
-        userId: 'user-from-customer',
-        amountCents: 999,
-        stripeEventId: 'evt_test_123',
-      });
+      const insertCall = mockDb.query.mock.calls.find(
+        (c) => typeof c[0] === 'string' && (c[0] as string).includes('revenue_ledger') && (c[0] as string).includes('ON CONFLICT')
+      );
+      expect(insertCall).toBeDefined();
+      const insertArgs = insertCall![1] as unknown[];
+      expect(insertArgs[0]).toBe('user-from-customer'); // resolved userId
     });
 
     it('logs revenue with null userId when user_id missing and customer lookup finds no match', async () => {
       const invoice = { metadata: {}, amount_paid: 999, customer: 'cus_unknown' };
-      // claim query → event
+      // 1. claim UPDATE → event
       mockDb.query.mockResolvedValueOnce({
         rows: [{ payload_json: { id: 'evt_test_123', data: { object: invoice } }, type: 'invoice.paid' }],
         rowCount: 1,
       } as never);
-      // customer lookup → not found
-      mockDb.query.mockResolvedValueOnce({
-        rows: [],
-        rowCount: 0,
-      } as never);
-      // success UPDATE
+      // 2. customer lookup → not found
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+      // 3. INSERT ON CONFLICT → inserted with null userId
+      mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'rev-1' }], rowCount: 1 } as never);
+      // 4. success UPDATE
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
 
       await processStripeEventJob(makeJob('invoice.paid', invoice));
 
-      expect(RevenueService.logEvent).toHaveBeenCalledWith(
-        expect.objectContaining({
-          eventType: 'subscription',
-          userId: null,
-          amountCents: 999,
-          stripeEventId: 'evt_test_123',
-          metadata: expect.objectContaining({ unresolved_user: true }),
-        })
+      const insertCall = mockDb.query.mock.calls.find(
+        (c) => typeof c[0] === 'string' && (c[0] as string).includes('revenue_ledger') && (c[0] as string).includes('ON CONFLICT')
       );
+      expect(insertCall).toBeDefined();
+      const insertArgs = insertCall![1] as unknown[];
+      expect(insertArgs[0]).toBeNull(); // null userId (unresolved)
     });
 
     it('logs revenue with null userId when user_id and customer are both absent', async () => {
-      // No customer field — no DB lookup, goes straight to null fallback
       const invoice = { metadata: {}, amount_paid: 500 };
-      // claim query → event
+      // 1. claim UPDATE → event
       mockDb.query.mockResolvedValueOnce({
         rows: [{ payload_json: { id: 'evt_test_123', data: { object: invoice } }, type: 'invoice.paid' }],
         rowCount: 1,
       } as never);
-      // success UPDATE (no customer lookup in between)
+      // 2. INSERT ON CONFLICT → inserted with null userId
+      mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'rev-1' }], rowCount: 1 } as never);
+      // 3. success UPDATE
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
 
       await processStripeEventJob(makeJob('invoice.paid', invoice));
 
-      expect(RevenueService.logEvent).toHaveBeenCalledWith(
-        expect.objectContaining({
-          userId: null,
-          amountCents: 500,
-        })
+      const insertCall = mockDb.query.mock.calls.find(
+        (c) => typeof c[0] === 'string' && (c[0] as string).includes('revenue_ledger') && (c[0] as string).includes('ON CONFLICT')
       );
+      expect(insertCall).toBeDefined();
+      const insertArgs = insertCall![1] as unknown[];
+      expect(insertArgs[0]).toBeNull(); // null userId
+      expect(insertArgs[1]).toBe(500);  // amountCents
     });
 
-    it('skips logEvent when amount_paid is 0 even with metadata present', async () => {
+    it('skips revenue_ledger insert when amount_paid is 0 even with metadata present', async () => {
       const invoice = { metadata: { user_id: 'user-abc' }, amount_paid: 0 };
       setupClaim('invoice.paid', invoice);
 
       await processStripeEventJob(makeJob('invoice.paid', invoice));
 
+      const insertCall = mockDb.query.mock.calls.find(
+        (c) => typeof c[0] === 'string' && (c[0] as string).includes('revenue_ledger')
+      );
+      expect(insertCall).toBeUndefined();
       expect(RevenueService.logEvent).not.toHaveBeenCalled();
+    });
+
+    it('is idempotent: skips when ON CONFLICT returns no rows (duplicate event)', async () => {
+      const invoice = { metadata: { user_id: 'user-abc' }, amount_paid: 999 };
+      // 1. claim UPDATE → event
+      mockDb.query.mockResolvedValueOnce({
+        rows: [{ payload_json: { id: 'evt_test_123', data: { object: invoice } }, type: 'invoice.paid' }],
+        rowCount: 1,
+      } as never);
+      // 2. INSERT ON CONFLICT → conflict (already inserted), 0 rows returned
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+      // 3. success UPDATE
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+      // Should not throw
+      await expect(processStripeEventJob(makeJob('invoice.paid', invoice))).resolves.toBeUndefined();
     });
   });
 

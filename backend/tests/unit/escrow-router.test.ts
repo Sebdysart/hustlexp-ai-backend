@@ -970,8 +970,8 @@ describe('escrow.lockForDispute', () => {
         success: true,
         data: makeEscrow() as any,
       });
-      // Task state guard: db.query for task state
-      mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'ACCEPTED' }], rowCount: 1 } as any);
+      // NOTE: Router no longer calls db.query for task state — TOCTOU fix moves
+      // that check inside EscrowService.lockForDispute via allowedTaskStates param.
       mockEscrowService.lockForDispute.mockResolvedValueOnce({
         success: true,
         data: lockedEscrow as any,
@@ -1018,8 +1018,7 @@ describe('escrow.lockForDispute', () => {
         success: true,
         data: makeEscrow() as any,
       });
-      // Task state guard: db.query for task state
-      mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'ACCEPTED' }], rowCount: 1 } as any);
+      // NOTE: No db.query mock needed — task state validation is now inside the service.
       mockEscrowService.lockForDispute.mockResolvedValueOnce({
         success: false,
         error: { code: 'INVALID_STATE', message: 'Cannot lock: wrong state' },
@@ -1037,8 +1036,7 @@ describe('escrow.lockForDispute', () => {
         success: true,
         data: makeEscrow() as any,
       });
-      // Task state guard: db.query for task state
-      mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'ACCEPTED' }], rowCount: 1 } as any);
+      // NOTE: No db.query mock needed — task state validation is now inside the service.
       mockEscrowService.lockForDispute.mockResolvedValueOnce({
         success: true,
         data: makeEscrow({ state: 'LOCKED_DISPUTE' }) as any,

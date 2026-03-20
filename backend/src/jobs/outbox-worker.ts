@@ -154,13 +154,21 @@ export async function processOutboxEvents(batchSize: number = 100): Promise<{
           }
         );
 
-        // Persist the BullMQ job ID now that we have it (row already 'enqueued')
-        await db.query(
-          `UPDATE outbox_events
-           SET bullmq_job_id = $1
-           WHERE id = $2`,
-          [job.id || event.idempotency_key, event.id]
-        );
+        // Persist the BullMQ job ID now that we have it (row already 'enqueued').
+        // BUG 6 FIX: Wrap in try/catch — bullmq_job_id is an audit field, not a
+        // control field. If this write fails (transient DB error, connection blip),
+        // the BullMQ job is already enqueued and will process normally. Blocking
+        // event processing on an audit-field write would silently strand events.
+        try {
+          await db.query(
+            `UPDATE outbox_events
+             SET bullmq_job_id = $1
+             WHERE id = $2`,
+            [job.id || event.idempotency_key, event.id]
+          );
+        } catch (err) {
+          log.warn({ err, eventId: event.id }, '[outbox-worker] Failed to record bullmq_job_id — event processing continues');
+        }
 
         processed++;
       } catch (error) {

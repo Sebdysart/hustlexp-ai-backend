@@ -334,13 +334,19 @@ describe('RatingService.processAutoRatings', () => {
   });
 
   it('batch-inserts auto-ratings for expired tasks', async () => {
+    // 1. Fetch expired tasks
     mockQuery.mockResolvedValueOnce({
       rows: [
         { id: 't1', poster_id: 'u1', worker_id: 'u2', completed_at: new Date() },
       ],
     });
-    // batch insert
+    // Per-task transaction (db.transaction passes same queryFn via mock):
+    // 2. pg_advisory_xact_lock (result ignored)
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    // 3. INSERT both directions via UNION ALL (rowCount = 2 = both directions)
     mockQuery.mockResolvedValueOnce({ rowCount: 2 });
+    // 4. Mutual-reveal UPDATE (result ignored)
+    mockQuery.mockResolvedValueOnce({ rowCount: 0 });
 
     const result = await RatingService.processAutoRatings();
     expect(result.success).toBe(true);

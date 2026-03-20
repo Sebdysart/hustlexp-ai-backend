@@ -620,12 +620,12 @@ export const FraudDetectionService = {
         for (const userId of userIds) {
           // Update user with fraud flag (add to inconsistency_flags or create risk score)
           await db.query(
-            `UPDATE users 
+            `UPDATE users
              SET inconsistency_flags = array_append(COALESCE(inconsistency_flags, ARRAY[]::TEXT[]), $1)
              WHERE id = $2 AND ($1 = ANY(inconsistency_flags)) IS NOT TRUE`,
             [`fraud_pattern_${patternType}`, userId]
           );
-          
+
           // Create high-priority risk score for flagged user
           await FraudDetectionService.calculateRiskScore({
             entityType: 'user',
@@ -636,6 +636,10 @@ export const FraudDetectionService = {
             },
             flags: [`fraud_pattern_${patternType}`, 'requires_review'],
           });
+
+          // Disconnect open SSE streams so HIGH-risk users stop receiving realtime
+          // task events, payment notifications, and messaging events immediately.
+          try { forceDisconnectUser(userId); } catch (err) { log.warn({ err, userId }, '[fraud] Failed to disconnect HIGH-risk user SSE stream'); }
         }
         
         // Flag for admin review (add to review queue)
@@ -723,13 +727,14 @@ export const FraudDetectionService = {
   getDetectedPatterns: async (
     limit: number = 100
   ): Promise<ServiceResult<FraudPattern[]>> => {
+    const cappedLimit = Math.min(limit, 500); // Hard cap at 500 to prevent runaway queries
     try {
       const result = await db.query<FraudPattern>(
         `SELECT * FROM fraud_patterns
          WHERE status = 'detected'
          ORDER BY detected_at DESC
          LIMIT $1`,
-        [limit]
+        [cappedLimit]
       );
       
       return {

@@ -435,14 +435,16 @@ describe('TaskService.advanceProgress — escrow terminal freeze', () => {
   it('returns INVALID_STATE when escrow is in terminal state RELEASED', async () => {
     // Sequence inside transaction:
     // 1. FOR UPDATE task select
-    // 2. disputes SELECT → empty (no active dispute)
-    // 3. escrows SELECT → escrow with state='RELEASED' (terminal)
+    // 2. disputes SELECT SKIP LOCKED → empty (no active dispute)
+    // 3. disputes COUNT → 0 (BUG3 fix: double-checks for locked dispute rows)
+    // 4. escrows SELECT FOR SHARE → escrow with state='RELEASED' (terminal)
     mockQuery
       .mockResolvedValueOnce({
         rows: [{ id: 'task-1', poster_id: 'poster-1', worker_id: 'worker-1', progress_state: 'ACCEPTED', state: 'ACCEPTED' }],
         rowCount: 1,
       } as never)
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // no disputes
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // no disputes (SKIP LOCKED)
+      .mockResolvedValueOnce({ rows: [{ count: '0' }], rowCount: 1 } as never) // dispute COUNT = 0
       .mockResolvedValueOnce({ rows: [{ state: 'RELEASED' }], rowCount: 1 } as never); // terminal escrow
 
     const result = await TaskService.advanceProgress({
@@ -467,15 +469,17 @@ describe('TaskService.advanceProgress — success', () => {
 
     // Sequence:
     // 1. FOR UPDATE task select (progress_state='ACCEPTED', worker_id='worker-1')
-    // 2. disputes SELECT → empty
-    // 3. escrows SELECT → empty
-    // 4. UPDATE task SET progress_state='TRAVELING' → returns updated task
+    // 2. disputes SELECT SKIP LOCKED → empty
+    // 3. disputes COUNT → 0 (BUG3 fix: double-checks for locked dispute rows)
+    // 4. escrows SELECT FOR SHARE → empty (no escrow)
+    // 5. UPDATE task SET progress_state='TRAVELING' → returns updated task
     mockQuery
       .mockResolvedValueOnce({
         rows: [{ id: 'task-1', poster_id: 'poster-1', worker_id: 'worker-1', progress_state: 'ACCEPTED', state: 'ACCEPTED' }],
         rowCount: 1,
       } as never)
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)  // no disputes
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)  // no disputes (SKIP LOCKED)
+      .mockResolvedValueOnce({ rows: [{ count: '0' }], rowCount: 1 } as never) // dispute COUNT = 0
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)  // no escrow
       .mockResolvedValueOnce({ rows: [updatedTask], rowCount: 1 } as never); // UPDATE result
 

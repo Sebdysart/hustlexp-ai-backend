@@ -366,6 +366,14 @@ export const userRouter = router({
       if (existing.rows.length > 0) {
         let existingUser: User | null = existing.rows[0];
 
+        // BUG 3 FIX: A banned user who changes their Firebase email and
+        // re-registers is matched here by firebase_uid. Without this check,
+        // the router would return their banned profile via toMobileUser,
+        // effectively re-admitting the banned account.
+        if (existingUser.is_banned) {
+          throw new TRPCError({ code: 'FORBIDDEN', message: 'Account is banned' });
+        }
+
         // FIX 4: If the matched row is a GDPR-deleted account, delete it so
         // the INSERT below can proceed with a fresh account. Without this
         // deletion the ON CONFLICT (firebase_uid) DO NOTHING clause would

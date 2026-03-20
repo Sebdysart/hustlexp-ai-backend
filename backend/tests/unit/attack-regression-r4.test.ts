@@ -241,8 +241,8 @@ describe('REG-5 — FIXED: Admin can lock mid-task escrows (adminOverride bypass
       success: true,
       data: makeEscrow({ poster_id: POSTER_ID }) as any,
     });
-    // Task state guard: db.query for task state (IN_PROGRESS is allowed)
-    mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'IN_PROGRESS' }], rowCount: 1 } as any);
+    // NOTE: Router no longer calls db.query for task state — TOCTOU fix moved this
+    // check inside EscrowService.lockForDispute via the allowedTaskStates parameter.
     // Service call succeeds
     mockEscrowService.lockForDispute.mockResolvedValueOnce({
       success: true,
@@ -260,19 +260,23 @@ describe('REG-5 — FIXED: Admin can lock mid-task escrows (adminOverride bypass
     );
   });
 
-  it('FIXED — non-admin caller gets PRECONDITION_FAILED when task is in OPEN state', async () => {
+  it('FIXED — non-admin caller gets BAD_REQUEST when task is in OPEN state (state check now inside service)', async () => {
     // Auth check passes (poster is participant)
     mockEscrowService.getById.mockResolvedValueOnce({
       success: true,
       data: makeEscrow({ poster_id: POSTER_ID }) as any,
     });
-    // Task state guard: db.query returns OPEN task — router rejects before service call
-    mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'OPEN' }], rowCount: 1 } as any);
+    // Task state guard is now enforced inside EscrowService.lockForDispute (moved from router
+    // for TOCTOU safety). The service returns a failure when task state is OPEN.
+    mockEscrowService.lockForDispute.mockResolvedValueOnce({
+      success: false,
+      error: { code: 'INVALID_STATE', message: 'Can only file a dispute on an active task (accepted or in-progress)' },
+    } as any);
 
     const caller = makePosterCaller(POSTER_ID);
     await expect(caller.lockForDispute({ escrowId: ESCROW_ID }))
       .rejects.toMatchObject({
-        code: 'PRECONDITION_FAILED',
+        code: 'BAD_REQUEST',
         message: 'Can only file a dispute on an active task (accepted or in-progress)',
       });
   });

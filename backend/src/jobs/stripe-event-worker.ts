@@ -464,56 +464,55 @@ async function handleInvoicePaid(event: StripeEventEnvelope): Promise<void> {
     return;
   }
 
-  // BUG 4 FIX: Concurrent retries could both read zero rows from revenue_ledger
-  // and both call logEvent, writing two subscription revenue entries. Fix: acquire
-  // a session-level advisory lock keyed on the Stripe event ID before reading
-  // revenue_ledger. Only one concurrent handler will hold the lock; the other will
-  // block until the first commits or rolls back, then re-reads a non-empty ledger.
+  // BUG 5 FIX: Replace advisory-lock + SELECT-before-INSERT idempotency guard with
+  // an atomic INSERT ... ON CONFLICT DO NOTHING. The prior pattern was racy: the
+  // SELECT and the INSERT (inside RevenueService.logEvent) ran on different DB
+  // connections, so two concurrent workers for the same event could both pass the
+  // SELECT check and both call logEvent, writing duplicate subscription revenue rows.
   //
-  // pg_try_advisory_xact_lock: transaction-scoped advisory lock — auto-released
-  // at commit/rollback. Returns false immediately if lock is held by another
-  // session (non-blocking variant). We use the blocking variant so the second
-  // retry waits rather than skips (skipping could miss the ledger write window).
-  await db.transaction(async (trx) => {
-    // Acquire advisory lock (blocks until acquired; released at transaction end)
-    await trx(`SELECT pg_advisory_xact_lock(hashtext($1))`, [String(event.id)]);
+  // The fix: bypass RevenueService.logEvent and write directly to revenue_ledger
+  // with ON CONFLICT (stripe_event_id) DO NOTHING. The revenue_ledger.stripe_event_id
+  // column has a UNIQUE constraint (migration 005-mega-schema-alignment.sql §1181),
+  // so the first INSERT wins and subsequent ones are silent no-ops — atomically,
+  // without a lock or a separate SELECT.
+  //
+  // NOTE: Ideally this would use ON CONFLICT (stripe_event_id, event_type) to allow
+  // different event types to share the same stripe_event_id, but revenue_ledger does
+  // not yet have a composite UNIQUE constraint on (stripe_event_id, event_type).
+  // A migration adding that constraint should be applied before enabling multi-type
+  // idempotency:
+  //   ALTER TABLE revenue_ledger
+  //     DROP CONSTRAINT IF EXISTS revenue_ledger_stripe_event_id_key,
+  //     ADD CONSTRAINT revenue_ledger_stripe_event_id_event_type_key
+  //       UNIQUE (stripe_event_id, event_type);
+  const insertResult = await db.query<{ id: string }>(
+    `INSERT INTO revenue_ledger
+       (event_type, user_id, amount_cents, currency, stripe_event_id, metadata)
+     VALUES ('subscription', $1, $2, 'usd', $3, $4::jsonb)
+     ON CONFLICT (stripe_event_id) DO NOTHING
+     RETURNING id`,
+    [
+      userId ?? null,
+      amountPaid,
+      event.id,
+      JSON.stringify(userId ? {} : { customer_id: customerId ?? null, unresolved_user: true }),
+    ]
+  );
 
-    // Re-check inside the lock — if another session already wrote the entry, skip
-    const existingRevenue = await trx<{ id: string }>(
-      `SELECT id FROM revenue_ledger WHERE stripe_event_id = $1 AND event_type = 'subscription' LIMIT 1`,
-      [event.id]
+  if (!insertResult.rows.length) {
+    // ON CONFLICT DO NOTHING — already processed by a concurrent worker
+    log.info({ stripeEventId: event.id }, '[stripe-event-worker] handleInvoicePaid: revenue already logged (ON CONFLICT), skipping duplicate');
+    return;
+  }
+
+  if (!userId) {
+    log.warn(
+      { invoiceId: event.id, amountPaid, customerId: customerId ?? null },
+      'invoice.paid: could not resolve user_id, revenue logged with null user_id'
     );
-    if (existingRevenue.rows.length > 0) {
-      log.info({ stripeEventId: event.id }, '[stripe-event-worker] handleInvoicePaid: revenue already logged (inside advisory lock), skipping duplicate');
-      return; // idempotent — already processed; advisory lock released on commit
-    }
+  }
 
-    // Dispatch to logEvent while the advisory lock is held. logEvent uses db.query
-    // on its own connection but its INSERT commits before this transaction commits
-    // and releases the lock — so the second concurrent caller will see the row
-    // when it re-checks revenue_ledger after acquiring the lock.
-    if (userId) {
-      await RevenueService.logEvent({
-        eventType: 'subscription',
-        userId,
-        amountCents: amountPaid,
-        stripeEventId: event.id,
-      });
-    } else {
-      log.warn(
-        { invoiceId: event.id, amountPaid, customerId: customerId ?? null },
-        'invoice.paid: could not resolve user_id, logging revenue with system'
-      );
-      await RevenueService.logEvent({
-        eventType: 'subscription',
-        userId: null,
-        amountCents: amountPaid,
-        stripeEventId: event.id,
-        metadata: { customer_id: customerId ?? null, unresolved_user: true },
-      });
-    }
-  });
-  // logEvent dispatched inside the advisory lock transaction above.
+  log.info({ stripeEventId: event.id, userId, amountPaid }, '[stripe-event-worker] handleInvoicePaid: subscription revenue logged');
 }
 
 async function handleChargeDisputeCreated(

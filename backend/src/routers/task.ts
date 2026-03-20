@@ -504,16 +504,12 @@ export const taskRouter = router({
           `SELECT state, template_slug, poster_id FROM tasks WHERE id = $1 FOR UPDATE`,
           [input.taskId]
         );
-        if (!lockResult.rows[0]) {
-          throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
-        }
-
-        // Self-dealing guard: a poster cannot accept their own task as a worker.
-        if (lockResult.rows[0].poster_id === ctx.user.id) {
-          throw new TRPCError({
-            code: 'FORBIDDEN',
-            message: 'You cannot accept a task that you posted',
-          });
+        // BUG 6 FIX: Collapse NOT_FOUND and self-dealing (poster == caller) into a
+        // single NOT_FOUND response. Returning FORBIDDEN for poster-own tasks leaks
+        // task existence to callers who are also posters (UUID enumeration vector).
+        // This matches the assignWorker pattern fixed the same way.
+        if (!lockResult.rows[0] || lockResult.rows[0].poster_id === ctx.user.id) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found or unavailable' });
         }
 
         const template = getTemplate(lockResult.rows[0].template_slug) ?? (() => {

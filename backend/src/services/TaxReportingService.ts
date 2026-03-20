@@ -75,8 +75,8 @@ export const TaxReportingService = {
   createTaxFiling: async (userId: string, taxYear: number, totalEarningsCents: number): Promise<ServiceResult<TaxFiling>> => {
     try {
       const result = await db.query<TaxFiling>(
-        `INSERT INTO tax_filings (user_id, tax_year, total_earnings_cents, status)
-         VALUES ($1, $2, $3, 'pending')
+        `INSERT INTO tax_filings (user_id, tax_year, total_earnings_cents, status, form_type)
+         VALUES ($1, $2, $3, 'pending', '1099-NEC')
          ON CONFLICT (user_id, tax_year, form_type) DO UPDATE SET
            total_earnings_cents = EXCLUDED.total_earnings_cents,
            updated_at = NOW()
@@ -84,6 +84,17 @@ export const TaxReportingService = {
          RETURNING *`,
         [userId, taxYear, totalEarningsCents]
       );
+      // ON CONFLICT DO UPDATE WHERE returns 0 rows when status != 'pending' (filing already finalized).
+      // Return a descriptive error instead of { success: true, data: undefined }.
+      if (!result.rows[0]) {
+        return {
+          success: false,
+          error: {
+            code: 'FILING_ALREADY_FINALIZED',
+            message: `Tax filing for user ${userId} tax year ${taxYear} has already been finalized (status is not 'pending') — no update applied`,
+          },
+        };
+      }
       return { success: true, data: result.rows[0] };
     } catch (error) {
       return { success: false, error: { code: 'DB_ERROR', message: error instanceof Error ? error.message : 'Unknown error' } };

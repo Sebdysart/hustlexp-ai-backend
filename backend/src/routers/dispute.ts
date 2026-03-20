@@ -105,7 +105,7 @@ export const disputeRouter = router({
       // inside its FOR UPDATE transaction (via EscrowService.lockForDispute's
       // existingDisputeCheck), providing defence-in-depth.
       const existingDispute = await db.query<{ id: string }>(
-        `SELECT id FROM disputes WHERE task_id = $1 AND status NOT IN ('RESOLVED', 'DISMISSED')`,
+        `SELECT id FROM disputes WHERE task_id = $1 AND state NOT IN ('RESOLVED')`,
         [task.id]
       );
       if ((existingDispute.rowCount ?? 0) > 0) {

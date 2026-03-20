@@ -62,6 +62,13 @@ interface CreateTransferParams {
   workerStripeAccountId: string;
   amount: number; // USD cents
   description?: string;
+  /** Optional suffix appended to the Stripe idempotency key.
+   * Use distinct suffixes when different callers issue transfers for the same
+   * escrow with different amounts (e.g. EscrowService.partialRefund vs
+   * escrow-action-worker.handlePartialRefundRequest) so Stripe does not
+   * mask a real duplicate as an idempotent replay.
+   */
+  idempotencyKeySuffix?: string;
 }
 
 interface CreateTransferResult {
@@ -307,7 +314,7 @@ export const StripeService = {
   createTransfer: async (
     params: CreateTransferParams
   ): Promise<ServiceResult<CreateTransferResult>> => {
-    const { escrowId, workerId, workerStripeAccountId, amount, description } = params;
+    const { escrowId, workerId, workerStripeAccountId, amount, description, idempotencyKeySuffix } = params;
 
     // Stripe stubbing for tests (Evil Test A) — never active in production
     if (process.env.HX_STRIPE_STUB === '1' && process.env.NODE_ENV !== 'production') {
@@ -332,6 +339,14 @@ export const StripeService = {
     }
 
     try {
+      // BUG 7 FIX: Include idempotencyKeySuffix in the key so that callers with
+      // different roles (EscrowService.partialRefund vs escrow-action-worker) produce
+      // distinct keys for the same escrow. Without distinct keys, Stripe would treat
+      // the second call as an idempotent replay of the first, masking a real duplicate
+      // that sends two transfers for different amounts to the same worker.
+      const idempotencyKey = idempotencyKeySuffix
+        ? `tr_create_${escrowId}_${amount}_${idempotencyKeySuffix}`
+        : `tr_create_${escrowId}_${amount}`;
       const transfer = await stripeBreaker.execute(() => stripe!.transfers.create(
         {
           amount,
@@ -343,7 +358,7 @@ export const StripeService = {
           },
           description: description || `HustleXP Payout ${escrowId}`,
         },
-        { idempotencyKey: `tr_create_${escrowId}_${amount}` }
+        { idempotencyKey }
       ));
 
       return {

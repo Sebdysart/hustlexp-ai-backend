@@ -203,9 +203,10 @@ app.use('/trpc/user.requestErasure', rateLimitMiddleware('auth'));        // 20/
 app.use('/trpc/user.updateProfile', rateLimitMiddleware('mutation'));     // 60/min — profile write mutations
 app.use('/trpc/user.completeOnboarding', rateLimitMiddleware('mutation')); // 60/min — onboarding write mutations
 
-// Tier 6: Public IP rate limit (60/min) — unauthenticated tRPC requests only.
-// Runs before the user-bucket catch-all; skipped automatically when a Bearer
-// token is present (publicIpRateLimitMiddleware bails out early in that case).
+// Tier 6: Public IP rate limit (60/min) — ALL tRPC requests, authenticated and unauthenticated.
+// Runs before the user-bucket catch-all; applies to every request regardless of whether a
+// Bearer token is present. Authenticated users are intentionally not exempt — this is a
+// defence-in-depth IP-level limit. Per-user limits are enforced separately by rateLimitMiddleware.
 app.use('/trpc/*', publicIpRateLimitMiddleware());                 // 60/min per IP — public/unauthenticated access
 
 // Tier 7: General (120/min) — catch-all for remaining tRPC and REST routes

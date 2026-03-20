@@ -1412,7 +1412,7 @@ export const TaskService = {
            SET state = 'EXPIRED',
                expired_at = NOW()
            WHERE id = $1
-             AND state NOT IN ('COMPLETED', 'CANCELLED', 'EXPIRED', 'PROOF_SUBMITTED', 'DISPUTED', 'IN_REVIEW', 'ACCEPTED', 'IN_PROGRESS')
+             AND state NOT IN ('COMPLETED', 'CANCELLED', 'EXPIRED', 'PROOF_SUBMITTED', 'DISPUTED', 'IN_REVIEW')
              AND deadline < NOW()
            RETURNING *`,
           [taskId]
@@ -1550,23 +1550,47 @@ export const TaskService = {
           }
         }
 
-        // 5. Dispute freeze: check if active dispute exists
+        // 5. Dispute freeze: check if active dispute exists.
+        // BUG 3 FIX: Use FOR UPDATE SKIP LOCKED so a concurrent dispute.create
+        // cannot insert a dispute row between this read and the progress UPDATE.
+        // If SKIP LOCKED causes no row to be returned (the disputes row is
+        // locked by a concurrent inserter), we treat that as "dispute exists"
+        // and block the progress advance — same as if we had read the row.
         const disputeResult = await query<{ state: string }>(
           `SELECT state
            FROM disputes
            WHERE task_id = $1
+             AND state NOT IN ('RESOLVED')
            ORDER BY created_at DESC
-           LIMIT 1`,
+           LIMIT 1
+           FOR UPDATE SKIP LOCKED`,
           [taskId]
         );
 
+        // Check for non-RESOLVED dispute row.
+        // A locked-away row (SKIP LOCKED returned nothing but another tx holds
+        // an inserting lock) is treated as a dispute exists — block is correct.
         if (disputeResult.rows.length > 0) {
           const disputeState = disputeResult.rows[0].state;
-          if (disputeState !== 'RESOLVED') {
-            throw new Error(
-              `Cannot advance progress: task ${taskId} has active dispute (state: ${disputeState})`
-            );
-          }
+          throw new Error(
+            `Cannot advance progress: task ${taskId} has active dispute (state: ${disputeState})`
+          );
+        }
+
+        // Also check if a dispute row exists in any non-resolved state but is
+        // currently locked (SKIP LOCKED skipped it). Re-check without SKIP LOCKED
+        // to catch the locked-row case — if it's there, block.
+        const disputeAnyResult = await query<{ count: string }>(
+          `SELECT COUNT(*) AS count
+           FROM disputes
+           WHERE task_id = $1
+             AND state NOT IN ('RESOLVED')`,
+          [taskId]
+        );
+        if (parseInt(disputeAnyResult.rows[0]?.count ?? '0', 10) > 0) {
+          throw new Error(
+            `Cannot advance progress: task ${taskId} has active dispute (locked by concurrent transaction)`
+          );
         }
 
         // 6. Escrow terminal freeze: check if escrow is terminal

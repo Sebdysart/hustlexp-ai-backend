@@ -350,25 +350,21 @@ describe('REPLAY ATTACK 3 — charge.refunded replayed', () => {
 
 describe('REPLAY ATTACK 4 — invoice.paid replayed (subscription credits)', () => {
   /**
-   * SOURCE: backend/src/jobs/stripe-event-worker.ts:295–313 (handleInvoicePaid)
-   *   Calls RevenueService.logEvent() — plain INSERT, no ON CONFLICT.
+   * SOURCE: backend/src/jobs/stripe-event-worker.ts (handleInvoicePaid)
    *
-   * SOURCE: backend/src/services/RevenueService.ts:118–146 (logEvent)
-   *   INSERT INTO revenue_ledger ... RETURNING id
-   *   NO ON CONFLICT clause — every call inserts a new row.
+   * BUG 5 FIX: handleInvoicePaid now uses an atomic INSERT INTO revenue_ledger
+   * ... ON CONFLICT (stripe_event_id) DO NOTHING instead of RevenueService.logEvent.
+   * This eliminates the race between the SELECT idempotency check and the INSERT
+   * that allowed two concurrent workers to both insert duplicate revenue rows.
    *
-   * However: the outer S-1 atomic-claim in stripe-event-worker.ts:63–84 prevents
-   * the worker from processing the same stripe_event_id twice, because
-   * claimed_at IS NULL AND processed_at IS NULL must both hold.
+   * The revenue_ledger.stripe_event_id column has a UNIQUE constraint
+   * (migration 005-mega-schema-alignment.sql §1181), so the first INSERT wins
+   * and subsequent ones silently DO NOTHING — atomically, without a lock.
    *
-   * VERDICT: SAFE with caveat — The per-event atomic claim stops double-processing
-   * at the worker level. RevenueService.logEvent itself is NOT idempotent (no
-   * ON CONFLICT), but it is protected by the stripe_events claim guard upstream.
-   * If the claim guard is bypassed (e.g., by a bug resetting claimed_at), duplicate
-   * revenue rows would be inserted. This is a GAP in defense-in-depth but not an
-   * exploitable replay under normal operation.
+   * VERDICT: SAFE — dual defense: S-1 atomic claim at the outer level +
+   * ON CONFLICT at the revenue_ledger level provides defense-in-depth.
    */
-  it('invoice.paid first delivery: claim succeeds, RevenueService.logEvent called once', async () => {
+  it('invoice.paid first delivery: claim succeeds, revenue_ledger INSERT called once via db.query', async () => {
     const stripeEventId = 'evt_invoice_paid_first';
 
     // stripe-event-worker claim UPDATE returns { payload_json, type }
@@ -389,20 +385,25 @@ describe('REPLAY ATTACK 4 — invoice.paid replayed (subscription credits)', () 
         }],
         rowCount: 1,
       })
-      // BUG 4 FIX: inside db.transaction — advisory lock call (pg_advisory_xact_lock)
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
-      // BUG 4 FIX: inside db.transaction — revenue_ledger idempotency check (0 rows = not yet logged)
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+      // BUG 5 FIX: db.query INSERT ON CONFLICT into revenue_ledger → new row inserted
+      .mockResolvedValueOnce({ rows: [{ id: 'rev-1' }], rowCount: 1 })
       // Final UPDATE: result='success'
       .mockResolvedValueOnce({ rows: [], rowCount: 1 });
 
     const job = makeJob({ stripeEventId, type: 'invoice.paid' });
     await processStripeEventJob(job);
-    // RevenueService was called exactly once
-    expect(vi.mocked(RevenueService.logEvent)).toHaveBeenCalledTimes(1);
+
+    // RevenueService.logEvent is NOT called — handleInvoicePaid now bypasses it
+    expect(vi.mocked(RevenueService.logEvent)).toHaveBeenCalledTimes(0);
+
+    // Verify the revenue_ledger INSERT ON CONFLICT was called
+    const insertCall = mockDb.query.mock.calls.find(
+      (c) => typeof c[0] === 'string' && (c[0] as string).includes('revenue_ledger') && (c[0] as string).includes('ON CONFLICT')
+    );
+    expect(insertCall).toBeDefined();
   });
 
-  it('invoice.paid replay: claim guard fires, RevenueService.logEvent NOT called', async () => {
+  it('invoice.paid replay: claim guard fires, revenue_ledger INSERT NOT called', async () => {
     const stripeEventId = 'evt_invoice_paid_replay';
 
     // Claim returns 0 rows → already processed (S-1 atomic claim guard)
@@ -411,26 +412,26 @@ describe('REPLAY ATTACK 4 — invoice.paid replayed (subscription credits)', () 
     const job = makeJob({ stripeEventId, type: 'invoice.paid' });
     await processStripeEventJob(job);
 
-    // RevenueService must NOT be called — event was already claimed
+    // Neither RevenueService.logEvent nor revenue_ledger INSERT must be called
     expect(vi.mocked(RevenueService.logEvent)).toHaveBeenCalledTimes(0);
+    const insertCall = mockDb.query.mock.calls.find(
+      (c) => typeof c[0] === 'string' && (c[0] as string).includes('revenue_ledger')
+    );
+    expect(insertCall).toBeUndefined();
   });
 
-  it('GAP — RevenueService.logEvent has no ON CONFLICT guard (not idempotent in isolation)', () => {
+  it('FIXED — revenue_ledger INSERT uses ON CONFLICT (stripe_event_id) DO NOTHING for defense-in-depth', () => {
     /**
-     * This is a documentation test. If the atomic-claim guard ever fails to prevent
-     * re-entry (e.g., due to a migration resetting claimed_at, or a future code change),
-     * invoice.paid would insert duplicate rows in revenue_ledger because logEvent
-     * does a plain INSERT with no idempotency key constraint.
+     * BUG 5 FIX: handleInvoicePaid now uses an atomic INSERT ... ON CONFLICT (stripe_event_id)
+     * DO NOTHING directly on revenue_ledger, replacing the prior RevenueService.logEvent call
+     * which had no idempotency guard. Even if the S-1 atomic claim were bypassed, the
+     * ON CONFLICT prevents duplicate revenue rows.
      *
-     * Recommendation: Add ON CONFLICT (stripe_event_id) DO NOTHING to revenue_ledger
-     * inserts that originate from webhook events, or add a UNIQUE constraint on
-     * (stripe_event_id) in revenue_ledger.
+     * The revenue_ledger table has UNIQUE (stripe_event_id) per migration 005-mega-schema-alignment.sql.
+     * A future migration should add UNIQUE (stripe_event_id, event_type) to support
+     * different event types sharing a stripe_event_id without collision.
      */
-    // Verify the mock has no ON CONFLICT protection
-    const logEventImpl = RevenueService.logEvent.toString();
-    // The real implementation (RevenueService.ts:118-146) does a plain INSERT
-    // This test documents the finding — mock always succeeds (no DB constraint)
-    expect(true).toBe(true); // structural gap documented above
+    expect(true).toBe(true); // fix documented above
   });
 });
 

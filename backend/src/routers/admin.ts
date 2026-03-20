@@ -47,7 +47,7 @@ export const adminRouter = router({
       limit: z.number().int().min(1).max(100).default(20),
       offset: z.number().int().min(0).default(0),
       search: z.string().max(255).optional(),
-      trustTier: z.string().max(20).optional(),
+      trustTier: z.enum(['0', '1', '2', '3', '4']).optional(),
       isBanned: z.boolean().optional(),
     }))
     .query(async ({ input }) => {
@@ -137,7 +137,9 @@ export const adminRouter = router({
           input.reason ?? null,
           JSON.stringify({ banned: input.banned }),
         ]
-      );
+      ).catch(err => {
+        log.warn({ err }, '[admin.setUserBan] Failed to write audit log — ban proceeding without audit record');
+      });
 
       // Look up firebase_uid so the Redis revocation marker uses the same key
       // namespace that trpc.ts and auth/middleware.ts read (auth:revoked:<firebaseUid>).
@@ -551,7 +553,7 @@ export const adminRouter = router({
     .input(z.object({
       limit: z.number().int().min(1).max(100).default(20),
       offset: z.number().int().min(0).default(0),
-      state: z.string().max(30).optional(),
+      state: z.enum(['OPEN', 'MATCHING', 'ACCEPTED', 'IN_PROGRESS', 'PROOF_SUBMITTED', 'COMPLETED', 'CANCELLED', 'DISPUTED', 'EXPIRED']).optional(),
     }))
     .query(async ({ input }) => {
       const conditions: string[] = ['1=1'];
@@ -596,7 +598,7 @@ export const adminRouter = router({
     .input(z.object({
       limit: z.number().int().min(1).max(100).default(20),
       offset: z.number().int().min(0).default(0),
-      status: z.string().max(30).optional(),
+      status: z.enum(['OPEN', 'EVIDENCE_REQUESTED', 'RESOLVED', 'ESCALATED']).optional(),
     }))
     .query(async ({ input }) => {
       const conditions: string[] = ['1=1'];
@@ -604,7 +606,7 @@ export const adminRouter = router({
       let paramIndex = 1;
 
       if (input.status) {
-        conditions.push(`d.status = $${paramIndex}`);
+        conditions.push(`d.state = $${paramIndex}`);
         params.push(input.status);
         paramIndex++;
       }
@@ -612,7 +614,7 @@ export const adminRouter = router({
       params.push(input.limit, input.offset);
 
       const result = await db.query(
-        `SELECT d.id, d.task_id, d.status, d.reason, d.created_at,
+        `SELECT d.id, d.task_id, d.state, d.reason, d.created_at,
                 t.title as task_title
          FROM disputes d
          JOIN tasks t ON t.id = d.task_id
@@ -795,7 +797,7 @@ export const adminRouter = router({
         `UPDATE disputes
          SET state = 'RESOLVED',
              resolved_at = NOW(),
-             resolution_notes = CONCAT('Admin override: escrow ', $2)
+             resolution_notes = CONCAT('Admin override: escrow ', $1, ' — action: ', $2)
          WHERE escrow_id = $1
            AND state != 'RESOLVED'`,
         [input.escrowId, input.action]

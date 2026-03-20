@@ -654,15 +654,49 @@ export const TrustTierService = {
       log.error({ err, userId }, '[TrustTierService] banUser: failed to query poster funded escrows');
     }
 
-    // Cancel poster's OPEN/MATCHING tasks (best-effort)
+    // Bucket B: poster's active tasks (ACCEPTED/IN_PROGRESS/PROOF_SUBMITTED) — a worker
+    // has done real work so the escrow must be locked for dispute (not refunded) and
+    // an outbox event is emitted for admin adjudication. Same pattern as admin.setUserBan.
+    try {
+      const activePosterEscrows = await db.query<{ escrow_id: string; task_id: string }>(
+        `SELECT e.id as escrow_id, t.id as task_id FROM escrows e
+         JOIN tasks t ON t.id = e.task_id
+         WHERE e.poster_id = $1
+           AND e.state = 'FUNDED'
+           AND t.state IN ('ACCEPTED', 'IN_PROGRESS', 'PROOF_SUBMITTED')`,
+        [userId]
+      );
+      for (const row of activePosterEscrows.rows) {
+        await db.query(
+          `UPDATE escrows SET state = 'LOCKED_DISPUTE', updated_at = NOW()
+           WHERE id = $1 AND state = 'FUNDED'`,
+          [row.escrow_id]
+        ).catch(err => log.error({ err, escrowId: row.escrow_id, userId }, '[TrustTierService] banUser: failed to lock active poster escrow'));
+        await writeToOutbox({
+          eventType: 'escrow.locked_on_ban',
+          aggregateType: 'escrow',
+          aggregateId: row.escrow_id,
+          eventVersion: 1,
+          payload: { escrowId: row.escrow_id, reason: 'poster_banned', taskId: row.task_id, bannedUserId: userId },
+          queueName: 'critical_payments',
+          idempotencyKey: `ban_poster_lock:${row.task_id}`,
+        }).catch(err => log.error({ err, escrowId: row.escrow_id, taskId: row.task_id, userId }, '[TrustTierService] banUser: failed to enqueue active poster escrow lock event'));
+      }
+    } catch (err) {
+      log.error({ err, userId }, '[TrustTierService] banUser: failed to query active poster funded escrows');
+    }
+
+    // Cancel poster's OPEN/MATCHING/ACCEPTED/IN_PROGRESS/PROOF_SUBMITTED tasks (best-effort).
+    // Expanded from OPEN/MATCHING to include all active states so tasks with a banned
+    // poster are not left stuck in an un-completable state.
     try {
       await db.query(
         `UPDATE tasks SET state = 'CANCELLED', cancelled_at = NOW()
-         WHERE poster_id = $1 AND state IN ('OPEN', 'MATCHING')`,
+         WHERE poster_id = $1 AND state IN ('OPEN', 'MATCHING', 'ACCEPTED', 'IN_PROGRESS', 'PROOF_SUBMITTED')`,
         [userId]
       );
     } catch (err) {
-      log.error({ err, userId }, '[TrustTierService] banUser: failed to cancel poster OPEN tasks');
+      log.error({ err, userId }, '[TrustTierService] banUser: failed to cancel poster active tasks');
     }
 
     // Log ban

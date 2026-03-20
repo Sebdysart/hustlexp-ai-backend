@@ -330,6 +330,10 @@ async function handleReleaseRequest(
   // review and return without rethrowing so BullMQ does NOT retry the job.
   let transferResult: Awaited<ReturnType<typeof StripeService.createTransfer>>;
   try {
+    // BUG 7 FIX: Pass 'dispute_release' suffix so this key is distinct from
+    // EscrowService.partialRefund's 'escrow_partial_refund' suffix. Without distinct
+    // suffixes, Stripe treats both callers as idempotent replays of the same key
+    // (tr_create_{escrowId}_{amount}), masking a real duplicate double-transfer.
     transferResult = await StripeService.createTransfer({
       escrowId: escrow.id,
       taskId,
@@ -337,6 +341,7 @@ async function handleReleaseRequest(
       workerStripeAccountId: worker.stripe_connect_id,
       amount: netPayoutCents,
       description: `Dispute resolution: ${reason}`,
+      idempotencyKeySuffix: 'dispute_release',
     });
   } catch (stripeError) {
     if (isStripeAccountRestrictionError(stripeError)) {
@@ -808,6 +813,10 @@ async function handlePartialRefundRequest(
       // Lock escrow for admin review; do NOT rethrow so BullMQ skips retry.
       let partialTransferResult: Awaited<ReturnType<typeof StripeService.createTransfer>>;
       try {
+        // BUG 7 FIX: Pass 'dispute_release' suffix (same as handleReleaseRequest)
+        // so this call's idempotency key is distinct from EscrowService.partialRefund's
+        // 'escrow_partial_refund' key. Different amounts for the same escrow must not
+        // collide at Stripe's idempotency layer.
         partialTransferResult = await StripeService.createTransfer({
           escrowId: escrow.id,
           taskId,
@@ -815,6 +824,7 @@ async function handlePartialRefundRequest(
           workerStripeAccountId: worker.stripe_connect_id,
           amount: netReleaseCents,
           description: `Dispute resolution: ${reason}`,
+          idempotencyKeySuffix: 'dispute_release',
         });
       } catch (stripeError) {
         if (isStripeAccountRestrictionError(stripeError)) {
@@ -848,9 +858,45 @@ async function handlePartialRefundRequest(
   }
 
   // Store both IDs + amounts, set REFUND_PARTIAL (MVP-authoritative terminalization)
-  // Wrapped in db.transaction() for atomicity of the version-checked UPDATE.
-  // WHERE clause enforces: non-null IDs when amounts > 0, and version matches (idempotent replay)
+  // BUG 1 FIX: Add SELECT FOR UPDATE NOWAIT inside T2 so the version is re-read
+  // from the live row under an exclusive lock, not from the T1 snapshot. Between
+  // T1 (which committed and released the row lock) and here, other operations can
+  // increment the version. Using the freshly-read version prevents a false version-
+  // conflict retry loop and mirrors the pattern in handleReleaseRequest /
+  // handleRefundRequest.
   const { rowCount: updateRowCount, finalState } = await db.transaction(async (trx: QueryFn) => {
+    // Step 1: Acquire exclusive lock and re-read current version + state
+    let lockedRow: { id: string; version: number; state: string } | undefined;
+    try {
+      const lockedResult = await trx<{ id: string; version: number; state: string }>(
+        `SELECT id, version, state FROM escrows WHERE id = $1 FOR UPDATE NOWAIT`,
+        [escrow.id]
+      );
+      if (!lockedResult.rows.length) {
+        throw new Error(`Escrow ${escrow.id} disappeared during T2 partial-refund lock — retry`);
+      }
+      lockedRow = lockedResult.rows[0];
+    } catch (lockErr) {
+      // NOWAIT raises 55P03 when another transaction holds the lock.
+      // Treat as version conflict — BullMQ will retry.
+      const msg = lockErr instanceof Error ? lockErr.message : String(lockErr);
+      if (msg.includes('55P03') || msg.toLowerCase().includes('could not obtain lock')) {
+        throw new Error(`Version conflict (lock contention) on partial-refund T2 for escrow ${escrow.id} — retry`);
+      }
+      throw lockErr;
+    }
+
+    // Step 2: If already terminal (idempotent replay), return early
+    if (lockedRow.state === 'REFUND_PARTIAL') {
+      return { rowCount: 0, finalState: 'REFUND_PARTIAL' };
+    }
+
+    // Step 3: Verify the escrow is still in LOCKED_DISPUTE before terminalizing
+    if (lockedRow.state !== 'LOCKED_DISPUTE') {
+      return { rowCount: 0, finalState: lockedRow.state };
+    }
+
+    // Step 4: UPDATE using the freshly-read version (not the stale T1 snapshot)
     const updateResult = await trx<{ id: string; state: string }>(
       `UPDATE escrows
        SET state = 'REFUND_PARTIAL',
@@ -865,11 +911,12 @@ async function handlePartialRefundRequest(
          AND version = $6
          AND ($3 = 0 OR $1 IS NOT NULL)  -- If refundAmount > 0, refundId must exist
          AND ($4 = 0 OR $2 IS NOT NULL)`, // If releaseAmount > 0, transferId must exist
-      [refundId, transferId, refundAmount, releaseAmount, escrow.id, escrow.version]
+      [refundId, transferId, refundAmount, releaseAmount, escrow.id, lockedRow.version]
     );
 
     if (updateResult.rowCount === 0) {
-      // Check if escrow is already terminal (concurrent completion or replay)
+      // Freshly-read version still didn't match — should not happen since we hold
+      // the FOR UPDATE lock, but handle defensively.
       const checkResult = await trx<{ state: string }>(
         `SELECT state FROM escrows WHERE id = $1`,
         [escrow.id]

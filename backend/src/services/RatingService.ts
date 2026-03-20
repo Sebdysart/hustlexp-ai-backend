@@ -612,60 +612,68 @@ export const RatingService = {
         return { success: true, data: { autoRated: 0 } };
       }
 
-      // Batch insert all auto-ratings in a single query (eliminates N+1)
-      // Generate both directions: poster→worker and worker→poster
-      // BUG FIX: Use SELECT...FROM tasks WHERE state='COMPLETED' as the row source
-      // so that if a task is cancelled between the SELECT above and this INSERT, the
-      // INSERT row is silently skipped (the subquery returns no rows) rather than
-      // writing an auto-rating for a non-completed task.
-      const values: unknown[] = [];
-      const selectRows: string[] = [];
-      let paramIdx = 1;
+      // BUG 4 FIX: Process tasks one at a time, acquiring the same advisory lock
+      // key used by submitRating for each taskId. This serializes processAutoRatings
+      // against concurrent submitRating calls for the same task, preventing the race
+      // where a genuine human rating ends up permanently hidden (is_blind=true,
+      // is_public=false) because the auto-rate INSERT+mutual-reveal ran concurrently.
+      //
+      // Each task is wrapped in its own transaction so the advisory lock is released
+      // promptly after that task's INSERT+mutual-reveal completes, rather than
+      // holding all locks for the entire batch duration.
+      let autoRated = 0;
+      const processedTaskIds: string[] = [];
 
       for (const task of validTasks) {
-        // Poster → Worker (state re-verified at insert time)
-        selectRows.push(
-          `SELECT $${paramIdx}::uuid, $${paramIdx + 1}::uuid, $${paramIdx + 2}::uuid, 5, 'No rating submitted (auto-rated)', ARRAY[]::TEXT[], true, false, true` +
-          ` FROM tasks WHERE id = $${paramIdx}::uuid AND state = 'COMPLETED'`
-        );
-        values.push(task.id, task.poster_id, task.worker_id);
-        paramIdx += 3;
+        try {
+          const taskAutoRated = await db.transaction(async (txQuery) => {
+            // Acquire the same advisory lock key as submitRating uses.
+            // This blocks concurrent submitRating calls for this task until
+            // the auto-rate INSERT and mutual-reveal UPDATE commit.
+            await txQuery(
+              `SELECT pg_advisory_xact_lock(hashtext($1))`,
+              [`rating:${task.id}`]
+            );
 
-        // Worker → Poster (state re-verified at insert time)
-        selectRows.push(
-          `SELECT $${paramIdx}::uuid, $${paramIdx + 1}::uuid, $${paramIdx + 2}::uuid, 5, 'No rating submitted (auto-rated)', ARRAY[]::TEXT[], true, false, true` +
-          ` FROM tasks WHERE id = $${paramIdx}::uuid AND state = 'COMPLETED'`
-        );
-        values.push(task.id, task.worker_id, task.poster_id);
-        paramIdx += 3;
+            // Insert both directions inside the advisory lock.
+            // SELECT...FROM tasks WHERE state='COMPLETED' ensures the task
+            // hasn't been cancelled between the outer SELECT and this INSERT.
+            const insertResult = await txQuery(
+              `INSERT INTO task_ratings (
+                task_id, rater_id, ratee_id, stars, comment, tags, is_public, is_blind, is_auto_rated
+              )
+              SELECT $1::uuid, $2::uuid, $3::uuid, 5, 'No rating submitted (auto-rated)', ARRAY[]::TEXT[], true, false, true
+                FROM tasks WHERE id = $1::uuid AND state = 'COMPLETED'
+              UNION ALL
+              SELECT $1::uuid, $4::uuid, $2::uuid, 5, 'No rating submitted (auto-rated)', ARRAY[]::TEXT[], true, false, true
+                FROM tasks WHERE id = $1::uuid AND state = 'COMPLETED'
+              ON CONFLICT DO NOTHING`,
+              [task.id, task.poster_id, task.worker_id, task.worker_id]
+            );
+
+            // Mutual-reveal: flip any genuine blind rating that existed before
+            // the auto-rate filled the other direction, completing the pair.
+            await txQuery(
+              `UPDATE task_ratings SET is_public = true, is_blind = false, updated_at = NOW()
+               WHERE task_id = $1
+                 AND is_blind = true
+                 AND is_public = false
+                 AND task_id IN (
+                   SELECT task_id FROM task_ratings GROUP BY task_id HAVING COUNT(*) = 2
+                 )`,
+              [task.id]
+            );
+
+            return insertResult.rowCount ?? 0;
+          });
+
+          autoRated += taskAutoRated;
+          processedTaskIds.push(task.id);
+        } catch (_taskErr) {
+          // Non-fatal: if one task fails, continue processing the rest
+          // (e.g. lock contention or cancelled task)
+        }
       }
-
-      const batchResult = await db.query(
-        `INSERT INTO task_ratings (
-          task_id, rater_id, ratee_id, stars, comment, tags, is_public, is_blind, is_auto_rated
-        )
-        ${selectRows.join(' UNION ALL ')}
-        ON CONFLICT DO NOTHING`,
-        values
-      );
-
-      const autoRated = batchResult.rowCount ?? 0;
-
-      // Mutual-reveal: if one party had already submitted a genuine blind rating
-      // before the auto-rate ran, the auto-rate just filled the other direction,
-      // completing the pair.  Flip those genuine ratings to is_public=true so they
-      // are visible — mirrors the mutual-reveal logic in submitRating().
-      const processedTaskIds = validTasks.map(t => t.id);
-      await db.query(
-        `UPDATE task_ratings SET is_public = true, is_blind = false
-         WHERE task_id = ANY($1)
-           AND is_blind = true
-           AND is_public = false
-           AND task_id IN (
-             SELECT task_id FROM task_ratings GROUP BY task_id HAVING COUNT(*) = 2
-           )`,
-        [processedTaskIds]
-      );
 
       return {
         success: true,

@@ -23,6 +23,7 @@ import { XPService } from './XPService.js';
 import { SelfInsurancePoolService } from './SelfInsurancePoolService.js';
 import { RevenueService } from './RevenueService.js';
 import { StripeService } from './StripeService.js';
+import { notifyAdmins } from './AdminNotificationHelper.js';
 import type {
   Escrow,
   EscrowState,
@@ -878,12 +879,35 @@ export const EscrowService = {
                   { escrowId, stripeRefundId, cancelError: cancelResult.error.message },
                   'CRITICAL: double-spend — Stripe refund cancellation failed. Escrow flagged for manual review.'
                 );
+                // BUG 5 FIX: Alert ops — cancellation failed means both the transfer and the
+                // refund succeeded (double-spend confirmed). Manual financial reconciliation required.
+                notifyAdmins({
+                  title: 'DOUBLE REFUND CONFIRMED',
+                  body: `Escrow ${escrowId} — Stripe refund ${stripeRefundId} could not be cancelled (already succeeded). Manual financial reconciliation required. Amount: ${refundAmount} cents.`,
+                  deepLink: `/admin/escrows/${escrowId}`,
+                  priority: 'CRITICAL',
+                  metadata: { escrow_id: escrowId, stripe_refund_id: stripeRefundId, amount_cents: refundAmount },
+                }).catch(notifyErr => escrowLogger.error(
+                  { err: notifyErr instanceof Error ? notifyErr.message : String(notifyErr), escrowId },
+                  'Failed to send admin notification for double-refund — manual intervention still required'
+                ));
               }
             } catch (cancelErr) {
               escrowLogger.error(
                 { escrowId, stripeRefundId, err: cancelErr instanceof Error ? cancelErr.message : String(cancelErr) },
                 'CRITICAL: double-spend — exception during refund cancellation. Escrow flagged for manual review.'
               );
+              // BUG 5 FIX: Alert ops on exception path too — outcome is unknown, ops must investigate.
+              notifyAdmins({
+                title: 'DOUBLE REFUND CONFIRMED',
+                body: `Escrow ${escrowId} — Stripe refund ${stripeRefundId} could not be cancelled (already succeeded). Manual financial reconciliation required. Amount: ${refundAmount} cents.`,
+                deepLink: `/admin/escrows/${escrowId}`,
+                priority: 'CRITICAL',
+                metadata: { escrow_id: escrowId, stripe_refund_id: stripeRefundId, amount_cents: refundAmount },
+              }).catch(notifyErr => escrowLogger.error(
+                { err: notifyErr instanceof Error ? notifyErr.message : String(notifyErr), escrowId },
+                'Failed to send admin notification for double-refund exception — manual intervention still required'
+              ));
             }
             return {
               success: false,
@@ -960,7 +984,7 @@ export const EscrowService = {
    * FIX 5: Enforces challenge_window_hours. A poster cannot file a dispute after
    * the challenge window (measured from task.completed_at) has elapsed.
    */
-  lockForDispute: async (escrowId: string, options?: { adminOverride?: boolean; initiatedBy?: string }): Promise<ServiceResult<Escrow>> => {
+  lockForDispute: async (escrowId: string, options?: { adminOverride?: boolean; initiatedBy?: string; allowedTaskStates?: string[] }): Promise<ServiceResult<Escrow>> => {
     try {
       // RACE CONDITION FIX: Entire check + update wrapped in a transaction so the
       // FOR UPDATE row-level lock is held from SELECT through COMMIT. Without the
@@ -971,8 +995,10 @@ export const EscrowService = {
           completed_at: Date | null;
           challenge_window_hours: number | null;
           version: number;
+          state: string;
+          task_state: string;
         }>(
-          `SELECT t.completed_at, t.challenge_window_hours, e.version
+          `SELECT t.completed_at, t.challenge_window_hours, e.version, e.state, t.state AS task_state
            FROM escrows e
            JOIN tasks t ON t.id = e.task_id
            WHERE e.id = $1
@@ -998,7 +1024,7 @@ export const EscrowService = {
         if (options?.initiatedBy) {
           const userFloodCheck = await query<{ count: string }>(
             `SELECT COUNT(*) as count FROM disputes
-             WHERE created_by = $1
+             WHERE initiated_by = $1
                AND state != 'RESOLVED'
                AND created_at > NOW() - INTERVAL '24 hours'`,
             [options.initiatedBy]
@@ -1008,6 +1034,19 @@ export const EscrowService = {
             throw new TRPCError({
               code: 'TOO_MANY_REQUESTS',
               message: 'Dispute rate limit exceeded: maximum 3 open disputes per 24 hours',
+            });
+          }
+        }
+
+        // BUG 5 FIX (TOCTOU): Validate task state inside the transaction while the
+        // FOR UPDATE lock is held, eliminating the race window between the router's
+        // pre-check and this service call. Only run when allowedTaskStates is passed.
+        if (options?.allowedTaskStates && !options?.adminOverride) {
+          const taskState = windowCheck.rows[0]?.task_state;
+          if (!taskState || !options.allowedTaskStates.includes(taskState)) {
+            throw new TRPCError({
+              code: 'PRECONDITION_FAILED',
+              message: 'Can only file a dispute on an active task (accepted, in-progress, proof-submitted, or completed)',
             });
           }
         }
@@ -1039,13 +1078,20 @@ export const EscrowService = {
         }
 
         const escrowVersion = windowCheck.rows[0]?.version;
+
+        // BUG 2 FIX: Also accept RELEASED escrows (dispute filed after payout).
+        // When locking a RELEASED escrow, clear stripe_transfer_id so the
+        // escrow-action-worker retry path can issue a fresh transfer if needed.
+        // DisputeService.create stores the original transfer ID in escrow_events
+        // (event_type='dispute_locked_after_release') for recovery purposes.
         const result = await query<Escrow>(
           `UPDATE escrows
            SET state = 'LOCKED_DISPUTE',
+               stripe_transfer_id = CASE WHEN state = 'RELEASED' THEN NULL ELSE stripe_transfer_id END,
                version = version + 1,
                updated_at = NOW()
            WHERE id = $1
-             AND state = 'FUNDED'
+             AND state IN ('FUNDED', 'RELEASED')
              AND version = $2
            RETURNING *`,
           [escrowId, escrowVersion]
@@ -1061,12 +1107,14 @@ export const EscrowService = {
             success: false,
             error: {
               code: ErrorCodes.INVALID_STATE,
-              message: `Cannot lock escrow: current state is ${existing.data.state}, expected FUNDED`,
+              message: `Cannot lock escrow: current state is ${existing.data.state}, expected FUNDED or RELEASED`,
             },
           };
         }
 
-        await logEscrowEvent(escrowId, 'FUNDED', 'LOCKED_DISPUTE');
+        // Use the pre-update state captured in windowCheck for the audit event.
+        const lockedFromState = windowCheck.rows[0]?.state ?? 'FUNDED';
+        await logEscrowEvent(escrowId, lockedFromState, 'LOCKED_DISPUTE');
 
         return { success: true, data: result.rows[0] };
       });
@@ -1272,6 +1320,10 @@ export const EscrowService = {
             `partialRefund: worker ${txWorkerId} has no stripe_connect_id — cannot issue worker transfer of ${workerCents} cents. Escrow remains LOCKED_DISPUTE for manual ops recovery.`
           );
         } else {
+          // BUG 7 FIX: Pass 'escrow_partial_refund' suffix so this key is distinct from
+          // escrow-action-worker's 'dispute_release' suffix. Without distinct suffixes,
+          // Stripe would see both calls as idempotent replays of the same transfer key
+          // (tr_create_{escrowId}_{amount}), masking a real duplicate double-transfer.
           const transferResult = await StripeService.createTransfer({
             escrowId,
             taskId: txTaskId!,
@@ -1279,6 +1331,7 @@ export const EscrowService = {
             workerStripeAccountId: txWorkerStripeConnectId,
             amount: netWorkerCents,
             description: `Dispute partial resolution: worker ${workerPercent}%`,
+            idempotencyKeySuffix: 'escrow_partial_refund',
           });
           if (!transferResult.success) {
             // Fatal: throw so the caller can retry while the escrow is still LOCKED_DISPUTE.

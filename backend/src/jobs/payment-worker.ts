@@ -30,6 +30,7 @@ import { writeToOutbox } from '../lib/outbox-helpers.js';
 import { TaskService } from '../services/TaskService.js';
 import { RevenueService } from '../services/RevenueService.js';
 import { sendPushNotification } from '../services/PushNotificationService.js';
+import { notifyAdmins } from '../services/AdminNotificationHelper.js';
 import { workerLogger } from '../logger.js';
 import { verifyJobSignature } from './queues.js';
 import { config } from '../config.js';
@@ -337,16 +338,17 @@ async function handleTransferCreated(transfer: Stripe.Transfer, stripeEventId: s
   // -------------------------------------------------------------------------
   // Critical section: lock escrow row, validate state, update atomically
   // -------------------------------------------------------------------------
-  const { updatedEscrow, taskId, skipped } = await db.transaction(async (trx: QueryFn) => {
+  const { updatedEscrow, taskId, escrowAmount, skipped } = await db.transaction(async (trx: QueryFn) => {
     // Find escrow by id (with version check) — FOR UPDATE holds the lock
     const escrowResult = await trx<{
       id: string;
       task_id: string;
       state: string;
       version: number;
+      amount: number;
       stripe_transfer_id: string | null;
     }>(
-      `SELECT id, task_id, state, version, stripe_transfer_id
+      `SELECT id, task_id, state, version, amount, stripe_transfer_id
        FROM escrows
        WHERE id = $1
        FOR UPDATE`,
@@ -370,13 +372,13 @@ async function handleTransferCreated(transfer: Stripe.Transfer, stripeEventId: s
         [`Escrow ${escrowId} already terminal (${escrow.state})`, stripeEventId]
       );
       log.warn({ escrowId, state: escrow.state, stripeEventId }, 'Stripe event skipped: escrow already terminal');
-      return { updatedEscrow: null, taskId: escrow.task_id, skipped: true };
+      return { updatedEscrow: null, taskId: escrow.task_id, escrowAmount: escrow.amount, skipped: true };
     }
 
     // Idempotency check: If already released with this transfer_id, skip
     if (escrow.state === 'RELEASED' && escrow.stripe_transfer_id === transferId) {
       log.info({ escrowId, transferId }, 'Escrow already released with this transfer, idempotent replay');
-      return { updatedEscrow: null, taskId: escrow.task_id, skipped: true };
+      return { updatedEscrow: null, taskId: escrow.task_id, escrowAmount: escrow.amount, skipped: true };
     }
 
     // Validate state transition: FUNDED|LOCKED_DISPUTE → RELEASED
@@ -411,7 +413,7 @@ async function handleTransferCreated(transfer: Stripe.Transfer, stripeEventId: s
       throw new Error(`Escrow ${escrowId} state or version changed during update (version mismatch or state changed)`);
     }
 
-    return { updatedEscrow: updateResult.rows[0], taskId: escrow.task_id, skipped: false };
+    return { updatedEscrow: updateResult.rows[0], taskId: escrow.task_id, escrowAmount: escrow.amount, skipped: false };
   });
 
   // Skipped paths: already handled inside the transaction
@@ -445,6 +447,53 @@ async function handleTransferCreated(transfer: Stripe.Transfer, stripeEventId: s
     queueName: 'critical_payments', // XP award happens in same queue
     idempotencyKey: `escrow.released:${escrowId}:${updatedEscrow.version}`,
   });
+
+  // BUG 4 FIX: Log platform_fee to revenue ledger as a fallback for the case where
+  // EscrowService.release()'s non-fatal logEvent call failed silently.
+  // Idempotency guard prevents double-write: if the fee was already recorded by
+  // EscrowService.release() this block is a no-op.
+  try {
+    const existingFee = await db.query<{ id: string }>(
+      `SELECT id FROM revenue_ledger WHERE stripe_event_id = $1 AND event_type = 'platform_fee' LIMIT 1`,
+      [stripeEventId]
+    );
+    if ((existingFee.rowCount ?? 0) === 0) {
+      // Look up worker_id from the task for ledger attribution
+      const taskRow = await db.query<{ worker_id: string | null }>(
+        `SELECT worker_id FROM tasks WHERE id = $1`,
+        [taskId]
+      );
+      const workerId = taskRow.rows[0]?.worker_id ?? null;
+      if (workerId && escrowAmount > 0) {
+        const platformFeePercent = config.stripe.platformFeePercent ?? 15;
+        const platformFeeCents = Math.round(escrowAmount * (platformFeePercent / 100));
+        if (platformFeeCents > 0) {
+          const netAmountCents = escrowAmount - platformFeeCents;
+          await RevenueService.logEvent({
+            eventType: 'platform_fee',
+            userId: workerId,
+            taskId,
+            amountCents: platformFeeCents,
+            grossAmountCents: escrowAmount,
+            platformFeeCents,
+            netAmountCents,
+            feeBasisPoints: Math.round(platformFeePercent * 100),
+            escrowId,
+            stripeTransferId: transferId,
+            stripeEventId,
+            metadata: { event: 'escrow_release_transfer_created_fallback' },
+          });
+          log.info({ escrowId, platformFeeCents, workerId }, 'handleTransferCreated: platform_fee fallback ledger entry written');
+        }
+      }
+    }
+  } catch (feeErr) {
+    // Non-fatal: fallback ledger write failure must not block event processing
+    log.warn(
+      { err: feeErr instanceof Error ? feeErr.message : String(feeErr), escrowId, stripeEventId },
+      'handleTransferCreated: platform_fee fallback ledger write failed — manual reconciliation may be required'
+    );
+  }
 
   log.info({ escrowId, version: updatedEscrow.version }, 'Escrow released (→ RELEASED)');
 }
@@ -501,7 +550,29 @@ async function handleChargeRefunded(charge: Stripe.Charge, stripeEventId: string
         : charge.payment_intent?.id;
 
       if (!paymentIntentId) {
-        throw new Error(`Charge ${charge.id} missing payment_intent and escrow_id metadata`);
+        // BUG 3 FIX: Both paths failed — no escrow_id in charge metadata AND no
+        // payment_intent on the charge. Throwing here causes infinite BullMQ retry
+        // because there is no recoverable state to retry into. Log CRITICAL and alert
+        // ops instead so a human can reconcile manually.
+        const criticalMsg = `CRITICAL: charge.refunded for charge ${charge.id} has no escrow_id metadata and no payment_intent — cannot correlate to an escrow. Manual reconciliation required.`;
+        log.error({ chargeId: charge.id, stripeEventId }, criticalMsg);
+        await notifyAdmins({
+          title: 'charge.refunded: unroutable refund event',
+          body: criticalMsg,
+          deepLink: `/admin/stripe-events/${stripeEventId}`,
+          priority: 'CRITICAL',
+          metadata: { charge_id: charge.id, stripe_event_id: stripeEventId },
+        }).catch(err => log.error({ err }, 'Failed to send admin notification for unroutable charge.refunded'));
+        // Mark the stripe_event as failed-permanent so it is not retried.
+        await db.query(
+          `UPDATE stripe_events
+           SET processed_at = NOW(),
+               result = 'failed',
+               error_message = $1
+           WHERE stripe_event_id = $2`,
+          [criticalMsg, stripeEventId]
+        );
+        return;
       }
 
       escrowResult = await trx<{
