@@ -7,6 +7,7 @@ import { redis, CACHE_KEYS } from "../cache/redis.js";
 import { authLogger } from "../logger.js";
 import { TOKEN_CACHE_TTL_SECONDS, REVOCATION_MARKER_TTL_SECONDS } from "./constants.js";
 import { db } from "../db.js";
+import { encryptSession, decryptSession } from "../middleware/encrypted-session.js";
 
 export interface AuthenticatedUser {
   uid: string;
@@ -37,21 +38,26 @@ export async function authenticateRequest(
   // 🔥 Attempt Redis cache (5 minute sessions — keeps revocation window ≤5 min)
   const cachedSession = await redis.get<string>(CACHE_KEYS.sessionToken(token));
   if (cachedSession) {
-    const user: AuthenticatedUser = JSON.parse(cachedSession);
-
-    // Check if user's tokens have been revoked since caching
-    const revokedAt = await redis.get<string>(REVOKED_KEY(user.uid));
-    if (revokedAt) {
-      // Token was cached before revocation — invalidate and re-verify
-      authLogger.info({ uid: user.uid }, "Cached session invalidated by revocation");
-      try {
-        await redis.del(CACHE_KEYS.sessionToken(token));
-      } catch (err) {
-        authLogger.error({ err }, '[auth] Failed to delete revoked session from cache — continuing with Firebase re-verification');
-      }
-      // Fall through to Firebase verification with checkRevoked
+    const user = decryptSession<AuthenticatedUser>(cachedSession);
+    if (!user) {
+      // Decryption failed — tampered or wrong key; evict and re-verify
+      try { await redis.del(CACHE_KEYS.sessionToken(token)); } catch (_) { /* ignore */ }
+      // Fall through to Firebase verification
     } else {
-      return user;
+      // Check if user's tokens have been revoked since caching
+      const revokedAt = await redis.get<string>(REVOKED_KEY(user.uid));
+      if (revokedAt) {
+        // Token was cached before revocation — invalidate and re-verify
+        authLogger.info({ uid: user.uid }, "Cached session invalidated by revocation");
+        try {
+          await redis.del(CACHE_KEYS.sessionToken(token));
+        } catch (err) {
+          authLogger.error({ err }, '[auth] Failed to delete revoked session from cache — continuing with Firebase re-verification');
+        }
+        // Fall through to Firebase verification with checkRevoked
+      } else {
+        return user;
+      }
     }
   }
 
@@ -97,7 +103,7 @@ export async function authenticateRequest(
     try {
       await redis.set(
         CACHE_KEYS.sessionToken(token),
-        JSON.stringify(user),
+        encryptSession(user),
         TOKEN_CACHE_TTL_SECONDS
       );
     } catch (err) {

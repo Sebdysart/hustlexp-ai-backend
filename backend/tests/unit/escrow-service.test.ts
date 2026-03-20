@@ -230,9 +230,10 @@ describe('EscrowService', () => {
       const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_123' });
       expect(result.success).toBe(true);
 
-      // Verify gamification: recordEarnings called with net payout (85% after 15% platform fee)
+      // Verify gamification: recordEarnings called with net payout (85% after 15% platform fee, minus 2% insurance)
+      // gross=5000, fee=750, net=4250, insurance=Math.round(4250*0.02)=85, final=4250-85=4165
       expect(EarnedVerificationUnlockService.recordEarnings).toHaveBeenCalledWith(
-        'worker-1', 'task-1', 'esc-1', 4250
+        'worker-1', 'task-1', 'esc-1', 4165
       );
 
       // Verify XP award: price / 10

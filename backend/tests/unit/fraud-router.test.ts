@@ -77,6 +77,8 @@ function makeAdminCaller() {
 describe('fraud router', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockDb.query.mockResolvedValue({ rows: [], rowCount: 0 } as any);
+    mockFraud.getLatestRiskScore.mockResolvedValue({ success: false } as any);
   });
 
   // =========================================================================

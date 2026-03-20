@@ -39,9 +39,11 @@ vi.mock('../../src/services/JuryPoolService', () => ({
 // Imports
 // ---------------------------------------------------------------------------
 
+import { db } from '../../src/db';
 import { juryRouter } from '../../src/routers/jury';
 import { JuryPoolService } from '../../src/services/JuryPoolService';
 
+const mockDb = vi.mocked(db);
 const mockService = vi.mocked(JuryPoolService);
 
 // ---------------------------------------------------------------------------
@@ -147,6 +149,7 @@ describe('jury.getVoteTally', () => {
       inconclusive: 1,
       total: 5,
     };
+    mockDb.query.mockResolvedValueOnce({ rows: [{ poster_id: 'test-uid', worker_id: 'test-uid' }], rowCount: 1 } as any);
     mockService.getVoteTally.mockResolvedValueOnce(tally as any);
 
     const result = await makeCaller().getVoteTally({ disputeId: TEST_UUID });

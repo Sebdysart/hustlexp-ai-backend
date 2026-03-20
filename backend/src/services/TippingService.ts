@@ -98,7 +98,11 @@ export const TippingService = {
 
       // H2 FIX: When task.price is null, treat it as no cap (null-safe guard).
       // Previously `null * 0.5` evaluated to 0, blocking all tips on null-price tasks.
-      const cap = task.price != null ? Math.floor(task.price * MAX_TIP_PERCENT) : null;
+      // F-21 FIX: task.price is stored in dollars; convert to cents before comparing
+      // against amountCents (which is already in cents). Without this conversion the
+      // cap is 100× too small (e.g., $50 task → cap of $0.25 instead of $25.00).
+      const taskPriceCents = task.price != null ? Math.round(Number(task.price) * 100) : null;
+      const cap = taskPriceCents != null ? Math.floor(taskPriceCents * MAX_TIP_PERCENT) : null;
       if (cap !== null && amountCents > cap) {
         return { success: false, error: { code: 'INVALID_AMOUNT', message: `Maximum tip is $${(cap / 100).toFixed(2)} (50% of task price)` } };
       }

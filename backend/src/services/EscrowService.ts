@@ -392,6 +392,7 @@ export const EscrowService = {
     let netPayoutCents: number;
     let platformFeeCents: number;
     let platformFeePercent: number;
+    let insuranceContributionCents: number = 0; // F-22: captured for recordContribution post-commit
     let taskId: string;
     let paymentMethod: string;
     let escrowStateBefore: string;
@@ -525,7 +526,14 @@ export const EscrowService = {
         // post-commit side effects without a duplicate recalculation outside.
         platformFeePercent = Math.min(100, Math.max(0, config.stripe.platformFeePercent ?? 15));
         platformFeeCents = Math.round(resolvedGross * (platformFeePercent / 100));
-        const resolvedNet = resolvedGross - platformFeeCents;
+        // F-22 FIX: Subtract self-insurance contribution (2%) from net payout so
+        // the amount is actually withheld from the worker transfer, not just recorded.
+        // netPayoutCents (used for recordContribution and logged) is the post-platform-fee
+        // amount; the insurance contribution is deducted from it before paying out.
+        const INSURANCE_RATE = 0.02; // 2% — matches SelfInsurancePoolService default
+        const resolvedNetBeforeInsurance = resolvedGross - platformFeeCents;
+        const txInsuranceContributionCents = Math.round(resolvedNetBeforeInsurance * INSURANCE_RATE);
+        const resolvedNet = resolvedNetBeforeInsurance - txInsuranceContributionCents;
 
         // 2. Release escrow (SPEC FIX: Allow release from both FUNDED and LOCKED_DISPUTE states)
         // The version = $3 optimistic-lock guard is a secondary safety net: if somehow
@@ -574,6 +582,7 @@ export const EscrowService = {
         workerId = resolvedWorkerId;
         grossPayoutCents = resolvedGross;
         netPayoutCents = resolvedNet;
+        insuranceContributionCents = txInsuranceContributionCents; // F-22: capture for post-commit recordContribution
         taskId = escrow.task_id;
         paymentMethod = resolvedPaymentMethod;
         escrowStateBefore = escrow.state;
@@ -612,8 +621,10 @@ export const EscrowService = {
       // for the platform_fee ledger entry, ensuring idempotency via stripe_event_id.
 
       // v1.x: Record 2% self-insurance contribution from worker earnings
+      // F-22 FIX: Use the insuranceContributionCents captured from the transaction
+      // (same value that was deducted from the Stripe transfer amount) so what is
+      // recorded in the pool exactly matches what was withheld.
       try {
-        const insuranceContributionCents = Math.round(netPayoutCents * 0.02);
         await SelfInsurancePoolService.recordContribution(
           taskId!,
           workerId!,
@@ -1175,6 +1186,7 @@ export const EscrowService = {
     let txAmount: number = 0;
     let txStripePaymentIntentId: string | null = null;
     let txWorkerId: string | null = null;
+    let txPosterId: string | null = null; // F-23: poster is charged the platform fee
     let txWorkerStripeConnectId: string | null = null;
     let txExistingTransferId: string | null = null;
     let txExistingRefundId: string | null = null;
@@ -1227,13 +1239,14 @@ export const EscrowService = {
         txExistingTransferId = row.stripe_transfer_id ?? null;
         txExistingRefundId = row.stripe_refund_id ?? null;
 
-        // Fetch worker_id and stripe_connect_id inside the transaction
+        // Fetch worker_id, poster_id and stripe_connect_id inside the transaction
         if (txTaskId) {
-          const taskRow = await query<{ worker_id: string | null }>(
-            `SELECT t.worker_id FROM tasks t WHERE t.id = $1`,
+          const taskRow = await query<{ worker_id: string | null; poster_id: string | null }>(
+            `SELECT t.worker_id, t.poster_id FROM tasks t WHERE t.id = $1`,
             [txTaskId]
           );
           txWorkerId = taskRow.rows[0]?.worker_id ?? null;
+          txPosterId = taskRow.rows[0]?.poster_id ?? null; // F-23
 
           if (txWorkerId) {
             const workerRow = await query<{ stripe_connect_id: string | null }>(
@@ -1436,9 +1449,11 @@ export const EscrowService = {
         const feeCents = workerCents - netWorkerCentsForLedger;
         if (feeCents > 0) {
           try {
+            // F-23 FIX: Platform fee is charged to the poster (buyer), not the worker.
+            // Use txPosterId so the ledger correctly attributes the fee to the payer.
             await RevenueService.logEvent({
               eventType: 'platform_fee',
-              userId: txWorkerId!,
+              userId: txPosterId ?? txWorkerId!, // prefer poster; fall back to worker if missing
               taskId: txTaskId ?? undefined,
               amountCents: feeCents,
               grossAmountCents: workerCents,

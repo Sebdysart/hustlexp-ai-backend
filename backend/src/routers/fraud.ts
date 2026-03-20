@@ -13,6 +13,7 @@ import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { router, adminProcedure, Schemas } from '../trpc.js';
 import { FraudDetectionService, type FraudPatternStatus, type RiskScoreStatus } from '../services/FraudDetectionService.js';
+import { db } from '../db.js';
 
 export const fraudRouter = router({
   // --------------------------------------------------------------------------
@@ -31,8 +32,16 @@ export const fraudRouter = router({
       riskScore: z.number().min(0.0).max(1.0), // 0.0 to 1.0
       componentScores: z.record(z.number()).optional(), // Optional breakdown of risk components
       flags: z.array(z.string()).optional(), // Optional array of flag strings
+      reason: z.string().max(1000).optional(), // Reason for manual risk score update
     }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input, ctx }) => {
+      // Fetch previous score for audit trail before writing the new one
+      const previousResult = await FraudDetectionService.getLatestRiskScore(
+        input.entityType,
+        input.entityId
+      );
+      const previousScore = previousResult.success ? previousResult.data?.risk_score ?? null : null;
+
       const result = await FraudDetectionService.calculateRiskScore({
         entityType: input.entityType,
         entityId: input.entityId,
@@ -40,19 +49,40 @@ export const fraudRouter = router({
         componentScores: input.componentScores,
         flags: input.flags || [],
       });
-      
+
       if (!result.success) {
         let code: 'BAD_REQUEST' | 'INTERNAL_SERVER_ERROR' = 'INTERNAL_SERVER_ERROR';
         if (result.error.code === 'INVALID_INPUT') {
           code = 'BAD_REQUEST';
         }
-        
+
         throw new TRPCError({
           code,
           message: result.error.message,
         });
       }
-      
+
+      // Audit log: record every manual risk score update so changes are traceable
+      const targetUserId = input.entityType === 'user' ? input.entityId : null;
+      await db.query(
+        `INSERT INTO admin_actions (admin_id, action_type, target_id, reason, metadata, created_at)
+         VALUES ($1, 'risk_score_update', $2, $3, $4, NOW())`,
+        [
+          ctx.user!.id,
+          targetUserId,
+          input.reason ?? null,
+          JSON.stringify({
+            entity_type: input.entityType,
+            entity_id: input.entityId,
+            previous_score: previousScore,
+            new_score: input.riskScore,
+            reason: input.reason ?? null,
+          }),
+        ]
+      ).catch(() => {
+        // Audit log failure must not block the risk score write — log only
+      });
+
       return result.data;
     }),
   

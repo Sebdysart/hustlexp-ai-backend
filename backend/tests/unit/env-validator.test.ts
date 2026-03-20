@@ -5,7 +5,7 @@ describe('validateEnv', () => {
 
   afterEach(() => {
     // Restore saved env
-    for (const key of ['DATABASE_URL', 'REDIS_URL', 'STRIPE_SECRET_KEY', 'JWT_SECRET', 'R2_ACCOUNT_ID']) {
+    for (const key of ['DATABASE_URL', 'REDIS_URL', 'STRIPE_SECRET_KEY', 'JWT_SECRET', 'R2_ACCOUNT_ID', 'STRIPE_WEBHOOK_SECRET']) {
       if (savedEnv[key] !== undefined) {
         process.env[key] = savedEnv[key];
       } else {
@@ -21,6 +21,7 @@ describe('validateEnv', () => {
     process.env.STRIPE_SECRET_KEY = 'sk_test_xxx';
     process.env.JWT_SECRET = 'secret';
     process.env.R2_ACCOUNT_ID = 'r2id';
+    process.env.STRIPE_WEBHOOK_SECRET = 'whsec_test';
     const { validateEnv } = await import('../../src/lib/env-validator');
     expect(() => validateEnv()).not.toThrow();
   });

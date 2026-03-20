@@ -459,12 +459,14 @@ async function handleTransferCreated(transfer: Stripe.Transfer, stripeEventId: s
       [stripeEventId]
     );
     if ((existingFee.rowCount ?? 0) === 0) {
-      // Look up worker_id from the task for ledger attribution
-      const taskRow = await db.query<{ worker_id: string | null }>(
-        `SELECT worker_id FROM tasks WHERE id = $1`,
+      // Look up poster_id and worker_id from the task for ledger attribution.
+      // F-23 FIX: Platform fee is charged to the poster (buyer), not the worker.
+      const taskRow = await db.query<{ worker_id: string | null; poster_id: string | null }>(
+        `SELECT worker_id, poster_id FROM tasks WHERE id = $1`,
         [taskId]
       );
       const workerId = taskRow.rows[0]?.worker_id ?? null;
+      const posterId = taskRow.rows[0]?.poster_id ?? null;
       if (workerId && escrowAmount > 0) {
         const platformFeePercent = config.stripe.platformFeePercent ?? 15;
         const platformFeeCents = Math.round(escrowAmount * (platformFeePercent / 100));
@@ -472,7 +474,7 @@ async function handleTransferCreated(transfer: Stripe.Transfer, stripeEventId: s
           const netAmountCents = escrowAmount - platformFeeCents;
           await RevenueService.logEvent({
             eventType: 'platform_fee',
-            userId: workerId,
+            userId: posterId ?? workerId, // F-23: prefer poster_id; fall back to workerId if missing
             taskId,
             amountCents: platformFeeCents,
             grossAmountCents: escrowAmount,
@@ -484,7 +486,7 @@ async function handleTransferCreated(transfer: Stripe.Transfer, stripeEventId: s
             stripeEventId,
             metadata: { event: 'escrow_release_transfer_created_fallback' },
           });
-          log.info({ escrowId, platformFeeCents, workerId }, 'handleTransferCreated: platform_fee fallback ledger entry written');
+          log.info({ escrowId, platformFeeCents, posterId, workerId }, 'handleTransferCreated: platform_fee fallback ledger entry written');
         }
       }
     }

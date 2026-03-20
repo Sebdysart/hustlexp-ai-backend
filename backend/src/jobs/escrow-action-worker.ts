@@ -279,9 +279,9 @@ async function handleReleaseRequest(
     return;
   }
 
-  // Get task to find worker_id
-  const taskResult = await db.query<{ worker_id: string | null }>(
-    'SELECT worker_id FROM tasks WHERE id = $1',
+  // Get task to find worker_id and poster_id
+  const taskResult = await db.query<{ worker_id: string | null; poster_id: string | null }>(
+    'SELECT worker_id, poster_id FROM tasks WHERE id = $1',
     [taskId]
   );
 
@@ -324,7 +324,15 @@ async function handleReleaseRequest(
   const platformFeeCents = Math.round(escrow.amount * (platformFeePercent / 100));
   const netPayoutCents = escrow.amount - platformFeeCents;
 
-  log.info({ escrowId: escrow.id, escrowAmount: escrow.amount, platformFeeCents, netPayoutCents }, 'Platform fee applied to transfer');
+  // F-22 FIX: Subtract self-insurance contribution from the Stripe transfer amount.
+  // Previously, recordContribution() was called with netPayoutCents * 0.02 but the
+  // transfer was sent for the full netPayoutCents — the insurance amount was recorded
+  // in the pool but never actually withheld from the worker's payout.
+  const INSURANCE_RATE = 0.02; // 2% — matches SelfInsurancePoolService.calculateContribution default
+  const insuranceContributionCents = Math.round(netPayoutCents * INSURANCE_RATE);
+  const transferAmountCents = netPayoutCents - insuranceContributionCents;
+
+  log.info({ escrowId: escrow.id, escrowAmount: escrow.amount, platformFeeCents, netPayoutCents, insuranceContributionCents, transferAmountCents }, 'Platform fee and insurance contribution applied to transfer');
 
   // Bug 1 Fix: Wrap createTransfer in a try/catch that detects non-retryable
   // Stripe account restriction codes. When detected, lock the escrow for admin
@@ -340,7 +348,7 @@ async function handleReleaseRequest(
       taskId,
       workerId: task.worker_id,
       workerStripeAccountId: worker.stripe_connect_id,
-      amount: netPayoutCents,
+      amount: transferAmountCents,
       description: `Dispute resolution: ${reason}`,
       idempotencyKeySuffix: 'dispute_release',
     });
@@ -416,9 +424,12 @@ async function handleReleaseRequest(
   // Non-fatal: ledger write failure must not block payout confirmation.
   if (platformFeeCents > 0) {
     try {
+      // F-23 FIX: Platform fee is charged to the poster (buyer), not the worker.
+      // Use task.poster_id for the userId field so the ledger correctly attributes
+      // the fee to the party who paid it.
       await RevenueService.logEvent({
         eventType: 'platform_fee',
-        userId: task.worker_id!,
+        userId: task.poster_id!,
         taskId,
         amountCents: platformFeeCents,
         grossAmountCents: escrow.amount,
@@ -440,8 +451,9 @@ async function handleReleaseRequest(
   // F-12 FIX: Record self-insurance pool contribution on dispute-driven release.
   // Matches the pattern in EscrowService.release (normal release path).
   // Non-fatal: pool contribution failure must not block payout confirmation.
+  // F-22 FIX: Use the insuranceContributionCents already computed above (same value
+  // that was withheld from the Stripe transfer) to keep amounts consistent.
   try {
-    const insuranceContributionCents = Math.round(netPayoutCents * 0.02);
     await SelfInsurancePoolService.recordContribution(
       taskId,
       task.worker_id!,
@@ -682,9 +694,9 @@ async function handlePartialRefundRequest(
     throw new Error(`SPLIT amounts (${Math.round(refundAmount)} + ${Math.round(releaseAmount)} = ${Math.round(refundAmount) + Math.round(releaseAmount)}) must sum to escrow amount (${escrow.amount})`);
   }
 
-  // Get task to find worker_id
-  const taskResult = await db.query<{ worker_id: string | null }>(
-    'SELECT worker_id FROM tasks WHERE id = $1',
+  // Get task to find worker_id and poster_id
+  const taskResult = await db.query<{ worker_id: string | null; poster_id: string | null }>(
+    'SELECT worker_id, poster_id FROM tasks WHERE id = $1',
     [taskId]
   );
 
@@ -979,9 +991,10 @@ async function handlePartialRefundRequest(
     // new-transfer block was skipped — no residual to correct in that case).
     const platformFee = adjustedPlatformFeeCents ?? (releaseAmount - netReleaseCents);
     try {
+      // F-23 FIX: Platform fee is charged to the poster (buyer), not the worker.
       await RevenueService.logEvent({
         eventType: 'platform_fee',
-        userId: task.worker_id,
+        userId: task.poster_id ?? task.worker_id, // F-23: prefer poster_id
         taskId,
         amountCents: platformFee,
         grossAmountCents: releaseAmount,

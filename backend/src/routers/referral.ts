@@ -31,38 +31,57 @@ export async function issueReferralReward(
   referrerId: string,
   rewardCents: number,
 ): Promise<{ issued: boolean; reason?: string }> {
-  // --- Cap check: count already-paid rewards for this referrer ---
-  const capCheck = await db.query<{ count: string }>(
-    `SELECT COUNT(*) AS count
-     FROM referral_redemptions
-     WHERE referrer_id = $1 AND referrer_reward_paid = TRUE`,
-    [referrerId],
-  );
-  const paidCount = parseInt(capCheck.rows[0]?.count || '0', 10);
-
-  if (paidCount >= REFERRAL_REWARD_CAP) {
-    referralLog.warn(
-      { referrerId, paidCount, cap: REFERRAL_REWARD_CAP, redemptionId },
-      'Referral reward skipped — lifetime cap reached',
+  return db.transaction(async (trx) => {
+    // Lock the specific redemption row to prevent concurrent double-issue
+    const redemptionLock = await trx(
+      `SELECT id FROM referral_redemptions
+       WHERE id = $1 AND referrer_id = $2 AND referrer_reward_paid = FALSE
+       FOR UPDATE`,
+      [redemptionId, referrerId],
     );
-    return { issued: false, reason: 'lifetime_cap_reached' };
-  }
 
-  // --- Mark the redemption as qualified and paid ---
-  await db.query(
-    `UPDATE referral_redemptions
-     SET qualified = TRUE,
-         referrer_reward_paid = TRUE,
-         referrer_reward_cents = $1
-     WHERE id = $2 AND referrer_id = $3 AND referrer_reward_paid = FALSE`,
-    [rewardCents, redemptionId, referrerId],
-  );
+    if (redemptionLock.rows.length === 0) {
+      // Either already paid or not found — skip silently
+      referralLog.warn(
+        { referrerId, redemptionId },
+        'Referral reward skipped — already paid or not found',
+      );
+      return { issued: false, reason: 'already_paid_or_not_found' };
+    }
 
-  referralLog.info(
-    { referrerId, redemptionId, rewardCents, paidCount: paidCount + 1 },
-    'Referral reward issued',
-  );
-  return { issued: true };
+    // --- Cap check: count already-paid rewards for this referrer (inside the transaction) ---
+    const capCheck = await trx(
+      `SELECT COUNT(*) AS count
+       FROM referral_redemptions
+       WHERE referrer_id = $1 AND referrer_reward_paid = TRUE`,
+      [referrerId],
+    );
+    const paidCount = parseInt(capCheck.rows[0]?.count || '0', 10);
+
+    if (paidCount >= REFERRAL_REWARD_CAP) {
+      referralLog.warn(
+        { referrerId, paidCount, cap: REFERRAL_REWARD_CAP, redemptionId },
+        'Referral reward skipped — lifetime cap reached',
+      );
+      return { issued: false, reason: 'lifetime_cap_reached' };
+    }
+
+    // --- Mark the redemption as qualified and paid (atomic, inside same transaction) ---
+    await trx(
+      `UPDATE referral_redemptions
+       SET qualified = TRUE,
+           referrer_reward_paid = TRUE,
+           referrer_reward_cents = $1
+       WHERE id = $2 AND referrer_id = $3 AND referrer_reward_paid = FALSE`,
+      [rewardCents, redemptionId, referrerId],
+    );
+
+    referralLog.info(
+      { referrerId, redemptionId, rewardCents, paidCount: paidCount + 1 },
+      'Referral reward issued',
+    );
+    return { issued: true };
+  });
 }
 
 // Generate a random referral code

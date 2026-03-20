@@ -19,6 +19,7 @@
 
 import { db } from '../db.js';
 import { getQueue, signJobPayload, type QueueName } from './queues.js';
+import { getClient as getRedisClient } from '../cache/redis.js';
 import { workerLogger } from '../logger.js';
 const log = workerLogger.child({ worker: 'outbox' });
 
@@ -297,24 +298,39 @@ export function startOutboxWorker(intervalMs: number = 5000): OutboxWorkerHandle
   }, 10 * 1000); // Every 10 seconds
 
   // Pre-Alpha Prerequisite: Trust tier promotion worker (hourly)
-  // BUG 8 FIX: Add a running flag to prevent overlapping executions. Without this
-  // guard, a slow promotion job that takes longer than 1 hour will be started again
-  // by the next setInterval tick while still running, causing concurrent promotions
-  // that can double-award tier upgrades or corrupt the promotion batch.
-  let trustTierRunning = false;
+  // W-15 FIX: Use a Redis distributed lock instead of an in-process flag so that
+  // multiple pods cannot run concurrent promotions and double-award tier upgrades.
+  // The in-process `trustTierRunning` flag only protected against overlap within a
+  // single process; in a multi-pod deployment both pods could enter simultaneously.
+  const TRUST_TIER_LOCK_KEY = 'lock:trust_tier_promotion';
+  const TRUST_TIER_LOCK_TTL_MS = 5 * 60 * 1000; // 5 minutes in ms
   const trustTierInterval = setInterval(async () => {
-    if (trustTierRunning) {
-      log.warn('Trust tier promotion already running — skipping this interval tick');
-      return;
+    const redisClient = getRedisClient();
+    if (redisClient) {
+      // Attempt to acquire distributed lock (NX = only set if not exists, PX = TTL in ms)
+      const acquired = await redisClient.set(TRUST_TIER_LOCK_KEY, '1', {
+        nx: true,
+        px: TRUST_TIER_LOCK_TTL_MS,
+      });
+      if (!acquired) {
+        log.info('Trust tier promotion already running on another pod, skipping');
+        return;
+      }
+    } else {
+      // Redis unavailable — fall back to always running (single-pod safe)
+      log.warn('Redis unavailable for trust tier lock — running without distributed lock');
     }
-    trustTierRunning = true;
     try {
       const { processTrustTierPromotionJob } = await import('./trust-tier-promotion-worker');
       await processTrustTierPromotionJob();
     } catch (error) {
       log.error({ err: error }, 'Trust tier promotion error');
     } finally {
-      trustTierRunning = false;
+      if (redisClient) {
+        await redisClient.del(TRUST_TIER_LOCK_KEY).catch(err => {
+          log.warn({ err }, 'Failed to release trust tier promotion lock');
+        });
+      }
     }
   }, 60 * 60 * 1000); // Every hour
 

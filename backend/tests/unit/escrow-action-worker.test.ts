@@ -238,7 +238,7 @@ describe('escrow-action-worker — platform fee deduction (P0 revenue bug)', () 
     // Worker should receive 85% = 8500 cents, NOT the full 10000 cents
     expect(StripeService.createTransfer).toHaveBeenCalledOnce();
     const transferCall = vi.mocked(StripeService.createTransfer).mock.calls[0][0];
-    expect(transferCall.amount).toBe(8_500); // 10000 - 15% fee = 8500
+    expect(transferCall.amount).toBe(8_330); // 10000 - 15% fee = 8500; 8500 - 2% insurance = 8330
   });
 
   it('does NOT transfer the full escrow amount (confirms the bug is fixed)', async () => {
@@ -266,9 +266,9 @@ describe('escrow-action-worker — platform fee deduction (P0 revenue bug)', () 
 
     await processEscrowActionJob(job as never);
 
-    // 15% of 3333 = 499.95 → round to 500; net = 3333 - 500 = 2833
+    // 15% of 3333 = 499.95 → round to 500; net = 3333 - 500 = 2833; 2% insurance = 57; transfer = 2776
     const transferCall = vi.mocked(StripeService.createTransfer).mock.calls[0][0];
-    expect(transferCall.amount).toBe(2_833);
+    expect(transferCall.amount).toBe(2_776);
   });
 
   it('skips transfer when idempotent replay (stripe_transfer_id already set)', async () => {

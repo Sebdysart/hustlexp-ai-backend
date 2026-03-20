@@ -15,6 +15,7 @@ import { TRPCError } from '@trpc/server';
 import { router, hustlerProcedure, adminProcedure, Schemas } from '../trpc.js';
 import { SelfInsurancePoolService } from '../services/SelfInsurancePoolService.js';
 import { z } from 'zod';
+import { db } from '../db.js';
 
 export const insuranceRouter = router({
   // --------------------------------------------------------------------------
@@ -70,7 +71,20 @@ export const insuranceRouter = router({
         requestedAmountCents: z.number().min(1).max(500000).optional(),
         reason: z.string().min(10).max(1000).optional(),
         incidentDescription: z.string().min(10).max(1000).optional(),
-        evidence_urls: z.array(z.string().url()).min(1).max(10).optional(),
+        evidence_urls: z.array(z.string().url().refine(
+          (url) => {
+            try {
+              const parsed = new URL(url);
+              // Only allow HTTPS and known storage domains
+              return parsed.protocol === 'https:' && (
+                parsed.hostname.endsWith('.r2.cloudflarestorage.com') ||
+                parsed.hostname.endsWith('.amazonaws.com') ||
+                parsed.hostname.endsWith('.cloudfront.net')
+              );
+            } catch { return false; }
+          },
+          { message: 'evidence_urls must be HTTPS URLs from approved storage domains' }
+        )).min(1).max(10).optional(),
       })
     )
     .mutation(async ({ ctx, input }) => {
@@ -80,6 +94,15 @@ export const insuranceRouter = router({
       if (!taskId || !amount || !reason) {
         throw new TRPCError({ code: 'BAD_REQUEST', message: 'taskId, amount, and reason are required' });
       }
+
+      // IDOR check: verify the requesting user is a participant of the task
+      const task = await db.query('SELECT poster_id, worker_id FROM tasks WHERE id = $1', [taskId]);
+      if (!task.rows[0]) throw new TRPCError({ code: 'NOT_FOUND' });
+      const { poster_id, worker_id } = task.rows[0];
+      if (ctx.user.id !== poster_id && ctx.user.id !== worker_id) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'Not a participant of this task' });
+      }
+
       const result = await SelfInsurancePoolService.fileClaim(
         taskId,
         ctx.user.id,

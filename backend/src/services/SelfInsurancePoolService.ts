@@ -208,10 +208,15 @@ export const SelfInsurancePoolService = {
   /**
    * Pay an approved claim
    * Transfers funds from pool to hustler
+   *
+   * F-17: Balance check + debit wrapped in a transaction with SELECT FOR UPDATE
+   *       to prevent concurrent double-drain.
+   * F-18: Idempotency check — returns early if claim is already paid.
+   * F-19: Stripe transfer uses Idempotency-Key header based on claimId.
    */
-  payClaim: async (claimId: string): Promise<ServiceResult<void>> => {
+  payClaim: async (claimId: string): Promise<ServiceResult<{ already_paid?: boolean; claim?: InsuranceClaim }>> => {
     try {
-      // Get claim details
+      // Get claim details (outside transaction — read-only pre-check)
       const claimResult = await db.query<InsuranceClaim>(
         'SELECT * FROM insurance_claims WHERE id = $1',
         [claimId]
@@ -229,6 +234,11 @@ export const SelfInsurancePoolService = {
 
       const claim = claimResult.rows[0];
 
+      // F-18: Idempotency — return early if already paid
+      if (claim.status === 'paid') {
+        return { success: true, data: { already_paid: true, claim } };
+      }
+
       if (claim.status !== 'approved') {
         return {
           success: false,
@@ -239,46 +249,52 @@ export const SelfInsurancePoolService = {
         };
       }
 
-      // Get pool status
-      const poolStatus = await SelfInsurancePoolService.getPoolStatus();
-      if (!poolStatus.success || !poolStatus.data) {
-        throw new Error('Failed to get pool status');
-      }
+      // Fetch coverage_percentage from pool config (needed before transaction)
+      const poolConfigResult = await db.query<{ coverage_percentage: number }>(
+        'SELECT coverage_percentage FROM self_insurance_pool LIMIT 1'
+      );
+      const coveragePercentage = poolConfigResult.rows[0]?.coverage_percentage ?? 80.0;
 
       // Calculate covered amount (default 80%)
       const coveredAmountCents = Math.round(
-        claim.claim_amount_cents * (poolStatus.data.coverage_percentage / 100)
+        claim.claim_amount_cents * (coveragePercentage / 100)
       );
 
-      // Check if pool has sufficient balance
-      if (coveredAmountCents > poolStatus.data.available_balance_cents) {
-        return {
-          success: false,
-          error: {
-            code: 'INSUFFICIENT_POOL_BALANCE',
-            message: `Pool balance insufficient. Available: $${(poolStatus.data.available_balance_cents / 100).toFixed(2)}, Required: $${(coveredAmountCents / 100).toFixed(2)}`
-          }
-        };
-      }
+      // F-17: Wrap balance check + pool debit + claim status update in a single
+      // transaction with SELECT FOR UPDATE to prevent concurrent double-drain.
+      await db.transaction(async (query: QueryFn) => {
+        // Lock the pool row and re-read balance atomically
+        // available_balance_cents is a computed column: total_deposits_cents - total_claims_cents
+        const poolResult = await query<{ available_balance_cents: number }>(
+          'SELECT available_balance_cents FROM self_insurance_pool FOR UPDATE LIMIT 1'
+        );
 
-      // Update pool balance
-      await db.query(
-        `UPDATE self_insurance_pool
-         SET total_claims_cents = total_claims_cents + $1,
-             updated_at = NOW()`,
-        [coveredAmountCents]
-      );
+        const availableBalanceCents = poolResult.rows[0]?.available_balance_cents ?? 0;
 
-      // Mark claim as paid
-      await db.query(
-        `UPDATE insurance_claims
-         SET status = 'paid',
-             paid_at = NOW()
-         WHERE id = $1`,
-        [claimId]
-      );
+        if (coveredAmountCents > availableBalanceCents) {
+          throw new Error(`INSUFFICIENT_POOL_BALANCE:Pool balance insufficient. Available: $${(availableBalanceCents / 100).toFixed(2)}, Required: $${(coveredAmountCents / 100).toFixed(2)}`);
+        }
+
+        // Debit pool balance
+        await query(
+          `UPDATE self_insurance_pool
+           SET total_claims_cents = total_claims_cents + $1,
+               updated_at = NOW()`,
+          [coveredAmountCents]
+        );
+
+        // Mark claim as paid
+        await query(
+          `UPDATE insurance_claims
+           SET status = 'paid',
+               paid_at = NOW()
+           WHERE id = $1`,
+          [claimId]
+        );
+      });
 
       // Transfer funds to hustler via Stripe Connect
+      // F-19: Use Idempotency-Key header keyed on claimId to prevent duplicate transfers
       const stripeKey = process.env.STRIPE_SECRET_KEY ?? '';
       if (stripeKey) {
         try {
@@ -293,6 +309,7 @@ export const SelfInsurancePoolService = {
               headers: {
                 'Authorization': `Bearer ${stripeKey}`,
                 'Content-Type': 'application/x-www-form-urlencoded',
+                'Idempotency-Key': `claim_payout_${claimId}`,
               },
               body: new URLSearchParams({
                 amount: coveredAmountCents.toString(),
@@ -320,14 +337,25 @@ export const SelfInsurancePoolService = {
 
       log.info({ claimId, coveredAmountCents }, 'Paid claim');
 
-      return { success: true, data: undefined };
+      return { success: true, data: {} };
     } catch (error) {
-      log.error({ err: error instanceof Error ? error.message : String(error), claimId }, 'Failed to pay claim');
+      const message = error instanceof Error ? error.message : String(error);
+      // Surface structured insufficient-balance errors
+      if (message.startsWith('INSUFFICIENT_POOL_BALANCE:')) {
+        return {
+          success: false,
+          error: {
+            code: 'INSUFFICIENT_POOL_BALANCE',
+            message: message.slice('INSUFFICIENT_POOL_BALANCE:'.length)
+          }
+        };
+      }
+      log.error({ err: message, claimId }, 'Failed to pay claim');
       return {
         success: false,
         error: {
           code: 'PAY_CLAIM_FAILED',
-          message: error instanceof Error ? error.message : 'Failed to pay claim'
+          message
         }
       };
     }

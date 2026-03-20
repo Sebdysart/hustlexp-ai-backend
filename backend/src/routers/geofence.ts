@@ -6,8 +6,10 @@
  */
 
 import { z } from 'zod';
+import { TRPCError } from '@trpc/server';
 import { router, hustlerProcedure } from '../trpc.js';
 import { GeofenceService } from '../services/GeofenceService.js';
+import { db } from '../db.js';
 
 export const geofenceRouter = router({
   checkProximity: hustlerProcedure
@@ -22,7 +24,15 @@ export const geofenceRouter = router({
 
   getTaskEvents: hustlerProcedure
     .input(z.object({ taskId: z.string().uuid() }))
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
+      const task = await db.query('SELECT poster_id, worker_id FROM tasks WHERE id = $1', [input.taskId]);
+      if (!task.rows[0]) throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
+
+      const { poster_id, worker_id } = task.rows[0];
+      if (ctx.user.id !== poster_id && ctx.user.id !== worker_id) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'Not a participant of this task' });
+      }
+
       return GeofenceService.getTaskEvents(input.taskId);
     }),
 

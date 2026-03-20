@@ -69,7 +69,7 @@ export const TaxReportingService = {
                   0 as task_count
            FROM tips tp
            WHERE tp.status = 'completed'
-             AND EXTRACT(YEAR FROM tp.completed_at) = $1
+             AND EXTRACT(YEAR FROM tp.created_at) = $1
              AND tp.worker_id IS NOT NULL
          ) combined
          GROUP BY user_id

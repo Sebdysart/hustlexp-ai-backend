@@ -48,6 +48,20 @@ export const processBiometricAnalysisJob = async (job: Job<BiometricAnalysisJobD
   try {
     log.info({ proofId: proof_id }, 'Processing biometric analysis');
 
+    // W-17 FIX: Check if biometric analysis was already completed for this proof
+    // before calling Rekognition. On BullMQ retry, without this guard, the worker
+    // would make a duplicate (costly and potentially incorrect) Rekognition API call.
+    const existingAnalysis = await db.query<{ biometric_analysis: Record<string, unknown> | null }>(
+      `SELECT metadata->>'biometric_analysis' as biometric_analysis
+       FROM proof_submissions
+       WHERE id = $1`,
+      [proof_id]
+    );
+    if (existingAnalysis.rows[0]?.biometric_analysis) {
+      log.info({ proofId: proof_id }, 'Biometric analysis already complete, skipping Rekognition call');
+      return;
+    }
+
     // Run biometric analysis
     const result = await BiometricVerificationService.analyzeProofSubmission(
       proof_id,

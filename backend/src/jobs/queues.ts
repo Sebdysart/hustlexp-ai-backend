@@ -127,6 +127,11 @@ export const QUEUE_CONFIGS: Record<QueueName, QueueConfig> = {
     },
     workerOptions: {
       maxStalledCount: 2,
+      // W-18 FIX: Fraud detection makes nested AI calls (LogisticsAIService.detectImpossibleTravel)
+      // that can exceed BullMQ's default 30s lockDuration. Without this, BullMQ considers the
+      // worker stalled and re-queues the job, causing overlap and duplicate AI calls.
+      lockDuration: 120000, // 2 minutes — sufficient for nested AI call chains
+      lockRenewTime: 30000, // Renew lock every 30s to keep it alive during long runs
     },
   },
 

@@ -149,7 +149,7 @@ describe('EscrowService', () => {
         'w-1',
         't-surge',
         'e-surge',
-        10200  // derived from escrow.amount=12000, NOT task.price=10000 (which would give 8500)
+        9996  // derived from escrow.amount=12000, NOT task.price=10000; net after 15% fee = 10200, after 2% insurance = 9996
       );
 
       // XP = Math.round(12000 / 10) = 1200, NOT 1000 (which task.price/10 would give)

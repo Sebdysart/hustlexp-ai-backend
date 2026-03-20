@@ -60,19 +60,29 @@ export const processXPTaxReminderJob = async (_job: Job): Promise<void> => {
     let sentCount = 0;
 
     for (const user of result.rows) {
-      // Check if we've sent a reminder recently (within 7 days)
-      const lastReminderResult = await db.query<{ sent_at: string }>(
-        `SELECT sent_at FROM notification_log
-         WHERE user_id = $1
-           AND notification_type = 'xp_tax_reminder'
-           AND sent_at > NOW() - INTERVAL '7 days'
-         ORDER BY sent_at DESC
-         LIMIT 1`,
+      // W-16 FIX: Atomic INSERT with conflict guard — replaces the prior SELECT then INSERT
+      // pattern which had a TOCTOU race where concurrent workers both passed the SELECT
+      // and both inserted. The partial unique index on notification_log(user_id,
+      // notification_type) WHERE notification_type = 'xp_tax_reminder' ensures only one
+      // row per user can exist; the RETURNING clause tells us if this worker won the race.
+      // We delete the old record first if it is older than 7 days, then attempt insert.
+      const dedupeResult = await db.query<{ id: string }>(
+        `WITH cleanup AS (
+           DELETE FROM notification_log
+           WHERE user_id = $1
+             AND notification_type = 'xp_tax_reminder'
+             AND sent_at <= NOW() - INTERVAL '7 days'
+         )
+         INSERT INTO notification_log (user_id, notification_type, sent_at)
+         VALUES ($1, 'xp_tax_reminder', NOW())
+         ON CONFLICT (user_id, notification_type) WHERE notification_type = 'xp_tax_reminder'
+         DO NOTHING
+         RETURNING id`,
         [user.user_id]
       );
 
-      if (lastReminderResult.rows.length > 0) {
-        // Already sent reminder within 7 days, skip
+      if (dedupeResult.rowCount === 0) {
+        // Another worker already sent a reminder within the 7-day window, skip
         continue;
       }
 
@@ -92,14 +102,6 @@ export const processXPTaxReminderJob = async (_job: Job): Promise<void> => {
             xpHeldBack: user.total_xp_held_back,
           },
         });
-
-        // Log notification for dedup (7-day window check above)
-        await db.query(
-          `INSERT INTO notification_log (user_id, notification_type, sent_at)
-           VALUES ($1, $2, NOW())
-           ON CONFLICT DO NOTHING`,
-          [user.user_id, 'xp_tax_reminder']
-        );
 
         sentCount++;
 

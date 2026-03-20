@@ -75,6 +75,12 @@ function registerWorkers(): void {
         // SMS delivery (Twilio)
         const { processSMSJob } = await import('./sms-worker');
         await processSMSJob(job);
+      } else if (eventType === 'task.instant_available') {
+        // Route instant availability notifications to InstantNotificationWorker
+        // NOTE: Moved from critical_payments to user_notifications to prevent
+        // availability notification floods from starving actual payment jobs (W-14 fix)
+        const { processInstantNotificationJob } = await import('./instant-notification-worker');
+        await processInstantNotificationJob(job);
       } else if (eventType === 'task.progress_updated') {
         // Realtime task progress updates (Step 10 - Pillar A)
         const { processRealtimeJob } = await import('./realtime-worker');
@@ -157,17 +163,13 @@ function registerWorkers(): void {
         // Route instant matching to InstantMatchingWorker (IEM v1)
         const { processInstantMatchingJob } = await import('./instant-matching-worker');
         await processInstantMatchingJob(job);
-      } else if (eventType === 'task.instant_available') {
-        // Route instant notifications to InstantNotificationWorker (Notification Urgency Design v1)
-        const { processInstantNotificationJob } = await import('./instant-notification-worker');
-        await processInstantNotificationJob(job);
       } else if (eventType === 'task.instant_surge_evaluate') {
         // Route instant surge evaluation to InstantSurgeWorker (Instant Surge Incentives v1)
         const { processInstantSurgeJob } = await import('./instant-surge-worker');
         await processInstantSurgeJob(job);
       } else {
         // Unknown event type: reject to prevent processing invalid jobs
-        const error = new Error(`Unknown event type in critical_payments queue: ${eventType}. Expected escrow.*_requested, payment.*, stripe.event_received, task.instant_matching_started, task.instant_available, or task.instant_surge_evaluate`);
+        const error = new Error(`Unknown event type in critical_payments queue: ${eventType}. Expected escrow.*_requested, payment.*, stripe.event_received, task.instant_matching_started, or task.instant_surge_evaluate`);
         log.error({ eventType, err: error.message }, 'Unknown event type in critical_payments queue');
         throw error; // BullMQ will mark job as failed
       }
@@ -294,12 +296,13 @@ async function registerScheduledJobs(): Promise<void> {
   const criticalTrustQueue = getQueue('critical_trust');
 
   // Recover stuck stripe events — every 10 minutes
+  // W-19 FIX: jobId removed — BullMQ repeatable jobs use their own internal repeat key
+  // for deduplication. Adding a custom jobId conflicts with BullMQ's repeat key format.
   await maintenanceQueue.add(
     'recover_stuck_stripe_events',
     { timeoutMinutes: 10 },
     {
       repeat: { pattern: '*/10 * * * *' },
-      jobId: 'scheduled:recover_stuck_stripe_events',
     }
   );
 
@@ -309,7 +312,6 @@ async function registerScheduledJobs(): Promise<void> {
     {},
     {
       repeat: { pattern: '0 */6 * * *' },
-      jobId: 'scheduled:cleanup_expired_exports',
     }
   );
 
@@ -319,7 +321,6 @@ async function registerScheduledJobs(): Promise<void> {
     {},
     {
       repeat: { pattern: '30 */6 * * *' },
-      jobId: 'scheduled:cleanup_expired_notifications',
     }
   );
 
@@ -329,7 +330,6 @@ async function registerScheduledJobs(): Promise<void> {
     {},
     {
       repeat: { pattern: '*/5 * * * *' },
-      jobId: 'scheduled:fraud_detection',
     }
   );
 
@@ -340,7 +340,6 @@ async function registerScheduledJobs(): Promise<void> {
     {},
     {
       repeat: { pattern: '0 3 * * *' },
-      jobId: 'scheduled:expertise_recalc_daily',
     }
   );
 
@@ -351,7 +350,6 @@ async function registerScheduledJobs(): Promise<void> {
     {},
     {
       repeat: { pattern: '0 10 * * *' },
-      jobId: 'scheduled:xp_tax_reminders_daily',
     }
   );
 

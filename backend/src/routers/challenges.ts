@@ -89,8 +89,8 @@ export const challengesRouter = router({
       const userId = ctx.user.id;
 
       // Get challenge target
-      const challenge = await db.query<{ target_value: number; xp_reward: number }>(
-        'SELECT target_value, xp_reward FROM daily_challenges WHERE id = $1',
+      const challenge = await db.query<{ target_value: number; xp_reward: number; challenge_type: string }>(
+        'SELECT target_value, xp_reward, challenge_type FROM daily_challenges WHERE id = $1',
         [input.challengeId]
       );
 
@@ -98,7 +98,33 @@ export const challengesRouter = router({
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Challenge not found' });
       }
 
-      const isCompleted = input.progress >= challenge.rows[0].target_value;
+      // Server-side verification: cap progress at what the user has actually completed
+      // For task-based challenges (complete_task, fast_completion), cross-reference
+      // with actual completed tasks to prevent self-reported cheating.
+      // For other challenge types (streak_maintain), cap at the target_value floor.
+      const challengeRow = challenge.rows[0] as { target_value: number; xp_reward: number; challenge_type?: string };
+      let verifiedProgress = input.progress;
+
+      if (
+        challengeRow.challenge_type === 'complete_task' ||
+        challengeRow.challenge_type === 'fast_completion'
+      ) {
+        const actualProgress = await db.query<{ completed_tasks: string }>(
+          `SELECT COUNT(*) as completed_tasks
+           FROM tasks
+           WHERE worker_id = $1 AND state = 'COMPLETED'`,
+          [userId]
+        );
+        verifiedProgress = Math.min(
+          input.progress,
+          Number(actualProgress.rows[0].completed_tasks)
+        );
+      }
+
+      // Hard cap: progress cannot exceed the challenge's target value
+      verifiedProgress = Math.min(verifiedProgress, challengeRow.target_value);
+
+      const isCompleted = verifiedProgress >= challengeRow.target_value;
 
       await db.query(
         `INSERT INTO daily_challenge_completions (challenge_id, user_id, progress, completed, completed_at)
@@ -107,9 +133,9 @@ export const challengesRouter = router({
            progress = GREATEST(daily_challenge_completions.progress, $3),
            completed = $4,
            completed_at = CASE WHEN $4 AND NOT daily_challenge_completions.completed THEN NOW() ELSE daily_challenge_completions.completed_at END`,
-        [input.challengeId, userId, input.progress, isCompleted, isCompleted ? new Date() : null]
+        [input.challengeId, userId, verifiedProgress, isCompleted, isCompleted ? new Date() : null]
       );
 
-      return { success: true, completed: isCompleted, xpReward: isCompleted ? challenge.rows[0].xp_reward : 0 };
+      return { success: true, completed: isCompleted, xpReward: isCompleted ? challengeRow.xp_reward : 0 };
     }),
 });

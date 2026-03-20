@@ -161,12 +161,13 @@ describe('ATTACK 1: Fee calculation base (escrow.amount vs task.price)', () => {
     const expectedFeeOnEscrow = Math.round(4000 * 0.15); // 600 cents
     const expectedFeeOnTaskPrice = Math.round(6000 * 0.15); // 900 cents
 
-    // recordEarnings receives netPayoutCents = escrowAmount - platformFee
+    // recordEarnings receives finalPayout = escrowAmount - platformFee - 2% insurance
+    // net = 4000 - 600 = 3400; insurance = Math.round(3400*0.02) = 68; final = 3400 - 68 = 3332
     expect(EarnedVerificationUnlockService.recordEarnings).toHaveBeenCalledWith(
       'worker-1',
       'task-1',
       'esc-1',
-      escrowAmount - expectedFeeOnEscrow, // 3400
+      3332, // 3400 - 2% insurance = 3332
     );
 
     // Confirm fee was NOT deducted on task.price basis
@@ -512,7 +513,7 @@ describe('ATTACK 8: Partial payout math — pennies lost or gained', () => {
     const netPayoutCents = grossPayoutCents - platformFeeCents; // 425
 
     expect(EarnedVerificationUnlockService.recordEarnings).toHaveBeenCalledWith(
-      'worker-1', 'task-1', 'esc-1', netPayoutCents,
+      'worker-1', 'task-1', 'esc-1', netPayoutCents - Math.round(netPayoutCents * 0.02), // 425 - 9 = 416
     );
     expect(platformFeeCents + netPayoutCents).toBe(grossPayoutCents);
     // VERDICT: SAFE
@@ -541,10 +542,11 @@ describe('ATTACK 8: Partial payout math — pennies lost or gained', () => {
       'task-1', 'worker-1', expectedInsurance,
     );
 
-    // Net payout to worker is gross minus ONLY platform fee (not insurance)
+    // Net payout to worker is gross minus platform fee minus 2% insurance
     const expectedNet = 10000 - Math.round(10000 * 0.15); // 8500
+    const expectedTransfer = expectedNet - Math.round(expectedNet * 0.02); // 8330
     expect(EarnedVerificationUnlockService.recordEarnings).toHaveBeenCalledWith(
-      'worker-1', 'task-1', 'esc-1', expectedNet,
+      'worker-1', 'task-1', 'esc-1', expectedTransfer,
     );
   });
 });

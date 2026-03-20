@@ -59,6 +59,25 @@ export const biometricRouter = router({
     )
     .mutation(async ({ ctx, input }) => {
       try {
+        // Ownership check: verify the requesting user is the assigned worker for the task
+        const task = await db.query(
+          'SELECT worker_id FROM tasks WHERE id = $1',
+          [input.task_id]
+        );
+        if (!task.rows[0]) throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
+        if (task.rows[0].worker_id !== ctx.user.id) {
+          throw new TRPCError({ code: 'FORBIDDEN', message: 'Not the assigned worker for this task' });
+        }
+
+        // Duplicate check: verify no existing biometric proof for this task+user
+        const existing = await db.query(
+          'SELECT id FROM biometric_proofs WHERE task_id = $1 AND user_id = $2',
+          [input.task_id, ctx.user.id]
+        );
+        if (existing.rows[0]) {
+          throw new TRPCError({ code: 'CONFLICT', message: 'Biometric proof already submitted for this task' });
+        }
+
         // BIPA compliance: verify biometric data consent before collection
         const hasConsent = await GDPRService.hasBiometricConsent(ctx.user.id);
         if (!hasConsent) {

@@ -31,7 +31,9 @@ import { SelfInsurancePoolService } from '../../src/services/SelfInsurancePoolSe
 const mockDb = vi.mocked(db);
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  vi.resetAllMocks();
+  // Re-bind transaction mock after resetAllMocks() wipes the implementation
+  mockDb.transaction.mockImplementation(async (fn: (q: typeof mockDb.query) => Promise<unknown>) => fn(mockDb.query));
 });
 
 function makePoolRow(overrides: Record<string, unknown> = {}) {
@@ -229,11 +231,9 @@ describe('SelfInsurancePoolService', () => {
         .mockResolvedValueOnce({
           rows: [makeClaimRow({ status: 'approved', claim_amount_cents: 100000 })],
           rowCount: 1,
-        } as never)
-        .mockResolvedValueOnce({
-          rows: [makePoolRow({ available_balance_cents: 1000, coverage_percentage: 80, max_claim_cents: 500000 })],
-          rowCount: 1,
-        } as never);
+        } as never) // claim
+        .mockResolvedValueOnce({ rows: [{ coverage_percentage: 80 }], rowCount: 1 } as never) // coverage% - NEW
+        .mockResolvedValueOnce({ rows: [{ available_balance_cents: 1000 }], rowCount: 1 } as never); // pool FOR UPDATE
 
       const result = await SelfInsurancePoolService.payClaim('claim-1');
 
@@ -249,11 +249,9 @@ describe('SelfInsurancePoolService', () => {
         .mockResolvedValueOnce({
           rows: [makeClaimRow({ status: 'approved', claim_amount_cents: 10000 })],
           rowCount: 1,
-        } as never) // Get claim
-        .mockResolvedValueOnce({
-          rows: [makePoolRow({ available_balance_cents: 50000, coverage_percentage: 80 })],
-          rowCount: 1,
-        } as never) // Pool status
+        } as never) // claim
+        .mockResolvedValueOnce({ rows: [{ coverage_percentage: 80 }], rowCount: 1 } as never) // coverage% - NEW
+        .mockResolvedValueOnce({ rows: [{ available_balance_cents: 50000 }], rowCount: 1 } as never) // pool FOR UPDATE
         .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // UPDATE pool
         .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // UPDATE claim to paid
 

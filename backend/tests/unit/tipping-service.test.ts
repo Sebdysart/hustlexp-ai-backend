@@ -143,14 +143,14 @@ describe('TippingService', () => {
 
     it('returns INVALID_AMOUNT when tip exceeds 50% of task price', async () => {
       mockDb.query.mockResolvedValueOnce({
-        rows: [{ state: 'COMPLETED', poster_id: 'poster-1', worker_id: 'worker-1', price: 5000 }],
+        rows: [{ state: 'COMPLETED', poster_id: 'poster-1', worker_id: 'worker-1', price: 50 }],
         rowCount: 1,
       } as never);
 
       const result = await TippingService.createTip({
         taskId: 'task-1',
         posterId: 'poster-1',
-        amountCents: 3000, // 60% of 5000
+        amountCents: 3000, // 60% of 5000 cents (price 50 * 100)
       });
 
       expect(result.success).toBe(false);
