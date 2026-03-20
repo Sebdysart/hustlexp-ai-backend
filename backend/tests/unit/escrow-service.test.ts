@@ -379,14 +379,17 @@ describe('EscrowService', () => {
     it('refunds from FUNDED state', async () => {
       const refunded = makeEscrow({ state: 'REFUNDED' });
       // Transaction callback query sequence:
-      //   1st: SELECT ... FOR UPDATE (escrow pre-check — now includes stripe_payment_intent_id + amount)
-      //   2nd: SELECT worker_id, state FROM tasks (task state check moved inside transaction — LL4)
-      //   3rd: UPDATE escrows RETURNING * (state transition)
-      //   4th: INSERT INTO escrow_events (logEscrowEvent — called outside transaction)
+      //   T1 — 1st: SELECT ... FOR UPDATE (escrow pre-check — now includes stripe_payment_intent_id + amount)
+      //   T1 — 2nd: SELECT worker_id, state FROM tasks (task state check moved inside transaction — LL4)
+      //   [Stripe createRefund called outside DB transactions]
+      //   T2 — 3rd: SELECT id, version, state FROM escrows FOR UPDATE NOWAIT (F-05: re-read version under lock)
+      //   T2 — 4th: UPDATE escrows RETURNING * (state transition using freshly-locked version)
+      //   outside — 5th: INSERT INTO escrow_events (logEscrowEvent)
       mockDb.query
         .mockResolvedValueOnce({ rows: [{ task_id: 'task-1', version: 0, state: 'FUNDED', stripe_payment_intent_id: 'pi_test', amount: 5000 }], rowCount: 1 } as never)
-        .mockResolvedValueOnce({ rows: [{ worker_id: 'worker-1', state: 'OPEN' }], rowCount: 1 } as never) // task state check
-        .mockResolvedValueOnce({ rows: [refunded], rowCount: 1 } as never) // UPDATE
+        .mockResolvedValueOnce({ rows: [{ worker_id: 'worker-1', state: 'OPEN' }], rowCount: 1 } as never) // T1: task state check
+        .mockResolvedValueOnce({ rows: [{ id: 'esc-1', version: 0, state: 'FUNDED' }], rowCount: 1 } as never) // T2: FOR UPDATE NOWAIT re-read
+        .mockResolvedValueOnce({ rows: [refunded], rowCount: 1 } as never) // T2: UPDATE
         .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // logEscrowEvent
 
       const result = await EscrowService.refund({ escrowId: 'esc-1' });
@@ -405,11 +408,18 @@ describe('EscrowService', () => {
     });
 
     it('returns ESCROW_TERMINAL when already refunded', async () => {
+      // No stripe_payment_intent_id → no Stripe call; T2 detects version mismatch via 0 rowCount.
+      // T1 — 1st: escrow pre-check FOR UPDATE
+      // T1 — 2nd: task state check
+      // T2 — 3rd: SELECT FOR UPDATE NOWAIT (F-05: re-read version — returns FUNDED so allowed)
+      // T2 — 4th: UPDATE → 0 rows (concurrent modification raced ahead)
+      // T2 — 5th: getById fallback (SELECT e.*, t.poster_id, t.worker_id ...) → REFUNDED
       mockDb.query
         .mockResolvedValueOnce({ rows: [{ task_id: 'task-1', version: 0, state: 'FUNDED', stripe_payment_intent_id: null, amount: 5000 }], rowCount: 1 } as never)
-        .mockResolvedValueOnce({ rows: [{ worker_id: null, state: 'OPEN' }], rowCount: 1 } as never) // task state check
-        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // UPDATE rowCount=0
-        .mockResolvedValueOnce({ rows: [makeEscrow({ state: 'REFUNDED' })], rowCount: 1 } as never); // getById fallback
+        .mockResolvedValueOnce({ rows: [{ worker_id: null, state: 'OPEN' }], rowCount: 1 } as never) // T1: task state check
+        .mockResolvedValueOnce({ rows: [{ id: 'esc-1', version: 0, state: 'FUNDED' }], rowCount: 1 } as never) // T2: FOR UPDATE NOWAIT
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // T2: UPDATE rowCount=0
+        .mockResolvedValueOnce({ rows: [makeEscrow({ state: 'REFUNDED' })], rowCount: 1 } as never); // T2: getById fallback
 
       const result = await EscrowService.refund({ escrowId: 'esc-1' });
       expect(result.success).toBe(false);

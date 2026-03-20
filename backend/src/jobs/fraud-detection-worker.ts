@@ -69,7 +69,7 @@ export const processFraudDetectionJob = async (_job: Job): Promise<void> => {
               ST_X(gps_coordinates::geometry) as gps_longitude,
               gps_timestamp
        FROM proof_submissions
-       WHERE gps_timestamp > NOW() - INTERVAL '5 minutes'
+       WHERE gps_timestamp > NOW() - INTERVAL '6 minutes'
          AND gps_coordinates IS NOT NULL
        ORDER BY user_id, gps_timestamp ASC`
     );

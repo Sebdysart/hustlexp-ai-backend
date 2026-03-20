@@ -243,6 +243,7 @@ describe('Money Path: Escrow Lifecycle', () => {
       // FIX 3: refund() pre-fetches task_id + worker_id before the UPDATE
       db.query.mockResolvedValueOnce({ rowCount: 1, rows: [{ task_id: 'task-1' }] }); // SELECT task_id
       db.query.mockResolvedValueOnce({ rowCount: 1, rows: [{ worker_id: null }] });   // SELECT worker_id (null = no clawback)
+      db.query.mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'escrow-1', version: 0, state: 'FUNDED' }] }); // F-05: T2 FOR UPDATE NOWAIT
       db.query.mockResolvedValueOnce({
         rowCount: 1,
         rows: [{ id: 'escrow-1', task_id: 'task-1', amount: 5000, state: 'REFUNDED', refunded_at: new Date() }],

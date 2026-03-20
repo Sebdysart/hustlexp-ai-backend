@@ -871,10 +871,10 @@ async function handlePartialRefundRequest(
       // Lock escrow for admin review; do NOT rethrow so BullMQ skips retry.
       let partialTransferResult: Awaited<ReturnType<typeof StripeService.createTransfer>>;
       try {
-        // BUG 7 FIX: Pass 'dispute_release' suffix (same as handleReleaseRequest)
-        // so this call's idempotency key is distinct from EscrowService.partialRefund's
-        // 'escrow_partial_refund' key. Different amounts for the same escrow must not
-        // collide at Stripe's idempotency layer.
+        // F-03 FIX: Use 'dispute_partial_release' suffix — distinct from handleReleaseRequest's
+        // 'dispute_release'. Both functions call createTransfer on the same escrow but with
+        // different amounts; sharing a suffix causes Stripe to return the cached result from
+        // the first call, sending the wrong amount on the second.
         partialTransferResult = await StripeService.createTransfer({
           escrowId: escrow.id,
           taskId,
@@ -882,7 +882,7 @@ async function handlePartialRefundRequest(
           workerStripeAccountId: worker.stripe_connect_id,
           amount: netReleaseCents,
           description: `Dispute resolution: ${reason}`,
-          idempotencyKeySuffix: 'dispute_release',
+          idempotencyKeySuffix: 'dispute_partial_release',
         });
       } catch (stripeError) {
         if (isStripeAccountRestrictionError(stripeError)) {
@@ -904,23 +904,27 @@ async function handlePartialRefundRequest(
 
       transferId = partialTransferResult.data.transferId;
       log.info({ escrowId: escrow.id, transferId, amount: releaseAmount }, 'Partial transfer created for escrow');
+    }
 
-      // F-07 FIX: Record self-insurance pool contribution now that the transfer
-      // has succeeded. Non-fatal — pool contribution failure must not block
-      // payout confirmation (mirrors handleReleaseRequest pattern).
-      if (task.worker_id && splitInsuranceContributionCents > 0) {
-        try {
-          await SelfInsurancePoolService.recordContribution(
-            taskId,
-            task.worker_id,
-            splitInsuranceContributionCents,
-          );
-        } catch (insuranceError) {
-          log.warn(
-            { err: insuranceError instanceof Error ? insuranceError.message : String(insuranceError), escrowId: escrow.id },
-            'handlePartialRefundRequest: self-insurance pool contribution failed — SPLIT release proceeds'
-          );
-        }
+    // F-07 FIX: Record self-insurance pool contribution OUTSIDE the if (!transferId) block.
+    // Previously, recordContribution was inside `if (!transferId)` (new-transfer branch only).
+    // On BullMQ retry where the Stripe transfer already succeeded, transferId is set and the
+    // block is skipped — pool contribution permanently missed.
+    // Fix: call recordContribution here (after the new/existing transferId is resolved) on
+    // every execution path where a transfer exists. recordContribution is idempotent via
+    // ON CONFLICT (task_id, hustler_id) DO NOTHING in its CTE — safe to call on retry.
+    if (task.worker_id && splitInsuranceContributionCents > 0) {
+      try {
+        await SelfInsurancePoolService.recordContribution(
+          taskId,
+          task.worker_id,
+          splitInsuranceContributionCents,
+        );
+      } catch (insuranceError) {
+        log.warn(
+          { err: insuranceError instanceof Error ? insuranceError.message : String(insuranceError), escrowId: escrow.id },
+          'handlePartialRefundRequest: self-insurance pool contribution failed — SPLIT release proceeds'
+        );
       }
     }
   }

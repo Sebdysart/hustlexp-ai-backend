@@ -262,15 +262,16 @@ describe('SelfInsurancePoolService', () => {
     });
 
     it('returns INSUFFICIENT_POOL_BALANCE when pool too low', async () => {
+      // F-04 FIX: coverage_percentage is now read INSIDE the transaction (no outer SELECT).
+      // Pool FOR UPDATE returns BOTH available_balance_cents AND coverage_percentage.
       mockDb.query
         .mockResolvedValueOnce({
           rows: [makeClaimRow({ status: 'approved', claim_amount_cents: 100000 })],
           rowCount: 1,
         } as never) // claim (outer SELECT)
-        .mockResolvedValueOnce({ rows: [{ coverage_percentage: 80 }], rowCount: 1 } as never) // coverage% (outer)
         // F-25: inside transaction — claim re-check FOR UPDATE, then pool FOR UPDATE
-        .mockResolvedValueOnce({ rows: [{ status: 'approved' }], rowCount: 1 } as never) // claim FOR UPDATE
-        .mockResolvedValueOnce({ rows: [{ available_balance_cents: 1000 }], rowCount: 1 } as never); // pool FOR UPDATE
+        .mockResolvedValueOnce({ rows: [{ status: 'approved', stripe_transfer_id: null }], rowCount: 1 } as never) // claim FOR UPDATE
+        .mockResolvedValueOnce({ rows: [{ available_balance_cents: 1000, coverage_percentage: 80 }], rowCount: 1 } as never); // pool FOR UPDATE (F-04: includes coverage_percentage)
 
       const result = await SelfInsurancePoolService.payClaim('claim-1');
 
@@ -281,15 +282,16 @@ describe('SelfInsurancePoolService', () => {
     it('pays claim successfully (F-06: uses StripeService.createTransfer)', async () => {
       const { StripeService: MockStripe } = await import('../../src/services/StripeService.js');
 
+      // F-04 FIX: coverage_percentage is now read INSIDE the transaction under FOR UPDATE.
+      // No outer SELECT for coverage_percentage — pool FOR UPDATE returns both columns.
       mockDb.query
         .mockResolvedValueOnce({
           rows: [makeClaimRow({ status: 'approved', claim_amount_cents: 10000 })],
           rowCount: 1,
         } as never) // claim (outer SELECT)
-        .mockResolvedValueOnce({ rows: [{ coverage_percentage: 80 }], rowCount: 1 } as never) // coverage% (outer)
         // F-25: inside transaction — claim re-check FOR UPDATE, then rest of transaction
         .mockResolvedValueOnce({ rows: [{ status: 'approved', stripe_transfer_id: null }], rowCount: 1 } as never) // claim FOR UPDATE
-        .mockResolvedValueOnce({ rows: [{ available_balance_cents: 50000 }], rowCount: 1 } as never) // pool FOR UPDATE
+        .mockResolvedValueOnce({ rows: [{ available_balance_cents: 50000, coverage_percentage: 80 }], rowCount: 1 } as never) // pool FOR UPDATE (F-04: includes coverage_percentage)
         .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // UPDATE pool
         .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // UPDATE claim to paid
         // After transaction: StripeService.createTransfer (mocked globally)

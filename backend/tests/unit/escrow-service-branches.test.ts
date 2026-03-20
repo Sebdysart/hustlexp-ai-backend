@@ -370,6 +370,8 @@ describe('EscrowService.refund — rowCount=0 branches', () => {
     mockQuery
       .mockResolvedValueOnce({ rows: [{ task_id: 'task-1' }], rowCount: 1 } as never) // pre-check: task_id
       .mockResolvedValueOnce({ rows: [{ worker_id: 'worker-1' }], rowCount: 1 } as never) // pre-check: worker_id
+      // F-05: T2 SELECT FOR UPDATE NOWAIT re-read (returns FUNDED — allowed, proceed to UPDATE)
+      .mockResolvedValueOnce({ rows: [{ id: 'esc-1', version: 1, state: 'FUNDED' }], rowCount: 1 } as never)
       // UPDATE returns rowCount=0
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
     // getById fallback → also fails (DB_ERROR)
@@ -386,6 +388,8 @@ describe('EscrowService.refund — rowCount=0 branches', () => {
     mockQuery
       .mockResolvedValueOnce({ rows: [{ task_id: 'task-1' }], rowCount: 1 } as never) // pre-check: task_id
       .mockResolvedValueOnce({ rows: [{ worker_id: 'worker-1' }], rowCount: 1 } as never) // pre-check: worker_id
+      // F-05: T2 SELECT FOR UPDATE NOWAIT re-read (returns FUNDED — allowed, proceed to UPDATE)
+      .mockResolvedValueOnce({ rows: [{ id: 'esc-1', version: 1, state: 'FUNDED' }], rowCount: 1 } as never)
       // UPDATE rowCount=0
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
       // getById → REFUNDED (terminal)
@@ -404,6 +408,8 @@ describe('EscrowService.refund — rowCount=0 branches', () => {
     mockQuery
       .mockResolvedValueOnce({ rows: [{ task_id: 'task-1' }], rowCount: 1 } as never) // pre-check: task_id
       .mockResolvedValueOnce({ rows: [{ worker_id: 'worker-1' }], rowCount: 1 } as never) // pre-check: worker_id
+      // F-05: T2 SELECT FOR UPDATE NOWAIT re-read (returns FUNDED — allowed, proceed to UPDATE)
+      .mockResolvedValueOnce({ rows: [{ id: 'esc-1', version: 1, state: 'FUNDED' }], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // UPDATE rowCount=0
       .mockResolvedValueOnce({ rows: [makeEscrow({ state: 'PENDING' })], rowCount: 1 } as never); // getById fallback
 

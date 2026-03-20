@@ -311,16 +311,13 @@ export const SelfInsurancePoolService = {
         };
       }
 
-      // Fetch coverage_percentage from pool config (needed before transaction)
-      const poolConfigResult = await db.query<{ coverage_percentage: number }>(
-        'SELECT coverage_percentage FROM self_insurance_pool LIMIT 1'
-      );
-      const coveragePercentage = poolConfigResult.rows[0]?.coverage_percentage ?? 80.0;
-
-      // Calculate covered amount (default 80%)
-      const coveredAmountCents = Math.round(
-        claim.claim_amount_cents * (coveragePercentage / 100)
-      );
+      // F-04 FIX: Do NOT fetch coverage_percentage outside the transaction.
+      // coveredAmountCents must be computed from the freshly-locked pool row so that
+      // an admin change to coverage_percentage between this point and the FOR UPDATE
+      // lock cannot produce a stale covered amount (same bug that was fixed for
+      // fileClaim in F-06/R44). The variable is declared here for use in the Stripe
+      // call after the transaction commits.
+      let coveredAmountCents: number = 0;
 
       // F-17: Wrap balance check + pool debit + claim status update in a single
       // transaction with SELECT FOR UPDATE to prevent concurrent double-drain.
@@ -344,13 +341,19 @@ export const SelfInsurancePoolService = {
           throw new Error(`CLAIM_NOT_APPROVED:Claim status changed to ${claimCheck.rows[0].status}`);
         }
 
-        // Lock the pool row and re-read balance atomically
+        // F-04 FIX: Lock the pool row and re-read BOTH available_balance_cents AND
+        // coverage_percentage atomically under FOR UPDATE. Previously, coverage_percentage
+        // was fetched outside the transaction, leaving a window where an admin update
+        // between the outer SELECT and this lock would produce a stale coveredAmountCents.
         // available_balance_cents is a computed column: total_deposits_cents - total_claims_cents
-        const poolResult = await query<{ available_balance_cents: number }>(
-          'SELECT available_balance_cents FROM self_insurance_pool FOR UPDATE LIMIT 1'
+        const poolResult = await query<{ available_balance_cents: number; coverage_percentage: number }>(
+          'SELECT available_balance_cents, coverage_percentage FROM self_insurance_pool FOR UPDATE LIMIT 1'
         );
 
         const availableBalanceCents = poolResult.rows[0]?.available_balance_cents ?? 0;
+        // Recompute from freshly-locked coverage_percentage (F-04 fix)
+        const freshCoveragePercentage = poolResult.rows[0]?.coverage_percentage ?? 80.0;
+        coveredAmountCents = Math.round(claim.claim_amount_cents * (freshCoveragePercentage / 100));
 
         if (coveredAmountCents > availableBalanceCents) {
           throw new Error(`INSUFFICIENT_POOL_BALANCE:Pool balance insufficient. Available: $${(availableBalanceCents / 100).toFixed(2)}, Required: $${(coveredAmountCents / 100).toFixed(2)}`);

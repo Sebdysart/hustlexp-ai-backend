@@ -307,13 +307,18 @@ export function startOutboxWorker(intervalMs: number = 5000): OutboxWorkerHandle
   // single process; in a multi-pod deployment both pods could enter simultaneously.
   const TRUST_TIER_LOCK_KEY = `lock:${config.app.env ?? 'production'}:trust_tier_promotion`;
   const TRUST_TIER_LOCK_TTL_MS = 5 * 60 * 1000; // 5 minutes in ms
+  // W-02 fix: Use a unique instance ID as the lock value so a pod that crashed and
+  // recovered cannot accidentally delete a fresh lock acquired by another pod after
+  // the original TTL expired. The Lua CAS-delete in the finally block ensures only
+  // the lock owner can release it.
+  const LOCK_HOLDER_ID = `${process.pid}:${Date.now()}`;
   const trustTierInterval = setInterval(async () => {
     try {
       const redisClient = getRedisClient();
       let lockAcquired = false;
       if (redisClient) {
         // Attempt to acquire distributed lock (NX = only set if not exists, PX = TTL in ms)
-        const acquired = await redisClient.set(TRUST_TIER_LOCK_KEY, '1', {
+        const acquired = await redisClient.set(TRUST_TIER_LOCK_KEY, LOCK_HOLDER_ID, {
           nx: true,
           px: TRUST_TIER_LOCK_TTL_MS,
         });
@@ -333,7 +338,11 @@ export function startOutboxWorker(intervalMs: number = 5000): OutboxWorkerHandle
         log.error({ err: error }, 'Trust tier promotion error');
       } finally {
         if (lockAcquired && redisClient) {
-          await redisClient.del(TRUST_TIER_LOCK_KEY).catch(err => {
+          // W-02 fix: Lua CAS-delete — only delete the key when its value still
+          // matches this pod's LOCK_HOLDER_ID. Prevents Pod A (recovering after a
+          // crash past the TTL) from deleting Pod B's freshly-acquired lock.
+          const luaScript = `if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end`;
+          await redisClient.eval(luaScript, 1, TRUST_TIER_LOCK_KEY, LOCK_HOLDER_ID).catch(err => {
             log.warn({ err }, 'Failed to release trust tier promotion lock');
           });
         }

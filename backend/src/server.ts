@@ -826,6 +826,10 @@ app.get('/api/users/:userId/onboarding-status', async (c) => {
 // STRIPE WEBHOOKS (Raw body needed)
 // ============================================================================
 
+// A-06 FIX: Rate-limit all /webhooks/* routes to bound the compute cost of
+// HMAC verification even though signatures are checked before DB writes.
+app.use('/webhooks/*', rateLimitMiddleware('general'));
+
 app.post('/webhooks/stripe', async (c) => {
   const sig = c.req.header('stripe-signature');
   const rawBody = await c.req.text();

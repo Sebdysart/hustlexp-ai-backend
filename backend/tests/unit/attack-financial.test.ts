@@ -568,13 +568,10 @@ describe('ATTACK 9: Refund on LOCKED_DISPUTE state', () => {
    * VERDICT: FIXED — poster cannot shortcut an active dispute.
    */
   it('refund() on LOCKED_DISPUTE now returns INVALID_STATE — exploit closed', async () => {
-    // FIX 3: refund() pre-fetches task_id + worker_id before the UPDATE
-    // UPDATE WHERE state = 'FUNDED' — misses because state is LOCKED_DISPUTE
+    // T1 pre-check returns state=LOCKED_DISPUTE — the guard triggers immediately before T2 is reached.
+    // The T1 LOCKED_DISPUTE guard (line ~794) returns INVALID_STATE for non-admin callers.
     mockDb.query
-      .mockResolvedValueOnce({ rows: [{ task_id: 'task-1' }], rowCount: 1 } as never) // SELECT task_id
-      .mockResolvedValueOnce({ rows: [{ worker_id: null }], rowCount: 1 } as never)   // SELECT worker_id
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // UPDATE returns 0 rows
-      .mockResolvedValueOnce({ rows: [makeEscrow({ state: 'LOCKED_DISPUTE' })], rowCount: 1 } as never); // getById
+      .mockResolvedValueOnce({ rows: [{ task_id: 'task-1', state: 'LOCKED_DISPUTE' }], rowCount: 1 } as never); // T1 pre-check: LOCKED_DISPUTE triggers guard
 
     const result = await EscrowService.refund({ escrowId: 'esc-1' });
     expect(result.success).toBe(false);
@@ -595,12 +592,13 @@ describe('ATTACK 10: Double refund', () => {
    * VERDICT: SAFE — double refund blocked by terminal state check.
    */
   it('second refund() call returns ESCROW_TERMINAL', async () => {
-    // FIX 3: refund() pre-fetches task_id + worker_id before the UPDATE
+    // FIX 3 + F-05: T1 pre-checks, then T2 FOR UPDATE NOWAIT re-read (FUNDED), UPDATE misses, getById sees REFUNDED
     mockDb.query
-      .mockResolvedValueOnce({ rows: [{ task_id: 'task-1' }], rowCount: 1 } as never) // SELECT task_id
-      .mockResolvedValueOnce({ rows: [{ worker_id: null }], rowCount: 1 } as never)   // SELECT worker_id
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // UPDATE miss (already REFUNDED)
-      .mockResolvedValueOnce({ rows: [makeEscrow({ state: 'REFUNDED' })], rowCount: 1 } as never);
+      .mockResolvedValueOnce({ rows: [{ task_id: 'task-1' }], rowCount: 1 } as never) // T1: SELECT task_id
+      .mockResolvedValueOnce({ rows: [{ worker_id: null }], rowCount: 1 } as never)   // T1: SELECT worker_id
+      .mockResolvedValueOnce({ rows: [{ id: 'esc-1', version: 1, state: 'FUNDED' }], rowCount: 1 } as never) // F-05: T2 FOR UPDATE NOWAIT
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // T2: UPDATE miss (already REFUNDED)
+      .mockResolvedValueOnce({ rows: [makeEscrow({ state: 'REFUNDED' })], rowCount: 1 } as never); // getById fallback
 
     const result = await EscrowService.refund({ escrowId: 'esc-1' });
     expect(result.success).toBe(false);

@@ -19,6 +19,8 @@ import { getStreakStatus } from '../services/StreakService.js';
 import { z } from 'zod';
 import { firebaseAuth } from '../auth/firebase.js';
 
+const log = logger.child({ router: 'user' });
+
 // --------------------------------------------------------------------------
 // Avatar URL allowlist — mirrors isApprovedPhotoHost in messaging.ts
 // Only R2-hosted URLs are accepted to prevent SSRF / tracking-pixel attacks.
@@ -134,9 +136,12 @@ export const userRouter = router({
     .query(async ({ ctx }) => {
       const result = await getStreakStatus(ctx.user!.id);
       if (!result.success) {
+        // A-07 FIX: Log the real error server-side; return a generic message to the client
+        // to prevent DB column names or internal details from leaking.
+        log.error({ err: result.error, userId: ctx.user!.id }, '[user.getStreakStatus] service error');
         throw new TRPCError({
           code: result.error.code === 'NOT_FOUND' ? 'NOT_FOUND' : 'INTERNAL_SERVER_ERROR',
-          message: result.error.message,
+          message: result.error.code === 'NOT_FOUND' ? 'User not found' : 'Unable to fetch data. Please try again.',
         });
       }
       return result.data;
@@ -222,9 +227,12 @@ export const userRouter = router({
       const result = await XPService.getHistory(ctx.user.id, limit, offset);
 
       if (!result.success) {
+        // A-07 FIX: Log the real error server-side; return a generic message to the client
+        // to prevent DB column names or internal details from leaking.
+        log.error({ err: result.error, userId: ctx.user.id }, '[user.xpHistory] service error');
         throw new TRPCError({
           code: 'INTERNAL_SERVER_ERROR',
-          message: result.error.message,
+          message: 'Unable to fetch data. Please try again.',
         });
       }
 

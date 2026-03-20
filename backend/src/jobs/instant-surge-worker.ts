@@ -197,11 +197,18 @@ async function handleSurgeLevel1(
 
   // Bug 3 fix: UPDATE surge_level + all outbox INSERTs in a single transaction so
   // they are atomic — if any outbox write fails the surge_level UPDATE is rolled back
+  // W-03 fix: CAS guard (AND surge_level < 1) prevents double fan-out when two
+  // concurrent workers both pass the pre-transaction surge_level check.
   await db.transaction(async (query) => {
-    await query(
-      `UPDATE tasks SET surge_level = 1, updated_at = NOW() WHERE id = $1`,
+    const updateResult = await query(
+      `UPDATE tasks SET surge_level = 1, updated_at = NOW() WHERE id = $1 AND surge_level < 1`,
       [taskId]
     );
+
+    if (updateResult.rowCount === 0) {
+      log.info({ taskId }, 'Surge Level 1: another worker already applied this surge level, skipping fan-out');
+      return;
+    }
 
     for (const hustler of allowed) {
       await writeToOutbox({
@@ -266,11 +273,18 @@ async function handleSurgeLevel2(
   }
 
   // Bug 3 fix: UPDATE surge_level + all outbox INSERTs in a single transaction
+  // W-03 fix: CAS guard (AND surge_level < 2) prevents double fan-out when two
+  // concurrent workers both pass the pre-transaction surge_level check.
   await db.transaction(async (query) => {
-    await query(
-      `UPDATE tasks SET surge_level = 2, updated_at = NOW() WHERE id = $1`,
+    const updateResult = await query(
+      `UPDATE tasks SET surge_level = 2, updated_at = NOW() WHERE id = $1 AND surge_level < 2`,
       [taskId]
     );
+
+    if (updateResult.rowCount === 0) {
+      log.info({ taskId }, 'Surge Level 2: another worker already applied this surge level, skipping fan-out');
+      return;
+    }
 
     for (const hustler of allowed) {
       await writeToOutbox({
@@ -319,6 +333,8 @@ async function handleSurgeLevel3(taskId: string): Promise<void> {
   await db.transaction(async (query) => {
     // Transition to OPEN state (non-instant)
     // Note: instant_mode = FALSE allows task to be in OPEN state (constraint allows this)
+    // W-03 fix: AND surge_level < 3 guards against two concurrent workers both
+    // entering handleSurgeLevel3 before either completes the UPDATE.
     const result = await query<{ id: string; poster_id: string }>(
       `UPDATE tasks
        SET state = 'OPEN',
@@ -328,6 +344,7 @@ async function handleSurgeLevel3(taskId: string): Promise<void> {
        WHERE id = $1
          AND state = 'MATCHING'
          AND instant_mode = TRUE
+         AND surge_level < 3
        RETURNING id, poster_id`,
       [taskId]
     );

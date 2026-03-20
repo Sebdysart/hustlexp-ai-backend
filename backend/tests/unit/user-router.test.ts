@@ -499,7 +499,7 @@ describe('user.xpHistory', () => {
       error: { code: 'DB_ERROR', message: 'Database connection lost' },
     });
 
-    await expect(makeUserCaller().xpHistory()).rejects.toThrow('Database connection lost');
+    await expect(makeUserCaller().xpHistory()).rejects.toThrow('Unable to fetch data. Please try again.');
   });
 });
 

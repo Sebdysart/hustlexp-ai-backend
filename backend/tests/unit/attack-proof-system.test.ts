@@ -565,6 +565,7 @@ describe('Attack #11 — prorate_on_abort=false, abort mid-task (should get $0)'
     mockDb.query
       .mockResolvedValueOnce({ rows: [{ task_id: 'task-1' }], rowCount: 1 } as never) // pre-check: task_id
       .mockResolvedValueOnce({ rows: [{ worker_id: null }], rowCount: 1 } as never)   // pre-check: worker_id (no worker yet)
+      .mockResolvedValueOnce({ rows: [{ id: 'esc-1', version: 1, state: 'FUNDED' }], rowCount: 1 } as never) // F-05: T2 FOR UPDATE NOWAIT
       .mockResolvedValueOnce({ rows: [refunded], rowCount: 1 } as never)               // UPDATE
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);                      // logEscrowEvent
 

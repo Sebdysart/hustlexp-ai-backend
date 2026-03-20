@@ -150,7 +150,7 @@ export const challengesRouter = router({
          VALUES ($1, $2, $3, $4, $5)
          ON CONFLICT (challenge_id, user_id) DO UPDATE SET
            progress = GREATEST(daily_challenge_completions.progress, $3),
-           completed = $4,
+           completed = daily_challenge_completions.completed OR $4,
            completed_at = CASE WHEN $4 AND NOT daily_challenge_completions.completed THEN NOW() ELSE daily_challenge_completions.completed_at END`,
         [input.challengeId, userId, verifiedProgress, isCompleted, isCompleted ? new Date() : null]
       );

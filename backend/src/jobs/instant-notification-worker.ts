@@ -140,7 +140,7 @@ export async function processInstantNotificationJob(
   });
 
     if (!notificationResult.success) {
-      throw new Error(`Failed to create instant notification: ${notificationResult.error.message}`);
+      throw new Error(`Failed to create instant notification: ${notificationResult.error?.message ?? 'unknown error'}`);
     }
 
     const latency = Date.now() - startTime;

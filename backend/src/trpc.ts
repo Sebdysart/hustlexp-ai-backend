@@ -86,15 +86,23 @@ export async function createContext(opts: {
     // Cross-invalidation check: if a Redis revocation marker exists (written by
     // invalidateAuthCacheForUser or revokeUserSessions) the in-process cache
     // entry is stale — evict it and fall through to Firebase re-verification.
-    const revokedAt = await redis.get<string>(REDIS_REVOKED_KEY(cached.firebaseUid));
-    if (revokedAt) {
-      log.info({ uid: cached.firebaseUid }, 'tRPC cache hit invalidated by Redis revocation marker');
-      // Evict the stale in-process cache entry immediately so it cannot be
-      // served again on this replica before the 5-minute TTL expires.
-      authCache.delete(authCacheKey(token));
+    // A-05 FIX: Wrap redis.get in try/catch so a Redis outage does not cause
+    // createContext to throw a 500 on every authenticated request. On failure,
+    // fall through to Firebase re-verification as a safe degraded path.
+    try {
+      const revokedAt = await redis.get<string>(REDIS_REVOKED_KEY(cached.firebaseUid));
+      if (revokedAt) {
+        log.info({ uid: cached.firebaseUid }, 'tRPC cache hit invalidated by Redis revocation marker');
+        // Evict the stale in-process cache entry immediately so it cannot be
+        // served again on this replica before the 5-minute TTL expires.
+        authCache.delete(authCacheKey(token));
+        // Fall through to Firebase re-verification below.
+      } else {
+        return { user: cached.user, firebaseUid: cached.firebaseUid, ip: extractIp(opts.req) };
+      }
+    } catch (redisErr) {
+      log.warn({ err: redisErr }, 'Redis unavailable for revocation check — falling through to Firebase verify');
       // Fall through to Firebase re-verification below.
-    } else {
-      return { user: cached.user, firebaseUid: cached.firebaseUid, ip: extractIp(opts.req) };
     }
   }
 

@@ -109,13 +109,22 @@ export const JuryPoolService = {
     confidence: number
   ): Promise<ServiceResult<void>> => {
     try {
-      // Verify juror eligibility
-      const juror = await db.query<{ trust_tier: number }>(
-        `SELECT trust_tier FROM users WHERE id = $1`,
+      // Verify juror eligibility — must meet BOTH trust tier AND task count thresholds
+      const juror = await db.query<{ trust_tier: number; tasks_completed: string }>(
+        `SELECT u.trust_tier,
+                (SELECT COUNT(*) FROM tasks WHERE worker_id = u.id AND state = 'COMPLETED') AS tasks_completed
+         FROM users u WHERE u.id = $1`,
         [jurorId]
       );
 
       if (juror.rows.length === 0 || juror.rows[0].trust_tier < MIN_JUROR_TRUST_TIER) {
+        return {
+          success: false,
+          error: { code: 'INELIGIBLE', message: 'You are not eligible to serve on this jury' },
+        };
+      }
+
+      if (Number(juror.rows[0].tasks_completed) < MIN_JUROR_TASKS) {
         return {
           success: false,
           error: { code: 'INELIGIBLE', message: 'You are not eligible to serve on this jury' },

@@ -1029,7 +1029,7 @@ describe('task.reviewProof', () => {
   });
 
   it('reviews proof by taskId + approved (iOS schema)', async () => {
-    // New order: TaskService.getById (ownership+state) → db.query (proof lookup) → ProofService.getById
+    // New order: TaskService.getById (ownership+state) → db.query (proof lookup) → ProofService.getById → db.query (proof state check)
     mockTaskService.getById.mockResolvedValueOnce({
       success: true,
       data: makeTaskRow({ poster_id: USER_ID, state: 'PROOF_SUBMITTED' }) as any,
@@ -1043,6 +1043,8 @@ describe('task.reviewProof', () => {
       success: true,
       data: makeProofRow({ task_id: TASK_ID }) as any,
     });
+    // R-05: proof state check now runs unconditionally (even in taskId path)
+    mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'SUBMITTED' }], rowCount: 1 } as any);
     mockProofService.review.mockResolvedValueOnce({
       success: true,
       data: makeProofRow({ state: 'ACCEPTED' }) as any,
@@ -1065,7 +1067,7 @@ describe('task.reviewProof', () => {
   });
 
   it('maps approved=false to REJECTED decision', async () => {
-    // New order: TaskService.getById (ownership+state) → db.query (proof lookup) → ProofService.getById
+    // New order: TaskService.getById (ownership+state) → db.query (proof lookup) → ProofService.getById → db.query (proof state check)
     mockTaskService.getById.mockResolvedValueOnce({
       success: true,
       data: makeTaskRow({ poster_id: USER_ID, state: 'PROOF_SUBMITTED' }) as any,
@@ -1078,6 +1080,8 @@ describe('task.reviewProof', () => {
       success: true,
       data: makeProofRow({ task_id: TASK_ID }) as any,
     });
+    // R-05: proof state check now runs unconditionally (even in taskId path)
+    mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'SUBMITTED' }], rowCount: 1 } as any);
     mockProofService.review.mockResolvedValueOnce({
       success: true,
       data: makeProofRow({ state: 'REJECTED' }) as any,

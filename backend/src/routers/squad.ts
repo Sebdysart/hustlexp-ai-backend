@@ -664,9 +664,21 @@ export const squadRouter = router({
   getTeamTask: protectedProcedure
     .input(z.object({ squadTaskId: Schemas.uuid }))
     .query(async ({ ctx, input }) => {
+      // Step 1: Resolve squad_id from the task assignment.
+      // If the assignment doesn't exist we still throw FORBIDDEN (not NOT_FOUND)
+      // to avoid leaking whether the squadTaskId exists at all.
+      const assignSquad = await db.query<{ squad_id: string }>(
+        `SELECT squad_id FROM squad_task_assignments WHERE id = $1`,
+        [input.squadTaskId]
+      );
+      if (assignSquad.rows.length === 0) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'Not a member of this squad' });
+      }
+
+      // Step 2: Verify the caller is a member of that squad.
       const member = await db.query(
-        `SELECT 1 FROM squad_members WHERE squad_id = (SELECT squad_id FROM squad_task_assignments WHERE id = $1) AND user_id = $2`,
-        [input.squadTaskId, ctx.user.id]
+        `SELECT 1 FROM squad_members WHERE squad_id = $1 AND user_id = $2`,
+        [assignSquad.rows[0].squad_id, ctx.user.id]
       );
       if (member.rows.length === 0) {
         throw new TRPCError({ code: 'FORBIDDEN', message: 'Not a member of this squad' });

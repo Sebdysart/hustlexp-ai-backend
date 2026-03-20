@@ -621,24 +621,35 @@ export const EscrowService = {
       // The handleTransferCreated() path is dead, so we must record the platform_fee here.
       // Use a dedup key of 'admin_override_release' in metadata (stripe_event_id stays NULL).
       if (adminOverride && adminManualPayoutRequired) {
-        try {
-          await RevenueService.logEvent({
-            eventType: 'platform_fee',
-            userId: releasedEscrow!.task_id ? undefined : null, // prefer poster via escrow lookup below
-            taskId: taskId!,
-            amountCents: platformFeeCents!,
-            grossAmountCents: grossPayoutCents!,
-            platformFeeCents: platformFeeCents!,
-            netAmountCents: netPayoutCents!,
-            feeBasisPoints: Math.round(platformFeePercent! * 100),
-            escrowId,
-            metadata: { event: 'admin_override_release', admin_manual_payout_required: true },
-          });
-        } catch (feeLogErr) {
-          escrowLogger.error(
-            { err: feeLogErr instanceof Error ? feeLogErr.message : String(feeLogErr), escrowId },
-            'F-01: Failed to log platform_fee for admin_override_release — manual reconciliation required'
+        // F-06 FIX: Skip RevenueService.logEvent when platformFeeCents rounds to 0.
+        // RevenueService has a POSITIVE_ONLY_EVENTS guard that silently rejects
+        // amountCents <= 0. For tiny escrows (e.g. 1 cent * 15% = 0 after rounding),
+        // calling logEvent wastes a DB round-trip and emits a misleading error log.
+        if (!platformFeeCents || platformFeeCents <= 0) {
+          escrowLogger.warn(
+            { escrowId, platformFeeCents: platformFeeCents ?? 0, grossPayoutCents },
+            'F-06: Skipping platform_fee ledger entry for admin_override_release — fee rounds to 0 cents'
           );
+        } else {
+          try {
+            await RevenueService.logEvent({
+              eventType: 'platform_fee',
+              userId: releasedEscrow!.task_id ? undefined : null, // prefer poster via escrow lookup below
+              taskId: taskId!,
+              amountCents: platformFeeCents,
+              grossAmountCents: grossPayoutCents!,
+              platformFeeCents: platformFeeCents,
+              netAmountCents: netPayoutCents!,
+              feeBasisPoints: Math.round(platformFeePercent! * 100),
+              escrowId,
+              metadata: { event: 'admin_override_release', admin_manual_payout_required: true },
+            });
+          } catch (feeLogErr) {
+            escrowLogger.error(
+              { err: feeLogErr instanceof Error ? feeLogErr.message : String(feeLogErr), escrowId },
+              'F-01: Failed to log platform_fee for admin_override_release — manual reconciliation required'
+            );
+          }
         }
       }
       //
@@ -897,8 +908,55 @@ export const EscrowService = {
       // -----------------------------------------------------------------------
       // Transaction 2 (terminalize): atomically commit state = REFUNDED and
       // persist the stripe_refund_id. Only runs after the Stripe call succeeds.
+      // F-05 FIX: Add SELECT FOR UPDATE NOWAIT before the UPDATE so we re-read
+      // the current version under an exclusive lock. T1 committed and released its
+      // lock; between T1 and T2 any concurrent operation can increment the version,
+      // making the stale escrowVersion from T1 miss the UPDATE (0 rows) even though
+      // the Stripe refund already succeeded. Mirroring the partialRefund T2 pattern.
       // -----------------------------------------------------------------------
       const termResult = await db.transaction(async (query) => {
+        // Step 1: Acquire exclusive lock and re-read current version + state
+        let lockedRefundRow: { id: string; version: number; state: string } | undefined;
+        try {
+          const lockedResult = await query<{ id: string; version: number; state: string }>(
+            `SELECT id, version, state FROM escrows WHERE id = $1 FOR UPDATE NOWAIT`,
+            [escrowId]
+          );
+          if (!lockedResult.rows.length) {
+            return {
+              success: false,
+              error: { code: ErrorCodes.NOT_FOUND, message: `Escrow ${escrowId} not found during T2 lock` },
+            } as ServiceResult<Escrow>;
+          }
+          lockedRefundRow = lockedResult.rows[0];
+        } catch (lockErr) {
+          const msg = lockErr instanceof Error ? lockErr.message : String(lockErr);
+          if (msg.includes('55P03') || msg.toLowerCase().includes('could not obtain lock')) {
+            throw new Error(`LOCK_CONTENTION: Another worker is processing this escrow refund — will retry`);
+          }
+          throw lockErr;
+        }
+
+        // Step 2: If state changed away from an allowed state, return appropriate error
+        if (!allowedStates!.includes(lockedRefundRow.state)) {
+          if (lockedRefundRow.state === 'REFUNDED') {
+            // Already refunded — idempotent
+            const existing = await EscrowService.getById(escrowId);
+            if (existing.success) {
+              refundedEscrow = existing.data;
+              return { success: true, data: existing.data } as ServiceResult<Escrow>;
+            }
+          }
+          return {
+            success: false,
+            error: {
+              code: isTerminalState(lockedRefundRow.state as EscrowState) ? ErrorCodes.ESCROW_TERMINAL : ErrorCodes.INVALID_STATE,
+              message: `Cannot refund escrow: state changed to ${lockedRefundRow.state} between T1 and T2`,
+            },
+          } as ServiceResult<Escrow>;
+        }
+
+        // Step 3: UPDATE using the freshly-locked version (not the stale T1 snapshot)
         const result = await query<Escrow>(
           `UPDATE escrows
            SET state = 'REFUNDED',
@@ -910,11 +968,12 @@ export const EscrowService = {
              AND state = ANY($4::text[])
              AND version = $2
            RETURNING *`,
-          [escrowId, escrowVersion, stripeRefundId, allowedStates!]
+          [escrowId, lockedRefundRow.version, stripeRefundId, allowedStates!]
         );
 
         if (result.rowCount === 0) {
-          // Concurrent modification — classify via getById.
+          // Freshly-locked version still didn't match — should not happen since we hold
+          // the FOR UPDATE lock, but handle defensively via getById classification.
           const existing = await EscrowService.getById(escrowId);
           if (!existing.success) {
             return existing;

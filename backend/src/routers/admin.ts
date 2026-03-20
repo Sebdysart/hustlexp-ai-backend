@@ -529,6 +529,36 @@ export const adminRouter = router({
       role: z.enum(['admin', 'support', 'finance', 'moderator', 'founder']),
     }))
     .mutation(async ({ ctx, input }) => {
+      // A-02 FIX: Self-revocation prohibition — an admin cannot revoke their own role.
+      if (input.userId === ctx.user.id) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'Cannot revoke your own admin role' });
+      }
+
+      // A-03 FIX: Role hierarchy — callers can only revoke roles strictly below their own rank.
+      // Mirrors the same guard in grantAdminRole to prevent privilege escalation via revocation.
+      const ROLE_RANK: Record<string, number> = {
+        support: 1,
+        moderator: 2,
+        finance: 3,
+        admin: 4,
+        founder: 5,
+      };
+      const callerRolesResult = await db.query<{ role: string }>(
+        'SELECT role FROM admin_roles WHERE user_id = $1',
+        [ctx.user.id]
+      );
+      const callerMaxRank = callerRolesResult.rows.reduce(
+        (max, r) => Math.max(max, ROLE_RANK[r.role] ?? 0),
+        0
+      );
+      const targetRoleRank = ROLE_RANK[input.role] ?? 0;
+      if (targetRoleRank >= callerMaxRank) {
+        throw new TRPCError({
+          code: 'FORBIDDEN',
+          message: 'Insufficient rank to revoke this role',
+        });
+      }
+
       // Precondition: verify firebase_uid FIRST — before any DB writes — so that
       // if the user has no Firebase UID the role is never revoked and no audit
       // row is written, making the check a true precondition rather than a
