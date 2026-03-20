@@ -48,9 +48,10 @@ export const TaxReportingService = {
    */
   getWorkersAboveThreshold: async (taxYear: number): Promise<ServiceResult<WorkerEarnings[]>> => {
     try {
+      const feePercent = config.stripe.platformFeePercent;
       const result = await db.query<WorkerEarnings>(
         `SELECT t.worker_id as user_id,
-                SUM(ROUND(e.amount * (1.0 - 15 / 100.0)))::BIGINT as total_earnings_cents,
+                SUM(ROUND(e.amount * (1.0 - $3 / 100.0)))::BIGINT as total_earnings_cents,
                 COUNT(DISTINCT t.id)::INTEGER as task_count
          FROM tasks t
          JOIN escrows e ON e.task_id = t.id
@@ -58,9 +59,9 @@ export const TaxReportingService = {
            AND EXTRACT(YEAR FROM e.released_at) = $1
            AND t.worker_id IS NOT NULL
          GROUP BY t.worker_id
-         HAVING SUM(ROUND(e.amount * (1.0 - 15 / 100.0))) >= $2
+         HAVING SUM(ROUND(e.amount * (1.0 - $3 / 100.0))) >= $2
          ORDER BY total_earnings_cents DESC`,
-        [taxYear, REPORTING_THRESHOLD_CENTS]
+        [taxYear, REPORTING_THRESHOLD_CENTS, feePercent]
       );
       return { success: true, data: result.rows };
     } catch (error) {
@@ -217,14 +218,15 @@ export const TaxReportingService = {
     try {
       const year = taxYear || new Date().getFullYear();
 
+      const feePercent = config.stripe.platformFeePercent;
       const result = await db.query<{ total_earnings_cents: string }>(
-        `SELECT COALESCE(SUM(ROUND(e.amount * (1.0 - 15 / 100.0))), 0)::BIGINT as total_earnings_cents
+        `SELECT COALESCE(SUM(ROUND(e.amount * (1.0 - $3 / 100.0))), 0)::BIGINT as total_earnings_cents
          FROM tasks t
          JOIN escrows e ON e.task_id = t.id
          WHERE e.state = 'RELEASED'
            AND EXTRACT(YEAR FROM e.released_at) = $1
            AND t.worker_id = $2`,
-        [year, userId]
+        [year, userId, feePercent]
       );
 
       const totalEarnings = parseInt(result.rows[0]?.total_earnings_cents || '0', 10);

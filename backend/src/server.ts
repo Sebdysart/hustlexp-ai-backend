@@ -361,7 +361,8 @@ app.get('/health/detailed', rateLimitMiddleware('auth'), async (c) => {
 
 // SSE endpoint for task progress updates
 // SECURITY: rate-limited to 10 new connection attempts/min per user (connection-flood protection)
-app.use('/realtime/stream', rateLimitMiddleware('sse'));
+// Also applies the global publicIpRateLimitMiddleware (60/min per IP) to match /trpc/* protection
+app.use('/realtime/stream', publicIpRateLimitMiddleware, rateLimitMiddleware('sse'));
 app.get('/realtime/stream', sseHandler);
 
 // ============================================================================

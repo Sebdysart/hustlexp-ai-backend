@@ -78,6 +78,11 @@ vi.mock('../../src/auth-cache', () => ({
   invalidateAuthCacheForUser: vi.fn(),
 }));
 
+// Set R2_PUBLIC_URL so isApprovedAvatarHost accepts the cdn.example.com test URL.
+// This must be set BEFORE the router module is imported, since R2_PUBLIC_HOSTNAME
+// is derived at module load time.
+process.env.R2_PUBLIC_URL = 'https://cdn.example.com';
+
 // ---------------------------------------------------------------------------
 // Imports
 // ---------------------------------------------------------------------------
@@ -458,31 +463,39 @@ describe('user.xpHistory', () => {
     vi.clearAllMocks();
   });
 
-  it('returns XP ledger entries on success', async () => {
+  it('returns paginated XP ledger entries on success', async () => {
     const entries = [
       { id: 'xp-1', user_id: TEST_USER_ID, effective_xp: 100, awarded_at: new Date() },
       { id: 'xp-2', user_id: TEST_USER_ID, effective_xp: 50, awarded_at: new Date() },
     ];
-    mockXPService.getHistory.mockResolvedValueOnce({ success: true, data: entries as any });
+    mockXPService.getHistory.mockResolvedValueOnce({
+      success: true,
+      data: { items: entries, total: 2, offset: 0 } as any,
+    });
 
     const result = await makeUserCaller().xpHistory();
 
-    expect(result).toHaveLength(2);
-    expect(result[0]).toHaveProperty('id', 'xp-1');
-    expect(result[1]).toHaveProperty('effective_xp', 50);
+    expect(result).toHaveProperty('total', 2);
+    expect(Array.isArray(result.items)).toBe(true);
+    expect(result.items).toHaveLength(2);
+    expect(result.items[0]).toHaveProperty('id', 'xp-1');
+    expect(result.items[1]).toHaveProperty('effective_xp', 50);
   });
 
-  it('calls XPService.getHistory with authenticated user ID', async () => {
-    mockXPService.getHistory.mockResolvedValueOnce({ success: true, data: [] });
+  it('calls XPService.getHistory with authenticated user ID and default pagination', async () => {
+    mockXPService.getHistory.mockResolvedValueOnce({
+      success: true,
+      data: { items: [], total: 0, offset: 0 },
+    });
 
     await makeUserCaller().xpHistory();
 
-    expect(mockXPService.getHistory).toHaveBeenCalledWith(TEST_USER_ID);
+    expect(mockXPService.getHistory).toHaveBeenCalledWith(TEST_USER_ID, 50, 0);
   });
 
   it('throws INTERNAL_SERVER_ERROR when service fails', async () => {
     mockXPService.getHistory.mockResolvedValueOnce({
-      success: false,
+      success: false as const,
       error: { code: 'DB_ERROR', message: 'Database connection lost' },
     });
 

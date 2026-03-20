@@ -637,6 +637,7 @@ export const DisputeService = {
             task_id: dispute.task_id,
             dispute_id: dispute.id,
             reason: 'dispute_resolution',
+            outcome_escrow_action: outcomeEscrowAction,
             refund_amount: refundAmount,
             release_amount: releaseAmount,
           },

@@ -26,6 +26,7 @@ import { forceDisconnectUser } from '../realtime/connection-registry.js';
 import { revokeUserSessions } from '../auth/middleware.js';
 import { writeToOutbox } from '../lib/outbox-helpers.js';
 import { logger } from '../logger.js';
+import { notifyAdmins } from '../services/AdminNotificationHelper.js';
 
 const log = logger.child({ router: 'admin' });
 
@@ -224,7 +225,22 @@ export const adminRouter = router({
           [input.userId]
         );
         for (const escrow of refundableEscrows.rows) {
-          await EscrowService.refund({ escrowId: escrow.id });
+          const refundResult = await EscrowService.refund({ escrowId: escrow.id, reason: 'user_banned' });
+          if (!refundResult.success) {
+            // Do NOT throw — the ban must still succeed even if a refund fails.
+            // Log the failure and alert admins for manual review.
+            log.error(
+              { escrowId: escrow.id, userId: input.userId, error: refundResult.error },
+              '[admin.setUserBan] Failed to refund idle escrow on ban — manual review required'
+            );
+            notifyAdmins({
+              title: 'Escrow Refund Failed on User Ban',
+              body: `Escrow ${escrow.id} failed to refund when user ${input.userId} was banned — manual intervention required`,
+              deepLink: `hustlexp://admin/escrows/${escrow.id}`,
+              priority: 'high',
+              metadata: { escrowId: escrow.id, userId: input.userId, error: refundResult.error?.message },
+            }).catch(err => log.warn({ err }, '[admin.setUserBan] notifyAdmins failed'));
+          }
         }
 
         // Bucket B: active tasks — lock for dispute and emit outbox event for admin review
@@ -304,9 +320,10 @@ export const adminRouter = router({
       ).catch(err => log.warn({ err }, 'Failed to write setSuspension audit log'));
 
       if (input.suspended) {
-        // Full session revocation
-        await invalidateAuthCacheForUser(input.userId);
-        const firebaseUid = result.rows[0].firebase_uid;
+        // Full session revocation — pass firebaseUid to avoid a redundant DB lookup
+        // (same pattern as setUserBan which already does this correctly).
+        const firebaseUid = result.rows[0].firebase_uid ?? undefined;
+        await invalidateAuthCacheForUser(input.userId, firebaseUid);
         if (firebaseUid) {
           await revokeUserSessions(firebaseUid).catch(err =>
             log.warn({ err }, '[admin.setSuspension] revokeUserSessions failed')
@@ -330,7 +347,21 @@ export const adminRouter = router({
           [input.userId]
         );
         for (const escrow of refundableEscrows.rows) {
-          await EscrowService.refund({ escrowId: escrow.id });
+          const refundResult = await EscrowService.refund({ escrowId: escrow.id, reason: 'user_suspended' });
+          if (!refundResult.success) {
+            // Do NOT throw — the suspension must still succeed even if a refund fails.
+            log.error(
+              { escrowId: escrow.id, userId: input.userId, error: refundResult.error },
+              '[admin.setSuspension] Failed to refund idle escrow on suspension — manual review required'
+            );
+            notifyAdmins({
+              title: 'Escrow Refund Failed on User Suspension',
+              body: `Escrow ${escrow.id} failed to refund when user ${input.userId} was suspended — manual intervention required`,
+              deepLink: `hustlexp://admin/escrows/${escrow.id}`,
+              priority: 'high',
+              metadata: { escrowId: escrow.id, userId: input.userId, error: refundResult.error?.message },
+            }).catch(err => log.warn({ err }, '[admin.setSuspension] notifyAdmins failed'));
+          }
         }
 
         // Bucket B: active tasks — lock for dispute and emit outbox event for admin review

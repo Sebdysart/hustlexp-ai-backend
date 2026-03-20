@@ -552,16 +552,29 @@ export const XPService = {
   },
 
   /**
-   * Get XP history for user
+   * Get XP history for user (paginated)
+   *
+   * Returns { items, total, offset } to prevent DoS/OOM from fetching unbounded
+   * ledger history. Default limit=50, max=100 enforced at the router layer.
    */
-  getHistory: async (userId: string): Promise<ServiceResult<XPLedgerEntry[]>> => {
+  getHistory: async (
+    userId: string,
+    limit: number = 50,
+    offset: number = 0
+  ): Promise<ServiceResult<{ items: XPLedgerEntry[]; total: number; offset: number }>> => {
     try {
-      const result = await db.query<XPLedgerEntry>(
-        'SELECT * FROM xp_ledger WHERE user_id = $1 ORDER BY awarded_at DESC',
+      const totalResult = await db.query<{ count: string }>(
+        'SELECT COUNT(*)::text as count FROM xp_ledger WHERE user_id = $1',
         [userId]
       );
-      
-      return { success: true, data: result.rows };
+      const total = parseInt(totalResult.rows[0]?.count ?? '0', 10);
+
+      const result = await db.query<XPLedgerEntry>(
+        'SELECT * FROM xp_ledger WHERE user_id = $1 ORDER BY awarded_at DESC LIMIT $2 OFFSET $3',
+        [userId, limit, offset]
+      );
+
+      return { success: true, data: { items: result.rows, total, offset } };
     } catch (error) {
       return {
         success: false,

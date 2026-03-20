@@ -220,6 +220,12 @@ export async function markOutboxEventProcessed(
 
 /**
  * Mark outbox event as failed (called by job processor after failed execution)
+ *
+ * BUG 6 FIX: Do NOT increment `attempts` here. The claim transaction in
+ * processOutboxEvents already incremented attempts when it set status='enqueued'.
+ * Double-incrementing on the failure path caused the attempts counter to advance
+ * twice per cycle, exhausting MAX_OUTBOX_ATTEMPTS at half the expected retries.
+ * This function's sole responsibility is recording the failure status and error.
  */
 export async function markOutboxEventFailed(
   idempotencyKey: string,
@@ -228,8 +234,7 @@ export async function markOutboxEventFailed(
   await db.query(
     `UPDATE outbox_events
      SET status = 'failed',
-         error_message = $1,
-         attempts = attempts + 1
+         error_message = $1
      WHERE idempotency_key = $2`,
     [errorMessage, idempotencyKey]
   );
@@ -271,12 +276,24 @@ export function startOutboxWorker(intervalMs: number = 5000): OutboxWorkerHandle
   }, 10 * 1000); // Every 10 seconds
 
   // Pre-Alpha Prerequisite: Trust tier promotion worker (hourly)
+  // BUG 8 FIX: Add a running flag to prevent overlapping executions. Without this
+  // guard, a slow promotion job that takes longer than 1 hour will be started again
+  // by the next setInterval tick while still running, causing concurrent promotions
+  // that can double-award tier upgrades or corrupt the promotion batch.
+  let trustTierRunning = false;
   const trustTierInterval = setInterval(async () => {
+    if (trustTierRunning) {
+      log.warn('Trust tier promotion already running — skipping this interval tick');
+      return;
+    }
+    trustTierRunning = true;
     try {
       const { processTrustTierPromotionJob } = await import('./trust-tier-promotion-worker');
       await processTrustTierPromotionJob();
     } catch (error) {
       log.error({ err: error }, 'Trust tier promotion error');
+    } finally {
+      trustTierRunning = false;
     }
   }, 60 * 60 * 1000); // Every hour
 

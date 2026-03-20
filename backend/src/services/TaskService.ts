@@ -1570,10 +1570,16 @@ export const TaskService = {
         }
 
         // 6. Escrow terminal freeze: check if escrow is terminal
+        // BUG 9 FIX: Use FOR SHARE so a concurrent payment-worker cannot transition
+        // the escrow to RELEASED in the gap between this read and the task UPDATE.
+        // FOR SHARE blocks concurrent exclusive locks (write operations) on the escrow
+        // row while allowing other readers, ensuring the state we read here is the
+        // state that persists through the end of this transaction.
         const escrowResult = await query<{ state: string }>(
           `SELECT state
            FROM escrows
-           WHERE task_id = $1`,
+           WHERE task_id = $1
+           FOR SHARE`,
           [taskId]
         );
 

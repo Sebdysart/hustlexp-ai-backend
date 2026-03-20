@@ -100,7 +100,12 @@ export async function set(
   ttl?: number
 ): Promise<void> {
   const client = getClient();
-  if (!client) return;
+  if (!client) {
+    if (config.app.isProduction) {
+      throw new Error('Redis unavailable — cache set fail-closed');
+    }
+    return;
+  }
 
   try {
     if (ttl) {
@@ -110,6 +115,9 @@ export async function set(
     }
   } catch (error) {
     redisLog.error({ err: error, key }, 'Redis SET error');
+    if (config.app.isProduction) {
+      throw error; // re-throw so callers can detect write failures (e.g. revocation marker)
+    }
   }
 }
 

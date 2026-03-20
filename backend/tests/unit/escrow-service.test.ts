@@ -55,6 +55,7 @@ vi.mock('../../src/services/StripeService', () => ({
   StripeService: {
     createRefund: vi.fn().mockResolvedValue({ success: true, data: { refundId: 're_test', amount: 5000, status: 'succeeded' } }),
     createTransfer: vi.fn().mockResolvedValue({ success: true, data: { transferId: 'tr_test', amount: 3000 } }),
+    cancelRefund: vi.fn().mockResolvedValue({ success: true, data: { refundId: 're_test', status: 'cancelled' } }),
   },
 }));
 

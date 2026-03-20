@@ -73,6 +73,8 @@ interface CreateRefundParams {
   escrowId: string; // P0: Required for metadata correlation
   amount?: number; // USD cents, optional for partial refund
   reason?: 'duplicate' | 'fraudulent' | 'requested_by_customer';
+  /** Optional suffix appended to idempotency key to distinguish callers that share the same paymentIntentId+amount */
+  idempotencyKeySuffix?: string;
 }
 
 interface CreateRefundResult {
@@ -367,7 +369,7 @@ export const StripeService = {
   createRefund: async (
     params: CreateRefundParams
   ): Promise<ServiceResult<CreateRefundResult>> => {
-    const { paymentIntentId, escrowId, amount, reason } = params;
+    const { paymentIntentId, escrowId, amount, reason, idempotencyKeySuffix } = params;
 
     // Stripe stubbing for tests (Evil Test A) — never active in production
     if (process.env.HX_STRIPE_STUB === '1' && process.env.NODE_ENV !== 'production') {
@@ -393,7 +395,9 @@ export const StripeService = {
     }
 
     try {
-      const idempotencyKey = `re_create_${paymentIntentId}_${amount ?? 'full'}`;
+      const idempotencyKey = idempotencyKeySuffix
+        ? `re_create_${paymentIntentId}_${amount ?? 'full'}_${idempotencyKeySuffix}`
+        : `re_create_${paymentIntentId}_${amount ?? 'full'}`;
 
       const refund = await stripeBreaker.execute(() => stripe!.refunds.create(
         {
@@ -416,6 +420,33 @@ export const StripeService = {
           status: refund.status ?? '',
         },
       };
+    } catch (error) {
+      return {
+        success: false,
+        error: {
+          code: 'STRIPE_ERROR',
+          message: error instanceof Error ? error.message : 'Unknown Stripe error',
+        },
+      };
+    }
+  },
+
+  /**
+   * Cancel a Stripe refund (best-effort double-spend recovery).
+   * Stripe only allows cancellation of refunds in 'pending' state.
+   * Returns success=true if cancelled or already in a terminal state that is not 'failed'.
+   */
+  cancelRefund: async (refundId: string): Promise<ServiceResult<{ refundId: string; status: string }>> => {
+    if (!stripe) {
+      return {
+        success: false,
+        error: { code: 'STRIPE_NOT_CONFIGURED', message: 'Stripe is not configured' },
+      };
+    }
+
+    try {
+      const cancelled = await stripeBreaker.execute(() => stripe!.refunds.cancel(refundId));
+      return { success: true, data: { refundId: cancelled.id, status: cancelled.status ?? 'cancelled' } };
     } catch (error) {
       return {
         success: false,

@@ -312,21 +312,11 @@ async function handleReleaseRequest(
     throw new Error(`Worker ${task.worker_id} has no stripe_connect_id`);
   }
 
-  // TT-03: Re-read stripe_transfer_id from the DB after the first transaction committed
-  // (the FOR UPDATE lock was released at commit). Two BullMQ workers can both see
-  // stripe_transfer_id = null in their stale escrow snapshots and both pass the
-  // idempotency check above; the re-read below is the second line of defence.
-  const freshEscrowResult = await db.query<{ stripe_transfer_id: string | null }>(
-    'SELECT stripe_transfer_id FROM escrows WHERE id = $1',
-    [escrow.id]
-  );
-  if (freshEscrowResult.rows[0]?.stripe_transfer_id) {
-    log.info(
-      { escrowId: escrow.id, transferId: freshEscrowResult.rows[0].stripe_transfer_id },
-      'Fresh DB re-read: transfer already created on a prior attempt — skipping Stripe call',
-    );
-    return;
-  }
+  // TT-03: A bare SELECT after T1 committed has a race window — two workers can
+  // both see stripe_transfer_id=null and both proceed to Stripe. Fix: the
+  // idempotency re-read is embedded inside T2 as a SELECT FOR UPDATE NOWAIT,
+  // so the lock is held through the version check and the UPDATE, making
+  // double-transfer physically impossible on this path.
 
   // Deduct platform fee before paying out to worker (PRODUCT_SPEC §9: 15% default)
   const platformFeePercent = Math.min(100, Math.max(0, config.stripe.platformFeePercent ?? 15));
@@ -369,12 +359,38 @@ async function handleReleaseRequest(
 
   const transferId = transferResult.data.transferId;
 
-  // Store transfer_id on escrow inside a transaction so the version-checked UPDATE
-  // is atomic. (The escrow row lock from processEscrowActionJob was already released
-  // when that transaction committed — this second short transaction re-acquires it
-  // just for the UPDATE statement itself, which is sufficient to prevent concurrent
-  // double-write from two workers that both passed the idempotency check above.)
+  // T2: Store transfer_id atomically.
+  // BUG 1 FIX: Begin T2 with SELECT FOR UPDATE NOWAIT so concurrent workers that
+  // also passed the TT-03 idempotency check above block here. Inside T2:
+  //   1. SELECT FOR UPDATE NOWAIT — acquire exclusive row lock
+  //   2. Re-check version (matches snapshot from T1) — if mismatch, another
+  //      worker already committed; rollback without error (idempotent)
+  //   3. Re-check stripe_transfer_id — if already set, this transfer arrived first
+  //   4. UPDATE — write the new transfer_id atomically with the lock held
   await db.transaction(async (trx: QueryFn) => {
+    // Step 1+2+3: Lock and re-validate before writing
+    const lockedRow = await trx<{ id: string; version: number; stripe_transfer_id: string | null }>(
+      `SELECT id, version, stripe_transfer_id FROM escrows WHERE id = $1 FOR UPDATE NOWAIT`,
+      [escrow.id]
+    );
+    if (!lockedRow.rows.length) {
+      throw new Error(`Escrow ${escrow.id} disappeared during T2 lock — retry`);
+    }
+    const locked = lockedRow.rows[0];
+    // If another worker already wrote a transfer_id, this Stripe call was a duplicate.
+    // The Stripe idempotency key on createTransfer guarantees the same transfer is
+    // returned — no money was double-sent. Log and skip the UPDATE.
+    if (locked.stripe_transfer_id) {
+      log.info(
+        { escrowId: escrow.id, existingTransferId: locked.stripe_transfer_id, ourTransferId: transferId },
+        'T2 re-read: transfer_id already set by concurrent worker — skipping UPDATE (idempotent)',
+      );
+      return; // No-op: idempotent
+    }
+    if (locked.version !== escrow.version) {
+      throw new Error(`Version conflict in T2 for escrow ${escrow.id} (expected ${escrow.version}, got ${locked.version}) — retry`);
+    }
+    // Step 4: Write atomically while the lock is held
     const updateResult = await trx<{ id: string }>(
       `UPDATE escrows
        SET stripe_transfer_id = $1,
@@ -490,22 +506,53 @@ async function handleRefundRequest(
     }
 
     if (originalTransferId) {
-      log.info(
-        { escrowId: escrow.id, originalTransferId },
-        'handleRefundRequest: escrow was previously RELEASED — reversing original transfer before refund',
+      // BUG 2 FIX: Check for an existing transfer_reversed checkpoint before calling
+      // createTransferReversal. If the reversal succeeded on a prior attempt but
+      // createRefund then failed, a BullMQ retry would call createTransferReversal
+      // again — potentially double-reversing. The escrow_events checkpoint makes the
+      // reversal idempotent across retries.
+      const existingReversalEvent = await db.query<{ id: string }>(
+        `SELECT id FROM escrow_events
+         WHERE escrow_id = $1 AND metadata::jsonb->>'event_type' = 'transfer_reversed'
+         LIMIT 1`,
+        [escrow.id]
       );
-      const reversalResult = await StripeService.createTransferReversal(originalTransferId, escrow.id);
-      if (!reversalResult.success) {
-        log.error(
-          { escrowId: escrow.id, originalTransferId, err: reversalResult.error.message },
-          'handleRefundRequest: transfer reversal failed — cannot safely issue refund',
+
+      if (existingReversalEvent.rows.length > 0) {
+        log.info(
+          { escrowId: escrow.id, originalTransferId },
+          'handleRefundRequest: transfer_reversed checkpoint found — skipping reversal call (idempotent retry)',
         );
-        throw new Error(`Transfer reversal failed: ${reversalResult.error.message}`);
+      } else {
+        log.info(
+          { escrowId: escrow.id, originalTransferId },
+          'handleRefundRequest: escrow was previously RELEASED — reversing original transfer before refund',
+        );
+        const reversalResult = await StripeService.createTransferReversal(originalTransferId, escrow.id);
+        if (!reversalResult.success) {
+          log.error(
+            { escrowId: escrow.id, originalTransferId, err: reversalResult.error.message },
+            'handleRefundRequest: transfer reversal failed — cannot safely issue refund',
+          );
+          throw new Error(`Transfer reversal failed: ${reversalResult.error.message}`);
+        }
+        // BUG 2 FIX: Write the checkpoint IMMEDIATELY after the reversal succeeds
+        // and BEFORE attempting the refund. If createRefund fails and BullMQ retries,
+        // the checkpoint above will skip the reversal so only the refund is retried.
+        await db.query(
+          `INSERT INTO escrow_events (escrow_id, from_state, to_state, actor_id, actor_type, metadata)
+           VALUES ($1, 'LOCKED_DISPUTE', 'LOCKED_DISPUTE', NULL, 'system', $2)`,
+          [escrow.id, JSON.stringify({
+            event_type: 'transfer_reversed',
+            original_transfer_id: originalTransferId,
+            reversal_id: reversalResult.data.reversalId,
+          })]
+        );
+        log.info(
+          { escrowId: escrow.id, originalTransferId, reversalId: reversalResult.data.reversalId },
+          'Transfer reversal completed and checkpoint written — proceeding with charge refund',
+        );
       }
-      log.info(
-        { escrowId: escrow.id, originalTransferId, reversalId: reversalResult.data.reversalId },
-        'Transfer reversal completed — proceeding with charge refund',
-      );
     }
   }
 
@@ -521,6 +568,7 @@ async function handleRefundRequest(
     escrowId: escrow.id,
     amount: amountToRefund,
     reason: 'requested_by_customer',
+    idempotencyKeySuffix: 'escrow_refund',
   });
 
   if (!refundResult.success) {
@@ -642,6 +690,7 @@ async function handlePartialRefundRequest(
         escrowId: escrow.id,
         amount: refundAmount,
         reason: 'requested_by_customer',
+        idempotencyKeySuffix: 'partial_refund',
       });
 
       if (!refundResult.success) {
@@ -685,14 +734,17 @@ async function handlePartialRefundRequest(
     const residual = escrow.amount - Math.round(refundAmount) - netReleaseCents - rawPlatformFeeCents;
     adjustedPlatformFeeCents = rawPlatformFeeCents + residual;
 
-    // TT-03: Re-read stripe_transfer_id from the DB after the first transaction committed.
-    // Two concurrent BullMQ retries can both see stripe_transfer_id = null in their stale
-    // snapshots; this fresh read is the second line of defence against double transfer.
+    // TT-03 (partial): The bare SELECT had a race window — two workers can both
+    // see stripe_transfer_id=null and both proceed to Stripe. Fix: use FOR UPDATE
+    // NOWAIT inside a transaction so the second worker blocks and re-reads the
+    // value the first worker wrote, preventing a double-transfer on this path.
     if (!transferId) {
-      const freshTransferResult = await db.query<{ stripe_transfer_id: string | null }>(
-        'SELECT stripe_transfer_id FROM escrows WHERE id = $1',
-        [escrow.id]
-      );
+      const freshTransferResult = await db.transaction(async (trx: QueryFn) => {
+        return trx<{ stripe_transfer_id: string | null }>(
+          'SELECT stripe_transfer_id FROM escrows WHERE id = $1 FOR UPDATE NOWAIT',
+          [escrow.id]
+        );
+      });
       if (freshTransferResult.rows[0]?.stripe_transfer_id) {
         transferId = freshTransferResult.rows[0].stripe_transfer_id;
         log.info(

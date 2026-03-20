@@ -464,38 +464,56 @@ async function handleInvoicePaid(event: StripeEventEnvelope): Promise<void> {
     return;
   }
 
-  // Idempotency guard: prevent double-counting subscription revenue on BullMQ retry
-  const existingRevenue = await db.query(
-    `SELECT id FROM revenue_ledger WHERE stripe_event_id = $1 AND event_type = 'subscription' LIMIT 1`,
-    [event.id]
-  );
-  if (existingRevenue.rows.length > 0) {
-    log.info({ stripeEventId: event.id }, '[stripe-event-worker] handleInvoicePaid: revenue already logged, skipping duplicate');
-    return; // idempotent — already processed
-  }
+  // BUG 4 FIX: Concurrent retries could both read zero rows from revenue_ledger
+  // and both call logEvent, writing two subscription revenue entries. Fix: acquire
+  // a session-level advisory lock keyed on the Stripe event ID before reading
+  // revenue_ledger. Only one concurrent handler will hold the lock; the other will
+  // block until the first commits or rolls back, then re-reads a non-empty ledger.
+  //
+  // pg_try_advisory_xact_lock: transaction-scoped advisory lock — auto-released
+  // at commit/rollback. Returns false immediately if lock is held by another
+  // session (non-blocking variant). We use the blocking variant so the second
+  // retry waits rather than skips (skipping could miss the ledger write window).
+  await db.transaction(async (trx) => {
+    // Acquire advisory lock (blocks until acquired; released at transaction end)
+    await trx(`SELECT pg_advisory_xact_lock(hashtext($1))`, [String(event.id)]);
 
-  if (userId) {
-    await RevenueService.logEvent({
-      eventType: 'subscription',
-      userId,
-      amountCents: amountPaid,
-      stripeEventId: event.id,
-    });
-  } else {
-    // Could not resolve user — log with 'system' so revenue is still captured
-    // and ops can reconcile via customer_id in metadata.
-    log.warn(
-      { invoiceId: event.id, amountPaid, customerId: customerId ?? null },
-      'invoice.paid: could not resolve user_id, logging revenue with system'
+    // Re-check inside the lock — if another session already wrote the entry, skip
+    const existingRevenue = await trx<{ id: string }>(
+      `SELECT id FROM revenue_ledger WHERE stripe_event_id = $1 AND event_type = 'subscription' LIMIT 1`,
+      [event.id]
     );
-    await RevenueService.logEvent({
-      eventType: 'subscription',
-      userId: null,
-      amountCents: amountPaid,
-      stripeEventId: event.id,
-      metadata: { customer_id: customerId ?? null, unresolved_user: true },
-    });
-  }
+    if (existingRevenue.rows.length > 0) {
+      log.info({ stripeEventId: event.id }, '[stripe-event-worker] handleInvoicePaid: revenue already logged (inside advisory lock), skipping duplicate');
+      return; // idempotent — already processed; advisory lock released on commit
+    }
+
+    // Dispatch to logEvent while the advisory lock is held. logEvent uses db.query
+    // on its own connection but its INSERT commits before this transaction commits
+    // and releases the lock — so the second concurrent caller will see the row
+    // when it re-checks revenue_ledger after acquiring the lock.
+    if (userId) {
+      await RevenueService.logEvent({
+        eventType: 'subscription',
+        userId,
+        amountCents: amountPaid,
+        stripeEventId: event.id,
+      });
+    } else {
+      log.warn(
+        { invoiceId: event.id, amountPaid, customerId: customerId ?? null },
+        'invoice.paid: could not resolve user_id, logging revenue with system'
+      );
+      await RevenueService.logEvent({
+        eventType: 'subscription',
+        userId: null,
+        amountCents: amountPaid,
+        stripeEventId: event.id,
+        metadata: { customer_id: customerId ?? null, unresolved_user: true },
+      });
+    }
+  });
+  // logEvent dispatched inside the advisory lock transaction above.
 }
 
 async function handleChargeDisputeCreated(

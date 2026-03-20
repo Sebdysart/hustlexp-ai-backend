@@ -20,6 +20,31 @@ import { z } from 'zod';
 import { firebaseAuth } from '../auth/firebase.js';
 
 // --------------------------------------------------------------------------
+// Avatar URL allowlist — mirrors isApprovedPhotoHost in messaging.ts
+// Only R2-hosted URLs are accepted to prevent SSRF / tracking-pixel attacks.
+// R2_PUBLIC_URL is read lazily inside the function so test environments can
+// set the env var without relying on module-load-time evaluation.
+// --------------------------------------------------------------------------
+function isApprovedAvatarHost(url: string): boolean {
+  try {
+    const { hostname } = new URL(url);
+    // Custom R2 public domain (configured via R2_PUBLIC_URL env var)
+    const r2Raw = process.env.R2_PUBLIC_URL || '';
+    if (r2Raw) {
+      try {
+        const r2Hostname = new URL(r2Raw).hostname;
+        if (hostname === r2Hostname) return true;
+      } catch { /* ignore malformed env var */ }
+    }
+    // Default Cloudflare R2 public URL pattern: pub-<hash>.r2.dev
+    if (/^pub-[a-f0-9]+\.r2\.dev$/.test(hostname)) return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+// --------------------------------------------------------------------------
 // Helper: Transform DB user row → iOS-compatible JSON
 // --------------------------------------------------------------------------
 // The iOS app expects camelCase keys and some field name differences.
@@ -183,20 +208,26 @@ export const userRouter = router({
     }),
   
   /**
-   * Get XP history
+   * Get XP history (paginated)
+   * Default limit=50, max=100 to prevent DoS/OOM from unbounded queries.
    */
   xpHistory: protectedProcedure
-    .input(z.void())
-    .query(async ({ ctx }) => {
-      const result = await XPService.getHistory(ctx.user.id);
-      
+    .input(z.object({
+      limit: z.number().int().min(1).max(100).default(50),
+      offset: z.number().int().nonnegative().default(0),
+    }).optional())
+    .query(async ({ ctx, input }) => {
+      const limit = input?.limit ?? 50;
+      const offset = input?.offset ?? 0;
+      const result = await XPService.getHistory(ctx.user.id, limit, offset);
+
       if (!result.success) {
         throw new TRPCError({
           code: 'INTERNAL_SERVER_ERROR',
           message: result.error.message,
         });
       }
-      
+
       return result.data;
     }),
   
@@ -386,7 +417,7 @@ export const userRouter = router({
     .input(z.object({
       fullName: z.string().min(1).max(255).optional(),
       bio: z.string().max(500).optional(),
-      avatarUrl: z.string().url().max(2048).optional(),
+      avatarUrl: z.string().url().max(2048).refine(isApprovedAvatarHost, { message: 'Avatar must be hosted on approved storage (R2 only)' }).optional(),
       phone: z.string().max(20).optional(),
       // Accept "hustler", "worker", or "poster" from frontend
       defaultMode: z.string().max(20).optional(),

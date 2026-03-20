@@ -85,6 +85,7 @@ const fakeTask = {
   escrow_id: ESCROW_UUID,
   completed_at: new Date().toISOString(),
   status: 'completed',
+  state: 'COMPLETED', // required by the router's early task-state validation (Bug 3 fix)
 };
 
 const fakeDispute = {

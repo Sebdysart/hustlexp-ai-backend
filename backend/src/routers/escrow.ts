@@ -484,23 +484,37 @@ export const escrowRouter = router({
   getHistory: protectedProcedure
     .input(z.object({
       limit: z.number().int().min(1).max(100).default(50),
+      offset: z.number().int().nonnegative().default(0),
     }).optional())
     .query(async ({ ctx, input }) => {
+      const limit = input?.limit ?? 50;
+      const offset = input?.offset ?? 0;
+
+      const totalResult = await db.query<{ count: string }>(
+        `SELECT COUNT(*)::text as count
+         FROM escrows e
+         JOIN tasks t ON t.id = e.task_id
+         WHERE t.poster_id = $1 OR t.worker_id = $1`,
+        [ctx.user.id]
+      );
+      const total = parseInt(totalResult.rows[0]?.count ?? '0', 10);
+
       const result = await db.query(
         `SELECT e.*, t.poster_id, t.worker_id
          FROM escrows e
          JOIN tasks t ON t.id = e.task_id
          WHERE t.poster_id = $1 OR t.worker_id = $1
          ORDER BY e.created_at DESC
-         LIMIT $2`,
-        [ctx.user.id, input?.limit || 50]
+         LIMIT $2 OFFSET $3`,
+        [ctx.user.id, limit, offset]
       );
 
       const rows = result.rows as (Record<string, unknown> & { stripe_payment_intent_id?: string; stripe_transfer_id?: string })[];
-      return rows.map((row) => {
+      const items = rows.map((row) => {
         const { stripe_payment_intent_id, stripe_transfer_id, ...safe } = row;
         return ctx.user.is_admin === true ? row : safe;
       });
+      return { items, total, offset };
     }),
 
   // --------------------------------------------------------------------------
@@ -524,8 +538,8 @@ export const escrowRouter = router({
     .input(Schemas.awardXP)
     .mutation(async ({ ctx, input }) => {
       // Derive baseXP from the escrow record — caller cannot supply it.
-      const escrowResult = await db.query<{ amount: number; worker_id: string }>(
-        `SELECT amount, worker_id FROM escrows WHERE id = $1 AND state = 'RELEASED'`,
+      const escrowResult = await db.query<{ amount: number; worker_id: string; task_id: string }>(
+        `SELECT amount, worker_id, task_id FROM escrows WHERE id = $1 AND state = 'RELEASED'`,
         [input.escrowId]
       );
       if (escrowResult.rows.length === 0) {
@@ -535,6 +549,12 @@ export const escrowRouter = router({
       // Verify the calling user is the worker on this escrow
       if (escrow.worker_id !== ctx.user.id) {
         throw new TRPCError({ code: 'FORBIDDEN', message: 'You are not the worker for this escrow' });
+      }
+      // Cross-validate: taskId supplied by caller must match the escrow's own task_id.
+      // Without this check a worker can supply their legitimate escrowId but a different
+      // taskId (e.g. a Live/surge task) to inflate their XP multiplier.
+      if (escrow.task_id !== input.taskId) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'taskId does not match escrow' });
       }
       // Derive baseXP from amount (amount is in cents; $1 = 10 XP)
       const derivedBaseXP = Math.round(escrow.amount / 10);

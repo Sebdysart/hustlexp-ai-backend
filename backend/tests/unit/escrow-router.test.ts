@@ -1065,120 +1065,130 @@ describe('escrow.getHistory', () => {
   });
 
   describe('return shape', () => {
-    it('returns an array of escrow rows', async () => {
+    it('returns paginated shape with items, total, offset', async () => {
       const rows = [
         makeEscrow({ id: 'esc-1' }),
         makeEscrow({ id: 'esc-2', state: 'RELEASED' }),
       ];
-      mockDb.query.mockResolvedValueOnce({
-        rows,
-        rowCount: rows.length,
-      } as any);
+      // First call: COUNT query; second call: rows query
+      mockDb.query.mockResolvedValueOnce({ rows: [{ count: '2' }], rowCount: 1 } as any);
+      mockDb.query.mockResolvedValueOnce({ rows, rowCount: rows.length } as any);
 
       const caller = makeCaller(POSTER_ID);
       const result = await caller.getHistory({ limit: 50 });
 
-      expect(Array.isArray(result)).toBe(true);
-      expect(result).toHaveLength(2);
-      expect(result[0]).toHaveProperty('id', 'esc-1');
-      expect(result[1]).toHaveProperty('state', 'RELEASED');
+      expect(result).toHaveProperty('total', 2);
+      expect(result).toHaveProperty('offset', 0);
+      expect(Array.isArray(result.items)).toBe(true);
+      expect(result.items).toHaveLength(2);
+      expect(result.items[0]).toHaveProperty('id', 'esc-1');
+      expect(result.items[1]).toHaveProperty('state', 'RELEASED');
     });
 
-    it('returns empty array when user has no history', async () => {
-      mockDb.query.mockResolvedValueOnce({
-        rows: [],
-        rowCount: 0,
-      } as any);
+    it('returns empty items array when user has no history', async () => {
+      mockDb.query.mockResolvedValueOnce({ rows: [{ count: '0' }], rowCount: 1 } as any);
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
 
       const caller = makeCaller(POSTER_ID);
       const result = await caller.getHistory({ limit: 50 });
 
-      expect(result).toEqual([]);
+      expect(result.items).toEqual([]);
+      expect(result.total).toBe(0);
     });
 
     it('strips stripe_payment_intent_id for non-admin callers', async () => {
       const rows = [makeEscrow({ id: 'esc-1', stripe_payment_intent_id: 'pi_secret_123' })];
+      mockDb.query.mockResolvedValueOnce({ rows: [{ count: '1' }], rowCount: 1 } as any);
       mockDb.query.mockResolvedValueOnce({ rows, rowCount: rows.length } as any);
 
       const result = await makeCaller(POSTER_ID, 'user').getHistory({ limit: 50 });
 
-      expect(result).toHaveLength(1);
-      expect(result[0]).not.toHaveProperty('stripe_payment_intent_id');
-      expect(result[0]).toHaveProperty('id', 'esc-1');
+      expect(result.items).toHaveLength(1);
+      expect(result.items[0]).not.toHaveProperty('stripe_payment_intent_id');
+      expect(result.items[0]).toHaveProperty('id', 'esc-1');
     });
 
     it('includes stripe_payment_intent_id for admin callers', async () => {
       const rows = [makeEscrow({ id: 'esc-1', stripe_payment_intent_id: 'pi_secret_123' })];
+      mockDb.query.mockResolvedValueOnce({ rows: [{ count: '1' }], rowCount: 1 } as any);
       mockDb.query.mockResolvedValueOnce({ rows, rowCount: rows.length } as any);
 
       const result = await makeCaller(POSTER_ID, 'admin').getHistory({ limit: 50 });
 
-      expect(result).toHaveLength(1);
-      expect(result[0]).toHaveProperty('stripe_payment_intent_id', 'pi_secret_123');
+      expect(result.items).toHaveLength(1);
+      expect(result.items[0]).toHaveProperty('stripe_payment_intent_id', 'pi_secret_123');
     });
 
     it('strips stripe_transfer_id for non-admin callers', async () => {
       const rows = [makeEscrow({ id: 'esc-1', stripe_transfer_id: 'tr_secret_456' })];
+      mockDb.query.mockResolvedValueOnce({ rows: [{ count: '1' }], rowCount: 1 } as any);
       mockDb.query.mockResolvedValueOnce({ rows, rowCount: rows.length } as any);
 
       const result = await makeCaller(POSTER_ID, 'user').getHistory({ limit: 50 });
 
-      expect(result).toHaveLength(1);
-      expect(result[0]).not.toHaveProperty('stripe_transfer_id');
-      expect(result[0]).toHaveProperty('id', 'esc-1');
+      expect(result.items).toHaveLength(1);
+      expect(result.items[0]).not.toHaveProperty('stripe_transfer_id');
+      expect(result.items[0]).toHaveProperty('id', 'esc-1');
     });
 
     it('includes stripe_transfer_id for admin callers', async () => {
       const rows = [makeEscrow({ id: 'esc-1', stripe_transfer_id: 'tr_secret_456' })];
+      mockDb.query.mockResolvedValueOnce({ rows: [{ count: '1' }], rowCount: 1 } as any);
       mockDb.query.mockResolvedValueOnce({ rows, rowCount: rows.length } as any);
 
       const result = await makeCaller(POSTER_ID, 'admin').getHistory({ limit: 50 });
 
-      expect(result).toHaveLength(1);
-      expect(result[0]).toHaveProperty('stripe_transfer_id', 'tr_secret_456');
+      expect(result.items).toHaveLength(1);
+      expect(result.items[0]).toHaveProperty('stripe_transfer_id', 'tr_secret_456');
     });
   });
 
   describe('pagination', () => {
     it('passes limit to db.query', async () => {
+      mockDb.query.mockResolvedValueOnce({ rows: [{ count: '0' }], rowCount: 1 } as any);
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
 
       await makeCaller(POSTER_ID).getHistory({ limit: 25 });
 
-      const [sql, params] = (mockDb.query as any).mock.calls[0];
+      // Second call is the rows query; first is the COUNT
+      const [sql, params] = (mockDb.query as any).mock.calls[1];
       expect(sql).toContain('LIMIT');
       expect(params).toContain(25);
     });
 
     it('uses default limit of 50 when input is omitted', async () => {
+      mockDb.query.mockResolvedValueOnce({ rows: [{ count: '0' }], rowCount: 1 } as any);
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
 
       await makeCaller(POSTER_ID).getHistory();
 
-      const [, params] = (mockDb.query as any).mock.calls[0];
+      const [, params] = (mockDb.query as any).mock.calls[1];
       expect(params).toContain(50);
     });
   });
 
   describe('db interaction', () => {
     it('queries escrows joined with tasks for the current user', async () => {
+      mockDb.query.mockResolvedValueOnce({ rows: [{ count: '0' }], rowCount: 1 } as any);
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
 
       await makeCaller(POSTER_ID).getHistory({ limit: 10 });
 
-      const [sql, params] = (mockDb.query as any).mock.calls[0];
+      // Second call is the rows query
+      const [sql, params] = (mockDb.query as any).mock.calls[1];
       expect(sql).toContain('FROM escrows');
       expect(sql).toContain('JOIN tasks');
       expect(sql).toContain('ORDER BY');
       expect(params[0]).toBe(POSTER_ID);
     });
 
-    it('makes exactly 1 db.query call', async () => {
+    it('makes exactly 2 db.query calls (count + rows)', async () => {
+      mockDb.query.mockResolvedValueOnce({ rows: [{ count: '0' }], rowCount: 1 } as any);
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
 
       await makeCaller(POSTER_ID).getHistory({ limit: 10 });
 
-      expect(mockDb.query).toHaveBeenCalledTimes(1);
+      expect(mockDb.query).toHaveBeenCalledTimes(2);
     });
   });
 });
@@ -1190,11 +1200,12 @@ describe('escrow.getHistory', () => {
 describe('escrow.awardXP', () => {
   // Helper: mock the DB query that the router now uses to derive baseXP server-side.
   // The escrow has amount=5000 cents, so derivedBaseXP = Math.round(5000/10) = 500.
-  function mockReleasedEscrow(overrides: { amount?: number; worker_id?: string } = {}) {
+  function mockReleasedEscrow(overrides: { amount?: number; worker_id?: string; task_id?: string } = {}) {
     mockDb.query.mockResolvedValueOnce({
       rows: [{
         amount: overrides.amount ?? 5000,
         worker_id: overrides.worker_id ?? WORKER_ID,
+        task_id: overrides.task_id ?? TASK_ID,
       }],
     });
   }
@@ -1421,7 +1432,7 @@ describe('Financial Safety — cross-cutting', () => {
   it('INV-5: double XP award blocked (23505 maps to CONFLICT)', async () => {
     // Router now queries DB to derive baseXP — mock the escrow lookup first
     mockDb.query.mockResolvedValueOnce({
-      rows: [{ amount: 5000, worker_id: WORKER_ID }],
+      rows: [{ amount: 5000, worker_id: WORKER_ID, task_id: TASK_ID }],
     });
     mockXPService.awardXP.mockResolvedValueOnce({
       success: false,

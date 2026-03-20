@@ -6,6 +6,7 @@ import { adminAuth, revokeFirebaseRefreshTokens } from "./firebase.js";
 import { redis, CACHE_KEYS } from "../cache/redis.js";
 import { authLogger } from "../logger.js";
 import { TOKEN_CACHE_TTL_SECONDS, REVOCATION_MARKER_TTL_SECONDS } from "./constants.js";
+import { db } from "../db.js";
 
 export interface AuthenticatedUser {
   uid: string;
@@ -43,7 +44,11 @@ export async function authenticateRequest(
     if (revokedAt) {
       // Token was cached before revocation — invalidate and re-verify
       authLogger.info({ uid: user.uid }, "Cached session invalidated by revocation");
-      await redis.del(CACHE_KEYS.sessionToken(token));
+      try {
+        await redis.del(CACHE_KEYS.sessionToken(token));
+      } catch (err) {
+        authLogger.error({ err }, '[auth] Failed to delete revoked session from cache — continuing with Firebase re-verification');
+      }
       // Fall through to Firebase verification with checkRevoked
     } else {
       return user;
@@ -61,12 +66,36 @@ export async function authenticateRequest(
       name: decoded.name || undefined,
     };
 
+    // Check DB for ban/suspension — ensures non-tRPC Hono routes also enforce these states
+    try {
+      const { rows: userRows } = await db.query<{ is_banned: boolean; account_status: string }>(
+        'SELECT is_banned, account_status FROM users WHERE firebase_uid = $1',
+        [decoded.uid]
+      );
+      if (userRows.length > 0) {
+        const dbUser = userRows[0];
+        if (dbUser.is_banned || dbUser.account_status === 'SUSPENDED') {
+          authLogger.warn({ uid: decoded.uid, is_banned: dbUser.is_banned, account_status: dbUser.account_status }, '[auth] Rejected banned/suspended user at Hono auth middleware');
+          return null; // Rejected — route will return 401
+        }
+      }
+    } catch (err) {
+      // DB errors must not block auth — log and continue (fail-open for availability)
+      authLogger.error({ err, uid: decoded.uid }, '[auth] DB ban-check failed — proceeding without ban enforcement');
+    }
+
     // Cache session for 5 mins (TOKEN_CACHE_TTL_SECONDS) — reduces revocation window to ≤5 min
-    await redis.set(
-      CACHE_KEYS.sessionToken(token),
-      JSON.stringify(user),
-      TOKEN_CACHE_TTL_SECONDS
-    );
+    try {
+      await redis.set(
+        CACHE_KEYS.sessionToken(token),
+        JSON.stringify(user),
+        TOKEN_CACHE_TTL_SECONDS
+      );
+    } catch (err) {
+      // Log CRITICAL if session cache write fails — defense-in-depth degraded.
+      // Do NOT fail authentication; the user is still verified by Firebase.
+      authLogger.error({ err, uid: user.uid }, '[auth] CRITICAL: failed to write session cache — revocation window degraded, continuing');
+    }
 
     return user;
   } catch (err: unknown) {
@@ -101,7 +130,13 @@ export async function requireAuth(c: Context): Promise<AuthenticatedUser> {
  * to be invalidated on next use.
  */
 export async function revokeUserSessions(uid: string): Promise<void> {
-  await redis.set(REVOKED_KEY(uid), new Date().toISOString(), REVOCATION_MARKER_TTL_SECONDS); // 6 min (> 5 min cache TTL)
+  try {
+    await redis.set(REVOKED_KEY(uid), new Date().toISOString(), REVOCATION_MARKER_TTL_SECONDS); // 6 min (> 5 min cache TTL)
+  } catch (err) {
+    // Log CRITICAL — revocation marker failed to write; Redis is the primary protection mechanism here.
+    // The Firebase token revocation below still runs as a second line of defense.
+    authLogger.error({ uid, err }, '[auth] CRITICAL: failed to write revocation marker to Redis — ban/suspend protection degraded');
+  }
   authLogger.info({ uid }, "User sessions revoked");
 
   // Also revoke Firebase refresh tokens so checkRevoked=true works after Redis TTL expires

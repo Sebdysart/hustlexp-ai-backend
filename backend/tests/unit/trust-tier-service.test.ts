@@ -51,6 +51,10 @@ vi.mock('../../src/auth/middleware', () => ({
   revokeUserSessions: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock('../../src/realtime/connection-registry', () => ({
+  forceDisconnectUser: vi.fn(),
+}));
+
 vi.mock('../../src/services/AlphaInstrumentation', () => ({
   AlphaInstrumentation: {
     emitTrustDeltaApplied: vi.fn().mockResolvedValue(undefined),
@@ -302,7 +306,11 @@ describe('TrustTierService.banUser', () => {
     mockQuery.mockResolvedValueOnce({ rows: [{ firebase_uid: 'firebase-u1' }], rowCount: 1 });
     // SELECT active tasks — none
     mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-    // UPDATE tasks (cancel active)
+    // UPDATE tasks (cancel worker-side active)
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    // SELECT poster funded escrows (BUG 3) — none
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+    // UPDATE tasks cancel poster OPEN tasks (BUG 3)
     mockQuery.mockResolvedValueOnce({ rows: [] });
     // SELECT default_mode for instrumentation
     mockQuery.mockResolvedValueOnce({ rows: [{ default_mode: 'hustler' }] });
@@ -325,11 +333,13 @@ describe('TrustTierService.banUser', () => {
     mockQuery.mockResolvedValueOnce({ rows: [] }); // update users
     mockQuery.mockResolvedValueOnce({ rows: [{ firebase_uid: 'firebase-u1' }], rowCount: 1 }); // SELECT firebase_uid
     mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // select active tasks — none
-    mockQuery.mockResolvedValueOnce({ rows: [] }); // cancel tasks UPDATE
+    mockQuery.mockResolvedValueOnce({ rows: [] }); // cancel worker-side tasks UPDATE
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // SELECT poster funded escrows (BUG 3)
+    mockQuery.mockResolvedValueOnce({ rows: [] }); // cancel poster OPEN tasks (BUG 3)
     mockQuery.mockResolvedValueOnce({ rows: [{ default_mode: 'poster' }] }); // instrumentation
 
     await TrustTierService.banUser('u1', 'abuse');
-    // The fifth call (index 4) should be the cancel tasks query (shifted by firebase_uid lookup)
+    // The fifth call (index 4) should be the cancel worker-side tasks query
     const cancelCall = mockQuery.mock.calls[4];
     expect(cancelCall[0]).toContain('CANCELLED');
   });
@@ -348,7 +358,11 @@ describe('TrustTierService.banUser', () => {
     mockQuery.mockResolvedValueOnce({ rows: [{ id: 'task-1' }], rowCount: 1 });
     // SELECT escrow for task-1 — funded escrow exists
     mockQuery.mockResolvedValueOnce({ rows: [{ id: 'escrow-1' }], rowCount: 1 });
-    // UPDATE tasks (cancel active)
+    // UPDATE tasks (cancel worker-side active tasks)
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    // SELECT poster funded escrows (BUG 3) — none for this user
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+    // UPDATE tasks cancel poster OPEN tasks (BUG 3)
     mockQuery.mockResolvedValueOnce({ rows: [] });
     // SELECT default_mode for instrumentation
     mockQuery.mockResolvedValueOnce({ rows: [{ default_mode: 'hustler' }] });
@@ -382,7 +396,11 @@ describe('TrustTierService.banUser', () => {
     mockQuery.mockResolvedValueOnce({ rows: [{ id: 'task-2' }], rowCount: 1 });
     // SELECT escrow for task-2 — no funded escrow
     mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-    // UPDATE tasks (cancel active)
+    // UPDATE tasks (cancel worker-side active tasks)
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    // SELECT poster funded escrows (BUG 3 fix) — none
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+    // UPDATE tasks cancel poster OPEN tasks (BUG 3 fix)
     mockQuery.mockResolvedValueOnce({ rows: [] });
     // SELECT default_mode for instrumentation
     mockQuery.mockResolvedValueOnce({ rows: [{ default_mode: 'hustler' }] });
@@ -390,5 +408,45 @@ describe('TrustTierService.banUser', () => {
     await TrustTierService.banUser('u1', 'fraud');
 
     expect(mockWrite).not.toHaveBeenCalled();
+  });
+
+  it('enqueues poster escrow refund and cancels poster OPEN tasks on ban (BUG 3)', async () => {
+    const { writeToOutbox: mockWriteToOutbox } = await import('../../src/lib/outbox-helpers');
+    const mockWrite = mockWriteToOutbox as ReturnType<typeof vi.fn>;
+    mockWrite.mockClear();
+
+    // getTrustTier
+    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 2 }], rowCount: 1 });
+    // UPDATE users SET trust_tier = BANNED
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    // SELECT firebase_uid FROM users
+    mockQuery.mockResolvedValueOnce({ rows: [{ firebase_uid: 'firebase-poster' }], rowCount: 1 });
+    // SELECT worker active tasks — none for this test
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+    // UPDATE tasks cancel worker-side
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    // SELECT poster funded escrows — one funded escrow
+    mockQuery.mockResolvedValueOnce({ rows: [{ escrow_id: 'escrow-p1', task_id: 'task-p1' }], rowCount: 1 });
+    // UPDATE tasks cancel poster OPEN tasks
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    // SELECT default_mode for instrumentation
+    mockQuery.mockResolvedValueOnce({ rows: [{ default_mode: 'poster' }] });
+
+    await TrustTierService.banUser('poster-u1', 'fraud');
+
+    expect(mockWrite).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: 'escrow.refund_requested',
+        aggregateId: 'escrow-p1',
+        payload: expect.objectContaining({ escrowId: 'escrow-p1', taskId: 'task-p1', reason: 'poster_banned' }),
+        idempotencyKey: 'ban_poster_refund:task-p1',
+      })
+    );
+
+    // Verify poster cancel query was called
+    const cancelCall = mockQuery.mock.calls.find(
+      (call) => typeof call[0] === 'string' && call[0].includes("poster_id") && call[0].includes("CANCELLED")
+    );
+    expect(cancelCall).toBeDefined();
   });
 });

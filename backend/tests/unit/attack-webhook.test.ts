@@ -389,6 +389,10 @@ describe('REPLAY ATTACK 4 — invoice.paid replayed (subscription credits)', () 
         }],
         rowCount: 1,
       })
+      // BUG 4 FIX: inside db.transaction — advisory lock call (pg_advisory_xact_lock)
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+      // BUG 4 FIX: inside db.transaction — revenue_ledger idempotency check (0 rows = not yet logged)
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
       // Final UPDATE: result='success'
       .mockResolvedValueOnce({ rows: [], rowCount: 1 });
 

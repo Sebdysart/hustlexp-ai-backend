@@ -72,6 +72,18 @@ export const disputeRouter = router({
         });
       }
 
+      // Early task-state validation — reject before any DB transaction is opened in the
+      // service, reducing unnecessary lock contention on the DB critical path.
+      // The service validates this too (INVALID_STATE), but this fast-path check avoids
+      // acquiring FOR UPDATE locks for clearly invalid states.
+      const validDisputeStates = ['COMPLETED'];
+      if (!validDisputeStates.includes(task.state)) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'Disputes can only be opened for completed tasks',
+        });
+      }
+
       // Resolve the escrow for this task.
       const escrowResult = await EscrowService.getByTaskId(input.taskId);
       if (!escrowResult.success) {

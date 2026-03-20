@@ -453,8 +453,15 @@ async function handleChargeRefunded(charge: Stripe.Charge, stripeEventId: string
   // P0: Extract escrow_id from charge metadata (preferred), fallback to payment_intent lookup
   const escrowId = charge.metadata?.escrow_id;
 
-  // Extract refund ID from charge.refunds (first refund)
-  const refundId = charge.refunds?.data?.[0]?.id;
+  // Extract the triggering refund ID: find the most-recently-created refund in the
+  // inline list. Stripe returns inline refund lists newest-first for <10 refunds,
+  // but reduce() is safe regardless of order and handles paginated charges (>10
+  // refunds) where data[0] may not be the just-created one.
+  const refundId = charge.refunds?.data?.reduce(
+    (latest: Stripe.Refund | null, r: Stripe.Refund) =>
+      !latest || r.created > latest.created ? r : latest,
+    null
+  )?.id;
   if (!refundId) {
     throw new Error(`Charge ${charge.id} missing refund ID`);
   }
@@ -838,21 +845,34 @@ async function handleTransferFailed(transfer: Stripe.Transfer, stripeEventId: st
   // so the worker is never silently unnotified.
   // -------------------------------------------------------------------------
 
-  // Insert failed_transfer ledger entry
-  await RevenueService.logEvent({
-    eventType: 'failed_transfer',
-    userId: workerId,
-    amountCents: -escrow.amount,
-    escrowId: escrow.id,
-    stripeEventId,
-    stripeTransferId: transferId,
-    metadata: {
-      reason: 'transfer_failed',
-      escrow_state_before: 'RELEASED',
-      escrow_state_after: revertedVersion != null ? 'LOCKED_DISPUTE' : 'REVERT_FAILED',
-      requires_admin_intervention: true,
-    },
-  });
+  // BUG 3 FIX: Insert failed_transfer ledger entry only if not already present.
+  // On BullMQ retry, a second call to logEvent would create a duplicate entry.
+  // Mirror the idempotency guard pattern used in handleInvoicePaid.
+  const existingFailedTransferEntry = await db.query(
+    `SELECT id FROM revenue_ledger WHERE stripe_event_id = $1 AND event_type = 'failed_transfer' LIMIT 1`,
+    [stripeEventId]
+  );
+  if (existingFailedTransferEntry.rows.length > 0) {
+    log.info(
+      { stripeEventId, escrowId: escrow.id },
+      'handleTransferFailed: failed_transfer ledger entry already exists — skipping duplicate (idempotent retry)',
+    );
+  } else {
+    await RevenueService.logEvent({
+      eventType: 'failed_transfer',
+      userId: workerId,
+      amountCents: -escrow.amount,
+      escrowId: escrow.id,
+      stripeEventId,
+      stripeTransferId: transferId,
+      metadata: {
+        reason: 'transfer_failed',
+        escrow_state_before: 'RELEASED',
+        escrow_state_after: revertedVersion != null ? 'LOCKED_DISPUTE' : 'REVERT_FAILED',
+        requires_admin_intervention: true,
+      },
+    });
+  }
 
   // Send push notification to worker
   if (workerId) {

@@ -382,26 +382,34 @@ describe('RED-TEAM: BullMQ Queue Attack Surface', () => {
         // task lookup
         .mockResolvedValueOnce({ rows: [{ worker_id: 'w1' }], rowCount: 1 })
         // user stripe_connect_id
-        .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_1' }], rowCount: 1 })
-        // TT-03: fresh re-read — no transfer yet on this attempt
-        .mockResolvedValueOnce({ rows: [{ stripe_transfer_id: null }], rowCount: 1 });
+        .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_1' }], rowCount: 1 });
       // NOTE: no "SELECT amount FROM escrows" mock — v2.0 reads escrow.amount
       // from the FOR UPDATE row directly, eliminating that extra round-trip.
+      // NOTE: TT-03 bare SELECT removed — the idempotency re-read is now embedded
+      // inside T2 as SELECT FOR UPDATE NOWAIT (BUG 1 FIX).
 
       (StripeService.createTransfer as any).mockResolvedValueOnce({
         success: true,
         data: { transferId: 'tr_new' },
       });
 
-      // UPDATE with version check returns 0 rows (another worker already updated) — now throws
-      (db.query as any).mockResolvedValueOnce({ rowCount: 0, rows: [] });
+      // T2: SELECT FOR UPDATE NOWAIT → locked row with version=1, no transfer_id yet
+      (db.query as any)
+        .mockResolvedValueOnce({
+          rows: [{ id: E.e4, version: 1, stripe_transfer_id: null }],
+          rowCount: 1,
+        })
+        // T2: UPDATE WHERE version=1 → 0 rows (another worker updated version to 2 first)
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] });
 
       const payloadFields = { escrow_id: E.e4, task_id: T.t4, reason: 'race' };
       const job = makeJob('escrow.release_requested', {
         payload: makeSignedPayload(payloadFields),
       });
 
-      // Version conflict now throws with "Concurrent version conflict" message
+      // BUG 1 FIX: T2 acquires FOR UPDATE lock, version matches but UPDATE still
+      // finds 0 rows (another worker committed between the lock and the UPDATE),
+      // throwing the version-conflict retry error.
       await expect(processEscrowActionJob(job as any)).rejects.toThrow('Concurrent version conflict');
       expect(StripeService.createTransfer).toHaveBeenCalledTimes(1);
     });
@@ -803,19 +811,22 @@ describe('RED-TEAM: BullMQ Queue Attack Surface', () => {
       // --- Process A path (wins) ---
       // NOTE: v2.0 reads escrow.amount from the FOR UPDATE row directly — no
       // separate "SELECT amount FROM escrows" query is needed.
+      // NOTE: TT-03 bare SELECT removed — the idempotency re-read is now embedded
+      // inside T2 as SELECT FOR UPDATE NOWAIT (BUG 1 FIX).
       (db.query as any)
-        .mockResolvedValueOnce({ rows: [escrowState], rowCount: 1 }) // SELECT FOR UPDATE
+        .mockResolvedValueOnce({ rows: [escrowState], rowCount: 1 }) // T1: SELECT FOR UPDATE
         .mockResolvedValueOnce({ rows: [{ worker_id: 'w1' }], rowCount: 1 })
-        .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_1' }], rowCount: 1 })
-        // TT-03: fresh re-read — no transfer yet when A runs
-        .mockResolvedValueOnce({ rows: [{ stripe_transfer_id: null }], rowCount: 1 });
+        .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_1' }], rowCount: 1 });
 
       (StripeService.createTransfer as any).mockResolvedValueOnce({
         success: true, data: { transferId: 'tr_winner' },
       });
 
-      // Process A's UPDATE succeeds (rowCount: 1, RETURNING id returns the updated row)
-      (db.query as any).mockResolvedValueOnce({ rowCount: 1, rows: [{ id: E.e10 }] });
+      // T2 Process A: SELECT FOR UPDATE NOWAIT → locked row (version=1, no transfer yet)
+      (db.query as any)
+        .mockResolvedValueOnce({ rows: [{ id: E.e10, version: 1, stripe_transfer_id: null }], rowCount: 1 })
+        // T2 Process A: UPDATE succeeds (rowCount: 1, RETURNING id returns the updated row)
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: E.e10 }] });
 
       const jobA = makeJob('escrow.release_requested', { payload: payloadA }, 'job-A');
 
@@ -830,23 +841,34 @@ describe('RED-TEAM: BullMQ Queue Attack Surface', () => {
       );
 
       // --- Process B path (loses version race) ---
-      // TT-03: B's fresh re-read returns 'tr_winner' (A already committed) →
-      // B skips Stripe entirely. This is the TT-03 double-transfer prevention.
+      // BUG 1 FIX: The TT-03 bare pre-Stripe SELECT was removed. Process B now calls Stripe
+      // (using Stripe's idempotency key, which returns the same 'tr_winner'), then in T2,
+      // SELECT FOR UPDATE NOWAIT reads 'tr_winner' already set by Process A and skips the UPDATE.
+      // This preserves at-most-once semantics via Stripe idempotency + T2 re-read.
       (db.query as any)
-        .mockResolvedValueOnce({ rows: [escrowState], rowCount: 1 }) // SELECT FOR UPDATE (same stale version)
+        .mockResolvedValueOnce({ rows: [escrowState], rowCount: 1 }) // T1: SELECT FOR UPDATE (same stale version)
         .mockResolvedValueOnce({ rows: [{ worker_id: 'w1' }], rowCount: 1 })
-        .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_1' }], rowCount: 1 })
-        // TT-03: fresh re-read — A already committed 'tr_winner', B sees it and skips Stripe
-        .mockResolvedValueOnce({ rows: [{ stripe_transfer_id: 'tr_winner' }], rowCount: 1 });
+        .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_1' }], rowCount: 1 });
+
+      (StripeService.createTransfer as any).mockResolvedValueOnce({
+        // Stripe idempotency key returns the same transfer A already created
+        success: true, data: { transferId: 'tr_winner' },
+      });
+
+      // T2 Process B: SELECT FOR UPDATE NOWAIT → sees 'tr_winner' already set by A
+      (db.query as any)
+        .mockResolvedValueOnce({ rows: [{ id: E.e10, version: 2, stripe_transfer_id: 'tr_winner' }], rowCount: 1 });
+      // No T2 UPDATE mock needed — B detects existing transfer_id and skips the UPDATE.
 
       const jobB = makeJob('escrow.release_requested', { payload: payloadB }, 'job-B');
 
-      // Process B completes without error — TT-03 fresh re-read sees 'tr_winner' and skips Stripe
+      // Process B completes without error — T2 re-read sees 'tr_winner' and skips DB UPDATE.
       await expect(processEscrowActionJob(jobB as any)).resolves.toBeUndefined();
 
-      // Process B issued zero Stripe calls — TT-03 fresh re-read short-circuited before createTransfer.
+      // Process B called Stripe once (idempotent Stripe call returns same transfer).
+      // The DB double-write is prevented by T2 SELECT FOR UPDATE NOWAIT + transfer_id check.
       // (vi.clearAllMocks() above reset Process A's call count; this assertion is for B alone.)
-      expect(StripeService.createTransfer).toHaveBeenCalledTimes(0);
+      expect(StripeService.createTransfer).toHaveBeenCalledTimes(1);
     });
   });
 

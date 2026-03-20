@@ -599,7 +599,7 @@ export const TrustTierService = {
       }
     }
 
-    // Cancel active tasks — must match exactly the state set used for escrow refund queries above.
+    // Cancel active tasks (worker-side) — must match exactly the state set used for escrow refund queries above.
     await db.query(
       `UPDATE tasks
        SET state = 'CANCELLED', updated_at = NOW()
@@ -607,6 +607,43 @@ export const TrustTierService = {
          AND state IN ('MATCHING', 'ACCEPTED', 'IN_PROGRESS', 'PROOF_SUBMITTED')`,
       [userId]
     );
+
+    // Refund idle funded escrows where the banned user is poster and task is not actively worked.
+    // (Bucket A: OPEN/MATCHING tasks with FUNDED escrows — poster's side)
+    try {
+      const posterEscrows = await db.query<{ escrow_id: string; task_id: string }>(
+        `SELECT e.id as escrow_id, t.id as task_id FROM escrows e
+         JOIN tasks t ON t.id = e.task_id
+         WHERE e.poster_id = $1
+           AND e.state = 'FUNDED'
+           AND t.state NOT IN ('ACCEPTED', 'IN_PROGRESS', 'PROOF_SUBMITTED', 'COMPLETED')`,
+        [userId]
+      );
+      for (const row of posterEscrows.rows) {
+        await writeToOutbox({
+          eventType: 'escrow.refund_requested',
+          aggregateType: 'escrow',
+          aggregateId: row.escrow_id,
+          eventVersion: 1,
+          payload: { escrowId: row.escrow_id, reason: 'poster_banned', taskId: row.task_id },
+          queueName: 'critical_payments',
+          idempotencyKey: `ban_poster_refund:${row.task_id}`,
+        }).catch(err => log.error({ err, escrowId: row.escrow_id, taskId: row.task_id, userId }, '[TrustTierService] banUser: failed to enqueue poster escrow refund'));
+      }
+    } catch (err) {
+      log.error({ err, userId }, '[TrustTierService] banUser: failed to query poster funded escrows');
+    }
+
+    // Cancel poster's OPEN/MATCHING tasks (best-effort)
+    try {
+      await db.query(
+        `UPDATE tasks SET state = 'CANCELLED', cancelled_at = NOW()
+         WHERE poster_id = $1 AND state IN ('OPEN', 'MATCHING')`,
+        [userId]
+      );
+    } catch (err) {
+      log.error({ err, userId }, '[TrustTierService] banUser: failed to cancel poster OPEN tasks');
+    }
 
     // Log ban
     try {

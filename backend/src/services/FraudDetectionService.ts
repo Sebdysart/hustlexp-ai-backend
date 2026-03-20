@@ -341,13 +341,18 @@ export const FraudDetectionService = {
     minRiskScore: number = 0.6,
     limit: number = 100
   ): Promise<ServiceResult<FraudRiskScore[]>> => {
+    if (minRiskScore < 0 || minRiskScore > 1) {
+      return { success: false, error: { code: 'INVALID_INPUT', message: 'minRiskScore must be between 0 and 1' } };
+    }
+    const cappedLimit = Math.min(limit, 500); // Hard cap at 500 to prevent runaway queries
+
     try {
       const result = await db.query<FraudRiskScore>(
         `SELECT * FROM fraud_risk_scores
          WHERE risk_score >= $1 AND status = 'active'
          ORDER BY risk_score DESC, calculated_at DESC
          LIMIT $2`,
-        [minRiskScore, limit]
+        [minRiskScore, cappedLimit]
       );
       
       return {
@@ -532,6 +537,38 @@ export const FraudDetectionService = {
             } catch (e) { log.warn({ e, userId }, 'session revocation failed'); }
 
             try { forceDisconnectUser(userId); } catch (e) { /* fire-and-forget */ }
+
+            // Lock funded escrows for the suspended user (best-effort, independent of the suspend tx)
+            try {
+              const activeEscrows = await db.query<{ id: string }>(
+                `SELECT e.id FROM escrows e
+                 JOIN tasks t ON t.id = e.task_id
+                 WHERE (e.poster_id = $1 OR e.worker_id = $1)
+                   AND e.state = 'FUNDED'
+                   AND t.state IN ('ACCEPTED', 'IN_PROGRESS', 'PROOF_SUBMITTED')`,
+                [userId]
+              );
+              for (const escrow of activeEscrows.rows) {
+                await db.query(
+                  `UPDATE escrows SET state = 'LOCKED_DISPUTE', updated_at = NOW()
+                   WHERE id = $1 AND state = 'FUNDED'`,
+                  [escrow.id]
+                ).catch(err => log.error({ err, escrowId: escrow.id, userId }, '[FraudDetection] failed to lock escrow on auto-suspension'));
+              }
+            } catch (err) {
+              log.error({ err, userId }, '[FraudDetection] failed to query active escrows for suspended user');
+            }
+
+            // Cancel poster's OPEN/MATCHING tasks (best-effort)
+            try {
+              await db.query(
+                `UPDATE tasks SET state = 'CANCELLED', cancelled_at = NOW()
+                 WHERE poster_id = $1 AND state IN ('OPEN', 'MATCHING')`,
+                [userId]
+              );
+            } catch (err) {
+              log.error({ err, userId }, '[FraudDetection] failed to cancel poster OPEN tasks on auto-suspension');
+            }
 
             suspensionApplied++;
           } catch (err) {

@@ -448,28 +448,33 @@ describe('XPService.awardXP', () => {
 // getHistory
 // ═══════════════════════════════════════════════════════════════════════════
 describe('XPService.getHistory', () => {
-  it('returns XP history entries for a user', async () => {
+  it('returns paginated XP history entries for a user', async () => {
     const entry = {
       id: 'xp-1', user_id: 'user-1', task_id: 'task-1',
       escrow_id: 'escrow-1', effective_xp: 100, awarded_at: new Date(),
     };
+    // First call: COUNT query; second call: rows query
+    mockQuery.mockResolvedValueOnce({ rows: [{ count: '1' }] });
     mockQuery.mockResolvedValueOnce({ rows: [entry] });
 
     const result = await XPService.getHistory('user-1');
     expect(result.success).toBe(true);
     if (result.success) {
-      expect(result.data).toHaveLength(1);
-      expect(result.data[0].id).toBe('xp-1');
+      expect(result.data.total).toBe(1);
+      expect(result.data.items).toHaveLength(1);
+      expect(result.data.items[0].id).toBe('xp-1');
     }
   });
 
-  it('returns empty array when no history', async () => {
+  it('returns empty items when no history', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] });
     mockQuery.mockResolvedValueOnce({ rows: [] });
 
     const result = await XPService.getHistory('user-new');
     expect(result.success).toBe(true);
     if (result.success) {
-      expect(result.data).toHaveLength(0);
+      expect(result.data.total).toBe(0);
+      expect(result.data.items).toHaveLength(0);
     }
   });
 

@@ -287,7 +287,7 @@ describe('REG-9 — FIXED: Velocity block threshold raised from 1000 to 3000', (
     // Router now derives baseXP server-side from escrow (SECURITY FIX: caller cannot supply it).
     // $150 task → amount = 15000 cents → derivedBaseXP = 1500
     mockDb.query.mockResolvedValueOnce({
-      rows: [{ amount: 15000, worker_id: WORKER_ID }],
+      rows: [{ amount: 15000, worker_id: WORKER_ID, task_id: TASK_ID }],
       rowCount: 1,
     } as any);
     // awardXP proceeds (1500 < 3000 threshold — not blocked)

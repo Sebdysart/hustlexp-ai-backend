@@ -801,7 +801,7 @@ export const EscrowService = {
         stripePaymentIntentId = escrowPreCheck.rows[0]?.stripe_payment_intent_id ?? null;
         stripeRefundId = escrowPreCheck.rows[0]?.stripe_refund_id ?? null;
         refundAmount = escrowPreCheck.rows[0]?.amount ?? 0;
-        allowedStates = adminOverride ? ['FUNDED', 'LOCKED_DISPUTE'] : ['FUNDED'];
+        allowedStates = adminOverride ? ['FUNDED', 'LOCKED_DISPUTE', 'RELEASED'] : ['FUNDED'];
 
         return { success: true } as unknown as ServiceResult<Escrow>;
       });
@@ -823,6 +823,7 @@ export const EscrowService = {
           escrowId,
           amount: refundAmount,
           reason: 'requested_by_customer',
+          idempotencyKeySuffix: adminOverride ? 'admin_override' : 'escrow_refund',
         });
         if (!refundResult.success) {
           throw new Error(`Stripe refund failed — ${refundResult.error.message}`);
@@ -855,6 +856,44 @@ export const EscrowService = {
           if (!existing.success) {
             return existing;
           }
+
+          // RACE RECOVERY: If the escrow transitioned to RELEASED between T1 and T2,
+          // a concurrent release() won the race after our Stripe refund was already issued.
+          // This is a double-spend: the worker received a transfer AND the poster got a refund.
+          // Best-effort recovery: attempt to cancel the just-issued Stripe refund.
+          if (existing.data.state === 'RELEASED' && stripeRefundId) {
+            escrowLogger.error(
+              { escrowId, stripeRefundId, escrowState: 'RELEASED' },
+              'CRITICAL: double-spend detected — escrow was RELEASED concurrently after Stripe refund was issued. Attempting refund cancellation.'
+            );
+            try {
+              const cancelResult = await StripeService.cancelRefund(stripeRefundId);
+              if (cancelResult.success) {
+                escrowLogger.warn(
+                  { escrowId, stripeRefundId },
+                  'Double-spend recovery: Stripe refund successfully cancelled — no financial loss.'
+                );
+              } else {
+                escrowLogger.error(
+                  { escrowId, stripeRefundId, cancelError: cancelResult.error.message },
+                  'CRITICAL: double-spend — Stripe refund cancellation failed. Escrow flagged for manual review.'
+                );
+              }
+            } catch (cancelErr) {
+              escrowLogger.error(
+                { escrowId, stripeRefundId, err: cancelErr instanceof Error ? cancelErr.message : String(cancelErr) },
+                'CRITICAL: double-spend — exception during refund cancellation. Escrow flagged for manual review.'
+              );
+            }
+            return {
+              success: false,
+              error: {
+                code: ErrorCodes.INVALID_STATE,
+                message: `Cannot refund escrow: concurrent release detected (FUNDED→RELEASED race). Stripe refund cancellation attempted — check logs for outcome.`,
+              },
+            } as ServiceResult<Escrow>;
+          }
+
           if (isTerminalState(existing.data.state)) {
             return {
               success: false,
@@ -1198,6 +1237,7 @@ export const EscrowService = {
             escrowId,
             amount: posterCents,
             reason: 'requested_by_customer',
+            idempotencyKeySuffix: 'partial_refund',
           });
           if (!refundResult.success) {
             // Fatal: throw so the caller can retry while the escrow is still LOCKED_DISPUTE.

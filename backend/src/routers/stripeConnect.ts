@@ -20,6 +20,45 @@ import { StripeConnectService } from '../services/StripeConnectService.js';
 import { TaxReportingService } from '../services/TaxReportingService.js';
 import { z } from 'zod';
 
+// --------------------------------------------------------------------------
+// Redirect URL allowlist — prevents open-redirect after Stripe KYC completion.
+// Only the HustleXP app deep-link scheme and the configured allowed origins
+// are accepted. In development, localhost is also permitted.
+// --------------------------------------------------------------------------
+function isAllowedRedirectUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    // Allow the HustleXP iOS custom URL scheme
+    if (parsed.protocol === 'hustlexp:') return true;
+    // Allow configured ALLOWED_ORIGINS (comma-separated, e.g. "https://hustlexp.com")
+    const allowedOrigins = (process.env.ALLOWED_ORIGINS || '')
+      .split(',')
+      .map(o => o.trim())
+      .filter(Boolean);
+    for (const origin of allowedOrigins) {
+      try {
+        const originHostname = new URL(origin).hostname;
+        if (parsed.hostname === originHostname || parsed.hostname.endsWith('.' + originHostname)) {
+          return true;
+        }
+      } catch { /* skip malformed entries */ }
+    }
+    // Allow localhost in non-production environments
+    if (process.env.NODE_ENV !== 'production' && parsed.hostname === 'localhost') return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+const allowedRedirectUrl = z
+  .string()
+  .url()
+  .max(2048)
+  .refine(isAllowedRedirectUrl, {
+    message: 'Redirect URL must use the HustleXP app scheme or an approved domain',
+  });
+
 // ============================================================================
 // INPUT SCHEMAS
 // ============================================================================
@@ -90,8 +129,8 @@ export const stripeConnectRouter = router({
    */
   createOnboardingLink: hustlerProcedure
     .input(z.object({
-      refreshUrl: z.string().url().max(2048),
-      returnUrl: z.string().url().max(2048),
+      refreshUrl: allowedRedirectUrl,
+      returnUrl: allowedRedirectUrl,
       collectTaxInfo: z.boolean().default(true),
     }))
     .mutation(async ({ ctx, input }) => {
@@ -387,8 +426,8 @@ export const stripeConnectRouter = router({
    */
   refreshOnboarding: hustlerProcedure
     .input(z.object({
-      refreshUrl: z.string().url().max(2048),
-      returnUrl: z.string().url().max(2048),
+      refreshUrl: allowedRedirectUrl,
+      returnUrl: allowedRedirectUrl,
     }))
     .mutation(async ({ ctx, input }) => {
       const result = await StripeConnectService.refreshOnboarding({

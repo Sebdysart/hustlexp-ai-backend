@@ -118,9 +118,11 @@ export const ratingRouter = router({
         });
       }
       
-      // Filter out blind ratings (RATE-8) - only return public ratings
-      // The service returns all ratings, but we filter to public only for display
-      return result.data.filter(rating => rating.is_public);
+      // Filter out blind ratings (RATE-8) — only return public, non-blind ratings.
+      // Checking BOTH flags closes a race condition where is_public=true and is_blind=true
+      // can coexist transiently (e.g. auto-reveal hasn't run yet), which would otherwise
+      // leak blind ratings early. This matches the getMyRatings SQL: AND is_blind = false.
+      return result.data.filter(rating => rating.is_public && !rating.is_blind);
     }),
   
   /**

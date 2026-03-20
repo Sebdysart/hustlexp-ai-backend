@@ -286,9 +286,16 @@ describe('set', () => {
     expect(mockRedisSet).toHaveBeenCalledWith('count-key', 999);
   });
 
-  it('does not throw on Redis error', async () => {
+  it('does not throw on Redis error in development (non-production)', async () => {
+    mockConfig.app.isProduction = false;
     mockRedisSet.mockRejectedValue(new Error('set failed'));
     await expect(set('err-key', 'val')).resolves.toBeUndefined();
+  });
+
+  it('re-throws on Redis error in production so callers can detect write failures', async () => {
+    mockConfig.app.isProduction = true;
+    mockRedisSet.mockRejectedValue(new Error('set failed in prod'));
+    await expect(set('err-key', 'val')).rejects.toThrow('set failed in prod');
   });
 });
 

@@ -266,9 +266,15 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
         throw new Error(`Max attempts (${emailRecord.max_attempts}) exceeded for email ${emailId}`);
       }
 
-      // ATOMIC CLAIM: Update status to sending only if still in claimable state
-      // CRITICAL: This is the atomic claim - only one worker can transition pending/failed -> sending
-      // Using UPDATE ... RETURNING ensures we only proceed if we successfully claimed the row
+      // ATOMIC CLAIM: Update status to sending only if still in claimable state.
+      // CRITICAL: This is the atomic claim - only one worker can transition pending/failed -> sending.
+      // Using UPDATE ... RETURNING ensures we only proceed if we successfully claimed the row.
+      //
+      // BUG 7 FIX: Add a staleness recovery clause for rows stuck in 'sending'.
+      // If the process crashes after the claim commit but before the suppression UPDATE,
+      // the row is permanently stuck in 'sending' and can never be re-claimed.
+      // The additional OR clause recovers rows that have been in 'sending' for more than
+      // 5 minutes (indicating a crashed worker), making them re-claimable on the next retry.
       const casResult = await txQuery<{
         id: string;
         status: string;
@@ -279,7 +285,10 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
              attempts = attempts + 1,
              updated_at = NOW()
          WHERE id = $1
-           AND status IN ('pending', 'failed')
+           AND (
+             status IN ('pending', 'failed')
+             OR (status = 'sending' AND updated_at < NOW() - INTERVAL '5 minutes')
+           )
          RETURNING id, status, attempts`,
         [emailId]
       );

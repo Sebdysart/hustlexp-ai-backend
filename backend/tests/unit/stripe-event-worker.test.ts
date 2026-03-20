@@ -20,8 +20,10 @@ vi.mock('../../src/db', () => ({
     query: vi.fn(),
     // transaction executes the callback with a per-transaction query function.
     // We expose the inner txQuery as a spy so tests can control its responses.
+    // Default return value is { rows: [], rowCount: 0 } so advisory-lock calls
+    // and idempotency-check selects don't throw on unprimed mocks.
     transaction: vi.fn(async (fn: (q: ReturnType<typeof vi.fn>) => Promise<unknown>) => {
-      const txQuery = vi.fn();
+      const txQuery = vi.fn().mockResolvedValue({ rows: [], rowCount: 0 });
       // Attach txQuery to the module-level ref so individual tests can prime it
       (globalThis as Record<string, unknown>).__txQuery = txQuery;
       return fn(txQuery);

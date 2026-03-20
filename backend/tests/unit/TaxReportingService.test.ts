@@ -19,7 +19,7 @@ vi.mock('../../src/db', () => ({
 
 vi.mock('../../src/config', () => ({
   config: {
-    stripe: { secretKey: 'sk_test_placeholder' },
+    stripe: { secretKey: 'sk_test_placeholder', platformFeePercent: 15 },
     redis: { url: null },
   },
 }));
@@ -104,10 +104,13 @@ describe('TaxReportingService', () => {
 
       // Verify the query was called with the threshold constant (60000 cents)
       // and uses net earnings (after platform fee deduction) for the 1099 threshold check.
-      // The platform fee is a fixed 15% constant — no per-row column reference.
+      // The platform fee is now passed as a bound parameter ($3) from config.stripe.platformFeePercent
+      // rather than hardcoded as a literal — preventing drift if the fee config changes.
       const [sql, params] = mockDb.query.mock.calls[0] as [string, unknown[]];
-      expect(sql).toContain('HAVING SUM(ROUND(e.amount * (1.0 - 15 / 100.0)))');
+      expect(sql).toContain('HAVING SUM(ROUND(e.amount * (1.0 - $3 / 100.0)))');
       expect(params).toContain(60000);
+      // Third param is platformFeePercent from config (defaults to 15)
+      expect(params[2]).toBe(15);
     });
 
     it('returns an empty array when no workers are above the threshold', async () => {

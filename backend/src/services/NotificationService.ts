@@ -137,6 +137,12 @@ export interface UpdatePreferencesParams {
 const DND_BYPASS_PRIORITIES: NotificationPriority[] = ['HIGH', 'CRITICAL'];
 const DND_BYPASS_CATEGORIES: NotificationCategory[] = ['task_accepted', 'payment_released', 'security_alert', 'instant_task_available'];
 
+// BUG 5 FIX: Categories that bypass the frequency cap entirely.
+// security_alert: an attacker can exhaust the 20/day limit, silencing real alerts.
+// payment_released: already has Infinity limits but guarded explicitly here for safety.
+// These categories must NEVER be silently dropped due to frequency limits.
+const FREQUENCY_BYPASS_CATEGORIES = new Set<NotificationCategory>(['security_alert', 'payment_released']);
+
 // Frequency limits per category (NOTIFICATION_SPEC.md §2.2)
 const FREQUENCY_LIMITS: Record<NotificationCategory, { perHour: number; perDay: number }> = {
   new_matching_task: { perHour: 5, perDay: 20 },
@@ -252,7 +258,10 @@ export const NotificationService = {
       // Check frequency limits (NOTIFICATION_SPEC.md §2.2) - Redis-based
       const categoryLimits = FREQUENCY_LIMITS[category];
       const limits = categoryLimits || { perHour: Infinity, perDay: Infinity };
-      if (limits.perHour !== Infinity || limits.perDay !== Infinity) {
+      // BUG 5 FIX: security_alert and payment_released bypass frequency caps entirely
+      // so they can never be DoS-suppressed by an attacker exhausting the daily limit.
+      const bypassFrequency = FREQUENCY_BYPASS_CATEGORIES.has(category);
+      if (!bypassFrequency && (limits.perHour !== Infinity || limits.perDay !== Infinity)) {
         const { hourlyCount, dailyCount } = await checkAndIncrementFrequency(userId, category);
 
         // BUG FIX (order): Check daily limit BEFORE hourly. Previously the
