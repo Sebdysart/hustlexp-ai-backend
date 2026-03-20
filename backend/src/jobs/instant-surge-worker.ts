@@ -50,7 +50,7 @@ export async function processInstantSurgeJob(
     }
   }
 
-  const { taskId, location, riskLevel, sensitive } = job.data;
+  const { taskId, location, riskLevel, sensitive } = (job.data as Record<string, unknown>).payload as InstantSurgeJobData;
   const startTime = Date.now();
 
   try {

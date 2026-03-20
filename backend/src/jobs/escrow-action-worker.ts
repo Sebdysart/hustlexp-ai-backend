@@ -496,21 +496,30 @@ async function handleRefundRequest(
     throw new Error(`Escrow ${escrow.id} has no stripe_payment_intent_id`);
   }
 
-  // TT-04: Re-read stripe_refund_id from the DB after the FOR UPDATE transaction
-  // committed (the lock was released at commit). Two BullMQ workers can both see
-  // stripe_refund_id = null in their stale escrow snapshots and both pass the
-  // idempotency check above; this fresh re-read is the second line of defence,
-  // mirroring the TT-03 pattern in handleReleaseRequest.
-  const freshRefundCheck = await db.query<{ stripe_refund_id: string | null }>(
-    'SELECT stripe_refund_id FROM escrows WHERE id = $1',
-    [escrow.id]
-  );
-  if (freshRefundCheck.rows[0]?.stripe_refund_id) {
-    log.info(
-      { escrowId: escrow.id, refundId: freshRefundCheck.rows[0].stripe_refund_id },
-      'Fresh DB re-read: refund already issued on a prior attempt (concurrent retry) — skipping Stripe call',
-    );
-    return;
+  // TT-04: Re-read stripe_refund_id from the DB under a FOR UPDATE NOWAIT lock so
+  // that two concurrent workers cannot both see stripe_refund_id = null and both
+  // proceed to call Stripe. NOWAIT causes the second worker to throw immediately
+  // rather than queue behind the first, so BullMQ retries it after a short delay
+  // rather than letting both workers race to Stripe simultaneously.
+  try {
+    const freshRefundCheck = await db.transaction(async (trx: QueryFn) => {
+      return trx<{ stripe_refund_id: string | null }>(
+        'SELECT stripe_refund_id FROM escrows WHERE id = $1 FOR UPDATE NOWAIT',
+        [escrow.id]
+      );
+    });
+    if (freshRefundCheck.rows[0]?.stripe_refund_id) {
+      log.info(
+        { escrowId: escrow.id, refundId: freshRefundCheck.rows[0].stripe_refund_id },
+        'Fresh DB re-read (NOWAIT): refund already issued on a prior attempt (concurrent retry) — skipping Stripe call',
+      );
+      return;
+    }
+  } catch (lockError) {
+    if ((lockError as Error).message?.includes('could not obtain lock')) {
+      throw new Error('LOCK_CONTENTION: Another worker is processing this escrow refund — will retry');
+    }
+    throw lockError;
   }
 
   // BUG FIX (HIGH - Part B): Check whether a Stripe transfer was already sent to
@@ -690,8 +699,16 @@ async function handlePartialRefundRequest(
     throw new Error('SPLIT amounts must be non-negative');
   }
 
-  if (Math.round(refundAmount) + Math.round(releaseAmount) !== escrow.amount) {
-    throw new Error(`SPLIT amounts (${Math.round(refundAmount)} + ${Math.round(releaseAmount)} = ${Math.round(refundAmount) + Math.round(releaseAmount)}) must sum to escrow amount (${escrow.amount})`);
+  // F-26: Validate using the same amounts that will be passed to Stripe, not raw inputs.
+  // The worker receives netReleaseCents (after platform fee), not releaseAmount.
+  // The fee absorbs any rounding residual so all three components sum to escrow.amount.
+  const platformFeePercentValidation = Math.min(100, Math.max(0, config.stripe?.platformFeePercent ?? 15));
+  const netReleaseCentsValidation = Math.round(releaseAmount * (1 - platformFeePercentValidation / 100));
+  const rawFeeCentsValidation = releaseAmount - netReleaseCentsValidation;
+  const residualValidation = escrow.amount - Math.round(refundAmount) - netReleaseCentsValidation - rawFeeCentsValidation;
+  const feeCentsValidation = rawFeeCentsValidation + residualValidation;
+  if (Math.round(refundAmount) + netReleaseCentsValidation + feeCentsValidation !== escrow.amount) {
+    throw new Error(`SPLIT amounts ${Math.round(refundAmount)} + ${netReleaseCentsValidation} + fee ${feeCentsValidation} !== escrow ${escrow.amount}`);
   }
 
   // Get task to find worker_id and poster_id

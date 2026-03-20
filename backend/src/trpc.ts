@@ -183,32 +183,14 @@ const isAuthenticated = t.middleware(async ({ ctx, next }) => {
 
 export const protectedProcedure = t.procedure.use(isAuthenticated);
 
-// Middleware: require admin
-const isAdmin = t.middleware(async ({ ctx, next }) => {
-  if (!ctx.user) {
-    throw new TRPCError({
-      code: 'UNAUTHORIZED',
-      message: 'Authentication required',
-    });
-  }
-
-  // Banned/suspended/deleted admins must not retain admin access.
-  if (
-    ctx.user.is_banned ||
-    ctx.user.account_status === 'SUSPENDED' ||
-    ctx.user.account_status === 'DELETED'
-  ) {
-    throw new TRPCError({
-      code: 'UNAUTHORIZED',
-      message: 'Account suspended.',
-    });
-  }
-
-  // Check admin role — only known roles are valid (prevents synthetic backdoor role names)
+// Middleware: require admin role — composed on top of isAuthenticated (via protectedProcedure).
+// Ban/suspension/auth checks are already handled by isAuthenticated; this only does the role check.
+const isAdminCheck = t.middleware(async ({ ctx, next }) => {
+  // ctx.user is guaranteed non-null and not banned by isAuthenticated (already ran)
   const VALID_ADMIN_ROLES = ['admin', 'support', 'finance', 'moderator', 'founder'];
   const adminResult = await db.query(
     'SELECT role FROM admin_roles WHERE user_id = $1 AND role = ANY($2::text[])',
-    [ctx.user.id, VALID_ADMIN_ROLES]
+    [ctx.user!.id, VALID_ADMIN_ROLES]
   );
 
   if (adminResult.rows.length === 0) {
@@ -221,28 +203,12 @@ const isAdmin = t.middleware(async ({ ctx, next }) => {
   return next({ ctx: { ...ctx, user: ctx.user } });
 });
 
-export const adminProcedure = t.procedure.use(isAdmin);
+export const adminProcedure = protectedProcedure.use(isAdminCheck);
 
-// Middleware: require Hustler role (default_mode = 'worker')
-const isHustler = t.middleware(async ({ ctx, next }) => {
-  if (!ctx.user) {
-    throw new TRPCError({
-      code: 'UNAUTHORIZED',
-      message: 'Authentication required',
-    });
-  }
-  // Banned/suspended/deleted users must not access role-gated endpoints.
-  if (
-    ctx.user.is_banned ||
-    ctx.user.account_status === 'SUSPENDED' ||
-    ctx.user.account_status === 'DELETED'
-  ) {
-    throw new TRPCError({
-      code: 'UNAUTHORIZED',
-      message: 'Account suspended.',
-    });
-  }
-  if (ctx.user.default_mode !== 'worker') {
+// Middleware: require Hustler role (default_mode = 'worker') — composed on top of isAuthenticated.
+// Ban/suspension/auth checks are already handled by isAuthenticated; this only does the role check.
+const isHustlerCheck = t.middleware(async ({ ctx, next }) => {
+  if (ctx.user!.default_mode !== 'worker') {
     throw new TRPCError({
       code: 'FORBIDDEN',
       message: 'Hustler access required',
@@ -251,28 +217,12 @@ const isHustler = t.middleware(async ({ ctx, next }) => {
   return next({ ctx: { ...ctx, user: ctx.user } });
 });
 
-export const hustlerProcedure = t.procedure.use(isHustler);
+export const hustlerProcedure = protectedProcedure.use(isHustlerCheck);
 
-// Middleware: require Poster role (default_mode = 'poster')
-const isPoster = t.middleware(async ({ ctx, next }) => {
-  if (!ctx.user) {
-    throw new TRPCError({
-      code: 'UNAUTHORIZED',
-      message: 'Authentication required',
-    });
-  }
-  // Banned/suspended/deleted users must not access role-gated endpoints.
-  if (
-    ctx.user.is_banned ||
-    ctx.user.account_status === 'SUSPENDED' ||
-    ctx.user.account_status === 'DELETED'
-  ) {
-    throw new TRPCError({
-      code: 'UNAUTHORIZED',
-      message: 'Account suspended.',
-    });
-  }
-  if (ctx.user.default_mode !== 'poster') {
+// Middleware: require Poster role (default_mode = 'poster') — composed on top of isAuthenticated.
+// Ban/suspension/auth checks are already handled by isAuthenticated; this only does the role check.
+const isPosterCheck = t.middleware(async ({ ctx, next }) => {
+  if (ctx.user!.default_mode !== 'poster') {
     throw new TRPCError({
       code: 'FORBIDDEN',
       message: 'Poster access required',
@@ -281,7 +231,7 @@ const isPoster = t.middleware(async ({ ctx, next }) => {
   return next({ ctx: { ...ctx, user: ctx.user } });
 });
 
-export const posterProcedure = t.procedure.use(isPoster);
+export const posterProcedure = protectedProcedure.use(isPosterCheck);
 
 // ============================================================================
 // INPUT SCHEMAS (Zod validation)

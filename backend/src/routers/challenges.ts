@@ -112,7 +112,9 @@ export const challengesRouter = router({
         const actualProgress = await db.query<{ completed_tasks: string }>(
           `SELECT COUNT(*) as completed_tasks
            FROM tasks
-           WHERE worker_id = $1 AND state = 'COMPLETED'`,
+           WHERE worker_id = $1 AND state = 'COMPLETED'
+             AND updated_at >= CURRENT_DATE
+             AND updated_at < CURRENT_DATE + INTERVAL '1 day'`,
           [userId]
         );
         verifiedProgress = Math.min(

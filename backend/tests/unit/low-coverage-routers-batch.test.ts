@@ -1157,30 +1157,30 @@ describe('liveRouter', () => {
 
   describe('toggle', () => {
     it('activates live mode and returns updated user row', async () => {
-      const updatedUser = { id: 'user-123', live_mode_state: 'ACTIVE' };
-      mockDb.query.mockResolvedValueOnce({ rows: [updatedUser], rowCount: 1 } as any);
+      const dbRow = { live_mode_state: 'ACTIVE', live_mode_session_started_at: null };
+      mockDb.query.mockResolvedValueOnce({ rows: [dbRow], rowCount: 1 } as any);
 
       const caller = liveRouter.createCaller(
         makeProtectedCtx({ live_mode_state: 'OFF', live_mode_banned_until: null })
       );
       const result = await caller.toggle({ enabled: true });
 
-      expect(result).toEqual(updatedUser);
+      expect(result).toEqual({ state: 'ACTIVE', sessionStartedAt: null });
       const [sql, params] = (mockDb.query as any).mock.calls[0];
       expect(sql).toContain('live_mode_state =');
       expect(params).toContain('ACTIVE');
     });
 
     it('deactivates live mode — sets state to OFF', async () => {
-      const updatedUser = { id: 'user-123', live_mode_state: 'OFF' };
-      mockDb.query.mockResolvedValueOnce({ rows: [updatedUser], rowCount: 1 } as any);
+      const dbRow = { live_mode_state: 'OFF', live_mode_session_started_at: null };
+      mockDb.query.mockResolvedValueOnce({ rows: [dbRow], rowCount: 1 } as any);
 
       const caller = liveRouter.createCaller(
         makeProtectedCtx({ live_mode_state: 'ACTIVE', live_mode_banned_until: null })
       );
       const result = await caller.toggle({ enabled: false });
 
-      expect(result).toEqual(updatedUser);
+      expect(result).toEqual({ state: 'OFF', sessionStartedAt: null });
       const [, params] = (mockDb.query as any).mock.calls[0];
       expect(params).toContain('OFF');
     });

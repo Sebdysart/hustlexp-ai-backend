@@ -888,7 +888,7 @@ app.post('/webhooks/checkr', async (c) => {
     return c.json({ error: 'Invalid signature' }, 401);
   }
   if (!timingSafeEqual(expectedBuf, providedBuf)) {
-    pinoLogger.warn({ providedSig }, 'Checkr webhook signature verification failed');
+    pinoLogger.warn({ sigLength: (providedSig ?? '').length }, 'Checkr webhook signature verification failed');
     return c.json({ error: 'Invalid signature' }, 401);
   }
 

@@ -82,21 +82,23 @@ export const SelfInsurancePoolService = {
   ): Promise<ServiceResult<void>> => {
     try {
       await db.transaction(async (query: QueryFn) => {
-        // Insert contribution record (ON CONFLICT DO NOTHING keeps this idempotent)
+        // F-28: Use a CTE so the pool UPDATE only fires when the INSERT actually
+        // inserts a row. If ON CONFLICT DO NOTHING suppresses the insert (duplicate
+        // call), the CTE returns zero rows and the UPDATE is skipped — preventing
+        // a double-credit to total_deposits_cents.
         await query(
-          `INSERT INTO insurance_contributions (
-            task_id, hustler_id, contribution_cents, contribution_percentage
-          ) VALUES ($1, $2, $3, $4)
-          ON CONFLICT (task_id, hustler_id) DO NOTHING`,
+          `WITH ins AS (
+            INSERT INTO insurance_contributions (
+              task_id, hustler_id, contribution_cents, contribution_percentage
+            ) VALUES ($1, $2, $3, $4)
+            ON CONFLICT (task_id, hustler_id) DO NOTHING
+            RETURNING id
+          )
+          UPDATE self_insurance_pool
+          SET total_deposits_cents = total_deposits_cents + $3,
+              updated_at = NOW()
+          WHERE EXISTS (SELECT 1 FROM ins)`,
           [taskId, hustlerId, contributionCents, contributionPercentage]
-        );
-
-        // Update pool total — atomic with the INSERT so both succeed or both roll back
-        await query(
-          `UPDATE self_insurance_pool
-           SET total_deposits_cents = total_deposits_cents + $1,
-               updated_at = NOW()`,
-          [contributionCents]
         );
       });
 
@@ -263,6 +265,18 @@ export const SelfInsurancePoolService = {
       // F-17: Wrap balance check + pool debit + claim status update in a single
       // transaction with SELECT FOR UPDATE to prevent concurrent double-drain.
       await db.transaction(async (query: QueryFn) => {
+        // F-25: Re-verify claim status under row lock to prevent concurrent double-pay
+        const claimCheck = await query<{ status: string }>(
+          'SELECT status FROM insurance_claims WHERE id = $1 FOR UPDATE',
+          [claimId]
+        );
+        if (!claimCheck.rows[0] || claimCheck.rows[0].status === 'paid') {
+          return; // Already paid by a concurrent call — idempotent no-op
+        }
+        if (claimCheck.rows[0].status !== 'approved') {
+          throw new Error(`CLAIM_NOT_APPROVED:Claim status changed to ${claimCheck.rows[0].status}`);
+        }
+
         // Lock the pool row and re-read balance atomically
         // available_balance_cents is a computed column: total_deposits_cents - total_claims_cents
         const poolResult = await query<{ available_balance_cents: number }>(
@@ -347,6 +361,16 @@ export const SelfInsurancePoolService = {
           error: {
             code: 'INSUFFICIENT_POOL_BALANCE',
             message: message.slice('INSUFFICIENT_POOL_BALANCE:'.length)
+          }
+        };
+      }
+      // Surface claim-status-changed errors (F-25: concurrent double-pay guard)
+      if (message.startsWith('CLAIM_NOT_APPROVED:')) {
+        return {
+          success: false,
+          error: {
+            code: 'CLAIM_NOT_APPROVED',
+            message: message.slice('CLAIM_NOT_APPROVED:'.length)
           }
         };
       }

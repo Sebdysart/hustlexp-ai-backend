@@ -133,6 +133,19 @@ vi.mock('@upstash/redis', () => ({
   },
 }));
 
+// --- encrypted-session (used by auth/middleware.ts) -------------------------
+// Mock as transparent pass-through so authenticateRequest tests can control
+// raw session payloads directly without needing a real SESSION_ENCRYPTION_KEY.
+vi.mock('../../src/middleware/encrypted-session', () => ({
+  encryptSession: (data: object) => JSON.stringify(data),
+  decryptSession: <T>(stored: string | null): T | null => {
+    if (!stored) return null;
+    try { return JSON.parse(stored) as T; } catch { return null; }
+  },
+  isEncryptionEnabled: () => true,
+  _resetKeyCache: () => {},
+}));
+
 // --- Sentry (used by error-handler.ts) ---------------------------------------
 vi.mock('@sentry/node', () => ({
   captureException: vi.fn(),

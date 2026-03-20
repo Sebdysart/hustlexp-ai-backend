@@ -123,7 +123,7 @@ describe('tipping.confirmTip', () => {
   it('confirms tip when caller is the poster', async () => {
     // Tip ownership check
     mockDb.query.mockResolvedValueOnce({
-      rows: [{ poster_id: 'test-uid' }],
+      rows: [{ poster_id: 'test-uid', stripe_payment_intent_id: 'pi_test' }],
       rowCount: 1,
     } as any);
 
@@ -160,7 +160,7 @@ describe('tipping.confirmTip', () => {
 
   it('throws BAD_REQUEST when service fails', async () => {
     mockDb.query.mockResolvedValueOnce({
-      rows: [{ poster_id: 'test-uid' }],
+      rows: [{ poster_id: 'test-uid', stripe_payment_intent_id: 'pi_test' }],
       rowCount: 1,
     } as any);
     mockService.confirmTip.mockResolvedValueOnce({

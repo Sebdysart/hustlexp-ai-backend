@@ -65,7 +65,6 @@ interface LeaderboardRow {
   name: string;
   emoji: string;
   tagline: string | null;
-  organizer_id: string;
   organizer_name: string;
   status: string;
   total_tasks_completed: number;
@@ -94,7 +93,7 @@ export const squadRouter = router({
   // CREATE SQUAD
   // --------------------------------------------------------------------------
 
-  create: posterProcedure
+  create: protectedProcedure
     .input(z.object({
       name: z.string().min(2).max(100),
       emoji: z.string().max(10).default('⚡️'),
@@ -273,7 +272,7 @@ export const squadRouter = router({
   // INVITE MEMBER
   // --------------------------------------------------------------------------
 
-  invite: posterProcedure
+  invite: protectedProcedure
     .input(z.object({
       squadId: Schemas.uuid,
       inviteeId: Schemas.uuid,
@@ -731,6 +730,17 @@ export const squadRouter = router({
   withdrawFromTeamTask: hustlerProcedure
     .input(z.object({ squadTaskId: Schemas.uuid }))
     .mutation(async ({ ctx, input }) => {
+      // Verify caller is a member of the squad containing this task
+      const membershipCheck = await db.query(
+        `SELECT 1 FROM squad_members sm
+         JOIN squad_task_assignments sta ON sta.squad_id = sm.squad_id
+         WHERE sta.id = $1 AND sm.user_id = $2`,
+        [input.squadTaskId, ctx.user.id]
+      );
+      if (!membershipCheck.rows[0]) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'Not a member of this squad' });
+      }
+
       const assignment = await db.query<{ id: string; status: string; required_workers: number }>(
         `SELECT id, status, required_workers FROM squad_task_assignments WHERE id = $1`,
         [input.squadTaskId]
@@ -857,7 +867,7 @@ export const squadRouter = router({
       const result = await db.query<LeaderboardRow>(
         `SELECT
            ROW_NUMBER() OVER (ORDER BY s.squad_xp DESC) as rank,
-           s.id, s.name, s.emoji, s.tagline, s.organizer_id,
+           s.id, s.name, s.emoji, s.tagline,
            u.full_name as organizer_name,
            s.status, s.total_tasks_completed, s.total_earnings_cents,
            s.squad_xp, s.squad_level, s.average_rating,
@@ -877,7 +887,6 @@ export const squadRouter = router({
         name: s.name,
         emoji: s.emoji,
         tagline: s.tagline,
-        organizerId: s.organizer_id,
         organizerName: s.organizer_name,
         status: s.status,
         maxMembers: s.max_members,

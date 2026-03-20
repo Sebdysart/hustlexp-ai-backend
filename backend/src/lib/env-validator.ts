@@ -13,6 +13,7 @@ const REQUIRED_VARS = [
   'STRIPE_WEBHOOK_SECRET',
   'JWT_SECRET',
   'R2_ACCOUNT_ID',
+  'SESSION_ENCRYPTION_KEY',
 ] as const;
 
 /**

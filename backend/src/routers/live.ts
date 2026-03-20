@@ -52,11 +52,14 @@ export const liveRouter = router({
            SET live_mode_state = $1,
                live_mode_session_started_at = $2
            WHERE id = $3
-           RETURNING *`,
+           RETURNING id, live_mode_state, live_mode_session_started_at`,
           [newState, sessionStartedAt, user.id]
         );
-        
-        return result.rows[0];
+
+        return {
+          state: result.rows[0].live_mode_state,
+          sessionStartedAt: result.rows[0].live_mode_session_started_at,
+        };
       } catch (error) {
         throw new TRPCError({
           code: 'INTERNAL_SERVER_ERROR',

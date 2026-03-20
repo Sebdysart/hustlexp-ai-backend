@@ -344,9 +344,13 @@ export const StripeService = {
       // distinct keys for the same escrow. Without distinct keys, Stripe would treat
       // the second call as an idempotent replay of the first, masking a real duplicate
       // that sends two transfers for different amounts to the same worker.
+      // F-29: Also include the last 8 chars of the destination account so that a
+      // transfer to a different worker for the same escrow+amount is never treated
+      // as an idempotent replay of a prior transfer to a different account.
+      const destSuffix = workerStripeAccountId ? `_${workerStripeAccountId.slice(-8)}` : '';
       const idempotencyKey = idempotencyKeySuffix
-        ? `tr_create_${escrowId}_${amount}_${idempotencyKeySuffix}`
-        : `tr_create_${escrowId}_${amount}`;
+        ? `tr_create_${escrowId}_${amount}${destSuffix}_${idempotencyKeySuffix}`
+        : `tr_create_${escrowId}_${amount}${destSuffix}`;
       const transfer = await stripeBreaker.execute(() => stripe!.transfers.create(
         {
           amount,

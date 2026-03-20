@@ -55,7 +55,7 @@ export async function processInstantMatchingJob(
     }
   }
 
-  const { taskId, location, riskLevel } = job.data;
+  const { taskId, location, riskLevel } = (job.data as Record<string, unknown>).payload as InstantMatchingJobData;
   const startTime = Date.now();
 
   try {

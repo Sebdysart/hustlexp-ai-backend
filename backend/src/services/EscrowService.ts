@@ -795,7 +795,7 @@ export const EscrowService = {
         stripeRefundId = escrowPreCheck.rows[0]?.stripe_refund_id ?? null;
         stripeTransferId = escrowPreCheck.rows[0]?.stripe_transfer_id ?? null;
         refundAmount = escrowPreCheck.rows[0]?.amount ?? 0;
-        allowedStates = adminOverride ? ['FUNDED', 'LOCKED_DISPUTE', 'RELEASED'] : ['FUNDED'];
+        allowedStates = adminOverride ? ['FUNDED', 'LOCKED_DISPUTE', 'RELEASED'] : ['FUNDED', 'LOCKED_DISPUTE'];
 
         return { success: true } as unknown as ServiceResult<Escrow>;
       });

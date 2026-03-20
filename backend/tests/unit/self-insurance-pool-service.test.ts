@@ -94,20 +94,20 @@ describe('SelfInsurancePoolService', () => {
   // --------------------------------------------------------------------------
   describe('recordContribution', () => {
     it('records contribution and updates pool', async () => {
+      // F-28: INSERT+UPDATE merged into a single CTE query
       mockDb.query
-        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // INSERT contribution
-        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // UPDATE pool
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // CTE: INSERT + conditional UPDATE
 
       const result = await SelfInsurancePoolService.recordContribution('task-1', 'hustler-1', 200);
 
       expect(result.success).toBe(true);
-      expect(mockDb.query).toHaveBeenCalledTimes(2);
+      expect(mockDb.query).toHaveBeenCalledTimes(1);
     });
 
     it('is idempotent (ON CONFLICT DO NOTHING)', async () => {
+      // F-28: single CTE; if ON CONFLICT fires, the UPDATE is skipped inside PostgreSQL
       mockDb.query
-        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // ON CONFLICT → no insert
-        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // UPDATE pool still runs
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // CTE: conflict → no update
 
       const result = await SelfInsurancePoolService.recordContribution('task-1', 'hustler-1', 200);
 
@@ -231,8 +231,10 @@ describe('SelfInsurancePoolService', () => {
         .mockResolvedValueOnce({
           rows: [makeClaimRow({ status: 'approved', claim_amount_cents: 100000 })],
           rowCount: 1,
-        } as never) // claim
-        .mockResolvedValueOnce({ rows: [{ coverage_percentage: 80 }], rowCount: 1 } as never) // coverage% - NEW
+        } as never) // claim (outer SELECT)
+        .mockResolvedValueOnce({ rows: [{ coverage_percentage: 80 }], rowCount: 1 } as never) // coverage% (outer)
+        // F-25: inside transaction — claim re-check FOR UPDATE, then pool FOR UPDATE
+        .mockResolvedValueOnce({ rows: [{ status: 'approved' }], rowCount: 1 } as never) // claim FOR UPDATE
         .mockResolvedValueOnce({ rows: [{ available_balance_cents: 1000 }], rowCount: 1 } as never); // pool FOR UPDATE
 
       const result = await SelfInsurancePoolService.payClaim('claim-1');
@@ -249,8 +251,10 @@ describe('SelfInsurancePoolService', () => {
         .mockResolvedValueOnce({
           rows: [makeClaimRow({ status: 'approved', claim_amount_cents: 10000 })],
           rowCount: 1,
-        } as never) // claim
-        .mockResolvedValueOnce({ rows: [{ coverage_percentage: 80 }], rowCount: 1 } as never) // coverage% - NEW
+        } as never) // claim (outer SELECT)
+        .mockResolvedValueOnce({ rows: [{ coverage_percentage: 80 }], rowCount: 1 } as never) // coverage% (outer)
+        // F-25: inside transaction — claim re-check FOR UPDATE, then rest of transaction
+        .mockResolvedValueOnce({ rows: [{ status: 'approved' }], rowCount: 1 } as never) // claim FOR UPDATE
         .mockResolvedValueOnce({ rows: [{ available_balance_cents: 50000 }], rowCount: 1 } as never) // pool FOR UPDATE
         .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // UPDATE pool
         .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // UPDATE claim to paid

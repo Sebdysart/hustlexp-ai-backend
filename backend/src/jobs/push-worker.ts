@@ -65,11 +65,19 @@ export async function processPushJob(job: Job<PushJobData>): Promise<void> {
     // The prior SELECT→FCM pattern had a race: two workers could both read status
     // != 'processed', both call FCM, causing double-send.
     // Atomic UPDATE: only the worker that transitions the row wins the race.
+    //
+    // W-26 FIX: Also reclaim rows stuck in 'processing' for more than 5 minutes.
+    // Without this clause, a process crash between claim and FCM leaves the row
+    // permanently in 'processing', causing BullMQ retries to exit early (0 rows
+    // claimed) and silently drop the notification forever.
     const claimResult = await db.query<{ id: string }>(
       `UPDATE outbox_events
-       SET status = 'processing'
+       SET status = 'processing', updated_at = NOW()
        WHERE idempotency_key = $1
-         AND status NOT IN ('processed', 'processing')
+         AND (
+           status NOT IN ('processed', 'processing')
+           OR (status = 'processing' AND updated_at < NOW() - INTERVAL '5 minutes')
+         )
        RETURNING id`,
       [idempotencyKey]
     );

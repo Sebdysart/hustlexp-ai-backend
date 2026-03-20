@@ -275,12 +275,21 @@ export const TaxReportingService = {
 
       const feePercent = config.stripe.platformFeePercent;
       const result = await db.query<{ total_earnings_cents: string }>(
-        `SELECT COALESCE(SUM(ROUND(e.amount * (1.0 - $3 / 100.0))), 0)::BIGINT as total_earnings_cents
-         FROM tasks t
-         JOIN escrows e ON e.task_id = t.id
-         WHERE e.state = 'RELEASED'
-           AND EXTRACT(YEAR FROM e.released_at) = $1
-           AND t.worker_id = $2`,
+        `SELECT COALESCE(SUM(earnings_cents), 0)::BIGINT as total_earnings_cents
+         FROM (
+           SELECT ROUND(e.amount * (1.0 - $3 / 100.0)) as earnings_cents
+           FROM tasks t
+           JOIN escrows e ON e.task_id = t.id
+           WHERE e.state = 'RELEASED'
+             AND EXTRACT(YEAR FROM e.released_at) = $1
+             AND t.worker_id = $2
+           UNION ALL
+           SELECT tp.amount_cents as earnings_cents
+           FROM tips tp
+           WHERE tp.worker_id = $2
+             AND tp.status = 'completed'
+             AND EXTRACT(YEAR FROM tp.created_at) = $1
+         ) combined`,
         [year, userId, feePercent]
       );
 

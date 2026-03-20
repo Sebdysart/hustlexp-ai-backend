@@ -36,8 +36,8 @@ export const tippingRouter = router({
     }))
     .mutation(async ({ ctx, input }) => {
       // Auth check: verify the caller created this tip
-      const tipCheck = await db.query<{ poster_id: string }>(
-        `SELECT poster_id FROM tips WHERE id = $1`,
+      const tipCheck = await db.query<{ poster_id: string; stripe_payment_intent_id: string }>(
+        `SELECT poster_id, stripe_payment_intent_id FROM tips WHERE id = $1`,
         [input.tipId]
       );
       if (tipCheck.rows.length === 0) {
@@ -45,6 +45,9 @@ export const tippingRouter = router({
       }
       if (tipCheck.rows[0].poster_id !== ctx.user.id) {
         throw new TRPCError({ code: 'FORBIDDEN', message: 'Not authorized to confirm this tip' });
+      }
+      if (tipCheck.rows[0].stripe_payment_intent_id !== input.stripePaymentIntentId) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'Payment intent does not match tip' });
       }
 
       const result = await TippingService.confirmTip(input.tipId, input.stripePaymentIntentId);
