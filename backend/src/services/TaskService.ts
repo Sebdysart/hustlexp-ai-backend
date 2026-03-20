@@ -1687,6 +1687,140 @@ export const TaskService = {
   },
 
   // --------------------------------------------------------------------------
+  // WORKER ABANDONMENT
+  // --------------------------------------------------------------------------
+
+  /**
+   * Worker abandons an ACCEPTED or IN_PROGRESS task.
+   *
+   * Returns the task to OPEN state (worker_id cleared) and emits a full
+   * escrow.refund_requested outbox event so the payment worker returns funds
+   * to the poster. Worker abandonment = full refund; the poster bears no
+   * partial-refund liability for the worker walking away.
+   *
+   * RACE CONDITION SAFETY: Wrapped in a transaction with SELECT FOR UPDATE.
+   * The worker_id and state checks are performed under the lock so a
+   * concurrent complete() or poster cancel() cannot race with this call.
+   */
+  workerAbandon: async (taskId: string, workerId: string, reason?: string): Promise<ServiceResult<Task>> => {
+    try {
+      return await db.transaction(async (query) => {
+        // Acquire row-level lock before reading state
+        const lockResult = await query<{ state: string; worker_id: string | null; poster_id: string }>(
+          `SELECT state, worker_id, poster_id FROM tasks WHERE id = $1 FOR UPDATE`,
+          [taskId]
+        );
+
+        if (lockResult.rows.length === 0) {
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.NOT_FOUND,
+              message: `Task ${taskId} not found`,
+            },
+          };
+        }
+
+        const { state: currentState, worker_id: assignedWorkerId } = lockResult.rows[0];
+
+        // Verify the caller is the assigned worker
+        if (assignedWorkerId !== workerId) {
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.FORBIDDEN,
+              message: 'Only the assigned worker can abandon this task',
+            },
+          };
+        }
+
+        // Only ACCEPTED or IN_PROGRESS tasks can be abandoned
+        if (!['ACCEPTED', 'IN_PROGRESS'].includes(currentState)) {
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.INVALID_STATE,
+              message: `Cannot abandon task: current state is ${currentState}. Only ACCEPTED or IN_PROGRESS tasks can be abandoned.`,
+            },
+          };
+        }
+
+        // Transition back to OPEN — task is available for new applicants
+        const result = await query<Task>(
+          `UPDATE tasks
+           SET state = 'OPEN',
+               worker_id = NULL,
+               accepted_at = NULL,
+               updated_at = NOW()
+           WHERE id = $1
+             AND state IN ('ACCEPTED', 'IN_PROGRESS')
+             AND worker_id = $2
+           RETURNING *`,
+          [taskId, workerId]
+        );
+
+        if (result.rowCount === 0) {
+          // Should be unreachable given the FOR UPDATE lock above, but guard anyway
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.INVALID_STATE,
+              message: 'Cannot abandon task: state changed unexpectedly',
+            },
+          };
+        }
+
+        // Log the abandonment reason to task_events if the table exists
+        // (fire-and-forget inside the transaction — failure is non-fatal)
+        if (reason) {
+          await query(
+            `INSERT INTO task_events (task_id, event_type, actor_id, metadata, created_at)
+             VALUES ($1, 'worker_abandoned', $2, $3, NOW())
+             ON CONFLICT DO NOTHING`,
+            [taskId, workerId, JSON.stringify({ reason })]
+          ).catch(() => {
+            // task_events table is best-effort; swallow if it doesn't exist
+          });
+        }
+
+        // Worker abandonment = full refund to poster. Emit in the same transaction
+        // so the outbox event and state change are atomic.
+        const escrowResult = await query<{ id: string; state: string }>(
+          `SELECT id, state FROM escrows WHERE task_id = $1 AND state = 'FUNDED'`,
+          [taskId]
+        );
+
+        if (escrowResult.rows.length > 0) {
+          const escrowId = escrowResult.rows[0].id;
+          await writeToOutbox(
+            {
+              eventType: 'escrow.refund_requested',
+              aggregateType: 'escrow',
+              aggregateId: escrowId,
+              eventVersion: 1,
+              payload: { escrowId, reason: 'worker_abandoned', taskId, workerId },
+              queueName: 'critical_payments',
+              idempotencyKey: `escrow.refund_on_worker_abandon:${escrowId}:${taskId}`,
+            },
+            query
+          );
+          log.info({ escrowId, taskId, workerId }, 'Escrow refund requested on worker abandonment');
+        }
+
+        return { success: true, data: result.rows[0] };
+      });
+    } catch (error) {
+      return {
+        success: false,
+        error: {
+          code: 'DB_ERROR',
+          message: error instanceof Error ? error.message : 'Unknown error',
+        },
+      };
+    }
+  },
+
+  // --------------------------------------------------------------------------
   // HELPERS
   // --------------------------------------------------------------------------
 

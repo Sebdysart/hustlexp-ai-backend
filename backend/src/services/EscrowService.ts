@@ -633,7 +633,7 @@ export const EscrowService = {
 
       // v1.x: Record 2% self-insurance contribution from worker earnings
       try {
-        const insuranceContributionCents = Math.round(grossPayoutCents * 0.02);
+        const insuranceContributionCents = Math.round(netPayoutCents * 0.02);
         await SelfInsurancePoolService.recordContribution(
           taskId!,
           workerId!,

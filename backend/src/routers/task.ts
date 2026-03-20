@@ -1093,6 +1093,42 @@ export const taskRouter = router({
     }),
 
   /**
+   * Worker abandons their assignment on an ACCEPTED or IN_PROGRESS task.
+   *
+   * Without this path, a worker who accepts and then cannot complete a task
+   * has no way to release it — the task is deadlocked in ACCEPTED state and
+   * the poster's escrow stays locked indefinitely.
+   *
+   * On success: task returns to OPEN (worker_id cleared), escrow refunded to poster.
+   */
+  workerCancel: hustlerProcedure
+    .input(z.object({
+      taskId: Schemas.uuid,
+      reason: z.string().max(500).optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const result = await TaskService.workerAbandon(input.taskId, ctx.user.id, input.reason);
+
+      if (!result.success) {
+        const errCode = result.error.code;
+        let code: 'NOT_FOUND' | 'FORBIDDEN' | 'PRECONDITION_FAILED' | 'BAD_REQUEST';
+        if (errCode === ErrorCodes.NOT_FOUND) {
+          code = 'NOT_FOUND';
+        } else if (errCode === ErrorCodes.FORBIDDEN) {
+          code = 'FORBIDDEN';
+        } else if (errCode === ErrorCodes.INVALID_STATE) {
+          code = 'PRECONDITION_FAILED';
+        } else {
+          code = 'BAD_REQUEST';
+        }
+        throw new TRPCError({ code, message: result.error.message });
+      }
+
+      await invalidateTask(input.taskId);
+      return result.data;
+    }),
+
+  /**
    * Poster accepts an applicant — assigns them as the worker
    *
    * RACE CONDITION FIX: All 6 DB operations are wrapped in a single db.transaction()
@@ -1107,44 +1143,28 @@ export const taskRouter = router({
       workerId: Schemas.uuid,
     }))
     .mutation(async ({ ctx, input }) => {
-      // Resolve the template slug outside the transaction — it is a read-only
-      // stateless lookup and does not need to be part of the locking sequence.
-      const templateSlugResult = await db.query<{ template_slug: string | null }>(
-        `SELECT template_slug FROM tasks WHERE id = $1`,
-        [input.taskId]
-      );
-      if (templateSlugResult.rows.length === 0) {
-        throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
-      }
+      // SECURITY FIX (MM6): The pre-transaction template_slug fetch was moved INSIDE
+      // the transaction, AFTER the FOR UPDATE lock and poster ownership check.
+      // The previous pattern threw NOT_FOUND for non-existent tasks before any
+      // ownership check, allowing any authenticated poster to probe arbitrary task
+      // UUIDs for existence (UUID enumeration via timing/error discrimination).
+      // Now non-owners always receive FORBIDDEN before existence is confirmed.
 
-      // BUG FIX: Re-validate poster's current trust tier against the task's required tier.
-      // Trust tier can be downgraded after task creation; re-check at assignment time to
-      // prevent a demoted poster from advancing the task lifecycle.
       const TRUST_TIER_ORDER = ['rookie', 'verified', 'trusted'];
       const TRUST_TIER_NUMERIC_MAP: Record<number, string> = { 1: 'rookie', 2: 'verified', 3: 'trusted', 4: 'trusted' };
-      const template = getTemplate(templateSlugResult.rows[0].template_slug ?? 'standard_physical');
-      if (template) {
-        const posterTierName = TRUST_TIER_NUMERIC_MAP[ctx.user.trust_tier ?? 1] ?? 'rookie';
-        const posterTierIndex = TRUST_TIER_ORDER.indexOf(posterTierName);
-        const requiredTierIndex = TRUST_TIER_ORDER.indexOf(template.requiredTrustTier ?? 'rookie');
-        if (posterTierIndex < requiredTierIndex) {
-          throw new TRPCError({
-            code: 'PRECONDITION_FAILED',
-            message: `Your trust level (${posterTierName}) no longer meets the requirement (${template.requiredTrustTier}) for this task type.`,
-          });
-        }
-      }
 
       const result = await db.transaction(async (txn) => {
         // Step 1: Lock the task row for the duration of the transaction.
         // FOR UPDATE prevents concurrent assignWorker calls from both reading
         // state='POSTED' and proceeding to assign different workers.
-        const taskResult = await txn<{ id: string; state: string; poster_id: string; trust_tier_required: number | null }>(
-          `SELECT id, state, poster_id, trust_tier_required FROM tasks WHERE id = $1 FOR UPDATE`,
+        const taskResult = await txn<{ id: string; state: string; poster_id: string; trust_tier_required: number | null; template_slug: string | null }>(
+          `SELECT id, state, poster_id, trust_tier_required, template_slug FROM tasks WHERE id = $1 FOR UPDATE`,
           [input.taskId]
         );
         if (taskResult.rows.length === 0) {
-          throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
+          // Return FORBIDDEN regardless of existence so non-owners cannot
+          // enumerate task UUIDs via error discrimination.
+          throw new TRPCError({ code: 'FORBIDDEN', message: 'Only the task poster can assign workers' });
         }
         if (taskResult.rows[0].poster_id !== ctx.user.id) {
           throw new TRPCError({ code: 'FORBIDDEN', message: 'Only the task poster can assign workers' });
@@ -1154,6 +1174,24 @@ export const taskRouter = router({
             code: 'PRECONDITION_FAILED',
             message: `Task must be POSTED to assign a worker, current: ${taskResult.rows[0].state}`,
           });
+        }
+
+        // Re-validate poster's current trust tier against the task's template requirement.
+        // Trust tier can be downgraded after task creation; re-check at assignment time to
+        // prevent a demoted poster from advancing the task lifecycle.
+        // Performed here — inside the lock, after ownership confirmed — so the slug read
+        // is not observable before the auth check completes.
+        const template = getTemplate(taskResult.rows[0].template_slug ?? 'standard_physical');
+        if (template) {
+          const posterTierName = TRUST_TIER_NUMERIC_MAP[ctx.user.trust_tier ?? 1] ?? 'rookie';
+          const posterTierIndex = TRUST_TIER_ORDER.indexOf(posterTierName);
+          const requiredTierIndex = TRUST_TIER_ORDER.indexOf(template.requiredTrustTier ?? 'rookie');
+          if (posterTierIndex < requiredTierIndex) {
+            throw new TRPCError({
+              code: 'PRECONDITION_FAILED',
+              message: `Your trust level (${posterTierName}) no longer meets the requirement (${template.requiredTrustTier}) for this task type.`,
+            });
+          }
         }
 
         // Step 1b: Enforce trust_tier_required on the admin-assign path.

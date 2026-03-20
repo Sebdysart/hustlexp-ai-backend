@@ -487,7 +487,8 @@ describe('processPaymentJob', () => {
      *   6. writeToOutbox (mocked globally)
      *   7. UPDATE stripe_events SET processed_at=NOW(), result='success' (db.query)
      */
-    function setupSuccessfulChargeRefunded(escrowId = 'escrow-refund-1', escrowAmount = 5000) {
+    // Setup helper: escrow was RELEASED (fee collected) — reversal SHOULD fire
+    function setupSuccessfulChargeRefundedFromReleased(escrowId = 'escrow-refund-1', escrowAmount = 5000) {
       const charge = {
         id: 'ch_abc',
         metadata: { escrow_id: escrowId },
@@ -498,7 +499,41 @@ describe('processPaymentJob', () => {
       // 1. Claim
       setupClaim('charge.refunded', charge, 'evt_charge_refunded');
 
-      // 2. Escrow SELECT inside transaction — FUNDED state, with amount field
+      // 2. Escrow SELECT inside transaction — RELEASED state (platform fee was collected)
+      mockQuery.mockResolvedValueOnce({
+        rows: [{ id: escrowId, task_id: 'task-ref-1', state: 'RELEASED', version: 2, amount: escrowAmount, stripe_refund_id: null }],
+        rowCount: 1,
+      } as never);
+
+      // 3. Escrow UPDATE → REFUNDED
+      mockQuery.mockResolvedValueOnce({
+        rows: [{ id: escrowId, state: 'REFUNDED', version: 3 }],
+        rowCount: 1,
+      } as never);
+
+      // 4. TaskService.advanceProgress — globally mocked
+      // 5. RevenueService.logEvent — globally mocked (fires because state was RELEASED)
+      // 6. writeToOutbox — globally mocked
+
+      // 7. Final success UPDATE
+      mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+      return { charge, escrowId, escrowAmount };
+    }
+
+    // Setup helper: escrow was FUNDED (no fee collected yet) — reversal must NOT fire
+    function setupSuccessfulChargeRefundedFromFunded(escrowId = 'escrow-refund-1', escrowAmount = 5000) {
+      const charge = {
+        id: 'ch_abc',
+        metadata: { escrow_id: escrowId },
+        refunds: { data: [{ id: 'ref_abc' }] },
+        payment_intent: 'pi_abc',
+      };
+
+      // 1. Claim
+      setupClaim('charge.refunded', charge, 'evt_charge_refunded');
+
+      // 2. Escrow SELECT inside transaction — FUNDED state (no platform fee collected)
       mockQuery.mockResolvedValueOnce({
         rows: [{ id: escrowId, task_id: 'task-ref-1', state: 'FUNDED', version: 2, amount: escrowAmount, stripe_refund_id: null }],
         rowCount: 1,
@@ -511,7 +546,7 @@ describe('processPaymentJob', () => {
       } as never);
 
       // 4. TaskService.advanceProgress — globally mocked
-      // 5. RevenueService.logEvent — globally mocked
+      // 5. RevenueService.logEvent — NOT called (state was not RELEASED)
       // 6. writeToOutbox — globally mocked
 
       // 7. Final success UPDATE
@@ -520,17 +555,25 @@ describe('processPaymentJob', () => {
       return { charge, escrowId, escrowAmount };
     }
 
-    it('calls RevenueService.logEvent after a successful charge.refunded', async () => {
-      setupSuccessfulChargeRefunded();
+    it('calls RevenueService.logEvent after charge.refunded when escrow was RELEASED (fee collected)', async () => {
+      setupSuccessfulChargeRefundedFromReleased();
 
       await processPaymentJob(makeJob('charge.refunded', 'evt_charge_refunded'));
 
       expect(vi.mocked(RevenueService.logEvent)).toHaveBeenCalledOnce();
     });
 
+    it('does NOT call RevenueService.logEvent when escrow was FUNDED (no fee collected yet)', async () => {
+      setupSuccessfulChargeRefundedFromFunded('escrow-refund-funded', 5000);
+
+      await processPaymentJob(makeJob('charge.refunded', 'evt_charge_refunded'));
+
+      expect(vi.mocked(RevenueService.logEvent)).not.toHaveBeenCalled();
+    });
+
     it('logs platform_fee_reversal with negative amountCents proportional to escrow amount', async () => {
       const escrowAmount = 10000; // $100 escrow
-      setupSuccessfulChargeRefunded('escrow-refund-2', escrowAmount);
+      setupSuccessfulChargeRefundedFromReleased('escrow-refund-2', escrowAmount);
 
       await processPaymentJob(makeJob('charge.refunded', 'evt_charge_refunded'));
 
@@ -542,7 +585,7 @@ describe('processPaymentJob', () => {
     });
 
     it('revenue ledger entry includes stripeEventId and stripeChargeId for audit trail', async () => {
-      setupSuccessfulChargeRefunded('escrow-refund-3', 5000);
+      setupSuccessfulChargeRefundedFromReleased('escrow-refund-3', 5000);
 
       await processPaymentJob(makeJob('charge.refunded', 'evt_charge_refunded'));
 
@@ -578,7 +621,7 @@ describe('processPaymentJob', () => {
     });
 
     it('charge.refunded succeeds end-to-end (processed_at set, result=success)', async () => {
-      setupSuccessfulChargeRefunded('escrow-refund-4', 5000);
+      setupSuccessfulChargeRefundedFromFunded('escrow-refund-4', 5000);
 
       await processPaymentJob(makeJob('charge.refunded', 'evt_charge_refunded'));
 

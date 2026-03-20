@@ -555,6 +555,29 @@ export const MessagingService = {
         };
       }
       
+      // Per-sender-per-task rate limit: shared with sendMessage so that switching
+      // from text to photo messages cannot bypass the 30-per-minute quota.
+      // Uses the SAME Redis key (`msg_rate:${senderId}:${taskId}`) so photo and
+      // text messages count against the same shared bucket.
+      // Checked AFTER input validation so invalid requests do not burn the quota.
+      // Fail-open: if Redis is unavailable, incr() returns 1 and the send proceeds.
+      const MSG_RATE_LIMIT = 30;
+      const MSG_RATE_WINDOW_SECONDS = 60;
+      const rateLimitKey = `msg_rate:${senderId}:${taskId}`;
+      const msgCount = await incr(rateLimitKey);
+      if (msgCount === 1) {
+        await expire(rateLimitKey, MSG_RATE_WINDOW_SECONDS);
+      }
+      if (msgCount > MSG_RATE_LIMIT) {
+        return {
+          success: false,
+          error: {
+            code: ErrorCodes.RATE_LIMIT_EXCEEDED,
+            message: `Message rate limit exceeded. You can send at most ${MSG_RATE_LIMIT} messages per minute per conversation.`,
+          },
+        };
+      }
+
       // Photo size validation should happen at upload time (before URLs are generated)
       // MESSAGING_SPEC.md §2.3: Maximum 3 photos per message, 5MB per photo
       // Since this service receives photoUrls (already uploaded), validation must occur

@@ -473,6 +473,12 @@ export const FraudDetectionService = {
       };
     }
 
+    // Bug 4 fix: declare suspension counters before the try/catch so they are
+    // accessible at the return site outside the try block.  Non-CRITICAL paths
+    // leave them at 0 (no suspensions attempted).
+    let suspensionApplied = 0;
+    let suspensionFailed = 0;
+
     // Inner try/catch: side-effects only. The INSERT already committed, so
     // side-effect failures must NOT return DB_ERROR (which would cause callers
     // to retry and duplicate the suspension). Log and return success instead.
@@ -526,14 +532,26 @@ export const FraudDetectionService = {
             } catch (e) { log.warn({ e, userId }, 'session revocation failed'); }
 
             try { forceDisconnectUser(userId); } catch (e) { /* fire-and-forget */ }
+
+            suspensionApplied++;
           } catch (err) {
             log.error({ err, userId }, '[FraudDetection] failed to suspend user in fraud ring — continuing');
+            suspensionFailed++;
             // DO NOT rethrow — process remaining users
           }
         }
-        
+
+        // Bug 4 fix: if ALL suspensions failed, emit a CRITICAL log so on-call
+        // engineers are alerted that the fraud ring may still be active.
+        if (userIds.length > 0 && suspensionApplied === 0) {
+          log.error(
+            { patternId: result.rows[0].id, attempted: suspensionFailed },
+            '[FraudDetection] CRITICAL: all per-user suspensions failed — fraud ring may remain active'
+          );
+        }
+
         // Alert admins (send notification to admin team)
-        log.error({ patternType, userIds, riskLevel: 'CRITICAL' }, 'CRITICAL fraud pattern detected - accounts auto-suspended');
+        log.error({ patternType, userIds, riskLevel: 'CRITICAL', suspensionApplied, suspensionFailed }, 'CRITICAL fraud pattern detected - accounts auto-suspended');
         await notifyAdmins({
           title: '🚨 CRITICAL Fraud Pattern Detected',
           body: `Pattern "${patternType}" detected for ${userIds.length} user(s): ${userIds.join(', ')}. Accounts have been auto-suspended. Review in admin dashboard.`,
@@ -615,10 +633,14 @@ export const FraudDetectionService = {
 
     return {
       success: true,
-      data: result.rows[0],
+      data: {
+        ...result.rows[0],
+        suspensionApplied,
+        suspensionFailed,
+      },
     };
   },
-  
+
   /**
    * Get fraud patterns for a user
    */

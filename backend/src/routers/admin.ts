@@ -18,6 +18,7 @@
 import { TRPCError } from '@trpc/server';
 import { router, adminProcedure, Schemas, invalidateAuthCacheForUser } from '../trpc.js';
 import { authCache } from '../auth-cache.js';
+import { redis } from '../cache/redis.js';
 import { db } from '../db.js';
 import { z } from 'zod';
 import { EscrowService } from '../services/EscrowService.js';
@@ -158,10 +159,23 @@ export const adminRouter = router({
       if (input.banned) {
         await invalidateAuthCacheForUser(input.userId, firebaseUid);
       } else {
-        // In-process eviction only — no Redis side effects.
+        // In-process eviction only — do NOT call invalidateAuthCacheForUser
+        // because that would write a new Redis marker, permanently locking
+        // out the now-unbanned user.
         for (const [key, entry] of authCache.entries()) {
           if (entry.user.id === input.userId) {
             authCache.delete(key);
+          }
+        }
+        // Bug 3 fix: delete the Redis revocation marker written during the
+        // original ban via invalidateAuthCacheForUser.  Without this, if the
+        // user is unbanned within REVOCATION_MARKER_TTL_SECONDS (~720 s) of
+        // the ban, the marker persists and keeps the user locked out.
+        if (firebaseUid) {
+          try {
+            await redis.del(`auth:revoked:${firebaseUid}`);
+          } catch (err) {
+            log.warn({ err }, '[admin.setUserBan] failed to delete Redis revocation marker on unban');
           }
         }
       }
@@ -300,9 +314,21 @@ export const adminRouter = router({
         }
         forceDisconnectUser(input.userId);
       } else {
-        // Unsuspend: evict in-process cache only (no Redis revocation marker)
+        // Unsuspend: evict in-process cache entries.
         for (const [key, entry] of authCache.entries()) {
           if (entry.user?.id === input.userId) authCache.delete(key);
+        }
+        // Bug 2 fix: also delete the Redis revocation marker written during
+        // the original suspension via invalidateAuthCacheForUser.  Without this,
+        // the marker persists for up to 720 s (REVOCATION_MARKER_TTL_SECONDS),
+        // locking the user out even though they are no longer suspended.
+        const firebaseUid = result.rows[0].firebase_uid;
+        if (firebaseUid) {
+          try {
+            await redis.del(`auth:revoked:${firebaseUid}`);
+          } catch (err) {
+            log.warn({ err }, '[admin.setSuspension] failed to delete Redis revocation marker on unsuspend');
+          }
         }
       }
       return { success: true, userId: input.userId, suspended: input.suspended };
@@ -325,6 +351,23 @@ export const adminRouter = router({
       role: z.string().min(1).max(100),
     }))
     .mutation(async ({ ctx, input }) => {
+      // Precondition: verify firebase_uid FIRST — before any DB writes — so that
+      // if the user has no Firebase UID the role is never granted and no audit
+      // row is written, making the check a true precondition rather than a
+      // post-hoc error after a side-effectful write (Bug 1 fix).
+      const fbRow = await db.query<{ firebase_uid: string | null }>(
+        'SELECT firebase_uid FROM users WHERE id = $1',
+        [input.userId]
+      );
+      const firebaseUid = fbRow.rows[0]?.firebase_uid;
+
+      if (!firebaseUid) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'Cannot modify admin role for user without a Firebase UID',
+        });
+      }
+
       // Upsert so a duplicate grant is idempotent
       await db.query(
         `INSERT INTO admin_roles (user_id, role)
@@ -342,19 +385,6 @@ export const adminRouter = router({
       // KK2 FIX: Invalidate the auth cache so the granted role takes effect
       // immediately — the cached is_admin value would otherwise persist for
       // up to 5 minutes.
-      const fbRow = await db.query<{ firebase_uid: string | null }>(
-        'SELECT firebase_uid FROM users WHERE id = $1',
-        [input.userId]
-      );
-      const firebaseUid = fbRow.rows[0]?.firebase_uid;
-
-      if (!firebaseUid) {
-        throw new TRPCError({
-          code: 'PRECONDITION_FAILED',
-          message: 'Cannot modify admin role for user without a Firebase UID',
-        });
-      }
-
       await invalidateAuthCacheForUser(input.userId, firebaseUid);
 
       return { userId: input.userId, role: input.role };
@@ -373,6 +403,23 @@ export const adminRouter = router({
       role: z.string().min(1).max(100),
     }))
     .mutation(async ({ ctx, input }) => {
+      // Precondition: verify firebase_uid FIRST — before any DB writes — so that
+      // if the user has no Firebase UID the role is never revoked and no audit
+      // row is written, making the check a true precondition rather than a
+      // post-hoc error after a side-effectful write (Bug 1 fix).
+      const fbRow = await db.query<{ firebase_uid: string | null }>(
+        'SELECT firebase_uid FROM users WHERE id = $1',
+        [input.userId]
+      );
+      const firebaseUid = fbRow.rows[0]?.firebase_uid ?? undefined;
+
+      if (!firebaseUid) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'Cannot modify admin role for user without a Firebase UID',
+        });
+      }
+
       const result = await db.query<{ user_id: string }>(
         `DELETE FROM admin_roles WHERE user_id = $1 AND role = $2 RETURNING user_id`,
         [input.userId, input.role]
@@ -391,19 +438,6 @@ export const adminRouter = router({
       // KK2 FIX: Invalidate the auth cache immediately after role removal so
       // the revoked admin cannot continue to trigger adminOverride=true paths
       // until the 5-minute TTL expires.
-      const fbRow = await db.query<{ firebase_uid: string | null }>(
-        'SELECT firebase_uid FROM users WHERE id = $1',
-        [input.userId]
-      );
-      const firebaseUid = fbRow.rows[0]?.firebase_uid ?? undefined;
-
-      if (!firebaseUid) {
-        throw new TRPCError({
-          code: 'PRECONDITION_FAILED',
-          message: 'Cannot modify admin role for user without a Firebase UID',
-        });
-      }
-
       await invalidateAuthCacheForUser(input.userId, firebaseUid);
 
       return { userId: input.userId, role: input.role };

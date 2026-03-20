@@ -518,28 +518,25 @@ describe('ATTACK 8: Partial payout math — pennies lost or gained', () => {
     // VERDICT: SAFE
   });
 
-  it('self-insurance contribution is 2% of GROSS (before platform fee)', async () => {
+  it('self-insurance contribution is 2% of NET (after platform fee)', async () => {
     /**
      * ANALYSIS: SelfInsurancePoolService.recordContribution is called with:
-     *   insuranceContributionCents = Math.round(grossPayoutCents * 0.02)
-     * (EscrowService.ts:430)
-     *
-     * This means the worker effectively pays:
-     *   platform_fee (15%) + insurance (2%) = 17% total deductions
-     *   but netPayoutCents = gross - platform_fee only (insurance is "recorded"
-     *   not subtracted from the Stripe transfer amount).
+     *   insuranceContributionCents = Math.round(netPayoutCents * 0.02)
+     * (EscrowService.ts — BUG FIX: was grossPayoutCents, corrected to netPayoutCents)
      *
      * The insurance contribution is an accounting entry, not a money movement
      * in EscrowService. The actual fund transfer happens elsewhere.
      * So the worker receives netPayoutCents (gross - 15% platform fee),
-     * and separately the pool is credited 2% (from the platform's cut, conceptually).
+     * and separately the pool is credited 2% of that net amount.
      *
-     * VERDICT: SAFE — insurance is not double-subtracted from worker payout.
+     * gross=10000, fee=1500 (15%), net=8500, insurance=Math.round(8500*0.02)=170
+     *
+     * VERDICT: SAFE — insurance is calculated on net, not double-charged from gross.
      */
     mockReleaseHappyPath(10000, 10000);
     await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_atk' });
 
-    const expectedInsurance = Math.round(10000 * 0.02); // 200 cents = $2
+    const expectedInsurance = Math.round(8500 * 0.02); // 170 cents ($1.70) — 2% of net
     expect(SelfInsurancePoolService.recordContribution).toHaveBeenCalledWith(
       'task-1', 'worker-1', expectedInsurance,
     );
@@ -657,9 +654,11 @@ describe('ATTACK 11: Refund amount vs original charge amount', () => {
 describe('ATTACK 12: Pool contribution path', () => {
   /**
    * SelfInsurancePoolService.recordContribution() is called from EscrowService.release()
-   * at line 430: `Math.round(grossPayoutCents * 0.02)`
+   * with: `Math.round(netPayoutCents * 0.02)`
+   * (BUG FIX: was grossPayoutCents — corrected to netPayoutCents so insurance is on
+   * the amount the worker actually receives, not the gross escrow amount.)
    *
-   * This means: contribution is 2% of escrow.amount (gross, before platform fee).
+   * This means: contribution is 2% of net payout (after 15% platform fee).
    * It is called on EVERY successful release, regardless of task type.
    *
    * The contribution uses ON CONFLICT (task_id, hustler_id) DO NOTHING,
@@ -668,7 +667,7 @@ describe('ATTACK 12: Pool contribution path', () => {
    *
    * VERDICT: SAFE — pool is funded on every release, idempotent.
    */
-  it('pool contribution is 2% of gross payout, called on every release', async () => {
+  it('pool contribution is 2% of net payout (after platform fee), called on every release', async () => {
     mockReleaseHappyPath(10000, 10000);
     await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_atk' });
 
@@ -676,9 +675,9 @@ describe('ATTACK 12: Pool contribution path', () => {
     expect(SelfInsurancePoolService.recordContribution).toHaveBeenCalledWith(
       'task-1',
       'worker-1',
-      200, // 2% of 10000
+      170, // 2% of net 8500 (gross 10000 - 15% fee 1500)
     );
-    // VERDICT: SAFE — funded on every normal release.
+    // VERDICT: SAFE — funded on every normal release, calculated on net amount.
   });
 
   it('pool contribution is also called when releasing from LOCKED_DISPUTE (dispute worker-win)', async () => {

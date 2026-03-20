@@ -1577,16 +1577,19 @@ describe('DisputeService', () => {
       }
     });
 
-    it('returns INVALID_STATE when escrow is not FUNDED', async () => {
+    it('returns INVALID_STATE when escrow is in an invalid state (REFUNDED)', async () => {
+      // BUG FIX (HIGH): FUNDED and RELEASED are both valid states for filing a dispute
+      // (completed tasks typically have RELEASED escrow). Only truly terminal states
+      // like REFUNDED or LOCKED_DISPUTE are invalid for dispute creation.
       // Inside transaction:
       // query 1: SELECT task FOR UPDATE → completed task
       mockDb.query.mockResolvedValueOnce({
         rows: [makeTask()],
         rowCount: 1,
       } as never);
-      // query 2: SELECT escrow FOR UPDATE → RELEASED escrow (fails state check)
+      // query 2: SELECT escrow FOR UPDATE → REFUNDED escrow (truly invalid state)
       mockDb.query.mockResolvedValueOnce({
-        rows: [makeEscrow({ state: 'RELEASED' })],
+        rows: [makeEscrow({ state: 'REFUNDED' })],
         rowCount: 1,
       } as never);
 

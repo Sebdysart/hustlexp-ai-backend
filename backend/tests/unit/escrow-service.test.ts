@@ -239,9 +239,10 @@ describe('EscrowService', () => {
         userId: 'worker-1', taskId: 'task-1', escrowId: 'esc-1', baseXP: 500,
       });
 
-      // Verify self-insurance contribution: 2% of gross payout
+      // Verify self-insurance contribution: 2% of NET payout (after 15% platform fee)
+      // gross=5000, fee=750, net=4250, insurance=Math.round(4250*0.02)=85
       expect(SelfInsurancePoolService.recordContribution).toHaveBeenCalledWith(
-        'task-1', 'worker-1', 100,
+        'task-1', 'worker-1', 85,
       );
     });
 

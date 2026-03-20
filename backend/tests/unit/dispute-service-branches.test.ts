@@ -159,22 +159,24 @@ describe('DisputeService.create', () => {
     if (!result.success) expect(result.error.message).toContain('48 hours');
   });
 
-  it('rejects when escrow is not FUNDED', async () => {
+  it('rejects when escrow is in an invalid state (REFUNDED)', async () => {
+    // BUG FIX (HIGH): FUNDED and RELEASED are both valid states for filing a dispute.
+    // Only truly terminal/locked states like REFUNDED, LOCKED_DISPUTE, etc. are rejected.
     // Inside transaction:
     // Query 1: SELECT task FOR UPDATE → completed task
     mockDb.query.mockResolvedValueOnce({
       rows: [{ id: 't1', completed_at: new Date() }],
       rowCount: 1,
     } as any);
-    // Query 2: SELECT escrow FOR UPDATE → RELEASED escrow (fails state check)
+    // Query 2: SELECT escrow FOR UPDATE → REFUNDED escrow (invalid state)
     mockDb.query.mockResolvedValueOnce({
-      rows: [{ id: 'e1', state: 'RELEASED' }],
+      rows: [{ id: 'e1', state: 'REFUNDED' }],
       rowCount: 1,
     } as any);
 
     const result = await DisputeService.create(baseParams);
     expect(result.success).toBe(false);
-    if (!result.success) expect(result.error.message).toContain('FUNDED');
+    if (!result.success) expect(result.error.code).toBe('INVALID_STATE');
   });
 
   it('returns error when TaskService fails', async () => {

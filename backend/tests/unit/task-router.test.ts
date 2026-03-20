@@ -1569,30 +1569,29 @@ describe('task.assignWorker', () => {
     // reset handled by global beforeEach
   });
 
-  // NOTE: The new assignWorker implementation wraps all 5 DB ops in db.transaction()
-  // with a SELECT FOR UPDATE as the first statement inside the transaction.
-  // Mock sequence (all via db.query since transaction delegates to the same fn):
-  //   [1] Pre-tx: SELECT template_slug FROM tasks WHERE id = $1
-  //   [2] In-tx:  SELECT id, state, poster_id, trust_tier_required FROM tasks WHERE id = $1 FOR UPDATE
-  //   [2b] In-tx: SELECT trust_tier FROM users WHERE id = $1  (ONLY when trust_tier_required is set)
-  //   [3] In-tx:  SELECT id FROM task_applications WHERE task_id = $1 AND hustler_id = $2 AND status = 'pending'
-  //   [4] In-tx:  UPDATE task_applications SET status = 'accepted'
-  //   [5] In-tx:  UPDATE task_applications SET status = 'rejected'
-  //   [6] In-tx:  UPDATE tasks SET state = 'ACCEPTED' ... RETURNING id, state, worker_id
+  // NOTE: SECURITY FIX applied — the pre-transaction template_slug SELECT was moved
+  // INSIDE the transaction, AFTER the FOR UPDATE lock and ownership check, to prevent
+  // task UUID enumeration via NOT_FOUND/FORBIDDEN error discrimination.
+  //
+  // Updated mock sequence (all via db.query since transaction delegates to the same fn):
+  //   [1] In-tx:  SELECT id, state, poster_id, trust_tier_required, template_slug FROM tasks WHERE id = $1 FOR UPDATE
+  //   [1b] In-tx: SELECT trust_tier FROM users WHERE id = $1  (ONLY when trust_tier_required is set)
+  //   [2] In-tx:  SELECT id FROM task_applications WHERE task_id = $1 AND hustler_id = $2 AND status = 'pending'
+  //   [3] In-tx:  UPDATE task_applications SET status = 'accepted'
+  //   [4] In-tx:  UPDATE task_applications SET status = 'rejected'
+  //   [5] In-tx:  UPDATE tasks SET state = 'ACCEPTED' ... RETURNING id, state, worker_id
 
   it('assigns worker and returns the accepted task row', async () => {
     const acceptedTask = { id: TASK_ID, state: 'ACCEPTED', worker_id: OTHER_USER_ID };
-    // [1] Pre-tx template_slug lookup
-    mockDb.query.mockResolvedValueOnce({ rows: [{ template_slug: 'standard_physical' }], rowCount: 1 } as any);
-    // [2] In-tx FOR UPDATE
-    mockDb.query.mockResolvedValueOnce({ rows: [{ id: TASK_ID, state: 'POSTED', poster_id: USER_ID }], rowCount: 1 } as any);
-    // [3] Application check
+    // [1] In-tx FOR UPDATE — includes template_slug now
+    mockDb.query.mockResolvedValueOnce({ rows: [{ id: TASK_ID, state: 'POSTED', poster_id: USER_ID, template_slug: 'standard_physical' }], rowCount: 1 } as any);
+    // [2] Application check
     mockDb.query.mockResolvedValueOnce({ rows: [{ id: APP_ID }], rowCount: 1 } as any);
-    // [4] Accept application update
+    // [3] Accept application update
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
-    // [5] Reject other applications
+    // [4] Reject other applications
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
-    // [6] UPDATE tasks RETURNING
+    // [5] UPDATE tasks RETURNING
     mockDb.query.mockResolvedValueOnce({ rows: [acceptedTask], rowCount: 1 } as any);
 
     const result = await makeCallerAsPoster().assignWorker({
@@ -1605,21 +1604,21 @@ describe('task.assignWorker', () => {
     expect(mockTaskService.accept).not.toHaveBeenCalled();
   });
 
-  it('throws NOT_FOUND when task does not exist (pre-tx template slug lookup)', async () => {
-    // Pre-tx SELECT returns no rows
+  it('throws FORBIDDEN when task does not exist (UUID enumeration prevention)', async () => {
+    // SECURITY FIX: non-existent task now returns FORBIDDEN (not NOT_FOUND) so that
+    // authenticated posters cannot probe arbitrary task UUIDs for existence.
+    // In-tx FOR UPDATE returns no rows — but we surface FORBIDDEN, not NOT_FOUND.
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
 
     await expect(
       makeCallerAsPoster().assignWorker({ taskId: TASK_ID, workerId: OTHER_USER_ID })
-    ).rejects.toThrow('Task not found');
+    ).rejects.toThrow('Only the task poster can assign workers');
   });
 
   it('throws FORBIDDEN when user is not the poster (checked inside transaction)', async () => {
-    // [1] Pre-tx template_slug lookup — returns task owned by a DIFFERENT poster
-    mockDb.query.mockResolvedValueOnce({ rows: [{ template_slug: 'standard_physical' }], rowCount: 1 } as any);
-    // [2] In-tx FOR UPDATE — poster_id is OTHER_USER_ID, not the caller
+    // [1] In-tx FOR UPDATE — poster_id is OTHER_USER_ID, not the caller
     mockDb.query.mockResolvedValueOnce({
-      rows: [{ id: TASK_ID, state: 'POSTED', poster_id: OTHER_USER_ID }],
+      rows: [{ id: TASK_ID, state: 'POSTED', poster_id: OTHER_USER_ID, template_slug: 'standard_physical' }],
       rowCount: 1,
     } as any);
 
@@ -1629,11 +1628,9 @@ describe('task.assignWorker', () => {
   });
 
   it('throws PRECONDITION_FAILED when task is not POSTED (checked inside transaction)', async () => {
-    // [1] Pre-tx template_slug lookup
-    mockDb.query.mockResolvedValueOnce({ rows: [{ template_slug: 'standard_physical' }], rowCount: 1 } as any);
-    // [2] In-tx FOR UPDATE — task state already ACCEPTED (e.g. concurrent caller won)
+    // [1] In-tx FOR UPDATE — task state already ACCEPTED (e.g. concurrent caller won)
     mockDb.query.mockResolvedValueOnce({
-      rows: [{ id: TASK_ID, state: 'ACCEPTED', poster_id: USER_ID }],
+      rows: [{ id: TASK_ID, state: 'ACCEPTED', poster_id: USER_ID, template_slug: 'standard_physical' }],
       rowCount: 1,
     } as any);
 
@@ -1643,11 +1640,9 @@ describe('task.assignWorker', () => {
   });
 
   it('throws NOT_FOUND when no pending application for worker', async () => {
-    // [1] Pre-tx template_slug lookup
-    mockDb.query.mockResolvedValueOnce({ rows: [{ template_slug: 'standard_physical' }], rowCount: 1 } as any);
-    // [2] In-tx FOR UPDATE
-    mockDb.query.mockResolvedValueOnce({ rows: [{ id: TASK_ID, state: 'POSTED', poster_id: USER_ID }], rowCount: 1 } as any);
-    // [3] Application check — no pending application found
+    // [1] In-tx FOR UPDATE
+    mockDb.query.mockResolvedValueOnce({ rows: [{ id: TASK_ID, state: 'POSTED', poster_id: USER_ID, template_slug: 'standard_physical' }], rowCount: 1 } as any);
+    // [2] Application check — no pending application found
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
 
     await expect(
@@ -1656,17 +1651,15 @@ describe('task.assignWorker', () => {
   });
 
   it('throws PRECONDITION_FAILED when UPDATE tasks affects 0 rows (concurrent assignment detected)', async () => {
-    // [1] Pre-tx template_slug lookup
-    mockDb.query.mockResolvedValueOnce({ rows: [{ template_slug: 'standard_physical' }], rowCount: 1 } as any);
-    // [2] In-tx FOR UPDATE
-    mockDb.query.mockResolvedValueOnce({ rows: [{ id: TASK_ID, state: 'POSTED', poster_id: USER_ID }], rowCount: 1 } as any);
-    // [3] Application check
+    // [1] In-tx FOR UPDATE
+    mockDb.query.mockResolvedValueOnce({ rows: [{ id: TASK_ID, state: 'POSTED', poster_id: USER_ID, template_slug: 'standard_physical' }], rowCount: 1 } as any);
+    // [2] Application check
     mockDb.query.mockResolvedValueOnce({ rows: [{ id: APP_ID }], rowCount: 1 } as any);
-    // [4] Accept application update
+    // [3] Accept application update
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
-    // [5] Reject other applications
+    // [4] Reject other applications
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
-    // [6] UPDATE tasks → 0 rows (state changed between FOR UPDATE check and UPDATE)
+    // [5] UPDATE tasks → 0 rows (state changed between FOR UPDATE check and UPDATE)
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
 
     await expect(
@@ -1675,14 +1668,12 @@ describe('task.assignWorker', () => {
   });
 
   it('throws FORBIDDEN when worker trust tier is below task trust_tier_required (H5 bug fix)', async () => {
-    // [1] Pre-tx template_slug lookup
-    mockDb.query.mockResolvedValueOnce({ rows: [{ template_slug: 'standard_physical' }], rowCount: 1 } as any);
-    // [2] In-tx FOR UPDATE — task requires trust tier 3
+    // [1] In-tx FOR UPDATE — task requires trust tier 3, template_slug included
     mockDb.query.mockResolvedValueOnce({
-      rows: [{ id: TASK_ID, state: 'POSTED', poster_id: USER_ID, trust_tier_required: 3 }],
+      rows: [{ id: TASK_ID, state: 'POSTED', poster_id: USER_ID, trust_tier_required: 3, template_slug: 'standard_physical' }],
       rowCount: 1,
     } as any);
-    // [2b] Worker trust tier lookup — worker is tier 2 (below requirement)
+    // [1b] Worker trust tier lookup — worker is tier 2 (below requirement)
     mockDb.query.mockResolvedValueOnce({ rows: [{ trust_tier: 2 }], rowCount: 1 } as any);
 
     await expect(
@@ -1691,14 +1682,12 @@ describe('task.assignWorker', () => {
   });
 
   it('throws NOT_FOUND when worker does not exist during trust_tier_required check', async () => {
-    // [1] Pre-tx template_slug lookup
-    mockDb.query.mockResolvedValueOnce({ rows: [{ template_slug: 'standard_physical' }], rowCount: 1 } as any);
-    // [2] In-tx FOR UPDATE — task requires trust tier 2
+    // [1] In-tx FOR UPDATE — task requires trust tier 2, template_slug included
     mockDb.query.mockResolvedValueOnce({
-      rows: [{ id: TASK_ID, state: 'POSTED', poster_id: USER_ID, trust_tier_required: 2 }],
+      rows: [{ id: TASK_ID, state: 'POSTED', poster_id: USER_ID, trust_tier_required: 2, template_slug: 'standard_physical' }],
       rowCount: 1,
     } as any);
-    // [2b] Worker trust tier lookup — no worker found
+    // [1b] Worker trust tier lookup — no worker found
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
 
     await expect(
@@ -1708,22 +1697,20 @@ describe('task.assignWorker', () => {
 
   it('assigns worker when trust tier meets requirement (H5 bug fix — allow path)', async () => {
     const acceptedTask = { id: TASK_ID, state: 'ACCEPTED', worker_id: OTHER_USER_ID };
-    // [1] Pre-tx template_slug lookup
-    mockDb.query.mockResolvedValueOnce({ rows: [{ template_slug: 'standard_physical' }], rowCount: 1 } as any);
-    // [2] In-tx FOR UPDATE — task requires trust tier 2
+    // [1] In-tx FOR UPDATE — task requires trust tier 2, template_slug included
     mockDb.query.mockResolvedValueOnce({
-      rows: [{ id: TASK_ID, state: 'POSTED', poster_id: USER_ID, trust_tier_required: 2 }],
+      rows: [{ id: TASK_ID, state: 'POSTED', poster_id: USER_ID, trust_tier_required: 2, template_slug: 'standard_physical' }],
       rowCount: 1,
     } as any);
-    // [2b] Worker trust tier lookup — worker is tier 2 (meets requirement)
+    // [1b] Worker trust tier lookup — worker is tier 2 (meets requirement)
     mockDb.query.mockResolvedValueOnce({ rows: [{ trust_tier: 2 }], rowCount: 1 } as any);
-    // [3] Application check
+    // [2] Application check
     mockDb.query.mockResolvedValueOnce({ rows: [{ id: APP_ID }], rowCount: 1 } as any);
-    // [4] Accept application update
+    // [3] Accept application update
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
-    // [5] Reject other applications
+    // [4] Reject other applications
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
-    // [6] UPDATE tasks RETURNING
+    // [5] UPDATE tasks RETURNING
     mockDb.query.mockResolvedValueOnce({ rows: [acceptedTask], rowCount: 1 } as any);
 
     const result = await makeCallerAsPoster().assignWorker({

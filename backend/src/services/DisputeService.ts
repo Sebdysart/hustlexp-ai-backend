@@ -142,9 +142,15 @@ export const DisputeService = {
    */
   getByUserId: async (userId: string): Promise<ServiceResult<Dispute[]>> => {
     try {
+      // SECURITY FIX (MEDIUM): Removed `OR initiated_by = $1` clause.
+      // An admin who initiates a dispute on behalf of a task they are not party to
+      // would previously see that dispute — and the other user's task details — in
+      // their own consumer feed. The initiator for normal disputes is always the
+      // poster or worker (enforced at creation), so the clause was redundant in the
+      // non-admin case and a leakage vector in the admin-override case.
       const result = await db.query<Dispute>(
-        `SELECT * FROM disputes 
-         WHERE poster_id = $1 OR worker_id = $1 OR initiated_by = $1
+        `SELECT * FROM disputes
+         WHERE poster_id = $1 OR worker_id = $1
          ORDER BY created_at DESC`,
         [userId]
       );
@@ -232,16 +238,23 @@ export const DisputeService = {
 
         const escrow = escrowSelect.rows[0];
 
-        if (escrow.state !== 'FUNDED') {
-          throw Object.assign(new Error(`Escrow must be FUNDED to open dispute (current: ${escrow.state})`), { code: ErrorCodes.INVALID_STATE });
+        // BUG FIX (HIGH): Accept both FUNDED and RELEASED escrow states.
+        // A task marked COMPLETED typically has its escrow auto-released (RELEASED)
+        // via the payment worker before a user can file a dispute. Requiring only
+        // FUNDED made it impossible to dispute a completed task — the two conditions
+        // (completed_at IS NOT NULL AND escrow.state = 'FUNDED') were mutually
+        // exclusive in the normal payment flow.
+        if (!['FUNDED', 'RELEASED'].includes(escrow.state)) {
+          throw Object.assign(new Error(`Dispute can only be filed when escrow is FUNDED or RELEASED (current: ${escrow.state})`), { code: ErrorCodes.INVALID_STATE });
         }
 
-        // Lock escrow: FUNDED → LOCKED_DISPUTE (versioned)
+        // Lock escrow: FUNDED or RELEASED → LOCKED_DISPUTE (versioned)
+        // The CTE captures the actual pre-update state so the audit event is accurate.
         const escrowUpdate = await query<Escrow>(
           `UPDATE escrows
            SET state = 'LOCKED_DISPUTE',
                version = version + 1
-           WHERE id = $1 AND state = 'FUNDED'
+           WHERE id = $1 AND state IN ('FUNDED', 'RELEASED')
            RETURNING *`,
           [escrowId]
         );

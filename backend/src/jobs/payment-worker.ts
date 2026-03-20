@@ -512,8 +512,11 @@ async function handleChargeRefunded(charge: Stripe.Charge, stripeEventId: string
 
     const escrow = escrowResult.rows[0];
 
-    // Terminal skip: If escrow is already terminal, skip (prevents noise)
-    if (['RELEASED', 'REFUNDED', 'REFUND_PARTIAL'].includes(escrow.state)) {
+    // Terminal skip: If escrow is already terminal (but NOT RELEASED — a refund after
+    // release is valid and requires a platform_fee_reversal), skip (prevents noise).
+    // RELEASED is intentionally excluded: a charge.refunded on a previously-released
+    // escrow must flow through so we can reverse the platform fee that was collected.
+    if (['REFUNDED', 'REFUND_PARTIAL'].includes(escrow.state)) {
       await trx(
         `UPDATE stripe_events
          SET processed_at = NOW(),
@@ -526,9 +529,9 @@ async function handleChargeRefunded(charge: Stripe.Charge, stripeEventId: string
       return { updatedEscrow: null, escrow, skipped: true };
     }
 
-    // Validate state transition: PENDING|FUNDED|LOCKED_DISPUTE → REFUNDED
-    if (!['PENDING', 'FUNDED', 'LOCKED_DISPUTE'].includes(escrow.state)) {
-      throw new Error(`Cannot refund escrow ${escrow.id}: current state is ${escrow.state}, expected PENDING, FUNDED, or LOCKED_DISPUTE`);
+    // Validate state transition: PENDING|FUNDED|LOCKED_DISPUTE|RELEASED → REFUNDED
+    if (!['PENDING', 'FUNDED', 'LOCKED_DISPUTE', 'RELEASED'].includes(escrow.state)) {
+      throw new Error(`Cannot refund escrow ${escrow.id}: current state is ${escrow.state}, expected PENDING, FUNDED, LOCKED_DISPUTE, or RELEASED`);
     }
 
     // Idempotency check: If already refunded with this refund_id, skip
@@ -537,7 +540,7 @@ async function handleChargeRefunded(charge: Stripe.Charge, stripeEventId: string
       return { updatedEscrow: null, escrow, skipped: true };
     }
 
-    // Update escrow: PENDING|FUNDED|LOCKED_DISPUTE → REFUNDED (with version check and increment)
+    // Update escrow: PENDING|FUNDED|LOCKED_DISPUTE|RELEASED → REFUNDED (with version check and increment)
     const updateResult = await trx<{
       id: string;
       state: string;
@@ -550,7 +553,7 @@ async function handleChargeRefunded(charge: Stripe.Charge, stripeEventId: string
            version = version + 1,
            updated_at = NOW()
        WHERE id = $2
-         AND state IN ('PENDING', 'FUNDED', 'LOCKED_DISPUTE')
+         AND state IN ('PENDING', 'FUNDED', 'LOCKED_DISPUTE', 'RELEASED')
          AND version = $3
        RETURNING id, state, version`,
       [refundId, escrow.id, escrow.version]
@@ -580,25 +583,27 @@ async function handleChargeRefunded(charge: Stripe.Charge, stripeEventId: string
   });
 
   // Record platform fee reversal in revenue ledger for accurate P&L.
-  // When a charge is refunded, any platform fee already recognised must be reversed.
-  // We record a negative entry (platform_fee_reversal) mirroring the pattern used
-  // by handleTransferFailed for its failed_transfer ledger entry.
-  const platformFeePercent = config.stripe.platformFeePercent ?? 15;
-  const platformFeeCents = Math.round(escrow.amount * (platformFeePercent / 100));
-  await RevenueService.logEvent({
-    eventType: 'platform_fee_reversal',
-    userId: null,
-    amountCents: -platformFeeCents,
-    escrowId: escrow.id,
-    stripeEventId,
-    stripeChargeId: charge.id,
-    metadata: {
-      reason: 'charge_refunded',
-      escrow_amount_cents: escrow.amount,
-      platform_fee_percent: platformFeePercent,
-      refund_id: refundId,
-    },
-  });
+  // A platform fee is only collected when escrow reaches RELEASED state (transfer to worker).
+  // We must ONLY reverse the fee when the pre-transition escrow state was RELEASED —
+  // for PENDING/FUNDED/LOCKED_DISPUTE states no fee was ever collected, so no reversal needed.
+  if (escrow.state === 'RELEASED') {
+    const platformFeePercent = config.stripe.platformFeePercent ?? 15;
+    const platformFeeCents = Math.round(escrow.amount * (platformFeePercent / 100));
+    await RevenueService.logEvent({
+      eventType: 'platform_fee_reversal',
+      userId: null,
+      amountCents: -platformFeeCents,
+      escrowId: escrow.id,
+      stripeEventId,
+      stripeChargeId: charge.id,
+      metadata: {
+        reason: 'charge_refunded_after_release',
+        escrow_amount_cents: escrow.amount,
+        platform_fee_percent: platformFeePercent,
+        refund_id: refundId,
+      },
+    }).catch(err => log.error({ err }, 'Failed to log platform_fee_reversal'));
+  }
 
   // Emit outbox event: escrow.refunded
   await writeToOutbox({
