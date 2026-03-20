@@ -209,22 +209,37 @@ export const DisputeService = {
 
         const task = taskSelect.rows[0];
 
-        if (!task.completed_at) {
+        // BUG R-3 FIX: Accept both COMPLETED and PROOF_SUBMITTED tasks for dispute creation.
+        // PROOF_SUBMITTED tasks do not have completed_at set — the 48-hour window only
+        // applies to COMPLETED tasks (post-completion dispute period). For PROOF_SUBMITTED
+        // tasks the window check is skipped; the poster disputes the proof itself, not the
+        // completed work.
+        const validDisputeTaskStates = ['COMPLETED', 'PROOF_SUBMITTED'];
+        if (!validDisputeTaskStates.includes(task.state)) {
           throw Object.assign(
-            new Error('Disputes can only be opened for completed tasks'),
+            new Error('Disputes can only be opened for completed tasks or tasks with submitted proof'),
             { code: ErrorCodes.INVALID_STATE }
           );
         }
 
-        const disputeWindowHours = 48;
-        const disputeWindowMs = disputeWindowHours * 60 * 60 * 1000;
-        const completedAt = new Date(task.completed_at);
+        if (task.state === 'COMPLETED') {
+          if (!task.completed_at) {
+            throw Object.assign(
+              new Error('Completed task is missing completed_at timestamp'),
+              { code: ErrorCodes.INVALID_STATE }
+            );
+          }
 
-        if (Date.now() - completedAt.getTime() > disputeWindowMs) {
-          throw Object.assign(
-            new Error(`Disputes must be opened within ${disputeWindowHours} hours of task completion`),
-            { code: ErrorCodes.INVALID_STATE }
-          );
+          const disputeWindowHours = 48;
+          const disputeWindowMs = disputeWindowHours * 60 * 60 * 1000;
+          const completedAt = new Date(task.completed_at);
+
+          if (Date.now() - completedAt.getTime() > disputeWindowMs) {
+            throw Object.assign(
+              new Error(`Disputes must be opened within ${disputeWindowHours} hours of task completion`),
+              { code: ErrorCodes.INVALID_STATE }
+            );
+          }
         }
 
         // Lock escrow row to prevent concurrent state changes

@@ -586,13 +586,16 @@ export const TaskService = {
           };
         }
 
-        // Early exit if task is already taken (before expensive eligibility checks)
-        if (task.state !== 'OPEN' && task.state !== 'MATCHING') {
+        // BUG R-2 FIX: task.accept (worker self-accept) is only valid for MATCHING state
+        // (instant mode). Standard OPEN tasks require the application workflow:
+        // applyForTask → poster reviews → assignWorker. Allowing OPEN here lets workers
+        // bypass that workflow entirely, skipping application review.
+        if (task.state !== 'MATCHING') {
           return {
             success: false,
             error: {
               code: ErrorCodes.INVALID_STATE,
-              message: `Cannot accept task: current state is ${task.state}, expected OPEN or MATCHING`,
+              message: `Cannot accept task: current state is ${task.state}, expected MATCHING (instant mode only). Standard tasks require applying via the application workflow.`,
             },
           };
         }
@@ -790,14 +793,15 @@ export const TaskService = {
           }
         }
 
-        // Instant mode: accept from MATCHING state; Standard: accept from OPEN state
+        // BUG R-2 FIX: Only MATCHING state is accepted here (instant mode self-accept).
+        // Standard OPEN tasks must go through the assignWorker poster-driven path.
         const result = await query<Task>(
           `UPDATE tasks
            SET state = 'ACCEPTED',
                worker_id = $2,
                accepted_at = NOW()
            WHERE id = $1
-             AND state IN ('OPEN', 'MATCHING')
+             AND state = 'MATCHING'
              AND worker_id IS NULL
            RETURNING *`,
           [taskId, workerId]
@@ -819,7 +823,7 @@ export const TaskService = {
             success: false,
             error: {
               code: ErrorCodes.INVALID_STATE,
-              message: `Cannot accept task: current state is ${existing.data.state}, expected ${task.instant_mode ? 'MATCHING' : 'OPEN'}`,
+              message: `Cannot accept task: current state is ${existing.data.state}, expected MATCHING`,
             },
           };
         }

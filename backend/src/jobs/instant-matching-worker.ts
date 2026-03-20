@@ -162,7 +162,7 @@ export async function processInstantMatchingJob(
         location,
         riskLevel,
       },
-      queueName: 'critical_payments', // High priority for instant tasks
+      queueName: 'user_notifications', // Notifications are not financial — must not block critical_payments (concurrency:1)
     });
   }
 

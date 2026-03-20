@@ -77,11 +77,17 @@ export const disputeRouter = router({
       // service, reducing unnecessary lock contention on the DB critical path.
       // The service validates this too (INVALID_STATE), but this fast-path check avoids
       // acquiring FOR UPDATE locks for clearly invalid states.
-      const validDisputeStates = ['COMPLETED'];
+      //
+      // BUG R-3 FIX: PROOF_SUBMITTED is a valid dispute state. A poster who disagrees
+      // with the submitted proof should be able to open a dispute at that point rather
+      // than being forced to wait until the task reaches COMPLETED. Without this,
+      // the poster's only option after an unacceptable proof submission was to reject
+      // it and hope the worker resubmits — there was no escalation path.
+      const validDisputeStates = ['COMPLETED', 'PROOF_SUBMITTED'];
       if (!validDisputeStates.includes(task.state)) {
         throw new TRPCError({
           code: 'PRECONDITION_FAILED',
-          message: 'Disputes can only be opened for completed tasks',
+          message: 'Disputes can only be opened for completed tasks or tasks with submitted proof',
         });
       }
 

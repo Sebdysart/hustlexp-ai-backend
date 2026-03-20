@@ -83,7 +83,17 @@ vi.mock('../../src/config', () => ({
   config: {
     stripe: { secretKey: null },
     redis: { url: 'redis://localhost:6379' },
+    // W-5 FIX: workers.ts now imports PushNotificationService → firebase.ts → config.firebase.
+    // Provide the firebase sub-object so property access does not throw.
+    firebase: { projectId: null, clientEmail: null, privateKey: null },
   },
+}));
+
+// W-5 FIX: workers.ts now imports sendPushNotification from PushNotificationService.
+// PushNotificationService imports messaging from firebase.ts which tries to initialise
+// Firebase Admin SDK at module load time. Mock the whole service to prevent that chain.
+vi.mock('../../src/services/PushNotificationService', () => ({
+  sendPushNotification: vi.fn().mockResolvedValue({ success: true }),
 }));
 
 describe('Scheduled Jobs Registration', () => {

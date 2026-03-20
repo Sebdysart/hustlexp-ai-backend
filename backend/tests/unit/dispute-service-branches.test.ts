@@ -149,8 +149,9 @@ describe('DisputeService.create', () => {
   it('rejects when outside dispute window (>48h)', async () => {
     const oldDate = new Date(Date.now() - 49 * 60 * 60 * 1000);
     // Inside transaction: SELECT task FOR UPDATE → task with old completed_at
+    // R-3 FIX: state check now runs before the 48h window check — must include state.
     mockDb.query.mockResolvedValueOnce({
-      rows: [{ id: 't1', completed_at: oldDate }],
+      rows: [{ id: 't1', completed_at: oldDate, state: 'COMPLETED' }],
       rowCount: 1,
     } as any);
 

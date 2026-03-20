@@ -27,6 +27,8 @@ import { processBiometricAnalysisJob } from './biometric-analyzer-worker.js';
 import { processExpertiseRecalcJob } from './expertise-recalc-worker.js';
 import { processXPTaxReminderJob } from './xp-tax-reminder-worker.js';
 import { workerLogger as log } from '../logger.js';
+import { db } from '../db.js';
+import { sendPushNotification } from '../services/PushNotificationService.js';
 import type { Job, Worker } from 'bullmq';
 
 // Track all registered workers and outbox interval handles for graceful shutdown
@@ -77,6 +79,49 @@ function registerWorkers(): void {
         // Realtime task progress updates (Step 10 - Pillar A)
         const { processRealtimeJob } = await import('./realtime-worker');
         await processRealtimeJob(job);
+      } else if (eventType === 'escrow.funded') {
+        // Notify poster that their payment was captured and escrow is now funded
+        const { escrowId } = job.data.payload as { escrowId: string };
+        const result = await db.query<{ poster_id: string | null }>(
+          `SELECT t.poster_id FROM escrows e JOIN tasks t ON t.id = e.task_id WHERE e.id = $1`,
+          [escrowId]
+        );
+        const posterId = result.rows[0]?.poster_id;
+        if (posterId) {
+          await sendPushNotification(
+            posterId,
+            'Payment Captured',
+            'Your payment was captured. The task is now funded and ready to be accepted.',
+            { screen: 'task_detail', escrow_id: escrowId, type: 'escrow_funded' }
+          );
+        }
+      } else if (eventType === 'escrow.refunded') {
+        // Notify poster that their refund was processed
+        const { escrowId } = job.data.payload as { escrowId: string };
+        const result = await db.query<{ poster_id: string | null }>(
+          `SELECT t.poster_id FROM escrows e JOIN tasks t ON t.id = e.task_id WHERE e.id = $1`,
+          [escrowId]
+        );
+        const posterId = result.rows[0]?.poster_id;
+        if (posterId) {
+          await sendPushNotification(
+            posterId,
+            'Refund Processed',
+            'Your payment has been refunded. Funds will appear in your account within a few business days.',
+            { screen: 'task_detail', escrow_id: escrowId, type: 'escrow_refunded' }
+          );
+        }
+      } else if (eventType === 'escrow.payment_failed') {
+        // Notify poster that their payment failed — payload already carries posterId
+        const { escrowId, posterId, taskId } = job.data.payload as { escrowId: string; posterId: string | null; taskId: string };
+        if (posterId) {
+          await sendPushNotification(
+            posterId,
+            'Payment Failed',
+            'Your payment could not be processed. Please update your payment method and try again.',
+            { screen: 'task_detail', task_id: taskId, escrow_id: escrowId, type: 'payment_failed' }
+          );
+        }
       } else {
         // Unknown notification type - log and skip (don't throw)
         log.info({ eventType }, 'Notification type not yet implemented');

@@ -31,22 +31,24 @@ const securityLog = logger.child({ module: 'security' });
  * that position — any value they inject is pushed further left by the proxy.
  *
  * Rules:
- *   1. If XFF is present, take the RIGHTMOST (last) entry — set by our proxy.
+ *   1. If XFF is present, take the LEFTMOST (first) entry — the original client IP.
  *   2. Otherwise fall back to Cloudflare's cf-connecting-ip, then x-real-ip.
  *   3. If none of the above are available, return 'unknown'.
  *
- * This function must be used for ALL IP-based rate limiting.  Using the raw
- * header (or its leftmost entry) allows an attacker to supply an arbitrary IP
- * and receive a fresh rate-limit bucket on every request.
+ * This function must be used for ALL IP-based rate limiting.  Using the
+ * rightmost entry returns the edge proxy IP — shared across all users —
+ * which means every user maps to the same rate-limit bucket, completely
+ * bypassing per-client enforcement.  The leftmost entry is the original
+ * client IP as reported by the first hop and is the correct key for
+ * per-client rate limiting.
  */
 function getTrustedClientIP(c: Context): string {
   const xff = c.req.header('x-forwarded-for');
   if (xff) {
     const ips = xff.split(',').map((ip) => ip.trim()).filter(Boolean);
-    // The rightmost entry is appended by our own trusted reverse proxy
-    // and cannot be injected by the client.
+    // The leftmost entry is the original client IP.
     if (ips.length > 0) {
-      return ips[ips.length - 1];
+      return ips[0];
     }
   }
   // Fallback: Cloudflare's canonical header, then a generic real-ip header
@@ -128,9 +130,9 @@ type RateLimitCategory = keyof typeof RATE_LIMITS;
  * Firebase token verification (in the tRPC auth middleware), which runs
  * inside the procedure handler — too late for HTTP-layer rate limiting.
  *
- * Therefore this middleware uses the trusted client IP (rightmost XFF entry,
- * set by our reverse proxy) as the bucket key for all requests.  This is
- * spoofing-resistant and requires no JWT inspection.
+ * Therefore this middleware uses the client IP (leftmost XFF entry,
+ * the original client IP) as the bucket key for all requests.  This is
+ * per-client and requires no JWT inspection.
  *
  * Per-user rate limiting (using the verified ctx.user.id) can be added at
  * the tRPC procedure level where the verified identity is already available.
@@ -337,9 +339,9 @@ export function publicIpRateLimitMiddleware() {
     // would allow any attacker with a valid Firebase token (including a free
     // account) to make unlimited requests from a single IP.
 
-    // Derive client IP using trusted resolution (rightmost XFF entry, set by
-    // our reverse proxy — not the leftmost, which is client-supplied and
-    // trivially spoofable).
+    // Derive client IP using leftmost XFF entry (the original client IP).
+    // Using the rightmost entry returns the shared edge proxy IP, which would
+    // collapse all users into one rate-limit bucket.
     const rawIp = getTrustedClientIP(c);
 
     const key = `rate:public:ip:${rawIp}`;

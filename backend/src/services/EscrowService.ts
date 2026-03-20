@@ -704,6 +704,7 @@ export const EscrowService = {
     let escrowStateBefore: string = 'FUNDED';
     let stripePaymentIntentId: string | null = null;
     let stripeRefundId: string | null = null;
+    let stripeTransferId: string | null = null;
     let refundAmount: number = 0;
     let escrowVersion: number | undefined;
     let allowedStates: string[];
@@ -715,8 +716,8 @@ export const EscrowService = {
       // Does NOT commit any state change — escrow remains FUNDED after T1.
       // -----------------------------------------------------------------------
       const readResult = await db.transaction(async (query) => {
-        const escrowPreCheck = await query<{ task_id: string; version: number; state: string; stripe_payment_intent_id: string | null; stripe_refund_id: string | null; amount: number }>(
-          `SELECT task_id, version, state, stripe_payment_intent_id, stripe_refund_id, amount FROM escrows WHERE id = $1 FOR UPDATE`,
+        const escrowPreCheck = await query<{ task_id: string; version: number; state: string; stripe_payment_intent_id: string | null; stripe_refund_id: string | null; stripe_transfer_id: string | null; amount: number }>(
+          `SELECT task_id, version, state, stripe_payment_intent_id, stripe_refund_id, stripe_transfer_id, amount FROM escrows WHERE id = $1 FOR UPDATE`,
           [escrowId]
         );
 
@@ -770,6 +771,7 @@ export const EscrowService = {
         escrowVersion = escrowPreCheck.rows[0]?.version;
         stripePaymentIntentId = escrowPreCheck.rows[0]?.stripe_payment_intent_id ?? null;
         stripeRefundId = escrowPreCheck.rows[0]?.stripe_refund_id ?? null;
+        stripeTransferId = escrowPreCheck.rows[0]?.stripe_transfer_id ?? null;
         refundAmount = escrowPreCheck.rows[0]?.amount ?? 0;
         allowedStates = adminOverride ? ['FUNDED', 'LOCKED_DISPUTE', 'RELEASED'] : ['FUNDED'];
 
@@ -778,6 +780,30 @@ export const EscrowService = {
 
       if (!readResult.success) {
         return readResult;
+      }
+
+      // -----------------------------------------------------------------------
+      // F-2 FIX: Transfer reversal — must happen BEFORE the Stripe refund.
+      // If the escrow is RELEASED (adminOverride path) and a transfer was already
+      // sent to the worker (stripe_transfer_id is set), clawback the transfer first.
+      // If the reversal fails, abort — do not issue the refund and create a
+      // double-spend where the worker keeps the funds AND the poster is refunded.
+      // -----------------------------------------------------------------------
+      if (adminOverride && escrowStateBefore === 'RELEASED' && stripeTransferId) {
+        const reversalResult = await StripeService.createTransferReversal(stripeTransferId, escrowId);
+        if (!reversalResult.success) {
+          return {
+            success: false,
+            error: {
+              code: 'STRIPE_REVERSAL_FAILED',
+              message: `Admin force-refund aborted: transfer reversal for transfer ${stripeTransferId} failed — ${reversalResult.error.message}. Refund not issued to prevent double-spend.`,
+            },
+          };
+        }
+        escrowLogger.info(
+          { escrowId, stripeTransferId, reversalId: reversalResult.data.reversalId },
+          'Admin force-refund: transfer reversal succeeded — proceeding with poster refund'
+        );
       }
 
       // -----------------------------------------------------------------------

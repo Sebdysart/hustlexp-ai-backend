@@ -49,9 +49,11 @@ export interface Context extends Record<string, unknown> {
 function extractIp(req: Request): string | null {
   const xff = req.headers.get('x-forwarded-for');
   if (xff) {
-    // Take the last entry — outermost proxy appends; last is the trusted edge
+    // Take the first (leftmost) entry — the original client IP.
+    // The rightmost entry is the edge proxy IP shared by all users,
+    // which would collapse every client into the same rate-limit bucket.
     const parts = xff.split(',');
-    return parts[parts.length - 1]?.trim() || null;
+    return parts[0]?.trim() || null;
   }
   return req.headers.get('x-real-ip') || null;
 }

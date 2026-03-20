@@ -497,12 +497,32 @@ export const FraudDetectionService = {
         // CRITICAL patterns: Auto-suspend accounts, alert admins
         for (const userId of userIds) {
           try {
-            await db.query(
+            const suspendResult = await db.query<{ id: string }>(
               `UPDATE users
                SET account_status = 'SUSPENDED', paused_at = NOW()
-               WHERE id = $1 AND account_status != 'SUSPENDED'`,
+               WHERE id = $1 AND account_status != 'SUSPENDED'
+               RETURNING id`,
               [userId]
             );
+
+            // Write audit log for auto-suspension so it appears in the admin
+            // audit trail alongside manual suspensions.  admin_id is NULL to
+            // indicate system-triggered action (not a human admin).
+            if (suspendResult.rows.length > 0) {
+              await db.query(
+                `INSERT INTO admin_actions (admin_id, action_type, target_id, reason, metadata)
+                 VALUES (NULL, 'user_suspend', $1, 'auto_fraud_detection', $2)`,
+                [
+                  userId,
+                  JSON.stringify({
+                    suspended: true,
+                    patternType,
+                    patternId: result.rows[0]?.id,
+                    triggeredBy: 'system',
+                  }),
+                ]
+              ).catch(err => log.warn({ err, userId }, '[FraudDetection] Failed to write auto-suspension audit log'));
+            }
 
             // Create high-priority risk score for suspended user
             await FraudDetectionService.calculateRiskScore({

@@ -185,7 +185,24 @@ export const fraudRouter = router({
    */
   detectPattern: adminProcedure
     .input(z.object({
-      patternType: z.string().min(1).max(50), // e.g., 'self_matching', 'multiple_accounts'
+      patternType: z.enum([
+        // CRITICAL patterns
+        'payment_fraud',
+        'identity_theft',
+        'money_laundering',
+        'account_takeover',
+        'coordinated_fraud_ring',
+        // HIGH risk patterns
+        'self_matching',
+        'multiple_accounts',
+        'unusual_transaction_volume',
+        'suspicious_payment_pattern',
+        'account_simultaneity',
+        // MEDIUM risk patterns
+        'rapid_account_creation',
+        'abnormal_task_patterns',
+        'unusual_rating_patterns',
+      ]),
       patternDescription: z.string().min(1),
       userIds: z.array(Schemas.uuid).min(1), // At least one user required
       taskIds: z.array(Schemas.uuid).optional(),

@@ -5,6 +5,7 @@
  * Integrates with Stripe Tax Reporting API for form generation.
  */
 
+import { TRPCError } from '@trpc/server';
 import { db } from '../db.js';
 import type { ServiceResult } from '../types.js';
 import { logger } from '../logger.js';
@@ -183,8 +184,19 @@ export const TaxReportingService = {
         return { success: false, error: { code: 'NO_FILING', message: 'No tax filing record found — run processAnnualFilings first' } };
       }
 
+      // F-8 FIX: IRS requires 1099-NEC only for payments >= $600 (60000 cents).
+      // Reject form generation below threshold to avoid filing incorrect forms.
+      const totalEarningsCents = Number(filingResult.rows[0].total_earnings_cents);
+      if (totalEarningsCents < REPORTING_THRESHOLD_CENTS) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: '1099-NEC not required: total payments below $600 threshold',
+        });
+      }
+
       // Use Stripe Tax Forms API via raw request (SDK types may not include forms resource)
       // Stripe handles form generation and IRS e-filing for Connect platforms
+      const ALREADY_FILED_SENTINEL = '__already_filed__';
       const taxForm = await (s as unknown as { rawRequest: (method: string, path: string, params: Record<string, string>) => Promise<{ body: string }> }).rawRequest(
         'POST',
         '/v1/tax/forms',
@@ -194,9 +206,20 @@ export const TaxReportingService = {
           tax_year: taxYear.toString(),
         }
       ).then((res: { body: string }) => JSON.parse(res.body)).catch((err: unknown) => {
+        // F-4 FIX: FILING_ALREADY_FINALIZED is not an error — the form was already
+        // successfully filed. Treat it as idempotent success so callers can safely retry.
+        const stripeCode = (err as Error & { code?: string }).code;
+        if (stripeCode === 'filing_already_finalized') {
+          log.info({ connectId, taxYear }, '1099-NEC already filed (filing_already_finalized) — treating as success');
+          return ALREADY_FILED_SENTINEL;
+        }
         log.error({ err: err instanceof Error ? err.message : String(err), connectId, taxYear }, 'Stripe Tax Form API call failed');
         return null;
       });
+
+      if (taxForm === ALREADY_FILED_SENTINEL) {
+        return { success: true, data: { formId: 'already_filed', status: 'already_filed' } };
+      }
 
       if (!taxForm) {
         return { success: false, error: { code: 'STRIPE_API_ERROR', message: 'Failed to create 1099-NEC form via Stripe' } };
@@ -215,6 +238,8 @@ export const TaxReportingService = {
       log.info({ userId, taxYear, formId: taxForm.id }, '1099-NEC form generated via Stripe');
       return { success: true, data: { formId: taxForm.id, status: 'generated' } };
     } catch (error) {
+      // Re-throw TRPCErrors (e.g. BAD_REQUEST for below-threshold) so they surface correctly to callers.
+      if (error instanceof TRPCError) throw error;
       log.error({ userId, taxYear, err: error instanceof Error ? error.message : 'unknown' }, 'Failed to generate 1099 form');
       return { success: false, error: { code: 'FORM_GENERATION_ERROR', message: error instanceof Error ? error.message : 'Unknown error' } };
     }

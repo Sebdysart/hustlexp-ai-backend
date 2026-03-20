@@ -517,7 +517,9 @@ describe('TaskService.accept', () => {
       instant_mode: false,
       sensitive: false,
       price: 2500,
-      state: 'OPEN',
+      // R-2 FIX: standard task.accept now requires MATCHING state (not OPEN).
+      // OPEN tasks must go through the full apply → review workflow.
+      state: 'MATCHING',
       worker_id: null,
       ...overrides,
     };

@@ -263,18 +263,16 @@ describe('fraud router', () => {
       expect(result).toEqual(data);
     });
 
-    it('throws BAD_REQUEST on INVALID_INPUT', async () => {
-      mockFraud.detectPattern.mockResolvedValue({
-        success: false,
-        error: { code: 'INVALID_INPUT', message: 'Invalid pattern' },
-      } as any);
-
+    it('throws BAD_REQUEST on invalid patternType (Zod enum)', async () => {
+      // A-3 FIX: patternType is now a Zod .enum([...]) — 'x' is rejected by Zod
+      // input validation before the service is ever called. The Zod error message
+      // describes which enum values are valid rather than 'Invalid pattern'.
       const caller = makeAdminCaller();
       await expect(caller.detectPattern({
-        patternType: 'x',
+        patternType: 'x' as any,
         patternDescription: 'test',
         userIds: [UUID2],
-      })).rejects.toThrow('Invalid pattern');
+      })).rejects.toThrow('Invalid enum value');
     });
   });
 
