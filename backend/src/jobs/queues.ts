@@ -53,7 +53,10 @@ function createRedisConnection(): Redis {
   // Create ioredis client (BullMQ-compatible)
   // Upstash requires TLS for direct connections
   const redis = new Redis(redisUrl, {
-    maxRetriesPerRequest: 3,
+    // W46-1 FIX: BullMQ requires maxRetriesPerRequest=null. Any non-null value
+    // causes MaxRetriesPerRequestError on transient Redis blips, crashing all
+    // workers instead of retrying the job via the BullMQ backoff strategy.
+    maxRetriesPerRequest: null,
     enableReadyCheck: true,
     lazyConnect: true,
     // Upstash-specific settings: requires TLS for direct TCP connections
@@ -381,7 +384,11 @@ export function parseIdempotencyKey(key: string): {
   return {
     eventType: parts[0],
     aggregateId: parts[1],
-    eventVersion: parseInt(parts.slice(2).join(':'), 10),
+    // W46-3 FIX: For 4+-segment surge keys (e.g., 'eventType:aggregateId:version:suffix'),
+    // parse only parts[2] as the numeric version. Previously, parts.slice(2).join(':')
+    // produced a non-numeric string like 'version:suffix' → parseInt → NaN, which
+    // corrupted deduplication IDs. The surge discriminator suffix lives in parts[3+].
+    eventVersion: parseInt(parts[2], 10),
   };
 }
 

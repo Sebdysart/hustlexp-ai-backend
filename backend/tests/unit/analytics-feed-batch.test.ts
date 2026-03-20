@@ -20,15 +20,22 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // ALL vi.mock CALLS MUST BE BEFORE ANY IMPORTS
 // ============================================================================
 
-vi.mock('../../src/db', () => ({
-  db: {
-    query: vi.fn(),
-    readQuery: vi.fn(),
-  },
-  isInvariantViolation: vi.fn(() => false),
-  isUniqueViolation: vi.fn(() => false),
-  getErrorMessage: vi.fn((code: string) => `Error ${code}`),
-}));
+vi.mock('../../src/db', () => {
+  const queryFn = vi.fn();
+  return {
+    db: {
+      query: queryFn,
+      readQuery: vi.fn(),
+      // serializableTransaction calls the callback with the same query spy so
+      // mockResolvedValueOnce sequences set on mockDb.query work seamlessly
+      // inside transaction callbacks (mirrors EscrowService.test.ts pattern).
+      serializableTransaction: vi.fn((fn: (q: typeof queryFn) => Promise<unknown>) => fn(queryFn)),
+    },
+    isInvariantViolation: vi.fn(() => false),
+    isUniqueViolation: vi.fn(() => false),
+    getErrorMessage: vi.fn((code: string) => `Error ${code}`),
+  };
+});
 
 vi.mock('../../src/logger', () => ({
   logger: {
@@ -117,7 +124,18 @@ const mockStripe = vi.mocked(StripeService);
 const mockIsInvariantViolation = vi.mocked(isInvariantViolation);
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  // resetAllMocks clears both call history AND once-queues, preventing mock
+  // bleed across tests when a previous test fails before consuming all its
+  // queued mockResolvedValueOnce / mockRejectedValueOnce responses.
+  vi.resetAllMocks();
+  // Re-apply default implementations that were wiped by resetAllMocks.
+  vi.mocked(isInvariantViolation).mockReturnValue(false);
+  // isEligible is the default for feed tests — all tasks eligible unless overridden.
+  mockIsEligible.mockReturnValue({ eligible: true, code: 'HX200', reasons: [] });
+  // Stripe configured by default so payTax tests hit the verification path.
+  mockStripe.isConfigured.mockReturnValue(true);
+  // AIClient not configured by default (avoids real AI calls).
+  mockAIClient.isConfigured.mockReturnValue(false);
 });
 
 // ============================================================================

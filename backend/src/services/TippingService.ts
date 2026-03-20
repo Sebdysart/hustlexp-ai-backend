@@ -317,13 +317,16 @@ export const TippingService = {
       }
 
       // F-04 FIX: Write revenue ledger entry so tips appear in GetRevenueSummary.
-      // Tips are 100% to the worker — no platform fee. Use 'per_task_fee' event type
-      // with amountCents=0 (platform takes nothing) so the tip is visible in the ledger.
+      // F46-1 FIX: Changed eventType from 'per_task_fee' to 'tip_received'. The
+      // previous code used 'per_task_fee' with amountCents=0, which is silently
+      // rejected by RevenueService.POSITIVE_ONLY_EVENTS guard (per_task_fee requires
+      // amountCents > 0). 'tip_received' is not in POSITIVE_ONLY_EVENTS so
+      // amountCents=0 is accepted — tips are 100% to the worker, platform takes nothing.
       // tipId is included in metadata for dedup and cross-referencing.
       const tip = result.rows[0];
       try {
         await RevenueService.logEvent({
-          eventType: 'per_task_fee',
+          eventType: 'tip_received',
           userId: tip.worker_id,
           taskId: tip.task_id,
           amountCents: 0, // Tips are 100% to the worker — no platform revenue

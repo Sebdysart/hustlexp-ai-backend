@@ -118,10 +118,16 @@ export async function createContext(opts: {
     const user = result.rows[0] ?? null;
 
     if (user) {
-      // Populate is_admin from admin_roles table so escrow and other routers can use ctx.user.is_admin
+      // Populate is_admin from admin_roles table so escrow and other routers can use ctx.user.is_admin.
+      // A46-2 FIX: Use the same role allowlist as isAdminCheck's fallback path. The previous
+      // `SELECT 1` accepted any admin_roles row regardless of role value, creating an
+      // inconsistency: the fast-path (warm requests) would grant admin to any role, while
+      // the fallback path (undefined is_admin) correctly filtered by VALID_ADMIN_ROLES.
+      // Now both paths use identical role allowlist logic.
+      const VALID_ADMIN_ROLES = ['admin', 'support', 'finance', 'moderator', 'founder'];
       const adminResult = await db.query(
-        'SELECT 1 FROM admin_roles WHERE user_id = $1 LIMIT 1',
-        [user.id]
+        'SELECT 1 FROM admin_roles WHERE user_id = $1 AND role = ANY($2::text[]) LIMIT 1',
+        [user.id, VALID_ADMIN_ROLES]
       );
       user.is_admin = adminResult.rows.length > 0;
 

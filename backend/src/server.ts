@@ -278,10 +278,19 @@ app.get('/health/detailed', rateLimitMiddleware('auth'), async (c) => {
   }
   const authHeader = c.req.header('Authorization');
   const provided = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
-  const providedBuf = Buffer.from(provided || '', 'utf8');
+  // A46-4 FIX: The previous length pre-check (`providedBuf.length === expectedBuf.length`)
+  // leaked the byte length of INTERNAL_API_KEY via a timing side-channel — an attacker
+  // could binary-search the key length by observing which requests fail fast vs. slow.
+  // Fix: pad both buffers to the same length (max of the two) with zeros before calling
+  // timingSafeEqual, which requires equal-length buffers without revealing which is longer.
+  const rawProvided = Buffer.from(provided || '', 'utf8');
   const expectedBuf = Buffer.from(internalApiKey, 'utf8');
-  const match = providedBuf.length === expectedBuf.length &&
-    timingSafeEqual(providedBuf, expectedBuf);
+  const maxLen = Math.max(rawProvided.length, expectedBuf.length);
+  const providedBuf = Buffer.alloc(maxLen);
+  const paddedExpected = Buffer.alloc(maxLen);
+  rawProvided.copy(providedBuf);
+  expectedBuf.copy(paddedExpected);
+  const match = timingSafeEqual(providedBuf, paddedExpected);
   if (!provided || !match) {
     return c.json({ error: 'Unauthorized' }, 401);
   }

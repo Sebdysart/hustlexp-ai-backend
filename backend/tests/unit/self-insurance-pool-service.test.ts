@@ -264,11 +264,13 @@ describe('SelfInsurancePoolService', () => {
     it('returns INSUFFICIENT_POOL_BALANCE when pool too low', async () => {
       // F-04 FIX: coverage_percentage is now read INSIDE the transaction (no outer SELECT).
       // Pool FOR UPDATE returns BOTH available_balance_cents AND coverage_percentage.
+      // F46-4 FIX: pre-check SELECT stripe_connect_id runs BEFORE the transaction.
       mockDb.query
         .mockResolvedValueOnce({
           rows: [makeClaimRow({ status: 'approved', claim_amount_cents: 100000 })],
           rowCount: 1,
         } as never) // claim (outer SELECT)
+        .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_test123' }], rowCount: 1 } as never) // pre-check SELECT stripe_connect_id (F46-4)
         // F-25: inside transaction — claim re-check FOR UPDATE, then pool FOR UPDATE
         .mockResolvedValueOnce({ rows: [{ status: 'approved', stripe_transfer_id: null }], rowCount: 1 } as never) // claim FOR UPDATE
         .mockResolvedValueOnce({ rows: [{ available_balance_cents: 1000, coverage_percentage: 80 }], rowCount: 1 } as never); // pool FOR UPDATE (F-04: includes coverage_percentage)
@@ -284,18 +286,20 @@ describe('SelfInsurancePoolService', () => {
 
       // F-04 FIX: coverage_percentage is now read INSIDE the transaction under FOR UPDATE.
       // No outer SELECT for coverage_percentage — pool FOR UPDATE returns both columns.
+      // F46-4 FIX: pre-check SELECT stripe_connect_id runs BEFORE the transaction.
+      // The post-transaction code reuses the pre-checked connectId — no second DB SELECT.
       mockDb.query
         .mockResolvedValueOnce({
           rows: [makeClaimRow({ status: 'approved', claim_amount_cents: 10000 })],
           rowCount: 1,
         } as never) // claim (outer SELECT)
+        .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_test' }], rowCount: 1 } as never) // pre-check SELECT stripe_connect_id (F46-4)
         // F-25: inside transaction — claim re-check FOR UPDATE, then rest of transaction
         .mockResolvedValueOnce({ rows: [{ status: 'approved', stripe_transfer_id: null }], rowCount: 1 } as never) // claim FOR UPDATE
         .mockResolvedValueOnce({ rows: [{ available_balance_cents: 50000, coverage_percentage: 80 }], rowCount: 1 } as never) // pool FOR UPDATE (F-04: includes coverage_percentage)
         .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // UPDATE pool
         .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // UPDATE claim to paid
-        // After transaction: StripeService.createTransfer (mocked globally)
-        .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_test' }], rowCount: 1 } as never) // SELECT stripe_connect_id
+        // After transaction: StripeService.createTransfer (mocked globally), then record transfer ID
         .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // UPDATE stripe_transfer_id
 
       const result = await SelfInsurancePoolService.payClaim('claim-1');

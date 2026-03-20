@@ -17,6 +17,7 @@
  * @see ARCHITECTURE.md §2.4 (Outbox pattern)
  */
 
+import { randomUUID } from 'crypto';
 import { db } from '../db.js';
 import { getQueue, signJobPayload, type QueueName } from './queues.js';
 import { getClient as getRedisClient } from '../cache/redis.js';
@@ -311,7 +312,12 @@ export function startOutboxWorker(intervalMs: number = 5000): OutboxWorkerHandle
   // recovered cannot accidentally delete a fresh lock acquired by another pod after
   // the original TTL expired. The Lua CAS-delete in the finally block ensures only
   // the lock owner can release it.
-  const LOCK_HOLDER_ID = `${process.pid}:${Date.now()}`;
+  // W46-2 FIX: Use randomUUID() instead of `${process.pid}:${Date.now()}`.
+  // In containerized environments PID is always 1; two pods restarting within
+  // the same millisecond produce identical LOCK_HOLDER_IDs, allowing Pod A
+  // (recovering after a crash) to delete Pod B's freshly-acquired lock.
+  // randomUUID() guarantees global uniqueness per pod instance.
+  const LOCK_HOLDER_ID = randomUUID();
   const trustTierInterval = setInterval(async () => {
     try {
       const redisClient = getRedisClient();

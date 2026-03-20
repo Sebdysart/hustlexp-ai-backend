@@ -150,17 +150,9 @@ export const processFraudDetectionJob = async (_job: Job): Promise<void> => {
 // QUEUE CONFIGURATION
 // ============================================================================
 
-export const fraudDetectionQueueConfig = {
-  name: 'fraud-detection',
-  processor: processFraudDetectionJob,
-  options: {
-    repeat: {
-      pattern: '*/5 * * * *' // Every 5 minutes
-    },
-    attempts: 2,
-    backoff: {
-      type: 'fixed' as const,
-      delay: 30000 // 30 seconds
-    }
-  }
-};
+// W46-4 FIX: fraudDetectionQueueConfig is dead code — 'fraud-detection' is not
+// in the QueueName union and is never consumed by createWorker() in queues.ts.
+// The fraud scanner runs via setInterval inside outbox-worker.ts startOutboxWorker().
+// Exporting this config was misleading and unreachable. Removed to eliminate confusion.
+// If fraud detection needs to move to BullMQ, add 'fraud_detection' to QueueName first.
+export const _fraudDetectionWorkerProcessor = processFraudDetectionJob;

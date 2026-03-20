@@ -36,6 +36,7 @@ export type RevenueEventType =
   | 'referral_payout'
   | 'chargeback'            // Negative entry: Stripe dispute loss
   | 'chargeback_reversal'   // Positive entry: Dispute won, funds recovered
+  | 'tip_received'           // Tip to worker (platform takes no cut; amountCents=0 is valid)
   | 'failed_transfer'       // Negative entry: Stripe transfer to worker failed
   | 'failed_payout'         // Negative entry: Stripe payout to bank failed
   | 'platform_fee_reversal'; // Negative entry: Platform fee reversed on refund

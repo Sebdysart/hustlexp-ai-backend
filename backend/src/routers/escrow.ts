@@ -485,7 +485,12 @@ export const escrowRouter = router({
       // Pass allowedTaskStates so the service validates atomically.
       const allowedTaskStates = ['ACCEPTED', 'IN_PROGRESS', 'PROOF_SUBMITTED', 'DISPUTED', 'COMPLETED'];
 
-      const result = await EscrowService.lockForDispute(input.escrowId, { adminOverride: ctx.user.is_admin, initiatedBy: ctx.user.id, allowedTaskStates });
+      // API46-6 FIX: Use strict boolean coercion. ctx.user.is_admin is typed as
+      // boolean | undefined — passing undefined as adminOverride silently grants no
+      // override (EscrowService checks truthiness), but the contract is imprecise.
+      // Explicitly convert to boolean to make the intent unambiguous and prevent
+      // future callers from accidentally passing a truthy non-boolean value.
+      const result = await EscrowService.lockForDispute(input.escrowId, { adminOverride: ctx.user.is_admin === true, initiatedBy: ctx.user.id, allowedTaskStates });
 
       if (!result.success) {
         throw new TRPCError({

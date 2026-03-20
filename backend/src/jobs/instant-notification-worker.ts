@@ -103,7 +103,12 @@ export async function processInstantNotificationJob(
        AND category = 'instant_task_available'
        AND read_at IS NULL
        AND task_id != $1
-       AND created_at < NOW()`,
+       AND created_at < NOW()
+       AND (expires_at IS NULL OR expires_at > NOW())`,
+    // W46-5 FIX: The expiresAt guard above excludes already-expired notifications
+    // from the suppression UPDATE. Without it, expired instant-task notifications
+    // received spurious 'suppressed_by_instant_task' metadata writes, polluting
+    // audit logs and corrupting notification analytics.
     [taskId, hustlerId]
   );
 

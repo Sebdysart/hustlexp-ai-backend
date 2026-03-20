@@ -311,6 +311,32 @@ export const SelfInsurancePoolService = {
         };
       }
 
+      // F46-4 FIX: Pre-check Stripe Connect ID BEFORE the DB transaction.
+      // Previously the Connect ID was fetched AFTER the DB committed: pool was debited
+      // and claim marked 'paid', but no Stripe transfer occurred — the function then
+      // returned { success: true } with pool funds permanently lost. The idempotency
+      // guard (status='paid' AND stripe_transfer_id set) would never match because
+      // stripe_transfer_id stays NULL, so every retry hit the same dead-end.
+      // Fix: fail fast before any DB writes so the pool is never debited and the
+      // caller can retry after the hustler completes Stripe Connect onboarding.
+      // Note: we still re-verify the Connect ID inside the Stripe try block below
+      // for correctness (concurrent onboarding revocation), but this early check
+      // prevents the irreversible DB commit from happening without a valid account.
+      const preCheckResult = await db.query<{ stripe_connect_id: string | null }>(
+        `SELECT stripe_connect_id FROM users WHERE id = $1`,
+        [claim.hustler_id]
+      );
+      const connectId = preCheckResult.rows[0]?.stripe_connect_id;
+      if (!connectId) {
+        return {
+          success: false,
+          error: {
+            code: 'NO_CONNECT_ACCOUNT',
+            message: `Hustler has no Stripe Connect account — cannot pay claim. Complete Stripe Connect onboarding first.`
+          }
+        };
+      }
+
       // F-04 FIX: Do NOT fetch coverage_percentage outside the transaction.
       // coveredAmountCents must be computed from the freshly-locked pool row so that
       // an admin change to coverage_percentage between this point and the FOR UPDATE
@@ -382,11 +408,9 @@ export const SelfInsurancePoolService = {
       // call goes through the circuit breaker, SDK retry/timeout logic, and test stubs.
       // F-19: Pass claimId as part of the idempotency key to prevent duplicate transfers.
       try {
-        const hustlerResult = await db.query<{ stripe_connect_id: string }>(
-          `SELECT stripe_connect_id FROM users WHERE id = $1`,
-          [claim.hustler_id]
-        );
-        const connectId = hustlerResult.rows[0]?.stripe_connect_id;
+        // F46-4 FIX: Re-use the pre-checked connectId from above (no redundant DB query).
+        // The pre-check already returned failure if connectId was null, so here it is
+        // guaranteed non-null. The inner block is kept in case of concurrent revocation.
         if (connectId) {
           const transferResult = await StripeService.createTransfer({
             escrowId: claimId, // use claimId as the correlation key for this payout

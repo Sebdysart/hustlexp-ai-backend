@@ -89,25 +89,38 @@ export const XPTaxService = {
       const taxAmountCents = Math.round(grossPayoutCents * (taxPercentage / 100));
       const netPayoutCents = grossPayoutCents; // Tax doesn't reduce payout
 
-      // Insert tax record
-      await db.query(
-        `INSERT INTO xp_tax_ledger (
-          user_id, task_id, gross_payout_cents, tax_percentage,
-          tax_amount_cents, net_payout_cents, payment_method, xp_held_back
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE)
-        ON CONFLICT (task_id, user_id) DO NOTHING`,
-        [userId, taskId, grossPayoutCents, taxPercentage, taxAmountCents, netPayoutCents, paymentMethod]
-      );
+      // F46-2 FIX: Wrap both queries in a serializable transaction to prevent
+      // non-atomic double-credit. Previously, two independent db.query() calls were
+      // used: the first (xp_tax_ledger INSERT) had ON CONFLICT DO NOTHING for
+      // idempotency, but the second (user_xp_tax_status UPDATE) always ran, even on
+      // duplicate calls — double-billing total_unpaid_tax_cents for the same task.
+      // Fix: both queries run atomically. Only if the ledger INSERT inserted a new row
+      // (rowCount === 1) do we update the summary. Duplicate calls become true no-ops.
+      await db.serializableTransaction(async (query) => {
+        // Insert tax record
+        const insertResult = await query(
+          `INSERT INTO xp_tax_ledger (
+            user_id, task_id, gross_payout_cents, tax_percentage,
+            tax_amount_cents, net_payout_cents, payment_method, xp_held_back
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE)
+          ON CONFLICT (task_id, user_id) DO NOTHING`,
+          [userId, taskId, grossPayoutCents, taxPercentage, taxAmountCents, netPayoutCents, paymentMethod]
+        );
 
-      // Update summary table
-      await db.query(
-        `INSERT INTO user_xp_tax_status (user_id, total_unpaid_tax_cents)
-         VALUES ($1, $2)
-         ON CONFLICT (user_id) DO UPDATE SET
-           total_unpaid_tax_cents = user_xp_tax_status.total_unpaid_tax_cents + $2,
-           last_updated_at = NOW()`,
-        [userId, taxAmountCents]
-      );
+        // Only update the summary if a new ledger row was actually inserted.
+        // ON CONFLICT DO NOTHING sets rowCount=0 on a duplicate → skip the increment.
+        if ((insertResult.rowCount ?? 0) > 0) {
+          // Update summary table
+          await query(
+            `INSERT INTO user_xp_tax_status (user_id, total_unpaid_tax_cents)
+             VALUES ($1, $2)
+             ON CONFLICT (user_id) DO UPDATE SET
+               total_unpaid_tax_cents = user_xp_tax_status.total_unpaid_tax_cents + $2,
+               last_updated_at = NOW()`,
+            [userId, taxAmountCents]
+          );
+        }
+      });
 
       log.info({ userId, taskId, taxAmountCents }, 'Recorded offline payment');
 
@@ -227,6 +240,21 @@ export const XPTaxService = {
             error: {
               code: 'INVALID_PAYMENT_TYPE',
               message: 'Payment intent is not an XP tax payment',
+            },
+          };
+        }
+
+        // F46-5 FIX: Verify the payment intent belongs to the calling user.
+        // Without this check, any user holding a succeeded xp_tax PaymentIntent
+        // (even one created for a different user) could submit it to payTax() and
+        // have their own held XP released without actually paying. The PI metadata
+        // contains user_id set by createTaxPaymentIntent(), so we enforce the match.
+        if (piResult.data.metadata.user_id && piResult.data.metadata.user_id !== userId) {
+          return {
+            success: false,
+            error: {
+              code: 'PAYMENT_USER_MISMATCH',
+              message: 'Payment intent does not belong to this user',
             },
           };
         }
