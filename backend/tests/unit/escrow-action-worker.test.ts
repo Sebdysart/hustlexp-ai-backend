@@ -190,8 +190,13 @@ function setupRefundMocks(overrides = {}) {
       });
       return fn(trxQuery);
     }
-    // Second transaction: version-checked UPDATE with RETURNING id. Return the updated row.
-    const trxQuery = vi.fn().mockResolvedValueOnce({ rowCount: 1, rows: [{ id: ESCROW_ID }] });
+    // Second transaction (T2): BUG 2 FIX added SELECT FOR UPDATE NOWAIT before the UPDATE.
+    // The trxQuery is called twice:
+    //   1st call: SELECT FOR UPDATE NOWAIT → returns the locked escrow row (for version re-read)
+    //   2nd call: UPDATE ... RETURNING id → returns the updated row
+    const trxQuery = vi.fn()
+      .mockResolvedValueOnce({ rows: [{ id: ESCROW_ID, version: 1, stripe_refund_id: null }], rowCount: 1 })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: ESCROW_ID }] });
     return fn(trxQuery);
   });
 }
@@ -563,7 +568,10 @@ describe('escrow-action-worker — refund_requested handler', () => {
         });
         return fn(trxQuery);
       }
-      return fn(vi.fn().mockResolvedValueOnce({ rowCount: 1, rows: [{ id: ESCROW_ID }] }));
+      // T2 now has two calls: SELECT FOR UPDATE NOWAIT + UPDATE RETURNING id (BUG 2 FIX)
+      return fn(vi.fn()
+        .mockResolvedValueOnce({ rows: [{ id: ESCROW_ID, version: 1, stripe_refund_id: null }], rowCount: 1 })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: ESCROW_ID }] }));
     });
 
     await processEscrowActionJob(makeJob('escrow.refund_requested',

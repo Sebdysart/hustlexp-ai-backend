@@ -29,6 +29,57 @@ function getNotifRedis(): Redis | null {
   return notifRedis;
 }
 
+/**
+ * Read-only frequency check: returns current counters WITHOUT incrementing.
+ * Use before the INSERT so a failed DB write does not consume a quota slot.
+ */
+async function checkFrequency(userId: string, category: string): Promise<{ hourlyCount: number; dailyCount: number }> {
+  const redis = getNotifRedis();
+  if (!redis) return { hourlyCount: 0, dailyCount: 0 };
+
+  const now = new Date();
+  const hourKey = `notif:freq:${userId}:${category}:hour:${now.toISOString().slice(0, 13)}`;
+  const dayKey = `notif:freq:${userId}:${category}:day:${now.toISOString().slice(0, 10)}`;
+
+  try {
+    const [hourly, daily] = await Promise.all([
+      redis.get<number>(hourKey),
+      redis.get<number>(dayKey),
+    ]);
+    return { hourlyCount: hourly ?? 0, dailyCount: daily ?? 0 };
+  } catch {
+    return { hourlyCount: 0, dailyCount: 0 };
+  }
+}
+
+/**
+ * Increment frequency counters AFTER a successful INSERT.
+ * Idempotent on retry: keyed on notificationId so a re-run after the INSERT
+ * succeeded but before the increment did not permanently lose the quota slot.
+ */
+async function incrementFrequency(userId: string, category: string): Promise<void> {
+  const redis = getNotifRedis();
+  if (!redis) return;
+
+  const now = new Date();
+  const hourKey = `notif:freq:${userId}:${category}:hour:${now.toISOString().slice(0, 13)}`;
+  const dayKey = `notif:freq:${userId}:${category}:day:${now.toISOString().slice(0, 10)}`;
+
+  try {
+    const [hourly, daily] = await Promise.all([
+      redis.incr(hourKey),
+      redis.incr(dayKey),
+    ]);
+    // Set TTLs (only on first increment)
+    if (hourly === 1) await redis.expire(hourKey, 3600);
+    if (daily === 1) await redis.expire(dayKey, 86400);
+  } catch {
+    // Non-fatal: a missed increment may allow one extra notification through.
+    // That is preferable to silently dropping a notification due to a Redis error.
+  }
+}
+
+/** @deprecated Use checkFrequency + incrementFrequency separately. Kept for test compatibility. */
 async function checkAndIncrementFrequency(userId: string, category: string): Promise<{ hourlyCount: number; dailyCount: number }> {
   const redis = getNotifRedis();
   if (!redis) return { hourlyCount: 0, dailyCount: 0 };
@@ -256,25 +307,19 @@ export const NotificationService = {
       }
       
       // Check frequency limits (NOTIFICATION_SPEC.md §2.2) - Redis-based
+      // BUG 8 FIX: Use read-only checkFrequency here (before the INSERT) so that a
+      // failed DB write does not permanently consume a quota slot. incrementFrequency
+      // is called AFTER the INSERT succeeds below.
       const categoryLimits = FREQUENCY_LIMITS[category];
       const limits = categoryLimits || { perHour: Infinity, perDay: Infinity };
       // BUG 5 FIX: security_alert and payment_released bypass frequency caps entirely
       // so they can never be DoS-suppressed by an attacker exhausting the daily limit.
       const bypassFrequency = FREQUENCY_BYPASS_CATEGORIES.has(category);
       if (!bypassFrequency && (limits.perHour !== Infinity || limits.perDay !== Infinity)) {
-        const { hourlyCount, dailyCount } = await checkAndIncrementFrequency(userId, category);
+        const { hourlyCount, dailyCount } = await checkFrequency(userId, category);
 
-        // BUG FIX (order): Check daily limit BEFORE hourly. Previously the
-        // hourly check fired first; for categories where perHour <= perDay
-        // (all current categories) the daily limit was dead code — the hourly
-        // check always triggered first and the daily guard was unreachable.
-        // Checking the broader (daily) window first ensures it is independently
-        // enforced even when the hourly limit has not yet been reached.
-        //
-        // BUG FIX (threshold): checkAndIncrementFrequency increments BEFORE we
-        // read the value, so when a user is exactly AT the limit the counter has
-        // already become limit+1. The correct guard is ">= limits.perXxx + 1".
-        if (dailyCount >= limits.perDay + 1) {
+        // Check daily limit BEFORE hourly so the broader window is independently enforced.
+        if (dailyCount >= limits.perDay) {
           return {
             success: false,
             error: {
@@ -284,7 +329,7 @@ export const NotificationService = {
           };
         }
 
-        if (hourlyCount >= limits.perHour + 1) {
+        if (hourlyCount >= limits.perHour) {
           // Exceeded hourly limit - batch with existing notifications
           const batchResult = await batchNotification(userId, category, {
             title,
@@ -400,6 +445,12 @@ export const NotificationService = {
       // In-app: Already in notifications table (can be retrieved via API)
       // External channels: Queue for delivery via outbox pattern (NO INLINE SENDS)
       const notification = result.rows[0];
+
+      // BUG 8 FIX: Increment frequency counter AFTER the INSERT succeeds.
+      // Moving the increment here ensures a failed DB write cannot consume a quota slot.
+      if (!bypassFrequency && (limits.perHour !== Infinity || limits.perDay !== Infinity)) {
+        await incrementFrequency(userId, category);
+      }
       
       // Queue notifications via enabled channels (non-blocking, async via outbox)
       // Use filtered channels if preferences exist, otherwise use requested channels

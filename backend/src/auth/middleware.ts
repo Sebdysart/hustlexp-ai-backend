@@ -80,8 +80,17 @@ export async function authenticateRequest(
         }
       }
     } catch (err) {
-      // DB errors must not block auth — log and continue (fail-open for availability)
-      authLogger.error({ err, uid: decoded.uid }, '[auth] DB ban-check failed — proceeding without ban enforcement');
+      // INTENTIONAL FAIL-OPEN: DB errors must not block authentication — this is
+      // a deliberate availability trade-off.  If the DB is unreachable we accept
+      // the risk of a banned/suspended user making requests rather than denying
+      // auth to all users.  DO NOT change this to fail-closed without evaluating
+      // the blast radius of a DB outage on the entire user base.
+      //
+      // BUG 6 FIX: log at ERROR level with a clear SECURITY DEGRADED marker so
+      // on-call engineers are alerted that ban enforcement is degraded.
+      authLogger.error({ err, uid: decoded.uid }, '[auth] DB ban-check failed — proceeding without ban enforcement. SECURITY DEGRADED.');
+      // NOTE: If this fires repeatedly, investigate DB connectivity / pool exhaustion.
+      // A metric/alert should be wired to this log line in your observability stack.
     }
 
     // Cache session for 5 mins (TOKEN_CACHE_TTL_SECONDS) — reduces revocation window to ≤5 min

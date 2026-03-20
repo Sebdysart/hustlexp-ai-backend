@@ -192,9 +192,12 @@ export const TaxReportingService = {
       }
 
       // Update filing record with Stripe form ID
+      // BUG 5 FIX: Add form_type filter to prevent overwriting ALL filings for this
+      // user+year. Without it, a user with multiple form types (e.g. 1099-NEC and a
+      // future 1099-K) would have all their filings updated with the same Stripe form ID.
       await db.query(
         `UPDATE tax_filings SET stripe_tax_form_id = $1, status = 'generated', updated_at = NOW()
-         WHERE user_id = $2 AND tax_year = $3`,
+         WHERE user_id = $2 AND tax_year = $3 AND form_type = '1099-NEC'`,
         [taxForm.id, userId, taxYear]
       );
 

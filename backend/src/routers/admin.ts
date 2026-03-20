@@ -438,7 +438,7 @@ export const adminRouter = router({
   grantAdminRole: adminProcedure
     .input(z.object({
       userId: Schemas.uuid,
-      role: z.string().min(1).max(100),
+      role: z.enum(['admin', 'support', 'finance', 'moderator', 'founder']),
     }))
     .mutation(async ({ ctx, input }) => {
       // Precondition: verify firebase_uid FIRST — before any DB writes — so that
@@ -475,7 +475,11 @@ export const adminRouter = router({
       // KK2 FIX: Invalidate the auth cache so the granted role takes effect
       // immediately — the cached is_admin value would otherwise persist for
       // up to 5 minutes.
-      await invalidateAuthCacheForUser(input.userId, firebaseUid);
+      // BUG 3 FIX: pass writeRevocationMarker=false so a role change does NOT
+      // write a Redis ban marker — that would cause 12 min of forced Firebase
+      // round-trips for every admin role grant.  In-process cache eviction is
+      // sufficient here; the user is not being banned or suspended.
+      await invalidateAuthCacheForUser(input.userId, firebaseUid, false);
 
       return { userId: input.userId, role: input.role };
     }),
@@ -490,7 +494,7 @@ export const adminRouter = router({
   revokeAdminRole: adminProcedure
     .input(z.object({
       userId: Schemas.uuid,
-      role: z.string().min(1).max(100),
+      role: z.enum(['admin', 'support', 'finance', 'moderator', 'founder']),
     }))
     .mutation(async ({ ctx, input }) => {
       // Precondition: verify firebase_uid FIRST — before any DB writes — so that
@@ -528,7 +532,10 @@ export const adminRouter = router({
       // KK2 FIX: Invalidate the auth cache immediately after role removal so
       // the revoked admin cannot continue to trigger adminOverride=true paths
       // until the 5-minute TTL expires.
-      await invalidateAuthCacheForUser(input.userId, firebaseUid);
+      // BUG 3 FIX: pass writeRevocationMarker=false so a role revocation does
+      // NOT write a Redis ban marker — that would cause 12 min of forced Firebase
+      // round-trips.  The revoked admin is not banned; they become a regular user.
+      await invalidateAuthCacheForUser(input.userId, firebaseUid, false);
 
       return { userId: input.userId, role: input.role };
     }),

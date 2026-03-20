@@ -1621,7 +1621,7 @@ export const TaskService = {
         aggregateType: 'task',
         aggregateId: taskId,
         eventVersion: 1,
-        idempotencyKey: `task.progress_updated:${taskId}:${to}`,
+        idempotencyKey: `task.progress_updated:${taskId}:${result.from ?? 'null'}:${to}`,
         payload: {
           taskId,
           from: result.from,

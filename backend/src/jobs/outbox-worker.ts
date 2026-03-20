@@ -221,22 +221,27 @@ export async function markOutboxEventProcessed(
 /**
  * Mark outbox event as failed (called by job processor after failed execution)
  *
- * BUG 6 FIX: Do NOT increment `attempts` here. The claim transaction in
+ * Uses the same CASE WHEN attempts < MAX guard as the inline recovery path so
+ * the event is reset to 'pending' (for retry) until it has exhausted MAX attempts,
+ * at which point it is permanently set to 'failed'.
+ *
+ * Note: do NOT increment `attempts` here. The claim transaction in
  * processOutboxEvents already incremented attempts when it set status='enqueued'.
- * Double-incrementing on the failure path caused the attempts counter to advance
- * twice per cycle, exhausting MAX_OUTBOX_ATTEMPTS at half the expected retries.
- * This function's sole responsibility is recording the failure status and error.
+ * Double-incrementing on the failure path would exhaust MAX_OUTBOX_ATTEMPTS at
+ * half the expected retries.
  */
 export async function markOutboxEventFailed(
   idempotencyKey: string,
   errorMessage: string
 ): Promise<void> {
+  const MAX_OUTBOX_ATTEMPTS = 5;
   await db.query(
     `UPDATE outbox_events
-     SET status = 'failed',
-         error_message = $1
+     SET status = CASE WHEN attempts < $3 THEN 'pending' ELSE 'failed' END,
+         error_message = $1,
+         updated_at = NOW()
      WHERE idempotency_key = $2`,
-    [errorMessage, idempotencyKey]
+    [errorMessage, idempotencyKey, MAX_OUTBOX_ATTEMPTS]
   );
 }
 
@@ -266,12 +271,21 @@ export function startOutboxWorker(intervalMs: number = 5000): OutboxWorkerHandle
   });
 
   // Start periodic surge evaluator (every 10 seconds)
+  // Concurrency guard: prevents overlapping executions when the evaluator is slow.
+  let surgeRunning = false;
   const surgeInterval = setInterval(async () => {
+    if (surgeRunning) {
+      log.warn('Surge evaluation already running, skipping');
+      return;
+    }
+    surgeRunning = true;
     try {
       const { evaluateInstantSurges } = await import('./instant-surge-evaluator');
       await evaluateInstantSurges();
-    } catch (error) {
-      log.error({ err: error }, 'Surge evaluator error');
+    } catch (err) {
+      log.error({ err }, '[outbox-worker] surgeInterval error');
+    } finally {
+      surgeRunning = false;
     }
   }, 10 * 1000); // Every 10 seconds
 

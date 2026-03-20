@@ -58,7 +58,19 @@ export function authCacheGet(token: string): CachedAuth | null {
  * If firebaseUid is known at the call site, pass it directly.  Otherwise,
  * this function collects it from any matching in-process cache entries it evicts.
  */
-export async function invalidateAuthCacheForUser(userId: string, firebaseUid?: string): Promise<void> {
+/**
+ * Invalidate all auth cache entries for a given user ID.
+ *
+ * @param writeRevocationMarker - When true (default), also writes a Redis
+ *   revocation marker keyed on firebaseUid so every replica sees the
+ *   invalidation signal immediately.  Pass false for role-change paths
+ *   (grantAdminRole / revokeAdminRole) — the in-process cache is still
+ *   evicted so the new is_admin value loads on the next request, but no
+ *   Redis ban marker is written.  Writing a revocation marker on a role
+ *   change causes 12 minutes of forced Firebase round-trips unnecessarily.
+ *   Ban and suspend paths should always use the default (true).
+ */
+export async function invalidateAuthCacheForUser(userId: string, firebaseUid?: string, writeRevocationMarker: boolean = true): Promise<void> {
   // 1. Evict in-process cache entries for this user and collect firebaseUid
   //    from the evicted entries if not supplied by the caller.
   const collectedFirebaseUids = new Set<string>(firebaseUid ? [firebaseUid] : []);
@@ -68,6 +80,10 @@ export async function invalidateAuthCacheForUser(userId: string, firebaseUid?: s
       authCache.delete(key);
     }
   }
+
+  // Skip Redis revocation marker write when the caller explicitly opts out
+  // (e.g. admin role grant/revoke — in-process eviction above is sufficient).
+  if (!writeRevocationMarker) return;
 
   // 1b. If no firebaseUid was supplied and none was collected from the
   //     in-process cache (e.g. this replica never saw the user, or all

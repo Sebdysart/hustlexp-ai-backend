@@ -255,8 +255,15 @@ async function handlePaymentIntentSucceeded(paymentIntent: Stripe.PaymentIntent,
     }
 
     // Validate amount (sanity check)
-    if (paymentIntent.amount !== escrow.amount) {
-      throw new Error(`Payment intent amount (${paymentIntent.amount}) does not match escrow amount (${escrow.amount})`);
+    // PaymentIntent.amount may include Stripe Tax and application fees on top of the
+    // task price. Use amount_received (what Stripe actually captured) as the coverage
+    // check, and require only that the PaymentIntent amount is AT LEAST the escrow
+    // amount (not necessarily an exact match).
+    if (paymentIntent.amount_received < escrow.amount) {
+      throw new Error(`Payment received (${paymentIntent.amount_received}) is less than escrow amount (${escrow.amount}) — insufficient payment`);
+    }
+    if (paymentIntent.amount < escrow.amount) {
+      throw new Error(`Payment intent amount (${paymentIntent.amount}) is less than escrow amount (${escrow.amount})`);
     }
 
     // Update escrow: PENDING → FUNDED (with version check and increment)
@@ -1148,19 +1155,29 @@ async function handlePayoutFailed(payout: Stripe.Payout, stripeEventId: string):
 
   // Insert failed_payout ledger entry for financial ops visibility
   // Amount is negative (funds did not reach the worker's bank)
-  await RevenueService.logEvent({
-    eventType: 'failed_payout',
-    userId: userId ?? null,
-    amountCents: -payoutAmount,
-    stripeEventId,
-    metadata: {
-      payout_id: payoutId,
-      connect_account_id: connectAccountId,
-      payout_status: payout.status,
-      failure_code: payout.failure_code,
-      failure_message: payout.failure_message,
-    },
-  });
+  // Idempotency guard: check for an existing entry before writing so that
+  // BullMQ retries do not create duplicate ledger rows.
+  const existingFailedPayoutEntry = await db.query(
+    `SELECT id FROM revenue_ledger WHERE stripe_event_id = $1 AND event_type = 'failed_payout' LIMIT 1`,
+    [stripeEventId]
+  );
+  if (existingFailedPayoutEntry.rows.length > 0) {
+    log.info({ stripeEventId, payoutId }, 'handlePayoutFailed: failed_payout ledger entry already exists — skipping duplicate (idempotent retry)');
+  } else {
+    await RevenueService.logEvent({
+      eventType: 'failed_payout',
+      userId: userId ?? null,
+      amountCents: -payoutAmount,
+      stripeEventId,
+      metadata: {
+        payout_id: payoutId,
+        connect_account_id: connectAccountId,
+        payout_status: payout.status,
+        failure_code: payout.failure_code,
+        failure_message: payout.failure_message,
+      },
+    });
+  }
 
   log.info(
     { payoutId, connectAccountId, userId, stripeEventId },

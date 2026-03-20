@@ -146,9 +146,10 @@ describe('NotificationService (extra coverage)', () => {
   describe('createNotification — frequency limiting', () => {
     it('returns RATE_LIMIT_EXCEEDED when hourly limit exceeded and no batch target found', async () => {
       // Category 'new_matching_task' has perHour: 5
-      // Return hourly count > 5 to trigger limit
-      mockRedisIncr
-        .mockResolvedValueOnce(6)   // hourly > 5 — triggers batch path
+      // checkFrequency uses redis.get() — return values >= limit to trigger enforcement.
+      // BUG 8 FIX: frequency is now read-only checked (get) before INSERT, then incremented after.
+      mockRedisGet
+        .mockResolvedValueOnce(5)   // hourly = 5 >= perHour(5) — triggers batch path
         .mockResolvedValueOnce(10); // daily
 
       mockDb.query
@@ -173,9 +174,11 @@ describe('NotificationService (extra coverage)', () => {
     });
 
     it('returns batched notification when hourly limit exceeded and batch target exists', async () => {
-      mockRedisIncr
-        .mockResolvedValueOnce(6)   // hourly > 5 — triggers batch
-        .mockResolvedValueOnce(10);
+      // checkFrequency uses redis.get(); incrementFrequency uses redis.incr() after INSERT.
+      // BUG 8 FIX: check is now read-only, so use mockRedisGet for the pre-INSERT check.
+      mockRedisGet
+        .mockResolvedValueOnce(5)   // hourly = 5 >= perHour(5) — triggers batch
+        .mockResolvedValueOnce(10); // daily
 
       const existingNotif = makeNotification({ title: 'Old Task', body: 'Old body', metadata: {} });
       const updatedNotif = makeNotification({ title: 'Old Task (2 new)', body: 'Updated body', metadata: { batched_count: 1 } });
@@ -212,9 +215,10 @@ describe('NotificationService (extra coverage)', () => {
 
     it('returns RATE_LIMIT_EXCEEDED when daily limit exceeded', async () => {
       // Category 'welcome' has perDay: 1
-      mockRedisIncr
-        .mockResolvedValueOnce(1)  // hourly OK (1 <= 1)
-        .mockResolvedValueOnce(2); // daily > 1 — triggers daily limit
+      // checkFrequency uses redis.get(); BUG 8 FIX: check is read-only pre-INSERT.
+      mockRedisGet
+        .mockResolvedValueOnce(0)  // hourly OK (0 < 1)
+        .mockResolvedValueOnce(1); // daily = 1 >= perDay(1) — triggers daily limit
 
       mockDb.query
         // getPreferences

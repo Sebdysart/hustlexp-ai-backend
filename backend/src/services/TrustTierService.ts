@@ -541,18 +541,38 @@ export const TrustTierService = {
       return;
     }
 
-    // Evict the auth cache so the banned status is enforced immediately
-    // (mirrors the pattern in FraudDetectionService.detectPattern lines 498-518)
-    await invalidateAuthCacheForUser(userId);
-
-    // Revoke Firebase refresh tokens so the user cannot re-authenticate after
-    // the Redis revocation marker expires.
+    // Look up firebase_uid before evicting the auth cache so we can pass it
+    // directly to invalidateAuthCacheForUser.
+    // BUG 5 FIX: previously invalidateAuthCacheForUser(userId) was called
+    // without firebaseUid, so if the in-process cache was cold the Redis
+    // revocation marker was never written — the user could re-authenticate
+    // on other replicas until the Firebase token expired naturally.
+    let firebaseUid: string | null = null;
     try {
       const fbRow = await db.query<{ firebase_uid: string | null }>(
         'SELECT firebase_uid FROM users WHERE id = $1',
         [userId]
       );
-      const firebaseUid = fbRow.rows[0]?.firebase_uid;
+      firebaseUid = fbRow.rows[0]?.firebase_uid ?? null;
+      if (!firebaseUid) {
+        log.warn({ userId }, '[TrustTierService] banUser: firebase_uid is null — Redis revocation marker will rely on in-process cache entries only');
+      }
+    } catch (fbLookupErr) {
+      log.error({ err: fbLookupErr instanceof Error ? fbLookupErr.message : String(fbLookupErr), userId }, '[TrustTierService] banUser: firebase_uid lookup failed');
+    }
+
+    // Evict the auth cache so the banned status is enforced immediately.
+    // Pass firebaseUid so the Redis revocation marker is written even when
+    // the in-process cache is cold (mirrors admin.setUserBan).
+    if (firebaseUid) {
+      await invalidateAuthCacheForUser(userId, firebaseUid);
+    } else {
+      await invalidateAuthCacheForUser(userId);
+    }
+
+    // Revoke Firebase refresh tokens so the user cannot re-authenticate after
+    // the Redis revocation marker expires.
+    try {
       if (firebaseUid) {
         await revokeUserSessions(firebaseUid);
       } else {

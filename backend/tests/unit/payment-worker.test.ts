@@ -333,8 +333,10 @@ describe('processPaymentJob', () => {
     });
 
     it('when amount mismatch: releases claim, does NOT tombstone with processed_at', async () => {
-      setupClaim('payment_intent.succeeded', { id: 'pi_mismatch', amount: 9999 });
-      // Escrow with different amount (inside transaction)
+      // BUG 1 FIX: amount_received is now the coverage check (must be >= escrow.amount).
+      // Simulate an underpayment: PI collected less than the escrow amount.
+      setupClaim('payment_intent.succeeded', { id: 'pi_mismatch', amount: 3000, amount_received: 2999 });
+      // Escrow with amount that exceeds what was received (inside transaction)
       mockQuery.mockResolvedValueOnce({
         rows: [{ id: 'escrow-2', state: 'PENDING', version: 1, amount: 5000 }],
         rowCount: 1,
@@ -344,7 +346,7 @@ describe('processPaymentJob', () => {
 
       await expect(
         processPaymentJob(makeJob('payment_intent.succeeded'))
-      ).rejects.toThrow(/amount.*does not match/i);
+      ).rejects.toThrow(/insufficient payment|less than escrow/i);
 
       const calls = mockQuery.mock.calls;
       const errorUpdateSql: string = calls[calls.length - 1][0] as string;

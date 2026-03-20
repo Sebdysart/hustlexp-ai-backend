@@ -63,7 +63,9 @@ import { disputeRouter } from '../../src/routers/dispute';
 import { DisputeService } from '../../src/services/DisputeService';
 import { TaskService } from '../../src/services/TaskService';
 import { EscrowService } from '../../src/services/EscrowService';
+import { db } from '../../src/db';
 
+const mockDb = vi.mocked(db);
 const mockDispute = vi.mocked(DisputeService);
 const mockTask = vi.mocked(TaskService);
 const mockEscrow = vi.mocked(EscrowService);
@@ -118,6 +120,8 @@ describe('dispute.create', () => {
   it('creates a dispute when worker initiates on their task', async () => {
     mockTask.getById.mockResolvedValueOnce({ success: true, data: fakeTask } as any);
     mockEscrow.getByTaskId.mockResolvedValueOnce({ success: true, data: { id: ESCROW_UUID } } as any);
+    // BUG-4 fix: duplicate dispute check — no existing active dispute
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
     mockDispute.create.mockResolvedValueOnce({ success: true, data: fakeDispute } as any);
 
     const result = await makeCaller(WORKER_ID).create({
@@ -143,6 +147,8 @@ describe('dispute.create', () => {
   it('creates a dispute when poster initiates', async () => {
     mockTask.getById.mockResolvedValueOnce({ success: true, data: fakeTask } as any);
     mockEscrow.getByTaskId.mockResolvedValueOnce({ success: true, data: { id: ESCROW_UUID } } as any);
+    // BUG-4 fix: duplicate dispute check — no existing active dispute
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
     mockDispute.create.mockResolvedValueOnce({
       success: true,
       data: { ...fakeDispute, initiated_by: POSTER_ID },
@@ -198,6 +204,8 @@ describe('dispute.create', () => {
   it('throws PRECONDITION_FAILED when service returns INVALID_STATE', async () => {
     mockTask.getById.mockResolvedValueOnce({ success: true, data: fakeTask } as any);
     mockEscrow.getByTaskId.mockResolvedValueOnce({ success: true, data: { id: ESCROW_UUID } } as any);
+    // BUG-4 fix: duplicate dispute check — no existing active dispute
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
     mockDispute.create.mockResolvedValueOnce({
       success: false,
       error: { code: 'INVALID_STATE', message: 'Disputes can only be opened for completed tasks' },
@@ -211,6 +219,8 @@ describe('dispute.create', () => {
   it('throws INTERNAL_SERVER_ERROR on unexpected service failure', async () => {
     mockTask.getById.mockResolvedValueOnce({ success: true, data: fakeTask } as any);
     mockEscrow.getByTaskId.mockResolvedValueOnce({ success: true, data: { id: ESCROW_UUID } } as any);
+    // BUG-4 fix: duplicate dispute check — no existing active dispute
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
     mockDispute.create.mockResolvedValueOnce({
       success: false,
       error: { code: 'DB_ERROR', message: 'Connection lost' },

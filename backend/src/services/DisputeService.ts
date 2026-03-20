@@ -513,8 +513,17 @@ export const DisputeService = {
               { code: 'BAD_REQUEST' }
             );
           }
-          if (Math.round(refundAmount) + Math.round(releaseAmount) !== escrow.amount) {
-            throw new Error(`SPLIT amounts (${Math.round(refundAmount)} + ${Math.round(releaseAmount)} = ${Math.round(refundAmount) + Math.round(releaseAmount)}) must sum to escrow amount (${escrow.amount})`);
+          // BUG 4 FIX: Validate integer-ness BEFORE the sum check. Math.round() allows
+          // float values like 4999.4 + 500.6 = 5000 to pass while storing non-integer
+          // cents. Reject non-integers explicitly first.
+          if (!Number.isInteger(refundAmount) || !Number.isInteger(releaseAmount)) {
+            throw Object.assign(
+              new Error('Split amounts must be whole cents'),
+              { code: 'INVALID_INPUT' }
+            );
+          }
+          if (refundAmount + releaseAmount !== escrow.amount) {
+            throw new Error(`SPLIT amounts (${refundAmount} + ${releaseAmount} = ${refundAmount + releaseAmount}) must sum to escrow amount (${escrow.amount})`);
           }
         }
         

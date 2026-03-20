@@ -282,7 +282,7 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
       }>(
         `UPDATE email_outbox
          SET status = 'sending',
-             attempts = attempts + 1,
+             attempts = CASE WHEN status = 'sending' THEN attempts ELSE attempts + 1 END,
              updated_at = NOW()
          WHERE id = $1
            AND (

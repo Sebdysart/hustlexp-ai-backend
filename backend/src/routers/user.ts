@@ -366,11 +366,14 @@ export const userRouter = router({
       if (existing.rows.length > 0) {
         let existingUser: User | null = existing.rows[0];
 
-        // FIX 4: If the matched row is a GDPR-deleted account, treat it as
-        // non-existent and create a fresh account instead of returning the
-        // dead row. Without this check, re-using the same Firebase UID after
-        // GDPR deletion permanently locks the user into the anonymized account.
+        // FIX 4: If the matched row is a GDPR-deleted account, delete it so
+        // the INSERT below can proceed with a fresh account. Without this
+        // deletion the ON CONFLICT (firebase_uid) DO NOTHING clause would
+        // still hit the constraint (same firebase_uid on the DELETED row) and
+        // return 0 rows — permanently blocking re-registration and leaking the
+        // anonymized profile back to the caller via the fallback SELECT.
         if (existingUser.account_status === 'DELETED') {
+          await db.query('DELETE FROM users WHERE id = $1', [existingUser.id]);
           existingUser = null;
         }
 

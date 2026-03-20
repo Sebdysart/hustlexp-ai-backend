@@ -202,10 +202,11 @@ const isAdmin = t.middleware(async ({ ctx, next }) => {
     });
   }
 
-  // Check admin role
+  // Check admin role — only known roles are valid (prevents synthetic backdoor role names)
+  const VALID_ADMIN_ROLES = ['admin', 'support', 'finance', 'moderator', 'founder'];
   const adminResult = await db.query(
-    'SELECT role FROM admin_roles WHERE user_id = $1',
-    [ctx.user.id]
+    'SELECT role FROM admin_roles WHERE user_id = $1 AND role = ANY($2::text[])',
+    [ctx.user.id, VALID_ADMIN_ROLES]
   );
 
   if (adminResult.rows.length === 0) {

@@ -577,15 +577,38 @@ async function handleRefundRequest(
 
   const refundId = refundResult.data.refundId;
 
-  // Store refund_id on escrow atomically (version-checked)
+  // Store refund_id on escrow atomically.
+  // BUG 2 FIX: Use SELECT FOR UPDATE NOWAIT inside T2 so the version is re-read
+  // from the live row under the same exclusive lock as the UPDATE. If another
+  // operation incremented the version between T1 (which released the lock at
+  // COMMIT) and here, we read the fresh version and update against it instead of
+  // the stale snapshot version — preventing the stale-version retry loop.
   await db.transaction(async (trx: QueryFn) => {
+    // Step 1: Acquire exclusive lock and re-read version
+    const lockedRow = await trx<{ id: string; version: number; stripe_refund_id: string | null }>(
+      `SELECT id, version, stripe_refund_id FROM escrows WHERE id = $1 FOR UPDATE NOWAIT`,
+      [escrow.id]
+    );
+    if (!lockedRow.rows.length) {
+      throw new Error(`Escrow ${escrow.id} disappeared during T2 refund lock — retry`);
+    }
+    const locked = lockedRow.rows[0];
+    // Step 2: Idempotency check — if another retry already stored the refund_id, skip
+    if (locked.stripe_refund_id) {
+      log.info(
+        { escrowId: escrow.id, existingRefundId: locked.stripe_refund_id, ourRefundId: refundId },
+        'T2 re-read: refund_id already set by concurrent worker — skipping UPDATE (idempotent)',
+      );
+      return;
+    }
+    // Step 3: UPDATE using the fresh version from the re-read, not the stale snapshot
     const updateResult = await trx<{ id: string }>(
       `UPDATE escrows
        SET stripe_refund_id = $1,
            version = version + 1
        WHERE id = $2 AND version = $3
        RETURNING id`,
-      [refundId, escrow.id, escrow.version]
+      [refundId, escrow.id, locked.version]
     );
     if (!updateResult.rows.length) {
       throw new Error(`Concurrent version conflict storing refund ${refundId} for escrow ${escrow.id} — retry`);

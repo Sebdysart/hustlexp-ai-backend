@@ -22,6 +22,7 @@ import { router, protectedProcedure, Schemas } from '../trpc.js';
 import { DisputeService } from '../services/DisputeService.js';
 import { TaskService } from '../services/TaskService.js';
 import { EscrowService } from '../services/EscrowService.js';
+import { db } from '../db.js';
 
 export const disputeRouter = router({
   // --------------------------------------------------------------------------
@@ -90,6 +91,27 @@ export const disputeRouter = router({
         throw new TRPCError({
           code: 'PRECONDITION_FAILED',
           message: escrowResult.error.message ?? 'Task has no associated escrow — cannot open dispute',
+        });
+      }
+
+      // CONCURRENCY FIX (BUG-4): Check for an existing active dispute at the
+      // router layer before entering the service transaction. Two concurrent
+      // calls can both read escrow.state='FUNDED' and both insert a dispute row
+      // if this check is missing. The service INSERT has no unique constraint
+      // that would reject the second write, so without this guard two dispute
+      // records can exist for the same task simultaneously.
+      //
+      // This is an application-level advisory check — the service also validates
+      // inside its FOR UPDATE transaction (via EscrowService.lockForDispute's
+      // existingDisputeCheck), providing defence-in-depth.
+      const existingDispute = await db.query<{ id: string }>(
+        `SELECT id FROM disputes WHERE task_id = $1 AND status NOT IN ('RESOLVED', 'DISMISSED')`,
+        [task.id]
+      );
+      if ((existingDispute.rowCount ?? 0) > 0) {
+        throw new TRPCError({
+          code: 'CONFLICT',
+          message: 'A dispute already exists for this task',
         });
       }
 

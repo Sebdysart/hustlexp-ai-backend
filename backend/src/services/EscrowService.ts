@@ -1015,20 +1015,17 @@ export const EscrowService = {
         if (windowCheck.rows.length > 0) {
           const { completed_at, challenge_window_hours } = windowCheck.rows[0];
 
-          // SECURITY FIX (v2.9.3): A dispute may only be filed on a completed task.
-          // Previously, null completed_at silently skipped the window guard, allowing
-          // any authenticated user to lock an in-progress task's escrow indefinitely.
-          // REG-5 FIX: adminOverride bypasses this check so admins can lock mid-task
-          // escrows for fraud investigation (completed_at=null).
-          if (completed_at == null && !options?.adminOverride) {
-            throw new TRPCError({
-              code: 'BAD_REQUEST',
-              message: 'Cannot dispute a task that has not been completed',
-            });
-          }
+          // REG-5 / BUG-2 FIX: The completed_at == null guard has been removed for
+          // the non-admin path. The router layer (escrow.lockForDispute) already
+          // validates that the task is in an active disputeable state
+          // (ACCEPTED / IN_PROGRESS / PROOF_SUBMITTED / DISPUTED) before calling this
+          // service, so blocking on completed_at here created contradictory
+          // preconditions — zero states can satisfy both "active task" AND
+          // "completed_at IS NOT NULL". Admins still bypass the window check via
+          // adminOverride when completed_at is null (fraud investigation path).
 
           // Only enforce challenge window when the task has a completion timestamp.
-          // If completed_at is null and adminOverride=true, skip the window check entirely.
+          // For active (non-completed) tasks completed_at is null — skip the window.
           if (completed_at != null) {
             const windowMs = (challenge_window_hours ?? 6) * 60 * 60 * 1000;
             const deadlineAt = new Date(new Date(completed_at).getTime() + windowMs);
@@ -1344,6 +1341,27 @@ export const EscrowService = {
 
       // Log platform fee to revenue ledger for the worker's partial payout.
       // Non-fatal: ledger write failure must not block the partial refund confirmation.
+      // BUG 3 FIX: If resolvedTransferId is null on this attempt, check whether a
+      // ledger entry already exists for this escrow (idempotent retry path). If one
+      // exists, log a warning and skip. If none exists, the transfer was created but
+      // not recorded — log CRITICAL so ops can reconcile via Stripe.
+      if (workerCents > 0 && !resolvedTransferId) {
+        const existingLedger = await db.query<{ id: string }>(
+          `SELECT id FROM revenue_ledger WHERE escrow_id = $1 AND event_type = 'platform_fee' LIMIT 1`,
+          [escrowId]
+        );
+        if (existingLedger.rows.length > 0) {
+          escrowLogger.warn(
+            { escrowId },
+            '[EscrowService.partialRefund] resolvedTransferId is null but platform_fee ledger entry already exists — skipping duplicate ledger write (idempotent retry)'
+          );
+        } else {
+          escrowLogger.error(
+            { escrowId, workerCents, txWorkerId },
+            '[EscrowService.partialRefund] CRITICAL: resolvedTransferId is null and no existing platform_fee ledger entry found — Stripe transfer may have been created but not recorded. Manual reconciliation required via Stripe idempotency key.'
+          );
+        }
+      }
       if (workerCents > 0 && resolvedTransferId) {
         // Reuse the same netWorkerCents computed for the Stripe transfer (line ~1233) to
         // guarantee the ledger records the exact amount transferred — not an independently

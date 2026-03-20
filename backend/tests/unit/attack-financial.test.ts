@@ -865,24 +865,39 @@ describe('ATTACK 17: XP formula uses gross payout (not net) — XP over-award', 
 
 describe('ATTACK 18: Dispute window bypass — lockForDispute after window expires', () => {
   /**
-   * SECURITY FIX (v2.9.3): lockForDispute() now explicitly rejects when
-   * completed_at is null. Previously null completed_at silently skipped the
-   * window guard, allowing any authenticated user to lock an in-progress
-   * task's escrow indefinitely.
+   * BUG-2 FIX: The service-level completed_at == null guard has been removed.
+   * The defence is now at the router layer (escrow.lockForDispute validates that
+   * the task is in an active disputeable state: ACCEPTED/IN_PROGRESS/PROOF_SUBMITTED/DISPUTED).
+   * The service-level guard created contradictory preconditions — the router allowed active
+   * tasks while the service required completed_at IS NOT NULL, making the feature completely
+   * non-functional for legitimate non-admin users.
    *
-   * VERDICT: FIXED — a dispute can only be filed on a completed task.
+   * Challenge-window enforcement (completed_at + challenge_window_hours) still runs when
+   * completed_at is non-null, so completed tasks outside the window are still rejected.
+   *
+   * VERDICT: FIXED at the router layer. Service-level guard removed (was contradictory).
+   * Active task disputes (completed_at = null) now proceed through the service;
+   * the router's task-state allowlist prevents abuse.
    */
-  it('lockForDispute on escrow with null completed_at now throws BAD_REQUEST — exploit closed', async () => {
-    // Window check returns completed_at = null → new guard fires BAD_REQUEST
+  it('lockForDispute on escrow with null completed_at proceeds (router guards task state; service no longer blocks)', async () => {
+    // Window check returns completed_at = null → no window check runs (skipped for active tasks)
+    // Dup dispute check returns 0 open disputes
+    // UPDATE: returns 0 rows (version mismatch / wrong state) → service calls getById for error message
+    // getById: returns an escrow row (so the INVALID_STATE path returns a meaningful message)
     mockDb.query
-      .mockResolvedValueOnce({ rows: [{ completed_at: null, challenge_window_hours: 6 }], rowCount: 1 } as never)  // window check
-      .mockResolvedValueOnce({ rows: [{ count: '0' }], rowCount: 1 } as never); // dup dispute check
+      .mockResolvedValueOnce({ rows: [{ completed_at: null, challenge_window_hours: 6, version: 1 }], rowCount: 1 } as never)  // window check (FOR UPDATE)
+      .mockResolvedValueOnce({ rows: [{ count: '0' }], rowCount: 1 } as never)   // dup dispute check
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)                  // UPDATE escrows SET state=LOCKED_DISPUTE → 0 rows (wrong state)
+      .mockResolvedValueOnce({ rows: [{ id: 'esc-1', state: 'REFUNDED', poster_id: 'p1', worker_id: 'w1' }], rowCount: 1 } as never); // getById fallback
 
-    await expect(EscrowService.lockForDispute('esc-1')).rejects.toMatchObject({
-      code: 'BAD_REQUEST',
-      message: 'Cannot dispute a task that has not been completed',
-    });
-    // VERDICT: FIXED — uncompleted tasks can no longer be locked for dispute.
+    // The service now proceeds past the completed_at check and attempts the UPDATE.
+    // The UPDATE returns 0 rows (escrow not in FUNDED state) → INVALID_STATE returned.
+    const result = await EscrowService.lockForDispute('esc-1');
+    expect(result.success).toBe(false);
+    // The error should be INVALID_STATE (from the UPDATE returning 0 rows) — not BAD_REQUEST.
+    // This confirms the completed_at guard is gone and the service proceeds to the UPDATE attempt.
+    expect((result as { success: false; error: { code: string } }).error.code).toBe('INVALID_STATE');
+    expect((result as { success: false; error: { code: string } }).error.code).not.toBe('BAD_REQUEST');
   });
 });
 

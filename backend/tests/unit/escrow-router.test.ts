@@ -700,7 +700,7 @@ describe('escrow.release', () => {
       // Stripe verification: transfer exists and amount is valid (platform fee applied: 4250/5000)
       mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_test_123', amount: 4250, metadata: { escrow_id: ESCROW_ID } });
       // Task price lookup for 80% floor calculation (task price = escrow amount here)
-      mockDb.query.mockResolvedValueOnce({ rows: [{ price: 5000 }] });
+      mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'COMPLETED', price: 5000 }] });
       mockEscrowService.release.mockResolvedValueOnce({
         success: true,
         data: releasedEscrow as any,
@@ -748,7 +748,7 @@ describe('escrow.release', () => {
       });
       mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_test_123', amount: 4250, metadata: { escrow_id: ESCROW_ID } });
       // Task price lookup for 80% floor calculation
-      mockDb.query.mockResolvedValueOnce({ rows: [{ price: 5000 }] });
+      mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'COMPLETED', price: 5000 }] });
       mockEscrowService.release.mockResolvedValueOnce({
         success: true,
         data: releasedEscrow as any,
@@ -779,7 +779,7 @@ describe('escrow.release', () => {
       });
       mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_test_123', amount: 4250, metadata: { escrow_id: ESCROW_ID } });
       // Task price lookup for 80% floor calculation
-      mockDb.query.mockResolvedValueOnce({ rows: [{ price: 5000 }] });
+      mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'COMPLETED', price: 5000 }] });
       mockEscrowService.release.mockResolvedValueOnce({
         success: false,
         error: { code: 'HX201', message: 'Escrow release requires completed task' },
@@ -797,7 +797,7 @@ describe('escrow.release', () => {
       });
       mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_test_123', amount: 4250, metadata: { escrow_id: ESCROW_ID } });
       // Task price lookup for 80% floor calculation
-      mockDb.query.mockResolvedValueOnce({ rows: [{ price: 5000 }] });
+      mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'COMPLETED', price: 5000 }] });
       mockEscrowService.release.mockResolvedValueOnce({
         success: false,
         error: { code: 'INVALID_STATE', message: 'Wrong state' },
@@ -817,7 +817,7 @@ describe('escrow.release', () => {
       });
       mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_test_123', amount: 4250, metadata: { escrow_id: ESCROW_ID } });
       // Task price lookup for 80% floor calculation
-      mockDb.query.mockResolvedValueOnce({ rows: [{ price: 5000 }] });
+      mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'COMPLETED', price: 5000 }] });
       mockEscrowService.release.mockResolvedValueOnce({
         success: true,
         data: makeEscrow({ state: 'RELEASED' }) as any,
@@ -1412,21 +1412,25 @@ describe('Financial Safety — cross-cutting', () => {
     expect(mockEscrowService.refund).not.toHaveBeenCalled();
   });
 
-  it('INV-2: release blocked when task is not COMPLETED (HX201 maps to PRECONDITION_FAILED)', async () => {
+  it('INV-2: release blocked when task is not COMPLETED (BUG-5 fix: router now enforces task.state check)', async () => {
+    // BUG-5 FIX: The router now checks task.state === 'COMPLETED' via db.query BEFORE
+    // calling EscrowService.release. The PRECONDITION_FAILED is thrown at the router layer.
+    // Previously this relied on the service returning HX201 (database trigger enforcement).
+    // Both paths converge on PRECONDITION_FAILED — the router check runs first.
     mockEscrowService.getById.mockResolvedValueOnce({
       success: true,
       data: makeEscrow() as any,
     });
     mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_test_123', amount: 4250, metadata: { escrow_id: ESCROW_ID } });
-    // Task price lookup for 80% floor calculation
-    mockDb.query.mockResolvedValueOnce({ rows: [{ price: 5000 }] });
-    mockEscrowService.release.mockResolvedValueOnce({
-      success: false,
-      error: { code: 'HX201', message: 'Task must be COMPLETED' },
-    });
+    // Task state + price lookup — return IN_PROGRESS state (not COMPLETED) to trigger the BUG-5 guard
+    mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'IN_PROGRESS', price: 5000 }] });
+    // Note: EscrowService.release is NOT called — router throws before reaching the service
 
     await expect(makeCaller(POSTER_ID).release({ escrowId: ESCROW_ID, stripeTransferId: 'tr_test_123' }))
       .rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+
+    // BUG-5 FIX: The service must NOT be reached when task state is not COMPLETED.
+    expect(mockEscrowService.release).not.toHaveBeenCalled();
   });
 
   it('INV-5: double XP award blocked (23505 maps to CONFLICT)', async () => {
@@ -1658,8 +1662,8 @@ describe('SECURITY FIX v2.9.4 — release: Stripe transfer verification', () => 
     });
     // Valid transfer: amount is 4250 (platform fee 15% deducted from 5000)
     mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_real_123', amount: 4250, metadata: { escrow_id: ESCROW_ID } });
-    // Task price lookup for 80% floor calculation (floor = 5000 * 0.80 = 4000; 4250 >= 4000 passes)
-    mockDb.query.mockResolvedValueOnce({ rows: [{ price: 5000 }] });
+    // Task state + price lookup (router checks state=COMPLETED first, then price for 80% floor)
+    mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'COMPLETED', price: 5000 }] });
     mockEscrowService.release.mockResolvedValueOnce({
       success: true,
       data: makeEscrow({ state: 'RELEASED' }) as any,
@@ -1685,8 +1689,8 @@ describe('SECURITY FIX v2.9.4 — release: Stripe transfer verification', () => 
       data: makeEscrow({ state: 'FUNDED', amount: 5000 }) as any,
     });
     mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_full', amount: 5000, metadata: { escrow_id: ESCROW_ID } });
-    // Task price lookup for 80% floor calculation (floor = 5000 * 0.80 = 4000; 5000 >= 4000 passes)
-    mockDb.query.mockResolvedValueOnce({ rows: [{ price: 5000 }] });
+    // Task state + price lookup (router checks state=COMPLETED first, then price for 80% floor)
+    mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'COMPLETED', price: 5000 }] });
     mockEscrowService.release.mockResolvedValueOnce({
       success: true,
       data: makeEscrow({ state: 'RELEASED' }) as any,

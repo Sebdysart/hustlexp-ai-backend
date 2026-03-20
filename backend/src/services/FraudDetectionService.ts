@@ -559,15 +559,18 @@ export const FraudDetectionService = {
               log.error({ err, userId }, '[FraudDetection] failed to query active escrows for suspended user');
             }
 
-            // Cancel poster's OPEN/MATCHING tasks (best-effort)
+            // Cancel poster's open and active tasks (best-effort).
+            // BUG 4 FIX: expanded state set to match admin.setUserBan — previously
+            // only 'OPEN'/'MATCHING' were cancelled, leaving ACCEPTED/IN_PROGRESS/
+            // PROOF_SUBMITTED tasks in an un-completable state after auto-suspension.
             try {
               await db.query(
                 `UPDATE tasks SET state = 'CANCELLED', cancelled_at = NOW()
-                 WHERE poster_id = $1 AND state IN ('OPEN', 'MATCHING')`,
+                 WHERE poster_id = $1 AND state IN ('OPEN', 'MATCHING', 'ACCEPTED', 'IN_PROGRESS', 'PROOF_SUBMITTED')`,
                 [userId]
               );
             } catch (err) {
-              log.error({ err, userId }, '[FraudDetection] failed to cancel poster OPEN tasks on auto-suspension');
+              log.error({ err, userId }, '[FraudDetection] failed to cancel poster tasks on auto-suspension');
             }
 
             suspensionApplied++;

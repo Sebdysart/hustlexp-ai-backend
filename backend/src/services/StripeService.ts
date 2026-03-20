@@ -20,6 +20,7 @@ import { db } from '../db.js';
 import type { ServiceResult } from '../types.js';
 import { stripeBreaker } from '../middleware/circuit-breaker.js';
 import { stripeLogger } from '../logger.js';
+import { notifyAdmins } from './AdminNotificationHelper.js';
 
 // ============================================================================
 // INITIALIZATION
@@ -583,7 +584,27 @@ export const StripeService = {
         );
         stripeLogger.warn({ eventId }, 'Handler failed — rolled back idempotency row so retry can re-claim');
       } catch (deleteError) {
-        stripeLogger.error({ eventId, deleteError }, 'Failed to roll back idempotency row — event may be permanently skipped');
+        // BUG 7 FIX: The DELETE failed, meaning the idempotency row is permanently stuck.
+        // Stripe's next retry delivery will see the existing row, return claimed=false, and
+        // skip the event — causing silent permanent data loss. Alert ops immediately.
+        stripeLogger.error(
+          { err: deleteError instanceof Error ? deleteError.message : String(deleteError), eventId },
+          '[stripe-webhook] PERMANENT: Failed to delete idempotency row — this Stripe event will never be retried. Manual intervention required.'
+        );
+        try {
+          await notifyAdmins({
+            title: 'Stripe Event Permanently Stuck',
+            body: `Stripe event ${eventId} is permanently stuck — idempotency row deletion failed. Manual DB intervention required.`,
+            deepLink: `/admin/stripe-events/${eventId}`,
+            priority: 'CRITICAL',
+            metadata: { event_id: eventId, delete_error: deleteError instanceof Error ? deleteError.message : String(deleteError) },
+          });
+        } catch (notifyError) {
+          stripeLogger.error(
+            { err: notifyError instanceof Error ? notifyError.message : String(notifyError), eventId },
+            '[stripe-webhook] Failed to notify admins of stuck event — check both DB and notification service'
+          );
+        }
       }
       return {
         success: false,

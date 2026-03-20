@@ -351,16 +351,42 @@ export const escrowRouter = router({
         });
       }
 
+      // BUG-5 FIX: Verify the associated task is COMPLETED before releasing funds.
+      // INV-2 states escrow can only be released on a completed task, but previously
+      // this router never checked task state — only the escrow state. A poster could
+      // trigger release while the task was still IN_PROGRESS.
+      const taskStateRow = await db.query<{ state: string; price: number }>(
+        `SELECT t.state, t.price FROM tasks t JOIN escrows e ON e.task_id = t.id WHERE e.id = $1`,
+        [input.escrowId]
+      );
+      if (taskStateRow.rows.length === 0) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found for this escrow' });
+      }
+      if (taskStateRow.rows[0].state !== 'COMPLETED') {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'Task must be completed before releasing escrow',
+        });
+      }
+
       // SECURITY FIX (HH3): Enforce a minimum transfer floor of 80% of task base price.
       // The platform takes a 15% fee, so the worker should receive ~85% of the task price.
       // A 5% tolerance band is allowed for rounding, giving a floor of 80%.
       // The floor is computed against task price (not escrow amount) so a poster tip
       // above the task price does not artificially inflate the minimum payout requirement.
-      const taskPriceRow = await db.query<{ price: number }>(
-        `SELECT t.price FROM tasks t JOIN escrows e ON e.task_id = t.id WHERE e.id = $1`,
-        [input.escrowId]
-      );
-      const taskPrice = taskPriceRow.rows[0]?.price ?? escrowAmount;
+      const taskPrice = taskStateRow.rows[0].price;
+
+      // BUG-5 FIX: Guard against null/NaN/zero task price before computing floor.
+      // Previously: taskPrice = taskPriceRow.rows[0]?.price ?? escrowAmount — if price
+      // was null the fallback was escrowAmount (correct) but if price was 0 or NaN,
+      // Math.floor(NaN * 0.80) = NaN and NaN < anything is false, silently bypassing
+      // the floor check entirely.
+      if (!taskPrice || !Number.isFinite(taskPrice) || taskPrice <= 0) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: 'Task price is invalid — cannot compute release floor',
+        });
+      }
       const minimumTransferFloor = Math.floor(taskPrice * 0.80);
       if (transfer.amount < minimumTransferFloor) {
         throw new TRPCError({

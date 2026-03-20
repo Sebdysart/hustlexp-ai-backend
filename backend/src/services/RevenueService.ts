@@ -117,7 +117,10 @@ export const RevenueService = {
    *   amountCents = what was charged
    */
   logEvent: async (params: LogEventParams): Promise<ServiceResult<{ id: string }>> => {
-    const POSITIVE_ONLY_EVENTS = ['platform_fee', 'subscription', 'tip_fee'];
+    // BUG 6 FIX: Added 'per_task_fee' and 'insurance_premium' which are revenue-positive
+    // event types that should never be logged with a non-positive amount. Removed 'tip_fee'
+    // which is not in the RevenueEventType union and was a phantom entry.
+    const POSITIVE_ONLY_EVENTS: RevenueEventType[] = ['platform_fee', 'subscription', 'per_task_fee', 'insurance_premium'];
     if (POSITIVE_ONLY_EVENTS.includes(params.eventType) && params.amountCents <= 0) {
       log.error({ params }, 'RevenueService.logEvent: positive-only event type received non-positive amountCents — rejecting');
       return {

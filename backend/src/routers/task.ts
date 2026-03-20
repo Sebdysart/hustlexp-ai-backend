@@ -1075,9 +1075,15 @@ export const taskRouter = router({
         `SELECT
            ta.id,
            ta.hustler_id AS user_id,
-           COALESCE(u.display_name, u.name, 'Unknown') AS name,
-           COALESCE(u.rating, 5.0) AS rating,
-           COALESCE(u.completed_tasks, 0) AS completed_tasks,
+           COALESCE(u.full_name, 'Unknown') AS name,
+           COALESCE(
+             (SELECT AVG(tr.stars) FROM task_ratings tr WHERE tr.ratee_id = u.id),
+             5.0
+           ) AS rating,
+           COALESCE(
+             (SELECT COUNT(*) FROM tasks t WHERE t.worker_id = u.id AND t.state = 'COMPLETED'),
+             0
+           ) AS completed_tasks,
            COALESCE(u.trust_tier, 'rookie') AS tier,
            ta.created_at AS applied_at,
            ta.message
