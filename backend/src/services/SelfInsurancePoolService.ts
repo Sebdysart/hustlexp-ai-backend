@@ -11,6 +11,7 @@
  */
 
 import { db } from '../db.js';
+import type { QueryFn } from '../db.js';
 import type { ServiceResult } from '../types.js';
 import { logger } from '../logger.js';
 
@@ -80,22 +81,24 @@ export const SelfInsurancePoolService = {
     contributionPercentage = 2.0
   ): Promise<ServiceResult<void>> => {
     try {
-      // Insert contribution record
-      await db.query(
-        `INSERT INTO insurance_contributions (
-          task_id, hustler_id, contribution_cents, contribution_percentage
-        ) VALUES ($1, $2, $3, $4)
-        ON CONFLICT (task_id, hustler_id) DO NOTHING`,
-        [taskId, hustlerId, contributionCents, contributionPercentage]
-      );
+      await db.transaction(async (query: QueryFn) => {
+        // Insert contribution record (ON CONFLICT DO NOTHING keeps this idempotent)
+        await query(
+          `INSERT INTO insurance_contributions (
+            task_id, hustler_id, contribution_cents, contribution_percentage
+          ) VALUES ($1, $2, $3, $4)
+          ON CONFLICT (task_id, hustler_id) DO NOTHING`,
+          [taskId, hustlerId, contributionCents, contributionPercentage]
+        );
 
-      // Update pool total
-      await db.query(
-        `UPDATE self_insurance_pool
-         SET total_deposits_cents = total_deposits_cents + $1,
-             updated_at = NOW()`,
-        [contributionCents]
-      );
+        // Update pool total — atomic with the INSERT so both succeed or both roll back
+        await query(
+          `UPDATE self_insurance_pool
+           SET total_deposits_cents = total_deposits_cents + $1,
+               updated_at = NOW()`,
+          [contributionCents]
+        );
+      });
 
       log.info({ taskId, hustlerId, amountCents: contributionCents }, 'Recorded contribution');
 

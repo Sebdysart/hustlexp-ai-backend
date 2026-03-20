@@ -98,6 +98,8 @@ export const escrowRouter = router({
   getByTaskId: protectedProcedure
     .input(z.object({ taskId: Schemas.uuid }))
     .query(async ({ ctx, input }) => {
+      // R-14 FIX: EscrowService.getByTaskId now JOINs tasks and returns poster_id/worker_id
+      // in the same query, so a second EscrowService.getById() call is no longer needed.
       const result = await EscrowService.getByTaskId(input.taskId);
 
       if (!result.success) {
@@ -107,12 +109,7 @@ export const escrowRouter = router({
         });
       }
 
-      // Fetch poster_id/worker_id (getByTaskId only selects from escrows, not the join)
-      const escrow = await EscrowService.getById(result.data.id);
-      if (!escrow.success) {
-        throw new TRPCError({ code: 'NOT_FOUND', message: 'Escrow not found' });
-      }
-      if (escrow.data.poster_id !== ctx.user.id && escrow.data.worker_id !== ctx.user.id && !ctx.user.is_admin) {
+      if (result.data.poster_id !== ctx.user.id && result.data.worker_id !== ctx.user.id && !ctx.user.is_admin) {
         throw new TRPCError({ code: 'FORBIDDEN', message: 'You do not have access to this escrow' });
       }
 

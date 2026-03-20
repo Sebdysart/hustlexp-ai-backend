@@ -309,14 +309,10 @@ describe('escrow.getByTaskId', () => {
   describe('return shape', () => {
     it('returns escrow data for a valid task', async () => {
       const escrow = makeEscrow();
+      // R-14 FIX: getByTaskId now JOINs tasks in one query — no second getById call.
       mockEscrowService.getByTaskId.mockResolvedValueOnce({
         success: true,
-        data: escrow as any,
-      });
-      // getByTaskId also calls getById for auth check
-      mockEscrowService.getById.mockResolvedValueOnce({
-        success: true,
-        data: escrow as any,
+        data: { ...escrow, poster_id: POSTER_ID, worker_id: WORKER_ID } as any,
       });
 
       const caller = makeCaller(POSTER_ID);
@@ -343,14 +339,10 @@ describe('escrow.getByTaskId', () => {
 
   describe('service delegation', () => {
     it('calls EscrowService.getByTaskId with the correct taskId', async () => {
+      // R-14 FIX: getByTaskId now JOINs tasks — poster_id/worker_id in single result.
       mockEscrowService.getByTaskId.mockResolvedValueOnce({
         success: true,
-        data: makeEscrow() as any,
-      });
-      // Auth check also calls getById
-      mockEscrowService.getById.mockResolvedValueOnce({
-        success: true,
-        data: makeEscrow() as any,
+        data: { ...makeEscrow(), poster_id: POSTER_ID, worker_id: WORKER_ID } as any,
       });
 
       await makeCaller().getByTaskId({ taskId: TASK_ID });

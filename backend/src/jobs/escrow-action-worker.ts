@@ -34,6 +34,7 @@ import { StripeService } from '../services/StripeService.js';
 import { TaskService } from '../services/TaskService.js';
 import { notifyAdmins } from '../services/AdminNotificationHelper.js';
 import { RevenueService } from '../services/RevenueService.js';
+import { SelfInsurancePoolService } from '../services/SelfInsurancePoolService.js';
 import { workerLogger } from '../logger.js';
 import { config } from '../config.js';
 import { verifyJobSignature } from './queues.js';
@@ -435,6 +436,23 @@ async function handleReleaseRequest(
       );
     }
   }
+
+  // F-12 FIX: Record self-insurance pool contribution on dispute-driven release.
+  // Matches the pattern in EscrowService.release (normal release path).
+  // Non-fatal: pool contribution failure must not block payout confirmation.
+  try {
+    const insuranceContributionCents = Math.round(netPayoutCents * 0.02);
+    await SelfInsurancePoolService.recordContribution(
+      taskId,
+      task.worker_id!,
+      insuranceContributionCents,
+    );
+  } catch (insuranceError) {
+    log.warn(
+      { err: insuranceError instanceof Error ? insuranceError.message : String(insuranceError), escrowId: escrow.id },
+      'handleReleaseRequest: self-insurance pool contribution failed — dispute release proceeds'
+    );
+  }
 }
 
 /**
@@ -721,7 +739,7 @@ async function handlePartialRefundRequest(
         escrowId: escrow.id,
         amount: refundAmount,
         reason: 'requested_by_customer',
-        idempotencyKeySuffix: 'partial_refund',
+        idempotencyKeySuffix: 'wkr_partial_refund',
       });
 
       if (!refundResult.success) {

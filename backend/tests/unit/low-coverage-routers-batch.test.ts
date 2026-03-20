@@ -841,7 +841,9 @@ describe('instantRouter', () => {
   // ---- metrics -------------------------------------------------------------
 
   describe('metrics', () => {
+    // R-16 FIX: metrics is now adminProcedure — use makeAdminCtx() + seedAdminRoleCheck()
     it('returns computed stats object with correct shape', async () => {
+      seedAdminRoleCheck(); // adminProcedure calls db.query for admin_roles
       // Call 1: time-to-accept rows
       const createdAt1 = new Date('2026-03-01T10:00:00Z');
       const acceptedAt1 = new Date('2026-03-01T10:00:45Z'); // 45s
@@ -864,7 +866,7 @@ describe('instantRouter', () => {
         rowCount: 1,
       } as any);
 
-      const caller = instantRouter.createCaller(makeProtectedCtx());
+      const caller = instantRouter.createCaller(makeAdminCtx());
       const result = await caller.metrics();
 
       expect(result).toHaveProperty('timeToAccept');
@@ -878,6 +880,7 @@ describe('instantRouter', () => {
     });
 
     it('returns nulls for stats when no time-to-accept data', async () => {
+      seedAdminRoleCheck(); // adminProcedure calls db.query for admin_roles
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
       mockDb.query.mockResolvedValueOnce({
@@ -885,7 +888,7 @@ describe('instantRouter', () => {
         rowCount: 1,
       } as any);
 
-      const caller = instantRouter.createCaller(makeProtectedCtx());
+      const caller = instantRouter.createCaller(makeAdminCtx());
       const result = await caller.metrics();
 
       expect(result.timeToAccept.median).toBeNull();

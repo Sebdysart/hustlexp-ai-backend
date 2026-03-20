@@ -14,6 +14,9 @@
 import { db, isInvariantViolation, isUniqueViolation, getErrorMessage } from '../db.js';
 import type { ServiceResult, TaskState } from '../types.js';
 import { ErrorCodes } from '../types.js';
+import { logger } from '../logger.js';
+
+const ratingServiceLog = logger.child({ service: 'RatingService' });
 
 // ============================================================================
 // TYPES
@@ -118,11 +121,12 @@ export const RatingService = {
         data: result.rows[0],
       };
     } catch (error) {
+      ratingServiceLog.error({ err: error instanceof Error ? error.message : String(error) }, 'RatingService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
@@ -147,11 +151,12 @@ export const RatingService = {
         data: result.rows,
       };
     } catch (error) {
+      ratingServiceLog.error({ err: error instanceof Error ? error.message : String(error) }, 'RatingService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
@@ -179,11 +184,12 @@ export const RatingService = {
         data: result.rows,
       };
     } catch (error) {
+      ratingServiceLog.error({ err: error instanceof Error ? error.message : String(error) }, 'RatingService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
@@ -229,11 +235,12 @@ export const RatingService = {
       }));
       return { success: true, data: rows };
     } catch (error) {
+      ratingServiceLog.error({ err: error instanceof Error ? error.message : String(error) }, 'RatingService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
@@ -277,11 +284,12 @@ export const RatingService = {
         data: result.rows[0],
       };
     } catch (error) {
+      ratingServiceLog.error({ err: error instanceof Error ? error.message : String(error) }, 'RatingService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
@@ -307,11 +315,12 @@ export const RatingService = {
         data: parseInt(result.rows[0]?.count || '0', 10) > 0,
       };
     } catch (error) {
+      ratingServiceLog.error({ err: error instanceof Error ? error.message : String(error) }, 'RatingService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
@@ -354,92 +363,16 @@ export const RatingService = {
         };
       }
       
-      // Get task details
-      const taskResult = await db.query<{
-        id: string;
-        poster_id: string;
-        worker_id: string | null;
-        state: TaskState;
-        completed_at: Date | null;
-      }>(
-        'SELECT id, poster_id, worker_id, state, completed_at FROM tasks WHERE id = $1',
-        [taskId]
-      );
-      
-      if (taskResult.rows.length === 0) {
-        return {
-          success: false,
-          error: {
-            code: ErrorCodes.NOT_FOUND,
-            message: `Task ${taskId} not found`,
-          },
-        };
-      }
-      
-      const task = taskResult.rows[0];
-      
-      // RATE-1: Rating only allowed after task COMPLETED (RATING_SYSTEM_SPEC.md §6)
-      if (task.state !== 'COMPLETED') {
-        return {
-          success: false,
-          error: {
-            code: ErrorCodes.INVALID_STATE,
-            message: `Cannot submit rating: task is in ${task.state} state. Ratings only allowed after task COMPLETED`,
-          },
-        };
-      }
-      
-      // RATE-2: Rating window: 7 days after completion (RATING_SYSTEM_SPEC.md §6)
-      if (!task.completed_at) {
-        return {
-          success: false,
-          error: {
-            code: ErrorCodes.INVALID_STATE,
-            message: 'Cannot submit rating: task completion date is missing',
-          },
-        };
-      }
-      
-      const completedAt = new Date(task.completed_at);
-      const ratingWindowEnd = new Date(completedAt.getTime() + RATING_WINDOW_DAYS * 24 * 60 * 60 * 1000);
-      const now = new Date();
-      
-      if (now > ratingWindowEnd) {
-        return {
-          success: false,
-          error: {
-            code: ErrorCodes.INVALID_STATE,
-            message: `Cannot submit rating: rating window has expired (7 days after completion). Rating window ended on ${ratingWindowEnd.toISOString()}`,
-          },
-        };
-      }
-      
-      // Verify rater is a participant (poster or worker)
-      if (task.poster_id !== raterId && task.worker_id !== raterId) {
-        return {
-          success: false,
-          error: {
-            code: ErrorCodes.FORBIDDEN,
-            message: 'You are not a participant in this task',
-          },
-        };
-      }
-      
-      // Determine ratee (the other party)
-      const rateeId = task.poster_id === raterId ? task.worker_id : task.poster_id;
-      
-      if (!rateeId) {
-        return {
-          success: false,
-          error: {
-            code: ErrorCodes.INVALID_STATE,
-            message: 'Cannot submit rating: no ratee (worker not assigned)',
-          },
-        };
-      }
-      
+      // R-15 FIX: Task state, completed_at, and participant validation are performed
+      // INSIDE the advisory-lock transaction with a SELECT FOR UPDATE on the task row.
+      // Previously these checks ran against a plain SELECT outside the transaction,
+      // creating a stale-read window where completed_at could be null between the task
+      // completing and the DB trigger updating it. Moving the read inside the same
+      // transaction that holds the advisory lock ensures the state check and the INSERT
+      // are consistent.
+      //
       // RATE-5: One rating per pair per task (DB UNIQUE constraint will enforce)
-      // Wrap the duplicate check, existingRatingsCount read, and INSERT in a
+      // Wrap the task read, duplicate check, existingRatingsCount read, and INSERT in a
       // single transaction with an advisory lock. This prevents two concurrent
       // first-time rating requests from both passing the duplicate check and
       // both computing is_blind from a stale count.
@@ -452,6 +385,70 @@ export const RatingService = {
           `SELECT pg_advisory_xact_lock(hashtext($1))`,
           [`rating:${taskId}`]
         );
+
+        // R-15: Read task state under FOR UPDATE inside the same transaction as the
+        // advisory lock. This eliminates the stale-read window on completed_at.
+        const taskLockResult = await txQuery<{
+          id: string;
+          poster_id: string;
+          worker_id: string | null;
+          state: TaskState;
+          completed_at: Date | null;
+        }>(
+          'SELECT id, poster_id, worker_id, state, completed_at FROM tasks WHERE id = $1 FOR UPDATE',
+          [taskId]
+        );
+
+        if (taskLockResult.rows.length === 0) {
+          throw Object.assign(new Error(`Task ${taskId} not found`), { code: ErrorCodes.NOT_FOUND });
+        }
+
+        const task = taskLockResult.rows[0];
+
+        // RATE-1: Rating only allowed after task COMPLETED (RATING_SYSTEM_SPEC.md §6)
+        if (task.state !== 'COMPLETED') {
+          throw Object.assign(
+            new Error(`Cannot submit rating: task is in ${task.state} state. Ratings only allowed after task COMPLETED`),
+            { code: ErrorCodes.INVALID_STATE }
+          );
+        }
+
+        // RATE-2: Rating window: 7 days after completion (RATING_SYSTEM_SPEC.md §6)
+        if (!task.completed_at) {
+          throw Object.assign(
+            new Error('Cannot submit rating: task completion date is missing'),
+            { code: ErrorCodes.INVALID_STATE }
+          );
+        }
+
+        const completedAt = new Date(task.completed_at);
+        const ratingWindowEnd = new Date(completedAt.getTime() + RATING_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+        const now = new Date();
+
+        if (now > ratingWindowEnd) {
+          throw Object.assign(
+            new Error(`Cannot submit rating: rating window has expired (7 days after completion). Rating window ended on ${ratingWindowEnd.toISOString()}`),
+            { code: ErrorCodes.INVALID_STATE }
+          );
+        }
+
+        // Verify rater is a participant (poster or worker)
+        if (task.poster_id !== raterId && task.worker_id !== raterId) {
+          throw Object.assign(
+            new Error('You are not a participant in this task'),
+            { code: ErrorCodes.FORBIDDEN }
+          );
+        }
+
+        // Determine ratee (the other party)
+        const rateeId = task.poster_id === raterId ? task.worker_id : task.poster_id;
+
+        if (!rateeId) {
+          throw Object.assign(
+            new Error('Cannot submit rating: no ratee (worker not assigned)'),
+            { code: ErrorCodes.INVALID_STATE }
+          );
+        }
 
         // Re-check for duplicate inside the transaction
         const dupCheck = await txQuery<{ id: string }>(
@@ -540,7 +537,7 @@ export const RatingService = {
           },
         };
       }
-      
+
       if (isInvariantViolation(error)) {
         return {
           success: false,
@@ -550,17 +547,34 @@ export const RatingService = {
           },
         };
       }
-      
+
+      // R-15: Surface typed errors thrown inside the transaction (NOT_FOUND, INVALID_STATE, FORBIDDEN)
+      const errCode = (error as { code?: string }).code;
+      if (
+        errCode === ErrorCodes.NOT_FOUND ||
+        errCode === ErrorCodes.INVALID_STATE ||
+        errCode === ErrorCodes.FORBIDDEN
+      ) {
+        return {
+          success: false,
+          error: {
+            code: errCode,
+            message: error instanceof Error ? error.message : 'Unknown error',
+          },
+        };
+      }
+
+      ratingServiceLog.error({ err: error instanceof Error ? error.message : String(error) }, 'RatingService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
   },
-  
+
   // --------------------------------------------------------------------------
   // AUTO-RATING (Background Job)
   // --------------------------------------------------------------------------
@@ -680,11 +694,12 @@ export const RatingService = {
         data: { autoRated },
       };
     } catch (error) {
+      ratingServiceLog.error({ err: error instanceof Error ? error.message : String(error) }, 'RatingService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
@@ -731,11 +746,12 @@ export const RatingService = {
         },
       };
     } catch (error) {
+      ratingServiceLog.error({ err: error instanceof Error ? error.message : String(error) }, 'RatingService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }

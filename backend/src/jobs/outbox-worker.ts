@@ -150,7 +150,6 @@ export async function processOutboxEvents(batchSize: number = 100): Promise<{
           },
           {
             jobId: event.idempotency_key, // Use idempotency key as job ID (prevents duplicates)
-            attempts: 3, // Default attempts (queue config may override)
           }
         );
 
@@ -190,7 +189,7 @@ export async function processOutboxEvents(batchSize: number = 100): Promise<{
           [MAX_OUTBOX_ATTEMPTS, errorMessage, event.id]
         );
 
-        if (event.attempts + 1 > MAX_OUTBOX_ATTEMPTS) {
+        if (event.attempts + 1 >= MAX_OUTBOX_ATTEMPTS) {
           log.error(
             { eventId: event.id, eventType: event.event_type, attempts: event.attempts + 1 },
             'Outbox event permanently failed after max attempts — requires ops intervention'

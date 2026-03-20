@@ -73,6 +73,17 @@ vi.mock('../../src/services/RevenueService.js', () => ({
   RevenueService: { logEvent: vi.fn().mockResolvedValue({ success: true, data: { id: 'rev_mock_id' } }) },
 }));
 
+// F-12 FIX: handleReleaseRequest now calls SelfInsurancePoolService.recordContribution.
+// Mock it to prevent db.transaction from being called a 3rd time (which would overwrite
+// the T2 updateSql capture in transaction-structure tests).
+vi.mock('../../src/services/SelfInsurancePoolService.js', () => ({
+  SelfInsurancePoolService: {
+    recordContribution: vi.fn().mockResolvedValue(undefined),
+    fileClaim: vi.fn(),
+    getPoolStatus: vi.fn(),
+  },
+}));
+
 // ---------------------------------------------------------------------------
 // Imports (after vi.mock declarations)
 // ---------------------------------------------------------------------------

@@ -21,7 +21,7 @@ import { trpcServer } from '@hono/trpc-server';
 import { appRouter } from './routers/index.js';
 import { createContext } from './trpc.js';
 import { config } from './config.js';
-import { securityHeaders, rateLimitMiddleware, publicIpRateLimitMiddleware } from './middleware/security.js';
+import { securityHeaders, rateLimitMiddleware, publicIpRateLimitMiddleware, aiRateLimitMiddleware } from './middleware/security.js';
 import { requestIdMiddleware, serverTimingMiddleware } from './middleware/request-id.js';
 import { httpMetricsMiddleware } from './monitoring/http-metrics.js';
 import { createMetricsEndpoint } from './monitoring/metrics.js';
@@ -169,10 +169,17 @@ app.use('/trpc/subscription.*', rateLimitMiddleware('financial')); // 10/min —
 app.use('/trpc/fraud.*', rateLimitMiddleware('financial'));         // 10/min — fraud reporting
 
 // Tier 3: AI (20/min) — cost protection
-app.use('/trpc/ai.*', rateLimitMiddleware('ai'));                  // 20/min — AI cost protection
+// A-07 FIX: Also apply per-user per-provider AI rate limiters (aiRateLimitMiddleware).
+// Previously only the IP-based general limiter ran on /trpc/ai.* routes; the
+// per-provider limits defined in AI_RATE_LIMITS were never wired to any route.
+app.use('/trpc/ai.*', rateLimitMiddleware('ai'));                  // 20/min — AI cost protection (IP-based)
+app.use('/trpc/ai.*', aiRateLimitMiddleware('openai'));            // per-user openai limit
 app.use('/trpc/disputeAI.*', rateLimitMiddleware('ai'));           // 20/min — AI dispute resolution
+app.use('/trpc/disputeAI.*', aiRateLimitMiddleware('openai'));     // per-user openai limit for dispute AI
 app.use('/trpc/matchmaker.*', rateLimitMiddleware('ai'));          // 20/min — AI matchmaking
+app.use('/trpc/matchmaker.*', aiRateLimitMiddleware('openai'));    // per-user openai limit for matchmaker
 app.use('/trpc/taskDiscovery.getAISuggestions', rateLimitMiddleware('ai')); // 20/min — AI task suggestions
+app.use('/trpc/taskDiscovery.getAISuggestions', aiRateLimitMiddleware('openai')); // per-user openai limit
 
 // Tier 3b: Public browse (30/min, IP-based) — DoS protection for unauthenticated endpoint.
 // Must precede the general /trpc/* catch-all and the taskDiscovery.* pattern below
@@ -439,6 +446,37 @@ app.use('/trpc/*', async (c, next) => {
     );
   }
 
+  // A-06 FIX: Batch amplification — a batch of N operations must consume N tokens
+  // from the general rate limiter, not just 1. Without this a client can batch 10
+  // operations in one HTTP request and bypass per-request limits 10×.
+  // We call the middleware N-1 extra times (the Hono middleware registered below
+  // already fires once for this request, so we only need the additional N-1 checks).
+  if (operationCount > 1) {
+    const identifier = `ip:${(() => {
+      const xff = c.req.header('x-forwarded-for');
+      if (xff) {
+        const ips = xff.split(',').map((ip) => ip.trim()).filter(Boolean);
+        if (ips.length > 0) return ips[0];
+      }
+      return c.req.header('cf-connecting-ip') || c.req.header('x-real-ip') || 'unknown';
+    })()}`;
+    const { checkRateLimit } = await import('./cache/redis.js');
+    for (let i = 1; i < operationCount; i++) {
+      const result = await checkRateLimit(identifier, 'general', 120, 60);
+      if (!result.allowed) {
+        c.header('Retry-After', '60');
+        return c.json(
+          {
+            error: 'Too Many Requests',
+            message: 'Rate limit exceeded (batch amplification). Try again in 60 seconds.',
+            retryAfter: 60,
+          },
+          429,
+        );
+      }
+    }
+  }
+
   await next();
 });
 
@@ -695,6 +733,17 @@ app.post('/api/ui/violations', async (c) => {
   const user = await getAuthUser(c);
   if (!user) {
     return c.json({ error: 'Unauthorized' }, 401);
+  }
+
+  // A-10 FIX: Only admin users may write to admin_actions. Any authenticated user
+  // could previously write arbitrary rows to the admin audit log, polluting it or
+  // forging admin action records. Check the admin_roles table before inserting.
+  const adminRoleResult = await db.query<{ user_id: string }>(
+    'SELECT user_id FROM admin_roles WHERE user_id = $1 LIMIT 1',
+    [user.id]
+  );
+  if (adminRoleResult.rows.length === 0) {
+    return c.json({ error: 'Forbidden' }, 403);
   }
 
   const rawBody = await c.req.json().catch(() => null);

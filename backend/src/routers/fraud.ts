@@ -204,9 +204,9 @@ export const fraudRouter = router({
         'unusual_rating_patterns',
       ]),
       patternDescription: z.string().min(1),
-      userIds: z.array(Schemas.uuid).min(1), // At least one user required
-      taskIds: z.array(Schemas.uuid).optional(),
-      transactionIds: z.array(Schemas.uuid).optional(),
+      userIds: z.array(Schemas.uuid).min(1).max(100), // At least one user, at most 100 (A-08: mass suspension guard)
+      taskIds: z.array(Schemas.uuid).max(100).optional(),
+      transactionIds: z.array(Schemas.uuid).max(100).optional(),
       evidence: z.record(z.any()).optional(), // Optional evidence data
     }))
     .mutation(async ({ input }) => {

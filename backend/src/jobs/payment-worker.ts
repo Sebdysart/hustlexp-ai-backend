@@ -29,6 +29,7 @@ import { db } from '../db.js';
 import { writeToOutbox } from '../lib/outbox-helpers.js';
 import { TaskService } from '../services/TaskService.js';
 import { RevenueService } from '../services/RevenueService.js';
+import { StripeService } from '../services/StripeService.js';
 import { sendPushNotification } from '../services/PushNotificationService.js';
 import { notifyAdmins } from '../services/AdminNotificationHelper.js';
 import { workerLogger } from '../logger.js';
@@ -536,8 +537,9 @@ async function handleChargeRefunded(charge: Stripe.Charge, stripeEventId: string
         version: number;
         amount: number;
         stripe_refund_id: string | null;
+        stripe_transfer_id: string | null;
       }>(
-        `SELECT id, task_id, state, version, amount, stripe_refund_id
+        `SELECT id, task_id, state, version, amount, stripe_refund_id, stripe_transfer_id
          FROM escrows
          WHERE id = $1
          FOR UPDATE`,
@@ -564,7 +566,7 @@ async function handleChargeRefunded(charge: Stripe.Charge, stripeEventId: string
           metadata: { charge_id: charge.id, stripe_event_id: stripeEventId },
         }).catch(err => log.error({ err }, 'Failed to send admin notification for unroutable charge.refunded'));
         // Mark the stripe_event as failed-permanent so it is not retried.
-        await db.query(
+        await trx(
           `UPDATE stripe_events
            SET processed_at = NOW(),
                result = 'failed',
@@ -572,7 +574,7 @@ async function handleChargeRefunded(charge: Stripe.Charge, stripeEventId: string
            WHERE stripe_event_id = $2`,
           [criticalMsg, stripeEventId]
         );
-        return;
+        return { updatedEscrow: null, escrow: null, skipped: true };
       }
 
       escrowResult = await trx<{
@@ -582,8 +584,9 @@ async function handleChargeRefunded(charge: Stripe.Charge, stripeEventId: string
         version: number;
         amount: number;
         stripe_refund_id: string | null;
+        stripe_transfer_id: string | null;
       }>(
-        `SELECT id, task_id, state, version, amount, stripe_refund_id
+        `SELECT id, task_id, state, version, amount, stripe_refund_id, stripe_transfer_id
          FROM escrows
          WHERE stripe_payment_intent_id = $1
          FOR UPDATE`,
@@ -623,6 +626,43 @@ async function handleChargeRefunded(charge: Stripe.Charge, stripeEventId: string
     if (escrow.state === 'REFUNDED' && escrow.stripe_refund_id === refundId) {
       log.info({ escrowId: escrow.id, refundId }, 'Escrow already refunded, idempotent replay');
       return { updatedEscrow: null, escrow, skipped: true };
+    }
+
+    // F-15 FIX: If escrow is RELEASED and a worker transfer exists, reverse it before
+    // marking REFUNDED. Without reversal the worker keeps the funds while the poster
+    // is also refunded — a double-spend. Non-fatal: if reversal fails, log and alert
+    // ops but still proceed with REFUNDED so the webhook is not retried forever.
+    if (escrow.state === 'RELEASED' && escrow.stripe_transfer_id) {
+      try {
+        const reversalResult = await StripeService.createTransferReversal(escrow.stripe_transfer_id, escrow.id);
+        if (!reversalResult.success) {
+          log.error(
+            { escrowId: escrow.id, stripeTransferId: escrow.stripe_transfer_id, err: reversalResult.error.message },
+            'F-15: Transfer reversal failed on charge.refunded — proceeding with REFUNDED but ops must manually reconcile worker payout'
+          );
+          await notifyAdmins({
+            title: 'charge.refunded: transfer reversal failed',
+            body: `Escrow ${escrow.id} — reversal of transfer ${escrow.stripe_transfer_id} failed: ${reversalResult.error.message}. Worker may retain funds. Manual reconciliation required.`,
+            deepLink: `/admin/escrows/${escrow.id}`,
+            priority: 'CRITICAL',
+            metadata: { escrow_id: escrow.id, stripe_transfer_id: escrow.stripe_transfer_id, stripe_event_id: stripeEventId },
+          }).catch(notifyErr => log.error({ notifyErr }, 'F-15: Failed to alert ops on reversal failure'));
+        } else {
+          log.info({ escrowId: escrow.id, stripeTransferId: escrow.stripe_transfer_id }, 'F-15: Transfer reversal succeeded before REFUNDED transition');
+        }
+      } catch (reversalErr) {
+        log.error(
+          { escrowId: escrow.id, stripeTransferId: escrow.stripe_transfer_id, err: reversalErr instanceof Error ? reversalErr.message : String(reversalErr) },
+          'F-15: Transfer reversal threw on charge.refunded — proceeding with REFUNDED, ops must manually reconcile'
+        );
+        await notifyAdmins({
+          title: 'charge.refunded: transfer reversal threw',
+          body: `Escrow ${escrow.id} — reversal of transfer ${escrow.stripe_transfer_id} threw an error. Worker may retain funds. Manual reconciliation required.`,
+          deepLink: `/admin/escrows/${escrow.id}`,
+          priority: 'CRITICAL',
+          metadata: { escrow_id: escrow.id, stripe_transfer_id: escrow.stripe_transfer_id, stripe_event_id: stripeEventId },
+        }).catch(notifyErr => log.error({ notifyErr }, 'F-15: Failed to alert ops on reversal throw'));
+      }
     }
 
     // Update escrow: PENDING|FUNDED|LOCKED_DISPUTE|RELEASED → REFUNDED (with version check and increment)

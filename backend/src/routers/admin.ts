@@ -443,6 +443,36 @@ export const adminRouter = router({
       role: z.enum(['admin', 'support', 'finance', 'moderator', 'founder']),
     }))
     .mutation(async ({ ctx, input }) => {
+      // A-05 FIX: Self-grant prohibition — an admin cannot elevate their own role.
+      if (input.userId === ctx.user.id) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'Cannot grant roles to yourself' });
+      }
+
+      // A-05 FIX: Role hierarchy — callers can only grant roles up to their own rank.
+      // Rank 5 (founder) is required to grant founder; rank 4 (admin) can grant up to admin; etc.
+      const ROLE_RANK: Record<string, number> = {
+        support: 1,
+        moderator: 2,
+        finance: 3,
+        admin: 4,
+        founder: 5,
+      };
+      const callerRolesResult = await db.query<{ role: string }>(
+        'SELECT role FROM admin_roles WHERE user_id = $1',
+        [ctx.user.id]
+      );
+      const callerMaxRank = callerRolesResult.rows.reduce(
+        (max, r) => Math.max(max, ROLE_RANK[r.role] ?? 0),
+        0
+      );
+      const targetRoleRank = ROLE_RANK[input.role] ?? 0;
+      if (targetRoleRank > callerMaxRank) {
+        throw new TRPCError({
+          code: 'FORBIDDEN',
+          message: `Insufficient rank to grant role '${input.role}'`,
+        });
+      }
+
       // Precondition: verify firebase_uid FIRST — before any DB writes — so that
       // if the user has no Firebase UID the role is never granted and no audit
       // row is written, making the check a true precondition rather than a

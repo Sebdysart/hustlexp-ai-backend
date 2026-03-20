@@ -579,18 +579,20 @@ export const FraudDetectionService = {
               log.error({ err, userId }, '[FraudDetection] failed to query active escrows for suspended user');
             }
 
-            // Cancel poster's open and active tasks (best-effort).
-            // BUG 4 FIX: expanded state set to match admin.setUserBan — previously
-            // only 'OPEN'/'MATCHING' were cancelled, leaving ACCEPTED/IN_PROGRESS/
-            // PROOF_SUBMITTED tasks in an un-completable state after auto-suspension.
+            // Cancel all open and active tasks for the suspended user as poster OR worker
+            // (best-effort).
+            // A-09 FIX: previously only poster_id = $1 was checked, leaving tasks where
+            // the user is the worker (worker_id = $1) uncancelled — matching admin.setUserBan
+            // which uses (poster_id = $1 OR worker_id = $1).
             try {
               await db.query(
                 `UPDATE tasks SET state = 'CANCELLED', cancelled_at = NOW()
-                 WHERE poster_id = $1 AND state IN ('OPEN', 'MATCHING', 'ACCEPTED', 'IN_PROGRESS', 'PROOF_SUBMITTED')`,
+                 WHERE (poster_id = $1 OR worker_id = $1)
+                   AND state IN ('OPEN', 'MATCHING', 'ACCEPTED', 'IN_PROGRESS', 'PROOF_SUBMITTED')`,
                 [userId]
               );
             } catch (err) {
-              log.error({ err, userId }, '[FraudDetection] failed to cancel poster tasks on auto-suspension');
+              log.error({ err, userId }, '[FraudDetection] failed to cancel tasks on auto-suspension');
             }
 
             suspensionApplied++;
@@ -657,11 +659,29 @@ export const FraudDetectionService = {
             flags: [`fraud_pattern_${patternType}`, 'requires_review'],
           });
 
+          // A-11 FIX: Write HIGH fraud flags to the admin audit log so they appear
+          // in the admin audit trail alongside CRITICAL auto-suspensions.
+          // admin_id=NULL indicates a system-triggered action (not a human admin).
+          // Wrapped in .catch() so audit log failure never blocks the fraud action.
+          db.query(
+            `INSERT INTO admin_actions (admin_id, action_type, target_id, reason, metadata)
+             VALUES (NULL, 'fraud_flag_high', $1, 'auto_fraud_detection', $2)`,
+            [
+              userId,
+              JSON.stringify({
+                patternType,
+                patternId: result.rows[0]?.id,
+                triggeredBy: 'system',
+                riskLevel: 'HIGH',
+              }),
+            ]
+          ).catch(err => log.warn({ err, userId }, '[FraudDetection] Failed to write HIGH fraud audit log'));
+
           // Disconnect open SSE streams so HIGH-risk users stop receiving realtime
           // task events, payment notifications, and messaging events immediately.
           try { forceDisconnectUser(userId); } catch (err) { log.warn({ err, userId }, '[fraud] Failed to disconnect HIGH-risk user SSE stream'); }
         }
-        
+
         // Flag for admin review (add to review queue)
         log.warn({ patternType, userIds, riskLevel: 'HIGH' }, 'HIGH risk fraud pattern detected - requires manual review');
         await notifyAdmins({

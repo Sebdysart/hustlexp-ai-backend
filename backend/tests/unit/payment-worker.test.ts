@@ -34,6 +34,11 @@ vi.mock('../../src/logger', () => ({
   logger: {
     child: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
   },
+  // F-15 FIX: payment-worker now imports StripeService which uses stripeLogger
+  stripeLogger: {
+    info: vi.fn(), warn: vi.fn(), error: vi.fn(),
+    child: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
+  },
 }));
 
 vi.mock('../../src/lib/outbox-helpers.js', () => ({

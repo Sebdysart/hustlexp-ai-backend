@@ -763,11 +763,18 @@ describe('task.start', () => {
     // reset handled by global beforeEach
   });
 
+  // R-09 FIX: task.start now uses db.transaction with SELECT FOR UPDATE.
+  // db.transaction delegates to db.query mock (see vi.mock('../../src/db') at top).
+  // Query sequence inside transaction:
+  //   1. SELECT worker_id, state FOR UPDATE — ownership + state check
+  //   2. SELECT * FROM tasks — full row re-fetch for return value
+
   it('returns task row when worker is assigned and state is ACCEPTED', async () => {
     const task = makeTaskRow({ state: 'ACCEPTED', worker_id: USER_ID });
-    // First getById: ownership/state check; second getById: return after invalidation
-    mockTaskService.getById.mockResolvedValueOnce({ success: true, data: task as any });
-    mockTaskService.getById.mockResolvedValueOnce({ success: true, data: task as any });
+    // 1. FOR UPDATE — returns slim row for ownership/state check
+    mockDb.query.mockResolvedValueOnce({ rows: [{ worker_id: USER_ID, state: 'ACCEPTED' }], rowCount: 1 } as any);
+    // 2. Full re-fetch inside same transaction
+    mockDb.query.mockResolvedValueOnce({ rows: [task], rowCount: 1 } as any);
 
     const result = await makeCaller().start({ taskId: TASK_ID });
 
@@ -775,17 +782,15 @@ describe('task.start', () => {
   });
 
   it('throws NOT_FOUND when task does not exist', async () => {
-    mockTaskService.getById.mockResolvedValueOnce({
-      success: false,
-      error: { code: 'NOT_FOUND', message: 'Task not found' },
-    });
+    // 1. FOR UPDATE — empty rows → NOT_FOUND
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
 
     await expect(makeCaller().start({ taskId: TASK_ID })).rejects.toThrow('Task not found');
   });
 
   it('throws FORBIDDEN when user is not the assigned worker', async () => {
-    const task = makeTaskRow({ state: 'ACCEPTED', worker_id: OTHER_USER_ID });
-    mockTaskService.getById.mockResolvedValueOnce({ success: true, data: task as any });
+    // 1. FOR UPDATE — worker_id mismatch → FORBIDDEN
+    mockDb.query.mockResolvedValueOnce({ rows: [{ worker_id: OTHER_USER_ID, state: 'ACCEPTED' }], rowCount: 1 } as any);
 
     await expect(makeCaller().start({ taskId: TASK_ID })).rejects.toThrow(
       'Only the assigned worker can start this task'
@@ -793,8 +798,8 @@ describe('task.start', () => {
   });
 
   it('throws PRECONDITION_FAILED when task is not in ACCEPTED state', async () => {
-    const task = makeTaskRow({ state: 'OPEN', worker_id: USER_ID });
-    mockTaskService.getById.mockResolvedValueOnce({ success: true, data: task as any });
+    // 1. FOR UPDATE — wrong state → PRECONDITION_FAILED
+    mockDb.query.mockResolvedValueOnce({ rows: [{ worker_id: USER_ID, state: 'OPEN' }], rowCount: 1 } as any);
 
     await expect(makeCaller().start({ taskId: TASK_ID })).rejects.toThrow(
       'Task must be ACCEPTED to start'

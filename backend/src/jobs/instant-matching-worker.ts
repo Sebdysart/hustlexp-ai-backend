@@ -101,12 +101,8 @@ export async function processInstantMatchingJob(
   // Trust tier enforcement: only hustlers with trust_tier >= minTrustTier can accept Instant tasks
   // v1: Broadcast to all eligible hustlers. v2 will add location-based filtering.
   
-  // Get task risk level for eligibility filtering
-  const taskRiskResult = await db.query<{ risk_level: string }>(
-    `SELECT risk_level FROM tasks WHERE id = $1`,
-    [taskId]
-  );
-  const taskRiskLevel = taskRiskResult.rows[0]?.risk_level || 'LOW';
+  // Get task risk level for eligibility filtering (already fetched above)
+  const taskRiskLevel = task.risk_level || 'LOW';
   
   // Map risk level to required trust tier
   // TIER_0/1 → VERIFIED (1), TIER_2 → IN_HOME (3), TIER_3 → BLOCKED

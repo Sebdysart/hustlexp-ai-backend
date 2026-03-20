@@ -100,16 +100,14 @@ export const disputeRouter = router({
         });
       }
 
-      // CONCURRENCY FIX (BUG-4): Check for an existing active dispute at the
-      // router layer before entering the service transaction. Two concurrent
-      // calls can both read escrow.state='FUNDED' and both insert a dispute row
-      // if this check is missing. The service INSERT has no unique constraint
-      // that would reject the second write, so without this guard two dispute
-      // records can exist for the same task simultaneously.
-      //
-      // This is an application-level advisory check — the service also validates
-      // inside its FOR UPDATE transaction (via EscrowService.lockForDispute's
-      // existingDisputeCheck), providing defence-in-depth.
+      // R-11: ADVISORY BEST-EFFORT CHECK ONLY — NOT a TOCTOU guard.
+      // This SELECT runs outside any transaction, so two concurrent requests can
+      // both read zero rows and both proceed to DisputeService.create(). The real
+      // duplicate-prevention guard is the FOR UPDATE lock inside
+      // DisputeService.create() (which locks both the task and escrow rows before
+      // inserting the dispute). This outer check is retained solely as a cheap
+      // fast-path to avoid entering the service transaction for obvious duplicates
+      // on non-concurrent traffic. Do NOT rely on it for correctness.
       const existingDispute = await db.query<{ id: string }>(
         `SELECT id FROM disputes WHERE task_id = $1 AND state NOT IN ('RESOLVED')`,
         [task.id]

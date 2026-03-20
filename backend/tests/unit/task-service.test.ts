@@ -280,7 +280,8 @@ describe('TaskService.getById', () => {
 
     expect(result.success).toBe(false);
     expect(result.error?.code).toBe('DB_ERROR');
-    expect(result.error?.message).toContain('db down');
+    // R-13 FIX: DB error messages are sanitized — raw message never exposed to callers
+    expect(result.error?.message).toBe('A database error occurred. Please try again.');
   });
 });
 

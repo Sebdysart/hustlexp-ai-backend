@@ -187,7 +187,12 @@ describe('RatingService.submitRating', () => {
     expect(result.error?.code).toBe('INVALID_INPUT');
   });
 
+  // R-15 FIX: task SELECT is now inside db.transaction() AFTER advisory lock.
+  // New query order: (1) advisory lock, (2) task SELECT FOR UPDATE, (3) duplicate check, ...
   it('rejects rating for non-COMPLETED task', async () => {
+    // 1. Advisory lock (inside transaction — result discarded)
+    mockQuery.mockResolvedValueOnce({ rows: [{}], rowCount: 1 });
+    // 2. Task SELECT FOR UPDATE (inside transaction — now non-COMPLETED)
     mockQuery.mockResolvedValueOnce({
       rows: [{ id: 't1', poster_id: 'u1', worker_id: 'u2', state: 'ACCEPTED', completed_at: null }],
     });
@@ -201,6 +206,9 @@ describe('RatingService.submitRating', () => {
 
   it('rejects rating outside 7-day window', async () => {
     const oldCompleted = new Date(Date.now() - 1000 * 60 * 60 * 24 * 8); // 8 days ago
+    // 1. Advisory lock
+    mockQuery.mockResolvedValueOnce({ rows: [{}], rowCount: 1 });
+    // 2. Task SELECT FOR UPDATE (expired window)
     mockQuery.mockResolvedValueOnce({
       rows: [{ id: 't1', poster_id: 'u1', worker_id: 'u2', state: 'COMPLETED', completed_at: oldCompleted }],
     });
@@ -213,6 +221,9 @@ describe('RatingService.submitRating', () => {
   });
 
   it('rejects non-participant rater', async () => {
+    // 1. Advisory lock
+    mockQuery.mockResolvedValueOnce({ rows: [{}], rowCount: 1 });
+    // 2. Task SELECT FOR UPDATE
     mockQuery.mockResolvedValueOnce({
       rows: [{ id: 't1', poster_id: 'u1', worker_id: 'u2', state: 'COMPLETED', completed_at: completedAt }],
     });
@@ -225,12 +236,12 @@ describe('RatingService.submitRating', () => {
   });
 
   it('rejects duplicate rating', async () => {
-    // 1. Task fetch (outside transaction)
+    // 1. Advisory lock (first call inside transaction — result is discarded)
+    mockQuery.mockResolvedValueOnce({ rows: [{}], rowCount: 1 });
+    // 2. Task SELECT FOR UPDATE (inside transaction)
     mockQuery.mockResolvedValueOnce({
       rows: [{ id: 't1', poster_id: 'u1', worker_id: 'u2', state: 'COMPLETED', completed_at: completedAt }],
     });
-    // 2. Advisory lock (first call inside transaction — result is discarded)
-    mockQuery.mockResolvedValueOnce({ rows: [{}], rowCount: 1 });
     // 3. Duplicate check inside transaction — existing rating found
     mockQuery.mockResolvedValueOnce({ rows: [{ id: 'r_existing' }] });
 
@@ -242,12 +253,12 @@ describe('RatingService.submitRating', () => {
   });
 
   it('successfully submits first rating (blind)', async () => {
-    // 1. Task fetch (outside transaction)
+    // 1. Advisory lock (first call inside transaction — result is discarded)
+    mockQuery.mockResolvedValueOnce({ rows: [{}], rowCount: 1 });
+    // 2. Task SELECT FOR UPDATE (inside transaction)
     mockQuery.mockResolvedValueOnce({
       rows: [{ id: 't1', poster_id: 'u1', worker_id: 'u2', state: 'COMPLETED', completed_at: completedAt }],
     });
-    // 2. Advisory lock (first call inside transaction — result is discarded)
-    mockQuery.mockResolvedValueOnce({ rows: [{}], rowCount: 1 });
     // 3. Duplicate check inside transaction — no existing rating
     mockQuery.mockResolvedValueOnce({ rows: [] });
     // 4. Existing ratings count (inside transaction) — 0 existing
@@ -264,12 +275,12 @@ describe('RatingService.submitRating', () => {
   });
 
   it('makes all ratings public when both parties rate', async () => {
-    // 1. Task fetch (outside transaction)
+    // 1. Advisory lock (first call inside transaction — result is discarded)
+    mockQuery.mockResolvedValueOnce({ rows: [{}], rowCount: 1 });
+    // 2. Task SELECT FOR UPDATE (inside transaction)
     mockQuery.mockResolvedValueOnce({
       rows: [{ id: 't1', poster_id: 'u1', worker_id: 'u2', state: 'COMPLETED', completed_at: completedAt }],
     });
-    // 2. Advisory lock (first call inside transaction — result is discarded)
-    mockQuery.mockResolvedValueOnce({ rows: [{}], rowCount: 1 });
     // 3. Duplicate check inside transaction — no existing rating
     mockQuery.mockResolvedValueOnce({ rows: [] });
     // 4. Existing ratings count (inside transaction) — 1 existing (first party already rated)
@@ -288,7 +299,9 @@ describe('RatingService.submitRating', () => {
   });
 
   it('returns NOT_FOUND for missing task', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [] });
+    // R-15 FIX: advisory lock acquired first (inside transaction), then task SELECT
+    mockQuery.mockResolvedValueOnce({ rows: [{}], rowCount: 1 }); // advisory lock
+    mockQuery.mockResolvedValueOnce({ rows: [] }); // task SELECT FOR UPDATE — empty
 
     const result = await RatingService.submitRating({
       taskId: 't_missing', raterId: 'u1', stars: 5,

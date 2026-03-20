@@ -44,7 +44,7 @@ export const processFraudDetectionJob = async (_job: Job): Promise<void> => {
   try {
     log.info('Starting fraud scan');
 
-    // Get recent proof submissions with GPS data (last 10 minutes)
+    // Get recent proof submissions with GPS data (last 5 minutes — matches cron interval)
     const result = await db.query<{
       proof_id: string;
       user_id: string;
@@ -57,7 +57,7 @@ export const processFraudDetectionJob = async (_job: Job): Promise<void> => {
               ST_X(gps_coordinates::geometry) as gps_longitude,
               gps_timestamp
        FROM proof_submissions
-       WHERE gps_timestamp > NOW() - INTERVAL '10 minutes'
+       WHERE gps_timestamp > NOW() - INTERVAL '5 minutes'
          AND gps_coordinates IS NOT NULL
        ORDER BY user_id, gps_timestamp ASC`
     );

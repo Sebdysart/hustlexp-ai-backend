@@ -16,6 +16,9 @@ import type { ServiceResult, Dispute, DisputeState, Escrow } from '../types.js';
 import { ErrorCodes } from '../types.js';
 import { writeToOutbox } from '../lib/outbox-helpers.js';
 import { EscrowService } from './EscrowService.js';
+import { logger } from '../logger.js';
+
+const disputeServiceLog = logger.child({ service: 'DisputeService' });
 
 // ============================================================================
 // HELPERS
@@ -105,11 +108,12 @@ export const DisputeService = {
       
       return { success: true, data: result.rows[0] };
     } catch (error) {
+      disputeServiceLog.error({ err: error instanceof Error ? error.message : String(error) }, 'DisputeService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
@@ -120,18 +124,21 @@ export const DisputeService = {
    */
   getByTaskId: async (taskId: string): Promise<ServiceResult<Dispute[]>> => {
     try {
+      // R-12: LIMIT 50 prevents DoS via accumulated resolved disputes.
+      // Any reasonable UI use case fits within this bound.
       const result = await db.query<Dispute>(
-        'SELECT * FROM disputes WHERE task_id = $1 ORDER BY created_at DESC',
+        'SELECT * FROM disputes WHERE task_id = $1 ORDER BY created_at DESC LIMIT 50',
         [taskId]
       );
       
       return { success: true, data: result.rows };
     } catch (error) {
+      disputeServiceLog.error({ err: error instanceof Error ? error.message : String(error) }, 'DisputeService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
@@ -158,11 +165,12 @@ export const DisputeService = {
 
       return { success: true, data: result.rows };
     } catch (error) {
+      disputeServiceLog.error({ err: error instanceof Error ? error.message : String(error) }, 'DisputeService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
@@ -364,11 +372,12 @@ export const DisputeService = {
           },
         };
       }
+      disputeServiceLog.error({ err: error instanceof Error ? error.message : String(error) }, 'DisputeService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
@@ -433,16 +442,17 @@ export const DisputeService = {
           },
         };
       }
+      disputeServiceLog.error({ err: error instanceof Error ? error.message : String(error) }, 'DisputeService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
   },
-  
+
   /**
    * Resolve dispute
    * MVP: Admin check + preconditions + versioned update + outbox events
@@ -721,11 +731,12 @@ export const DisputeService = {
           },
         };
       }
+      disputeServiceLog.error({ err: error instanceof Error ? error.message : String(error) }, 'DisputeService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
@@ -790,11 +801,12 @@ export const DisputeService = {
           },
         };
       }
+      disputeServiceLog.error({ err: error instanceof Error ? error.message : String(error) }, 'DisputeService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }

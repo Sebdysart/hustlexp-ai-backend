@@ -6,7 +6,7 @@
  * Not production-ready UI.
  */
 
-import { router, hustlerProcedure } from '../trpc.js';
+import { router, hustlerProcedure, adminProcedure } from '../trpc.js';
 import { TaskService } from '../services/TaskService.js';
 import { db } from '../db.js';
 import { z } from 'zod';
@@ -135,10 +135,12 @@ export const instantRouter = router({
     }),
 
   /**
-   * Get instant task metrics (for testing)
+   * Get instant task metrics (aggregate platform timing data)
+   * R-16: Restricted to adminProcedure — aggregate timing data must not be exposed
+   * to all hustlers as it reveals platform throughput and demand patterns.
    * Notification Urgency Design v1: Includes notification-to-accept latency
    */
-  metrics: hustlerProcedure.input(z.void()).query(async () => {
+  metrics: adminProcedure.input(z.void()).query(async () => {
     // Time-to-accept (created_at → accepted_at for LIVE mode tasks)
     const timeToAcceptResult = await db.query<{
       created_at: Date;

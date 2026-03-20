@@ -620,26 +620,38 @@ export const taskRouter = router({
   start: hustlerProcedure
     .input(z.object({ taskId: Schemas.uuid }))
     .mutation(async ({ ctx, input }) => {
-      // Verify worker is the one who accepted
-      const taskResult = await TaskService.getById(input.taskId);
-      if (!taskResult.success) {
-        throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
-      }
-      if (taskResult.data.worker_id !== ctx.user.id) {
-        throw new TRPCError({ code: 'FORBIDDEN', message: 'Only the assigned worker can start this task' });
-      }
-      if (taskResult.data.state !== 'ACCEPTED') {
-        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: `Task must be ACCEPTED to start, current state: ${taskResult.data.state}` });
-      }
+      // R-09 FIX: Ownership and state checks are performed inside a transaction
+      // with SELECT FOR UPDATE so the check and any subsequent logic are performed
+      // against a locked, consistent snapshot of the task row. The previous
+      // pattern (plain SELECT outside a transaction) created a TOCTOU window where
+      // a concurrent accept/cancel could change worker_id or state between the read
+      // and the response.
+      const task = await db.transaction(async (query) => {
+        const lockResult = await query<{ worker_id: string | null; state: string }>(
+          `SELECT worker_id, state FROM tasks WHERE id = $1 FOR UPDATE`,
+          [input.taskId]
+        );
+        if (lockResult.rows.length === 0) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
+        }
+        const row = lockResult.rows[0];
+        if (row.worker_id !== ctx.user.id) {
+          throw new TRPCError({ code: 'FORBIDDEN', message: 'Only the assigned worker can start this task' });
+        }
+        if (row.state !== 'ACCEPTED') {
+          throw new TRPCError({ code: 'PRECONDITION_FAILED', message: `Task must be ACCEPTED to start, current state: ${row.state}` });
+        }
+        // No state transition — ACCEPTED already means the worker is working.
+        // Re-fetch the full task row inside the same transaction for a consistent return value.
+        const fullResult = await query<import('../types.js').Task>(
+          `SELECT * FROM tasks WHERE id = $1`,
+          [input.taskId]
+        );
+        return fullResult.rows[0];
+      });
 
-      // Task is ACCEPTED — the worker has started. No separate IN_PROGRESS state exists in the schema.
-      // The ACCEPTED state already means the worker is working. Return the current task data.
       await invalidateTask(input.taskId);
-      const refreshed = await TaskService.getById(input.taskId);
-      if (!refreshed.success) {
-        throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found after start' });
-      }
-      return refreshed.data;
+      return task;
     }),
 
   /**
@@ -733,10 +745,28 @@ export const taskRouter = router({
         });
       }
 
-      // Transition task to PROOF_SUBMITTED in its own internal transaction
+      // R-10 FIX: ProofService.submit and TaskService.submitProof each own their
+      // internal transactions and cannot be composed into a single atomic unit
+      // without invasive refactoring. Instead, if the task state transition fails
+      // after the proof row has already committed, delete the orphaned proof row
+      // before rethrowing so the worker can retry cleanly.
       const taskResult = await TaskService.submitProof(input.taskId);
 
       if (!taskResult.success) {
+        // Best-effort cleanup: remove the committed proof row so it does not
+        // permanently block future submission attempts (ProofService.submit
+        // rejects if an active proof already exists for the task).
+        try {
+          await db.query(
+            `DELETE FROM proofs WHERE id = $1`,
+            [proofResult.data.id]
+          );
+        } catch (cleanupErr) {
+          taskRouterLog.error(
+            { err: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr), proofId: proofResult.data.id },
+            'R-10: failed to delete orphaned proof after task state transition failure'
+          );
+        }
         throw new TRPCError({
           code: 'BAD_REQUEST',
           message: taskResult.error.message,

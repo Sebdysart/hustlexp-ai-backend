@@ -219,7 +219,7 @@ async function handleSurgeLevel1(
           surgeLevel: 1,
           urgencyCopy: 'Urgent Instant — limited availability',
         },
-        queueName: 'critical_payments',
+        queueName: 'user_notifications',
       }, query);
     }
   });
@@ -288,7 +288,7 @@ async function handleSurgeLevel2(
           surgeLevel: 2,
           urgencyCopy: 'High-priority Instant — bonus XP',
         },
-        queueName: 'critical_payments',
+        queueName: 'user_notifications',
       }, query);
     }
   });

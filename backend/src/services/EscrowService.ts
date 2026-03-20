@@ -142,11 +142,12 @@ export const EscrowService = {
       
       return { success: true, data: result.rows[0] };
     } catch (error) {
+      escrowLogger.error({ err: error instanceof Error ? error.message : String(error) }, 'EscrowService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
@@ -154,11 +155,17 @@ export const EscrowService = {
 
   /**
    * Get escrow by task ID
+   * R-14 FIX: JOIN tasks so poster_id/worker_id are included in one query,
+   * eliminating the need for a second EscrowService.getById() call in the router
+   * for authorization checks.
    */
   getByTaskId: async (taskId: string): Promise<ServiceResult<Escrow>> => {
     try {
       const result = await db.query<Escrow>(
-        'SELECT * FROM escrows WHERE task_id = $1',
+        `SELECT e.*, t.poster_id, t.worker_id
+         FROM escrows e
+         JOIN tasks t ON t.id = e.task_id
+         WHERE e.task_id = $1`,
         [taskId]
       );
       
@@ -174,11 +181,12 @@ export const EscrowService = {
       
       return { success: true, data: result.rows[0] };
     } catch (error) {
+      escrowLogger.error({ err: error instanceof Error ? error.message : String(error) }, 'EscrowService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
@@ -224,11 +232,12 @@ export const EscrowService = {
           },
         };
       }
+      escrowLogger.error({ err: error instanceof Error ? error.message : String(error) }, 'EscrowService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
@@ -334,11 +343,12 @@ export const EscrowService = {
 
       return txResult;
     } catch (error) {
+      escrowLogger.error({ err: error instanceof Error ? error.message : String(error) }, 'EscrowService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
@@ -677,11 +687,12 @@ export const EscrowService = {
         }
       }
 
+      escrowLogger.error({ err: error instanceof Error ? error.message : String(error) }, 'EscrowService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
@@ -966,11 +977,12 @@ export const EscrowService = {
 
       return { success: true, data: refundedEscrow! };
     } catch (error) {
+      escrowLogger.error({ err: error instanceof Error ? error.message : String(error) }, 'EscrowService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
@@ -1121,11 +1133,12 @@ export const EscrowService = {
       if (error instanceof TRPCError) {
         throw error;
       }
+      escrowLogger.error({ err: error instanceof Error ? error.message : String(error) }, 'EscrowService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
@@ -1280,7 +1293,7 @@ export const EscrowService = {
             escrowId,
             amount: posterCents,
             reason: 'requested_by_customer',
-            idempotencyKeySuffix: 'partial_refund',
+            idempotencyKeySuffix: 'svc_partial_refund',
           });
           if (!refundResult.success) {
             // Fatal: throw so the caller can retry while the escrow is still LOCKED_DISPUTE.
@@ -1464,11 +1477,12 @@ export const EscrowService = {
 
       return { success: true, data: partialRefundEscrow! };
     } catch (error) {
+      escrowLogger.error({ err: error instanceof Error ? error.message : String(error) }, 'EscrowService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }

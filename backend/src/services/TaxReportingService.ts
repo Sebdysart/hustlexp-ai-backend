@@ -51,16 +51,29 @@ export const TaxReportingService = {
     try {
       const feePercent = config.stripe.platformFeePercent;
       const result = await db.query<WorkerEarnings>(
-        `SELECT t.worker_id as user_id,
-                SUM(ROUND(e.amount * (1.0 - $3 / 100.0)))::BIGINT as total_earnings_cents,
-                COUNT(DISTINCT t.id)::INTEGER as task_count
-         FROM tasks t
-         JOIN escrows e ON e.task_id = t.id
-         WHERE e.state = 'RELEASED'
-           AND EXTRACT(YEAR FROM e.released_at) = $1
-           AND t.worker_id IS NOT NULL
-         GROUP BY t.worker_id
-         HAVING SUM(ROUND(e.amount * (1.0 - $3 / 100.0))) >= $2
+        `SELECT user_id,
+                SUM(earnings_cents)::BIGINT as total_earnings_cents,
+                SUM(task_count)::INTEGER as task_count
+         FROM (
+           SELECT t.worker_id as user_id,
+                  ROUND(e.amount * (1.0 - $3 / 100.0)) as earnings_cents,
+                  1 as task_count
+           FROM tasks t
+           JOIN escrows e ON e.task_id = t.id
+           WHERE e.state = 'RELEASED'
+             AND EXTRACT(YEAR FROM e.released_at) = $1
+             AND t.worker_id IS NOT NULL
+           UNION ALL
+           SELECT tp.worker_id as user_id,
+                  tp.amount_cents as earnings_cents,
+                  0 as task_count
+           FROM tips tp
+           WHERE tp.status = 'completed'
+             AND EXTRACT(YEAR FROM tp.completed_at) = $1
+             AND tp.worker_id IS NOT NULL
+         ) combined
+         GROUP BY user_id
+         HAVING SUM(earnings_cents) >= $2
          ORDER BY total_earnings_cents DESC`,
         [taxYear, REPORTING_THRESHOLD_CENTS, feePercent]
       );
@@ -136,6 +149,9 @@ export const TaxReportingService = {
           Number(worker.total_earnings_cents)
         );
         if (filingResult.success) {
+          processed++;
+        } else if (filingResult.error.code === 'FILING_ALREADY_FINALIZED') {
+          // Filing already finalized for this worker/year — treat as success (idempotent)
           processed++;
         } else {
           errors++;

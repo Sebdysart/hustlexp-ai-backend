@@ -6,9 +6,18 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-vi.mock('../../src/db', () => ({
-  db: { query: vi.fn() },
-}));
+vi.mock('../../src/db', () => {
+  const queryFn = vi.fn();
+  return {
+    db: {
+      query: queryFn,
+      // F-16 FIX: recordContribution now wraps INSERT+UPDATE in db.transaction.
+      // Delegate to the callback with the same queryFn so mockResolvedValueOnce
+      // sequences work seamlessly inside transactions.
+      transaction: vi.fn((fn: (q: typeof queryFn) => Promise<unknown>) => fn(queryFn)),
+    },
+  };
+});
 
 vi.mock('../../src/logger', () => ({
   logger: {

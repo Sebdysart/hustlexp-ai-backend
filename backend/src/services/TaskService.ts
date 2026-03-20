@@ -121,11 +121,12 @@ export const TaskService = {
       
       return { success: true, data: result.rows[0] };
     } catch (error) {
+      log.error({ err: error instanceof Error ? error.message : String(error) }, 'TaskService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
@@ -186,11 +187,12 @@ export const TaskService = {
 
       return { success: true, data: { tasks, nextCursor } };
     } catch (error) {
+      log.error({ err: error instanceof Error ? error.message : String(error) }, 'TaskService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
@@ -249,11 +251,12 @@ export const TaskService = {
 
       return { success: true, data: { tasks, nextCursor } };
     } catch (error) {
+      log.error({ err: error instanceof Error ? error.message : String(error) }, 'TaskService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
@@ -290,11 +293,12 @@ export const TaskService = {
       const result = await db.query<Task>(sql, params);
       return { success: true, data: result.rows };
     } catch (error) {
+      log.error({ err: error instanceof Error ? error.message : String(error) }, 'TaskService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
@@ -523,11 +527,12 @@ export const TaskService = {
           },
         };
       }
+      log.error({ err: error instanceof Error ? error.message : String(error) }, 'TaskService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
@@ -847,7 +852,7 @@ export const TaskService = {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
@@ -927,11 +932,12 @@ export const TaskService = {
         return { success: true, data: result.rows[0] };
       });
     } catch (error) {
+      log.error({ err: error instanceof Error ? error.message : String(error) }, 'TaskService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
@@ -1043,11 +1049,12 @@ export const TaskService = {
         }
       }
 
+      log.error({ err: error instanceof Error ? error.message : String(error) }, 'TaskService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
@@ -1117,11 +1124,12 @@ export const TaskService = {
         return { success: true, data: result.rows[0] };
       });
     } catch (error) {
+      log.error({ err: error instanceof Error ? error.message : String(error) }, 'TaskService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
@@ -1189,11 +1197,12 @@ export const TaskService = {
         return { success: true, data: result.rows[0] };
       });
     } catch (error) {
+      log.error({ err: error instanceof Error ? error.message : String(error) }, 'TaskService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
@@ -1365,11 +1374,12 @@ export const TaskService = {
         return { success: true, data: result.rows[0] };
       });
     } catch (error) {
+      log.error({ err: error instanceof Error ? error.message : String(error) }, 'TaskService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
@@ -1464,11 +1474,12 @@ export const TaskService = {
         return { success: true, data: result.rows[0] };
       });
     } catch (error) {
+      log.error({ err: error instanceof Error ? error.message : String(error) }, 'TaskService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
@@ -1853,11 +1864,12 @@ export const TaskService = {
         return { success: true, data: result.rows[0] };
       });
     } catch (error) {
+      log.error({ err: error instanceof Error ? error.message : String(error) }, 'TaskService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
