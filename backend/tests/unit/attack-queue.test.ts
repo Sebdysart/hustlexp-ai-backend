@@ -1010,22 +1010,23 @@ describe('RED-TEAM: BullMQ Queue Attack Surface', () => {
     });
 
     it('throws on malformed key (attacker providing crafted idempotency key)', () => {
+      // W-05 FIX: parseIdempotencyKey now accepts >= 3 parts (surge keys use 4 segments).
+      // Only keys with fewer than 3 parts are rejected as malformed.
       expect(() => parseIdempotencyKey('only:two')).toThrow('Invalid idempotency key format');
-      expect(() => parseIdempotencyKey('one:two:three:four')).toThrow('Invalid idempotency key format');
+      // 4-part keys are now valid (surge discriminator as 4th segment)
+      expect(() => parseIdempotencyKey('one:two:three:four')).not.toThrow();
     });
 
-    it('colons in aggregateId break the 3-part invariant (GAP: no escaping)', () => {
+    it('colons in aggregateId are now handled — 4-part keys parse correctly (W-05 fix)', () => {
       /**
-       * FINDING: If aggregateId contains a colon (e.g., a compound ID like
-       * "tenant:123"), the key becomes "event:tenant:123:1" — 4 parts —
-       * and parseIdempotencyKey THROWS instead of parsing correctly.
-       *
-       * Real UUIDs never contain colons, so this is SAFE in practice.
-       * If aggregateId format ever changes to allow colons, this becomes
-       * an exploit that can cause idempotency key parsing failures.
+       * W-05 FIX: parseIdempotencyKey now uses parts.length < 3 (was !== 3).
+       * Keys with 4+ segments (e.g., surge keys) no longer throw — parts[2+]
+       * are joined as the version/suffix. Real UUIDs never contain colons so
+       * this does not introduce an injection risk.
        */
-      const badKey = generateIdempotencyKey('escrow.release', 'tenant:123', 1);
-      expect(() => parseIdempotencyKey(badKey)).toThrow('Invalid idempotency key format');
+      const key = generateIdempotencyKey('escrow.release', 'tenant:123', 1);
+      // Should parse without throwing (4 parts: eventType, tenant, 123, version)
+      expect(() => parseIdempotencyKey(key)).not.toThrow();
     });
   });
 });

@@ -21,7 +21,12 @@ import { db } from '../db.js';
 import { getQueue, signJobPayload, type QueueName } from './queues.js';
 import { getClient as getRedisClient } from '../cache/redis.js';
 import { workerLogger } from '../logger.js';
+import { config } from '../config.js';
 const log = workerLogger.child({ worker: 'outbox' });
+
+// Maximum delivery attempts before an outbox event is permanently failed.
+// Single source of truth — used by both processOutboxEvents and markOutboxEventFailed.
+const MAX_OUTBOX_ATTEMPTS = 5;
 
 // Financial event types that require HMAC payload signing
 const FINANCIAL_EVENT_TYPES = new Set([
@@ -176,7 +181,6 @@ export async function processOutboxEvents(batchSize: number = 100): Promise<{
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
         errors.push({ eventId: event.id, error: errorMessage });
 
-        const MAX_OUTBOX_ATTEMPTS = 5;
         // The transaction already incremented attempts and set status='enqueued'.
         // queue.add() failed, so roll back the status: if still below the max,
         // reset to 'pending' so the next poll will retry; otherwise mark 'failed'.
@@ -242,7 +246,6 @@ export async function markOutboxEventFailed(
   idempotencyKey: string,
   errorMessage: string
 ): Promise<void> {
-  const MAX_OUTBOX_ATTEMPTS = 5;
   await db.query(
     `UPDATE outbox_events
      SET status = CASE WHEN attempts < $3 THEN 'pending' ELSE 'failed' END,
@@ -302,35 +305,41 @@ export function startOutboxWorker(intervalMs: number = 5000): OutboxWorkerHandle
   // multiple pods cannot run concurrent promotions and double-award tier upgrades.
   // The in-process `trustTierRunning` flag only protected against overlap within a
   // single process; in a multi-pod deployment both pods could enter simultaneously.
-  const TRUST_TIER_LOCK_KEY = 'lock:trust_tier_promotion';
+  const TRUST_TIER_LOCK_KEY = `lock:${config.app.env ?? 'production'}:trust_tier_promotion`;
   const TRUST_TIER_LOCK_TTL_MS = 5 * 60 * 1000; // 5 minutes in ms
   const trustTierInterval = setInterval(async () => {
-    const redisClient = getRedisClient();
-    if (redisClient) {
-      // Attempt to acquire distributed lock (NX = only set if not exists, PX = TTL in ms)
-      const acquired = await redisClient.set(TRUST_TIER_LOCK_KEY, '1', {
-        nx: true,
-        px: TRUST_TIER_LOCK_TTL_MS,
-      });
-      if (!acquired) {
-        log.info('Trust tier promotion already running on another pod, skipping');
-        return;
-      }
-    } else {
-      // Redis unavailable — fall back to always running (single-pod safe)
-      log.warn('Redis unavailable for trust tier lock — running without distributed lock');
-    }
     try {
-      const { processTrustTierPromotionJob } = await import('./trust-tier-promotion-worker');
-      await processTrustTierPromotionJob();
-    } catch (error) {
-      log.error({ err: error }, 'Trust tier promotion error');
-    } finally {
+      const redisClient = getRedisClient();
+      let lockAcquired = false;
       if (redisClient) {
-        await redisClient.del(TRUST_TIER_LOCK_KEY).catch(err => {
-          log.warn({ err }, 'Failed to release trust tier promotion lock');
+        // Attempt to acquire distributed lock (NX = only set if not exists, PX = TTL in ms)
+        const acquired = await redisClient.set(TRUST_TIER_LOCK_KEY, '1', {
+          nx: true,
+          px: TRUST_TIER_LOCK_TTL_MS,
         });
+        if (!acquired) {
+          log.info('Trust tier promotion already running on another pod, skipping');
+          return;
+        }
+        lockAcquired = true;
+      } else {
+        // Redis unavailable — fall back to always running (single-pod safe)
+        log.warn('Redis unavailable for trust tier lock — running without distributed lock');
       }
+      try {
+        const { processTrustTierPromotionJob } = await import('./trust-tier-promotion-worker');
+        await processTrustTierPromotionJob();
+      } catch (error) {
+        log.error({ err: error }, 'Trust tier promotion error');
+      } finally {
+        if (lockAcquired && redisClient) {
+          await redisClient.del(TRUST_TIER_LOCK_KEY).catch(err => {
+            log.warn({ err }, 'Failed to release trust tier promotion lock');
+          });
+        }
+      }
+    } catch (err) {
+      log.error({ err }, 'trustTierInterval: unhandled error in callback');
     }
   }, 60 * 60 * 1000); // Every hour
 

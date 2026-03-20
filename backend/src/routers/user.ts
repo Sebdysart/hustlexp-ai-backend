@@ -238,7 +238,7 @@ export const userRouter = router({
     .input(z.void())
     .query(async ({ ctx }) => {
       const result = await db.query(
-        `SELECT * FROM badges WHERE user_id = $1 ORDER BY awarded_at DESC`,
+        `SELECT * FROM badges WHERE user_id = $1 ORDER BY awarded_at DESC LIMIT 200`,
         [ctx.user.id]
       );
       

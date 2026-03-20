@@ -64,6 +64,7 @@ import { EscrowService } from '../../src/services/EscrowService';
 import { EarnedVerificationUnlockService } from '../../src/services/EarnedVerificationUnlockService';
 import { XPService } from '../../src/services/XPService';
 import { SelfInsurancePoolService } from '../../src/services/SelfInsurancePoolService.js';
+import { RevenueService } from '../../src/services/RevenueService';
 
 const mockDb = vi.mocked(db);
 const mockIsInvariantViolation = vi.mocked(isInvariantViolation);
@@ -341,6 +342,34 @@ describe('EscrowService', () => {
       const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_svc' });
       expect(result.success).toBe(true);
     });
+
+    it('F-01: logs platform_fee when adminOverride=true and worker has no stripe_connect_id (manual payout required)', async () => {
+      // adminOverride=true, worker has no Stripe Connect ID → adminManualPayoutRequired=true
+      // The normal transfer.created webhook will never fire, so platform_fee must be logged here.
+      const escrowRow = { id: 'esc-1', task_id: 'task-1', amount: 5000, state: 'FUNDED' };
+      const taskRow = { worker_id: 'worker-1', price: 5000 };
+      const workerNoStripeRow = { stripe_connect_id: null }; // no Connect account → adminManualPayoutRequired=true
+      const released = makeEscrow({ state: 'RELEASED' });
+
+      mockDb.query
+        .mockResolvedValueOnce({ rows: [escrowRow], rowCount: 1 } as never) // SELECT escrow FOR UPDATE
+        .mockResolvedValueOnce({ rows: [taskRow], rowCount: 1 } as never)   // SELECT task
+        .mockResolvedValueOnce({ rows: [workerNoStripeRow], rowCount: 1 } as never) // adminOverride: check stripe_connect_id
+        .mockResolvedValueOnce({ rows: [released], rowCount: 1 } as never); // UPDATE → RELEASED
+
+      const result = await EscrowService.release({
+        escrowId: 'esc-1',
+        adminOverride: true,
+        reason: 'Admin force release',
+      });
+
+      expect(result.success).toBe(true);
+      // F-01: RevenueService.logEvent must have been called for platform_fee
+      expect(vi.mocked(RevenueService.logEvent)).toHaveBeenCalledOnce();
+      const logCall = vi.mocked(RevenueService.logEvent).mock.calls[0][0];
+      expect(logCall.eventType).toBe('platform_fee');
+      expect(logCall.metadata).toMatchObject({ event: 'admin_override_release', admin_manual_payout_required: true });
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -439,17 +468,20 @@ describe('EscrowService', () => {
       //   StripeService.createTransfer → mocked (returns tr_test)
       //   StripeService.createRefund   → mocked (returns re_test)
       //
-      // Transaction 2 (terminalize — single UPDATE with both Stripe IDs):
-      //   4th query: UPDATE escrows SET state='REFUND_PARTIAL', stripe_transfer_id=...,
-      //              stripe_refund_id=... WHERE version=$V RETURNING *
+      // Transaction 2 (terminalize):
+      //   F-05 FIX: SELECT FOR UPDATE NOWAIT re-read (locked version)
+      //   4th query: SELECT id, version, state FROM escrows FOR UPDATE NOWAIT
+      //   5th query: UPDATE escrows SET state='REFUND_PARTIAL' WHERE version=$lockedVersion
       //
-      //   5th query: INSERT INTO escrow_events (logEscrowEvent — outside Tx2)
+      //   6th query: INSERT INTO escrow_events (logEscrowEvent — outside Tx2)
       mockDb.query.mockResolvedValueOnce({
         rows: [{ version: 0, state: 'LOCKED_DISPUTE', task_id: 'task-1', amount: 5000, stripe_payment_intent_id: 'pi_test', stripe_transfer_id: null, stripe_refund_id: null }],
         rowCount: 1,
       } as never);
       mockDb.query.mockResolvedValueOnce({ rows: [{ worker_id: 'worker-1' }], rowCount: 1 } as never);
       mockDb.query.mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_test' }], rowCount: 1 } as never);
+      // F-05: T2 NOWAIT re-read
+      mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'esc-1', version: 0, state: 'LOCKED_DISPUTE' }], rowCount: 1 } as never);
       mockDb.query.mockResolvedValueOnce({ rows: [partial], rowCount: 1 } as never);
       // logEscrowEvent INSERT
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
@@ -465,12 +497,12 @@ describe('EscrowService', () => {
       expect(vi.mocked(MockStripe.createTransfer)).toHaveBeenCalledTimes(1);
       expect(vi.mocked(MockStripe.createRefund)).toHaveBeenCalledTimes(1);
 
-      // Verify the terminalizing UPDATE carries both Stripe IDs via COALESCE
+      // Verify the terminalizing UPDATE uses lockedVersion (from NOWAIT re-read) not stale T1 version
       const updateCalls = mockDb.query.mock.calls.filter(
         (c) => typeof c[0] === 'string' && (c[0] as string).includes("SET state = 'REFUND_PARTIAL'")
       );
       expect(updateCalls).toHaveLength(1);
-      // params: [escrowId, version, resolvedTransferId, resolvedRefundId]
+      // params: [escrowId, lockedVersion, resolvedTransferId, resolvedRefundId]
       expect(updateCalls[0][1]).toEqual(['esc-1', 0, 'tr_test', 're_test']);
     });
 
@@ -483,6 +515,8 @@ describe('EscrowService', () => {
       } as never);
       mockDb.query.mockResolvedValueOnce({ rows: [{ worker_id: 'worker-1' }], rowCount: 1 } as never);
       mockDb.query.mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_test' }], rowCount: 1 } as never);
+      // F-05: T2 NOWAIT re-read
+      mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'esc-1', version: 1, state: 'LOCKED_DISPUTE' }], rowCount: 1 } as never);
       // Tx2: terminalizing UPDATE (both Stripe IDs passed via COALESCE)
       mockDb.query.mockResolvedValueOnce({ rows: [partial], rowCount: 1 } as never);
       // logEscrowEvent INSERT
@@ -510,6 +544,8 @@ describe('EscrowService', () => {
       } as never);
       mockDb.query.mockResolvedValueOnce({ rows: [{ worker_id: 'worker-1' }], rowCount: 1 } as never);
       mockDb.query.mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_test' }], rowCount: 1 } as never);
+      // F-05: T2 NOWAIT re-read
+      mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'esc-1', version: 1, state: 'LOCKED_DISPUTE' }], rowCount: 1 } as never);
       // Tx2: terminalizing UPDATE (both Stripe IDs passed via COALESCE)
       mockDb.query.mockResolvedValueOnce({ rows: [partial], rowCount: 1 } as never);
       // logEscrowEvent INSERT

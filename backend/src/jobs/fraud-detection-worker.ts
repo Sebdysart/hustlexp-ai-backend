@@ -22,6 +22,18 @@ import type { Job } from 'bullmq';
 import { workerLogger } from '../logger.js';
 const log = workerLogger.child({ worker: 'fraud-detection' });
 
+/**
+ * Race a promise against a timeout.
+ * Rejects with an Error(`Timeout after ${ms}ms`) if the promise does not settle in time.
+ */
+const withTimeout = <T>(promise: Promise<T>, ms: number): Promise<T> =>
+  Promise.race([
+    promise,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`Timeout after ${ms}ms`)), ms)
+    ),
+  ]);
+
 // ============================================================================
 // TYPES
 // ============================================================================
@@ -96,11 +108,26 @@ export const processFraudDetectionJob = async (_job: Job): Promise<void> => {
         const lastProof = proofs[i - 1];
         const currentProof = proofs[i];
 
-        const travelResult = await LogisticsAIService.detectImpossibleTravel(
-          userId,
-          { ...currentProof.gps_coordinates, timestamp: currentProof.gps_timestamp },
-          { ...lastProof.gps_coordinates, timestamp: lastProof.gps_timestamp }
-        );
+        let travelResult: Awaited<ReturnType<typeof LogisticsAIService.detectImpossibleTravel>>;
+        try {
+          travelResult = await withTimeout(
+            LogisticsAIService.detectImpossibleTravel(
+              userId,
+              { ...currentProof.gps_coordinates, timestamp: currentProof.gps_timestamp },
+              { ...lastProof.gps_coordinates, timestamp: lastProof.gps_timestamp }
+            ),
+            10_000
+          );
+        } catch (aiErr) {
+          const isTimeout = aiErr instanceof Error && aiErr.message.startsWith('Timeout after');
+          log.warn(
+            { userId, err: aiErr, isTimeout },
+            isTimeout
+              ? 'detectImpossibleTravel timed out — treating as non-fraud, continuing'
+              : 'detectImpossibleTravel threw unexpectedly — treating as non-fraud, continuing'
+          );
+          continue;
+        }
 
         if (travelResult.success && travelResult.data!.flagged) {
           flaggedCount++;

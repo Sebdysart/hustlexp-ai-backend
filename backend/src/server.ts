@@ -187,6 +187,11 @@ app.use('/trpc/taskDiscovery.getAISuggestions', aiRateLimitMiddleware('openai'))
 app.use('/trpc/taskDiscovery.browseTasks', rateLimitMiddleware('browse')); // 30/min — public task browse
 
 // Tier 4: Domain-specific
+// A-04: escrow.refund and escrow.confirmFunding trigger Stripe API calls — they must use
+// the tighter 'financial' bucket (10/min) not the general 'escrow' bucket (30/min).
+// These rules must precede the escrow.* catch-all so Hono's first-match wins.
+app.use('/trpc/escrow.refund*', rateLimitMiddleware('financial'));           // 10/min — Stripe refund API
+app.use('/trpc/escrow.confirmFunding*', rateLimitMiddleware('financial'));   // 10/min — Stripe payment confirmation
 app.use('/trpc/escrow.*', rateLimitMiddleware('escrow'));           // 30/min — other escrow ops
 app.use('/trpc/live.*', rateLimitMiddleware('live'));               // 20/min — live mode (multi-table JOIN, geo amplification risk)
 app.use('/trpc/task.*', rateLimitMiddleware('task'));               // 60/min — core task ops
@@ -517,7 +522,7 @@ async function getAuthUser(c: Context): Promise<User | null> {
   try {
     const decoded = await firebaseAuth.verifyIdToken(token, true); // checkRevoked = true
     const result = await db.query<User>(
-      'SELECT id, firebase_uid, email, full_name, is_banned, account_status, default_mode, role FROM users WHERE firebase_uid = $1',
+      'SELECT id, firebase_uid, email, full_name, is_banned, account_status, default_mode, role, trust_tier, stripe_connect_id FROM users WHERE firebase_uid = $1',
       [decoded.uid]
     );
     const user = result.rows[0] || null;

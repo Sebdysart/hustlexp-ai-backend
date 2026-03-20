@@ -607,18 +607,44 @@ export const EscrowService = {
         }
       );
 
-      // F-10 FIX: Do NOT log platform_fee here. The platform_fee revenue ledger row
-      // MUST only be written by the payment-worker's handleTransferCreated() handler,
-      // which has the real Stripe transfer event ID (stripeEventId). That handler uses
-      // an idempotency guard of:
+      // F-10 FIX: Do NOT log platform_fee here for normal (non-admin-override) releases.
+      // The platform_fee revenue ledger row MUST only be written by the payment-worker's
+      // handleTransferCreated() handler, which has the real Stripe transfer event ID
+      // (stripeEventId). That handler uses an idempotency guard of:
       //   SELECT id FROM revenue_ledger WHERE stripe_event_id = $1 AND event_type = 'platform_fee'
       // If we wrote a row here with stripe_event_id = NULL, that guard would never find
       // it and would insert a second platform_fee row — every escrow release would be
       // double-counted in the revenue ledger.
       //
+      // EXCEPTION — F-01 FIX: When adminOverride=true AND adminManualPayoutRequired=true,
+      // no Stripe transfer is ever created and no transfer.created webhook will fire.
+      // The handleTransferCreated() path is dead, so we must record the platform_fee here.
+      // Use a dedup key of 'admin_override_release' in metadata (stripe_event_id stays NULL).
+      if (adminOverride && adminManualPayoutRequired) {
+        try {
+          await RevenueService.logEvent({
+            eventType: 'platform_fee',
+            userId: releasedEscrow!.task_id ? undefined : null, // prefer poster via escrow lookup below
+            taskId: taskId!,
+            amountCents: platformFeeCents!,
+            grossAmountCents: grossPayoutCents!,
+            platformFeeCents: platformFeeCents!,
+            netAmountCents: netPayoutCents!,
+            feeBasisPoints: Math.round(platformFeePercent! * 100),
+            escrowId,
+            metadata: { event: 'admin_override_release', admin_manual_payout_required: true },
+          });
+        } catch (feeLogErr) {
+          escrowLogger.error(
+            { err: feeLogErr instanceof Error ? feeLogErr.message : String(feeLogErr), escrowId },
+            'F-01: Failed to log platform_fee for admin_override_release — manual reconciliation required'
+          );
+        }
+      }
+      //
       // The release event itself is captured in escrow_events via logEscrowEvent above.
       // The payment-worker's handleTransferCreated() is the single authoritative source
-      // for the platform_fee ledger entry, ensuring idempotency via stripe_event_id.
+      // for the platform_fee ledger entry on normal releases, ensuring idempotency via stripe_event_id.
 
       // v1.x: Record 2% self-insurance contribution from worker earnings
       // F-22 FIX: Use the insuranceContributionCents captured from the transaction
@@ -1370,8 +1396,46 @@ export const EscrowService = {
       // -----------------------------------------------------------------------
       // Transaction 2 (terminalize): atomically commit state = REFUND_PARTIAL
       // plus both Stripe IDs. Only runs after both Stripe calls succeed.
+      //
+      // F-05 FIX: Re-read the version under FOR UPDATE NOWAIT so the UPDATE
+      // predicate uses the freshly-locked version rather than the stale T1
+      // snapshot. Any operation that incremented the version between T1 and T2
+      // would cause escrowVersion! to match 0 rows — orphaning the Stripe calls.
       // -----------------------------------------------------------------------
       const termResult = await db.transaction(async (query) => {
+        // Step 1: Acquire exclusive lock and re-read live version
+        let lockedVersion: number;
+        try {
+          const lockedRow = await query<{ id: string; version: number; state: string }>(
+            `SELECT id, version, state FROM escrows WHERE id = $1 FOR UPDATE NOWAIT`,
+            [escrowId]
+          );
+          if (!lockedRow.rows.length) {
+            throw new Error(`Escrow ${escrowId} disappeared during T2 partial-refund lock — retry`);
+          }
+          const lockedState = lockedRow.rows[0].state;
+          // Idempotent replay: already terminalized by a concurrent caller
+          if (lockedState === 'REFUND_PARTIAL') {
+            const existing = await EscrowService.getById(escrowId);
+            return existing;
+          }
+          if (lockedState !== 'LOCKED_DISPUTE') {
+            return {
+              success: false,
+              error: {
+                code: ErrorCodes.INVALID_STATE,
+                message: `partialRefund: escrow state changed to ${lockedState} during T2 lock — cannot terminalize`,
+              },
+            } as ServiceResult<Escrow>;
+          }
+          lockedVersion = lockedRow.rows[0].version;
+        } catch (lockErr) {
+          if (lockErr instanceof Error && lockErr.message.includes('could not obtain lock')) {
+            throw new Error(`partialRefund T2: row lock contention on escrow ${escrowId} — retry`);
+          }
+          throw lockErr;
+        }
+
         const result = await query<Escrow>(
           `UPDATE escrows
            SET state = 'REFUND_PARTIAL',
@@ -1384,7 +1448,7 @@ export const EscrowService = {
              AND version = $2
              AND state = 'LOCKED_DISPUTE'
            RETURNING *`,
-          [escrowId, escrowVersion!, resolvedTransferId, resolvedRefundId]
+          [escrowId, lockedVersion!, resolvedTransferId, resolvedRefundId]
         );
 
         if (result.rowCount === 0) {

@@ -504,9 +504,11 @@ describe('EscrowService.partialRefund', () => {
       .mockResolvedValueOnce({ rows: [{ worker_id: 'worker-1' }], rowCount: 1 } as never)
       // 3rd: SELECT stripe_connect_id FROM users (inside transaction)
       .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_test' }], rowCount: 1 } as never)
-      // 4th: UPDATE succeeds
+      // 4th: F-05: SELECT id, version, state FOR UPDATE NOWAIT (T2 re-read)
+      .mockResolvedValueOnce({ rows: [{ id: 'esc-1', version: 1, state: 'LOCKED_DISPUTE' }], rowCount: 1 } as never)
+      // 5th: UPDATE succeeds
       .mockResolvedValueOnce({ rows: [updated], rowCount: 1 } as never)
-      // 5th: logEscrowEvent INSERT
+      // 6th: logEscrowEvent INSERT
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
     // Post-commit: StripeService.createTransfer + createRefund are mocked via vi.mock above.
 

@@ -28,6 +28,12 @@ vi.mock('../../src/logger', () => ({
 import { db } from '../../src/db';
 import { SelfInsurancePoolService } from '../../src/services/SelfInsurancePoolService';
 
+vi.mock('../../src/services/StripeService.js', () => ({
+  StripeService: {
+    createTransfer: vi.fn().mockResolvedValue({ success: true, data: { transferId: 'tr_test', amount: 8000 } }),
+  },
+}));
+
 const mockDb = vi.mocked(db);
 
 beforeEach(() => {
@@ -129,10 +135,15 @@ describe('SelfInsurancePoolService', () => {
   // --------------------------------------------------------------------------
   describe('fileClaim', () => {
     it('files a claim successfully', async () => {
-      // getPoolStatus
-      mockDb.query.mockResolvedValueOnce({ rows: [makePoolRow()], rowCount: 1 } as never);
-      // INSERT claim
-      mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'claim-1' }], rowCount: 1 } as never);
+      // F-02 FIX: fileClaim now wraps the balance check + INSERT in a transaction.
+      // Sequence:
+      //   1. getPoolStatus (outer db.query — reads pool config)
+      //   Inside db.transaction:
+      //     2. SELECT available_balance_cents FOR UPDATE (pool lock)
+      //     3. INSERT insurance_claims RETURNING id
+      mockDb.query.mockResolvedValueOnce({ rows: [makePoolRow()], rowCount: 1 } as never); // getPoolStatus
+      mockDb.query.mockResolvedValueOnce({ rows: [{ available_balance_cents: 80000 }], rowCount: 1 } as never); // FOR UPDATE lock
+      mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'claim-1' }], rowCount: 1 } as never); // INSERT
 
       const result = await SelfInsurancePoolService.fileClaim(
         'task-1', 'hustler-1', 25000, 'Tool damage', ['https://r2.dev/evidence.jpg']
@@ -142,7 +153,7 @@ describe('SelfInsurancePoolService', () => {
       if (result.success) expect(result.data).toBe('claim-1');
     });
 
-    it('rejects claim exceeding max amount', async () => {
+    it('rejects claim exceeding max amount (pre-flight check, no transaction)', async () => {
       mockDb.query.mockResolvedValueOnce({
         rows: [makePoolRow({ max_claim_cents: 500000 })],
         rowCount: 1,
@@ -154,6 +165,20 @@ describe('SelfInsurancePoolService', () => {
 
       expect(result.success).toBe(false);
       if (!result.success) expect(result.error.code).toBe('CLAIM_EXCEEDS_MAX');
+    });
+
+    it('rejects claim when locked balance is insufficient', async () => {
+      // Pool status shows balance, but the FOR UPDATE re-read shows insufficient balance
+      mockDb.query.mockResolvedValueOnce({ rows: [makePoolRow({ available_balance_cents: 50000 })], rowCount: 1 } as never); // getPoolStatus
+      // Inside transaction: FOR UPDATE returns a lower balance (concurrent claim reduced it)
+      mockDb.query.mockResolvedValueOnce({ rows: [{ available_balance_cents: 100 }], rowCount: 1 } as never); // FOR UPDATE lock
+
+      const result = await SelfInsurancePoolService.fileClaim(
+        'task-1', 'hustler-1', 25000, 'Damage', []
+      );
+
+      expect(result.success).toBe(false);
+      if (!result.success) expect(result.error.code).toBe('INSUFFICIENT_POOL_BALANCE');
     });
 
     it('handles pool status failure', async () => {
@@ -171,7 +196,7 @@ describe('SelfInsurancePoolService', () => {
   // reviewClaim
   // --------------------------------------------------------------------------
   describe('reviewClaim', () => {
-    it('approves a claim', async () => {
+    it('approves a pending claim', async () => {
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
 
       const result = await SelfInsurancePoolService.reviewClaim('claim-1', 'admin-1', true, 'Valid claim');
@@ -181,7 +206,7 @@ describe('SelfInsurancePoolService', () => {
       expect(params[0]).toBe('approved');
     });
 
-    it('denies a claim', async () => {
+    it('denies a pending claim', async () => {
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
 
       const result = await SelfInsurancePoolService.reviewClaim('claim-1', 'admin-1', false, 'Insufficient evidence');
@@ -191,7 +216,17 @@ describe('SelfInsurancePoolService', () => {
       expect(params[0]).toBe('denied');
     });
 
-    it('returns error on failure', async () => {
+    it('returns CLAIM_NOT_REVIEWABLE when claim is not in pending status (F-04 fix)', async () => {
+      // UPDATE returns rowCount=0 when the AND status='pending' guard rejects it
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+
+      const result = await SelfInsurancePoolService.reviewClaim('claim-1', 'admin-1', true, 'ok');
+
+      expect(result.success).toBe(false);
+      if (!result.success) expect(result.error.code).toBe('CLAIM_NOT_REVIEWABLE');
+    });
+
+    it('returns error on DB failure', async () => {
       mockDb.query.mockRejectedValueOnce(new Error('update failed'));
 
       const result = await SelfInsurancePoolService.reviewClaim('claim-1', 'admin-1', true, 'ok');
@@ -243,9 +278,8 @@ describe('SelfInsurancePoolService', () => {
       if (!result.success) expect(result.error.code).toBe('INSUFFICIENT_POOL_BALANCE');
     });
 
-    it('pays claim successfully (no Stripe key)', async () => {
-      const originalKey = process.env.STRIPE_SECRET_KEY;
-      delete process.env.STRIPE_SECRET_KEY;
+    it('pays claim successfully (F-06: uses StripeService.createTransfer)', async () => {
+      const { StripeService: MockStripe } = await import('../../src/services/StripeService.js');
 
       mockDb.query
         .mockResolvedValueOnce({
@@ -254,15 +288,18 @@ describe('SelfInsurancePoolService', () => {
         } as never) // claim (outer SELECT)
         .mockResolvedValueOnce({ rows: [{ coverage_percentage: 80 }], rowCount: 1 } as never) // coverage% (outer)
         // F-25: inside transaction — claim re-check FOR UPDATE, then rest of transaction
-        .mockResolvedValueOnce({ rows: [{ status: 'approved' }], rowCount: 1 } as never) // claim FOR UPDATE
+        .mockResolvedValueOnce({ rows: [{ status: 'approved', stripe_transfer_id: null }], rowCount: 1 } as never) // claim FOR UPDATE
         .mockResolvedValueOnce({ rows: [{ available_balance_cents: 50000 }], rowCount: 1 } as never) // pool FOR UPDATE
         .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // UPDATE pool
-        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // UPDATE claim to paid
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // UPDATE claim to paid
+        // After transaction: StripeService.createTransfer (mocked globally)
+        .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_test' }], rowCount: 1 } as never) // SELECT stripe_connect_id
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // UPDATE stripe_transfer_id
 
       const result = await SelfInsurancePoolService.payClaim('claim-1');
 
       expect(result.success).toBe(true);
-      if (originalKey) process.env.STRIPE_SECRET_KEY = originalKey;
+      expect(vi.mocked(MockStripe.createTransfer)).toHaveBeenCalledOnce();
     });
   });
 

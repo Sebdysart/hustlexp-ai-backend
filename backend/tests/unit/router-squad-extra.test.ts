@@ -354,6 +354,8 @@ describe('squad.respondToInvite', () => {
           rowCount: 1,
         })
         .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // UPDATE invite status
+        .mockResolvedValueOnce({ rows: [{ status: 'active', max_members: 5 }], rowCount: 1 }) // R-05: squad active check
+        .mockResolvedValueOnce({ rows: [{ cnt: '2' }], rowCount: 1 }) // R-02: capacity check
         .mockResolvedValueOnce({ rows: [], rowCount: 1 }); // INSERT member
       return fn(txQuery);
     });

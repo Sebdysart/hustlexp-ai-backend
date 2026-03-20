@@ -297,6 +297,27 @@ export const QUEUE_CONFIGS: Record<QueueName, QueueConfig> = {
 
 const queueInstances = new Map<QueueName, Queue>();
 
+// Tracks every ioredis connection created by getQueue / createWorker so they
+// can all be cleanly disconnected on graceful shutdown (W-06 fix).
+const connectionInstances = new Map<string, Redis>();
+
+/**
+ * Close all tracked ioredis connections.
+ * Call this during graceful shutdown before the process exits.
+ */
+export async function closeAllConnections(): Promise<void> {
+  const closePromises: Promise<void>[] = [];
+  for (const [key, conn] of connectionInstances.entries()) {
+    closePromises.push(
+      conn.quit().then(() => undefined).catch((err: unknown) => {
+        rootLogger.warn({ err, connectionKey: key }, 'Error closing Redis connection');
+      })
+    );
+  }
+  await Promise.all(closePromises);
+  connectionInstances.clear();
+}
+
 /**
  * Get or create a BullMQ queue
  * Singleton pattern to ensure one queue instance per name
@@ -305,15 +326,16 @@ export function getQueue(queueName: QueueName): Queue {
   if (queueInstances.has(queueName)) {
     return queueInstances.get(queueName)!;
   }
-  
-  const config = QUEUE_CONFIGS[queueName];
+
+  const queueConfig = QUEUE_CONFIGS[queueName];
   const connection = createRedisConnection();
-  
+  connectionInstances.set(`${queueName}:queue`, connection);
+
   const queue = new Queue(queueName, {
     connection: connection as unknown as QueueOptions['connection'],
-    defaultJobOptions: config.defaultJobOptions,
+    defaultJobOptions: queueConfig.defaultJobOptions,
   });
-  
+
   queueInstances.set(queueName, queue);
   return queue;
 }
@@ -337,7 +359,15 @@ export function generateIdempotencyKey(
 }
 
 /**
- * Parse idempotency key to extract components
+ * Parse idempotency key to extract components.
+ *
+ * Supports both the standard 3-segment format ({eventType}:{aggregateId}:{version})
+ * and extended surge/discriminator keys with 4+ segments
+ * (e.g. 'task.instant_available:taskId:hustlerId:surge1').
+ * For extended keys, parts[0] is eventType, parts[1] is aggregateId, and
+ * parts.slice(2).join(':') is treated as the discriminator suffix (returned as
+ * a non-numeric NaN eventVersion — callers that need the raw suffix should use
+ * the key directly).
  */
 export function parseIdempotencyKey(key: string): {
   eventType: string;
@@ -345,13 +375,13 @@ export function parseIdempotencyKey(key: string): {
   eventVersion: number;
 } {
   const parts = key.split(':');
-  if (parts.length !== 3) {
+  if (parts.length < 3) {
     throw new Error(`Invalid idempotency key format: ${key}`);
   }
   return {
     eventType: parts[0],
     aggregateId: parts[1],
-    eventVersion: parseInt(parts[2], 10),
+    eventVersion: parseInt(parts.slice(2).join(':'), 10),
   };
 }
 
@@ -381,6 +411,9 @@ export function createWorker(
 ): Worker {
   const queueConfig = QUEUE_CONFIGS[queueName];
   const connection = createRedisConnection();
+  // Use a unique key per worker in case multiple workers share the same queue name
+  const connKey = `${queueName}:worker:${connectionInstances.size}`;
+  connectionInstances.set(connKey, connection);
 
   // For the critical_payments queue, override removeOnFail so that any job
   // that exhausts all retries is preserved indefinitely in Redis for audit and
@@ -476,6 +509,18 @@ export function verifyJobSignature(payload: Record<string, unknown>, signature: 
   }
   return diff === 0;
 }
+
+// ============================================================================
+// GRACEFUL SHUTDOWN — close all tracked Redis connections
+// ============================================================================
+
+const shutdownHandler = async (signal: string) => {
+  rootLogger.info({ signal }, 'queues: received shutdown signal, closing Redis connections');
+  await closeAllConnections();
+};
+
+process.on('SIGTERM', () => { void shutdownHandler('SIGTERM'); });
+process.on('SIGINT',  () => { void shutdownHandler('SIGINT'); });
 
 // ============================================================================
 // EXPORTS

@@ -47,14 +47,22 @@ export interface Context extends Record<string, unknown> {
 }
 
 function extractIp(req: Request): string | null {
+  // cf-connecting-ip: set by Cloudflare directly from the TCP connection;
+  // cannot be forged by the client regardless of what they put in XFF.
+  const cfIp = req.headers.get('cf-connecting-ip');
+  if (cfIp) return cfIp.trim() || null;
+
+  // X-Forwarded-For: use the RIGHTMOST entry, which is appended by our
+  // trusted reverse proxy and cannot be forged by the client.
+  // A-22: NEVER use the leftmost entry — it is client-controlled and allows
+  // an attacker to spoof arbitrary IPs to bypass rate limiting.
   const xff = req.headers.get('x-forwarded-for');
   if (xff) {
-    // Take the first (leftmost) entry — the original client IP.
-    // The rightmost entry is the edge proxy IP shared by all users,
-    // which would collapse every client into the same rate-limit bucket.
-    const parts = xff.split(',');
-    return parts[0]?.trim() || null;
+    const parts = xff.split(',').map((p) => p.trim()).filter(Boolean);
+    return parts[parts.length - 1] ?? null;
   }
+
+  // x-real-ip: set by nginx/proxies from the connection address.
   return req.headers.get('x-real-ip') || null;
 }
 

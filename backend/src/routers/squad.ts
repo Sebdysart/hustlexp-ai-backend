@@ -347,11 +347,11 @@ export const squadRouter = router({
     }))
     .mutation(async ({ ctx, input }) => {
       return await db.transaction(async (query) => {
-        // Get and validate invite
+        // Get and validate invite (R-01: also reject expired invites)
         const invite = await query<{
           id: string; squad_id: string; invitee_id: string; status: string;
         }>(
-          `SELECT * FROM squad_invites WHERE id = $1 AND invitee_id = $2 AND status = 'pending'`,
+          `SELECT * FROM squad_invites WHERE id = $1 AND invitee_id = $2 AND status = 'pending' AND expires_at > NOW()`,
           [input.inviteId, ctx.user.id]
         );
 
@@ -369,6 +369,25 @@ export const squadRouter = router({
         );
 
         if (input.accept) {
+          // R-05: Verify squad is still active
+          const squadResult = await query<{ status: string; max_members: number }>(
+            `SELECT status, max_members FROM squads WHERE id = $1`,
+            [inv.squad_id]
+          );
+          if (squadResult.rows[0]?.status !== 'active') {
+            throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Squad is no longer active' });
+          }
+
+          // R-02: Check squad capacity under transaction lock
+          const countResult = await query<{ cnt: string }>(
+            `SELECT COUNT(*) as cnt FROM squad_members WHERE squad_id = $1`,
+            [inv.squad_id]
+          );
+          const currentCount = parseInt(countResult.rows[0].cnt, 10);
+          if (currentCount >= squadResult.rows[0].max_members) {
+            throw new TRPCError({ code: 'CONFLICT', message: 'Squad is full' });
+          }
+
           // Add as member
           await query(
             `INSERT INTO squad_members (squad_id, user_id, role)

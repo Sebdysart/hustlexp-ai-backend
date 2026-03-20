@@ -14,6 +14,7 @@ import { db } from '../db.js';
 import type { QueryFn } from '../db.js';
 import type { ServiceResult } from '../types.js';
 import { logger } from '../logger.js';
+import { StripeService } from './StripeService.js';
 
 const log = logger.child({ service: 'SelfInsurancePoolService' });
 
@@ -129,7 +130,7 @@ export const SelfInsurancePoolService = {
     evidenceUrls: string[]
   ): Promise<ServiceResult<string>> => {
     try {
-      // Validate claim amount against max
+      // Pre-flight: validate claim amount against pool max (outside transaction — read-only config check)
       const poolStatus = await SelfInsurancePoolService.getPoolStatus();
       if (!poolStatus.success || !poolStatus.data) {
         throw new Error('Failed to get pool status');
@@ -145,39 +146,58 @@ export const SelfInsurancePoolService = {
         };
       }
 
-      // F-32: Also check against live available balance using the same coverage percentage
-      // that payClaim() will apply, so we reject at filing time rather than at payout time.
+      // F-02 FIX: Wrap the live balance check + INSERT in a transaction with
+      // SELECT ... FOR UPDATE so concurrent callers cannot collectively exceed
+      // pool balance. The FOR UPDATE row lock serializes concurrent fileClaim()
+      // calls through the balance check, ensuring only one at a time can read
+      // the balance, validate it, and INSERT a new claim.
       const coveredAmount = Math.round(claimAmountCents * (poolStatus.data.coverage_percentage / 100));
-      if (coveredAmount > poolStatus.data.available_balance_cents) {
-        return {
-          success: false,
-          error: {
-            code: 'INSUFFICIENT_POOL_BALANCE',
-            message: `Pool has insufficient balance to cover this claim. Available: $${(poolStatus.data.available_balance_cents / 100).toFixed(2)}`
-          }
-        };
-      }
 
-      // Insert claim
-      const result = await db.query<{ id: string }>(
-        `INSERT INTO insurance_claims (
-          task_id, hustler_id, claim_amount_cents, claim_reason, evidence_urls
-        ) VALUES ($1, $2, $3, $4, $5)
-        RETURNING id`,
-        [taskId, hustlerId, claimAmountCents, reason, evidenceUrls]
-      );
+      const claimId = await db.transaction(async (query: QueryFn) => {
+        // Lock the pool row to serialize concurrent claim filings
+        const poolResult = await query<{ available_balance_cents: number }>(
+          'SELECT available_balance_cents FROM self_insurance_pool FOR UPDATE LIMIT 1'
+        );
 
-      const claimId = result.rows[0].id;
+        const availableBalanceCents = poolResult.rows[0]?.available_balance_cents ?? 0;
+
+        // F-32: Check against live locked balance
+        if (coveredAmount > availableBalanceCents) {
+          throw new Error(`INSUFFICIENT_POOL_BALANCE:Pool has insufficient balance to cover this claim. Available: $${(availableBalanceCents / 100).toFixed(2)}`);
+        }
+
+        // Insert claim (holds the lock through commit, preventing double-filing past the balance)
+        const result = await query<{ id: string }>(
+          `INSERT INTO insurance_claims (
+            task_id, hustler_id, claim_amount_cents, claim_reason, evidence_urls
+          ) VALUES ($1, $2, $3, $4, $5)
+          RETURNING id`,
+          [taskId, hustlerId, claimAmountCents, reason, evidenceUrls]
+        );
+
+        return result.rows[0].id;
+      });
+
       log.info({ claimId, taskId, amountCents: claimAmountCents }, 'Filed claim');
 
       return { success: true, data: claimId };
     } catch (error) {
-      log.error({ err: error instanceof Error ? error.message : String(error), taskId, hustlerId }, 'Failed to file claim');
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.startsWith('INSUFFICIENT_POOL_BALANCE:')) {
+        return {
+          success: false,
+          error: {
+            code: 'INSUFFICIENT_POOL_BALANCE',
+            message: message.slice('INSUFFICIENT_POOL_BALANCE:'.length)
+          }
+        };
+      }
+      log.error({ err: message, taskId, hustlerId }, 'Failed to file claim');
       return {
         success: false,
         error: {
           code: 'FILE_CLAIM_FAILED',
-          message: error instanceof Error ? error.message : 'Failed to file claim'
+          message
         }
       };
     }
@@ -196,15 +216,29 @@ export const SelfInsurancePoolService = {
     try {
       const newStatus: ClaimStatus = approved ? 'approved' : 'denied';
 
-      await db.query(
+      // F-04 FIX: Add AND status = 'pending' guard so already-paid or denied claims
+      // cannot be re-reviewed. Without this guard, any claim can be flipped back to
+      // 'approved' or 'denied' regardless of its current state.
+      const result = await db.query(
         `UPDATE insurance_claims
          SET status = $1,
              reviewed_by = $2,
              reviewed_at = NOW(),
              review_notes = $3
-         WHERE id = $4`,
+         WHERE id = $4
+           AND status = 'pending'`,
         [newStatus, reviewerId, reviewNotes, claimId]
       );
+
+      if (result.rowCount === 0) {
+        return {
+          success: false,
+          error: {
+            code: 'CLAIM_NOT_REVIEWABLE',
+            message: 'Claim is not in pending status and cannot be reviewed'
+          }
+        };
+      }
 
       log.info({ claimId, approved }, 'Reviewed claim');
 
@@ -331,57 +365,46 @@ export const SelfInsurancePoolService = {
       });
 
       // Transfer funds to hustler via Stripe Connect
-      // F-19: Use Idempotency-Key header keyed on claimId to prevent duplicate transfers
-      const stripeKey = process.env.STRIPE_SECRET_KEY ?? '';
-      if (stripeKey) {
-        try {
-          const hustlerResult = await db.query<{ stripe_connect_id: string }>(
-            `SELECT stripe_connect_id FROM users WHERE id = $1`,
-            [claim.hustler_id]
-          );
-          const connectId = hustlerResult.rows[0]?.stripe_connect_id;
-          if (connectId) {
-            const transferResponse = await fetch('https://api.stripe.com/v1/transfers', {
-              method: 'POST',
-              headers: {
-                'Authorization': `Bearer ${stripeKey}`,
-                'Content-Type': 'application/x-www-form-urlencoded',
-                'Idempotency-Key': `claim_payout_${claimId}`,
-              },
-              body: new URLSearchParams({
-                amount: coveredAmountCents.toString(),
-                currency: 'usd',
-                destination: connectId,
-                description: `Insurance claim payout: ${claimId}`,
-                'metadata[claim_id]': claimId,
-                'metadata[task_id]': claim.task_id,
-              }).toString(),
-            });
-            if (transferResponse.ok) {
-              // F-31: Record the transfer ID so the idempotency guard can confirm
-              // that the Stripe call succeeded. Without this, a process crash after
-              // DB commit but before Stripe completes leaves the claim in a
-              // status='paid'/stripe_transfer_id=NULL limbo that is un-retryable.
-              const transferData = await transferResponse.json() as { id?: string };
-              if (transferData.id) {
-                await db.query(
-                  'UPDATE insurance_claims SET stripe_transfer_id = $1 WHERE id = $2',
-                  [transferData.id, claimId]
-                );
-              }
-            } else {
-              log.error({ claimId, taskId: claim.task_id, statusCode: transferResponse.status }, 'Stripe transfer failed for claim payout');
-              await db.query(
-                `UPDATE insurance_claims SET review_notes = COALESCE(review_notes, '') || ' [STRIPE_TRANSFER_FAILED]' WHERE id = $1`,
-                [claimId]
-              );
-            }
+      // F-06 FIX: Use StripeService.createTransfer() instead of raw fetch() so the
+      // call goes through the circuit breaker, SDK retry/timeout logic, and test stubs.
+      // F-19: Pass claimId as part of the idempotency key to prevent duplicate transfers.
+      try {
+        const hustlerResult = await db.query<{ stripe_connect_id: string }>(
+          `SELECT stripe_connect_id FROM users WHERE id = $1`,
+          [claim.hustler_id]
+        );
+        const connectId = hustlerResult.rows[0]?.stripe_connect_id;
+        if (connectId) {
+          const transferResult = await StripeService.createTransfer({
+            escrowId: claimId, // use claimId as the correlation key for this payout
+            taskId: claim.task_id,
+            workerId: claim.hustler_id,
+            workerStripeAccountId: connectId,
+            amount: coveredAmountCents,
+            description: `Insurance claim payout: ${claimId}`,
+            idempotencyKeySuffix: `claim_payout_${claimId}`,
+          });
+          if (transferResult.success) {
+            // F-31: Record the transfer ID so the idempotency guard can confirm
+            // that the Stripe call succeeded. Without this, a process crash after
+            // DB commit but before Stripe completes leaves the claim in a
+            // status='paid'/stripe_transfer_id=NULL limbo that is un-retryable.
+            await db.query(
+              'UPDATE insurance_claims SET stripe_transfer_id = $1 WHERE id = $2',
+              [transferResult.data.transferId, claimId]
+            );
           } else {
-            log.warn({ hustlerId: claim.hustler_id, claimId }, 'Hustler has no Stripe Connect ID');
+            log.error({ claimId, taskId: claim.task_id, err: transferResult.error.message }, 'Stripe transfer failed for claim payout');
+            await db.query(
+              `UPDATE insurance_claims SET review_notes = COALESCE(review_notes, '') || ' [STRIPE_TRANSFER_FAILED]' WHERE id = $1`,
+              [claimId]
+            );
           }
-        } catch (stripeError) {
-          log.error({ err: stripeError instanceof Error ? stripeError.message : String(stripeError), claimId }, 'Stripe error during claim payout');
+        } else {
+          log.warn({ hustlerId: claim.hustler_id, claimId }, 'Hustler has no Stripe Connect ID');
         }
+      } catch (stripeError) {
+        log.error({ err: stripeError instanceof Error ? stripeError.message : String(stripeError), claimId }, 'Stripe error during claim payout');
       }
 
       log.info({ claimId, coveredAmountCents }, 'Paid claim');
