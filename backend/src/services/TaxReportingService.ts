@@ -289,7 +289,8 @@ export const TaxReportingService = {
            FROM tips tp
            WHERE tp.worker_id = $2
              AND tp.status = 'completed'
-             AND EXTRACT(YEAR FROM tp.created_at) = $1
+             AND EXTRACT(YEAR FROM tp.completed_at) = $1
+             AND tp.completed_at IS NOT NULL
          ) combined`,
         [year, userId, feePercent]
       );

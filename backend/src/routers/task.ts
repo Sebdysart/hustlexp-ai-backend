@@ -1005,7 +1005,7 @@ export const taskRouter = router({
   cancel: posterProcedure
     .input(z.object({
       taskId: Schemas.uuid,
-      reason: z.string().max(1000).optional(),
+      reason: z.string().trim().max(1000).optional(),
     }))
     .mutation(async ({ ctx, input }) => {
       // YY-01 FIX: poster ownership is verified inside the FOR UPDATE transaction
@@ -1040,7 +1040,7 @@ export const taskRouter = router({
   applyForTask: hustlerProcedure
     .input(z.object({
       taskId: Schemas.uuid,
-      message: z.string().max(500).optional(),
+      message: z.string().trim().max(500).optional(),
     }))
     .mutation(async ({ ctx, input }) => {
       const taskResult = await db.query(
@@ -1149,7 +1149,7 @@ export const taskRouter = router({
   workerCancel: hustlerProcedure
     .input(z.object({
       taskId: Schemas.uuid,
-      reason: z.string().max(500).optional(),
+      reason: z.string().trim().max(500).optional(),
     }))
     .mutation(async ({ ctx, input }) => {
       const result = await TaskService.workerAbandon(input.taskId, ctx.user.id, input.reason);
@@ -1324,7 +1324,7 @@ export const taskRouter = router({
     .input(z.object({
       taskId: Schemas.uuid,
       workerId: Schemas.uuid,
-      reason: z.string().max(500).optional(),
+      reason: z.string().trim().max(500).optional(),
     }))
     .mutation(async ({ ctx, input }) => {
       const taskResult = await db.query(

@@ -605,7 +605,7 @@ export const DisputeService = {
             version: newVersion,
           },
           queueName: 'critical_trust',
-        });
+        }, query);
         
         // Write trust events: trust.dispute_resolved.worker and trust.dispute_resolved.poster
         // Generate deterministic idempotency keys
@@ -633,7 +633,7 @@ export const DisputeService = {
           },
           queueName: 'critical_trust',
           idempotencyKey: workerTrustIdempotencyKey,
-        });
+        }, query);
         
         // Poster trust event
         await writeToOutbox({
@@ -653,7 +653,7 @@ export const DisputeService = {
           },
           queueName: 'critical_trust',
           idempotencyKey: posterTrustIdempotencyKey,
-        });
+        }, query);
         
         // Write escrow action request outbox event (exactly one)
         const escrowEventType = outcomeEscrowAction === 'RELEASE'
@@ -676,7 +676,7 @@ export const DisputeService = {
             release_amount: releaseAmount,
           },
           queueName: 'critical_payments',
-        });
+        }, query);
         
         return resolvedDispute;
       });

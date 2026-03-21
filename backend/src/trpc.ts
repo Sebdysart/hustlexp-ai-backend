@@ -305,7 +305,7 @@ export const Schemas = {
 
   acceptWithConsent: z.object({
     taskId: z.string().uuid(),
-    consentItems: z.array(z.string()).min(1).max(10),
+    consentItems: z.array(z.string().trim().min(1).max(500)).min(1).max(10),
   }),
   
   // Escrow

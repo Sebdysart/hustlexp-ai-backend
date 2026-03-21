@@ -449,7 +449,7 @@ export const userRouter = router({
   updateProfile: protectedProcedure
     .input(z.object({
       fullName: z.string().trim().min(1).max(255).optional(),
-      bio: z.string().max(500).optional(),
+      bio: z.string().trim().max(500).optional(),
       avatarUrl: z.string().url().max(2048).refine(isApprovedAvatarHost, { message: 'Avatar must be hosted on approved storage (R2 only)' }).optional(),
       phone: z.string().trim().max(20).regex(/^[+\d\s\-().]{7,20}$/, 'Invalid phone number format').optional(),
       // Accept "hustler", "worker", or "poster" from frontend

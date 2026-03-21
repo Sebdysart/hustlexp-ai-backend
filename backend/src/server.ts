@@ -417,6 +417,13 @@ function serveStatic(path: string, _contentType = 'text/html') {
   };
 }
 
+// A50-3 FIX: Apply rate limiting to static legal pages. Without this guard,
+// the pages were unauthenticated and unmetered, making them an easy amplification
+// vector (large HTML responses, no throttle). Pattern matches /health* protection.
+app.use('/privacy*', publicIpRateLimitMiddleware());
+app.use('/terms*', publicIpRateLimitMiddleware());
+app.use('/legal*', publicIpRateLimitMiddleware());
+
 app.get('/privacy-policy', serveStatic('privacy-policy.html'));
 app.get('/privacy', serveStatic('privacy-policy.html'));
 app.get('/terms-of-service', serveStatic('terms-of-service.html'));

@@ -103,6 +103,10 @@ export const insuranceRouter = router({
         throw new TRPCError({ code: 'FORBIDDEN', message: 'Not a participant of this task' });
       }
 
+      if (ctx.user.id !== worker_id) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'Only the assigned worker can file an insurance claim' });
+      }
+
       const result = await SelfInsurancePoolService.fileClaim(
         taskId,
         ctx.user.id,

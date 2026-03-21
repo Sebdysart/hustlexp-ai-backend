@@ -1250,6 +1250,13 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
       await query('DELETE FROM user_xp_tax_status WHERE user_id = $1', [userId]);
       await query('DELETE FROM insurance_contributions WHERE user_id = $1', [userId]);
       await query('DELETE FROM insurance_claims WHERE user_id = $1', [userId]);
+      // D50-4: Delete evidence uploaded by this user (uploader_user_id is NOT NULL
+      // in the schema, so UPDATE NULL is not possible — DELETE is required).
+      // Note: evidence rows for active/completed disputes are not retained here
+      // because the user's right to erasure takes precedence over record-keeping
+      // for resolved disputes (GDPR Art. 17). Open dispute escrows are already
+      // refunded above before we reach this point.
+      await query('DELETE FROM evidence WHERE uploader_user_id = $1', [userId]);
       await query(
         `UPDATE dispute_jury_votes SET voter_id = NULL WHERE voter_id = $1`,
         [userId]
@@ -1263,8 +1270,31 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
         [userId]
       );
 
+      // D50-2: Delete queued outbound emails containing PII (subject/body/recipient)
+      await query('DELETE FROM email_outbox WHERE user_id = $1', [userId]);
+
+      // D50-3: Delete notification delivery log (contains PII in body/title columns)
+      await query('DELETE FROM notification_log WHERE user_id = $1', [userId]);
+
       // Delete notifications (bodies contain PII: task descriptions, payment amounts, counterparty names)
       await query('DELETE FROM notifications WHERE user_id = $1', [userId]);
+
+      // D50-6: Scrub notification bodies sent TO other users that contain this
+      // user's message text. The notifications table links to tasks via task_id,
+      // and task_messages links to tasks via task_id with sender_id. We clear the
+      // body for any notification whose task_id matches a task where the deleted
+      // user was the sender (covers message-preview notifications).
+      await query(
+        `UPDATE notifications n
+         SET body = '[Message deleted per GDPR request]'
+         WHERE n.task_id IN (
+           SELECT DISTINCT tm.task_id
+           FROM task_messages tm
+           WHERE tm.sender_id = $1
+         )
+         AND n.user_id != $1`,
+        [userId]
+      );
       
       // Delete saved searches
       await query(
@@ -1355,10 +1385,14 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
       // Since user record is anonymized (not deleted), foreign keys remain valid
       // We anonymize content and remove photos for privacy for ALL matched rows
       // (both sent and received messages must be erased per GDPR)
+      // D50-1: also clear location columns (lat/lon/expires) which are PII
       await query(
         `UPDATE task_messages
          SET content = '[Message deleted per GDPR request]',
              photo_urls = '{}'::TEXT[],
+             location_latitude = NULL,
+             location_longitude = NULL,
+             location_expires_at = NULL,
              moderation_status = 'quarantined'
          WHERE sender_id = $1 OR receiver_id = $1`,
         [userId]
