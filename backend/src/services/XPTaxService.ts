@@ -337,14 +337,25 @@ export const XPTaxService = {
           }
         }
 
-        // Update summary table — inside same transaction so it is always consistent
+        // Update summary table — full reconciliation against actual ledger rows so the
+        // result is correct regardless of prior partial runs (F52-2 FIX).
+        // Decrementing by innerTotalTaxPaid is unsafe when a previous run paid some rows
+        // and crashed before updating the summary; that leaves a stale positive balance
+        // that the decrement can never recover from.  Re-computing from the ledger is
+        // idempotent and always produces the authoritative value.
         await query(
           `UPDATE user_xp_tax_status
-           SET total_unpaid_tax_cents = GREATEST(total_unpaid_tax_cents - $1, 0),
-               total_xp_held_back = GREATEST(total_xp_held_back - $2, 0),
-               last_updated_at = NOW()
-           WHERE user_id = $3`,
-          [innerTotalTaxPaid, innerTotalXpReleased, userId]
+           SET total_unpaid_tax_cents = COALESCE(
+             (SELECT SUM(tax_amount_cents) FROM xp_tax_ledger WHERE user_id = $1 AND tax_paid = false),
+             0
+           ),
+           total_xp_held_back = COALESCE(
+             (SELECT SUM(xp_held_back) FROM xp_tax_ledger WHERE user_id = $1 AND tax_paid = false AND xp_held_back > 0),
+             0
+           ),
+           last_updated_at = NOW()
+           WHERE user_id = $1`,
+          [userId]
         );
 
         return { totalXpReleased: innerTotalXpReleased, totalTaxPaid: innerTotalTaxPaid };

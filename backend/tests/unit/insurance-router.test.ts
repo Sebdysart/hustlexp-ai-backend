@@ -153,6 +153,7 @@ describe('insurance router', () => {
         taskId: UUID2,
         requestedAmountCents: 5000,
         incidentDescription: 'Tool was broken',
+        evidence_urls: ['https://hustlexp.r2.cloudflarestorage.com/evidence.jpg'],
       });
 
       expect(result.success).toBe(true);
@@ -177,6 +178,7 @@ describe('insurance router', () => {
         task_id: UUID2,
         claim_amount_cents: 500000,
         reason: 'Major damage occurred during task',
+        evidence_urls: ['https://hustlexp.r2.cloudflarestorage.com/evidence.jpg'],
       })).rejects.toThrow('Pool depleted');
     });
   });

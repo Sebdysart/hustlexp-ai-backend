@@ -433,6 +433,9 @@ export const userRouter = router({
           'SELECT * FROM users WHERE firebase_uid = $1',
           [input.firebaseUid]
         );
+        if (!existing.rows[0]) {
+          throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: 'Registration conflict — please retry' });
+        }
         return await toMobileUser(existing.rows[0]);
       }
 

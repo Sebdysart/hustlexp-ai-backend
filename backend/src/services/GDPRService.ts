@@ -627,15 +627,11 @@ export const GDPRService = {
           },
         };
       }
-      if (request.status === 'rejected') {
-        return {
-          success: false,
-          error: {
-            code: ErrorCodes.INVALID_STATE,
-            message: 'Erasure request failed and requires admin reset before retry',
-          },
-        };
-      }
+      // D52-3: 'rejected' means a previous anonymization attempt failed mid-flight.
+      // All 'rejected' paths in this service come from internal DB/transaction errors,
+      // not from permanent policy rejections (those result in 'cancelled' via cancelRequest).
+      // Therefore, allow 'rejected' requests to re-enter the deletion flow for
+      // admin-triggered retries. The CAS update below will re-transition to 'processing'.
 
       // Verify deadline has passed (grace period expired)
       const now = new Date();
@@ -651,13 +647,15 @@ export const GDPRService = {
         };
       }
       
-      // CAS update: atomically transition from 'pending' → 'processing'.
+      // CAS update: atomically transition from 'pending'/'rejected' → 'processing'.
+      // 'pending' = initial state, 'rejected' = prior attempt failed (retryable).
       // If another worker already started processing, rowCount will be 0 and we bail
       // immediately — preventing concurrent deleteAndAnonymizeUserData calls.
+      // D52-3: include 'rejected' to allow admin-triggered retries after failure.
       const casResult = await db.query<{ id: string }>(
         `UPDATE gdpr_data_requests
          SET status = 'processing', processed_at = NOW()
-         WHERE id = $1 AND status = 'pending'
+         WHERE id = $1 AND status IN ('pending', 'rejected') AND deadline <= NOW()
          RETURNING id`,
         [requestId]
       );
@@ -1042,7 +1040,16 @@ export async function collectUserDataForExport(userId: string): Promise<Record<s
        ORDER BY created_at DESC`,
       [userId]
     );
-    
+
+    // 13. Task applications (D52-2: user's own applications as hustler)
+    const taskApplicationsResult = await db.query(
+      `SELECT ta.id, ta.task_id, ta.message, ta.status, ta.created_at AS applied_at
+       FROM task_applications ta
+       WHERE ta.hustler_id = $1
+       ORDER BY ta.created_at DESC`,
+      [userId]
+    );
+
     // Compile export data
     const exportData = {
       export_date: new Date().toISOString(),
@@ -1060,6 +1067,7 @@ export async function collectUserDataForExport(userId: string): Promise<Record<s
       notification_preferences: notificationPrefsResult.rows[0] || null,
       consent_history: consentHistoryResult.rows,
       saved_searches: savedSearchesResult.rows,
+      task_applications: taskApplicationsResult.rows,
     };
     
     return exportData;
@@ -1082,8 +1090,14 @@ export async function collectUserDataForExport(userId: string): Promise<Record<s
  */
 async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult<{ deletedAt: Date }>> {
   try {
-    // Generate anonymization ID
-    const anonymizedId = `DELETED_USER_${randomUUID().split('-')[0].toUpperCase()}`;
+    // Generate a deterministic, UUID-format anonymization ID derived from the
+    // real userId. This ensures the value is valid for UUID-typed columns
+    // (proofs.submitter_id, fraud_risk_scores.entity_id, task_applications.hustler_id)
+    // while still being clearly synthetic. The last 12 hex chars of the userId
+    // are placed in the node segment; all other nibbles are zeroed.
+    // NOTE: randomUUID() is NOT used here — we need a stable, reproducible ID
+    // so that retries of a failed anonymization transaction are idempotent.
+    const anonymizedId = `00000000-0000-0000-0000-${userId.replace(/-/g, '').slice(-12)}`;
     const anonymizedEmail = `deleted-${randomUUID().split('-')[0]}@deleted.hustlexp.app`;
     const deletedAt = new Date();
 
@@ -1388,6 +1402,17 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
              description = '[deleted]'
          WHERE submitter_id = $2`,
         [anonymizedId, userId]
+      );
+
+      // D52-1: Anonymize task_applications where user was the hustler.
+      // hustler_id is NOT NULL UUID FK — replace with anonymizedId (valid UUID).
+      // message TEXT may contain PII — overwrite with GDPR notice.
+      await query(
+        `UPDATE task_applications
+         SET message = '[Application removed per GDPR request]',
+             hustler_id = $2
+         WHERE hustler_id = $1`,
+        [userId, anonymizedId]
       );
 
       // Anonymize proof_submissions for the same user — GPS and biometric fields

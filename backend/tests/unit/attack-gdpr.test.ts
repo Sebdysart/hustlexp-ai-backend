@@ -372,37 +372,14 @@ describe('Attack 4: Delete while XP job is pending in BullMQ', () => {
   it('should confirm XPService.awardXP does NOT check account_status before writing to ledger', async () => {
     const { XPService } = await import('../../src/services/XPService');
 
-    // Restore real implementation for this one test to inspect actual behavior
-    vi.mocked(XPService.awardXP).mockRestore?.();
+    // This test is a structural code-reading finding — no DB calls are made.
+    // XPService.awardXP is a vi.mock() — mockRestore is a no-op here.
+    // IMPORTANT: Do NOT queue mockResolvedValueOnce values that won't be consumed;
+    // vi.clearAllMocks() between tests does NOT drain the once-queue, so leftover
+    // values would poison subsequent tests (Attack 5 → 6 → 7).
 
-    // The real awardXP does: SELECT ... FROM users WHERE id = $1 FOR UPDATE
-    // It does NOT check account_status = 'DELETED'
-    // We simulate: user exists but account_status = 'DELETED'
-    setupSerializableTransaction();
-    mockDb.query
-      // Daily cap check (checkDailyXPCap → Redis fallback to DB)
-      .mockResolvedValueOnce({ rows: [{ total_xp_today: 0 }], rowCount: 1 })
-      // Velocity check
-      .mockResolvedValueOnce({ rows: [{ count: '0' }], rowCount: 1 })
-      // Inside serializableTransaction: SELECT FOR UPDATE — returns DELETED user
-      .mockResolvedValueOnce({
-        rows: [{ xp_total: 500, current_level: 2, current_streak: 3, trust_tier: 1 }],
-        rowCount: 1
-      })
-      // SELECT mode FROM tasks
-      .mockResolvedValueOnce({ rows: [{ mode: 'STANDARD' }], rowCount: 1 })
-      // INSERT INTO xp_ledger
-      .mockResolvedValueOnce({
-        rows: [{ id: 'xp-new', user_id: 'user-deleted', effective_xp: 50, task_id: 't1', escrow_id: 'e1' }],
-        rowCount: 1
-      })
-      // UPDATE users SET xp_total
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 });
-
-    // The call succeeds even though account_status = 'DELETED' — there is no guard
-    // (We're testing the structural absence of a check, not the real result)
-    // FINDING: No account_status check exists in XPService.awardXP flow
-    // This is confirmed by reading XPService.ts lines 283-362 — zero check for
+    // FINDING: No account_status check exists in XPService.awardXP flow.
+    // Confirmed by reading XPService.ts lines 283-362 — zero check for
     // account_status or 'DELETED' before writing the ledger entry.
     expect(true).toBe(true); // Structural finding — documented in verdict above
   });
@@ -468,9 +445,11 @@ describe('Attack 5: Delete and re-register with same email', () => {
 
     // register() check: SELECT id FROM users WHERE firebase_uid = $1 OR email = $2
     // firebase_uid matches — returns the deleted row
+    // Only one db.query is called in this test (the existingCheck).
+    // Do NOT add a second mockResolvedValueOnce — unconsumed values persist
+    // across vi.clearAllMocks() and poison subsequent tests.
     mockDb.query
-      .mockResolvedValueOnce({ rows: [{ id: deletedUser.id }], rowCount: 1 })  // firebase_uid hit
-      .mockResolvedValueOnce({ rows: [deletedUser], rowCount: 1 });             // full row fetch
+      .mockResolvedValueOnce({ rows: [{ id: deletedUser.id }], rowCount: 1 });  // firebase_uid hit
 
     // FINDING: the register handler at user.ts:268-274 does NOT check account_status.
     // It returns the existing row regardless of whether it is 'DELETED'.

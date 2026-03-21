@@ -107,12 +107,16 @@ export const insuranceRouter = router({
         throw new TRPCError({ code: 'FORBIDDEN', message: 'Only the assigned worker can file an insurance claim' });
       }
 
+      if (!input.evidence_urls || input.evidence_urls.length === 0) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'At least one piece of evidence is required to file a claim' });
+      }
+
       const result = await SelfInsurancePoolService.fileClaim(
         taskId,
         ctx.user.id,
         amount,
         reason,
-        input.evidence_urls || []
+        input.evidence_urls
       );
 
       if (!result.success) {
