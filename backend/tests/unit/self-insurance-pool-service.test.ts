@@ -136,15 +136,15 @@ describe('SelfInsurancePoolService', () => {
   describe('fileClaim', () => {
     it('files a claim successfully', async () => {
       // F-02 FIX: fileClaim now wraps the balance check + INSERT in a transaction.
-      // F48-1: pre-flight duplicate check (db.query) runs BEFORE the try block.
+      // F49-7 FIX: duplicate check moved INSIDE the transaction (FOR UPDATE).
       // Sequence:
-      //   0. F48-1 duplicate check (outer db.query — no existing claim)
-      //   1. getPoolStatus (outer db.query — reads pool config)
+      //   0. getPoolStatus (outer db.query — reads pool config)
       //   Inside db.transaction:
+      //     1. SELECT duplicate check FOR UPDATE (no existing claim)
       //     2. SELECT available_balance_cents, coverage_percentage FOR UPDATE (pool lock)
       //     3. INSERT insurance_claims RETURNING id
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // F48-1 duplicate check — no existing claim
       mockDb.query.mockResolvedValueOnce({ rows: [makePoolRow()], rowCount: 1 } as never); // getPoolStatus
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // F49-7 duplicate check FOR UPDATE — no existing claim
       mockDb.query.mockResolvedValueOnce({ rows: [{ available_balance_cents: 80000, coverage_percentage: 80 }], rowCount: 1 } as never); // FOR UPDATE lock
       mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'claim-1' }], rowCount: 1 } as never); // INSERT
 
@@ -157,8 +157,11 @@ describe('SelfInsurancePoolService', () => {
     });
 
     it('returns CLAIM_ALREADY_EXISTS when a pending claim already exists', async () => {
-      // F48-1: duplicate guard fires before getPoolStatus — returns immediately
-      mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'claim-existing' }], rowCount: 1 } as never); // existing pending claim
+      // F49-7 FIX: duplicate guard now fires INSIDE the transaction (FOR UPDATE).
+      // getPoolStatus runs first (outer db.query), then the transaction starts and
+      // the duplicate check finds an existing claim — throws CLAIM_ALREADY_EXISTS.
+      mockDb.query.mockResolvedValueOnce({ rows: [makePoolRow()], rowCount: 1 } as never); // getPoolStatus
+      mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'claim-existing' }], rowCount: 1 } as never); // duplicate check FOR UPDATE — existing pending claim
 
       const result = await SelfInsurancePoolService.fileClaim(
         'task-1', 'hustler-1', 25000, 'Tool damage', []
@@ -166,15 +169,15 @@ describe('SelfInsurancePoolService', () => {
 
       expect(result.success).toBe(false);
       if (!result.success) expect(result.error.code).toBe('CLAIM_ALREADY_EXISTS');
-      // getPoolStatus should NOT have been called
-      expect(mockDb.query).toHaveBeenCalledTimes(1);
+      // getPoolStatus + duplicate check = 2 db.query calls total
+      expect(mockDb.query).toHaveBeenCalledTimes(2);
     });
 
     it('allows filing claim when previous claim was rejected', async () => {
-      // F48-1: duplicate check finds no active claim (rejected row does not count)
-      // so the claim proceeds normally
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // F48-1 duplicate check — no non-rejected/non-withdrawn claim
+      // F49-7 FIX: duplicate check now runs inside the transaction (FOR UPDATE).
+      // Rejected row does not count — the query filters status NOT IN ('rejected', 'withdrawn').
       mockDb.query.mockResolvedValueOnce({ rows: [makePoolRow()], rowCount: 1 } as never); // getPoolStatus
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // F49-7 duplicate check FOR UPDATE — no non-rejected/non-withdrawn claim
       mockDb.query.mockResolvedValueOnce({ rows: [{ available_balance_cents: 80000, coverage_percentage: 80 }], rowCount: 1 } as never); // FOR UPDATE lock
       mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'claim-new' }], rowCount: 1 } as never); // INSERT
 
@@ -190,12 +193,12 @@ describe('SelfInsurancePoolService', () => {
       // F47-6 FIX: The guard now computes estimatedCoveredCents = claimAmount * coverage%
       // and compares THAT against max_claim_cents.
       // 700000 * 80% = 560000 > 500000 max → CLAIM_EXCEEDS_MAX
-      // F48-1: duplicate check runs first — no existing claim
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // F48-1 duplicate check
+      // F49-7 FIX: duplicate check moved inside transaction — getPoolStatus fires CLAIM_EXCEEDS_MAX
+      // before the transaction starts, so no duplicate check query is needed here.
       mockDb.query.mockResolvedValueOnce({
         rows: [makePoolRow({ max_claim_cents: 500000, coverage_percentage: 80 })],
         rowCount: 1,
-      } as never);
+      } as never); // getPoolStatus — CLAIM_EXCEEDS_MAX fires after this, before transaction
 
       const result = await SelfInsurancePoolService.fileClaim(
         'task-1', 'hustler-1', 700000, 'Major damage', []
@@ -209,10 +212,10 @@ describe('SelfInsurancePoolService', () => {
       // F47-6 FIX: 600000 raw, 80% coverage → estimatedCoveredCents = 480000 < 500000 max
       // Old bug: would have rejected this because 600000 > 500000.
       // New behavior: pre-flight passes; subsequent balance check inside transaction is the gate.
-      // F48-1: duplicate check runs first — no existing claim
+      // F49-7 FIX: duplicate check now runs inside transaction (no pre-flight db.query).
       mockDb.query
-        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // F48-1 duplicate check
         .mockResolvedValueOnce({ rows: [makePoolRow({ max_claim_cents: 500000, coverage_percentage: 80, available_balance_cents: 1000000 })], rowCount: 1 } as never) // getPoolStatus
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // F49-7 duplicate check FOR UPDATE — no existing claim
         .mockResolvedValueOnce({ rows: [{ available_balance_cents: 1000000, coverage_percentage: 80 }], rowCount: 1 } as never) // FOR UPDATE lock
         .mockResolvedValueOnce({ rows: [{ id: 'claim-2' }], rowCount: 1 } as never); // INSERT
 
@@ -226,10 +229,10 @@ describe('SelfInsurancePoolService', () => {
 
     it('rejects claim when locked balance is insufficient', async () => {
       // Pool status shows balance, but the FOR UPDATE re-read shows insufficient balance
-      // F48-1: duplicate check runs first — no existing claim
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // F48-1 duplicate check
+      // F49-7 FIX: duplicate check now runs inside transaction (no pre-flight db.query).
       mockDb.query.mockResolvedValueOnce({ rows: [makePoolRow({ available_balance_cents: 50000 })], rowCount: 1 } as never); // getPoolStatus
-      // Inside transaction: FOR UPDATE returns a lower balance (concurrent claim reduced it)
+      // Inside transaction: duplicate check passes, then FOR UPDATE returns a lower balance (concurrent claim reduced it)
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // F49-7 duplicate check FOR UPDATE — no existing claim
       mockDb.query.mockResolvedValueOnce({ rows: [{ available_balance_cents: 100, coverage_percentage: 80 }], rowCount: 1 } as never); // FOR UPDATE lock
 
       const result = await SelfInsurancePoolService.fileClaim(
@@ -241,9 +244,8 @@ describe('SelfInsurancePoolService', () => {
     });
 
     it('handles pool status failure', async () => {
-      // F48-1 duplicate check passes (no existing claim), then getPoolStatus fails
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // F48-1 duplicate check
-      mockDb.query.mockRejectedValueOnce(new Error('db error'));
+      // F49-7 FIX: duplicate check now inside transaction; getPoolStatus runs first and fails
+      mockDb.query.mockRejectedValueOnce(new Error('db error')); // getPoolStatus fails
 
       const result = await SelfInsurancePoolService.fileClaim(
         'task-1', 'hustler-1', 25000, 'Damage', []

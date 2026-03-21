@@ -129,24 +129,6 @@ export const SelfInsurancePoolService = {
     reason: string,
     evidenceUrls: string[]
   ): Promise<ServiceResult<string>> => {
-    // F48-1: Pre-flight duplicate guard — reject if a non-rejected, non-withdrawn claim
-    // already exists for this (task_id, hustler_id) pair. This prevents a hustler from
-    // calling fileClaim N times and creating N pending claim rows that each drain the pool.
-    // Performed OUTSIDE the transaction (read-only config check, same pattern as max_claim_cents).
-    const existingClaimResult = await db.query<{ id: string }>(
-      `SELECT id FROM insurance_claims WHERE task_id = $1 AND hustler_id = $2 AND status NOT IN ('rejected', 'withdrawn') LIMIT 1`,
-      [taskId, hustlerId]
-    );
-    if (existingClaimResult.rows[0]) {
-      return {
-        success: false,
-        error: {
-          code: 'CLAIM_ALREADY_EXISTS',
-          message: 'A claim already exists for this task'
-        }
-      };
-    }
-
     try {
       // Pre-flight: validate claim amount against pool max (outside transaction — read-only config check)
       const poolStatus = await SelfInsurancePoolService.getPoolStatus();
@@ -182,6 +164,20 @@ export const SelfInsurancePoolService = {
       // a stale coveredAmount — now it is always fresh and consistent.
 
       const claimId = await db.transaction(async (query: QueryFn) => {
+        // F49-7 FIX: Duplicate check moved INSIDE the transaction with FOR UPDATE to
+        // eliminate the TOCTOU race window. Previously, the pre-flight SELECT ran
+        // outside the transaction — two concurrent fileClaim() calls could both pass
+        // the check before either INSERT committed, creating duplicate pending claims.
+        // The FOR UPDATE row-level lock serializes concurrent callers: the second caller
+        // blocks until the first transaction commits, then sees the inserted row.
+        const existingClaim = await query<{ id: string }>(
+          `SELECT id FROM insurance_claims WHERE task_id = $1 AND hustler_id = $2 AND status NOT IN ('rejected', 'withdrawn') LIMIT 1 FOR UPDATE`,
+          [taskId, hustlerId]
+        );
+        if (existingClaim.rows[0]) {
+          throw new Error('CLAIM_ALREADY_EXISTS:A claim already exists for this task');
+        }
+
         // Lock the pool row to serialize concurrent claim filings and ensure
         // both available_balance_cents and coverage_percentage are read atomically.
         const poolResult = await query<{ available_balance_cents: number; coverage_percentage: number }>(
@@ -216,6 +212,15 @@ export const SelfInsurancePoolService = {
       return { success: true, data: claimId };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      if (message.startsWith('CLAIM_ALREADY_EXISTS:')) {
+        return {
+          success: false,
+          error: {
+            code: 'CLAIM_ALREADY_EXISTS',
+            message: message.slice('CLAIM_ALREADY_EXISTS:'.length)
+          }
+        };
+      }
       if (message.startsWith('INSUFFICIENT_POOL_BALANCE:')) {
         return {
           success: false,

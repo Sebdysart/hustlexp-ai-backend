@@ -967,10 +967,10 @@ export async function collectUserDataForExport(userId: string): Promise<Record<s
     
     // 5. Message history (last 90 days)
     const messagesResult = await db.query(
-      `SELECT id, task_id, sender_id, recipient_id, message_type, content,
+      `SELECT id, task_id, sender_id, receiver_id, message_type, content,
               photo_urls, created_at
        FROM task_messages
-       WHERE (sender_id = $1 OR recipient_id = $1)
+       WHERE (sender_id = $1 OR receiver_id = $1)
        AND created_at >= NOW() - INTERVAL '90 days'
        ORDER BY created_at DESC`,
       [userId]
@@ -1099,9 +1099,23 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
       [userId]
     );
     for (const row of openPosterTasksResult.rows) {
-      const cancelResult = await TaskService.cancel(row.id);
-      if (!cancelResult.success) {
-        log.warn({ taskId: row.id, userId, err: cancelResult.error?.message }, 'GDPR: could not cancel poster task — continuing');
+      try {
+        const cancelResult = await TaskService.cancel(row.id);
+        if (!cancelResult.success) {
+          const errMsg = cancelResult.error?.message ?? '';
+          if (errMsg.includes('INVALID_STATE') || errMsg.includes('TASK_TERMINAL')) {
+            log.warn({ taskId: row.id, userId, err: errMsg }, 'GDPR: poster task already in terminal state — skipping cancel (idempotent retry)');
+          } else {
+            log.warn({ taskId: row.id, userId, err: errMsg }, 'GDPR: could not cancel poster task — continuing');
+          }
+        }
+      } catch (cancelErr) {
+        const errMsg = cancelErr instanceof Error ? cancelErr.message : String(cancelErr);
+        if (errMsg.includes('INVALID_STATE') || errMsg.includes('TASK_TERMINAL')) {
+          log.warn({ taskId: row.id, userId, err: errMsg }, 'GDPR: poster task cancel threw INVALID_STATE — skipping (idempotent retry)');
+        } else {
+          log.warn({ taskId: row.id, userId, err: errMsg }, 'GDPR: poster task cancel threw unexpectedly — continuing');
+        }
       }
       // Refund any FUNDED or PENDING escrow attached to this task.
       // PENDING escrows have a PaymentIntent created but not yet confirmed by
@@ -1128,14 +1142,42 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
         if (escrow.state === 'LOCKED_DISPUTE') {
           // Poster is being deleted — return full amount to poster account
           // (100% poster, 0% worker) since the poster's task is being cleaned up.
-          const refundResult = await EscrowService.partialRefund({ escrowId: escrow.id, workerPercent: 0, posterPercent: 100 });
-          if (!refundResult.success) {
-            log.warn({ escrowId: escrow.id, taskId: row.id, userId, err: refundResult.error?.message }, 'GDPR: could not partialRefund poster LOCKED_DISPUTE escrow — continuing');
+          try {
+            const refundResult = await EscrowService.partialRefund({ escrowId: escrow.id, workerPercent: 0, posterPercent: 100 });
+            if (!refundResult.success) {
+              const errMsg = refundResult.error?.message ?? '';
+              if (errMsg.includes('INVALID_STATE')) {
+                log.warn({ escrowId: escrow.id, taskId: row.id, userId, err: errMsg }, 'GDPR: poster LOCKED_DISPUTE escrow already in terminal state — skipping (idempotent retry)');
+              } else {
+                log.warn({ escrowId: escrow.id, taskId: row.id, userId, err: errMsg }, 'GDPR: could not partialRefund poster LOCKED_DISPUTE escrow — continuing');
+              }
+            }
+          } catch (refundErr) {
+            const errMsg = refundErr instanceof Error ? refundErr.message : String(refundErr);
+            if (errMsg.includes('INVALID_STATE')) {
+              log.warn({ escrowId: escrow.id, taskId: row.id, userId, err: errMsg }, 'GDPR: poster LOCKED_DISPUTE escrow partialRefund threw INVALID_STATE — skipping (idempotent retry)');
+            } else {
+              log.warn({ escrowId: escrow.id, taskId: row.id, userId, err: errMsg }, 'GDPR: poster LOCKED_DISPUTE escrow partialRefund threw unexpectedly — continuing');
+            }
           }
         } else {
-          const refundResult = await EscrowService.refund({ escrowId: escrow.id });
-          if (!refundResult.success) {
-            log.warn({ escrowId: escrow.id, taskId: row.id, userId, err: refundResult.error?.message }, 'GDPR: could not refund poster task escrow — continuing');
+          try {
+            const refundResult = await EscrowService.refund({ escrowId: escrow.id });
+            if (!refundResult.success) {
+              const errMsg = refundResult.error?.message ?? '';
+              if (errMsg.includes('INVALID_STATE')) {
+                log.warn({ escrowId: escrow.id, taskId: row.id, userId, err: errMsg }, 'GDPR: poster task escrow already in terminal state — skipping (idempotent retry)');
+              } else {
+                log.warn({ escrowId: escrow.id, taskId: row.id, userId, err: errMsg }, 'GDPR: could not refund poster task escrow — continuing');
+              }
+            }
+          } catch (refundErr) {
+            const errMsg = refundErr instanceof Error ? refundErr.message : String(refundErr);
+            if (errMsg.includes('INVALID_STATE')) {
+              log.warn({ escrowId: escrow.id, taskId: row.id, userId, err: errMsg }, 'GDPR: poster task escrow refund threw INVALID_STATE — skipping (idempotent retry)');
+            } else {
+              log.warn({ escrowId: escrow.id, taskId: row.id, userId, err: errMsg }, 'GDPR: poster task escrow refund threw unexpectedly — continuing');
+            }
           }
         }
       }
@@ -1155,15 +1197,43 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
     );
     for (const row of workerEscrowsResult.rows) {
       if (row.state === 'FUNDED') {
-        const refundResult = await EscrowService.refund({ escrowId: row.id });
-        if (!refundResult.success) {
-          log.warn({ escrowId: row.id, userId, err: refundResult.error?.message }, 'GDPR: could not refund worker FUNDED escrow — continuing');
+        try {
+          const refundResult = await EscrowService.refund({ escrowId: row.id });
+          if (!refundResult.success) {
+            const errMsg = refundResult.error?.message ?? '';
+            if (errMsg.includes('INVALID_STATE')) {
+              log.warn({ escrowId: row.id, userId, err: errMsg }, 'GDPR: worker FUNDED escrow already in terminal state — skipping (idempotent retry)');
+            } else {
+              log.warn({ escrowId: row.id, userId, err: errMsg }, 'GDPR: could not refund worker FUNDED escrow — continuing');
+            }
+          }
+        } catch (refundErr) {
+          const errMsg = refundErr instanceof Error ? refundErr.message : String(refundErr);
+          if (errMsg.includes('INVALID_STATE')) {
+            log.warn({ escrowId: row.id, userId, err: errMsg }, 'GDPR: worker FUNDED escrow refund threw INVALID_STATE — skipping (idempotent retry)');
+          } else {
+            log.warn({ escrowId: row.id, userId, err: errMsg }, 'GDPR: worker FUNDED escrow refund threw unexpectedly — continuing');
+          }
         }
       } else if (row.state === 'LOCKED_DISPUTE') {
         // Return full amount to poster (0% to deleted worker)
-        const refundResult = await EscrowService.partialRefund({ escrowId: row.id, workerPercent: 0, posterPercent: 100 });
-        if (!refundResult.success) {
-          log.warn({ escrowId: row.id, userId, err: refundResult.error?.message }, 'GDPR: could not partialRefund worker LOCKED_DISPUTE escrow — continuing');
+        try {
+          const refundResult = await EscrowService.partialRefund({ escrowId: row.id, workerPercent: 0, posterPercent: 100 });
+          if (!refundResult.success) {
+            const errMsg = refundResult.error?.message ?? '';
+            if (errMsg.includes('INVALID_STATE')) {
+              log.warn({ escrowId: row.id, userId, err: errMsg }, 'GDPR: worker LOCKED_DISPUTE escrow already in terminal state — skipping (idempotent retry)');
+            } else {
+              log.warn({ escrowId: row.id, userId, err: errMsg }, 'GDPR: could not partialRefund worker LOCKED_DISPUTE escrow — continuing');
+            }
+          }
+        } catch (refundErr) {
+          const errMsg = refundErr instanceof Error ? refundErr.message : String(refundErr);
+          if (errMsg.includes('INVALID_STATE')) {
+            log.warn({ escrowId: row.id, userId, err: errMsg }, 'GDPR: worker LOCKED_DISPUTE escrow partialRefund threw INVALID_STATE — skipping (idempotent retry)');
+          } else {
+            log.warn({ escrowId: row.id, userId, err: errMsg }, 'GDPR: worker LOCKED_DISPUTE escrow partialRefund threw unexpectedly — continuing');
+          }
         }
       }
     }
@@ -1281,15 +1351,16 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
         [userId]
       );
 
-      // Anonymize task messages (sender_id and recipient_id are NOT NULL in schema)
+      // Anonymize task messages (sender_id and receiver_id are NOT NULL in schema)
       // Since user record is anonymized (not deleted), foreign keys remain valid
-      // We anonymize content and remove photos for privacy
+      // We anonymize content and remove photos for privacy for ALL matched rows
+      // (both sent and received messages must be erased per GDPR)
       await query(
         `UPDATE task_messages
-         SET content = CASE WHEN sender_id = $1 THEN '[Message deleted per GDPR request]' ELSE content END,
-             photo_urls = CASE WHEN sender_id = $1 THEN '{}'::TEXT[] ELSE photo_urls END,
-             moderation_status = 'quarantined'  -- Hide messages from deleted user
-         WHERE sender_id = $1 OR recipient_id = $1`,
+         SET content = '[Message deleted per GDPR request]',
+             photo_urls = '{}'::TEXT[],
+             moderation_status = 'quarantined'
+         WHERE sender_id = $1 OR receiver_id = $1`,
         [userId]
       );
       

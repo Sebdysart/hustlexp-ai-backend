@@ -423,8 +423,8 @@ export const notificationRouter = router({
   sendTestPush: adminProcedure
     .input(z.object({
       userId: Schemas.uuid,
-      title: z.string().default('HustleXP Test Push'),
-      body: z.string().default('If you see this, push notifications are working!'),
+      title: z.string().trim().max(200).default('HustleXP Test Push'),
+      body: z.string().trim().max(1000).default('If you see this, push notifications are working!'),
     }))
     .mutation(async ({ input }) => {
       const result = await sendPushNotification(

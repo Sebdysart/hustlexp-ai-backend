@@ -236,6 +236,15 @@ createMetricsEndpoint(app);
 // HEALTH CHECK
 // ============================================================================
 
+// A49-2 FIX: Apply IP-based rate limiting to all health endpoints.
+// Without this, an attacker can flood /health, /health/readiness, and
+// /health/liveness at unbounded rates, triggering DB queries (/health,
+// /health/readiness) on every request and consuming connection pool budget.
+// /health/liveness has no DB cost but still benefits from DoS protection.
+// The /health/detailed route already has rateLimitMiddleware('auth') and
+// now also gets publicIpRateLimitMiddleware() via the wildcard below.
+app.use('/health*', publicIpRateLimitMiddleware());
+
 app.get('/health', async (c) => {
   try {
     // Verify database is reachable without leaking schema internals to unauthenticated callers

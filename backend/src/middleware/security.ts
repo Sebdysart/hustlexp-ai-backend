@@ -271,7 +271,45 @@ export function aiRateLimitMiddleware(provider: keyof typeof AI_RATE_LIMITS) {
     // Evict stale entries when cache exceeds 10,000 entries to prevent unbounded growth.
     const cached = aiAuthCache.get(token);
     if (cached && cached.expMs > Date.now()) {
-      userId = cached.uid;
+      // A49-1 FIX: A cached entry does NOT automatically mean the user is still active.
+      // A ban/revocation sets `auth:revoked:{uid}` in Redis. Without this check, a banned
+      // user's cache entry remains valid for up to 5 minutes — the full cache TTL.
+      // Check the Redis revocation marker on every cache hit. If Redis is unavailable,
+      // fail safe by evicting the cache entry and falling through to Firebase verification.
+      let isRevoked = false;
+      try {
+        const revokedAt = await redis.get(`auth:revoked:${cached.uid}`);
+        if (revokedAt) {
+          isRevoked = true;
+          aiAuthCache.delete(token);
+        }
+      } catch {
+        // Redis unavailable — evict the cache entry and fall through to Firebase
+        // verification rather than fail open (a banned user must not bypass auth).
+        aiAuthCache.delete(token);
+        isRevoked = true; // forces fall-through to Firebase verification below
+      }
+      if (!isRevoked) {
+        userId = cached.uid;
+      } else {
+        // Fall through to full Firebase verification (handled by the else branch below).
+        // Re-enter the Firebase path by clearing cached so the else block runs.
+        // We achieve this by setting userId to a sentinel and letting it fall into
+        // the try/catch block via a synthetic miss path:
+        try {
+          const decoded = await firebaseAuth.verifyIdToken(token, true);
+          userId = decoded.uid;
+          if (aiAuthCache.size > 10000) {
+            const now = Date.now();
+            for (const [k, v] of aiAuthCache) {
+              if (v.expMs <= now) aiAuthCache.delete(k);
+            }
+          }
+          aiAuthCache.set(token, { uid: userId, expMs: Date.now() + AI_AUTH_CACHE_TTL_MS });
+        } catch {
+          return c.json({ error: 'Authentication required' }, 401);
+        }
+      }
     } else {
       try {
         const decoded = await firebaseAuth.verifyIdToken(token, true);

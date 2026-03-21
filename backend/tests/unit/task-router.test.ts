@@ -1092,7 +1092,7 @@ describe('task.reviewProof', () => {
       data: makeTaskRow({ state: 'ACCEPTED' }) as any,
     });
 
-    await makeCallerAsPoster().reviewProof({ taskId: TASK_ID, approved: false });
+    await makeCallerAsPoster().reviewProof({ taskId: TASK_ID, approved: false, feedback: 'Work is incomplete' });
 
     expect(mockProofService.review).toHaveBeenCalledWith(
       expect.objectContaining({ decision: 'REJECTED' })
@@ -1238,7 +1238,7 @@ describe('task.reviewProof', () => {
     });
 
     await expect(
-      makeCallerAsPoster().reviewProof({ proofId: PROOF_ID, decision: 'REJECTED' })
+      makeCallerAsPoster().reviewProof({ proofId: PROOF_ID, decision: 'REJECTED', reason: 'Work is incomplete' })
     ).rejects.toThrow('Proof marked rejected but task state could not be reverted');
   });
 });

@@ -692,11 +692,11 @@ export const taskRouter = router({
   submitProof: hustlerProcedure
     .input(z.object({
       taskId: z.string().uuid(),
-      description: z.string().max(2000).optional(),
+      description: z.string().trim().max(2000).optional(),
       // Extended fields from iOS frontend
       photoUrls: z.array(approvedProofMediaUrl).max(10).optional(),
       videoUrls: z.array(approvedProofMediaUrl).max(5).optional(),
-      notes: z.string().max(2000).optional(),
+      notes: z.string().trim().max(2000).optional(),
       gpsLatitude: z.number().min(-90).max(90).optional(),
       gpsLongitude: z.number().min(-180).max(180).optional(),
       biometricHash: z.string().max(256).optional(),
@@ -731,7 +731,7 @@ export const taskRouter = router({
       const proofResult = await ProofService.submit({
         taskId: input.taskId,
         submitterId: ctx.user.id,
-        description: input.description || input.notes,
+        description: input.description ?? input.notes,
         photoUrls: input.photoUrls,
         gpsLatitude: input.gpsLatitude,
         gpsLongitude: input.gpsLongitude,
@@ -803,11 +803,11 @@ export const taskRouter = router({
       // Original schema fields
       proofId: z.string().uuid().optional(),
       decision: z.enum(['ACCEPTED', 'REJECTED']).optional(),
-      reason: z.string().max(1000).optional(),
+      reason: z.string().trim().max(1000).optional(),
       // iOS frontend fields
       taskId: z.string().uuid().optional(),
       approved: z.boolean().optional(),
-      feedback: z.string().max(1000).optional(),
+      feedback: z.string().trim().max(1000).optional(),
     }))
     .mutation(async ({ ctx, input }) => {
       // Resolve decision: from original field or from iOS boolean
@@ -816,6 +816,14 @@ export const taskRouter = router({
         throw new TRPCError({ code: 'BAD_REQUEST', message: 'decision or approved is required' });
       }
       const reason = input.reason || input.feedback;
+
+      // R49-5: When rejecting, reason must not be blank (whitespace-only) after trim.
+      // The Zod schema already applies .trim() so an all-whitespace string arrives as "".
+      // Treat that the same as undefined — a REJECTED decision with no substantive reason
+      // is invalid because the worker needs actionable feedback to resubmit.
+      if (decision === 'REJECTED' && (reason === undefined || reason === '')) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'A reason is required when rejecting proof' });
+      }
 
       // When taskId is provided, perform ownership check BEFORE any proof lookup
       // to prevent non-owning posters from enumerating proof existence / UUIDs.

@@ -396,30 +396,37 @@ export const XPTaxService = {
    */
   adminForgiveTax: async (userId: string, adminId: string, reason: string): Promise<ServiceResult<void>> => {
     try {
-      // Mark all unpaid taxes as forgiven and clear the xp_held_back flag
-      // F47-1 FIX: Also reset xp_held_back = FALSE so the ledger rows no longer
-      // show as "held" after forgiveness. Without this, the ledger entries stayed
-      // in a permanently inconsistent state (tax_paid=TRUE but xp_held_back=TRUE).
-      await db.query(
-        `UPDATE xp_tax_ledger
-         SET tax_paid = TRUE,
-             tax_paid_at = NOW(),
-             xp_held_back = FALSE
-         WHERE user_id = $1 AND tax_paid = FALSE`,
-        [userId]
-      );
+      // F49-2 FIX: Wrap both UPDATE queries in a serializableTransaction so that
+      // the ledger forgiveness and the summary reset are applied atomically.
+      // Previously, two independent db.query() calls meant a crash between them
+      // would leave the ledger rows forgiven but the summary still showing unpaid
+      // tax — causing XP-block checks to incorrectly block the user forever.
+      await db.serializableTransaction(async (query) => {
+        // Mark all unpaid taxes as forgiven and clear the xp_held_back flag
+        // F47-1 FIX: Also reset xp_held_back = FALSE so the ledger rows no longer
+        // show as "held" after forgiveness. Without this, the ledger entries stayed
+        // in a permanently inconsistent state (tax_paid=TRUE but xp_held_back=TRUE).
+        await query(
+          `UPDATE xp_tax_ledger
+           SET tax_paid = TRUE,
+               tax_paid_at = NOW(),
+               xp_held_back = FALSE
+           WHERE user_id = $1 AND tax_paid = FALSE`,
+          [userId]
+        );
 
-      // Reset summary
-      // F47-1 FIX: Also reset total_xp_held_back = 0 so dashboards and future
-      // XP-blocked checks no longer see stale held-XP after forgiveness.
-      await db.query(
-        `UPDATE user_xp_tax_status
-         SET total_unpaid_tax_cents = 0,
-             total_xp_held_back = 0,
-             last_updated_at = NOW()
-         WHERE user_id = $1`,
-        [userId]
-      );
+        // Reset summary
+        // F47-1 FIX: Also reset total_xp_held_back = 0 so dashboards and future
+        // XP-blocked checks no longer see stale held-XP after forgiveness.
+        await query(
+          `UPDATE user_xp_tax_status
+           SET total_unpaid_tax_cents = 0,
+               total_xp_held_back = 0,
+               last_updated_at = NOW()
+           WHERE user_id = $1`,
+          [userId]
+        );
+      });
 
       // Log to admin_actions audit table
       log.info({ adminId, userId, reason }, 'Admin forgave XP taxes');

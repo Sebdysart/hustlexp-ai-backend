@@ -429,12 +429,13 @@ export const EscrowService = {
 
         const escrow = escrowResult.rows[0];
 
-        // Get task details for worker_id and price
+        // Get task details for worker_id, price, and payment_method
         const taskResult = await query<{
           worker_id: string | null;
           price: number;
+          payment_method: string | null;
         }>(
-          `SELECT worker_id, price FROM tasks WHERE id = $1`,
+          `SELECT worker_id, price, payment_method FROM tasks WHERE id = $1`,
           [escrow.task_id]
         );
 
@@ -450,7 +451,7 @@ export const EscrowService = {
 
         const task = taskResult.rows[0];
         const resolvedWorkerId = task.worker_id!;
-        const resolvedPaymentMethod: string = 'escrow';
+        const resolvedPaymentMethod: string = task.payment_method ?? 'escrow';
         const resolvedGross = escrow.amount;
 
         // KYC GATE: Verify worker has completed Stripe Connect onboarding

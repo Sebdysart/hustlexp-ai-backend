@@ -71,6 +71,9 @@ function makeJob(overrides: Record<string, unknown> = {}): Job {
     id: 'job-001',
     data: {
       payload: {
+        // A49-3: _sig is now mandatory — include a test sentinel so the presence
+        // check passes. verifyJobSignature is mocked to return true in all tests.
+        _sig: 'test-hmac-signature',
         taskId: 'task-abc',
         hustlerId: 'hustler-xyz',
         riskLevel: 'LOW',
@@ -201,6 +204,37 @@ describe('processInstantNotificationJob', () => {
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
 
       await expect(processInstantNotificationJob(job)).rejects.toThrow('not found');
+    });
+  });
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // A49-3: Mandatory HMAC signature enforcement
+  // ──────────────────────────────────────────────────────────────────────────
+
+  describe('A49-3: mandatory HMAC signature', () => {
+    it('throws when _sig is absent from the payload', async () => {
+      const job = makeJob({ _sig: undefined });
+      // Remove _sig entirely from the payload to simulate a job without a signature
+      (job.data as Record<string, unknown>).payload = {
+        taskId: 'task-abc',
+        hustlerId: 'hustler-xyz',
+        riskLevel: 'LOW',
+        sensitive: false,
+      };
+
+      await expect(processInstantNotificationJob(job)).rejects.toThrow(
+        'Missing job signature — job rejected for security'
+      );
+      expect(mockCreateNotification).not.toHaveBeenCalled();
+    });
+
+    it('throws when _sig is an empty string', async () => {
+      const job = makeJob({ _sig: '' });
+
+      await expect(processInstantNotificationJob(job)).rejects.toThrow(
+        'Missing job signature — job rejected for security'
+      );
+      expect(mockCreateNotification).not.toHaveBeenCalled();
     });
   });
 

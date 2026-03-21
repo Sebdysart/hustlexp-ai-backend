@@ -268,7 +268,7 @@ export const userRouter = router({
       idToken: z.string().min(1),
       firebaseUid: z.string().max(128),
       email: z.string().email().max(254),
-      fullName: z.string().min(1).max(255),
+      fullName: z.string().trim().min(1).max(255),
       // Accept "hustler", "worker", or "poster" from frontend
       defaultMode: z.string().max(20).default('worker'),
       // COPPA compliance: date of birth for age verification (AUDIT FIX)
@@ -448,10 +448,10 @@ export const userRouter = router({
    */
   updateProfile: protectedProcedure
     .input(z.object({
-      fullName: z.string().min(1).max(255).optional(),
+      fullName: z.string().trim().min(1).max(255).optional(),
       bio: z.string().max(500).optional(),
       avatarUrl: z.string().url().max(2048).refine(isApprovedAvatarHost, { message: 'Avatar must be hosted on approved storage (R2 only)' }).optional(),
-      phone: z.string().max(20).optional(),
+      phone: z.string().trim().max(20).regex(/^[+\d\s\-().]{7,20}$/, 'Invalid phone number format').optional(),
       // Accept "hustler", "worker", or "poster" from frontend
       defaultMode: z.string().max(20).optional(),
     }))

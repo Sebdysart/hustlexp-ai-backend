@@ -36,17 +36,22 @@ export async function processInstantSurgeJob(
   job: Job<InstantSurgeJobData>
 ): Promise<void> {
   // HMAC signature verification (Attack 12 — Redis injection defence)
-  // task.instant_surge_evaluate jobs dispatched via the outbox carry a _sig field
-  // inside job.data.payload. Verify it when present.
+  // task.instant_surge_evaluate jobs dispatched via the outbox MUST carry a _sig field
+  // inside job.data.payload. The check is mandatory — jobs without a signature are
+  // rejected outright to prevent unsigned payloads injected directly into Redis
+  // (bypassing the outbox) from executing with elevated trust.
   const outerPayload = (job.data as Record<string, unknown>).payload;
   if (outerPayload && typeof outerPayload === 'object') {
     const p = outerPayload as Record<string, unknown>;
-    if ('_sig' in p) {
-      const { _sig, ...payloadWithoutSig } = p;
-      if (!verifyJobSignature(payloadWithoutSig, _sig as string)) {
-        log.error({ jobId: job.id }, 'Job signature verification failed — possible Redis injection attack');
-        throw new Error('JOB_SIGNATURE_INVALID: Payload signature verification failed');
-      }
+    // A49-3 FIX: Signature is now mandatory. Missing or empty _sig rejects the job.
+    if (!('_sig' in p) || !p._sig) {
+      log.error({ jobId: job.id }, 'Job is missing required HMAC signature — rejecting for security');
+      throw new Error('Missing job signature — job rejected for security');
+    }
+    const { _sig, ...payloadWithoutSig } = p;
+    if (!verifyJobSignature(payloadWithoutSig, _sig as string)) {
+      log.error({ jobId: job.id }, 'Job signature verification failed — possible Redis injection attack');
+      throw new Error('JOB_SIGNATURE_INVALID: Payload signature verification failed');
     }
   }
 
