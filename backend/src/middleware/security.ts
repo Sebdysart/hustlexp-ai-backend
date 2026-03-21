@@ -235,6 +235,15 @@ const AI_RATE_LIMITS = {
   anthropic: { requests: 15, windowMs: 60000 }, // 15 req/min
 };
 
+// A48-4 FIX: In-memory cache to avoid calling firebaseAuth.verifyIdToken on every
+// AI request. Without this, each AI request triggers a Firebase network round-trip,
+// doubling Firebase load on AI routes and risking false 401s when Firebase throttles.
+// TTL is 5 minutes — tokens are still valid for at least 1 hour, so early eviction
+// does not cause auth failures. Max 10,000 entries with on-demand eviction of stale
+// entries prevents unbounded memory growth.
+const aiAuthCache = new Map<string, { uid: string; expMs: number }>();
+const AI_AUTH_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
 /**
  * AI per-minute rate limiter per user
  * Prevents cost abuse while allowing legitimate usage
@@ -258,11 +267,26 @@ export function aiRateLimitMiddleware(provider: keyof typeof AI_RATE_LIMITS) {
     }
 
     let userId: string;
-    try {
-      const decoded = await firebaseAuth.verifyIdToken(token, true);
-      userId = decoded.uid;
-    } catch {
-      return c.json({ error: 'Authentication required' }, 401);
+    // A48-4 FIX: Check the in-memory cache before calling Firebase.
+    // Evict stale entries when cache exceeds 10,000 entries to prevent unbounded growth.
+    const cached = aiAuthCache.get(token);
+    if (cached && cached.expMs > Date.now()) {
+      userId = cached.uid;
+    } else {
+      try {
+        const decoded = await firebaseAuth.verifyIdToken(token, true);
+        userId = decoded.uid;
+        // Cache the result so subsequent AI requests skip Firebase for up to 5 minutes.
+        if (aiAuthCache.size > 10000) {
+          const now = Date.now();
+          for (const [k, v] of aiAuthCache) {
+            if (v.expMs <= now) aiAuthCache.delete(k);
+          }
+        }
+        aiAuthCache.set(token, { uid: userId, expMs: Date.now() + AI_AUTH_CACHE_TTL_MS });
+      } catch {
+        return c.json({ error: 'Authentication required' }, 401);
+      }
     }
 
     // Use the sliding-window checkRateLimit (Upstash) instead of the fixed-window

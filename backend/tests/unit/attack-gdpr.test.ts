@@ -569,7 +569,10 @@ describe('Attack 6: Partial deletion — PII erasure vs financial record retenti
     expect(bioCleared).toBe(true); // FIX 6 applied — bio cleared on deletion
   });
 
-  it('should confirm analytics_events older than 90 days are NOT deleted', async () => {
+  it('D48-2 FIX: analytics_events deletion has NO 90-day cutoff — all records deleted', async () => {
+    // FINDING WAS: GDPRService deleted only events created_at >= NOW() - INTERVAL '90 days',
+    // leaving older events linked to real user_id indefinitely (GDPR Art. 17 violation).
+    // D48-2 FIX: The 90-day filter was removed — all analytics_events for user are now deleted.
     const requestId = 'req-del-analytics';
     const pastDeadline = new Date(Date.now() - 1000);
 
@@ -584,14 +587,13 @@ describe('Attack 6: Partial deletion — PII erasure vs financial record retenti
 
     const sqlCalls = mockDb.query.mock.calls.map((call: unknown[]) => (call[0] as string).toLowerCase());
 
-    // GDPRService.ts:1022 deletes only 'created_at >= NOW() - INTERVAL 90 days'
     const analyticsDeleteSql = sqlCalls.find((sql: string) =>
       sql.includes('analytics_events') && sql.includes('delete')
     );
     expect(analyticsDeleteSql).toBeTruthy();
-    // The SQL contains the 90-day filter — older events are never deleted
-    expect(analyticsDeleteSql).toContain('90 days');
-    // FINDING: Events older than 90 days remain linked to real user_id forever.
+    // D48-2: The 90-day filter is GONE — all records deleted, not just recent ones
+    expect(analyticsDeleteSql).not.toContain('90 days');
+    expect(analyticsDeleteSql).not.toContain('interval');
   });
 });
 

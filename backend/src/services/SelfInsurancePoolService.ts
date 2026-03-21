@@ -129,6 +129,24 @@ export const SelfInsurancePoolService = {
     reason: string,
     evidenceUrls: string[]
   ): Promise<ServiceResult<string>> => {
+    // F48-1: Pre-flight duplicate guard — reject if a non-rejected, non-withdrawn claim
+    // already exists for this (task_id, hustler_id) pair. This prevents a hustler from
+    // calling fileClaim N times and creating N pending claim rows that each drain the pool.
+    // Performed OUTSIDE the transaction (read-only config check, same pattern as max_claim_cents).
+    const existingClaimResult = await db.query<{ id: string }>(
+      `SELECT id FROM insurance_claims WHERE task_id = $1 AND hustler_id = $2 AND status NOT IN ('rejected', 'withdrawn') LIMIT 1`,
+      [taskId, hustlerId]
+    );
+    if (existingClaimResult.rows[0]) {
+      return {
+        success: false,
+        error: {
+          code: 'CLAIM_ALREADY_EXISTS',
+          message: 'A claim already exists for this task'
+        }
+      };
+    }
+
     try {
       // Pre-flight: validate claim amount against pool max (outside transaction — read-only config check)
       const poolStatus = await SelfInsurancePoolService.getPoolStatus();
@@ -377,14 +395,23 @@ export const SelfInsurancePoolService = {
         // was fetched outside the transaction, leaving a window where an admin update
         // between the outer SELECT and this lock would produce a stale coveredAmountCents.
         // available_balance_cents is a computed column: total_deposits_cents - total_claims_cents
-        const poolResult = await query<{ available_balance_cents: number; coverage_percentage: number }>(
-          'SELECT available_balance_cents, coverage_percentage FROM self_insurance_pool FOR UPDATE LIMIT 1'
+        // F48-2: Also read max_claim_cents under the lock so that a coverage_percentage raise
+        // after claim filing cannot produce a payout that exceeds the pool cap.
+        const poolResult = await query<{ available_balance_cents: number; coverage_percentage: number; max_claim_cents: number }>(
+          'SELECT available_balance_cents, coverage_percentage, max_claim_cents FROM self_insurance_pool FOR UPDATE LIMIT 1'
         );
 
         const availableBalanceCents = poolResult.rows[0]?.available_balance_cents ?? 0;
         // Recompute from freshly-locked coverage_percentage (F-04 fix)
         const freshCoveragePercentage = poolResult.rows[0]?.coverage_percentage ?? 80.0;
         coveredAmountCents = Math.round(claim.claim_amount_cents * (freshCoveragePercentage / 100));
+
+        // F48-2: Guard against coverage_percentage having been raised since claim filing —
+        // throw before the balance check so the pool is never debited beyond the cap.
+        const maxClaimCents = poolResult.rows[0]?.max_claim_cents ?? 500000;
+        if (coveredAmountCents > maxClaimCents) {
+          throw new Error('CLAIM_EXCEEDS_MAX:Covered payout would exceed pool maximum claim limit');
+        }
 
         if (coveredAmountCents > availableBalanceCents) {
           throw new Error(`INSUFFICIENT_POOL_BALANCE:Pool balance insufficient. Available: $${(availableBalanceCents / 100).toFixed(2)}, Required: $${(coveredAmountCents / 100).toFixed(2)}`);
@@ -461,6 +488,16 @@ export const SelfInsurancePoolService = {
           error: {
             code: 'INSUFFICIENT_POOL_BALANCE',
             message: message.slice('INSUFFICIENT_POOL_BALANCE:'.length)
+          }
+        };
+      }
+      // Surface F48-2: covered payout exceeds pool cap
+      if (message.startsWith('CLAIM_EXCEEDS_MAX:')) {
+        return {
+          success: false,
+          error: {
+            code: 'CLAIM_EXCEEDS_MAX',
+            message: message.slice('CLAIM_EXCEEDS_MAX:'.length)
           }
         };
       }

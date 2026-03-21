@@ -334,8 +334,13 @@ export function startOutboxWorker(intervalMs: number = 5000): OutboxWorkerHandle
         }
         lockAcquired = true;
       } else {
-        // Redis unavailable — fall back to always running (single-pod safe)
-        log.warn('Redis unavailable for trust tier lock — running without distributed lock');
+        // W48-1 FIX: Redis unavailable — SKIP this run entirely instead of proceeding
+        // without a distributed lock. In multi-pod deployments, all pods would run
+        // processTrustTierPromotionJob() simultaneously without the lock, causing
+        // duplicate tier promotions and double XP awards. Skipping is safe: the job
+        // will retry on the next hourly tick once Redis is available again.
+        log.warn({ err: null }, '[trust-tier-worker] Redis unavailable — skipping trust tier promotion to avoid duplicate processing in multi-pod deployment');
+        return; // Skip this run entirely — will retry on next interval tick
       }
       try {
         const { processTrustTierPromotionJob } = await import('./trust-tier-promotion-worker');

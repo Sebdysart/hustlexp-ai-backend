@@ -136,13 +136,16 @@ describe('SelfInsurancePoolService', () => {
   describe('fileClaim', () => {
     it('files a claim successfully', async () => {
       // F-02 FIX: fileClaim now wraps the balance check + INSERT in a transaction.
+      // F48-1: pre-flight duplicate check (db.query) runs BEFORE the try block.
       // Sequence:
+      //   0. F48-1 duplicate check (outer db.query — no existing claim)
       //   1. getPoolStatus (outer db.query — reads pool config)
       //   Inside db.transaction:
-      //     2. SELECT available_balance_cents FOR UPDATE (pool lock)
+      //     2. SELECT available_balance_cents, coverage_percentage FOR UPDATE (pool lock)
       //     3. INSERT insurance_claims RETURNING id
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // F48-1 duplicate check — no existing claim
       mockDb.query.mockResolvedValueOnce({ rows: [makePoolRow()], rowCount: 1 } as never); // getPoolStatus
-      mockDb.query.mockResolvedValueOnce({ rows: [{ available_balance_cents: 80000 }], rowCount: 1 } as never); // FOR UPDATE lock
+      mockDb.query.mockResolvedValueOnce({ rows: [{ available_balance_cents: 80000, coverage_percentage: 80 }], rowCount: 1 } as never); // FOR UPDATE lock
       mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'claim-1' }], rowCount: 1 } as never); // INSERT
 
       const result = await SelfInsurancePoolService.fileClaim(
@@ -153,10 +156,42 @@ describe('SelfInsurancePoolService', () => {
       if (result.success) expect(result.data).toBe('claim-1');
     });
 
+    it('returns CLAIM_ALREADY_EXISTS when a pending claim already exists', async () => {
+      // F48-1: duplicate guard fires before getPoolStatus — returns immediately
+      mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'claim-existing' }], rowCount: 1 } as never); // existing pending claim
+
+      const result = await SelfInsurancePoolService.fileClaim(
+        'task-1', 'hustler-1', 25000, 'Tool damage', []
+      );
+
+      expect(result.success).toBe(false);
+      if (!result.success) expect(result.error.code).toBe('CLAIM_ALREADY_EXISTS');
+      // getPoolStatus should NOT have been called
+      expect(mockDb.query).toHaveBeenCalledTimes(1);
+    });
+
+    it('allows filing claim when previous claim was rejected', async () => {
+      // F48-1: duplicate check finds no active claim (rejected row does not count)
+      // so the claim proceeds normally
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // F48-1 duplicate check — no non-rejected/non-withdrawn claim
+      mockDb.query.mockResolvedValueOnce({ rows: [makePoolRow()], rowCount: 1 } as never); // getPoolStatus
+      mockDb.query.mockResolvedValueOnce({ rows: [{ available_balance_cents: 80000, coverage_percentage: 80 }], rowCount: 1 } as never); // FOR UPDATE lock
+      mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'claim-new' }], rowCount: 1 } as never); // INSERT
+
+      const result = await SelfInsurancePoolService.fileClaim(
+        'task-1', 'hustler-1', 25000, 'Tool damage', []
+      );
+
+      expect(result.success).toBe(true);
+      if (result.success) expect(result.data).toBe('claim-new');
+    });
+
     it('rejects claim where covered amount exceeds max (F47-6: checks covered not raw)', async () => {
       // F47-6 FIX: The guard now computes estimatedCoveredCents = claimAmount * coverage%
       // and compares THAT against max_claim_cents.
       // 700000 * 80% = 560000 > 500000 max → CLAIM_EXCEEDS_MAX
+      // F48-1: duplicate check runs first — no existing claim
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // F48-1 duplicate check
       mockDb.query.mockResolvedValueOnce({
         rows: [makePoolRow({ max_claim_cents: 500000, coverage_percentage: 80 })],
         rowCount: 1,
@@ -174,7 +209,9 @@ describe('SelfInsurancePoolService', () => {
       // F47-6 FIX: 600000 raw, 80% coverage → estimatedCoveredCents = 480000 < 500000 max
       // Old bug: would have rejected this because 600000 > 500000.
       // New behavior: pre-flight passes; subsequent balance check inside transaction is the gate.
+      // F48-1: duplicate check runs first — no existing claim
       mockDb.query
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // F48-1 duplicate check
         .mockResolvedValueOnce({ rows: [makePoolRow({ max_claim_cents: 500000, coverage_percentage: 80, available_balance_cents: 1000000 })], rowCount: 1 } as never) // getPoolStatus
         .mockResolvedValueOnce({ rows: [{ available_balance_cents: 1000000, coverage_percentage: 80 }], rowCount: 1 } as never) // FOR UPDATE lock
         .mockResolvedValueOnce({ rows: [{ id: 'claim-2' }], rowCount: 1 } as never); // INSERT
@@ -189,9 +226,11 @@ describe('SelfInsurancePoolService', () => {
 
     it('rejects claim when locked balance is insufficient', async () => {
       // Pool status shows balance, but the FOR UPDATE re-read shows insufficient balance
+      // F48-1: duplicate check runs first — no existing claim
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // F48-1 duplicate check
       mockDb.query.mockResolvedValueOnce({ rows: [makePoolRow({ available_balance_cents: 50000 })], rowCount: 1 } as never); // getPoolStatus
       // Inside transaction: FOR UPDATE returns a lower balance (concurrent claim reduced it)
-      mockDb.query.mockResolvedValueOnce({ rows: [{ available_balance_cents: 100 }], rowCount: 1 } as never); // FOR UPDATE lock
+      mockDb.query.mockResolvedValueOnce({ rows: [{ available_balance_cents: 100, coverage_percentage: 80 }], rowCount: 1 } as never); // FOR UPDATE lock
 
       const result = await SelfInsurancePoolService.fileClaim(
         'task-1', 'hustler-1', 25000, 'Damage', []
@@ -202,6 +241,8 @@ describe('SelfInsurancePoolService', () => {
     });
 
     it('handles pool status failure', async () => {
+      // F48-1 duplicate check passes (no existing claim), then getPoolStatus fails
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // F48-1 duplicate check
       mockDb.query.mockRejectedValueOnce(new Error('db error'));
 
       const result = await SelfInsurancePoolService.fileClaim(
@@ -285,6 +326,7 @@ describe('SelfInsurancePoolService', () => {
       // F-04 FIX: coverage_percentage is now read INSIDE the transaction (no outer SELECT).
       // Pool FOR UPDATE returns BOTH available_balance_cents AND coverage_percentage.
       // F46-4 FIX: pre-check SELECT stripe_connect_id runs BEFORE the transaction.
+      // F48-2: pool FOR UPDATE also returns max_claim_cents.
       mockDb.query
         .mockResolvedValueOnce({
           rows: [makeClaimRow({ status: 'approved', claim_amount_cents: 100000 })],
@@ -293,12 +335,30 @@ describe('SelfInsurancePoolService', () => {
         .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_test123' }], rowCount: 1 } as never) // pre-check SELECT stripe_connect_id (F46-4)
         // F-25: inside transaction — claim re-check FOR UPDATE, then pool FOR UPDATE
         .mockResolvedValueOnce({ rows: [{ status: 'approved', stripe_transfer_id: null }], rowCount: 1 } as never) // claim FOR UPDATE
-        .mockResolvedValueOnce({ rows: [{ available_balance_cents: 1000, coverage_percentage: 80 }], rowCount: 1 } as never); // pool FOR UPDATE (F-04: includes coverage_percentage)
+        .mockResolvedValueOnce({ rows: [{ available_balance_cents: 1000, coverage_percentage: 80, max_claim_cents: 500000 }], rowCount: 1 } as never); // pool FOR UPDATE (F-04/F48-2)
 
       const result = await SelfInsurancePoolService.payClaim('claim-1');
 
       expect(result.success).toBe(false);
       if (!result.success) expect(result.error.code).toBe('INSUFFICIENT_POOL_BALANCE');
+    });
+
+    it('returns CLAIM_EXCEEDS_MAX when coverage raise makes payout exceed pool cap (F48-2)', async () => {
+      // F48-2: claim filed at 80% coverage (covered=8000), but coverage raised to 200%
+      // inside the transaction covered=20000 > max_claim_cents=10000 → CLAIM_EXCEEDS_MAX
+      mockDb.query
+        .mockResolvedValueOnce({
+          rows: [makeClaimRow({ status: 'approved', claim_amount_cents: 10000 })],
+          rowCount: 1,
+        } as never) // claim (outer SELECT)
+        .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_test123' }], rowCount: 1 } as never) // pre-check stripe_connect_id
+        .mockResolvedValueOnce({ rows: [{ status: 'approved', stripe_transfer_id: null }], rowCount: 1 } as never) // claim FOR UPDATE
+        .mockResolvedValueOnce({ rows: [{ available_balance_cents: 500000, coverage_percentage: 200, max_claim_cents: 10000 }], rowCount: 1 } as never); // pool FOR UPDATE — coverage raised, max is 10000, covered=20000
+
+      const result = await SelfInsurancePoolService.payClaim('claim-1');
+
+      expect(result.success).toBe(false);
+      if (!result.success) expect(result.error.code).toBe('CLAIM_EXCEEDS_MAX');
     });
 
     it('pays claim successfully (F-06: uses StripeService.createTransfer)', async () => {
@@ -316,7 +376,7 @@ describe('SelfInsurancePoolService', () => {
         .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_test' }], rowCount: 1 } as never) // pre-check SELECT stripe_connect_id (F46-4)
         // F-25: inside transaction — claim re-check FOR UPDATE, then rest of transaction
         .mockResolvedValueOnce({ rows: [{ status: 'approved', stripe_transfer_id: null }], rowCount: 1 } as never) // claim FOR UPDATE
-        .mockResolvedValueOnce({ rows: [{ available_balance_cents: 50000, coverage_percentage: 80 }], rowCount: 1 } as never) // pool FOR UPDATE (F-04: includes coverage_percentage)
+        .mockResolvedValueOnce({ rows: [{ available_balance_cents: 50000, coverage_percentage: 80, max_claim_cents: 500000 }], rowCount: 1 } as never) // pool FOR UPDATE (F-04/F48-2: includes coverage_percentage + max_claim_cents)
         .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // UPDATE pool
         .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // UPDATE claim to paid
         // After transaction: StripeService.createTransfer (mocked globally), then record transfer ID

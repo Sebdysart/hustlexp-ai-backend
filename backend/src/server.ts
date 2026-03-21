@@ -223,6 +223,7 @@ app.use('/trpc/*', publicIpRateLimitMiddleware());                 // 60/min per
 
 // Tier 7: General (120/min) — catch-all for remaining tRPC and REST routes
 app.use('/trpc/*', rateLimitMiddleware('general'));                 // 120/min — all other tRPC routes
+app.use('/api/*', publicIpRateLimitMiddleware());                   // 60/min per IP — A48-2: defence-in-depth (prevents Firebase quota exhaustion via unauthenticated /api/* requests)
 app.use('/api/*', rateLimitMiddleware('general'));                  // 120/min — REST endpoints
 
 // ============================================================================

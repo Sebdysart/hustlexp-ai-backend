@@ -1192,6 +1192,9 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
         `DELETE FROM notification_preferences WHERE user_id = $1`,
         [userId]
       );
+
+      // Delete notifications (bodies contain PII: task descriptions, payment amounts, counterparty names)
+      await query('DELETE FROM notifications WHERE user_id = $1', [userId]);
       
       // Delete saved searches
       await query(
@@ -1199,11 +1202,9 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
         [userId]
       );
       
-      // Delete analytics events (last 90 days - older ones should already be purged)
+      // Delete analytics events (all records — GDPR Art. 17 requires full erasure)
       await query(
-        `DELETE FROM analytics_events 
-         WHERE user_id = $1 
-         AND created_at >= NOW() - INTERVAL '90 days'`,
+        `DELETE FROM analytics_events WHERE user_id = $1`,
         [userId]
       );
       

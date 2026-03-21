@@ -746,6 +746,54 @@ describe('user.register', () => {
       ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
     });
 
+    it('returns FORBIDDEN when input.email does not match Firebase token email (R48-1 IDOR)', async () => {
+      // Attacker supplies their own valid Firebase token (uid matches) but a
+      // victim's email address to trigger the OR-based lookup and leak the victim's profile.
+      mockFirebaseAuth.verifyIdToken.mockResolvedValueOnce({
+        uid: 'fb-new-user',
+        email: 'attacker@evil.com',
+      } as any);
+
+      await expect(
+        makePublicCaller().register(validInput) // validInput.email = 'newuser@hustlexp.com'
+      ).rejects.toMatchObject({ code: 'FORBIDDEN', message: 'Email address does not match the provided Firebase ID token.' });
+    });
+
+    it('allows registration when token email matches input.email (case-insensitive)', async () => {
+      // Token email is upper-cased — must still pass the check
+      mockFirebaseAuth.verifyIdToken.mockResolvedValueOnce({
+        uid: 'fb-new-user',
+        email: 'NEWUSER@HUSTLEXP.COM',
+      } as any);
+
+      const newUser = makeFakeUser({ id: 'new-user-id', firebase_uid: 'fb-new-user' });
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // ban check
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // existing check
+      mockDb.query.mockResolvedValueOnce({ rows: [newUser], rowCount: 1 } as any); // INSERT
+      setupStatsQuery();
+
+      const result = await makePublicCaller().register(validInput);
+      expect(result).toHaveProperty('id', 'new-user-id');
+    });
+
+    it('allows registration when Firebase token has no email (Sign-in-with-Apple / fail-open)', async () => {
+      // Some OAuth providers (e.g., Sign In with Apple) omit email from the token.
+      // We must not block registration in that case.
+      mockFirebaseAuth.verifyIdToken.mockResolvedValueOnce({
+        uid: 'fb-new-user',
+        // email intentionally absent
+      } as any);
+
+      const newUser = makeFakeUser({ id: 'new-user-id', firebase_uid: 'fb-new-user' });
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // ban check
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // existing check
+      mockDb.query.mockResolvedValueOnce({ rows: [newUser], rowCount: 1 } as any); // INSERT
+      setupStatsQuery();
+
+      const result = await makePublicCaller().register(validInput);
+      expect(result).toHaveProperty('id', 'new-user-id');
+    });
+
     it('allows registration when decoded UID matches firebaseUid', async () => {
       mockFirebaseAuth.verifyIdToken.mockResolvedValueOnce({ uid: 'fb-new-user' } as any);
 

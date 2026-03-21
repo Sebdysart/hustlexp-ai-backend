@@ -298,6 +298,20 @@ export const userRouter = router({
           message: 'Firebase ID token does not match the provided firebaseUid.',
         });
       }
+      // --------------------------------------------------------------------------
+      // R48-1 IDOR FIX: Cross-check input.email against Firebase token email.
+      // Without this, an attacker can supply their own valid Firebase token (for
+      // their UID) but a victim's email address, causing the OR-based SELECT below
+      // to return the victim's profile row and leak it to the attacker.
+      // Sign-in-with-Apple and some OAuth providers omit email from the token —
+      // fail-open for those cases (decodedToken.email is undefined/null).
+      // --------------------------------------------------------------------------
+      if (decodedToken.email && decodedToken.email.toLowerCase() !== input.email.toLowerCase()) {
+        throw new TRPCError({
+          code: 'FORBIDDEN',
+          message: 'Email address does not match the provided Firebase ID token.',
+        });
+      }
 
       // --------------------------------------------------------------------------
       // COPPA AGE VERIFICATION (AUDIT FIX)
