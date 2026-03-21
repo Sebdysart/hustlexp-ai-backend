@@ -272,12 +272,12 @@ export const Schemas = {
   
   // Task
   createTask: z.object({
-    title: z.string().min(1).max(255),
+    title: z.string().trim().min(1).max(255),
     description: z.string().trim().min(10).max(5000),
     price: z.number().int().positive().max(99999900), // USD cents, max $999,999
-    requirements: z.string().max(2000).optional(),
+    requirements: z.string().trim().max(2000).optional(),
     location: z.string().max(500).optional(),
-    category: z.string().max(100).optional(),
+    category: z.string().trim().max(100).optional(),
     deadline: z.string().datetime().optional(),
     requiresProof: z.boolean().default(true),
     // Live Mode (PRODUCT_SPEC §3.5)

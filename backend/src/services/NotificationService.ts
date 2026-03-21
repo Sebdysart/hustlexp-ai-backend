@@ -878,11 +878,12 @@ export const NotificationService = {
    */
   cleanupExpiredNotifications: async (): Promise<ServiceResult<{ deleted: number }>> => {
     try {
-      // Delete notifications expired more than 30 days ago
+      // Delete notifications expired more than 30 days ago, or old notifications
+      // that never had an expiry set (D51-5: prevents unbounded accumulation).
       const result = await db.query(
         `DELETE FROM notifications
-         WHERE expires_at IS NOT NULL
-           AND expires_at < NOW() - INTERVAL '30 days'`
+         WHERE (expires_at IS NOT NULL AND expires_at < NOW() - INTERVAL '30 days')
+            OR (expires_at IS NULL AND created_at < NOW() - INTERVAL '90 days')`
       );
       const count = result.rowCount ?? 0;
 

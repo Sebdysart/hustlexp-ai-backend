@@ -453,7 +453,7 @@ export const userRouter = router({
       avatarUrl: z.string().url().max(2048).refine(isApprovedAvatarHost, { message: 'Avatar must be hosted on approved storage (R2 only)' }).optional(),
       phone: z.string().trim().max(20).regex(/^[+\d\s\-().]{7,20}$/, 'Invalid phone number format').optional(),
       // Accept "hustler", "worker", or "poster" from frontend
-      defaultMode: z.string().max(20).optional(),
+      defaultMode: z.string().trim().max(20).optional(),
     }))
     .mutation(async ({ ctx, input }) => {
       const updates: string[] = [];
@@ -578,7 +578,7 @@ export const userRouter = router({
       roleConfidenceWorker: z.number().min(0).max(1),
       roleConfidencePoster: z.number().min(0).max(1),
       roleCertaintyTier: z.enum(['STRONG', 'MODERATE', 'WEAK']),
-      inconsistencyFlags: z.array(z.string().max(100)).max(20).optional(),
+      inconsistencyFlags: z.array(z.string().trim().max(100)).max(20).optional(),
     }))
     .mutation(async ({ ctx, input }) => {
       const result = await db.query<User>(

@@ -738,7 +738,7 @@ export const GDPRService = {
         title: 'Account Deletion Completed',
         body: 'Your account and personal data have been permanently deleted per your GDPR request. This action cannot be undone.',
         deepLink: 'app://support',
-        channels: ['in_app', 'email'],
+        channels: ['email'], // D51-8: no in_app channel — user is deleted and cannot log in to see it
         priority: 'HIGH',
         metadata: { requestId, deletedAt: deletedAt.toISOString() },
       }).catch(err => {
@@ -1273,6 +1273,16 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
       // D50-2: Delete queued outbound emails containing PII (subject/body/recipient)
       await query('DELETE FROM email_outbox WHERE user_id = $1', [userId]);
 
+      // D51-3: Delete outbox_events whose payload carries the deleted user's email
+      // (outbox_events has no user_id column; identify rows via payload JSONB).
+      await query(
+        `DELETE FROM outbox_events WHERE payload->>'userId' = $1::text`,
+        [userId]
+      );
+
+      // D51-4: Delete queued SMS rows (sms_outbox has a user_id column).
+      await query('DELETE FROM sms_outbox WHERE user_id = $1', [userId]);
+
       // D50-3: Delete notification delivery log (contains PII in body/title columns)
       await query('DELETE FROM notification_log WHERE user_id = $1', [userId]);
 
@@ -1293,6 +1303,19 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
            WHERE tm.sender_id = $1
          )
          AND n.user_id != $1`,
+        [userId]
+      );
+
+      // D51-1: Remove senderId UUID from JSONB metadata on notifications for
+      // tasks where the deleted user sent messages (covers message-preview
+      // notifications sent to the counterparty that embed the sender's UUID).
+      await query(
+        `UPDATE notifications
+         SET metadata = metadata - 'senderId'
+         WHERE metadata ? 'senderId'
+           AND task_id IN (
+             SELECT DISTINCT task_id FROM task_messages WHERE sender_id = $1
+           )`,
         [userId]
       );
       

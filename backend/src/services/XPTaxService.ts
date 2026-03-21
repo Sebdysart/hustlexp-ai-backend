@@ -261,12 +261,12 @@ export const XPTaxService = {
         // (even one created for a different user) could submit it to payTax() and
         // have their own held XP released without actually paying. The PI metadata
         // contains user_id set by createTaxPaymentIntent(), so we enforce the match.
-        if (piResult.data.metadata.user_id && piResult.data.metadata.user_id !== userId) {
+        if (!piResult.data.metadata.user_id || piResult.data.metadata.user_id !== userId) {
           return {
             success: false,
             error: {
-              code: 'PAYMENT_USER_MISMATCH',
-              message: 'Payment intent does not belong to this user',
+              code: 'PAYMENT_NOT_OWNED',
+              message: 'This payment does not belong to you',
             },
           };
         }

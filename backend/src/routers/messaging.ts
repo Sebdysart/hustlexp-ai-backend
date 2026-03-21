@@ -127,7 +127,7 @@ export const messagingRouter = router({
     .input(z.object({
       taskId: Schemas.uuid,
       photoUrls: z.array(approvedPhotoUrl).min(1).max(3), // 1-3 photos — approved storage domain only
-      caption: z.string().max(200).optional(),
+      caption: z.string().trim().max(200).optional(),
     }))
     .mutation(async ({ input, ctx }) => {
       if (!ctx.user) {

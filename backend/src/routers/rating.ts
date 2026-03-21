@@ -39,8 +39,8 @@ export const ratingRouter = router({
     .input(z.object({
       taskId: Schemas.uuid,
       stars: z.number().int().min(1).max(5), // RATE-6: Stars must be 1-5
-      comment: z.string().max(500).optional(), // RATE-7: Comment max 500 characters
-      tags: z.array(z.string().max(50)).max(20).optional(), // Optional tags (e.g., "On Time", "Professional")
+      comment: z.string().trim().max(500).optional(), // RATE-7: Comment max 500 characters
+      tags: z.array(z.string().trim().max(50)).max(20).optional(), // Optional tags (e.g., "On Time", "Professional")
     }))
     .mutation(async ({ input, ctx }) => {
       if (!ctx.user) {

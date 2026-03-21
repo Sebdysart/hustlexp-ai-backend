@@ -531,6 +531,7 @@ app.use('/trpc/*', trpcServer({
 // They internally call tRPC endpoints for type safety
 
 import { firebaseAuth } from './auth/firebase.js';
+import { redis } from './cache/redis.js';
 import { db } from './db.js';
 import type { User } from './types.js';
 import { sseHandler } from './realtime/sse-handler.js';
@@ -547,6 +548,14 @@ async function getAuthUser(c: Context): Promise<User | null> {
   const token = authHeader.slice(7);
   try {
     const decoded = await firebaseAuth.verifyIdToken(token, true); // checkRevoked = true
+    // A51-1 FIX: Check Redis revocation marker (set by revokeUserSessions on sign-out /
+    // password change). Firebase's checkRevoked=true above only catches revoked *refresh*
+    // tokens; the Redis marker provides a fast-path check for our own revocation events.
+    const REVOKED_KEY = (uid: string) => `auth:revoked:${uid}`;
+    const revoked = await redis.get(REVOKED_KEY(decoded.uid));
+    if (revoked) {
+      return null;
+    }
     const result = await db.query<User>(
       'SELECT id, firebase_uid, email, full_name, is_banned, account_status, default_mode, role, trust_tier, stripe_connect_id FROM users WHERE firebase_uid = $1',
       [decoded.uid]
@@ -571,8 +580,12 @@ const timestampBody = z.object({ timestamp: z.string().datetime().optional() }).
 // Animation Tracking Endpoints
 
 app.get('/api/users/:userId/xp-celebration-status', async (c) => {
+  const userId = c.req.param('userId');
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(userId)) {
+    return c.json({ error: 'Invalid user ID' }, 400);
+  }
   const user = await getAuthUser(c);
-  if (!user || user.id !== c.req.param('userId')) {
+  if (!user || user.id !== userId) {
     return c.json({ error: 'Unauthorized' }, 401);
   }
 
@@ -593,8 +606,12 @@ app.get('/api/users/:userId/xp-celebration-status', async (c) => {
 });
 
 app.post('/api/users/:userId/xp-celebration-shown', async (c) => {
+  const userId = c.req.param('userId');
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(userId)) {
+    return c.json({ error: 'Invalid user ID' }, 400);
+  }
   const user = await getAuthUser(c);
-  if (!user || user.id !== c.req.param('userId')) {
+  if (!user || user.id !== userId) {
     return c.json({ error: 'Unauthorized' }, 401);
   }
 
@@ -621,8 +638,12 @@ app.post('/api/users/:userId/xp-celebration-shown', async (c) => {
 });
 
 app.get('/api/users/:userId/badges/:badgeId/animation-status', async (c) => {
+  const userId = c.req.param('userId');
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(userId)) {
+    return c.json({ error: 'Invalid user ID' }, 400);
+  }
   const user = await getAuthUser(c);
-  if (!user || user.id !== c.req.param('userId')) {
+  if (!user || user.id !== userId) {
     return c.json({ error: 'Unauthorized' }, 401);
   }
 
@@ -651,8 +672,12 @@ app.get('/api/users/:userId/badges/:badgeId/animation-status', async (c) => {
 });
 
 app.post('/api/users/:userId/badges/:badgeId/animation-shown', async (c) => {
+  const userId = c.req.param('userId');
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(userId)) {
+    return c.json({ error: 'Invalid user ID' }, 400);
+  }
   const user = await getAuthUser(c);
-  if (!user || user.id !== c.req.param('userId')) {
+  if (!user || user.id !== userId) {
     return c.json({ error: 'Unauthorized' }, 401);
   }
 
@@ -817,8 +842,12 @@ app.post('/api/ui/violations', async (c) => {
 // User Onboarding Status
 
 app.get('/api/users/:userId/onboarding-status', async (c) => {
+  const userId = c.req.param('userId');
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(userId)) {
+    return c.json({ error: 'Invalid user ID' }, 400);
+  }
   const user = await getAuthUser(c);
-  if (!user || user.id !== c.req.param('userId')) {
+  if (!user || user.id !== userId) {
     return c.json({ error: 'Unauthorized' }, 401);
   }
 
@@ -920,16 +949,19 @@ app.post('/webhooks/checkr', async (c) => {
     .update(rawBodyText, 'utf8')
     .digest('hex');
 
-  // Use timingSafeEqual to prevent timing-attack enumeration of the secret.
+  // A51-3 FIX: Use constant-time comparison with padding so that a length mismatch
+  // (e.g. non-hex or truncated input) does not leak signature length via early-return
+  // timing.  Both buffers are padded to the longer length before timingSafeEqual so
+  // the comparison always takes the same amount of time regardless of input length.
   const expectedBuf = Buffer.from(expectedSig, 'hex');
   const providedBuf = Buffer.from(providedSig, 'hex');
-  // Guard against non-hex input producing a wrong-length buffer, which would
-  // cause timingSafeEqual to throw a RangeError (DoS via 500).
-  if (providedBuf.length !== expectedBuf.length) {
-    pinoLogger.warn('Checkr webhook signature verification failed: buffer length mismatch (non-hex input)');
-    return c.json({ error: 'Invalid signature' }, 401);
-  }
-  if (!timingSafeEqual(expectedBuf, providedBuf)) {
+  const maxLen = Math.max(providedBuf.length, expectedBuf.length);
+  const paddedProvided = Buffer.alloc(maxLen);
+  const paddedExpected = Buffer.alloc(maxLen);
+  providedBuf.copy(paddedProvided);
+  expectedBuf.copy(paddedExpected);
+  const valid = timingSafeEqual(paddedProvided, paddedExpected);
+  if (!valid) {
     pinoLogger.warn({ sigLength: (providedSig ?? '').length }, 'Checkr webhook signature verification failed');
     return c.json({ error: 'Invalid signature' }, 401);
   }

@@ -136,20 +136,13 @@ export const SelfInsurancePoolService = {
         throw new Error('Failed to get pool status');
       }
 
-      // F47-6 FIX: Compare the estimated covered amount (not raw claim amount) against
-      // max_claim_cents. The actual debit is coverage_percentage% of the claim, so
-      // checking raw claimAmountCents was too strict — it rejected valid claims whose
-      // raw amount exceeds the cap but whose covered amount falls within it.
-      const estimatedCoveredCents = Math.round(claimAmountCents * ((poolStatus.data.coverage_percentage ?? 80) / 100));
-      if (estimatedCoveredCents > poolStatus.data.max_claim_cents) {
-        return {
-          success: false,
-          error: {
-            code: 'CLAIM_EXCEEDS_MAX',
-            message: `Claim amount $${(claimAmountCents / 100).toFixed(2)} exceeds maximum $${(poolStatus.data.max_claim_cents / 100).toFixed(2)}`
-          }
-        };
-      }
+      // F51-5 FIX: The pre-flight CLAIM_EXCEEDS_MAX check has been removed.
+      // It compared an estimated covered amount computed from a stale coverage_percentage
+      // (read outside the transaction) against max_claim_cents — a race condition that
+      // could produce false greens or false reds. The in-transaction check (inside
+      // db.transaction() below, under FOR UPDATE) reads fresh locked values and already
+      // returns CLAIM_EXCEEDS_MAX if coveredAmountCents > maxClaimCents. That check is
+      // the reliable gate; the pre-flight was redundant and unreliable.
 
       // F-02 FIX: Wrap the live balance check + INSERT in a transaction with
       // SELECT ... FOR UPDATE so concurrent callers cannot collectively exceed

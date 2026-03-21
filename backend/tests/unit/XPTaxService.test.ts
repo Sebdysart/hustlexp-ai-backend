@@ -215,7 +215,7 @@ describe('XPTaxService.payTax', () => {
     if (!result.success) expect(result.error.code).toBe('PAYMENT_NOT_SUCCEEDED');
   });
 
-  it('returns PAYMENT_USER_MISMATCH when PI belongs to a different user', async () => {
+  it('returns PAYMENT_NOT_OWNED when PI belongs to a different user (F51-4)', async () => {
     mockStripe.isConfigured.mockReturnValue(true);
     mockStripe.verifyPaymentIntent.mockResolvedValueOnce({
       success: true,
@@ -232,6 +232,26 @@ describe('XPTaxService.payTax', () => {
     const result = await XPTaxService.payTax('user-1', 'pi_test');
 
     expect(result.success).toBe(false);
-    if (!result.success) expect(result.error.code).toBe('PAYMENT_USER_MISMATCH');
+    if (!result.success) expect(result.error.code).toBe('PAYMENT_NOT_OWNED');
+  });
+
+  it('returns PAYMENT_NOT_OWNED when PI metadata.user_id is absent (F51-4 fail-closed)', async () => {
+    mockStripe.isConfigured.mockReturnValue(true);
+    mockStripe.verifyPaymentIntent.mockResolvedValueOnce({
+      success: true,
+      data: {
+        status: 'succeeded',
+        amountCents: 500,
+        metadata: { type: 'xp_tax' }, // user_id absent
+      },
+    } as any);
+
+    mockDb.query
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // Idempotency check
+
+    const result = await XPTaxService.payTax('user-1', 'pi_test');
+
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error.code).toBe('PAYMENT_NOT_OWNED');
   });
 });
