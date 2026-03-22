@@ -21,6 +21,20 @@ export interface AuthenticatedUser {
 // Redis key for revoked tokens (set when user signs out or changes password)
 const REVOKED_KEY = (uid: string) => `auth:revoked:${uid}`;
 
+/**
+ * A53-1 FIX: Sentinel error class used to propagate DB ban-check failures
+ * through the outer Firebase try/catch block without being swallowed.
+ * The outer catch re-throws this class so callers receive a hard error
+ * (fail-closed) rather than a successful authentication response.
+ */
+class BanCheckFailedError extends Error {
+  constructor(cause: unknown) {
+    super('DB ban-check failed — cannot verify account status');
+    this.name = 'BanCheckFailedError';
+    this.cause = cause;
+  }
+}
+
 export async function authenticateRequest(
   c: Context
 ): Promise<AuthenticatedUser | null> {
@@ -107,17 +121,18 @@ export async function authenticateRequest(
         user.account_status = dbUser.account_status;
       }
     } catch (err) {
-      // INTENTIONAL FAIL-OPEN: DB errors must not block authentication — this is
-      // a deliberate availability trade-off.  If the DB is unreachable we accept
-      // the risk of a banned/suspended user making requests rather than denying
-      // auth to all users.  DO NOT change this to fail-closed without evaluating
-      // the blast radius of a DB outage on the entire user base.
-      //
-      // BUG 6 FIX: log at ERROR level with a clear SECURITY DEGRADED marker so
-      // on-call engineers are alerted that ban enforcement is degraded.
-      authLogger.error({ err, uid: decoded.uid }, '[auth] DB ban-check failed — proceeding without ban enforcement. SECURITY DEGRADED.');
-      // NOTE: If this fires repeatedly, investigate DB connectivity / pool exhaustion.
-      // A metric/alert should be wired to this log line in your observability stack.
+      // A53-1 FIX: Fail closed — if the DB ban-check throws we cannot verify
+      // whether the user is banned/suspended/deleted.  Returning the user here
+      // would allow a banned user through during a DB outage (fail-open).
+      // Wrap in BanCheckFailedError so the outer Firebase catch block can
+      // distinguish this from a Firebase token error and re-throw rather than
+      // return null, ensuring the request hard-fails (401/500) instead of
+      // proceeding with an unverified authentication state.
+      // The availability trade-off is intentional: a transient DB outage causes
+      // authentication failures for ALL users, but it does NOT allow banned users
+      // to bypass enforcement — which is the correct security posture.
+      authLogger.error({ err, uid: decoded.uid }, '[auth] DB ban-check failed — denying request. SECURITY DEGRADED. Investigate DB connectivity.');
+      throw new BanCheckFailedError(err);
     }
 
     // Cache session for 5 mins (TOKEN_CACHE_TTL_SECONDS) — reduces revocation window to ≤5 min
@@ -135,6 +150,11 @@ export async function authenticateRequest(
 
     return user;
   } catch (err: unknown) {
+    // A53-1 FIX: DB ban-check failure must propagate so the request fails closed.
+    // Re-throw BanCheckFailedError without logging again (already logged above).
+    if (err instanceof BanCheckFailedError) {
+      throw err;
+    }
     // Firebase throws specific error for revoked tokens
     if ((err as Record<string, unknown>)?.code === "auth/id-token-revoked") {
       authLogger.warn("Token has been revoked");

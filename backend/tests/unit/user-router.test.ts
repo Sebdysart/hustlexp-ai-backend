@@ -26,9 +26,18 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Mocks — must come before any imports that transitively touch these modules
 // ---------------------------------------------------------------------------
 
-vi.mock('../../src/db', () => ({
-  db: { query: vi.fn() },
-}));
+vi.mock('../../src/db', () => {
+  const queryFn = vi.fn();
+  return {
+    db: {
+      query: queryFn,
+      // T53-2: serializableTransaction delegates to queryFn so existing
+      // mock sequences work unchanged. Tests that need to verify it is
+      // called can inspect mockDb.serializableTransaction directly.
+      serializableTransaction: vi.fn((fn: (q: typeof queryFn) => Promise<unknown>) => fn(queryFn)),
+    },
+  };
+});
 
 vi.mock('../../src/auth/firebase', () => ({
   firebaseAuth: { verifyIdToken: vi.fn() },
@@ -948,6 +957,46 @@ describe('user.updateProfile', () => {
     await makeUserCaller().updateProfile({}); // no fields → early return
 
     expect(mockInvalidate).not.toHaveBeenCalled();
+  });
+
+  // T53-2: Role TOCTOU — the open-task check and the UPDATE must be atomic.
+  it('T53-2: uses serializableTransaction when switching roles to prevent TOCTOU', async () => {
+    const workerUser = makeFakeUser({ default_mode: 'worker' });
+
+    // Inside the serializable transaction: COUNT → 0 open tasks, then UPDATE
+    mockDb.query
+      .mockResolvedValueOnce({ rows: [{ count: '0' }], rowCount: 1 } as any) // COUNT inside tx
+      .mockResolvedValueOnce({ rows: [makeFakeUser({ default_mode: 'poster' })], rowCount: 1 } as any); // UPDATE inside tx
+    setupStatsQuery();
+
+    await makeUserCaller(workerUser).updateProfile({ defaultMode: 'poster' });
+
+    // serializableTransaction must have been called (not just db.query directly)
+    expect(mockDb.serializableTransaction).toHaveBeenCalledOnce();
+  });
+
+  it('T53-2: blocks role switch via PRECONDITION_FAILED when open tasks exist (inside transaction)', async () => {
+    const workerUser = makeFakeUser({ default_mode: 'worker' });
+
+    // Inside the serializable transaction: COUNT → 1 open task
+    mockDb.query.mockResolvedValueOnce({ rows: [{ count: '1' }], rowCount: 1 } as any);
+
+    await expect(
+      makeUserCaller(workerUser).updateProfile({ defaultMode: 'poster' })
+    ).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+
+    expect(mockDb.serializableTransaction).toHaveBeenCalledOnce();
+  });
+
+  it('T53-2: does NOT use serializableTransaction for non-role-switch profile updates', async () => {
+    // Only changing bio — no role switch, no serializable tx needed
+    mockDb.query.mockResolvedValueOnce({ rows: [makeFakeUser({ bio: 'New bio' })], rowCount: 1 } as any);
+    setupStatsQuery();
+
+    await makeUserCaller().updateProfile({ bio: 'New bio' });
+
+    // Should have used plain db.query, not serializableTransaction
+    expect(mockDb.serializableTransaction).not.toHaveBeenCalled();
   });
 });
 

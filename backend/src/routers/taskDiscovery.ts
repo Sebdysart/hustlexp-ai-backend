@@ -170,16 +170,31 @@ export const taskDiscoveryRouter = router({
         });
       }
 
-      // Annotate with progressive verification (canAccept per task)
+      // Annotate with progressive verification (canAccept per task).
+      // T53-6 FIX: Strip poster_id from feed items for tasks where the requesting
+      // hustler has not been assigned as the worker. Poster identity should not be
+      // revealed to unassigned workers — it constitutes PII at the matchmaking stage.
+      // Once a task is assigned (task.worker_id === ctx.user.id), the poster_id is
+      // already available via the dedicated task-detail endpoint which enforces
+      // participant-only access.
       const userTrustTier = ctx.user.trust_tier ?? 0;
-      const annotatedData = result.data.map((item) => ({
-        ...item,
-        canAccept: canUserAcceptTask(userTrustTier, item.task.price as number),
-        requiredTrustTier: getRequiredTierForTask(item.task.price as number),
-        verificationCTA: canUserAcceptTask(userTrustTier, item.task.price as number)
-          ? null
-          : `Complete Level ${getRequiredTierForTask(item.task.price as number)} verification to accept this task`,
-      }));
+      const annotatedData = result.data.map((item) => {
+        const isAssigned = (item.task as { worker_id?: string | null }).worker_id === ctx.user.id;
+        // Destructure poster_id away; re-expose only for assigned workers
+        const { poster_id: taskPosterId, ...taskWithoutPosterId } = item.task as typeof item.task & { poster_id?: string };
+        const safeTask = isAssigned
+          ? { ...taskWithoutPosterId, poster_id: taskPosterId }
+          : taskWithoutPosterId;
+        return {
+          ...item,
+          task: safeTask,
+          canAccept: canUserAcceptTask(userTrustTier, item.task.price as number),
+          requiredTrustTier: getRequiredTierForTask(item.task.price as number),
+          verificationCTA: canUserAcceptTask(userTrustTier, item.task.price as number)
+            ? null
+            : `Complete Level ${getRequiredTierForTask(item.task.price as number)} verification to accept this task`,
+        };
+      });
 
       return annotatedData;
     }),

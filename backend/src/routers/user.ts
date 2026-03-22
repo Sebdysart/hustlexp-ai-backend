@@ -479,37 +479,10 @@ export const userRouter = router({
         updates.push(`phone = $${paramIndex++}`);
         values.push(input.phone);
       }
+      const isRoleSwitch = input.defaultMode !== undefined && normalizeRole(input.defaultMode) !== ctx.user.default_mode;
+
       if (input.defaultMode !== undefined) {
         const newMode = normalizeRole(input.defaultMode);
-        if (newMode !== ctx.user.default_mode) {
-          // Guard: no open tasks in current role before switching
-          // REG-11 FIX: EXPIRED is a terminal TaskState — include it here so expired
-          // tasks don't block role switching. REFUNDED is EscrowState, not TaskState —
-          // removed. Terminal TaskStates: COMPLETED, CANCELLED, EXPIRED.
-          // REG-13 FIX: Wrap in try/catch to sanitize DB errors before surfacing to caller.
-          let openTasksCount: number;
-          try {
-            const result = await db.query(
-              `SELECT COUNT(*) FROM tasks
-               WHERE (poster_id = $1 OR worker_id = $1)
-               AND state NOT IN ('COMPLETED', 'CANCELLED', 'EXPIRED')`,
-              [ctx.user.id]
-            );
-            openTasksCount = parseInt(result.rows[0].count, 10);
-          } catch (err) {
-            logger.error({ userId: ctx.user.id, err }, 'Failed to check open tasks for role switch');
-            throw new TRPCError({
-              code: 'INTERNAL_SERVER_ERROR',
-              message: 'Unable to verify account status. Please try again.',
-            });
-          }
-          if (openTasksCount > 0) {
-            throw new TRPCError({
-              code: 'PRECONDITION_FAILED',
-              message: 'Cannot switch role while you have active tasks. Complete or cancel all tasks first.',
-            });
-          }
-        }
         updates.push(`default_mode = $${paramIndex++}`);
         // Normalize: iOS sends "hustler" but DB stores "worker"
         values.push(newMode);
@@ -522,17 +495,49 @@ export const userRouter = router({
       updates.push(`updated_at = NOW()`);
       values.push(ctx.user.id);
 
-      const result = await db.query<User>(
-        `UPDATE users SET ${updates.join(', ')} WHERE id = $${paramIndex} RETURNING *`,
-        values
-      );
+      // T53-2 FIX: When switching roles, wrap the open-task COUNT check and
+      // the user UPDATE in a single SERIALIZABLE transaction so that no new task
+      // assignment can sneak in between the check and the write (TOCTOU race).
+      // Non-role-switch updates use a plain query — no locking needed.
+      let updatedUser: User;
+      if (isRoleSwitch) {
+        updatedUser = await db.serializableTransaction(async (txQuery) => {
+          // REG-11 FIX: EXPIRED is terminal — include it so expired tasks don't
+          // block role switching. Terminal TaskStates: COMPLETED, CANCELLED, EXPIRED.
+          const countResult = await txQuery<{ count: string }>(
+            `SELECT COUNT(*) FROM tasks
+             WHERE (poster_id = $1 OR worker_id = $1)
+             AND state NOT IN ('COMPLETED', 'CANCELLED', 'EXPIRED')`,
+            [ctx.user.id]
+          );
+          const openTasksCount = parseInt(countResult.rows[0].count, 10);
+          if (openTasksCount > 0) {
+            throw new TRPCError({
+              code: 'PRECONDITION_FAILED',
+              message: 'Cannot switch role while you have active tasks. Complete or cancel all tasks first.',
+            });
+          }
+          const result = await txQuery<User>(
+            `UPDATE users SET ${updates.join(', ')} WHERE id = $${paramIndex} RETURNING *`,
+            values
+          );
+          return result.rows[0];
+        });
+      } else {
+        const result = await db.query<User>(
+          `UPDATE users SET ${updates.join(', ')} WHERE id = $${paramIndex} RETURNING *`,
+          values
+        );
+        updatedUser = result.rows[0];
+      }
+
       await invalidateUser(ctx.user.id);
       // SEC-FIX: Evict the in-process auth token cache so the new default_mode
       // is enforced immediately rather than after the 5-minute TTL expires.
       // This matches the pattern used by ban, GDPR deletion, and trust-tier changes.
       // BUG GG3 FIX: await the call (was fire-and-forget) so Redis errors surface.
       await invalidateAuthCacheForUser(ctx.user.id);
-      return await toMobileUser(result.rows[0]);
+      return await toMobileUser(updatedUser);
     }),
   
   /**

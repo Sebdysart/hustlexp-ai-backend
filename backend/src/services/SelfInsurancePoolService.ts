@@ -164,7 +164,7 @@ export const SelfInsurancePoolService = {
         // The FOR UPDATE row-level lock serializes concurrent callers: the second caller
         // blocks until the first transaction commits, then sees the inserted row.
         const existingClaim = await query<{ id: string }>(
-          `SELECT id FROM insurance_claims WHERE task_id = $1 AND hustler_id = $2 AND status NOT IN ('rejected', 'withdrawn') LIMIT 1 FOR UPDATE`,
+          `SELECT id FROM insurance_claims WHERE task_id = $1 AND hustler_id = $2 AND status NOT IN ('denied', 'withdrawn') LIMIT 1 FOR UPDATE`,
           [taskId, hustlerId]
         );
         if (existingClaim.rows[0]) {
@@ -433,46 +433,97 @@ export const SelfInsurancePoolService = {
         );
       });
 
+      // F53-5 FIX: Stripe requires transfer amounts >= 50 cents. If coveredAmountCents
+      // is below the floor, the Stripe call would fail with a cryptic error. Fail fast
+      // with a descriptive error before any Stripe call so the caller knows exactly why.
+      // Note: this check runs AFTER the DB transaction commits — the pool has been debited
+      // and the claim marked 'paid'. That is intentional: if the amount is below the Stripe
+      // floor, the claim should be manually voided by an admin (this is an edge case for
+      // very small tasks). The alternative would be to check inside the transaction, but
+      // that requires knowing coveredAmountCents before committing — it is set inside the
+      // transaction, so we check here as an explicit post-transaction guard.
+      if (coveredAmountCents < 50) {
+        log.error({ claimId, coveredAmountCents }, 'Covered payout below Stripe minimum transfer amount (50 cents)');
+        return {
+          success: false,
+          error: {
+            code: 'TRANSFER_AMOUNT_TOO_LOW',
+            message: `Covered payout of ${coveredAmountCents} cents is below the minimum Stripe transfer amount (50 cents). Claim requires manual review.`,
+          },
+        };
+      }
+
       // Transfer funds to hustler via Stripe Connect
       // F-06 FIX: Use StripeService.createTransfer() instead of raw fetch() so the
       // call goes through the circuit breaker, SDK retry/timeout logic, and test stubs.
       // F-19: Pass claimId as part of the idempotency key to prevent duplicate transfers.
+      // F53-10 FIX: Do NOT swallow Stripe failures. If Stripe throws or returns
+      // success:false, return a STRIPE_TRANSFER_FAILED error so the caller knows the
+      // worker was not paid. Previously, all Stripe errors were silently caught and the
+      // function returned { success: true } — the DB had already committed status='paid'
+      // but the worker received nothing (permanent money loss).
+      // F46-4 FIX: Re-use the pre-checked connectId from above (no redundant DB query).
+      // The pre-check already returned failure if connectId was null, so here it is
+      // guaranteed non-null.
+      let transferResult: Awaited<ReturnType<typeof StripeService.createTransfer>>;
       try {
-        // F46-4 FIX: Re-use the pre-checked connectId from above (no redundant DB query).
-        // The pre-check already returned failure if connectId was null, so here it is
-        // guaranteed non-null. The inner block is kept in case of concurrent revocation.
-        if (connectId) {
-          const transferResult = await StripeService.createTransfer({
-            escrowId: claimId, // use claimId as the correlation key for this payout
-            taskId: claim.task_id,
-            workerId: claim.hustler_id,
-            workerStripeAccountId: connectId,
-            amount: coveredAmountCents,
-            description: `Insurance claim payout: ${claimId}`,
-            idempotencyKeySuffix: `claim_payout_${claimId}`,
-          });
-          if (transferResult.success) {
-            // F-31: Record the transfer ID so the idempotency guard can confirm
-            // that the Stripe call succeeded. Without this, a process crash after
-            // DB commit but before Stripe completes leaves the claim in a
-            // status='paid'/stripe_transfer_id=NULL limbo that is un-retryable.
-            await db.query(
-              'UPDATE insurance_claims SET stripe_transfer_id = $1 WHERE id = $2',
-              [transferResult.data.transferId, claimId]
-            );
-          } else {
-            log.error({ claimId, taskId: claim.task_id, err: transferResult.error.message }, 'Stripe transfer failed for claim payout');
-            await db.query(
-              `UPDATE insurance_claims SET review_notes = COALESCE(review_notes, '') || ' [STRIPE_TRANSFER_FAILED]' WHERE id = $1`,
-              [claimId]
-            );
-          }
-        } else {
-          log.warn({ hustlerId: claim.hustler_id, claimId }, 'Hustler has no Stripe Connect ID');
+        transferResult = await StripeService.createTransfer({
+          escrowId: claimId, // use claimId as the correlation key for this payout
+          taskId: claim.task_id,
+          workerId: claim.hustler_id,
+          workerStripeAccountId: connectId,
+          amount: coveredAmountCents,
+          description: `Insurance claim payout: ${claimId}`,
+          idempotencyKeySuffix: `claim_payout_${claimId}`,
+        });
+      } catch (stripeException) {
+        // F53-10 FIX: Stripe threw an exception (network error, SDK error, etc.)
+        // Record it for ops visibility and return a structured failure — do NOT swallow.
+        const errMsg = stripeException instanceof Error ? stripeException.message : String(stripeException);
+        log.error({ err: errMsg, claimId }, 'Stripe threw during claim payout transfer');
+        // Best-effort annotation — ignore any secondary DB failure so the structured error always returns.
+        try {
+          await db.query(
+            `UPDATE insurance_claims SET review_notes = COALESCE(review_notes, '') || ' [STRIPE_TRANSFER_FAILED]' WHERE id = $1`,
+            [claimId]
+          );
+        } catch {
+          // Ignore secondary failures — the primary error is what matters to the caller
         }
-      } catch (stripeError) {
-        log.error({ err: stripeError instanceof Error ? stripeError.message : String(stripeError), claimId }, 'Stripe error during claim payout');
+        return {
+          success: false,
+          error: {
+            code: 'STRIPE_TRANSFER_FAILED',
+            message: `Stripe transfer threw: ${errMsg}`,
+          },
+        };
       }
+
+      if (!transferResult.success) {
+        // F53-10 FIX: Stripe returned a structured failure — record it for ops visibility
+        // but propagate the error to the caller (do NOT return { success: true }).
+        log.error({ claimId, taskId: claim.task_id, err: transferResult.error.message }, 'Stripe transfer failed for claim payout');
+        await db.query(
+          `UPDATE insurance_claims SET review_notes = COALESCE(review_notes, '') || ' [STRIPE_TRANSFER_FAILED]' WHERE id = $1`,
+          [claimId]
+        );
+        return {
+          success: false,
+          error: {
+            code: 'STRIPE_TRANSFER_FAILED',
+            message: `Stripe transfer failed: ${transferResult.error.message}`,
+          },
+        };
+      }
+
+      // F-31: Record the transfer ID so the idempotency guard can confirm
+      // that the Stripe call succeeded. Without this, a process crash after
+      // DB commit but before Stripe completes leaves the claim in a
+      // status='paid'/stripe_transfer_id=NULL limbo that is un-retryable.
+      await db.query(
+        'UPDATE insurance_claims SET stripe_transfer_id = $1 WHERE id = $2',
+        [transferResult.data.transferId, claimId]
+      );
 
       log.info({ claimId, coveredAmountCents }, 'Paid claim');
 

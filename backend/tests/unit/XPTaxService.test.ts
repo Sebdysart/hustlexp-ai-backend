@@ -255,3 +255,112 @@ describe('XPTaxService.payTax', () => {
     if (!result.success) expect(result.error.code).toBe('PAYMENT_NOT_OWNED');
   });
 });
+
+// ---------------------------------------------------------------------------
+// payTax — F53-1: per-row PI idempotency inside FIFO loop
+// ---------------------------------------------------------------------------
+
+describe('XPTaxService.payTax — F53-1: per-PI per-row idempotency inside FIFO loop', () => {
+  it('inserts dedup record into xp_tax_payment_intent_idempotency before awarding XP for each row (F53-1)', async () => {
+    // The FIFO loop must INSERT into xp_tax_payment_intent_idempotency with ON CONFLICT DO NOTHING
+    // before processing each tax row. Only proceed if rowCount === 1.
+    mockStripe.isConfigured.mockReturnValue(true);
+    mockStripe.verifyPaymentIntent.mockResolvedValueOnce({
+      success: true,
+      data: {
+        status: 'succeeded',
+        amountCents: 1000,
+        metadata: { type: 'xp_tax', user_id: 'user-1' },
+      },
+    } as any);
+
+    mockDb.query
+      // 1. Outer idempotency check — no existing rows
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      // Inside serializableTransaction:
+      // 2. SELECT unpaid taxes (two rows)
+      .mockResolvedValueOnce({
+        rows: [
+          { id: 'tax-1', tax_amount_cents: 500, gross_payout_cents: 5000, created_at: new Date() },
+          { id: 'tax-2', tax_amount_cents: 500, gross_payout_cents: 5000, created_at: new Date() },
+        ],
+        rowCount: 2,
+      } as never)
+      // 3. Dedup INSERT for tax-1 — row inserted (rowCount=1) → proceed
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
+      // 4. UPDATE xp_tax_ledger for tax-1
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
+      // 5. UPDATE users XP for tax-1
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
+      // 6. Dedup INSERT for tax-2 — row inserted (rowCount=1) → proceed
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
+      // 7. UPDATE xp_tax_ledger for tax-2
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
+      // 8. UPDATE users XP for tax-2
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
+      // 9. UPDATE user_xp_tax_status (summary)
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+    const result = await XPTaxService.payTax('user-1', 'pi_test_dedup');
+
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.xp_released).toBe(1000); // 2 * (5000/10)
+
+    // Must have entered serializableTransaction
+    expect(mockDb.serializableTransaction).toHaveBeenCalledOnce();
+
+    // Verify the dedup INSERT was issued for each row (calls 3 and 6 in mock sequence)
+    // Call indices (0-based): 0=outer idempotency, rest inside tx via mockDb.query
+    // calls[1]=SELECT unpaid, calls[2]=dedup tax-1, calls[3]=UPDATE ledger tax-1,
+    // calls[4]=UPDATE users tax-1, calls[5]=dedup tax-2, calls[6]=UPDATE ledger tax-2,
+    // calls[7]=UPDATE users tax-2, calls[8]=summary update
+    const allSqls = mockDb.query.mock.calls.map(c => (c[0] as string).toLowerCase());
+    const dedupInserts = allSqls.filter(sql => sql.includes('xp_tax_payment_intent_idempotency'));
+    expect(dedupInserts.length).toBe(2); // one per row
+    dedupInserts.forEach(sql => {
+      expect(sql).toContain('on conflict');
+      expect(sql).toContain('do nothing');
+    });
+  });
+
+  it('skips XP award when dedup INSERT returns rowCount=0 (already processed row — retry guard, F53-1)', async () => {
+    // Simulate transaction retry: the dedup table already has an entry for this PI+row
+    // → INSERT ON CONFLICT DO NOTHING → rowCount=0 → skip XP award for that row
+    mockStripe.isConfigured.mockReturnValue(true);
+    mockStripe.verifyPaymentIntent.mockResolvedValueOnce({
+      success: true,
+      data: {
+        status: 'succeeded',
+        amountCents: 500,
+        metadata: { type: 'xp_tax', user_id: 'user-1' },
+      },
+    } as any);
+
+    mockDb.query
+      // 1. Outer idempotency check — no existing paid rows for this PI
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      // Inside serializableTransaction:
+      // 2. SELECT unpaid taxes
+      .mockResolvedValueOnce({
+        rows: [
+          { id: 'tax-1', tax_amount_cents: 500, gross_payout_cents: 5000, created_at: new Date() },
+        ],
+        rowCount: 1,
+      } as never)
+      // 3. Dedup INSERT — conflict (already processed in a prior attempt) → rowCount=0 → skip
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      // 4. UPDATE user_xp_tax_status (summary — still runs)
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+    const result = await XPTaxService.payTax('user-1', 'pi_test_already_processed');
+
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.xp_released).toBe(0); // skipped — dedup fired
+
+    // Must NOT have called UPDATE users (XP award) — dedup blocked it
+    const updateUsersCalls = mockDb.query.mock.calls.filter(c =>
+      (c[0] as string).toLowerCase().includes('update users')
+    );
+    expect(updateUsersCalls.length).toBe(0);
+  });
+});

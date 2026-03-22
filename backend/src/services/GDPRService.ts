@@ -34,6 +34,58 @@ if (config.stripe.secretKey && !config.stripe.secretKey.includes('placeholder'))
   stripe = new Stripe(config.stripe.secretKey, { apiVersion: '2025-11-17.clover' });
 }
 
+// ============================================================================
+// D53-4: PER-USER IN-MEMORY RATE LIMITER FOR GDPR ENDPOINTS
+// ============================================================================
+// Cooldown periods (milliseconds)
+const GDPR_DELETION_COOLDOWN_MS = 24 * 60 * 60 * 1000; // 24 hours
+const GDPR_EXPORT_COOLDOWN_MS = 60 * 60 * 1000;         // 1 hour
+
+// Map key: `${userId}:${requestType}` → timestamp of last allowed request
+const gdprRateLimitMap = new Map<string, number>();
+
+/**
+ * Check whether a GDPR request from userId is within the cooldown window.
+ * Returns { allowed: true } if the request can proceed and records the
+ * current timestamp. Returns { allowed: false, retryAfterMs } when within
+ * the cooldown window.
+ *
+ * Exported for unit-testing. Called by createRequest before any DB work.
+ */
+export function checkGDPRRateLimit(
+  userId: string,
+  requestType: 'deletion' | 'export' | string
+): { allowed: boolean; retryAfterMs?: number } {
+  const cooldownMs = requestType === 'deletion'
+    ? GDPR_DELETION_COOLDOWN_MS
+    : GDPR_EXPORT_COOLDOWN_MS;
+
+  const key = `${userId}:${requestType}`;
+  const now = Date.now();
+  const last = gdprRateLimitMap.get(key);
+
+  if (last !== undefined) {
+    const elapsed = now - last;
+    if (elapsed < cooldownMs) {
+      return { allowed: false, retryAfterMs: cooldownMs - elapsed };
+    }
+  }
+
+  // Record the timestamp and allow
+  gdprRateLimitMap.set(key, now);
+  return { allowed: true };
+}
+
+/**
+ * Clear all rate-limit state. ONLY for use in tests — never call in production.
+ * Vitest runs each test file in a separate module context but all tests within
+ * the same file share module state. This function allows beforeEach hooks to
+ * reset the Map so rate-limit tests don't bleed into createRequest tests.
+ */
+export function _resetGDPRRateLimitMapForTesting(): void {
+  gdprRateLimitMap.clear();
+}
+
 const log = logger.child({ service: 'GDPRService' });
 
 // ============================================================================
@@ -113,8 +165,23 @@ export const GDPRService = {
     params: CreateGDPRRequestParams
   ): Promise<ServiceResult<GDPRDataRequest>> => {
     const { userId, requestType, exportFormat } = params;
-    
+
     try {
+      // D53-4: Enforce per-user rate limit before doing any DB work.
+      // Deletion: 24-hour cooldown. Export: 1-hour cooldown.
+      if (requestType === 'deletion' || requestType === 'export') {
+        const rateCheck = checkGDPRRateLimit(userId, requestType);
+        if (!rateCheck.allowed) {
+          return {
+            success: false,
+            error: {
+              code: 'RATE_LIMIT_EXCEEDED',
+              message: `Too many ${requestType} requests. Please wait before submitting another.`,
+            },
+          };
+        }
+      }
+
       // Validate request type and format
       if (requestType === 'export' && !exportFormat) {
         return {
@@ -125,7 +192,7 @@ export const GDPRService = {
           },
         };
       }
-      
+
       // Check for existing pending request of same type
       const existingResult = await db.query<{ id: string }>(
         `SELECT id FROM gdpr_data_requests
@@ -893,6 +960,10 @@ export const GDPRService = {
       return false;
     }
   },
+
+  // D53-4: Expose checkGDPRRateLimit as a service method so it can be used
+  // by the tRPC router and tested directly through GDPRService.
+  checkGDPRRateLimit,
 };
 
 // ============================================================================
@@ -1090,14 +1161,30 @@ export async function collectUserDataForExport(userId: string): Promise<Record<s
  */
 async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult<{ deletedAt: Date }>> {
   try {
-    // Generate a deterministic, UUID-format anonymization ID derived from the
-    // real userId. This ensures the value is valid for UUID-typed columns
-    // (proofs.submitter_id, fraud_risk_scores.entity_id, task_applications.hustler_id)
-    // while still being clearly synthetic. The last 12 hex chars of the userId
-    // are placed in the node segment; all other nibbles are zeroed.
-    // NOTE: randomUUID() is NOT used here — we need a stable, reproducible ID
-    // so that retries of a failed anonymization transaction are idempotent.
-    const anonymizedId = `00000000-0000-0000-0000-${userId.replace(/-/g, '').slice(-12)}`;
+    // D53-1 FIX: Use randomUUID() for the anonymizedId instead of a deterministic
+    // ID derived from the real userId. The old approach embedded the last 12 hex
+    // characters of userId in the node segment, making re-identification trivial.
+    //
+    // Idempotency (retry-safe): Before generating a new UUID we check whether the
+    // user row already has the deleted-*@deleted.hustlexp.app email pattern. If it
+    // does, the row was already anonymized by a previous run — return success early
+    // without overwriting existing anonymization data. This replaces the previous
+    // deterministic-ID approach as the idempotency mechanism.
+    const userEmailCheck = await db.query<{ email: string }>(
+      `SELECT email FROM users WHERE id = $1`,
+      [userId]
+    );
+    const existingEmail = userEmailCheck.rows[0]?.email ?? '';
+    if (/^deleted-.+@deleted\.hustlexp\.app$/.test(existingEmail)) {
+      // Already anonymized — return early (idempotent re-run)
+      log.info({ userId }, 'GDPR: user already anonymized — skipping re-run (idempotent)');
+      return { success: true, data: { deletedAt: new Date() } };
+    }
+
+    // Generate a cryptographically random UUID for the anonymizedId. This is safe
+    // for UUID-typed FK columns (proofs.submitter_id, task_applications.hustler_id,
+    // fraud_risk_scores.entity_id) and carries zero information about the real userId.
+    const anonymizedId = randomUUID();
     const anonymizedEmail = `deleted-${randomUUID().split('-')[0]}@deleted.hustlexp.app`;
     const deletedAt = new Date();
 
@@ -1255,6 +1342,26 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
     // Use a transaction to ensure atomicity
     await db.serializableTransaction(async (query) => {
       // 1. Immediate deletion (GDPR_COMPLIANCE_SPEC.md §3.1)
+
+      // D53-2 FIX: Delete from tables that contain PII but were missing from the
+      // original scrub. All confirmed in schema.sql with user_id FK columns.
+      // Identity verification data — contains email, phone, status
+      await query('DELETE FROM users_identity WHERE user_id = $1', [userId]);
+      // Verification attempt records — contains target (email/phone), code_hash, ip_address
+      await query('DELETE FROM verification_attempts WHERE user_id = $1', [userId]);
+      // Identity events — contains ip_address, channel, metadata
+      await query('DELETE FROM identity_events WHERE user_id = $1', [userId]);
+      // User stats — aggregated stats linked to userId (no anonymization needed, delete)
+      await query('DELETE FROM user_stats WHERE user_id = $1', [userId]);
+      // Boost purchases — linked to userId
+      await query('DELETE FROM user_boosts WHERE user_id = $1', [userId]);
+      // Leaderboard cache — stores username, name, avatar_url (display PII)
+      await query('DELETE FROM leaderboard_cache WHERE user_id = $1', [userId]);
+      // Proactive AI preferences — stores categories, schedule, device_tokens
+      await query('DELETE FROM proactive_preferences WHERE user_id = $1', [userId]);
+      // Direct messages (messages table) — sender_id is the author column per schema.sql
+      // messages.sender_id references users(id); content and image_url are PII
+      await query('DELETE FROM messages WHERE sender_id = $1', [userId]);
 
       // Delete tables added after GDPR service was written
       await query('DELETE FROM alpha_telemetry WHERE user_id = $1', [userId]);

@@ -497,6 +497,12 @@ describe('authenticateRequest', () => {
       name: undefined,
     } as never);
 
+    // A53-1 FIX: ban-check now runs after Firebase verify — provide a non-banned row
+    const { db } = await import('../../src/db');
+    vi.mocked(db.query).mockResolvedValueOnce({
+      rows: [{ is_banned: false, account_status: 'ACTIVE' }],
+    } as never);
+
     const c = makeCtx({
       req: { header: vi.fn().mockReturnValue('Bearer validtokenforrevoked') },
     });
@@ -538,6 +544,12 @@ describe('authenticateRequest', () => {
       email: 'c@d.com',
       email_verified: true,
       name: 'Charlie',
+    } as never);
+
+    // A53-1 FIX: ban-check now runs after Firebase verify — provide a non-banned row
+    const { db } = await import('../../src/db');
+    vi.mocked(db.query).mockResolvedValueOnce({
+      rows: [{ is_banned: false, account_status: 'ACTIVE' }],
     } as never);
 
     const c = makeCtx({

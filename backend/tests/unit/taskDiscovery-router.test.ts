@@ -176,6 +176,74 @@ describe('taskDiscovery.getFeed', () => {
 
     await expect(makeCaller().getFeed({})).rejects.toThrow('Feed error');
   });
+
+  // T53-6: Matchmaker must not leak poster identity to unassigned hustlers.
+  // poster_id should be stripped from tasks where worker_id !== callerUserId.
+  it('T53-6: strips poster_id from unassigned task feed items', async () => {
+    const CALLER_ID = 'hustler-user-1';
+    const feedItems = [
+      {
+        task: {
+          id: 'task-unassigned',
+          price: 3000,
+          poster_id: 'poster-secret-id',
+          worker_id: null, // not yet assigned
+        },
+        matching_score: 0.8,
+        relevance_score: 0.85,
+        distance_miles: 1.5,
+      },
+    ];
+    mockService.getFeed.mockResolvedValueOnce({ success: true, data: feedItems } as any);
+
+    const result = await makeCaller(CALLER_ID, 2).getFeed({});
+
+    expect(result).toHaveLength(1);
+    // poster_id must NOT appear in the response for an unassigned task
+    expect((result[0].task as any).poster_id).toBeUndefined();
+  });
+
+  it('T53-6: includes poster_id for tasks where the caller is the assigned worker', async () => {
+    const CALLER_ID = 'hustler-user-1';
+    const feedItems = [
+      {
+        task: {
+          id: 'task-assigned',
+          price: 3000,
+          poster_id: 'poster-secret-id',
+          worker_id: CALLER_ID, // this hustler is the assigned worker
+        },
+        matching_score: 0.9,
+        relevance_score: 0.9,
+        distance_miles: 0.5,
+      },
+    ];
+    mockService.getFeed.mockResolvedValueOnce({ success: true, data: feedItems } as any);
+
+    const result = await makeCaller(CALLER_ID, 2).getFeed({});
+
+    expect(result).toHaveLength(1);
+    // For an assigned task, poster_id is allowed (participant has context)
+    expect((result[0].task as any).poster_id).toBe('poster-secret-id');
+  });
+
+  it('T53-6: browseTasks also strips poster_id from public task listings', async () => {
+    const tasks = [
+      {
+        id: 'task-1',
+        price: 1500,
+        poster_id: 'poster-secret-id',
+        title: 'Fix sink',
+      },
+    ];
+    mockService.browsePublicFeed.mockResolvedValueOnce({ success: true, data: tasks } as any);
+
+    const result = await makePublicCaller().browseTasks({});
+
+    expect(result.tasks).toHaveLength(1);
+    // poster_id must not be in the public browseTasks response
+    expect((result.tasks[0] as any).poster_id).toBeUndefined();
+  });
 });
 
 // ---------------------------------------------------------------------------

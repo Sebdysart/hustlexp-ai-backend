@@ -106,7 +106,7 @@ vi.mock('../../src/auth/middleware', () => ({
 // ---------------------------------------------------------------------------
 
 import { db } from '../../src/db';
-import { GDPRService, collectUserDataForExport } from '../../src/services/GDPRService';
+import { GDPRService, collectUserDataForExport, _resetGDPRRateLimitMapForTesting } from '../../src/services/GDPRService';
 import { NotificationService } from '../../src/services/NotificationService';
 import { EscrowService } from '../../src/services/EscrowService';
 import { TaskService } from '../../src/services/TaskService';
@@ -118,6 +118,8 @@ const mockTaskService = vi.mocked(TaskService);
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // D53-4: reset the in-memory rate-limit Map so each test gets a fresh bucket
+  _resetGDPRRateLimitMapForTesting();
   mockPaymentIntentsCancel.mockReset();
   mockPaymentIntentsCancel.mockResolvedValue({ id: 'pi_test', status: 'canceled' });
 });

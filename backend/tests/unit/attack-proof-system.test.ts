@@ -713,14 +713,16 @@ describe('Attack #15 — Reviewer approves proof with wrong taskId', () => {
 
     // review() DB query sequence when decision=ACCEPTED and proof has no photo_url/gps:
     //   1. SELECT proofs JOIN proof_submissions (proof row — no photo_url, no gps_coordinates)
-    //   2. SELECT description, before_photo_url FROM tasks (biometric/GPS skipped due to null fields)
-    //   3. (tx) SELECT state FROM proofs FOR UPDATE  — concurrency lock
-    //   4. (tx) UPDATE proofs SET state = ACCEPTED AND state = 'SUBMITTED'
+    //   2. T53-8: SELECT poster_id FROM tasks WHERE id = proof.task_id (ownership check)
+    //   3. SELECT description, before_photo_url FROM tasks (biometric/GPS skipped due to null fields)
+    //   4. (tx) SELECT state FROM proofs FOR UPDATE  — concurrency lock
+    //   5. (tx) UPDATE proofs SET state = ACCEPTED AND state = 'SUBMITTED'
     mockDb.query
       .mockResolvedValueOnce({ rows: [proof], rowCount: 1 } as never)                                              // 1. SELECT proof (outside tx)
-      .mockResolvedValueOnce({ rows: [{ description: 'task', before_photo_url: null }], rowCount: 1 } as never)   // 2. task description (AI pipeline)
-      .mockResolvedValueOnce({ rows: [{ state: 'SUBMITTED' }], rowCount: 1 } as never)                            // 3. SELECT state FOR UPDATE (inside tx)
-      .mockResolvedValueOnce({ rows: [accepted], rowCount: 1 } as never);                                         // 4. UPDATE (inside tx)
+      .mockResolvedValueOnce({ rows: [{ poster_id: 'reviewer-1' }], rowCount: 1 } as never)                       // 2. T53-8 ownership check (reviewer is poster)
+      .mockResolvedValueOnce({ rows: [{ description: 'task', before_photo_url: null }], rowCount: 1 } as never)   // 3. task description (AI pipeline)
+      .mockResolvedValueOnce({ rows: [{ state: 'SUBMITTED' }], rowCount: 1 } as never)                            // 4. SELECT state FOR UPDATE (inside tx)
+      .mockResolvedValueOnce({ rows: [accepted], rowCount: 1 } as never);                                         // 5. UPDATE (inside tx)
 
     const result = await ProofService.review({
       proofId: 'proof-A',

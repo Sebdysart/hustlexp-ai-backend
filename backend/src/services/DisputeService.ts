@@ -198,6 +198,21 @@ export const DisputeService = {
           },
         };
       }
+
+      // T53-3 FIX: Block self-disputes where the same user holds both roles.
+      // This prevents a user who is both poster and worker on a task from filing
+      // a dispute against themselves (e.g., via a crafted API call). This scenario
+      // should be prevented at task creation, but we enforce it here as a belt-and-
+      // suspenders guard at the financial boundary.
+      if (posterId === workerId) {
+        return {
+          success: false,
+          error: {
+            code: ErrorCodes.FORBIDDEN,
+            message: 'Cannot file a dispute on a task where you are both the poster and worker',
+          },
+        };
+      }
       
       // Transaction: Create dispute + lock task + lock escrow + outbox event
       // Task fetch and 48h window check are performed INSIDE the transaction under

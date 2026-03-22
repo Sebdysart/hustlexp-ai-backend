@@ -515,6 +515,25 @@ export const ProofService = {
         };
       }
 
+      // T53-8 FIX: Proof review role check — enforce at the service layer that only
+      // the task's poster can approve or reject proof. The router (posterProcedure)
+      // guards the primary path, but callers may invoke ProofService.review() directly
+      // (e.g. integration tests, future internal callers) and bypass that guard.
+      // Belt-and-suspenders: query the task's poster_id and compare against reviewerId.
+      const taskOwnerResult = await db.query<{ poster_id: string }>(
+        `SELECT poster_id FROM tasks WHERE id = $1`,
+        [current.task_id]
+      );
+      if (taskOwnerResult.rows.length > 0 && taskOwnerResult.rows[0].poster_id !== reviewerId) {
+        return {
+          success: false,
+          error: {
+            code: ErrorCodes.FORBIDDEN,
+            message: 'Only the task poster can review proof',
+          },
+        };
+      }
+
       // Phase 2: Acquire Redis advisory lock BEFORE the AI pipeline (FIX YY-03).
       // This ensures only one reviewer runs the expensive AI pipeline for a given proof.
       // Concurrent reviewers that already passed Phase 1's plain SELECT will be turned

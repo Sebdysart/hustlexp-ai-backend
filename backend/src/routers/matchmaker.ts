@@ -107,13 +107,13 @@ export const matchmakerRouter = router({
       taskId: z.string().uuid(),
       userId: z.string().uuid(),
     }))
-    .query(async ({ input }) => {
-      // Fetch task from DB
+    .query(async ({ input, ctx }) => {
+      // Fetch task from DB — include poster_id and worker_id for the IDOR check below.
       const taskResult = await db.query<{
         id: string; title: string; description: string;
         category: string | null; location_text: string | null; price: number;
-        requirements: string | null;
-      }>('SELECT id, title, description, category, location_text, price, requirements FROM tasks WHERE id = $1', [input.taskId]);
+        requirements: string | null; poster_id: string; worker_id: string | null;
+      }>('SELECT id, title, description, category, location_text, price, requirements, poster_id, worker_id FROM tasks WHERE id = $1', [input.taskId]);
 
       if (taskResult.rows.length === 0) {
         throw new TRPCError({
@@ -123,6 +123,20 @@ export const matchmakerRouter = router({
       }
 
       const taskRow = taskResult.rows[0];
+
+      // T53-4 FIX: Matchmaker IDOR — verify the requesting user is a participant
+      // (poster or assigned worker) of the task before returning any task details.
+      // Without this check any authenticated user can query explainMatch with an
+      // arbitrary taskId and learn task title, description, location, and price.
+      const callerId = ctx.user.id;
+      const isParticipant = callerId === taskRow.poster_id || callerId === taskRow.worker_id;
+      if (!isParticipant) {
+        throw new TRPCError({
+          code: 'FORBIDDEN',
+          message: 'You are not authorized to view match details for this task',
+        });
+      }
+
       const task = {
         id: taskRow.id,
         title: taskRow.title,

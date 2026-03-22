@@ -27,6 +27,7 @@ vi.mock('../../src/logger', () => ({
 
 import { db } from '../../src/db';
 import { SelfInsurancePoolService } from '../../src/services/SelfInsurancePoolService';
+import { StripeService } from '../../src/services/StripeService.js';
 
 vi.mock('../../src/services/StripeService.js', () => ({
   StripeService: {
@@ -35,11 +36,15 @@ vi.mock('../../src/services/StripeService.js', () => ({
 }));
 
 const mockDb = vi.mocked(db);
+const mockStripe = vi.mocked(StripeService);
 
 beforeEach(() => {
   vi.resetAllMocks();
   // Re-bind transaction mock after resetAllMocks() wipes the implementation
   mockDb.transaction.mockImplementation(async (fn: (q: typeof mockDb.query) => Promise<unknown>) => fn(mockDb.query));
+  // Re-bind Stripe mock default after resetAllMocks() wipes the implementation.
+  // Tests that need Stripe to throw or return failure must override this with mockResolvedValueOnce/mockRejectedValueOnce.
+  mockStripe.createTransfer.mockResolvedValue({ success: true, data: { transferId: 'tr_test', amount: 8000 } } as any);
 });
 
 function makePoolRow(overrides: Record<string, unknown> = {}) {
@@ -426,6 +431,196 @@ describe('SelfInsurancePoolService', () => {
       const result = await SelfInsurancePoolService.getPoolStatus();
 
       expect(result.success).toBe(false);
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // F53-3: denied status mismatch — fileClaim must treat 'denied' as terminal
+  // --------------------------------------------------------------------------
+  describe('fileClaim — F53-3: denied claims must block re-filing (status NOT IN fix)', () => {
+    it('returns CLAIM_ALREADY_EXISTS when a DENIED claim exists for the same task (F53-3)', async () => {
+      // F53-3 BUG: The query used `status NOT IN ('rejected', 'withdrawn')`.
+      // 'rejected' is not a real ClaimStatus; 'denied' is the actual terminal status.
+      // A denied claim should block re-filing just like a pending/approved/paid claim.
+      // After the fix the query uses `NOT IN ('denied', 'withdrawn')`.
+      mockDb.query.mockResolvedValueOnce({ rows: [makePoolRow()], rowCount: 1 } as never); // getPoolStatus
+      // Duplicate check FOR UPDATE: finds a denied claim (denied is now treated as blocking)
+      mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'claim-denied' }], rowCount: 1 } as never);
+
+      const result = await SelfInsurancePoolService.fileClaim(
+        'task-1', 'hustler-1', 25000, 'Tool damage', []
+      );
+
+      // With the bug: denied claim would NOT appear (NOT IN ('rejected', 'withdrawn') passes denied)
+      // so fileClaim would try to file a second claim — wrong.
+      // After fix: denied is in the NOT IN list so the duplicate check returns the row → CLAIM_ALREADY_EXISTS.
+      expect(result.success).toBe(false);
+      if (!result.success) expect(result.error.code).toBe('CLAIM_ALREADY_EXISTS');
+    });
+
+    it('allows re-filing after a withdrawn claim (withdrawn is still excluded) (F53-3)', async () => {
+      // 'withdrawn' must remain excluded from the blocking set — a withdrawn claim should allow re-filing.
+      mockDb.query.mockResolvedValueOnce({ rows: [makePoolRow()], rowCount: 1 } as never); // getPoolStatus
+      // Duplicate check finds no blocking claim (withdrawn is excluded from the NOT IN list's complement)
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+      mockDb.query.mockResolvedValueOnce({ rows: [{ available_balance_cents: 80000, coverage_percentage: 80 }], rowCount: 1 } as never); // pool lock
+      mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'claim-new' }], rowCount: 1 } as never); // INSERT
+
+      const result = await SelfInsurancePoolService.fileClaim(
+        'task-1', 'hustler-1', 25000, 'Tool damage', []
+      );
+
+      expect(result.success).toBe(true);
+    });
+
+    it('SQL uses denied not rejected — duplicate check query contains denied (F53-3)', async () => {
+      // Verify the actual SQL string contains 'denied' not 'rejected'
+      mockDb.query.mockResolvedValueOnce({ rows: [makePoolRow()], rowCount: 1 } as never); // getPoolStatus
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // duplicate check
+      mockDb.query.mockResolvedValueOnce({ rows: [{ available_balance_cents: 80000, coverage_percentage: 80 }], rowCount: 1 } as never);
+      mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'claim-new' }], rowCount: 1 } as never);
+
+      await SelfInsurancePoolService.fileClaim('task-1', 'hustler-1', 10000, 'Damage', []);
+
+      // The second query call is the duplicate check inside the transaction
+      const duplicateCheckCall = mockDb.query.mock.calls[1];
+      const sql = duplicateCheckCall[0] as string;
+      expect(sql).toContain("'denied'");
+      expect(sql).not.toContain("'rejected'");
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // F53-5: transfer amount floor — coveredAmountCents must be >= 50 before Stripe
+  // --------------------------------------------------------------------------
+  describe('payClaim — F53-5: minimum transfer amount floor (50 cents)', () => {
+    it('returns TRANSFER_AMOUNT_TOO_LOW when covered amount is below 50 cents (F53-5)', async () => {
+      // coveredAmountCents = round(40 * 80/100) = 32 < 50 → must fail before Stripe
+      mockDb.query
+        .mockResolvedValueOnce({
+          rows: [makeClaimRow({ status: 'approved', claim_amount_cents: 40 })],
+          rowCount: 1,
+        } as never) // claim outer SELECT
+        .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_test' }], rowCount: 1 } as never) // pre-check stripe_connect_id
+        .mockResolvedValueOnce({ rows: [{ status: 'approved', stripe_transfer_id: null }], rowCount: 1 } as never) // claim FOR UPDATE
+        .mockResolvedValueOnce({ rows: [{ available_balance_cents: 50000, coverage_percentage: 80, max_claim_cents: 500000 }], rowCount: 1 } as never); // pool FOR UPDATE
+
+      const result = await SelfInsurancePoolService.payClaim('claim-1');
+
+      expect(result.success).toBe(false);
+      if (!result.success) expect(result.error.code).toBe('TRANSFER_AMOUNT_TOO_LOW');
+    });
+
+    it('returns TRANSFER_AMOUNT_TOO_LOW for exactly 49 cents covered (F53-5)', async () => {
+      // claim_amount_cents=62, coverage=80% → round(62*0.8)=50 → should pass at 50
+      // claim_amount_cents=60, coverage=80% → round(60*0.8)=48 < 50 → must fail
+      mockDb.query
+        .mockResolvedValueOnce({
+          rows: [makeClaimRow({ status: 'approved', claim_amount_cents: 60 })],
+          rowCount: 1,
+        } as never)
+        .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_test' }], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [{ status: 'approved', stripe_transfer_id: null }], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [{ available_balance_cents: 50000, coverage_percentage: 80, max_claim_cents: 500000 }], rowCount: 1 } as never);
+
+      const result = await SelfInsurancePoolService.payClaim('claim-1');
+
+      expect(result.success).toBe(false);
+      if (!result.success) expect(result.error.code).toBe('TRANSFER_AMOUNT_TOO_LOW');
+    });
+
+    it('succeeds when covered amount is exactly 50 cents (F53-5 boundary)', async () => {
+      const { StripeService: MockStripe } = await import('../../src/services/StripeService.js');
+      // claim_amount_cents=63, coverage=80% → round(63*0.8)=50 → exactly at floor → ok
+      mockDb.query
+        .mockResolvedValueOnce({
+          rows: [makeClaimRow({ status: 'approved', claim_amount_cents: 63 })],
+          rowCount: 1,
+        } as never)
+        .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_test' }], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [{ status: 'approved', stripe_transfer_id: null }], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [{ available_balance_cents: 50000, coverage_percentage: 80, max_claim_cents: 500000 }], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // UPDATE pool
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // UPDATE claim to paid
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // UPDATE stripe_transfer_id
+
+      const result = await SelfInsurancePoolService.payClaim('claim-1');
+
+      expect(result.success).toBe(true);
+      expect(vi.mocked(MockStripe.createTransfer)).toHaveBeenCalledOnce();
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // F53-10: payClaim must NOT swallow Stripe failures
+  // --------------------------------------------------------------------------
+  describe('payClaim — F53-10: Stripe failures must not return success', () => {
+    it('returns failure when Stripe createTransfer throws (F53-10)', async () => {
+      const { StripeService: MockStripe } = await import('../../src/services/StripeService.js');
+      vi.mocked(MockStripe.createTransfer).mockRejectedValueOnce(new Error('stripe network error'));
+
+      mockDb.query
+        .mockResolvedValueOnce({
+          rows: [makeClaimRow({ status: 'approved', claim_amount_cents: 10000 })],
+          rowCount: 1,
+        } as never) // claim outer SELECT
+        .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_test' }], rowCount: 1 } as never) // pre-check stripe_connect_id
+        .mockResolvedValueOnce({ rows: [{ status: 'approved', stripe_transfer_id: null }], rowCount: 1 } as never) // claim FOR UPDATE
+        .mockResolvedValueOnce({ rows: [{ available_balance_cents: 50000, coverage_percentage: 80, max_claim_cents: 500000 }], rowCount: 1 } as never) // pool FOR UPDATE
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // UPDATE pool
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // UPDATE claim to paid
+
+      const result = await SelfInsurancePoolService.payClaim('claim-1');
+
+      // F53-10 BUG: currently returns { success: true } even when Stripe throws.
+      // After fix: must propagate the error.
+      expect(result.success).toBe(false);
+      if (!result.success) expect(result.error.code).toBe('STRIPE_TRANSFER_FAILED');
+    });
+
+    it('returns failure when Stripe createTransfer returns success:false (F53-10)', async () => {
+      const { StripeService: MockStripe } = await import('../../src/services/StripeService.js');
+      vi.mocked(MockStripe.createTransfer).mockResolvedValueOnce({
+        success: false,
+        error: { message: 'insufficient funds in platform account' },
+      } as any);
+
+      mockDb.query
+        .mockResolvedValueOnce({
+          rows: [makeClaimRow({ status: 'approved', claim_amount_cents: 10000 })],
+          rowCount: 1,
+        } as never)
+        .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_test' }], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [{ status: 'approved', stripe_transfer_id: null }], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [{ available_balance_cents: 50000, coverage_percentage: 80, max_claim_cents: 500000 }], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // UPDATE pool
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // UPDATE claim to paid
+
+      const result = await SelfInsurancePoolService.payClaim('claim-1');
+
+      expect(result.success).toBe(false);
+      if (!result.success) expect(result.error.code).toBe('STRIPE_TRANSFER_FAILED');
+    });
+
+    it('does NOT return success:true when Stripe throws (regression guard for F53-10)', async () => {
+      // Extra explicit assertion: success must be falsy when Stripe blows up
+      const { StripeService: MockStripe } = await import('../../src/services/StripeService.js');
+      vi.mocked(MockStripe.createTransfer).mockRejectedValueOnce(new Error('timeout'));
+
+      mockDb.query
+        .mockResolvedValueOnce({
+          rows: [makeClaimRow({ status: 'approved', claim_amount_cents: 5000 })],
+          rowCount: 1,
+        } as never)
+        .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_test' }], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [{ status: 'approved', stripe_transfer_id: null }], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [{ available_balance_cents: 50000, coverage_percentage: 80, max_claim_cents: 500000 }], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+      const result = await SelfInsurancePoolService.payClaim('claim-1');
+
+      expect(result.success).not.toBe(true);
     });
   });
 

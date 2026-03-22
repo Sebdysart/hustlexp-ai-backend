@@ -307,6 +307,28 @@ export const XPTaxService = {
         // Pay taxes in FIFO order
         for (const tax of unpaidTaxes.rows) {
           if (remainingPayment >= tax.tax_amount_cents) {
+            // F53-1 FIX: Per-PI per-row idempotency guard.
+            // INSERT a dedup record before processing this row. ON CONFLICT DO NOTHING
+            // means a duplicate (same PI + same ledger row) from a prior incomplete
+            // attempt returns rowCount=0 — in that case skip XP award entirely.
+            // Without this guard, a serializableTransaction retry (Postgres error 40001)
+            // re-runs the entire callback: the rows are still unpaid (rollback means no
+            // commits), so each row gets processed twice, double-awarding XP.
+            const dedupResult = await query(
+              `INSERT INTO xp_tax_payment_intent_idempotency (stripe_payment_intent_id, xp_tax_ledger_id)
+               VALUES ($1, $2)
+               ON CONFLICT (stripe_payment_intent_id, xp_tax_ledger_id) DO NOTHING`,
+              [stripePaymentIntentId, tax.id]
+            );
+
+            // Only award XP if this (PI, ledger row) pair was freshly inserted
+            if ((dedupResult.rowCount ?? 0) < 1) {
+              // Already processed in a prior attempt — skip to avoid double-award
+              remainingPayment -= tax.tax_amount_cents;
+              innerTotalTaxPaid += tax.tax_amount_cents;
+              continue;
+            }
+
             // Mark tax as paid and release held XP, recording the Stripe intent ID
             // for idempotency (prevents double-charge on retry).
             await query(
