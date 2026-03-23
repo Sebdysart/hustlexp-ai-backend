@@ -415,6 +415,17 @@ export const SelfInsurancePoolService = {
           throw new Error(`INSUFFICIENT_POOL_BALANCE:Pool balance insufficient. Available: $${(availableBalanceCents / 100).toFixed(2)}, Required: $${(coveredAmountCents / 100).toFixed(2)}`);
         }
 
+        // F56-1 FIX: Move the Stripe minimum transfer floor check INSIDE the transaction,
+        // BEFORE the pool debit and claim status UPDATE. Previously this check ran after
+        // the transaction committed — the pool was permanently debited and claim marked
+        // 'paid' with stripe_transfer_id=NULL, leaving the claim in an un-retryable limbo
+        // (retry hits status='paid'/no transfer_id → falls through idempotency guard →
+        // hits status guard → CLAIM_NOT_APPROVED permanently). By throwing here, the
+        // transaction rolls back: no pool debit, no claim status change.
+        if (coveredAmountCents < 50) {
+          throw new Error(`TRANSFER_AMOUNT_TOO_LOW:Covered payout of ${coveredAmountCents} cents is below the minimum Stripe transfer amount (50 cents). Claim requires manual review.`);
+        }
+
         // Debit pool balance
         await query(
           `UPDATE self_insurance_pool
@@ -432,26 +443,6 @@ export const SelfInsurancePoolService = {
           [claimId]
         );
       });
-
-      // F53-5 FIX: Stripe requires transfer amounts >= 50 cents. If coveredAmountCents
-      // is below the floor, the Stripe call would fail with a cryptic error. Fail fast
-      // with a descriptive error before any Stripe call so the caller knows exactly why.
-      // Note: this check runs AFTER the DB transaction commits — the pool has been debited
-      // and the claim marked 'paid'. That is intentional: if the amount is below the Stripe
-      // floor, the claim should be manually voided by an admin (this is an edge case for
-      // very small tasks). The alternative would be to check inside the transaction, but
-      // that requires knowing coveredAmountCents before committing — it is set inside the
-      // transaction, so we check here as an explicit post-transaction guard.
-      if (coveredAmountCents < 50) {
-        log.error({ claimId, coveredAmountCents }, 'Covered payout below Stripe minimum transfer amount (50 cents)');
-        return {
-          success: false,
-          error: {
-            code: 'TRANSFER_AMOUNT_TOO_LOW',
-            message: `Covered payout of ${coveredAmountCents} cents is below the minimum Stripe transfer amount (50 cents). Claim requires manual review.`,
-          },
-        };
-      }
 
       // Transfer funds to hustler via Stripe Connect
       // F-06 FIX: Use StripeService.createTransfer() instead of raw fetch() so the
@@ -547,6 +538,16 @@ export const SelfInsurancePoolService = {
           error: {
             code: 'CLAIM_EXCEEDS_MAX',
             message: message.slice('CLAIM_EXCEEDS_MAX:'.length)
+          }
+        };
+      }
+      // Surface F56-1: transfer amount below Stripe minimum floor
+      if (message.startsWith('TRANSFER_AMOUNT_TOO_LOW:')) {
+        return {
+          success: false,
+          error: {
+            code: 'TRANSFER_AMOUNT_TOO_LOW',
+            message: message.slice('TRANSFER_AMOUNT_TOO_LOW:'.length)
           }
         };
       }

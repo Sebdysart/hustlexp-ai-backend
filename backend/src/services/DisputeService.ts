@@ -678,6 +678,12 @@ export const DisputeService = {
         // Fix: inside this same transaction, accept the submitted proof and transition
         // the task DISPUTED → COMPLETED BEFORE the escrow.release_requested event is
         // written, making both writes atomic with the dispute resolution.
+        //
+        // T56-1 FIX: For REFUND and SPLIT outcomes the task was left permanently in
+        // DISPUTED state with no API path to advance it. Transition DISPUTED → CANCELLED
+        // atomically with the dispute resolution so the task reaches a terminal state.
+        // CANCELLED is correct for both: REFUND means the poster won (work rejected),
+        // and SPLIT means work was partially disputed (settlement, not completion).
         if (outcomeEscrowAction === 'RELEASE') {
           // Accept any submitted proof so INV-3 (completed task requires accepted proof) is satisfied.
           await query(
@@ -687,6 +693,12 @@ export const DisputeService = {
           // Transition task DISPUTED → COMPLETED.
           await query(
             `UPDATE tasks SET state = 'COMPLETED', completed_at = NOW() WHERE id = $1 AND state = 'DISPUTED'`,
+            [dispute.task_id]
+          );
+        } else if (outcomeEscrowAction === 'REFUND' || outcomeEscrowAction === 'SPLIT') {
+          // Transition task DISPUTED → CANCELLED.
+          await query(
+            `UPDATE tasks SET state = 'CANCELLED' WHERE id = $1 AND state = 'DISPUTED'`,
             [dispute.task_id]
           );
         }

@@ -369,7 +369,7 @@ export const userRouter = router({
       // above), by assigning trust_tier=0 (UNVERIFIED) so the account is restricted
       // until phone verification is completed.
       const bannedByEmail = await db.query<{ id: string }>(
-        `SELECT id FROM users WHERE email = $1 AND is_banned = true AND account_status != 'DELETED'`,
+        `SELECT id FROM users WHERE email = $1 AND (is_banned = true OR account_status = 'SUSPENDED') AND account_status != 'DELETED'`,
         [input.email]
       );
       if (bannedByEmail.rows.length > 0) {
@@ -394,6 +394,11 @@ export const userRouter = router({
         // effectively re-admitting the banned account.
         if (existingUser.is_banned) {
           throw new TRPCError({ code: 'FORBIDDEN', message: 'Account is banned' });
+        }
+
+        // A56-2: A suspended user must not be re-admitted via re-registration.
+        if (existingUser.account_status === 'SUSPENDED') {
+          throw new TRPCError({ code: 'FORBIDDEN', message: 'Account is suspended' });
         }
 
         // FIX 4: If the matched row is a GDPR-deleted account, delete it so
@@ -436,7 +441,16 @@ export const userRouter = router({
         if (!existing.rows[0]) {
           throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: 'Registration conflict — please retry' });
         }
-        return await toMobileUser(existing.rows[0]);
+        // A56-1: The winning concurrent request may have been a banned or suspended
+        // account. Guard against re-admitting such accounts via the conflict path.
+        const winner = existing.rows[0];
+        if (winner.is_banned) {
+          throw new TRPCError({ code: 'FORBIDDEN', message: 'Account is banned' });
+        }
+        if (winner.account_status === 'SUSPENDED') {
+          throw new TRPCError({ code: 'FORBIDDEN', message: 'Account is suspended' });
+        }
+        return await toMobileUser(winner);
       }
 
       return await toMobileUser(result.rows[0]);

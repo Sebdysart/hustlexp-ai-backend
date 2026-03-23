@@ -464,6 +464,120 @@ describe('DisputeService.resolve', () => {
     if (!result.success) expect(result.error.code).toBe('DB_ERROR');
   });
 
+  it('T56-1: REFUND path transitions task DISPUTED → CANCELLED (poster wins)', async () => {
+    // Arrange: admin has permission
+    mockDb.query.mockResolvedValueOnce({ rows: [{ can_resolve_disputes: true }], rowCount: 1 } as any);
+
+    const disputeRow = {
+      id: 'd1',
+      task_id: 'task-1',
+      escrow_id: 'escrow-1',
+      worker_id: 'worker-1',
+      poster_id: 'poster-1',
+      state: 'OPEN',
+      version: 1,
+    };
+    const escrowRow = { id: 'escrow-1', state: 'LOCKED_DISPUTE', amount: 10000, version: 1 };
+
+    const taskUpdateSqlCalls: string[] = [];
+
+    mockDb.transaction.mockImplementationOnce(async (fn: (q: typeof db.query) => Promise<unknown>) => {
+      const captureQuery = vi.fn(async (sql: string, _params?: unknown[]) => {
+        if (sql.includes('FROM disputes') && sql.includes('FOR UPDATE')) {
+          return { rows: [disputeRow], rowCount: 1 };
+        }
+        if (sql.includes('FROM escrows') && sql.includes('FOR UPDATE')) {
+          return { rows: [escrowRow], rowCount: 1 };
+        }
+        if (sql.includes('UPDATE disputes')) {
+          return { rows: [{ ...disputeRow, state: 'RESOLVED', version: 2 }], rowCount: 1 };
+        }
+        if (sql.includes('UPDATE tasks')) {
+          taskUpdateSqlCalls.push(sql.trim());
+          return { rows: [{ id: 'task-1', state: 'CANCELLED' }], rowCount: 1 };
+        }
+        if (sql.includes('INSERT INTO outbox') || sql.includes('outbox')) {
+          return { rows: [{ id: 'outbox-1' }], rowCount: 1 };
+        }
+        return { rows: [], rowCount: 0 };
+      });
+      return fn(captureQuery);
+    });
+
+    const result = await DisputeService.resolve({
+      disputeId: 'd1',
+      resolvedBy: 'admin-1',
+      resolution: 'Poster wins — refund issued',
+      outcomeEscrowAction: 'REFUND',
+    });
+
+    expect(result.success).toBe(true);
+
+    // T56-1: task must be transitioned to CANCELLED (not left in DISPUTED)
+    const cancelledTransition = taskUpdateSqlCalls.find(sql =>
+      sql.includes("'CANCELLED'") && sql.includes("'DISPUTED'")
+    );
+    expect(cancelledTransition).toBeDefined();
+  });
+
+  it('T56-1: SPLIT path transitions task DISPUTED → CANCELLED (partial payout)', async () => {
+    // Arrange: admin has permission
+    mockDb.query.mockResolvedValueOnce({ rows: [{ can_resolve_disputes: true }], rowCount: 1 } as any);
+
+    const disputeRow = {
+      id: 'd1',
+      task_id: 'task-1',
+      escrow_id: 'escrow-1',
+      worker_id: 'worker-1',
+      poster_id: 'poster-1',
+      state: 'OPEN',
+      version: 1,
+    };
+    const escrowRow = { id: 'escrow-1', state: 'LOCKED_DISPUTE', amount: 10000, version: 1 };
+
+    const taskUpdateSqlCalls: string[] = [];
+
+    mockDb.transaction.mockImplementationOnce(async (fn: (q: typeof db.query) => Promise<unknown>) => {
+      const captureQuery = vi.fn(async (sql: string, _params?: unknown[]) => {
+        if (sql.includes('FROM disputes') && sql.includes('FOR UPDATE')) {
+          return { rows: [disputeRow], rowCount: 1 };
+        }
+        if (sql.includes('FROM escrows') && sql.includes('FOR UPDATE')) {
+          return { rows: [escrowRow], rowCount: 1 };
+        }
+        if (sql.includes('UPDATE disputes')) {
+          return { rows: [{ ...disputeRow, state: 'RESOLVED', version: 2 }], rowCount: 1 };
+        }
+        if (sql.includes('UPDATE tasks')) {
+          taskUpdateSqlCalls.push(sql.trim());
+          return { rows: [{ id: 'task-1', state: 'CANCELLED' }], rowCount: 1 };
+        }
+        if (sql.includes('INSERT INTO outbox') || sql.includes('outbox')) {
+          return { rows: [{ id: 'outbox-1' }], rowCount: 1 };
+        }
+        return { rows: [], rowCount: 0 };
+      });
+      return fn(captureQuery);
+    });
+
+    const result = await DisputeService.resolve({
+      disputeId: 'd1',
+      resolvedBy: 'admin-1',
+      resolution: 'Split — partial payout to both parties',
+      outcomeEscrowAction: 'SPLIT',
+      refundAmount: 6000,
+      releaseAmount: 4000,
+    });
+
+    expect(result.success).toBe(true);
+
+    // T56-1: task must be transitioned to CANCELLED (not left in DISPUTED)
+    const cancelledTransition = taskUpdateSqlCalls.find(sql =>
+      sql.includes("'CANCELLED'") && sql.includes("'DISPUTED'")
+    );
+    expect(cancelledTransition).toBeDefined();
+  });
+
   it('T55-1: RELEASE path accepts proof and completes task BEFORE emitting escrow event', async () => {
     // Arrange: admin has permission
     mockDb.query.mockResolvedValueOnce({ rows: [{ can_resolve_disputes: true }], rowCount: 1 } as any);

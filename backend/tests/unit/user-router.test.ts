@@ -672,6 +672,109 @@ describe('user.register', () => {
 
       expect(result).toHaveProperty('id', 'existing-user-id');
     });
+
+    // A56-2: existing-user path must block SUSPENDED accounts
+    it('A56-2: throws FORBIDDEN when existing user has account_status=SUSPENDED', async () => {
+      const suspendedUser = makeFakeUser({
+        id: 'suspended-user-id',
+        email: 'newuser@hustlexp.com',
+        account_status: 'SUSPENDED',
+        is_banned: false,
+      });
+
+      // Email ban check → not blocked (is_banned=false, so SQL misses it — A56-3 aside)
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+      // Check existing → finds the SUSPENDED row
+      mockDb.query.mockResolvedValueOnce({ rows: [suspendedUser], rowCount: 1 } as any);
+
+      await expect(
+        makePublicCaller().register(validInput)
+      ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    });
+  });
+
+  // A56-3: bannedByEmail pre-check must also block SUSPENDED accounts
+  describe('A56-3: bannedByEmail pre-check blocks SUSPENDED accounts', () => {
+    it('throws FORBIDDEN when a SUSPENDED account with same email is found in bannedByEmail check', async () => {
+      // The pre-check query now blocks SUSPENDED rows too.
+      // Simulate the query returning a SUSPENDED account.
+      mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'suspended-user-id' }], rowCount: 1 } as any);
+
+      await expect(
+        makePublicCaller().register(validInput)
+      ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    });
+  });
+
+  // A56-1: concurrent-INSERT conflict path must check ban/suspension
+  describe('A56-1: concurrent INSERT conflict path ban/suspension guard', () => {
+    it('throws FORBIDDEN when the row that won the race is banned', async () => {
+      const bannedUser = makeFakeUser({
+        id: 'banned-winner-id',
+        firebase_uid: 'fb-new-user',
+        is_banned: true,
+        account_status: 'ACTIVE',
+      });
+
+      // Email ban check → clear
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+      // Existing check → no match
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+      // INSERT → 0 rows (conflict, another request won)
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+      // Fallback SELECT → returns the banned winner row
+      mockDb.query.mockResolvedValueOnce({ rows: [bannedUser], rowCount: 1 } as any);
+
+      await expect(
+        makePublicCaller().register(validInput)
+      ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    });
+
+    it('throws FORBIDDEN when the row that won the race is SUSPENDED', async () => {
+      const suspendedUser = makeFakeUser({
+        id: 'suspended-winner-id',
+        firebase_uid: 'fb-new-user',
+        is_banned: false,
+        account_status: 'SUSPENDED',
+      });
+
+      // Email ban check → clear
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+      // Existing check → no match
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+      // INSERT → 0 rows (conflict)
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+      // Fallback SELECT → returns the suspended winner row
+      mockDb.query.mockResolvedValueOnce({ rows: [suspendedUser], rowCount: 1 } as any);
+
+      await expect(
+        makePublicCaller().register(validInput)
+      ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    });
+
+    it('returns the winning row when the concurrent insert winner is a normal active user', async () => {
+      const normalUser = makeFakeUser({
+        id: 'normal-winner-id',
+        firebase_uid: 'fb-new-user',
+        is_banned: false,
+        account_status: 'ACTIVE',
+      });
+
+      // Email ban check → clear
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+      // Existing check → no match
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+      // INSERT → 0 rows (conflict)
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+      // Fallback SELECT → returns normal user
+      mockDb.query.mockResolvedValueOnce({ rows: [normalUser], rowCount: 1 } as any);
+      // toMobileUser stats query
+      setupStatsQuery();
+
+      const result = await makePublicCaller().register(validInput);
+
+      expect(result).toHaveProperty('id', 'normal-winner-id');
+    });
   });
 
   describe('COPPA age verification', () => {

@@ -529,6 +529,35 @@ describe('SelfInsurancePoolService', () => {
       if (!result.success) expect(result.error.code).toBe('TRANSFER_AMOUNT_TOO_LOW');
     });
 
+    it('does NOT debit the pool when covered amount is below 50 cents (F56-1: pre-flight check)', async () => {
+      // F56-1 BUG: The coveredAmountCents < 50 check fired AFTER the DB transaction
+      // committed — the pool was debited and claim marked 'paid' before the check ran.
+      // Fix: move the check INSIDE the transaction but BEFORE the pool debit and
+      // claim status UPDATE statements. The transaction then throws and rolls back
+      // before any writes, so the pool is never debited.
+      // coveredAmountCents = round(40 * 80/100) = 32 < 50
+      mockDb.query
+        .mockResolvedValueOnce({
+          rows: [makeClaimRow({ status: 'approved', claim_amount_cents: 40 })],
+          rowCount: 1,
+        } as never) // claim outer SELECT
+        .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_test' }], rowCount: 1 } as never) // pre-check stripe_connect_id
+        // Inside transaction: claim FOR UPDATE, then pool FOR UPDATE — check fires, transaction rolls back
+        .mockResolvedValueOnce({ rows: [{ status: 'approved', stripe_transfer_id: null }], rowCount: 1 } as never) // claim FOR UPDATE
+        .mockResolvedValueOnce({ rows: [{ available_balance_cents: 50000, coverage_percentage: 80, max_claim_cents: 500000 }], rowCount: 1 } as never); // pool FOR UPDATE
+
+      const result = await SelfInsurancePoolService.payClaim('claim-1');
+
+      expect(result.success).toBe(false);
+      if (!result.success) expect(result.error.code).toBe('TRANSFER_AMOUNT_TOO_LOW');
+
+      // Critical: the pool debit UPDATE (total_claims_cents) must NOT have been called.
+      // With the bug the transaction commits before the check; with the fix it rolls back.
+      const allSqlCalls = mockDb.query.mock.calls.map((c) => c[0] as string);
+      const poolDebitCalled = allSqlCalls.some((sql) => sql.includes('total_claims_cents'));
+      expect(poolDebitCalled).toBe(false);
+    });
+
     it('succeeds when covered amount is exactly 50 cents (F53-5 boundary)', async () => {
       const { StripeService: MockStripe } = await import('../../src/services/StripeService.js');
       // claim_amount_cents=63, coverage=80% → round(63*0.8)=50 → exactly at floor → ok
