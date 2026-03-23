@@ -1612,10 +1612,15 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
       // (Stripe stores name/email behind them). They must be cleared to satisfy GDPR
       // erasure. avatar_url (hosted photo) and bio are also PII and must be cleared.
       await query(
+        // D64-7 FIX: Randomize firebase_uid — it is UNIQUE NOT NULL so cannot be
+        // NULLed, but leaving the original value allows re-identification (anyone
+        // who observed the user's JWT can extract the firebase_uid and locate the
+        // anonymized row). Replace with a random UUID to sever that link.
         `UPDATE users
          SET email = $1,
              name = 'Deleted User',
              full_name = 'Deleted User',
+             firebase_uid = 'deleted-' || $4,
              phone = NULL,
              account_status = 'DELETED',
              paused_at = $2,
@@ -1625,7 +1630,7 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
              bio = NULL,
              flagged_phrase_counter = '{}'::jsonb
          WHERE id = $3`,
-        [anonymizedEmail, deletedAt, userId]
+        [anonymizedEmail, deletedAt, userId, randomUUID()]
       );
       
       // 3. Retention (7 years): Anonymize transaction/task/dispute data
@@ -1813,6 +1818,10 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
       // D61-9: Delete admin_roles — user_id NOT NULL UNIQUE FK references users(id).
       // After erasure the user's UUID must not remain as a live PK reference.
       await query('DELETE FROM admin_roles WHERE user_id = $1', [userId]);
+
+      // D64-2: Delete GDPR data export records — exports.user_id is NOT NULL FK.
+      // These files contain the user's personal data and must be purged on erasure.
+      await query('DELETE FROM exports WHERE user_id = $1', [userId]);
 
       // FIX: Anonymize admin_actions — keep rows for financial audit trail, but
       // clear the free-text reason field and mark metadata with gdpr_deleted so

@@ -485,12 +485,14 @@ export const escrowRouter = router({
       // Pass allowedTaskStates so the service validates atomically.
       const allowedTaskStates = ['ACCEPTED', 'IN_PROGRESS', 'PROOF_SUBMITTED', 'DISPUTED', 'COMPLETED'];
 
-      // API46-6 FIX: Use strict boolean coercion. ctx.user.is_admin is typed as
-      // boolean | undefined — passing undefined as adminOverride silently grants no
-      // override (EscrowService checks truthiness), but the contract is imprecise.
-      // Explicitly convert to boolean to make the intent unambiguous and prevent
-      // future callers from accidentally passing a truthy non-boolean value.
-      const result = await EscrowService.lockForDispute(input.escrowId, { adminOverride: ctx.user.is_admin === true, initiatedBy: ctx.user.id, allowedTaskStates });
+      // A64-3 FIX: Never pass adminOverride=true from the participant-facing endpoint.
+      // The adminOverride flag bypasses task-state validation in EscrowService —
+      // allowing it here would let any user who is both an admin AND a task participant
+      // lock escrows on tasks in states like OPEN/MATCHING that should not be disputable.
+      // adminOverride is only appropriate for the admin-exclusive override endpoint
+      // (which is correctly gated by adminProcedure). Participant disputes must always
+      // go through the state machine constraints regardless of the caller's admin status.
+      const result = await EscrowService.lockForDispute(input.escrowId, { adminOverride: false, initiatedBy: ctx.user.id, allowedTaskStates });
 
       if (!result.success) {
         throw new TRPCError({

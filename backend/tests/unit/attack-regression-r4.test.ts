@@ -235,15 +235,15 @@ describe('REG-2 — FIXED: Null task price is rejected (not silently coerced to 
 // ===========================================================================
 
 describe('REG-5 — FIXED: Admin can lock mid-task escrows (adminOverride bypasses completed_at=null guard)', () => {
-  it('FIXED — admin can lock dispute on in-progress task (completed_at=null)', async () => {
-    // Auth check passes (admin is escrow poster)
+  it('A64-3 FIX: participant-facing lockForDispute always passes adminOverride=false (even for admin callers)', async () => {
+    // A64-3: An admin who is also a task participant must NOT receive adminOverride=true
+    // from the participant-facing endpoint. adminOverride bypasses task state validation
+    // in EscrowService, allowing disputes on tasks in OPEN/MATCHING states. The bypass
+    // is only permitted via the admin-exclusive escrow override endpoint.
     mockEscrowService.getById.mockResolvedValueOnce({
       success: true,
       data: makeEscrow({ poster_id: POSTER_ID }) as any,
     });
-    // NOTE: Router no longer calls db.query for task state — TOCTOU fix moved this
-    // check inside EscrowService.lockForDispute via the allowedTaskStates parameter.
-    // Service call succeeds
     mockEscrowService.lockForDispute.mockResolvedValueOnce({
       success: true,
       data: makeEscrow({ state: 'LOCKED_DISPUTE' }) as any,
@@ -253,10 +253,11 @@ describe('REG-5 — FIXED: Admin can lock mid-task escrows (adminOverride bypass
     const result = await caller.lockForDispute({ escrowId: ESCROW_ID });
 
     expect(result).toHaveProperty('state', 'LOCKED_DISPUTE');
-    // Router passes adminOverride=true for admin callers
+    // A64-3 FIX: Router now always passes adminOverride=false — admin status of the
+    // caller must not bypass task state guards in the participant-facing endpoint.
     expect(mockEscrowService.lockForDispute).toHaveBeenCalledWith(
       ESCROW_ID,
-      expect.objectContaining({ adminOverride: true })
+      expect.objectContaining({ adminOverride: false })
     );
   });
 

@@ -716,9 +716,14 @@ export const ProofService = {
         // proof is reviewed (REJECTED) while the task is DISPUTED, a subsequent
         // dispute resolution with RELEASE would try to accept a REJECTED proof —
         // violating INV-3 (completed task requires accepted proof).
+        // T64-2 FIX: Use FOR UPDATE on the tasks row so that DisputeService.create()
+        // cannot commit a DISPUTED state transition between this read and the proof
+        // UPDATE below. Without the lock, a concurrent dispute.create() could commit
+        // task→DISPUTED after this SELECT but before the proof UPDATE, leaving the
+        // task DISPUTED with an ACCEPTED/REJECTED proof (inconsistent state).
         const proofTaskId = lockResult.rows[0].task_id;
         const taskStateCheck = await query<{ state: string }>(
-          'SELECT state FROM tasks WHERE id = $1',
+          'SELECT state FROM tasks WHERE id = $1 FOR UPDATE',
           [proofTaskId]
         );
         if (taskStateCheck.rows[0]?.state !== 'PROOF_SUBMITTED') {

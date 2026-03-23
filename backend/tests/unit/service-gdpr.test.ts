@@ -1847,3 +1847,40 @@ describe('D63-7: deleteAndAnonymizeUserData — recurring_task_series.preferred_
     expect(rtsCall![1]).toContain('user-d54');
   });
 });
+
+// ===========================================================================
+// D64: deleteAndAnonymizeUserData — exports deletion and firebase_uid erasure
+// ===========================================================================
+
+describe('D64-2: deleteAndAnonymizeUserData — exports deleted', () => {
+  it('DELETEs export records for the user (exports.user_id is NOT NULL FK)', async () => {
+    const { serializableQuery } = setupDeletionMocksWithCapture();
+
+    const result = await GDPRService.executeDeletion('req-d54');
+
+    expect(result.success).toBe(true);
+
+    const calls = serializableQuery.mock.calls as [string, unknown[]][];
+    const exportsCall = calls.find(([sql]) => /DELETE FROM exports/i.test(sql));
+    expect(exportsCall, 'Expected DELETE FROM exports to be called').toBeDefined();
+    expect(exportsCall![0]).toMatch(/user_id/i);
+    expect(exportsCall![1]).toContain('user-d54');
+  });
+});
+
+describe('D64-7: deleteAndAnonymizeUserData — firebase_uid anonymized', () => {
+  it('sets firebase_uid to a unique deleted- prefixed value in UPDATE users SET', async () => {
+    const { serializableQuery } = setupDeletionMocksWithCapture();
+
+    const result = await GDPRService.executeDeletion('req-d54');
+
+    expect(result.success).toBe(true);
+
+    const calls = serializableQuery.mock.calls as [string, unknown[]][];
+    const usersUpdateCall = calls.find(([sql]) => /UPDATE users\s+SET/i.test(sql));
+    expect(usersUpdateCall, 'Expected UPDATE users SET to be called').toBeDefined();
+    // The SQL should reference firebase_uid with a 'deleted-' prefix concatenation
+    expect(usersUpdateCall![0]).toMatch(/firebase_uid/i);
+    expect(usersUpdateCall![0]).toMatch(/deleted-/i);
+  });
+});

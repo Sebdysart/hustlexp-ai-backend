@@ -372,7 +372,12 @@ export const SelfInsurancePoolService = {
         return { success: true, data: { already_paid: true, claim } };
       }
 
-      if (claim.status !== 'approved') {
+      // F64-2 FIX: Allow status='paid' with stripe_transfer_id=NULL to fall through
+      // to the transaction+Stripe retry path. When status='paid' AND stripe_transfer_id
+      // is NULL it means the DB committed but Stripe failed — the idempotency check above
+      // already handled the truly-complete case (status='paid' && stripe_transfer_id SET).
+      // Any other non-approved status (denied, pending, withdrawn) is still blocked.
+      if (claim.status !== 'approved' && claim.status !== 'paid') {
         return {
           success: false,
           error: {

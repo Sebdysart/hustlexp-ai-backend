@@ -466,12 +466,15 @@ export const adminRouter = router({
         0
       );
       const targetRoleRank = ROLE_RANK[input.role] ?? 0;
-      // A46-3 FIX: Use strict `>` (not `>=`) so that a founder (rank 5) can grant
-      // the founder role to another user. With `>=`, a founder calling grantAdminRole
-      // with role='founder' got (5 >= 5) = true → FORBIDDEN (operational lockout).
-      // Correct invariant: you may only grant roles STRICTLY ABOVE your own rank to
-      // block privilege escalation. Same-rank grants are allowed (founder → founder).
-      if (targetRoleRank > callerMaxRank) {
+      // A46-3 FIX: Use `>=` to block same-rank grants, EXCEPT founders (rank 5)
+      // may grant the founder role to another user — without this exception, there
+      // is no way to onboard a new founder if the only founder is unavailable.
+      // A64-2 FIX: Restrict same-rank grants to founder only. The original A46-3
+      // fix used strict `>` which allowed ALL same-rank grants — meaning a support
+      // admin (rank 1) could grant support access to arbitrary users, proliferating
+      // low-level admin access without oversight. Only founder→founder is permitted.
+      const isFounderSameRankGrant = input.role === 'founder' && callerMaxRank >= 5;
+      if (targetRoleRank >= callerMaxRank && !isFounderSameRankGrant) {
         throw new TRPCError({
           code: 'FORBIDDEN',
           message: `Insufficient rank to grant role '${input.role}'`,

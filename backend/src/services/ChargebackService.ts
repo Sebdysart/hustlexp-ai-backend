@@ -245,7 +245,7 @@ export const ChargebackService = {
         );
 
         // Step 2: Conditionally lock payouts (only if not already locked).
-        await db.query(
+        const lockResult = await db.query(
           `UPDATE users
            SET payouts_locked = TRUE,
                payouts_locked_at = NOW(),
@@ -256,10 +256,13 @@ export const ChargebackService = {
           [userId, `Chargeback: ${stripeDisputeId} (${reason || 'unknown'})`]
         );
 
-        // Update payment dispute to record the freeze
+        // F64-3 FIX: Only record payouts_were_frozen=TRUE when this dispute actually
+        // froze the account (Step 2 matched a row). If payouts_locked was already TRUE
+        // when this dispute arrived, lockResult.rowCount=0 — recording frozen=TRUE would
+        // corrupt the audit trail, falsely attributing the freeze to this dispute.
         await db.query(
-          `UPDATE payment_disputes SET payouts_were_frozen = TRUE WHERE id = $1`,
-          [paymentDisputeId]
+          `UPDATE payment_disputes SET payouts_were_frozen = $2 WHERE id = $1`,
+          [paymentDisputeId, (lockResult.rowCount ?? 0) > 0]
         );
 
         // 5. Downgrade trust tier if dispute_count >= 2

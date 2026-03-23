@@ -538,7 +538,7 @@ export const taskRouter = router({
         // T63-4: Enforce application workflow — hustler must have a pending
         // application before they can claim a task via mutual consent.
         const appResult = await query<{ id: string }>(
-          `SELECT id FROM task_applications WHERE task_id = $1 AND worker_id = $2 AND status = 'pending'`,
+          `SELECT id FROM task_applications WHERE task_id = $1 AND hustler_id = $2 AND status = 'pending'`,
           [input.taskId, ctx.user.id]
         );
         if (!appResult.rows[0]) {

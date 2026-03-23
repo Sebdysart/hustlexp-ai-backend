@@ -1139,3 +1139,44 @@ describe('F61-1: fileClaim concurrent duplicate handling via unique constraint',
     }
   });
 });
+
+// --------------------------------------------------------------------------
+// F64-2: payClaim outer status guard must allow status='paid'+stripe_transfer_id=NULL
+// --------------------------------------------------------------------------
+describe('payClaim — F64-2: outer status guard allows retry when status=paid but Stripe not completed', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it('F64-2: retries Stripe when outer SELECT returns status=paid with stripe_transfer_id=NULL', async () => {
+    // The real retry scenario: a previous payClaim call set status='paid' in the DB
+    // but Stripe failed. On this retry the outer SELECT returns status='paid' (not
+    // 'approved'). Before the fix, the outer guard `status !== 'approved'` would
+    // return CLAIM_NOT_APPROVED here, permanently blocking the retry.
+    const { StripeService: MockStripe } = await import('../../src/services/StripeService.js');
+    mockStripe.createTransfer.mockResolvedValueOnce({ success: true, data: { transferId: 'tr_retry_f64', amount: 15000 } } as any);
+
+    mockDb.query
+      .mockResolvedValueOnce({
+        // Outer SELECT: status='paid', stripe_transfer_id=NULL — the blocking scenario
+        rows: [makeClaimRow({ status: 'paid', claim_amount_cents: 18750, covered_amount_cents: 15000, stripe_transfer_id: null })],
+        rowCount: 1,
+      } as never) // outer SELECT claim
+      .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_test' }], rowCount: 1 } as never) // pre-check
+      // Inner transaction: claim FOR UPDATE — status='paid', stripe_transfer_id=NULL
+      .mockResolvedValueOnce({
+        rows: [{ status: 'paid', stripe_transfer_id: null, claim_amount_cents: 18750, covered_amount_cents: 15000 }],
+        rowCount: 1,
+      } as never)
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // UPDATE stripe_transfer_id
+
+    const result = await SelfInsurancePoolService.payClaim('claim-f64');
+
+    expect(result.success).toBe(true);
+    if (result.success) expect((result.data as any).already_paid).toBeUndefined();
+    expect(vi.mocked(MockStripe.createTransfer)).toHaveBeenCalledOnce();
+    expect(vi.mocked(MockStripe.createTransfer)).toHaveBeenCalledWith(
+      expect.objectContaining({ amount: 15000 })
+    );
+  });
+});

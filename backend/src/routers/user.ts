@@ -386,11 +386,22 @@ export const userRouter = router({
       // Normalize role: iOS sends "hustler" but DB stores "worker"
       const dbMode = normalizeRole(input.defaultMode);
 
+      // A64-1 FIX: When decodedToken.email is absent (anonymous, phone, or
+      // Sign-in-with-Apple auth), the email guard above was skipped. To prevent
+      // IDOR — an attacker supplying a victim's email with their own valid token —
+      // we only match by firebase_uid when the token has no email. Matching by
+      // email without a token-verified email would allow any anonymous-auth user
+      // to claim another user's profile just by knowing their email address.
       // Check if user already exists
-      const existing = await db.query<User>(
-        'SELECT * FROM users WHERE firebase_uid = $1 OR email = $2',
-        [input.firebaseUid, input.email]
-      );
+      const existing = decodedToken.email
+        ? await db.query<User>(
+            'SELECT * FROM users WHERE firebase_uid = $1 OR email = $2',
+            [input.firebaseUid, input.email]
+          )
+        : await db.query<User>(
+            'SELECT * FROM users WHERE firebase_uid = $1',
+            [input.firebaseUid]
+          );
 
       if (existing.rows.length > 0) {
         let existingUser: User | null = existing.rows[0];
