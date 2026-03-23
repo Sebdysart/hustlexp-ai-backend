@@ -237,7 +237,7 @@ export const XPTaxService = {
 
       let amountPaidCents: number;
 
-      if (piResult.success && piResult.data) {
+      if (piResult.success) {
         // Stripe is configured — verify payment status
         if (piResult.data.status !== 'succeeded') {
           return {

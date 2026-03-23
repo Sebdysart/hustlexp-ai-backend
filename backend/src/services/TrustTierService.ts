@@ -540,7 +540,7 @@ export const TrustTierService = {
       banRowCount = banResult.rowCount;
     });
 
-    if (currentTier === TrustTier.BANNED) {
+    if ((currentTier as TrustTier) === TrustTier.BANNED) {
       return; // Already banned
     }
 
