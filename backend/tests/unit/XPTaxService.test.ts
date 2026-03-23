@@ -323,6 +323,63 @@ describe('XPTaxService.payTax — F53-1: per-PI per-row idempotency inside FIFO 
     });
   });
 
+  // ---------------------------------------------------------------------------
+  // F54-1: summary UPDATE must use COUNT(*) with xp_held_back = true, not SUM
+  // ---------------------------------------------------------------------------
+  it('summary UPDATE uses COUNT(*) + xp_held_back = true, not SUM(xp_held_back) > 0 (F54-1)', async () => {
+    // PostgreSQL cannot SUM a boolean column. The subquery must use COUNT(*) with
+    // WHERE xp_held_back = true instead of SUM(xp_held_back) WHERE xp_held_back > 0.
+    mockStripe.isConfigured.mockReturnValue(true);
+    mockStripe.verifyPaymentIntent.mockResolvedValueOnce({
+      success: true,
+      data: {
+        status: 'succeeded',
+        amountCents: 500,
+        metadata: { type: 'xp_tax', user_id: 'user-1' },
+      },
+    } as any);
+
+    mockDb.query
+      // 1. Outer idempotency check — no existing rows
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      // Inside serializableTransaction:
+      // 2. SELECT unpaid taxes
+      .mockResolvedValueOnce({
+        rows: [
+          { id: 'tax-1', tax_amount_cents: 500, gross_payout_cents: 5000, created_at: new Date() },
+        ],
+        rowCount: 1,
+      } as never)
+      // 3. Dedup INSERT — new row
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
+      // 4. UPDATE xp_tax_ledger (mark paid)
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
+      // 5. UPDATE users (award XP)
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
+      // 6. UPDATE user_xp_tax_status (summary)
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+    const result = await XPTaxService.payTax('user-1', 'pi_f54_count_test');
+
+    expect(result.success).toBe(true);
+
+    // Find the summary UPDATE call — it's the last query call
+    const allSqls = mockDb.query.mock.calls.map(c => (c[0] as string));
+    const summaryUpdateSql = allSqls.find(sql =>
+      sql.toLowerCase().includes('update user_xp_tax_status')
+    );
+    expect(summaryUpdateSql).toBeDefined();
+
+    // Must NOT use SUM(xp_held_back) — that crashes on boolean columns
+    expect(summaryUpdateSql).not.toMatch(/SUM\s*\(\s*xp_held_back\s*\)/i);
+    // Must NOT use boolean > 0 comparison — invalid in PostgreSQL for booleans
+    expect(summaryUpdateSql).not.toMatch(/xp_held_back\s*>\s*0/i);
+
+    // Must use COUNT(*) with xp_held_back = true (valid boolean comparison)
+    expect(summaryUpdateSql).toMatch(/COUNT\s*\(\s*\*\s*\)/i);
+    expect(summaryUpdateSql).toMatch(/xp_held_back\s*=\s*true/i);
+  });
+
   it('skips XP award when dedup INSERT returns rowCount=0 (already processed row — retry guard, F53-1)', async () => {
     // Simulate transaction retry: the dedup table already has an entry for this PI+row
     // → INSERT ON CONFLICT DO NOTHING → rowCount=0 → skip XP award for that row

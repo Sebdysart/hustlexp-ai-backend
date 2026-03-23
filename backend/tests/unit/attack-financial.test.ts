@@ -161,13 +161,13 @@ describe('ATTACK 1: Fee calculation base (escrow.amount vs task.price)', () => {
     const expectedFeeOnEscrow = Math.round(4000 * 0.15); // 600 cents
     const expectedFeeOnTaskPrice = Math.round(6000 * 0.15); // 900 cents
 
-    // recordEarnings receives finalPayout = escrowAmount - platformFee - 2% insurance
-    // net = 4000 - 600 = 3400; insurance = Math.round(3400*0.02) = 68; final = 3400 - 68 = 3332
+    // recordEarnings receives finalPayout = escrowAmount - platformFee - 2% insurance on gross
+    // net = 4000 - 600 = 3400; insurance = Math.round(4000*0.02) = 80; final = 3400 - 80 = 3320
     expect(EarnedVerificationUnlockService.recordEarnings).toHaveBeenCalledWith(
       'worker-1',
       'task-1',
       'esc-1',
-      3332, // 3400 - 2% insurance = 3332
+      3320, // F54-2: insurance = 2% of gross 4000 = 80; resolvedNet = 3400 - 80 = 3320
     );
 
     // Confirm fee was NOT deducted on task.price basis
@@ -512,39 +512,40 @@ describe('ATTACK 8: Partial payout math — pennies lost or gained', () => {
     const platformFeeCents = Math.round(grossPayoutCents * (platformFeePercent / 100)); // 75
     const netPayoutCents = grossPayoutCents - platformFeeCents; // 425
 
+    // F54-2: insurance = 2% of gross (500), not net (425)
+    // insurance = Math.round(500 * 0.02) = 10; resolvedNet = 425 - 10 = 415
     expect(EarnedVerificationUnlockService.recordEarnings).toHaveBeenCalledWith(
-      'worker-1', 'task-1', 'esc-1', netPayoutCents - Math.round(netPayoutCents * 0.02), // 425 - 9 = 416
+      'worker-1', 'task-1', 'esc-1', netPayoutCents - Math.round(grossPayoutCents * 0.02), // 425 - 10 = 415
     );
     expect(platformFeeCents + netPayoutCents).toBe(grossPayoutCents);
     // VERDICT: SAFE
   });
 
-  it('self-insurance contribution is 2% of NET (after platform fee)', async () => {
+  it('self-insurance contribution is 2% of GROSS (task price) — F54-2 fix', async () => {
     /**
-     * ANALYSIS: SelfInsurancePoolService.recordContribution is called with:
-     *   insuranceContributionCents = Math.round(netPayoutCents * 0.02)
-     * (EscrowService.ts — BUG FIX: was grossPayoutCents, corrected to netPayoutCents)
+     * F54-2 FIX: SelfInsurancePoolService.recordContribution is called with:
+     *   insuranceContributionCents = Math.round(grossPayoutCents * 0.02)
      *
-     * The insurance contribution is an accounting entry, not a money movement
-     * in EscrowService. The actual fund transfer happens elsewhere.
-     * So the worker receives netPayoutCents (gross - 15% platform fee),
-     * and separately the pool is credited 2% of that net amount.
+     * Per spec: contribution = 2% of task price (gross), matching
+     * SelfInsurancePoolService.calculateContribution(taskPriceCents).
      *
-     * gross=10000, fee=1500 (15%), net=8500, insurance=Math.round(8500*0.02)=170
+     * gross=10000, fee=1500 (15%), netBeforeInsurance=8500,
+     * insurance=Math.round(10000*0.02)=200
+     * resolvedNet = 8500 - 200 = 8300
      *
-     * VERDICT: SAFE — insurance is calculated on net, not double-charged from gross.
+     * VERDICT: FIXED (F54-2) — insurance is now on gross, matching the spec.
      */
     mockReleaseHappyPath(10000, 10000);
     await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_atk' });
 
-    const expectedInsurance = Math.round(8500 * 0.02); // 170 cents ($1.70) — 2% of net
+    const expectedInsurance = Math.round(10000 * 0.02); // 200 cents ($2.00) — 2% of gross
     expect(SelfInsurancePoolService.recordContribution).toHaveBeenCalledWith(
       'task-1', 'worker-1', expectedInsurance,
     );
 
-    // Net payout to worker is gross minus platform fee minus 2% insurance
+    // Net payout to worker is gross minus platform fee minus 2% insurance on gross
     const expectedNet = 10000 - Math.round(10000 * 0.15); // 8500
-    const expectedTransfer = expectedNet - Math.round(expectedNet * 0.02); // 8330
+    const expectedTransfer = expectedNet - Math.round(10000 * 0.02); // 8500 - 200 = 8300
     expect(EarnedVerificationUnlockService.recordEarnings).toHaveBeenCalledWith(
       'worker-1', 'task-1', 'esc-1', expectedTransfer,
     );
@@ -653,12 +654,12 @@ describe('ATTACK 11: Refund amount vs original charge amount', () => {
 
 describe('ATTACK 12: Pool contribution path', () => {
   /**
-   * SelfInsurancePoolService.recordContribution() is called from EscrowService.release()
-   * with: `Math.round(netPayoutCents * 0.02)`
-   * (BUG FIX: was grossPayoutCents — corrected to netPayoutCents so insurance is on
-   * the amount the worker actually receives, not the gross escrow amount.)
+   * F54-2 FIX: SelfInsurancePoolService.recordContribution() is called from EscrowService.release()
+   * with: `Math.round(grossPayoutCents * 0.02)`
    *
-   * This means: contribution is 2% of net payout (after 15% platform fee).
+   * Per spec: contribution = 2% of task price (gross), matching
+   * SelfInsurancePoolService.calculateContribution(taskPriceCents).
+   *
    * It is called on EVERY successful release, regardless of task type.
    *
    * The contribution uses ON CONFLICT (task_id, hustler_id) DO NOTHING,
@@ -667,7 +668,7 @@ describe('ATTACK 12: Pool contribution path', () => {
    *
    * VERDICT: SAFE — pool is funded on every release, idempotent.
    */
-  it('pool contribution is 2% of net payout (after platform fee), called on every release', async () => {
+  it('pool contribution is 2% of gross (task price), called on every release — F54-2', async () => {
     mockReleaseHappyPath(10000, 10000);
     await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_atk' });
 
@@ -675,9 +676,9 @@ describe('ATTACK 12: Pool contribution path', () => {
     expect(SelfInsurancePoolService.recordContribution).toHaveBeenCalledWith(
       'task-1',
       'worker-1',
-      170, // 2% of net 8500 (gross 10000 - 15% fee 1500)
+      200, // F54-2: 2% of gross 10000 = 200 (not 170 which was 2% of net 8500)
     );
-    // VERDICT: SAFE — funded on every normal release, calculated on net amount.
+    // VERDICT: FIXED (F54-2) — funded on every release, calculated on gross amount per spec.
   });
 
   it('pool contribution is also called when releasing from LOCKED_DISPUTE (dispute worker-win)', async () => {

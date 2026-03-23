@@ -231,10 +231,11 @@ describe('EscrowService', () => {
       const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_123' });
       expect(result.success).toBe(true);
 
-      // Verify gamification: recordEarnings called with net payout (85% after 15% platform fee, minus 2% insurance)
-      // gross=5000, fee=750, net=4250, insurance=Math.round(4250*0.02)=85, final=4250-85=4165
+      // Verify gamification: recordEarnings called with net payout
+      // F54-2: insurance = 2% of gross (not net)
+      // gross=5000, fee=750, netBeforeInsurance=4250, insurance=Math.round(5000*0.02)=100, final=4250-100=4150
       expect(EarnedVerificationUnlockService.recordEarnings).toHaveBeenCalledWith(
-        'worker-1', 'task-1', 'esc-1', 4165
+        'worker-1', 'task-1', 'esc-1', 4150
       );
 
       // Verify XP award: price / 10
@@ -242,10 +243,10 @@ describe('EscrowService', () => {
         userId: 'worker-1', taskId: 'task-1', escrowId: 'esc-1', baseXP: 500,
       });
 
-      // Verify self-insurance contribution: 2% of NET payout (after 15% platform fee)
-      // gross=5000, fee=750, net=4250, insurance=Math.round(4250*0.02)=85
+      // Verify self-insurance contribution: F54-2: 2% of GROSS (not net)
+      // gross=5000, insurance=Math.round(5000*0.02)=100
       expect(SelfInsurancePoolService.recordContribution).toHaveBeenCalledWith(
-        'task-1', 'worker-1', 85,
+        'task-1', 'worker-1', 100,
       );
     });
 

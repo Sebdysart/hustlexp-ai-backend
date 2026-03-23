@@ -1371,6 +1371,35 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
       await query('DELETE FROM user_xp_tax_status WHERE user_id = $1', [userId]);
       await query('DELETE FROM insurance_contributions WHERE user_id = $1', [userId]);
       await query('DELETE FROM insurance_claims WHERE user_id = $1', [userId]);
+
+      // D54-1: Delete tax_forms — contains PII (name_on_file, address_line1, city,
+      // state, zip, tax_id_last4, stripe_connect_id, foreign_tax_id, signature_on_file).
+      // The users UPDATE (not DELETE) means ON DELETE CASCADE never fires.
+      await query('DELETE FROM tax_forms WHERE user_id = $1', [userId]);
+
+      // D54-3: Delete squad membership and invitation data.
+      // squad_members.user_id FK references users(id).
+      await query('DELETE FROM squad_members WHERE user_id = $1', [userId]);
+      // squad_invites has two user FK columns — delete rows where user is either party.
+      await query(
+        'DELETE FROM squad_invites WHERE inviter_id = $1 OR invitee_id = $1',
+        [userId]
+      );
+      // squad_task_workers.worker_id FK references users(id).
+      await query('DELETE FROM squad_task_workers WHERE worker_id = $1', [userId]);
+
+      // D54-4: Delete additional tables containing user PII.
+      // skill_verifications — contains skill_name, payment info linked to user.
+      await query('DELETE FROM skill_verifications WHERE user_id = $1', [userId]);
+      // insurance_subscriptions — contains tier, coverage, Stripe subscription ID linked to user.
+      await query('DELETE FROM insurance_subscriptions WHERE user_id = $1', [userId]);
+      // daily_challenge_completions — contains progress and completion status linked to user.
+      await query('DELETE FROM daily_challenge_completions WHERE user_id = $1', [userId]);
+      // tips — poster_id and worker_id both reference users(id); both sides must be covered.
+      await query(
+        'DELETE FROM tips WHERE poster_id = $1 OR worker_id = $1',
+        [userId]
+      );
       // D50-4: Delete evidence uploaded by this user (uploader_user_id is NOT NULL
       // in the schema, so UPDATE NULL is not possible — DELETE is required).
       // Note: evidence rows for active/completed disputes are not retained here

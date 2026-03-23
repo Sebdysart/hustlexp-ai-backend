@@ -150,12 +150,58 @@ describe('EscrowService', () => {
         'w-1',
         't-surge',
         'e-surge',
-        9996  // derived from escrow.amount=12000, NOT task.price=10000; net after 15% fee = 10200, after 2% insurance = 9996
+        9960  // gross=12000, platformFee=15%=1800, netBeforeInsurance=10200, insurance=2% of gross=240, resolvedNet=9960
       );
 
       // XP = Math.round(12000 / 10) = 1200, NOT 1000 (which task.price/10 would give)
       expect(XPService.awardXP).toHaveBeenCalledWith(
         expect.objectContaining({ baseXP: 1200 })
+      );
+    });
+  });
+
+  describe('release — insurance contribution base (F54-2)', () => {
+    it('calculates insurance contribution from gross escrow amount, not net-of-platform-fee (F54-2)', async () => {
+      // Spec: insurance = 2% of task price (gross), not 2% of (gross - platformFee)
+      // gross=12000, platformFee=15%=1800, net-before-insurance=10200
+      // BUGGY:  insurance = 2% of 10200 = 204  → resolvedNet = 10200 - 204 = 9996
+      // CORRECT: insurance = 2% of 12000 = 240  → resolvedNet = 10200 - 240 = 9960
+      const { EarnedVerificationUnlockService } = await import('../../src/services/EarnedVerificationUnlockService');
+      const { XPService } = await import('../../src/services/XPService');
+
+      // Query 1: fetch escrow
+      (db.query as any).mockResolvedValueOnce({
+        rows: [{ id: 'e-ins', task_id: 't-ins', amount: 12000, state: 'FUNDED' }],
+        rowCount: 1,
+      });
+      // Query 2: fetch task
+      (db.query as any).mockResolvedValueOnce({
+        rows: [{ worker_id: 'w-ins', price: 12000 }],
+        rowCount: 1,
+      });
+      // Query 3: KYC check
+      (db.query as any).mockResolvedValueOnce({
+        rows: [{ payouts_enabled: true, stripe_connect_id: 'acct_ins', stripe_connect_status: 'active' }],
+        rowCount: 1,
+      });
+      // Query 4: UPDATE escrows SET state = 'RELEASED'
+      (db.query as any).mockResolvedValueOnce({
+        rows: [{ id: 'e-ins', task_id: 't-ins', amount: 12000, state: 'RELEASED' }],
+        rowCount: 1,
+      });
+
+      const result = await EscrowService.release({ escrowId: 'e-ins', stripeTransferId: 'tr_ins' });
+
+      expect(result.success).toBe(true);
+
+      // gross=12000, platformFee=15% of 12000=1800, netBeforeInsurance=10200
+      // insurance = 2% of gross=12000 = 240 (NOT 2% of 10200=204)
+      // resolvedNet = 10200 - 240 = 9960
+      expect(EarnedVerificationUnlockService.recordEarnings).toHaveBeenCalledWith(
+        'w-ins',
+        't-ins',
+        'e-ins',
+        9960  // 2% insurance on gross 12000 = 240; net = 10200 - 240 = 9960
       );
     });
   });

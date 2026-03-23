@@ -533,7 +533,10 @@ export const EscrowService = {
         // amount; the insurance contribution is deducted from it before paying out.
         const INSURANCE_RATE = 0.02; // 2% — matches SelfInsurancePoolService default
         const resolvedNetBeforeInsurance = resolvedGross - platformFeeCents;
-        const txInsuranceContributionCents = Math.round(resolvedNetBeforeInsurance * INSURANCE_RATE);
+        // F54-2 FIX: Insurance contribution is 2% of gross escrow amount (task price),
+        // not 2% of net-of-platform-fee. This matches SelfInsurancePoolService.calculateContribution
+        // which takes taskPriceCents (gross) as its input.
+        const txInsuranceContributionCents = Math.round(resolvedGross * INSURANCE_RATE);
         const resolvedNet = resolvedNetBeforeInsurance - txInsuranceContributionCents;
 
         // 2. Release escrow (SPEC FIX: Allow release from both FUNDED and LOCKED_DISPUTE states)

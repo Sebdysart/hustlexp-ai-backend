@@ -389,17 +389,23 @@ describe('GDPRService.executeDeletion', () => {
     // 2. UPDATE to processing
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
 
-    // 2a. FIX 2: SELECT open poster tasks (none)
+    // 3. SELECT firebase_uid (fetched before deleteAndAnonymizeUserData)
+    mockDb.query.mockResolvedValueOnce({ rows: [{ firebase_uid: null }], rowCount: 1 } as never);
+
+    // 4a. (inside deleteAndAnonymizeUserData) SELECT email idempotency check
+    mockDb.query.mockResolvedValueOnce({ rows: [{ email: 'test@example.com' }], rowCount: 1 } as never);
+
+    // 4b. SELECT open poster tasks (none)
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
 
-    // 2b. FIX 1: SELECT worker FUNDED/LOCKED_DISPUTE escrows (none)
+    // 4c. SELECT worker FUNDED/LOCKED_DISPUTE escrows (none)
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
 
-    // 3. serializableTransaction (deleteAndAnonymizeUserData)
+    // 5. serializableTransaction (deleteAndAnonymizeUserData)
     const serializableQuery = vi.fn().mockResolvedValue({ rows: [], rowCount: 0 } as never);
     mockDb.serializableTransaction.mockImplementation(async (fn) => fn(serializableQuery) as Promise<unknown>);
 
-    // 4. UPDATE to completed
+    // 6. UPDATE to completed
     mockDb.query.mockResolvedValueOnce({
       rows: [{ id: 'req-1', status: 'completed' }],
       rowCount: 1,
@@ -468,10 +474,10 @@ describe('GDPRService.executeDeletion', () => {
       rowCount: 1,
     } as never);
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // processing
-    // FIX 2: SELECT open poster tasks (none)
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
-    // FIX 1: SELECT worker FUNDED/LOCKED_DISPUTE escrows (none)
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+    mockDb.query.mockResolvedValueOnce({ rows: [{ firebase_uid: null }], rowCount: 1 } as never); // firebase_uid
+    mockDb.query.mockResolvedValueOnce({ rows: [{ email: 'test@example.com' }], rowCount: 1 } as never); // email idempotency
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // open poster tasks (none)
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // worker escrows (none)
     mockDb.serializableTransaction.mockImplementation(async (fn) => {
       const q = vi.fn().mockResolvedValue({ rows: [], rowCount: 0 } as never);
       return fn(q) as Promise<unknown>;
@@ -499,7 +505,9 @@ describe('GDPRService.executeDeletion', () => {
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
     // 3. SELECT firebase_uid (BUG GG1 FIX — fetched before deleteAndAnonymizeUserData)
     mockDb.query.mockResolvedValueOnce({ rows: [{ firebase_uid: 'firebase-uid-1' }], rowCount: 1 } as never);
-    // 4. (inside deleteAndAnonymizeUserData) SELECT open poster tasks — one task returned
+    // 4. (inside deleteAndAnonymizeUserData) SELECT email idempotency check
+    mockDb.query.mockResolvedValueOnce({ rows: [{ email: 'test@example.com' }], rowCount: 1 } as never);
+    // 5. SELECT open poster tasks — one task returned
     mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'task-poster-1' }], rowCount: 1 } as never);
     // 5. SELECT escrows for poster task — PENDING escrow with PI id
     mockDb.query.mockResolvedValueOnce({
@@ -533,6 +541,7 @@ describe('GDPRService.executeDeletion', () => {
     } as never);
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // processing
     mockDb.query.mockResolvedValueOnce({ rows: [{ firebase_uid: null }], rowCount: 1 } as never); // firebase_uid
+    mockDb.query.mockResolvedValueOnce({ rows: [{ email: 'test@example.com' }], rowCount: 1 } as never); // email idempotency
     mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'task-poster-2' }], rowCount: 1 } as never); // poster tasks
     mockDb.query.mockResolvedValueOnce({
       rows: [{ id: 'escrow-pending-2', state: 'PENDING', stripe_payment_intent_id: null }],
@@ -562,6 +571,7 @@ describe('GDPRService.executeDeletion', () => {
     } as never);
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // processing
     mockDb.query.mockResolvedValueOnce({ rows: [{ firebase_uid: null }], rowCount: 1 } as never); // firebase_uid
+    mockDb.query.mockResolvedValueOnce({ rows: [{ email: 'test@example.com' }], rowCount: 1 } as never); // email idempotency
     mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'task-poster-3' }], rowCount: 1 } as never); // poster tasks
     mockDb.query.mockResolvedValueOnce({
       rows: [{ id: 'escrow-pending-3', state: 'PENDING', stripe_payment_intent_id: 'pi_already_cancelled' }],
@@ -595,6 +605,7 @@ describe('GDPRService.executeDeletion', () => {
     } as never);
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // processing
     mockDb.query.mockResolvedValueOnce({ rows: [{ firebase_uid: null }], rowCount: 1 } as never); // firebase_uid
+    mockDb.query.mockResolvedValueOnce({ rows: [{ email: 'test@example.com' }], rowCount: 1 } as never); // email idempotency
     mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'task-poster-4' }], rowCount: 1 } as never); // poster tasks
     mockDb.query.mockResolvedValueOnce({
       rows: [{ id: 'escrow-dispute-1', state: 'LOCKED_DISPUTE', stripe_payment_intent_id: null }],
@@ -906,5 +917,146 @@ describe('GDPRService.getConsentStatus — error path', () => {
     if (result.success) {
       expect(result.data).toHaveLength(0);
     }
+  });
+});
+
+// ===========================================================================
+// D54: deleteAndAnonymizeUserData — missing table deletions
+// ===========================================================================
+
+/**
+ * Helper: set up all db.query mocks for executeDeletion with no poster/worker tasks,
+ * then capture the SQL calls made inside serializableTransaction.
+ * Returns { serializableQuery } so callers can assert on it.
+ */
+function setupDeletionMocksWithCapture() {
+  const pastDeadline = new Date(Date.now() - 86400000);
+
+  // 1. SELECT request
+  mockDb.query.mockResolvedValueOnce({
+    rows: [{ id: 'req-d54', user_id: 'user-d54', status: 'pending', request_type: 'deletion', deadline: pastDeadline }],
+    rowCount: 1,
+  } as never);
+  // 2. UPDATE to processing (CAS)
+  mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'req-d54' }], rowCount: 1 } as never);
+  // 3. SELECT firebase_uid
+  mockDb.query.mockResolvedValueOnce({ rows: [{ firebase_uid: null }], rowCount: 1 } as never);
+  // 4. SELECT email (idempotency check inside deleteAndAnonymizeUserData)
+  mockDb.query.mockResolvedValueOnce({ rows: [{ email: 'user@example.com' }], rowCount: 1 } as never);
+  // 5. SELECT open poster tasks (none)
+  mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+  // 6. SELECT worker escrows (none)
+  mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+
+  // 7. serializableTransaction: capture all SQL inside the deletion
+  const serializableQuery = vi.fn().mockResolvedValue({ rows: [], rowCount: 0 } as never);
+  mockDb.serializableTransaction.mockImplementation(async (fn) => fn(serializableQuery) as Promise<unknown>);
+
+  // 8. UPDATE to completed
+  mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'req-d54', status: 'completed' }], rowCount: 1 } as never);
+
+  mockNotification.createNotification.mockResolvedValue({ success: true } as never);
+
+  return { serializableQuery };
+}
+
+describe('D54-1: deleteAndAnonymizeUserData — tax_forms deletion', () => {
+  it('deletes tax_forms rows for the user', async () => {
+    const { serializableQuery } = setupDeletionMocksWithCapture();
+
+    const result = await GDPRService.executeDeletion('req-d54');
+
+    expect(result.success).toBe(true);
+
+    // Verify tax_forms DELETE was issued inside the transaction
+    const calls = serializableQuery.mock.calls as [string, unknown[]][];
+    const taxFormsDeletion = calls.find(([sql]) => /DELETE FROM tax_forms/i.test(sql));
+    expect(taxFormsDeletion, 'Expected DELETE FROM tax_forms to be called').toBeDefined();
+    expect(taxFormsDeletion![1]).toContain('user-d54');
+  });
+});
+
+describe('D54-3: deleteAndAnonymizeUserData — squad table deletions', () => {
+  it('deletes squad_members rows for the user', async () => {
+    const { serializableQuery } = setupDeletionMocksWithCapture();
+
+    await GDPRService.executeDeletion('req-d54');
+
+    const calls = serializableQuery.mock.calls as [string, unknown[]][];
+    const squadMembersDeletion = calls.find(([sql]) => /DELETE FROM squad_members/i.test(sql));
+    expect(squadMembersDeletion, 'Expected DELETE FROM squad_members to be called').toBeDefined();
+    expect(squadMembersDeletion![1]).toContain('user-d54');
+  });
+
+  it('deletes squad_invites rows where user is inviter or invitee', async () => {
+    const { serializableQuery } = setupDeletionMocksWithCapture();
+
+    await GDPRService.executeDeletion('req-d54');
+
+    const calls = serializableQuery.mock.calls as [string, unknown[]][];
+    const squadInvitesDeletion = calls.find(([sql]) => /DELETE FROM squad_invites/i.test(sql));
+    expect(squadInvitesDeletion, 'Expected DELETE FROM squad_invites to be called').toBeDefined();
+    // The SQL should handle both inviter_id and invitee_id
+    expect(squadInvitesDeletion![0]).toMatch(/inviter_id|invitee_id/i);
+    expect(squadInvitesDeletion![1]).toContain('user-d54');
+  });
+
+  it('deletes squad_task_workers rows for the user', async () => {
+    const { serializableQuery } = setupDeletionMocksWithCapture();
+
+    await GDPRService.executeDeletion('req-d54');
+
+    const calls = serializableQuery.mock.calls as [string, unknown[]][];
+    const squadTaskWorkersDeletion = calls.find(([sql]) => /DELETE FROM squad_task_workers/i.test(sql));
+    expect(squadTaskWorkersDeletion, 'Expected DELETE FROM squad_task_workers to be called').toBeDefined();
+    expect(squadTaskWorkersDeletion![1]).toContain('user-d54');
+  });
+});
+
+describe('D54-4: deleteAndAnonymizeUserData — additional table deletions', () => {
+  it('deletes skill_verifications rows for the user', async () => {
+    const { serializableQuery } = setupDeletionMocksWithCapture();
+
+    await GDPRService.executeDeletion('req-d54');
+
+    const calls = serializableQuery.mock.calls as [string, unknown[]][];
+    const deletion = calls.find(([sql]) => /DELETE FROM skill_verifications/i.test(sql));
+    expect(deletion, 'Expected DELETE FROM skill_verifications to be called').toBeDefined();
+    expect(deletion![1]).toContain('user-d54');
+  });
+
+  it('deletes insurance_subscriptions rows for the user', async () => {
+    const { serializableQuery } = setupDeletionMocksWithCapture();
+
+    await GDPRService.executeDeletion('req-d54');
+
+    const calls = serializableQuery.mock.calls as [string, unknown[]][];
+    const deletion = calls.find(([sql]) => /DELETE FROM insurance_subscriptions/i.test(sql));
+    expect(deletion, 'Expected DELETE FROM insurance_subscriptions to be called').toBeDefined();
+    expect(deletion![1]).toContain('user-d54');
+  });
+
+  it('deletes daily_challenge_completions rows for the user', async () => {
+    const { serializableQuery } = setupDeletionMocksWithCapture();
+
+    await GDPRService.executeDeletion('req-d54');
+
+    const calls = serializableQuery.mock.calls as [string, unknown[]][];
+    const deletion = calls.find(([sql]) => /DELETE FROM daily_challenge_completions/i.test(sql));
+    expect(deletion, 'Expected DELETE FROM daily_challenge_completions to be called').toBeDefined();
+    expect(deletion![1]).toContain('user-d54');
+  });
+
+  it('deletes tips rows where user is poster or worker', async () => {
+    const { serializableQuery } = setupDeletionMocksWithCapture();
+
+    await GDPRService.executeDeletion('req-d54');
+
+    const calls = serializableQuery.mock.calls as [string, unknown[]][];
+    const deletion = calls.find(([sql]) => /DELETE FROM tips/i.test(sql));
+    expect(deletion, 'Expected DELETE FROM tips to be called').toBeDefined();
+    // tips has poster_id and worker_id — both should be covered
+    expect(deletion![0]).toMatch(/poster_id|worker_id/i);
+    expect(deletion![1]).toContain('user-d54');
   });
 });

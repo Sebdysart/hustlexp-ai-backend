@@ -372,7 +372,7 @@ export const XPTaxService = {
              0
            ),
            total_xp_held_back = COALESCE(
-             (SELECT SUM(xp_held_back) FROM xp_tax_ledger WHERE user_id = $1 AND tax_paid = false AND xp_held_back > 0),
+             (SELECT COUNT(*) FROM xp_tax_ledger WHERE user_id = $1 AND tax_paid = false AND xp_held_back = true),
              0
            ),
            last_updated_at = NOW()
