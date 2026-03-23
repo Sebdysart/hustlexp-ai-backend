@@ -197,4 +197,76 @@ describe('DisputeService', () => {
       expect(result.success).toBe(true);
     });
   });
+
+  describe('T59-3: task state update to DISPUTED happens atomically within dispute-creation transaction', () => {
+    it('T59-3: when creating dispute on PROOF_SUBMITTED task, task UPDATE to DISPUTED is called within the same transaction (not as separate db.query)', async () => {
+      const { DisputeService } = await import('../../src/services/DisputeService');
+
+      // Track all calls to the transaction query function vs the module-level db.query
+      const transactionQueryCalls: string[] = [];
+      const moduleQueryCalls: string[] = [];
+
+      // Override transaction to capture calls to the in-transaction query fn
+      (mockDb.transaction as ReturnType<typeof vi.fn>).mockImplementationOnce(
+        async (fn: (q: typeof mockDb.query) => Promise<unknown>) => {
+          const txQuery = vi.fn((...args: unknown[]) => {
+            if (typeof args[0] === 'string') {
+              transactionQueryCalls.push(args[0]);
+            }
+            // Delegate to mockDb.query for return values
+            return (mockDb.query as ReturnType<typeof vi.fn>)(...args);
+          });
+
+          // Track module-level db.query calls separately
+          (mockDb.query as ReturnType<typeof vi.fn>).mockImplementation((...args: unknown[]) => {
+            if (typeof args[0] === 'string') {
+              moduleQueryCalls.push(args[0]);
+            }
+            return Promise.resolve({ rows: [], rowCount: 0 });
+          });
+
+          return fn(txQuery as typeof mockDb.query);
+        }
+      );
+
+      // Setup mock sequence: PROOF_SUBMITTED task, FUNDED escrow, lock, dispute insert, outbox, task UPDATE
+      mockDb.query
+        // task FOR UPDATE → PROOF_SUBMITTED
+        .mockResolvedValueOnce({ rows: [{ id: 'task-1', state: 'PROOF_SUBMITTED', completed_at: null, poster_id: 'poster-1', worker_id: 'worker-1' }], rowCount: 1 } as never)
+        // escrow FOR UPDATE → FUNDED
+        .mockResolvedValueOnce({ rows: [{ id: 'escrow-1', state: 'FUNDED', amount: 5000, stripe_transfer_id: null, version: 1 }], rowCount: 1 } as never)
+        // escrow UPDATE → LOCKED_DISPUTE
+        .mockResolvedValueOnce({ rows: [{ id: 'escrow-1', state: 'LOCKED_DISPUTE', version: 2 }], rowCount: 1 } as never)
+        // dispute INSERT
+        .mockResolvedValueOnce({ rows: [{ id: 'disp-1', state: 'OPEN', version: 1 }], rowCount: 1 } as never)
+        // outbox INSERT
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
+        // T59-3: UPDATE tasks SET state='DISPUTED' (must be within transaction)
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+      const result = await DisputeService.create({
+        taskId: 'task-1',
+        escrowId: 'escrow-1',
+        initiatedBy: 'poster-1',
+        posterId: 'poster-1',
+        workerId: 'worker-1',
+        reason: 'Bad work',
+        description: 'Details',
+      });
+
+      expect(result.success).toBe(true);
+
+      // The task UPDATE to DISPUTED must have gone through the transaction query fn
+      const txDisputedUpdate = transactionQueryCalls.find(
+        (sql) => sql.includes('UPDATE tasks') && sql.includes('DISPUTED')
+      );
+      expect(txDisputedUpdate).toBeDefined();
+
+      // The task UPDATE to DISPUTED must NOT have been a separate module-level db.query call
+      const moduleDisputedUpdate = moduleQueryCalls.find(
+        (sql) => sql.includes('UPDATE tasks') && sql.includes('DISPUTED')
+      );
+      expect(moduleDisputedUpdate).toBeUndefined();
+    });
+  });
 });

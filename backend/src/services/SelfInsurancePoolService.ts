@@ -264,14 +264,16 @@ export const SelfInsurancePoolService = {
       // F-04 FIX: Add AND status = 'pending' guard so already-paid or denied claims
       // cannot be re-reviewed. Without this guard, any claim can be flipped back to
       // 'approved' or 'denied' regardless of its current state.
-      const result = await db.query(
+      // F59-1 FIX: RETURNING claim_amount_cents so denial can decrement total_claims_cents.
+      const result = await db.query<{ claim_amount_cents: number }>(
         `UPDATE insurance_claims
          SET status = $1,
              reviewed_by = $2,
              reviewed_at = NOW(),
              review_notes = $3
          WHERE id = $4
-           AND status = 'pending'`,
+           AND status = 'pending'
+         RETURNING claim_amount_cents`,
         [newStatus, reviewerId, reviewNotes, claimId]
       );
 
@@ -283,6 +285,23 @@ export const SelfInsurancePoolService = {
             message: 'Claim is not in pending status and cannot be reviewed'
           }
         };
+      }
+
+      // F59-1 FIX: When denying a claim, return the coverage reservation back to the pool.
+      // fileClaim reserved coveredAmountCents in total_claims_cents at filing time.
+      // A denied claim will never be paid — the reservation must be released so future
+      // claimants are not incorrectly blocked by INSUFFICIENT_POOL_BALANCE.
+      if (!approved && result.rows[0]) {
+        const claimAmountCents = result.rows[0].claim_amount_cents;
+        const poolStatus = await SelfInsurancePoolService.getPoolStatus();
+        const coveragePct = poolStatus.success && poolStatus.data ? poolStatus.data.coverage_percentage : 80;
+        const coveredAmount = Math.round(claimAmountCents * (coveragePct / 100));
+        await db.query(
+          `UPDATE self_insurance_pool
+           SET total_claims_cents = GREATEST(0, total_claims_cents - $1),
+               updated_at = NOW()`,
+          [coveredAmount]
+        );
       }
 
       log.info({ claimId, approved }, 'Reviewed claim');
@@ -380,6 +399,12 @@ export const SelfInsurancePoolService = {
       // call after the transaction commits.
       let coveredAmountCents: number = 0;
 
+      // F59-2 FIX: Flag to detect when the transaction finds the claim is already paid.
+      // Previously, status='paid' caused an early `return` inside the transaction, leaving
+      // coveredAmountCents=0. After the transaction, Stripe was called with amount=0.
+      // Now we set this flag instead of returning, and guard against the Stripe call below.
+      let alreadyPaid = false;
+
       // F-17: Wrap balance check + pool debit + claim status update in a single
       // transaction with SELECT FOR UPDATE to prevent concurrent double-drain.
       await db.transaction(async (query: QueryFn) => {
@@ -396,6 +421,9 @@ export const SelfInsurancePoolService = {
           return; // Claim locked/deleted by concurrent call — safe to exit
         }
         if (claimCheck.rows[0].status === 'paid') {
+          // F59-2 FIX: Set flag instead of returning so coveredAmountCents stays 0
+          // and the caller can detect this path without attempting a Stripe transfer.
+          alreadyPaid = true;
           return; // DB already committed (with or without Stripe) — skip debit, outer code retries Stripe if needed
         }
         if (claimCheck.rows[0].status !== 'approved') {
@@ -455,6 +483,13 @@ export const SelfInsurancePoolService = {
           [claimId]
         );
       });
+
+      // F59-2 FIX: If the transaction detected the claim was already paid by a concurrent
+      // caller, return early here — coveredAmountCents is still 0 at this point, so calling
+      // Stripe with amount=0 would either error or produce a zero-dollar transfer.
+      if (alreadyPaid) {
+        return { success: true, data: { already_paid: true, claim } };
+      }
 
       // Transfer funds to hustler via Stripe Connect
       // F-06 FIX: Use StripeService.createTransfer() instead of raw fetch() so the

@@ -56,6 +56,7 @@ vi.mock('../../src/services/StripeService', () => ({
     createRefund: vi.fn().mockResolvedValue({ success: true, data: { refundId: 're_test', amount: 5000, status: 'succeeded' } }),
     createTransfer: vi.fn().mockResolvedValue({ success: true, data: { transferId: 'tr_test', amount: 3000 } }),
     cancelRefund: vi.fn().mockResolvedValue({ success: true, data: { refundId: 're_test', status: 'cancelled' } }),
+    createTransferReversal: vi.fn().mockResolvedValue({ success: true, data: { reversalId: 'pyr_test' } }),
   },
 }));
 
@@ -622,6 +623,63 @@ describe('EscrowService', () => {
       expect(EscrowService.getValidTransitions('PENDING')).toEqual(['FUNDED', 'REFUNDED']);
       expect(EscrowService.getValidTransitions('RELEASED')).toEqual([]);
       expect(EscrowService.getValidTransitions('LOCKED_DISPUTE')).toEqual(['RELEASED', 'REFUNDED', 'REFUND_PARTIAL']);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // F59-5: adminRefund on RELEASED escrow with null stripeTransferId
+  // -------------------------------------------------------------------------
+  describe('refund — F59-5: RELEASED escrow with null stripeTransferId must return MANUAL_PAYOUT_CANNOT_REFUND', () => {
+    it('returns MANUAL_PAYOUT_CANNOT_REFUND when adminOverride=true, state=RELEASED, stripeTransferId=null', async () => {
+      // adminOverride=true, state=RELEASED, stripe_transfer_id=null (manual payout path).
+      // Use task_id=null so the task state guard is skipped (the escrow has no task, or
+      // a task_id that returns no rows). This isolates the MANUAL_PAYOUT_CANNOT_REFUND guard.
+      // Transfer reversal block is skipped (no transfer ID).
+      // The new guard fires: RELEASED + null transferId → MANUAL_PAYOUT_CANNOT_REFUND.
+      // No Stripe refund must be issued.
+      const { StripeService: MockStripe } = await import('../../src/services/StripeService');
+      mockDb.query
+        .mockResolvedValueOnce({
+          rows: [{
+            task_id: null, version: 0, state: 'RELEASED',
+            stripe_payment_intent_id: 'pi_test', stripe_refund_id: null,
+            stripe_transfer_id: null, amount: 5000,
+          }],
+          rowCount: 1,
+        } as never); // T1: SELECT FOR UPDATE (task_id=null skips task state check)
+
+      const result = await EscrowService.refund({ escrowId: 'esc-1', adminOverride: true });
+
+      expect(result.success).toBe(false);
+      if (!result.success) expect(result.error.code).toBe('MANUAL_PAYOUT_CANNOT_REFUND');
+      // Stripe refund must NOT have been called
+      expect(vi.mocked(MockStripe.createRefund)).not.toHaveBeenCalled();
+    });
+
+    it('succeeds (transfer reversal then refund) when adminOverride=true, state=RELEASED, stripeTransferId is set', async () => {
+      // Existing behavior: RELEASED + stripeTransferId present → reversal → refund.
+      // Use task_id=null so the task state guard is skipped (same approach as above).
+      const refunded = makeEscrow({ state: 'REFUNDED' });
+      const { StripeService: MockStripe } = await import('../../src/services/StripeService');
+
+      mockDb.query
+        .mockResolvedValueOnce({
+          rows: [{
+            task_id: null, version: 0, state: 'RELEASED',
+            stripe_payment_intent_id: 'pi_test', stripe_refund_id: null,
+            stripe_transfer_id: 'tr_existing', amount: 5000,
+          }],
+          rowCount: 1,
+        } as never) // T1: SELECT FOR UPDATE (task_id=null skips task state check)
+        .mockResolvedValueOnce({ rows: [{ id: 'esc-1', version: 0, state: 'RELEASED' }], rowCount: 1 } as never) // T2: FOR UPDATE NOWAIT re-read
+        .mockResolvedValueOnce({ rows: [refunded], rowCount: 1 } as never) // T2: UPDATE
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // logEscrowEvent
+
+      const result = await EscrowService.refund({ escrowId: 'esc-1', adminOverride: true });
+
+      expect(result.success).toBe(true);
+      expect(vi.mocked(MockStripe.createTransferReversal)).toHaveBeenCalledOnce();
+      expect(vi.mocked(MockStripe.createRefund)).toHaveBeenCalledOnce();
     });
   });
 });

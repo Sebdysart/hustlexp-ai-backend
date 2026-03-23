@@ -352,7 +352,19 @@ export const DisputeService = {
           },
           queueName: 'critical_trust',
         });
-        
+
+        // T59-3 FIX: Update task state to DISPUTED atomically within this transaction.
+        // Prevents proof review racing between dispute-created commit and a separate
+        // openDispute commit. When a dispute is created on a PROOF_SUBMITTED task, the
+        // task must move to DISPUTED in the same transaction so no concurrent
+        // reviewProof call can review proof after the dispute row exists.
+        if (task.state === 'PROOF_SUBMITTED') {
+          await query(
+            `UPDATE tasks SET state = 'DISPUTED', updated_at = NOW() WHERE id = $1 AND state = 'PROOF_SUBMITTED'`,
+            [taskId]
+          );
+        }
+
         return dispute;
       });
       

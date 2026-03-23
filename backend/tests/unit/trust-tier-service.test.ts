@@ -262,6 +262,8 @@ describe('TrustTierService.applyPromotion', () => {
     });
     // serializableTransaction → txQuery: UPDATE users SET trust_tier (CAS matched → rowCount=1)
     mockQuery.mockResolvedValueOnce({ rows: [{ id: 'u1', trust_tier: 2 }], rowCount: 1 });
+    // A59-2 FIX: SELECT firebase_uid FROM users for invalidateAuthCacheForUser
+    mockQuery.mockResolvedValueOnce({ rows: [{ firebase_uid: 'firebase-u1' }], rowCount: 1 });
     // INSERT trust_ledger
     mockQuery.mockResolvedValueOnce({ rows: [] });
     // SELECT default_mode for AlphaInstrumentation
@@ -290,6 +292,36 @@ describe('TrustTierService.applyPromotion', () => {
     expect(result).toEqual({ success: true, alreadyApplied: true });
     // No further queries (trust_ledger, instrumentation) should be fired
     expect(mockQuery).toHaveBeenCalledTimes(5);
+  });
+
+  it('A59-2: invalidateAuthCacheForUser is called with both userId AND firebaseUid on successful promotion', async () => {
+    const { invalidateAuthCacheForUser } = await import('../../src/auth-cache');
+    const mockInvalidate = vi.mocked(invalidateAuthCacheForUser);
+
+    // getTrustTier for applyPromotion (pre-flight)
+    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }], rowCount: 1 });
+    // serializableTransaction → txQuery: SELECT trust_tier FOR UPDATE
+    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }], rowCount: 1 });
+    // evaluatePromotion -> getTrustTier (inside transaction)
+    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }], rowCount: 1 });
+    // evaluatePromotion -> user details (inside transaction)
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ is_verified: true, verified_at: new Date(), phone: '+1234', stripe_customer_id: 'cus_1' }],
+      rowCount: 1,
+    });
+    // serializableTransaction → txQuery: UPDATE users SET trust_tier (CAS matched → rowCount=1)
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'u1', trust_tier: 2 }], rowCount: 1 });
+    // A59-2 FIX: SELECT firebase_uid FROM users
+    mockQuery.mockResolvedValueOnce({ rows: [{ firebase_uid: 'firebase-abc' }], rowCount: 1 });
+    // INSERT trust_ledger
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    // SELECT default_mode for AlphaInstrumentation
+    mockQuery.mockResolvedValueOnce({ rows: [{ default_mode: 'worker' }] });
+
+    await TrustTierService.applyPromotion('u1', TrustTier.VERIFIED, 'system');
+
+    // Must be called with both userId AND the firebaseUid fetched from DB
+    expect(mockInvalidate).toHaveBeenCalledWith('u1', 'firebase-abc');
   });
 });
 

@@ -139,8 +139,8 @@ export const taskRouter = router({
       );
 
       const isParticipant = task.poster_id === ctx.user.id || task.worker_id === ctx.user.id;
-      // Tasks in OPEN/MATCHING/POSTED state are discoverable (hustler feed)
-      const isDiscoverable = ['OPEN', 'MATCHING', 'POSTED'].includes(task.state);
+      // Tasks in OPEN/MATCHING state are discoverable (hustler feed)
+      const isDiscoverable = ['OPEN', 'MATCHING'].includes(task.state);
 
       if (!isParticipant && !isDiscoverable) {
         // Last resort: check admin role before throwing
@@ -1051,10 +1051,10 @@ export const taskRouter = router({
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
       }
       const task = taskResult.rows[0];
-      if (task.state !== 'POSTED') {
+      if (task.state !== 'OPEN') {
         throw new TRPCError({
           code: 'PRECONDITION_FAILED',
-          message: `Task must be in POSTED state to apply, current: ${task.state}`,
+          message: `Task must be in OPEN state to apply, current: ${task.state}`,
         });
       }
       if (task.poster_id === ctx.user.id) {
@@ -1179,7 +1179,7 @@ export const taskRouter = router({
    * RACE CONDITION FIX: All 6 DB operations are wrapped in a single db.transaction()
    * with a SELECT ... FOR UPDATE as the very first statement. The row-level lock is
    * held from the initial state check through the final TaskService.accept() UPDATE,
-   * so two concurrent poster calls cannot both read state='POSTED' and produce
+   * so two concurrent poster calls cannot both read state='OPEN' and produce
    * inconsistent task_applications records (worker Y accepted but task.worker_id=X).
    */
   assignWorker: posterProcedure
@@ -1207,7 +1207,7 @@ export const taskRouter = router({
       const result = await db.transaction(async (txn) => {
         // Step 1: Lock the task row for the duration of the transaction.
         // FOR UPDATE prevents concurrent assignWorker calls from both reading
-        // state='POSTED' and proceeding to assign different workers.
+        // state='OPEN' and proceeding to assign different workers.
         const taskResult = await txn<{ id: string; state: string; poster_id: string; trust_tier_required: number | null; template_slug: string | null }>(
           `SELECT id, state, poster_id, trust_tier_required, template_slug FROM tasks WHERE id = $1 FOR UPDATE`,
           [input.taskId]
@@ -1220,10 +1220,10 @@ export const taskRouter = router({
         if (taskResult.rows[0].poster_id !== ctx.user.id) {
           throw new TRPCError({ code: 'FORBIDDEN', message: 'Only the task poster can assign workers' });
         }
-        if (taskResult.rows[0].state !== 'POSTED') {
+        if (taskResult.rows[0].state !== 'OPEN') {
           throw new TRPCError({
             code: 'PRECONDITION_FAILED',
-            message: `Task must be POSTED to assign a worker, current: ${taskResult.rows[0].state}`,
+            message: `Task must be OPEN to assign a worker, current: ${taskResult.rows[0].state}`,
           });
         }
 
@@ -1304,7 +1304,7 @@ export const taskRouter = router({
                worker_id = $2,
                accepted_at = NOW()
            WHERE id = $1
-             AND state = 'POSTED'
+             AND state = 'OPEN'
            RETURNING id, state, worker_id`,
           [input.taskId, input.workerId]
         );
@@ -1312,7 +1312,7 @@ export const taskRouter = router({
         if ((acceptResult.rowCount ?? 0) === 0) {
           throw new TRPCError({
             code: 'PRECONDITION_FAILED',
-            message: 'Task is no longer in POSTED state — concurrent assignment detected',
+            message: 'Task is no longer in OPEN state — concurrent assignment detected',
           });
         }
 

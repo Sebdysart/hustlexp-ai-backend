@@ -183,7 +183,7 @@ function makeCtx(overrides: Record<string, unknown> = {}) {
 function makeTaskRow(overrides: Record<string, unknown> = {}) {
   return {
     id: 'task-1',
-    state: 'POSTED',
+    state: 'OPEN',
     poster_id: 'poster-1',
     worker_id: null,
     template_slug: 'standard_physical',
@@ -206,7 +206,7 @@ describe('assignWorker — transaction locking (FIX 1)', () => {
   });
 
   it('db.transaction() is entered — all state-mutating ops use a single tx', async () => {
-    // Happy path: task is POSTED, worker has pending application.
+    // Happy path: task is OPEN, worker has pending application.
     // SECURITY FIX: no pre-tx slug lookup — template_slug is now fetched INSIDE the
     // transaction along with state/poster_id (FOR UPDATE row includes template_slug).
     mockQuery

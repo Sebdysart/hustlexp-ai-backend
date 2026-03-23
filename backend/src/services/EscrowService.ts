@@ -870,6 +870,24 @@ export const EscrowService = {
       }
 
       // -----------------------------------------------------------------------
+      // F59-5 FIX: Admin refund on RELEASED escrow where transfer was manually paid
+      // (stripeTransferId is null). The transfer-reversal block above is skipped
+      // (no transfer ID), but the escrow was marked RELEASED — meaning the worker
+      // was paid via the adminManualPayoutRequired path. Issuing a Stripe refund
+      // to the poster here would return money that the worker already received
+      // without any corresponding clawback. Ops must handle this case manually.
+      // -----------------------------------------------------------------------
+      if (adminOverride && escrowStateBefore === 'RELEASED' && !stripeTransferId) {
+        return {
+          success: false,
+          error: {
+            code: 'MANUAL_PAYOUT_CANNOT_REFUND',
+            message: 'Cannot refund a manually-paid RELEASED escrow — worker clawback must be handled manually',
+          },
+        };
+      }
+
+      // -----------------------------------------------------------------------
       // F-05 FIX: Admin refund on RELEASED escrow with no stripe_payment_intent_id.
       // When adminOverride=true and the escrow is RELEASED but has no PI on record,
       // there is nothing to refund in Stripe. Silently marking as REFUNDED would

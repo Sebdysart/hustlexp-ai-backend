@@ -428,7 +428,16 @@ export const TrustTierService = {
 
     // Invalidate auth cache so the new tier is visible immediately
     // BUG GG3 FIX: await the call (was fire-and-forget) so Redis errors surface.
-    await invalidateAuthCacheForUser(userId);
+    // A59-2 FIX: Pre-fetch firebase_uid so the Redis revocation marker is written
+    // correctly even when the in-process cache is cold (user not yet cached on
+    // this replica). Without this, invalidateAuthCacheForUser(userId) falls back
+    // to a DB lookup internally which may fail silently.
+    const firebaseUidResult = await db.query<{ firebase_uid: string }>(
+      'SELECT firebase_uid FROM users WHERE id = $1',
+      [userId]
+    );
+    const firebaseUid = firebaseUidResult.rows[0]?.firebase_uid;
+    await invalidateAuthCacheForUser(userId, firebaseUid);
 
     // Log transition (if trust_ledger exists)
     try {

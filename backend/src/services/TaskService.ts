@@ -1736,12 +1736,11 @@ export const TaskService = {
   // --------------------------------------------------------------------------
 
   /**
-   * Worker abandons an ACCEPTED or IN_PROGRESS task.
+   * Worker abandons an ACCEPTED task.
    *
-   * Returns the task to OPEN state (worker_id cleared) and emits a full
-   * escrow.refund_requested outbox event so the payment worker returns funds
-   * to the poster. Worker abandonment = full refund; the poster bears no
-   * partial-refund liability for the worker walking away.
+   * Emits a full escrow.refund_requested outbox event so the payment worker
+   * returns funds to the poster. Worker abandonment = full refund; the poster
+   * bears no partial-refund liability for the worker walking away.
    *
    * RACE CONDITION SAFETY: Wrapped in a transaction with SELECT FOR UPDATE.
    * The worker_id and state checks are performed under the lock so a
@@ -1779,13 +1778,13 @@ export const TaskService = {
           };
         }
 
-        // Only ACCEPTED or IN_PROGRESS tasks can be abandoned
-        if (!['ACCEPTED', 'IN_PROGRESS'].includes(currentState)) {
+        // Only ACCEPTED tasks can be abandoned
+        if (!['ACCEPTED'].includes(currentState)) {
           return {
             success: false,
             error: {
               code: ErrorCodes.INVALID_STATE,
-              message: `Cannot abandon task: current state is ${currentState}. Only ACCEPTED or IN_PROGRESS tasks can be abandoned.`,
+              message: `Cannot abandon task: current state is ${currentState}. Only ACCEPTED tasks can be abandoned.`,
             },
           };
         }
@@ -1801,7 +1800,7 @@ export const TaskService = {
                accepted_at = NULL,
                updated_at = NOW()
            WHERE id = $1
-             AND state IN ('ACCEPTED', 'IN_PROGRESS')
+             AND state = 'ACCEPTED'
              AND worker_id = $2
            RETURNING *`,
           [taskId, workerId]

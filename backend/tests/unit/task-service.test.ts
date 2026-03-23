@@ -1353,6 +1353,47 @@ describe('TaskService.workerAbandon (T58-1)', () => {
     );
     expect(setsStateOpen).toBe(false);
   });
+
+  it('T59-2: workerAbandon returns INVALID_STATE when task is in non-existent IN_PROGRESS state', async () => {
+    // [1] FOR UPDATE lock — task reports IN_PROGRESS (invalid state)
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ state: 'IN_PROGRESS', worker_id: 'worker-1', poster_id: 'poster-1' }],
+      rowCount: 1,
+    } as never);
+
+    const result = await TaskService.workerAbandon('task-1', 'worker-1');
+
+    // Must fail with INVALID_STATE — IN_PROGRESS is not a valid state for abandonment
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.code).toBe('INVALID_STATE');
+    }
+  });
+
+  it('T59-2: workerAbandon UPDATE query does NOT reference IN_PROGRESS in WHERE clause', async () => {
+    // [1] FOR UPDATE lock — task is ACCEPTED
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ state: 'ACCEPTED', worker_id: 'worker-1', poster_id: 'poster-1' }],
+      rowCount: 1,
+    } as never);
+    // [2] UPDATE tasks SET state='CANCELLED'
+    mockQuery.mockResolvedValueOnce({
+      rows: [makeTask({ state: 'CANCELLED', worker_id: null })],
+      rowCount: 1,
+    } as never);
+    // [3] UPDATE escrows — no funded escrow
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+
+    await TaskService.workerAbandon('task-1', 'worker-1');
+
+    const allCalls = (mockQuery as ReturnType<typeof vi.fn>).mock.calls as unknown[][];
+    const referencesInProgress = allCalls.some(
+      (call) =>
+        typeof call[0] === 'string' &&
+        (call[0] as string).includes('IN_PROGRESS')
+    );
+    expect(referencesInProgress).toBe(false);
+  });
 });
 
 // ===========================================================================

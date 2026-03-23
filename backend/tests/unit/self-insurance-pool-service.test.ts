@@ -771,4 +771,81 @@ describe('SelfInsurancePoolService', () => {
       expect(result.success).toBe(false);
     });
   });
+
+  // --------------------------------------------------------------------------
+  // F59-1: reviewClaim deny must decrement total_claims_cents
+  // --------------------------------------------------------------------------
+  describe('reviewClaim — F59-1: denial must return covered amount to pool', () => {
+    it('decrements total_claims_cents when approved=false (denial releases reservation)', async () => {
+      // Denial path:
+      //   1st query: UPDATE insurance_claims ... WHERE id = $4 AND status = 'pending' RETURNING claim_amount_cents → rowCount=1
+      //   2nd query: SELECT * FROM self_insurance_pool (getPoolStatus inner call)
+      //   3rd query: UPDATE self_insurance_pool SET total_claims_cents = GREATEST(0, total_claims_cents - $1)
+      mockDb.query
+        .mockResolvedValueOnce({ rows: [{ claim_amount_cents: 25000 }], rowCount: 1 } as never) // UPDATE insurance_claims RETURNING
+        .mockResolvedValueOnce({ rows: [makePoolRow({ coverage_percentage: 80 })], rowCount: 1 } as never) // getPoolStatus SELECT
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // UPDATE self_insurance_pool decrement
+
+      const result = await SelfInsurancePoolService.reviewClaim('claim-1', 'admin-1', false, 'Insufficient evidence');
+
+      expect(result.success).toBe(true);
+
+      // The third query must be an UPDATE self_insurance_pool decrement
+      const allCalls = mockDb.query.mock.calls;
+      const decrementCall = allCalls.find(c => {
+        const sql = (c[0] as string).toLowerCase();
+        return sql.includes('update self_insurance_pool') && sql.includes('total_claims_cents') && sql.includes('greatest');
+      });
+      expect(decrementCall).toBeDefined();
+      // covered amount = round(25000 * 80/100) = 20000
+      const params = decrementCall![1] as unknown[];
+      expect(params[0]).toBe(20000);
+    });
+
+    it('does NOT decrement total_claims_cents when approved=true', async () => {
+      // Approval path: only one query — UPDATE insurance_claims (no pool adjustment)
+      mockDb.query
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // UPDATE insurance_claims
+
+      const result = await SelfInsurancePoolService.reviewClaim('claim-1', 'admin-1', true, 'Valid claim');
+
+      expect(result.success).toBe(true);
+
+      // No UPDATE self_insurance_pool call must have occurred
+      const allCalls = mockDb.query.mock.calls;
+      const poolUpdateCall = allCalls.find(c => {
+        const sql = (c[0] as string).toLowerCase();
+        return sql.includes('update self_insurance_pool');
+      });
+      expect(poolUpdateCall).toBeUndefined();
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // F59-2: payClaim must not call Stripe when transaction detects already-paid claim
+  // --------------------------------------------------------------------------
+  describe('payClaim — F59-2: concurrent already-paid path must not invoke Stripe', () => {
+    it('returns already_paid=true and does NOT call StripeService.createTransfer when inner transaction detects status=paid', async () => {
+      const { StripeService: MockStripe } = await import('../../src/services/StripeService.js');
+
+      // Outer SELECT returns approved (pre-transaction check passes)
+      // pre-check SELECT stripe_connect_id also passes
+      // Inside transaction: claim FOR UPDATE returns status='paid' → alreadyPaid=true, transaction returns early
+      // After transaction: guard detects alreadyPaid → returns { success: true, data: { already_paid: true } }
+      // Stripe must NOT be called
+      mockDb.query
+        .mockResolvedValueOnce({
+          rows: [makeClaimRow({ status: 'approved', claim_amount_cents: 10000 })],
+          rowCount: 1,
+        } as never) // outer SELECT claim
+        .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_test' }], rowCount: 1 } as never) // pre-check stripe_connect_id
+        .mockResolvedValueOnce({ rows: [{ status: 'paid', stripe_transfer_id: 'tr_existing', claim_amount_cents: 10000 }], rowCount: 1 } as never); // claim FOR UPDATE — already paid
+
+      const result = await SelfInsurancePoolService.payClaim('claim-1');
+
+      expect(result.success).toBe(true);
+      if (result.success) expect(result.data.already_paid).toBe(true);
+      expect(vi.mocked(MockStripe.createTransfer)).not.toHaveBeenCalled();
+    });
+  });
 });
