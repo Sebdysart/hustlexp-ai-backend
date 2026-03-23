@@ -847,6 +847,40 @@ describe('SelfInsurancePoolService', () => {
       if (result.success) expect(result.data.already_paid).toBe(true);
       expect(vi.mocked(MockStripe.createTransfer)).not.toHaveBeenCalled();
     });
+
+    it('F62-1: retries Stripe when status=paid but stripe_transfer_id is NULL (DB committed, Stripe failed)', async () => {
+      // Scenario: previous payClaim call committed the DB transaction (status='paid') but
+      // the Stripe transfer failed before stripe_transfer_id was written.
+      // On retry: inner transaction detects status='paid' AND stripe_transfer_id=NULL →
+      // should NOT set alreadyPaid=true; should set coveredAmountCents from stored value.
+      // Outer code proceeds to Stripe transfer (retry).
+      const { StripeService: MockStripe } = await import('../../src/services/StripeService.js');
+      mockStripe.createTransfer.mockResolvedValueOnce({ success: true, data: { transferId: 'tr_retry', amount: 20000 } } as any);
+
+      mockDb.query
+        .mockResolvedValueOnce({
+          rows: [makeClaimRow({ status: 'approved', claim_amount_cents: 25000, covered_amount_cents: 20000 })],
+          rowCount: 1,
+        } as never) // outer SELECT claim
+        .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_test' }], rowCount: 1 } as never) // pre-check stripe_connect_id
+        // claim FOR UPDATE: status='paid' but stripe_transfer_id=NULL (DB committed, Stripe never ran)
+        .mockResolvedValueOnce({
+          rows: [{ status: 'paid', stripe_transfer_id: null, claim_amount_cents: 25000, covered_amount_cents: 20000 }],
+          rowCount: 1,
+        } as never) // claim FOR UPDATE
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // UPDATE stripe_transfer_id after Stripe succeeds
+
+      const result = await SelfInsurancePoolService.payClaim('claim-1');
+
+      // Must succeed by retrying Stripe (not returning already_paid)
+      expect(result.success).toBe(true);
+      if (result.success) expect((result.data as any).already_paid).toBeUndefined();
+      // Stripe MUST be called with the stored covered_amount_cents
+      expect(vi.mocked(MockStripe.createTransfer)).toHaveBeenCalledOnce();
+      expect(vi.mocked(MockStripe.createTransfer)).toHaveBeenCalledWith(
+        expect.objectContaining({ amount: 20000 })
+      );
+    });
   });
 
   // --------------------------------------------------------------------------

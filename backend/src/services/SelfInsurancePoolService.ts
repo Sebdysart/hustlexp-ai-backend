@@ -440,10 +440,19 @@ export const SelfInsurancePoolService = {
           return; // Claim locked/deleted by concurrent call — safe to exit
         }
         if (claimCheck.rows[0].status === 'paid') {
-          // F59-2 FIX: Set flag instead of returning so coveredAmountCents stays 0
-          // and the caller can detect this path without attempting a Stripe transfer.
-          alreadyPaid = true;
-          return; // DB already committed (with or without Stripe) — skip debit, outer code retries Stripe if needed
+          if (claimCheck.rows[0].stripe_transfer_id) {
+            // F59-2 FIX: Set flag instead of returning so coveredAmountCents stays 0
+            // and the caller can detect this path without attempting a Stripe transfer.
+            // Truly idempotent: DB committed AND Stripe transfer succeeded.
+            alreadyPaid = true;
+          } else {
+            // F62-1 FIX: DB committed status='paid' but Stripe transfer never completed
+            // (Stripe failed after the transaction committed). Set coveredAmountCents from
+            // the stored value so the outer code falls through to retry the Stripe transfer.
+            // Do NOT set alreadyPaid — the outer code must proceed to Stripe.
+            coveredAmountCents = claimCheck.rows[0].covered_amount_cents ?? 0;
+          }
+          return; // Exit transaction — no DB mutations needed (pool already debited at filing)
         }
         if (claimCheck.rows[0].status !== 'approved') {
           throw new Error(`CLAIM_NOT_APPROVED:Claim status changed to ${claimCheck.rows[0].status}`);

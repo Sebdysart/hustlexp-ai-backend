@@ -656,6 +656,18 @@ describe('XPService.getDailyLeaderboard', () => {
       expect(result.error.code).toBe('DB_ERROR');
     }
   });
+
+  it('A62-3: leaderboard query filters out banned and deleted/suspended users', async () => {
+    // The SQL must include is_banned = false AND account_status NOT IN ('DELETED', 'SUSPENDED')
+    // so banned/GDPR-deleted users are excluded from the public leaderboard.
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+
+    await XPService.getDailyLeaderboard(25);
+
+    const sqlArg = mockQuery.mock.calls[0][0] as string;
+    expect(sqlArg).toMatch(/u\.is_banned\s*=\s*false/i);
+    expect(sqlArg).toMatch(/u\.account_status\s+NOT\s+IN\s*\(\s*'DELETED'\s*,\s*'SUSPENDED'\s*\)/i);
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════

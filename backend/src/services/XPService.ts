@@ -859,6 +859,8 @@ export const XPService = {
          JOIN users u ON u.id = xl.user_id
          WHERE xl.awarded_at AT TIME ZONE 'UTC' >= DATE_TRUNC('day', NOW() AT TIME ZONE 'UTC')
            AND xl.awarded_at AT TIME ZONE 'UTC' < DATE_TRUNC('day', NOW() AT TIME ZONE 'UTC') + INTERVAL '1 day'
+           AND u.is_banned = false
+           AND u.account_status NOT IN ('DELETED', 'SUSPENDED')
          GROUP BY xl.user_id, u.full_name
          ORDER BY xp_earned DESC
          LIMIT $1`,

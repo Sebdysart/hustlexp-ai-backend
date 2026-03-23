@@ -1391,8 +1391,18 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
       await query('DELETE FROM worker_skills WHERE user_id = $1', [userId]);
       await query('DELETE FROM xp_tax_ledger WHERE user_id = $1', [userId]);
       await query('DELETE FROM user_xp_tax_status WHERE user_id = $1', [userId]);
+
+      // D62-6: Delete legacy transactions table — user_id UUID NOT NULL REFERENCES users(id).
+      // Column is NOT NULL so rows cannot be updated; must DELETE for GDPR compliance.
+      await query('DELETE FROM transactions WHERE user_id = $1', [userId]);
+
+      // D62-7: Delete legacy task_assignments table — user_id UUID NOT NULL REFERENCES users(id).
+      // Column is NOT NULL so rows cannot be updated; must DELETE for GDPR compliance.
+      await query('DELETE FROM task_assignments WHERE user_id = $1', [userId]);
       await query('DELETE FROM insurance_contributions WHERE hustler_id = $1', [userId]);
-      await query('DELETE FROM insurance_claims WHERE user_id = $1', [userId]);
+      // D62-1: insurance_claims.hustler_id is the correct column (not user_id).
+      // Using user_id caused "column user_id does not exist" → transaction rollback.
+      await query('DELETE FROM insurance_claims WHERE hustler_id = $1', [userId]);
 
       // D58-1: Delete worker_tax_info — contains SSN/EIN (CRITICAL PII).
       // worker_tax_info.user_id FK references users(id); cascade never fires
@@ -1408,6 +1418,16 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
       await query('DELETE FROM worker_payout_settings WHERE worker_id = $1', [userId]);
       await query('DELETE FROM worker_earnings_1099 WHERE worker_id = $1', [userId]);
 
+      // D62-2: Delete capability_profiles — user_id UUID PRIMARY KEY REFERENCES users(id).
+      // ON DELETE CASCADE never fires because users is UPDATEd not DELETEd. Contains
+      // skills, licenses, background_check_status, insurance_status — all HIGH PII.
+      await query('DELETE FROM capability_profiles WHERE user_id = $1', [userId]);
+
+      // D62-3: Delete verified_trades — user_id UUID NOT NULL REFERENCES users(id).
+      // ON DELETE CASCADE never fires because users is UPDATEd not DELETEd.
+      // Trade verification records contain PII and must be erased.
+      await query('DELETE FROM verified_trades WHERE user_id = $1', [userId]);
+
       // D58-4: Delete expertise tables — user_expertise, expertise_waitlist, expertise_change_log.
       // All use user_id FK referencing users(id); cascade never fires because users is UPDATEd.
       await query('DELETE FROM expertise_change_log WHERE user_id = $1', [userId]);
@@ -1420,6 +1440,12 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
 
       // D58-6: Delete task_matching_scores — hustler_id FK referencing users(id).
       await query('DELETE FROM task_matching_scores WHERE hustler_id = $1', [userId]);
+
+      // D62-4: Null out ai_events UUID columns that reference the deleted user.
+      // actor_user_id and subject_user_id are both nullable UUIDs. The AI decision
+      // payload JSONB may contain PII. UUID references must be cleared for GDPR erasure.
+      await query('UPDATE ai_events SET actor_user_id = NULL WHERE actor_user_id = $1', [userId]);
+      await query('UPDATE ai_events SET subject_user_id = NULL WHERE subject_user_id = $1', [userId]);
 
       // D54-1: Delete tax_forms — contains PII (name_on_file, address_line1, city,
       // state, zip, tax_id_last4, stripe_connect_id, foreign_tax_id, signature_on_file).
@@ -1458,6 +1484,9 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
       // D55-3: Delete live_sessions for this user (user_id NOT NULL, contains
       // earnings_cents and behavioural session data).
       await query('DELETE FROM live_sessions WHERE user_id = $1', [userId]);
+      // D62-5: Null out live_broadcasts.accepted_by — nullable UUID FK referencing users(id).
+      // UUID reference to deleted user survives without this UPDATE.
+      await query('UPDATE live_broadcasts SET accepted_by = NULL WHERE accepted_by = $1', [userId]);
       // D50-4: Delete evidence uploaded by this user (uploader_user_id is NOT NULL
       // in the schema, so UPDATE NULL is not possible — DELETE is required).
       // Note: evidence rows for active/completed disputes are not retained here

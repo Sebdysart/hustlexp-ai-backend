@@ -722,9 +722,14 @@ export const DisputeService = {
         // CANCELLED is correct for both: REFUND means the poster won (work rejected),
         // and SPLIT means work was partially disputed (settlement, not completion).
         if (outcomeEscrowAction === 'RELEASE') {
-          // Accept any submitted proof so INV-3 (completed task requires accepted proof) is satisfied.
+          // Accept any submitted OR rejected proof so INV-3 (completed task requires accepted proof) is satisfied.
+          // T62-1 FIX: Also accept REJECTED proofs — a proof may have been prematurely rejected between
+          // the ProofService.review() and TaskService.rejectProof() calls in the task router before a
+          // concurrent dispute.create() locked the task. If we only accept SUBMITTED proofs, a prior
+          // rejection leaves the proof in REJECTED state and the task transition to COMPLETED fails
+          // (INV-3 fires), permanently blocking dispute resolution with a RELEASE outcome.
           await query(
-            `UPDATE proofs SET state = 'ACCEPTED', reviewed_at = NOW() WHERE task_id = $1 AND state = 'SUBMITTED'`,
+            `UPDATE proofs SET state = 'ACCEPTED', reviewed_at = NOW() WHERE task_id = $1 AND state IN ('SUBMITTED', 'REJECTED')`,
             [dispute.task_id]
           );
           // Transition task DISPUTED → COMPLETED.

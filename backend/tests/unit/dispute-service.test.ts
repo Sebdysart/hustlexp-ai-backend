@@ -429,3 +429,73 @@ describe('DisputeService', () => {
     });
   });
 });
+
+// =============================================================================
+// T62-1: DisputeService.resolve — RELEASE must accept REJECTED proofs
+// =============================================================================
+describe('T62-1: DisputeService.resolve RELEASE accepts REJECTED proof (concurrent deadlock fix)', () => {
+  it('T62-1: resolve with RELEASE outcome updates proofs with state IN (SUBMITTED, REJECTED)', async () => {
+    // Scenario: proof was REJECTED by ProofService.review() before a concurrent dispute.create()
+    // locked the task into DISPUTED. Now admin resolves the dispute with RELEASE outcome.
+    // The proof UPDATE must use state IN ('SUBMITTED', 'REJECTED') to succeed — otherwise
+    // the proof stays REJECTED, the task cannot transition to COMPLETED (INV-3), and
+    // the dispute is permanently unresolvable (deadlock).
+    const { DisputeService } = await import('../../src/services/DisputeService');
+
+    // canResolveDisputes check
+    mockDb.query.mockResolvedValueOnce({ rows: [{ can_resolve_disputes: true }], rowCount: 1 } as any);
+
+    const disputeRow = {
+      id: 'd-t62',
+      task_id: 'task-t62',
+      escrow_id: 'escrow-t62',
+      worker_id: 'worker-1',
+      poster_id: 'poster-1',
+      state: 'OPEN',
+      version: 1,
+    };
+    const escrowRow = { id: 'escrow-t62', state: 'LOCKED_DISPUTE', amount: 10000, version: 1 };
+
+    // Capture the SQL used to update proofs
+    let proofUpdateSql = '';
+    mockDb.transaction.mockImplementationOnce(async (fn: (q: typeof mockDb.query) => Promise<unknown>) => {
+      const captureQuery = vi.fn(async (sql: string, _params?: unknown[]) => {
+        if (sql.includes('FROM disputes') && sql.includes('FOR UPDATE')) {
+          return { rows: [disputeRow], rowCount: 1 };
+        }
+        if (sql.includes('FROM escrows') && sql.includes('FOR UPDATE')) {
+          return { rows: [escrowRow], rowCount: 1 };
+        }
+        if (sql.includes('UPDATE disputes')) {
+          return { rows: [{ ...disputeRow, state: 'RESOLVED', version: 2 }], rowCount: 1 };
+        }
+        if (sql.includes('UPDATE proofs') && sql.includes("'ACCEPTED'")) {
+          proofUpdateSql = sql;
+          return { rows: [], rowCount: 1 };
+        }
+        if (sql.includes('UPDATE tasks') && sql.includes("'COMPLETED'")) {
+          return { rows: [{ id: 'task-t62', state: 'COMPLETED' }], rowCount: 1 };
+        }
+        if (sql.includes('INSERT INTO outbox') || sql.includes('outbox')) {
+          return { rows: [{ id: 'outbox-1' }], rowCount: 1 };
+        }
+        return { rows: [], rowCount: 0 };
+      });
+      return fn(captureQuery);
+    });
+
+    const result = await DisputeService.resolve({
+      disputeId: 'd-t62',
+      resolvedBy: 'admin-1',
+      resolution: 'Worker wins — proof was valid despite prior rejection',
+      outcomeEscrowAction: 'RELEASE',
+    });
+
+    expect(result.success).toBe(true);
+
+    // T62-1 CRITICAL: the proof UPDATE must include REJECTED in the state filter
+    expect(proofUpdateSql).toMatch(/state\s+IN\s*\(\s*'SUBMITTED'\s*,\s*'REJECTED'\s*\)/i);
+    // Must NOT be restricted to only SUBMITTED
+    expect(proofUpdateSql).not.toMatch(/state\s*=\s*'SUBMITTED'/);
+  });
+});
