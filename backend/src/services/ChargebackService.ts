@@ -20,6 +20,7 @@ import { db } from '../db.js';
 import { RevenueService } from './RevenueService.js';
 import type { ServiceResult } from '../types.js';
 import { stripeLogger } from '../logger.js';
+import { invalidateAuthCacheForUser } from '../auth-cache.js';
 
 const log = stripeLogger.child({ service: 'ChargebackService' });
 
@@ -273,6 +274,16 @@ export const ChargebackService = {
               `UPDATE users SET trust_tier = $2 WHERE id = $1`,
               [userId, newTier]
             );
+
+            // Invalidate auth cache so the downgraded tier is visible immediately
+            // A60-4 FIX: trust_tier change without cache invalidation leaves cached
+            // sessions with stale tier for up to 5 minutes.
+            const fbUidResult = await db.query<{ firebase_uid: string }>(
+              'SELECT firebase_uid FROM users WHERE id = $1',
+              [userId]
+            );
+            const fbUid = fbUidResult.rows[0]?.firebase_uid;
+            await invalidateAuthCacheForUser(userId, fbUid, false); // writeRevocationMarker=false — tier change is not a security event
 
             // Record in trust_ledger for audit
             await db.query(

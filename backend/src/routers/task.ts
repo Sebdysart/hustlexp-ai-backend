@@ -1043,47 +1043,56 @@ export const taskRouter = router({
       message: z.string().trim().max(500).optional(),
     }))
     .mutation(async ({ ctx, input }) => {
-      const taskResult = await db.query(
-        `SELECT id, state, poster_id, trust_tier_required FROM tasks WHERE id = $1`,
-        [input.taskId]
-      );
-      if (taskResult.rows.length === 0) {
-        throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
-      }
-      const task = taskResult.rows[0];
-      if (task.state !== 'OPEN') {
-        throw new TRPCError({
-          code: 'PRECONDITION_FAILED',
-          message: `Task must be in OPEN state to apply, current: ${task.state}`,
-        });
-      }
-      if (task.poster_id === ctx.user.id) {
-        throw new TRPCError({ code: 'BAD_REQUEST', message: 'Cannot apply for your own task' });
-      }
-      if (task.trust_tier_required !== null && ctx.user.trust_tier < task.trust_tier_required) {
-        throw new TRPCError({ code: 'FORBIDDEN', message: 'Your trust tier is insufficient for this task' });
-      }
+      // T60-2 FIX: Wrap the state check and INSERT in a single transaction with a
+      // SELECT FOR UPDATE on the task row. Without this, a concurrent assignWorker
+      // can transition the task from OPEN to ACCEPTED between the plain SELECT and
+      // the INSERT, producing orphaned application rows for a no-longer-open task.
+      // The FOR UPDATE lock serializes concurrent callers: the second caller blocks
+      // until the first transaction commits, then sees the updated task state.
+      const appRow = await db.transaction(async (query) => {
+        const taskResult = await query<{ state: string; poster_id: string; trust_tier_required: number | null }>(
+          `SELECT state, poster_id, trust_tier_required FROM tasks WHERE id = $1 FOR UPDATE`,
+          [input.taskId]
+        );
+        if (taskResult.rows.length === 0) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
+        }
+        const task = taskResult.rows[0];
+        if (task.state !== 'OPEN') {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message: `Task must be in OPEN state to apply, current: ${task.state}`,
+          });
+        }
+        if (task.poster_id === ctx.user.id) {
+          throw new TRPCError({ code: 'BAD_REQUEST', message: 'Cannot apply for your own task' });
+        }
+        if (task.trust_tier_required !== null && ctx.user.trust_tier < task.trust_tier_required) {
+          throw new TRPCError({ code: 'FORBIDDEN', message: 'Your trust tier is insufficient for this task' });
+        }
 
-      // Use ON CONFLICT DO NOTHING against the partial unique index
-      // (idx_task_app_active_per_hustler covers status NOT IN rejected/counter_rejected/withdrawn/expired)
-      // to make the duplicate check and insert atomic, eliminating the TOCTOU race.
-      const result = await db.query(
-        `INSERT INTO task_applications (id, task_id, hustler_id, message, status, counter_offer_round, created_at, updated_at)
-         VALUES (gen_random_uuid(), $1, $2, $3, 'pending', 0, NOW(), NOW())
-         ON CONFLICT (task_id, hustler_id) WHERE status NOT IN ('rejected', 'counter_rejected', 'withdrawn', 'expired') DO NOTHING
-         RETURNING *`,
-        [input.taskId, ctx.user.id, input.message || null]
-      );
-      if (result.rowCount === 0) {
-        throw new TRPCError({ code: 'CONFLICT', message: 'You already have an active application for this task' });
-      }
+        // Use ON CONFLICT DO NOTHING against the partial unique index
+        // (idx_task_app_active_per_hustler covers status NOT IN rejected/counter_rejected/withdrawn/expired)
+        // to make the duplicate check and insert atomic, eliminating the TOCTOU race.
+        const result = await query(
+          `INSERT INTO task_applications (id, task_id, hustler_id, message, status, counter_offer_round, created_at, updated_at)
+           VALUES (gen_random_uuid(), $1, $2, $3, 'pending', 0, NOW(), NOW())
+           ON CONFLICT (task_id, hustler_id) WHERE status NOT IN ('rejected', 'counter_rejected', 'withdrawn', 'expired') DO NOTHING
+           RETURNING *`,
+          [input.taskId, ctx.user.id, input.message || null]
+        );
+        if ((result.rowCount ?? 0) === 0) {
+          throw new TRPCError({ code: 'CONFLICT', message: 'You already have an active application for this task' });
+        }
+        return result.rows[0];
+      });
 
       return {
-        id: result.rows[0].id,
-        taskId: result.rows[0].task_id,
-        status: result.rows[0].status,
-        message: result.rows[0].message,
-        appliedAt: result.rows[0].created_at,
+        id: appRow.id,
+        taskId: appRow.task_id,
+        status: appRow.status,
+        message: appRow.message,
+        appliedAt: appRow.created_at,
       };
     }),
 

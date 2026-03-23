@@ -721,8 +721,9 @@ describe('Attack #15 — Reviewer approves proof with wrong taskId', () => {
       .mockResolvedValueOnce({ rows: [proof], rowCount: 1 } as never)                                              // 1. SELECT proof (outside tx)
       .mockResolvedValueOnce({ rows: [{ poster_id: 'reviewer-1' }], rowCount: 1 } as never)                       // 2. T53-8 ownership check (reviewer is poster)
       .mockResolvedValueOnce({ rows: [{ description: 'task', before_photo_url: null }], rowCount: 1 } as never)   // 3. task description (AI pipeline)
-      .mockResolvedValueOnce({ rows: [{ state: 'SUBMITTED' }], rowCount: 1 } as never)                            // 4. SELECT state FOR UPDATE (inside tx)
-      .mockResolvedValueOnce({ rows: [accepted], rowCount: 1 } as never);                                         // 5. UPDATE (inside tx)
+      .mockResolvedValueOnce({ rows: [{ state: 'SUBMITTED', task_id: 'task-B' }], rowCount: 1 } as never)         // 4. SELECT state, task_id FOR UPDATE (inside tx)
+      .mockResolvedValueOnce({ rows: [{ state: 'PROOF_SUBMITTED' }], rowCount: 1 } as never)                      // 5. T60-1: SELECT task state (inside tx)
+      .mockResolvedValueOnce({ rows: [accepted], rowCount: 1 } as never);                                         // 6. UPDATE (inside tx)
 
     const result = await ProofService.review({
       proofId: 'proof-A',

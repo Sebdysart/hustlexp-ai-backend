@@ -174,7 +174,7 @@ export const userRouter = router({
             created_at: Date;
           }>(
             `SELECT id, full_name, avatar_url, bio, trust_tier, xp_total, is_verified, default_mode, created_at
-             FROM users WHERE id = $1`,
+             FROM users WHERE id = $1 AND is_banned = false AND account_status NOT IN ('DELETED', 'SUSPENDED')`,
             [input.userId]
           );
           if (result.rows.length === 0) {

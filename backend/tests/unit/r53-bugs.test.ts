@@ -274,8 +274,10 @@ describe('T53-8: Proof review role check — only poster can review', () => {
       rowCount: 1,
     } as any);
 
-    // Phase 3 transaction — FOR UPDATE SELECT (state = SUBMITTED)
-    mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'SUBMITTED' }], rowCount: 1 } as any);
+    // Phase 3 transaction — FOR UPDATE SELECT (state = SUBMITTED, task_id)
+    mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'SUBMITTED', task_id: 'task-1' }], rowCount: 1 } as any);
+    // Phase 3 transaction — T60-1: SELECT task state (still PROOF_SUBMITTED)
+    mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'PROOF_SUBMITTED' }], rowCount: 1 } as any);
     // Phase 3 transaction — UPDATE proof
     mockDb.query.mockResolvedValueOnce({
       rows: [{ ...makeProof(), state: 'REJECTED', reviewed_by: POSTER_UUID }],

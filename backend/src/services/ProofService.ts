@@ -697,8 +697,8 @@ export const ProofService = {
       // reviewer committed first the UPDATE matches 0 rows and we throw CONFLICT.
       const updatedProof = await db.transaction(async (query) => {
         // Acquire exclusive row lock — blocks any concurrent reviewer at this point
-        const lockResult = await query<{ state: string }>(
-          `SELECT state FROM proofs WHERE id = $1 FOR UPDATE`,
+        const lockResult = await query<{ state: string; task_id: string }>(
+          `SELECT state, task_id FROM proofs WHERE id = $1 FOR UPDATE`,
           [proofId]
         );
 
@@ -708,6 +708,24 @@ export const ProofService = {
 
         if (lockResult.rows[0].state !== 'SUBMITTED') {
           throw new TRPCError({ code: 'CONFLICT', message: 'Proof already reviewed' });
+        }
+
+        // T60-1 FIX: After acquiring the proof lock, verify the task is still in
+        // PROOF_SUBMITTED state. A concurrent dispute creation (T59-3) can have
+        // transitioned the task to DISPUTED between Phase 1 and Phase 3. If the
+        // proof is reviewed (REJECTED) while the task is DISPUTED, a subsequent
+        // dispute resolution with RELEASE would try to accept a REJECTED proof —
+        // violating INV-3 (completed task requires accepted proof).
+        const proofTaskId = lockResult.rows[0].task_id;
+        const taskStateCheck = await query<{ state: string }>(
+          'SELECT state FROM tasks WHERE id = $1',
+          [proofTaskId]
+        );
+        if (taskStateCheck.rows[0]?.state !== 'PROOF_SUBMITTED') {
+          throw new TRPCError({
+            code: 'CONFLICT',
+            message: `TASK_STATE_CHANGED:Task is no longer in PROOF_SUBMITTED state (current: ${taskStateCheck.rows[0]?.state ?? 'unknown'})`,
+          });
         }
 
         // Update proof — AND state = 'SUBMITTED' is an extra guard against races

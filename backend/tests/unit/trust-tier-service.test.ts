@@ -481,4 +481,37 @@ describe('TrustTierService.banUser', () => {
     );
     expect(cancelCall).toBeDefined();
   });
+
+  // A60-1: banUser must set is_banned = TRUE in addition to trust_tier = 9
+  it('A60-1: banUser UPDATE includes is_banned = TRUE', async () => {
+    // transaction -> SELECT trust_tier FOR UPDATE
+    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 2 }], rowCount: 1 });
+    // transaction -> UPDATE users SET trust_tier = BANNED (the call under test)
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+    // SELECT firebase_uid FROM users
+    mockQuery.mockResolvedValueOnce({ rows: [{ firebase_uid: 'firebase-u1' }], rowCount: 1 });
+    // SELECT active tasks — none
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+    // UPDATE tasks (cancel worker-side active)
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    // SELECT poster funded escrows — none
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+    // UPDATE tasks cancel poster active tasks
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    // SELECT default_mode for instrumentation
+    mockQuery.mockResolvedValueOnce({ rows: [{ default_mode: 'worker' }] });
+
+    await TrustTierService.banUser('u1', 'fraud');
+
+    // The UPDATE query that sets trust_tier = BANNED must also set is_banned = TRUE
+    const banUpdateCall = mockQuery.mock.calls.find(
+      (call) =>
+        typeof call[0] === 'string' &&
+        call[0].includes('UPDATE users') &&
+        call[0].includes('trust_tier') &&
+        (call[1] as unknown[])?.includes(9)
+    );
+    expect(banUpdateCall).toBeDefined();
+    expect(banUpdateCall![0]).toMatch(/is_banned\s*=\s*TRUE/i);
+  });
 });

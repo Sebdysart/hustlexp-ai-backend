@@ -23,8 +23,13 @@ vi.mock('../../src/logger', () => ({
   escrowLogger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
 }));
 
+vi.mock('../../src/auth-cache', () => ({
+  invalidateAuthCacheForUser: vi.fn().mockResolvedValue(undefined),
+}));
+
 import { TrustService } from '../../src/services/TrustService';
 import { db, isInvariantViolation } from '../../src/db';
+import { invalidateAuthCacheForUser } from '../../src/auth-cache';
 
 const mockQuery = db.query as ReturnType<typeof vi.fn>;
 
@@ -115,6 +120,8 @@ describe('TrustService.promote', () => {
     mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }] });
     // Update query
     mockQuery.mockResolvedValueOnce({ rows: [{ id: 'u1', trust_tier: 2 }] });
+    // A60-4: SELECT firebase_uid for cache invalidation
+    mockQuery.mockResolvedValueOnce({ rows: [{ firebase_uid: 'fb-u1' }] });
     // Ledger insert
     mockQuery.mockResolvedValueOnce({ rows: [] });
 
@@ -188,10 +195,13 @@ describe('TrustService.promote', () => {
     };
     mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }] });
     mockQuery.mockResolvedValueOnce({ rows: [{ id: 'u1', trust_tier: 2 }] });
+    // A60-4: SELECT firebase_uid for cache invalidation
+    mockQuery.mockResolvedValueOnce({ rows: [{ firebase_uid: 'fb-u1' }] });
     mockQuery.mockResolvedValueOnce({ rows: [] });
 
     await TrustService.promote(params);
-    const ledgerCall = mockQuery.mock.calls[2];
+    // index 0: getCurrentTier, 1: UPDATE, 2: SELECT firebase_uid, 3: ledger insert
+    const ledgerCall = mockQuery.mock.calls[3];
     expect(ledgerCall[1]).toContain('task1');
     expect(ledgerCall[1]).toContain('disp1');
   });
@@ -268,5 +278,35 @@ describe('TrustService.checkPromotionEligibility', () => {
     expect(result.success).toBe(true);
     expect(result.data?.eligible).toBe(true);
     expect(result.data?.nextTier).toBe(4);
+  });
+});
+
+// ============================================================================
+// A60-4: invalidateAuthCacheForUser after trust_tier update in TrustService.promote
+// ============================================================================
+describe('TrustService.promote A60-4: auth cache invalidation', () => {
+  const baseParams = {
+    userId: 'u1',
+    newTier: 2,
+    reason: 'Completed 5 tasks',
+    changedBy: 'system',
+  };
+
+  it('calls invalidateAuthCacheForUser with userId after trust_tier update', async () => {
+    const mockInvalidate = vi.mocked(invalidateAuthCacheForUser);
+    mockInvalidate.mockClear();
+
+    // Current tier query
+    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }] });
+    // Update query
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'u1', trust_tier: 2 }] });
+    // SELECT firebase_uid (for cache invalidation)
+    mockQuery.mockResolvedValueOnce({ rows: [{ firebase_uid: 'fb-u1' }] });
+    // Ledger insert
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+
+    await TrustService.promote(baseParams);
+
+    expect(mockInvalidate).toHaveBeenCalledWith('u1', 'fb-u1', false);
   });
 });

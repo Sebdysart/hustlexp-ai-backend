@@ -188,6 +188,19 @@ export const DisputeService = {
     const { taskId, escrowId, initiatedBy, posterId, workerId, reason, description } = params;
     
     try {
+      // T60-4 FIX: Guard against tasks with no assigned worker.
+      // A dispute without a payout target (workerId=null) is meaningless and would
+      // produce escrow actions with no recipient — reject early before any DB writes.
+      if (!workerId) {
+        return {
+          success: false,
+          error: {
+            code: 'INVALID_TASK',
+            message: 'Task has no assigned worker — cannot open a dispute',
+          },
+        };
+      }
+
       // Precondition: Check authorization
       if (initiatedBy !== posterId && initiatedBy !== workerId) {
         return {

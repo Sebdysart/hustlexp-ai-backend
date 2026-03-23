@@ -461,6 +461,53 @@ describe('user.getById', () => {
       ).rejects.toThrow();
     });
   });
+
+  describe('A60-2: banned/deleted user filtering', () => {
+    it('returns NOT_FOUND when the target user is banned', async () => {
+      // getById returns 0 rows because query includes is_banned = false filter
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+
+      await expect(
+        makeUserCaller().getById({ userId: OTHER_USER_ID })
+      ).rejects.toThrow('User not found');
+    });
+
+    it('returns NOT_FOUND when the target user account_status is DELETED', async () => {
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+
+      await expect(
+        makeUserCaller().getById({ userId: OTHER_USER_ID })
+      ).rejects.toThrow('User not found');
+    });
+
+    it('getById SQL query includes is_banned = false filter', async () => {
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+
+      try {
+        await makeUserCaller().getById({ userId: OTHER_USER_ID });
+      } catch {
+        // expected NOT_FOUND
+      }
+
+      const queryCall = mockDb.query.mock.calls[0];
+      expect(queryCall[0]).toMatch(/is_banned\s*=\s*false/i);
+    });
+
+    it('getById SQL query filters out DELETED and SUSPENDED account_status', async () => {
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+
+      try {
+        await makeUserCaller().getById({ userId: OTHER_USER_ID });
+      } catch {
+        // expected NOT_FOUND
+      }
+
+      const queryCall = mockDb.query.mock.calls[0];
+      expect(queryCall[0]).toMatch(/account_status/i);
+      expect(queryCall[0]).toMatch(/DELETED/);
+      expect(queryCall[0]).toMatch(/SUSPENDED/);
+    });
+  });
 });
 
 // ===========================================================================

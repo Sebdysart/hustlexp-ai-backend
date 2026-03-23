@@ -202,13 +202,15 @@ export const SelfInsurancePoolService = {
           [coveredAmount]
         );
 
-        // Insert claim (holds the lock through commit, preventing double-filing past the balance)
-        const result = await query<{ id: string }>(
+        // F60: Insert claim with covered_amount_cents stored at filing time.
+        // Storing it now means reviewClaim denial and payClaim both use the same
+        // value rather than recomputing from a potentially changed coverage_percentage.
+        const result = await query<{ id: string; covered_amount_cents: number }>(
           `INSERT INTO insurance_claims (
-            task_id, hustler_id, claim_amount_cents, claim_reason, evidence_urls
-          ) VALUES ($1, $2, $3, $4, $5)
-          RETURNING id`,
-          [taskId, hustlerId, claimAmountCents, reason, evidenceUrls]
+            task_id, hustler_id, claim_amount_cents, covered_amount_cents, claim_reason, evidence_urls
+          ) VALUES ($1, $2, $3, $4, $5, $6)
+          RETURNING id, covered_amount_cents`,
+          [taskId, hustlerId, claimAmountCents, coveredAmount, reason, evidenceUrls]
         );
 
         return result.rows[0].id;
@@ -261,59 +263,66 @@ export const SelfInsurancePoolService = {
     try {
       const newStatus: ClaimStatus = approved ? 'approved' : 'denied';
 
-      // F-04 FIX: Add AND status = 'pending' guard so already-paid or denied claims
-      // cannot be re-reviewed. Without this guard, any claim can be flipped back to
-      // 'approved' or 'denied' regardless of its current state.
-      // F59-1 FIX: RETURNING claim_amount_cents so denial can decrement total_claims_cents.
-      const result = await db.query<{ claim_amount_cents: number }>(
-        `UPDATE insurance_claims
-         SET status = $1,
-             reviewed_by = $2,
-             reviewed_at = NOW(),
-             review_notes = $3
-         WHERE id = $4
-           AND status = 'pending'
-         RETURNING claim_amount_cents`,
-        [newStatus, reviewerId, reviewNotes, claimId]
-      );
-
-      if (result.rowCount === 0) {
-        return {
-          success: false,
-          error: {
-            code: 'CLAIM_NOT_REVIEWABLE',
-            message: 'Claim is not in pending status and cannot be reviewed'
-          }
-        };
-      }
-
-      // F59-1 FIX: When denying a claim, return the coverage reservation back to the pool.
-      // fileClaim reserved coveredAmountCents in total_claims_cents at filing time.
-      // A denied claim will never be paid — the reservation must be released so future
-      // claimants are not incorrectly blocked by INSUFFICIENT_POOL_BALANCE.
-      if (!approved && result.rows[0]) {
-        const claimAmountCents = result.rows[0].claim_amount_cents;
-        const poolStatus = await SelfInsurancePoolService.getPoolStatus();
-        const coveragePct = poolStatus.success && poolStatus.data ? poolStatus.data.coverage_percentage : 80;
-        const coveredAmount = Math.round(claimAmountCents * (coveragePct / 100));
-        await db.query(
-          `UPDATE self_insurance_pool
-           SET total_claims_cents = GREATEST(0, total_claims_cents - $1),
-               updated_at = NOW()`,
-          [coveredAmount]
+      // F60-1 FIX: Wrap the claim UPDATE and pool decrement in a single transaction
+      // so they are atomic. Previously, a crash between the two statements could leave
+      // the pool over-reported (claim denied but reservation not returned).
+      //
+      // F60-2 FIX: Use RETURNING covered_amount_cents (stored at filing time) so the
+      // denial decrement uses the original filed value rather than recomputing from
+      // a potentially different current coverage_percentage.
+      await db.transaction(async (query: QueryFn) => {
+        // Atomic: update claim status and get covered_amount_cents in one statement.
+        // AND status = 'pending' prevents re-reviewing already-reviewed claims.
+        const updateResult = await query<{ covered_amount_cents: number | null }>(
+          `UPDATE insurance_claims
+           SET status = $1,
+               reviewed_by = $2,
+               reviewed_at = NOW(),
+               review_notes = $3
+           WHERE id = $4 AND status = 'pending'
+           RETURNING covered_amount_cents`,
+          [newStatus, reviewerId, reviewNotes, claimId]
         );
-      }
+
+        if ((updateResult.rowCount ?? 0) === 0) {
+          throw new Error('CLAIM_NOT_REVIEWABLE:Claim is not in pending status and cannot be reviewed');
+        }
+
+        // F60-1/F60-2 FIX: When denying a claim, return the coverage reservation back
+        // to the pool using the stored covered_amount_cents (filed at claim time).
+        // fileClaim reserved this amount in total_claims_cents at filing time.
+        // A denied claim will never be paid — the reservation must be released so future
+        // claimants are not incorrectly blocked by INSUFFICIENT_POOL_BALANCE.
+        if (!approved && updateResult.rows[0]?.covered_amount_cents != null) {
+          await query(
+            `UPDATE self_insurance_pool
+             SET total_claims_cents = GREATEST(0, total_claims_cents - $1),
+                 updated_at = NOW()`,
+            [updateResult.rows[0].covered_amount_cents]
+          );
+        }
+      });
 
       log.info({ claimId, approved }, 'Reviewed claim');
 
       return { success: true, data: undefined };
     } catch (error) {
-      log.error({ err: error instanceof Error ? error.message : String(error), claimId }, 'Failed to review claim');
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.startsWith('CLAIM_NOT_REVIEWABLE:')) {
+        return {
+          success: false,
+          error: {
+            code: 'CLAIM_NOT_REVIEWABLE',
+            message: message.slice('CLAIM_NOT_REVIEWABLE:'.length)
+          }
+        };
+      }
+      log.error({ err: message, claimId }, 'Failed to review claim');
       return {
         success: false,
         error: {
           code: 'REVIEW_CLAIM_FAILED',
-          message: error instanceof Error ? error.message : 'Failed to review claim'
+          message
         }
       };
     }
@@ -413,8 +422,10 @@ export const SelfInsurancePoolService = {
         // previous call fully completed. If stripe_transfer_id is NULL, DB committed but Stripe
         // failed; the outer idempotency check allows fall-through for Stripe retry, so here
         // we just skip the DB portion (pool already debited) by returning early.
-        const claimCheck = await query<{ status: string; stripe_transfer_id: string | null; claim_amount_cents: number }>(
-          'SELECT status, stripe_transfer_id, claim_amount_cents FROM insurance_claims WHERE id = $1 FOR UPDATE',
+        // F60-3 FIX: Also SELECT covered_amount_cents so we use the stored value rather than
+        // recomputing from a potentially different current coverage_percentage.
+        const claimCheck = await query<{ status: string; stripe_transfer_id: string | null; claim_amount_cents: number; covered_amount_cents: number | null }>(
+          'SELECT status, stripe_transfer_id, claim_amount_cents, covered_amount_cents FROM insurance_claims WHERE id = $1 FOR UPDATE',
           [claimId]
         );
         if (!claimCheck.rows[0]) {
@@ -442,9 +453,14 @@ export const SelfInsurancePoolService = {
         );
 
         const availableBalanceCents = poolResult.rows[0]?.available_balance_cents ?? 0;
-        // Recompute from freshly-locked coverage_percentage (F-04 fix)
-        const freshCoveragePercentage = poolResult.rows[0]?.coverage_percentage ?? 80.0;
-        coveredAmountCents = Math.round(claimCheck.rows[0].claim_amount_cents * (freshCoveragePercentage / 100));
+        // F60-3 FIX: Use stored covered_amount_cents if available (filed at claim time);
+        // fall back to recomputing for legacy rows where the column is NULL.
+        if (claimCheck.rows[0].covered_amount_cents != null) {
+          coveredAmountCents = claimCheck.rows[0].covered_amount_cents;
+        } else {
+          const freshCoveragePercentage = poolResult.rows[0]?.coverage_percentage ?? 80.0;
+          coveredAmountCents = Math.round(claimCheck.rows[0].claim_amount_cents * (freshCoveragePercentage / 100));
+        }
 
         // F48-2: Guard against coverage_percentage having been raised since claim filing —
         // throw before the balance check so the pool is never debited beyond the cap.

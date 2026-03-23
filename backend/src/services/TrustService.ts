@@ -14,6 +14,7 @@
 import { db, isInvariantViolation, getErrorMessage } from '../db.js';
 import type { ServiceResult, TrustLedgerEntry, User } from '../types.js';
 import { ErrorCodes } from '../types.js';
+import { invalidateAuthCacheForUser } from '../auth-cache.js';
 
 // ============================================================================
 // TYPES
@@ -166,7 +167,17 @@ export const TrustService = {
         'UPDATE users SET trust_tier = $1 WHERE id = $2 RETURNING *',
         [newTier, userId]
       );
-      
+
+      // Invalidate auth cache so the updated tier is visible immediately
+      // A60-4 FIX: trust_tier change without cache invalidation leaves cached
+      // sessions with stale tier for up to 5 minutes.
+      const fbUidResult = await db.query<{ firebase_uid: string }>(
+        'SELECT firebase_uid FROM users WHERE id = $1',
+        [userId]
+      );
+      const fbUid = fbUidResult.rows[0]?.firebase_uid;
+      await invalidateAuthCacheForUser(userId, fbUid, false); // writeRevocationMarker=false — tier change is not a security event
+
       // Manually insert ledger entry with full context (trigger only logs basic info)
       await db.query(
         `INSERT INTO trust_ledger (

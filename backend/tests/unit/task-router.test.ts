@@ -1519,6 +1519,56 @@ describe('task.applyForTask', () => {
       makeCaller().applyForTask({ taskId: TASK_ID })
     ).rejects.toThrow(/PRECONDITION_FAILED|must be in OPEN state/i);
   });
+
+  // T60-2: applyForTask state check must be inside a transaction with FOR UPDATE
+  // so concurrent assignWorker cannot transition the task between the state read and INSERT.
+  it('T60-2: INSERT happens via the transactional query function, not db.query directly', async () => {
+    // Track which calls go through the transaction callback vs module-level db.query.
+    const txQueryCalls: string[] = [];
+
+    // Override the transaction mock to capture in-tx calls
+    (mockDb.transaction as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      async (fn: (q: typeof mockDb.query) => Promise<unknown>) => {
+        const txQuery = vi.fn((...args: unknown[]) => {
+          if (typeof args[0] === 'string') txQueryCalls.push(args[0]);
+          return (mockDb.query as ReturnType<typeof vi.fn>)(...args);
+        });
+        return fn(txQuery as typeof mockDb.query);
+      }
+    );
+
+    const now = new Date();
+    // Inside transaction: SELECT FOR UPDATE → OPEN task, then INSERT
+    mockDb.query
+      .mockResolvedValueOnce({
+        rows: [{ id: TASK_ID, state: 'OPEN', poster_id: OTHER_USER_ID, trust_tier_required: null }],
+        rowCount: 1,
+      } as any) // SELECT FOR UPDATE
+      .mockResolvedValueOnce({
+        rows: [{
+          id: 'app-new',
+          task_id: TASK_ID,
+          hustler_id: USER_ID,
+          message: null,
+          status: 'pending',
+          created_at: now,
+        }],
+        rowCount: 1,
+      } as any); // INSERT
+
+    await makeCaller().applyForTask({ taskId: TASK_ID });
+
+    // Both the SELECT and the INSERT should be inside the transaction query function
+    expect(txQueryCalls.length).toBeGreaterThanOrEqual(2);
+    const hasSelectForUpdate = txQueryCalls.some(
+      sql => sql.toLowerCase().includes('for update') && sql.toLowerCase().includes('select')
+    );
+    const hasInsert = txQueryCalls.some(
+      sql => sql.toLowerCase().includes('insert into task_applications')
+    );
+    expect(hasSelectForUpdate).toBe(true);
+    expect(hasInsert).toBe(true);
+  });
 });
 
 // ===========================================================================

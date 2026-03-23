@@ -198,6 +198,56 @@ describe('DisputeService', () => {
     });
   });
 
+  // T60-4: DisputeService.create must guard against workerId=null.
+  // If a task has no assigned worker, a dispute cannot have a payout target.
+  describe('T60-4: create returns INVALID_TASK when workerId is null', () => {
+    it('T60-4: returns INVALID_TASK error when workerId is null (no assigned worker)', async () => {
+      const { DisputeService } = await import('../../src/services/DisputeService');
+
+      const result = await DisputeService.create({
+        taskId: 'task-1',
+        escrowId: 'escrow-1',
+        initiatedBy: 'poster-1',
+        posterId: 'poster-1',
+        workerId: null as unknown as string, // simulate null worker
+        reason: 'No worker assigned',
+        description: 'Cannot dispute with no worker',
+      });
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.code).toBe('INVALID_TASK');
+        expect(result.error.message).toMatch(/no assigned worker/i);
+      }
+      // Must not touch the database — guard fires before transaction
+      expect(mockDb.transaction).not.toHaveBeenCalled();
+    });
+
+    it('T60-4: create proceeds normally when workerId is a non-empty string', async () => {
+      const { DisputeService } = await import('../../src/services/DisputeService');
+
+      const completedAt = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+      mockDb.query
+        .mockResolvedValueOnce({ rows: [{ id: 'task-1', state: 'COMPLETED', completed_at: completedAt, poster_id: 'poster-1', worker_id: 'worker-1' }], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [{ id: 'escrow-1', state: 'FUNDED', amount: 5000, stripe_transfer_id: null, version: 1 }], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [{ id: 'escrow-1', state: 'LOCKED_DISPUTE', version: 2 }], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [{ id: 'disp-1', state: 'OPEN', version: 1 }], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // outbox INSERT
+
+      const result = await DisputeService.create({
+        taskId: 'task-1',
+        escrowId: 'escrow-1',
+        initiatedBy: 'poster-1',
+        posterId: 'poster-1',
+        workerId: 'worker-1',
+        reason: 'Bad work',
+        description: 'Details',
+      });
+
+      expect(result.success).toBe(true);
+    });
+  });
+
   describe('T59-3: task state update to DISPUTED happens atomically within dispute-creation transaction', () => {
     it('T59-3: when creating dispute on PROOF_SUBMITTED task, task UPDATE to DISPUTED is called within the same transaction (not as separate db.query)', async () => {
       const { DisputeService } = await import('../../src/services/DisputeService');

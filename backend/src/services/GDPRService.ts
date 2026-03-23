@@ -1468,10 +1468,10 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
       // D55-1: Delete dispute_evidence uploaded by this user (uploaded_by NOT NULL;
       // different table from evidence — has uploaded_by column, not uploader_user_id).
       await query('DELETE FROM dispute_evidence WHERE uploaded_by = $1', [userId]);
-      await query(
-        `UPDATE dispute_jury_votes SET voter_id = NULL WHERE voter_id = $1`,
-        [userId]
-      );
+      // D60-A: dispute_jury_votes.juror_id is NOT NULL — must DELETE, not SET NULL.
+      // Previous bug used wrong column name 'voter_id' (doesn't exist) causing
+      // the entire transaction to roll back for users with jury vote records.
+      await query('DELETE FROM dispute_jury_votes WHERE juror_id = $1', [userId]);
       await query('DELETE FROM plan_entitlements WHERE user_id = $1', [userId]);
       await query('DELETE FROM task_geofence_events WHERE user_id = $1', [userId]);
 
@@ -1727,13 +1727,10 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
         [userId]
       );
 
-      // Anonymize referral_redemptions to remove user linkage
+      // D60-B: referral_redemptions.referrer_id and referred_id are both NOT NULL —
+      // cannot SET NULL. DELETE rows where user appears as either referrer or referred.
       await query(
-        `UPDATE referral_redemptions SET referrer_id = NULL WHERE referrer_id = $1`,
-        [userId]
-      );
-      await query(
-        `UPDATE referral_redemptions SET referred_id = NULL WHERE referred_id = $1`,
+        'DELETE FROM referral_redemptions WHERE referrer_id = $1 OR referred_id = $1',
         [userId]
       );
 
@@ -1744,6 +1741,49 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
          WHERE user_id = $1`,
         [userId]
       );
+
+      // D60-C: shadow_score_events.user_id is NOT NULL — must DELETE.
+      // Contains behavioral scoring events which are PII.
+      await query('DELETE FROM shadow_score_events WHERE user_id = $1', [userId]);
+
+      // D60-D: license_verifications.user_id is NOT NULL — must DELETE.
+      // Contains trade license numbers and issuing state data (PII).
+      await query('DELETE FROM license_verifications WHERE user_id = $1', [userId]);
+
+      // D60-E: insurance_verifications.user_id is NOT NULL — must DELETE.
+      // Contains policy numbers and coverage amounts (PII).
+      await query('DELETE FROM insurance_verifications WHERE user_id = $1', [userId]);
+
+      // D60-F: background_checks.user_id is NOT NULL — must DELETE.
+      // Contains background check results (PII).
+      await query('DELETE FROM background_checks WHERE user_id = $1', [userId]);
+
+      // D60-G: compliance_violations.user_id is nullable (ON DELETE SET NULL declared,
+      // but never fires because users is UPDATEd not DELETEd). NULL the user_id and
+      // also scrub ip_address and device_fingerprint which are PII.
+      await query(
+        `UPDATE compliance_violations
+         SET user_id = NULL,
+             ip_address = NULL,
+             device_fingerprint = NULL
+         WHERE user_id = $1`,
+        [userId]
+      );
+
+      // D60-H: fraud_detection_events.user_id is nullable — SET NULL and clear details JSONB.
+      await query(
+        `UPDATE fraud_detection_events
+         SET user_id = NULL,
+             details = '{}'::JSONB
+         WHERE user_id = $1`,
+        [userId]
+      );
+
+      // D60-I: verification_earnings_ledger.user_id is NOT NULL — must DELETE.
+      await query('DELETE FROM verification_earnings_ledger WHERE user_id = $1', [userId]);
+
+      // D60-I: verification_earnings_tracking.user_id is the PK (NOT NULL) — must DELETE.
+      await query('DELETE FROM verification_earnings_tracking WHERE user_id = $1', [userId]);
 
       // FIX: Anonymize admin_actions — keep rows for financial audit trail, but
       // clear the free-text reason field and mark metadata with gdpr_deleted so

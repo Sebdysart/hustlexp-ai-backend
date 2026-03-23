@@ -23,9 +23,14 @@ vi.mock('../../src/logger', () => ({
   logger: { child: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }) },
 }));
 
+vi.mock('../../src/auth-cache', () => ({
+  invalidateAuthCacheForUser: vi.fn().mockResolvedValue(undefined),
+}));
+
 import { db } from '../../src/db';
 import { ChargebackService } from '../../src/services/ChargebackService';
 import { RevenueService } from '../../src/services/RevenueService';
+import { invalidateAuthCacheForUser } from '../../src/auth-cache';
 
 const mockDb = vi.mocked(db);
 const mockRevenueLog = vi.mocked(RevenueService.logEvent);
@@ -321,6 +326,48 @@ describe('ChargebackService', () => {
         expect(result.data.disputeRate).toBe(0.001);
         expect(result.data.isAtRisk).toBe(false); // 0.1% < 0.75%
       }
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // A60-4: invalidateAuthCacheForUser after trust_tier downgrade
+  // -------------------------------------------------------------------------
+  describe('A60-4: auth cache invalidation after trust_tier downgrade', () => {
+    it('calls invalidateAuthCacheForUser with userId after trust_tier downgrade', async () => {
+      const mockInvalidate = vi.mocked(invalidateAuthCacheForUser);
+      mockInvalidate.mockClear();
+
+      const params = makeDisputeParams();
+
+      // Find escrow
+      mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'esc-1', task_id: 'task-1', state: 'FUNDED' }], rowCount: 1 } as never);
+      // Find poster
+      mockDb.query.mockResolvedValueOnce({ rows: [{ poster_id: 'user-1' }], rowCount: 1 } as never);
+      // INSERT payment_disputes
+      mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'pd-2' }], rowCount: 1 } as never);
+      // link reversal ledger
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      // freeze payouts
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      // payouts_were_frozen
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      // trust_tier=3, dispute_count=2 → downgrade to tier 2
+      mockDb.query.mockResolvedValueOnce({ rows: [{ trust_tier: 3, dispute_count: 2 }], rowCount: 1 } as never);
+      // UPDATE users SET trust_tier
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      // SELECT firebase_uid (for cache invalidation)
+      mockDb.query.mockResolvedValueOnce({ rows: [{ firebase_uid: 'fb-user-1' }], rowCount: 1 } as never);
+      // INSERT trust_ledger
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      // UPDATE payment_disputes trust_was_downgraded
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      // LOCK escrow
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+      const result = await ChargebackService.handleDisputeCreated(params);
+      expect(result.success).toBe(true);
+
+      expect(mockInvalidate).toHaveBeenCalledWith('user-1', 'fb-user-1', false);
     });
   });
 });

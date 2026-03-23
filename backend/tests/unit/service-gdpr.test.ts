@@ -1480,3 +1480,183 @@ describe('D58-8: deleteAndAnonymizeUserData — Stripe customer deleted via API'
     expect(mockCustomersDel).not.toHaveBeenCalled();
   });
 });
+
+// ===========================================================================
+// D60: deleteAndAnonymizeUserData — R60 batch of GDPR bug fixes
+// ===========================================================================
+
+describe('D60-A: deleteAndAnonymizeUserData — dispute_jury_votes uses juror_id (not voter_id)', () => {
+  it('uses juror_id column (not voter_id) and DELETEs the row (NOT NULL column)', async () => {
+    const { serializableQuery } = setupDeletionMocksWithCapture();
+
+    const result = await GDPRService.executeDeletion('req-d54');
+
+    expect(result.success).toBe(true);
+
+    const calls = serializableQuery.mock.calls as [string, unknown[]][];
+    // Must use DELETE (juror_id is NOT NULL — cannot SET NULL)
+    const juryVotesDeletion = calls.find(([sql]) => /DELETE FROM dispute_jury_votes/i.test(sql));
+    expect(juryVotesDeletion, 'Expected DELETE FROM dispute_jury_votes with juror_id to be called').toBeDefined();
+    expect(juryVotesDeletion![0]).toMatch(/juror_id/i);
+    expect(juryVotesDeletion![0]).not.toMatch(/voter_id/i);
+    expect(juryVotesDeletion![1]).toContain('user-d54');
+  });
+});
+
+describe('D60-B: deleteAndAnonymizeUserData — referral_redemptions DELETEd (NOT NULL FKs)', () => {
+  it('DELETEs referral_redemptions rows where referrer_id OR referred_id matches (not SET NULL)', async () => {
+    const { serializableQuery } = setupDeletionMocksWithCapture();
+
+    const result = await GDPRService.executeDeletion('req-d54');
+
+    expect(result.success).toBe(true);
+
+    const calls = serializableQuery.mock.calls as [string, unknown[]][];
+    // Must be DELETE (both FKs are NOT NULL — SET NULL would violate constraint)
+    const referralDeletion = calls.find(([sql]) => /DELETE FROM referral_redemptions/i.test(sql));
+    expect(referralDeletion, 'Expected DELETE FROM referral_redemptions to be called').toBeDefined();
+    expect(referralDeletion![0]).toMatch(/referrer_id|referred_id/i);
+    expect(referralDeletion![1]).toContain('user-d54');
+
+    // Verify no UPDATE SET NULL remains for referral_redemptions
+    const referralUpdate = calls.find(([sql]) =>
+      /UPDATE referral_redemptions/i.test(sql) &&
+      /SET (referrer_id|referred_id)\s*=\s*NULL/i.test(sql)
+    );
+    expect(referralUpdate, 'Expected no UPDATE referral_redemptions SET NULL (FK is NOT NULL)').toBeUndefined();
+  });
+});
+
+describe('D60-C: deleteAndAnonymizeUserData — shadow_score_events deleted', () => {
+  it('DELETEs shadow_score_events rows for the user', async () => {
+    const { serializableQuery } = setupDeletionMocksWithCapture();
+
+    const result = await GDPRService.executeDeletion('req-d54');
+
+    expect(result.success).toBe(true);
+
+    const calls = serializableQuery.mock.calls as [string, unknown[]][];
+    const deletion = calls.find(([sql]) => /DELETE FROM shadow_score_events/i.test(sql));
+    expect(deletion, 'Expected DELETE FROM shadow_score_events to be called').toBeDefined();
+    expect(deletion![0]).toMatch(/user_id/i);
+    expect(deletion![1]).toContain('user-d54');
+  });
+});
+
+describe('D60-D: deleteAndAnonymizeUserData — license_verifications deleted', () => {
+  it('DELETEs license_verifications rows for the user', async () => {
+    const { serializableQuery } = setupDeletionMocksWithCapture();
+
+    const result = await GDPRService.executeDeletion('req-d54');
+
+    expect(result.success).toBe(true);
+
+    const calls = serializableQuery.mock.calls as [string, unknown[]][];
+    const deletion = calls.find(([sql]) => /DELETE FROM license_verifications/i.test(sql));
+    expect(deletion, 'Expected DELETE FROM license_verifications to be called').toBeDefined();
+    expect(deletion![0]).toMatch(/user_id/i);
+    expect(deletion![1]).toContain('user-d54');
+  });
+});
+
+describe('D60-E: deleteAndAnonymizeUserData — insurance_verifications deleted', () => {
+  it('DELETEs insurance_verifications rows for the user', async () => {
+    const { serializableQuery } = setupDeletionMocksWithCapture();
+
+    const result = await GDPRService.executeDeletion('req-d54');
+
+    expect(result.success).toBe(true);
+
+    const calls = serializableQuery.mock.calls as [string, unknown[]][];
+    const deletion = calls.find(([sql]) => /DELETE FROM insurance_verifications/i.test(sql));
+    expect(deletion, 'Expected DELETE FROM insurance_verifications to be called').toBeDefined();
+    expect(deletion![0]).toMatch(/user_id/i);
+    expect(deletion![1]).toContain('user-d54');
+  });
+});
+
+describe('D60-F: deleteAndAnonymizeUserData — background_checks deleted', () => {
+  it('DELETEs background_checks rows for the user', async () => {
+    const { serializableQuery } = setupDeletionMocksWithCapture();
+
+    const result = await GDPRService.executeDeletion('req-d54');
+
+    expect(result.success).toBe(true);
+
+    const calls = serializableQuery.mock.calls as [string, unknown[]][];
+    const deletion = calls.find(([sql]) => /DELETE FROM background_checks/i.test(sql));
+    expect(deletion, 'Expected DELETE FROM background_checks to be called').toBeDefined();
+    expect(deletion![0]).toMatch(/user_id/i);
+    expect(deletion![1]).toContain('user-d54');
+  });
+});
+
+describe('D60-G: deleteAndAnonymizeUserData — compliance_violations PII scrubbed', () => {
+  it('NULLs ip_address, device_fingerprint, and user_id in compliance_violations', async () => {
+    const { serializableQuery } = setupDeletionMocksWithCapture();
+
+    const result = await GDPRService.executeDeletion('req-d54');
+
+    expect(result.success).toBe(true);
+
+    const calls = serializableQuery.mock.calls as [string, unknown[]][];
+    const complianceCall = calls.find(([sql]) => /compliance_violations/i.test(sql));
+    expect(complianceCall, 'Expected compliance_violations to be scrubbed').toBeDefined();
+    // Either DELETE or UPDATE that NULLs ip_address and device_fingerprint
+    const sqlStr = complianceCall![0];
+    const isDelete = /DELETE FROM compliance_violations/i.test(sqlStr);
+    const isUpdate = /UPDATE compliance_violations/i.test(sqlStr) &&
+      /ip_address\s*=\s*NULL/i.test(sqlStr) &&
+      /device_fingerprint\s*=\s*NULL/i.test(sqlStr);
+    expect(isDelete || isUpdate, 'compliance_violations must be DELETEd or have PII NULLed').toBe(true);
+    expect(complianceCall![1]).toContain('user-d54');
+  });
+});
+
+describe('D60-H: deleteAndAnonymizeUserData — fraud_detection_events user_id NULLed', () => {
+  it('NULLs user_id in fraud_detection_events (nullable FK)', async () => {
+    const { serializableQuery } = setupDeletionMocksWithCapture();
+
+    const result = await GDPRService.executeDeletion('req-d54');
+
+    expect(result.success).toBe(true);
+
+    const calls = serializableQuery.mock.calls as [string, unknown[]][];
+    const fraudEventCall = calls.find(([sql]) => /fraud_detection_events/i.test(sql));
+    expect(fraudEventCall, 'Expected fraud_detection_events to be scrubbed').toBeDefined();
+    const sqlStr = fraudEventCall![0];
+    const isDelete = /DELETE FROM fraud_detection_events/i.test(sqlStr);
+    const isUpdate = /UPDATE fraud_detection_events/i.test(sqlStr) && /user_id\s*=\s*NULL/i.test(sqlStr);
+    expect(isDelete || isUpdate, 'fraud_detection_events must be DELETEd or user_id NULLed').toBe(true);
+    expect(fraudEventCall![1]).toContain('user-d54');
+  });
+});
+
+describe('D60-I: deleteAndAnonymizeUserData — verification_earnings tables deleted', () => {
+  it('DELETEs verification_earnings_ledger rows for the user', async () => {
+    const { serializableQuery } = setupDeletionMocksWithCapture();
+
+    const result = await GDPRService.executeDeletion('req-d54');
+
+    expect(result.success).toBe(true);
+
+    const calls = serializableQuery.mock.calls as [string, unknown[]][];
+    const deletion = calls.find(([sql]) => /DELETE FROM verification_earnings_ledger/i.test(sql));
+    expect(deletion, 'Expected DELETE FROM verification_earnings_ledger to be called').toBeDefined();
+    expect(deletion![0]).toMatch(/user_id/i);
+    expect(deletion![1]).toContain('user-d54');
+  });
+
+  it('DELETEs verification_earnings_tracking rows for the user', async () => {
+    const { serializableQuery } = setupDeletionMocksWithCapture();
+
+    const result = await GDPRService.executeDeletion('req-d54');
+
+    expect(result.success).toBe(true);
+
+    const calls = serializableQuery.mock.calls as [string, unknown[]][];
+    const deletion = calls.find(([sql]) => /DELETE FROM verification_earnings_tracking/i.test(sql));
+    expect(deletion, 'Expected DELETE FROM verification_earnings_tracking to be called').toBeDefined();
+    expect(deletion![1]).toContain('user-d54');
+  });
+});

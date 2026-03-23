@@ -532,7 +532,7 @@ export const TrustTierService = {
 
       const banResult = await txQuery(
         `UPDATE users
-         SET trust_tier = $1, updated_at = NOW()
+         SET trust_tier = $1, is_banned = TRUE, updated_at = NOW()
          WHERE id = $2 AND trust_tier != $1`,
         [TrustTier.BANNED, userId]
       );
