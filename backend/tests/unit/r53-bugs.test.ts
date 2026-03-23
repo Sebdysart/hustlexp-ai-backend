@@ -252,7 +252,7 @@ describe('T53-8: Proof review role check — only poster can review', () => {
 
     expect(result.success).toBe(false);
     expect(result.error?.code).toBe('FORBIDDEN');
-    expect(result.error?.message).toMatch(/poster/i);
+    expect(result.error?.message).toMatch(/not authorized/i);
   });
 
   it('T53-8: allows REJECTED review when reviewer is the task poster', async () => {

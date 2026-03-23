@@ -64,14 +64,18 @@ vi.mock('../../src/config', () => ({
 
 // vi.hoisted() runs before vi.mock() hoisting, so these refs are safe to use
 // inside the MockStripe class initializer even though vi.mock is hoisted.
-const { mockPaymentIntentsCancel } = vi.hoisted(() => ({
+const { mockPaymentIntentsCancel, mockCustomersDel } = vi.hoisted(() => ({
   mockPaymentIntentsCancel: vi.fn(),
+  mockCustomersDel: vi.fn(),
 }));
 
 vi.mock('stripe', () => ({
   default: class MockStripe {
     paymentIntents = {
       cancel: mockPaymentIntentsCancel,
+    };
+    customers = {
+      del: mockCustomersDel,
     };
   },
 }));
@@ -110,6 +114,9 @@ import { GDPRService, collectUserDataForExport, _resetGDPRRateLimitMapForTesting
 import { NotificationService } from '../../src/services/NotificationService';
 import { EscrowService } from '../../src/services/EscrowService';
 import { TaskService } from '../../src/services/TaskService';
+import { invalidateAuthCacheForUser } from '../../src/auth-cache';
+import { forceDisconnectUser } from '../../src/realtime/connection-registry';
+import { revokeUserSessions } from '../../src/auth/middleware';
 
 const mockDb = vi.mocked(db);
 const mockNotification = vi.mocked(NotificationService);
@@ -117,11 +124,21 @@ const mockEscrowService = vi.mocked(EscrowService);
 const mockTaskService = vi.mocked(TaskService);
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  vi.resetAllMocks();
   // D53-4: reset the in-memory rate-limit Map so each test gets a fresh bucket
   _resetGDPRRateLimitMapForTesting();
-  mockPaymentIntentsCancel.mockReset();
   mockPaymentIntentsCancel.mockResolvedValue({ id: 'pi_test', status: 'canceled' });
+  mockCustomersDel.mockResolvedValue({ id: 'cus_test', deleted: true });
+  // Restore default mock implementations that vi.resetAllMocks() cleared
+  vi.mocked(EscrowService.refund).mockResolvedValue({ success: true } as never);
+  vi.mocked(EscrowService.partialRefund).mockResolvedValue({ success: true } as never);
+  vi.mocked(TaskService.cancel).mockResolvedValue({ success: true } as never);
+  vi.mocked(NotificationService.createNotification).mockResolvedValue({ success: true } as never);
+  // Auth helpers must return Promises; vi.resetAllMocks() clears their implementations.
+  // revokeUserSessions result has .catch() called on it — must be a Promise.
+  vi.mocked(invalidateAuthCacheForUser).mockResolvedValue(undefined);
+  vi.mocked(forceDisconnectUser).mockResolvedValue(undefined);
+  vi.mocked(revokeUserSessions).mockResolvedValue(undefined);
 });
 
 // ===========================================================================
@@ -401,6 +418,9 @@ describe('GDPRService.executeDeletion', () => {
     // 4c. SELECT worker FUNDED/LOCKED_DISPUTE escrows (none)
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
 
+    // 4d. D58-8: SELECT stripe_customer_id (before transaction)
+    mockDb.query.mockResolvedValueOnce({ rows: [{ stripe_customer_id: null }], rowCount: 1 } as never);
+
     // 5. serializableTransaction (deleteAndAnonymizeUserData)
     const serializableQuery = vi.fn().mockResolvedValue({ rows: [], rowCount: 0 } as never);
     mockDb.serializableTransaction.mockImplementation(async (fn) => fn(serializableQuery) as Promise<unknown>);
@@ -432,6 +452,7 @@ describe('GDPRService.executeDeletion', () => {
   it('marks request rejected when deleteAndAnonymizeUserData fails', async () => {
     const pastDeadline = new Date(Date.now() - 86400000);
 
+    // 1. SELECT request
     mockDb.query.mockResolvedValueOnce({
       rows: [{
         id: 'req-1', user_id: 'user-1', status: 'pending',
@@ -440,19 +461,28 @@ describe('GDPRService.executeDeletion', () => {
       rowCount: 1,
     } as never);
 
-    // UPDATE to processing
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+    // 2. UPDATE to processing
+    mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'req-1' }], rowCount: 1 } as never);
 
-    // FIX 2: SELECT open poster tasks (none)
+    // 3. SELECT firebase_uid
+    mockDb.query.mockResolvedValueOnce({ rows: [{ firebase_uid: null }], rowCount: 1 } as never);
+
+    // 4. SELECT email (idempotency check inside deleteAndAnonymizeUserData)
+    mockDb.query.mockResolvedValueOnce({ rows: [{ email: 'user@example.com' }], rowCount: 1 } as never);
+
+    // 5. SELECT open poster tasks (none)
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
 
-    // FIX 1: SELECT worker FUNDED/LOCKED_DISPUTE escrows (none)
+    // 6. SELECT worker FUNDED/LOCKED_DISPUTE escrows (none)
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+
+    // 7. D58-8: SELECT stripe_customer_id (before transaction)
+    mockDb.query.mockResolvedValueOnce({ rows: [{ stripe_customer_id: null }], rowCount: 1 } as never);
 
     // serializableTransaction throws
     mockDb.serializableTransaction.mockRejectedValue(new Error('DB transaction failed'));
 
-    // UPDATE to rejected (error path)
+    // 8. UPDATE to rejected (error path)
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
 
     const result = await GDPRService.executeDeletion('req-1');
@@ -478,6 +508,7 @@ describe('GDPRService.executeDeletion', () => {
     mockDb.query.mockResolvedValueOnce({ rows: [{ email: 'test@example.com' }], rowCount: 1 } as never); // email idempotency
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // open poster tasks (none)
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // worker escrows (none)
+    mockDb.query.mockResolvedValueOnce({ rows: [{ stripe_customer_id: null }], rowCount: 1 } as never); // D58-8: stripe_customer_id
     mockDb.serializableTransaction.mockImplementation(async (fn) => {
       const q = vi.fn().mockResolvedValue({ rows: [], rowCount: 0 } as never);
       return fn(q) as Promise<unknown>;
@@ -516,6 +547,8 @@ describe('GDPRService.executeDeletion', () => {
     } as never);
     // 6. SELECT worker escrows (none)
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+    // 6b. D58-8: SELECT stripe_customer_id (before transaction)
+    mockDb.query.mockResolvedValueOnce({ rows: [{ stripe_customer_id: null }], rowCount: 1 } as never);
     // 7. serializableTransaction
     const serializableQuery = vi.fn().mockResolvedValue({ rows: [], rowCount: 0 } as never);
     mockDb.serializableTransaction.mockImplementation(async (fn) => fn(serializableQuery) as Promise<unknown>);
@@ -548,6 +581,7 @@ describe('GDPRService.executeDeletion', () => {
       rowCount: 1,
     } as never); // escrows
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // worker escrows
+    mockDb.query.mockResolvedValueOnce({ rows: [{ stripe_customer_id: null }], rowCount: 1 } as never); // D58-8
     mockDb.serializableTransaction.mockImplementation(async (fn) => {
       const q = vi.fn().mockResolvedValue({ rows: [], rowCount: 0 } as never);
       return fn(q) as Promise<unknown>;
@@ -578,6 +612,7 @@ describe('GDPRService.executeDeletion', () => {
       rowCount: 1,
     } as never); // escrows
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // worker escrows
+    mockDb.query.mockResolvedValueOnce({ rows: [{ stripe_customer_id: null }], rowCount: 1 } as never); // D58-8
     mockDb.serializableTransaction.mockImplementation(async (fn) => {
       const q = vi.fn().mockResolvedValue({ rows: [], rowCount: 0 } as never);
       return fn(q) as Promise<unknown>;
@@ -612,6 +647,7 @@ describe('GDPRService.executeDeletion', () => {
       rowCount: 1,
     } as never); // escrows
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // worker escrows
+    mockDb.query.mockResolvedValueOnce({ rows: [{ stripe_customer_id: null }], rowCount: 1 } as never); // D58-8
     mockDb.serializableTransaction.mockImplementation(async (fn) => {
       const q = vi.fn().mockResolvedValue({ rows: [], rowCount: 0 } as never);
       return fn(q) as Promise<unknown>;
@@ -947,6 +983,8 @@ function setupDeletionMocksWithCapture() {
   mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
   // 6. SELECT worker escrows (none)
   mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+  // 6b. D58-8: SELECT stripe_customer_id (before transaction; null = no Stripe customer)
+  mockDb.query.mockResolvedValueOnce({ rows: [{ stripe_customer_id: null }], rowCount: 1 } as never);
 
   // 7. serializableTransaction: capture all SQL inside the deletion
   const serializableQuery = vi.fn().mockResolvedValue({ rows: [], rowCount: 0 } as never);
@@ -1196,5 +1234,249 @@ describe('D57-4: deleteAndAnonymizeUserData — recurring_task_series and squads
     );
     expect(squadCall, 'Expected squads organizer_id to be cleared (DELETE or UPDATE NULL)').toBeDefined();
     expect(squadCall![1]).toContain('user-d54');
+  });
+});
+
+// ===========================================================================
+// D58: deleteAndAnonymizeUserData — R58 batch of missing PII deletions
+// ===========================================================================
+
+describe('D58-1: deleteAndAnonymizeUserData — worker_tax_info deletion (CRITICAL — SSN/EIN)', () => {
+  it('deletes worker_tax_info rows for the user inside the transaction', async () => {
+    const { serializableQuery } = setupDeletionMocksWithCapture();
+
+    const result = await GDPRService.executeDeletion('req-d54');
+
+    expect(result.success).toBe(true);
+
+    const calls = serializableQuery.mock.calls as [string, unknown[]][];
+    const deletion = calls.find(([sql]) => /DELETE FROM worker_tax_info/i.test(sql));
+    expect(deletion, 'Expected DELETE FROM worker_tax_info to be called').toBeDefined();
+    expect(deletion![1]).toContain('user-d54');
+  });
+});
+
+describe('D58-2: deleteAndAnonymizeUserData — worker_stripe_accounts deletion (CRITICAL)', () => {
+  it('deletes worker_stripe_accounts rows for the user inside the transaction', async () => {
+    const { serializableQuery } = setupDeletionMocksWithCapture();
+
+    const result = await GDPRService.executeDeletion('req-d54');
+
+    expect(result.success).toBe(true);
+
+    const calls = serializableQuery.mock.calls as [string, unknown[]][];
+    const deletion = calls.find(([sql]) => /DELETE FROM worker_stripe_accounts/i.test(sql));
+    expect(deletion, 'Expected DELETE FROM worker_stripe_accounts to be called').toBeDefined();
+    expect(deletion![1]).toContain('user-d54');
+  });
+});
+
+describe('D58-3: deleteAndAnonymizeUserData — worker_payout_settings and worker_earnings_1099 deletion', () => {
+  it('deletes worker_payout_settings rows for the user inside the transaction', async () => {
+    const { serializableQuery } = setupDeletionMocksWithCapture();
+
+    const result = await GDPRService.executeDeletion('req-d54');
+
+    expect(result.success).toBe(true);
+
+    const calls = serializableQuery.mock.calls as [string, unknown[]][];
+    const deletion = calls.find(([sql]) => /DELETE FROM worker_payout_settings/i.test(sql));
+    expect(deletion, 'Expected DELETE FROM worker_payout_settings to be called').toBeDefined();
+    expect(deletion![1]).toContain('user-d54');
+  });
+
+  it('deletes worker_earnings_1099 rows for the user inside the transaction', async () => {
+    const { serializableQuery } = setupDeletionMocksWithCapture();
+
+    const result = await GDPRService.executeDeletion('req-d54');
+
+    expect(result.success).toBe(true);
+
+    const calls = serializableQuery.mock.calls as [string, unknown[]][];
+    const deletion = calls.find(([sql]) => /DELETE FROM worker_earnings_1099/i.test(sql));
+    expect(deletion, 'Expected DELETE FROM worker_earnings_1099 to be called').toBeDefined();
+    expect(deletion![1]).toContain('user-d54');
+  });
+});
+
+describe('D58-4: deleteAndAnonymizeUserData — expertise table deletions', () => {
+  it('deletes expertise_change_log rows for the user inside the transaction', async () => {
+    const { serializableQuery } = setupDeletionMocksWithCapture();
+
+    const result = await GDPRService.executeDeletion('req-d54');
+
+    expect(result.success).toBe(true);
+
+    const calls = serializableQuery.mock.calls as [string, unknown[]][];
+    const deletion = calls.find(([sql]) => /DELETE FROM expertise_change_log/i.test(sql));
+    expect(deletion, 'Expected DELETE FROM expertise_change_log to be called').toBeDefined();
+    expect(deletion![1]).toContain('user-d54');
+  });
+
+  it('deletes expertise_waitlist rows for the user inside the transaction', async () => {
+    const { serializableQuery } = setupDeletionMocksWithCapture();
+
+    const result = await GDPRService.executeDeletion('req-d54');
+
+    expect(result.success).toBe(true);
+
+    const calls = serializableQuery.mock.calls as [string, unknown[]][];
+    const deletion = calls.find(([sql]) => /DELETE FROM expertise_waitlist/i.test(sql));
+    expect(deletion, 'Expected DELETE FROM expertise_waitlist to be called').toBeDefined();
+    expect(deletion![1]).toContain('user-d54');
+  });
+
+  it('deletes user_expertise rows for the user inside the transaction', async () => {
+    const { serializableQuery } = setupDeletionMocksWithCapture();
+
+    const result = await GDPRService.executeDeletion('req-d54');
+
+    expect(result.success).toBe(true);
+
+    const calls = serializableQuery.mock.calls as [string, unknown[]][];
+    const deletion = calls.find(([sql]) => /DELETE FROM user_expertise/i.test(sql));
+    expect(deletion, 'Expected DELETE FROM user_expertise to be called').toBeDefined();
+    expect(deletion![1]).toContain('user-d54');
+  });
+});
+
+describe('D58-5: deleteAndAnonymizeUserData — featured_listings deletion', () => {
+  it('deletes featured_listings rows where user is the poster inside the transaction', async () => {
+    const { serializableQuery } = setupDeletionMocksWithCapture();
+
+    const result = await GDPRService.executeDeletion('req-d54');
+
+    expect(result.success).toBe(true);
+
+    const calls = serializableQuery.mock.calls as [string, unknown[]][];
+    const deletion = calls.find(([sql]) => /DELETE FROM featured_listings/i.test(sql));
+    expect(deletion, 'Expected DELETE FROM featured_listings to be called').toBeDefined();
+    expect(deletion![0]).toMatch(/poster_id/i);
+    expect(deletion![1]).toContain('user-d54');
+  });
+});
+
+describe('D58-6: deleteAndAnonymizeUserData — task_matching_scores deletion', () => {
+  it('deletes task_matching_scores rows for the user inside the transaction', async () => {
+    const { serializableQuery } = setupDeletionMocksWithCapture();
+
+    const result = await GDPRService.executeDeletion('req-d54');
+
+    expect(result.success).toBe(true);
+
+    const calls = serializableQuery.mock.calls as [string, unknown[]][];
+    const deletion = calls.find(([sql]) => /DELETE FROM task_matching_scores/i.test(sql));
+    expect(deletion, 'Expected DELETE FROM task_matching_scores to be called').toBeDefined();
+    expect(deletion![0]).toMatch(/hustler_id/i);
+    expect(deletion![1]).toContain('user-d54');
+  });
+});
+
+describe('D58-7: deleteAndAnonymizeUserData — proof_submissions photo_url nulled', () => {
+  it('nulls photo_url in the proof_submissions UPDATE inside the transaction', async () => {
+    const { serializableQuery } = setupDeletionMocksWithCapture();
+
+    const result = await GDPRService.executeDeletion('req-d54');
+
+    expect(result.success).toBe(true);
+
+    const calls = serializableQuery.mock.calls as [string, unknown[]][];
+    const proofSubmissionsUpdate = calls.find(([sql]) => /UPDATE proof_submissions/i.test(sql));
+    expect(proofSubmissionsUpdate, 'Expected UPDATE proof_submissions to be called').toBeDefined();
+    expect(proofSubmissionsUpdate![0]).toMatch(/photo_url\s*=\s*NULL/i);
+  });
+});
+
+describe('D58-8: deleteAndAnonymizeUserData — Stripe customer deleted via API', () => {
+  it('calls stripe.customers.del with the customer id before nulling stripe_customer_id in DB', async () => {
+    const pastDeadline = new Date(Date.now() - 86400000);
+
+    // 1. SELECT request
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ id: 'req-d58', user_id: 'user-d58', status: 'pending', request_type: 'deletion', deadline: pastDeadline }],
+      rowCount: 1,
+    } as never);
+    // 2. UPDATE to processing
+    mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'req-d58' }], rowCount: 1 } as never);
+    // 3. SELECT firebase_uid
+    mockDb.query.mockResolvedValueOnce({ rows: [{ firebase_uid: null }], rowCount: 1 } as never);
+    // 4. SELECT email (idempotency check inside deleteAndAnonymizeUserData)
+    mockDb.query.mockResolvedValueOnce({ rows: [{ email: 'user@example.com' }], rowCount: 1 } as never);
+    // 5. SELECT open poster tasks (none)
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+    // 6. SELECT worker escrows (none)
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+    // 7. SELECT stripe_customer_id (fetched before transaction for D58-8)
+    mockDb.query.mockResolvedValueOnce({ rows: [{ stripe_customer_id: 'cus_test_123' }], rowCount: 1 } as never);
+
+    // 8. serializableTransaction
+    const serializableQuery = vi.fn().mockResolvedValue({ rows: [], rowCount: 0 } as never);
+    mockDb.serializableTransaction.mockImplementation(async (fn) => fn(serializableQuery) as Promise<unknown>);
+
+    // 9. UPDATE to completed
+    mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'req-d58', status: 'completed' }], rowCount: 1 } as never);
+
+    mockCustomersDel.mockResolvedValue({ id: 'cus_test_123', deleted: true });
+
+    const result = await GDPRService.executeDeletion('req-d58');
+
+    expect(result.success).toBe(true);
+    expect(mockCustomersDel).toHaveBeenCalledWith('cus_test_123');
+  });
+
+  it('continues deletion even when stripe.customers.del throws (best-effort)', async () => {
+    const pastDeadline = new Date(Date.now() - 86400000);
+
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ id: 'req-d58', user_id: 'user-d58', status: 'pending', request_type: 'deletion', deadline: pastDeadline }],
+      rowCount: 1,
+    } as never);
+    mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'req-d58' }], rowCount: 1 } as never);
+    mockDb.query.mockResolvedValueOnce({ rows: [{ firebase_uid: null }], rowCount: 1 } as never);
+    mockDb.query.mockResolvedValueOnce({ rows: [{ email: 'user@example.com' }], rowCount: 1 } as never);
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // poster tasks
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // worker escrows
+    mockDb.query.mockResolvedValueOnce({ rows: [{ stripe_customer_id: 'cus_err_123' }], rowCount: 1 } as never);
+
+    mockDb.serializableTransaction.mockImplementation(async (fn) => {
+      const q = vi.fn().mockResolvedValue({ rows: [], rowCount: 0 } as never);
+      return fn(q) as Promise<unknown>;
+    });
+
+    mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'req-d58', status: 'completed' }], rowCount: 1 } as never);
+
+    mockCustomersDel.mockRejectedValue(new Error('Stripe API error'));
+
+    const result = await GDPRService.executeDeletion('req-d58');
+
+    // Must still succeed — Stripe deletion is best-effort
+    expect(result.success).toBe(true);
+  });
+
+  it('skips stripe.customers.del when no stripe_customer_id exists', async () => {
+    const pastDeadline = new Date(Date.now() - 86400000);
+
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ id: 'req-d58', user_id: 'user-d58', status: 'pending', request_type: 'deletion', deadline: pastDeadline }],
+      rowCount: 1,
+    } as never);
+    mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'req-d58' }], rowCount: 1 } as never);
+    mockDb.query.mockResolvedValueOnce({ rows: [{ firebase_uid: null }], rowCount: 1 } as never);
+    mockDb.query.mockResolvedValueOnce({ rows: [{ email: 'user@example.com' }], rowCount: 1 } as never);
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // poster tasks
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // worker escrows
+    mockDb.query.mockResolvedValueOnce({ rows: [{ stripe_customer_id: null }], rowCount: 1 } as never);
+
+    mockDb.serializableTransaction.mockImplementation(async (fn) => {
+      const q = vi.fn().mockResolvedValue({ rows: [], rowCount: 0 } as never);
+      return fn(q) as Promise<unknown>;
+    });
+
+    mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'req-d58', status: 'completed' }], rowCount: 1 } as never);
+
+    const result = await GDPRService.executeDeletion('req-d58');
+
+    expect(result.success).toBe(true);
+    expect(mockCustomersDel).not.toHaveBeenCalled();
   });
 });

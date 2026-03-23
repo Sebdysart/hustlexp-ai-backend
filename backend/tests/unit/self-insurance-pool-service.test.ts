@@ -142,15 +142,18 @@ describe('SelfInsurancePoolService', () => {
     it('files a claim successfully', async () => {
       // F-02 FIX: fileClaim now wraps the balance check + INSERT in a transaction.
       // F49-7 FIX: duplicate check moved INSIDE the transaction (FOR UPDATE).
+      // F58-3 FIX: pool balance debited inside transaction to prevent concurrent over-commitment.
       // Sequence:
       //   0. getPoolStatus (outer db.query — reads pool config)
       //   Inside db.transaction:
       //     1. SELECT duplicate check FOR UPDATE (no existing claim)
       //     2. SELECT available_balance_cents, coverage_percentage FOR UPDATE (pool lock)
-      //     3. INSERT insurance_claims RETURNING id
+      //     3. UPDATE self_insurance_pool SET total_claims_cents += coveredAmount (F58-3 reservation)
+      //     4. INSERT insurance_claims RETURNING id
       mockDb.query.mockResolvedValueOnce({ rows: [makePoolRow()], rowCount: 1 } as never); // getPoolStatus
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // F49-7 duplicate check FOR UPDATE — no existing claim
       mockDb.query.mockResolvedValueOnce({ rows: [{ available_balance_cents: 80000, coverage_percentage: 80 }], rowCount: 1 } as never); // FOR UPDATE lock
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // UPDATE pool (F58-3 reservation)
       mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'claim-1' }], rowCount: 1 } as never); // INSERT
 
       const result = await SelfInsurancePoolService.fileClaim(
@@ -181,9 +184,11 @@ describe('SelfInsurancePoolService', () => {
     it('allows filing claim when previous claim was rejected', async () => {
       // F49-7 FIX: duplicate check now runs inside the transaction (FOR UPDATE).
       // Rejected row does not count — the query filters status NOT IN ('rejected', 'withdrawn').
+      // F58-3 FIX: pool reservation UPDATE added to transaction.
       mockDb.query.mockResolvedValueOnce({ rows: [makePoolRow()], rowCount: 1 } as never); // getPoolStatus
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // F49-7 duplicate check FOR UPDATE — no non-rejected/non-withdrawn claim
       mockDb.query.mockResolvedValueOnce({ rows: [{ available_balance_cents: 80000, coverage_percentage: 80 }], rowCount: 1 } as never); // FOR UPDATE lock
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // UPDATE pool (F58-3 reservation)
       mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'claim-new' }], rowCount: 1 } as never); // INSERT
 
       const result = await SelfInsurancePoolService.fileClaim(
@@ -199,10 +204,12 @@ describe('SelfInsurancePoolService', () => {
       // The reliable in-transaction check in payClaim (under FOR UPDATE) handles the cap.
       // fileClaim now only checks INSUFFICIENT_POOL_BALANCE (live balance vs covered amount).
       // 700000 * 80% = 560000 — if pool balance >= 560000, the claim is filed successfully.
+      // F58-3 FIX: pool reservation UPDATE added to transaction.
       mockDb.query
         .mockResolvedValueOnce({ rows: [makePoolRow({ max_claim_cents: 500000, coverage_percentage: 80, available_balance_cents: 1000000 })], rowCount: 1 } as never) // getPoolStatus
         .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // duplicate check FOR UPDATE — no existing claim
         .mockResolvedValueOnce({ rows: [{ available_balance_cents: 1000000, coverage_percentage: 80 }], rowCount: 1 } as never) // FOR UPDATE lock
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // UPDATE pool (F58-3 reservation)
         .mockResolvedValueOnce({ rows: [{ id: 'claim-1' }], rowCount: 1 } as never); // INSERT
 
       const result = await SelfInsurancePoolService.fileClaim(
@@ -218,10 +225,12 @@ describe('SelfInsurancePoolService', () => {
       // Old bug: would have rejected this because 600000 > 500000.
       // New behavior: pre-flight passes; subsequent balance check inside transaction is the gate.
       // F49-7 FIX: duplicate check now runs inside transaction (no pre-flight db.query).
+      // F58-3 FIX: pool reservation UPDATE added to transaction.
       mockDb.query
         .mockResolvedValueOnce({ rows: [makePoolRow({ max_claim_cents: 500000, coverage_percentage: 80, available_balance_cents: 1000000 })], rowCount: 1 } as never) // getPoolStatus
         .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // F49-7 duplicate check FOR UPDATE — no existing claim
         .mockResolvedValueOnce({ rows: [{ available_balance_cents: 1000000, coverage_percentage: 80 }], rowCount: 1 } as never) // FOR UPDATE lock
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // UPDATE pool (F58-3 reservation)
         .mockResolvedValueOnce({ rows: [{ id: 'claim-2' }], rowCount: 1 } as never); // INSERT
 
       const result = await SelfInsurancePoolService.fileClaim(
@@ -460,10 +469,12 @@ describe('SelfInsurancePoolService', () => {
 
     it('allows re-filing after a withdrawn claim (withdrawn is still excluded) (F53-3)', async () => {
       // 'withdrawn' must remain excluded from the blocking set — a withdrawn claim should allow re-filing.
+      // F58-3 FIX: pool reservation UPDATE added to transaction.
       mockDb.query.mockResolvedValueOnce({ rows: [makePoolRow()], rowCount: 1 } as never); // getPoolStatus
       // Duplicate check finds no blocking claim (withdrawn is excluded from the NOT IN list's complement)
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
       mockDb.query.mockResolvedValueOnce({ rows: [{ available_balance_cents: 80000, coverage_percentage: 80 }], rowCount: 1 } as never); // pool lock
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // UPDATE pool (F58-3 reservation)
       mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'claim-new' }], rowCount: 1 } as never); // INSERT
 
       const result = await SelfInsurancePoolService.fileClaim(
@@ -475,9 +486,11 @@ describe('SelfInsurancePoolService', () => {
 
     it('SQL uses denied not rejected — duplicate check query contains denied (F53-3)', async () => {
       // Verify the actual SQL string contains 'denied' not 'rejected'
+      // F58-3 FIX: pool reservation UPDATE added to transaction.
       mockDb.query.mockResolvedValueOnce({ rows: [makePoolRow()], rowCount: 1 } as never); // getPoolStatus
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // duplicate check
       mockDb.query.mockResolvedValueOnce({ rows: [{ available_balance_cents: 80000, coverage_percentage: 80 }], rowCount: 1 } as never);
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // UPDATE pool (F58-3 reservation)
       mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'claim-new' }], rowCount: 1 } as never);
 
       await SelfInsurancePoolService.fileClaim('task-1', 'hustler-1', 10000, 'Damage', []);
@@ -650,6 +663,78 @@ describe('SelfInsurancePoolService', () => {
       const result = await SelfInsurancePoolService.payClaim('claim-1');
 
       expect(result.success).not.toBe(true);
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // F58-3: fileClaim must debit pool balance at filing time to prevent over-commitment
+  // --------------------------------------------------------------------------
+  describe('fileClaim — F58-3: pool balance debited at filing time (concurrent over-commitment fix)', () => {
+    it('debits total_claims_cents in fileClaim transaction to reserve pool balance (F58-3)', async () => {
+      // After fileClaim succeeds, the pool UPDATE must have been called inside the transaction.
+      // This reserves the covered amount so concurrent callers see the reduced balance.
+      mockDb.query.mockResolvedValueOnce({ rows: [makePoolRow()], rowCount: 1 } as never); // getPoolStatus
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // duplicate check FOR UPDATE
+      mockDb.query.mockResolvedValueOnce({ rows: [{ available_balance_cents: 80000, coverage_percentage: 80 }], rowCount: 1 } as never); // pool FOR UPDATE
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // UPDATE pool (reservation)
+      mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'claim-1' }], rowCount: 1 } as never); // INSERT claim
+
+      const result = await SelfInsurancePoolService.fileClaim(
+        'task-1', 'hustler-1', 25000, 'Tool damage', ['https://r2.dev/evidence.jpg']
+      );
+
+      expect(result.success).toBe(true);
+
+      // The pool UPDATE must have been called inside the transaction
+      const allSqls = mockDb.query.mock.calls.map(c => (c[0] as string).toLowerCase());
+      const poolDebitCall = allSqls.find(sql =>
+        sql.includes('update self_insurance_pool') && sql.includes('total_claims_cents')
+      );
+      expect(poolDebitCall).toBeDefined();
+    });
+
+    it('second fileClaim fails with INSUFFICIENT_POOL_BALANCE when first reserved the balance (F58-3)', async () => {
+      // Pool has 80000 available_balance_cents, coverage 80%.
+      // First claim: 25000 * 80% = 20000 covered. Pool debited → 60000 remaining.
+      // Second claim: 25000 * 80% = 20000 covered. Pool debited again → 40000 remaining? No —
+      // In this test we simulate that after the first claim debited the pool,
+      // the second fileClaim's FOR UPDATE sees only the residual balance.
+      // Since we can't truly run concurrent DB ops in unit tests, we verify that
+      // fileClaim issues the UPDATE self_insurance_pool query (the debit reservation),
+      // and that when available_balance_cents is 0 at the FOR UPDATE step, it correctly fails.
+
+      // Second claim attempt — pool FOR UPDATE returns 0 after first reservation
+      mockDb.query.mockResolvedValueOnce({ rows: [makePoolRow({ available_balance_cents: 0 })], rowCount: 1 } as never); // getPoolStatus
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // duplicate check FOR UPDATE (no existing claim for task-2)
+      mockDb.query.mockResolvedValueOnce({ rows: [{ available_balance_cents: 0, coverage_percentage: 80 }], rowCount: 1 } as never); // pool FOR UPDATE — balance already reserved
+
+      const result = await SelfInsurancePoolService.fileClaim(
+        'task-2', 'hustler-1', 25000, 'Concurrent claim', []
+      );
+
+      expect(result.success).toBe(false);
+      if (!result.success) expect(result.error.code).toBe('INSUFFICIENT_POOL_BALANCE');
+    });
+
+    it('fileClaim transaction issues UPDATE self_insurance_pool with correct coveredAmount (F58-3)', async () => {
+      // Verify the reservation UPDATE uses the correct covered amount: 25000 * 80% = 20000
+      mockDb.query.mockResolvedValueOnce({ rows: [makePoolRow()], rowCount: 1 } as never); // getPoolStatus
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // duplicate check FOR UPDATE
+      mockDb.query.mockResolvedValueOnce({ rows: [{ available_balance_cents: 80000, coverage_percentage: 80 }], rowCount: 1 } as never); // pool FOR UPDATE
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // UPDATE pool reservation
+      mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'claim-1' }], rowCount: 1 } as never); // INSERT claim
+
+      await SelfInsurancePoolService.fileClaim('task-1', 'hustler-1', 25000, 'Damage', []);
+
+      // Find the UPDATE self_insurance_pool call
+      const poolUpdateCall = mockDb.query.mock.calls.find(c => {
+        const sql = (c[0] as string).toLowerCase();
+        return sql.includes('update self_insurance_pool') && sql.includes('total_claims_cents');
+      });
+      expect(poolUpdateCall).toBeDefined();
+      // The parameter should be 20000 (25000 * 80%)
+      const params = poolUpdateCall![1] as unknown[];
+      expect(params[0]).toBe(20000);
     });
   });
 

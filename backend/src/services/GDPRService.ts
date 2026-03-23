@@ -1339,6 +1339,28 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
       }
     }
 
+    // -------------------------------------------------------------------------
+    // D58-8: Delete the Stripe customer via Stripe API before nulling the ID
+    // in the DB. This is best-effort: if Stripe is unavailable or the customer
+    // was already deleted, we log a warning and continue with the DB deletion.
+    // The stripe_customer_id is still nulled in the UPDATE users SET below.
+    // -------------------------------------------------------------------------
+    const stripeCustomerRow = await db.query<{ stripe_customer_id: string | null }>(
+      `SELECT stripe_customer_id FROM users WHERE id = $1`,
+      [userId]
+    );
+    const stripeCustomerId = stripeCustomerRow.rows[0]?.stripe_customer_id ?? null;
+    if (stripeCustomerId && stripe) {
+      try {
+        await stripe.customers.del(stripeCustomerId);
+      } catch (stripeErr) {
+        log.warn(
+          { userId, stripeCustomerId, err: stripeErr instanceof Error ? stripeErr.message : String(stripeErr) },
+          'GDPR: could not delete Stripe customer via API — continuing with DB anonymization (best-effort)'
+        );
+      }
+    }
+
     // Use a transaction to ensure atomicity
     await db.serializableTransaction(async (query) => {
       // 1. Immediate deletion (GDPR_COMPLIANCE_SPEC.md §3.1)
@@ -1371,6 +1393,33 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
       await query('DELETE FROM user_xp_tax_status WHERE user_id = $1', [userId]);
       await query('DELETE FROM insurance_contributions WHERE user_id = $1', [userId]);
       await query('DELETE FROM insurance_claims WHERE user_id = $1', [userId]);
+
+      // D58-1: Delete worker_tax_info — contains SSN/EIN (CRITICAL PII).
+      // worker_tax_info.user_id FK references users(id); cascade never fires
+      // because users is UPDATEd not DELETEd.
+      await query('DELETE FROM worker_tax_info WHERE user_id = $1', [userId]);
+
+      // D58-2: Delete worker_stripe_accounts — contains Stripe Connect account IDs (CRITICAL).
+      // worker_stripe_accounts.worker_id FK references users(id).
+      await query('DELETE FROM worker_stripe_accounts WHERE worker_id = $1', [userId]);
+
+      // D58-3: Delete worker_payout_settings and worker_earnings_1099 (HIGH PII).
+      // Both use worker_id FK referencing users(id).
+      await query('DELETE FROM worker_payout_settings WHERE worker_id = $1', [userId]);
+      await query('DELETE FROM worker_earnings_1099 WHERE worker_id = $1', [userId]);
+
+      // D58-4: Delete expertise tables — user_expertise, expertise_waitlist, expertise_change_log.
+      // All use user_id FK referencing users(id); cascade never fires because users is UPDATEd.
+      await query('DELETE FROM expertise_change_log WHERE user_id = $1', [userId]);
+      await query('DELETE FROM expertise_waitlist WHERE user_id = $1', [userId]);
+      await query('DELETE FROM user_expertise WHERE user_id = $1', [userId]);
+
+      // D58-5: Delete featured_listings — poster_id NOT NULL FK referencing users(id).
+      // Cascade never fires because users is UPDATEd not DELETEd.
+      await query('DELETE FROM featured_listings WHERE poster_id = $1', [userId]);
+
+      // D58-6: Delete task_matching_scores — hustler_id FK referencing users(id).
+      await query('DELETE FROM task_matching_scores WHERE hustler_id = $1', [userId]);
 
       // D54-1: Delete tax_forms — contains PII (name_on_file, address_line1, city,
       // state, zip, tax_id_last4, stripe_connect_id, foreign_tax_id, signature_on_file).
@@ -1593,11 +1642,13 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
         [userId, anonymizedId]
       );
 
-      // Anonymize proof_submissions for the same user — GPS and biometric fields
-      // are PII that live on proof_submissions, not proofs
+      // Anonymize proof_submissions for the same user — GPS, biometric, and photo fields
+      // are PII that live on proof_submissions, not proofs.
+      // D58-7: photo_url also contains PII (photo of the worker at the job site).
       await query(
         `UPDATE proof_submissions
-         SET gps_coordinates = NULL,
+         SET photo_url = NULL,
+             gps_coordinates = NULL,
              gps_accuracy_meters = NULL,
              biometric_verified = FALSE,
              biometric_confidence = NULL,

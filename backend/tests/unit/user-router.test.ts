@@ -706,6 +706,42 @@ describe('user.register', () => {
     });
   });
 
+  // A58-2: bannedByEmail guard must still block a user who is BOTH banned AND GDPR-deleted.
+  // The old query excluded ALL DELETED rows which allowed banned+GDPR-deleted users to re-register.
+  describe('A58-2: bannedByEmail guard with GDPR-deleted rows', () => {
+    it('throws FORBIDDEN when the matching row has is_banned=true AND account_status=DELETED', async () => {
+      // A banned+GDPR-deleted row must still block re-registration.
+      // The fixed query returns this row (it is NOT excluded because is_banned=true).
+      mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'banned-deleted-user-id' }], rowCount: 1 } as any);
+
+      await expect(
+        makePublicCaller().register(validInput)
+      ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    });
+
+    it('does NOT block re-registration when the matching row has is_banned=false AND account_status=DELETED', async () => {
+      // A legitimately GDPR-erased non-banned row must NOT block re-registration.
+      // The fixed query excludes this row, so ban check returns empty.
+      const newUser = makeFakeUser({
+        id: 'new-user-id',
+        firebase_uid: 'fb-new-user',
+        email: 'newuser@hustlexp.com',
+      });
+
+      // Email ban check → empty (DELETED non-banned row excluded by new logic)
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+      // Existing user check → no active row found
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+      // INSERT RETURNING
+      mockDb.query.mockResolvedValueOnce({ rows: [newUser], rowCount: 1 } as any);
+      setupStatsQuery();
+
+      const result = await makePublicCaller().register(validInput);
+
+      expect(result).toHaveProperty('id', 'new-user-id');
+    });
+  });
+
   // A56-1: concurrent-INSERT conflict path must check ban/suspension
   describe('A56-1: concurrent INSERT conflict path ban/suspension guard', () => {
     it('throws FORBIDDEN when the row that won the race is banned', async () => {
@@ -1027,6 +1063,8 @@ describe('user.updateProfile', () => {
 
   // SEC-FIX: Role switch must invalidate the auth token cache so the new
   // default_mode takes effect before the 5-minute TTL expires.
+  // A58-1 FIX: The call must pass writeRevocationMarker=false to avoid writing a
+  // Redis revocation marker on every profile update (including role switches).
   it('calls invalidateAuthCacheForUser when defaultMode changes', async () => {
     // User starts as 'worker'; switching to 'poster'
     const workerUser = makeFakeUser({ default_mode: 'worker' });
@@ -1044,7 +1082,7 @@ describe('user.updateProfile', () => {
     await makeUserCaller(workerUser).updateProfile({ defaultMode: 'poster' });
 
     expect(mockInvalidate).toHaveBeenCalledOnce();
-    expect(mockInvalidate).toHaveBeenCalledWith(TEST_USER_ID);
+    expect(mockInvalidate).toHaveBeenCalledWith(TEST_USER_ID, undefined, false);
   });
 
   it('does NOT call invalidateAuthCacheForUser when defaultMode is unchanged', async () => {
@@ -1100,6 +1138,24 @@ describe('user.updateProfile', () => {
 
     // Should have used plain db.query, not serializableTransaction
     expect(mockDb.serializableTransaction).not.toHaveBeenCalled();
+  });
+
+  // A58-1: updateProfile must NOT write a Redis revocation marker on every update.
+  // The third argument writeRevocationMarker=false must be passed so that normal
+  // profile updates do not force 12 minutes of Firebase re-verification.
+  it('A58-1: calls invalidateAuthCacheForUser with writeRevocationMarker=false on non-role-switch update', async () => {
+    // Only changing bio — no role switch path, uses plain db.query
+    mockDb.query.mockResolvedValueOnce({ rows: [makeFakeUser({ bio: 'Updated bio' })], rowCount: 1 } as any);
+    setupStatsQuery();
+
+    const mockInvalidate = vi.mocked(invalidateAuthCacheForUser);
+    mockInvalidate.mockReset();
+
+    await makeUserCaller().updateProfile({ bio: 'Updated bio' });
+
+    // Must be called with (userId, undefined, false) — NOT just (userId)
+    expect(mockInvalidate).toHaveBeenCalledOnce();
+    expect(mockInvalidate).toHaveBeenCalledWith(TEST_USER_ID, undefined, false);
   });
 });
 

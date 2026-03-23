@@ -57,8 +57,16 @@ beforeEach(() => {
 
 describe('XPTaxService.adminForgiveTax', () => {
   it('resets total_xp_held_back = 0 as well as total_unpaid_tax_cents (F47-1)', async () => {
-    // 1. UPDATE xp_tax_ledger
+    // F58-2 FIX: adminForgiveTax now first SELECTs the XP sum, then credits users.xp_total,
+    // then marks the ledger rows paid, then resets the summary. Updated mock sequence:
+    // 1. SELECT SUM(gross_payout_cents / 10) → total XP to credit
+    // 2. UPDATE users SET xp_total = xp_total + N (only if N > 0)
+    // 3. UPDATE xp_tax_ledger SET tax_paid = TRUE ...
+    // 4. UPDATE user_xp_tax_status SET total_unpaid_tax_cents = 0 ...
+    // 5. INSERT admin_actions (fire-and-forget)
     mockDb.query
+      .mockResolvedValueOnce({ rows: [{ total_xp: 500 }], rowCount: 1 } as never) // SELECT SUM (F58-2)
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // UPDATE users SET xp_total (F58-2)
       .mockResolvedValueOnce({ rows: [], rowCount: 2 } as never) // UPDATE xp_tax_ledger
       .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // UPDATE user_xp_tax_status
       .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // INSERT admin_actions (fire-and-forget catch)
@@ -67,16 +75,18 @@ describe('XPTaxService.adminForgiveTax', () => {
 
     expect(result.success).toBe(true);
 
+    const allSqls = mockDb.query.mock.calls.map(c => (c[0] as string));
+
     // Verify the xp_tax_ledger UPDATE includes xp_held_back = FALSE
-    const ledgerUpdateCall = mockDb.query.mock.calls[0];
-    const ledgerSql = ledgerUpdateCall[0] as string;
-    expect(ledgerSql).toContain('xp_held_back = FALSE');
+    const ledgerUpdateSql = allSqls.find(sql => sql.includes('xp_tax_ledger') && sql.includes('tax_paid = TRUE'));
+    expect(ledgerUpdateSql).toBeDefined();
+    expect(ledgerUpdateSql).toContain('xp_held_back = FALSE');
 
     // Verify the user_xp_tax_status UPDATE includes total_xp_held_back = 0
-    const summaryUpdateCall = mockDb.query.mock.calls[1];
-    const summarySql = summaryUpdateCall[0] as string;
-    expect(summarySql).toContain('total_xp_held_back = 0');
-    expect(summarySql).toContain('total_unpaid_tax_cents = 0');
+    const summaryUpdateSql = allSqls.find(sql => sql.includes('user_xp_tax_status'));
+    expect(summaryUpdateSql).toBeDefined();
+    expect(summaryUpdateSql).toContain('total_xp_held_back = 0');
+    expect(summaryUpdateSql).toContain('total_unpaid_tax_cents = 0');
   });
 
   it('returns error on DB failure in adminForgiveTax', async () => {
@@ -419,5 +429,169 @@ describe('XPTaxService.payTax — F53-1: per-PI per-row idempotency inside FIFO 
       (c[0] as string).toLowerCase().includes('update users')
     );
     expect(updateUsersCalls.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F58-1: payTax idempotency check must include user_id filter
+// ---------------------------------------------------------------------------
+
+describe('XPTaxService.payTax — F58-1: idempotency guard must filter by user_id', () => {
+  it('idempotency check SQL includes AND user_id = $2 to prevent cross-user PI reuse (F58-1)', async () => {
+    // The idempotency check query must include user_id in the WHERE clause.
+    // Without it, a PI used by user A can short-circuit payTax for user B.
+    mockStripe.isConfigured.mockReturnValue(true);
+    mockStripe.verifyPaymentIntent.mockResolvedValueOnce({
+      success: true,
+      data: {
+        status: 'succeeded',
+        amountCents: 500,
+        metadata: { type: 'xp_tax', user_id: 'user-b' },
+      },
+    } as any);
+
+    mockDb.query
+      // 1. Idempotency check — no existing rows for this PI + user-b combination
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      // Inside serializableTransaction:
+      // 2. SELECT unpaid taxes
+      .mockResolvedValueOnce({
+        rows: [
+          { id: 'tax-b1', tax_amount_cents: 500, gross_payout_cents: 5000, created_at: new Date() },
+        ],
+        rowCount: 1,
+      } as never)
+      // 3. Dedup INSERT
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
+      // 4. UPDATE xp_tax_ledger
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
+      // 5. UPDATE users
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
+      // 6. UPDATE user_xp_tax_status (summary)
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+    await XPTaxService.payTax('user-b', 'pi_originally_from_user_a');
+
+    // The FIRST db.query call is the idempotency check — verify its SQL and params
+    const idempotencyCall = mockDb.query.mock.calls[0];
+    const idempotencySql = idempotencyCall[0] as string;
+    const idempotencyParams = idempotencyCall[1] as unknown[];
+
+    // SQL must reference user_id in the WHERE clause
+    expect(idempotencySql.toLowerCase()).toContain('user_id');
+    // The second parameter must be the userId (user-b)
+    expect(idempotencyParams[1]).toBe('user-b');
+  });
+
+  it('user B proceeds to process their rows even when a PI was already used by user A (F58-1)', async () => {
+    // Scenario: pi_shared was already used by user-a (row in xp_tax_ledger with that PI).
+    // User B calls payTax with the same PI.
+    // With the bug (no user_id filter): idempotency check returns a row → short-circuit → user B gets xp_released=0 without paying
+    // With the fix (user_id = $2): idempotency check finds 0 rows for user-b → falls through → Stripe is verified
+    mockStripe.isConfigured.mockReturnValue(true);
+    mockStripe.verifyPaymentIntent.mockResolvedValueOnce({
+      success: true,
+      data: {
+        status: 'succeeded',
+        amountCents: 500,
+        // PI metadata belongs to user-b legitimately
+        metadata: { type: 'xp_tax', user_id: 'user-b' },
+      },
+    } as any);
+
+    mockDb.query
+      // 1. Idempotency check for (pi_shared, user-b): 0 rows → NOT a replay for user-b
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      // Inside serializableTransaction:
+      // 2. SELECT unpaid taxes for user-b
+      .mockResolvedValueOnce({
+        rows: [
+          { id: 'tax-b1', tax_amount_cents: 500, gross_payout_cents: 5000, created_at: new Date() },
+        ],
+        rowCount: 1,
+      } as never)
+      // 3. Dedup INSERT
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
+      // 4. UPDATE xp_tax_ledger
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
+      // 5. UPDATE users
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
+      // 6. UPDATE user_xp_tax_status (summary)
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+    const result = await XPTaxService.payTax('user-b', 'pi_shared');
+
+    // Must have entered the FIFO loop and processed user-b's rows
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.xp_released).toBe(500); // 5000/10
+    expect(mockDb.serializableTransaction).toHaveBeenCalledOnce();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F58-2: adminForgiveTax must credit users.xp_total with forgiven XP
+// ---------------------------------------------------------------------------
+
+describe('XPTaxService.adminForgiveTax — F58-2: must credit users.xp_total with forgiven XP', () => {
+  it('calls UPDATE users SET xp_total = xp_total + $1 after forgiving taxes (F58-2)', async () => {
+    // adminForgiveTax must:
+    // 1. SELECT SUM(xp_amount) or equivalent to find XP to release
+    // 2. UPDATE users SET xp_total = xp_total + <sum> WHERE id = userId
+    // 3. UPDATE xp_tax_ledger SET tax_paid = TRUE ...
+    // 4. UPDATE user_xp_tax_status SET total_unpaid_tax_cents = 0 ...
+    // Currently steps 1-2 are missing — this test verifies they are added.
+    mockDb.query
+      // 1. SELECT SUM of XP to forgive (inside serializableTransaction)
+      .mockResolvedValueOnce({ rows: [{ total_xp: 750 }], rowCount: 1 } as never) // SELECT SUM
+      // 2. UPDATE users SET xp_total = xp_total + 750
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
+      // 3. UPDATE xp_tax_ledger SET tax_paid = TRUE ...
+      .mockResolvedValueOnce({ rows: [], rowCount: 2 } as never)
+      // 4. UPDATE user_xp_tax_status SET total_unpaid_tax_cents = 0 ...
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
+      // 5. INSERT admin_actions (fire-and-forget)
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+    const result = await XPTaxService.adminForgiveTax('user-1', 'admin-1', 'audit override');
+
+    expect(result.success).toBe(true);
+
+    // Verify UPDATE users SET xp_total was called
+    const allSqls = mockDb.query.mock.calls.map(c => (c[0] as string).toLowerCase());
+    const updateUsersXpCall = allSqls.find(sql =>
+      sql.includes('update users') && sql.includes('xp_total')
+    );
+    expect(updateUsersXpCall).toBeDefined();
+    expect(updateUsersXpCall).toContain('xp_total = xp_total +');
+  });
+
+  it('credits the correct XP sum derived from ledger rows to users.xp_total (F58-2)', async () => {
+    // The XP credited must come from a SELECT SUM/calculation of the forgiven rows.
+    // Verify that the parameter passed to the UPDATE users query equals the summed XP.
+    mockDb.query
+      // 1. SELECT SUM returns total_xp = 1200
+      .mockResolvedValueOnce({ rows: [{ total_xp: 1200 }], rowCount: 1 } as never)
+      // 2. UPDATE users SET xp_total = xp_total + 1200
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
+      // 3. UPDATE xp_tax_ledger
+      .mockResolvedValueOnce({ rows: [], rowCount: 3 } as never)
+      // 4. UPDATE user_xp_tax_status
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
+      // 5. INSERT admin_actions
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+    await XPTaxService.adminForgiveTax('user-1', 'admin-1', 'test');
+
+    // Find the UPDATE users call and check the XP parameter
+    const updateUserCall = mockDb.query.mock.calls.find(c => {
+      const sql = (c[0] as string).toLowerCase();
+      return sql.includes('update users') && sql.includes('xp_total');
+    });
+    expect(updateUserCall).toBeDefined();
+    const params = updateUserCall![1] as unknown[];
+    // First param should be the XP amount (1200)
+    expect(params[0]).toBe(1200);
+    // Second param should be the userId
+    expect(params[1]).toBe('user-1');
   });
 });

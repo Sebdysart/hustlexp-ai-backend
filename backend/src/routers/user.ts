@@ -368,8 +368,15 @@ export const userRouter = router({
       // Also guard against the case where phone is omitted entirely (no phone check
       // above), by assigning trust_tier=0 (UNVERIFIED) so the account is restricted
       // until phone verification is completed.
+      // A58-2 FIX: The old condition `AND account_status != 'DELETED'` excluded ALL
+      // DELETED rows, which allowed a user who was banned AND GDPR-deleted to
+      // re-register with the same email. The corrected logic only excludes a DELETED
+      // row when it is NOT banned — a legitimately erased non-banned user. A row that
+      // is DELETED AND banned still triggers the FORBIDDEN guard.
       const bannedByEmail = await db.query<{ id: string }>(
-        `SELECT id FROM users WHERE email = $1 AND (is_banned = true OR account_status = 'SUSPENDED') AND account_status != 'DELETED'`,
+        `SELECT id FROM users WHERE email = $1
+          AND (is_banned = true OR account_status = 'SUSPENDED')
+          AND NOT (account_status = 'DELETED' AND is_banned = false)`,
         [input.email]
       );
       if (bannedByEmail.rows.length > 0) {
@@ -550,7 +557,10 @@ export const userRouter = router({
       // is enforced immediately rather than after the 5-minute TTL expires.
       // This matches the pattern used by ban, GDPR deletion, and trust-tier changes.
       // BUG GG3 FIX: await the call (was fire-and-forget) so Redis errors surface.
-      await invalidateAuthCacheForUser(ctx.user.id);
+      // A58-1 FIX: Pass writeRevocationMarker=false so a normal profile update does
+      // NOT write a Redis auth:revoked:<uid> key (which would force 12 minutes of
+      // Firebase re-verification for ordinary users).
+      await invalidateAuthCacheForUser(ctx.user.id, undefined, false);
       return await toMobileUser(updatedUser);
     }),
   

@@ -188,6 +188,20 @@ export const SelfInsurancePoolService = {
           throw new Error(`INSUFFICIENT_POOL_BALANCE:Pool has insufficient balance to cover this claim. Available: $${(availableBalanceCents / 100).toFixed(2)}`);
         }
 
+        // F58-3 FIX: Reserve the covered amount in the pool at filing time.
+        // Without this, concurrent fileClaim() calls all read the same available balance
+        // before any of them commits — allowing multiple claims to be filed that together
+        // exceed the pool capacity (over-commitment). By debiting total_claims_cents here
+        // (under the FOR UPDATE lock already held on the pool row), subsequent concurrent
+        // filers see the reduced available_balance_cents and are correctly rejected.
+        // Note: payClaim no longer re-debits total_claims_cents — it only marks the claim paid.
+        await query(
+          `UPDATE self_insurance_pool
+           SET total_claims_cents = total_claims_cents + $1,
+               updated_at = NOW()`,
+          [coveredAmount]
+        );
+
         // Insert claim (holds the lock through commit, preventing double-filing past the balance)
         const result = await query<{ id: string }>(
           `INSERT INTO insurance_claims (
@@ -426,13 +440,11 @@ export const SelfInsurancePoolService = {
           throw new Error(`TRANSFER_AMOUNT_TOO_LOW:Covered payout of ${coveredAmountCents} cents is below the minimum Stripe transfer amount (50 cents). Claim requires manual review.`);
         }
 
-        // Debit pool balance
-        await query(
-          `UPDATE self_insurance_pool
-           SET total_claims_cents = total_claims_cents + $1,
-               updated_at = NOW()`,
-          [coveredAmountCents]
-        );
+        // F58-3 FIX: Do NOT re-debit pool balance here. total_claims_cents was already
+        // incremented by fileClaim at filing time (under the same FOR UPDATE lock) to
+        // prevent concurrent over-commitment. Re-incrementing here would double-count
+        // the reservation and permanently over-report total_claims_cents.
+        // payClaim only needs to mark the claim as paid.
 
         // Mark claim as paid
         await query(

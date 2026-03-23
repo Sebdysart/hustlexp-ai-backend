@@ -208,11 +208,15 @@ export const XPTaxService = {
       // which made a partially-completed loop (crash mid-FIFO) permanently irrecoverable —
       // the remaining unpaid rows could never be finished. Now we only short-circuit when
       // there are truly no remaining unpaid rows for this user.
+      // F58-1 FIX: Added AND user_id = $2 so a PI used by user A cannot trigger the
+      // idempotency short-circuit for user B. Without this filter, any PI that has been
+      // recorded as paid for any user would cause all other users submitting the same PI
+      // to silently return xp_released=0 without going through Stripe verification.
       const existingPayment = await db.query<{ id: string }>(
         `SELECT id FROM xp_tax_ledger
-         WHERE stripe_payment_intent_id = $1 AND tax_paid = TRUE
+         WHERE stripe_payment_intent_id = $1 AND user_id = $2 AND tax_paid = TRUE
          LIMIT 1`,
-        [stripePaymentIntentId]
+        [stripePaymentIntentId, userId]
       );
       if (existingPayment.rows.length > 0) {
         // PI was seen before — but check whether any rows are still unpaid (partial failure)
@@ -435,6 +439,26 @@ export const XPTaxService = {
       // would leave the ledger rows forgiven but the summary still showing unpaid
       // tax — causing XP-block checks to incorrectly block the user forever.
       await db.serializableTransaction(async (query) => {
+        // F58-2 FIX: Compute XP held across all unforgiven rows so we can credit
+        // users.xp_total. Previously adminForgiveTax marked rows as paid and cleared
+        // the hold but never awarded the XP to the user — the held XP was permanently
+        // lost. We compute the sum first (before marking paid) then credit the user.
+        const xpSumResult = await query<{ total_xp: number }>(
+          `SELECT COALESCE(SUM(ROUND(gross_payout_cents / 10.0)), 0) AS total_xp
+           FROM xp_tax_ledger
+           WHERE user_id = $1 AND tax_paid = FALSE`,
+          [userId]
+        );
+        const totalXpToCredit = Number(xpSumResult.rows[0]?.total_xp ?? 0);
+
+        // Credit the user's xp_total with the forgiven XP (only if there is XP to release)
+        if (totalXpToCredit > 0) {
+          await query(
+            `UPDATE users SET xp_total = xp_total + $1 WHERE id = $2`,
+            [totalXpToCredit, userId]
+          );
+        }
+
         // Mark all unpaid taxes as forgiven and clear the xp_held_back flag
         // F47-1 FIX: Also reset xp_held_back = FALSE so the ledger rows no longer
         // show as "held" after forgiveness. Without this, the ledger entries stayed
