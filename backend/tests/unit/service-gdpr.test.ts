@@ -1748,3 +1748,102 @@ describe('D61-9: deleteAndAnonymizeUserData — admin_roles deleted', () => {
     expect(adminRolesCall![1]).toContain('user-d54');
   });
 });
+
+// ===========================================================================
+// D63: deleteAndAnonymizeUserData — nullable FK SET NULL and full_name fix
+// ===========================================================================
+
+describe('D63-1: deleteAndAnonymizeUserData — revenue_ledger.user_id SET NULL', () => {
+  it('NULLs user_id in revenue_ledger (nullable FK, cascade never fires on UPDATE)', async () => {
+    const { serializableQuery } = setupDeletionMocksWithCapture();
+
+    const result = await GDPRService.executeDeletion('req-d54');
+
+    expect(result.success).toBe(true);
+
+    const calls = serializableQuery.mock.calls as [string, unknown[]][];
+    const ledgerCall = calls.find(([sql]) => /revenue_ledger/i.test(sql));
+    expect(ledgerCall, 'Expected revenue_ledger user_id to be NULLed').toBeDefined();
+    expect(ledgerCall![0]).toMatch(/SET user_id\s*=\s*NULL/i);
+    expect(ledgerCall![1]).toContain('user-d54');
+  });
+});
+
+describe('D63-2: deleteAndAnonymizeUserData — ai_cost_logs.user_id SET NULL', () => {
+  it('NULLs user_id in ai_cost_logs (nullable FK)', async () => {
+    const { serializableQuery } = setupDeletionMocksWithCapture();
+
+    const result = await GDPRService.executeDeletion('req-d54');
+
+    expect(result.success).toBe(true);
+
+    const calls = serializableQuery.mock.calls as [string, unknown[]][];
+    const aiCostCall = calls.find(([sql]) => /ai_cost_logs/i.test(sql));
+    expect(aiCostCall, 'Expected ai_cost_logs user_id to be NULLed').toBeDefined();
+    expect(aiCostCall![0]).toMatch(/SET user_id\s*=\s*NULL/i);
+    expect(aiCostCall![1]).toContain('user-d54');
+  });
+});
+
+describe('D63-3: deleteAndAnonymizeUserData — payment_disputes.user_id SET NULL', () => {
+  it('NULLs user_id in payment_disputes (nullable FK)', async () => {
+    const { serializableQuery } = setupDeletionMocksWithCapture();
+
+    const result = await GDPRService.executeDeletion('req-d54');
+
+    expect(result.success).toBe(true);
+
+    const calls = serializableQuery.mock.calls as [string, unknown[]][];
+    const paymentDisputesCall = calls.find(([sql]) => /payment_disputes/i.test(sql));
+    expect(paymentDisputesCall, 'Expected payment_disputes user_id to be NULLed').toBeDefined();
+    expect(paymentDisputesCall![0]).toMatch(/SET user_id\s*=\s*NULL/i);
+    expect(paymentDisputesCall![1]).toContain('user-d54');
+  });
+});
+
+describe('D63-5-real: deleteAndAnonymizeUserData — full_name column anonymized', () => {
+  it('sets full_name = \'Deleted User\' in the UPDATE users SET statement', async () => {
+    const { serializableQuery } = setupDeletionMocksWithCapture();
+
+    const result = await GDPRService.executeDeletion('req-d54');
+
+    expect(result.success).toBe(true);
+
+    const calls = serializableQuery.mock.calls as [string, unknown[]][];
+    const usersUpdateCall = calls.find(([sql]) => /UPDATE users\s+SET/i.test(sql));
+    expect(usersUpdateCall, 'Expected UPDATE users SET to be called').toBeDefined();
+    expect(usersUpdateCall![0]).toMatch(/full_name\s*=\s*'Deleted User'/i);
+  });
+});
+
+describe('D63-6: deleteAndAnonymizeUserData — recurring_task_occurrences.worker_id SET NULL', () => {
+  it('NULLs worker_id in recurring_task_occurrences (nullable FK)', async () => {
+    const { serializableQuery } = setupDeletionMocksWithCapture();
+
+    const result = await GDPRService.executeDeletion('req-d54');
+
+    expect(result.success).toBe(true);
+
+    const calls = serializableQuery.mock.calls as [string, unknown[]][];
+    const rtoCall = calls.find(([sql]) => /recurring_task_occurrences/i.test(sql));
+    expect(rtoCall, 'Expected recurring_task_occurrences worker_id to be NULLed').toBeDefined();
+    expect(rtoCall![0]).toMatch(/SET worker_id\s*=\s*NULL/i);
+    expect(rtoCall![1]).toContain('user-d54');
+  });
+});
+
+describe('D63-7: deleteAndAnonymizeUserData — recurring_task_series.preferred_worker_id SET NULL', () => {
+  it('NULLs preferred_worker_id in recurring_task_series (nullable FK)', async () => {
+    const { serializableQuery } = setupDeletionMocksWithCapture();
+
+    const result = await GDPRService.executeDeletion('req-d54');
+
+    expect(result.success).toBe(true);
+
+    const calls = serializableQuery.mock.calls as [string, unknown[]][];
+    const rtsCall = calls.find(([sql]) => /recurring_task_series/i.test(sql) && /preferred_worker_id/i.test(sql));
+    expect(rtsCall, 'Expected recurring_task_series preferred_worker_id to be NULLed').toBeDefined();
+    expect(rtsCall![0]).toMatch(/SET preferred_worker_id\s*=\s*NULL/i);
+    expect(rtsCall![1]).toContain('user-d54');
+  });
+});

@@ -215,12 +215,16 @@ export const analyticsRouter = router({
       const isPoster = task.poster_id === ctx.user.id;
       const isWorker = task.worker_id === ctx.user.id;
       
-      // Check if user is admin
+      // Check if user is admin.
+      // A63-3 FIX: Use role allowlist consistent with adminProcedure — a bare
+      // SELECT without a role filter would grant admin access to any admin_roles
+      // row regardless of role value, allowing privilege escalation.
       let isAdmin = false;
       if (!isPoster && !isWorker) {
+        const VALID_ADMIN_ROLES = ['admin', 'support', 'finance', 'moderator', 'founder'];
         const adminResult = await db.query(
-          'SELECT 1 FROM admin_roles WHERE user_id = $1 LIMIT 1',
-          [ctx.user.id]
+          'SELECT 1 FROM admin_roles WHERE user_id = $1 AND role = ANY($2::text[]) LIMIT 1',
+          [ctx.user.id, VALID_ADMIN_ROLES]
         );
         isAdmin = adminResult.rows.length > 0;
       }

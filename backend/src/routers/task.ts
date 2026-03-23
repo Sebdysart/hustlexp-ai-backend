@@ -143,10 +143,14 @@ export const taskRouter = router({
       const isDiscoverable = ['OPEN', 'MATCHING'].includes(task.state);
 
       if (!isParticipant && !isDiscoverable) {
-        // Last resort: check admin role before throwing
+        // Last resort: check admin role before throwing.
+        // A63-3 FIX: Use the same role allowlist as adminProcedure — a bare
+        // SELECT without a role filter would grant admin access to any row in
+        // admin_roles regardless of role value, allowing privilege escalation.
+        const VALID_ADMIN_ROLES = ['admin', 'support', 'finance', 'moderator', 'founder'];
         const adminResult = await db.query(
-          'SELECT 1 FROM admin_roles WHERE user_id = $1 LIMIT 1',
-          [ctx.user.id]
+          'SELECT 1 FROM admin_roles WHERE user_id = $1 AND role = ANY($2::text[]) LIMIT 1',
+          [ctx.user.id, VALID_ADMIN_ROLES]
         );
         if (adminResult.rows.length === 0) {
           throw new TRPCError({ code: 'FORBIDDEN', message: 'Access denied' });
@@ -185,9 +189,11 @@ export const taskRouter = router({
       const task = result.rows[0];
       const isParticipant = task.poster_id === ctx.user.id || task.worker_id === ctx.user.id;
       if (!isParticipant) {
+        // A63-3 FIX: Use role allowlist consistent with adminProcedure.
+        const VALID_ADMIN_ROLES = ['admin', 'support', 'finance', 'moderator', 'founder'];
         const adminResult = await db.query(
-          'SELECT 1 FROM admin_roles WHERE user_id = $1 LIMIT 1',
-          [ctx.user.id]
+          'SELECT 1 FROM admin_roles WHERE user_id = $1 AND role = ANY($2::text[]) LIMIT 1',
+          [ctx.user.id, VALID_ADMIN_ROLES]
         );
         if (adminResult.rows.length === 0) {
           throw new TRPCError({ code: 'FORBIDDEN', message: 'Access denied' });
@@ -526,6 +532,19 @@ export const taskRouter = router({
           throw new TRPCError({
             code: 'PRECONDITION_FAILED',
             message: 'Task is no longer available for claiming',
+          });
+        }
+
+        // T63-4: Enforce application workflow — hustler must have a pending
+        // application before they can claim a task via mutual consent.
+        const appResult = await query<{ id: string }>(
+          `SELECT id FROM task_applications WHERE task_id = $1 AND worker_id = $2 AND status = 'pending'`,
+          [input.taskId, ctx.user.id]
+        );
+        if (!appResult.rows[0]) {
+          throw new TRPCError({
+            code: 'FORBIDDEN',
+            message: 'You must apply for this task before accepting it',
           });
         }
 
@@ -1342,8 +1361,8 @@ export const taskRouter = router({
       reason: z.string().trim().max(500).optional(),
     }))
     .mutation(async ({ ctx, input }) => {
-      const taskResult = await db.query(
-        `SELECT poster_id FROM tasks WHERE id = $1`,
+      const taskResult = await db.query<{ poster_id: string; state: string }>(
+        `SELECT poster_id, state FROM tasks WHERE id = $1`,
         [input.taskId]
       );
       if (taskResult.rows.length === 0) {
@@ -1351,6 +1370,15 @@ export const taskRouter = router({
       }
       if (taskResult.rows[0].poster_id !== ctx.user.id) {
         throw new TRPCError({ code: 'FORBIDDEN', message: 'Only the task poster can reject applicants' });
+      }
+
+      // T63-2: Applicant management is only valid before work has started.
+      const INVALID_STATES_FOR_REJECTION = ['IN_PROGRESS', 'PROOF_SUBMITTED', 'COMPLETED', 'CANCELLED', 'DISPUTED'];
+      if (INVALID_STATES_FOR_REJECTION.includes(taskResult.rows[0].state)) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'Cannot manage applicants once the task is in progress or finalised',
+        });
       }
 
       const result = await db.query(

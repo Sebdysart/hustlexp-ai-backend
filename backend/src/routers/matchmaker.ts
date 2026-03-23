@@ -67,8 +67,8 @@ export const matchmakerRouter = router({
           COALESCE((SELECT COUNT(*) FILTER(WHERE state = 'COMPLETED')::float / NULLIF(COUNT(*) FILTER(WHERE state IN ('COMPLETED','CANCELLED')), 0) FROM tasks WHERE worker_id = u.id), 1.0) as completion_rate,
           (SELECT AVG(stars)::float FROM task_ratings WHERE ratee_id = u.id) as average_rating
          FROM users u
-         WHERE u.default_mode IN ('hustler', 'flex')
-         AND u.account_status = 'active'
+         WHERE u.default_mode IN ('worker', 'poster')
+         AND u.account_status = 'ACTIVE'
          LIMIT 50`);
 
       const candidates = candidateResult.rows.map((c) => ({

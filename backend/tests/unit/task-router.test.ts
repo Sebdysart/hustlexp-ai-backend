@@ -1835,9 +1835,9 @@ describe('task.rejectApplicant', () => {
   });
 
   it('returns { success: true } on successful rejection', async () => {
-    // Task ownership check
+    // Task ownership + state check
     mockDb.query.mockResolvedValueOnce({
-      rows: [{ poster_id: USER_ID }],
+      rows: [{ poster_id: USER_ID, state: 'OPEN' }],
       rowCount: 1,
     } as any);
     // Update application
@@ -1865,7 +1865,7 @@ describe('task.rejectApplicant', () => {
 
   it('throws FORBIDDEN when user is not the poster', async () => {
     mockDb.query.mockResolvedValueOnce({
-      rows: [{ poster_id: OTHER_USER_ID }],
+      rows: [{ poster_id: OTHER_USER_ID, state: 'OPEN' }],
       rowCount: 1,
     } as any);
 
@@ -1876,7 +1876,7 @@ describe('task.rejectApplicant', () => {
 
   it('throws NOT_FOUND when no pending application for worker', async () => {
     mockDb.query.mockResolvedValueOnce({
-      rows: [{ poster_id: USER_ID }],
+      rows: [{ poster_id: USER_ID, state: 'OPEN' }],
       rowCount: 1,
     } as any);
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
@@ -1888,7 +1888,99 @@ describe('task.rejectApplicant', () => {
 
   it('accepts optional reason', async () => {
     mockDb.query.mockResolvedValueOnce({
-      rows: [{ poster_id: USER_ID }],
+      rows: [{ poster_id: USER_ID, state: 'OPEN' }],
+      rowCount: 1,
+    } as any);
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ id: APP_ID }],
+      rowCount: 1,
+    } as any);
+
+    const result = await makeCallerAsPoster().rejectApplicant({
+      taskId: TASK_ID,
+      workerId: OTHER_USER_ID,
+    });
+
+    expect(result).toEqual({ success: true });
+  });
+
+  // T63-2: task-state guard — cannot reject applicants once work has started
+  it('throws INVALID_STATE when task is IN_PROGRESS', async () => {
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ poster_id: USER_ID, state: 'IN_PROGRESS' }],
+      rowCount: 1,
+    } as any);
+
+    await expect(
+      makeCallerAsPoster().rejectApplicant({ taskId: TASK_ID, workerId: OTHER_USER_ID })
+    ).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+  });
+
+  it('throws INVALID_STATE when task is COMPLETED', async () => {
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ poster_id: USER_ID, state: 'COMPLETED' }],
+      rowCount: 1,
+    } as any);
+
+    await expect(
+      makeCallerAsPoster().rejectApplicant({ taskId: TASK_ID, workerId: OTHER_USER_ID })
+    ).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+  });
+
+  it('throws INVALID_STATE when task is CANCELLED', async () => {
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ poster_id: USER_ID, state: 'CANCELLED' }],
+      rowCount: 1,
+    } as any);
+
+    await expect(
+      makeCallerAsPoster().rejectApplicant({ taskId: TASK_ID, workerId: OTHER_USER_ID })
+    ).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+  });
+
+  it('throws INVALID_STATE when task is DISPUTED', async () => {
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ poster_id: USER_ID, state: 'DISPUTED' }],
+      rowCount: 1,
+    } as any);
+
+    await expect(
+      makeCallerAsPoster().rejectApplicant({ taskId: TASK_ID, workerId: OTHER_USER_ID })
+    ).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+  });
+
+  it('throws INVALID_STATE when task is PROOF_SUBMITTED', async () => {
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ poster_id: USER_ID, state: 'PROOF_SUBMITTED' }],
+      rowCount: 1,
+    } as any);
+
+    await expect(
+      makeCallerAsPoster().rejectApplicant({ taskId: TASK_ID, workerId: OTHER_USER_ID })
+    ).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+  });
+
+  it('allows rejection when task is OPEN', async () => {
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ poster_id: USER_ID, state: 'OPEN' }],
+      rowCount: 1,
+    } as any);
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ id: APP_ID }],
+      rowCount: 1,
+    } as any);
+
+    const result = await makeCallerAsPoster().rejectApplicant({
+      taskId: TASK_ID,
+      workerId: OTHER_USER_ID,
+    });
+
+    expect(result).toEqual({ success: true });
+  });
+
+  it('allows rejection when task is ASSIGNED', async () => {
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ poster_id: USER_ID, state: 'ASSIGNED' }],
       rowCount: 1,
     } as any);
     mockDb.query.mockResolvedValueOnce({
@@ -2230,17 +2322,17 @@ describe('task.acceptWithConsent', () => {
   it('successfully accepts a wildcard task with mutual consent', async () => {
     mockDb.query
       .mockResolvedValueOnce({
-        // Pre-transaction: get template_slug + state
-        rows: [{ template_slug: 'wildcard_bizarre', state: 'OPEN' }],
+        // SELECT state, template_slug, poster_id FOR UPDATE
+        rows: [{ state: 'OPEN', template_slug: 'wildcard_bizarre', poster_id: OTHER_USER_ID }],
         rowCount: 1,
       } as any)
       .mockResolvedValueOnce({
-        // Inside transaction: SELECT state FOR UPDATE
-        rows: [{ state: 'OPEN' }],
+        // SELECT id FROM task_applications — pending application exists
+        rows: [{ id: APP_ID }],
         rowCount: 1,
       } as any)
       .mockResolvedValueOnce({
-        // Inside transaction: UPDATE tasks SET ... WHERE state = 'OPEN'
+        // UPDATE tasks SET mutual_consent_accepted ...
         rows: [], rowCount: 1,
       } as any);
 
@@ -2252,6 +2344,30 @@ describe('task.acceptWithConsent', () => {
     });
 
     expect(result).toEqual({ accepted: true });
+  });
+
+  // T63-4: application workflow guard
+  it('throws FORBIDDEN when hustler has no pending application', async () => {
+    mockDb.query
+      .mockResolvedValueOnce({
+        // SELECT state, template_slug, poster_id FOR UPDATE
+        rows: [{ state: 'OPEN', template_slug: 'wildcard_bizarre', poster_id: OTHER_USER_ID }],
+        rowCount: 1,
+      } as any)
+      .mockResolvedValueOnce({
+        // SELECT id FROM task_applications — no pending application
+        rows: [],
+        rowCount: 0,
+      } as any);
+
+    mockGetTemplate.mockReturnValueOnce(CONSENT_TEMPLATE as any);
+
+    await expect(
+      makeCallerAsHustler().acceptWithConsent({
+        taskId: TASK_ID,
+        consentItems: ['I agree'],
+      })
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
   });
 
   it('throws NOT_FOUND when task does not exist', async () => {
@@ -2266,9 +2382,9 @@ describe('task.acceptWithConsent', () => {
   });
 
   it('throws BAD_REQUEST when template does not require consent', async () => {
-    // Router: db.query first (returns task row), then getTemplate is called
+    // FOR UPDATE lock — returns task with non-consent template
     mockDb.query.mockResolvedValueOnce({
-      rows: [{ template_slug: 'standard_physical', state: 'posted' }],
+      rows: [{ state: 'OPEN', template_slug: 'standard_physical', poster_id: OTHER_USER_ID }],
       rowCount: 1,
     } as any);
     mockGetTemplate.mockReturnValueOnce(NO_CONSENT_TEMPLATE as any);
@@ -2282,17 +2398,11 @@ describe('task.acceptWithConsent', () => {
   });
 
   it('throws PRECONDITION_FAILED when task is no longer available', async () => {
-    mockDb.query
-      .mockResolvedValueOnce({
-        // Pre-transaction: get template_slug + state
-        rows: [{ template_slug: 'wildcard_bizarre', state: 'claimed' }],
-        rowCount: 1,
-      } as any)
-      .mockResolvedValueOnce({
-        // Inside transaction: SELECT state FOR UPDATE → returns claimed (not 'posted')
-        rows: [{ state: 'claimed' }],
-        rowCount: 1,
-      } as any);
+    mockDb.query.mockResolvedValueOnce({
+      // FOR UPDATE — task is already claimed/non-OPEN
+      rows: [{ state: 'ACCEPTED', template_slug: 'wildcard_bizarre', poster_id: OTHER_USER_ID }],
+      rowCount: 1,
+    } as any);
 
     mockGetTemplate.mockReturnValueOnce(CONSENT_TEMPLATE as any);
 

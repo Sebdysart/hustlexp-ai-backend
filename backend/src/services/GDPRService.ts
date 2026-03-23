@@ -1615,6 +1615,7 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
         `UPDATE users
          SET email = $1,
              name = 'Deleted User',
+             full_name = 'Deleted User',
              phone = NULL,
              account_status = 'DELETED',
              paused_at = $2,
@@ -1822,6 +1823,41 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
          SET metadata = metadata || '{"gdpr_deleted": true}'::jsonb,
              reason = '[deleted]'
          WHERE target_user_id = $1`,
+        [userId]
+      );
+
+      // D63-1: revenue_ledger.user_id is nullable FK with ON DELETE SET NULL, but
+      // cascade never fires because users is UPDATEd not DELETEd. NULL it manually.
+      await query(
+        `UPDATE revenue_ledger SET user_id = NULL WHERE user_id = $1`,
+        [userId]
+      );
+
+      // D63-2: ai_cost_logs.user_id is nullable FK with ON DELETE SET NULL, but
+      // cascade never fires because users is UPDATEd not DELETEd. NULL it manually.
+      await query(
+        `UPDATE ai_cost_logs SET user_id = NULL WHERE user_id = $1`,
+        [userId]
+      );
+
+      // D63-3: payment_disputes.user_id is nullable FK with ON DELETE SET NULL, but
+      // cascade never fires because users is UPDATEd not DELETEd. NULL it manually.
+      await query(
+        `UPDATE payment_disputes SET user_id = NULL WHERE user_id = $1`,
+        [userId]
+      );
+
+      // D63-6: recurring_task_occurrences.worker_id is nullable FK (ON DELETE SET NULL)
+      // but cascade never fires because users is UPDATEd not DELETEd. NULL it manually.
+      await query(
+        `UPDATE recurring_task_occurrences SET worker_id = NULL WHERE worker_id = $1`,
+        [userId]
+      );
+
+      // D63-7: recurring_task_series.preferred_worker_id is nullable FK (ON DELETE SET NULL)
+      // but cascade never fires because users is UPDATEd not DELETEd. NULL it manually.
+      await query(
+        `UPDATE recurring_task_series SET preferred_worker_id = NULL WHERE preferred_worker_id = $1`,
         [userId]
       );
     });

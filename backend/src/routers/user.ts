@@ -450,12 +450,18 @@ export const userRouter = router({
         }
         // A56-1: The winning concurrent request may have been a banned or suspended
         // account. Guard against re-admitting such accounts via the conflict path.
+        // A63-1 FIX: Also guard against DELETED accounts — the concurrent winner
+        // may be a GDPR-deleted row. Returning a DELETED profile would expose
+        // anonymized data and block the caller from ever re-registering.
         const winner = existing.rows[0];
         if (winner.is_banned) {
           throw new TRPCError({ code: 'FORBIDDEN', message: 'Account is banned' });
         }
         if (winner.account_status === 'SUSPENDED') {
           throw new TRPCError({ code: 'FORBIDDEN', message: 'Account is suspended' });
+        }
+        if (winner.account_status === 'DELETED') {
+          throw new TRPCError({ code: 'FORBIDDEN', message: 'Account has been deleted' });
         }
         return await toMobileUser(winner);
       }
