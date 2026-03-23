@@ -1790,10 +1790,13 @@ export const TaskService = {
           };
         }
 
-        // Transition back to OPEN — task is available for new applicants
+        // Transition to CANCELLED — worker abandonment is a terminal event for this assignment.
+        // The task creator can re-post if needed. OPEN is not a valid transition from ACCEPTED
+        // per VALID_TRANSITIONS, and the escrow would be in LOCKED_DISPUTE state making any
+        // new worker unpayable.
         const result = await query<Task>(
           `UPDATE tasks
-           SET state = 'OPEN',
+           SET state = 'CANCELLED',
                worker_id = NULL,
                accepted_at = NULL,
                updated_at = NOW()

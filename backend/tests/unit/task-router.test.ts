@@ -1729,6 +1729,14 @@ describe('task.assignWorker', () => {
 
     expect(result).toEqual(acceptedTask);
   });
+
+  // T58-3: poster must not be able to assign themselves as worker
+  it('T58-3: throws BAD_REQUEST when workerId === caller (poster self-assigning)', async () => {
+    // The guard must fire before any DB query when workerId === ctx.user.id
+    await expect(
+      makeCallerAsPoster(USER_ID).assignWorker({ taskId: TASK_ID, workerId: USER_ID })
+    ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+  });
 });
 
 // ===========================================================================

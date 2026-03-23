@@ -310,7 +310,7 @@ describe('ProofService', () => {
       const submittedProof = makeProof({ state: 'SUBMITTED' });
 
       mockDb.query
-        .mockResolvedValueOnce({ rows: [{ worker_id: 'user-1', state: 'in_progress' }], rowCount: 1 } as never) // task FOR UPDATE
+        .mockResolvedValueOnce({ rows: [{ worker_id: 'user-1', state: 'ACCEPTED' }], rowCount: 1 } as never) // task FOR UPDATE
         .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)   // dup check FOR UPDATE on proofs
         .mockResolvedValueOnce({ rows: [pendingProof], rowCount: 1 } as never) // INSERT
         .mockResolvedValueOnce({ rows: [submittedProof], rowCount: 1 } as never); // UPDATE to SUBMITTED
@@ -332,7 +332,7 @@ describe('ProofService', () => {
     it('T53-1: throws CONFLICT when a duplicate pending/submitted proof exists (race guard)', async () => {
       // Simulate: task lock passes, but duplicate proof check finds an existing proof
       mockDb.query
-        .mockResolvedValueOnce({ rows: [{ worker_id: 'user-1', state: 'in_progress' }], rowCount: 1 } as never) // task FOR UPDATE
+        .mockResolvedValueOnce({ rows: [{ worker_id: 'user-1', state: 'ACCEPTED' }], rowCount: 1 } as never) // task FOR UPDATE
         .mockResolvedValueOnce({ rows: [{ id: 'existing-proof' }], rowCount: 1 } as never); // existing PENDING proof
 
       await expect(
@@ -346,7 +346,7 @@ describe('ProofService', () => {
 
     it('T53-1: throws UNAUTHORIZED when submitter is not the assigned worker', async () => {
       mockDb.query.mockResolvedValueOnce({
-        rows: [{ worker_id: 'other-worker', state: 'in_progress' }], rowCount: 1,
+        rows: [{ worker_id: 'other-worker', state: 'ACCEPTED' }], rowCount: 1,
       } as never);
 
       await expect(
@@ -356,6 +356,41 @@ describe('ProofService', () => {
           description: 'Fake proof',
         })
       ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+    });
+
+    // T58-4: PROOF_ALLOWED_STATES must NOT include non-existent states
+    it('T58-4: rejects proof submission when task state is IN_PROGRESS (non-existent state)', async () => {
+      // IN_PROGRESS is not a valid task state — proof submission should be rejected
+      mockDb.query.mockResolvedValueOnce({
+        rows: [{ worker_id: 'user-1', state: 'IN_PROGRESS' }], rowCount: 1,
+      } as never);
+
+      await expect(
+        ProofService.submit({
+          taskId: 'task-1',
+          submitterId: 'user-1',
+          description: 'Proof attempt',
+        })
+      ).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    });
+
+    it('T58-4: allows proof submission when task state is ACCEPTED (valid state)', async () => {
+      const pendingProof = makeProof({ state: 'PENDING' });
+      const submittedProof = makeProof({ state: 'SUBMITTED' });
+
+      mockDb.query
+        .mockResolvedValueOnce({ rows: [{ worker_id: 'user-1', state: 'ACCEPTED' }], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+        .mockResolvedValueOnce({ rows: [pendingProof], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [submittedProof], rowCount: 1 } as never);
+
+      const result = await ProofService.submit({
+        taskId: 'task-1',
+        submitterId: 'user-1',
+        description: 'Proof done',
+      });
+
+      expect(result.success).toBe(true);
     });
   });
 
@@ -724,6 +759,26 @@ describe('ProofService', () => {
       expect(LogisticsAIService.validateGPSProof).toHaveBeenCalled();
       expect(PhotoVerificationService.compareBeforeAfter).toHaveBeenCalled();
       expect(JudgeAIService.synthesizeVerdict).toHaveBeenCalled();
+    });
+
+    // T58-2: auth check must NOT be skipped when task not found (rows.length === 0)
+    it('returns FORBIDDEN when task does not exist for the proof (T58-2: orphaned proof)', async () => {
+      const proof = makeProof({ state: 'SUBMITTED' });
+      // Phase 1 SELECT — proof found, SUBMITTED state is valid for ACCEPTED transition
+      mockDb.query.mockResolvedValueOnce({ rows: [proof], rowCount: 1 } as never);
+      // T53-8 ownership check — task_id row NOT found (orphaned proof)
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+
+      const result = await ProofService.review({
+        proofId: 'proof-1',
+        reviewerId: 'any-caller',
+        decision: 'ACCEPTED',
+      });
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.code).toBe('FORBIDDEN');
+      }
     });
 
     it('handles invariant violation during review', async () => {

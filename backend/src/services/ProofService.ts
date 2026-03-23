@@ -288,8 +288,10 @@ export const ProofService = {
           throw new TRPCError({ code: 'UNAUTHORIZED', message: 'Only the assigned worker can submit proof.' });
         }
 
-        // FIX 2: Only allow proof submission on active task states
-        const PROOF_ALLOWED_STATES = ['accepted', 'in_progress', 'ACCEPTED', 'IN_PROGRESS'];
+        // FIX 2: Only allow proof submission on ACCEPTED state — the only valid state
+        // for proof submission per the task state machine. 'in_progress', 'IN_PROGRESS',
+        // and 'accepted' (lowercase) are not valid task states.
+        const PROOF_ALLOWED_STATES = ['ACCEPTED'];
         if (!PROOF_ALLOWED_STATES.includes(task.state)) {
           throw new TRPCError({
             code: 'PRECONDITION_FAILED',
@@ -524,12 +526,12 @@ export const ProofService = {
         `SELECT poster_id FROM tasks WHERE id = $1`,
         [current.task_id]
       );
-      if (taskOwnerResult.rows.length > 0 && taskOwnerResult.rows[0].poster_id !== reviewerId) {
+      if (taskOwnerResult.rows.length === 0 || taskOwnerResult.rows[0].poster_id !== reviewerId) {
         return {
           success: false,
           error: {
             code: ErrorCodes.FORBIDDEN,
-            message: 'Only the task poster can review proof',
+            message: 'Not authorized to review this proof',
           },
         };
       }

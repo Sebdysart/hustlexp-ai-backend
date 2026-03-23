@@ -1293,6 +1293,69 @@ describe('TaskService.expire', () => {
 });
 
 // ===========================================================================
+// T58-1: workerAbandon — must transition to CANCELLED not OPEN
+// ===========================================================================
+describe('TaskService.workerAbandon (T58-1)', () => {
+  it('sets state to CANCELLED (not OPEN) when an ACCEPTED task is abandoned', async () => {
+    // [1] FOR UPDATE lock — task is ACCEPTED
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ state: 'ACCEPTED', worker_id: 'worker-1', poster_id: 'poster-1' }],
+      rowCount: 1,
+    } as never);
+    // [2] UPDATE tasks SET state='CANCELLED' — return abandoned task row
+    mockQuery.mockResolvedValueOnce({
+      rows: [makeTask({ state: 'CANCELLED', worker_id: null })],
+      rowCount: 1,
+    } as never);
+    // [3] UPDATE escrows SET state='LOCKED_DISPUTE' — no funded escrow found (rowCount 0)
+    mockQuery.mockResolvedValueOnce({
+      rows: [],
+      rowCount: 0,
+    } as never);
+
+    const result = await TaskService.workerAbandon('task-1', 'worker-1');
+
+    expect(result.success).toBe(true);
+    // The UPDATE must have set state='CANCELLED'
+    const updateCall = (mockQuery as ReturnType<typeof vi.fn>).mock.calls.find(
+      (call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes('UPDATE tasks')
+    );
+    expect(updateCall).toBeDefined();
+    expect(updateCall![0]).toContain("'CANCELLED'");
+    expect(updateCall![0]).not.toContain("'OPEN'");
+  });
+
+  it('does NOT produce any query that sets state=OPEN when worker abandons ACCEPTED task', async () => {
+    // [1] FOR UPDATE
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ state: 'ACCEPTED', worker_id: 'worker-1', poster_id: 'poster-1' }],
+      rowCount: 1,
+    } as never);
+    // [2] UPDATE tasks
+    mockQuery.mockResolvedValueOnce({
+      rows: [makeTask({ state: 'CANCELLED', worker_id: null })],
+      rowCount: 1,
+    } as never);
+    // [3] UPDATE escrows — no funded escrow
+    mockQuery.mockResolvedValueOnce({
+      rows: [],
+      rowCount: 0,
+    } as never);
+
+    await TaskService.workerAbandon('task-1', 'worker-1');
+
+    const allCalls = (mockQuery as ReturnType<typeof vi.fn>).mock.calls as unknown[][];
+    const setsStateOpen = allCalls.some(
+      (call) =>
+        typeof call[0] === 'string' &&
+        (call[0] as string).includes('UPDATE tasks') &&
+        (call[0] as string).includes("'OPEN'")
+    );
+    expect(setsStateOpen).toBe(false);
+  });
+});
+
+// ===========================================================================
 // 15. getValidTransitions helper
 // ===========================================================================
 describe('TaskService.getValidTransitions', () => {

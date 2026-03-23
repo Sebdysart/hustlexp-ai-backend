@@ -1195,6 +1195,12 @@ export const taskRouter = router({
       // UUIDs for existence (UUID enumeration via timing/error discrimination).
       // Now non-owners always receive FORBIDDEN before existence is confirmed.
 
+      // T58-3: A poster cannot assign themselves as the worker even if a pending
+      // application row exists for their own userId. Fail fast before any DB access.
+      if (input.workerId === ctx.user.id) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'Cannot assign yourself as worker' });
+      }
+
       const TRUST_TIER_ORDER = ['rookie', 'verified', 'trusted'];
       const TRUST_TIER_NUMERIC_MAP: Record<number, string> = { 1: 'rookie', 2: 'verified', 3: 'trusted', 4: 'trusted' };
 
