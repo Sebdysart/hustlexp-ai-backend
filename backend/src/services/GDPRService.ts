@@ -1400,6 +1400,15 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
         'DELETE FROM tips WHERE poster_id = $1 OR worker_id = $1',
         [userId]
       );
+      // D55-2: Delete poster_ratings where user is the rated poster or the rater.
+      // Both poster_id and rated_by are NOT NULL and reference users(id).
+      await query(
+        'DELETE FROM poster_ratings WHERE poster_id = $1 OR rated_by = $1',
+        [userId]
+      );
+      // D55-3: Delete live_sessions for this user (user_id NOT NULL, contains
+      // earnings_cents and behavioural session data).
+      await query('DELETE FROM live_sessions WHERE user_id = $1', [userId]);
       // D50-4: Delete evidence uploaded by this user (uploader_user_id is NOT NULL
       // in the schema, so UPDATE NULL is not possible — DELETE is required).
       // Note: evidence rows for active/completed disputes are not retained here
@@ -1407,6 +1416,9 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
       // for resolved disputes (GDPR Art. 17). Open dispute escrows are already
       // refunded above before we reach this point.
       await query('DELETE FROM evidence WHERE uploader_user_id = $1', [userId]);
+      // D55-1: Delete dispute_evidence uploaded by this user (uploaded_by NOT NULL;
+      // different table from evidence — has uploaded_by column, not uploader_user_id).
+      await query('DELETE FROM dispute_evidence WHERE uploaded_by = $1', [userId]);
       await query(
         `UPDATE dispute_jury_votes SET voter_id = NULL WHERE voter_id = $1`,
         [userId]

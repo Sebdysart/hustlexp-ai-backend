@@ -670,6 +670,27 @@ export const DisputeService = {
           idempotencyKey: posterTrustIdempotencyKey,
         }, query);
         
+        // T55-1 FIX: When the worker wins (RELEASE), the task is still in DISPUTED
+        // state. The payment-worker later sets escrow.state = 'RELEASED', but the
+        // PostgreSQL trigger enforce_released_requires_completed() (INV-2/HX201)
+        // blocks that UPDATE unless the task is already COMPLETED.
+        //
+        // Fix: inside this same transaction, accept the submitted proof and transition
+        // the task DISPUTED → COMPLETED BEFORE the escrow.release_requested event is
+        // written, making both writes atomic with the dispute resolution.
+        if (outcomeEscrowAction === 'RELEASE') {
+          // Accept any submitted proof so INV-3 (completed task requires accepted proof) is satisfied.
+          await query(
+            `UPDATE proofs SET state = 'ACCEPTED', reviewed_at = NOW() WHERE task_id = $1 AND state = 'SUBMITTED'`,
+            [dispute.task_id]
+          );
+          // Transition task DISPUTED → COMPLETED.
+          await query(
+            `UPDATE tasks SET state = 'COMPLETED', completed_at = NOW() WHERE id = $1 AND state = 'DISPUTED'`,
+            [dispute.task_id]
+          );
+        }
+
         // Write escrow action request outbox event (exactly one)
         const escrowEventType = outcomeEscrowAction === 'RELEASE'
           ? 'escrow.release_requested'

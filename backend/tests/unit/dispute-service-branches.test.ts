@@ -463,4 +463,79 @@ describe('DisputeService.resolve', () => {
     expect(result.success).toBe(false);
     if (!result.success) expect(result.error.code).toBe('DB_ERROR');
   });
+
+  it('T55-1: RELEASE path accepts proof and completes task BEFORE emitting escrow event', async () => {
+    // Arrange: admin has permission
+    mockDb.query.mockResolvedValueOnce({ rows: [{ can_resolve_disputes: true }], rowCount: 1 } as any);
+
+    const disputeRow = {
+      id: 'd1',
+      task_id: 'task-1',
+      escrow_id: 'escrow-1',
+      worker_id: 'worker-1',
+      poster_id: 'poster-1',
+      state: 'OPEN',
+      version: 1,
+    };
+    const escrowRow = { id: 'escrow-1', state: 'LOCKED_DISPUTE', amount: 10000, version: 1 };
+
+    // Track all query SQL strings issued inside the transaction
+    const querySqlLog: string[] = [];
+
+    mockDb.transaction.mockImplementationOnce(async (fn: (q: typeof db.query) => Promise<unknown>) => {
+      const captureQuery = vi.fn(async (sql: string, _params?: unknown[]) => {
+        querySqlLog.push(sql.trim().split('\n')[0].trim()); // first line for identification
+        if (sql.includes('FROM disputes') && sql.includes('FOR UPDATE')) {
+          return { rows: [disputeRow], rowCount: 1 };
+        }
+        if (sql.includes('FROM escrows') && sql.includes('FOR UPDATE')) {
+          return { rows: [escrowRow], rowCount: 1 };
+        }
+        if (sql.includes('UPDATE disputes')) {
+          return { rows: [{ ...disputeRow, state: 'RESOLVED', version: 2 }], rowCount: 1 };
+        }
+        // proof accept
+        if (sql.includes('UPDATE proofs') && sql.includes("'ACCEPTED'")) {
+          return { rows: [], rowCount: 1 };
+        }
+        // task complete from disputed
+        if (sql.includes('UPDATE tasks') && sql.includes("'COMPLETED'")) {
+          return { rows: [{ id: 'task-1', state: 'COMPLETED' }], rowCount: 1 };
+        }
+        // outbox writes
+        if (sql.includes('INSERT INTO outbox') || sql.includes('outbox')) {
+          return { rows: [{ id: 'outbox-1' }], rowCount: 1 };
+        }
+        return { rows: [], rowCount: 0 };
+      });
+      return fn(captureQuery);
+    });
+
+    const result = await DisputeService.resolve({
+      disputeId: 'd1',
+      resolvedBy: 'admin-1',
+      resolution: 'Worker wins',
+      outcomeEscrowAction: 'RELEASE',
+    });
+
+    // The resolve itself must succeed
+    expect(result.success).toBe(true);
+
+    // T55-1 CRITICAL: proof must be accepted AND task must be completed BEFORE
+    // the escrow.release_requested outbox event is emitted — otherwise the
+    // payment-worker's RELEASED→escrow UPDATE will fail INV-2 (task not COMPLETED)
+    const proofAcceptIdx = querySqlLog.findIndex(sql => sql.includes('UPDATE proofs'));
+    const taskCompleteIdx = querySqlLog.findIndex(sql => sql.includes('UPDATE tasks') && !sql.includes('disputes'));
+    const escrowEventIdx = querySqlLog.findIndex(sql =>
+      sql.includes('outbox') || sql.includes('INSERT INTO outbox')
+    );
+
+    expect(proofAcceptIdx).toBeGreaterThanOrEqual(0);  // proof must be accepted
+    expect(taskCompleteIdx).toBeGreaterThanOrEqual(0); // task must be completed
+    // Both must happen before the escrow release outbox event
+    if (escrowEventIdx >= 0) {
+      expect(proofAcceptIdx).toBeLessThan(escrowEventIdx);
+      expect(taskCompleteIdx).toBeLessThan(escrowEventIdx);
+    }
+  });
 });

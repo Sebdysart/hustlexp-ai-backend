@@ -1792,7 +1792,10 @@ describe('DisputeService', () => {
       mockDb.query
         .mockResolvedValueOnce({ rows: [dispute], rowCount: 1 } as never)   // FOR UPDATE dispute
         .mockResolvedValueOnce({ rows: [escrow], rowCount: 1 } as never)    // FOR UPDATE escrow
-        .mockResolvedValueOnce({ rows: [resolved], rowCount: 1 } as never); // UPDATE dispute
+        .mockResolvedValueOnce({ rows: [resolved], rowCount: 1 } as never)  // UPDATE dispute
+        // T55-1 FIX: RELEASE path accepts proof then completes task before outbox
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)           // UPDATE proofs ACCEPTED
+        .mockResolvedValueOnce({ rows: [{ id: 'task-1', state: 'COMPLETED' }], rowCount: 1 } as never); // UPDATE tasks COMPLETED
 
       const svc = await getService();
       const result = await svc.resolve({
