@@ -319,4 +319,113 @@ describe('DisputeService', () => {
       expect(moduleDisputedUpdate).toBeUndefined();
     });
   });
+
+  describe('T61-1: COMPLETED task transitions to DISPUTED when dispute is created', () => {
+    it('T61-1: creates dispute on COMPLETED task and transitions task to DISPUTED within the transaction', async () => {
+      const { DisputeService } = await import('../../src/services/DisputeService');
+
+      // Set completed_at to just now (within 48h window)
+      const recentlyCompleted = new Date(Date.now() - 1 * 60 * 60 * 1000).toISOString(); // 1 hour ago
+
+      mockDb.query
+        // 1. task FOR UPDATE → COMPLETED (within 48h window)
+        .mockResolvedValueOnce({
+          rows: [{ id: 'task-1', state: 'COMPLETED', completed_at: recentlyCompleted, poster_id: 'poster-1', worker_id: 'worker-1' }],
+          rowCount: 1,
+        } as never)
+        // 2. escrow FOR UPDATE → RELEASED (completed tasks typically have released escrow)
+        .mockResolvedValueOnce({
+          rows: [{ id: 'escrow-1', state: 'RELEASED', amount: 5000, stripe_transfer_id: null, version: 1 }],
+          rowCount: 1,
+        } as never)
+        // 3. escrow UPDATE → LOCKED_DISPUTE
+        .mockResolvedValueOnce({
+          rows: [{ id: 'escrow-1', state: 'LOCKED_DISPUTE', version: 2 }],
+          rowCount: 1,
+        } as never)
+        // 4. dispute INSERT
+        .mockResolvedValueOnce({
+          rows: [{ id: 'disp-1', state: 'OPEN', version: 1 }],
+          rowCount: 1,
+        } as never)
+        // 5. outbox INSERT (dispute.created)
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
+        // 6. T61-1: UPDATE tasks SET state='DISPUTED' WHERE state='COMPLETED'
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+      const result = await DisputeService.create({
+        taskId: 'task-1',
+        escrowId: 'escrow-1',
+        initiatedBy: 'poster-1',
+        posterId: 'poster-1',
+        workerId: 'worker-1',
+        reason: 'Completed work not as described',
+        description: 'The delivered work does not match spec',
+      });
+
+      expect(result.success).toBe(true);
+
+      // Verify that the UPDATE tasks ... COMPLETED → DISPUTED query was issued
+      const allSqls = mockDb.query.mock.calls.map(c => c[0] as string);
+      const completedToDisputed = allSqls.find(
+        (sql) => sql.includes('UPDATE tasks') && sql.includes('DISPUTED') && sql.includes("state = 'COMPLETED'")
+      );
+      expect(completedToDisputed).toBeDefined();
+    });
+
+    it('T61-1: does NOT emit a COMPLETED→DISPUTED update for PROOF_SUBMITTED tasks (guard is state-specific)', async () => {
+      const { DisputeService } = await import('../../src/services/DisputeService');
+
+      mockDb.query
+        // task FOR UPDATE → PROOF_SUBMITTED
+        .mockResolvedValueOnce({
+          rows: [{ id: 'task-2', state: 'PROOF_SUBMITTED', completed_at: null, poster_id: 'poster-1', worker_id: 'worker-1' }],
+          rowCount: 1,
+        } as never)
+        // escrow FOR UPDATE → FUNDED
+        .mockResolvedValueOnce({
+          rows: [{ id: 'escrow-2', state: 'FUNDED', amount: 5000, stripe_transfer_id: null, version: 1 }],
+          rowCount: 1,
+        } as never)
+        // escrow UPDATE → LOCKED_DISPUTE
+        .mockResolvedValueOnce({
+          rows: [{ id: 'escrow-2', state: 'LOCKED_DISPUTE', version: 2 }],
+          rowCount: 1,
+        } as never)
+        // dispute INSERT
+        .mockResolvedValueOnce({
+          rows: [{ id: 'disp-2', state: 'OPEN', version: 1 }],
+          rowCount: 1,
+        } as never)
+        // outbox INSERT
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
+        // PROOF_SUBMITTED → DISPUTED update
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+      const result = await DisputeService.create({
+        taskId: 'task-2',
+        escrowId: 'escrow-2',
+        initiatedBy: 'poster-1',
+        posterId: 'poster-1',
+        workerId: 'worker-1',
+        reason: 'Proof looks wrong',
+        description: 'The proof submitted is invalid',
+      });
+
+      expect(result.success).toBe(true);
+
+      // Verify PROOF_SUBMITTED → DISPUTED was used (not COMPLETED → DISPUTED)
+      const allSqls = mockDb.query.mock.calls.map(c => c[0] as string);
+      const proofToDisputed = allSqls.find(
+        (sql) => sql.includes('UPDATE tasks') && sql.includes('DISPUTED') && sql.includes("state = 'PROOF_SUBMITTED'")
+      );
+      expect(proofToDisputed).toBeDefined();
+
+      // The COMPLETED → DISPUTED variant must NOT appear
+      const completedToDisputed = allSqls.find(
+        (sql) => sql.includes('UPDATE tasks') && sql.includes('DISPUTED') && sql.includes("state = 'COMPLETED'")
+      );
+      expect(completedToDisputed).toBeUndefined();
+    });
+  });
 });

@@ -595,3 +595,113 @@ describe('XPTaxService.adminForgiveTax — F58-2: must credit users.xp_total wit
     expect(params[1]).toBe('user-1');
   });
 });
+
+// ---------------------------------------------------------------------------
+// F61-3: payTax sets xp_held_back = FALSE on paid rows
+// ---------------------------------------------------------------------------
+
+describe('XPTaxService.payTax — F61-3: xp_held_back cleared to FALSE when tax is paid', () => {
+  it('F61-3: the xp_tax_ledger UPDATE in the FIFO loop includes xp_held_back = FALSE', async () => {
+    mockStripe.isConfigured.mockReturnValue(true);
+    mockStripe.verifyPaymentIntent.mockResolvedValueOnce({
+      success: true,
+      data: {
+        status: 'succeeded',
+        amountCents: 500,
+        metadata: { type: 'xp_tax', user_id: 'user-1' },
+      },
+    } as any);
+
+    mockDb.query
+      // 1. Idempotency check — no existing rows with this PI
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      // Inside serializableTransaction:
+      // 2. SELECT unpaid taxes (one row with xp_held_back=TRUE)
+      .mockResolvedValueOnce({
+        rows: [
+          { id: 'tax-1', tax_amount_cents: 500, gross_payout_cents: 5000, xp_held_back: true, created_at: new Date() },
+        ],
+        rowCount: 1,
+      } as never)
+      // 3. Dedup INSERT into xp_tax_payment_intent_idempotency (rowCount=1 → proceed)
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
+      // 4. UPDATE xp_tax_ledger SET tax_paid=TRUE, xp_held_back=FALSE, xp_released=TRUE ...
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
+      // 5. UPDATE users SET xp_total = xp_total + N
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
+      // 6. UPDATE user_xp_tax_status (summary reconciliation)
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+    const result = await XPTaxService.payTax('user-1', 'pi_test_f61_3');
+
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.xp_released).toBe(500); // 5000/10
+
+    // Find the UPDATE xp_tax_ledger call and verify xp_held_back = FALSE is present.
+    // Note: the outer idempotency check also queries xp_tax_ledger with tax_paid = TRUE,
+    // so we filter specifically for UPDATE (not SELECT) statements.
+    const ledgerUpdateCall = mockDb.query.mock.calls.find(call => {
+      const sql = (call[0] as string).trimStart();
+      return sql.startsWith('UPDATE xp_tax_ledger') && sql.includes('tax_paid = TRUE');
+    });
+    expect(ledgerUpdateCall).toBeDefined();
+    const ledgerSql = ledgerUpdateCall![0] as string;
+    expect(ledgerSql).toContain('xp_held_back = FALSE');
+  });
+
+  it('F61-3: xp_held_back = FALSE appears on each row in a multi-row FIFO loop', async () => {
+    mockStripe.isConfigured.mockReturnValue(true);
+    mockStripe.verifyPaymentIntent.mockResolvedValueOnce({
+      success: true,
+      data: {
+        status: 'succeeded',
+        amountCents: 1000,
+        metadata: { type: 'xp_tax', user_id: 'user-2' },
+      },
+    } as any);
+
+    mockDb.query
+      // 1. Outer idempotency check — no existing rows
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      // Inside serializableTransaction:
+      // 2. SELECT unpaid taxes (two rows)
+      .mockResolvedValueOnce({
+        rows: [
+          { id: 'tax-a', tax_amount_cents: 500, gross_payout_cents: 5000, xp_held_back: true, created_at: new Date('2026-01-01') },
+          { id: 'tax-b', tax_amount_cents: 500, gross_payout_cents: 5000, xp_held_back: true, created_at: new Date('2026-01-02') },
+        ],
+        rowCount: 2,
+      } as never)
+      // 3. Dedup INSERT for tax-a (rowCount=1)
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
+      // 4. UPDATE xp_tax_ledger for tax-a
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
+      // 5. UPDATE users XP for tax-a
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
+      // 6. Dedup INSERT for tax-b (rowCount=1)
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
+      // 7. UPDATE xp_tax_ledger for tax-b
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
+      // 8. UPDATE users XP for tax-b
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
+      // 9. UPDATE user_xp_tax_status (summary)
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+    const result = await XPTaxService.payTax('user-2', 'pi_multi_row');
+
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.xp_released).toBe(1000); // 2 rows × 500 XP
+
+    // All xp_tax_ledger UPDATE calls must include xp_held_back = FALSE.
+    // Filter specifically for UPDATE (not SELECT) to avoid matching the outer
+    // idempotency check which also queries xp_tax_ledger with tax_paid = TRUE.
+    const ledgerUpdateCalls = mockDb.query.mock.calls.filter(call => {
+      const sql = (call[0] as string).trimStart();
+      return sql.startsWith('UPDATE xp_tax_ledger') && sql.includes('tax_paid = TRUE');
+    });
+    expect(ledgerUpdateCalls.length).toBe(2);
+    for (const call of ledgerUpdateCalls) {
+      expect(call[0] as string).toContain('xp_held_back = FALSE');
+    }
+  });
+});

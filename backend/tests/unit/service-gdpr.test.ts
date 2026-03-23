@@ -1660,3 +1660,91 @@ describe('D60-I: deleteAndAnonymizeUserData — verification_earnings tables del
     expect(deletion![1]).toContain('user-d54');
   });
 });
+
+// ===========================================================================
+// D61: deleteAndAnonymizeUserData — column name / type bugs
+// ===========================================================================
+
+describe('D61-1: deleteAndAnonymizeUserData — admin_actions uses target_user_id (not target_id)', () => {
+  it('UPDATEs admin_actions using WHERE target_user_id (not target_id)', async () => {
+    const { serializableQuery } = setupDeletionMocksWithCapture();
+
+    const result = await GDPRService.executeDeletion('req-d54');
+
+    expect(result.success).toBe(true);
+
+    const calls = serializableQuery.mock.calls as [string, unknown[]][];
+    const adminActionsCall = calls.find(([sql]) => /admin_actions/i.test(sql));
+    expect(adminActionsCall, 'Expected admin_actions SQL to be issued').toBeDefined();
+    expect(adminActionsCall![0]).toMatch(/target_user_id/i);
+    expect(adminActionsCall![0]).not.toMatch(/WHERE\s+target_id\b/i);
+    expect(adminActionsCall![1]).toContain('user-d54');
+  });
+});
+
+describe('D61-2: deleteAndAnonymizeUserData — content_moderation_queue uses DELETE (not SET NULL)', () => {
+  it('DELETEs content_moderation_queue rows instead of setting user_id = NULL', async () => {
+    const { serializableQuery } = setupDeletionMocksWithCapture();
+
+    const result = await GDPRService.executeDeletion('req-d54');
+
+    expect(result.success).toBe(true);
+
+    const calls = serializableQuery.mock.calls as [string, unknown[]][];
+    const cmqCall = calls.find(([sql]) => /content_moderation_queue/i.test(sql));
+    expect(cmqCall, 'Expected content_moderation_queue SQL to be issued').toBeDefined();
+    expect(cmqCall![0]).toMatch(/DELETE FROM content_moderation_queue/i);
+    expect(cmqCall![0]).not.toMatch(/SET\s+user_id\s*=\s*NULL/i);
+    expect(cmqCall![1]).toContain('user-d54');
+  });
+});
+
+describe('D61-7: deleteAndAnonymizeUserData — insurance_contributions uses hustler_id (not user_id)', () => {
+  it('DELETEs insurance_contributions using WHERE hustler_id (not user_id)', async () => {
+    const { serializableQuery } = setupDeletionMocksWithCapture();
+
+    const result = await GDPRService.executeDeletion('req-d54');
+
+    expect(result.success).toBe(true);
+
+    const calls = serializableQuery.mock.calls as [string, unknown[]][];
+    const insContribCall = calls.find(([sql]) => /DELETE FROM insurance_contributions/i.test(sql));
+    expect(insContribCall, 'Expected DELETE FROM insurance_contributions to be called').toBeDefined();
+    expect(insContribCall![0]).toMatch(/hustler_id/i);
+    expect(insContribCall![0]).not.toMatch(/WHERE\s+user_id/i);
+    expect(insContribCall![1]).toContain('user-d54');
+  });
+});
+
+describe('D61-8: deleteAndAnonymizeUserData — fraud_patterns uses $1::UUID (not $1::TEXT)', () => {
+  it('uses $1::UUID cast when removing user from fraud_patterns user_ids array', async () => {
+    const { serializableQuery } = setupDeletionMocksWithCapture();
+
+    const result = await GDPRService.executeDeletion('req-d54');
+
+    expect(result.success).toBe(true);
+
+    const calls = serializableQuery.mock.calls as [string, unknown[]][];
+    const fraudPatternCall = calls.find(([sql]) => /fraud_patterns/i.test(sql));
+    expect(fraudPatternCall, 'Expected fraud_patterns SQL to be issued').toBeDefined();
+    expect(fraudPatternCall![0]).toMatch(/\$1::UUID/i);
+    expect(fraudPatternCall![0]).not.toMatch(/\$1::TEXT/i);
+    expect(fraudPatternCall![1]).toContain('user-d54');
+  });
+});
+
+describe('D61-9: deleteAndAnonymizeUserData — admin_roles deleted', () => {
+  it('DELETEs admin_roles rows for the user', async () => {
+    const { serializableQuery } = setupDeletionMocksWithCapture();
+
+    const result = await GDPRService.executeDeletion('req-d54');
+
+    expect(result.success).toBe(true);
+
+    const calls = serializableQuery.mock.calls as [string, unknown[]][];
+    const adminRolesCall = calls.find(([sql]) => /DELETE FROM admin_roles/i.test(sql));
+    expect(adminRolesCall, 'Expected DELETE FROM admin_roles to be called').toBeDefined();
+    expect(adminRolesCall![0]).toMatch(/user_id/i);
+    expect(adminRolesCall![1]).toContain('user-d54');
+  });
+});

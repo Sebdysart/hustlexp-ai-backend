@@ -75,15 +75,17 @@ describe('ChargebackService', () => {
       } as never);
       // 4. UPDATE payment_disputes with reversal ledger
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
-      // 5. UPDATE users SET payouts_locked
+      // 5. UPDATE users SET dispute_count (F61-2: always-increment, step 1)
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
-      // 6. UPDATE payment_disputes SET payouts_were_frozen
+      // 6. UPDATE users SET payouts_locked = TRUE WHERE payouts_locked = FALSE (step 2)
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
-      // 7. SELECT trust_tier, dispute_count
+      // 7. UPDATE payment_disputes SET payouts_were_frozen
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      // 8. SELECT trust_tier, dispute_count
       mockDb.query.mockResolvedValueOnce({
         rows: [{ trust_tier: 3, dispute_count: 1 }], rowCount: 1,
       } as never);
-      // 8. UPDATE escrows SET state = LOCKED_DISPUTE
+      // 9. UPDATE escrows SET state = LOCKED_DISPUTE
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
 
       const result = await ChargebackService.handleDisputeCreated(params);
@@ -133,12 +135,15 @@ describe('ChargebackService', () => {
       mockDb.query.mockResolvedValueOnce({ rows: [{ poster_id: 'user-1' }], rowCount: 1 } as never);
       mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'pd-2' }], rowCount: 1 } as never);
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // link reversal
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // freeze payouts
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // always-increment dispute_count (F61-2 step 1)
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // conditional payouts_locked (F61-2 step 2)
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // payouts_were_frozen
       // dispute_count = 2, trust_tier = 3 -> should drop to 2
       mockDb.query.mockResolvedValueOnce({ rows: [{ trust_tier: 3, dispute_count: 2 }], rowCount: 1 } as never);
       // UPDATE users SET trust_tier
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      // SELECT firebase_uid (A60-4)
+      mockDb.query.mockResolvedValueOnce({ rows: [{ firebase_uid: 'fb-user-1' }], rowCount: 1 } as never);
       // INSERT trust_ledger
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
       // UPDATE payment_disputes trust_was_downgraded
@@ -163,15 +168,17 @@ describe('ChargebackService', () => {
       mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'esc-1', task_id: 'task-1', state: 'FUNDED' }], rowCount: 1 } as never);
       mockDb.query.mockResolvedValueOnce({ rows: [{ poster_id: 'user-1' }], rowCount: 1 } as never);
       mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'pd-3' }], rowCount: 1 } as never);
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // link reversal
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // always-increment dispute_count (F61-2 step 1)
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // conditional payouts_locked (F61-2 step 2)
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // payouts_were_frozen
       // dispute_count = 3 -> drop to tier 1
       mockDb.query.mockResolvedValueOnce({ rows: [{ trust_tier: 4, dispute_count: 3 }], rowCount: 1 } as never);
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // UPDATE users SET trust_tier = 1
+      mockDb.query.mockResolvedValueOnce({ rows: [{ firebase_uid: 'fb-u1' }], rowCount: 1 } as never); // SELECT firebase_uid
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // INSERT trust_ledger
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // UPDATE payment_disputes trust_was_downgraded
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // LOCK escrow
 
       const result = await ChargebackService.handleDisputeCreated(params);
       expect(result.success).toBe(true);
@@ -347,7 +354,9 @@ describe('ChargebackService', () => {
       mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'pd-2' }], rowCount: 1 } as never);
       // link reversal ledger
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
-      // freeze payouts
+      // always-increment dispute_count (F61-2 step 1)
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      // conditional payouts_locked (F61-2 step 2)
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
       // payouts_were_frozen
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
@@ -368,6 +377,116 @@ describe('ChargebackService', () => {
       expect(result.success).toBe(true);
 
       expect(mockInvalidate).toHaveBeenCalledWith('user-1', 'fb-user-1', false);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // F61-2: dispute_count incremented even when payouts_locked=TRUE
+  // -------------------------------------------------------------------------
+  describe('F61-2: dispute_count always incremented regardless of payouts_locked state', () => {
+    it('F61-2: increments dispute_count even when payouts_locked is already TRUE (repeat fraudster)', async () => {
+      // Simulates a user who already has payouts_locked=TRUE from a prior chargeback.
+      // The original bug: a single UPDATE with AND payouts_locked = FALSE would match
+      // 0 rows and skip the dispute_count increment entirely.
+      // Fix: two separate UPDATEs — first always increments dispute_count,
+      // second conditionally sets payouts_locked (matches 0 rows when already locked, harmless).
+      const params = makeDisputeParams({ stripeDisputeId: 'dp_repeat_fraud' });
+
+      // 1. Find escrow by payment intent
+      mockDb.query.mockResolvedValueOnce({
+        rows: [{ id: 'esc-1', task_id: 'task-1', state: 'RELEASED' }], rowCount: 1,
+      } as never);
+      // 2. Find poster from task
+      mockDb.query.mockResolvedValueOnce({
+        rows: [{ poster_id: 'user-1' }], rowCount: 1,
+      } as never);
+      // 3. INSERT payment_disputes (new)
+      mockDb.query.mockResolvedValueOnce({
+        rows: [{ id: 'pd-repeat' }], rowCount: 1,
+      } as never);
+      // 4. UPDATE payment_disputes with reversal ledger
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      // 5. UPDATE users SET dispute_count = COALESCE(dispute_count,0)+1 (always — F61-2 fix, step 1)
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      // 6. UPDATE users SET payouts_locked = TRUE WHERE payouts_locked = FALSE
+      //    (matches 0 rows because already locked — this is fine)
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+      // 7. UPDATE payment_disputes SET payouts_were_frozen = TRUE
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      // 8. SELECT trust_tier, dispute_count (now reflects incremented count = 3 → drop to tier 1)
+      mockDb.query.mockResolvedValueOnce({
+        rows: [{ trust_tier: 2, dispute_count: 3 }], rowCount: 1,
+      } as never);
+      // 9. UPDATE users SET trust_tier = 1
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      // 10. SELECT firebase_uid
+      mockDb.query.mockResolvedValueOnce({ rows: [{ firebase_uid: 'fb-user-1' }], rowCount: 1 } as never);
+      // 11. INSERT trust_ledger
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      // 12. UPDATE payment_disputes trust_was_downgraded
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      // 13. UPDATE escrows SET state = LOCKED_DISPUTE (escrow was RELEASED → no match, harmless)
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+
+      const result = await ChargebackService.handleDisputeCreated(params);
+      expect(result.success).toBe(true);
+
+      // Verify: the dispute_count increment UPDATE was issued (no payouts_locked guard)
+      const allSqls = mockDb.query.mock.calls.map(c => c[0] as string);
+      const disputeCountUpdate = allSqls.find(
+        (sql) => sql.includes('dispute_count') && sql.includes('UPDATE users') && !sql.includes('payouts_locked = FALSE')
+      );
+      expect(disputeCountUpdate).toBeDefined();
+
+      // Verify: a separate conditional payouts_locked update exists
+      const payoutsLockUpdate = allSqls.find(
+        (sql) => sql.includes('payouts_locked = TRUE') && sql.includes('payouts_locked = FALSE')
+      );
+      expect(payoutsLockUpdate).toBeDefined();
+    });
+
+    it('F61-2: trust tier downgrade fires on 3rd chargeback even when payouts were already locked', async () => {
+      // User has payouts_locked=TRUE. Receives 3rd chargeback. Because dispute_count is
+      // always incremented (F61-2), the SELECT after the update returns dispute_count=3
+      // and the tier-downgrade logic fires correctly.
+      const params = makeDisputeParams({ stripeDisputeId: 'dp_3rd_chargeback' });
+
+      // Escrow lookup
+      mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'esc-1', task_id: 'task-1', state: 'FUNDED' }], rowCount: 1 } as never);
+      // Poster lookup
+      mockDb.query.mockResolvedValueOnce({ rows: [{ poster_id: 'user-1' }], rowCount: 1 } as never);
+      // INSERT payment_disputes
+      mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'pd-3rd' }], rowCount: 1 } as never);
+      // Link reversal ledger
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      // Always-increment dispute_count (F61-2 step 1)
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      // Conditional payouts_locked (already locked → 0 rows matched)
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+      // UPDATE payouts_were_frozen
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      // SELECT trust_tier=3, dispute_count=3 → must drop to tier 1
+      mockDb.query.mockResolvedValueOnce({ rows: [{ trust_tier: 3, dispute_count: 3 }], rowCount: 1 } as never);
+      // UPDATE users SET trust_tier = 1
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      // SELECT firebase_uid
+      mockDb.query.mockResolvedValueOnce({ rows: [{ firebase_uid: 'fb-u1' }], rowCount: 1 } as never);
+      // INSERT trust_ledger
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      // UPDATE payment_disputes trust_was_downgraded
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      // UPDATE escrows (FUNDED → LOCKED_DISPUTE)
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+      const result = await ChargebackService.handleDisputeCreated(params);
+      expect(result.success).toBe(true);
+
+      // Tier-downgrade query must have been called with tier=1
+      const trustUpdateCall = mockDb.query.mock.calls.find(
+        (call) => typeof call[0] === 'string' && (call[0] as string).includes('UPDATE users SET trust_tier')
+      );
+      expect(trustUpdateCall).toBeDefined();
+      expect(trustUpdateCall![1]).toContain(1); // downgraded to tier 1
     });
   });
 });

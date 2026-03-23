@@ -1391,7 +1391,7 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
       await query('DELETE FROM worker_skills WHERE user_id = $1', [userId]);
       await query('DELETE FROM xp_tax_ledger WHERE user_id = $1', [userId]);
       await query('DELETE FROM user_xp_tax_status WHERE user_id = $1', [userId]);
-      await query('DELETE FROM insurance_contributions WHERE user_id = $1', [userId]);
+      await query('DELETE FROM insurance_contributions WHERE hustler_id = $1', [userId]);
       await query('DELETE FROM insurance_claims WHERE user_id = $1', [userId]);
 
       // D58-1: Delete worker_tax_info — contains SSN/EIN (CRITICAL PII).
@@ -1708,8 +1708,8 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
       // Anonymize fraud patterns (keep pattern data but remove user references)
       await query(
         `UPDATE fraud_patterns
-         SET user_ids = array_remove(user_ids, $1::TEXT)
-         WHERE $1::TEXT = ANY(user_ids)`,
+         SET user_ids = array_remove(user_ids, $1::UUID)
+         WHERE $1::UUID = ANY(user_ids)`,
         [userId]
       );
       
@@ -1734,13 +1734,8 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
         [userId]
       );
 
-      // Anonymize content moderation queue (keep moderation records but remove user reference)
-      await query(
-        `UPDATE content_moderation_queue
-         SET user_id = NULL
-         WHERE user_id = $1`,
-        [userId]
-      );
+      // D61-2: content_moderation_queue.user_id is NOT NULL — DELETE rows instead of SET NULL.
+      await query('DELETE FROM content_moderation_queue WHERE user_id = $1', [userId]);
 
       // D60-C: shadow_score_events.user_id is NOT NULL — must DELETE.
       // Contains behavioral scoring events which are PII.
@@ -1785,15 +1780,19 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
       // D60-I: verification_earnings_tracking.user_id is the PK (NOT NULL) — must DELETE.
       await query('DELETE FROM verification_earnings_tracking WHERE user_id = $1', [userId]);
 
+      // D61-9: Delete admin_roles — user_id NOT NULL UNIQUE FK references users(id).
+      // After erasure the user's UUID must not remain as a live PK reference.
+      await query('DELETE FROM admin_roles WHERE user_id = $1', [userId]);
+
       // FIX: Anonymize admin_actions — keep rows for financial audit trail, but
       // clear the free-text reason field and mark metadata with gdpr_deleted so
       // it's clear the subject has been deleted. Do NOT delete rows (audit trail).
-      // The target_id UUID is retained as a legal gray area for audit purposes.
+      // D61-1: The correct column is target_user_id (not target_id).
       await query(
         `UPDATE admin_actions
          SET metadata = metadata || '{"gdpr_deleted": true}'::jsonb,
              reason = '[deleted]'
-         WHERE target_id = $1`,
+         WHERE target_user_id = $1`,
         [userId]
       );
     });

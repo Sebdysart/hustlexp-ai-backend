@@ -228,13 +228,29 @@ export const ChargebackService = {
 
       // 4. Freeze user payouts (if user identified)
       if (userId) {
+        // F61-2 FIX: Split into two separate UPDATE statements so that dispute_count
+        // is always incremented regardless of whether payouts_locked is already TRUE.
+        // The original single UPDATE had AND payouts_locked = FALSE which prevented
+        // dispute_count from incrementing on repeat chargebacks — so the tier-downgrade
+        // logic never fired for users with an already-frozen account.
+
+        // Step 1: Always increment dispute_count (no payouts_locked guard).
+        await db.query(
+          `UPDATE users
+           SET dispute_count = COALESCE(dispute_count, 0) + 1,
+               last_dispute_at = NOW(),
+               updated_at = NOW()
+           WHERE id = $1`,
+          [userId]
+        );
+
+        // Step 2: Conditionally lock payouts (only if not already locked).
         await db.query(
           `UPDATE users
            SET payouts_locked = TRUE,
                payouts_locked_at = NOW(),
                payouts_locked_reason = $2,
-               dispute_count = COALESCE(dispute_count, 0) + 1,
-               last_dispute_at = NOW()
+               updated_at = NOW()
            WHERE id = $1
              AND payouts_locked = FALSE`,
           [userId, `Chargeback: ${stripeDisputeId} (${reason || 'unknown'})`]

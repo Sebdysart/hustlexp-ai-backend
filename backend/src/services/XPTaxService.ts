@@ -335,10 +335,15 @@ export const XPTaxService = {
 
             // Mark tax as paid and release held XP, recording the Stripe intent ID
             // for idempotency (prevents double-charge on retry).
+            // F61-3 FIX: Also set xp_held_back = FALSE so the row no longer appears
+            // as "held" after payment. Without this, user_xp_tax_status summary
+            // recomputes total_xp_held_back = COUNT(*) WHERE xp_held_back = TRUE and
+            // still sees these rows, leaving dashboards/XP-block checks stale.
             await query(
               `UPDATE xp_tax_ledger
                SET tax_paid = TRUE,
                    tax_paid_at = NOW(),
+                   xp_held_back = FALSE,
                    xp_released = TRUE,
                    xp_released_at = NOW(),
                    stripe_payment_intent_id = $2

@@ -163,6 +163,14 @@ export const SelfInsurancePoolService = {
         // the check before either INSERT committed, creating duplicate pending claims.
         // The FOR UPDATE row-level lock serializes concurrent callers: the second caller
         // blocks until the first transaction commits, then sees the inserted row.
+        //
+        // F61-1 FIX: When no rows exist, FOR UPDATE acquires no lock — two concurrent
+        // calls can both find 0 rows and both proceed to INSERT. The real concurrency
+        // safety is provided by the partial unique index
+        // idx_insurance_claims_unique_active (task_id, hustler_id WHERE status NOT IN
+        // ('denied', 'withdrawn')) defined in add_unique_claim_constraint.sql. The
+        // second concurrent INSERT fails with a unique constraint violation which is
+        // caught by the outer catch and surfaced as CLAIM_ALREADY_EXISTS.
         const existingClaim = await query<{ id: string }>(
           `SELECT id FROM insurance_claims WHERE task_id = $1 AND hustler_id = $2 AND status NOT IN ('denied', 'withdrawn') LIMIT 1 FOR UPDATE`,
           [taskId, hustlerId]

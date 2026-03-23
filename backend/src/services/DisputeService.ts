@@ -371,9 +371,21 @@ export const DisputeService = {
         // openDispute commit. When a dispute is created on a PROOF_SUBMITTED task, the
         // task must move to DISPUTED in the same transaction so no concurrent
         // reviewProof call can review proof after the dispute row exists.
+        //
+        // T61-1 FIX: Also transition COMPLETED tasks to DISPUTED so the resolution
+        // path (REFUND/SPLIT → CANCELLED, RELEASE → stays COMPLETED) works correctly.
+        // Without this, a dispute on a COMPLETED task leaves the task in COMPLETED
+        // permanently after a REFUND/SPLIT resolution because the UPDATE:
+        //   UPDATE tasks SET state = 'CANCELLED' WHERE id = $1 AND state = 'DISPUTED'
+        // matches 0 rows.
         if (task.state === 'PROOF_SUBMITTED') {
           await query(
             `UPDATE tasks SET state = 'DISPUTED', updated_at = NOW() WHERE id = $1 AND state = 'PROOF_SUBMITTED'`,
+            [taskId]
+          );
+        } else if (task.state === 'COMPLETED') {
+          await query(
+            `UPDATE tasks SET state = 'DISPUTED', updated_at = NOW() WHERE id = $1 AND state = 'COMPLETED'`,
             [taskId]
           );
         }
