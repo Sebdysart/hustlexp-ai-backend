@@ -341,7 +341,7 @@ describe('SelfInsurancePoolService', () => {
         } as never) // claim (outer SELECT)
         .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_test123' }], rowCount: 1 } as never) // pre-check SELECT stripe_connect_id (F46-4)
         // F-25: inside transaction — claim re-check FOR UPDATE, then pool FOR UPDATE
-        .mockResolvedValueOnce({ rows: [{ status: 'approved', stripe_transfer_id: null }], rowCount: 1 } as never) // claim FOR UPDATE
+        .mockResolvedValueOnce({ rows: [{ status: 'approved', stripe_transfer_id: null, claim_amount_cents: 100000 }], rowCount: 1 } as never) // claim FOR UPDATE
         .mockResolvedValueOnce({ rows: [{ available_balance_cents: 1000, coverage_percentage: 80, max_claim_cents: 500000 }], rowCount: 1 } as never); // pool FOR UPDATE (F-04/F48-2)
 
       const result = await SelfInsurancePoolService.payClaim('claim-1');
@@ -359,7 +359,7 @@ describe('SelfInsurancePoolService', () => {
           rowCount: 1,
         } as never) // claim (outer SELECT)
         .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_test123' }], rowCount: 1 } as never) // pre-check stripe_connect_id
-        .mockResolvedValueOnce({ rows: [{ status: 'approved', stripe_transfer_id: null }], rowCount: 1 } as never) // claim FOR UPDATE
+        .mockResolvedValueOnce({ rows: [{ status: 'approved', stripe_transfer_id: null, claim_amount_cents: 10000 }], rowCount: 1 } as never) // claim FOR UPDATE
         .mockResolvedValueOnce({ rows: [{ available_balance_cents: 500000, coverage_percentage: 200, max_claim_cents: 10000 }], rowCount: 1 } as never); // pool FOR UPDATE — coverage raised, max is 10000, covered=20000
 
       const result = await SelfInsurancePoolService.payClaim('claim-1');
@@ -382,7 +382,7 @@ describe('SelfInsurancePoolService', () => {
         } as never) // claim (outer SELECT)
         .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_test' }], rowCount: 1 } as never) // pre-check SELECT stripe_connect_id (F46-4)
         // F-25: inside transaction — claim re-check FOR UPDATE, then rest of transaction
-        .mockResolvedValueOnce({ rows: [{ status: 'approved', stripe_transfer_id: null }], rowCount: 1 } as never) // claim FOR UPDATE
+        .mockResolvedValueOnce({ rows: [{ status: 'approved', stripe_transfer_id: null, claim_amount_cents: 10000 }], rowCount: 1 } as never) // claim FOR UPDATE
         .mockResolvedValueOnce({ rows: [{ available_balance_cents: 50000, coverage_percentage: 80, max_claim_cents: 500000 }], rowCount: 1 } as never) // pool FOR UPDATE (F-04/F48-2: includes coverage_percentage + max_claim_cents)
         .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // UPDATE pool
         .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // UPDATE claim to paid
@@ -502,7 +502,7 @@ describe('SelfInsurancePoolService', () => {
           rowCount: 1,
         } as never) // claim outer SELECT
         .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_test' }], rowCount: 1 } as never) // pre-check stripe_connect_id
-        .mockResolvedValueOnce({ rows: [{ status: 'approved', stripe_transfer_id: null }], rowCount: 1 } as never) // claim FOR UPDATE
+        .mockResolvedValueOnce({ rows: [{ status: 'approved', stripe_transfer_id: null, claim_amount_cents: 40 }], rowCount: 1 } as never) // claim FOR UPDATE
         .mockResolvedValueOnce({ rows: [{ available_balance_cents: 50000, coverage_percentage: 80, max_claim_cents: 500000 }], rowCount: 1 } as never); // pool FOR UPDATE
 
       const result = await SelfInsurancePoolService.payClaim('claim-1');
@@ -520,7 +520,7 @@ describe('SelfInsurancePoolService', () => {
           rowCount: 1,
         } as never)
         .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_test' }], rowCount: 1 } as never)
-        .mockResolvedValueOnce({ rows: [{ status: 'approved', stripe_transfer_id: null }], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [{ status: 'approved', stripe_transfer_id: null, claim_amount_cents: 60 }], rowCount: 1 } as never)
         .mockResolvedValueOnce({ rows: [{ available_balance_cents: 50000, coverage_percentage: 80, max_claim_cents: 500000 }], rowCount: 1 } as never);
 
       const result = await SelfInsurancePoolService.payClaim('claim-1');
@@ -543,7 +543,7 @@ describe('SelfInsurancePoolService', () => {
         } as never) // claim outer SELECT
         .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_test' }], rowCount: 1 } as never) // pre-check stripe_connect_id
         // Inside transaction: claim FOR UPDATE, then pool FOR UPDATE — check fires, transaction rolls back
-        .mockResolvedValueOnce({ rows: [{ status: 'approved', stripe_transfer_id: null }], rowCount: 1 } as never) // claim FOR UPDATE
+        .mockResolvedValueOnce({ rows: [{ status: 'approved', stripe_transfer_id: null, claim_amount_cents: 40 }], rowCount: 1 } as never) // claim FOR UPDATE
         .mockResolvedValueOnce({ rows: [{ available_balance_cents: 50000, coverage_percentage: 80, max_claim_cents: 500000 }], rowCount: 1 } as never); // pool FOR UPDATE
 
       const result = await SelfInsurancePoolService.payClaim('claim-1');
@@ -567,7 +567,7 @@ describe('SelfInsurancePoolService', () => {
           rowCount: 1,
         } as never)
         .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_test' }], rowCount: 1 } as never)
-        .mockResolvedValueOnce({ rows: [{ status: 'approved', stripe_transfer_id: null }], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [{ status: 'approved', stripe_transfer_id: null, claim_amount_cents: 63 }], rowCount: 1 } as never)
         .mockResolvedValueOnce({ rows: [{ available_balance_cents: 50000, coverage_percentage: 80, max_claim_cents: 500000 }], rowCount: 1 } as never)
         .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // UPDATE pool
         .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // UPDATE claim to paid
@@ -594,7 +594,7 @@ describe('SelfInsurancePoolService', () => {
           rowCount: 1,
         } as never) // claim outer SELECT
         .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_test' }], rowCount: 1 } as never) // pre-check stripe_connect_id
-        .mockResolvedValueOnce({ rows: [{ status: 'approved', stripe_transfer_id: null }], rowCount: 1 } as never) // claim FOR UPDATE
+        .mockResolvedValueOnce({ rows: [{ status: 'approved', stripe_transfer_id: null, claim_amount_cents: 10000 }], rowCount: 1 } as never) // claim FOR UPDATE
         .mockResolvedValueOnce({ rows: [{ available_balance_cents: 50000, coverage_percentage: 80, max_claim_cents: 500000 }], rowCount: 1 } as never) // pool FOR UPDATE
         .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // UPDATE pool
         .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // UPDATE claim to paid
@@ -620,7 +620,7 @@ describe('SelfInsurancePoolService', () => {
           rowCount: 1,
         } as never)
         .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_test' }], rowCount: 1 } as never)
-        .mockResolvedValueOnce({ rows: [{ status: 'approved', stripe_transfer_id: null }], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [{ status: 'approved', stripe_transfer_id: null, claim_amount_cents: 10000 }], rowCount: 1 } as never)
         .mockResolvedValueOnce({ rows: [{ available_balance_cents: 50000, coverage_percentage: 80, max_claim_cents: 500000 }], rowCount: 1 } as never)
         .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // UPDATE pool
         .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // UPDATE claim to paid
@@ -642,7 +642,7 @@ describe('SelfInsurancePoolService', () => {
           rowCount: 1,
         } as never)
         .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_test' }], rowCount: 1 } as never)
-        .mockResolvedValueOnce({ rows: [{ status: 'approved', stripe_transfer_id: null }], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [{ status: 'approved', stripe_transfer_id: null, claim_amount_cents: 5000 }], rowCount: 1 } as never)
         .mockResolvedValueOnce({ rows: [{ available_balance_cents: 50000, coverage_percentage: 80, max_claim_cents: 500000 }], rowCount: 1 } as never)
         .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
         .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);

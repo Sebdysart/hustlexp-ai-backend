@@ -137,6 +137,21 @@ export const matchmakerRouter = router({
         });
       }
 
+      // T57-1 FIX: Also validate input.userId is a task participant or the caller.
+      // The isParticipant check above only guards the CALLER — input.userId could still
+      // reference any user UUID, leaking trust_tier, completion_rate, and rating data
+      // for users not involved in this task.
+      const isUserIdParticipant =
+        input.userId === taskRow.poster_id ||
+        input.userId === taskRow.worker_id ||
+        input.userId === callerId;
+      if (!isUserIdParticipant) {
+        throw new TRPCError({
+          code: 'FORBIDDEN',
+          message: 'The requested user is not a participant of this task',
+        });
+      }
+
       const task = {
         id: taskRow.id,
         title: taskRow.title,

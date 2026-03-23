@@ -40,6 +40,7 @@ vi.mock('../../src/services/XPTaxService', () => ({
 
 vi.mock('../../src/services/StripeService', () => ({
   StripeService: {
+    isConfigured: vi.fn(),
     createTaxPaymentIntent: vi.fn(),
   },
 }));
@@ -129,6 +130,7 @@ describe('xpTax.createPaymentIntent', () => {
   beforeEach(() => vi.clearAllMocks());
 
   it('creates payment intent when tax balance exists', async () => {
+    mockStripeService.isConfigured.mockReturnValueOnce(true);
     mockTaxService.checkTaxStatus.mockResolvedValueOnce({
       success: true,
       data: { unpaid_tax_cents: 500 },
@@ -145,7 +147,22 @@ describe('xpTax.createPaymentIntent', () => {
     expect(result.amountCents).toBe(500);
   });
 
-  it('returns mock intent when Stripe not available', async () => {
+  it('returns mock intent when Stripe not configured (dev/test)', async () => {
+    mockStripeService.isConfigured.mockReturnValueOnce(false);
+    mockTaxService.checkTaxStatus.mockResolvedValueOnce({
+      success: true,
+      data: { unpaid_tax_cents: 300 },
+    } as any);
+
+    const result = await makeCaller().createPaymentIntent();
+
+    expect(result.clientSecret).toContain('pi_tax_');
+    expect(result.amountCents).toBe(300);
+    expect(mockStripeService.createTaxPaymentIntent).not.toHaveBeenCalled();
+  });
+
+  it('throws INTERNAL_SERVER_ERROR when Stripe configured but createTaxPaymentIntent fails (F57-3)', async () => {
+    mockStripeService.isConfigured.mockReturnValueOnce(true);
     mockTaxService.checkTaxStatus.mockResolvedValueOnce({
       success: true,
       data: { unpaid_tax_cents: 300 },
@@ -154,10 +171,7 @@ describe('xpTax.createPaymentIntent', () => {
       success: false,
     } as any);
 
-    const result = await makeCaller().createPaymentIntent();
-
-    expect(result.clientSecret).toContain('pi_tax_');
-    expect(result.amountCents).toBe(300);
+    await expect(makeCaller().createPaymentIntent()).rejects.toThrow('Failed to create tax payment intent');
   });
 
   it('throws BAD_REQUEST when no tax balance', async () => {

@@ -1426,6 +1426,36 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
       await query('DELETE FROM plan_entitlements WHERE user_id = $1', [userId]);
       await query('DELETE FROM task_geofence_events WHERE user_id = $1', [userId]);
 
+      // D57-1: Delete session_forecasts — financial behavioral forecasts per user.
+      // user_id NOT NULL REFERENCES users(id); no ON DELETE CASCADE, and users is
+      // UPDATEd (not DELETEd), so cascade never fires.
+      await query('DELETE FROM session_forecasts WHERE user_id = $1', [userId]);
+
+      // D57-2: Delete content_appeals — contains appeal_reason TEXT (PII).
+      // user_id NOT NULL REFERENCES users(id) ON DELETE CASCADE; cascade never fires
+      // because users is UPDATEd not DELETEd.
+      await query('DELETE FROM content_appeals WHERE user_id = $1', [userId]);
+
+      // D57-3: Delete content_reports — contains description TEXT (PII).
+      // Both reporter_user_id and reported_content_user_id are NOT NULL FKs.
+      // Must cover both columns so all rows linking to the deleted user are removed.
+      await query(
+        'DELETE FROM content_reports WHERE reporter_user_id = $1 OR reported_content_user_id = $1',
+        [userId]
+      );
+
+      // D57-4a: Delete recurring_task_series — poster_id NOT NULL, contains
+      // title/description/location PII. ON DELETE CASCADE declared but never fires
+      // because users is UPDATEd, not DELETEd.
+      await query('DELETE FROM recurring_task_series WHERE poster_id = $1', [userId]);
+
+      // D57-4b: Delete squads where user is the organizer.
+      // organizer_id NOT NULL REFERENCES users(id) ON DELETE CASCADE; cascade never
+      // fires since users is UPDATEd not DELETEd. organizer_id cannot be NULLed
+      // (NOT NULL constraint), so we must DELETE the squad row (squad_members,
+      // squad_invites, and squad_task_assignments cascade via their FK constraints).
+      await query('DELETE FROM squads WHERE organizer_id = $1', [userId]);
+
       // Delete notification preferences
       await query(
         `DELETE FROM notification_preferences WHERE user_id = $1`,

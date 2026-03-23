@@ -374,8 +374,8 @@ export const SelfInsurancePoolService = {
         // previous call fully completed. If stripe_transfer_id is NULL, DB committed but Stripe
         // failed; the outer idempotency check allows fall-through for Stripe retry, so here
         // we just skip the DB portion (pool already debited) by returning early.
-        const claimCheck = await query<{ status: string; stripe_transfer_id: string | null }>(
-          'SELECT status, stripe_transfer_id FROM insurance_claims WHERE id = $1 FOR UPDATE',
+        const claimCheck = await query<{ status: string; stripe_transfer_id: string | null; claim_amount_cents: number }>(
+          'SELECT status, stripe_transfer_id, claim_amount_cents FROM insurance_claims WHERE id = $1 FOR UPDATE',
           [claimId]
         );
         if (!claimCheck.rows[0]) {
@@ -402,7 +402,7 @@ export const SelfInsurancePoolService = {
         const availableBalanceCents = poolResult.rows[0]?.available_balance_cents ?? 0;
         // Recompute from freshly-locked coverage_percentage (F-04 fix)
         const freshCoveragePercentage = poolResult.rows[0]?.coverage_percentage ?? 80.0;
-        coveredAmountCents = Math.round(claim.claim_amount_cents * (freshCoveragePercentage / 100));
+        coveredAmountCents = Math.round(claimCheck.rows[0].claim_amount_cents * (freshCoveragePercentage / 100));
 
         // F48-2: Guard against coverage_percentage having been raised since claim filing —
         // throw before the balance check so the pool is never debited beyond the cap.
