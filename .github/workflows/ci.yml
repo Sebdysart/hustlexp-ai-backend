@@ -2,9 +2,9 @@ name: CI — Lint, Typecheck, Test
 
 on:
   push:
-    branches: [main, "feat/*"]
+    branches: [main, "feat/*", "auto/*"]
   pull_request:
-    branches: [main, "feat/*"]
+    branches: [main, "feat/*", "auto/*"]
   workflow_call:
 
 concurrency:
