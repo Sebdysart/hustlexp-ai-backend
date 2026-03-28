@@ -48,5 +48,10 @@
     "exclude": [
         "node_modules",
         "dist"
+    ],
+    "references": [
+        { "path": "./tsconfig.src.json" },
+        { "path": "./tsconfig.tests.json" },
+        { "path": "./tsconfig.scripts.json" }
     ]
 }
