@@ -1,5 +1,5 @@
 import { getApps, initializeApp, cert } from "firebase-admin/app";
-import { getAuth, DecodedIdToken } from "firebase-admin/auth";
+import { getAuth, DecodedIdToken, UserRecord } from "firebase-admin/auth";
 import { getMessaging, Messaging } from 'firebase-admin/messaging';
 import { config } from "../config.js";
 import { authLogger } from "../logger.js";
@@ -29,6 +29,15 @@ export async function verifyIdToken(token: string, checkRevoked: boolean = true)
   }
 
   return auth.verifyIdToken(token, checkRevoked);
+}
+
+/** Load Firebase Auth user record (email, displayName) for lazy DB provisioning. */
+export async function getFirebaseUserRecord(uid: string): Promise<UserRecord> {
+  if (!auth) {
+    authLogger.error("Firebase Admin is not configured — cannot load user record");
+    throw new Error("Firebase Admin is not configured — missing credentials");
+  }
+  return auth.getUser(uid);
 }
 
 export { messaging };

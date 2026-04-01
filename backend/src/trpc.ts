@@ -16,6 +16,7 @@ import { db } from './db.js';
 import type { User } from './types.js';
 import { logger } from './logger.js';
 import { authCacheGet, authCacheSet } from './auth-cache.js';
+import { ensureUserRowForFirebaseUid } from './auth/ensure-user.js';
 import { redis } from './cache/redis.js';
 
 // Matches the revocation marker key written by invalidateAuthCacheForUser
@@ -84,7 +85,14 @@ export async function createContext(opts: {
       [decoded.uid]
     );
 
-    const user = result.rows[0] ?? null;
+    let user: User | null = result.rows[0] ?? null;
+
+    // Firebase user exists but no `users` row yet — common after email/password sign-in
+    // when the account was created outside the normal register flow. Lazy-provision
+    // so `user.me` and other protected routes succeed (same idea as user.register).
+    if (!user) {
+      user = await ensureUserRowForFirebaseUid(decoded.uid);
+    }
 
     if (user) {
       // Populate is_admin from admin_roles table so escrow and other routers can use ctx.user.is_admin
