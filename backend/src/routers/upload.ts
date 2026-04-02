@@ -46,7 +46,7 @@ export const uploadRouter = router({
    */
   getPresignedUrl: protectedProcedure
     .input(z.object({
-      taskId: z.string().uuid(),
+      taskId: z.string().uuid().optional(),
       filename: z.string()
         .min(1)
         .max(255)
@@ -57,11 +57,16 @@ export const uploadRouter = router({
       fileSize: z.number()
         .min(1, 'File cannot be empty')
         .max(MAX_FILE_SIZE, `File size must be under ${MAX_FILE_SIZE / 1024 / 1024}MB`),
-      purpose: z.enum(['proof', 'message']).optional().default('proof'),
+      purpose: z.enum(['proof', 'message', 'avatar']).optional().default('proof'),
     }))
     .mutation(async ({ ctx, input }) => {
-      const prefix = input.purpose === 'message' ? 'messages' : 'proofs';
-      const key = `${prefix}/${input.taskId}/${ctx.user.id}/${Date.now()}_${input.filename}`;
+      let prefix: string;
+      if (input.purpose === 'message') prefix = 'messages';
+      else if (input.purpose === 'avatar') prefix = 'avatars';
+      else prefix = 'proofs';
+      const key = input.purpose === 'avatar'
+        ? `avatars/${ctx.user.id}/${Date.now()}_${input.filename}`
+        : `${prefix}/${input.taskId}/${ctx.user.id}/${Date.now()}_${input.filename}`;
       const baseUrl = process.env.R2_PUBLIC_URL || `https://${r2Config.bucketName}.r2.dev`;
 
       // Generate real presigned URL if R2 is configured
