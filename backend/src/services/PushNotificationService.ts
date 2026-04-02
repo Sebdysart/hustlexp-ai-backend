@@ -121,7 +121,6 @@ export async function sendPushNotification(
        JOIN users u ON u.id = dt.user_id
        WHERE dt.user_id = $1
        AND dt.is_active = true
-       AND u.is_banned = false
        AND u.account_status NOT IN ('DELETED', 'SUSPENDED')`,
       [userId]
     );

@@ -62,9 +62,11 @@ export const adminRouter = router({
       }
 
       if (input.isBanned !== undefined) {
-        conditions.push(`u.is_banned = $${paramIndex}`);
-        params.push(input.isBanned);
-        paramIndex++;
+        if (input.isBanned) {
+          conditions.push(`u.account_status IN ('SUSPENDED', 'DELETED')`);
+        } else {
+          conditions.push(`u.account_status NOT IN ('SUSPENDED', 'DELETED')`);
+        }
       }
 
       params.push(input.limit, input.offset);
@@ -81,7 +83,7 @@ export const adminRouter = router({
         created_at: Date;
       }>(
         `SELECT u.id, u.full_name, u.email, u.trust_tier, u.xp_total,
-                u.is_verified, COALESCE(u.is_banned, false) as is_banned, u.default_mode, u.created_at
+                u.is_verified, (u.account_status IN ('SUSPENDED', 'DELETED')) as is_banned, u.default_mode, u.created_at
          FROM users u
          WHERE ${conditions.join(' AND ')}
          ORDER BY u.created_at DESC
@@ -111,7 +113,9 @@ export const adminRouter = router({
     }))
     .mutation(async ({ ctx, input }) => {
       const result = await db.query<{ id: string; is_banned: boolean }>(
-        `UPDATE users SET is_banned = $1, updated_at = NOW() WHERE id = $2 RETURNING id, is_banned`,
+        `UPDATE users SET account_status = CASE WHEN $1 THEN 'SUSPENDED' ELSE 'ACTIVE' END, updated_at = NOW()
+         WHERE id = $2
+         RETURNING id, (account_status IN ('SUSPENDED', 'DELETED')) as is_banned`,
         [input.banned, input.userId]
       );
 

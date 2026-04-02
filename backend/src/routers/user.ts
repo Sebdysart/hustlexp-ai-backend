@@ -296,7 +296,7 @@ export const userRouter = router({
       // A banned user with phone A registering with email B is detected here.
       if (input.phone) {
         const bannedPhone = await db.query<{ id: string }>(
-          `SELECT id FROM users WHERE phone = $1 AND is_banned = true`,
+          `SELECT id FROM users WHERE phone = $1 AND account_status IN ('SUSPENDED', 'DELETED')`,
           [input.phone]
         );
         if (bannedPhone.rows.length > 0) {
@@ -312,7 +312,7 @@ export const userRouter = router({
       // above), by assigning trust_tier=0 (UNVERIFIED) so the account is restricted
       // until phone verification is completed.
       const bannedByEmail = await db.query<{ id: string }>(
-        `SELECT id FROM users WHERE email = $1 AND is_banned = true`,
+        `SELECT id FROM users WHERE email = $1 AND account_status IN ('SUSPENDED', 'DELETED')`,
         [input.email]
       );
       if (bannedByEmail.rows.length > 0) {

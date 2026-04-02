@@ -60,7 +60,7 @@ interface OutboxEvent {
  */
 async function checkAndEvictBannedUser(userId: string): Promise<boolean> {
   const result = await db.query<{ is_banned: boolean }>(
-    'SELECT COALESCE(is_banned, false) as is_banned FROM users WHERE id = $1',
+    `SELECT (account_status IN ('SUSPENDED', 'DELETED')) as is_banned FROM users WHERE id = $1`,
     [userId]
   );
   if (result.rows.length === 0) return true; // user deleted — treat as banned
