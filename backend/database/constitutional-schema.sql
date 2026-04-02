@@ -63,9 +63,13 @@ CREATE TABLE IF NOT EXISTS users (
     authority_expectation NUMERIC(4,3),
     price_sensitivity NUMERIC(4,3),
     
-    -- Trust (PRODUCT_SPEC §6, 4-tier system)
-    trust_tier INTEGER DEFAULT 1 NOT NULL 
-        CHECK (trust_tier >= 1 AND trust_tier <= 4),
+    -- COPPA compliance (ONBOARDING_SPEC §7)
+    date_of_birth DATE,
+    is_minor BOOLEAN DEFAULT FALSE,
+
+    -- Trust (PRODUCT_SPEC §6, 4-tier system; 0 = unverified/phone-less new user)
+    trust_tier INTEGER DEFAULT 1 NOT NULL
+        CHECK (trust_tier >= 0 AND trust_tier <= 4),
     
     -- Trust hold (gating enforcement)
     trust_hold BOOLEAN DEFAULT FALSE NOT NULL,

@@ -67,13 +67,15 @@ async function toMobileUser(user: User) {
     xp: user.xp_total,
     tasksCompleted: stats ? parseInt(stats.tasks_completed || '0', 10) : 0,
     tasksPosted: stats ? parseInt(stats.tasks_posted || '0', 10) : 0,
-    totalEarnings: stats ? parseInt(stats.total_earnings || '0', 10) : 0,
-    totalSpent: stats ? parseInt(stats.total_spent || '0', 10) : 0,
+    totalEarnings: stats ? parseInt(stats.total_earnings || '0', 10) / 100 : 0,
+    totalSpent: stats ? parseInt(stats.total_spent || '0', 10) / 100 : 0,
     isVerified: user.is_verified,
     createdAt: user.created_at,
-    // Extra fields the app may need
-    hasCompletedOnboarding: user.onboarding_completed_at != null,
-    defaultMode: user.default_mode,
+    // v1.8.0 fields expected by iOS HXUser
+    unpaidTaxCents: 0,       // TODO: query from xp_tax_status when table exists
+    xpHeldBack: 0,            // TODO: query from xp_ledger held entries
+    verificationEarnedCents: 0, // TODO: query from earned_verification_unlock
+    insuranceContributionsCents: 0, // TODO: query from self_insurance_pool
   };
 }
 

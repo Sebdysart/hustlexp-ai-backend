@@ -1,15 +1,15 @@
 -- ============================================================================
--- Migration 008: Add is_banned column and DELETED account_status
+-- Migration 008: Add missing users columns + fix constraints
 -- ============================================================================
--- The backend code references users.is_banned in ~15 places (trpc.ts, admin.ts,
--- user.ts, realtime-dispatcher.ts, PushNotificationService.ts) but the column
--- was never added to the schema. Without it, user.register and every ban check
--- throws "column is_banned does not exist".
+-- Fixes three bugs that cause user.register to fail with 500:
 --
--- Also expands account_status CHECK to include 'DELETED' which is used by
--- the GDPR erasure flow and trpc.ts middleware but was absent from the constraint.
+-- 1. is_banned column missing → "column is_banned does not exist"
+-- 2. date_of_birth / is_minor columns missing → INSERT fails
+-- 3. trust_tier CHECK (>= 1) rejects trust_tier=0 for phone-less new users
 --
--- All statements are idempotent.
+-- Also expands account_status CHECK to include 'DELETED' for GDPR erasure.
+--
+-- All statements are idempotent — safe to run multiple times.
 -- ============================================================================
 
 -- 1. Add is_banned column
@@ -22,10 +22,37 @@ DO $$ BEGIN
   END IF;
 END $$;
 
--- 2. Expand account_status CHECK constraint to include 'DELETED'
---    Drop the old constraint and recreate it with the full value set.
+-- 2. Add date_of_birth column (COPPA compliance)
 DO $$ BEGIN
-  -- Only alter if 'DELETED' is not already in the constraint
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'users' AND column_name = 'date_of_birth'
+  ) THEN
+    ALTER TABLE users ADD COLUMN date_of_birth DATE;
+  END IF;
+END $$;
+
+-- 3. Add is_minor column (COPPA compliance)
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'users' AND column_name = 'is_minor'
+  ) THEN
+    ALTER TABLE users ADD COLUMN is_minor BOOLEAN DEFAULT FALSE;
+  END IF;
+END $$;
+
+-- 4. Fix trust_tier CHECK to allow 0 (phone-less new users start at 0)
+DO $$ BEGIN
+  ALTER TABLE users DROP CONSTRAINT IF EXISTS users_trust_tier_check;
+  ALTER TABLE users ADD CONSTRAINT users_trust_tier_check
+    CHECK (trust_tier >= 0 AND trust_tier <= 4);
+EXCEPTION WHEN others THEN
+  NULL; -- ignore if constraint name differs
+END $$;
+
+-- 5. Expand account_status CHECK to include 'DELETED'
+DO $$ BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM information_schema.check_constraints cc
     JOIN information_schema.constraint_column_usage cu
@@ -40,5 +67,5 @@ DO $$ BEGIN
   END IF;
 END $$;
 
--- 3. Index on is_banned for fast ban-evasion lookups in user.register
+-- 6. Indexes
 CREATE INDEX IF NOT EXISTS idx_users_is_banned ON users(is_banned) WHERE is_banned = TRUE;
