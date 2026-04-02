@@ -20,11 +20,25 @@ import { cors } from 'hono/cors';
 import { trpcServer } from '@hono/trpc-server';
 import { appRouter } from './routers/index.js';
 import { createContext } from './trpc.js';
-import { config } from './config.js';
+import { config, validateConfig } from './config.js';
 import { securityHeaders, rateLimitMiddleware, publicIpRateLimitMiddleware } from './middleware/security.js';
 import { requestIdMiddleware, serverTimingMiddleware } from './middleware/request-id.js';
 import { httpMetricsMiddleware } from './monitoring/http-metrics.js';
 import { createMetricsEndpoint } from './monitoring/metrics.js';
+
+// ============================================================================
+// STARTUP CONFIGURATION VALIDATION (Fail-Fast)
+// ============================================================================
+
+// Validate required env vars before accepting any traffic.
+// In production this exits the process; in development it logs warnings.
+const { errors: configErrors, warnings: configWarnings } = validateConfig();
+configWarnings.forEach(w => console.warn(`⚠️  CONFIG WARNING: ${w}`));
+if (configErrors.length > 0 && !config.app.isProduction) {
+  // Development: log errors but continue so developers can test partial setups
+  configErrors.forEach(e => console.error(`❌ CONFIG ERROR (non-fatal in dev): ${e}`));
+}
+// Production fail-fast is handled inside validateConfig() → process.exit(1)
 
 // ============================================================================
 // SECURITY VALIDATION (Fail-Fast in Production)

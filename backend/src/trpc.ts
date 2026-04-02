@@ -125,7 +125,18 @@ export async function createContext(opts: {
     // prevent token leakage into log streams.
     const rawMsg = (error as Error).message ?? '';
     const safeMsg = rawMsg.replace(/eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]*/g, '[REDACTED_TOKEN]');
-    log.error({ err: safeMsg }, 'Firebase token verification failed');
+
+    // Distinguish misconfiguration from a legitimate bad-token rejection so
+    // Railway logs make the root cause immediately obvious.
+    if (rawMsg.includes('Firebase Admin is not configured')) {
+      log.error(
+        { err: safeMsg },
+        'AUTH FAILURE: Firebase Admin SDK is not initialised — set FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, FIREBASE_PRIVATE_KEY env vars'
+      );
+    } else {
+      log.warn({ err: safeMsg }, 'Firebase token verification failed (invalid/expired token)');
+    }
+
     return { user: null, firebaseUid: null };
   }
 }

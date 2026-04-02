@@ -206,14 +206,17 @@ export function validateConfig(): { valid: boolean; errors: string[]; warnings: 
     errors.push('DATABASE_URL is required');
   }
 
+  // Firebase Admin credentials are required in all environments — without them
+  // every authenticated request returns 401 and the app is completely unusable.
+  if (!config.firebase.projectId) errors.push('FIREBASE_PROJECT_ID is required (auth will not work without it)');
+  if (!config.firebase.privateKey) errors.push('FIREBASE_PRIVATE_KEY is required (auth will not work without it)');
+  if (!config.firebase.clientEmail) errors.push('FIREBASE_CLIENT_EMAIL is required (auth will not work without it)');
+
   // Required in production
   if (config.app.isProduction) {
     if (!process.env.QUEUE_HMAC_SECRET) {
       errors.push('QUEUE_HMAC_SECRET is required in production (HMAC signing for financial BullMQ jobs)');
     }
-    if (!config.firebase.projectId) errors.push('FIREBASE_PROJECT_ID is required');
-    if (!config.firebase.privateKey) errors.push('FIREBASE_PRIVATE_KEY is required');
-    if (!config.firebase.clientEmail) errors.push('FIREBASE_CLIENT_EMAIL is required');
     if (!config.stripe.secretKey || config.stripe.secretKey.includes('placeholder')) {
       errors.push('STRIPE_SECRET_KEY is required (not placeholder)');
     }
