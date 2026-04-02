@@ -153,10 +153,11 @@ Respond with JSON only: {"worker": 0.0-1.0, "poster": 0.0-1.0, "certainty": "STR
               schema: OnboardingAIResponseSchema,
             });
 
+            const aiData = aiResult.data as { worker?: number; poster?: number; certainty?: string };
             inference = {
-              roleConfidenceWorker: aiResult.data.worker,
-              roleConfidencePoster: aiResult.data.poster,
-              certaintyTier: aiResult.data.certainty,
+              roleConfidenceWorker: aiData.worker ?? 0.5,
+              roleConfidencePoster: aiData.poster ?? 0.5,
+              certaintyTier: (aiData.certainty as CertaintyTier) ?? 'WEAK',
             };
           }
         } catch (aiError) {

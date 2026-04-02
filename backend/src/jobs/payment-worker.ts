@@ -65,7 +65,7 @@ export async function processPaymentJob(job: Job<PaymentJobData>): Promise<void>
   // payment.stripe_event_received jobs are signed via FINANCIAL_EVENT_TYPES in outbox-worker.
   // _sig is present only when the job was dispatched through the signed outbox path.
   // Jobs dispatched directly (e.g., scheduled retries) without a signature are skipped.
-  const payload = job.data.payload as Record<string, unknown>;
+  const payload = job.data.payload as unknown as Record<string, unknown>;
   if ('_sig' in payload) {
     const { _sig, ...payloadWithoutSig } = payload;
     if (!verifyJobSignature(payloadWithoutSig, _sig as string)) {

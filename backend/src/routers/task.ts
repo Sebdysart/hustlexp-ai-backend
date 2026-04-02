@@ -887,7 +887,7 @@ export const taskRouter = router({
       if (task.poster_id === ctx.user.id) {
         throw new TRPCError({ code: 'BAD_REQUEST', message: 'Cannot apply for your own task' });
       }
-      if (task.trust_tier_required !== null && ctx.user.trust_tier < task.trust_tier_required) {
+      if (task.trust_tier_required != null && ctx.user.trust_tier < (task.trust_tier_required as number)) {
         throw new TRPCError({ code: 'FORBIDDEN', message: 'Your trust tier is insufficient for this task' });
       }
 

@@ -413,7 +413,7 @@ export const userRouter = router({
                AND state NOT IN ('COMPLETED', 'CANCELLED', 'EXPIRED')`,
               [ctx.user.id]
             );
-            openTasksCount = parseInt(result.rows[0].count, 10);
+            openTasksCount = parseInt(result.rows[0].count as string, 10);
           } catch (err) {
             logger.error({ userId: ctx.user.id, err }, 'Failed to check open tasks for role switch');
             throw new TRPCError({

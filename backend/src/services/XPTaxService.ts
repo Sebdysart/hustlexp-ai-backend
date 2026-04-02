@@ -238,7 +238,7 @@ export const XPTaxService = {
           success: false,
           error: {
             code: 'STRIPE_VERIFICATION_FAILED',
-            message: piResult.error?.message ?? 'Failed to verify Stripe payment intent',
+            message: (piResult as unknown as { error?: { message?: string } }).error?.message ?? 'Failed to verify Stripe payment intent',
           },
         };
       }

@@ -65,7 +65,7 @@ export async function processStripeEventJob(job: Job<StripeEventJobData>): Promi
   // stripe.event_received jobs dispatched via the outbox carry a _sig field inside
   // job.data.payload. Verify it when present; direct-dispatch jobs (without _sig) are
   // allowed through so that legacy callers are not broken.
-  const outerPayload = (job.data as Record<string, unknown>).payload;
+  const outerPayload = (job.data as unknown as Record<string, unknown>).payload;
   if (outerPayload && typeof outerPayload === 'object') {
     const p = outerPayload as Record<string, unknown>;
     if ('_sig' in p) {

@@ -357,8 +357,8 @@ export const EscrowService = {
 
     // Variables populated inside the transaction, used by post-commit side effects
     let releasedEscrow: Escrow;
-    let workerId: string;
-    let grossPayoutCents: number;
+    let workerId: string | undefined;
+    let grossPayoutCents: number | undefined;
     let netPayoutCents: number;
     let taskId: string;
     let paymentMethod: string;
@@ -599,7 +599,7 @@ export const EscrowService = {
 
       // v1.x: Record 2% self-insurance contribution from worker earnings
       try {
-        const insuranceContributionCents = Math.round(grossPayoutCents * 0.02);
+        const insuranceContributionCents = Math.round(grossPayoutCents! * 0.02);
         await SelfInsurancePoolService.recordContribution(
           taskId!,
           workerId!,
