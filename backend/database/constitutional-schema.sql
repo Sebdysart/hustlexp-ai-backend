@@ -115,13 +115,16 @@ CREATE TABLE IF NOT EXISTS users (
     consecutive_active_days INTEGER DEFAULT 0,
     last_mandatory_break_at TIMESTAMPTZ,
     
-    -- Account pause state (PRODUCT_SPEC §11)
+    -- Account pause/ban/erasure state (PRODUCT_SPEC §11, GDPR §7)
     account_status VARCHAR(20) DEFAULT 'ACTIVE'
-        CHECK (account_status IN ('ACTIVE', 'PAUSED', 'SUSPENDED')),
+        CHECK (account_status IN ('ACTIVE', 'PAUSED', 'SUSPENDED', 'DELETED')),
     paused_at TIMESTAMPTZ,
     pause_streak_snapshot INTEGER,
     pause_trust_tier_snapshot INTEGER,
-    
+
+    -- Ban flag — set by admin ban action; blocks all authenticated access
+    is_banned BOOLEAN NOT NULL DEFAULT FALSE,
+
     -- Timestamps
     created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
     updated_at TIMESTAMPTZ DEFAULT NOW() NOT NULL
@@ -133,6 +136,7 @@ CREATE INDEX IF NOT EXISTS idx_users_stripe_customer ON users(stripe_customer_id
 CREATE INDEX IF NOT EXISTS idx_users_trust_tier ON users(trust_tier);
 CREATE INDEX IF NOT EXISTS idx_users_trust_hold ON users(trust_hold);
 CREATE INDEX IF NOT EXISTS idx_users_default_mode ON users(default_mode);
+CREATE INDEX IF NOT EXISTS idx_users_is_banned ON users(is_banned) WHERE is_banned = TRUE;
 
 -- ----------------------------------------------------------------------------
 -- 1.2 TASKS TABLE
