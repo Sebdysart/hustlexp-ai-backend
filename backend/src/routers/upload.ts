@@ -72,13 +72,13 @@ export const uploadRouter = router({
       // Generate real presigned URL if R2 is configured
       if (s3Client) {
         const command = new PutObjectCommand({
-          Bucket: r2Config.bucketName,
+          Bucket: r2Config.bucketName!,
           Key: key,
           ContentType: input.contentType,
           ContentLength: input.fileSize,
           Metadata: {
             'uploaded-by': ctx.user.id,
-            'task-id': input.taskId,
+            ...(input.taskId ? { 'task-id': input.taskId } : {}),
           },
         });
 
