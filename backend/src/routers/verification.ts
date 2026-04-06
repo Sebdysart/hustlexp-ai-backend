@@ -218,7 +218,16 @@ export const verificationRouter = router({
   sendEmailVerification: protectedProcedure
     .input(z.object({}).optional())
     .mutation(async ({ ctx }) => {
+      log.info({
+        userId: ctx.user.id,
+        email: ctx.user.email,
+        firebaseUid: ctx.user.firebase_uid ?? 'MISSING',
+        hasSendgridKey: !!config.identity.sendgrid.apiKey,
+        fromEmail: config.identity.sendgrid.fromEmail,
+      }, '>>> sendEmailVerification called');
+
       if (!ctx.user.firebase_uid) {
+        log.error({ userId: ctx.user.id }, 'No firebase_uid on user');
         throw new TRPCError({
           code: 'BAD_REQUEST',
           message: 'No Firebase account linked.',
