@@ -18,6 +18,8 @@ import { sendVerification, checkVerification } from '../services/TwilioSMSServic
 import { getFirebaseUser, generateEmailVerificationLink as fbGenerateEmailVerificationLink } from '../auth/firebase.js';
 import { invalidateUser } from '../cache/db-cache.js';
 import { invalidateAuthCacheForUser } from '../auth-cache.js';
+import { config } from '../config.js';
+import sgMail from '@sendgrid/mail';
 import type { User } from '../types.js';
 
 const log = logger.child({ router: 'verification' });
@@ -224,15 +226,42 @@ export const verificationRouter = router({
       }
 
       try {
+        // Generate the Firebase email verification link
         const link = await fbGenerateEmailVerificationLink(ctx.user.email);
-        // The link is generated — Firebase sends the email automatically
-        // when using generateEmailVerificationLink with an action code settings.
-        // For now, we log it. In production, you'd send via SendGrid for custom branding.
-        log.info({ userId: ctx.user.id, email: ctx.user.email }, 'Email verification link generated');
+
+        // Send the link to the user via SendGrid
+        if (!config.identity.sendgrid.apiKey) {
+          log.warn('SendGrid not configured — cannot send verification email');
+          throw new Error('Email service not configured');
+        }
+
+        sgMail.setApiKey(config.identity.sendgrid.apiKey);
+
+        await sgMail.send({
+          to: ctx.user.email,
+          from: config.identity.sendgrid.fromEmail,
+          subject: 'Verify your email — HustleXP',
+          html: `<div style="font-family:Inter,sans-serif;max-width:600px;margin:0 auto;padding:24px;background:#0D0D0D;color:#F5F5F5;">
+            <div style="text-align:center;margin-bottom:24px;">
+              <span style="font-size:24px;font-weight:700;color:#A855F7;">⚡ HustleXP</span>
+            </div>
+            <h2 style="color:#F5F5F5;">Verify Your Email</h2>
+            <p>Click the button below to verify your email address.</p>
+            <div style="text-align:center;margin:24px 0;">
+              <a href="${link}" style="display:inline-block;padding:14px 32px;background:#A855F7;color:#fff;border-radius:8px;text-decoration:none;font-weight:600;font-size:16px;">Verify Email</a>
+            </div>
+            <p style="color:#888;font-size:13px;">If the button doesn't work, copy and paste this link:<br/><a href="${link}" style="color:#A855F7;word-break:break-all;">${link}</a></p>
+            <hr style="border:none;border-top:1px solid #2A2A2A;margin:24px 0;"/>
+            <p style="font-size:12px;color:#888;">If you didn't request this, you can safely ignore this email.</p>
+          </div>`,
+          text: `Verify your email for HustleXP. Click this link: ${link}`,
+        });
+
+        log.info({ userId: ctx.user.id, email: ctx.user.email }, 'Email verification sent via SendGrid');
 
         return { success: true };
       } catch (err) {
-        log.error({ userId: ctx.user.id, err }, 'Failed to generate email verification link');
+        log.error({ userId: ctx.user.id, err }, 'Failed to send email verification');
         throw new TRPCError({
           code: 'INTERNAL_SERVER_ERROR',
           message: 'Failed to send verification email. Please try again.',
