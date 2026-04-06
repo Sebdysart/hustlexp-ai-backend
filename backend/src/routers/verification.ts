@@ -104,39 +104,58 @@ export const verificationRouter = router({
       phone: z.string().regex(E164_REGEX, 'Phone must be in E.164 format (e.g. +15551234567)'),
     }))
     .mutation(async ({ ctx, input }) => {
+      log.info({ userId: ctx.user.id, phone: input.phone }, '>>> sendPhoneOTP called');
+
       // Rate limit: max 3 OTP sends per 10 minutes per user
-      const recentAttempts = await db.query<{ count: string }>(
-        `SELECT COUNT(*) as count FROM sms_outbox
-         WHERE user_id = $1 AND created_at > NOW() - INTERVAL '10 minutes'`,
-        [ctx.user.id]
-      );
-      if (parseInt(recentAttempts.rows[0]?.count ?? '0', 10) >= 3) {
-        throw new TRPCError({
-          code: 'TOO_MANY_REQUESTS',
-          message: 'Too many verification attempts. Please wait 10 minutes.',
-        });
+      // sms_outbox table may not exist — skip rate limiting if so
+      try {
+        const recentAttempts = await db.query<{ count: string }>(
+          `SELECT COUNT(*) as count FROM sms_outbox
+           WHERE user_id = $1 AND created_at > NOW() - INTERVAL '10 minutes'`,
+          [ctx.user.id]
+        );
+        if (parseInt(recentAttempts.rows[0]?.count ?? '0', 10) >= 3) {
+          throw new TRPCError({
+            code: 'TOO_MANY_REQUESTS',
+            message: 'Too many verification attempts. Please wait 10 minutes.',
+          });
+        }
+      } catch (err) {
+        if (err instanceof TRPCError) throw err;
+        log.warn({ err }, 'sms_outbox rate limit check failed (table may not exist) — skipping');
       }
 
       // Ensure users_identity row exists
-      await db.query(
-        `INSERT INTO users_identity (user_id, email, phone)
-         VALUES ($1, $2, $3)
-         ON CONFLICT (user_id) DO UPDATE SET phone = $3, updated_at = NOW()`,
-        [ctx.user.id, ctx.user.email, input.phone]
-      );
+      try {
+        await db.query(
+          `INSERT INTO users_identity (user_id, email, phone)
+           VALUES ($1, $2, $3)
+           ON CONFLICT (user_id) DO UPDATE SET phone = $3, updated_at = NOW()`,
+          [ctx.user.id, ctx.user.email, input.phone]
+        );
+        log.info({ userId: ctx.user.id }, 'users_identity upserted');
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log.error({ userId: ctx.user.id, err: msg }, 'FAILED: users_identity upsert');
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: `Database error: ${msg}`,
+        });
+      }
 
       // Send OTP via Twilio Verify
+      log.info({ phone: input.phone }, 'Calling Twilio sendVerification...');
       const result = await sendVerification(input.phone, 'sms');
 
       if (!result.success) {
-        log.error({ userId: ctx.user.id, phone: input.phone, err: result.error }, 'Phone OTP send failed');
+        log.error({ userId: ctx.user.id, phone: input.phone, err: result.error }, 'Phone OTP send failed (Twilio)');
         throw new TRPCError({
           code: 'INTERNAL_SERVER_ERROR',
           message: result.error ?? 'Failed to send verification code. Please try again.',
         });
       }
 
-      log.info({ userId: ctx.user.id, phone: input.phone }, 'Phone OTP sent');
+      log.info({ userId: ctx.user.id, phone: input.phone }, 'Phone OTP sent successfully');
 
       return { success: true };
     }),
