@@ -54,14 +54,20 @@ async function toMobileUser(user: User) {
   const stats = statsResult.rows[0];
 
   // Fetch phone/email verification status from users_identity
-  const identityResult = await db.query<{
-    phone_verified: boolean;
-    email_verified: boolean;
-  }>(
-    `SELECT phone_verified, email_verified FROM users_identity WHERE user_id = $1`,
-    [user.id]
-  );
-  const identityRow = identityResult.rows[0] ?? null;
+  // Wrapped in try/catch: table may not exist yet if migration hasn't run
+  let identityRow: { phone_verified: boolean; email_verified: boolean } | null = null;
+  try {
+    const identityResult = await db.query<{
+      phone_verified: boolean;
+      email_verified: boolean;
+    }>(
+      `SELECT phone_verified, email_verified FROM users_identity WHERE user_id = $1`,
+      [user.id]
+    );
+    identityRow = identityResult.rows[0] ?? null;
+  } catch {
+    // Table doesn't exist yet — default to false
+  }
 
   return {
     id: user.id,

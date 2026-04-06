@@ -27,6 +27,26 @@ export async function ensureUserRowForFirebaseUid(firebaseUid: string): Promise<
       return null;
     }
 
+    // First, check if a user already exists with this email (different firebase_uid)
+    const existing = await db.query<User>(
+      `SELECT * FROM users WHERE email = $1`,
+      [email]
+    );
+
+    if (existing.rows.length > 0) {
+      const existingUser = existing.rows[0];
+      // Update firebase_uid to the current one (user may have re-created Firebase account)
+      if (existingUser.firebase_uid !== firebaseUid) {
+        const updated = await db.query<User>(
+          `UPDATE users SET firebase_uid = $1, updated_at = NOW() WHERE id = $2 RETURNING *`,
+          [firebaseUid, existingUser.id]
+        );
+        log.info({ userId: existingUser.id, oldFirebaseUid: existingUser.firebase_uid, newFirebaseUid: firebaseUid }, 'Updated firebase_uid for existing user (email match)');
+        return updated.rows[0] ?? existingUser;
+      }
+      return existingUser;
+    }
+
     const displayName = fbUser.displayName?.trim() || email.split('@')[0] || 'User';
     // Match user.register: phone-less → trust_tier 0 (UNVERIFIED)
     const initialTrustTier = 0;
