@@ -40,6 +40,22 @@ export async function getFirebaseUserRecord(uid: string): Promise<UserRecord> {
   return auth.getUser(uid);
 }
 
+/** Get a Firebase user by UID (wraps auth.getUser). */
+export async function getFirebaseUser(uid: string) {
+  if (!auth) {
+    throw new Error("Firebase Admin is not configured — missing credentials");
+  }
+  return auth.getUser(uid);
+}
+
+/** Generate an email verification link for a user. */
+export async function generateEmailVerificationLink(email: string): Promise<string> {
+  if (!auth) {
+    throw new Error("Firebase Admin is not configured — missing credentials");
+  }
+  return auth.generateEmailVerificationLink(email);
+}
+
 export { messaging };
 export const adminAuth = { verifyIdToken };
 export const firebaseAuth = adminAuth;

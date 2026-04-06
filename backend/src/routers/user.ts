@@ -53,6 +53,16 @@ async function toMobileUser(user: User) {
 
   const stats = statsResult.rows[0];
 
+  // Fetch phone/email verification status from users_identity
+  const identityResult = await db.query<{
+    phone_verified: boolean;
+    email_verified: boolean;
+  }>(
+    `SELECT phone_verified, email_verified FROM users_identity WHERE user_id = $1`,
+    [user.id]
+  );
+  const identityRow = identityResult.rows[0] ?? null;
+
   return {
     id: user.id,
     name: user.full_name,
@@ -76,6 +86,9 @@ async function toMobileUser(user: User) {
     xpHeldBack: 0,            // TODO: query from xp_ledger held entries
     verificationEarnedCents: 0, // TODO: query from earned_verification_unlock
     insuranceContributionsCents: 0, // TODO: query from self_insurance_pool
+    // Verification status (phone/email)
+    phoneVerified: identityRow?.phone_verified ?? false,
+    emailVerified: identityRow?.email_verified ?? false,
   };
 }
 

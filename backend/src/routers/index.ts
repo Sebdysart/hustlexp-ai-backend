@@ -58,6 +58,7 @@ import { messagingRouter } from './messaging.js';
 import { notificationRouter } from './notification.js';
 import { ratingRouter } from './rating.js';
 import { uploadRouter } from './upload.js';
+import { verificationRouter } from './verification.js';
 import { juryRouter } from './jury.js';
 import { analyticsRouter } from './analytics.js';
 import { gdprRouter } from './gdpr.js';
@@ -125,6 +126,7 @@ export const appRouter = router({
   notification: notificationRouter,
   rating: ratingRouter,
   upload: uploadRouter,
+  verification: verificationRouter,
   jury: juryRouter,
   analytics: analyticsRouter,
   gdpr: gdprRouter,
