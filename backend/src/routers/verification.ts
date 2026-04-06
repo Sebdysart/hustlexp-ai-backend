@@ -72,10 +72,7 @@ export const verificationRouter = router({
                WHERE user_id = $1`,
               [ctx.user.id]
             );
-            await db.query(
-              `UPDATE users SET email_verified = TRUE WHERE id = $1`,
-              [ctx.user.id]
-            );
+            // email_verified tracked in users_identity only
             row.email_verified = true;
             row.email_verified_at = new Date();
             log.info({ userId: ctx.user.id }, 'Synced Firebase email verification to DB');
