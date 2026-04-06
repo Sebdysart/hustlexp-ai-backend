@@ -311,16 +311,13 @@ export const verificationRouter = router({
         return { emailVerified: false };
       }
 
-      // Sync to DB
+      // Sync to DB (upsert in case row doesn't exist yet)
       await db.query(
-        `UPDATE users_identity
-         SET email_verified = TRUE, email_verified_at = NOW(), updated_at = NOW()
-         WHERE user_id = $1`,
-        [ctx.user.id]
-      );
-      await db.query(
-        `UPDATE users SET email_verified = TRUE WHERE id = $1`,
-        [ctx.user.id]
+        `INSERT INTO users_identity (user_id, email, email_verified, email_verified_at)
+         VALUES ($1, $2, TRUE, NOW())
+         ON CONFLICT (user_id) DO UPDATE
+         SET email_verified = TRUE, email_verified_at = NOW(), updated_at = NOW()`,
+        [ctx.user.id, ctx.user.email]
       );
 
       await invalidateUser(ctx.user.id);
