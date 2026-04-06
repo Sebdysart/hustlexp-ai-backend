@@ -35,7 +35,7 @@ export const verificationRouter = router({
    * Creates a users_identity row if one doesn't exist yet.
    */
   getStatus: protectedProcedure
-    .input(z.void())
+    .input(z.object({}).optional())
     .query(async ({ ctx }) => {
       // Upsert users_identity row
       const result = await db.query<{
@@ -214,7 +214,7 @@ export const verificationRouter = router({
    * Firebase handles the email link; we just trigger it.
    */
   sendEmailVerification: protectedProcedure
-    .input(z.void())
+    .input(z.object({}).optional())
     .mutation(async ({ ctx }) => {
       if (!ctx.user.firebase_uid) {
         throw new TRPCError({
@@ -245,7 +245,7 @@ export const verificationRouter = router({
    * Call this after the user clicks the verification link.
    */
   checkEmailVerification: protectedProcedure
-    .input(z.void())
+    .input(z.object({}).optional())
     .mutation(async ({ ctx }) => {
       if (!ctx.user.firebase_uid) {
         throw new TRPCError({
