@@ -225,16 +225,30 @@ export const verificationRouter = router({
         });
       }
 
+      // Step 1: Generate Firebase email verification link
+      let link: string;
       try {
-        // Generate the Firebase email verification link
-        const link = await fbGenerateEmailVerificationLink(ctx.user.email);
+        link = await fbGenerateEmailVerificationLink(ctx.user.email);
+        log.info({ userId: ctx.user.id, email: ctx.user.email }, 'Firebase verification link generated');
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log.error({ userId: ctx.user.id, email: ctx.user.email, err: msg }, 'STEP 1 FAILED: Firebase generateEmailVerificationLink');
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: `Firebase link generation failed: ${msg}`,
+        });
+      }
 
-        // Send the link to the user via SendGrid
-        if (!config.identity.sendgrid.apiKey) {
-          log.warn('SendGrid not configured — cannot send verification email');
-          throw new Error('Email service not configured');
-        }
+      // Step 2: Send the link via SendGrid
+      if (!config.identity.sendgrid.apiKey) {
+        log.error('STEP 2 FAILED: SENDGRID_API_KEY not configured');
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: 'Email service not configured (SENDGRID_API_KEY missing)',
+        });
+      }
 
+      try {
         sgMail.setApiKey(config.identity.sendgrid.apiKey);
 
         await sgMail.send({
@@ -258,13 +272,15 @@ export const verificationRouter = router({
         });
 
         log.info({ userId: ctx.user.id, email: ctx.user.email }, 'Email verification sent via SendGrid');
-
         return { success: true };
       } catch (err) {
-        log.error({ userId: ctx.user.id, err }, 'Failed to send email verification');
+        const msg = err instanceof Error ? err.message : String(err);
+        // SendGrid errors often have a response body with details
+        const sgBody = (err as any)?.response?.body;
+        log.error({ userId: ctx.user.id, email: ctx.user.email, err: msg, sendgridResponse: sgBody, fromEmail: config.identity.sendgrid.fromEmail }, 'STEP 2 FAILED: SendGrid send');
         throw new TRPCError({
           code: 'INTERNAL_SERVER_ERROR',
-          message: 'Failed to send verification email. Please try again.',
+          message: `Email send failed: ${msg}`,
         });
       }
     }),
