@@ -155,11 +155,13 @@ export async function createCandidate(params: {
  */
 export async function createInvitation(
   candidateId: string,
-  packageSlug: string = 'tasker_standard'
+  packageSlug: string = 'tasker_standard',
+  workLocations?: Array<{ state: string; country?: string }>
 ): Promise<CheckrInvitation> {
   const invitation = await checkrFetch<CheckrInvitation>('POST', '/v1/invitations', {
     candidate_id: candidateId,
     package: packageSlug,
+    work_locations: workLocations ?? [{ country: 'US', state: 'all' }],
   });
 
   log.info({
