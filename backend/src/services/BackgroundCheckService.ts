@@ -70,6 +70,8 @@ export interface BackgroundCheck {
 export interface BackgroundCheckInitiation {
   userId: string;
   provider: 'checkr' | 'sterling' | 'goodhire' | 'manual';
+  email?: string;
+  phone?: string;
   ssnLast4?: string;
   dateOfBirth?: string;
   fullName?: string;
@@ -129,9 +131,9 @@ export async function initiateBackgroundCheck(
     const candidate = await createCandidate({
       firstName,
       lastName,
-      email: '', // Will be populated from user record
+      email: initiation.email || '',
+      phone: initiation.phone,
       dob: initiation.dateOfBirth,
-      ssnLast4: initiation.ssnLast4,
     });
 
     // Step 2: Create invitation (sends hosted verification link)

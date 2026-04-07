@@ -361,7 +361,6 @@ export const verificationRouter = router({
       firstName: z.string().min(1).max(100),
       lastName: z.string().min(1).max(100),
       dateOfBirth: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Must be YYYY-MM-DD'),
-      ssnLast4: z.string().length(4).regex(/^\d{4}$/, 'Must be 4 digits').optional(),
     }))
     .mutation(async ({ ctx, input }) => {
       log.info({ userId: ctx.user.id }, '>>> startIdentityVerification called');
@@ -372,9 +371,10 @@ export const verificationRouter = router({
         const check = await initiateBackgroundCheck({
           userId: ctx.user.id,
           provider: 'checkr',
+          email: ctx.user.email,
+          phone: ctx.user.phone,
           fullName: `${input.firstName} ${input.lastName}`,
           dateOfBirth: input.dateOfBirth,
-          ssnLast4: input.ssnLast4,
         });
 
         // Extract invitationUrl from details

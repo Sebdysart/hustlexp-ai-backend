@@ -124,7 +124,6 @@ export async function createCandidate(params: {
   email: string;
   phone?: string;
   dob?: string; // YYYY-MM-DD
-  ssnLast4?: string;
 }): Promise<CheckrCandidate> {
   const body: Record<string, unknown> = {
     first_name: params.firstName,
@@ -134,7 +133,6 @@ export async function createCandidate(params: {
 
   if (params.phone) body.phone = params.phone;
   if (params.dob) body.dob = params.dob;
-  if (params.ssnLast4) body.ssn = params.ssnLast4;
 
   const candidate = await checkrFetch<CheckrCandidate>('POST', '/v1/candidates', body);
 
