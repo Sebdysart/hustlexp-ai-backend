@@ -137,7 +137,7 @@ export async function initiateBackgroundCheck(
     });
 
     // Step 2: Create invitation (sends hosted verification link)
-    const invitation = await createInvitation(candidate.id, 'tasker_standard');
+    const invitation = await createInvitation(candidate.id, config.identity.checkr.packageSlug);
 
     externalCheckId = candidate.id;
     invitationUrl = invitation.invitation_url;

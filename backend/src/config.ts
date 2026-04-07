@@ -121,6 +121,7 @@ export const config = {
     checkr: {
       apiKey: process.env.CHECKR_API_KEY || '',
       webhookSecret: process.env.CHECKR_WEBHOOK_SECRET || '',
+      packageSlug: process.env.CHECKR_PACKAGE_SLUG || 'tasker_pro',
       // 'staging' or 'production'
       environment: (process.env.CHECKR_ENVIRONMENT || 'staging') as 'staging' | 'production',
       get apiBase() {
