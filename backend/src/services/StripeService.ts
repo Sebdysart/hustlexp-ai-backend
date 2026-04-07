@@ -29,7 +29,7 @@ let stripe: Stripe | null = null;
 
 if (config.stripe.secretKey && !config.stripe.secretKey.includes('placeholder')) {
   stripe = new Stripe(config.stripe.secretKey, {
-    apiVersion: '2025-11-17.clover',
+    apiVersion: '2024-12-18.acacia' as any,
   });
   stripeLogger.info('Stripe initialized');
 } else {
@@ -560,7 +560,7 @@ export const StripeService = {
       const ephemeralKey = await stripeBreaker.execute(() =>
         stripe!.ephemeralKeys.create(
           { customer: customerId },
-          { apiVersion: '2025-11-17.clover' }
+          { apiVersion: '2024-12-18.acacia' as any }
         )
       );
 
