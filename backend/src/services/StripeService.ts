@@ -547,6 +547,30 @@ export const StripeService = {
   },
 
   /**
+   * Create an ephemeral key for a customer (required by PaymentSheet).
+   */
+  createEphemeralKey: async (
+    customerId: string
+  ): Promise<ServiceResult<string>> => {
+    if (!stripe) {
+      return { success: false, error: { code: 'STRIPE_NOT_CONFIGURED', message: 'Stripe is not configured' } };
+    }
+
+    try {
+      const ephemeralKey = await stripeBreaker.execute(() =>
+        stripe!.ephemeralKeys.create(
+          { customer: customerId },
+          { apiVersion: '2025-11-17.clover' }
+        )
+      );
+
+      return { success: true, data: ephemeralKey.secret! };
+    } catch (error) {
+      return { success: false, error: { code: 'STRIPE_ERROR', message: error instanceof Error ? error.message : 'Failed to create ephemeral key' } };
+    }
+  },
+
+  /**
    * Create a SetupIntent for saving a payment method without charging.
    */
   createSetupIntent: async (

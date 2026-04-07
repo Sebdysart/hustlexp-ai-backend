@@ -62,16 +62,24 @@ export const paymentMethodsRouter = router({
         throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: customerResult.error.message });
       }
 
-      const result = await StripeService.createSetupIntent(customerResult.data);
-      if (!result.success) {
-        throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: result.error.message });
+      const [setupResult, ephKeyResult] = await Promise.all([
+        StripeService.createSetupIntent(customerResult.data),
+        StripeService.createEphemeralKey(customerResult.data),
+      ]);
+
+      if (!setupResult.success) {
+        throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: setupResult.error.message });
+      }
+      if (!ephKeyResult.success) {
+        throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: ephKeyResult.error.message });
       }
 
-      log.info({ userId: ctx.user.id }, 'SetupIntent created for adding payment method');
+      log.info({ userId: ctx.user.id }, 'SetupIntent + EphemeralKey created for adding payment method');
 
       return {
-        clientSecret: result.data.clientSecret,
+        clientSecret: setupResult.data.clientSecret,
         customerId: customerResult.data,
+        ephemeralKeySecret: ephKeyResult.data,
       };
     }),
 

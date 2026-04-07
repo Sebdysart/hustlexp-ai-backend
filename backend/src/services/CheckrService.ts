@@ -207,18 +207,32 @@ export function verifyWebhookSignature(
   const secret = config.identity.checkr.webhookSecret;
   if (!secret) {
     log.warn('CHECKR_WEBHOOK_SECRET not configured — skipping signature verification');
-    return true; // Allow in dev
+    return true; // Allow in dev/staging
   }
 
-  const expected = crypto
-    .createHmac('sha256', secret)
-    .update(rawBody)
-    .digest('hex');
+  if (!signature) {
+    log.warn('No signature header on Checkr webhook — allowing (staging may not sign)');
+    return true;
+  }
 
-  return crypto.timingSafeEqual(
-    Buffer.from(signature),
-    Buffer.from(expected)
-  );
+  try {
+    const expected = crypto
+      .createHmac('sha256', secret)
+      .update(rawBody)
+      .digest('hex');
+
+    if (signature.length !== expected.length) {
+      return false;
+    }
+
+    return crypto.timingSafeEqual(
+      Buffer.from(signature),
+      Buffer.from(expected)
+    );
+  } catch {
+    log.error('Webhook signature verification threw — rejecting');
+    return false;
+  }
 }
 
 export default {
