@@ -406,6 +406,59 @@ export const stripeConnectRouter = router({
 
       return result.data;
     }),
+
+  // --------------------------------------------------------------------------
+  // BALANCE & CASH OUT
+  // --------------------------------------------------------------------------
+
+  /**
+   * Get the worker's available and pending Stripe balance
+   */
+  getBalance: hustlerProcedure
+    .input(z.void())
+    .query(async ({ ctx }) => {
+      const result = await StripeConnectService.getBalance(ctx.user.id);
+
+      if (!result.success) {
+        if (result.error.code === 'STRIPE_CONNECT_NOT_SETUP') {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message: 'Stripe Connect account not set up. Complete onboarding first.',
+          });
+        }
+        throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: result.error.message });
+      }
+
+      return result.data;
+    }),
+
+  /**
+   * Request a payout (cash out) of available balance
+   */
+  requestPayout: hustlerProcedure
+    .input(z.object({
+      amountCents: z.number().int().positive().min(100, 'Minimum payout is $1.00'),
+      method: z.enum(['instant', 'standard']).default('standard'),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const result = await StripeConnectService.requestPayout({
+        userId: ctx.user.id,
+        amountCents: input.amountCents,
+        method: input.method,
+      });
+
+      if (!result.success) {
+        if (result.error.code === 'STRIPE_CONNECT_NOT_SETUP') {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message: 'Stripe Connect account not set up. Complete onboarding first.',
+          });
+        }
+        throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: result.error.message });
+      }
+
+      return result.data;
+    }),
 });
 
 export type StripeConnectRouter = typeof stripeConnectRouter;

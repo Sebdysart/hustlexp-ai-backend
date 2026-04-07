@@ -27,7 +27,7 @@ let stripe: Stripe | null = null;
 
 if (config.stripe.secretKey && !config.stripe.secretKey.includes('placeholder')) {
   stripe = new Stripe(config.stripe.secretKey, {
-    apiVersion: '2025-11-17.clover',
+    apiVersion: '2024-12-18.acacia' as any,
   });
   stripeLogger.info('Stripe Connect initialized');
 } else {
@@ -904,6 +904,111 @@ export const StripeConnectService = {
       returnUrl: params.returnUrl,
     });
   },
+
+  // ============================================================================
+  // BALANCE & PAYOUTS
+  // ============================================================================
+
+  /**
+   * Get the worker's available and pending balance from Stripe.
+   */
+  getBalance: async (userId: string): Promise<ServiceResult<{
+    availableCents: number;
+    pendingCents: number;
+    currency: string;
+  }>> => {
+    if (!stripe) {
+      return { success: false, error: { code: 'STRIPE_NOT_CONFIGURED', message: 'Stripe not configured' } };
+    }
+
+    const connectId = await getConnectId(userId);
+    if (!connectId) {
+      return { success: false, error: { code: 'STRIPE_CONNECT_NOT_SETUP', message: 'No Stripe Connect account' } };
+    }
+
+    try {
+      const balance = await stripeBreaker.execute(() =>
+        stripe!.balance.retrieve({ stripeAccount: connectId })
+      );
+
+      const available = balance.available.find(b => b.currency === 'usd')?.amount ?? 0;
+      const pending = balance.pending.find(b => b.currency === 'usd')?.amount ?? 0;
+
+      return {
+        success: true,
+        data: { availableCents: available, pendingCents: pending, currency: 'usd' },
+      };
+    } catch (error) {
+      return { success: false, error: { code: 'STRIPE_ERROR', message: error instanceof Error ? error.message : 'Failed to get balance' } };
+    }
+  },
+
+  /**
+   * Request an instant payout of available balance.
+   * Requires a debit card on file (instant payouts only go to debit cards).
+   */
+  requestPayout: async (params: {
+    userId: string;
+    amountCents: number;
+    method: 'instant' | 'standard';
+  }): Promise<ServiceResult<{
+    payoutId: string;
+    amountCents: number;
+    expectedArrival: string;
+    status: string;
+  }>> => {
+    if (!stripe) {
+      return { success: false, error: { code: 'STRIPE_NOT_CONFIGURED', message: 'Stripe not configured' } };
+    }
+
+    const connectId = await getConnectId(params.userId);
+    if (!connectId) {
+      return { success: false, error: { code: 'STRIPE_CONNECT_NOT_SETUP', message: 'No Stripe Connect account' } };
+    }
+
+    try {
+      const payout = await stripeBreaker.execute(() =>
+        stripe!.payouts.create(
+          {
+            amount: params.amountCents,
+            currency: 'usd',
+            method: params.method,
+          },
+          { stripeAccount: connectId }
+        )
+      );
+
+      stripeLogger.info({
+        userId: params.userId,
+        payoutId: payout.id,
+        amount: params.amountCents,
+        method: params.method,
+      }, 'Payout requested');
+
+      return {
+        success: true,
+        data: {
+          payoutId: payout.id,
+          amountCents: payout.amount,
+          expectedArrival: new Date((payout.arrival_date ?? 0) * 1000).toISOString(),
+          status: payout.status,
+        },
+      };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : 'Failed to create payout';
+      stripeLogger.error({ userId: params.userId, err: msg }, 'Payout request failed');
+      return { success: false, error: { code: 'STRIPE_ERROR', message: msg } };
+    }
+  },
 };
+
+/** Helper to get stripe_connect_id from DB */
+async function getConnectId(userId: string): Promise<string | null> {
+  const result = await db.query<{ stripe_connect_id: string | null }>(
+    'SELECT stripe_connect_id FROM users WHERE id = $1',
+    [userId]
+  );
+  return result.rows[0]?.stripe_connect_id ?? null;
+}
 
 export default StripeConnectService;
