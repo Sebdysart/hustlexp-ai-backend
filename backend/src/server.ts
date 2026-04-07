@@ -776,28 +776,51 @@ app.post('/webhooks/stripe', async (c) => {
 // ============================================================================
 
 app.post('/webhooks/checkr', async (c) => {
-  const rawBody = await c.req.json().catch(() => null);
+  const rawBodyText = await c.req.text().catch(() => '');
+  const rawBody = JSON.parse(rawBodyText || '{}');
 
   if (!rawBody || !rawBody.type) {
     return c.json({ error: 'Invalid webhook payload' }, 400);
   }
 
-  const { updateBackgroundCheckStatus } = await import('./services/BackgroundCheckService');
+  // Verify webhook signature
+  const signature = c.req.header('x-checkr-signature') || '';
+  const { verifyWebhookSignature } = await import('./services/CheckrService.js');
+  if (!verifyWebhookSignature(rawBodyText, signature)) {
+    pinoLogger.warn({ type: rawBody.type }, 'Checkr webhook signature verification failed');
+    return c.json({ error: 'Invalid signature' }, 401);
+  }
+
+  const { updateBackgroundCheckStatus } = await import('./services/BackgroundCheckService.js');
 
   try {
     const { type, data } = rawBody;
+    // Checkr sends candidate_id or report ID depending on event type
     const reportId = data?.object?.id;
 
-    if (type === 'report.completed' || type === 'report.suspended' || type === 'report.disputed') {
-      const statusMap: Record<string, 'IN_PROGRESS' | 'CLEAR' | 'CONSIDER' | 'FAILED'> = {
-        'report.completed': 'CLEAR',
-        'report.suspended': 'CONSIDER',
-        'report.disputed': 'CONSIDER',
-      };
-      await updateBackgroundCheckStatus(reportId, statusMap[type] ?? 'CONSIDER', data?.object?.result);
+    pinoLogger.info({ type, reportId }, 'Checkr webhook received');
+
+    const statusMap: Record<string, 'IN_PROGRESS' | 'CLEAR' | 'CONSIDER' | 'FAILED'> = {
+      'report.created': 'IN_PROGRESS',
+      'report.completed': 'CLEAR',
+      'report.suspended': 'CONSIDER',
+      'report.disputed': 'CONSIDER',
+      'report.upgraded': 'IN_PROGRESS',
+      'candidate.id_verification.completed': 'CLEAR',
+    };
+
+    const newStatus = statusMap[type];
+    if (newStatus && reportId) {
+      await updateBackgroundCheckStatus(
+        reportId,
+        newStatus,
+        data?.object?.result ?? null,
+        data?.object ? data.object : undefined
+      );
+      pinoLogger.info({ type, reportId, newStatus }, 'Checkr webhook processed');
     }
 
-    return c.json({ received: true, processed: true }, 200);
+    return c.json({ received: true, processed: !!newStatus }, 200);
   } catch (error) {
     pinoLogger.error({ error: error instanceof Error ? error.message : String(error) }, 'Checkr webhook processing failed');
     return c.json({ error: 'Webhook processing failed' }, 500);

@@ -346,6 +346,91 @@ export const verificationRouter = router({
 
       return { emailVerified: true };
     }),
+
+  // --------------------------------------------------------------------------
+  // ID VERIFICATION & BACKGROUND CHECK (Checkr)
+  // --------------------------------------------------------------------------
+
+  /**
+   * Start identity verification + background check via Checkr.
+   * Creates a Checkr candidate and invitation, returns the hosted URL
+   * where the user completes verification.
+   */
+  startIdentityVerification: protectedProcedure
+    .input(z.object({
+      firstName: z.string().min(1).max(100),
+      lastName: z.string().min(1).max(100),
+      dateOfBirth: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Must be YYYY-MM-DD'),
+      ssnLast4: z.string().length(4).regex(/^\d{4}$/, 'Must be 4 digits').optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      log.info({ userId: ctx.user.id }, '>>> startIdentityVerification called');
+
+      const { initiateBackgroundCheck } = await import('../services/BackgroundCheckService.js');
+
+      try {
+        const check = await initiateBackgroundCheck({
+          userId: ctx.user.id,
+          provider: 'checkr',
+          fullName: `${input.firstName} ${input.lastName}`,
+          dateOfBirth: input.dateOfBirth,
+          ssnLast4: input.ssnLast4,
+        });
+
+        // Extract invitationUrl from details
+        const invitationUrl = (check.details as any)?.invitationUrl ?? null;
+
+        log.info({
+          userId: ctx.user.id,
+          checkId: check.id,
+          hasInvitationUrl: !!invitationUrl,
+        }, 'Identity verification initiated');
+
+        return {
+          checkId: check.id,
+          status: check.status,
+          invitationUrl,
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log.error({ userId: ctx.user.id, err: msg }, 'startIdentityVerification failed');
+
+        // Re-throw TRPCErrors (like CONFLICT for existing check)
+        if (err instanceof TRPCError) throw err;
+
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: `Identity verification failed: ${msg}`,
+        });
+      }
+    }),
+
+  /**
+   * Get the current ID verification / background check status.
+   */
+  getIdentityVerificationStatus: protectedProcedure
+    .input(z.object({}).optional())
+    .query(async ({ ctx }) => {
+      const { getUserBackgroundCheck } = await import('../services/BackgroundCheckService.js');
+
+      const check = await getUserBackgroundCheck(ctx.user.id);
+
+      if (!check) {
+        return {
+          status: 'NOT_STARTED' as const,
+          checkId: null,
+          invitationUrl: null,
+          completedAt: null,
+        };
+      }
+
+      return {
+        status: check.status,
+        checkId: check.id,
+        invitationUrl: (check.details as any)?.invitationUrl ?? null,
+        completedAt: check.completedAt,
+      };
+    }),
 });
 
 export type VerificationRouter = typeof verificationRouter;

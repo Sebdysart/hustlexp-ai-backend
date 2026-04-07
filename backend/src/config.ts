@@ -118,6 +118,17 @@ export const config = {
       apiKey: process.env.SENDGRID_API_KEY || '',
       fromEmail: process.env.SENDGRID_FROM_EMAIL || 'verify@hustlexp.app',
     },
+    checkr: {
+      apiKey: process.env.CHECKR_API_KEY || '',
+      webhookSecret: process.env.CHECKR_WEBHOOK_SECRET || '',
+      // 'staging' or 'production'
+      environment: (process.env.CHECKR_ENVIRONMENT || 'staging') as 'staging' | 'production',
+      get apiBase() {
+        return this.environment === 'production'
+          ? 'https://api.checkr.com'
+          : 'https://api.checkr-staging.com';
+      },
+    },
   },
   
   // Seattle Beta Configuration

@@ -16,6 +16,8 @@ import { db } from '../db.js';
 import { logger } from '../logger.js';
 import { TRPCError } from '@trpc/server';
 import { recomputeCapabilityProfile } from './CapabilityRecomputeService.js';
+import { createCandidate, createInvitation } from './CheckrService.js';
+import { config } from '../config.js';
 
 const log = logger.child({ service: 'BackgroundCheckService' });
 
@@ -113,9 +115,42 @@ export async function initiateBackgroundCheck(
     }
   }
 
-  // Create check record
-  // In production, this would call the provider's API
-  const externalCheckId = `bc_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  // Call Checkr API to create candidate and invitation
+  let externalCheckId: string;
+  let invitationUrl: string | null = null;
+
+  if (initiation.provider === 'checkr' && config.identity.checkr.apiKey) {
+    // Parse full name into first/last
+    const nameParts = (initiation.fullName || '').trim().split(/\s+/);
+    const firstName = nameParts[0] || 'Unknown';
+    const lastName = nameParts.slice(1).join(' ') || 'Unknown';
+
+    // Step 1: Create candidate in Checkr
+    const candidate = await createCandidate({
+      firstName,
+      lastName,
+      email: '', // Will be populated from user record
+      dob: initiation.dateOfBirth,
+      ssnLast4: initiation.ssnLast4,
+    });
+
+    // Step 2: Create invitation (sends hosted verification link)
+    const invitation = await createInvitation(candidate.id, 'tasker_standard');
+
+    externalCheckId = candidate.id;
+    invitationUrl = invitation.invitation_url;
+
+    log.info({
+      userId: initiation.userId,
+      candidateId: candidate.id,
+      invitationUrl,
+    }, 'Checkr candidate + invitation created');
+  } else {
+    // Fallback for manual or non-Checkr providers
+    externalCheckId = `bc_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    log.info({ userId: initiation.userId, provider: initiation.provider }, 'Manual background check initiated');
+  }
+
   const expiresAt = new Date();
   expiresAt.setFullYear(expiresAt.getFullYear() + 1); // 1 year validity
 
@@ -137,21 +172,19 @@ export async function initiateBackgroundCheck(
         ssnLast4: initiation.ssnLast4,
         dateOfBirth: initiation.dateOfBirth,
         fullName: initiation.fullName,
+        invitationUrl,
       }),
     ]
   );
 
   const row = result.rows[0];
-  
-  log.info({ 
-    userId: initiation.userId, 
+
+  log.info({
+    userId: initiation.userId,
     provider: initiation.provider,
     checkId: row.id,
-    externalCheckId 
+    externalCheckId,
   }, 'Background check initiated');
-
-  // In production: Call provider API here
-  // await callBackgroundCheckProvider(initiation, externalCheckId);
 
   return {
     id: row.id,
