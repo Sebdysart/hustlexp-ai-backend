@@ -498,6 +498,173 @@ export const StripeService = {
       };
     }
   },
+
+  // ============================================================================
+  // PAYMENT METHOD MANAGEMENT
+  // ============================================================================
+
+  /**
+   * Ensure a Stripe Customer exists for a user. Creates one if not.
+   */
+  ensureCustomer: async (
+    userId: string,
+    email: string,
+    name?: string
+  ): Promise<ServiceResult<string>> => {
+    if (!stripe) {
+      return { success: false, error: { code: 'STRIPE_NOT_CONFIGURED', message: 'Stripe is not configured' } };
+    }
+
+    // Check if user already has a customer ID
+    const userResult = await db.query<{ stripe_customer_id: string | null }>(
+      'SELECT stripe_customer_id FROM users WHERE id = $1',
+      [userId]
+    );
+    const existing = userResult.rows[0]?.stripe_customer_id;
+    if (existing) {
+      return { success: true, data: existing };
+    }
+
+    try {
+      const customer = await stripeBreaker.execute(() =>
+        stripe!.customers.create({
+          email,
+          name: name || undefined,
+          metadata: { user_id: userId },
+        })
+      );
+
+      await db.query(
+        'UPDATE users SET stripe_customer_id = $1, updated_at = NOW() WHERE id = $2',
+        [customer.id, userId]
+      );
+
+      stripeLogger.info({ userId, customerId: customer.id }, 'Stripe customer created');
+      return { success: true, data: customer.id };
+    } catch (error) {
+      return { success: false, error: { code: 'STRIPE_ERROR', message: error instanceof Error ? error.message : 'Failed to create customer' } };
+    }
+  },
+
+  /**
+   * Create a SetupIntent for saving a payment method without charging.
+   */
+  createSetupIntent: async (
+    customerId: string
+  ): Promise<ServiceResult<{ setupIntentId: string; clientSecret: string }>> => {
+    if (!stripe) {
+      return { success: false, error: { code: 'STRIPE_NOT_CONFIGURED', message: 'Stripe is not configured' } };
+    }
+
+    try {
+      const setupIntent = await stripeBreaker.execute(() =>
+        stripe!.setupIntents.create({
+          customer: customerId,
+          payment_method_types: ['card'],
+        })
+      );
+
+      return {
+        success: true,
+        data: {
+          setupIntentId: setupIntent.id,
+          clientSecret: setupIntent.client_secret!,
+        },
+      };
+    } catch (error) {
+      return { success: false, error: { code: 'STRIPE_ERROR', message: error instanceof Error ? error.message : 'Failed to create setup intent' } };
+    }
+  },
+
+  /**
+   * List saved payment methods for a customer.
+   */
+  listPaymentMethods: async (
+    customerId: string
+  ): Promise<ServiceResult<Array<{
+    id: string;
+    brand: string;
+    last4: string;
+    expMonth: number;
+    expYear: number;
+    isDefault: boolean;
+  }>>> => {
+    if (!stripe) {
+      return { success: false, error: { code: 'STRIPE_NOT_CONFIGURED', message: 'Stripe is not configured' } };
+    }
+
+    try {
+      const methods = await stripeBreaker.execute(() =>
+        stripe!.paymentMethods.list({
+          customer: customerId,
+          type: 'card',
+        })
+      );
+
+      // Get default payment method
+      const customer = await stripeBreaker.execute(() =>
+        stripe!.customers.retrieve(customerId)
+      );
+      const defaultPmId = (customer as Stripe.Customer).invoice_settings?.default_payment_method;
+
+      return {
+        success: true,
+        data: methods.data.map((pm) => ({
+          id: pm.id,
+          brand: pm.card?.brand ?? 'unknown',
+          last4: pm.card?.last4 ?? '????',
+          expMonth: pm.card?.exp_month ?? 0,
+          expYear: pm.card?.exp_year ?? 0,
+          isDefault: pm.id === defaultPmId,
+        })),
+      };
+    } catch (error) {
+      return { success: false, error: { code: 'STRIPE_ERROR', message: error instanceof Error ? error.message : 'Failed to list payment methods' } };
+    }
+  },
+
+  /**
+   * Remove a payment method.
+   */
+  detachPaymentMethod: async (
+    paymentMethodId: string
+  ): Promise<ServiceResult<void>> => {
+    if (!stripe) {
+      return { success: false, error: { code: 'STRIPE_NOT_CONFIGURED', message: 'Stripe is not configured' } };
+    }
+
+    try {
+      await stripeBreaker.execute(() =>
+        stripe!.paymentMethods.detach(paymentMethodId)
+      );
+      return { success: true, data: undefined };
+    } catch (error) {
+      return { success: false, error: { code: 'STRIPE_ERROR', message: error instanceof Error ? error.message : 'Failed to remove payment method' } };
+    }
+  },
+
+  /**
+   * Set a payment method as the customer's default.
+   */
+  setDefaultPaymentMethod: async (
+    customerId: string,
+    paymentMethodId: string
+  ): Promise<ServiceResult<void>> => {
+    if (!stripe) {
+      return { success: false, error: { code: 'STRIPE_NOT_CONFIGURED', message: 'Stripe is not configured' } };
+    }
+
+    try {
+      await stripeBreaker.execute(() =>
+        stripe!.customers.update(customerId, {
+          invoice_settings: { default_payment_method: paymentMethodId },
+        })
+      );
+      return { success: true, data: undefined };
+    } catch (error) {
+      return { success: false, error: { code: 'STRIPE_ERROR', message: error instanceof Error ? error.message : 'Failed to set default payment method' } };
+    }
+  },
 };
 
 export default StripeService;

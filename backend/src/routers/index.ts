@@ -59,6 +59,7 @@ import { notificationRouter } from './notification.js';
 import { ratingRouter } from './rating.js';
 import { uploadRouter } from './upload.js';
 import { verificationRouter } from './verification.js';
+import { paymentMethodsRouter } from './paymentMethods.js';
 import { juryRouter } from './jury.js';
 import { analyticsRouter } from './analytics.js';
 import { gdprRouter } from './gdpr.js';
@@ -127,6 +128,7 @@ export const appRouter = router({
   rating: ratingRouter,
   upload: uploadRouter,
   verification: verificationRouter,
+  paymentMethods: paymentMethodsRouter,
   jury: juryRouter,
   analytics: analyticsRouter,
   gdpr: gdprRouter,
