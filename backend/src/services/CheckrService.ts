@@ -161,7 +161,7 @@ export async function createInvitation(
   const invitation = await checkrFetch<CheckrInvitation>('POST', '/v1/invitations', {
     candidate_id: candidateId,
     package: packageSlug,
-    work_locations: workLocations ?? [{ country: 'US', state: 'all' }],
+    work_locations: workLocations ?? [{ country: 'US', state: 'CA' }],
   });
 
   log.info({

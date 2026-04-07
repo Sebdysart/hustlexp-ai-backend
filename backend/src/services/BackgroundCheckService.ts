@@ -75,6 +75,7 @@ export interface BackgroundCheckInitiation {
   ssnLast4?: string;
   dateOfBirth?: string;
   fullName?: string;
+  workState?: string;
 }
 
 // ============================================================================
@@ -137,7 +138,10 @@ export async function initiateBackgroundCheck(
     });
 
     // Step 2: Create invitation (sends hosted verification link)
-    const invitation = await createInvitation(candidate.id, config.identity.checkr.packageSlug);
+    const workLocations = initiation.workState
+      ? [{ country: 'US', state: initiation.workState }]
+      : [{ country: 'US', state: 'CA' }];
+    const invitation = await createInvitation(candidate.id, config.identity.checkr.packageSlug, workLocations);
 
     externalCheckId = candidate.id;
     invitationUrl = invitation.invitation_url;

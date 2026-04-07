@@ -361,6 +361,7 @@ export const verificationRouter = router({
       firstName: z.string().min(1).max(100),
       lastName: z.string().min(1).max(100),
       dateOfBirth: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Must be YYYY-MM-DD'),
+      workState: z.string().length(2, 'Must be 2-letter state code (e.g. CA)'),
     }))
     .mutation(async ({ ctx, input }) => {
       log.info({ userId: ctx.user.id }, '>>> startIdentityVerification called');
@@ -375,6 +376,7 @@ export const verificationRouter = router({
           phone: ctx.user.phone,
           fullName: `${input.firstName} ${input.lastName}`,
           dateOfBirth: input.dateOfBirth,
+          workState: input.workState,
         });
 
         // Extract invitationUrl from details
