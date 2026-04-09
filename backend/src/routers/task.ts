@@ -20,8 +20,96 @@ import { ScoperAIService } from '../services/ScoperAIService.js';
 import { getTemplate, getManifest, isCareContent, isContentReleaseRequired } from '../services/TaskTemplateRegistry.js';
 import { TaskRiskClassifier } from '../services/TaskRiskClassifier.js';
 import { checkRateLimit } from '../cache/redis.js';
+import { AIClient } from '../services/AIClient.js';
 
 const taskRouterLog = logger.child({ router: 'task' });
+
+// ============================================================================
+// AI CONVERSE — System Prompt & Response Schema
+// ============================================================================
+
+const TASK_CONVERSE_SYSTEM_PROMPT = `You are HustleXP's AI Task Creation Assistant. You help posters create task listings through natural conversation.
+
+YOUR ROLE:
+- Understand what the user needs done
+- Ask smart follow-up questions ONE AT A TIME (never dump all questions at once)
+- Extract structured task data from natural conversation
+- Evaluate task difficulty based on complexity, required skills, time, and risk
+- Suggest fair pricing based on task type, difficulty, and market rates
+
+TASK FIELDS TO EXTRACT (update the "draft" object):
+- title: Short, clear task title (max 60 chars)
+- description: Detailed description of what needs to be done
+- suggestedPriceCents: Price in cents (e.g. 5000 = $50.00). Use these ranges:
+  Easy tasks: $15-$50 | Medium: $50-$150 | Hard: $150-$500
+- location: Where the task happens (address, neighborhood, or "Remote")
+- estimatedDurationMinutes: How long the task should take
+- difficulty: "easy", "medium", or "hard" based on:
+  Easy = simple physical task, no special skills, <1 hour
+  Medium = requires some skill or coordination, 1-3 hours
+  Hard = specialized skills, complex logistics, or 3+ hours
+- category: One of: delivery, moving, cleaning, yardWork, shopping, assembly, tech, petCare, handyman, childcare, elderCare, contentCreator, eventAppearance, creativeProduction, specializedLicensed, other
+- requirements: Specific skills, tools, or qualifications needed
+- deadline: When this needs to be done (ISO date or null)
+- flags: Array of relevant tags like ["urgent", "heavy_lifting", "vehicle_needed", "remote"]
+- isReadyToPost: Set to true ONLY when you have at minimum: title, description, price, and location
+
+CONVERSATION RULES:
+1. Be concise and friendly. No corporate speak.
+2. After the user's FIRST message: understand the task, set title/description/category/difficulty, suggest a price, then ask for the MOST important missing field.
+3. For follow-ups: extract what the user said, update the draft, then ask for the next missing field.
+4. When all required fields are filled: summarize the task and ask for confirmation. Set isReadyToPost=true.
+5. If the user says "yes", "looks good", "post it", etc: confirm the task is ready.
+6. ALWAYS respond with valid JSON matching the schema. No markdown, no code blocks.
+
+PRICING GUIDELINES:
+- Grocery delivery: $15-$30
+- House cleaning: $40-$100
+- Moving help: $50-$150
+- Dog walking: $15-$25
+- Furniture assembly: $30-$80
+- Tech support: $30-$100
+- Lawn care: $25-$60
+- Specialized/licensed work: $80-$300
+- Content creation: $50-$200
+- Software development: $100-$500
+
+RESPONSE FORMAT (strict JSON):
+{
+  "message": "Your conversational response to the user",
+  "draft": {
+    "title": "string or null",
+    "description": "string or null",
+    "suggestedPriceCents": number or null,
+    "location": "string or null",
+    "estimatedDurationMinutes": number or null,
+    "difficulty": "easy|medium|hard or null",
+    "category": "string or null",
+    "requirements": "string or null",
+    "deadline": "string or null",
+    "flags": ["array", "of", "strings"],
+    "isReadyToPost": false
+  }
+}`;
+
+const AIConverseResponseSchema = z.object({
+  message: z.string().min(1),
+  draft: z.object({
+    title: z.string().nullable().optional(),
+    description: z.string().nullable().optional(),
+    suggestedPriceCents: z.number().nullable().optional(),
+    location: z.string().nullable().optional(),
+    estimatedDurationMinutes: z.number().nullable().optional(),
+    difficulty: z.enum(['easy', 'medium', 'hard']).nullable().optional(),
+    category: z.string().nullable().optional(),
+    requirements: z.string().nullable().optional(),
+    deadline: z.string().nullable().optional(),
+    flags: z.array(z.string()).optional(),
+    isReadyToPost: z.boolean().optional(),
+  }).nullable().optional(),
+});
+
+type AIConverseResponse = z.infer<typeof AIConverseResponseSchema>;
 
 // ---------------------------------------------------------------------------
 // Redis-backed rate limit for evaluateDraft: max 5 calls per 60s per user.
@@ -404,6 +492,180 @@ export const taskRouter = router({
       return result.data;
     }),
   
+  // --------------------------------------------------------------------------
+  // AI-POWERED TASK CREATION CONVERSATION
+  // --------------------------------------------------------------------------
+
+  /**
+   * AI-powered conversational task creation.
+   * Every user message is processed by GPT-4o which:
+   * - Understands the task description
+   * - Asks smart follow-up questions one at a time
+   * - Extracts structured data from natural language
+   * - Evaluates difficulty, suggests pricing
+   * - Returns both a conversational response and structured draft updates
+   */
+  aiConverse: posterProcedure
+    .input(z.object({
+      message: z.string().min(1).max(5000),
+      conversationHistory: z.array(z.object({
+        role: z.enum(['user', 'assistant']),
+        content: z.string(),
+      })).max(30),
+      currentDraft: z.object({
+        title: z.string().optional(),
+        description: z.string().optional(),
+        suggestedPriceCents: z.number().optional(),
+        location: z.string().optional(),
+        estimatedDurationMinutes: z.number().optional(),
+        difficulty: z.string().optional(),
+        category: z.string().optional(),
+        requirements: z.string().optional(),
+        deadline: z.string().optional(),
+        flags: z.array(z.string()).optional(),
+        isReadyToPost: z.boolean().optional(),
+      }).optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const startTime = Date.now();
+      const conversationId = `conv_${ctx.user.id}_${Date.now()}`;
+
+      logger.info({
+        conversationId,
+        userId: ctx.user.id,
+        messageLength: input.message.length,
+        historyLength: input.conversationHistory.length,
+        currentDraft: input.currentDraft,
+      }, '[AIConverse] >>> Request received');
+
+      // Rate limit: 10 messages per minute
+      await checkDraftEvalRateLimit(ctx.user.id);
+
+      // Build conversation messages for the AI
+      const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
+        {
+          role: 'system',
+          content: TASK_CONVERSE_SYSTEM_PROMPT,
+        },
+      ];
+
+      // Add conversation history
+      for (const msg of input.conversationHistory) {
+        messages.push({ role: msg.role, content: msg.content });
+      }
+
+      // Add the current draft state as context
+      if (input.currentDraft) {
+        messages.push({
+          role: 'system',
+          content: `Current draft state (JSON): ${JSON.stringify(input.currentDraft)}. Update fields based on the user's new message.`,
+        });
+      }
+
+      // Add the new user message
+      messages.push({ role: 'user', content: input.message });
+
+      logger.info({
+        conversationId,
+        totalMessages: messages.length,
+      }, '[AIConverse] Calling AI provider...');
+
+      try {
+        const aiResult = await AIClient.callJSON<AIConverseResponse>({
+          route: 'primary',
+          schema: AIConverseResponseSchema,
+          temperature: 0.5,
+          timeoutMs: 20000,
+          systemPrompt: TASK_CONVERSE_SYSTEM_PROMPT,
+          prompt: messages
+            .filter(m => m.role !== 'system')
+            .map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`)
+            .join('\n\n')
+            + `\n\nCurrent draft: ${JSON.stringify(input.currentDraft ?? {})}`
+            + `\n\nUser: ${input.message}`,
+          responseFormat: 'json',
+        });
+
+        const latencyMs = Date.now() - startTime;
+
+        logger.info({
+          conversationId,
+          provider: aiResult.provider,
+          model: aiResult.model,
+          cached: aiResult.cached,
+          latencyMs,
+          isReadyToPost: aiResult.data.draft?.isReadyToPost,
+          difficulty: aiResult.data.draft?.difficulty,
+          suggestedPrice: aiResult.data.draft?.suggestedPriceCents,
+        }, '[AIConverse] AI response received');
+
+        // Run compliance check on the description if it's substantial
+        const description = aiResult.data.draft?.description || input.currentDraft?.description;
+        let complianceWarning: string | null = null;
+        if (description && description.length > 20) {
+          logger.info({ conversationId }, '[AIConverse] Running compliance check...');
+          const compliance = await ComplianceGuardianService.evaluate({
+            description,
+            userId: ctx.user.id,
+          });
+
+          if (compliance.tier === 'hard_block') {
+            logger.warn({
+              conversationId,
+              score: compliance.score,
+              rules: compliance.triggeredRules,
+            }, '[AIConverse] Compliance HARD BLOCK');
+
+            return {
+              message: `I can't help create this task — it appears to violate our guidelines. ${compliance.suggestedAlternative || 'Please describe a different task.'}`,
+              draft: null,
+              compliance: { tier: compliance.tier, score: compliance.score },
+            };
+          }
+
+          if (compliance.tier === 'soft_flag') {
+            complianceWarning = `Note: This task was flagged for review (${compliance.triggeredRules.join(', ')}). It can still be posted.`;
+            logger.info({
+              conversationId,
+              score: compliance.score,
+              rules: compliance.triggeredRules,
+            }, '[AIConverse] Compliance soft flag');
+          }
+        }
+
+        const responseMessage = complianceWarning
+          ? `${aiResult.data.message}\n\n⚠️ ${complianceWarning}`
+          : aiResult.data.message;
+
+        logger.info({
+          conversationId,
+          totalLatencyMs: Date.now() - startTime,
+        }, '[AIConverse] <<< Response sent');
+
+        return {
+          message: responseMessage,
+          draft: aiResult.data.draft,
+          compliance: null,
+        };
+      } catch (err) {
+        const latencyMs = Date.now() - startTime;
+        const errMsg = err instanceof Error ? err.message : String(err);
+
+        logger.error({
+          conversationId,
+          latencyMs,
+          err: errMsg,
+        }, '[AIConverse] AI call FAILED');
+
+        // Fallback: return a helpful message without AI
+        return {
+          message: "I'm having trouble processing that right now. Could you tell me:\n• What do you need done?\n• Where is the task?\n• How much are you willing to pay?",
+          draft: input.currentDraft ?? null,
+          compliance: null,
+        };
+      }
+    }),
+
   /**
    * Evaluate a task draft for compliance before creation.
    * HARD_BLOCK (score ≥ 61): throws, no task created.
