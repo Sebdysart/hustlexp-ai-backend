@@ -70,13 +70,19 @@ export const PlanService = {
    * Get user plan (with expiration check)
    */
   getUserPlan: async (userId: string): Promise<UserPlan> => {
-    const result = await db.query<{
-      plan: UserPlan;
-      plan_expires_at: Date | null;
-    }>(
-      `SELECT plan, plan_expires_at FROM users WHERE id = $1`,
-      [userId]
-    );
+    let result;
+    try {
+      result = await db.query<{
+        plan: UserPlan;
+        plan_expires_at: Date | null;
+      }>(
+        `SELECT plan, plan_expires_at FROM users WHERE id = $1`,
+        [userId]
+      );
+    } catch {
+      // 'plan' column may not exist in production yet — default to free
+      return 'free';
+    }
 
     if (result.rows.length === 0) {
       return 'free'; // Default to free if user not found
@@ -87,10 +93,14 @@ export const PlanService = {
     // Check if plan has expired
     if (user.plan_expires_at && user.plan_expires_at < new Date()) {
       // Plan expired - reset to free
-      await db.query(
-        `UPDATE users SET plan = 'free', plan_expires_at = NULL WHERE id = $1`,
-        [userId]
-      );
+      try {
+        await db.query(
+          `UPDATE users SET plan = 'free', plan_expires_at = NULL WHERE id = $1`,
+          [userId]
+        );
+      } catch {
+        // Column may not exist — ignore
+      }
       return 'free';
     }
 
