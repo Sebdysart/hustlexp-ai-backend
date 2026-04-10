@@ -116,8 +116,13 @@ export const userRouter = router({
    * Returns mobile-compatible JSON shape (camelCase, mapped field names)
    */
   me: protectedProcedure
-    .input(z.void())
+    .input(z.object({}).optional())
     .query(async ({ ctx }) => {
+      logger.info({
+        userId: ctx.user!.id,
+        dbDefaultMode: ctx.user!.default_mode,
+        mappedRole: ctx.user!.default_mode === 'worker' ? 'hustler' : ctx.user!.default_mode,
+      }, '[user.me] Returning user profile — check role mapping');
       return await toMobileUser(ctx.user!);
     }),
 
@@ -420,6 +425,12 @@ export const userRouter = router({
       }
       if (input.defaultMode !== undefined) {
         const newMode = normalizeRole(input.defaultMode);
+        logger.info({
+          userId: ctx.user.id,
+          inputDefaultMode: input.defaultMode,
+          normalizedMode: newMode,
+          currentDbMode: ctx.user.default_mode,
+        }, '[updateProfile] Role change requested');
         if (newMode !== ctx.user.default_mode) {
           // Guard: no open tasks in current role before switching
           // REG-11 FIX: EXPIRED is a terminal TaskState — include it here so expired
