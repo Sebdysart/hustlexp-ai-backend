@@ -46,6 +46,7 @@ interface CreateTaskParams {
   deadline?: Date;
   requiresProof?: boolean;
   riskLevel?: TaskRiskLevel; // Defaults to 'LOW' in DB
+  estimatedDuration?: string;
   // Live Mode (PRODUCT_SPEC §3.5)
   mode?: 'STANDARD' | 'LIVE';
   liveBroadcastRadiusMiles?: number;
@@ -442,13 +443,13 @@ export const TaskService = {
       const result = await db.query<Task>(
         `INSERT INTO tasks (
           poster_id, title, description, price, xp_reward,
-          requirements, location, category, deadline, requires_proof,
+          requirements, location, category, estimated_duration, deadline, requires_proof,
           risk_level, mode, live_broadcast_radius_miles, instant_mode, sensitive, state,
           template_slug
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
         RETURNING *`,
-        [posterId, title, description, finalPrice, xpReward, requirements, location, category, deadline, requiresProof, riskLevel, mode, liveBroadcastRadiusMiles, instantMode, sensitive, initialState, templateSlug || null]
+        [posterId, title, description, finalPrice, xpReward, requirements, location, category, params.estimatedDuration || null, deadline, requiresProof, riskLevel, mode, liveBroadcastRadiusMiles, instantMode, sensitive, initialState, templateSlug || null]
       );
       
       let createdTask = result.rows[0];

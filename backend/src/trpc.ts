@@ -302,6 +302,7 @@ export const Schemas = {
     requirements: z.string().max(2000).optional(),
     location: z.string().max(500).optional(),
     category: z.string().max(100).optional(),
+    estimatedDuration: z.string().max(100).optional(),
     deadline: z.string().datetime().optional(),
     requiresProof: z.boolean().default(true),
     // Live Mode (PRODUCT_SPEC §3.5)

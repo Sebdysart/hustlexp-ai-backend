@@ -422,6 +422,7 @@ export const taskRouter = router({
         requirements: input.requirements,
         location: input.location,
         category: input.category,
+        estimatedDuration: input.estimatedDuration,
         deadline: input.deadline ? new Date(input.deadline) : undefined,
         requiresProof: input.requiresProof,
         mode: input.mode,
@@ -491,7 +492,67 @@ export const taskRouter = router({
 
       return result.data;
     }),
-  
+
+  /**
+   * Update a task (poster only, only while in OPEN state)
+   */
+  update: posterProcedure
+    .input(z.object({
+      taskId: z.string().uuid(),
+      title: z.string().min(1).max(255).optional(),
+      description: z.string().min(10).max(5000).optional(),
+      price: z.number().int().positive().max(99999900).optional(),
+      location: z.string().max(500).optional(),
+      category: z.string().max(100).optional(),
+      estimatedDuration: z.string().max(100).optional(),
+      requirements: z.string().max(2000).optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      // Verify ownership and state
+      const taskResult = await db.query<{ poster_id: string; state: string }>(
+        'SELECT poster_id, state FROM tasks WHERE id = $1',
+        [input.taskId]
+      );
+      if (taskResult.rows.length === 0) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
+      }
+      if (taskResult.rows[0].poster_id !== ctx.user.id) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'You can only edit your own tasks' });
+      }
+      if (taskResult.rows[0].state !== 'OPEN') {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'Can only edit tasks in OPEN state' });
+      }
+
+      const updates: string[] = [];
+      const values: unknown[] = [];
+      let idx = 1;
+
+      if (input.title !== undefined) { updates.push(`title = $${idx++}`); values.push(input.title); }
+      if (input.description !== undefined) { updates.push(`description = $${idx++}`); values.push(input.description); }
+      if (input.price !== undefined) { updates.push(`price = $${idx++}`); values.push(input.price); }
+      if (input.location !== undefined) { updates.push(`location = $${idx++}`); values.push(input.location); }
+      if (input.category !== undefined) { updates.push(`category = $${idx++}`); values.push(input.category); }
+      if (input.estimatedDuration !== undefined) { updates.push(`estimated_duration = $${idx++}`); values.push(input.estimatedDuration); }
+      if (input.requirements !== undefined) { updates.push(`requirements = $${idx++}`); values.push(input.requirements); }
+
+      if (updates.length === 0) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'No fields to update' });
+      }
+
+      updates.push(`updated_at = NOW()`);
+      values.push(input.taskId);
+
+      const result = await db.query(
+        `UPDATE tasks SET ${updates.join(', ')} WHERE id = $${idx} RETURNING *`,
+        values
+      );
+
+      await invalidateTask(input.taskId);
+      logger.info({ taskId: input.taskId, userId: ctx.user.id, fields: updates }, '[task.update] Task updated');
+
+      return result.rows[0];
+    }),
+
   // --------------------------------------------------------------------------
   // AI-POWERED TASK CREATION CONVERSATION
   // --------------------------------------------------------------------------
