@@ -47,6 +47,9 @@ interface CreateTaskParams {
   requiresProof?: boolean;
   riskLevel?: TaskRiskLevel; // Defaults to 'LOW' in DB
   estimatedDuration?: string;
+  locationCity?: string;
+  locationState?: string;
+  locationRadiusMiles?: number;
   // Live Mode (PRODUCT_SPEC §3.5)
   mode?: 'STANDARD' | 'LIVE';
   liveBroadcastRadiusMiles?: number;
@@ -440,16 +443,25 @@ export const TaskService = {
       // Instant mode: start in MATCHING state, not OPEN
       const initialState = instantMode ? 'MATCHING' : 'OPEN';
       
+      // Build location display string from structured fields
+      const locationDisplay = params.locationCity && params.locationState
+        ? `${params.locationCity}, ${params.locationState}`
+        : location || 'Anywhere';
+
       const result = await db.query<Task>(
         `INSERT INTO tasks (
           poster_id, title, description, price, xp_reward,
-          requirements, location, category, estimated_duration, deadline, requires_proof,
+          requirements, location, location_city, location_state, location_radius_miles,
+          category, estimated_duration, deadline, requires_proof,
           risk_level, mode, live_broadcast_radius_miles, instant_mode, sensitive, state,
           template_slug
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
         RETURNING *`,
-        [posterId, title, description, finalPrice, xpReward, requirements, location, category, params.estimatedDuration || null, deadline, requiresProof, riskLevel, mode, liveBroadcastRadiusMiles, instantMode, sensitive, initialState, templateSlug || null]
+        [posterId, title, description, finalPrice, xpReward, requirements,
+         locationDisplay, params.locationCity || null, params.locationState || null, params.locationRadiusMiles || null,
+         category, params.estimatedDuration || null, deadline, requiresProof,
+         riskLevel, mode, liveBroadcastRadiusMiles, instantMode, sensitive, initialState, templateSlug || null]
       );
       
       let createdTask = result.rows[0];

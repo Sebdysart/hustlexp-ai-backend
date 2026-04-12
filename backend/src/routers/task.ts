@@ -42,7 +42,9 @@ TASK FIELDS TO EXTRACT (update the "draft" object):
 - description: Detailed description of what needs to be done
 - suggestedPriceCents: Price in cents (e.g. 5000 = $50.00). Use these ranges:
   Easy tasks: $15-$50 | Medium: $50-$150 | Hard: $150-$500
-- location: Where the task happens (address, neighborhood, or "Remote")
+- locationCity: City name (e.g. "Houston", "San Francisco", "Austin"). Set to "Anywhere" if no location restriction.
+- locationState: Two-letter US state code (e.g. "TX", "CA", "NY"). Leave null if locationCity is "Anywhere".
+- locationRadiusMiles: Service radius from the city center. Options: 25, 50, 75, or 100 miles. Default 25.
 - estimatedDurationMinutes: How long the task should take
 - difficulty: "easy", "medium", or "hard" based on:
   Easy = simple physical task, no special skills, <1 hour
@@ -51,8 +53,14 @@ TASK FIELDS TO EXTRACT (update the "draft" object):
 - category: One of: delivery, moving, cleaning, yardWork, shopping, assembly, tech, petCare, handyman, childcare, elderCare, contentCreator, eventAppearance, creativeProduction, specializedLicensed, other
 - requirements: Specific skills, tools, or qualifications needed
 - deadline: When this needs to be done (ISO date or null)
-- flags: Array of relevant tags like ["urgent", "heavy_lifting", "vehicle_needed", "remote"]
-- isReadyToPost: Set to true ONLY when you have at minimum: title, description, price, and location
+- flags: Array of relevant tags like ["urgent", "heavy_lifting", "vehicle_needed"]
+- isReadyToPost: Set to true ONLY when you have at minimum: title, description, price, and location (city/state or Anywhere)
+
+IMPORTANT RULES:
+- Every task is IN PERSON. There is no "Remote" option. All tasks require physical presence.
+- When asking about location, ask "What city are you in?" or "Where should the hustler come?"
+- If user says a city name, extract the city and state. If user says "anywhere" or "no preference", set locationCity to "Anywhere".
+- Always ask about the service radius (25, 50, 75, or 100 miles) after getting the city.
 
 CONVERSATION RULES:
 1. Be concise and friendly. No corporate speak.
@@ -81,7 +89,9 @@ RESPONSE FORMAT (strict JSON):
     "title": "string or null",
     "description": "string or null",
     "suggestedPriceCents": number or null,
-    "location": "string or null",
+    "locationCity": "city name or Anywhere",
+    "locationState": "two-letter state code or null",
+    "locationRadiusMiles": 25 or 50 or 75 or 100,
     "estimatedDurationMinutes": number or null,
     "difficulty": "easy|medium|hard or null",
     "category": "string or null",
@@ -98,7 +108,9 @@ const AIConverseResponseSchema = z.object({
     title: z.string().nullable().optional(),
     description: z.string().nullable().optional(),
     suggestedPriceCents: z.number().nullable().optional(),
-    location: z.string().nullable().optional(),
+    locationCity: z.string().nullable().optional(),
+    locationState: z.string().nullable().optional(),
+    locationRadiusMiles: z.number().nullable().optional(),
     estimatedDurationMinutes: z.number().nullable().optional(),
     difficulty: z.enum(['easy', 'medium', 'hard']).nullable().optional(),
     category: z.string().nullable().optional(),
@@ -421,6 +433,9 @@ export const taskRouter = router({
         price: input.price,
         requirements: input.requirements,
         location: input.location,
+        locationCity: input.locationCity,
+        locationState: input.locationState,
+        locationRadiusMiles: input.locationRadiusMiles,
         category: input.category,
         estimatedDuration: input.estimatedDuration,
         deadline: input.deadline ? new Date(input.deadline) : undefined,
@@ -577,7 +592,9 @@ export const taskRouter = router({
         title: z.string().optional(),
         description: z.string().optional(),
         suggestedPriceCents: z.number().optional(),
-        location: z.string().optional(),
+        locationCity: z.string().optional(),
+        locationState: z.string().optional(),
+        locationRadiusMiles: z.number().optional(),
         estimatedDurationMinutes: z.number().optional(),
         difficulty: z.string().optional(),
         category: z.string().optional(),

@@ -301,6 +301,9 @@ export const Schemas = {
     price: z.number().int().positive().max(99999900), // USD cents, max $999,999
     requirements: z.string().max(2000).optional(),
     location: z.string().max(500).optional(),
+    locationCity: z.string().max(100).optional(),
+    locationState: z.string().max(2).optional(),
+    locationRadiusMiles: z.number().int().min(0).max(100).optional(),
     category: z.string().max(100).optional(),
     estimatedDuration: z.string().max(100).optional(),
     deadline: z.string().datetime().optional(),
