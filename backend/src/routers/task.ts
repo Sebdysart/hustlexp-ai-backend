@@ -51,10 +51,34 @@ TASK FIELDS TO EXTRACT (update the "draft" object):
   Medium = requires some skill or coordination, 1-3 hours
   Hard = specialized skills, complex logistics, or 3+ hours
 - category: One of: delivery, moving, cleaning, yardWork, shopping, assembly, tech, petCare, handyman, childcare, elderCare, contentCreator, eventAppearance, creativeProduction, specializedLicensed, other
+- templateSlug: REQUIRED. Assign based on task type (see TEMPLATE RULES below)
+- riskLevel: REQUIRED. One of: "LOW", "MEDIUM", "HIGH". Assess based on risk factors (see RISK RULES below)
 - requirements: Specific skills, tools, or qualifications needed
 - deadline: When this needs to be done (ISO date or null)
-- flags: Array of relevant tags like ["urgent", "heavy_lifting", "vehicle_needed"]
+- flags: Array of relevant tags like ["urgent", "heavy_lifting", "vehicle_needed", "inside_home", "people_present", "pets_present"]
 - isReadyToPost: Set to true ONLY when you have at minimum: title, description, price, and location (city/state or Anywhere)
+
+TEMPLATE ASSIGNMENT RULES (assign ONE templateSlug):
+- "standard_physical": Delivery, moving, yard work, shopping, assembly, outdoor tasks
+- "in_home": Tasks inside someone's home — cleaning, handyman, repairs, furniture assembly at home
+- "care": Childcare, elder care, pet sitting — involves vulnerable people/animals
+- "content_creator": Photography, videography, social media content, streaming
+- "event_appearance": Event staffing, promotions, brand ambassador, mascot
+- "creative_production": Film shoots, recording sessions, modeling
+- "specialized_licensed": Electrician, plumber, HVAC, tutor, notary — requires professional license
+- "wildcard_bizarre": Anything unusual that doesn't fit other categories
+
+RISK LEVEL RULES (assess ONE riskLevel):
+- "LOW": Outdoor/public tasks, simple physical labor, no home entry, no vulnerable people
+- "MEDIUM": Inside home but no vulnerable people, handling valuables, requires vehicle, licensed work, content with people
+- "HIGH": Children/elderly present, overnight stays, isolated locations, physical contact possible, care tasks
+
+When you assign a template, INFORM the user about the implications:
+- care template: "This task requires a background-checked hustler (Trusted tier+)"
+- in_home template: "In-home tasks have a 48-hour review period before payment releases"
+- content_creator: "A content release agreement will be required"
+- wildcard_bizarre: "Both parties will need to agree to a mutual consent checklist"
+- specialized_licensed: "The hustler will need to verify their professional license"
 
 IMPORTANT RULES:
 - Every task is IN PERSON. There is no "Remote" option. All tasks require physical presence.
@@ -95,6 +119,8 @@ RESPONSE FORMAT (strict JSON):
     "estimatedDurationMinutes": number or null,
     "difficulty": "easy|medium|hard or null",
     "category": "string or null",
+    "templateSlug": "standard_physical|in_home|care|content_creator|event_appearance|creative_production|specialized_licensed|wildcard_bizarre",
+    "riskLevel": "LOW|MEDIUM|HIGH",
     "requirements": "string or null",
     "deadline": "string or null",
     "flags": ["array", "of", "strings"],
@@ -114,6 +140,8 @@ const AIConverseResponseSchema = z.object({
     estimatedDurationMinutes: z.number().nullable().optional(),
     difficulty: z.enum(['easy', 'medium', 'hard']).nullable().optional(),
     category: z.string().nullable().optional(),
+    templateSlug: z.string().nullable().optional(),
+    riskLevel: z.enum(['LOW', 'MEDIUM', 'HIGH']).nullable().optional(),
     requirements: z.string().nullable().optional(),
     deadline: z.string().nullable().optional(),
     flags: z.array(z.string()).optional(),
@@ -598,6 +626,8 @@ export const taskRouter = router({
         estimatedDurationMinutes: z.number().optional(),
         difficulty: z.string().optional(),
         category: z.string().optional(),
+        templateSlug: z.string().optional(),
+        riskLevel: z.string().optional(),
         requirements: z.string().optional(),
         deadline: z.string().optional(),
         flags: z.array(z.string()).optional(),

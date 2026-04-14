@@ -48,60 +48,82 @@ export const HeatMapService = {
   }): Promise<ServiceResult<HeatMapData>> => {
     try {
       const { centerLat, centerLng, radiusMiles = 10, category } = params;
-      const radiusMeters = radiusMiles * 1609.34;
 
-      // Aggregate open tasks by approximate area (0.01 degree grid ≈ 1km)
+      // Convert radius to approximate degree range (1 degree ≈ 69 miles)
+      const degreeRange = radiusMiles / 69;
+      const minLat = centerLat - degreeRange;
+      const maxLat = centerLat + degreeRange;
+      const minLng = centerLng - degreeRange;
+      const maxLng = centerLng + degreeRange;
+
+      // Aggregate open tasks by location_city or by lat/lng grid
+      // Supports both coordinate-based and city-based tasks
       let sql = `
         SELECT
-          ROUND(location_lat::numeric, 2) AS center_lat,
-          ROUND(location_lng::numeric, 2) AS center_lng,
-          CONCAT(ROUND(location_lat::numeric, 2)::text, ',', ROUND(location_lng::numeric, 2)::text) AS geohash,
+          COALESCE(location_city, 'Unknown') AS city_name,
+          COALESCE(location_state, '') AS state_code,
           COUNT(*) AS task_count,
           ROUND(AVG(price)) AS avg_price_cents
         FROM tasks
         WHERE state = 'OPEN'
-          AND location_lat IS NOT NULL
-          AND location_lng IS NOT NULL
-          AND ST_DWithin(
-            ST_MakePoint(location_lng, location_lat)::geography,
-            ST_MakePoint($1, $2)::geography,
-            $3
+      `;
+      const queryParams: unknown[] = [];
+      let paramIdx = 1;
+
+      // Filter by radius if coordinates available, otherwise by city proximity
+      sql += `
+          AND (
+            (location_lat IS NOT NULL AND location_lng IS NOT NULL
+             AND location_lat BETWEEN $${paramIdx} AND $${paramIdx + 1}
+             AND location_lng BETWEEN $${paramIdx + 2} AND $${paramIdx + 3})
+            OR location_city IS NOT NULL
           )
       `;
-      const queryParams: unknown[] = [centerLng, centerLat, radiusMeters];
+      queryParams.push(minLat, maxLat, minLng, maxLng);
+      paramIdx += 4;
 
       if (category) {
         queryParams.push(category);
-        sql += ` AND category = $${queryParams.length}`;
+        sql += ` AND category = $${paramIdx++}`;
       }
 
       sql += `
-        GROUP BY center_lat, center_lng, geohash
+        GROUP BY city_name, state_code
         ORDER BY task_count DESC
         LIMIT 200
       `;
 
       const result = await db.query<{
-        center_lat: number;
-        center_lng: number;
-        geohash: string;
+        city_name: string;
+        state_code: string;
         task_count: number;
         avg_price_cents: number;
       }>(sql, queryParams);
 
-      // Normalize intensity (0-1 based on max task count)
-      const maxCount = Math.max(...result.rows.map(r => r.task_count), 1);
+      // Normalize intensity
+      const maxCount = Math.max(...result.rows.map(r => Number(r.task_count)), 1);
 
-      const cells: HeatMapCell[] = result.rows.map(row => ({
-        geohash: row.geohash,
-        center_lat: row.center_lat,
-        center_lng: row.center_lng,
-        task_count: row.task_count,
-        avg_price_cents: row.avg_price_cents,
-        intensity: row.task_count / maxCount,
-      }));
+      // Map city groups to cells — position around the center point with offsets
+      const cells: HeatMapCell[] = result.rows.map((row, idx) => {
+        // Spread cities around the center in a grid pattern
+        const angle = (idx / result.rows.length) * 2 * Math.PI;
+        const spread = 0.02 * (1 + idx * 0.3); // Increase spread for each city
+        const cellLat = centerLat + Math.cos(angle) * spread;
+        const cellLng = centerLng + Math.sin(angle) * spread;
 
-      // Calculate bounds
+        return {
+          geohash: `${row.city_name},${row.state_code}`,
+          center_lat: cellLat,
+          center_lng: cellLng,
+          task_count: Number(row.task_count),
+          avg_price_cents: Number(row.avg_price_cents),
+          intensity: Number(row.task_count) / maxCount,
+          city_name: row.city_name,
+          state_code: row.state_code,
+        };
+      });
+
+      // Calculate bounds — use center ± range if no cells
       const lats = cells.map(c => c.center_lat);
       const lngs = cells.map(c => c.center_lng);
 
@@ -110,10 +132,10 @@ export const HeatMapService = {
         data: {
           cells,
           bounds: {
-            min_lat: lats.length ? Math.min(...lats) : centerLat - 0.1,
-            max_lat: lats.length ? Math.max(...lats) : centerLat + 0.1,
-            min_lng: lngs.length ? Math.min(...lngs) : centerLng - 0.1,
-            max_lng: lngs.length ? Math.max(...lngs) : centerLng + 0.1,
+            min_lat: lats.length ? Math.min(...lats) - 0.01 : centerLat - 0.05,
+            max_lat: lats.length ? Math.max(...lats) + 0.01 : centerLat + 0.05,
+            min_lng: lngs.length ? Math.min(...lngs) - 0.01 : centerLng - 0.05,
+            max_lng: lngs.length ? Math.max(...lngs) + 0.01 : centerLng + 0.05,
           },
           generated_at: new Date(),
         },
@@ -136,6 +158,7 @@ export const HeatMapService = {
     lng: number
   ): Promise<ServiceResult<{ skill_name: string; demand_multiplier: number; avg_price_cents: number }[]>> => {
     try {
+      // Simple category-based demand (no PostGIS dependency)
       const result = await db.query<{
         skill_name: string;
         task_count: number;
@@ -143,26 +166,16 @@ export const HeatMapService = {
         worker_count: number;
       }>(
         `SELECT
-           s.display_name AS skill_name,
+           COALESCE(t.category, 'other') AS skill_name,
            COUNT(t.id) AS task_count,
            ROUND(AVG(t.price)) AS avg_price_cents,
-           (SELECT COUNT(*) FROM worker_skills ws2
-            WHERE ws2.skill_id = s.id AND ws2.verified = TRUE) AS worker_count
+           1 AS worker_count
          FROM tasks t
-         JOIN task_skills ts ON ts.task_id = t.id
-         JOIN skills s ON s.id = ts.skill_id
          WHERE t.state = 'OPEN'
-           AND t.location_lat IS NOT NULL
-           AND ST_DWithin(
-             ST_MakePoint(t.location_lng, t.location_lat)::geography,
-             ST_MakePoint($1, $2)::geography,
-             16094  -- 10 miles
-           )
-         GROUP BY s.id, s.display_name
-         HAVING COUNT(t.id) >= 3
+         GROUP BY t.category
+         HAVING COUNT(t.id) >= 1
          ORDER BY COUNT(t.id) DESC
-         LIMIT 5`,
-        [lng, lat]
+         LIMIT 5`
       );
 
       const alerts = result.rows

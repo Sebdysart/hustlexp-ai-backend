@@ -23,6 +23,10 @@ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS progress_state VARCHAR(20) DEFAULT 'P
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS progress_updated_at TIMESTAMPTZ DEFAULT NOW();
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS progress_by UUID;
 
+-- Location coordinates (for heatmap spatial queries)
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS location_lat DECIMAL(10,8);
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS location_lng DECIMAL(11,8);
+
 -- Recurring tasks link
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS parent_series_id UUID;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS occurrence_number INTEGER;
