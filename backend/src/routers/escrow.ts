@@ -242,6 +242,81 @@ export const escrowRouter = router({
     }),
   
   /**
+   * Release escrow to worker (combined: creates Stripe transfer + releases escrow)
+   * This is the primary endpoint for poster-initiated payouts.
+   * INV-2: Will fail if task is not COMPLETED
+   * SECURITY: Only the poster who created the escrow can release funds
+   */
+  releaseToWorker: posterProcedure
+    .input(z.object({ escrowId: Schemas.uuid }))
+    .mutation(async ({ ctx, input }) => {
+      // 1. Authorization: only poster can release
+      const escrow = await EscrowService.getById(input.escrowId);
+      if (!escrow.success) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Escrow not found' });
+      }
+      if (escrow.data.poster_id !== ctx.user.id) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'Only the escrow creator can release funds' });
+      }
+
+      // 2. Get worker's Stripe Connect account
+      const taskResult = await db.query<{ worker_id: string; price: number }>(
+        'SELECT worker_id, price FROM tasks WHERE id = $1',
+        [escrow.data.task_id]
+      );
+      if (taskResult.rows.length === 0 || !taskResult.rows[0].worker_id) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'Task has no assigned worker' });
+      }
+      const workerId = taskResult.rows[0].worker_id;
+
+      const workerResult = await db.query<{ stripe_connect_id: string | null }>(
+        'SELECT stripe_connect_id FROM users WHERE id = $1',
+        [workerId]
+      );
+      if (workerResult.rows.length === 0 || !workerResult.rows[0].stripe_connect_id) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'Worker has not set up their payout account. Funds will remain in escrow until they do.',
+        });
+      }
+
+      // 3. Calculate net payout (after platform fee)
+      const grossAmount = escrow.data.amount;
+      const feePercent = Math.min(100, Math.max(0, 15)); // 15% platform fee
+      const platformFeeCents = Math.round(grossAmount * (feePercent / 100));
+      const netPayoutCents = grossAmount - platformFeeCents;
+
+      // 4. Create Stripe transfer to worker
+      const transferResult = await StripeService.createTransfer({
+        escrowId: input.escrowId,
+        workerId,
+        workerStripeAccountId: workerResult.rows[0].stripe_connect_id,
+        amount: netPayoutCents,
+        description: `HustleXP Payout for task`,
+      });
+      if (!transferResult.success) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: `Stripe transfer failed: ${transferResult.error.message}`,
+        });
+      }
+
+      // 5. Release escrow with the transfer ID
+      const releaseResult = await EscrowService.release({
+        escrowId: input.escrowId,
+        stripeTransferId: transferResult.data.transferId,
+      });
+      if (!releaseResult.success) {
+        throw new TRPCError({
+          code: releaseResult.error.code === 'HX201' ? 'PRECONDITION_FAILED' : 'BAD_REQUEST',
+          message: releaseResult.error.message,
+        });
+      }
+
+      return releaseResult.data;
+    }),
+
+  /**
    * Refund escrow to poster
    * SECURITY: Only the poster who created the escrow can request a refund
    */

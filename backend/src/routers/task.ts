@@ -549,11 +549,13 @@ export const taskRouter = router({
       category: z.string().max(100).optional(),
       estimatedDuration: z.string().max(100).optional(),
       requirements: z.string().max(2000).optional(),
+      deadline: z.string().datetime().optional(),
+      templateSlug: z.string().max(50).optional(),
     }))
     .mutation(async ({ ctx, input }) => {
       // Verify ownership and state
-      const taskResult = await db.query<{ poster_id: string; state: string }>(
-        'SELECT poster_id, state FROM tasks WHERE id = $1',
+      const taskResult = await db.query<{ poster_id: string; state: string; description: string }>(
+        'SELECT poster_id, state, description FROM tasks WHERE id = $1',
         [input.taskId]
       );
       if (taskResult.rows.length === 0) {
@@ -564,6 +566,26 @@ export const taskRouter = router({
       }
       if (taskResult.rows[0].state !== 'OPEN') {
         throw new TRPCError({ code: 'BAD_REQUEST', message: 'Can only edit tasks in OPEN state' });
+      }
+
+      // Validate templateSlug if provided
+      if (input.templateSlug !== undefined) {
+        const template = getTemplate(input.templateSlug);
+        if (!template) {
+          throw new TRPCError({ code: 'BAD_REQUEST', message: `Unknown template: ${input.templateSlug}` });
+        }
+        // Enforce trust tier requirement
+        const TRUST_TIER_ORDER = ['rookie', 'verified', 'trusted'];
+        const TRUST_TIER_NUMERIC_MAP: Record<number, string> = { 1: 'rookie', 2: 'verified', 3: 'trusted', 4: 'trusted' };
+        const posterTierName = TRUST_TIER_NUMERIC_MAP[ctx.user.trust_tier ?? 1] ?? 'rookie';
+        const posterTierIndex = TRUST_TIER_ORDER.indexOf(posterTierName);
+        const requiredTierIndex = TRUST_TIER_ORDER.indexOf(template.requiredTrustTier ?? 'rookie');
+        if (posterTierIndex < requiredTierIndex) {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message: `This task type requires ${template.requiredTrustTier} trust level. Your current level is ${posterTierName}.`,
+          });
+        }
       }
 
       const updates: string[] = [];
@@ -577,6 +599,19 @@ export const taskRouter = router({
       if (input.category !== undefined) { updates.push(`category = $${idx++}`); values.push(input.category); }
       if (input.estimatedDuration !== undefined) { updates.push(`estimated_duration = $${idx++}`); values.push(input.estimatedDuration); }
       if (input.requirements !== undefined) { updates.push(`requirements = $${idx++}`); values.push(input.requirements); }
+      if (input.deadline !== undefined) { updates.push(`deadline = $${idx++}`); values.push(new Date(input.deadline)); }
+      if (input.templateSlug !== undefined) {
+        const template = getTemplate(input.templateSlug)!;
+        const description = input.description ?? taskResult.rows[0].description;
+        const caregiving = template.slug === 'care' || isCareContent(description);
+        const requiresContentRelease = template.requiresContentRelease || isContentReleaseRequired(description);
+
+        updates.push(`template_slug = $${idx++}`); values.push(input.templateSlug);
+        updates.push(`late_cancel_pct = $${idx++}`); values.push(template.lateCancelPct);
+        updates.push(`content_release = $${idx++}`); values.push(requiresContentRelease);
+        updates.push(`cancellation_window_hours = $${idx++}`);
+        values.push(caregiving ? 0 : template.autoReleaseHours);
+      }
 
       if (updates.length === 0) {
         throw new TRPCError({ code: 'BAD_REQUEST', message: 'No fields to update' });
