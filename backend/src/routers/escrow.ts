@@ -289,6 +289,7 @@ export const escrowRouter = router({
       // 4. Create Stripe transfer to worker
       const transferResult = await StripeService.createTransfer({
         escrowId: input.escrowId,
+        taskId: escrow.data.task_id,
         workerId,
         workerStripeAccountId: workerResult.rows[0].stripe_connect_id,
         amount: netPayoutCents,
