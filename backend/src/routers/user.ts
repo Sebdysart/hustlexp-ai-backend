@@ -92,6 +92,8 @@ async function toMobileUser(user: User) {
     xpHeldBack: 0,            // TODO: query from xp_ledger held entries
     verificationEarnedCents: 0, // TODO: query from earned_verification_unlock
     insuranceContributionsCents: 0, // TODO: query from self_insurance_pool
+    // Onboarding
+    onboardingComplete: user.onboarding_completed_at !== null,
     // Verification status (phone/email)
     phoneVerified: identityRow?.phone_verified ?? false,
     emailVerified: identityRow?.email_verified ?? false,
