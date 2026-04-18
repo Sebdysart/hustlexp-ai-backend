@@ -170,18 +170,24 @@ export const taskDiscoveryRouter = router({
         });
       }
 
-      // Annotate with progressive verification (canAccept per task)
+      // Transform to iOS-expected shape: { tasks: [HXTask], matchScore }
+      // The iOS TaskFeedResponse expects a flat tasks array of HXTask objects,
+      // not the nested { task, matching_score, ... } structure.
       const userTrustTier = ctx.user.trust_tier ?? 0;
-      const annotatedData = result.data.map((item) => ({
-        ...item,
+      const tasks = result.data.map((item) => ({
+        ...item.task,
+        matchingScore: item.matching_score,
         canAccept: canUserAcceptTask(userTrustTier, item.task.price as number),
-        requiredTrustTier: getRequiredTierForTask(item.task.price as number),
-        verificationCTA: canUserAcceptTask(userTrustTier, item.task.price as number)
-          ? null
-          : `Complete Level ${getRequiredTierForTask(item.task.price as number)} verification to accept this task`,
       }));
 
-      return annotatedData;
+      return {
+        tasks,
+        lockedQuests: null,
+        demandAlerts: null,
+        matchScore: result.data.length > 0
+          ? result.data.reduce((sum, i) => sum + i.matching_score, 0) / result.data.length
+          : null,
+      };
     }),
   
   /**
