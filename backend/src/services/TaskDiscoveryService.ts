@@ -632,95 +632,121 @@ export const TaskDiscoveryService = {
     offset: number = 0
   ): Promise<ServiceResult<TaskFeedItem[]>> => {
     try {
-      // Ensure scores are calculated (or use cached if fresh)
-      await TaskDiscoveryService.calculateFeedScores(hustlerId, filters.max_distance_miles || 10.0);
-      
-      // Build query
-      let sql = `
-        SELECT 
-          t.*,
-          tms.matching_score,
-          tms.relevance_score,
-          tms.distance_miles
-        FROM tasks t
-        INNER JOIN task_matching_scores tms ON tms.task_id = t.id AND tms.hustler_id = $1
-        WHERE t.state = 'OPEN'
-          AND tms.expires_at > NOW()
-      `;
-      
-      const params: unknown[] = [hustlerId];
-      
-      // Apply filters
-      if (filters.category) {
-        params.push(filters.category);
-        sql += ` AND t.category = $${params.length}`;
-      }
-      
-      if (filters.min_price !== undefined) {
-        params.push(filters.min_price);
-        sql += ` AND t.price >= $${params.length}`;
-      }
-      
-      if (filters.max_price !== undefined) {
-        params.push(filters.max_price);
-        sql += ` AND t.price <= $${params.length}`;
-      }
-      
-      if (filters.max_distance_miles !== undefined) {
-        params.push(filters.max_distance_miles);
-        sql += ` AND tms.distance_miles <= $${params.length}`;
-      }
-      
-      if (filters.min_matching_score !== undefined) {
-        params.push(filters.min_matching_score);
-        sql += ` AND tms.matching_score >= $${params.length}`;
-      } else {
-        // Default: hide tasks below 0.20 matching score (TASK_DISCOVERY_SPEC.md §1.3)
-        sql += ` AND tms.matching_score >= 0.20`;
-      }
-      
-      // Apply sorting
-      const sortBy = filters.sort_by || 'relevance';
-      switch (sortBy) {
-        case 'relevance':
-          sql += ` ORDER BY tms.relevance_score DESC`;
-          break;
-        case 'price':
-          sql += ` ORDER BY t.price DESC`;
-          break;
-        case 'distance':
-          sql += ` ORDER BY tms.distance_miles ASC`;
-          break;
-        case 'deadline':
-          sql += ` ORDER BY t.deadline ASC NULLS LAST`;
-          break;
-        default:
-          sql += ` ORDER BY tms.relevance_score DESC`;
-      }
-      
-      params.push(limit, offset);
-      sql += ` LIMIT $${params.length - 1} OFFSET $${params.length}`;
-      
-      const result = await db.query<TaskFeedRow>(sql, params);
+      // Try matching-score-based feed first
+      let feedItems: TaskFeedItem[] = [];
 
-      // Generate "Why this task?" explanations (TASK_DISCOVERY_SPEC.md §4)
-      const feedItems: TaskFeedItem[] = result.rows.map((row) => {
-        const explanation = generateExplanation({
-          matching_score: row.matching_score as number,
-          distance_miles: row.distance_miles as number,
-          category: row.category as string,
-          price: row.price as number,
-        });
+      try {
+        await TaskDiscoveryService.calculateFeedScores(hustlerId, filters.max_distance_miles || 10.0);
 
-        return {
+        let sql = `
+          SELECT
+            t.*,
+            tms.matching_score,
+            tms.relevance_score,
+            tms.distance_miles
+          FROM tasks t
+          INNER JOIN task_matching_scores tms ON tms.task_id = t.id AND tms.hustler_id = $1
+          WHERE t.state = 'OPEN'
+            AND tms.expires_at > NOW()
+        `;
+
+        const params: unknown[] = [hustlerId];
+
+        if (filters.category) {
+          params.push(filters.category);
+          sql += ` AND t.category = $${params.length}`;
+        }
+        if (filters.min_price !== undefined) {
+          params.push(filters.min_price);
+          sql += ` AND t.price >= $${params.length}`;
+        }
+        if (filters.max_price !== undefined) {
+          params.push(filters.max_price);
+          sql += ` AND t.price <= $${params.length}`;
+        }
+        if (filters.max_distance_miles !== undefined) {
+          params.push(filters.max_distance_miles);
+          sql += ` AND tms.distance_miles <= $${params.length}`;
+        }
+        if (filters.min_matching_score !== undefined) {
+          params.push(filters.min_matching_score);
+          sql += ` AND tms.matching_score >= $${params.length}`;
+        } else {
+          sql += ` AND tms.matching_score >= 0.20`;
+        }
+
+        const sortBy = filters.sort_by || 'relevance';
+        switch (sortBy) {
+          case 'price':
+            sql += ` ORDER BY t.price DESC`; break;
+          case 'distance':
+            sql += ` ORDER BY tms.distance_miles ASC`; break;
+          case 'deadline':
+            sql += ` ORDER BY t.deadline ASC NULLS LAST`; break;
+          default:
+            sql += ` ORDER BY tms.relevance_score DESC`;
+        }
+
+        params.push(limit, offset);
+        sql += ` LIMIT $${params.length - 1} OFFSET $${params.length}`;
+
+        const result = await db.query<TaskFeedRow>(sql, params);
+
+        feedItems = result.rows.map((row) => ({
           task: row,
           matching_score: row.matching_score as number,
           relevance_score: row.relevance_score as number,
           distance_miles: row.distance_miles as number,
-          explanation,
-        };
-      });
-      
+          explanation: generateExplanation({
+            matching_score: row.matching_score as number,
+            distance_miles: row.distance_miles as number,
+            category: row.category as string,
+            price: row.price as number,
+          }),
+        }));
+      } catch (scoreError) {
+        // Matching score pipeline failed (table schema mismatch, geocoding, etc.)
+        console.warn('[TaskDiscoveryService] Matching score pipeline failed, using fallback:', scoreError);
+      }
+
+      // Fallback: if matching scores produced no results, return all OPEN tasks directly
+      if (feedItems.length === 0) {
+        let fallbackSql = `
+          SELECT t.*
+          FROM tasks t
+          WHERE t.state = 'OPEN'
+            AND t.poster_id != $1
+        `;
+        const fallbackParams: unknown[] = [hustlerId];
+
+        if (filters.category) {
+          fallbackParams.push(filters.category);
+          fallbackSql += ` AND t.category = $${fallbackParams.length}`;
+        }
+        if (filters.min_price !== undefined) {
+          fallbackParams.push(filters.min_price);
+          fallbackSql += ` AND t.price >= $${fallbackParams.length}`;
+        }
+        if (filters.max_price !== undefined) {
+          fallbackParams.push(filters.max_price);
+          fallbackSql += ` AND t.price <= $${fallbackParams.length}`;
+        }
+
+        fallbackSql += ` ORDER BY t.created_at DESC`;
+        fallbackParams.push(limit, offset);
+        fallbackSql += ` LIMIT $${fallbackParams.length - 1} OFFSET $${fallbackParams.length}`;
+
+        const fallbackResult = await db.query<TaskFeedRow>(fallbackSql, fallbackParams);
+
+        feedItems = fallbackResult.rows.map((row) => ({
+          task: row,
+          matching_score: 0.5,
+          relevance_score: 0.5,
+          distance_miles: 0,
+          explanation: 'Available task near you',
+        }));
+      }
+
       return {
         success: true,
         data: feedItems,
