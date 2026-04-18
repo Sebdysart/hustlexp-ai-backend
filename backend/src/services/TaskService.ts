@@ -243,9 +243,7 @@ export const TaskService = {
     
     try {
       let sql = `
-        SELECT id, title, description, price, state, category, location,
-               template_slug, trust_tier_required, created_at, expires_at,
-               estimated_duration_minutes, is_remote
+        SELECT *
         FROM tasks
         WHERE state = 'OPEN'
       `;
