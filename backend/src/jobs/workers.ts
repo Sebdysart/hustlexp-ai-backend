@@ -345,6 +345,16 @@ async function registerScheduledJobs(): Promise<void> {
     }
   );
 
+  // Rolling occurrence generation — hourly, keeps 8 weeks of PENDING occurrences
+  await recurringTasksQueue.add(
+    'recurring.replenish_occurrences',
+    {},
+    {
+      repeat: { pattern: '30 * * * *' }, // :30 of every hour (offset from spawn)
+      jobId: 'scheduled:recurring_task_replenish_hourly',
+    }
+  );
+
   log.info('Scheduled repeatable jobs registered');
 }
 

@@ -16,8 +16,9 @@ import { EscrowService } from './EscrowService.js';
 
 const log = logger.child({ service: 'RecurringTaskService' });
 
-const DEFAULT_OCCURRENCES_TO_GENERATE = 30;
+const DEFAULT_OCCURRENCES_TO_GENERATE = 56; // 8 weeks of daily occurrences
 const MAX_OCCURRENCES_PER_CALL = 100;
+const ROLLING_WINDOW_WEEKS = 8;
 
 type Pattern = 'daily' | 'weekly' | 'biweekly' | 'monthly';
 
@@ -219,38 +220,52 @@ interface FullSeriesRow extends SeriesRow {
 
 /**
  * Spawn a real HXTask + Escrow from a scheduled occurrence.
+ *
+ * Idempotency: Uses a transient 'spawning' lock state. The row transitions
+ * scheduled → spawning → posted (or back to scheduled on failure).
+ * SKIP LOCKED in spawnDueOccurrences ensures concurrent cron runs
+ * physically cannot touch the same row.
+ *
  * Called by the recurring-task-worker cron job or manually via spawnOccurrenceNow.
  */
 export async function spawnTaskForOccurrence(
   occurrenceId: string
 ): Promise<ServiceResult<{ taskId: string; escrowId: string }>> {
   try {
-    // 1. Load occurrence + series in one query
-    const occResult = await db.query<{
+    // 1. Atomically claim the occurrence: scheduled → spawning
+    //    FOR UPDATE ensures no other transaction can modify this row.
+    //    If status is not 'scheduled', another process already claimed it.
+    const claimResult = await db.query<{
       id: string;
       series_id: string;
       occurrence_number: number;
       status: string;
       task_id: string | null;
     }>(
-      `SELECT id, series_id, occurrence_number, status, task_id
-       FROM recurring_task_occurrences WHERE id = $1 FOR UPDATE`,
+      `UPDATE recurring_task_occurrences
+       SET status = 'spawning'
+       WHERE id = $1 AND status = 'scheduled'
+       RETURNING id, series_id, occurrence_number, status, task_id`,
       [occurrenceId]
     );
 
-    if (occResult.rows.length === 0) {
-      return { success: false, error: { code: ErrorCodes.NOT_FOUND, message: 'Occurrence not found' } };
-    }
-
-    const occ = occResult.rows[0];
-
-    // Idempotency: already spawned
-    if (occ.status !== 'scheduled') {
-      if (occ.task_id) {
-        return { success: true, data: { taskId: occ.task_id, escrowId: '' } };
+    if (claimResult.rows.length === 0) {
+      // Either not found or already claimed by another process
+      const existing = await db.query<{ status: string; task_id: string | null }>(
+        `SELECT status, task_id FROM recurring_task_occurrences WHERE id = $1`,
+        [occurrenceId]
+      );
+      if (existing.rows.length === 0) {
+        return { success: false, error: { code: ErrorCodes.NOT_FOUND, message: 'Occurrence not found' } };
       }
-      return { success: false, error: { code: ErrorCodes.INVALID_STATE, message: `Occurrence status is ${occ.status}, expected scheduled` } };
+      // Idempotency: already spawned or being spawned
+      if (existing.rows[0].task_id) {
+        return { success: true, data: { taskId: existing.rows[0].task_id, escrowId: '' } };
+      }
+      return { success: false, error: { code: ErrorCodes.INVALID_STATE, message: `Occurrence status is ${existing.rows[0].status}, already being processed` } };
     }
+
+    const occ = claimResult.rows[0];
 
     // 2. Load series
     const seriesResult = await db.query<FullSeriesRow>(
@@ -258,6 +273,7 @@ export async function spawnTaskForOccurrence(
       [occ.series_id]
     );
     if (seriesResult.rows.length === 0) {
+      await revertToScheduled(occurrenceId, 'Series not found');
       return { success: false, error: { code: ErrorCodes.NOT_FOUND, message: 'Series not found' } };
     }
     const series = seriesResult.rows[0];
@@ -288,10 +304,7 @@ export async function spawnTaskForOccurrence(
     });
 
     if (!taskResult.success) {
-      await db.query(
-        `UPDATE recurring_task_occurrences SET spawn_error = $1 WHERE id = $2`,
-        [taskResult.error.message, occurrenceId]
-      );
+      await revertToScheduled(occurrenceId, taskResult.error.message);
       log.error({ occurrenceId, error: taskResult.error }, 'Failed to spawn task for occurrence');
       return { success: false, error: taskResult.error };
     }
@@ -320,7 +333,7 @@ export async function spawnTaskForOccurrence(
       }
     }
 
-    // 6. Update occurrence
+    // 6. Finalize: spawning → posted
     await db.query(
       `UPDATE recurring_task_occurrences
        SET status = 'posted', task_id = $1, escrow_id = $2, spawned_at = NOW(), spawn_error = NULL
@@ -346,10 +359,8 @@ export async function spawnTaskForOccurrence(
     return { success: true, data: { taskId, escrowId } };
   } catch (e) {
     log.error({ err: e, occurrenceId }, 'spawnTaskForOccurrence failed');
-    await db.query(
-      `UPDATE recurring_task_occurrences SET spawn_error = $1 WHERE id = $2`,
-      [e instanceof Error ? e.message : String(e), occurrenceId]
-    ).catch(() => {});
+    // Revert to scheduled so a retry can pick it up
+    await revertToScheduled(occurrenceId, e instanceof Error ? e.message : String(e));
     return {
       success: false,
       error: { code: 'DB_ERROR', message: e instanceof Error ? e.message : String(e) },
@@ -357,11 +368,24 @@ export async function spawnTaskForOccurrence(
   }
 }
 
+/** Revert a 'spawning' occurrence back to 'scheduled' with an error message */
+async function revertToScheduled(occurrenceId: string, error: string): Promise<void> {
+  await db.query(
+    `UPDATE recurring_task_occurrences SET status = 'scheduled', spawn_error = $1 WHERE id = $2 AND status = 'spawning'`,
+    [error, occurrenceId]
+  ).catch(() => {});
+}
+
 /**
- * Spawn all due occurrences (scheduled_date <= today, status = 'scheduled', series active).
- * Called by the recurring-task-worker cron job.
+ * Spawn all due occurrences using SKIP LOCKED for concurrency safety.
+ *
+ * SELECT FOR UPDATE SKIP LOCKED means:
+ * - Each row is locked for this transaction only
+ * - Concurrent cron runs skip already-locked rows instead of blocking
+ * - No double-spawning is physically possible
  */
 export async function spawnDueOccurrences(): Promise<{ spawned: number; failed: number }> {
+  // Select due occurrences with SKIP LOCKED — concurrent runs skip rows we're processing
   const dueResult = await db.query<{ id: string; series_id: string }>(
     `SELECT o.id, o.series_id
      FROM recurring_task_occurrences o
@@ -370,7 +394,8 @@ export async function spawnDueOccurrences(): Promise<{ spawned: number; failed: 
        AND o.scheduled_date <= CURRENT_DATE
        AND s.status = 'active'
      ORDER BY o.scheduled_date ASC
-     LIMIT 50`,
+     LIMIT 50
+     FOR UPDATE OF o SKIP LOCKED`,
     []
   );
 
@@ -381,13 +406,69 @@ export async function spawnDueOccurrences(): Promise<{ spawned: number; failed: 
     const result = await spawnTaskForOccurrence(row.id);
     if (result.success) {
       spawned++;
-      // Replenish future occurrences for this series
-      await generateOccurrencesForSeries(row.series_id);
     } else {
       failed++;
     }
   }
 
+  // Replenish future occurrences for all affected series (deduplicated)
+  const seriesIds = [...new Set(dueResult.rows.map(r => r.series_id))];
+  for (const seriesId of seriesIds) {
+    await generateOccurrencesForSeries(seriesId);
+  }
+
   log.info({ spawned, failed, total: dueResult.rows.length }, 'spawnDueOccurrences completed');
   return { spawned, failed };
+}
+
+// --------------------------------------------------------------------------
+// ROLLING OCCURRENCE GENERATION
+// --------------------------------------------------------------------------
+
+/**
+ * Ensure all active series have at least 8 weeks of PENDING occurrences.
+ *
+ * Called hourly by the rolling-generation cron. Uses ON CONFLICT DO NOTHING
+ * for idempotency — safe to run from multiple processes or multiple times.
+ */
+export async function replenishAllSeriesOccurrences(): Promise<{ series: number; generated: number }> {
+  // Find all active series that might need more occurrences
+  const activeSeries = await db.query<{ id: string }>(
+    `SELECT id FROM recurring_task_series WHERE status = 'active'`
+  );
+
+  let totalGenerated = 0;
+
+  for (const series of activeSeries.rows) {
+    // Count how many future scheduled occurrences exist
+    const countResult = await db.query<{ cnt: string }>(
+      `SELECT COUNT(*) as cnt FROM recurring_task_occurrences
+       WHERE series_id = $1 AND status = 'scheduled' AND scheduled_date > CURRENT_DATE`,
+      [series.id]
+    );
+    const futureCount = parseInt(countResult.rows[0]?.cnt || '0', 10);
+
+    // If below threshold, generate more starting from tomorrow
+    const threshold = ROLLING_WINDOW_WEEKS * 7; // 56 for daily
+    if (futureCount < threshold) {
+      // Find the latest existing occurrence date to avoid gaps
+      const latestResult = await db.query<{ max_date: string }>(
+        `SELECT MAX(scheduled_date)::TEXT as max_date FROM recurring_task_occurrences WHERE series_id = $1`,
+        [series.id]
+      );
+      const fromDate = latestResult.rows[0]?.max_date || toDateString(new Date());
+
+      const result = await generateOccurrencesForSeries(series.id, {
+        maxOccurrences: threshold - futureCount,
+        fromDate,
+      });
+
+      if (result.success) {
+        totalGenerated += result.data.generated;
+      }
+    }
+  }
+
+  log.info({ series: activeSeries.rows.length, generated: totalGenerated }, 'Rolling occurrence generation completed');
+  return { series: activeSeries.rows.length, generated: totalGenerated };
 }

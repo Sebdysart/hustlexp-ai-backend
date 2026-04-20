@@ -9,22 +9,25 @@
 
 import type { Job } from 'bullmq';
 import { logger } from '../logger.js';
-import { spawnDueOccurrences } from '../services/RecurringTaskService.js';
+import { spawnDueOccurrences, replenishAllSeriesOccurrences } from '../services/RecurringTaskService.js';
 
 const log = logger.child({ worker: 'recurring-task-worker' });
 
 export async function processRecurringTaskSpawnJob(job: Job): Promise<void> {
-  log.info({ jobId: job.id, jobName: job.name }, 'Starting recurring task spawn job');
+  log.info({ jobId: job.id, jobName: job.name }, 'Starting recurring task job');
 
   try {
-    const result = await spawnDueOccurrences();
-
-    log.info(
-      { jobId: job.id, spawned: result.spawned, failed: result.failed },
-      'Recurring task spawn job completed'
-    );
+    if (job.name === 'recurring.replenish_occurrences') {
+      // Rolling generation: ensure 8 weeks of occurrences ahead for all active series
+      const result = await replenishAllSeriesOccurrences();
+      log.info({ jobId: job.id, series: result.series, generated: result.generated }, 'Rolling generation completed');
+    } else {
+      // Default: spawn due occurrences
+      const result = await spawnDueOccurrences();
+      log.info({ jobId: job.id, spawned: result.spawned, failed: result.failed }, 'Spawn job completed');
+    }
   } catch (error) {
-    log.error({ jobId: job.id, err: error }, 'Recurring task spawn job failed');
+    log.error({ jobId: job.id, err: error }, 'Recurring task job failed');
     throw error; // Let BullMQ retry
   }
 }

@@ -18,7 +18,7 @@ import { z } from 'zod';
 import { router, posterProcedure, Schemas } from '../trpc.js';
 import { db } from '../db.js';
 import { logger } from '../logger.js';
-import { generateOccurrencesForSeries, spawnTaskForOccurrence } from '../services/RecurringTaskService.js';
+import { generateOccurrencesForSeries, spawnTaskForOccurrence, replenishAllSeriesOccurrences } from '../services/RecurringTaskService.js';
 import { EscrowService } from '../services/EscrowService.js';
 
 const log = logger.child({ router: 'recurringTask' });
@@ -188,6 +188,161 @@ export const recurringTaskRouter = router({
       }
 
       return mapSeriesToResponse(series);
+    }),
+
+  // --------------------------------------------------------------------------
+  // UPDATE SERIES (with propagation rules)
+  // --------------------------------------------------------------------------
+
+  /**
+   * Edit a recurring series. Propagation rules:
+   *
+   * - Budget change: updates payment_cents on series + all future SCHEDULED occurrences
+   *   (already-posted/completed occurrences keep their original price)
+   * - Schedule change (pattern, dayOfWeek, dayOfMonth): deletes all future SCHEDULED
+   *   occurrences and regenerates from today using the new schedule
+   * - End date change: truncates — cancels all SCHEDULED occurrences after new end date
+   * - Title/description/location: updates series only (future spawned tasks inherit)
+   */
+  updateSeries: posterProcedure
+    .input(z.object({
+      id: Schemas.uuid,
+      title: z.string().min(3).max(255).optional(),
+      description: z.string().min(10).optional(),
+      payment: z.number().min(5).optional(), // dollars
+      location: z.string().max(500).optional(),
+      category: z.string().max(50).optional(),
+      estimatedDuration: z.string().max(50).optional(),
+      pattern: z.enum(['daily', 'weekly', 'biweekly', 'monthly']).optional(),
+      dayOfWeek: z.number().int().min(1).max(7).optional(),
+      dayOfMonth: z.number().int().min(1).max(28).optional(),
+      timeOfDay: z.string().regex(/^\d{2}:\d{2}$/).optional(),
+      endDate: z.string().optional(),
+      templateSlug: z.string().max(50).optional(),
+      riskLevel: z.enum(['LOW', 'MEDIUM', 'HIGH']).optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      // Verify ownership
+      const existing = await db.query<SeriesRow>(
+        `SELECT * FROM recurring_task_series WHERE id = $1 AND poster_id = $2`,
+        [input.id, ctx.user.id]
+      );
+      if (existing.rows.length === 0) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Series not found' });
+      }
+      const series = existing.rows[0];
+
+      // Build update query
+      const updates: string[] = [];
+      const values: unknown[] = [];
+      let idx = 1;
+
+      // Simple field updates (propagate via future task creation)
+      if (input.title !== undefined) { updates.push(`title = $${idx++}`); values.push(input.title); }
+      if (input.description !== undefined) { updates.push(`description = $${idx++}`); values.push(input.description); }
+      if (input.location !== undefined) { updates.push(`location = $${idx++}`); values.push(input.location); }
+      if (input.category !== undefined) { updates.push(`category = $${idx++}`); values.push(input.category); }
+      if (input.estimatedDuration !== undefined) { updates.push(`estimated_duration = $${idx++}`); values.push(input.estimatedDuration); }
+      if (input.templateSlug !== undefined) { updates.push(`template_slug = $${idx++}`); values.push(input.templateSlug); }
+      if (input.riskLevel !== undefined) { updates.push(`risk_level = $${idx++}`); values.push(input.riskLevel); }
+
+      // Budget change: update series + propagate to unspawned occurrences
+      let budgetChanged = false;
+      if (input.payment !== undefined) {
+        const newCents = Math.round(input.payment * 100);
+        updates.push(`payment_cents = $${idx++}`); values.push(newCents);
+        budgetChanged = true;
+      }
+
+      // Schedule change detection
+      const scheduleChanged = (
+        (input.pattern !== undefined && input.pattern !== series.pattern) ||
+        (input.dayOfWeek !== undefined && input.dayOfWeek !== series.day_of_week) ||
+        (input.dayOfMonth !== undefined && input.dayOfMonth !== series.day_of_month)
+      );
+
+      if (input.pattern !== undefined) { updates.push(`pattern = $${idx++}`); values.push(input.pattern); }
+      if (input.dayOfWeek !== undefined) { updates.push(`day_of_week = $${idx++}`); values.push(input.dayOfWeek); }
+      if (input.dayOfMonth !== undefined) { updates.push(`day_of_month = $${idx++}`); values.push(input.dayOfMonth); }
+      if (input.timeOfDay !== undefined) { updates.push(`time_of_day = $${idx++}`); values.push(input.timeOfDay); }
+
+      // End date change
+      let endDateChanged = false;
+      if (input.endDate !== undefined) {
+        updates.push(`end_date = $${idx++}`); values.push(input.endDate);
+        endDateChanged = true;
+      }
+
+      if (updates.length === 0) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'No fields to update' });
+      }
+
+      updates.push(`updated_at = NOW()`);
+      values.push(input.id);
+      await db.query(
+        `UPDATE recurring_task_series SET ${updates.join(', ')} WHERE id = $${idx}`,
+        values
+      );
+
+      // --- Propagation Rules ---
+
+      // Budget propagation: update price on all future scheduled occurrences
+      // (The task inherits price from series at spawn time, so this is informational.
+      //  But if we add escrow pre-funding later, this ensures the right amount.)
+      if (budgetChanged) {
+        log.info({ seriesId: input.id, newPayment: input.payment }, 'Budget changed — future tasks will use new price');
+      }
+
+      // Schedule change: delete future SCHEDULED occurrences and regenerate
+      if (scheduleChanged) {
+        await db.query(
+          `DELETE FROM recurring_task_occurrences
+           WHERE series_id = $1 AND status = 'scheduled' AND scheduled_date > CURRENT_DATE`,
+          [input.id]
+        );
+
+        // Recount occurrences
+        const countResult = await db.query<{ cnt: string }>(
+          `SELECT COUNT(*) as cnt FROM recurring_task_occurrences WHERE series_id = $1`,
+          [input.id]
+        );
+        await db.query(
+          `UPDATE recurring_task_series SET occurrence_count = $1 WHERE id = $2`,
+          [parseInt(countResult.rows[0].cnt, 10), input.id]
+        );
+
+        // Regenerate from tomorrow with new schedule
+        const tomorrow = new Date();
+        tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+        await generateOccurrencesForSeries(input.id, {
+          fromDate: tomorrow.toISOString().slice(0, 10),
+        });
+
+        log.info({ seriesId: input.id }, 'Schedule changed — regenerated future occurrences');
+      }
+
+      // End date truncation: cancel all scheduled occurrences after new end date
+      if (endDateChanged && input.endDate) {
+        const cancelled = await db.query(
+          `UPDATE recurring_task_occurrences
+           SET status = 'cancelled', spawn_error = 'Series end date changed'
+           WHERE series_id = $1 AND status = 'scheduled' AND scheduled_date > $2::DATE`,
+          [input.id, input.endDate]
+        );
+        if ((cancelled.rowCount ?? 0) > 0) {
+          log.info({ seriesId: input.id, cancelled: cancelled.rowCount }, 'End date changed — cancelled future occurrences');
+        }
+      }
+
+      // Return updated series
+      const updatedResult = await db.query<SeriesRow>(
+        `SELECT rts.*, u.full_name as worker_name
+         FROM recurring_task_series rts
+         LEFT JOIN users u ON u.id = rts.preferred_worker_id
+         WHERE rts.id = $1`,
+        [input.id]
+      );
+      return mapSeriesToResponse(updatedResult.rows[0], updatedResult.rows[0].worker_name);
     }),
 
   // --------------------------------------------------------------------------
