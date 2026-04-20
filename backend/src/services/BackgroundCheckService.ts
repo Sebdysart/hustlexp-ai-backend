@@ -72,7 +72,6 @@ export interface BackgroundCheckInitiation {
   provider: 'checkr' | 'sterling' | 'goodhire' | 'manual';
   email?: string;
   phone?: string;
-  ssnLast4?: string;
   dateOfBirth?: string;
   fullName?: string;
   workState?: string;
@@ -175,7 +174,6 @@ export async function initiateBackgroundCheck(
       externalCheckId,
       expiresAt.toISOString(),
       JSON.stringify({
-        ssnLast4: initiation.ssnLast4,
         dateOfBirth: initiation.dateOfBirth,
         fullName: initiation.fullName,
         invitationUrl,

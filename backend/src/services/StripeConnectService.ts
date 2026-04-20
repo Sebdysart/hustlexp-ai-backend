@@ -110,7 +110,6 @@ export interface TaxInfoInput {
   state?: string;
   zipCode?: string;
   country?: string;
-  ssnLast4?: string;
   ein?: string;
   foreignTaxId?: string;
   treatyCountry?: string;
@@ -647,7 +646,7 @@ export const StripeConnectService = {
       };
     }
 
-    const taxIdLast4 = params.ssnLast4 || params.ein?.slice(-4) || null;
+    const taxIdLast4 = params.ein?.slice(-4) || null;
 
     // Expire any existing active form before inserting new one
     await db.query(

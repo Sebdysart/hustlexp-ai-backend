@@ -44,8 +44,7 @@ const TaxInfoInputSchema = z.object({
   state: z.string().min(1).max(100).optional(),
   zipCode: z.string().min(1).max(20).optional(),
   country: z.string().length(2).default('US'), // ISO country code
-  // Tax ID
-  ssnLast4: z.string().regex(/^\d{4}$/).optional(),
+  // Tax ID (SSN removed — Stripe handles SSN collection during Connect onboarding)
   ein: z.string().regex(/^\d{9}$/).optional(),
   // W-8BEN Fields (for non-US persons)
   foreignTaxId: z.string().max(50).optional(),

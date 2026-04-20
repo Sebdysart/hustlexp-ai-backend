@@ -236,7 +236,11 @@ export interface Task {
   // Proof requirement
   requires_proof: boolean;
   proof_instructions?: string;
-  
+
+  // Recurring task support
+  parent_series_id?: string;
+  occurrence_number?: number;
+
   created_at: Date;
   updated_at: Date;
 }
