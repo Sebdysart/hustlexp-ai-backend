@@ -230,6 +230,20 @@ function registerWorkers(): void {
     }
   ));
 
+  // Recurring task worker — spawns real tasks from due recurring occurrences
+  activeWorkers.push(createWorker(
+    'recurring_tasks',
+    async (job: Job) => {
+      const { processRecurringTaskSpawnJob } = await import('./recurring-task-worker');
+      await processRecurringTaskSpawnJob(job);
+    },
+    {
+      concurrency: 1, // One at a time to avoid double-spawning
+      removeOnComplete: { count: 50, age: 86400 },
+      removeOnFail: { age: 7 * 86400 },
+    }
+  ));
+
   log.info('All BullMQ workers registered');
 }
 
@@ -307,6 +321,27 @@ async function registerScheduledJobs(): Promise<void> {
     {
       repeat: { pattern: '0 10 * * *' },
       jobId: 'scheduled:xp_tax_reminders_daily',
+    }
+  );
+
+  // Recurring task spawning — daily at 6:00 AM UTC
+  const recurringTasksQueue = getQueue('recurring_tasks');
+  await recurringTasksQueue.add(
+    'recurring.spawn_due_tasks',
+    {},
+    {
+      repeat: { pattern: '0 6 * * *' },
+      jobId: 'scheduled:recurring_task_spawn_daily',
+    }
+  );
+
+  // Recurring task catch-up — every 2 hours (handles missed daily runs)
+  await recurringTasksQueue.add(
+    'recurring.spawn_due_tasks',
+    {},
+    {
+      repeat: { pattern: '0 */2 * * *' },
+      jobId: 'scheduled:recurring_task_spawn_catchup',
     }
   );
 

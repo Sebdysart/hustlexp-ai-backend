@@ -18,7 +18,7 @@ import { z } from 'zod';
 import { router, posterProcedure, Schemas } from '../trpc.js';
 import { db } from '../db.js';
 import { logger } from '../logger.js';
-import { generateOccurrencesForSeries } from '../services/RecurringTaskService.js';
+import { generateOccurrencesForSeries, spawnTaskForOccurrence } from '../services/RecurringTaskService.js';
 import { EscrowService } from '../services/EscrowService.js';
 
 const log = logger.child({ router: 'recurringTask' });
@@ -469,6 +469,54 @@ export const recurringTaskRouter = router({
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Series not found' });
       }
       return { success: true };
+    }),
+
+  // --------------------------------------------------------------------------
+  // SPAWN OPERATIONS
+  // --------------------------------------------------------------------------
+
+  /**
+   * Manually spawn a task from a scheduled occurrence (poster clicks "Post Now")
+   */
+  spawnOccurrenceNow: posterProcedure
+    .input(z.object({ occurrenceId: Schemas.uuid }))
+    .mutation(async ({ ctx, input }) => {
+      // Verify poster owns the series
+      const occ = await db.query<{ series_id: string }>(
+        `SELECT o.series_id FROM recurring_task_occurrences o
+         JOIN recurring_task_series s ON s.id = o.series_id
+         WHERE o.id = $1 AND s.poster_id = $2`,
+        [input.occurrenceId, ctx.user.id]
+      );
+      if (occ.rows.length === 0) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Occurrence not found' });
+      }
+
+      const result = await spawnTaskForOccurrence(input.occurrenceId);
+      if (!result.success) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: result.error.message });
+      }
+
+      return result.data;
+    }),
+
+  /**
+   * Get the spawned task for an occurrence
+   */
+  getInstanceTask: posterProcedure
+    .input(z.object({ occurrenceId: Schemas.uuid }))
+    .query(async ({ ctx, input }) => {
+      const result = await db.query(
+        `SELECT t.* FROM tasks t
+         JOIN recurring_task_occurrences o ON o.task_id = t.id
+         JOIN recurring_task_series s ON s.id = o.series_id
+         WHERE o.id = $1 AND s.poster_id = $2`,
+        [input.occurrenceId, ctx.user.id]
+      );
+      if (result.rows.length === 0) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'No task spawned for this occurrence' });
+      }
+      return result.rows[0];
     }),
 });
 

@@ -58,6 +58,9 @@ interface CreateTaskParams {
   sensitive?: boolean; // Sensitive tasks require higher trust tier (Tier ≥ 3)
   // Template system — set atomically with the INSERT to prevent NULL window on partial failure
   templateSlug?: string;
+  // Recurring task support — links spawned task to parent series
+  parentSeriesId?: string;
+  occurrenceNumber?: number;
 }
 
 interface AcceptTaskParams {
@@ -452,14 +455,15 @@ export const TaskService = {
           requirements, location, location_city, location_state, location_radius_miles,
           category, estimated_duration, deadline, requires_proof,
           risk_level, mode, live_broadcast_radius_miles, instant_mode, sensitive, state,
-          template_slug
+          template_slug, parent_series_id, occurrence_number
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
         RETURNING *`,
         [posterId, title, description, finalPrice, xpReward, requirements,
          locationDisplay, params.locationCity || null, params.locationState || null, params.locationRadiusMiles || null,
          category, params.estimatedDuration || null, deadline, requiresProof,
-         riskLevel, mode, liveBroadcastRadiusMiles, instantMode, sensitive, initialState, templateSlug || null]
+         riskLevel, mode, liveBroadcastRadiusMiles, instantMode, sensitive, initialState, templateSlug || null,
+         params.parentSeriesId || null, params.occurrenceNumber || null]
       );
       
       let createdTask = result.rows[0];
@@ -950,7 +954,29 @@ export const TaskService = {
           };
         }
 
-        return { success: true, data: result.rows[0] };
+        // Post-completion: update recurring task occurrence if this is a series instance
+        const completedTask = result.rows[0];
+        if (completedTask.parent_series_id) {
+          try {
+            await query(
+              `UPDATE recurring_task_occurrences
+               SET status = 'completed', completed_at = NOW(), worker_id = $1
+               WHERE series_id = $2 AND task_id = $3`,
+              [completedTask.worker_id, completedTask.parent_series_id, completedTask.id]
+            );
+            await query(
+              `UPDATE recurring_task_series
+               SET completed_count = completed_count + 1, updated_at = NOW()
+               WHERE id = $1`,
+              [completedTask.parent_series_id]
+            );
+          } catch (recurringErr) {
+            // Non-critical: log but don't fail the completion
+            log.error({ err: recurringErr, taskId }, 'Failed to update recurring occurrence on completion');
+          }
+        }
+
+        return { success: true, data: completedTask };
       });
     } catch (error) {
       // Check for INV-3 violation from trigger

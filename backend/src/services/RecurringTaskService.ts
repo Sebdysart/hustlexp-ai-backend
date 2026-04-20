@@ -11,6 +11,8 @@ import { db } from '../db.js';
 import { logger } from '../logger.js';
 import type { ServiceResult } from '../types.js';
 import { ErrorCodes } from '../types.js';
+import { TaskService } from './TaskService.js';
+import { EscrowService } from './EscrowService.js';
 
 const log = logger.child({ service: 'RecurringTaskService' });
 
@@ -194,4 +196,198 @@ export async function generateOccurrencesForSeries(
       error: { code: 'DB_ERROR', message: e instanceof Error ? e.message : String(e) },
     };
   }
+}
+
+// --------------------------------------------------------------------------
+// SPAWN TASK FROM OCCURRENCE
+// --------------------------------------------------------------------------
+
+interface FullSeriesRow extends SeriesRow {
+  title: string;
+  description: string;
+  payment_cents: number;
+  location: string | null;
+  category: string | null;
+  estimated_duration: string | null;
+  required_tier: number;
+  preferred_worker_id: string | null;
+  risk_level: string | null;
+  template_slug: string | null;
+  requires_proof: boolean;
+  requirements: string | null;
+}
+
+/**
+ * Spawn a real HXTask + Escrow from a scheduled occurrence.
+ * Called by the recurring-task-worker cron job or manually via spawnOccurrenceNow.
+ */
+export async function spawnTaskForOccurrence(
+  occurrenceId: string
+): Promise<ServiceResult<{ taskId: string; escrowId: string }>> {
+  try {
+    // 1. Load occurrence + series in one query
+    const occResult = await db.query<{
+      id: string;
+      series_id: string;
+      occurrence_number: number;
+      status: string;
+      task_id: string | null;
+    }>(
+      `SELECT id, series_id, occurrence_number, status, task_id
+       FROM recurring_task_occurrences WHERE id = $1 FOR UPDATE`,
+      [occurrenceId]
+    );
+
+    if (occResult.rows.length === 0) {
+      return { success: false, error: { code: ErrorCodes.NOT_FOUND, message: 'Occurrence not found' } };
+    }
+
+    const occ = occResult.rows[0];
+
+    // Idempotency: already spawned
+    if (occ.status !== 'scheduled') {
+      if (occ.task_id) {
+        return { success: true, data: { taskId: occ.task_id, escrowId: '' } };
+      }
+      return { success: false, error: { code: ErrorCodes.INVALID_STATE, message: `Occurrence status is ${occ.status}, expected scheduled` } };
+    }
+
+    // 2. Load series
+    const seriesResult = await db.query<FullSeriesRow>(
+      `SELECT * FROM recurring_task_series WHERE id = $1`,
+      [occ.series_id]
+    );
+    if (seriesResult.rows.length === 0) {
+      return { success: false, error: { code: ErrorCodes.NOT_FOUND, message: 'Series not found' } };
+    }
+    const series = seriesResult.rows[0];
+
+    if (series.status !== 'active') {
+      await db.query(
+        `UPDATE recurring_task_occurrences SET status = 'cancelled', spawn_error = 'Series not active' WHERE id = $1`,
+        [occurrenceId]
+      );
+      return { success: false, error: { code: ErrorCodes.INVALID_STATE, message: 'Series is not active' } };
+    }
+
+    // 3. Create the task via TaskService (runs full compliance/template pipeline)
+    const taskResult = await TaskService.create({
+      posterId: series.poster_id,
+      title: series.title,
+      description: series.description,
+      price: series.payment_cents,
+      requirements: series.requirements || undefined,
+      location: series.location || undefined,
+      category: series.category || undefined,
+      estimatedDuration: series.estimated_duration || undefined,
+      requiresProof: series.requires_proof,
+      riskLevel: (series.risk_level as 'LOW' | 'MEDIUM' | 'HIGH') || undefined,
+      templateSlug: series.template_slug || undefined,
+      parentSeriesId: series.id,
+      occurrenceNumber: occ.occurrence_number,
+    });
+
+    if (!taskResult.success) {
+      await db.query(
+        `UPDATE recurring_task_occurrences SET spawn_error = $1 WHERE id = $2`,
+        [taskResult.error.message, occurrenceId]
+      );
+      log.error({ occurrenceId, error: taskResult.error }, 'Failed to spawn task for occurrence');
+      return { success: false, error: taskResult.error };
+    }
+
+    const taskId = taskResult.data.id;
+
+    // 4. Create escrow for the task
+    const escrowResult = await EscrowService.create({
+      taskId,
+      amount: series.payment_cents,
+    });
+
+    const escrowId = escrowResult.success ? escrowResult.data.id : '';
+
+    // 5. Auto-assign preferred worker if set
+    if (series.preferred_worker_id) {
+      try {
+        await TaskService.accept({
+          taskId,
+          workerId: series.preferred_worker_id,
+        });
+        log.info({ taskId, workerId: series.preferred_worker_id }, 'Auto-assigned preferred worker');
+      } catch (acceptErr) {
+        // Non-fatal: task stays OPEN for anyone to claim
+        log.warn({ taskId, workerId: series.preferred_worker_id, err: acceptErr }, 'Failed to auto-assign preferred worker');
+      }
+    }
+
+    // 6. Update occurrence
+    await db.query(
+      `UPDATE recurring_task_occurrences
+       SET status = 'posted', task_id = $1, escrow_id = $2, spawned_at = NOW(), spawn_error = NULL
+       WHERE id = $3`,
+      [taskId, escrowId || null, occurrenceId]
+    );
+
+    // 7. Update series next_occurrence_at
+    const nextOcc = await db.query<{ scheduled_date: string }>(
+      `SELECT scheduled_date FROM recurring_task_occurrences
+       WHERE series_id = $1 AND status = 'scheduled'
+       ORDER BY scheduled_date ASC LIMIT 1`,
+      [series.id]
+    );
+    if (nextOcc.rows.length > 0) {
+      await db.query(
+        `UPDATE recurring_task_series SET next_occurrence_at = $1, updated_at = NOW() WHERE id = $2`,
+        [nextOcc.rows[0].scheduled_date + 'T12:00:00.000Z', series.id]
+      );
+    }
+
+    log.info({ seriesId: series.id, occurrenceId, taskId, escrowId }, 'Spawned task from recurring occurrence');
+    return { success: true, data: { taskId, escrowId } };
+  } catch (e) {
+    log.error({ err: e, occurrenceId }, 'spawnTaskForOccurrence failed');
+    await db.query(
+      `UPDATE recurring_task_occurrences SET spawn_error = $1 WHERE id = $2`,
+      [e instanceof Error ? e.message : String(e), occurrenceId]
+    ).catch(() => {});
+    return {
+      success: false,
+      error: { code: 'DB_ERROR', message: e instanceof Error ? e.message : String(e) },
+    };
+  }
+}
+
+/**
+ * Spawn all due occurrences (scheduled_date <= today, status = 'scheduled', series active).
+ * Called by the recurring-task-worker cron job.
+ */
+export async function spawnDueOccurrences(): Promise<{ spawned: number; failed: number }> {
+  const dueResult = await db.query<{ id: string; series_id: string }>(
+    `SELECT o.id, o.series_id
+     FROM recurring_task_occurrences o
+     JOIN recurring_task_series s ON s.id = o.series_id
+     WHERE o.status = 'scheduled'
+       AND o.scheduled_date <= CURRENT_DATE
+       AND s.status = 'active'
+     ORDER BY o.scheduled_date ASC
+     LIMIT 50`,
+    []
+  );
+
+  let spawned = 0;
+  let failed = 0;
+
+  for (const row of dueResult.rows) {
+    const result = await spawnTaskForOccurrence(row.id);
+    if (result.success) {
+      spawned++;
+      // Replenish future occurrences for this series
+      await generateOccurrencesForSeries(row.series_id);
+    } else {
+      failed++;
+    }
+  }
+
+  log.info({ spawned, failed, total: dueResult.rows.length }, 'spawnDueOccurrences completed');
+  return { spawned, failed };
 }

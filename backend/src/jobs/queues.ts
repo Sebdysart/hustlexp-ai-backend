@@ -76,7 +76,8 @@ export type QueueName =
   | 'tax_reporting'
   | 'biometric_analysis'
   | 'expertise_recalc'
-  | 'xp_tax_reminders';
+  | 'xp_tax_reminders'
+  | 'recurring_tasks';
 
 interface QueueConfig {
   name: QueueName;
@@ -275,6 +276,27 @@ export const QUEUE_CONFIGS: Record<QueueName, QueueConfig> = {
       removeOnComplete: {
         age: 24 * 60 * 60, // 24 hours
         count: 10,
+      },
+      removeOnFail: {
+        age: 7 * 24 * 60 * 60, // 7 days
+      },
+    },
+    workerOptions: {
+      maxStalledCount: 1,
+    },
+  },
+
+  recurring_tasks: {
+    name: 'recurring_tasks',
+    defaultJobOptions: {
+      attempts: 3,
+      backoff: {
+        type: 'exponential',
+        delay: 30000, // 30s, 60s, 120s
+      },
+      removeOnComplete: {
+        age: 24 * 60 * 60, // 24 hours
+        count: 100,
       },
       removeOnFail: {
         age: 7 * 24 * 60 * 60, // 7 days
