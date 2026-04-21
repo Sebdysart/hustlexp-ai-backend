@@ -1275,25 +1275,46 @@ export const taskRouter = router({
       message: z.string().max(500).optional(),
     }))
     .mutation(async ({ ctx, input }) => {
+      taskRouterLog.info({
+        taskId: input.taskId,
+        userId: ctx.user.id,
+        userTrustTier: ctx.user.trust_tier,
+        userMode: ctx.user.default_mode,
+      }, '[task.applyForTask] Application attempt');
+
       const taskResult = await db.query(
-        `SELECT id, state, poster_id, trust_tier_required FROM tasks WHERE id = $1`,
+        `SELECT id, state, poster_id, trust_tier_required, risk_level FROM tasks WHERE id = $1`,
         [input.taskId]
       );
       if (taskResult.rows.length === 0) {
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
       }
       const task = taskResult.rows[0];
-      if (task.state !== 'POSTED') {
+
+      taskRouterLog.info({
+        taskId: input.taskId,
+        taskState: task.state,
+        taskPosterId: task.poster_id,
+        taskTrustTierRequired: task.trust_tier_required,
+        taskRiskLevel: task.risk_level,
+      }, '[task.applyForTask] Task details');
+
+      if (task.state !== 'OPEN' && task.state !== 'POSTED') {
         throw new TRPCError({
           code: 'PRECONDITION_FAILED',
-          message: `Task must be in POSTED state to apply, current: ${task.state}`,
+          message: `Task must be in OPEN state to apply, current: ${task.state}`,
         });
       }
       if (task.poster_id === ctx.user.id) {
         throw new TRPCError({ code: 'BAD_REQUEST', message: 'Cannot apply for your own task' });
       }
       if (task.trust_tier_required != null && ctx.user.trust_tier < (task.trust_tier_required as number)) {
-        throw new TRPCError({ code: 'FORBIDDEN', message: 'Your trust tier is insufficient for this task' });
+        taskRouterLog.warn({
+          taskId: input.taskId,
+          required: task.trust_tier_required,
+          userTier: ctx.user.trust_tier,
+        }, '[task.applyForTask] Trust tier insufficient');
+        throw new TRPCError({ code: 'FORBIDDEN', message: `Your trust tier (${ctx.user.trust_tier}) is insufficient. Task requires tier ${task.trust_tier_required}.` });
       }
 
       // Use ON CONFLICT DO NOTHING against the partial unique index
