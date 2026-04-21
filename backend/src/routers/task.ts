@@ -1283,7 +1283,7 @@ export const taskRouter = router({
       }, '[task.applyForTask] Application attempt');
 
       const taskResult = await db.query(
-        `SELECT id, state, poster_id, trust_tier_required, risk_level FROM tasks WHERE id = $1`,
+        `SELECT id, state, poster_id, required_tier, risk_level FROM tasks WHERE id = $1`,
         [input.taskId]
       );
       if (taskResult.rows.length === 0) {
@@ -1295,7 +1295,7 @@ export const taskRouter = router({
         taskId: input.taskId,
         taskState: task.state,
         taskPosterId: task.poster_id,
-        taskTrustTierRequired: task.trust_tier_required,
+        taskRequiredTier: task.required_tier,
         taskRiskLevel: task.risk_level,
       }, '[task.applyForTask] Task details');
 
@@ -1308,13 +1308,13 @@ export const taskRouter = router({
       if (task.poster_id === ctx.user.id) {
         throw new TRPCError({ code: 'BAD_REQUEST', message: 'Cannot apply for your own task' });
       }
-      if (task.trust_tier_required != null && ctx.user.trust_tier < (task.trust_tier_required as number)) {
+      if (task.required_tier != null && ctx.user.trust_tier < (task.required_tier as number)) {
         taskRouterLog.warn({
           taskId: input.taskId,
-          required: task.trust_tier_required,
+          required: task.required_tier,
           userTier: ctx.user.trust_tier,
         }, '[task.applyForTask] Trust tier insufficient');
-        throw new TRPCError({ code: 'FORBIDDEN', message: `Your trust tier (${ctx.user.trust_tier}) is insufficient. Task requires tier ${task.trust_tier_required}.` });
+        throw new TRPCError({ code: 'FORBIDDEN', message: `Your trust tier (${ctx.user.trust_tier}) is insufficient. Task requires tier ${task.required_tier}.` });
       }
 
       // Use ON CONFLICT DO NOTHING against the partial unique index
