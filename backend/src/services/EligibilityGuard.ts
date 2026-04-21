@@ -44,10 +44,10 @@ export enum EligibilityErrorCode {
 // ============================================================================
 
 const REQUIRED_TIER_BY_RISK: Record<TaskRisk, TrustTier | 'BLOCKED_IN_ALPHA'> = {
-  [TaskRisk.TIER_0]: TrustTier.VERIFIED,
-  [TaskRisk.TIER_1]: TrustTier.VERIFIED,
-  [TaskRisk.TIER_2]: TrustTier.TRUSTED,
-  [TaskRisk.TIER_3]: 'BLOCKED_IN_ALPHA',
+  [TaskRisk.TIER_0]: TrustTier.ROOKIE,    // LOW risk — open to all users
+  [TaskRisk.TIER_1]: TrustTier.VERIFIED,   // MEDIUM risk — requires ID verification
+  [TaskRisk.TIER_2]: TrustTier.TRUSTED,    // HIGH risk — requires trust history
+  [TaskRisk.TIER_3]: 'BLOCKED_IN_ALPHA',   // IN_HOME — blocked during alpha
 };
 
 // ============================================================================
