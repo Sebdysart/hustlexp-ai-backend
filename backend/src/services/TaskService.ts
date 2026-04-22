@@ -839,12 +839,12 @@ export const TaskService = {
           return { success: true, data: existingTask.rows[0] };
         }
 
-        if (currentState !== 'ACCEPTED') {
+        if (currentState !== 'ACCEPTED' && currentState !== 'IN_PROGRESS') {
           return {
             success: false,
             error: {
               code: ErrorCodes.INVALID_STATE,
-              message: `Cannot submit proof: current state is ${currentState}, expected ACCEPTED`,
+              message: `Cannot submit proof: current state is ${currentState}, expected ACCEPTED or IN_PROGRESS`,
             },
           };
         }
@@ -854,7 +854,7 @@ export const TaskService = {
            SET state = 'PROOF_SUBMITTED',
                proof_submitted_at = NOW()
            WHERE id = $1
-             AND state = 'ACCEPTED'
+             AND state IN ('ACCEPTED', 'IN_PROGRESS')
            RETURNING *`,
           [taskId]
         );
