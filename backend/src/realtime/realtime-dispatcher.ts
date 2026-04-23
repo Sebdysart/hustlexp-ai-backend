@@ -221,6 +221,45 @@ async function writeToConnection(conn: SSEConnection, message: string): Promise<
 }
 
 /**
+ * Dispatch earnings.updated event to a specific worker's SSE connections.
+ *
+ * Fired after escrow release so the worker's EarningsScreen updates in real-time.
+ */
+export async function dispatchEarningsUpdated(payload: {
+  userId: string;
+  taskId: string;
+  taskTitle: string;
+  amountCents: number;
+  netPayoutCents: number;
+  newTotalEarningsCents: number;
+}): Promise<void> {
+  const { userId } = payload;
+
+  if (await checkAndEvictBannedUser(userId)) return;
+
+  const conns = getConnections(userId);
+  if (!conns) return;
+
+  const sseMessage = `event: earnings.updated\ndata: ${JSON.stringify(payload)}\n\n`;
+
+  let fanoutCount = 0;
+  for (const conn of conns) {
+    if (conn.closed) continue;
+    try {
+      await writeToConnection(conn, sseMessage);
+      fanoutCount++;
+    } catch (error) {
+      log.error({ err: error instanceof Error ? error.message : String(error), userId }, 'Failed to write earnings.updated to SSE');
+      conn.closed = true;
+    }
+  }
+
+  if (fanoutCount > 0) {
+    log.info({ userId, taskId: payload.taskId, amountCents: payload.netPayoutCents }, 'earnings.updated fanout complete');
+  }
+}
+
+/**
  * Broadcast a flag_changed event to all active SSE connections
  */
 export async function dispatchFlagChanged(flagName: string): Promise<void> {

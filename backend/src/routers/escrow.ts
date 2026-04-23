@@ -14,6 +14,7 @@ import { router, protectedProcedure, hustlerProcedure, posterProcedure, Schemas 
 import { EscrowService } from '../services/EscrowService.js';
 import { StripeService } from '../services/StripeService.js';
 import { XPService } from '../services/XPService.js';
+import { dispatchEarningsUpdated } from '../realtime/realtime-dispatcher.js';
 import { db } from '../db.js';
 import { z } from 'zod';
 
@@ -312,6 +313,33 @@ export const escrowRouter = router({
           code: releaseResult.error.code === 'HX201' ? 'PRECONDITION_FAILED' : 'BAD_REQUEST',
           message: releaseResult.error.message,
         });
+      }
+
+      // 6. Fire real-time earnings event to worker
+      // Compute new total from released escrows so the worker's UI updates instantly.
+      try {
+        const taskTitle = await db.query<{ title: string }>(
+          'SELECT title FROM tasks WHERE id = $1',
+          [escrow.data.task_id]
+        );
+        const totalResult = await db.query<{ total: string }>(
+          `SELECT COALESCE(SUM(amount), 0) AS total FROM escrows WHERE worker_id = $1 AND state = 'RELEASED'`,
+          [workerId]
+        );
+        const newTotalCents = parseInt(totalResult.rows[0]?.total ?? '0', 10);
+
+        await dispatchEarningsUpdated({
+          userId: workerId,
+          taskId: escrow.data.task_id,
+          taskTitle: taskTitle.rows[0]?.title ?? 'Task',
+          amountCents: grossAmount,
+          netPayoutCents: netPayoutCents,
+          newTotalEarningsCents: newTotalCents,
+        });
+      } catch (err) {
+        // Non-blocking — log but don't fail the release
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[escrow.releaseToWorker] Failed to dispatch earnings event: ${message}`);
       }
 
       return releaseResult.data;
