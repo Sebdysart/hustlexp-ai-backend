@@ -1082,6 +1082,24 @@ export const taskRouter = router({
         });
       }
 
+      // Attach photo proof URLs to the proof
+      if (input.photoUrls?.length) {
+        for (let i = 0; i < input.photoUrls.length; i++) {
+          const url = input.photoUrls[i];
+          const photoResult = await ProofService.addPhoto({
+            proofId: proofResult.data.id,
+            storageKey: url,
+            contentType: 'image/jpeg',
+            fileSizeBytes: 0,
+            checksumSha256: '',
+            sequenceNumber: i + 1,
+          });
+          if (!photoResult.success) {
+            logger.child({ service: 'task' }).warn({ proofId: proofResult.data.id, url }, 'Failed to add photo to proof');
+          }
+        }
+      }
+
       // Attach video proof URLs to the proof
       if (input.videoUrls?.length) {
         for (const url of input.videoUrls) {
@@ -1091,7 +1109,6 @@ export const taskRouter = router({
             contentType: 'video/mp4',
           });
           if (!videoResult.success) {
-            // Log but do not fail the whole submission; proof is already created
             logger.child({ service: 'task' }).warn({ proofId: proofResult.data.id, url }, 'Failed to add video to proof');
           }
         }
