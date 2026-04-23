@@ -440,19 +440,9 @@ export const taskRouter = router({
         });
       }
 
-      // FIX 1: Enforce requiredTrustTier — reject if poster's tier is below template minimum.
-      // trust_tier in DB is numeric (1=rookie, 2=verified, 3=trusted).
-      const TRUST_TIER_ORDER = ['rookie', 'verified', 'trusted'];
-      const TRUST_TIER_NUMERIC_MAP: Record<number, string> = { 1: 'rookie', 2: 'verified', 3: 'trusted', 4: 'trusted' };
-      const posterTierName = TRUST_TIER_NUMERIC_MAP[ctx.user.trust_tier ?? 1] ?? 'rookie';
-      const posterTierIndex = TRUST_TIER_ORDER.indexOf(posterTierName);
-      const requiredTierIndex = TRUST_TIER_ORDER.indexOf(template.requiredTrustTier ?? 'rookie');
-      if (posterTierIndex < requiredTierIndex) {
-        throw new TRPCError({
-          code: 'PRECONDITION_FAILED',
-          message: `This task type requires ${template.requiredTrustTier} trust level. Your current level is ${posterTierName}.`,
-        });
-      }
+      // Trust tier requirement is enforced when hustlers ACCEPT the task, not when
+      // posters CREATE it. Posters can post any task type regardless of their own tier.
+      // The template's requiredTrustTier is stored on the task and checked in applyForTask.
 
       const result = await TaskService.create({
         posterId: ctx.user.id,
@@ -574,18 +564,7 @@ export const taskRouter = router({
         if (!template) {
           throw new TRPCError({ code: 'BAD_REQUEST', message: `Unknown template: ${input.templateSlug}` });
         }
-        // Enforce trust tier requirement
-        const TRUST_TIER_ORDER = ['rookie', 'verified', 'trusted'];
-        const TRUST_TIER_NUMERIC_MAP: Record<number, string> = { 1: 'rookie', 2: 'verified', 3: 'trusted', 4: 'trusted' };
-        const posterTierName = TRUST_TIER_NUMERIC_MAP[ctx.user.trust_tier ?? 1] ?? 'rookie';
-        const posterTierIndex = TRUST_TIER_ORDER.indexOf(posterTierName);
-        const requiredTierIndex = TRUST_TIER_ORDER.indexOf(template.requiredTrustTier ?? 'rookie');
-        if (posterTierIndex < requiredTierIndex) {
-          throw new TRPCError({
-            code: 'PRECONDITION_FAILED',
-            message: `This task type requires ${template.requiredTrustTier} trust level. Your current level is ${posterTierName}.`,
-          });
-        }
+        // Trust tier is enforced at accept time, not at creation/edit time.
       }
 
       const updates: string[] = [];
@@ -1419,23 +1398,8 @@ export const taskRouter = router({
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
       }
 
-      // BUG FIX: Re-validate poster's current trust tier against the task's required tier.
-      // Trust tier can be downgraded after task creation; re-check at assignment time to
-      // prevent a demoted poster from advancing the task lifecycle.
-      const TRUST_TIER_ORDER = ['rookie', 'verified', 'trusted'];
-      const TRUST_TIER_NUMERIC_MAP: Record<number, string> = { 1: 'rookie', 2: 'verified', 3: 'trusted', 4: 'trusted' };
-      const template = getTemplate(templateSlugResult.rows[0].template_slug ?? 'standard_physical');
-      if (template) {
-        const posterTierName = TRUST_TIER_NUMERIC_MAP[ctx.user.trust_tier ?? 1] ?? 'rookie';
-        const posterTierIndex = TRUST_TIER_ORDER.indexOf(posterTierName);
-        const requiredTierIndex = TRUST_TIER_ORDER.indexOf(template.requiredTrustTier ?? 'rookie');
-        if (posterTierIndex < requiredTierIndex) {
-          throw new TRPCError({
-            code: 'PRECONDITION_FAILED',
-            message: `Your trust level (${posterTierName}) no longer meets the requirement (${template.requiredTrustTier}) for this task type.`,
-          });
-        }
-      }
+      // Trust tier is enforced when the hustler accepts/applies, not when
+      // the poster assigns. The poster's own tier is irrelevant here.
 
       const result = await db.transaction(async (txn) => {
         // Step 1: Lock the task row for the duration of the transaction.
