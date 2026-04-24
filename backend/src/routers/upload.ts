@@ -24,17 +24,23 @@ const ALLOWED_CONTENT_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/h
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
 const PRESIGN_EXPIRY = 15 * 60; // 15 minutes
 
-// Initialize S3 client for Cloudflare R2 (S3-compatible)
+// Initialize S3 client — supports Cloudflare R2, Tigris (Fly.io), or any S3-compatible provider.
+// Priority: S3_ENDPOINT env var > Cloudflare R2 derived endpoint
 const r2Config = config.cloudflare.r2;
-const isR2Configured = r2Config.accountId && r2Config.accessKeyId && r2Config.secretAccessKey;
+const s3Endpoint = process.env.S3_ENDPOINT
+  || (r2Config.accountId ? `https://${r2Config.accountId}.r2.cloudflarestorage.com` : '');
+const s3AccessKey = process.env.AWS_ACCESS_KEY_ID || r2Config.accessKeyId;
+const s3SecretKey = process.env.AWS_SECRET_ACCESS_KEY || r2Config.secretAccessKey;
+const s3BucketName = process.env.BUCKET_NAME || r2Config.bucketName || 'hustlexp-storage';
+const isS3Configured = s3Endpoint && s3AccessKey && s3SecretKey;
 
-const s3Client = isR2Configured
+const s3Client = isS3Configured
   ? new S3Client({
-      region: 'auto',
-      endpoint: `https://${r2Config.accountId}.r2.cloudflarestorage.com`,
+      region: process.env.AWS_REGION || 'auto',
+      endpoint: s3Endpoint,
       credentials: {
-        accessKeyId: r2Config.accessKeyId,
-        secretAccessKey: r2Config.secretAccessKey,
+        accessKeyId: s3AccessKey,
+        secretAccessKey: s3SecretKey,
       },
     })
   : null;
@@ -67,12 +73,12 @@ export const uploadRouter = router({
       const key = input.purpose === 'avatar'
         ? `avatars/${ctx.user.id}/${Date.now()}_${input.filename}`
         : `${prefix}/${input.taskId}/${ctx.user.id}/${Date.now()}_${input.filename}`;
-      const baseUrl = process.env.R2_PUBLIC_URL || `https://${r2Config.bucketName}.r2.dev`;
+      const baseUrl = process.env.R2_PUBLIC_URL || `https://${s3BucketName}.r2.dev`;
 
-      // Generate real presigned URL if R2 is configured
+      // Generate real presigned URL if S3/R2/Tigris is configured
       if (s3Client) {
         const command = new PutObjectCommand({
-          Bucket: r2Config.bucketName!,
+          Bucket: s3BucketName,
           Key: key,
           ContentType: input.contentType,
           ContentLength: input.fileSize,
@@ -95,7 +101,7 @@ export const uploadRouter = router({
       }
 
       // Fallback: mock URLs for local development
-      log.warn('R2 not configured, returning mock presigned URL');
+      log.warn('S3/R2/Tigris not configured, returning mock presigned URL');
       return {
         uploadUrl: `${baseUrl}/upload/${key}?X-Amz-Signature=mock`,
         publicUrl: `${baseUrl}/${key}`,
