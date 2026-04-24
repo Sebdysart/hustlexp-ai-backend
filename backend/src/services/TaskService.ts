@@ -17,6 +17,13 @@ import { writeToOutbox } from '../lib/outbox-helpers.js';
 import { PlanService } from './PlanService.js';
 import { ScoperAIService } from './ScoperAIService.js';
 import { MIN_INSTANT_TIER, MIN_SENSITIVE_INSTANT_TIER } from './InstantTrustConfig.js';
+import { EligibilityGuard } from './EligibilityGuard.js';
+import { FraudDetectionService } from './FraudDetectionService.js';
+import { InstantModeKillSwitch } from './InstantModeKillSwitch.js';
+import { InstantRateLimiter } from './InstantRateLimiter.js';
+import { InstantObservability } from './InstantObservability.js';
+import { InstantTaskGate } from './InstantTaskGate.js';
+import * as BackgroundCheckService from './BackgroundCheckService.js';
 import { taskLogger } from '../logger.js';
 
 const log = taskLogger.child({ service: 'TaskService' });
@@ -385,7 +392,7 @@ export const TaskService = {
 
     // Launch Hardening v1: Kill switch check
     if (instantMode) {
-      const { InstantModeKillSwitch } = await import('./InstantModeKillSwitch.js');
+      // InstantModeKillSwitch — top-level import
       const flags = InstantModeKillSwitch.checkFlags({ taskId: undefined, operation: 'create' });
       
       if (!flags.instantModeEnabled) {
@@ -397,7 +404,7 @@ export const TaskService = {
 
     // Launch Hardening v1: Rate limiting for Instant posts
     if (instantMode) {
-      const { InstantRateLimiter } = await import('./InstantRateLimiter.js');
+      // InstantRateLimiter — top-level import
       const rateLimitCheck = await InstantRateLimiter.checkPostLimit(posterId);
       
       if (!rateLimitCheck.allowed) {
@@ -417,7 +424,7 @@ export const TaskService = {
     // IEM v1: AI Task Completeness Gate (Option B)
     // Enforce gate server-side - even if UI allows Instant Mode, backend validates
     if (instantMode) {
-      const { InstantTaskGate } = await import('./InstantTaskGate.js');
+      // InstantTaskGate — top-level import
       const gateResult = await InstantTaskGate.check({
         title,
         description,
@@ -594,7 +601,6 @@ export const TaskService = {
         }
 
         // Pre-Alpha Prerequisite: Eligibility Guard (centralized enforcement)
-        const { EligibilityGuard } = await import('./EligibilityGuard.js');
         const eligibilityResult = await EligibilityGuard.assertEligibility({
           userId: workerId,
           taskId,
@@ -615,7 +621,7 @@ export const TaskService = {
         // Trust-Tier Tightening: Enforce minimum trust tier for Instant tasks
         if (task.instant_mode) {
           // Launch Hardening v1: Kill switch check
-          const { InstantModeKillSwitch } = await import('./InstantModeKillSwitch.js');
+          // InstantModeKillSwitch — top-level import
           const flags = InstantModeKillSwitch.checkFlags({ taskId, operation: 'accept' });
 
           if (!flags.instantModeEnabled) {
@@ -629,7 +635,7 @@ export const TaskService = {
           }
 
           // Launch Hardening v1: Rate limiting for Instant accepts
-          const { InstantRateLimiter } = await import('./InstantRateLimiter.js');
+          // InstantRateLimiter — top-level import
           const rateLimitCheck = await InstantRateLimiter.checkAcceptLimit(workerId);
 
           if (!rateLimitCheck.allowed) {
@@ -705,7 +711,7 @@ export const TaskService = {
 
         // Fraud risk check on task acceptance
         try {
-          const { FraudDetectionService } = await import('./FraudDetectionService.js');
+          // FraudDetectionService — top-level import
           const riskResult = await FraudDetectionService.getRiskAssessment('user', workerId);
           if (riskResult.success && riskResult.data && riskResult.data.riskScore > 0.7) {
             log.warn({ workerId, taskId, riskScore: riskResult.data.riskScore }, 'Task acceptance blocked by fraud risk');
@@ -725,7 +731,7 @@ export const TaskService = {
         // Background check gate: high-value tasks (>$500) require clear background check
         if (task.price > 50000) {
           try {
-            const BackgroundCheckService = await import('./BackgroundCheckService.js');
+            // BackgroundCheckService — top-level import
             const hasCheck = await BackgroundCheckService.hasValidBackgroundCheck(workerId);
             if (!hasCheck) {
               log.info({ workerId, taskId, price: task.price }, 'High-value task requires background check');
@@ -764,7 +770,7 @@ export const TaskService = {
 
           // Launch Hardening v1: Observability - log accept race condition
           if (task.instant_mode && existing.data.state === 'ACCEPTED') {
-            const { InstantObservability } = await import('./InstantObservability.js');
+            // InstantObservability — top-level import
             InstantObservability.logAcceptRace(taskId, workerId, 'Task already accepted by another hustler');
           }
 
