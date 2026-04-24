@@ -50,6 +50,8 @@ interface CreateTaskParams {
   locationCity?: string;
   locationState?: string;
   locationRadiusMiles?: number;
+  latitude?: number;
+  longitude?: number;
   // Live Mode (PRODUCT_SPEC §3.5)
   mode?: 'STANDARD' | 'LIVE';
   liveBroadcastRadiusMiles?: number;
@@ -453,14 +455,16 @@ export const TaskService = {
         `INSERT INTO tasks (
           poster_id, title, description, price, xp_reward,
           requirements, location, location_city, location_state, location_radius_miles,
+          location_lat, location_lng,
           category, estimated_duration, deadline, requires_proof,
           risk_level, mode, live_broadcast_radius_miles, instant_mode, sensitive, state,
           template_slug, parent_series_id, occurrence_number
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
         RETURNING *`,
         [posterId, title, description, finalPrice, xpReward, requirements,
          locationDisplay, params.locationCity || null, params.locationState || null, params.locationRadiusMiles || null,
+         params.latitude || null, params.longitude || null,
          category, params.estimatedDuration || null, deadline, requiresProof,
          riskLevel, mode, liveBroadcastRadiusMiles, instantMode, sensitive, initialState, templateSlug || null,
          params.parentSeriesId || null, params.occurrenceNumber || null]

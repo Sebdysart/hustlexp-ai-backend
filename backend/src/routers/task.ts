@@ -454,6 +454,8 @@ export const taskRouter = router({
         locationCity: input.locationCity,
         locationState: input.locationState,
         locationRadiusMiles: input.locationRadiusMiles,
+        latitude: input.latitude,
+        longitude: input.longitude,
         category: input.category,
         estimatedDuration: input.estimatedDuration,
         deadline: input.deadline ? new Date(input.deadline) : undefined,

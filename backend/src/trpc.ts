@@ -304,6 +304,8 @@ export const Schemas = {
     locationCity: z.string().max(100).optional(),
     locationState: z.string().max(2).optional(),
     locationRadiusMiles: z.number().int().min(0).max(100).optional(),
+    latitude: z.number().min(-90).max(90).optional(),
+    longitude: z.number().min(-180).max(180).optional(),
     category: z.string().max(100).optional(),
     estimatedDuration: z.string().max(100).optional(),
     deadline: z.string().datetime().optional(),
