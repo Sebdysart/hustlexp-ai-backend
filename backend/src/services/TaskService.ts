@@ -121,7 +121,14 @@ export const TaskService = {
   getById: async (taskId: string): Promise<ServiceResult<Task>> => {
     try {
       const result = await db.query<Task>(
-        'SELECT * FROM tasks WHERE id = $1',
+        `SELECT t.*,
+                COALESCE(pu.display_name, pu.name) AS poster_name,
+                COALESCE(pu.rating, 5.0) AS poster_rating,
+                COALESCE(wu.display_name, wu.name) AS worker_name
+         FROM tasks t
+         LEFT JOIN users pu ON pu.id = t.poster_id
+         LEFT JOIN users wu ON wu.id = t.worker_id
+         WHERE t.id = $1`,
         [taskId]
       );
       
@@ -163,17 +170,19 @@ export const TaskService = {
     try {
       const result = cursor
         ? await db.query<Task>(
-            `SELECT * FROM tasks
-             WHERE poster_id = $1
-               AND created_at < $2::timestamptz
-             ORDER BY created_at DESC
+            `SELECT t.*, COALESCE(pu.display_name, pu.name) AS poster_name, COALESCE(pu.rating, 5.0) AS poster_rating, COALESCE(wu.display_name, wu.name) AS worker_name
+             FROM tasks t LEFT JOIN users pu ON pu.id = t.poster_id LEFT JOIN users wu ON wu.id = t.worker_id
+             WHERE t.poster_id = $1
+               AND t.created_at < $2::timestamptz
+             ORDER BY t.created_at DESC
              LIMIT $3`,
             [posterId, cursor, fetchLimit]
           )
         : await db.query<Task>(
-            `SELECT * FROM tasks
-             WHERE poster_id = $1
-             ORDER BY created_at DESC
+            `SELECT t.*, COALESCE(pu.display_name, pu.name) AS poster_name, COALESCE(pu.rating, 5.0) AS poster_rating, COALESCE(wu.display_name, wu.name) AS worker_name
+             FROM tasks t LEFT JOIN users pu ON pu.id = t.poster_id LEFT JOIN users wu ON wu.id = t.worker_id
+             WHERE t.poster_id = $1
+             ORDER BY t.created_at DESC
              LIMIT $2`,
             [posterId, fetchLimit]
           );
@@ -210,17 +219,19 @@ export const TaskService = {
     try {
       const result = cursor
         ? await db.query<Task>(
-            `SELECT * FROM tasks
-             WHERE worker_id = $1
-               AND created_at < $2::timestamptz
-             ORDER BY created_at DESC
+            `SELECT t.*, COALESCE(pu.display_name, pu.name) AS poster_name, COALESCE(pu.rating, 5.0) AS poster_rating, COALESCE(wu.display_name, wu.name) AS worker_name
+             FROM tasks t LEFT JOIN users pu ON pu.id = t.poster_id LEFT JOIN users wu ON wu.id = t.worker_id
+             WHERE t.worker_id = $1
+               AND t.created_at < $2::timestamptz
+             ORDER BY t.created_at DESC
              LIMIT $3`,
             [workerId, cursor, fetchLimit]
           )
         : await db.query<Task>(
-            `SELECT * FROM tasks
-             WHERE worker_id = $1
-             ORDER BY created_at DESC
+            `SELECT t.*, COALESCE(pu.display_name, pu.name) AS poster_name, COALESCE(pu.rating, 5.0) AS poster_rating, COALESCE(wu.display_name, wu.name) AS worker_name
+             FROM tasks t LEFT JOIN users pu ON pu.id = t.poster_id LEFT JOIN users wu ON wu.id = t.worker_id
+             WHERE t.worker_id = $1
+             ORDER BY t.created_at DESC
              LIMIT $2`,
             [workerId, fetchLimit]
           );
@@ -255,19 +266,20 @@ export const TaskService = {
     
     try {
       let sql = `
-        SELECT *
-        FROM tasks
-        WHERE state = 'OPEN'
+        SELECT t.*, COALESCE(pu.display_name, pu.name) AS poster_name, COALESCE(pu.rating, 5.0) AS poster_rating
+        FROM tasks t
+        LEFT JOIN users pu ON pu.id = t.poster_id
+        WHERE t.state = 'OPEN'
       `;
       const params: unknown[] = [];
-      
+
       if (category) {
         params.push(category);
-        sql += ` AND category = $${params.length}`;
+        sql += ` AND t.category = $${params.length}`;
       }
-      
+
       params.push(limit, offset);
-      sql += ` ORDER BY created_at DESC LIMIT $${params.length - 1} OFFSET $${params.length}`;
+      sql += ` ORDER BY t.created_at DESC LIMIT $${params.length - 1} OFFSET $${params.length}`;
       
       const result = await db.query<Task>(sql, params);
       return { success: true, data: result.rows };
