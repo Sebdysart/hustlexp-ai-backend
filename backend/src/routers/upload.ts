@@ -24,24 +24,28 @@ const ALLOWED_CONTENT_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/h
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
 const PRESIGN_EXPIRY = 15 * 60; // 15 minutes
 
-// Initialize S3 client — supports Cloudflare R2, Tigris (Fly.io), or any S3-compatible provider.
-// Priority: S3_ENDPOINT env var > Cloudflare R2 derived endpoint
+// Initialize S3 client — supports Tigris (Fly.io), Cloudflare R2, or any S3-compatible provider.
+// AWS_* env vars always take priority over legacy R2_* config.
 const r2Config = config.cloudflare.r2;
 const s3Endpoint = process.env.S3_ENDPOINT
   || (r2Config.accountId ? `https://${r2Config.accountId}.r2.cloudflarestorage.com` : '');
-const s3AccessKey = process.env.AWS_ACCESS_KEY_ID || r2Config.accessKeyId;
-const s3SecretKey = process.env.AWS_SECRET_ACCESS_KEY || r2Config.secretAccessKey;
+// Explicit priority: AWS_* > R2_* — never mix Tigris endpoint with R2 credentials
+const s3AccessKey = process.env.S3_ENDPOINT
+  ? (process.env.AWS_ACCESS_KEY_ID || '')
+  : (process.env.AWS_ACCESS_KEY_ID || r2Config.accessKeyId);
+const s3SecretKey = process.env.S3_ENDPOINT
+  ? (process.env.AWS_SECRET_ACCESS_KEY || '')
+  : (process.env.AWS_SECRET_ACCESS_KEY || r2Config.secretAccessKey);
 const s3BucketName = process.env.BUCKET_NAME || r2Config.bucketName || 'hustlexp-storage';
-const isS3Configured = s3Endpoint && s3AccessKey && s3SecretKey;
+const isS3Configured = !!(s3Endpoint && s3AccessKey && s3SecretKey);
 
 log.info({
   s3Endpoint,
   s3BucketName,
-  hasAccessKey: !!s3AccessKey,
-  hasSecretKey: !!s3SecretKey,
+  accessKeyPrefix: s3AccessKey ? s3AccessKey.substring(0, 6) + '...' : 'MISSING',
   isS3Configured,
-  source: process.env.S3_ENDPOINT ? 'S3_ENDPOINT env' : 'R2 config fallback',
-}, 'S3/Tigris storage configuration');
+  source: process.env.S3_ENDPOINT ? 'S3_ENDPOINT env (Tigris)' : 'R2 config fallback',
+}, 'S3 storage configuration');
 
 const s3Client = isS3Configured
   ? new S3Client({
