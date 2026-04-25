@@ -34,6 +34,15 @@ const s3SecretKey = process.env.AWS_SECRET_ACCESS_KEY || r2Config.secretAccessKe
 const s3BucketName = process.env.BUCKET_NAME || r2Config.bucketName || 'hustlexp-storage';
 const isS3Configured = s3Endpoint && s3AccessKey && s3SecretKey;
 
+log.info({
+  s3Endpoint,
+  s3BucketName,
+  hasAccessKey: !!s3AccessKey,
+  hasSecretKey: !!s3SecretKey,
+  isS3Configured,
+  source: process.env.S3_ENDPOINT ? 'S3_ENDPOINT env' : 'R2 config fallback',
+}, 'S3/Tigris storage configuration');
+
 const s3Client = isS3Configured
   ? new S3Client({
       region: process.env.AWS_REGION || 'auto',
@@ -91,6 +100,10 @@ export const uploadRouter = router({
         const uploadUrl = await getSignedUrl(s3Client, command, {
           expiresIn: PRESIGN_EXPIRY,
         });
+
+        // Log the upload URL domain for debugging (strip query params with credentials)
+        const uploadDomain = new URL(uploadUrl).origin;
+        log.info({ uploadDomain, publicUrl: `${baseUrl}/${key}`, bucket: s3BucketName }, 'Generated presigned upload URL');
 
         return {
           uploadUrl,
