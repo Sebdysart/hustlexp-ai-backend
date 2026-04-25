@@ -122,8 +122,8 @@ export const TaskService = {
     try {
       const result = await db.query<Task>(
         `SELECT t.*,
-                COALESCE(pu.full_name, pu.username, pu.email) AS poster_name,
-                COALESCE(wu.full_name, wu.username, wu.email) AS worker_name
+                COALESCE(pu.full_name, pu.email) AS poster_name,
+                COALESCE(wu.full_name, wu.email) AS worker_name
          FROM tasks t
          LEFT JOIN users pu ON pu.id = t.poster_id
          LEFT JOIN users wu ON wu.id = t.worker_id
@@ -169,7 +169,7 @@ export const TaskService = {
     try {
       const result = cursor
         ? await db.query<Task>(
-            `SELECT t.*, COALESCE(pu.full_name, pu.username, pu.email) AS poster_name, COALESCE(wu.full_name, wu.username, wu.email) AS worker_name
+            `SELECT t.*, COALESCE(pu.full_name, pu.email) AS poster_name, COALESCE(wu.full_name, wu.email) AS worker_name
              FROM tasks t LEFT JOIN users pu ON pu.id = t.poster_id LEFT JOIN users wu ON wu.id = t.worker_id
              WHERE t.poster_id = $1
                AND t.created_at < $2::timestamptz
@@ -178,7 +178,7 @@ export const TaskService = {
             [posterId, cursor, fetchLimit]
           )
         : await db.query<Task>(
-            `SELECT t.*, COALESCE(pu.full_name, pu.username, pu.email) AS poster_name, COALESCE(wu.full_name, wu.username, wu.email) AS worker_name
+            `SELECT t.*, COALESCE(pu.full_name, pu.email) AS poster_name, COALESCE(wu.full_name, wu.email) AS worker_name
              FROM tasks t LEFT JOIN users pu ON pu.id = t.poster_id LEFT JOIN users wu ON wu.id = t.worker_id
              WHERE t.poster_id = $1
              ORDER BY t.created_at DESC
@@ -218,7 +218,7 @@ export const TaskService = {
     try {
       const result = cursor
         ? await db.query<Task>(
-            `SELECT t.*, COALESCE(pu.full_name, pu.username, pu.email) AS poster_name, COALESCE(wu.full_name, wu.username, wu.email) AS worker_name
+            `SELECT t.*, COALESCE(pu.full_name, pu.email) AS poster_name, COALESCE(wu.full_name, wu.email) AS worker_name
              FROM tasks t LEFT JOIN users pu ON pu.id = t.poster_id LEFT JOIN users wu ON wu.id = t.worker_id
              WHERE t.worker_id = $1
                AND t.created_at < $2::timestamptz
@@ -227,7 +227,7 @@ export const TaskService = {
             [workerId, cursor, fetchLimit]
           )
         : await db.query<Task>(
-            `SELECT t.*, COALESCE(pu.full_name, pu.username, pu.email) AS poster_name, COALESCE(wu.full_name, wu.username, wu.email) AS worker_name
+            `SELECT t.*, COALESCE(pu.full_name, pu.email) AS poster_name, COALESCE(wu.full_name, wu.email) AS worker_name
              FROM tasks t LEFT JOIN users pu ON pu.id = t.poster_id LEFT JOIN users wu ON wu.id = t.worker_id
              WHERE t.worker_id = $1
              ORDER BY t.created_at DESC
@@ -265,7 +265,7 @@ export const TaskService = {
     
     try {
       let sql = `
-        SELECT t.*, COALESCE(pu.full_name, pu.username, pu.email) AS poster_name
+        SELECT t.*, COALESCE(pu.full_name, pu.email) AS poster_name
         FROM tasks t
         LEFT JOIN users pu ON pu.id = t.poster_id
         WHERE t.state = 'OPEN'
