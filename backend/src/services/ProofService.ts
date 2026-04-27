@@ -469,23 +469,6 @@ export const ProofService = {
         const task = taskResult.rows[0];
 
         // Before/after photo comparison skipped for beta — before_photo_url not yet implemented.
-        if (false) {
-          const photoResult = await PhotoVerificationService.compareBeforeAfter(
-            current.task_id,
-            '', // before_photo_url
-            current.photo_url ?? '',
-            task?.description ?? ''
-          );
-          if (photoResult.success) {
-            photoSignals = {
-              similarity_score: photoResult.data.similarity_score,
-              completion_score: photoResult.data.completion_score,
-              change_detected: photoResult.data.change_detected,
-            };
-          } else {
-            log.warn({ proofId }, 'Photo verification error, proceeding without');
-          }
-        }
 
         // ── 4. JudgeAI synthesis — combines all available signals ──
         const judgeResult = await JudgeAIService.synthesizeVerdict({
