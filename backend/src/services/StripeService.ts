@@ -128,6 +128,9 @@ export const StripeService = {
    */
   isConfigured: (): boolean => stripe !== null,
 
+  /** Get the raw Stripe instance (for balance checks etc.) */
+  getStripeInstance: () => stripe,
+
   /**
    * Create payment intent for escrow funding
    */

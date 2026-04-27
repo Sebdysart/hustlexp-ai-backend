@@ -251,7 +251,7 @@ export const escrowRouter = router({
   releaseToWorker: posterProcedure
     .input(z.object({ escrowId: Schemas.uuid }))
     .mutation(async ({ ctx, input }) => {
-      // 1. Authorization: only poster can release
+      // ── Check 1: Escrow exists + poster authorization ──
       const escrow = await EscrowService.getById(input.escrowId);
       if (!escrow.success) {
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Escrow not found' });
@@ -260,18 +260,39 @@ export const escrowRouter = router({
         throw new TRPCError({ code: 'FORBIDDEN', message: 'Only the escrow creator can release funds' });
       }
 
-      // 2. Get worker's Stripe Connect account
-      const taskResult = await db.query<{ worker_id: string; price: number }>(
-        'SELECT worker_id, price FROM tasks WHERE id = $1',
+      // ── Check 2: Escrow is in FUNDED state (not already released/refunded) ──
+      if (escrow.data.state === 'RELEASED') {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'Escrow has already been released to the worker.' });
+      }
+      if (escrow.data.state === 'REFUNDED') {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'Escrow has already been refunded.' });
+      }
+      if (escrow.data.state !== 'FUNDED' && escrow.data.state !== 'LOCKED_DISPUTE') {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: `Escrow must be funded before release. Current state: ${escrow.data.state}`,
+        });
+      }
+
+      // ── Check 3: Task is COMPLETED (INV-2) ──
+      const taskResult = await db.query<{ worker_id: string; price: number; state: string }>(
+        'SELECT worker_id, price, state FROM tasks WHERE id = $1',
         [escrow.data.task_id]
       );
       if (taskResult.rows.length === 0 || !taskResult.rows[0].worker_id) {
         throw new TRPCError({ code: 'BAD_REQUEST', message: 'Task has no assigned worker' });
       }
+      if (taskResult.rows[0].state !== 'COMPLETED') {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: `Task must be completed before payment. Current state: ${taskResult.rows[0].state}`,
+        });
+      }
       const workerId = taskResult.rows[0].worker_id;
 
-      const workerResult = await db.query<{ stripe_connect_id: string | null }>(
-        'SELECT stripe_connect_id FROM users WHERE id = $1',
+      // ── Check 4: Worker has Stripe Connect set up ──
+      const workerResult = await db.query<{ stripe_connect_id: string | null; full_name: string }>(
+        'SELECT stripe_connect_id, full_name FROM users WHERE id = $1',
         [workerId]
       );
       if (workerResult.rows.length === 0 || !workerResult.rows[0].stripe_connect_id) {
@@ -281,13 +302,50 @@ export const escrowRouter = router({
         });
       }
 
-      // 3. Calculate net payout (after platform fee)
+      // ── Check 5: Escrow amount is valid ──
       const grossAmount = escrow.data.amount;
+      if (!grossAmount || grossAmount <= 0) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'Escrow has no funds to release.' });
+      }
+
+      // ── Check 6: Stripe is configured ──
+      if (!StripeService.isConfigured()) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'Payment processing is not configured. Please contact support.',
+        });
+      }
+
+      // ── Check 7: Platform Stripe balance is sufficient ──
+      try {
+        const stripe = StripeService.getStripeInstance();
+        if (stripe) {
+          const balance = await stripe.balance.retrieve();
+          const availableUSD = balance.available.find(b => b.currency === 'usd');
+          const availableCents = availableUSD?.amount ?? 0;
+          const feePercent = 15;
+          const netPayoutCents = grossAmount - Math.round(grossAmount * (feePercent / 100));
+
+          if (availableCents < netPayoutCents) {
+            throw new TRPCError({
+              code: 'PRECONDITION_FAILED',
+              message: `Insufficient platform balance for payout. Available: $${(availableCents / 100).toFixed(2)}, needed: $${(netPayoutCents / 100).toFixed(2)}. Please contact support.`,
+            });
+          }
+        }
+      } catch (err) {
+        // If it's our own TRPCError (insufficient balance), re-throw
+        if (err instanceof TRPCError) throw err;
+        // Otherwise Stripe API error — log but don't block (balance check is best-effort)
+        console.warn('[escrow.releaseToWorker] Balance check failed, proceeding:', err instanceof Error ? err.message : err);
+      }
+
+      // ── All checks passed — execute transfer ──
       const feePercent = Math.min(100, Math.max(0, 15)); // 15% platform fee
       const platformFeeCents = Math.round(grossAmount * (feePercent / 100));
       const netPayoutCents = grossAmount - platformFeeCents;
 
-      // 4. Create Stripe transfer to worker
+      // Create Stripe transfer to worker
       const transferResult = await StripeService.createTransfer({
         escrowId: input.escrowId,
         taskId: escrow.data.task_id,
@@ -299,11 +357,11 @@ export const escrowRouter = router({
       if (!transferResult.success) {
         throw new TRPCError({
           code: 'INTERNAL_SERVER_ERROR',
-          message: `Stripe transfer failed: ${transferResult.error.message}`,
+          message: `Payment transfer failed: ${transferResult.error.message}`,
         });
       }
 
-      // 5. Release escrow with the transfer ID
+      // Release escrow with the transfer ID
       const releaseResult = await EscrowService.release({
         escrowId: input.escrowId,
         stripeTransferId: transferResult.data.transferId,

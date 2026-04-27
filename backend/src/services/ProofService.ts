@@ -399,16 +399,12 @@ export const ProofService = {
     const { proofId, reviewerId, decision, reason } = params;
 
     try {
-      // Get current proof state with proof_submissions data
+      // Get current proof state with first photo URL from proof_photos
       const currentResult = await db.query<Proof & {
         photo_url?: string;
-        gps_coordinates?: { lat: number; lng: number } | null;
-        gps_accuracy_meters?: number;
-        lidar_depth_map_url?: string;
       }>(
-        `SELECT p.*, ps.photo_url, ps.gps_coordinates, ps.gps_accuracy_meters, ps.lidar_depth_map_url
+        `SELECT p.*, (SELECT pp.storage_key FROM proof_photos pp WHERE pp.proof_id = p.id ORDER BY pp.sequence_number LIMIT 1) AS photo_url
          FROM proofs p
-         LEFT JOIN proof_submissions ps ON ps.proof_id = p.id
          WHERE p.id = $1
          LIMIT 1`,
         [proofId]
@@ -448,7 +444,7 @@ export const ProofService = {
           const biometricResult = await BiometricVerificationService.analyzeProofSubmission(
             proofId,
             current.photo_url,
-            current.lidar_depth_map_url
+            undefined // LiDAR not available in current schema
           );
           if (biometricResult.success) {
             biometricSignals = biometricResult.data!.scores;
@@ -457,42 +453,10 @@ export const ProofService = {
           }
         }
 
-        // ── 2. Logistics signals (nullable if no GPS data) ──
-        let logisticsSignals: LogisticsSignals | null = null;
-
-        if (current.gps_coordinates) {
-          const parsedCoords: { latitude: number; longitude: number } =
-            typeof current.gps_coordinates === 'string'
-              ? JSON.parse(current.gps_coordinates)
-              : current.gps_coordinates;
-
-          // Fetch actual task location from tasks table
-          const taskLocResult = await db.query<{ location_lat: number; location_lng: number }>(
-            'SELECT location_lat, location_lng FROM tasks WHERE id = $1 AND location_lat IS NOT NULL',
-            [current.task_id]
-          );
-          const taskCoords = taskLocResult.rows.length > 0
-            ? { latitude: Number(taskLocResult.rows[0].location_lat), longitude: Number(taskLocResult.rows[0].location_lng) }
-            : parsedCoords; // Fallback to proof GPS if task has no location set
-          const accuracyMeters = current.gps_accuracy_meters || 0;
-
-          const gpsResult = await LogisticsAIService.validateGPSProof(
-            parsedCoords,
-            taskCoords,
-            accuracyMeters
-          );
-
-          if (gpsResult.success) {
-            logisticsSignals = {
-              gps_proximity: { passed: gpsResult.data.passed, distance_meters: gpsResult.data.distance_meters },
-              impossible_travel: { passed: true }, // Checked separately if we have prior location
-              time_lock: { passed: true },          // Checked via PhotoVerification capture validation
-              gps_accuracy: { passed: accuracyMeters <= 50, accuracy_meters: accuracyMeters },
-            };
-          } else {
-            log.warn({ proofId }, 'Logistics subsystem error, proceeding without');
-          }
-        }
+        // ── 2. Logistics signals (skipped — GPS data not stored in proofs table) ──
+        // GPS validation happens at submission time via the biometric endpoint.
+        // For beta, poster reviews proof manually.
+        const logisticsSignals: LogisticsSignals | null = null;
 
         // ── 3. Photo verification signals (nullable if no before/after photos) ──
         let photoSignals: PhotoVerificationSignals | null = null;
