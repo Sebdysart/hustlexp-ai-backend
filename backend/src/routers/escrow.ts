@@ -199,9 +199,18 @@ export const escrowRouter = router({
       }
 
       // 3. Return escrowId + payment details so iOS can confirm funding after payment
-      const escrowId = escrowResult.success
-        ? escrowResult.data.id
-        : (await EscrowService.getByTaskId(input.taskId)).data?.id;
+      let escrowId: string | undefined;
+      if (escrowResult.success) {
+        escrowId = escrowResult.data.id;
+      } else {
+        const existing = await EscrowService.getByTaskId(input.taskId);
+        if (existing.success) {
+          escrowId = existing.data.id;
+        }
+      }
+      if (!escrowId) {
+        throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: 'Failed to create escrow record' });
+      }
 
       return {
         ...result.data,
