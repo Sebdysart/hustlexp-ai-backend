@@ -215,13 +215,28 @@ async function getOrCreateConnectAccount(
       stripe!.accounts.create({
         type: 'express',
         email,
+        country: 'US',
         business_type: 'individual',
         individual: {
           first_name: fullName.split(' ')[0],
           last_name: fullName.split(' ').slice(1).join(' ') || undefined,
+          email,
         },
+        // Pre-fill business profile so hustlers don't have to answer
+        // "what does your business do?" — they're individuals doing gig tasks.
+        business_profile: {
+          mcc: '1520', // General contractor / services
+          product_description: 'Independent worker performing local tasks via HustleXP marketplace',
+          url: 'https://hustlexp.app',
+        },
+        // Request only the capabilities needed for receiving payouts
+        capabilities: {
+          transfers: { requested: true },
+        },
+        // TOS acceptance happens via the Express onboarding flow (Stripe handles this)
         metadata: {
           user_id: userId,
+          platform: 'hustlexp',
         },
       })
     );
