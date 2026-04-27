@@ -162,20 +162,51 @@ export const escrowRouter = router({
         });
       }
 
+      // 1. Create escrow record in PENDING state
+      const escrowResult = await EscrowService.create({
+        taskId: input.taskId,
+        amount,
+      });
+      if (!escrowResult.success) {
+        // If escrow already exists for this task, fetch it instead of failing
+        if (escrowResult.error.code === 'DUPLICATE') {
+          const existing = await EscrowService.getByTaskId(input.taskId);
+          if (existing.success) {
+            // If already funded, no need for another payment intent
+            if (existing.data.state === 'FUNDED') {
+              throw new TRPCError({ code: 'BAD_REQUEST', message: 'This task is already funded.' });
+            }
+            // Return existing escrow's payment intent if available
+          }
+        }
+        if (escrowResult.error.code !== 'DUPLICATE') {
+          throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: escrowResult.error.message });
+        }
+      }
+
+      // 2. Create Stripe PaymentIntent
       const result = await StripeService.createPaymentIntent({
         taskId: input.taskId,
         posterId: ctx.user.id,
         amount,
       });
-      
+
       if (!result.success) {
         throw new TRPCError({
           code: 'INTERNAL_SERVER_ERROR',
           message: result.error.message,
         });
       }
-      
-      return result.data;
+
+      // 3. Return escrowId + payment details so iOS can confirm funding after payment
+      const escrowId = escrowResult.success
+        ? escrowResult.data.id
+        : (await EscrowService.getByTaskId(input.taskId)).data?.id;
+
+      return {
+        ...result.data,
+        escrowId,
+      };
     }),
   
   /**
