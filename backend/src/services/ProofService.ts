@@ -462,18 +462,19 @@ export const ProofService = {
         let photoSignals: PhotoVerificationSignals | null = null;
 
         // Get task description for photo comparison context
-        const taskResult = await db.query<{ description: string; before_photo_url?: string }>(
-          'SELECT description, before_photo_url FROM tasks WHERE id = $1',
+        const taskResult = await db.query<{ description: string }>(
+          'SELECT description FROM tasks WHERE id = $1',
           [current.task_id]
         );
         const task = taskResult.rows[0];
 
-        if (current.photo_url && task?.before_photo_url && task?.description) {
+        // Before/after photo comparison skipped for beta — before_photo_url not yet implemented.
+        if (false) {
           const photoResult = await PhotoVerificationService.compareBeforeAfter(
             current.task_id,
-            task.before_photo_url,
-            current.photo_url,
-            task.description
+            '', // before_photo_url
+            current.photo_url ?? '',
+            task?.description ?? ''
           );
           if (photoResult.success) {
             photoSignals = {
