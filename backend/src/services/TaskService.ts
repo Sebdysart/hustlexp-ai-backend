@@ -541,226 +541,182 @@ export const TaskService = {
   /**
    * Accept task: OPEN → ACCEPTED
    *
-   * TRANSACTION SAFETY: Entire method wrapped in transaction to hold FOR UPDATE
-   * lock through the final UPDATE, preventing race conditions under high contention.
+   * PERFORMANCE: All validation checks run BEFORE the transaction so the
+   * FOR UPDATE lock is held only for the atomic state flip (~10ms).
+   * The WHERE clause on the UPDATE acts as the final race-condition guard —
+   * if another worker wins the race, rowCount === 0 and we return an error.
+   *
+   * SECURITY: Same checks as before, same order, nothing removed.
    */
   accept: async (params: AcceptTaskParams): Promise<ServiceResult<Task>> => {
     const { taskId, workerId } = params;
 
     try {
-      // Wrap entire method in transaction to hold FOR UPDATE lock through completion
-      return await db.transaction(async (query) => {
-        // Step 9-C: Check worker plan eligibility for task risk level
-        // Trust-Tier Tightening: Check trust tier for Instant tasks
-        // RACE CONDITION FIX: Lock task immediately with FOR UPDATE to prevent wasted work
-        const taskResult = await query<{
-          risk_level: TaskRiskLevel;
-          instant_mode: boolean;
-          sensitive: boolean | null;
-          price: number;
-          state: string;
-          worker_id: string | null;
-          poster_id: string;
-        }>(
-          `SELECT risk_level, instant_mode, sensitive, price, state, worker_id, poster_id
-           FROM tasks WHERE id = $1 FOR UPDATE`,
-          [taskId]
+      // ── Phase 1: Read task (no lock) + validate ──────────────────────
+      const taskResult = await db.query<{
+        risk_level: TaskRiskLevel;
+        instant_mode: boolean;
+        sensitive: boolean | null;
+        price: number;
+        state: string;
+        worker_id: string | null;
+        poster_id: string;
+      }>(
+        `SELECT risk_level, instant_mode, sensitive, price, state, worker_id, poster_id
+         FROM tasks WHERE id = $1`,
+        [taskId]
+      );
+
+      if (taskResult.rows.length === 0) {
+        return {
+          success: false,
+          error: { code: ErrorCodes.NOT_FOUND, message: `Task ${taskId} not found` },
+        };
+      }
+
+      const task = taskResult.rows[0];
+
+      // Prevent self-dealing
+      if (task.poster_id === workerId) {
+        return {
+          success: false,
+          error: { code: 'FORBIDDEN', message: 'You cannot accept your own task.' },
+        };
+      }
+
+      // Early exit if task is already taken
+      if (task.state !== 'OPEN' && task.state !== 'MATCHING') {
+        return {
+          success: false,
+          error: {
+            code: ErrorCodes.INVALID_STATE,
+            message: `Cannot accept task: current state is ${task.state}, expected OPEN or MATCHING`,
+          },
+        };
+      }
+
+      if (task.worker_id !== null) {
+        return {
+          success: false,
+          error: { code: ErrorCodes.INVALID_STATE, message: 'Task already accepted by another worker' },
+        };
+      }
+
+      // ── Phase 2: Eligibility & security checks (no lock held) ────────
+      const eligibilityResult = await EligibilityGuard.assertEligibility({
+        userId: workerId,
+        taskId,
+        isInstant: task.instant_mode || false,
+      });
+
+      if (!eligibilityResult.allowed) {
+        return {
+          success: false,
+          error: {
+            code: String(eligibilityResult.code),
+            message: (eligibilityResult.details?.reason as string) || 'Eligibility check failed',
+            details: eligibilityResult.details,
+          },
+        };
+      }
+
+      // Instant mode checks
+      if (task.instant_mode) {
+        const flags = InstantModeKillSwitch.checkFlags({ taskId, operation: 'accept' });
+        if (!flags.instantModeEnabled) {
+          return {
+            success: false,
+            error: { code: ErrorCodes.INVALID_STATE, message: 'Instant Mode is currently disabled' },
+          };
+        }
+
+        const rateLimitCheck = await InstantRateLimiter.checkAcceptLimit(workerId);
+        if (!rateLimitCheck.allowed) {
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.RATE_LIMIT_EXCEEDED,
+              message: rateLimitCheck.reason || 'Rate limit exceeded for Instant accepts',
+              details: { retryAfter: rateLimitCheck.retryAfter },
+            },
+          };
+        }
+
+        const workerResult = await db.query<{ trust_tier: number; trust_hold: boolean }>(
+          `SELECT trust_tier, trust_hold FROM users WHERE id = $1`,
+          [workerId]
         );
 
-        if (taskResult.rows.length === 0) {
+        if (workerResult.rowCount === 0) {
           return {
             success: false,
-            error: {
-              code: ErrorCodes.NOT_FOUND,
-              message: `Task ${taskId} not found`,
-            },
+            error: { code: ErrorCodes.NOT_FOUND, message: `Worker ${workerId} not found` },
           };
         }
 
-        const task = taskResult.rows[0];
+        const worker = workerResult.rows[0];
 
-        // FIX 4: Prevent self-dealing — a poster cannot accept their own task
-        if (task.poster_id === workerId) {
+        if (worker.trust_hold) {
           return {
             success: false,
-            error: {
-              code: 'FORBIDDEN',
-              message: 'You cannot accept your own task.',
-            },
+            error: { code: ErrorCodes.INSTANT_TASK_TRUST_INSUFFICIENT, message: 'Your account is currently on hold' },
           };
         }
 
-        // Early exit if task is already taken (before expensive eligibility checks)
-        if (task.state !== 'OPEN' && task.state !== 'MATCHING') {
+        const minTrustTier = task.sensitive ? MIN_SENSITIVE_INSTANT_TIER : MIN_INSTANT_TIER;
+        if (worker.trust_tier < minTrustTier) {
           return {
             success: false,
-            error: {
-              code: ErrorCodes.INVALID_STATE,
-              message: `Cannot accept task: current state is ${task.state}, expected OPEN or MATCHING`,
-            },
+            error: { code: ErrorCodes.INSTANT_TASK_TRUST_INSUFFICIENT, message: 'This task requires a higher trust tier' },
           };
         }
+      }
 
-        if (task.worker_id !== null) {
+      // Plan check
+      const planCheck = await PlanService.canAcceptTaskWithRisk(workerId, task.risk_level);
+      if (!planCheck.allowed) {
+        return {
+          success: false,
+          error: {
+            code: 'PLAN_REQUIRED',
+            message: planCheck.reason || 'Pro plan required for high-risk tasks',
+            details: { requiredPlan: planCheck.requiredPlan, riskLevel: task.risk_level },
+          },
+        };
+      }
+
+      // Fraud risk check (non-blocking on failure)
+      try {
+        const riskResult = await FraudDetectionService.getRiskAssessment('user', workerId);
+        if (riskResult.success && riskResult.data && riskResult.data.riskScore > 0.7) {
+          log.warn({ workerId, taskId, riskScore: riskResult.data.riskScore }, 'Task acceptance blocked by fraud risk');
           return {
             success: false,
-            error: {
-              code: ErrorCodes.INVALID_STATE,
-              message: `Task already accepted by another worker`,
-            },
+            error: { code: 'FRAUD_RISK_HIGH', message: 'Task acceptance is under review due to account risk assessment' },
           };
         }
+      } catch (fraudError) {
+        log.warn({ workerId, taskId, err: fraudError instanceof Error ? fraudError.message : String(fraudError) }, 'Fraud risk check failed, allowing acceptance');
+      }
 
-        // Pre-Alpha Prerequisite: Eligibility Guard (centralized enforcement)
-        const eligibilityResult = await EligibilityGuard.assertEligibility({
-          userId: workerId,
-          taskId,
-          isInstant: task.instant_mode || false,
-        });
-
-        if (!eligibilityResult.allowed) {
-          return {
-            success: false,
-            error: {
-              code: String(eligibilityResult.code),
-              message: (eligibilityResult.details?.reason as string) || 'Eligibility check failed',
-              details: eligibilityResult.details,
-            },
-          };
-        }
-
-        // Trust-Tier Tightening: Enforce minimum trust tier for Instant tasks
-        if (task.instant_mode) {
-          // Launch Hardening v1: Kill switch check
-          // InstantModeKillSwitch — top-level import
-          const flags = InstantModeKillSwitch.checkFlags({ taskId, operation: 'accept' });
-
-          if (!flags.instantModeEnabled) {
-            return {
-              success: false,
-              error: {
-                code: ErrorCodes.INVALID_STATE,
-                message: 'Instant Mode is currently disabled',
-              },
-            };
-          }
-
-          // Launch Hardening v1: Rate limiting for Instant accepts
-          // InstantRateLimiter — top-level import
-          const rateLimitCheck = await InstantRateLimiter.checkAcceptLimit(workerId);
-
-          if (!rateLimitCheck.allowed) {
-            return {
-              success: false,
-              error: {
-                code: ErrorCodes.RATE_LIMIT_EXCEEDED,
-                message: rateLimitCheck.reason || 'Rate limit exceeded for Instant accepts',
-                details: {
-                  retryAfter: rateLimitCheck.retryAfter,
-                },
-              },
-            };
-          }
-
-          const workerResult = await query<{ trust_tier: number; trust_hold: boolean }>(
-            `SELECT trust_tier, trust_hold FROM users WHERE id = $1`,
-            [workerId]
-          );
-
-          if (workerResult.rowCount === 0) {
-            return {
-              success: false,
-              error: {
-                code: ErrorCodes.NOT_FOUND,
-                message: `Worker ${workerId} not found`,
-              },
-            };
-          }
-
-          const worker = workerResult.rows[0];
-
-          // Check trust hold first
-          if (worker.trust_hold) {
-            return {
-              success: false,
-              error: {
-                code: ErrorCodes.INSTANT_TASK_TRUST_INSUFFICIENT,
-                message: 'Your account is currently on hold',
-              },
-            };
-          }
-
-          // Determine minimum trust tier (sensitive tasks require higher tier)
-          const minTrustTier = task.sensitive ? MIN_SENSITIVE_INSTANT_TIER : MIN_INSTANT_TIER;
-
-          // Enforce trust tier requirement
-          if (worker.trust_tier < minTrustTier) {
-            return {
-              success: false,
-              error: {
-                code: ErrorCodes.INSTANT_TASK_TRUST_INSUFFICIENT,
-                message: 'This task requires a higher trust tier',
-              },
-            };
-          }
-        }
-
-        const planCheck = await PlanService.canAcceptTaskWithRisk(workerId, task.risk_level);
-        if (!planCheck.allowed) {
-          return {
-            success: false,
-            error: {
-              code: 'PLAN_REQUIRED',
-              message: planCheck.reason || 'Pro plan required for high-risk tasks',
-              details: {
-                requiredPlan: planCheck.requiredPlan,
-                riskLevel: task.risk_level,
-              },
-            },
-          };
-        }
-
-        // Fraud risk check on task acceptance
+      // Background check for high-value tasks (non-blocking on failure)
+      if (task.price > 50000) {
         try {
-          // FraudDetectionService — top-level import
-          const riskResult = await FraudDetectionService.getRiskAssessment('user', workerId);
-          if (riskResult.success && riskResult.data && riskResult.data.riskScore > 0.7) {
-            log.warn({ workerId, taskId, riskScore: riskResult.data.riskScore }, 'Task acceptance blocked by fraud risk');
+          const hasCheck = await BackgroundCheckService.hasValidBackgroundCheck(workerId);
+          if (!hasCheck) {
+            log.info({ workerId, taskId, price: task.price }, 'High-value task requires background check');
             return {
               success: false,
-              error: {
-                code: 'FRAUD_RISK_HIGH',
-                message: 'Task acceptance is under review due to account risk assessment',
-              },
+              error: { code: 'BACKGROUND_CHECK_REQUIRED', message: 'High-value tasks require a completed background check' },
             };
           }
-        } catch (fraudError) {
-          // Don't block task acceptance if fraud check fails
-          log.warn({ workerId, taskId, err: fraudError instanceof Error ? fraudError.message : String(fraudError) }, 'Fraud risk check failed, allowing acceptance');
+        } catch (bgCheckError) {
+          log.warn({ workerId, taskId, err: bgCheckError instanceof Error ? bgCheckError.message : String(bgCheckError) }, 'Background check lookup failed, allowing acceptance');
         }
+      }
 
-        // Background check gate: high-value tasks (>$500) require clear background check
-        if (task.price > 50000) {
-          try {
-            // BackgroundCheckService — top-level import
-            const hasCheck = await BackgroundCheckService.hasValidBackgroundCheck(workerId);
-            if (!hasCheck) {
-              log.info({ workerId, taskId, price: task.price }, 'High-value task requires background check');
-              return {
-                success: false,
-                error: {
-                  code: 'BACKGROUND_CHECK_REQUIRED',
-                  message: 'High-value tasks require a completed background check',
-                },
-              };
-            }
-          } catch (bgCheckError) {
-            // Don't block if background check service is unavailable
-            log.warn({ workerId, taskId, err: bgCheckError instanceof Error ? bgCheckError.message : String(bgCheckError) }, 'Background check lookup failed, allowing acceptance');
-          }
-        }
-
-        // Instant mode: accept from MATCHING state; Standard: accept from OPEN state
+      // ── Phase 3: Atomic transaction — lock + update (fast, ~10ms) ────
+      return await db.transaction(async (query) => {
         const result = await query<Task>(
           `UPDATE tasks
            SET state = 'ACCEPTED',
@@ -774,14 +730,11 @@ export const TaskService = {
         );
 
         if (result.rowCount === 0) {
+          // Another worker won the race — task state changed between Phase 1 and Phase 3
           const existing = await TaskService.getById(taskId);
-          if (!existing.success) {
-            return existing;
-          }
+          if (!existing.success) return existing;
 
-          // Launch Hardening v1: Observability - log accept race condition
           if (task.instant_mode && existing.data.state === 'ACCEPTED') {
-            // InstantObservability — top-level import
             InstantObservability.logAcceptRace(taskId, workerId, 'Task already accepted by another hustler');
           }
 
@@ -796,19 +749,16 @@ export const TaskService = {
 
         const acceptedTask = result.rows[0];
 
-        // Step 4: Hook ACCEPTED transition (Pillar A - Realtime Tracking)
-        // System-driven transition: POSTED → ACCEPTED
+        // Hook ACCEPTED transition for realtime tracking
         await TaskService.advanceProgress({
           taskId,
           to: 'ACCEPTED',
           actor: { type: 'system' },
         });
 
-        // Transaction commits automatically on successful return
         return { success: true, data: acceptedTask };
       });
     } catch (error) {
-      // Transaction automatically rolls back on thrown error
       return {
         success: false,
         error: {
