@@ -264,10 +264,14 @@ export const TaskService = {
     const { limit = 50, offset = 0, category } = options;
     
     try {
+      // CRITICAL: Only show tasks where escrow is FUNDED.
+      // This guarantees that when a hustler accepts, money is already locked
+      // and they will be paid for completed work.
       let sql = `
         SELECT t.*, COALESCE(pu.full_name, pu.email) AS poster_name
         FROM tasks t
         LEFT JOIN users pu ON pu.id = t.poster_id
+        INNER JOIN escrows e ON e.task_id = t.id AND e.state = 'FUNDED'
         WHERE t.state = 'OPEN'
       `;
       const params: unknown[] = [];
@@ -599,6 +603,23 @@ export const TaskService = {
         return {
           success: false,
           error: { code: ErrorCodes.INVALID_STATE, message: 'Task already accepted by another worker' },
+        };
+      }
+
+      // CRITICAL: Verify escrow is FUNDED before allowing accept.
+      // Protects hustler from doing work that won't be paid.
+      const escrowCheck = await db.query<{ state: string }>(
+        `SELECT state FROM escrows WHERE task_id = $1`,
+        [taskId]
+      );
+      if (escrowCheck.rows.length === 0 || escrowCheck.rows[0].state !== 'FUNDED') {
+        const actualState = escrowCheck.rows[0]?.state ?? 'NONE';
+        return {
+          success: false,
+          error: {
+            code: 'ESCROW_NOT_FUNDED',
+            message: `This task hasn't been funded yet. Payment is required before workers can accept.`,
+          },
         };
       }
 
