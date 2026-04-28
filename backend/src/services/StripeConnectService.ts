@@ -348,11 +348,32 @@ export const StripeConnectService = {
         },
       };
     } catch (error) {
+      // Stale ID detection — clear and return "not onboarded"
+      const errMsg = error instanceof Error ? error.message : String(error);
+      if (errMsg.includes('does not have access') || errMsg.includes('No such account') || errMsg.includes('does not exist')) {
+        stripeLogger.warn({ userId, accountId, errMsg }, 'Stripe Connect account is stale — clearing ID');
+        await db.query('UPDATE users SET stripe_connect_id = NULL WHERE id = $1', [userId]);
+        return {
+          success: true,
+          data: {
+            isOnboarded: false,
+            accountId: null,
+            accountStatus: null,
+            requirementsDue: [],
+            requirementsCurrentlyDue: [],
+            requirementsEventuallyDue: [],
+            disabledReason: null,
+            chargesEnabled: false,
+            payoutsEnabled: false,
+            onboardingUrl: null,
+          },
+        };
+      }
       return {
         success: false,
         error: {
           code: 'STRIPE_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown Stripe error',
+          message: errMsg,
         },
       };
     }
@@ -396,6 +417,13 @@ export const StripeConnectService = {
           collect: collectTaxInfo ? 'eventually_due' : undefined,
         })
       );
+
+      stripeLogger.info({
+        userId,
+        accountId,
+        urlDomain: new URL(accountLink.url).host,
+        urlPath: new URL(accountLink.url).pathname.substring(0, 30),
+      }, 'Created onboarding link');
 
       return {
         success: true,
@@ -962,7 +990,14 @@ export const StripeConnectService = {
         data: { availableCents: available, pendingCents: pending, currency: 'usd' },
       };
     } catch (error) {
-      return { success: false, error: { code: 'STRIPE_ERROR', message: error instanceof Error ? error.message : 'Failed to get balance' } };
+      const errMsg = error instanceof Error ? error.message : String(error);
+      // Stale ID detection — clear and treat as no Connect account
+      if (errMsg.includes('does not have access') || errMsg.includes('No such account') || errMsg.includes('does not exist')) {
+        stripeLogger.warn({ userId, connectId, errMsg }, 'Stripe Connect account stale on getBalance — clearing ID');
+        await db.query('UPDATE users SET stripe_connect_id = NULL WHERE id = $1', [userId]);
+        return { success: false, error: { code: 'STRIPE_CONNECT_NOT_SETUP', message: 'Stripe Connect account no longer exists. Please set up payouts again.' } };
+      }
+      return { success: false, error: { code: 'STRIPE_ERROR', message: errMsg } };
     }
   },
 
