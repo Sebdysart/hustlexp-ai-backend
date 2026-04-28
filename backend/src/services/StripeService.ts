@@ -524,8 +524,20 @@ export const StripeService = {
       [userId]
     );
     const existing = userResult.rows[0]?.stripe_customer_id;
+
+    // Verify the customer still exists in Stripe (handles stale IDs after Stripe account reset)
     if (existing) {
-      return { success: true, data: existing };
+      try {
+        const customer = await stripeBreaker.execute(() => stripe!.customers.retrieve(existing));
+        if (customer && !(customer as { deleted?: boolean }).deleted) {
+          return { success: true, data: existing };
+        }
+        stripeLogger.warn({ userId, existingId: existing }, 'Stored customer ID returned deleted record — recreating');
+      } catch (err) {
+        // Customer doesn't exist in Stripe (e.g. after test account reset) — clear the stale ID
+        stripeLogger.warn({ userId, existingId: existing, err: err instanceof Error ? err.message : String(err) }, 'Stored customer ID is invalid — recreating');
+        await db.query('UPDATE users SET stripe_customer_id = NULL WHERE id = $1', [userId]);
+      }
     }
 
     try {

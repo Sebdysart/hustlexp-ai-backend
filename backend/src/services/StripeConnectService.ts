@@ -194,12 +194,21 @@ async function getOrCreateConnectAccount(
 
   const existingAccountId = userResult.rows[0].stripe_connect_id;
 
-  // If account exists, return it
-  if (existingAccountId) {
-    return {
-      success: true,
-      data: { accountId: existingAccountId, isNew: false },
-    };
+  // If account exists, verify it still exists in Stripe (handles stale IDs after Stripe account reset)
+  if (existingAccountId && stripe) {
+    try {
+      const account = await stripeBreaker.execute(() => stripe!.accounts.retrieve(existingAccountId));
+      if (account && !(account as { deleted?: boolean }).deleted) {
+        return {
+          success: true,
+          data: { accountId: existingAccountId, isNew: false },
+        };
+      }
+      stripeLogger.warn({ userId, existingId: existingAccountId }, 'Stored Connect ID returned deleted record — recreating');
+    } catch (err) {
+      stripeLogger.warn({ userId, existingId: existingAccountId, err: err instanceof Error ? err.message : String(err) }, 'Stored Connect ID is invalid — recreating');
+      await db.query('UPDATE users SET stripe_connect_id = NULL WHERE id = $1', [userId]);
+    }
   }
 
   // Create new Stripe Connect Express account
