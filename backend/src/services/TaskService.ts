@@ -1300,6 +1300,27 @@ export const TaskService = {
         }
 
         return { success: true, data: result.rows[0] };
+      }).then(async (txResult) => {
+        // Notify poster (and worker if assigned) that task expired
+        if (txResult.success) {
+          try {
+            const { NotificationService } = await import('./NotificationService.js');
+            const expiredTask = txResult.data;
+            await NotificationService.createNotification({
+              userId: expiredTask.poster_id,
+              category: 'task_expired',
+              title: 'Task expired',
+              body: `Your task "${expiredTask.title}" passed its deadline. Your funds have been refunded.`,
+              taskId,
+              deepLink: `hustlexp://task/${taskId}`,
+              channels: ['push', 'in_app'],
+              priority: 'MEDIUM',
+            });
+          } catch (err) {
+            log.warn({ err: err instanceof Error ? err.message : String(err), taskId }, 'Failed to send expire notification');
+          }
+        }
+        return txResult;
       });
     } catch (error) {
       return {

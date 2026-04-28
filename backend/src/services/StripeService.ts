@@ -311,9 +311,10 @@ export const StripeService = {
   ): Promise<ServiceResult<CreateTransferResult>> => {
     const { escrowId, workerId, workerStripeAccountId, amount, description } = params;
 
-    // Stripe stubbing for tests (Evil Test A)
+    // Stripe stubbing for tests — WARNING: bypasses real Stripe entirely
     if (process.env.HX_STRIPE_STUB === '1') {
       const crypto = await import('crypto');
+      stripeLogger.warn({ escrowId, workerId, amount, workerStripeAccountId }, '⚠️ HX_STRIPE_STUB=1 — returning FAKE transfer ID, no real Stripe call');
       return {
         success: true,
         data: {
@@ -333,6 +334,8 @@ export const StripeService = {
       };
     }
 
+    stripeLogger.info({ escrowId, workerId, amount, destination: workerStripeAccountId }, 'Calling Stripe transfers.create');
+
     try {
       const transfer = await stripeBreaker.execute(() => stripe!.transfers.create({
         amount,
@@ -345,6 +348,8 @@ export const StripeService = {
         description: description || `HustleXP Payout ${escrowId}`,
       }));
 
+      stripeLogger.info({ escrowId, transferId: transfer.id, amount: transfer.amount }, '✓ Stripe transfer created');
+
       return {
         success: true,
         data: {
@@ -353,11 +358,13 @@ export const StripeService = {
         },
       };
     } catch (error) {
+      const errMsg = error instanceof Error ? error.message : 'Unknown Stripe error';
+      stripeLogger.error({ escrowId, workerId, amount, errMsg }, '✗ Stripe transfer FAILED');
       return {
         success: false,
         error: {
           code: 'STRIPE_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown Stripe error',
+          message: errMsg,
         },
       };
     }

@@ -10,6 +10,7 @@ import { TRPCError } from '@trpc/server';
 import { router, protectedProcedure, publicProcedure, hustlerProcedure, posterProcedure, Schemas } from '../trpc.js';
 import { TaskService } from '../services/TaskService.js';
 import { ProofService } from '../services/ProofService.js';
+import { NotificationService } from '../services/NotificationService.js';
 import { db } from '../db.js';
 import type { Proof } from '../types.js';
 import { cachedDbQuery, invalidateTask, CACHE_KEYS, CACHE_TTL, CACHE_TAGS } from '../cache/db-cache.js';
@@ -45,7 +46,7 @@ TASK FIELDS TO EXTRACT (update the "draft" object):
 - locationCity: City name (e.g. "Houston", "San Francisco", "Austin"). Set to "Anywhere" if no location restriction.
 - locationState: Two-letter US state code (e.g. "TX", "CA", "NY"). Leave null if locationCity is "Anywhere".
 - locationRadiusMiles: Service radius from the city center. Options: 25, 50, 75, or 100 miles. Default 25.
-- estimatedDurationMinutes: How long the task should take
+- estimatedDurationMinutes: Total minutes the task takes. For recurring/multi-session tasks, sum ALL sessions (e.g. "3 hours/day for 90 days" → 3 × 60 × 90 = 16200). Always return total committed minutes, never per-session.
 - difficulty: "easy", "medium", or "hard" based on:
   Easy = simple physical task, no special skills, <1 hour
   Medium = requires some skill or coordination, 1-3 hours
@@ -90,7 +91,7 @@ CONVERSATION RULES:
 1. Be concise and friendly. No corporate speak.
 2. After the user's FIRST message: understand the task, set title/description/category/difficulty, suggest a price, then ask for the MOST important missing field.
 3. For follow-ups: extract what the user said, update the draft, then ask for the next missing field.
-4. When all required fields are filled: summarize the task and ask for confirmation. Set isReadyToPost=true. In the summary, mention the estimated duration (e.g. "5 days"), NOT the deadline. The task card displays the estimated duration, so the summary must match.
+4. When all required fields are filled: summarize the task and ask for confirmation. Set isReadyToPost=true. In the summary, mention the estimated duration in HOURS (e.g. "270 hours total" for a 3hr/day × 90 days task, or "2 hours" for a one-off). The task card displays duration in hours, so the summary must match.
 5. If the user says "yes", "looks good", "post it", etc: confirm the task is ready.
 6. ALWAYS respond with valid JSON matching the schema. No markdown, no code blocks.
 
@@ -116,7 +117,7 @@ RESPONSE FORMAT (strict JSON):
     "locationCity": "city name or Anywhere",
     "locationState": "two-letter state code or null",
     "locationRadiusMiles": 25 or 50 or 75 or 100,
-    "estimatedDurationMinutes": number or null,
+    "estimatedDurationMinutes": number or null (TOTAL minutes — sum all sessions for recurring tasks),
     "difficulty": "easy|medium|hard or null",
     "category": "string or null",
     "templateSlug": "standard_physical|in_home|care|content_creator|event_appearance|creative_production|specialized_licensed|wildcard_bizarre",
@@ -956,7 +957,7 @@ export const taskRouter = router({
         taskId: input.taskId,
         workerId: ctx.user.id,
       });
-      
+
       if (!result.success) {
         const code = result.error.code === 'HX002' ? 'PRECONDITION_FAILED' : 'BAD_REQUEST';
         throw new TRPCError({
@@ -965,6 +966,24 @@ export const taskRouter = router({
         });
       }
       await invalidateTask(input.taskId);
+
+      // Notify poster that a hustler accepted their task
+      try {
+        const workerName = ctx.user.full_name || 'A hustler';
+        await NotificationService.createNotification({
+          userId: result.data.poster_id,
+          category: 'task_accepted',
+          title: 'Your task was accepted!',
+          body: `${workerName} accepted "${result.data.title}". They'll get started soon.`,
+          taskId: input.taskId,
+          deepLink: `hustlexp://task/${input.taskId}`,
+          channels: ['push', 'in_app'],
+          priority: 'HIGH',
+        });
+      } catch (err) {
+        taskRouterLog.warn({ err: err instanceof Error ? err.message : String(err), taskId: input.taskId }, 'Failed to send task_accepted notification');
+      }
+
       return result.data;
     }),
   
@@ -1097,7 +1116,7 @@ export const taskRouter = router({
 
       // Transition task to PROOF_SUBMITTED
       const taskResult = await TaskService.submitProof(input.taskId);
-      
+
       if (!taskResult.success) {
         throw new TRPCError({
           code: 'BAD_REQUEST',
@@ -1105,6 +1124,23 @@ export const taskRouter = router({
         });
       }
       await invalidateTask(input.taskId);
+
+      // Notify poster that proof was submitted
+      try {
+        await NotificationService.createNotification({
+          userId: taskResult.data.poster_id,
+          category: 'proof_submitted',
+          title: 'Proof submitted — review needed',
+          body: `Your hustler submitted proof for "${taskResult.data.title}". Approve to release payment.`,
+          taskId: input.taskId,
+          deepLink: `hustlexp://task/${input.taskId}/review`,
+          channels: ['push', 'in_app'],
+          priority: 'HIGH',
+        });
+      } catch (err) {
+        taskRouterLog.warn({ err: err instanceof Error ? err.message : String(err), taskId: input.taskId }, 'Failed to send proof_submitted notification');
+      }
+
       return {
         task: taskResult.data,
         proof: proofResult.data,
@@ -1190,6 +1226,46 @@ export const taskRouter = router({
         });
       }
       await invalidateTask(proofResult.data.task_id);
+
+      // Notify hustler about the review decision
+      try {
+        const taskRow = await db.query<{ title: string; price: number; worker_id: string | null }>(
+          'SELECT title, price, worker_id FROM tasks WHERE id = $1',
+          [proofResult.data.task_id]
+        );
+        const t = taskRow.rows[0];
+        if (t?.worker_id) {
+          if (decision === 'ACCEPTED') {
+            const netCents = Math.round(t.price * 0.85);
+            await NotificationService.createNotification({
+              userId: t.worker_id,
+              category: 'proof_approved',
+              title: 'Payment approved! 🎉',
+              body: `Your work on "${t.title}" was approved. $${(netCents / 100).toFixed(2)} is on its way to your account.`,
+              taskId: proofResult.data.task_id,
+              deepLink: `hustlexp://task/${proofResult.data.task_id}`,
+              channels: ['push', 'in_app'],
+              priority: 'HIGH',
+            });
+          } else {
+            await NotificationService.createNotification({
+              userId: t.worker_id,
+              category: 'proof_rejected',
+              title: 'Proof needs changes',
+              body: reason
+                ? `Poster requested changes for "${t.title}": ${reason}`
+                : `Poster requested changes for "${t.title}". Please resubmit.`,
+              taskId: proofResult.data.task_id,
+              deepLink: `hustlexp://task/${proofResult.data.task_id}`,
+              channels: ['push', 'in_app'],
+              priority: 'HIGH',
+            });
+          }
+        }
+      } catch (err) {
+        taskRouterLog.warn({ err: err instanceof Error ? err.message : String(err) }, 'Failed to send proof review notification');
+      }
+
       return reviewResult.data;
     }),
   
@@ -1249,7 +1325,7 @@ export const taskRouter = router({
       }
       
       const result = await TaskService.cancel(input.taskId);
-      
+
       if (!result.success) {
         throw new TRPCError({
           code: 'BAD_REQUEST',
@@ -1257,6 +1333,38 @@ export const taskRouter = router({
         });
       }
       await invalidateTask(input.taskId);
+
+      // Notify poster about refund (if escrow was funded) and hustler if assigned
+      try {
+        // Refund notification to poster
+        await NotificationService.createNotification({
+          userId: result.data.poster_id,
+          category: 'refund_issued',
+          title: 'Task cancelled — refund processing',
+          body: `"${result.data.title}" was cancelled. Your refund will arrive on your card in 5-10 business days.`,
+          taskId: input.taskId,
+          deepLink: `hustlexp://payments/history`,
+          channels: ['push', 'in_app'],
+          priority: 'HIGH',
+        });
+
+        // If a hustler was assigned, notify them too
+        if (result.data.worker_id) {
+          await NotificationService.createNotification({
+            userId: result.data.worker_id,
+            category: 'task_cancelled',
+            title: 'Task was cancelled',
+            body: `The poster cancelled "${result.data.title}".`,
+            taskId: input.taskId,
+            deepLink: `hustlexp://task/${input.taskId}`,
+            channels: ['push', 'in_app'],
+            priority: 'MEDIUM',
+          });
+        }
+      } catch (err) {
+        taskRouterLog.warn({ err: err instanceof Error ? err.message : String(err) }, 'Failed to send cancel notifications');
+      }
+
       return result.data;
     }),
 
@@ -1315,6 +1423,23 @@ export const taskRouter = router({
 
       await invalidateTask(input.taskId);
       const refreshed = await TaskService.getById(input.taskId);
+
+      // Notify poster that the hustler abandoned — task is open again
+      try {
+        await NotificationService.createNotification({
+          userId: taskResult.data.poster_id,
+          category: 'task_cancelled',
+          title: 'Hustler dropped your task',
+          body: `The hustler abandoned "${taskResult.data.title}". Don't worry — your funds are safe and the task is open for someone new.`,
+          taskId: input.taskId,
+          deepLink: `hustlexp://task/${input.taskId}`,
+          channels: ['push', 'in_app'],
+          priority: 'HIGH',
+        });
+      } catch (err) {
+        taskRouterLog.warn({ err: err instanceof Error ? err.message : String(err) }, 'Failed to send abandonment notification');
+      }
+
       return refreshed.success ? refreshed.data : taskResult.data;
     }),
 
