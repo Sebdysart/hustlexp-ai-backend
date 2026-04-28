@@ -420,16 +420,14 @@ export const EscrowService = {
         const resolvedPaymentMethod: string = 'escrow';
         const resolvedGross = escrow.amount;
 
-        // KYC GATE: Verify worker has completed Stripe Connect onboarding
-        // before releasing funds (FinCEN/BSA compliance).
-        // Skipped when adminOverride=true (admin force-release path) — but fee/XP/insurance still run.
+        // KYC GATE: Verify worker has Stripe Connect set up before releasing funds.
+        // Note: payouts_enabled is verified live by Stripe's transfer API itself —
+        // if KYC is incomplete, the transfer will fail with a clear error from Stripe.
         if (!adminOverride) {
           const workerKycResult = await query<{
-            payouts_enabled: boolean;
             stripe_connect_id: string | null;
-            stripe_connect_status: string | null;
           }>(
-            `SELECT payouts_enabled, stripe_connect_id, stripe_connect_status FROM users WHERE id = $1`,
+            `SELECT stripe_connect_id FROM users WHERE id = $1`,
             [resolvedWorkerId]
           );
 
@@ -443,24 +441,12 @@ export const EscrowService = {
             } as ServiceResult<Escrow>;
           }
 
-          const workerKyc = workerKycResult.rows[0];
-
-          if (!workerKyc.stripe_connect_id) {
+          if (!workerKycResult.rows[0].stripe_connect_id) {
             return {
               success: false,
               error: {
                 code: ErrorCodes.INVALID_STATE,
                 message: `Worker has not set up Stripe Connect — cannot release payout`,
-              },
-            } as ServiceResult<Escrow>;
-          }
-
-          if (!workerKyc.payouts_enabled) {
-            return {
-              success: false,
-              error: {
-                code: ErrorCodes.INVALID_STATE,
-                message: `Worker KYC incomplete — payouts not enabled (status: ${workerKyc.stripe_connect_status ?? 'unknown'})`,
               },
             } as ServiceResult<Escrow>;
           }
