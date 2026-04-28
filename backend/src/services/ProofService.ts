@@ -529,6 +529,41 @@ export const ProofService = {
         [decision, reviewerId, reason, proofId]
       );
 
+      // On REJECTED: reset task to ACCEPTED so worker can resubmit a new proof
+      // (or escalate to dispute on repeat rejections)
+      if (decision === 'REJECTED') {
+        try {
+          // Count prior rejections for this task
+          const rejCount = await db.query<{ count: string }>(
+            `SELECT COUNT(*) AS count FROM proofs WHERE task_id = $1 AND state = 'REJECTED'`,
+            [current.task_id]
+          );
+          const rejectionCount = parseInt(rejCount.rows[0]?.count ?? '0', 10);
+
+          if (rejectionCount >= 2) {
+            // Two strikes — escalate to dispute (lock escrow, freeze task)
+            log.warn({ taskId: current.task_id, rejectionCount }, 'Repeat rejections — escalating to dispute');
+            await db.query(
+              `UPDATE tasks SET state = 'DISPUTED' WHERE id = $1`,
+              [current.task_id]
+            );
+            await db.query(
+              `UPDATE escrows SET state = 'LOCKED_DISPUTE' WHERE task_id = $1 AND state = 'FUNDED'`,
+              [current.task_id]
+            );
+          } else {
+            // First rejection — let worker resubmit
+            await db.query(
+              `UPDATE tasks SET state = 'ACCEPTED' WHERE id = $1 AND state = 'PROOF_SUBMITTED'`,
+              [current.task_id]
+            );
+            log.info({ taskId: current.task_id }, 'Proof rejected — task reset to ACCEPTED for resubmission');
+          }
+        } catch (err) {
+          log.error({ err: err instanceof Error ? err.message : String(err), taskId: current.task_id }, 'Failed to handle rejection state transition');
+        }
+      }
+
       return { success: true, data: result.rows[0] };
     } catch (error) {
       if (isInvariantViolation(error)) {

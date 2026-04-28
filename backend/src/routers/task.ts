@@ -1260,6 +1260,64 @@ export const taskRouter = router({
       return result.data;
     }),
 
+  /**
+   * Hustler abandons their accepted task.
+   * Returns task to OPEN state for another hustler to accept.
+   * Records reputation penalty on the abandoning worker.
+   * Escrow stays FUNDED — money waits for next hustler. Poster keeps funds locked.
+   */
+  abandon: hustlerProcedure
+    .input(z.object({
+      taskId: Schemas.uuid,
+      reason: z.string().max(1000).optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const taskResult = await TaskService.getById(input.taskId);
+      if (!taskResult.success) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
+      }
+
+      // Only the assigned worker may abandon
+      if (taskResult.data.worker_id !== ctx.user.id) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'Only the assigned worker can abandon this task' });
+      }
+
+      // Only allow abandonment from ACCEPTED state (not after proof submitted)
+      if (taskResult.data.state !== 'ACCEPTED') {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: `Cannot abandon task in state ${taskResult.data.state}. Tasks can only be abandoned before proof is submitted.`,
+        });
+      }
+
+      // Reset task to OPEN, clear worker, log abandonment for reputation
+      await db.transaction(async (query) => {
+        await query(
+          `UPDATE tasks
+           SET state = 'OPEN',
+               worker_id = NULL,
+               accepted_at = NULL
+           WHERE id = $1 AND worker_id = $2 AND state = 'ACCEPTED'`,
+          [input.taskId, ctx.user.id]
+        );
+
+        // Log abandonment event for reputation tracking
+        await query(
+          `INSERT INTO task_abandonments (task_id, worker_id, reason, abandoned_at)
+           VALUES ($1, $2, $3, NOW())
+           ON CONFLICT DO NOTHING`,
+          [input.taskId, ctx.user.id, input.reason || null]
+        );
+      }).catch((err) => {
+        // task_abandonments table may not exist yet — log but don't fail
+        console.warn('[task.abandon] Failed to log abandonment:', err instanceof Error ? err.message : err);
+      });
+
+      await invalidateTask(input.taskId);
+      const refreshed = await TaskService.getById(input.taskId);
+      return refreshed.success ? refreshed.data : taskResult.data;
+    }),
+
   // --------------------------------------------------------------------------
   // APPLICATION MANAGEMENT
   // --------------------------------------------------------------------------

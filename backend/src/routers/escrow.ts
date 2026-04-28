@@ -356,29 +356,12 @@ export const escrowRouter = router({
         });
       }
 
-      // ── Check 7: Platform Stripe balance is sufficient ──
-      try {
-        const stripe = StripeService.getStripeInstance();
-        if (stripe) {
-          const balance = await stripe.balance.retrieve();
-          const availableUSD = balance.available.find(b => b.currency === 'usd');
-          const availableCents = availableUSD?.amount ?? 0;
-          const feePercent = 15;
-          const netPayoutCents = grossAmount - Math.round(grossAmount * (feePercent / 100));
-
-          if (availableCents < netPayoutCents) {
-            throw new TRPCError({
-              code: 'PRECONDITION_FAILED',
-              message: `Insufficient platform balance for payout. Available: $${(availableCents / 100).toFixed(2)}, needed: $${(netPayoutCents / 100).toFixed(2)}. Please contact support.`,
-            });
-          }
-        }
-      } catch (err) {
-        // If it's our own TRPCError (insufficient balance), re-throw
-        if (err instanceof TRPCError) throw err;
-        // Otherwise Stripe API error — log but don't block (balance check is best-effort)
-        console.warn('[escrow.releaseToWorker] Balance check failed, proceeding:', err instanceof Error ? err.message : err);
-      }
+      // Note: We do NOT check platform balance proactively because:
+      // 1. Stripe holds funds in PENDING for ~2 business days before AVAILABLE
+      // 2. In test mode, charges often stay in pending indefinitely
+      // 3. Stripe's transfer API has its own balance check that's more accurate
+      // If the platform truly lacks balance, the transfer call below will fail
+      // with a clear "balance_insufficient" error from Stripe.
 
       // ── All checks passed — execute transfer ──
       const feePercent = Math.min(100, Math.max(0, 15)); // 15% platform fee
@@ -395,9 +378,17 @@ export const escrowRouter = router({
         description: `HustleXP Payout for task`,
       });
       if (!transferResult.success) {
+        const stripeMsg = transferResult.error.message;
+        // Surface a helpful message for the most common failure: insufficient balance
+        if (stripeMsg.toLowerCase().includes('insufficient') || stripeMsg.includes('balance_insufficient')) {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message: 'Payment is settling — please try again in a few minutes. (Test mode charges may take longer to settle.)',
+          });
+        }
         throw new TRPCError({
           code: 'INTERNAL_SERVER_ERROR',
-          message: `Payment transfer failed: ${transferResult.error.message}`,
+          message: `Payment transfer failed: ${stripeMsg}`,
         });
       }
 

@@ -1255,28 +1255,52 @@ export const TaskService = {
    */
   expire: async (taskId: string): Promise<ServiceResult<Task>> => {
     try {
-      const result = await db.query<Task>(
-        `UPDATE tasks
-         SET state = 'EXPIRED',
-             expired_at = NOW()
-         WHERE id = $1
-           AND state NOT IN ('COMPLETED', 'CANCELLED', 'EXPIRED', 'PROOF_SUBMITTED', 'DISPUTED', 'IN_REVIEW', 'ACCEPTED', 'IN_PROGRESS')
-           AND deadline < NOW()
-         RETURNING *`,
-        [taskId]
-      );
-      
-      if (result.rowCount === 0) {
-        return {
-          success: false,
-          error: {
-            code: ErrorCodes.INVALID_STATE,
-            message: 'Task cannot be expired (already terminal or deadline not passed)',
-          },
-        };
-      }
-      
-      return { success: true, data: result.rows[0] };
+      return await db.transaction(async (query) => {
+        const result = await query<Task>(
+          `UPDATE tasks
+           SET state = 'EXPIRED',
+               expired_at = NOW()
+           WHERE id = $1
+             AND state NOT IN ('COMPLETED', 'CANCELLED', 'EXPIRED', 'PROOF_SUBMITTED', 'DISPUTED', 'IN_REVIEW', 'ACCEPTED', 'IN_PROGRESS')
+             AND deadline < NOW()
+           RETURNING *`,
+          [taskId]
+        );
+
+        if (result.rowCount === 0) {
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.INVALID_STATE,
+              message: 'Task cannot be expired (already terminal or deadline not passed)',
+            },
+          };
+        }
+
+        // Auto-refund: if escrow was funded, return money to poster
+        const escrowResult = await query<{ id: string }>(
+          `SELECT id FROM escrows WHERE task_id = $1 AND state = 'FUNDED'`,
+          [taskId]
+        );
+        if (escrowResult.rows.length > 0) {
+          const escrowId = escrowResult.rows[0].id;
+          await writeToOutbox(
+            {
+              eventType: 'escrow.refund_requested',
+              aggregateType: 'escrow',
+              aggregateId: escrowId,
+              eventVersion: 1,
+              payload: { escrowId, reason: 'task_expired', taskId },
+              queueName: 'critical_payments',
+              idempotencyKey: `escrow.refund_on_expire:${escrowId}:${taskId}`,
+            },
+            query
+          );
+          log.info({ escrowId, taskId }, 'Escrow refund requested on task expiration');
+        }
+
+        return { success: true, data: result.rows[0] };
+      });
     } catch (error) {
       return {
         success: false,
