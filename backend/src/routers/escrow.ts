@@ -16,6 +16,7 @@ import { StripeService } from '../services/StripeService.js';
 import { XPService } from '../services/XPService.js';
 import { dispatchEarningsUpdated } from '../realtime/realtime-dispatcher.js';
 import { db } from '../db.js';
+import { NotificationService } from '../services/NotificationService.js';
 import { z } from 'zod';
 
 export const escrowRouter = router({
@@ -244,6 +245,66 @@ export const escrowRouter = router({
           code: 'BAD_REQUEST',
           message: result.error.message,
         });
+      }
+
+      // Notify nearby/eligible hustlers that a new task is available.
+      // Fires asynchronously — don't block the funding response.
+      try {
+        const taskRow = await db.query<{
+          id: string;
+          title: string;
+          location: string | null;
+          location_city: string | null;
+          location_state: string | null;
+          required_tier: number | null;
+          poster_id: string;
+        }>(
+          `SELECT id, title, location, location_city, location_state, required_tier, poster_id
+           FROM tasks WHERE id = $1`,
+          [escrow.data.task_id]
+        );
+        const task = taskRow.rows[0];
+        if (task) {
+          // Get all eligible hustlers — keep it broad for beta (all active hustlers
+          // in same city/state, up to 50 recipients to avoid spam).
+          const minTier = task.required_tier ?? 1;
+          const cityFilter = task.location_city
+            ? `AND city ILIKE $3`
+            : ``;
+          const params: unknown[] = [task.poster_id, minTier];
+          if (task.location_city) params.push(task.location_city);
+          const eligibleHustlers = await db.query<{ id: string }>(
+            `SELECT id FROM users
+             WHERE id != $1
+               AND default_mode IN ('worker', 'hustler')
+               AND COALESCE(trust_tier, 1) >= $2
+               AND account_status = 'ACTIVE'
+               ${cityFilter}
+             LIMIT 50`,
+            params
+          );
+
+          // Send notifications in parallel (non-blocking)
+          const locationLabel = task.location_city && task.location_state
+            ? `${task.location_city}, ${task.location_state}`
+            : (task.location ?? 'your area');
+          await Promise.all(
+            eligibleHustlers.rows.map(h =>
+              NotificationService.createNotification({
+                userId: h.id,
+                category: 'new_matching_task',
+                title: 'New task in your area',
+                body: `"${task.title}" is now available in ${locationLabel}. Tap to view.`,
+                taskId: task.id,
+                deepLink: `hustlexp://task/${task.id}`,
+                channels: ['push', 'in_app'],
+                priority: 'MEDIUM',
+              }).catch(() => null)
+            )
+          );
+        }
+      } catch (err) {
+        console.warn('[escrow.confirmFunding] Failed to notify hustlers:', err instanceof Error ? err.message : err);
       }
 
       return result.data;

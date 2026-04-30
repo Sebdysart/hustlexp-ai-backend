@@ -423,21 +423,26 @@ export const MessagingService = {
         }
       }
       
-      // Send notification to recipient
+      // Send notification to recipient — fetch sender name for personalization
+      const senderRow = await db.query<{ full_name: string | null }>(
+        'SELECT full_name FROM users WHERE id = $1',
+        [senderId]
+      );
+      const senderName = senderRow.rows[0]?.full_name ?? 'Someone';
+
       await NotificationService.createNotification({
         userId: recipientId,
         category: 'message_received',
-        title: 'New Message',
-        body: messageType === 'TEXT' && content 
-          ? (content.length > 50 ? content.substring(0, 50) + '...' : content)
-          : 'You received a new message',
-        deepLink: `app://task/${taskId}/messages`,
+        title: senderName,
+        body: messageType === 'TEXT' && content
+          ? (content.length > 80 ? content.substring(0, 80) + '…' : content)
+          : '📷 Sent you a photo',
+        deepLink: `hustlexp://task/${taskId}/messages`,
         taskId,
         metadata: { messageId: message.id, messageType, senderId },
         channels: ['in_app', 'push'],
-        priority: 'MEDIUM',
+        priority: 'HIGH',
       }).catch(error => {
-        // Log error but don't fail message creation
         log.error({ err: error instanceof Error ? error.message : String(error), recipientId, taskId }, 'Failed to send message notification');
       });
       

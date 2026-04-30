@@ -260,6 +260,47 @@ export async function dispatchEarningsUpdated(payload: {
 }
 
 /**
+ * Dispatch a notification.created event to a specific user.
+ * Used for in-app banners + badge updates regardless of FCM availability.
+ */
+export async function dispatchNotificationCreated(payload: {
+  userId: string;
+  notificationId: string;
+  category: string;
+  title: string;
+  body: string;
+  deepLink?: string | null;
+  taskId?: string | null;
+  priority: string;
+  createdAt: string;
+}): Promise<void> {
+  const { userId } = payload;
+
+  if (await checkAndEvictBannedUser(userId)) return;
+
+  const conns = getConnections(userId);
+  if (!conns) return;
+
+  const sseMessage = `event: notification.created\ndata: ${JSON.stringify(payload)}\n\n`;
+
+  let fanoutCount = 0;
+  for (const conn of conns) {
+    if (conn.closed) continue;
+    try {
+      await writeToConnection(conn, sseMessage);
+      fanoutCount++;
+    } catch (error) {
+      log.error({ err: error instanceof Error ? error.message : String(error), userId }, 'Failed to write notification.created to SSE');
+      conn.closed = true;
+    }
+  }
+
+  if (fanoutCount > 0) {
+    log.info({ userId, notificationId: payload.notificationId, category: payload.category }, 'notification.created fanout complete');
+  }
+}
+
+/**
  * Broadcast a flag_changed event to all active SSE connections
  */
 export async function dispatchFlagChanged(flagName: string): Promise<void> {

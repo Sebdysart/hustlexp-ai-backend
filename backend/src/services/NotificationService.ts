@@ -386,7 +386,28 @@ export const NotificationService = {
       // Use filtered channels if preferences exist, otherwise use requested channels
       const channelsToUse = enabledChannels;
       await queueNotificationChannels(notification, channelsToUse);
-      
+
+      // Dispatch SSE event so any open iOS app shows an in-app banner immediately,
+      // regardless of whether FCM/APNs is configured. Non-blocking.
+      try {
+        const { dispatchNotificationCreated } = await import('../realtime/realtime-dispatcher.js');
+        await dispatchNotificationCreated({
+          userId: notification.user_id,
+          notificationId: notification.id,
+          category: notification.category,
+          title: notification.title,
+          body: notification.body,
+          deepLink: notification.deep_link,
+          taskId: notification.task_id ?? null,
+          priority: notification.priority,
+          createdAt: (notification.created_at instanceof Date
+            ? notification.created_at.toISOString()
+            : String(notification.created_at)),
+        });
+      } catch (sseErr) {
+        log.warn({ err: sseErr instanceof Error ? sseErr.message : String(sseErr), notificationId: notification.id }, 'SSE dispatch failed (non-blocking)');
+      }
+
       return {
         success: true,
         data: notification,
