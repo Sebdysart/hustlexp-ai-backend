@@ -153,7 +153,7 @@ export const notificationRouter = router({
    * Mark all notifications as read for user
    */
   markAllAsRead: protectedProcedure
-    .input(z.void())
+    .input(z.object({}).optional())
     .mutation(async ({ ctx }) => {
       if (!ctx.user) {
         throw new TRPCError({
