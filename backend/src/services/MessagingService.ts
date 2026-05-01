@@ -767,19 +767,19 @@ export const MessagingService = {
         };
       }
       
-      // Mark all unread messages as read
-      const result = await db.query<{ count: string }>(
+      // Mark all unread messages as read.
+      // Postgres rejects aggregate functions in RETURNING — use rowCount instead.
+      const result = await db.query(
         `UPDATE task_messages
          SET read_at = NOW(), updated_at = NOW()
-         WHERE task_id = $1 AND receiver_id = $2 AND read_at IS NULL
-         RETURNING COUNT(*) as count`,
+         WHERE task_id = $1 AND receiver_id = $2 AND read_at IS NULL`,
         [taskId, userId]
       );
-      
+
       return {
         success: true,
         data: {
-          marked: parseInt(result.rows[0]?.count || '0', 10),
+          marked: result.rowCount ?? 0,
         },
       };
     } catch (error) {
