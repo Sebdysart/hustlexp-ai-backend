@@ -17,6 +17,7 @@ import { XPService } from '../services/XPService.js';
 import { dispatchEarningsUpdated } from '../realtime/realtime-dispatcher.js';
 import { db } from '../db.js';
 import { NotificationService } from '../services/NotificationService.js';
+import { MessagingService } from '../services/MessagingService.js';
 import { z } from 'zod';
 
 export const escrowRouter = router({
@@ -492,6 +493,19 @@ export const escrowRouter = router({
         console.error(`[escrow.releaseToWorker] Failed to dispatch earnings event: ${message}`);
       }
 
+      // Once payment has settled, the conversation is no longer load-bearing.
+      // Delete the task's messages so they stop cluttering both inboxes.
+      // Best-effort — failure here must not surface to the user.
+      try {
+        const cleanup = await MessagingService.deleteForTask(escrow.data.task_id);
+        if (!cleanup.success) {
+          console.error(`[escrow.releaseToWorker] Message cleanup failed: ${cleanup.error.message}`);
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[escrow.releaseToWorker] Message cleanup threw: ${message}`);
+      }
+
       return releaseResult.data;
     }),
 
@@ -520,6 +534,17 @@ export const escrowRouter = router({
           code: 'BAD_REQUEST',
           message: result.error.message,
         });
+      }
+
+      // Same as on release: once funds are returned the conversation is settled.
+      try {
+        const cleanup = await MessagingService.deleteForTask(escrow.data.task_id);
+        if (!cleanup.success) {
+          console.error(`[escrow.refund] Message cleanup failed: ${cleanup.error.message}`);
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[escrow.refund] Message cleanup threw: ${message}`);
       }
 
       return result.data;

@@ -207,6 +207,40 @@ export const notificationRouter = router({
     }),
   
   // --------------------------------------------------------------------------
+  // DELETE OPERATIONS
+  // --------------------------------------------------------------------------
+
+  /**
+   * Delete a single notification owned by the current user.
+   */
+  delete: protectedProcedure
+    .input(z.object({
+      notificationId: Schemas.uuid,
+    }))
+    .mutation(async ({ input, ctx }) => {
+      if (!ctx.user) {
+        throw new TRPCError({
+          code: 'UNAUTHORIZED',
+          message: 'Authentication required',
+        });
+      }
+
+      const result = await NotificationService.deleteNotification(
+        input.notificationId,
+        ctx.user.id
+      );
+
+      if (!result.success) {
+        throw new TRPCError({
+          code: result.error.code === 'NOT_FOUND' ? 'NOT_FOUND' : 'INTERNAL_SERVER_ERROR',
+          message: result.error.message,
+        });
+      }
+
+      return result.data;
+    }),
+
+  // --------------------------------------------------------------------------
   // PREFERENCES
   // --------------------------------------------------------------------------
   

@@ -792,6 +792,37 @@ export const MessagingService = {
       };
     }
   },
+
+  /**
+   * Delete all messages for a task. Called after a task settles (escrow released
+   * or refunded) so completed conversations don't pile up in either party's inbox.
+   *
+   * Best-effort: failure is logged by callers but does not block the settlement
+   * flow. Returns the number of rows deleted.
+   */
+  deleteForTask: async (taskId: string): Promise<ServiceResult<{ deleted: number }>> => {
+    try {
+      const result = await db.query(
+        `DELETE FROM task_messages WHERE task_id = $1`,
+        [taskId]
+      );
+
+      return {
+        success: true,
+        data: {
+          deleted: result.rowCount ?? 0,
+        },
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: {
+          code: 'DB_ERROR',
+          message: error instanceof Error ? error.message : 'Unknown error',
+        },
+      };
+    }
+  },
 };
 
 // ============================================================================

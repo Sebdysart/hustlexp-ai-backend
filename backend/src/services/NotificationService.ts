@@ -815,12 +815,55 @@ export const NotificationService = {
   },
   
   // --------------------------------------------------------------------------
+  // DELETE OPERATIONS
+  // --------------------------------------------------------------------------
+
+  /**
+   * Delete a single notification owned by the user.
+   *
+   * Verifies ownership before deletion to prevent users from deleting
+   * notifications belonging to other users.
+   */
+  deleteNotification: async (
+    notificationId: string,
+    userId: string
+  ): Promise<ServiceResult<{ deleted: boolean }>> => {
+    try {
+      const result = await db.query(
+        `DELETE FROM notifications
+         WHERE id = $1 AND user_id = $2`,
+        [notificationId, userId]
+      );
+
+      if ((result.rowCount ?? 0) === 0) {
+        return {
+          success: false,
+          error: {
+            code: 'NOT_FOUND',
+            message: 'Notification not found or not owned by user',
+          },
+        };
+      }
+
+      return { success: true, data: { deleted: true } };
+    } catch (error) {
+      return {
+        success: false,
+        error: {
+          code: 'DB_ERROR',
+          message: error instanceof Error ? error.message : 'Unknown error',
+        },
+      };
+    }
+  },
+
+  // --------------------------------------------------------------------------
   // CLEANUP (Background Job)
   // --------------------------------------------------------------------------
-  
+
   /**
    * Clean up expired notifications (NOTIF-5: Notifications expire after 30 days)
-   * 
+   *
    * This should be called by a background job daily
    */
   cleanupExpiredNotifications: async (): Promise<ServiceResult<{ deleted: number }>> => {
