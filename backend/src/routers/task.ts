@@ -1772,9 +1772,13 @@ export const taskRouter = router({
   getBookmarkedTasks: hustlerProcedure
     .query(async ({ ctx }) => {
       const result = await db.query(
-        `SELECT t.*
+        `SELECT t.*,
+                COALESCE(pu.full_name, pu.email) AS poster_name,
+                COALESCE(wu.full_name, wu.email) AS worker_name
          FROM tasks t
          INNER JOIN task_bookmarks b ON b.task_id = t.id
+         LEFT JOIN users pu ON pu.id = t.poster_id
+         LEFT JOIN users wu ON wu.id = t.worker_id
          WHERE b.user_id = $1
          ORDER BY b.created_at DESC`,
         [ctx.user.id]
