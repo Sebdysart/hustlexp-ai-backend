@@ -1722,6 +1722,81 @@ export const taskRouter = router({
 
       return { success: true };
     }),
+
+  // ── Bookmarks ────────────────────────────────────────────────────────────
+
+  /**
+   * Bookmark a task (idempotent — safe to call if already bookmarked)
+   */
+  bookmark: hustlerProcedure
+    .input(z.object({ taskId: Schemas.uuid }))
+    .mutation(async ({ ctx, input }) => {
+      // Verify task exists and is publicly visible
+      const taskResult = await db.query<{ id: string }>(
+        `SELECT id FROM tasks WHERE id = $1`,
+        [input.taskId]
+      );
+      if (taskResult.rows.length === 0) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
+      }
+
+      await db.query(
+        `INSERT INTO task_bookmarks (user_id, task_id)
+         VALUES ($1, $2)
+         ON CONFLICT (user_id, task_id) DO NOTHING`,
+        [ctx.user.id, input.taskId]
+      );
+
+      taskRouterLog.info({ userId: ctx.user.id, taskId: input.taskId }, 'Task bookmarked');
+      return { success: true };
+    }),
+
+  /**
+   * Remove a bookmark (idempotent — safe to call if not bookmarked)
+   */
+  removeBookmark: hustlerProcedure
+    .input(z.object({ taskId: Schemas.uuid }))
+    .mutation(async ({ ctx, input }) => {
+      await db.query(
+        `DELETE FROM task_bookmarks WHERE user_id = $1 AND task_id = $2`,
+        [ctx.user.id, input.taskId]
+      );
+
+      taskRouterLog.info({ userId: ctx.user.id, taskId: input.taskId }, 'Task bookmark removed');
+      return { success: true };
+    }),
+
+  /**
+   * Get all tasks bookmarked by the current hustler
+   */
+  getBookmarkedTasks: hustlerProcedure
+    .query(async ({ ctx }) => {
+      const result = await db.query(
+        `SELECT t.*
+         FROM tasks t
+         INNER JOIN task_bookmarks b ON b.task_id = t.id
+         WHERE b.user_id = $1
+         ORDER BY b.created_at DESC`,
+        [ctx.user.id]
+      );
+      return result.rows;
+    }),
+
+  /**
+   * Check whether the current hustler has bookmarked a specific task
+   */
+  isBookmarked: hustlerProcedure
+    .input(z.object({ taskId: Schemas.uuid }))
+    .query(async ({ ctx, input }) => {
+      const result = await db.query<{ exists: boolean }>(
+        `SELECT EXISTS(
+           SELECT 1 FROM task_bookmarks
+           WHERE user_id = $1 AND task_id = $2
+         ) AS exists`,
+        [ctx.user.id, input.taskId]
+      );
+      return { isBookmarked: result.rows[0]?.exists ?? false };
+    }),
 });
 
 export type TaskRouter = typeof taskRouter;
