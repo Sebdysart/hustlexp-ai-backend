@@ -77,7 +77,8 @@ export type QueueName =
   | 'biometric_analysis'
   | 'expertise_recalc'
   | 'xp_tax_reminders'
-  | 'recurring_tasks';
+  | 'recurring_tasks'
+  | 'task_dispatch';
 
 interface QueueConfig {
   name: QueueName;
@@ -304,6 +305,28 @@ export const QUEUE_CONFIGS: Record<QueueName, QueueConfig> = {
     },
     workerOptions: {
       maxStalledCount: 1,
+    },
+  },
+
+  task_dispatch: {
+    name: 'task_dispatch',
+    defaultJobOptions: {
+      attempts: 3,
+      backoff: {
+        type: 'exponential',
+        delay: 5000, // 5s, 10s, 20s
+      },
+      removeOnComplete: {
+        age: 6 * 60 * 60, // 6 hours — wave jobs are short-lived
+        count: 500,
+      },
+      removeOnFail: {
+        age: 24 * 60 * 60, // 1 day for post-mortem
+      },
+    },
+    workerOptions: {
+      maxStalledCount: 2,
+      concurrency: 5,
     },
   },
 };

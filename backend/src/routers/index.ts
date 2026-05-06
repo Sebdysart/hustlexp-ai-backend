@@ -21,6 +21,7 @@ import { router } from '../trpc.js';
 // All procedures gated by hustlerProcedure (default_mode = 'worker').
 import { taskDiscoveryRouter } from './taskDiscovery.js';
 import { instantRouter } from './instant.js';
+import { dispatchRouter } from './dispatch.js';
 import { liveRouter } from './live.js';
 import { stripeConnectRouter } from './stripeConnect.js';
 import { xpTaxRouter } from './xpTax.js';
@@ -94,6 +95,7 @@ export const appRouter = router({
   // ── Hustler Domain ─────────────────────────────────────────────────────
   taskDiscovery: taskDiscoveryRouter,
   instant: instantRouter,
+  dispatch: dispatchRouter,
   live: liveRouter,
   stripeConnect: stripeConnectRouter,
   xpTax: xpTaxRouter,

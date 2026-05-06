@@ -75,8 +75,11 @@ export async function processInstantMatchingJob(
     instant_mode: boolean;
     risk_level: string;
     sensitive: boolean | null;
+    fulfillment_mode: string;
   }>(
-    `SELECT id, state, instant_mode, risk_level, sensitive FROM tasks WHERE id = $1`,
+    `SELECT id, state, instant_mode, risk_level, sensitive,
+            COALESCE(fulfillment_mode, 'broadcast') AS fulfillment_mode
+       FROM tasks WHERE id = $1`,
     [taskId]
   );
 
@@ -89,6 +92,15 @@ export async function processInstantMatchingJob(
   if (!task.instant_mode || task.state !== 'MATCHING') {
     // Task already accepted or cancelled
     log.info({ taskId, state: task.state }, 'Task no longer in MATCHING state');
+    return;
+  }
+
+  // Smart dispatch: delegate to WaveManager instead of broadcasting to all
+  if (task.fulfillment_mode === 'smart_dispatch') {
+    const { WaveManager } = await import('../services/WaveManager.js');
+    await WaveManager.initiateDispatch(taskId);
+    const latency = Date.now() - startTime;
+    log.info({ taskId, latency, fulfillmentMode: 'smart_dispatch' }, 'Smart dispatch initiated');
     return;
   }
 

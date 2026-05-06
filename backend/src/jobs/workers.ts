@@ -26,6 +26,7 @@ import { processEmailJob } from './email-worker.js';
 import { processBiometricAnalysisJob } from './biometric-analyzer-worker.js';
 import { processExpertiseRecalcJob } from './expertise-recalc-worker.js';
 import { processXPTaxReminderJob } from './xp-tax-reminder-worker.js';
+import { processDispatchWaveJob } from './dispatch-wave-worker.js';
 import { workerLogger as log } from '../logger.js';
 import type { Job, Worker } from 'bullmq';
 
@@ -241,6 +242,19 @@ function registerWorkers(): void {
       concurrency: 1, // One at a time to avoid double-spawning
       removeOnComplete: { count: 50, age: 86400 },
       removeOnFail: { age: 7 * 86400 },
+    }
+  ));
+
+  // Smart dispatch wave worker — processes wave 1/2/3 ping delivery
+  activeWorkers.push(createWorker(
+    'task_dispatch',
+    async (job: Job) => {
+      await processDispatchWaveJob(job);
+    },
+    {
+      concurrency: 5, // Process up to 5 wave jobs concurrently (independent tasks)
+      removeOnComplete: { count: 500, age: 6 * 3600 },
+      removeOnFail: { age: 86400 },
     }
   ));
 
