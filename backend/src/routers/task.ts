@@ -43,9 +43,10 @@ TASK FIELDS TO EXTRACT (update the "draft" object):
 - description: Detailed description of what needs to be done
 - suggestedPriceCents: Price in cents (e.g. 5000 = $50.00). Use these ranges:
   Easy tasks: $15-$50 | Medium: $50-$150 | Hard: $150-$500
+- locationStreet: Street address (e.g. "123 Main St"). Leave null if locationCity is "Anywhere" or no specific address.
 - locationCity: City name (e.g. "Houston", "San Francisco", "Austin"). Set to "Anywhere" if no location restriction.
 - locationState: Two-letter US state code (e.g. "TX", "CA", "NY"). Leave null if locationCity is "Anywhere".
-- locationRadiusMiles: Service radius from the city center. Options: 25, 50, 75, or 100 miles. Default 25.
+- locationZip: ZIP/postal code (e.g. "77001"). Leave null if locationCity is "Anywhere" or unknown.
 - estimatedDurationMinutes: Total minutes the task takes. For recurring/multi-session tasks, sum ALL sessions (e.g. "3 hours/day for 90 days" → 3 × 60 × 90 = 16200). Always return total committed minutes, never per-session.
 - difficulty: "easy", "medium", or "hard" based on:
   Easy = simple physical task, no special skills, <1 hour
@@ -57,7 +58,7 @@ TASK FIELDS TO EXTRACT (update the "draft" object):
 - requirements: Specific skills, tools, or qualifications needed
 - deadline: When this needs to be done (ISO date or null)
 - flags: Array of relevant tags like ["urgent", "heavy_lifting", "vehicle_needed", "inside_home", "people_present", "pets_present"]
-- isReadyToPost: Set to true ONLY when you have at minimum: title, description, price, and location (city/state or Anywhere)
+- isReadyToPost: Set to true ONLY when you have at minimum: title, description, price, and location (full address or Anywhere)
 
 TEMPLATE ASSIGNMENT RULES (assign ONE templateSlug):
 - "standard_physical": Delivery, moving, yard work, shopping, assembly, outdoor tasks
@@ -83,9 +84,9 @@ When you assign a template, INFORM the user about the implications:
 
 IMPORTANT RULES:
 - Every task is IN PERSON. There is no "Remote" option. All tasks require physical presence.
-- When asking about location, ask "What city are you in?" or "Where should the hustler come?"
-- If user says a city name, extract the city and state. If user says "anywhere" or "no preference", set locationCity to "Anywhere".
-- Always ask about the service radius (25, 50, 75, or 100 miles) after getting the city.
+- When asking about location, ask "What's the address?" or "Where should the hustler come?" — collect the full street address, city, state, and ZIP so the task can be pinned precisely on the map.
+- If user says "anywhere" or "no preference", set locationCity to "Anywhere" and leave locationStreet/locationState/locationZip null.
+- Do NOT ask about a service radius — tasks are pinned to a specific address, not a radius.
 
 CONVERSATION RULES:
 1. Be concise and friendly. No corporate speak.
@@ -114,9 +115,10 @@ RESPONSE FORMAT (strict JSON):
     "title": "string or null",
     "description": "string or null",
     "suggestedPriceCents": number or null,
+    "locationStreet": "street address or null",
     "locationCity": "city name or Anywhere",
     "locationState": "two-letter state code or null",
-    "locationRadiusMiles": 25 or 50 or 75 or 100,
+    "locationZip": "ZIP code or null",
     "estimatedDurationMinutes": number or null (TOTAL minutes — sum all sessions for recurring tasks),
     "difficulty": "easy|medium|hard or null",
     "category": "string or null",
@@ -135,9 +137,10 @@ const AIConverseResponseSchema = z.object({
     title: z.string().nullable().optional(),
     description: z.string().nullable().optional(),
     suggestedPriceCents: z.number().nullable().optional(),
+    locationStreet: z.string().nullable().optional(),
     locationCity: z.string().nullable().optional(),
     locationState: z.string().nullable().optional(),
-    locationRadiusMiles: z.number().nullable().optional(),
+    locationZip: z.string().nullable().optional(),
     estimatedDurationMinutes: z.number().nullable().optional(),
     difficulty: z.enum(['easy', 'medium', 'hard']).nullable().optional(),
     category: z.string().nullable().optional(),
@@ -637,9 +640,10 @@ export const taskRouter = router({
         title: z.string().optional(),
         description: z.string().optional(),
         suggestedPriceCents: z.number().optional(),
+        locationStreet: z.string().optional(),
         locationCity: z.string().optional(),
         locationState: z.string().optional(),
-        locationRadiusMiles: z.number().optional(),
+        locationZip: z.string().optional(),
         estimatedDurationMinutes: z.number().optional(),
         difficulty: z.string().optional(),
         category: z.string().optional(),
