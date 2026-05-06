@@ -80,7 +80,7 @@ describe('skills.getCategories', () => {
 
   it('returns categories from WorkerSkillService', async () => {
     const categories = [{ id: '1', name: 'Cleaning' }, { id: '2', name: 'Moving' }];
-    mockService.getCategories.mockResolvedValueOnce(categories);
+    mockService.getCategories.mockResolvedValueOnce({ success: true, data: categories });
 
     const result = await makeCaller(false).getCategories();
 
@@ -94,7 +94,7 @@ describe('skills.getSkills', () => {
 
   it('returns skills without category filter', async () => {
     const skills = [{ id: '1', name: 'Vacuuming' }];
-    mockService.getSkills.mockResolvedValueOnce(skills);
+    mockService.getSkills.mockResolvedValueOnce({ success: true, data: skills });
 
     const result = await makeCaller(false).getSkills();
 
@@ -103,7 +103,7 @@ describe('skills.getSkills', () => {
   });
 
   it('passes categoryId to service when provided', async () => {
-    mockService.getSkills.mockResolvedValueOnce([]);
+    mockService.getSkills.mockResolvedValueOnce({ success: true, data: [] });
 
     await makeCaller(false).getSkills({ categoryId: TEST_UUID });
 

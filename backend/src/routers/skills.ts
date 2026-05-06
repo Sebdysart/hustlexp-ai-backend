@@ -11,13 +11,24 @@ import { router, publicProcedure, hustlerProcedure } from '../trpc.js';
 import { WorkerSkillService } from '../services/WorkerSkillService.js';
 import { db } from '../db.js';
 import { cachedDbQuery, invalidateSkills, CACHE_TTL, CACHE_TAGS } from '../cache/db-cache.js';
+import type { ServiceResult } from '../types.js';
+
+/** WorkerSkillService returns ServiceResult; tRPC clients expect the payload only. */
+function unwrapServiceResult<T>(result: ServiceResult<T>): T {
+  if (result.success) return result.data;
+  throw new TRPCError({
+    code: 'INTERNAL_SERVER_ERROR',
+    message: result.error.message,
+  });
+}
 
 export const skillsRouter = router({
   // Public: Browse skill catalog (cached)
   getCategories: publicProcedure.input(z.void()).query(async () => {
     return cachedDbQuery(
-      'skills:categories',
-      () => WorkerSkillService.getCategories(),
+      // v2: cache stored bare arrays (unwrap ServiceResult); bump key to avoid stale wrapped JSON
+      'skills:categories:v2',
+      async () => unwrapServiceResult(await WorkerSkillService.getCategories()),
       { tags: [CACHE_TAGS.SKILLS], ttl: CACHE_TTL.userStats }
     );
   }),
@@ -25,10 +36,10 @@ export const skillsRouter = router({
   getSkills: publicProcedure
     .input(z.object({ categoryId: z.string().uuid().optional() }).optional())
     .query(async ({ input }) => {
-      const key = `skills:list:${input?.categoryId ?? 'all'}`;
+      const key = `skills:list:v2:${input?.categoryId ?? 'all'}`;
       return cachedDbQuery(
         key,
-        () => WorkerSkillService.getSkills(input?.categoryId),
+        async () => unwrapServiceResult(await WorkerSkillService.getSkills(input?.categoryId)),
         { tags: [CACHE_TAGS.SKILLS], ttl: CACHE_TTL.userStats }
       );
     }),
