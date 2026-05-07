@@ -218,7 +218,7 @@ export const DispatchService = {
   async recordPingEvent(
     taskId: string,
     hustlerId: string,
-    eventType: 'ping_viewed' | 'ping_accepted' | 'ping_declined' | 'ping_expired',
+    eventType: 'ping_viewed' | 'ping_accepted' | 'ping_declined' | 'ping_expired' | 'claimed',
     waveNumber?: number
   ): Promise<void> {
     await db.query(
@@ -372,5 +372,108 @@ export const DispatchService = {
       score: r.matchScore,
       waveNumber: 3 as const,
     }));
+  },
+
+  // ── Claim Conversion ────────────────────────────────────────────────────────
+
+  /**
+   * Convert a soft hold into a real task assignment.
+   *
+   * The UPDATE is atomic: it only succeeds if the soft hold is still held by
+   * this hustler and has not expired. If two hustlers race, only one wins.
+   *
+   * After a successful claim:
+   *   1. ETA is calculated from the hustler's last known GPS to the task location.
+   *   2. ETA is stored on the task row for the poster to read.
+   *   3. A `task.dispatch_claimed` outbox event is written so the poster
+   *      receives a real-time SSE update.
+   */
+  async confirmClaim(taskId: string, hustlerId: string): Promise<{
+    taskId: string;
+    estimatedArrivalMinutes: number | null;
+    estimatedArrivalAt: Date | null;
+  }> {
+    // Atomically convert soft_hold_active → claimed
+    const claimResult = await db.query<{
+      latitude: number | null;
+      longitude: number | null;
+    }>(
+      `UPDATE tasks
+          SET state                = 'ACCEPTED',
+              worker_id            = $1,
+              dispatch_state       = 'claimed',
+              soft_hold_hustler_id = NULL,
+              soft_hold_expires_at = NULL,
+              last_dispatched_at   = NOW()
+        WHERE id = $2
+          AND soft_hold_hustler_id = $1
+          AND soft_hold_expires_at > NOW()
+          AND state IN ('OPEN', 'MATCHING')
+          AND worker_id IS NULL
+        RETURNING latitude, longitude`,
+      [hustlerId, taskId]
+    );
+
+    if (claimResult.rowCount === 0) {
+      throw new Error('CONFLICT: Soft hold expired or task already claimed by another hustler');
+    }
+
+    const taskLat = claimResult.rows[0].latitude !== null ? Number(claimResult.rows[0].latitude) : null;
+    const taskLng = claimResult.rows[0].longitude !== null ? Number(claimResult.rows[0].longitude) : null;
+
+    // Record claimed event in dispatch_events
+    await DispatchService.recordPingEvent(taskId, hustlerId, 'claimed');
+
+    // Calculate ETA from hustler's last GPS → task location
+    let etaMinutes: number | null = null;
+    let etaAt: Date | null = null;
+
+    if (taskLat !== null && taskLng !== null) {
+      const hustlerLoc = await db.query<{
+        last_location_lat: number | null;
+        last_location_lng: number | null;
+      }>(
+        `SELECT last_location_lat, last_location_lng FROM users WHERE id = $1`,
+        [hustlerId]
+      );
+
+      const hLat = hustlerLoc.rows[0]?.last_location_lat;
+      const hLng = hustlerLoc.rows[0]?.last_location_lng;
+
+      if (hLat !== null && hLat !== undefined && hLng !== null && hLng !== undefined) {
+        const distMiles = DispatchService._haversineDistance(
+          Number(hLat), Number(hLng), taskLat, taskLng
+        );
+        // Estimate at 25 mph urban average, clamped to [2, 120] min
+        etaMinutes = Math.max(2, Math.min(Math.ceil((distMiles / 25) * 60), 120));
+        etaAt = new Date(Date.now() + etaMinutes * 60 * 1000);
+
+        await db.query(
+          `UPDATE tasks
+              SET estimated_arrival_minutes = $1,
+                  estimated_arrival_at      = $2
+            WHERE id = $3`,
+          [etaMinutes, etaAt, taskId]
+        );
+      }
+    }
+
+    // Outbox event → poster sees real-time SSE update
+    await writeToOutbox({
+      eventType: 'task.dispatch_claimed',
+      aggregateType: 'task',
+      aggregateId: taskId,
+      payload: {
+        taskId,
+        hustlerId,
+        estimatedArrivalMinutes: etaMinutes,
+        estimatedArrivalAt: etaAt?.toISOString() ?? null,
+      },
+      queueName: 'user_notifications',
+      idempotencyKey: `dispatch_claimed_${taskId}`,
+    });
+
+    log.info({ taskId, hustlerId, etaMinutes }, 'Task claimed via Smart Dispatch');
+    return { taskId, estimatedArrivalMinutes: etaMinutes, estimatedArrivalAt: etaAt };
   },
 };

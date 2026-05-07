@@ -18,7 +18,7 @@
 
 import { z } from 'zod';
 import { router } from '../trpc.js';
-import { hustlerProcedure, protectedProcedure } from '../trpc.js';
+import { hustlerProcedure, posterProcedure, protectedProcedure } from '../trpc.js';
 import { TRPCError } from '@trpc/server';
 import { GoModeService } from '../services/GoModeService.js';
 import { SoftHoldManager } from '../services/SoftHoldManager.js';
@@ -203,5 +203,89 @@ export const dispatchRouter = router({
       const userId = ctx.user!.id;
       const released = await SoftHoldManager.release(input.taskId, userId);
       return { released };
+    }),
+
+  // ── Claim Conversion ──────────────────────────────────────────────────────
+
+  confirmClaim: hustlerProcedure
+    .input(z.object({ taskId: z.string().uuid() }))
+    .mutation(async ({ ctx, input }) => {
+      const hustlerId = ctx.user!.id;
+      try {
+        const result = await DispatchService.confirmClaim(input.taskId, hustlerId);
+
+        // Cancel pending wave jobs — non-critical, fire-and-forget
+        const { WaveManager } = await import('../services/WaveManager.js');
+        WaveManager.cancelWaves(input.taskId).catch(() => {});
+
+        return result;
+      } catch (err) {
+        if (err instanceof Error && err.message.startsWith('CONFLICT')) {
+          throw new TRPCError({
+            code: 'CONFLICT',
+            message: 'This task was just taken. Keep Go Mode on for the next ping!',
+          });
+        }
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: err instanceof Error ? err.message : 'Failed to confirm claim',
+        });
+      }
+    }),
+
+  // ── Poster: dispatch status ────────────────────────────────────────────────
+
+  getPosterDispatchStatus: posterProcedure
+    .input(z.object({ taskId: z.string().uuid() }))
+    .query(async ({ ctx, input }) => {
+      const { taskId } = input;
+
+      const taskResult = await db.query<{
+        dispatch_state: string | null;
+        wave_number: number | null;
+        fulfillment_mode: string | null;
+        soft_hold_expires_at: Date | null;
+        estimated_arrival_minutes: number | null;
+        estimated_arrival_at: Date | null;
+      }>(
+        `SELECT dispatch_state, wave_number, fulfillment_mode, soft_hold_expires_at,
+                estimated_arrival_minutes, estimated_arrival_at
+           FROM tasks
+          WHERE id = $1 AND poster_id = $2`,
+        [taskId, ctx.user!.id]
+      );
+
+      if (taskResult.rowCount === 0) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
+      }
+
+      const task = taskResult.rows[0];
+
+      const eventsResult = await db.query<{
+        event_type: string;
+        wave_number: number | null;
+        created_at: Date;
+      }>(
+        `SELECT event_type, wave_number, created_at
+           FROM dispatch_events
+          WHERE task_id = $1
+          ORDER BY created_at DESC
+          LIMIT 20`,
+        [taskId]
+      );
+
+      return {
+        dispatchState: task.dispatch_state ?? 'idle',
+        waveNumber: task.wave_number ?? 0,
+        fulfillmentMode: task.fulfillment_mode ?? 'broadcast',
+        softHoldExpiresAt: task.soft_hold_expires_at ?? null,
+        estimatedArrivalMinutes: task.estimated_arrival_minutes ?? null,
+        estimatedArrivalAt: task.estimated_arrival_at ?? null,
+        events: eventsResult.rows.map(r => ({
+          eventType: r.event_type,
+          waveNumber: r.wave_number ?? 0,
+          createdAt: r.created_at,
+        })),
+      };
     }),
 });

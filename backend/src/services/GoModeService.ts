@@ -16,6 +16,7 @@
  */
 
 import { db } from '../db.js';
+import { writeToOutbox } from '../lib/outbox-helpers.js';
 import { logger as serviceLogger } from '../logger.js';
 
 const log = serviceLogger.child({ service: 'GoModeService' });
@@ -118,6 +119,10 @@ export const GoModeService = {
 
     const row = result.rows[0];
     const isOnline = GoModeService._deriveIsOnline(row.go_mode, row.location_updated_at);
+
+    // Recalculate ETA for any active smart-dispatch claimed task
+    await GoModeService._refreshETAForClaimedTask(userId, lat, lng).catch(() => {});
+
     return {
       goMode: row.go_mode,
       isOnline,
@@ -261,6 +266,83 @@ export const GoModeService = {
       cancellationRate: Number(row.cancellation_rate),
       preferredCategories: row.preferred_categories ?? [],
     }));
+  },
+
+  /**
+   * Recalculate and persist ETA for any active smart-dispatch claimed task
+   * belonging to this hustler. Called on every location update (every ~30 s).
+   * Writes a `task.eta_updated` outbox event so the poster's screen refreshes.
+   */
+  async _refreshETAForClaimedTask(
+    hustlerId: string,
+    hustlerLat: number,
+    hustlerLng: number
+  ): Promise<void> {
+    const claimedTask = await db.query<{
+      id: string;
+      latitude: number | null;
+      longitude: number | null;
+    }>(
+      `SELECT id, latitude, longitude
+         FROM tasks
+        WHERE worker_id       = $1
+          AND dispatch_state  = 'claimed'
+          AND fulfillment_mode = 'smart_dispatch'
+          AND state IN ('ACCEPTED', 'IN_PROGRESS')
+          AND latitude IS NOT NULL
+          AND longitude IS NOT NULL
+        LIMIT 1`,
+      [hustlerId]
+    );
+
+    if (claimedTask.rowCount === 0) return;
+
+    const task = claimedTask.rows[0];
+    const distMiles = GoModeService._haversineDistanceMiles(
+      hustlerLat, hustlerLng,
+      Number(task.latitude), Number(task.longitude)
+    );
+    const etaMinutes = Math.max(2, Math.min(Math.ceil((distMiles / 25) * 60), 120));
+    const etaAt = new Date(Date.now() + etaMinutes * 60 * 1000);
+
+    await db.query(
+      `UPDATE tasks
+          SET estimated_arrival_minutes = $1,
+              estimated_arrival_at      = $2
+        WHERE id = $3`,
+      [etaMinutes, etaAt, task.id]
+    );
+
+    await writeToOutbox({
+      eventType: 'task.eta_updated',
+      aggregateType: 'task',
+      aggregateId: task.id,
+      payload: {
+        taskId: task.id,
+        estimatedArrivalMinutes: etaMinutes,
+        estimatedArrivalAt: etaAt.toISOString(),
+      },
+      queueName: 'user_notifications',
+      idempotencyKey: `eta_updated_${task.id}_${Math.floor(Date.now() / 30000)}`,
+    });
+
+    log.debug({ taskId: task.id, hustlerId, etaMinutes }, 'ETA refreshed');
+  },
+
+  /** Haversine distance in miles between two GPS points */
+  _haversineDistanceMiles(
+    lat1: number, lng1: number,
+    lat2: number, lng2: number
+  ): number {
+    const R = 3958.8;
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLng = (lng2 - lng1) * Math.PI / 180;
+    const a =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos(lat1 * Math.PI / 180) *
+      Math.cos(lat2 * Math.PI / 180) *
+      Math.sin(dLng / 2) ** 2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   },
 
   /** A hustler is "online" if go_mode=true AND location was updated recently */
