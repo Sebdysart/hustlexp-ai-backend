@@ -67,6 +67,8 @@ interface CreateTaskParams {
   sensitive?: boolean; // Sensitive tasks require higher trust tier (Tier ≥ 3)
   // Template system — set atomically with the INSERT to prevent NULL window on partial failure
   templateSlug?: string;
+  // Smart Dispatch
+  fulfillmentMode?: 'broadcast' | 'smart_dispatch';
   // Recurring task support — links spawned task to parent series
   parentSeriesId?: string;
   occurrenceNumber?: number;
@@ -480,16 +482,17 @@ export const TaskService = {
           location_lat, location_lng,
           category, estimated_duration, deadline, requires_proof,
           risk_level, mode, live_broadcast_radius_miles, instant_mode, sensitive, state,
-          template_slug, parent_series_id, occurrence_number
+          template_slug, parent_series_id, occurrence_number, fulfillment_mode
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
         RETURNING *`,
         [posterId, title, description, finalPrice, xpReward, requirements,
          locationDisplay, params.locationCity || null, params.locationState || null, params.locationRadiusMiles || null,
          params.latitude || null, params.longitude || null,
          category, params.estimatedDuration || null, deadline, requiresProof,
          riskLevel, mode, liveBroadcastRadiusMiles, instantMode, sensitive, initialState, templateSlug || null,
-         params.parentSeriesId || null, params.occurrenceNumber || null]
+         params.parentSeriesId || null, params.occurrenceNumber || null,
+         params.fulfillmentMode ?? 'broadcast']
       );
       
       let createdTask = result.rows[0];

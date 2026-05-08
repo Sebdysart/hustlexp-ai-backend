@@ -468,6 +468,7 @@ export const taskRouter = router({
         liveBroadcastRadiusMiles: input.liveBroadcastRadiusMiles,
         instantMode: input.instantMode,
         templateSlug: template.slug,
+        fulfillmentMode: input.fulfillmentMode,
       });
 
       if (!result.success) {

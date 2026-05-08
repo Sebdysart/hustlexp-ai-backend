@@ -321,6 +321,8 @@ export const Schemas = {
     insideHome: z.boolean().optional(),
     peoplePresent: z.boolean().optional(),
     petsPresent: z.boolean().optional(),
+    // Smart Dispatch
+    fulfillmentMode: z.enum(['broadcast', 'smart_dispatch']).default('broadcast'),
     // FIX 7: Accept these fields in the schema so callers can provide them,
     // but the router will immediately reject them (features not yet implemented).
     prorate_on_abort: z.boolean().optional(),
