@@ -182,8 +182,29 @@ export const WaveManager = {
       dispatchState: task.dispatch_state,
     };
 
+    log.info(
+      {
+        taskId,
+        waveNumber,
+        fulfillmentMode: task.fulfillment_mode,
+        state: task.state,
+        dispatchState: task.dispatch_state,
+        locationLat: dispatchTask.locationLat,
+        locationLng: dispatchTask.locationLng,
+        riskLevel: dispatchTask.riskLevel,
+        sensitive: dispatchTask.sensitive,
+      },
+      'Wave executing — fetching candidates'
+    );
+
     // Get ranked candidates for this wave
     const candidates = await DispatchService.getCandidatesForWave(dispatchTask, waveNumber);
+
+    log.info({ taskId, waveNumber, candidateCount: candidates.length }, 'Candidates resolved for wave');
+
+    if (candidates.length === 0 && waveNumber !== 3) {
+      log.info({ taskId, waveNumber }, 'No candidates in this wave — next wave will attempt');
+    }
 
     if (candidates.length === 0 && waveNumber === 3) {
       // Wave 3 produced no candidates — mark task as dispatch_expired

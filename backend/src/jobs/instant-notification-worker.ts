@@ -73,8 +73,11 @@ export async function processInstantNotificationJob(
     title: string;
     price: number;
     instant_mode: boolean;
+    fulfillment_mode: string;
   }>(
-    `SELECT id, state, title, price, instant_mode FROM tasks WHERE id = $1`,
+    `SELECT id, state, title, price, instant_mode,
+            COALESCE(fulfillment_mode, 'broadcast') AS fulfillment_mode
+       FROM tasks WHERE id = $1`,
     [taskId]
   );
 
@@ -84,9 +87,20 @@ export async function processInstantNotificationJob(
 
   const task = taskResult.rows[0];
 
-  if (!task.instant_mode || task.state !== 'MATCHING') {
-    // Task already accepted or cancelled - don't send notification
-    log.info({ taskId, state: task.state }, 'Task no longer in MATCHING state - skipping notification');
+  log.info({ taskId, state: task.state, instantMode: task.instant_mode, fulfillmentMode: task.fulfillment_mode }, 'Task state at notification time');
+
+  // Smart Dispatch tasks: allow OPEN state (they are not instant_mode=true)
+  const isSmartDispatch = task.fulfillment_mode === 'smart_dispatch';
+  const isInstantMode = task.instant_mode && task.state === 'MATCHING';
+
+  if (!isSmartDispatch && !isInstantMode) {
+    log.info({ taskId, state: task.state, instantMode: task.instant_mode, fulfillmentMode: task.fulfillment_mode }, 'Task not in a notifiable state - skipping notification');
+    return;
+  }
+
+  // Skip if task is already fulfilled/cancelled regardless of mode
+  if (task.state === 'ACCEPTED' || task.state === 'COMPLETED' || task.state === 'CANCELLED') {
+    log.info({ taskId, state: task.state }, 'Task already fulfilled/cancelled - skipping notification');
     return;
   }
 

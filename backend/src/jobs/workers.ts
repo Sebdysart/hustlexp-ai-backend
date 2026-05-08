@@ -78,6 +78,12 @@ function registerWorkers(): void {
         // Realtime task progress updates (Step 10 - Pillar A)
         const { processRealtimeJob } = await import('./realtime-worker');
         await processRealtimeJob(job);
+      } else if (eventType === 'task.dispatch_ping' || eventType === 'task.instant_available') {
+        // Smart Dispatch ping — deliver FCM push with type:"dispatch_ping" payload
+        // iOS PushNotificationManager routes on type to GoModeManager → LivePingView
+        log.info({ eventType, jobId: job.id }, 'Routing to dispatch-ping-worker');
+        const { processDispatchPingJob } = await import('./dispatch-ping-worker');
+        await processDispatchPingJob(job);
       } else {
         // Unknown notification type - log and skip (don't throw)
         log.info({ eventType }, 'Notification type not yet implemented');

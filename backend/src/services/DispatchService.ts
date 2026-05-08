@@ -81,6 +81,21 @@ export const DispatchService = {
     const riskTier = task.riskLevel === 'HIGH' || task.riskLevel === 'IN_HOME' ? 3 : 1;
     const effectiveMinTier = Math.max(baseTier, riskTier);
 
+    log.info(
+      {
+        taskId: task.id,
+        waveNumber,
+        isSmartDispatch,
+        baseTier,
+        riskTier,
+        effectiveMinTier,
+        radiusMiles: waveConf.radiusMiles,
+        requireOnline: waveConf.requireOnline,
+        hasCoords: task.locationLat !== null,
+      },
+      'getCandidatesForWave — tier thresholds resolved'
+    );
+
     let candidates: DispatchCandidate[] = [];
 
     if (waveConf.requireOnline) {
@@ -93,8 +108,18 @@ export const DispatchService = {
           )
         : await GoModeService.getOnlineHustlers();
 
+      log.info(
+        { taskId: task.id, waveNumber, onlineCount: online.length, effectiveMinTier },
+        'Online hustlers fetched — filtering by trust tier'
+      );
+
       // Filter by trust tier
       const eligible = online.filter(h => h.trustTier >= effectiveMinTier);
+
+      log.info(
+        { taskId: task.id, waveNumber, eligibleCount: eligible.length, droppedByTier: online.length - eligible.length },
+        'Trust tier filter applied'
+      );
 
       // Score and sort
       const scored = eligible.map(h => ({
