@@ -129,7 +129,7 @@ export const dispatchRouter = router({
         `INSERT INTO hustler_dispatch_prefs
            (user_id, max_distance_miles, min_payout_cents, preferred_categories,
             auto_accept, ping_sound_enabled, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, NOW())
+         VALUES ($1, $2, $3, $4, COALESCE($5, false), COALESCE($6, true), NOW())
          ON CONFLICT (user_id) DO UPDATE SET
            max_distance_miles   = COALESCE($2, hustler_dispatch_prefs.max_distance_miles),
            min_payout_cents     = COALESCE($3, hustler_dispatch_prefs.min_payout_cents),
