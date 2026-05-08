@@ -24,7 +24,7 @@ import { writeToOutbox } from '../lib/outbox-helpers.js';
 import { GoModeService, type OnlineHustler } from './GoModeService.js';
 import { MatchmakerAIService } from './MatchmakerAIService.js';
 import { PlanService } from './PlanService.js';
-import { MIN_INSTANT_TIER, MIN_SENSITIVE_INSTANT_TIER } from './InstantTrustConfig.js';
+import { MIN_INSTANT_TIER, MIN_SENSITIVE_INSTANT_TIER, MIN_SMART_DISPATCH_TIER } from './InstantTrustConfig.js';
 import { logger as serviceLogger } from '../logger.js';
 
 const log = serviceLogger.child({ service: 'DispatchService' });
@@ -71,10 +71,15 @@ export const DispatchService = {
   ): Promise<DispatchCandidate[]> {
     const waveConf = WAVE_CONFIG[waveNumber];
 
-    // Determine minimum trust tier
-    const minTier = task.sensitive ? MIN_SENSITIVE_INSTANT_TIER : MIN_INSTANT_TIER;
+    // Determine minimum trust tier.
+    // Smart Dispatch is a routing mechanism (not IEM) — allow Rookie (tier 1) hustlers.
+    // Instant Execution Mode keeps the stricter MIN_INSTANT_TIER = 2 requirement.
+    const isSmartDispatch = task.fulfillmentMode === 'smart_dispatch';
+    const baseTier = isSmartDispatch
+      ? MIN_SMART_DISPATCH_TIER
+      : task.sensitive ? MIN_SENSITIVE_INSTANT_TIER : MIN_INSTANT_TIER;
     const riskTier = task.riskLevel === 'HIGH' || task.riskLevel === 'IN_HOME' ? 3 : 1;
-    const effectiveMinTier = Math.max(minTier, riskTier);
+    const effectiveMinTier = Math.max(baseTier, riskTier);
 
     let candidates: DispatchCandidate[] = [];
 
