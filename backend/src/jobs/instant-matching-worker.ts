@@ -89,18 +89,20 @@ export async function processInstantMatchingJob(
 
   const task = taskResult.rows[0];
 
-  if (!task.instant_mode || task.state !== 'MATCHING') {
-    // Task already accepted or cancelled
-    log.info({ taskId, state: task.state }, 'Task no longer in MATCHING state');
-    return;
-  }
-
-  // Smart dispatch: delegate to WaveManager instead of broadcasting to all
+  // Smart dispatch: delegate to WaveManager regardless of instant_mode or state.
+  // Smart dispatch tasks start in OPEN state (not MATCHING), so this branch must
+  // run before the instant_mode guard below which would otherwise block them.
   if (task.fulfillment_mode === 'smart_dispatch') {
     const { WaveManager } = await import('../services/WaveManager.js');
     await WaveManager.initiateDispatch(taskId);
     const latency = Date.now() - startTime;
     log.info({ taskId, latency, fulfillmentMode: 'smart_dispatch' }, 'Smart dispatch initiated');
+    return;
+  }
+
+  if (!task.instant_mode || task.state !== 'MATCHING') {
+    // Task already accepted or cancelled
+    log.info({ taskId, state: task.state }, 'Task no longer in MATCHING state');
     return;
   }
 

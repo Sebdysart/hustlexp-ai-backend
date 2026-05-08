@@ -504,14 +504,14 @@ export const TaskService = {
           `UPDATE tasks SET matched_at = NOW() WHERE id = $1`,
           [createdTask.id]
         );
-        
+
         // Reload task to get matched_at
         const reloaded = await db.query<Task>(
           `SELECT * FROM tasks WHERE id = $1`,
           [createdTask.id]
         );
         createdTask = reloaded.rows[0];
-        
+
         // Enqueue matching broadcast job (non-blocking)
         await writeToOutbox({
           eventType: 'task.instant_matching_started',
@@ -520,7 +520,21 @@ export const TaskService = {
           eventVersion: 1,
           idempotencyKey: `task.instant_matching_started:${createdTask.id}`,
           payload: { taskId: createdTask.id, location, riskLevel },
-          queueName: 'critical_payments', // Use critical queue for instant tasks
+          queueName: 'critical_payments',
+        });
+      }
+
+      // Smart dispatch: trigger wave sequence for non-instant smart_dispatch tasks.
+      // Instant smart_dispatch tasks are already handled by the block above.
+      if (params.fulfillmentMode === 'smart_dispatch' && !instantMode) {
+        await writeToOutbox({
+          eventType: 'task.instant_matching_started',
+          aggregateType: 'task',
+          aggregateId: createdTask.id,
+          eventVersion: 1,
+          idempotencyKey: `task.instant_matching_started:${createdTask.id}`,
+          payload: { taskId: createdTask.id, location, riskLevel },
+          queueName: 'critical_payments',
         });
       }
       
