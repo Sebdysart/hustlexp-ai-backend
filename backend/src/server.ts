@@ -1289,6 +1289,18 @@ async function startServer() {
       ],
     },
   }, `HustleXP server listening on http://localhost:${config.app.port}`);
+
+  // Start BullMQ workers + outbox poller in-process so Railway single-web-service
+  // deployments process outbox events even when the separate `worker` dyno is not running.
+  try {
+    const { registerWorkers } = await import('./jobs/workers.js');
+    const { startOutboxWorker } = await import('./jobs/outbox-worker.js');
+    registerWorkers();
+    startOutboxWorker(5000);
+    startLog.info('BullMQ workers + outbox poller started inline (poll interval 5s)');
+  } catch (bwErr) {
+    startLog.error({ err: bwErr }, 'Failed to start inline workers — background jobs will not run');
+  }
 }
 
 // Start server
