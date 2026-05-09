@@ -295,7 +295,7 @@ export const dispatchRouter = router({
   // making Smart Dispatch testable on Simulator and providing a push fallback
   // on real devices in case FCM delivery is delayed.
 
-  getActivePing: hustlerProcedure
+  getActivePing: protectedProcedure
     .query(async ({ ctx }) => {
       const hustlerId = ctx.user!.id;
 
