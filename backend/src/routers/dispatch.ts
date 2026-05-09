@@ -288,4 +288,66 @@ export const dispatchRouter = router({
         })),
       };
     }),
+
+  // ── Active Ping Polling ────────────────────────────────────────────────────
+  // iOS Simulator cannot receive real FCM pushes (no APNs connection).
+  // This endpoint lets GoModeManager poll every ~3 s to discover pending pings,
+  // making Smart Dispatch testable on Simulator and providing a push fallback
+  // on real devices in case FCM delivery is delayed.
+
+  getActivePing: hustlerProcedure
+    .query(async ({ ctx }) => {
+      const hustlerId = ctx.user!.id;
+
+      // Find the most recent wave_started event for this hustler that:
+      //  - arrived within the last 30 s (ping window)
+      //  - has no terminal follow-up (accepted / declined / expired / claimed)
+      //  - belongs to a task that is still dispatchable
+      const result = await db.query<{
+        task_id: string;
+        wave_number: number;
+        event_created_at: Date;
+        title: string;
+        price: number;
+        location: string | null;
+      }>(
+        `SELECT de.task_id,
+                de.wave_number,
+                de.created_at        AS event_created_at,
+                t.title,
+                t.price,
+                t.location
+           FROM dispatch_events de
+           JOIN tasks t ON t.id = de.task_id
+          WHERE de.hustler_id = $1
+            AND de.event_type   = 'wave_started'
+            AND de.created_at   > NOW() - INTERVAL '30 seconds'
+            AND t.state NOT IN  ('ACCEPTED', 'COMPLETED', 'CANCELLED')
+            AND NOT EXISTS (
+              SELECT 1 FROM dispatch_events de2
+               WHERE de2.task_id    = de.task_id
+                 AND de2.hustler_id = de.hustler_id
+                 AND de2.event_type IN ('ping_accepted','ping_declined','ping_expired','claimed')
+            )
+          ORDER BY de.created_at DESC
+          LIMIT 1`,
+        [hustlerId]
+      );
+
+      if (result.rowCount === 0) return null;
+
+      const row = result.rows[0];
+      const expiresAt = new Date(
+        new Date(row.event_created_at).getTime() + 30 * 1000
+      ).toISOString();
+
+      return {
+        taskId:       row.task_id,
+        taskTitle:    row.title,
+        paymentCents: Math.round(Number(row.price)),
+        location:     row.location ?? null,
+        waveNumber:   row.wave_number,
+        expiresAt,
+      };
+    }),
 });
