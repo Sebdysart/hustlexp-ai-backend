@@ -28,7 +28,7 @@ import { db } from '../db.js';
 export const dispatchRouter = router({
   // ── Go Mode ────────────────────────────────────────────────────────────────
 
-  setGoMode: hustlerProcedure
+  setGoMode: protectedProcedure
     .input(z.object({ enabled: z.boolean() }))
     .mutation(async ({ ctx, input }) => {
       const userId = ctx.user!.id;
@@ -42,7 +42,7 @@ export const dispatchRouter = router({
       }
     }),
 
-  updateLocation: hustlerProcedure
+  updateLocation: protectedProcedure
     .input(z.object({
       lat: z.number().min(-90).max(90),
       lng: z.number().min(-180).max(180),
@@ -59,7 +59,7 @@ export const dispatchRouter = router({
       }
     }),
 
-  getStatus: hustlerProcedure
+  getStatus: protectedProcedure
     .input(z.object({}).optional())
     .query(async ({ ctx }) => {
       const userId = ctx.user!.id;
@@ -75,7 +75,7 @@ export const dispatchRouter = router({
 
   // ── Dispatch Preferences ──────────────────────────────────────────────────
 
-  getPrefs: hustlerProcedure
+  getPrefs: protectedProcedure
     .input(z.object({}).optional())
     .query(async ({ ctx }) => {
       const userId = ctx.user!.id;
@@ -114,7 +114,7 @@ export const dispatchRouter = router({
       };
     }),
 
-  setPrefs: hustlerProcedure
+  setPrefs: protectedProcedure
     .input(z.object({
       maxDistanceMiles: z.number().int().min(1).max(100).optional(),
       minPayoutCents: z.number().int().min(0).optional(),
@@ -152,7 +152,7 @@ export const dispatchRouter = router({
 
   // ── Ping Events ────────────────────────────────────────────────────────────
 
-  recordPingEvent: hustlerProcedure
+  recordPingEvent: protectedProcedure
     .input(z.object({
       taskId: z.string(),
       eventType: z.enum(['ping_viewed', 'ping_declined']),
@@ -207,7 +207,7 @@ export const dispatchRouter = router({
 
   // ── Claim Conversion ──────────────────────────────────────────────────────
 
-  confirmClaim: hustlerProcedure
+  confirmClaim: protectedProcedure
     .input(z.object({ taskId: z.string().uuid() }))
     .mutation(async ({ ctx, input }) => {
       const hustlerId = ctx.user!.id;
@@ -451,7 +451,8 @@ export const dispatchRouter = router({
           LIMIT 5`
       );
 
-      // Outbox events related to smart_dispatch tasks in last 10 min
+      // Outbox events for the recent smart_dispatch tasks (any age)
+      const taskIds = tasks.rows.map(t => t.id);
       const outbox = await db.query<{
         id: string;
         event_type: string;
@@ -464,14 +465,22 @@ export const dispatchRouter = router({
         `SELECT oe.id, oe.event_type, oe.aggregate_id, oe.status,
                 oe.attempts, oe.error_message, oe.created_at
            FROM outbox_events oe
-          WHERE oe.created_at > NOW() - INTERVAL '10 minutes'
-            AND oe.event_type IN (
-              'task.instant_matching_started',
-              'task.instant_available',
-              'task.dispatch_ping'
-            )
+          WHERE (
+            -- Recent dispatch events (last 10 min)
+            (oe.created_at > NOW() - INTERVAL '10 minutes'
+             AND oe.event_type IN (
+               'task.instant_matching_started',
+               'task.instant_available',
+               'task.dispatch_ping'
+             ))
+            OR
+            -- All-time events for the specific tasks we found (any age)
+            (oe.aggregate_id = ANY($1)
+             AND oe.event_type = 'task.instant_matching_started')
+          )
           ORDER BY oe.created_at DESC
-          LIMIT 20`
+          LIMIT 20`,
+        [taskIds]
       );
 
       // dispatch_events for this hustler in last 10 min
