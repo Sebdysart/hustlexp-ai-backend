@@ -115,7 +115,7 @@ export async function processOutboxEvents(batchSize: number = 100): Promise<{
             payload: jobPayload,
           },
           {
-            jobId: event.idempotency_key, // Use idempotency key as job ID (prevents duplicates)
+            jobId: event.idempotency_key.replace(/:/g, '_'), // BullMQ forbids ':' in job IDs (used as Redis key separator)
             attempts: 3, // Default attempts (queue config may override)
           }
         );
@@ -224,6 +224,23 @@ export interface OutboxWorkerHandles {
  */
 export function startOutboxWorker(intervalMs: number = 5000): OutboxWorkerHandles {
   log.info({ intervalMs }, 'Starting outbox worker loop');
+
+  // Reset dispatch outbox events that failed due to "Custom Id cannot contain :" bug.
+  // BullMQ forbids colons in job IDs; the fix (replacing : with _) is now in place.
+  // Safe to run every restart — it only touches events whose error matches this exact string.
+  db.query(
+    `UPDATE outbox_events
+     SET status = 'pending', attempts = 0, error_message = NULL
+     WHERE status = 'failed'
+       AND event_type = 'task.instant_matching_started'
+       AND error_message = 'Custom Id cannot contain :'`
+  ).then(r => {
+    if ((r.rowCount ?? 0) > 0) {
+      log.info({ count: r.rowCount }, 'Reset failed dispatch outbox events for retry (colon-in-jobId fix)');
+    }
+  }).catch(err => {
+    log.error({ err }, 'Failed to reset stuck dispatch outbox events');
+  });
 
   // Initial poll (immediate)
   processOutboxEvents(100).catch(error => {
