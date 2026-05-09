@@ -298,11 +298,59 @@ export const dispatchRouter = router({
   getActivePing: protectedProcedure
     .query(async ({ ctx }) => {
       const hustlerId = ctx.user!.id;
+      const log = (await import('../logger.js')).logger.child({ procedure: 'getActivePing', hustlerId });
 
-      // Find the most recent wave_started event for this hustler that:
-      //  - arrived within the last 30 s (ping window)
-      //  - has no terminal follow-up (accepted / declined / expired / claimed)
-      //  - belongs to a task that is still dispatchable
+      // Check 1: Is the hustler online with a fresh location?
+      const hustlerRow = await db.query<{
+        go_mode: boolean;
+        trust_hold: boolean;
+        trust_tier: number;
+        last_location_lat: number | null;
+        location_updated_at: Date | null;
+      }>(
+        `SELECT go_mode, trust_hold, trust_tier, last_location_lat, location_updated_at
+           FROM users WHERE id = $1`,
+        [hustlerId]
+      );
+
+      const h = hustlerRow.rows[0];
+      log.info({
+        goMode: h?.go_mode,
+        trustHold: h?.trust_hold,
+        trustTier: h?.trust_tier,
+        hasLocation: h?.last_location_lat !== null,
+        locationAge: h?.location_updated_at
+          ? `${Math.round((Date.now() - new Date(h.location_updated_at).getTime()) / 1000)}s ago`
+          : 'never',
+      }, '[getActivePing] Hustler state');
+
+      // Check 2: Any dispatch_events (wave_started) for this hustler in the last 5 min?
+      const recentEvents = await db.query<{
+        task_id: string;
+        event_type: string;
+        wave_number: number;
+        created_at: Date;
+      }>(
+        `SELECT task_id, event_type, wave_number, created_at
+           FROM dispatch_events
+          WHERE hustler_id = $1
+            AND created_at > NOW() - INTERVAL '5 minutes'
+          ORDER BY created_at DESC
+          LIMIT 10`,
+        [hustlerId]
+      );
+
+      log.info({
+        recentEventCount: recentEvents.rowCount,
+        events: recentEvents.rows.map(e => ({
+          taskId: e.task_id,
+          type: e.event_type,
+          wave: e.wave_number,
+          age: `${Math.round((Date.now() - new Date(e.created_at).getTime()) / 1000)}s ago`,
+        })),
+      }, '[getActivePing] Recent dispatch_events for hustler');
+
+      // Check 3: Active ping query (30s window)
       const result = await db.query<{
         task_id: string;
         wave_number: number;
@@ -334,12 +382,21 @@ export const dispatchRouter = router({
         [hustlerId]
       );
 
-      if (result.rowCount === 0) return null;
+      log.info({ found: result.rowCount ?? 0 }, '[getActivePing] Active ping query result');
+
+      if ((result.rowCount ?? 0) === 0) return null;
 
       const row = result.rows[0];
       const expiresAt = new Date(
         new Date(row.event_created_at).getTime() + 30 * 1000
       ).toISOString();
+
+      log.info({
+        taskId: row.task_id,
+        waveNumber: row.wave_number,
+        expiresAt,
+        paymentCents: Math.round(Number(row.price)),
+      }, '[getActivePing] Returning active ping');
 
       return {
         taskId:       row.task_id,
@@ -348,6 +405,125 @@ export const dispatchRouter = router({
         location:     row.location ?? null,
         waveNumber:   row.wave_number,
         expiresAt,
+      };
+    }),
+
+  // ── Ping Debug State ─────────────────────────────────────────────────────
+  // Full pipeline snapshot for debugging. Shows everything needed to diagnose
+  // why a hustler is or isn't receiving pings.
+
+  getPingDebugState: protectedProcedure
+    .query(async ({ ctx }) => {
+      const hustlerId = ctx.user!.id;
+
+      // Hustler row
+      const hustlerResult = await db.query<{
+        go_mode: boolean;
+        trust_hold: boolean;
+        trust_tier: number;
+        default_mode: string;
+        account_status: string;
+        last_location_lat: number | null;
+        last_location_lng: number | null;
+        location_updated_at: Date | null;
+      }>(
+        `SELECT go_mode, trust_hold, trust_tier, default_mode, account_status,
+                last_location_lat, last_location_lng, location_updated_at
+           FROM users WHERE id = $1`,
+        [hustlerId]
+      );
+      const hustler = hustlerResult.rows[0] ?? null;
+
+      // Last 5 smart_dispatch tasks (any poster)
+      const tasks = await db.query<{
+        id: string;
+        title: string;
+        state: string;
+        fulfillment_mode: string;
+        dispatch_state: string | null;
+        created_at: Date;
+      }>(
+        `SELECT id, title, state, fulfillment_mode,
+                COALESCE(dispatch_state,'none') AS dispatch_state, created_at
+           FROM tasks
+          WHERE fulfillment_mode = 'smart_dispatch'
+          ORDER BY created_at DESC
+          LIMIT 5`
+      );
+
+      // Outbox events related to smart_dispatch tasks in last 10 min
+      const outbox = await db.query<{
+        id: string;
+        event_type: string;
+        aggregate_id: string;
+        status: string;
+        attempts: number;
+        error_message: string | null;
+        created_at: Date;
+      }>(
+        `SELECT oe.id, oe.event_type, oe.aggregate_id, oe.status,
+                oe.attempts, oe.error_message, oe.created_at
+           FROM outbox_events oe
+          WHERE oe.created_at > NOW() - INTERVAL '10 minutes'
+            AND oe.event_type IN (
+              'task.instant_matching_started',
+              'task.instant_available',
+              'task.dispatch_ping'
+            )
+          ORDER BY oe.created_at DESC
+          LIMIT 20`
+      );
+
+      // dispatch_events for this hustler in last 10 min
+      const dispatchEvents = await db.query<{
+        task_id: string;
+        event_type: string;
+        wave_number: number;
+        created_at: Date;
+      }>(
+        `SELECT task_id, event_type, wave_number, created_at
+           FROM dispatch_events
+          WHERE hustler_id = $1
+            AND created_at > NOW() - INTERVAL '10 minutes'
+          ORDER BY created_at DESC
+          LIMIT 20`,
+        [hustlerId]
+      );
+
+      return {
+        hustler: hustler ? {
+          goMode: hustler.go_mode,
+          trustHold: hustler.trust_hold,
+          trustTier: hustler.trust_tier,
+          defaultMode: hustler.default_mode,
+          accountStatus: hustler.account_status,
+          hasLocation: hustler.last_location_lat !== null,
+          locationAgeSeconds: hustler.location_updated_at
+            ? Math.round((Date.now() - new Date(hustler.location_updated_at).getTime()) / 1000)
+            : null,
+        } : null,
+        recentSmartDispatchTasks: tasks.rows.map(t => ({
+          id: t.id,
+          title: t.title,
+          state: t.state,
+          fulfillmentMode: t.fulfillment_mode,
+          dispatchState: t.dispatch_state,
+          ageSeconds: Math.round((Date.now() - new Date(t.created_at).getTime()) / 1000),
+        })),
+        outboxEvents: outbox.rows.map(e => ({
+          eventType: e.event_type,
+          taskId: e.aggregate_id,
+          status: e.status,
+          attempts: e.attempts,
+          error: e.error_message,
+          ageSeconds: Math.round((Date.now() - new Date(e.created_at).getTime()) / 1000),
+        })),
+        myDispatchEvents: dispatchEvents.rows.map(e => ({
+          taskId: e.task_id,
+          eventType: e.event_type,
+          waveNumber: e.wave_number,
+          ageSeconds: Math.round((Date.now() - new Date(e.created_at).getTime()) / 1000),
+        })),
       };
     }),
 });
