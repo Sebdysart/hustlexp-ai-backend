@@ -350,7 +350,10 @@ export const dispatchRouter = router({
         })),
       }, '[getActivePing] Recent dispatch_events for hustler');
 
-      // Check 3: Active ping query (30s window)
+      // Check 3: Active ping query.
+      // Window is 2 minutes so Simulator polling (no FCM) can still find pings
+      // that fired before the app launched. expiresAt is always NOW()+30s so the
+      // hustler always gets a fresh 30-second countdown from the moment of receipt.
       const result = await db.query<{
         task_id: string;
         wave_number: number;
@@ -369,7 +372,7 @@ export const dispatchRouter = router({
            JOIN tasks t ON t.id = de.task_id
           WHERE de.hustler_id = $1
             AND de.event_type   = 'wave_started'
-            AND de.created_at   > NOW() - INTERVAL '30 seconds'
+            AND de.created_at   > NOW() - INTERVAL '2 minutes'
             AND t.state NOT IN  ('ACCEPTED', 'COMPLETED', 'CANCELLED')
             AND NOT EXISTS (
               SELECT 1 FROM dispatch_events de2
@@ -387,9 +390,9 @@ export const dispatchRouter = router({
       if ((result.rowCount ?? 0) === 0) return null;
 
       const row = result.rows[0];
-      const expiresAt = new Date(
-        new Date(row.event_created_at).getTime() + 30 * 1000
-      ).toISOString();
+      // Always give the hustler 30 seconds from NOW (the moment the poll finds the ping),
+      // not from event_created_at — ensures a full countdown even on Simulator polling.
+      const expiresAt = new Date(Date.now() + 30 * 1000).toISOString();
 
       log.info({
         taskId: row.task_id,
