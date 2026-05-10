@@ -208,8 +208,8 @@ export const GoModeService = {
           AND u.location_updated_at > NOW() - INTERVAL '${freshnessInterval}'
           AND u.default_mode = 'worker'
           AND u.trust_hold = FALSE
-          AND u.account_status = 'active'
-        HAVING 3958.8 * ACOS(
+          AND u.account_status = 'ACTIVE'
+          AND 3958.8 * ACOS(
             LEAST(1, COS(RADIANS($1)) * COS(RADIANS(u.last_location_lat))
             * COS(RADIANS(u.last_location_lng) - RADIANS($2))
             + SIN(RADIANS($1)) * SIN(RADIANS(u.last_location_lat)))
@@ -237,7 +237,7 @@ export const GoModeService = {
           AND u.location_updated_at > NOW() - INTERVAL '${freshnessInterval}'
           AND u.default_mode = 'worker'
           AND u.trust_hold = FALSE
-          AND u.account_status = 'active'
+          AND u.account_status = 'ACTIVE'
         ORDER BY u.acceptance_rate DESC
         LIMIT 50`;
       params = [];

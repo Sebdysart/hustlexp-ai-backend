@@ -267,18 +267,22 @@ export function startOutboxWorker(intervalMs: number = 5000): OutboxWorkerHandle
     if ((r.rowCount ?? 0) > 0) log.info({ count: r.rowCount }, 'Reset colon-failed dispatch outbox events for retry');
   }).catch(err => log.error({ err }, 'Failed to reset colon-failed dispatch events'));
 
-  // Recovery: reset dispatch events that were enqueued to BullMQ but never consumed
-  // (BullMQ workers may not be running). Any event enqueued >2 minutes ago and not yet
-  // processed by a BullMQ worker should be retried via the direct in-process path.
+  // Recovery: reset dispatch events that were enqueued to BullMQ but never consumed,
+  // OR that were processed but produced 0 candidates (account_status case bug now fixed).
+  // Any task.instant_matching_started event whose task dispatch_state is still 'idle'
+  // should be retried — the fix to account_status = 'ACTIVE' may now find candidates.
   db.query(
-    `UPDATE outbox_events
+    `UPDATE outbox_events oe
      SET status = 'pending', attempts = 0, error_message = NULL, enqueued_at = NULL, bullmq_job_id = NULL
-     WHERE status = 'enqueued'
-       AND event_type IN ('task.instant_matching_started', 'task.dispatch_ping')
-       AND enqueued_at < NOW() - INTERVAL '2 minutes'`
+     FROM tasks t
+     WHERE oe.aggregate_id = t.id
+       AND oe.event_type = 'task.instant_matching_started'
+       AND oe.status IN ('enqueued', 'processed')
+       AND t.dispatch_state = 'idle'
+       AND t.state NOT IN ('CANCELLED', 'COMPLETED', 'ACCEPTED')`
   ).then(r => {
-    if ((r.rowCount ?? 0) > 0) log.info({ count: r.rowCount }, 'Reset stale-enqueued dispatch events for direct in-process retry');
-  }).catch(err => log.error({ err }, 'Failed to reset stale-enqueued dispatch events'));
+    if ((r.rowCount ?? 0) > 0) log.info({ count: r.rowCount }, 'Reset dispatch events for idle tasks — will retry with fixed account_status filter');
+  }).catch(err => log.error({ err }, 'Failed to reset idle-task dispatch events'));
 
   // Initial poll (immediate)
   processOutboxEvents(100).catch(error => {
