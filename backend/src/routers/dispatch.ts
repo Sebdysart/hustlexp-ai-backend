@@ -33,7 +33,20 @@ export const dispatchRouter = router({
     .mutation(async ({ ctx, input }) => {
       const userId = ctx.user!.id;
       try {
-        return await GoModeService.setGoMode(userId, input.enabled);
+        const result = await GoModeService.setGoMode(userId, input.enabled);
+
+        // When a hustler goes online, immediately re-dispatch any OPEN smart_dispatch
+        // tasks that expired (waves ran while hustler was offline). Fire-and-forget
+        // so the response is not delayed.
+        if (input.enabled) {
+          redispatchExpiredTasksForHustler(userId).catch(err => {
+            import('../logger.js').then(({ logger }) =>
+              logger.warn({ hustlerId: userId, err: err instanceof Error ? err.message : String(err) }, 'redispatch on go-mode failed (non-fatal)')
+            );
+          });
+        }
+
+        return result;
       } catch (err) {
         throw new TRPCError({
           code: 'INTERNAL_SERVER_ERROR',
@@ -539,3 +552,54 @@ export const dispatchRouter = router({
       };
     }),
 });
+
+// ── Go-Mode Re-dispatch Helper ────────────────────────────────────────────────
+//
+// When a hustler enables Go Mode, find any OPEN smart_dispatch tasks that are
+// expired or stuck mid-dispatch (waves ran while this hustler was offline).
+// Reset them to 'idle' and re-trigger the outbox so wave 1 runs immediately.
+// This ensures hustlers never miss tasks just because they were offline when
+// the original waves fired.
+
+async function redispatchExpiredTasksForHustler(hustlerId: string): Promise<void> {
+  const log = (await import('../logger.js')).logger.child({ fn: 'redispatchExpiredTasksForHustler', hustlerId });
+
+  // Find OPEN smart_dispatch tasks the hustler has never been pinged for
+  // and whose dispatch sequence has ended (expired) or stalled (wave_N with no follow-up).
+  const tasks = await db.query<{ id: string }>(
+    `SELECT t.id
+       FROM tasks t
+      WHERE t.fulfillment_mode = 'smart_dispatch'
+        AND t.state NOT IN ('ACCEPTED', 'COMPLETED', 'CANCELLED')
+        AND t.dispatch_state NOT IN ('fulfilled', 'claimed', 'soft_hold_active')
+        AND NOT EXISTS (
+          SELECT 1 FROM dispatch_events de
+           WHERE de.task_id   = t.id
+             AND de.hustler_id = $1
+        )
+      LIMIT 10`,
+    [hustlerId]
+  );
+
+  if (tasks.rowCount === 0) {
+    log.info('No expired tasks to re-dispatch on go-mode');
+    return;
+  }
+
+  log.info({ count: tasks.rowCount }, 'Re-dispatching tasks for newly-online hustler');
+
+  // Reset each task to idle so _executeWave allows it, then run wave 1 directly.
+  for (const { id: taskId } of tasks.rows) {
+    try {
+      await db.query(
+        `UPDATE tasks SET dispatch_state = 'idle', updated_at = NOW() WHERE id = $1`,
+        [taskId]
+      );
+      const { WaveManager } = await import('../services/WaveManager.js');
+      await WaveManager.initiateDispatch(taskId);
+      log.info({ taskId }, 'Re-dispatched on go-mode enable');
+    } catch (err) {
+      log.warn({ taskId, err: err instanceof Error ? err.message : String(err) }, 'Re-dispatch failed for task (non-fatal)');
+    }
+  }
+}
