@@ -267,22 +267,44 @@ export function startOutboxWorker(intervalMs: number = 5000): OutboxWorkerHandle
     if ((r.rowCount ?? 0) > 0) log.info({ count: r.rowCount }, 'Reset colon-failed dispatch outbox events for retry');
   }).catch(err => log.error({ err }, 'Failed to reset colon-failed dispatch events'));
 
-  // Recovery: reset dispatch events that were enqueued to BullMQ but never consumed,
-  // OR that were processed but produced 0 candidates (account_status case bug now fixed).
-  // Any task.instant_matching_started event whose task dispatch_state is still 'idle'
-  // should be retried — the fix to account_status = 'ACTIVE' may now find candidates.
+  // Recovery A: tasks still idle (GROUP BY / case bug ran 0 waves) — reset failed events.
   db.query(
     `UPDATE outbox_events oe
      SET status = 'pending', attempts = 0, error_message = NULL, enqueued_at = NULL, bullmq_job_id = NULL
      FROM tasks t
      WHERE oe.aggregate_id = t.id
        AND oe.event_type = 'task.instant_matching_started'
-       AND oe.status IN ('enqueued', 'processed')
+       AND oe.status IN ('enqueued', 'processed', 'failed')
        AND t.dispatch_state = 'idle'
        AND t.state NOT IN ('CANCELLED', 'COMPLETED', 'ACCEPTED')`
   ).then(r => {
-    if ((r.rowCount ?? 0) > 0) log.info({ count: r.rowCount }, 'Reset dispatch events for idle tasks — will retry with fixed account_status filter');
-  }).catch(err => log.error({ err }, 'Failed to reset idle-task dispatch events'));
+    if ((r.rowCount ?? 0) > 0) log.info({ count: r.rowCount }, 'Recovery A: reset dispatch events for idle OPEN tasks');
+  }).catch(err => log.error({ err }, 'Recovery A failed'));
+
+  // Recovery B: tasks that expired because all 3 waves found 0 candidates (account_status
+  // case mismatch now fixed). Reset dispatch_state to 'idle' so _executeWave allows retry,
+  // then reset the outbox event so the outbox poller re-triggers the wave sequence.
+  db.query(
+    `UPDATE tasks SET dispatch_state = 'idle', updated_at = NOW()
+     WHERE dispatch_state = 'expired'
+       AND fulfillment_mode = 'smart_dispatch'
+       AND state NOT IN ('CANCELLED', 'COMPLETED', 'ACCEPTED')`
+  ).then(r => {
+    if ((r.rowCount ?? 0) > 0) log.info({ count: r.rowCount }, 'Recovery B: reset expired smart_dispatch tasks to idle');
+  }).catch(err => log.error({ err }, 'Recovery B (task reset) failed'));
+
+  db.query(
+    `UPDATE outbox_events oe
+     SET status = 'pending', attempts = 0, error_message = NULL, enqueued_at = NULL, bullmq_job_id = NULL
+     FROM tasks t
+     WHERE oe.aggregate_id = t.id
+       AND oe.event_type = 'task.instant_matching_started'
+       AND oe.status IN ('enqueued', 'processed', 'failed')
+       AND t.dispatch_state IN ('idle', 'expired')
+       AND t.state NOT IN ('CANCELLED', 'COMPLETED', 'ACCEPTED')`
+  ).then(r => {
+    if ((r.rowCount ?? 0) > 0) log.info({ count: r.rowCount }, 'Recovery B: reset outbox events for expired/idle OPEN tasks');
+  }).catch(err => log.error({ err }, 'Recovery B (outbox reset) failed'));
 
   // Initial poll (immediate)
   processOutboxEvents(100).catch(error => {
