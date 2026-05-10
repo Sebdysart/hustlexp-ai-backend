@@ -95,6 +95,37 @@ export async function processOutboxEvents(batchSize: number = 100): Promise<{
     
     for (const event of result.rows) {
       try {
+        // ── Direct dispatch bypass ────────────────────────────────────────────
+        // Process these event types inline without routing through BullMQ workers,
+        // which may not be running in a single-process Railway deployment.
+
+        if (event.event_type === 'task.instant_matching_started') {
+          const { WaveManager } = await import('../services/WaveManager.js');
+          await WaveManager.initiateDispatch(event.aggregate_id);
+          const u = await db.query(
+            `UPDATE outbox_events SET status = 'processed', processed_at = NOW(), attempts = attempts + 1
+             WHERE id = $1 AND status = 'pending'`,
+            [event.id]
+          );
+          if ((u.rowCount ?? 0) > 0) processed++;
+          continue;
+        }
+
+        if (event.event_type === 'task.dispatch_ping') {
+          const { sendDispatchPing } = await import('./dispatch-ping-worker.js');
+          const payload = event.payload as { taskId: string; hustlerId: string; waveNumber: number; location?: string | null };
+          await sendDispatchPing(payload, event.idempotency_key);
+          const u = await db.query(
+            `UPDATE outbox_events SET status = 'processed', processed_at = NOW(), attempts = attempts + 1
+             WHERE id = $1 AND status = 'pending'`,
+            [event.id]
+          );
+          if ((u.rowCount ?? 0) > 0) processed++;
+          continue;
+        }
+
+        // ── Standard BullMQ enqueue path (all other event types) ─────────────
+
         // Get the appropriate queue
         const queue = getQueue(event.queue_name);
 
@@ -119,7 +150,7 @@ export async function processOutboxEvents(batchSize: number = 100): Promise<{
             attempts: 3, // Default attempts (queue config may override)
           }
         );
-        
+
         // Mark outbox event as enqueued (with WHERE status = 'pending' to prevent double-enqueue)
         // Only update if still pending (prevents race condition if two workers both locked the same row)
         const updateResult = await db.query(
@@ -132,13 +163,13 @@ export async function processOutboxEvents(batchSize: number = 100): Promise<{
              AND status = 'pending'`, // CRITICAL: Only update if still pending (prevents double-enqueue)
           [job.id || event.idempotency_key, event.id]
         );
-        
+
         // If update affected 0 rows, another worker already processed this event
         if (updateResult.rowCount === 0) {
           log.warn({ eventId: event.id }, 'Outbox event already processed by another worker, skipping');
           continue; // Skip to next event
         }
-        
+
         processed++;
       } catch (error) {
         failed++;
@@ -225,22 +256,29 @@ export interface OutboxWorkerHandles {
 export function startOutboxWorker(intervalMs: number = 5000): OutboxWorkerHandles {
   log.info({ intervalMs }, 'Starting outbox worker loop');
 
-  // Reset dispatch outbox events that failed due to "Custom Id cannot contain :" bug.
-  // BullMQ forbids colons in job IDs; the fix (replacing : with _) is now in place.
-  // Safe to run every restart — it only touches events whose error matches this exact string.
+  // Recovery: reset dispatch events that failed due to the "Custom Id cannot contain :" bug.
   db.query(
     `UPDATE outbox_events
      SET status = 'pending', attempts = 0, error_message = NULL
      WHERE status = 'failed'
-       AND event_type = 'task.instant_matching_started'
+       AND event_type IN ('task.instant_matching_started', 'task.dispatch_ping')
        AND error_message = 'Custom Id cannot contain :'`
   ).then(r => {
-    if ((r.rowCount ?? 0) > 0) {
-      log.info({ count: r.rowCount }, 'Reset failed dispatch outbox events for retry (colon-in-jobId fix)');
-    }
-  }).catch(err => {
-    log.error({ err }, 'Failed to reset stuck dispatch outbox events');
-  });
+    if ((r.rowCount ?? 0) > 0) log.info({ count: r.rowCount }, 'Reset colon-failed dispatch outbox events for retry');
+  }).catch(err => log.error({ err }, 'Failed to reset colon-failed dispatch events'));
+
+  // Recovery: reset dispatch events that were enqueued to BullMQ but never consumed
+  // (BullMQ workers may not be running). Any event enqueued >2 minutes ago and not yet
+  // processed by a BullMQ worker should be retried via the direct in-process path.
+  db.query(
+    `UPDATE outbox_events
+     SET status = 'pending', attempts = 0, error_message = NULL, enqueued_at = NULL, bullmq_job_id = NULL
+     WHERE status = 'enqueued'
+       AND event_type IN ('task.instant_matching_started', 'task.dispatch_ping')
+       AND enqueued_at < NOW() - INTERVAL '2 minutes'`
+  ).then(r => {
+    if ((r.rowCount ?? 0) > 0) log.info({ count: r.rowCount }, 'Reset stale-enqueued dispatch events for direct in-process retry');
+  }).catch(err => log.error({ err }, 'Failed to reset stale-enqueued dispatch events'));
 
   // Initial poll (immediate)
   processOutboxEvents(100).catch(error => {

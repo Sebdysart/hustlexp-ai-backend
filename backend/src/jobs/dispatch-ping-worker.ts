@@ -41,15 +41,21 @@ interface DispatchPingJobData {
   payload: DispatchPingJobPayload;
 }
 
-export async function processDispatchPingJob(job: Job<DispatchPingJobData>): Promise<void> {
+/**
+ * Core dispatch-ping logic, callable directly (bypassing BullMQ).
+ * Used by the outbox worker when BullMQ workers are not consuming.
+ */
+export async function sendDispatchPing(
+  payload: DispatchPingJobPayload,
+  jobId?: string
+): Promise<void> {
   const startTime = Date.now();
-  const payload = job.data.payload as DispatchPingJobPayload;
   const { taskId, hustlerId, waveNumber, location } = payload;
 
-  log.info({ jobId: job.id, taskId, hustlerId, waveNumber }, 'Dispatch ping job started');
+  log.info({ jobId, taskId, hustlerId, waveNumber }, 'Dispatch ping job started');
 
   if (!taskId || !hustlerId) {
-    log.error({ jobId: job.id, payload }, 'Dispatch ping job missing taskId or hustlerId — dropping');
+    log.error({ jobId, payload }, 'Dispatch ping job missing taskId or hustlerId — dropping');
     return;
   }
 
@@ -79,7 +85,6 @@ export async function processDispatchPingJob(job: Job<DispatchPingJobData>): Pro
     'Task state at ping delivery time'
   );
 
-  // Skip if task is no longer in a pingable state
   if (
     task.state === 'ACCEPTED' ||
     task.state === 'COMPLETED' ||
@@ -94,7 +99,6 @@ export async function processDispatchPingJob(job: Job<DispatchPingJobData>): Pro
     return;
   }
 
-  // Verify the hustler exists and is not on trust hold
   const hustlerResult = await db.query<{ id: string; trust_hold: boolean; go_mode: boolean }>(
     `SELECT id, trust_hold, COALESCE(go_mode, false) AS go_mode FROM users WHERE id = $1`,
     [hustlerId]
@@ -114,7 +118,6 @@ export async function processDispatchPingJob(job: Job<DispatchPingJobData>): Pro
 
   log.info({ taskId, hustlerId, goMode: hustler.go_mode }, 'Hustler eligible — sending FCM dispatch ping');
 
-  // Build FCM data payload — all values must be strings for FCM data messages
   const paymentCents = Math.round(Number(task.price));
   const fcmData: Record<string, string> = {
     type: 'dispatch_ping',
@@ -147,4 +150,8 @@ export async function processDispatchPingJob(job: Job<DispatchPingJobData>): Pro
       ? 'Dispatch ping FCM delivered'
       : 'Dispatch ping FCM sent but no active tokens found (hustler may not have FCM token registered)'
   );
+}
+
+export async function processDispatchPingJob(job: Job<DispatchPingJobData>): Promise<void> {
+  await sendDispatchPing(job.data.payload as DispatchPingJobPayload, job.id);
 }

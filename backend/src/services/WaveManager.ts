@@ -46,41 +46,27 @@ export const WaveManager = {
    * If BullMQ is unavailable, wave 1 runs synchronously and waves 2/3 are skipped.
    */
   async initiateDispatch(taskId: string): Promise<void> {
-    log.info({ taskId }, 'Initiating smart dispatch wave sequence');
+    log.info({ taskId }, 'Initiating smart dispatch wave sequence (in-process)');
 
-    if (!config.redis.url) {
-      log.warn({ taskId }, 'Redis not configured — running wave 1 synchronously, waves 2/3 skipped');
-      await WaveManager._executeWave(taskId, 1);
-      return;
-    }
+    // Wave 1: always execute synchronously — no BullMQ worker dependency.
+    await WaveManager._executeWave(taskId, 1);
 
-    try {
-      const queue = getQueue('task_dispatch');
-
-      // Enqueue all 3 waves. Wave 1 runs immediately, 2 & 3 are delayed.
-      for (const wave of [1, 2, 3] as const) {
-        await queue.add(
-          'dispatch.wave',
-          { taskId, waveNumber: wave } satisfies WaveJobData,
-          {
-            delay: WAVE_DELAYS_MS[wave],
-            jobId: `dispatch:wave:${taskId}:${wave}`,
-            // If task was already fulfilled, we want to be able to remove the job
-            removeOnComplete: { count: 1 },
-            removeOnFail: { count: 5 },
-          }
-        );
-      }
-
-      log.info({ taskId }, 'All 3 wave jobs enqueued');
-    } catch (err) {
-      // BullMQ connection error — fall back to synchronous wave 1
-      log.warn(
-        { taskId, err: err instanceof Error ? err.message : String(err) },
-        'BullMQ unavailable — falling back to synchronous wave 1'
+    // Waves 2 & 3: schedule via in-process timer.
+    // If the server restarts before these fire they are lost (acceptable for
+    // pre-production; migrate back to BullMQ once worker connectivity is stable).
+    setTimeout(() => {
+      WaveManager._executeWave(taskId, 2).catch(err =>
+        log.error({ taskId, err: err instanceof Error ? err.message : String(err) }, 'Wave 2 execution failed')
       );
-      await WaveManager._executeWave(taskId, 1);
-    }
+    }, WAVE_DELAYS_MS[2]);
+
+    setTimeout(() => {
+      WaveManager._executeWave(taskId, 3).catch(err =>
+        log.error({ taskId, err: err instanceof Error ? err.message : String(err) }, 'Wave 3 execution failed')
+      );
+    }, WAVE_DELAYS_MS[3]);
+
+    log.info({ taskId, wave2DelayMs: WAVE_DELAYS_MS[2], wave3DelayMs: WAVE_DELAYS_MS[3] }, 'Wave 1 complete — waves 2 & 3 scheduled');
   },
 
   /**
