@@ -133,7 +133,11 @@ export async function sendDispatchPing(
   const pushTitle = `New task — wave ${waveNumber}`;
   const pushBody = `${task.title} — $${(paymentCents / 100).toFixed(2)}${location ? ` • ${location}` : ''}`;
 
-  const result = await sendPushNotification(hustlerId, pushTitle, pushBody, fcmData);
+  // dataOnly=true → silent background push (content-available:1, no banner).
+  // The app wakes via didReceiveRemoteNotification, shows LivePingView itself.
+  // A standard notification message would only deliver to the app when the user taps the banner,
+  // which is too slow for a 30-second countdown.
+  const result = await sendPushNotification(hustlerId, pushTitle, pushBody, fcmData, false, true);
 
   const latency = Date.now() - startTime;
   log.info(

@@ -95,10 +95,12 @@ export function sanitizePushBody(body: string, sensitive = false): string {
  * to suppress all location context entirely.
  *
  * @param userId    Target user ID
- * @param title     Notification title
- * @param body      Notification body text (will be sanitized)
+ * @param title     Notification title (ignored when dataOnly=true)
+ * @param body      Notification body text (will be sanitized, ignored when dataOnly=true)
  * @param data      Optional key-value data payload
  * @param sensitive When true, body is replaced with a generic message
+ * @param dataOnly  When true, sends a silent background push (no banner) with content-available:1.
+ *                  Use for dispatch pings — lets the app wake in background and show its own UI.
  * @returns Delivery result with sent/failed counts
  */
 export async function sendPushNotification(
@@ -106,7 +108,8 @@ export async function sendPushNotification(
   title: string,
   body: string,
   data?: Record<string, string>,
-  sensitive = false
+  sensitive = false,
+  dataOnly = false
 ): Promise<PushResult> {
   // Guard: If Firebase messaging not initialized, return gracefully
   if (!messaging) {
@@ -135,11 +138,27 @@ export async function sendPushNotification(
     // Sanitize body: strip GPS coordinates / addresses; honour sensitive flag
     const safeBody = sanitizePushBody(body, sensitive);
 
-    // Send multicast via FCM
+    // Send multicast via FCM.
+    // dataOnly=true → silent background push with content-available:1, no banner.
+    //   iOS wakes the app via didReceiveRemoteNotification so it can show its own UI.
+    //   apns-priority MUST be 5 for background pushes (Apple requirement).
+    // dataOnly=false → standard notification+data message, shows a system banner.
     const response = await messaging.sendEachForMulticast({
       tokens,
-      notification: { title, body: safeBody },
+      ...(dataOnly ? {} : { notification: { title, body: safeBody } }),
       data: data || undefined,
+      ...(dataOnly ? {
+        apns: {
+          headers: {
+            'apns-push-type': 'background',
+            'apns-priority': '5',
+          },
+          payload: {
+            aps: { 'content-available': 1 },
+          },
+        },
+        android: { priority: 'high' as const },
+      } : {}),
     });
 
     // Process results: deactivate invalid tokens
