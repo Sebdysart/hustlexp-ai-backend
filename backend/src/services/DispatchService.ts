@@ -355,7 +355,7 @@ export const DispatchService = {
          FROM users u
         WHERE u.default_mode = 'worker'
           AND u.trust_hold = FALSE
-          AND u.account_status = 'active'
+          AND u.account_status = 'ACTIVE'
           AND u.trust_tier >= $1
           AND NOT EXISTS (
             SELECT 1 FROM tasks t

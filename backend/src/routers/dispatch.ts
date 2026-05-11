@@ -63,7 +63,30 @@ export const dispatchRouter = router({
     .mutation(async ({ ctx, input }) => {
       const userId = ctx.user!.id;
       try {
-        return await GoModeService.updateLocation(userId, input.lat, input.lng);
+        // Detect first GPS push while go_mode=true (location_updated_at was NULL).
+        // This is the offline→online transition — re-dispatch any tasks that expired
+        // while the hustler had no location.
+        const prev = await db.query<{ go_mode: boolean; location_updated_at: Date | null }>(
+          `SELECT go_mode, location_updated_at FROM users WHERE id = $1`,
+          [userId]
+        );
+        const isFirstLocationWhileOnline =
+          prev.rows[0]?.go_mode === true && prev.rows[0]?.location_updated_at === null;
+
+        const result = await GoModeService.updateLocation(userId, input.lat, input.lng);
+
+        if (isFirstLocationWhileOnline) {
+          redispatchExpiredTasksForHustler(userId).catch(err => {
+            import('../logger.js').then(({ logger }) =>
+              logger.warn(
+                { hustlerId: userId, err: err instanceof Error ? err.message : String(err) },
+                'redispatch on first-location-push failed (non-fatal)'
+              )
+            );
+          });
+        }
+
+        return result;
       } catch (err) {
         throw new TRPCError({
           code: 'INTERNAL_SERVER_ERROR',
