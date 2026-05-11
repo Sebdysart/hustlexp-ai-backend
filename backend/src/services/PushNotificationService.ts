@@ -94,13 +94,14 @@ export function sanitizePushBody(body: string, sensitive = false): string {
  * addresses are replaced with "[location protected]". Pass `sensitive: true`
  * to suppress all location context entirely.
  *
- * @param userId    Target user ID
- * @param title     Notification title (ignored when dataOnly=true)
- * @param body      Notification body text (will be sanitized, ignored when dataOnly=true)
- * @param data      Optional key-value data payload
- * @param sensitive When true, body is replaced with a generic message
- * @param dataOnly  When true, sends a silent background push (no banner) with content-available:1.
- *                  Use for dispatch pings — lets the app wake in background and show its own UI.
+ * @param userId         Target user ID
+ * @param title          Notification title
+ * @param body           Notification body text (will be sanitized)
+ * @param data           Optional key-value data payload
+ * @param sensitive      When true, body is replaced with a generic message
+ * @param urgentWakeup   When true, adds APNs content-available:1 + priority 10 so the app
+ *                       wakes in the background immediately AND shows a banner. Use for
+ *                       dispatch pings — the app sets activePing before the user taps anything.
  * @returns Delivery result with sent/failed counts
  */
 export async function sendPushNotification(
@@ -109,7 +110,7 @@ export async function sendPushNotification(
   body: string,
   data?: Record<string, string>,
   sensitive = false,
-  dataOnly = false
+  urgentWakeup = false
 ): Promise<PushResult> {
   // Guard: If Firebase messaging not initialized, return gracefully
   if (!messaging) {
@@ -139,23 +140,18 @@ export async function sendPushNotification(
     const safeBody = sanitizePushBody(body, sensitive);
 
     // Send multicast via FCM.
-    // dataOnly=true → silent background push with content-available:1, no banner.
-    //   iOS wakes the app via didReceiveRemoteNotification so it can show its own UI.
-    //   apns-priority MUST be 5 for background pushes (Apple requirement).
-    // dataOnly=false → standard notification+data message, shows a system banner.
+    // urgentWakeup=true (dispatch pings): shows a banner AND wakes the app immediately
+    //   via content-available:1 + priority 10. iOS calls didReceiveRemoteNotification
+    //   in the background so GoModeManager can set activePing before the user taps.
+    // urgentWakeup=false: standard notification message (banner only, no background wake).
     const response = await messaging.sendEachForMulticast({
       tokens,
-      ...(dataOnly ? {} : { notification: { title, body: safeBody } }),
+      notification: { title, body: safeBody },
       data: data || undefined,
-      ...(dataOnly ? {
+      ...(urgentWakeup ? {
         apns: {
-          headers: {
-            'apns-push-type': 'background',
-            'apns-priority': '5',
-          },
-          payload: {
-            aps: { 'content-available': 1 },
-          },
+          headers: { 'apns-priority': '10' },
+          payload: { aps: { 'content-available': 1 } },
         },
         android: { priority: 'high' as const },
       } : {}),

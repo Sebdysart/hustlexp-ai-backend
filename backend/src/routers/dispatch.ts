@@ -539,6 +539,18 @@ export const dispatchRouter = router({
         [hustlerId]
       );
 
+      // FCM token status — tells us whether real device push can actually be delivered
+      const fcmTokenResult = await db.query<{
+        token_count: string;
+        last_registered_at: Date | null;
+      }>(
+        `SELECT COUNT(*)::text AS token_count, MAX(created_at) AS last_registered_at
+           FROM device_tokens
+          WHERE user_id = $1 AND is_active = true`,
+        [hustlerId]
+      );
+      const fcmTokenRow = fcmTokenResult.rows[0];
+
       return {
         hustler: hustler ? {
           goMode: hustler.go_mode,
@@ -573,6 +585,12 @@ export const dispatchRouter = router({
           waveNumber: e.wave_number,
           ageSeconds: Math.round((Date.now() - new Date(e.created_at).getTime()) / 1000),
         })),
+        fcmTokens: {
+          activeCount: parseInt(fcmTokenRow?.token_count ?? '0', 10),
+          lastRegisteredAgeSeconds: fcmTokenRow?.last_registered_at
+            ? Math.round((Date.now() - new Date(fcmTokenRow.last_registered_at).getTime()) / 1000)
+            : null,
+        },
       };
     }),
 });
