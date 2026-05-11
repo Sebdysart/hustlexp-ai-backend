@@ -425,8 +425,8 @@ export const DispatchService = {
   }> {
     // Atomically convert soft_hold_active → claimed
     const claimResult = await db.query<{
-      latitude: number | null;
-      longitude: number | null;
+      location_lat: number | null;
+      location_lng: number | null;
     }>(
       `UPDATE tasks
           SET state                = 'ACCEPTED',
@@ -440,7 +440,7 @@ export const DispatchService = {
           AND soft_hold_expires_at > NOW()
           AND state IN ('OPEN', 'MATCHING')
           AND worker_id IS NULL
-        RETURNING latitude, longitude`,
+        RETURNING location_lat, location_lng`,
       [hustlerId, taskId]
     );
 
@@ -448,8 +448,8 @@ export const DispatchService = {
       throw new Error('CONFLICT: Soft hold expired or task already claimed by another hustler');
     }
 
-    const taskLat = claimResult.rows[0].latitude !== null ? Number(claimResult.rows[0].latitude) : null;
-    const taskLng = claimResult.rows[0].longitude !== null ? Number(claimResult.rows[0].longitude) : null;
+    const taskLat = claimResult.rows[0].location_lat !== null ? Number(claimResult.rows[0].location_lat) : null;
+    const taskLng = claimResult.rows[0].location_lng !== null ? Number(claimResult.rows[0].location_lng) : null;
 
     // Record claimed event in dispatch_events
     await DispatchService.recordPingEvent(taskId, hustlerId, 'claimed');
