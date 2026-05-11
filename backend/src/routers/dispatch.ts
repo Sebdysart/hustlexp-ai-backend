@@ -415,6 +415,7 @@ export const dispatchRouter = router({
                WHERE de2.task_id    = de.task_id
                  AND de2.hustler_id = de.hustler_id
                  AND de2.event_type IN ('ping_accepted','ping_declined','ping_expired','claimed')
+                 AND de2.created_at > de.created_at
             )
           ORDER BY de.created_at DESC
           LIMIT 1`,
