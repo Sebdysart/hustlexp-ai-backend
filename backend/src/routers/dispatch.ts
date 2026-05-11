@@ -191,7 +191,7 @@ export const dispatchRouter = router({
   recordPingEvent: protectedProcedure
     .input(z.object({
       taskId: z.string(),
-      eventType: z.enum(['ping_viewed', 'ping_declined']),
+      eventType: z.enum(['ping_viewed', 'ping_declined', 'ping_expired']),
       waveNumber: z.number().int().min(1).max(3).optional(),
     }))
     .mutation(async ({ ctx, input }) => {
