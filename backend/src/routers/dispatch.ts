@@ -587,9 +587,9 @@ export const dispatchRouter = router({
 async function redispatchExpiredTasksForHustler(hustlerId: string): Promise<void> {
   const log = (await import('../logger.js')).logger.child({ fn: 'redispatchExpiredTasksForHustler', hustlerId });
 
-  // Find OPEN smart_dispatch tasks the hustler has never been pinged for
-  // and whose dispatch sequence has ended (expired) or stalled (wave_N with no follow-up).
-  const tasks = await db.query<{ id: string }>(
+  // ── Case 1: Tasks this hustler was NEVER dispatched for ───────────────────
+  // Reset to idle and run the full wave sequence (candidate selection + FCM).
+  const neverDispatched = await db.query<{ id: string }>(
     `SELECT t.id
        FROM tasks t
       WHERE t.fulfillment_mode = 'smart_dispatch'
@@ -597,32 +597,79 @@ async function redispatchExpiredTasksForHustler(hustlerId: string): Promise<void
         AND t.dispatch_state NOT IN ('fulfilled', 'claimed', 'soft_hold_active')
         AND NOT EXISTS (
           SELECT 1 FROM dispatch_events de
-           WHERE de.task_id   = t.id
+           WHERE de.task_id    = t.id
              AND de.hustler_id = $1
         )
       LIMIT 10`,
     [hustlerId]
   );
 
-  if (tasks.rowCount === 0) {
-    log.info('No expired tasks to re-dispatch on go-mode');
-    return;
-  }
+  log.info({ count: neverDispatched.rowCount ?? 0 }, 'Case 1: tasks never dispatched to this hustler');
 
-  log.info({ count: tasks.rowCount }, 'Re-dispatching tasks for newly-online hustler');
-
-  // Reset each task to idle so _executeWave allows it, then run wave 1 directly.
-  for (const { id: taskId } of tasks.rows) {
+  for (const { id: taskId } of neverDispatched.rows) {
     try {
-      await db.query(
-        `UPDATE tasks SET dispatch_state = 'idle', updated_at = NOW() WHERE id = $1`,
-        [taskId]
-      );
+      await db.query(`UPDATE tasks SET dispatch_state = 'idle', updated_at = NOW() WHERE id = $1`, [taskId]);
       const { WaveManager } = await import('../services/WaveManager.js');
       await WaveManager.initiateDispatch(taskId);
-      log.info({ taskId }, 'Re-dispatched on go-mode enable');
+      log.info({ taskId }, 'Re-dispatched (never-seen) on go-mode enable');
     } catch (err) {
-      log.warn({ taskId, err: err instanceof Error ? err.message : String(err) }, 'Re-dispatch failed for task (non-fatal)');
+      log.warn({ taskId, err: err instanceof Error ? err.message : String(err) }, 'Case 1 re-dispatch failed (non-fatal)');
+    }
+  }
+
+  // ── Case 2: Tasks where ping expired (wave_started exists, no accept/decline) ──
+  // The hustler saw the ping but the 30s timer ran out without a response.
+  // Insert a fresh wave_started event and send FCM directly — bypassing the outbox
+  // so the idempotency key collision on the old processed event doesn't silently drop it.
+  const expiredPings = await db.query<{ id: string; location: string | null }>(
+    `SELECT t.id, t.location
+       FROM tasks t
+      WHERE t.fulfillment_mode = 'smart_dispatch'
+        AND t.state NOT IN ('ACCEPTED', 'COMPLETED', 'CANCELLED')
+        AND t.dispatch_state NOT IN ('fulfilled', 'claimed', 'soft_hold_active')
+        AND EXISTS (
+          SELECT 1 FROM dispatch_events de
+           WHERE de.task_id    = t.id
+             AND de.hustler_id = $1
+             AND de.event_type = 'wave_started'
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM dispatch_events de
+           WHERE de.task_id    = t.id
+             AND de.hustler_id = $1
+             AND de.event_type IN ('ping_accepted', 'ping_declined', 'claimed')
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM dispatch_events de
+           WHERE de.task_id    = t.id
+             AND de.hustler_id = $1
+             AND de.event_type = 'wave_started'
+             AND de.created_at > NOW() - INTERVAL '2 minutes'
+        )
+      LIMIT 10`,
+    [hustlerId]
+  );
+
+  log.info({ count: expiredPings.rowCount ?? 0 }, 'Case 2: tasks with expired pings for this hustler');
+
+  for (const task of expiredPings.rows) {
+    try {
+      // Insert a fresh wave_started so getActivePing finds it within the 2-minute window
+      await db.query(
+        `INSERT INTO dispatch_events (task_id, hustler_id, event_type, wave_number, dispatch_score)
+         VALUES ($1, $2, 'wave_started', 1, 0.5)`,
+        [task.id, hustlerId]
+      );
+      // Send FCM ping directly (skips outbox to avoid idempotency key collision with the
+      // already-processed task.dispatch_ping event from the original wave)
+      const { sendDispatchPing } = await import('../jobs/dispatch-ping-worker.js');
+      await sendDispatchPing(
+        { taskId: task.id, hustlerId, waveNumber: 1, location: task.location ?? null },
+        `redispatch:${task.id}:${hustlerId}:${Date.now()}`
+      );
+      log.info({ taskId: task.id }, 'Re-pinged (expired ping) on go-mode enable');
+    } catch (err) {
+      log.warn({ taskId: task.id, err: err instanceof Error ? err.message : String(err) }, 'Case 2 re-ping failed (non-fatal)');
     }
   }
 }
