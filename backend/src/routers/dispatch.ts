@@ -387,9 +387,11 @@ export const dispatchRouter = router({
       }, '[getActivePing] Recent dispatch_events for hustler');
 
       // Check 3: Active ping query.
-      // Window is 2 minutes so Simulator polling (no FCM) can still find pings
-      // that fired before the app launched. expiresAt is always NOW()+30s so the
+      // Window is 5 minutes: long enough for Simulator polling (no FCM) to find pings
+      // even if the app was backgrounded. expiresAt is always NOW()+30s so the
       // hustler always gets a fresh 30-second countdown from the moment of receipt.
+      // Task state check (NOT IN ACCEPTED/COMPLETED/CANCELLED) ensures stale pings
+      // for already-fulfilled tasks never surface.
       const result = await db.query<{
         task_id: string;
         wave_number: number;
@@ -408,7 +410,7 @@ export const dispatchRouter = router({
            JOIN tasks t ON t.id = de.task_id
           WHERE de.hustler_id = $1
             AND de.event_type   = 'wave_started'
-            AND de.created_at   > NOW() - INTERVAL '2 minutes'
+            AND de.created_at   > NOW() - INTERVAL '5 minutes'
             AND t.state NOT IN  ('ACCEPTED', 'COMPLETED', 'CANCELLED')
             AND NOT EXISTS (
               SELECT 1 FROM dispatch_events de2

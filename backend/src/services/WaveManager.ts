@@ -19,6 +19,7 @@
  */
 
 import { db } from '../db.js';
+import { randomUUID } from 'crypto';
 import { getQueue } from '../jobs/queues.js';
 import { DispatchService, type TaskDispatchInfo } from './DispatchService.js';
 import { logger as serviceLogger } from '../logger.js';
@@ -36,6 +37,7 @@ const WAVE_DELAYS_MS = {
 export interface WaveJobData {
   taskId: string;
   waveNumber: 1 | 2 | 3;
+  cycleId: string;
 }
 
 export const WaveManager = {
@@ -46,27 +48,30 @@ export const WaveManager = {
    * If BullMQ is unavailable, wave 1 runs synchronously and waves 2/3 are skipped.
    */
   async initiateDispatch(taskId: string): Promise<void> {
-    log.info({ taskId }, 'Initiating smart dispatch wave sequence (in-process)');
+    // One UUID per dispatch cycle — all 3 waves share it so outbox idempotency
+    // keys are unique across re-dispatch cycles for the same task.
+    const cycleId = randomUUID();
+    log.info({ taskId, cycleId }, 'Initiating smart dispatch wave sequence (in-process)');
 
     // Wave 1: always execute synchronously — no BullMQ worker dependency.
-    await WaveManager._executeWave(taskId, 1);
+    await WaveManager._executeWave(taskId, 1, cycleId);
 
     // Waves 2 & 3: schedule via in-process timer.
     // If the server restarts before these fire they are lost (acceptable for
     // pre-production; migrate back to BullMQ once worker connectivity is stable).
     setTimeout(() => {
-      WaveManager._executeWave(taskId, 2).catch(err =>
+      WaveManager._executeWave(taskId, 2, cycleId).catch(err =>
         log.error({ taskId, err: err instanceof Error ? err.message : String(err) }, 'Wave 2 execution failed')
       );
     }, WAVE_DELAYS_MS[2]);
 
     setTimeout(() => {
-      WaveManager._executeWave(taskId, 3).catch(err =>
+      WaveManager._executeWave(taskId, 3, cycleId).catch(err =>
         log.error({ taskId, err: err instanceof Error ? err.message : String(err) }, 'Wave 3 execution failed')
       );
     }, WAVE_DELAYS_MS[3]);
 
-    log.info({ taskId, wave2DelayMs: WAVE_DELAYS_MS[2], wave3DelayMs: WAVE_DELAYS_MS[3] }, 'Wave 1 complete — waves 2 & 3 scheduled');
+    log.info({ taskId, cycleId, wave2DelayMs: WAVE_DELAYS_MS[2], wave3DelayMs: WAVE_DELAYS_MS[3] }, 'Wave 1 complete — waves 2 & 3 scheduled');
   },
 
   /**
@@ -102,13 +107,13 @@ export const WaveManager = {
    *
    * Skips execution if the task is already fulfilled/cancelled/expired.
    */
-  async processWave(taskId: string, waveNumber: 1 | 2 | 3): Promise<void> {
-    await WaveManager._executeWave(taskId, waveNumber);
+  async processWave(taskId: string, waveNumber: 1 | 2 | 3, cycleId?: string): Promise<void> {
+    await WaveManager._executeWave(taskId, waveNumber, cycleId ?? randomUUID());
   },
 
   // ── Internal ───────────────────────────────────────────────────────────────
 
-  async _executeWave(taskId: string, waveNumber: 1 | 2 | 3): Promise<void> {
+  async _executeWave(taskId: string, waveNumber: 1 | 2 | 3, cycleId: string): Promise<void> {
     // Fetch task and verify it's still dispatchable
     const taskResult = await db.query<{
       id: string;
@@ -212,7 +217,8 @@ export const WaveManager = {
       taskId,
       candidates,
       waveNumber,
-      task.location
+      task.location,
+      cycleId
     );
   },
 };

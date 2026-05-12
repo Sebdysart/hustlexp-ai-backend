@@ -164,12 +164,17 @@ export const DispatchService = {
   /**
    * Enqueue outbox events to ping a list of hustlers for a task.
    * Records dispatch_events rows for the audit trail.
+   *
+   * cycleId: a UUID generated at the start of each dispatch cycle (in WaveManager.initiateDispatch).
+   * Including it in the idempotency key ensures re-dispatches of the same task get fresh outbox
+   * events instead of hitting ON CONFLICT DO NOTHING from a previous cycle's processed events.
    */
   async dispatchToHustlers(
     taskId: string,
     candidates: DispatchCandidate[],
     waveNumber: WaveNumber,
-    taskLocation: string | null
+    taskLocation: string | null,
+    cycleId: string
   ): Promise<void> {
     if (candidates.length === 0) {
       log.info({ taskId, waveNumber }, 'No candidates — skipping dispatch');
@@ -206,7 +211,7 @@ export const DispatchService = {
             aggregateType: 'task',
             aggregateId: taskId,
             eventVersion: waveNumber,
-            idempotencyKey: `task.dispatch_ping:${taskId}:${candidate.userId}:wave${waveNumber}`,
+            idempotencyKey: `task.dispatch_ping:${taskId}:${candidate.userId}:wave${waveNumber}:${cycleId}`,
             payload: {
               taskId,
               hustlerId: candidate.userId,
@@ -225,7 +230,7 @@ export const DispatchService = {
             eventType: 'task.instant_available',
             aggregateType: 'task',
             aggregateId: taskId,
-            idempotencyKey: `task.instant_available:${taskId}:${candidate.userId}:wave${waveNumber}`,
+            idempotencyKey: `task.instant_available:${taskId}:${candidate.userId}:wave${waveNumber}:${cycleId}`,
             payload: {
               taskId,
               hustlerId: candidate.userId,
