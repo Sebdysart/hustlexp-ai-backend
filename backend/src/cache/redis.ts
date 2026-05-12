@@ -217,13 +217,7 @@ export async function checkRateLimit(
 ): Promise<{ allowed: boolean; remaining: number; resetAt?: number }> {
   const limiter = getRateLimiter(window * 1000, limit);
   if (!limiter) {
-    // FAIL CLOSED in production — deny if rate limiting is unavailable
-    if (config.app.isProduction) {
-      redisLog.error('Rate limiting unavailable (Redis not configured) — denying request');
-      return { allowed: false, remaining: 0, resetAt: Date.now() + window * 1000 };
-    }
-    // Allow in development with warning
-    redisLog.warn('Rate limiting disabled — Redis not configured (dev mode)');
+    redisLog.warn({ userId, action }, 'Rate limiting disabled — Redis not configured, failing open');
     return { allowed: true, remaining: limit };
   }
 
@@ -236,11 +230,11 @@ export async function checkRateLimit(
       resetAt: result.reset,
     };
   } catch (error) {
-    redisLog.error({ err: error, userId, action }, 'Rate limit check error');
-    // FAIL CLOSED in production on Redis errors too
-    if (config.app.isProduction) {
-      return { allowed: false, remaining: 0, resetAt: Date.now() + window * 1000 };
-    }
+    // FAIL OPEN on Redis errors (quota exceeded, connection failure, etc.).
+    // Fail-closed is the right policy when Redis is reachable but returns
+    // success=false. When Redis itself is unavailable we shouldn't block
+    // legitimate user actions — log and allow through.
+    redisLog.error({ err: error, userId, action }, 'Rate limit check failed — failing open to avoid blocking users');
     return { allowed: true, remaining: limit };
   }
 }
