@@ -131,13 +131,18 @@ export async function sendPushNotification(
 
     const tokens = tokenResult.rows.map(row => row.fcm_token);
 
+    log.info({ userId, tokenCount: tokens.length, urgentWakeup, title }, 'push_send_attempt');
+
     // No tokens found - return gracefully (user may not have registered a device)
     if (tokens.length === 0) {
+      log.warn({ userId }, 'push_no_tokens — user has no active FCM tokens, notification not delivered');
       return { success: true, sent: 0, failed: 0 };
     }
 
     // Sanitize body: strip GPS coordinates / addresses; honour sensitive flag
     const safeBody = sanitizePushBody(body, sensitive);
+
+    log.info({ userId, tokenCount: tokens.length, urgentWakeup, dataKeys: Object.keys(data || {}) }, 'push_fcm_sending');
 
     // Send multicast via FCM.
     // urgentWakeup=true (dispatch pings): shows a banner AND wakes the app immediately
@@ -160,6 +165,15 @@ export async function sendPushNotification(
     // Process results: deactivate invalid tokens
     const sent = response.successCount;
     const failed = response.failureCount;
+
+    // Log per-token results for debugging
+    response.responses.forEach((resp, index) => {
+      if (resp.success) {
+        log.info({ userId, tokenIndex: index, messageId: resp.messageId }, 'push_token_delivered');
+      } else {
+        log.error({ userId, tokenIndex: index, errorCode: resp.error?.code, errorMessage: resp.error?.message }, 'push_token_failed');
+      }
+    });
 
     if (response.failureCount > 0) {
       const deactivationPromises: Promise<void>[] = [];
