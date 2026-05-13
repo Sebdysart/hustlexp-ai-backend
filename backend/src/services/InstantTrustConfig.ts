@@ -11,5 +11,4 @@ export const MIN_INSTANT_TIER = 2;
 export const MIN_SENSITIVE_INSTANT_TIER = 3;
 
 // Minimum trust tier for Smart Dispatch (lower bar — routing mechanism, not IEM)
-// Set to 0 so new unverified accounts (default tier) can receive pings immediately.
-export const MIN_SMART_DISPATCH_TIER = 0;
+export const MIN_SMART_DISPATCH_TIER = 1;
