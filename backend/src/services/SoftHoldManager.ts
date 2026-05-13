@@ -20,7 +20,7 @@ import { logger as serviceLogger } from '../logger.js';
 
 const log = serviceLogger.child({ service: 'SoftHoldManager' });
 
-const DEFAULT_HOLD_TTL_SECONDS = 30;
+const DEFAULT_HOLD_TTL_SECONDS = 90;
 
 export interface SoftHoldResult {
   acquired: boolean;
