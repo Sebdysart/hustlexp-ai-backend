@@ -388,8 +388,8 @@ export const dispatchRouter = router({
 
       // Check 3: Active ping query.
       // Window is 5 minutes: long enough for Simulator polling (no FCM) to find pings
-      // even if the app was backgrounded. expiresAt is always NOW()+30s so the
-      // hustler always gets a fresh 30-second countdown from the moment of receipt.
+      // even if the app was backgrounded. expiresAt is always NOW()+90s so the
+      // hustler always gets a full 90-second countdown from the moment of receipt.
       // Task state check (NOT IN ACCEPTED/COMPLETED/CANCELLED) ensures stale pings
       // for already-fulfilled tasks never surface.
       const result = await db.query<{
@@ -434,9 +434,9 @@ export const dispatchRouter = router({
       if ((result.rowCount ?? 0) === 0) return null;
 
       const row = result.rows[0];
-      // Always give the hustler 30 seconds from NOW (the moment the poll finds the ping),
+      // Always give the hustler 90 seconds from NOW (the moment the poll finds the ping),
       // not from event_created_at — ensures a full countdown even on Simulator polling.
-      const expiresAt = new Date(Date.now() + 30 * 1000).toISOString();
+      const expiresAt = new Date(Date.now() + 90 * 1000).toISOString();
 
       log.info({
         taskId: row.task_id,
