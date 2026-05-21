@@ -22,6 +22,7 @@ import { XPTaxService } from './XPTaxService.js';
 import { XPService } from './XPService.js';
 import { SelfInsurancePoolService } from './SelfInsurancePoolService.js';
 import { RevenueService } from './RevenueService.js';
+import { sendPushNotification } from './PushNotificationService.js';
 import type {
   Escrow,
   EscrowState,
@@ -359,10 +360,10 @@ export const EscrowService = {
     let releasedEscrow: Escrow;
     let workerId: string | undefined;
     let grossPayoutCents: number | undefined;
-    let netPayoutCents: number;
-    let taskId: string;
-    let paymentMethod: string;
-    let escrowStateBefore: string;
+    let netPayoutCents: number = 0;
+    let taskId: string = '';
+    let paymentMethod: string = '';
+    let escrowStateBefore: string = '';
     let adminManualPayoutRequired = false;
 
     try {
@@ -638,6 +639,43 @@ export const EscrowService = {
             'Failed to award XP'
           );
         }
+      }
+
+      // Send payment notifications to hustler and poster
+      try {
+        const taskResult = await db.query<{ title: string; poster_id: string }>(
+          `SELECT title, poster_id FROM tasks WHERE id = $1`,
+          [taskId]
+        );
+        const task = taskResult.rows[0];
+        const dollars = ((netPayoutCents ?? 0) / 100).toFixed(2);
+        const grossDollars = ((grossPayoutCents ?? 0) / 100).toFixed(2);
+
+        // Notify hustler — payment landed
+        if (workerId) {
+          await sendPushNotification(
+            workerId,
+            '💸 Payment received!',
+            `$${dollars} has been sent to your account${task ? ` for "${task.title}"` : ''}.`,
+            { type: 'escrow_released', taskId: taskId ?? '', amountCents: String(netPayoutCents ?? 0) }
+          );
+        }
+
+        // Notify poster — payment confirmed
+        if (task?.poster_id) {
+          await sendPushNotification(
+            task.poster_id,
+            '✅ Payment sent',
+            `$${grossDollars} payment confirmed${task ? ` for "${task.title}"` : ''}.`,
+            { type: 'payment_confirmed', taskId: taskId ?? '', amountCents: String(grossPayoutCents ?? 0) }
+          );
+        }
+      } catch (notifError) {
+        // Never fail escrow release due to notification error
+        escrowLogger.error(
+          { err: notifError instanceof Error ? notifError.message : String(notifError), escrowId },
+          'Payment notification failed — escrow release was successful'
+        );
       }
 
       return { success: true, data: releasedEscrow! };
