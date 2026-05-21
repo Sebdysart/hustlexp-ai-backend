@@ -26,6 +26,7 @@ import { processEmailJob } from './email-worker.js';
 import { processBiometricAnalysisJob } from './biometric-analyzer-worker.js';
 import { processExpertiseRecalcJob } from './expertise-recalc-worker.js';
 import { processXPTaxReminderJob } from './xp-tax-reminder-worker.js';
+import { processTaskReminderJob } from './task-reminder-worker.js';
 import { processDispatchWaveJob } from './dispatch-wave-worker.js';
 import { workerLogger as log } from '../logger.js';
 import type { Job, Worker } from 'bullmq';
@@ -224,6 +225,19 @@ function registerWorkers(): void {
     }
   ));
 
+  // Task reminder worker — hourly cron, sends nudges for stale/overdue tasks
+  activeWorkers.push(createWorker(
+    'task_reminders',
+    async (job: Job) => {
+      await processTaskReminderJob(job);
+    },
+    {
+      concurrency: 1,
+      removeOnComplete: { count: 10, age: 86400 },
+      removeOnFail: { age: 7 * 86400 },
+    }
+  ));
+
   // XP tax reminder worker — daily cron, sends reminders for unpaid XP taxes
   activeWorkers.push(createWorker(
     'xp_tax_reminders',
@@ -330,6 +344,17 @@ async function registerScheduledJobs(): Promise<void> {
     {
       repeat: { pattern: '0 3 * * *' },
       jobId: 'scheduled:expertise_recalc_daily',
+    }
+  );
+
+  // Task reminders — every hour (checks stale/overdue/deadline tasks)
+  const taskRemindersQueue = getQueue('task_reminders');
+  await taskRemindersQueue.add(
+    'task.send_reminders',
+    {},
+    {
+      repeat: { pattern: '0 * * * *' },
+      jobId: 'scheduled:task_reminders_hourly',
     }
   );
 

@@ -64,7 +64,8 @@ export type NotificationCategory =
   | 'message_received' | 'unread_messages'
   | 'new_matching_task' | 'live_mode_task' | 'instant_task_available'
   | 'account_suspended' | 'security_alert' | 'password_changed'
-  | 'welcome' | 'weekly_recap' | 'export_ready';
+  | 'welcome' | 'weekly_recap' | 'export_ready'
+  | 'task_reminder';
 
 export type NotificationPriority = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
 export type NotificationChannel = 'push' | 'email' | 'sms' | 'in_app';
@@ -165,6 +166,7 @@ const FREQUENCY_LIMITS: Record<NotificationCategory, { perHour: number; perDay: 
   welcome: { perHour: 1, perDay: 1 },
   weekly_recap: { perHour: 1, perDay: 1 },
   export_ready: { perHour: Infinity, perDay: Infinity },
+  task_reminder: { perHour: 5, perDay: 10 },
 };
 
 // ============================================================================

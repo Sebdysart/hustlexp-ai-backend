@@ -78,7 +78,8 @@ export type QueueName =
   | 'expertise_recalc'
   | 'xp_tax_reminders'
   | 'recurring_tasks'
-  | 'task_dispatch';
+  | 'task_dispatch'
+  | 'task_reminders';
 
 interface QueueConfig {
   name: QueueName;
@@ -298,6 +299,27 @@ export const QUEUE_CONFIGS: Record<QueueName, QueueConfig> = {
       removeOnComplete: {
         age: 24 * 60 * 60, // 24 hours
         count: 100,
+      },
+      removeOnFail: {
+        age: 7 * 24 * 60 * 60, // 7 days
+      },
+    },
+    workerOptions: {
+      maxStalledCount: 1,
+    },
+  },
+
+  task_reminders: {
+    name: 'task_reminders',
+    defaultJobOptions: {
+      attempts: 2,
+      backoff: {
+        type: 'fixed',
+        delay: 60000, // 1 minute
+      },
+      removeOnComplete: {
+        age: 24 * 60 * 60, // 24 hours
+        count: 10,
       },
       removeOnFail: {
         age: 7 * 24 * 60 * 60, // 7 days
