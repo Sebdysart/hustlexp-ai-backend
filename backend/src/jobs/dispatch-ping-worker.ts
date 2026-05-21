@@ -130,8 +130,9 @@ export async function sendDispatchPing(
 
   log.info({ taskId, hustlerId, fcmData }, 'Sending FCM push with dispatch_ping payload');
 
-  const pushTitle = `New task — wave ${waveNumber}`;
-  const pushBody = `${task.title} — $${(paymentCents / 100).toFixed(2)}${location ? ` • ${location}` : ''}`;
+  const dollars = (paymentCents / 100).toFixed(2);
+  const pushTitle = `Task available — $${dollars}`;
+  const pushBody = `${task.title}${location ? ` • ${location}` : ''}. Tap to accept!`;
 
   // urgentWakeup=true → notification banner + content-available:1 + priority 10.
   // iOS shows the banner immediately AND wakes the app in the background so
