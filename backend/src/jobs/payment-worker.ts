@@ -766,8 +766,8 @@ async function handleTransferFailed(transfer: Stripe.Transfer, stripeEventId: st
   if (workerId) {
     await sendPushNotification(
       workerId,
-      'Payment Transfer Failed',
-      'Your payment transfer failed. Our team has been alerted and will resolve this urgently. No action required from you.',
+      'Payout transfer failed',
+      'Your payout transfer failed. Our team has been alerted and will fix this — no action needed from you.',
       { screen: 'earnings', escrow_id: escrow.id, type: 'transfer_failed' }
     );
   }
@@ -939,7 +939,7 @@ async function handlePaymentIntentPaymentFailed(paymentIntent: Stripe.PaymentInt
   if (posterId) {
     await sendPushNotification(
       posterId,
-      'Payment Failed',
+      'Payment failed',
       'Your payment could not be processed. Please update your payment method and try again.',
       { screen: 'task_detail', task_id: escrow.task_id, type: 'payment_failed' }
     );
@@ -1023,7 +1023,7 @@ async function handlePayoutFailed(payout: Stripe.Payout, stripeEventId: string):
   if (userId) {
     await sendPushNotification(
       userId,
-      'Bank Transfer Failed',
+      'Bank transfer failed',
       'Your bank transfer failed. Please update your bank details in the app to receive your earnings.',
       { screen: 'payout_settings', type: 'payout_failed' }
     );

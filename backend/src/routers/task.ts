@@ -1256,10 +1256,10 @@ export const taskRouter = router({
             await NotificationService.createNotification({
               userId: t.worker_id,
               category: 'proof_rejected',
-              title: 'Proof needs changes',
+              title: 'Resubmit your proof',
               body: reason
-                ? `Poster requested changes for "${t.title}": ${reason}`
-                : `Poster requested changes for "${t.title}". Please resubmit.`,
+                ? `"${t.title}": ${reason}`
+                : `The poster requested changes on "${t.title}". Please resubmit your proof.`,
               taskId: proofResult.data.task_id,
               deepLink: `hustlexp://task/${proofResult.data.task_id}`,
               channels: ['push', 'in_app'],
@@ -1358,8 +1358,8 @@ export const taskRouter = router({
           await NotificationService.createNotification({
             userId: result.data.worker_id,
             category: 'task_cancelled',
-            title: 'Task was cancelled',
-            body: `The poster cancelled "${result.data.title}".`,
+            title: 'Task cancelled',
+            body: `"${result.data.title}" was cancelled by the poster. Any pending payment has been voided.`,
             taskId: input.taskId,
             deepLink: `hustlexp://task/${input.taskId}`,
             channels: ['push', 'in_app'],
