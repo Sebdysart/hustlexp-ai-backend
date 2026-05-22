@@ -423,6 +423,7 @@ export const dispatchRouter = router({
               SELECT 1 FROM tasks active
                WHERE active.worker_id = $1
                  AND active.state = 'ACCEPTED'
+                 AND active.updated_at > NOW() - INTERVAL '24 hours'
             )
           ORDER BY de.created_at DESC
           LIMIT 1`,

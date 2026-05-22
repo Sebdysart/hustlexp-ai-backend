@@ -203,7 +203,10 @@ export const DispatchService = {
         );
       }
 
-      // Enqueue ping notifications via outbox (transactional)
+      // Enqueue ping notifications via outbox (transactional).
+      // task.dispatch_ping is processed inline by the outbox worker → sendDispatchPing → FCM.
+      // One event per candidate is sufficient; the duplicate task.instant_available was removed
+      // to prevent each hustler receiving two FCMs per wave.
       for (const candidate of candidates) {
         await writeToOutbox(
           {
@@ -217,24 +220,6 @@ export const DispatchService = {
               hustlerId: candidate.userId,
               waveNumber,
               dispatchScore: candidate.score,
-              location: taskLocation,
-            },
-            queueName: 'user_notifications',
-          },
-          query
-        );
-
-        // Also enqueue push notification
-        await writeToOutbox(
-          {
-            eventType: 'task.instant_available',
-            aggregateType: 'task',
-            aggregateId: taskId,
-            idempotencyKey: `task.instant_available:${taskId}:${candidate.userId}:wave${waveNumber}:${cycleId}`,
-            payload: {
-              taskId,
-              hustlerId: candidate.userId,
-              waveNumber,
               location: taskLocation,
             },
             queueName: 'user_notifications',
