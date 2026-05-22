@@ -156,7 +156,7 @@ export async function sendPushNotification(
       ...(urgentWakeup ? {
         apns: {
           headers: { 'apns-priority': '10' },
-          payload: { aps: { 'content-available': 1 } },
+          payload: { aps: { 'content-available': 1, category: 'DISPATCH_PING' } },
         },
         android: { priority: 'high' as const },
       } : {}),
