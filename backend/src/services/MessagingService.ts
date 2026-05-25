@@ -441,7 +441,7 @@ export const MessagingService = {
         deepLink: `hustlexp://task/${taskId}/messages`,
         taskId,
         metadata: { messageId: message.id, messageType, senderId },
-        channels: ['in_app', 'push'],
+        channels: ['in_app'],
         priority: 'HIGH',
       }).catch(error => {
         log.error({ err: error instanceof Error ? error.message : String(error), recipientId, taskId }, 'Failed to send message notification');
