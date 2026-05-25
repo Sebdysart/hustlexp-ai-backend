@@ -22,6 +22,42 @@ function unwrapServiceResult<T>(result: ServiceResult<T>): T {
   });
 }
 
+/**
+ * Returns worker skills in the flat shape expected by the iOS WorkerSkillRecord model:
+ * { id, skillId, skillName, level, xp, tasksCompleted, licenseVerified, licenseVerifiedAt }
+ *
+ * iOS decodes with convertFromSnakeCase, so camelCase SQL aliases are used here
+ * to bypass that conversion (PostgreSQL preserves quoted identifier case).
+ * level/xp are returned as 0 — the DB tracks tasks_completed, not per-skill XP.
+ */
+async function getWorkerSkillsForIOS(userId: string) {
+  const result = await db.query<{
+    id: string;
+    skillId: string;
+    skillName: string;
+    level: number;
+    xp: number;
+    tasksCompleted: number;
+    licenseVerified: boolean;
+    licenseVerifiedAt: Date | null;
+  }>(
+    `SELECT ws.id,
+            ws.skill_id        AS "skillId",
+            s.display_name     AS "skillName",
+            0                  AS level,
+            0                  AS xp,
+            ws.tasks_completed AS "tasksCompleted",
+            ws.verified        AS "licenseVerified",
+            ws.verified_at     AS "licenseVerifiedAt"
+     FROM worker_skills ws
+     JOIN skills s ON s.id = ws.skill_id
+     WHERE ws.user_id = $1
+     ORDER BY s.display_name ASC`,
+    [userId]
+  );
+  return result.rows;
+}
+
 export const skillsRouter = router({
   // Public: Browse skill catalog (cached)
   getCategories: publicProcedure.input(z.void()).query(async () => {
@@ -48,21 +84,21 @@ export const skillsRouter = router({
   addSkills: hustlerProcedure
     .input(z.object({ skillIds: z.array(z.string().uuid()).min(1).max(50) }))
     .mutation(async ({ ctx, input }) => {
-      const out = await WorkerSkillService.addSkills(ctx.user.id, input.skillIds);
+      unwrapServiceResult(await WorkerSkillService.addSkills(ctx.user.id, input.skillIds));
       await invalidateSkills();
-      return out;
+      // Return the full skill list so iOS can populate WorkerSkillRecord[]
+      return getWorkerSkillsForIOS(ctx.user.id);
     }),
 
   removeSkill: hustlerProcedure
     .input(z.object({ skillId: z.string().uuid() }))
     .mutation(async ({ ctx, input }) => {
-      const out = await WorkerSkillService.removeSkill(ctx.user.id, input.skillId);
+      unwrapServiceResult(await WorkerSkillService.removeSkill(ctx.user.id, input.skillId));
       await invalidateSkills();
-      return out;
     }),
 
   getMySkills: hustlerProcedure.input(z.void()).query(async ({ ctx }) => {
-    return WorkerSkillService.getWorkerSkills(ctx.user.id);
+    return getWorkerSkillsForIOS(ctx.user.id);
   }),
 
   submitLicense: hustlerProcedure
