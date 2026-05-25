@@ -18,6 +18,7 @@ import { logger } from '../logger.js';
 import type { ServiceResult } from '../types.js';
 import { ErrorCodes } from '../types.js';
 import { AlphaInstrumentation } from './AlphaInstrumentation.js';
+import { sendPushNotification } from './PushNotificationService.js';
 import { updateStreakOnTaskCompletion } from './StreakService.js';
 import { Redis } from '@upstash/redis';
 import { config } from '../config.js';
@@ -424,6 +425,21 @@ export const XPService = {
           }
         } catch (err) {
           log.warn({ err: err instanceof Error ? err.message : String(err), userId, taskId }, 'Streak update failed');
+        }
+      }
+
+      if (result.success && effectiveXPAwarded > 0) {
+        try {
+          await sendPushNotification(
+            userId,
+            `⚡ +${effectiveXPAwarded} XP earned!`,
+            'Keep the momentum going — every task gets you closer to Elite status. 🔥',
+            { type: 'xp_earned', amount: String(effectiveXPAwarded), taskId },
+            false, false,
+            { category: 'XP_EARNED', interruptionLevel: 'passive' }
+          );
+        } catch (pushErr) {
+          // Non-blocking
         }
       }
 

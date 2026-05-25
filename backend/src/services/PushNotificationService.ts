@@ -110,7 +110,12 @@ export async function sendPushNotification(
   body: string,
   data?: Record<string, string>,
   sensitive = false,
-  urgentWakeup = false
+  urgentWakeup = false,
+  options?: {
+    threadId?: string;
+    interruptionLevel?: 'passive' | 'active' | 'time-sensitive' | 'critical';
+    category?: string;
+  }
 ): Promise<PushResult> {
   // Guard: If Firebase messaging not initialized, return gracefully
   if (!messaging) {
@@ -149,17 +154,23 @@ export async function sendPushNotification(
     //   via content-available:1 + priority 10. iOS calls didReceiveRemoteNotification
     //   in the background so GoModeManager can set activePing before the user taps.
     // urgentWakeup=false: standard notification message (banner only, no background wake).
+    const apnsAps: Record<string, unknown> = {};
+    if (urgentWakeup) apnsAps['content-available'] = 1;
+    if (options?.category) apnsAps['category'] = options.category;
+    if (options?.threadId) apnsAps['thread-id'] = options.threadId;
+    if (options?.interruptionLevel) apnsAps['interruption-level'] = options.interruptionLevel;
+
     const response = await messaging.sendEachForMulticast({
       tokens,
       notification: { title, body: safeBody },
       data: data || undefined,
-      ...(urgentWakeup ? {
+      ...(Object.keys(apnsAps).length > 0 || urgentWakeup ? {
         apns: {
-          headers: { 'apns-priority': '10' },
-          payload: { aps: { 'content-available': 1, category: 'DISPATCH_PING' } },
+          ...(urgentWakeup ? { headers: { 'apns-priority': '10' } } : {}),
+          payload: { aps: apnsAps },
         },
-        android: { priority: 'high' as const },
       } : {}),
+      ...(urgentWakeup ? { android: { priority: 'high' as const } } : {}),
     });
 
     // Process results: deactivate invalid tokens

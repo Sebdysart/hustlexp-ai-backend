@@ -269,6 +269,22 @@ app.get('/health/liveness', (c) => {
   return c.json({ alive: true, uptime: process.uptime() });
 });
 
+// SSL certificate pin manifest — consumed by iOS on every launch for remote pin rotation.
+// Update these values whenever Railway rotates the TLS certificate (every ~90 days).
+// Format: hex-encoded SHA-256 of raw public key bytes (not SPKI DER).
+// Get values by running the app in debug and logging CertificatePins.sha256(of:) output.
+const SSL_PINS = {
+  pins: [
+    'd5417bbb6ac5fe032dfdec60d2fcadc08ed8d6587a8ad0cf08aa2fc871fc0e4d', // Railway leaf cert
+    'ae489edc871d44a06fdaa2e560740478c29c00801076b40d9b9ff4109ab702a1', // Let's Encrypt intermediate CA
+  ],
+  version: 1,
+};
+
+app.get('/api/ssl-pins', (c) => {
+  return c.json(SSL_PINS);
+});
+
 // Detailed health for monitoring
 app.get('/health/detailed', async (c) => {
   const checks: Record<string, { status: string; latency?: number; error?: string }> = {};

@@ -13,6 +13,7 @@
 
 import { db, isInvariantViolation, getErrorMessage } from '../db.js';
 import type { ServiceResult, TrustLedgerEntry, User } from '../types.js';
+import { sendPushNotification } from './PushNotificationService.js';
 import { ErrorCodes } from '../types.js';
 
 // ============================================================================
@@ -176,6 +177,21 @@ export const TrustService = {
         [userId, currentTier, newTier, reason, reasonDetails ? JSON.stringify(reasonDetails) : null, taskId, disputeId, changedBy]
       );
       
+      try {
+        const tierLabels: Record<number, string> = { 1: 'Starter', 2: 'Trusted', 3: 'Pro', 4: 'Elite' };
+        const tierName = tierLabels[newTier] ?? `Tier ${newTier}`;
+        await sendPushNotification(
+          userId,
+          `🚀 Trust Tier ${newTier} — ${tierName}!`,
+          `You've leveled up to ${tierName}! Higher-value tasks and better rewards are now unlocked. Keep hustling! 💪`,
+          { type: 'tier_up', newTier: String(newTier), oldTier: String(currentTier) },
+          false, false,
+          { category: 'TIER_UP', interruptionLevel: 'active' }
+        );
+      } catch (pushErr) {
+        // Non-blocking — tier promotion already succeeded
+      }
+
       return { success: true, data: updateResult.rows[0] };
     } catch (error) {
       if (isInvariantViolation(error)) {

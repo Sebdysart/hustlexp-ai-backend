@@ -13,6 +13,7 @@
 import { db, isInvariantViolation, getErrorMessage } from '../db.js';
 import type { ServiceResult, Badge } from '../types.js';
 import { ErrorCodes } from '../types.js';
+import { sendPushNotification } from './PushNotificationService.js';
 
 // ============================================================================
 // TYPES
@@ -148,6 +149,21 @@ export const BadgeService = {
         [userId, badgeType, badgeTier, awardedFor, taskId]
       );
       
+      try {
+        const badge = result.rows[0];
+        const tierStars = '⭐'.repeat(Math.min(badge.badge_tier, 4));
+        await sendPushNotification(
+          userId,
+          `🏆 New badge earned! ${tierStars}`,
+          `You just unlocked the ${badge.badge_type.replace(/_/g, ' ')} badge. Nice work — keep it up! 🔥`,
+          { type: 'badge_earned', badgeType: badge.badge_type, badgeTier: String(badge.badge_tier) },
+          false, false,
+          { category: 'BADGE_EARNED', interruptionLevel: 'passive' }
+        );
+      } catch (pushErr) {
+        // Non-blocking — badge award already succeeded
+      }
+
       return { success: true, data: result.rows[0] };
     } catch (error) {
       // Check for unique constraint violation (user already has this badge)

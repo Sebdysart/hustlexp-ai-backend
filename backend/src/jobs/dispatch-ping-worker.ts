@@ -137,7 +137,10 @@ export async function sendDispatchPing(
   // urgentWakeup=true → notification banner + content-available:1 + priority 10.
   // iOS shows the banner immediately AND wakes the app in the background so
   // GoModeManager sets activePing before the user taps anything.
-  const result = await sendPushNotification(hustlerId, pushTitle, pushBody, fcmData, false, true);
+  const result = await sendPushNotification(hustlerId, pushTitle, pushBody, fcmData, false, true, {
+    category: 'DISPATCH_PING',
+    interruptionLevel: 'time-sensitive',
+  });
 
   const latency = Date.now() - startTime;
   log.info(

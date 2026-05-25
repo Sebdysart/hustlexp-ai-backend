@@ -16,6 +16,7 @@ import type { ServiceResult, TaskState } from '../types.js';
 import { ErrorCodes } from '../types.js';
 import { ContentModerationService } from './ContentModerationService.js';
 import { NotificationService } from './NotificationService.js';
+import { sendPushNotification } from './PushNotificationService.js';
 import { logger } from '../logger.js';
 import { incr, expire } from '../cache/redis.js';
 
@@ -444,6 +445,19 @@ export const MessagingService = {
         priority: 'HIGH',
       }).catch(error => {
         log.error({ err: error instanceof Error ? error.message : String(error), recipientId, taskId }, 'Failed to send message notification');
+      });
+
+      sendPushNotification(
+        recipientId,
+        senderName,
+        messageType === 'TEXT' && content
+          ? (content.length > 80 ? content.substring(0, 80) + '…' : content)
+          : '📷 Sent you a photo',
+        { type: 'message_received', taskId },
+        false, false,
+        { category: 'MESSAGE_RECEIVED', threadId: `task-${taskId}`, interruptionLevel: 'active' }
+      ).catch(error => {
+        log.error({ err: error instanceof Error ? error.message : String(error), recipientId, taskId }, 'Failed to send message FCM push');
       });
       
       return {

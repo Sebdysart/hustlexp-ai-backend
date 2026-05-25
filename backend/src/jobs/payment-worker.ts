@@ -766,9 +766,11 @@ async function handleTransferFailed(transfer: Stripe.Transfer, stripeEventId: st
   if (workerId) {
     await sendPushNotification(
       workerId,
-      'Payout transfer failed',
-      'Your payout transfer failed. Our team has been alerted and will fix this — no action needed from you.',
-      { screen: 'earnings', escrow_id: escrow.id, type: 'transfer_failed' }
+      '⚠️ Payout transfer failed',
+      "Your payout hit a snag, but don't worry — our team is on it and you won't lose a cent. 🛡️",
+      { type: 'transfer_failed', screen: 'earnings', escrow_id: escrow.id },
+      false, false,
+      { interruptionLevel: 'active' }
     );
   }
 
@@ -939,9 +941,11 @@ async function handlePaymentIntentPaymentFailed(paymentIntent: Stripe.PaymentInt
   if (posterId) {
     await sendPushNotification(
       posterId,
-      'Payment failed',
-      'Your payment could not be processed. Please update your payment method and try again.',
-      { screen: 'task_detail', task_id: escrow.task_id, type: 'payment_failed' }
+      '⚠️ Payment failed',
+      'Your payment didn\'t go through. Tap to update your payment method so your task stays active.',
+      { type: 'payment_failed', taskId: escrow.task_id, screen: 'task_detail' },
+      false, false,
+      { interruptionLevel: 'active' }
     );
   }
 
@@ -1023,9 +1027,11 @@ async function handlePayoutFailed(payout: Stripe.Payout, stripeEventId: string):
   if (userId) {
     await sendPushNotification(
       userId,
-      'Bank transfer failed',
-      'Your bank transfer failed. Please update your bank details in the app to receive your earnings.',
-      { screen: 'payout_settings', type: 'payout_failed' }
+      '⚠️ Bank transfer failed',
+      "Your earnings couldn't reach your bank. Update your bank details and we'll retry right away. 💸",
+      { type: 'payout_failed', screen: 'payout_settings' },
+      false, false,
+      { interruptionLevel: 'active' }
     );
   } else {
     log.warn(

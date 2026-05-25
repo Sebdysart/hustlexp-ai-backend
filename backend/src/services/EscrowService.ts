@@ -655,9 +655,11 @@ export const EscrowService = {
         if (workerId) {
           await sendPushNotification(
             workerId,
-            '💸 Payment received!',
-            `$${dollars} has been sent to your account${task ? ` for "${task.title}"` : ''}.`,
-            { type: 'escrow_released', taskId: taskId ?? '', amountCents: String(netPayoutCents ?? 0) }
+            '💸 Ka-ching! Payment received',
+            `$${dollars} is on its way to your account${task ? ` for "${task.title}"` : ''}. Great work! 🙌`,
+            { type: 'escrow_released', taskId: taskId ?? '', amountCents: String(netPayoutCents ?? 0) },
+            false, false,
+            { category: 'PAYMENT_RECEIVED', threadId: `task-${taskId}`, interruptionLevel: 'active' }
           );
         }
 
@@ -665,9 +667,11 @@ export const EscrowService = {
         if (task?.poster_id) {
           await sendPushNotification(
             task.poster_id,
-            '✅ Payment sent',
-            `$${grossDollars} payment confirmed${task ? ` for "${task.title}"` : ''}.`,
-            { type: 'payment_confirmed', taskId: taskId ?? '', amountCents: String(grossPayoutCents ?? 0) }
+            '✅ Payment sent!',
+            `$${grossDollars} released${task ? ` for "${task.title}"` : ''}. Thanks for using HustleXP! 🎉`,
+            { type: 'payment_confirmed', taskId: taskId ?? '', amountCents: String(grossPayoutCents ?? 0) },
+            false, false,
+            { category: 'PAYMENT_RECEIVED', threadId: `task-${taskId}`, interruptionLevel: 'active' }
           );
         }
       } catch (notifError) {

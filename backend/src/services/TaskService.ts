@@ -25,6 +25,7 @@ import { InstantObservability } from './InstantObservability.js';
 import { InstantTaskGate } from './InstantTaskGate.js';
 import * as BackgroundCheckService from './BackgroundCheckService.js';
 import { taskLogger } from '../logger.js';
+import { sendPushNotification } from './PushNotificationService.js';
 
 const log = taskLogger.child({ service: 'TaskService' });
 import type {
@@ -754,7 +755,7 @@ export const TaskService = {
       }
 
       // ── Phase 3: Atomic transaction — lock + update (fast, ~10ms) ────
-      return await db.transaction(async (query) => {
+      const acceptResult = await db.transaction(async (query) => {
         const result = await query<Task>(
           `UPDATE tasks
            SET state = 'ACCEPTED',
@@ -795,7 +796,38 @@ export const TaskService = {
         });
 
         return { success: true, data: acceptedTask };
-      });
+      }) as unknown as ServiceResult<Task>;
+
+      if (acceptResult.success && acceptResult.data) {
+        try {
+          const acceptedTask = acceptResult.data;
+          const workerInfo = await db.query<{ name: string }>(
+            `SELECT COALESCE(name, 'Your hustler') AS name FROM users WHERE id = $1`,
+            [workerId]
+          );
+          const workerName = workerInfo.rows[0]?.name ?? 'Your hustler';
+          await sendPushNotification(
+            workerId,
+            "🎉 You're booked!",
+            `You accepted "${acceptedTask.title}". Head over and get started! 🚀`,
+            { type: 'task_assigned', taskId, role: 'hustler' },
+            false, false,
+            { category: 'TASK_ASSIGNED', threadId: `task-${taskId}`, interruptionLevel: 'active' }
+          );
+          await sendPushNotification(
+            acceptedTask.poster_id,
+            '⚡ Hustler on the way!',
+            `${workerName} accepted "${acceptedTask.title}" and is heading your way! 🏃`,
+            { type: 'task_assigned', taskId, role: 'poster' },
+            false, false,
+            { category: 'TASK_ASSIGNED', threadId: `task-${taskId}`, interruptionLevel: 'active' }
+          );
+        } catch (pushErr) {
+          log.warn({ taskId, err: pushErr instanceof Error ? pushErr.message : String(pushErr) }, 'accept: push notification failed — task accepted OK');
+        }
+      }
+
+      return acceptResult;
     } catch (error) {
       return {
         success: false,
@@ -818,7 +850,7 @@ export const TaskService = {
    */
   submitProof: async (taskId: string): Promise<ServiceResult<Task>> => {
     try {
-      return await db.transaction(async (query) => {
+      const proofResult = await db.transaction(async (query) => {
         // Acquire row-level lock before reading state
         const lockResult = await query<{ state: string }>(
           `SELECT state FROM tasks WHERE id = $1 FOR UPDATE`,
@@ -879,7 +911,25 @@ export const TaskService = {
         }
 
         return { success: true, data: result.rows[0] };
-      });
+      }) as unknown as ServiceResult<Task>;
+
+      if (proofResult.success && proofResult.data) {
+        try {
+          const task = proofResult.data;
+          await sendPushNotification(
+            task.poster_id,
+            '📸 Proof submitted — review needed!',
+            `Your hustler submitted proof for "${task.title}". Approve to release payment! 💰`,
+            { type: 'proof_submitted', taskId },
+            false, false,
+            { category: 'PROOF_SUBMITTED', threadId: `task-${taskId}`, interruptionLevel: 'time-sensitive' }
+          );
+        } catch (pushErr) {
+          log.warn({ taskId, err: pushErr instanceof Error ? pushErr.message : String(pushErr) }, 'submitProof: push notification failed — proof submitted OK');
+        }
+      }
+
+      return proofResult;
     } catch (error) {
       return {
         success: false,
@@ -904,7 +954,7 @@ export const TaskService = {
    */
   complete: async (taskId: string): Promise<ServiceResult<Task>> => {
     try {
-      return await db.transaction(async (query) => {
+      const completeResult = await db.transaction(async (query) => {
         // Acquire row-level lock before reading state
         const lockResult = await query<{ state: string }>(
           `SELECT state FROM tasks WHERE id = $1 FOR UPDATE`,
@@ -986,7 +1036,27 @@ export const TaskService = {
         }
 
         return { success: true, data: completedTask };
-      });
+      }) as unknown as ServiceResult<Task>;
+
+      if (completeResult.success && completeResult.data) {
+        const completedTask = completeResult.data;
+        if (completedTask.worker_id) {
+          try {
+            await sendPushNotification(
+              completedTask.worker_id,
+              '✅ Proof approved!',
+              `"${completedTask.title}" is done — your payout is on its way. Great work! 🎉`,
+              { type: 'proof_approved', taskId },
+              false, false,
+              { threadId: `task-${taskId}`, interruptionLevel: 'active' }
+            );
+          } catch (pushErr) {
+            // Non-blocking
+          }
+        }
+      }
+
+      return completeResult;
     } catch (error) {
       // Check for INV-3 violation from trigger
       if (isInvariantViolation(error)) {
@@ -1024,7 +1094,7 @@ export const TaskService = {
    */
   rejectProof: async (taskId: string, _reason: string): Promise<ServiceResult<Task>> => {
     try {
-      return await db.transaction(async (query) => {
+      const rejectResult = await db.transaction(async (query) => {
         // Acquire row-level lock before reading state
         const lockResult = await query<{ state: string }>(
           `SELECT state FROM tasks WHERE id = $1 FOR UPDATE`,
@@ -1075,7 +1145,27 @@ export const TaskService = {
         }
 
         return { success: true, data: result.rows[0] };
-      });
+      }) as unknown as ServiceResult<Task>;
+
+      if (rejectResult.success && rejectResult.data) {
+        try {
+          const task = rejectResult.data;
+          if (task.worker_id) {
+            await sendPushNotification(
+              task.worker_id,
+              '❌ Proof not accepted',
+              `Your proof for "${task.title}" was rejected. Take another look and resubmit — you've got this! 💪`,
+              { type: 'proof_rejected', taskId },
+              false, false,
+              { category: 'PROOF_REJECTED', threadId: `task-${taskId}`, interruptionLevel: 'active' }
+            );
+          }
+        } catch (pushErr) {
+          log.warn({ taskId, err: pushErr instanceof Error ? pushErr.message : String(pushErr) }, 'rejectProof: push notification failed — proof rejected OK');
+        }
+      }
+
+      return rejectResult;
     } catch (error) {
       return {
         success: false,
@@ -1098,7 +1188,7 @@ export const TaskService = {
    */
   openDispute: async (taskId: string): Promise<ServiceResult<Task>> => {
     try {
-      return await db.transaction(async (query) => {
+      const disputeResult = await db.transaction(async (query) => {
         // Acquire row-level lock before reading state
         const lockResult = await query<{ state: string }>(
           `SELECT state FROM tasks WHERE id = $1 FOR UPDATE`,
@@ -1147,7 +1237,35 @@ export const TaskService = {
         }
 
         return { success: true, data: result.rows[0] };
-      });
+      }) as unknown as ServiceResult<Task>;
+
+      if (disputeResult.success && disputeResult.data) {
+        try {
+          const task = disputeResult.data;
+          if (task.worker_id) {
+            await sendPushNotification(
+              task.worker_id,
+              '⚖️ Dispute opened',
+              `The poster opened a dispute on "${task.title}". Our team will review and reach out soon.`,
+              { type: 'dispute_update', taskId },
+              false, false,
+              { category: 'DISPUTE_UPDATE', threadId: `task-${taskId}`, interruptionLevel: 'active' }
+            );
+          }
+          await sendPushNotification(
+            task.poster_id,
+            '⚖️ Dispute filed',
+            `Your dispute on "${task.title}" is under review. We'll be in touch shortly! 🔍`,
+            { type: 'dispute_update', taskId },
+            false, false,
+            { category: 'DISPUTE_UPDATE', threadId: `task-${taskId}`, interruptionLevel: 'active' }
+          );
+        } catch (pushErr) {
+          log.warn({ taskId, err: pushErr instanceof Error ? pushErr.message : String(pushErr) }, 'openDispute: push notification failed — dispute opened OK');
+        }
+      }
+
+      return disputeResult;
     } catch (error) {
       return {
         success: false,
@@ -1169,7 +1287,7 @@ export const TaskService = {
    */
   cancel: async (taskId: string): Promise<ServiceResult<Task>> => {
     try {
-      return await db.transaction(async (query) => {
+      const cancelResult = await db.transaction(async (query) => {
         // Acquire row-level lock before reading state
         const lockResult = await query<{ state: string }>(
           `SELECT state FROM tasks WHERE id = $1 FOR UPDATE`,
@@ -1255,7 +1373,27 @@ export const TaskService = {
         }
 
         return { success: true, data: result.rows[0] };
-      });
+      }) as unknown as ServiceResult<Task>;
+
+      if (cancelResult.success && cancelResult.data) {
+        const cancelledTask = cancelResult.data;
+        if (cancelledTask.worker_id) {
+          try {
+            await sendPushNotification(
+              cancelledTask.worker_id,
+              '😔 Task cancelled',
+              `"${cancelledTask.title}" was cancelled by the poster. Check the feed for new opportunities nearby!`,
+              { type: 'task_cancelled', taskId },
+              false, false,
+              { threadId: `task-${taskId}`, interruptionLevel: 'active' }
+            );
+          } catch (pushErr) {
+            // Non-blocking
+          }
+        }
+      }
+
+      return cancelResult;
     } catch (error) {
       return {
         success: false,
@@ -1319,23 +1457,34 @@ export const TaskService = {
         return { success: true, data: result.rows[0] } as ServiceResult<Task>;
       });
 
-      // Notify poster that task expired (after transaction commits)
-      if (txResult.success) {
+      // Notify poster and hustler (if any) that task expired (after transaction commits)
+      if (txResult.success && txResult.data) {
+        const expiredTask = txResult.data;
         try {
-          const { NotificationService } = await import('./NotificationService.js');
-          const expiredTask = txResult.data;
-          await NotificationService.createNotification({
-            userId: expiredTask.poster_id,
-            category: 'task_expired',
-            title: 'Task expired',
-            body: `Your task "${expiredTask.title}" passed its deadline. Your funds have been refunded.`,
-            taskId,
-            deepLink: `hustlexp://task/${taskId}`,
-            channels: ['push', 'in_app'],
-            priority: 'MEDIUM',
-          });
+          await sendPushNotification(
+            expiredTask.poster_id,
+            '⏰ Task expired',
+            `"${expiredTask.title}" passed its deadline with no takers. Your funds have been refunded.`,
+            { type: 'task_expired', taskId },
+            false, false,
+            { threadId: `task-${taskId}`, interruptionLevel: 'active' }
+          );
         } catch (err) {
-          log.warn({ err: err instanceof Error ? err.message : String(err), taskId }, 'Failed to send expire notification');
+          log.warn({ err: err instanceof Error ? err.message : String(err), taskId }, 'Failed to send expire notification to poster');
+        }
+        if (expiredTask.worker_id) {
+          try {
+            await sendPushNotification(
+              expiredTask.worker_id,
+              '⏰ Task expired',
+              `"${expiredTask.title}" has expired. Check the feed for new opportunities nearby!`,
+              { type: 'task_expired', taskId },
+              false, false,
+              { threadId: `task-${taskId}`, interruptionLevel: 'active' }
+            );
+          } catch (err) {
+            log.warn({ err: err instanceof Error ? err.message : String(err), taskId }, 'Failed to send expire notification to worker');
+          }
         }
       }
 
