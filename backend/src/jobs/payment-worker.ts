@@ -764,9 +764,10 @@ async function handleTransferFailed(transfer: Stripe.Transfer, stripeEventId: st
 
   // Send push notification to worker
   if (workerId) {
+    const amountStr = `$${(escrow.amount / 100).toFixed(2)}`;
     await sendPushNotification(
       workerId,
-      '⚠️ Payout transfer failed',
+      `⚠️ ${amountStr} payout failed`,
       "Your payout hit a snag, but don't worry — our team is on it and you won't lose a cent. 🛡️",
       { type: 'transfer_failed', screen: 'earnings', escrow_id: escrow.id },
       false, false,
@@ -939,10 +940,15 @@ async function handlePaymentIntentPaymentFailed(paymentIntent: Stripe.PaymentInt
   // -------------------------------------------------------------------------
 
   if (posterId) {
+    const taskTitleResult = await db.query<{ title: string }>(
+      `SELECT title FROM tasks WHERE id = $1`,
+      [escrow.task_id]
+    );
+    const taskTitle = taskTitleResult.rows[0]?.title ?? 'your task';
     await sendPushNotification(
       posterId,
       '⚠️ Payment failed',
-      'Your payment didn\'t go through. Tap to update your payment method so your task stays active.',
+      `Your payment for "${taskTitle}" didn't go through. Tap to update your payment method.`,
       { type: 'payment_failed', taskId: escrow.task_id, screen: 'task_detail' },
       false, false,
       { interruptionLevel: 'active' }
