@@ -141,9 +141,8 @@ export const WorkerSkillService = {
    */
   addSkills: async (userId: string, skillIds: string[]): Promise<ServiceResult<{ added: number; pendingVerification: string[] }>> => {
     try {
-      // Get user trust tier
-      const userResult = await db.query<{ trust_tier: number; background_check_passed: boolean }>(
-        `SELECT trust_tier, COALESCE(background_check_passed, FALSE) AS background_check_passed FROM users WHERE id = $1`,
+      const userResult = await db.query<{ id: string }>(
+        `SELECT id FROM users WHERE id = $1`,
         [userId]
       );
 

@@ -7,7 +7,7 @@
 
 import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
-import { router, publicProcedure, hustlerProcedure } from '../trpc.js';
+import { router, publicProcedure, hustlerProcedure, protectedProcedure } from '../trpc.js';
 import { WorkerSkillService } from '../services/WorkerSkillService.js';
 import { db } from '../db.js';
 import { cachedDbQuery, invalidateSkills, CACHE_TTL, CACHE_TAGS } from '../cache/db-cache.js';
@@ -80,25 +80,26 @@ export const skillsRouter = router({
       );
     }),
 
-  // Protected: Worker skill management
-  addSkills: hustlerProcedure
+  // Protected: Worker skill management (protectedProcedure, not hustlerProcedure —
+  // skills belong to a user regardless of role; called during onboarding before
+  // default_mode is confirmed in the auth cache).
+  addSkills: protectedProcedure
     .input(z.object({ skillIds: z.array(z.string().uuid()).min(1).max(50) }))
     .mutation(async ({ ctx, input }) => {
-      unwrapServiceResult(await WorkerSkillService.addSkills(ctx.user.id, input.skillIds));
+      unwrapServiceResult(await WorkerSkillService.addSkills(ctx.user!.id, input.skillIds));
       await invalidateSkills();
-      // Return the full skill list so iOS can populate WorkerSkillRecord[]
-      return getWorkerSkillsForIOS(ctx.user.id);
+      return getWorkerSkillsForIOS(ctx.user!.id);
     }),
 
-  removeSkill: hustlerProcedure
+  removeSkill: protectedProcedure
     .input(z.object({ skillId: z.string().uuid() }))
     .mutation(async ({ ctx, input }) => {
-      unwrapServiceResult(await WorkerSkillService.removeSkill(ctx.user.id, input.skillId));
+      unwrapServiceResult(await WorkerSkillService.removeSkill(ctx.user!.id, input.skillId));
       await invalidateSkills();
     }),
 
-  getMySkills: hustlerProcedure.input(z.void()).query(async ({ ctx }) => {
-    return getWorkerSkillsForIOS(ctx.user.id);
+  getMySkills: protectedProcedure.input(z.void()).query(async ({ ctx }) => {
+    return getWorkerSkillsForIOS(ctx.user!.id);
   }),
 
   submitLicense: hustlerProcedure
