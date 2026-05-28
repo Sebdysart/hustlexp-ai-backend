@@ -12,6 +12,9 @@ import { TRPCError } from '@trpc/server';
 import { config } from '../config.js';
 import { db } from '../db.js';
 import { checkUserBudget, trackUserCost, checkGlobalBudget, trackGlobalCost } from './UserAIBudget.js';
+import { logger } from '../logger.js';
+
+const log = logger.child({ module: 'AIRouter' });
 
 interface AICallConfig {
   maxTokensPerCall: number;
@@ -71,7 +74,7 @@ async function checkBudget(agent: string, userId: string): Promise<{ allowed: bo
     const spent = Number(await getRedis().get(budgetKey) ?? 0);
     return { allowed: spent < config.dailyBudgetPerUser, spent, limit: config.dailyBudgetPerUser };
   } catch (error) {
-    console.warn(`[AI Router] Failed to check budget (fail-closed):`, error);
+    log.warn({ err: error }, '[AIRouter] Failed to check budget (fail-closed)');
     return { allowed: false, spent: 0, limit: config.dailyBudgetPerUser };
   }
 }
@@ -88,7 +91,7 @@ async function trackCost(agent: string, userId: string, provider: AIProvider, to
       [agent, userId, provider, tokensUsed, cost]
     );
   } catch (error) {
-    console.error(`[AI Router] Failed to track cost:`, error);
+    log.error({ err: error }, '[AIRouter] Failed to track cost');
   }
 }
 

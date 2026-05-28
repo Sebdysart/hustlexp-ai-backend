@@ -19,6 +19,9 @@ import { db } from '../db.js';
 import { NotificationService } from '../services/NotificationService.js';
 import { MessagingService } from '../services/MessagingService.js';
 import { z } from 'zod';
+import { logger } from '../logger.js';
+
+const log = logger.child({ router: 'escrow' });
 
 export const escrowRouter = router({
   // --------------------------------------------------------------------------
@@ -305,7 +308,7 @@ export const escrowRouter = router({
           );
         }
       } catch (err) {
-        console.warn('[escrow.confirmFunding] Failed to notify hustlers:', err instanceof Error ? err.message : err);
+        log.warn({ err }, '[escrow.confirmFunding] Failed to notify hustlers');
       }
 
       return result.data;
@@ -490,7 +493,7 @@ export const escrowRouter = router({
       } catch (err) {
         // Non-blocking — log but don't fail the release
         const message = err instanceof Error ? err.message : String(err);
-        console.error(`[escrow.releaseToWorker] Failed to dispatch earnings event: ${message}`);
+        log.error({ message }, '[escrow.releaseToWorker] Failed to dispatch earnings event');
       }
 
       // Once payment has settled, the conversation is no longer load-bearing.
@@ -499,11 +502,11 @@ export const escrowRouter = router({
       try {
         const cleanup = await MessagingService.deleteForTask(escrow.data.task_id);
         if (!cleanup.success) {
-          console.error(`[escrow.releaseToWorker] Message cleanup failed: ${cleanup.error.message}`);
+          log.error({ message: cleanup.error.message }, '[escrow.releaseToWorker] Message cleanup failed');
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        console.error(`[escrow.releaseToWorker] Message cleanup threw: ${message}`);
+        log.error({ message }, '[escrow.releaseToWorker] Message cleanup threw');
       }
 
       return releaseResult.data;
@@ -540,11 +543,11 @@ export const escrowRouter = router({
       try {
         const cleanup = await MessagingService.deleteForTask(escrow.data.task_id);
         if (!cleanup.success) {
-          console.error(`[escrow.refund] Message cleanup failed: ${cleanup.error.message}`);
+          log.error({ message: cleanup.error.message }, '[escrow.refund] Message cleanup failed');
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        console.error(`[escrow.refund] Message cleanup threw: ${message}`);
+        log.error({ message }, '[escrow.refund] Message cleanup threw');
       }
 
       return result.data;

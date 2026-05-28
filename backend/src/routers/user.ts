@@ -53,21 +53,29 @@ async function toMobileUser(user: User) {
 
   const stats = statsResult.rows[0];
 
-  // Fetch phone/email verification status from users_identity
-  // Wrapped in try/catch: table may not exist yet if migration hasn't run
-  let identityRow: { phone_verified: boolean; email_verified: boolean } | null = null;
-  try {
-    const identityResult = await db.query<{
-      phone_verified: boolean;
-      email_verified: boolean;
-    }>(
-      `SELECT phone_verified, email_verified FROM users_identity WHERE user_id = $1`,
+  // Run supplemental queries in parallel — all wrapped in try/catch so a missing
+  // table during an incomplete migration never breaks the profile response.
+  const [identityRow, taxStatus, verificationEarned, insuranceTotal] = await Promise.all([
+    db.query<{ phone_verified: boolean; email_verified: boolean }>(
+      'SELECT phone_verified, email_verified FROM users_identity WHERE user_id = $1',
       [user.id]
-    );
-    identityRow = identityResult.rows[0] ?? null;
-  } catch {
-    // Table doesn't exist yet — default to false
-  }
+    ).then(r => r.rows[0] ?? null).catch(() => null),
+
+    db.query<{ total_unpaid_tax_cents: number; total_xp_held_back: number }>(
+      'SELECT total_unpaid_tax_cents, total_xp_held_back FROM user_xp_tax_status WHERE user_id = $1',
+      [user.id]
+    ).then(r => r.rows[0] ?? null).catch(() => null),
+
+    db.query<{ total_net_earnings_cents: number }>(
+      'SELECT total_net_earnings_cents FROM verification_earnings_tracking WHERE user_id = $1',
+      [user.id]
+    ).then(r => r.rows[0] ?? null).catch(() => null),
+
+    db.query<{ total: string }>(
+      'SELECT COALESCE(SUM(contribution_cents), 0)::text AS total FROM insurance_contributions WHERE hustler_id = $1',
+      [user.id]
+    ).then(r => r.rows[0] ?? null).catch(() => null),
+  ]);
 
   return {
     id: user.id,
@@ -87,11 +95,10 @@ async function toMobileUser(user: User) {
     totalSpent: stats ? parseInt(stats.total_spent || '0', 10) / 100 : 0,
     isVerified: user.is_verified,
     createdAt: user.created_at,
-    // v1.8.0 fields expected by iOS HXUser
-    unpaidTaxCents: 0,       // TODO: query from xp_tax_status when table exists
-    xpHeldBack: 0,            // TODO: query from xp_ledger held entries
-    verificationEarnedCents: 0, // TODO: query from earned_verification_unlock
-    insuranceContributionsCents: 0, // TODO: query from self_insurance_pool
+    unpaidTaxCents: taxStatus?.total_unpaid_tax_cents ?? 0,
+    xpHeldBack: taxStatus?.total_xp_held_back ?? 0,
+    verificationEarnedCents: verificationEarned?.total_net_earnings_cents ?? 0,
+    insuranceContributionsCents: parseInt(insuranceTotal?.total ?? '0', 10),
     // Onboarding
     onboardingComplete: user.onboarding_completed_at !== null,
     // Verification status (phone/email)

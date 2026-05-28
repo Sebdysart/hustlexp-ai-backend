@@ -33,10 +33,10 @@ import { createMetricsEndpoint } from './monitoring/metrics.js';
 // Validate required env vars before accepting any traffic.
 // In production this exits the process; in development it logs warnings.
 const { errors: configErrors, warnings: configWarnings } = validateConfig();
-configWarnings.forEach(w => console.warn(`⚠️  CONFIG WARNING: ${w}`));
+configWarnings.forEach(w => pinoLogger.warn(w, 'CONFIG WARNING'));
 if (configErrors.length > 0 && !config.app.isProduction) {
   // Development: log errors but continue so developers can test partial setups
-  configErrors.forEach(e => console.error(`❌ CONFIG ERROR (non-fatal in dev): ${e}`));
+  configErrors.forEach(e => pinoLogger.error(e, 'CONFIG ERROR (non-fatal in dev)'));
 }
 // Production fail-fast is handled inside validateConfig() → process.exit(1)
 
@@ -49,30 +49,23 @@ if (config.app.isProduction) {
   const allowedOrigins = config.app.allowedOrigins;
   
   if (allowedOrigins.length === 0) {
-    console.error('❌ CRITICAL: ALLOWED_ORIGINS is not set in production');
-    console.error('   Set ALLOWED_ORIGINS to your frontend domain(s)');
-    console.error('   Example: ALLOWED_ORIGINS=https://app.hustlexp.com,https://admin.hustlexp.com');
+    pinoLogger.fatal('CRITICAL: ALLOWED_ORIGINS is not set in production — set it to your frontend domain(s)');
     process.exit(1);
   }
-  
+
   if (allowedOrigins.includes('*')) {
-    console.error('❌ CRITICAL: ALLOWED_ORIGINS contains "*" in production');
-    console.error('   This allows any website to access your API');
-    console.error('   Set specific origins like: ALLOWED_ORIGINS=https://app.hustlexp.com');
+    pinoLogger.fatal('CRITICAL: ALLOWED_ORIGINS contains "*" in production — set specific origins');
     process.exit(1);
   }
-  
+
   // Validate all origins are HTTPS
   const nonHttpsOrigins = allowedOrigins.filter(o => o.startsWith('http:'));
   if (nonHttpsOrigins.length > 0) {
-    console.error('❌ CRITICAL: Non-HTTPS origins in production:');
-    nonHttpsOrigins.forEach(o => console.error(`   - ${o}`));
-    console.error('   All origins must use HTTPS in production');
+    pinoLogger.fatal({ nonHttpsOrigins }, 'CRITICAL: Non-HTTPS origins in production — all origins must use HTTPS');
     process.exit(1);
   }
-  
-  console.log('✅ CORS configured for production:');
-  allowedOrigins.forEach(origin => console.log(`   - ${origin}`));
+
+  pinoLogger.info({ allowedOrigins }, 'CORS configured for production');
 }
 
 // Hono context variable type augmentation
