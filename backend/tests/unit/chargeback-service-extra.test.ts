@@ -25,6 +25,7 @@ vi.mock('../../src/services/RevenueService', () => ({
 
 vi.mock('../../src/logger', () => ({
   stripeLogger: {
+    info: vi.fn(), warn: vi.fn(), error: vi.fn(),
     child: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
   },
   logger: { child: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }) },

@@ -18,6 +18,7 @@
 
 import { db } from '../db.js';
 import { RevenueService } from './RevenueService.js';
+import { StripeService } from './StripeService.js';
 import type { ServiceResult } from '../types.js';
 import { stripeLogger } from '../logger.js';
 
@@ -325,6 +326,13 @@ export const ChargebackService = {
         'Chargeback processed'
       );
 
+      // 7. Gather + submit evidence to Stripe (non-fatal).
+      try {
+        await ChargebackService.submitDisputeEvidence(stripeDisputeId, paymentDisputeId, taskId, escrowId);
+      } catch (evidenceErr) {
+        log.error({ err: evidenceErr instanceof Error ? evidenceErr.message : String(evidenceErr), stripeDisputeId }, 'Evidence submission failed (non-fatal)');
+      }
+
       return { success: true, data: { paymentDisputeId } };
     } catch (error) {
       log.error({ err: error instanceof Error ? error.message : String(error), stripeDisputeId }, 'handleDisputeCreated failed');
@@ -335,6 +343,133 @@ export const ChargebackService = {
           message: error instanceof Error ? error.message : 'Unknown error',
         },
       };
+    }
+  },
+
+  /**
+   * Gather and submit dispute evidence to Stripe (B#6).
+   *
+   * Quality gate: auto-submits only when strong evidence exists (proof photos,
+   * GPS validation, task timeline). Thin evidence is flagged for admin review
+   * rather than submitted blindly (weak evidence can hurt win rate).
+   */
+  submitDisputeEvidence: async (
+    stripeDisputeId: string,
+    paymentDisputeId: string,
+    taskId: string | null,
+    escrowId: string | null,
+  ): Promise<void> => {
+    if (!taskId) {
+      log.info({ stripeDisputeId }, 'No task_id — cannot gather evidence');
+      return;
+    }
+
+    // Gather evidence from multiple sources (read-only queries, any failure → partial)
+    let taskDesc = '';
+    let proofSummary = '';
+    let gpsSummary = '';
+    let messageSummary = '';
+    let escrowSummary = '';
+    let evidenceStrength = 0; // 0-5 scale
+
+    try {
+      const task = await db.query<{ title: string; description: string; price: number; created_at: Date; completed_at: Date | null; poster_id: string; worker_id: string | null }>(
+        `SELECT title, description, price, created_at, completed_at, poster_id, worker_id FROM tasks WHERE id = $1`, [taskId]
+      );
+      if (task.rows[0]) {
+        const t = task.rows[0];
+        taskDesc = `Task: "${t.title}" — ${t.description || 'No description'}. Price: $${(t.price / 100).toFixed(2)}. Created: ${t.created_at}. Completed: ${t.completed_at || 'N/A'}.`;
+        evidenceStrength++;
+      }
+    } catch { /* partial evidence ok */ }
+
+    try {
+      const proofs = await db.query<{ state: string; submitted_at: Date; description: string | null; photo_count: number }>(
+        `SELECT p.state, p.submitted_at, p.description, COUNT(pp.id)::int AS photo_count
+         FROM proofs p LEFT JOIN proof_photos pp ON pp.proof_id = p.id
+         WHERE p.task_id = $1 GROUP BY p.id ORDER BY p.submitted_at DESC LIMIT 3`,
+        [taskId]
+      );
+      if (proofs.rows.length > 0) {
+        const accepted = proofs.rows.filter(p => p.state === 'ACCEPTED');
+        proofSummary = `${proofs.rows.length} proof(s) submitted, ${accepted.length} ACCEPTED. ` +
+          proofs.rows.map(p => `[${p.state}] ${p.photo_count} photo(s) at ${p.submitted_at}`).join('; ');
+        if (accepted.length > 0) evidenceStrength += 2; // strong signal
+      }
+    } catch { /* partial evidence ok */ }
+
+    try {
+      const geo = await db.query<{ event_type: string; distance_meters: number; created_at: Date }>(
+        `SELECT event_type, distance_meters, created_at FROM geofence_events WHERE task_id = $1 ORDER BY created_at`, [taskId]
+      );
+      if (geo.rows.length > 0) {
+        const checkins = geo.rows.filter(g => g.event_type === 'checkin' || g.event_type === 'enter');
+        gpsSummary = `GPS: ${geo.rows.length} location events. ${checkins.length} check-in(s). ` +
+          geo.rows.slice(0, 5).map(g => `${g.event_type} @ ${g.distance_meters}m (${g.created_at})`).join('; ');
+        evidenceStrength++;
+      }
+    } catch { /* partial evidence ok */ }
+
+    try {
+      const msgs = await db.query<{ content: string; sender_id: string; created_at: Date }>(
+        `SELECT content, sender_id, created_at FROM task_messages WHERE task_id = $1 ORDER BY created_at LIMIT 10`, [taskId]
+      );
+      if (msgs.rows.length > 0) {
+        messageSummary = `${msgs.rows.length} message(s): ` +
+          msgs.rows.map(m => `[${m.created_at}] "${m.content?.slice(0, 60) || '(media)'}"`).join('; ');
+        evidenceStrength++;
+      }
+    } catch { /* partial evidence ok */ }
+
+    if (escrowId) {
+      try {
+        const esc = await db.query<{ amount: number; funded_at: Date | null; released_at: Date | null; stripe_payment_intent_id: string | null }>(
+          `SELECT amount, funded_at, released_at, stripe_payment_intent_id FROM escrows WHERE id = $1`, [escrowId]
+        );
+        if (esc.rows[0]) {
+          const e = esc.rows[0];
+          escrowSummary = `Escrow: $${(e.amount / 100).toFixed(2)}, funded ${e.funded_at || 'N/A'}, released ${e.released_at || 'N/A'}, PI ${e.stripe_payment_intent_id || 'N/A'}.`;
+        }
+      } catch { /* partial evidence ok */ }
+    }
+
+    // Quality gate: only auto-submit when evidence strength >= 3 (out of 5).
+    // Thin evidence is flagged for admin review.
+    const shouldAutoSubmit = evidenceStrength >= 3;
+
+    const evidence: Record<string, string> = {
+      product_description: `HustleXP local services marketplace task. ${taskDesc}`,
+      service_documentation: [proofSummary, gpsSummary].filter(Boolean).join(' | '),
+      uncategorized_text: [messageSummary, escrowSummary].filter(Boolean).join(' | '),
+    };
+    // Remove empty fields
+    for (const key of Object.keys(evidence)) {
+      if (!evidence[key]) delete evidence[key];
+    }
+
+    if (!shouldAutoSubmit) {
+      await db.query(
+        `UPDATE payment_disputes SET evidence_needs_review = TRUE WHERE id = $1`,
+        [paymentDisputeId]
+      );
+      log.warn({ stripeDisputeId, evidenceStrength, paymentDisputeId }, 'Evidence too thin for auto-submit — flagged for admin review');
+      return;
+    }
+
+    const result = await StripeService.submitDisputeEvidence(stripeDisputeId, evidence, true);
+
+    if (result.success) {
+      await db.query(
+        `UPDATE payment_disputes SET evidence_submitted_at = NOW() WHERE id = $1`,
+        [paymentDisputeId]
+      );
+      log.info({ stripeDisputeId, evidenceStrength, paymentDisputeId }, 'Evidence auto-submitted to Stripe');
+    } else {
+      await db.query(
+        `UPDATE payment_disputes SET evidence_submission_failed = TRUE WHERE id = $1`,
+        [paymentDisputeId]
+      );
+      log.error({ stripeDisputeId, err: result.error.message, paymentDisputeId }, 'Evidence submission to Stripe failed — flagged for retry');
     }
   },
 

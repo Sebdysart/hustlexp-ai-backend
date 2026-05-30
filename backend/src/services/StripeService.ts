@@ -229,6 +229,24 @@ export const StripeService = {
     }
   },
 
+  submitDisputeEvidence: async (
+    stripeDisputeId: string,
+    evidence: Record<string, string>,
+    submit: boolean
+  ): Promise<ServiceResult<void>> => {
+    if (!stripe) {
+      return { success: false, error: { code: 'STRIPE_NOT_CONFIGURED', message: 'Stripe is not configured' } };
+    }
+    try {
+      await stripeBreaker.execute(() =>
+        stripe!.disputes.update(stripeDisputeId, { evidence, submit } as never)
+      );
+      return { success: true, data: undefined };
+    } catch (error) {
+      return { success: false, error: { code: 'STRIPE_DISPUTE_EVIDENCE_FAILED', message: error instanceof Error ? error.message : 'Unknown error' } };
+    }
+  },
+
   processWebhookEvent: async (
     eventId: string,
     eventType: string,

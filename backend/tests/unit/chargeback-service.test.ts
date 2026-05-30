@@ -16,6 +16,12 @@ vi.mock('../../src/services/RevenueService', () => ({
   },
 }));
 
+vi.mock('../../src/services/StripeService', () => ({
+  StripeService: {
+    submitDisputeEvidence: vi.fn().mockResolvedValue({ success: true, data: undefined }),
+  },
+}));
+
 vi.mock('../../src/logger', () => ({
   stripeLogger: {
     child: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
@@ -26,9 +32,11 @@ vi.mock('../../src/logger', () => ({
 import { db } from '../../src/db';
 import { ChargebackService } from '../../src/services/ChargebackService';
 import { RevenueService } from '../../src/services/RevenueService';
+import { StripeService } from '../../src/services/StripeService';
 
 const mockDb = vi.mocked(db);
 const mockRevenueLog = vi.mocked(RevenueService.logEvent);
+const mockSubmitEvidence = vi.mocked(StripeService.submitDisputeEvidence);
 
 function makeDisputeParams(overrides: Record<string, unknown> = {}) {
   return {
@@ -378,6 +386,70 @@ describe('ChargebackService', () => {
         expect(result.data.disputeRate).toBe(0.001);
         expect(result.data.isAtRisk).toBe(false); // 0.1% < 0.75%
       }
+    });
+  });
+
+  describe('submitDisputeEvidence', () => {
+    it('auto-submits evidence when quality is strong (≥3 signals)', async () => {
+      // task
+      mockDb.query.mockResolvedValueOnce({ rows: [{ title: 'Move couch', description: 'Help me move', price: 5000, created_at: new Date(), completed_at: new Date(), poster_id: 'p1', worker_id: 'w1' }], rowCount: 1 } as never);
+      // proofs with accepted proof + photos
+      mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'ACCEPTED', submitted_at: new Date(), description: 'done', photo_count: 3 }], rowCount: 1 } as never);
+      // geofence events
+      mockDb.query.mockResolvedValueOnce({ rows: [{ event_type: 'checkin', distance_meters: 10, created_at: new Date() }], rowCount: 1 } as never);
+      // messages
+      mockDb.query.mockResolvedValueOnce({ rows: [{ content: 'On my way', sender_id: 'w1', created_at: new Date() }], rowCount: 1 } as never);
+      // escrow
+      mockDb.query.mockResolvedValueOnce({ rows: [{ amount: 5000, funded_at: new Date(), released_at: new Date(), stripe_payment_intent_id: 'pi_1' }], rowCount: 1 } as never);
+      // UPDATE evidence_submitted_at
+      mockDb.query.mockResolvedValueOnce({ rowCount: 1 } as never);
+
+      await ChargebackService.submitDisputeEvidence('dp_1', 'pd_1', 'task-1', 'esc-1');
+
+      expect(mockSubmitEvidence).toHaveBeenCalledWith('dp_1', expect.objectContaining({ product_description: expect.stringContaining('Move couch') }), true);
+      const updateCall = mockDb.query.mock.calls.find(c => typeof c[0] === 'string' && c[0].includes('evidence_submitted_at'));
+      expect(updateCall).toBeTruthy();
+    });
+
+    it('flags admin review when evidence is thin (< 3 signals)', async () => {
+      // task only — 1 signal
+      mockDb.query.mockResolvedValueOnce({ rows: [{ title: 'X', description: '', price: 100, created_at: new Date(), completed_at: null, poster_id: 'p1', worker_id: null }], rowCount: 1 } as never);
+      // no proofs
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+      // no geofence
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+      // no messages
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+      // UPDATE evidence_needs_review
+      mockDb.query.mockResolvedValueOnce({ rowCount: 1 } as never);
+
+      await ChargebackService.submitDisputeEvidence('dp_2', 'pd_2', 'task-2', null);
+
+      expect(mockSubmitEvidence).not.toHaveBeenCalled();
+      const reviewCall = mockDb.query.mock.calls.find(c => typeof c[0] === 'string' && c[0].includes('evidence_needs_review'));
+      expect(reviewCall).toBeTruthy();
+    });
+
+    it('flags submission failure when Stripe API errors (does not throw)', async () => {
+      // strong evidence (3+ signals)
+      mockDb.query.mockResolvedValueOnce({ rows: [{ title: 'T', description: 'D', price: 100, created_at: new Date(), completed_at: new Date(), poster_id: 'p', worker_id: 'w' }], rowCount: 1 } as never);
+      mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'ACCEPTED', submitted_at: new Date(), description: 'x', photo_count: 2 }], rowCount: 1 } as never);
+      mockDb.query.mockResolvedValueOnce({ rows: [{ event_type: 'checkin', distance_meters: 5, created_at: new Date() }], rowCount: 1 } as never);
+      mockDb.query.mockResolvedValueOnce({ rows: [{ content: 'hi', sender_id: 'w', created_at: new Date() }], rowCount: 1 } as never);
+      // Stripe fails
+      mockSubmitEvidence.mockResolvedValueOnce({ success: false, error: { code: 'ERR', message: 'network' } } as never);
+      // UPDATE evidence_submission_failed
+      mockDb.query.mockResolvedValueOnce({ rowCount: 1 } as never);
+
+      await expect(ChargebackService.submitDisputeEvidence('dp_3', 'pd_3', 'task-3', null)).resolves.toBeUndefined();
+      const failCall = mockDb.query.mock.calls.find(c => typeof c[0] === 'string' && c[0].includes('evidence_submission_failed'));
+      expect(failCall).toBeTruthy();
+    });
+
+    it('skips gracefully when no task_id is available', async () => {
+      await ChargebackService.submitDisputeEvidence('dp_4', 'pd_4', null, null);
+      expect(mockSubmitEvidence).not.toHaveBeenCalled();
+      expect(mockDb.query).not.toHaveBeenCalled();
     });
   });
 });
