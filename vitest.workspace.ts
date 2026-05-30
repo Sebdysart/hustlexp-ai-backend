@@ -7,17 +7,6 @@ export default defineWorkspace([
       environment: 'node',
       testTimeout: 30000,
       include: ['backend/tests/unit/**/*.test.ts'],
-      exclude: [
-        'backend/tests/unit/src-layer-services-batch.test.ts',
-        'backend/tests/unit/errors-branches.test.ts',
-        'backend/tests/unit/safety-branches.test.ts',
-        'backend/tests/unit/stripe-money-engine.test.ts',
-        'backend/tests/unit/stripe-service-src.test.ts',
-        'backend/tests/unit/service-tax-compliance-extra.test.ts',
-        'backend/tests/unit/service-feed-query.test.ts',
-        'backend/tests/unit/service-capability-profile.test.ts',
-        'backend/tests/unit/query-cache-extra.test.ts',
-      ],
       // Unit tests use vi.mock() with no shared infrastructure.
       // Safe to run in parallel across files.
       fileParallelism: true,
