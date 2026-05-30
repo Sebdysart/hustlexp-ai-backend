@@ -1,28 +1,9 @@
-/**
- * XPTaxService v1.0.0
- *
- * CONSTITUTIONAL: Manages XP tax for offline payments (Layer 0 enforcement)
- *
- * XP is ONLY awarded for payments processed through escrow. Offline payments
- * (cash, Venmo, Cash App) incur a 10% XP tax that must be paid before XP award.
- *
- * Enforcement: Database trigger `enforce_xp_tax_payment()` blocks XP insertion
- * if unpaid offline taxes exist (Error code: HX201)
- *
- * @see XP_TAX_SYSTEM_SPEC_LOCKED.md
- * @see schema.sql v1.8.0 (xp_tax_ledger, user_xp_tax_status, trigger)
- */
-
 import { db } from '../db.js';
 import { logger } from '../logger.js';
 import type { ServiceResult } from '../types.js';
 import { StripeService } from './StripeService.js';
 
 const log = logger.child({ service: 'XPTaxService' });
-
-// ============================================================================
-// TYPES
-// ============================================================================
 
 type PaymentMethod = 'escrow' | 'offline_cash' | 'offline_venmo' | 'offline_cashapp';
 
@@ -57,27 +38,12 @@ interface TaxStatus {
   blocked: boolean;
 }
 
-// ============================================================================
-// SERVICE
-// ============================================================================
-
 export const XPTaxService = {
-  /**
-   * Calculate tax for offline payment
-   * Returns 0 for escrow, 10% for offline
-   */
   calculateTax: (grossPayoutCents: number, paymentMethod: PaymentMethod): number => {
-    if (paymentMethod === 'escrow') {
-      return 0; // No tax on platform payments
-    }
-    // 10% tax on offline payments
+    if (paymentMethod === 'escrow') return 0;
     return Math.round(grossPayoutCents * 0.10);
   },
 
-  /**
-   * Record offline payment and calculate tax
-   * Creates xp_tax_ledger entry with xp_held_back = TRUE
-   */
   recordOfflinePayment: async (
     userId: string,
     taskId: string,
@@ -85,11 +51,10 @@ export const XPTaxService = {
     grossPayoutCents: number
   ): Promise<ServiceResult<void>> => {
     try {
-      const taxPercentage = 10.0; // 10% for offline
+      const taxPercentage = 10.0;
       const taxAmountCents = Math.round(grossPayoutCents * (taxPercentage / 100));
-      const netPayoutCents = grossPayoutCents; // Tax doesn't reduce payout
+      const netPayoutCents = grossPayoutCents;
 
-      // Insert tax record
       await db.query(
         `INSERT INTO xp_tax_ledger (
           user_id, task_id, gross_payout_cents, tax_percentage,
@@ -99,7 +64,6 @@ export const XPTaxService = {
         [userId, taskId, grossPayoutCents, taxPercentage, taxAmountCents, netPayoutCents, paymentMethod]
       );
 
-      // Update summary table
       await db.query(
         `INSERT INTO user_xp_tax_status (user_id, total_unpaid_tax_cents)
          VALUES ($1, $2)
@@ -110,41 +74,22 @@ export const XPTaxService = {
       );
 
       log.info({ userId, taskId, taxAmountCents }, 'Recorded offline payment');
-
       return { success: true, data: undefined };
     } catch (error) {
       log.error({ err: error instanceof Error ? error.message : String(error) }, 'recordOfflinePayment failed');
-      return {
-        success: false,
-        error: {
-          code: 'RECORD_OFFLINE_PAYMENT_FAILED',
-          message: error instanceof Error ? error.message : 'Failed to record offline payment'
-        }
-      };
+      return { success: false, error: { code: 'RECORD_OFFLINE_PAYMENT_FAILED', message: error instanceof Error ? error.message : 'Failed to record offline payment' } };
     }
   },
 
-  /**
-   * Check user's unpaid tax balance
-   */
   checkTaxStatus: async (userId: string): Promise<ServiceResult<TaxStatus>> => {
     try {
       const result = await db.query<UserXPTaxStatus>(
         'SELECT total_unpaid_tax_cents, total_xp_held_back FROM user_xp_tax_status WHERE user_id = $1',
         [userId]
       );
-
       if (!result.rows[0]) {
-        return {
-          success: true,
-          data: {
-            unpaid_tax_cents: 0,
-            xp_held_back: 0,
-            blocked: false
-          }
-        };
+        return { success: true, data: { unpaid_tax_cents: 0, xp_held_back: 0, blocked: false } };
       }
-
       return {
         success: true,
         data: {
@@ -155,99 +100,57 @@ export const XPTaxService = {
       };
     } catch (error) {
       log.error({ err: error instanceof Error ? error.message : String(error) }, 'checkTaxStatus failed');
-      return {
-        success: false,
-        error: {
-          code: 'CHECK_TAX_STATUS_FAILED',
-          message: error instanceof Error ? error.message : 'Failed to check tax status'
-        }
-      };
+      return { success: false, error: { code: 'CHECK_TAX_STATUS_FAILED', message: error instanceof Error ? error.message : 'Failed to check tax status' } };
     }
   },
 
-  /**
-   * Pay accumulated XP tax via Stripe
-   * Releases held XP after payment confirmed
-   *
-   * IDEMPOTENCY: If stripePaymentIntentId has already been recorded as a paid
-   * tax entry, this call returns immediately with success to prevent double-charging
-   * on network retries or iOS re-submissions of the same intent.
-   */
   payTax: async (
     userId: string,
     stripePaymentIntentId: string
   ): Promise<ServiceResult<{ xp_released: number }>> => {
     try {
-      // FIX: Hard-block if Stripe is not configured — never process tax payments without verification
       if (!StripeService.isConfigured()) {
-        return {
-          success: false,
-          error: {
-            code: 'XP_TAX_PAYMENT_UNAVAILABLE',
-            message: 'XP_TAX_PAYMENT_UNAVAILABLE: Stripe is not configured. Cannot process tax payment.',
-          },
-        };
+        return { success: false, error: { code: 'XP_TAX_PAYMENT_UNAVAILABLE', message: 'Stripe is not configured. Cannot process tax payment.' } };
       }
 
-      // IDEMPOTENCY CHECK: Return early if this Stripe payment intent was already processed.
-      // This prevents double-charging when the client retries a request (e.g. network error
-      // after Stripe succeeded but before the server responded).
       const existingPayment = await db.query<{ id: string }>(
-        `SELECT id FROM xp_tax_ledger
-         WHERE stripe_payment_intent_id = $1 AND tax_paid = TRUE
-         LIMIT 1`,
+        `SELECT id FROM xp_tax_ledger WHERE stripe_payment_intent_id = $1 AND tax_paid = TRUE LIMIT 1`,
         [stripePaymentIntentId]
       );
       if (existingPayment.rows.length > 0) {
-        log.info({ userId, stripePaymentIntentId }, 'payTax: idempotent replay — intent already processed');
+        log.info({ userId, stripePaymentIntentId }, 'payTax: idempotent replay');
         return { success: true, data: { xp_released: 0 } };
       }
 
-      // Verify Stripe payment succeeded
       const piResult = await StripeService.verifyPaymentIntent(stripePaymentIntentId);
 
       let amountPaidCents: number;
 
       if (piResult.success && piResult.data) {
-        // Stripe is configured — verify payment status
         if (piResult.data.status !== 'succeeded') {
-          return {
-            success: false,
-            error: {
-              code: 'PAYMENT_NOT_SUCCEEDED',
-              message: `Payment intent status is "${piResult.data.status}", expected "succeeded"`,
-            },
-          };
+          return { success: false, error: { code: 'PAYMENT_NOT_SUCCEEDED', message: `Payment intent status is "${piResult.data.status}", expected "succeeded"` } };
         }
 
-        // Verify this is a tax payment for this user
         if (piResult.data.metadata.type !== 'xp_tax') {
-          return {
-            success: false,
-            error: {
-              code: 'INVALID_PAYMENT_TYPE',
-              message: 'Payment intent is not an XP tax payment',
-            },
-          };
+          return { success: false, error: { code: 'INVALID_PAYMENT_TYPE', message: 'Payment intent is not an XP tax payment' } };
+        }
+
+        // FIX: Verify the payment intent belongs to the calling user.
+        // Without this check, User A could submit User B's valid tax PI
+        // to clear User A's taxes using User B's payment.
+        if (piResult.data.metadata.user_id !== userId) {
+          return { success: false, error: { code: 'PAYMENT_USER_MISMATCH', message: 'Payment intent does not belong to this user' } };
         }
 
         amountPaidCents = piResult.data.amountCents;
       } else {
-        // Stripe returned an error despite being configured — propagate it
-        return {
-          success: false,
-          error: {
-            code: 'STRIPE_VERIFICATION_FAILED',
-            message: piResult.error?.message ?? 'Failed to verify Stripe payment intent',
-          },
-        };
+        return { success: false, error: { code: 'STRIPE_VERIFICATION_FAILED', message: piResult.error?.message ?? 'Failed to verify Stripe payment intent' } };
       }
 
       if (amountPaidCents <= 0) {
         return { success: true, data: { xp_released: 0 } };
       }
 
-      // Get unpaid tax entries (FIFO order)
       const unpaidTaxes = await db.query<XPTaxLedger>(
         'SELECT * FROM xp_tax_ledger WHERE user_id = $1 AND tax_paid = FALSE ORDER BY created_at ASC',
         [userId]
@@ -257,32 +160,17 @@ export const XPTaxService = {
       let totalXpReleased = 0;
       let totalTaxPaid = 0;
 
-      // Pay taxes in FIFO order
       for (const tax of unpaidTaxes.rows) {
         if (remainingPayment >= tax.tax_amount_cents) {
-          // Mark tax as paid and release held XP, recording the Stripe intent ID
-          // for idempotency (prevents double-charge on retry).
           await db.query(
             `UPDATE xp_tax_ledger
-             SET tax_paid = TRUE,
-                 tax_paid_at = NOW(),
-                 xp_released = TRUE,
-                 xp_released_at = NOW(),
-                 stripe_payment_intent_id = $2
+             SET tax_paid = TRUE, tax_paid_at = NOW(), xp_released = TRUE, xp_released_at = NOW(), stripe_payment_intent_id = $2
              WHERE id = $1`,
             [tax.id, stripePaymentIntentId]
           );
 
-          // Calculate held XP to release (100 XP per $1 of gross payout)
           const xpAmount = Math.round(tax.gross_payout_cents / 10);
-
-          // Release held XP directly to user's xp_total
-          // Note: This bypasses INV-1 (no escrow) because tax XP is already earned,
-          // just held back pending tax payment. We update the user directly.
-          await db.query(
-            `UPDATE users SET xp_total = xp_total + $1 WHERE id = $2`,
-            [xpAmount, userId]
-          );
+          await db.query(`UPDATE users SET xp_total = xp_total + $1 WHERE id = $2`, [xpAmount, userId]);
 
           remainingPayment -= tax.tax_amount_cents;
           totalTaxPaid += tax.tax_amount_cents;
@@ -290,7 +178,6 @@ export const XPTaxService = {
         }
       }
 
-      // Update summary table
       await db.query(
         `UPDATE user_xp_tax_status
          SET total_unpaid_tax_cents = GREATEST(total_unpaid_tax_cents - $1, 0),
@@ -301,87 +188,48 @@ export const XPTaxService = {
       );
 
       log.info({ userId, totalTaxPaidCents: totalTaxPaid, xpReleased: totalXpReleased }, 'Tax payment processed');
-
       return { success: true, data: { xp_released: totalXpReleased } };
     } catch (error) {
       log.error({ err: error instanceof Error ? error.message : String(error), userId }, 'payTax failed');
-      return {
-        success: false,
-        error: {
-          code: 'PAY_TAX_FAILED',
-          message: error instanceof Error ? error.message : 'Failed to pay tax'
-        }
-      };
+      return { success: false, error: { code: 'PAY_TAX_FAILED', message: error instanceof Error ? error.message : 'Failed to pay tax' } };
     }
   },
 
-  /**
-   * Get tax payment history
-   */
   getTaxHistory: async (userId: string, limit = 20): Promise<ServiceResult<XPTaxLedger[]>> => {
     try {
       const result = await db.query<XPTaxLedger>(
-        `SELECT * FROM xp_tax_ledger
-         WHERE user_id = $1
-         ORDER BY created_at DESC
-         LIMIT $2`,
+        'SELECT * FROM xp_tax_ledger WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2',
         [userId, limit]
       );
-
       return { success: true, data: result.rows };
     } catch (error) {
       log.error({ err: error instanceof Error ? error.message : String(error), userId }, 'getTaxHistory failed');
-      return {
-        success: false,
-        error: {
-          code: 'GET_TAX_HISTORY_FAILED',
-          message: error instanceof Error ? error.message : 'Failed to get tax history'
-        }
-      };
+      return { success: false, error: { code: 'GET_TAX_HISTORY_FAILED', message: error instanceof Error ? error.message : 'Failed to get tax history' } };
     }
   },
 
-  /**
-   * Admin: Forgive all unpaid taxes (emergency override)
-   */
   adminForgiveTax: async (userId: string, adminId: string, reason: string): Promise<ServiceResult<void>> => {
     try {
-      // Mark all unpaid taxes as forgiven
       await db.query(
-        `UPDATE xp_tax_ledger
-         SET tax_paid = TRUE,
-             tax_paid_at = NOW()
-         WHERE user_id = $1 AND tax_paid = FALSE`,
+        `UPDATE xp_tax_ledger SET tax_paid = TRUE, tax_paid_at = NOW() WHERE user_id = $1 AND tax_paid = FALSE`,
+        [userId]
+      );
+      await db.query(
+        `UPDATE user_xp_tax_status SET total_unpaid_tax_cents = 0, last_updated_at = NOW() WHERE user_id = $1`,
         [userId]
       );
 
-      // Reset summary
-      await db.query(
-        `UPDATE user_xp_tax_status
-         SET total_unpaid_tax_cents = 0,
-             last_updated_at = NOW()
-         WHERE user_id = $1`,
-        [userId]
-      );
-
-      // Log to admin_actions audit table
       log.info({ adminId, userId, reason }, 'Admin forgave XP taxes');
       await db.query(
         `INSERT INTO admin_actions (admin_user_id, admin_role, action_type, action_details, target_user_id, result)
          VALUES ($1, 'admin', 'forgive_xp_taxes', $2::JSONB, $3, 'success')`,
         [adminId, JSON.stringify({ reason, userId }), userId]
-      ).catch(err => log.error({ err: err instanceof Error ? err.message : String(err), adminId, userId }, 'Failed to log admin forgive action'));
+      ).catch(err => log.error({ err: err instanceof Error ? err.message : String(err) }, 'Failed to log admin forgive action'));
 
       return { success: true, data: undefined };
     } catch (error) {
       log.error({ err: error instanceof Error ? error.message : String(error), adminId, userId }, 'adminForgiveTax failed');
-      return {
-        success: false,
-        error: {
-          code: 'ADMIN_FORGIVE_FAILED',
-          message: error instanceof Error ? error.message : 'Failed to forgive tax'
-        }
-      };
+      return { success: false, error: { code: 'ADMIN_FORGIVE_FAILED', message: error instanceof Error ? error.message : 'Failed to forgive tax' } };
     }
   }
 };
