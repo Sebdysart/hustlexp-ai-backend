@@ -2,8 +2,18 @@ import { db } from '../db.js';
 import type { ServiceResult } from '../types.js';
 import { logger } from '../logger.js';
 import { StripeService } from './StripeService.js';
+import { config } from '../config.js';
 
 const log = logger.child({ service: 'SelfInsurancePoolService' });
+
+// Legal hold: the self-insurance pool is gated OFF by default pending legal
+// review (WA unauthorized-insurance risk; cf. WA Insurance Commissioner v.
+// Airbnb, 2023). When disabled, BOTH the 2% contribution (collection) and all
+// claims/payouts early-return this error — the pool is unreachable.
+const INSURANCE_DISABLED_RESULT = {
+  success: false as const,
+  error: { code: 'INSURANCE_DISABLED', message: 'Insurance pool is currently unavailable.' },
+};
 
 interface SelfInsurancePool {
   id: string;
@@ -51,6 +61,11 @@ export const SelfInsurancePoolService = {
     contributionCents: number,
     contributionPercentage = 2.0
   ): Promise<ServiceResult<void>> => {
+    // Legal hold: do NOT collect contributions while the pool is disabled.
+    if (!config.features.insurancePoolEnabled) {
+      log.info({ taskId, hustlerId }, 'Insurance pool disabled (legal hold) — skipping contribution');
+      return INSURANCE_DISABLED_RESULT;
+    }
     try {
       await db.query(
         `INSERT INTO insurance_contributions (
@@ -79,6 +94,9 @@ export const SelfInsurancePoolService = {
     reason: string,
     evidenceUrls: string[]
   ): Promise<ServiceResult<string>> => {
+    if (!config.features.insurancePoolEnabled) {
+      return INSURANCE_DISABLED_RESULT;
+    }
     try {
       const poolStatus = await SelfInsurancePoolService.getPoolStatus();
       if (!poolStatus.success || !poolStatus.data) throw new Error('Failed to get pool status');
@@ -99,6 +117,9 @@ export const SelfInsurancePoolService = {
   },
 
   reviewClaim: async (claimId: string, reviewerId: string, approved: boolean, reviewNotes: string): Promise<ServiceResult<void>> => {
+    if (!config.features.insurancePoolEnabled) {
+      return INSURANCE_DISABLED_RESULT;
+    }
     try {
       const newStatus: ClaimStatus = approved ? 'approved' : 'denied';
       await db.query(
@@ -113,12 +134,13 @@ export const SelfInsurancePoolService = {
     }
   },
 
-  // EXPLOIT FIX (B7): payClaim now attempts Stripe transfer BEFORE deducting
-  // from the pool. If the transfer fails, pool balance is untouched and the
-  // claim stays 'approved' for retry. Previously the pool was deducted and
-  // claim marked 'paid' before the transfer, so a failed transfer "lost"
-  // money from the pool permanently.
+  // EXPLOIT FIX (B7): payClaim attempts Stripe transfer BEFORE deducting from the
+  // pool. If the transfer fails, pool balance is untouched and the claim stays
+  // 'approved' for retry.
   payClaim: async (claimId: string): Promise<ServiceResult<void>> => {
+    if (!config.features.insurancePoolEnabled) {
+      return INSURANCE_DISABLED_RESULT;
+    }
     try {
       const claimResult = await db.query<InsuranceClaim>('SELECT * FROM insurance_claims WHERE id = $1', [claimId]);
       if (!claimResult.rows[0]) return { success: false, error: { code: 'CLAIM_NOT_FOUND', message: 'Claim not found' } };

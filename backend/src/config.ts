@@ -146,6 +146,14 @@ export const config = {
         : 'dev-only-hmac-secret-local-use'),
   },
 
+  // Feature flags — legal/safety kill switches. Default OFF; enable only via explicit env.
+  features: {
+    // Self-insurance pool gated OFF pending legal review (WA unauthorized-insurance
+    // risk; cf. WA Insurance Commissioner v. Airbnb, 2023). Gates BOTH the 2%
+    // contribution (collection) and all claims/payouts at the service layer.
+    insurancePoolEnabled: process.env.INSURANCE_POOL_ENABLED === 'true',
+  },
+
   app: {
     port: parseInt(process.env.PORT || '3000', 10),
     env: process.env.NODE_ENV || 'development',
