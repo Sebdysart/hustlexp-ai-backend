@@ -69,7 +69,7 @@ export const aiRouter = router({
         `SELECT COUNT(*) FROM tasks WHERE poster_id = $1 OR worker_id = $1`,
         [ctx.user.id]
       );
-      if (parseInt(taskCount.rows[0].count) > 0) {
+      if (parseInt(taskCount.rows[0].count as string) > 0) {
         throw new TRPCError({
           code: 'PRECONDITION_FAILED',
           message: 'Role cannot be changed after completing tasks.',

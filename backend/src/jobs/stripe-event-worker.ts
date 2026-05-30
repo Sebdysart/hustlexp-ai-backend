@@ -65,9 +65,9 @@ export async function processStripeEventJob(job: Job<StripeEventJobData>): Promi
   // stripe.event_received jobs dispatched via the outbox carry a _sig field inside
   // job.data.payload. Verify it when present; direct-dispatch jobs (without _sig) are
   // allowed through so that legacy callers are not broken.
-  const outerPayload = (job.data as Record<string, unknown>).payload;
+  const outerPayload = (job.data as unknown as Record<string, unknown>).payload;
   if (outerPayload && typeof outerPayload === 'object') {
-    const p = outerPayload as Record<string, unknown>;
+    const p = outerPayload as unknown as Record<string, unknown>;
     if ('_sig' in p) {
       const { _sig, ...payloadWithoutSig } = p;
       if (!verifyJobSignature(payloadWithoutSig, _sig as string)) {
@@ -344,7 +344,7 @@ async function handleAccountUpdated(event: StripeEventEnvelope): Promise<void> {
   );
 
   // Check if requirements became past_due
-  const requirements = account.requirements as Record<string, unknown> | undefined;
+  const requirements = account.requirements as unknown as Record<string, unknown> | undefined;
   const currentlyDue = requirements?.currently_due as unknown[] | undefined;
   if (currentlyDue && currentlyDue.length > 0) {
     const { NotificationService } = await import('../services/NotificationService');

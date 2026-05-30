@@ -144,7 +144,7 @@ export const XPTaxService = {
 
         amountPaidCents = piResult.data.amountCents;
       } else {
-        return { success: false, error: { code: 'STRIPE_VERIFICATION_FAILED', message: piResult.error?.message ?? 'Failed to verify Stripe payment intent' } };
+        return { success: false, error: { code: 'STRIPE_VERIFICATION_FAILED', message: (piResult as { error?: { message?: string } }).error?.message ?? 'Failed to verify Stripe payment intent' } };
       }
 
       if (amountPaidCents <= 0) {

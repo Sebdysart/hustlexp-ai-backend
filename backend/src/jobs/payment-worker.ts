@@ -26,7 +26,7 @@ interface PaymentJobData {
 export async function processPaymentJob(job: Job<PaymentJobData>): Promise<void> {
   const { stripeEventId, eventType } = job.data.payload;
 
-  const payload = job.data.payload as Record<string, unknown>;
+  const payload = job.data.payload as unknown as Record<string, unknown>;
   if ('_sig' in payload) {
     const { _sig, ...payloadWithoutSig } = payload;
     if (!verifyJobSignature(payloadWithoutSig, _sig as string)) {
