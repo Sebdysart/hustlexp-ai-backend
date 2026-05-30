@@ -48,7 +48,7 @@ export const escrowRouter = router({
 
       // Strip Stripe-internal identifiers for non-admin callers
       if (!ctx.user.is_admin) {
-        const { stripe_payment_intent_id, stripe_transfer_id, ...safeEscrow } = result.data as typeof result.data & { stripe_payment_intent_id?: string; stripe_transfer_id?: string };
+        const { stripe_payment_intent_id: _spi, stripe_transfer_id: _sti, ...safeEscrow } = result.data as typeof result.data & { stripe_payment_intent_id?: string; stripe_transfer_id?: string };
         return safeEscrow;
       }
       return result.data;
@@ -101,7 +101,7 @@ export const escrowRouter = router({
 
       // Strip Stripe-internal identifiers for non-admin callers
       if (!ctx.user.is_admin) {
-        const { stripe_payment_intent_id, stripe_transfer_id, ...safeEscrow } = result.data as typeof result.data & { stripe_payment_intent_id?: string; stripe_transfer_id?: string };
+        const { stripe_payment_intent_id: _spi, stripe_transfer_id: _sti, ...safeEscrow } = result.data as typeof result.data & { stripe_payment_intent_id?: string; stripe_transfer_id?: string };
         return safeEscrow;
       }
       return result.data;
@@ -153,7 +153,7 @@ export const escrowRouter = router({
 
       // SECURITY FIX (v2.9.3): Enforce escrow amount >= task price.
       // Without this guard a poster can fund $1 for a $50 task, underpaying the worker.
-      let amount = input.amount !== undefined ? input.amount : taskPriceCents;
+      const amount = input.amount !== undefined ? input.amount : taskPriceCents;
       if (amount < taskPriceCents) {
         throw new TRPCError({
           code: 'BAD_REQUEST',

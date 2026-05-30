@@ -16,7 +16,6 @@ import type { ServiceResult, Dispute, DisputeState, Escrow } from '../types.js';
 import { ErrorCodes } from '../types.js';
 import { writeToOutbox } from '../lib/outbox-helpers.js';
 import { TaskService } from './TaskService.js';
-import { EscrowService } from './EscrowService.js';
 
 // ============================================================================
 // HELPERS
