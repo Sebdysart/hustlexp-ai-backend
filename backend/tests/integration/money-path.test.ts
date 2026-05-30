@@ -224,7 +224,7 @@ describe('Money Path: Escrow Lifecycle', () => {
       db.query.mockResolvedValueOnce({ rowCount: 0, rows: [] });
       db.query.mockResolvedValueOnce({ rowCount: 0, rows: [] });
 
-      const result = await EscrowService.release({ escrowId: 'escrow-1', stripeTransferId: 'tr_test_dispute_win' });
+      const result = await EscrowService.release({ escrowId: 'escrow-1', stripeTransferId: 'tr_test_dispute_win', adminOverride: true });
       expect(result.success).toBe(true);
       expect(result.data?.state).toBe('RELEASED');
     });

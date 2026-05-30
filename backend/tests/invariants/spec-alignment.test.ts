@@ -394,7 +394,7 @@ describe('SPEC ALIGNMENT: Escrow State Machine (PRODUCT_SPEC §4.2, §4.3)', () 
       // Mock 5+: Downstream service calls (earnings tracking, XP, etc.)
       db.query.mockResolvedValue({ rowCount: 0, rows: [] });
 
-      const result = await EscrowService.release({ escrowId: 'escrow-1', stripeTransferId: 'tr_test_spec_align' });
+      const result = await EscrowService.release({ escrowId: 'escrow-1', stripeTransferId: 'tr_test_spec_align', adminOverride: true });
       expect(result.success).toBe(true);
       expect(result.data?.state).toBe('RELEASED');
     });
