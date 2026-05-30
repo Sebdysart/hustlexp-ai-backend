@@ -56,6 +56,14 @@ vi.mock('../../src/services/RevenueService', () => ({
   RevenueService: { logEvent: vi.fn().mockResolvedValue({ success: true, data: { id: 'rev-1' } }) },
 }));
 
+vi.mock('../../src/services/StripeService', () => ({
+  StripeService: {
+    isConfigured: vi.fn(() => false),
+    createRefund: vi.fn().mockResolvedValue({ success: true, data: { refundId: 're_test_x', amount: 0, status: 'succeeded' } }),
+    createTransfer: vi.fn().mockResolvedValue({ success: true, data: { transferId: 'tr_test_x', amount: 0 } }),
+  },
+}));
+
 import { db } from '../../src/db';
 import { EscrowService } from '../../src/services/EscrowService';
 import { EarnedVerificationUnlockService } from '../../src/services/EarnedVerificationUnlockService';

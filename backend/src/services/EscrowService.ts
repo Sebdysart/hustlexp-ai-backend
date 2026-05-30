@@ -22,6 +22,7 @@ import { XPTaxService } from './XPTaxService.js';
 import { XPService } from './XPService.js';
 import { SelfInsurancePoolService } from './SelfInsurancePoolService.js';
 import { RevenueService } from './RevenueService.js';
+import { StripeService } from './StripeService.js';
 import type {
   Escrow,
   EscrowState,
@@ -339,6 +340,51 @@ export const EscrowService = {
     let refundWorkerId: string | null = null;
     let escrowStateBefore: string = 'FUNDED';
     try {
+      // MONEY-PATH FIX: issue the actual Stripe refund BEFORE the state transition.
+      // Previously refund() only flipped state to REFUNDED and never called Stripe,
+      // so the poster's captured charge was never returned. The state machine relied
+      // on the charge.refunded webhook for completion, but that webhook only fires if
+      // a refund is actually created — which no non-dispute caller ever did.
+      //
+      // Pattern (Stripe-first, then DB — mirrors escrow-action-worker / payClaim):
+      //   1. Pre-read state + payment intent + any existing refund id.
+      //   2. If refundable and a captured PaymentIntent exists with no prior refund,
+      //      create the Stripe refund (idempotent on re_${escrowId}, fail-closed).
+      //   3. Transition state and persist stripe_refund_id below.
+      // The charge.refunded webhook then no-ops (escrow already REFUNDED) or acts as a
+      // safety net if step 3 fails after the refund was issued.
+      const preRead = await db.query<{ state: string; stripe_payment_intent_id: string | null; stripe_refund_id: string | null }>(
+        `SELECT state, stripe_payment_intent_id, stripe_refund_id FROM escrows WHERE id = $1`,
+        [escrowId]
+      );
+      if (preRead.rows.length === 0) {
+        return { success: false, error: { code: ErrorCodes.NOT_FOUND, message: `Escrow ${escrowId} not found` } };
+      }
+      const preState = preRead.rows[0].state;
+      const stripePaymentIntentId = preRead.rows[0].stripe_payment_intent_id;
+      let stripeRefundId: string | null = preRead.rows[0].stripe_refund_id;
+
+      // Refundable iff FUNDED, or LOCKED_DISPUTE with admin override.
+      const canRefund = preState === 'FUNDED' || (preState === 'LOCKED_DISPUTE' && adminOverride);
+
+      if (canRefund && StripeService.isConfigured() && stripePaymentIntentId && !stripeRefundId) {
+        const refundResult = await StripeService.createRefund({
+          paymentIntentId: stripePaymentIntentId,
+          escrowId,
+          reason: 'requested_by_customer',
+        });
+        if (!refundResult.success) {
+          // Fail-closed: do NOT mark the escrow REFUNDED if the money was not returned.
+          escrowLogger.error(
+            { escrowId, err: refundResult.error.message },
+            'Stripe refund failed — escrow NOT marked refunded'
+          );
+          return { success: false, error: { code: 'STRIPE_REFUND_FAILED', message: `Failed to refund payment: ${refundResult.error.message}` } };
+        }
+        stripeRefundId = refundResult.data.refundId;
+        escrowLogger.info({ escrowId, refundId: stripeRefundId }, 'Stripe refund issued');
+      }
+
       const txResult = await db.transaction(async (query) => {
         const escrowPreCheck = await query<{ task_id: string; version: number; state: string }>(
           `SELECT task_id, version, state FROM escrows WHERE id = $1 FOR UPDATE`, [escrowId]
@@ -357,10 +403,11 @@ export const EscrowService = {
         }
 
         const allowedStates = adminOverride ? `'FUNDED', 'LOCKED_DISPUTE'` : `'FUNDED'`;
+        // COALESCE: keep an already-stored refund id if present (dispute path), else persist ours.
         const result = await query<Escrow>(
-          `UPDATE escrows SET state = 'REFUNDED', refunded_at = NOW(), version = version + 1, updated_at = NOW()
-           WHERE id = $1 AND state IN (${allowedStates}) AND version = $2 RETURNING *`,
-          [escrowId, escrowVersion]
+          `UPDATE escrows SET state = 'REFUNDED', stripe_refund_id = COALESCE($2, stripe_refund_id), refunded_at = NOW(), version = version + 1, updated_at = NOW()
+           WHERE id = $1 AND state IN (${allowedStates}) AND version = $3 RETURNING *`,
+          [escrowId, stripeRefundId, escrowVersion]
         );
 
         if (result.rowCount === 0) {
@@ -379,7 +426,10 @@ export const EscrowService = {
 
       if (!txResult.success) return txResult;
 
-      await logEscrowEvent(escrowId, escrowStateBefore, 'REFUNDED', undefined, adminOverride ? 'admin' : 'system', adminOverride && reason ? { adminOverride: true, reason } : {});
+      await logEscrowEvent(escrowId, escrowStateBefore, 'REFUNDED', undefined, adminOverride ? 'admin' : 'system', {
+        ...(adminOverride && reason ? { adminOverride: true, reason } : {}),
+        ...(stripeRefundId ? { stripe_refund_id: stripeRefundId } : {}),
+      });
 
       if (refundWorkerId) {
         try {
