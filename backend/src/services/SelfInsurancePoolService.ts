@@ -1,35 +1,19 @@
-/**
- * SelfInsurancePoolService v1.0.0
- *
- * Platform-managed insurance pool funded by task contributions
- *
- * Contribution: 2% of task price deducted at escrow setup
- * Claims: Filed by hustlers for damages/disputes, reviewed by admin/AI
- * Coverage: 80% of claim amount (default), max $5000 per claim
- *
- * @see schema.sql v1.8.0 (self_insurance_pool, insurance_contributions, insurance_claims)
- */
-
 import { db } from '../db.js';
 import type { ServiceResult } from '../types.js';
 import { logger } from '../logger.js';
+import { StripeService } from './StripeService.js';
 
 const log = logger.child({ service: 'SelfInsurancePoolService' });
-
-// ============================================================================
-// TYPES
-// ============================================================================
 
 interface SelfInsurancePool {
   id: string;
   total_deposits_cents: number;
   total_claims_cents: number;
-  available_balance_cents: number; // Computed column
+  available_balance_cents: number;
   coverage_percentage: number;
   max_claim_cents: number;
   updated_at: Date;
 }
-
 
 type ClaimStatus = 'pending' | 'approved' | 'denied' | 'paid';
 
@@ -56,23 +40,11 @@ interface PoolStatus {
   max_claim_cents: number;
 }
 
-// ============================================================================
-// SERVICE
-// ============================================================================
-
 export const SelfInsurancePoolService = {
-  /**
-   * Calculate required insurance contribution
-   * Default: 2% of task price
-   */
   calculateContribution: (taskPriceCents: number, contributionPercentage = 2.0): number => {
     return Math.round(taskPriceCents * (contributionPercentage / 100));
   },
 
-  /**
-   * Record contribution to insurance pool
-   * Called during escrow setup
-   */
   recordContribution: async (
     taskId: string,
     hustlerId: string,
@@ -80,7 +52,6 @@ export const SelfInsurancePoolService = {
     contributionPercentage = 2.0
   ): Promise<ServiceResult<void>> => {
     try {
-      // Insert contribution record
       await db.query(
         `INSERT INTO insurance_contributions (
           task_id, hustler_id, contribution_cents, contribution_percentage
@@ -89,7 +60,6 @@ export const SelfInsurancePoolService = {
         [taskId, hustlerId, contributionCents, contributionPercentage]
       );
 
-      // Update pool total
       await db.query(
         `UPDATE self_insurance_pool
          SET total_deposits_cents = total_deposits_cents + $1,
@@ -112,9 +82,6 @@ export const SelfInsurancePoolService = {
     }
   },
 
-  /**
-   * File a claim against the insurance pool
-   */
   fileClaim: async (
     taskId: string,
     hustlerId: string,
@@ -123,7 +90,6 @@ export const SelfInsurancePoolService = {
     evidenceUrls: string[]
   ): Promise<ServiceResult<string>> => {
     try {
-      // Validate claim amount against max
       const poolStatus = await SelfInsurancePoolService.getPoolStatus();
       if (!poolStatus.success || !poolStatus.data) {
         throw new Error('Failed to get pool status');
@@ -139,7 +105,6 @@ export const SelfInsurancePoolService = {
         };
       }
 
-      // Insert claim
       const result = await db.query<{ id: string }>(
         `INSERT INTO insurance_claims (
           task_id, hustler_id, claim_amount_cents, claim_reason, evidence_urls
@@ -164,10 +129,6 @@ export const SelfInsurancePoolService = {
     }
   },
 
-  /**
-   * Review a claim (admin/AI)
-   * Approves or denies claim
-   */
   reviewClaim: async (
     claimId: string,
     reviewerId: string,
@@ -202,13 +163,11 @@ export const SelfInsurancePoolService = {
     }
   },
 
-  /**
-   * Pay an approved claim
-   * Transfers funds from pool to hustler
-   */
+  // STOP-007 FIX: Replaced raw fetch('https://api.stripe.com/v1/transfers') with
+  // StripeService.createTransfer(). The raw fetch bypassed all payment safeguards:
+  // circuit breaker, error handling, idempotency keys, and structured logging.
   payClaim: async (claimId: string): Promise<ServiceResult<void>> => {
     try {
-      // Get claim details
       const claimResult = await db.query<InsuranceClaim>(
         'SELECT * FROM insurance_claims WHERE id = $1',
         [claimId]
@@ -217,10 +176,7 @@ export const SelfInsurancePoolService = {
       if (!claimResult.rows[0]) {
         return {
           success: false,
-          error: {
-            code: 'CLAIM_NOT_FOUND',
-            message: 'Claim not found'
-          }
+          error: { code: 'CLAIM_NOT_FOUND', message: 'Claim not found' }
         };
       }
 
@@ -229,25 +185,19 @@ export const SelfInsurancePoolService = {
       if (claim.status !== 'approved') {
         return {
           success: false,
-          error: {
-            code: 'CLAIM_NOT_APPROVED',
-            message: 'Claim must be approved before payment'
-          }
+          error: { code: 'CLAIM_NOT_APPROVED', message: 'Claim must be approved before payment' }
         };
       }
 
-      // Get pool status
       const poolStatus = await SelfInsurancePoolService.getPoolStatus();
       if (!poolStatus.success || !poolStatus.data) {
         throw new Error('Failed to get pool status');
       }
 
-      // Calculate covered amount (default 80%)
       const coveredAmountCents = Math.round(
         claim.claim_amount_cents * (poolStatus.data.coverage_percentage / 100)
       );
 
-      // Check if pool has sufficient balance
       if (coveredAmountCents > poolStatus.data.available_balance_cents) {
         return {
           success: false,
@@ -258,7 +208,6 @@ export const SelfInsurancePoolService = {
         };
       }
 
-      // Update pool balance
       await db.query(
         `UPDATE self_insurance_pool
          SET total_claims_cents = total_claims_cents + $1,
@@ -266,7 +215,6 @@ export const SelfInsurancePoolService = {
         [coveredAmountCents]
       );
 
-      // Mark claim as paid
       await db.query(
         `UPDATE insurance_claims
          SET status = 'paid',
@@ -275,9 +223,7 @@ export const SelfInsurancePoolService = {
         [claimId]
       );
 
-      // Transfer funds to hustler via Stripe Connect
-      const stripeKey = process.env.STRIPE_SECRET_KEY ?? '';
-      if (stripeKey) {
+      if (StripeService.isConfigured()) {
         try {
           const hustlerResult = await db.query<{ stripe_connect_id: string }>(
             `SELECT stripe_connect_id FROM users WHERE id = $1`,
@@ -285,23 +231,16 @@ export const SelfInsurancePoolService = {
           );
           const connectId = hustlerResult.rows[0]?.stripe_connect_id;
           if (connectId) {
-            const transferResponse = await fetch('https://api.stripe.com/v1/transfers', {
-              method: 'POST',
-              headers: {
-                'Authorization': `Bearer ${stripeKey}`,
-                'Content-Type': 'application/x-www-form-urlencoded',
-              },
-              body: new URLSearchParams({
-                amount: coveredAmountCents.toString(),
-                currency: 'usd',
-                destination: connectId,
-                description: `Insurance claim payout: ${claimId}`,
-                'metadata[claim_id]': claimId,
-                'metadata[task_id]': claim.task_id,
-              }).toString(),
+            const transferResult = await StripeService.createTransfer({
+              escrowId: `insurance_${claimId}`,
+              taskId: claim.task_id,
+              workerId: claim.hustler_id,
+              workerStripeAccountId: connectId,
+              amount: coveredAmountCents,
+              description: `Insurance claim payout: ${claimId}`,
             });
-            if (!transferResponse.ok) {
-              log.error({ claimId, taskId: claim.task_id, statusCode: transferResponse.status }, 'Stripe transfer failed for claim payout');
+            if (!transferResult.success) {
+              log.error({ claimId, taskId: claim.task_id, error: transferResult.error }, 'Stripe transfer failed for claim payout');
               await db.query(
                 `UPDATE insurance_claims SET review_notes = COALESCE(review_notes, '') || ' [STRIPE_TRANSFER_FAILED]' WHERE id = $1`,
                 [claimId]
@@ -330,9 +269,6 @@ export const SelfInsurancePoolService = {
     }
   },
 
-  /**
-   * Get pool status (balance, coverage, limits)
-   */
   getPoolStatus: async (): Promise<ServiceResult<PoolStatus>> => {
     try {
       const result = await db.query<SelfInsurancePool>(
@@ -340,7 +276,6 @@ export const SelfInsurancePoolService = {
       );
 
       if (!result.rows[0]) {
-        // Pool not initialized yet
         return {
           success: true,
           data: {
@@ -376,9 +311,6 @@ export const SelfInsurancePoolService = {
     }
   },
 
-  /**
-   * Get user's claims
-   */
   getMyClaims: async (hustlerId: string): Promise<ServiceResult<InsuranceClaim[]>> => {
     try {
       const result = await db.query<InsuranceClaim>(

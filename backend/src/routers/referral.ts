@@ -1,37 +1,24 @@
-/**
- * Referral Router v1.0.0
- * Manages referral codes, redemption, and rewards
- */
-
 import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
 import { router, hustlerProcedure } from '../trpc.js';
 import { db } from '../db.js';
 import { logger } from '../logger.js';
+import { StripeService } from '../services/StripeService.js';
 
 const referralLog = logger.child({ service: 'ReferralRouter' });
 
-// Maximum number of referral reward payouts a single referrer can receive
 const REFERRAL_REWARD_CAP = 20;
 
-/**
- * Issue a referral reward for the referrer when a referred user completes
- * their first task and the redemption is marked qualified.
- *
- * Enforces a lifetime cap of REFERRAL_REWARD_CAP paid rewards per referrer.
- * If the cap is already reached the reward is silently skipped (logged at warn).
- *
- * @param redemptionId - The referral_redemptions.id to mark as paid
- * @param referrerId   - The user_id of the referrer (for cap check)
- * @param rewardCents  - The reward amount in cents to record
- * @returns { issued: boolean; reason?: string }
- */
+// STOP-010 FIX: issueReferralReward now calls StripeService.createTransfer()
+// to actually transfer the reward to the referrer's Stripe Connect account.
+// Previously the function only set referrer_reward_paid=TRUE in the DB without
+// creating a real Stripe transfer — the referrer would see "$5 earned" in the
+// app but never receive the money.
 export async function issueReferralReward(
   redemptionId: string,
   referrerId: string,
   rewardCents: number,
 ): Promise<{ issued: boolean; reason?: string }> {
-  // --- Cap check: count already-paid rewards for this referrer ---
   const capCheck = await db.query<{ count: string }>(
     `SELECT COUNT(*) AS count
      FROM referral_redemptions
@@ -48,7 +35,37 @@ export async function issueReferralReward(
     return { issued: false, reason: 'lifetime_cap_reached' };
   }
 
-  // --- Mark the redemption as qualified and paid ---
+  // Look up referrer's Stripe Connect account for real transfer
+  const referrerResult = await db.query<{ stripe_connect_id: string | null }>(
+    'SELECT stripe_connect_id FROM users WHERE id = $1',
+    [referrerId],
+  );
+  const stripeConnectId = referrerResult.rows[0]?.stripe_connect_id;
+
+  if (stripeConnectId && StripeService.isConfigured()) {
+    const transferResult = await StripeService.createTransfer({
+      escrowId: `referral_${redemptionId}`,
+      taskId: redemptionId,
+      workerId: referrerId,
+      workerStripeAccountId: stripeConnectId,
+      amount: rewardCents,
+      description: `HustleXP referral reward`,
+    });
+
+    if (!transferResult.success) {
+      referralLog.error(
+        { referrerId, redemptionId, error: transferResult.error },
+        'Stripe transfer failed for referral reward — not marking as paid',
+      );
+      return { issued: false, reason: 'stripe_transfer_failed' };
+    }
+  } else if (!stripeConnectId) {
+    referralLog.warn(
+      { referrerId, redemptionId },
+      'Referrer has no Stripe Connect ID — reward recorded but transfer deferred',
+    );
+  }
+
   await db.query(
     `UPDATE referral_redemptions
      SET qualified = TRUE,
@@ -65,9 +82,8 @@ export async function issueReferralReward(
   return { issued: true };
 }
 
-// Generate a random referral code
 function generateReferralCode(): string {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // No I, O, 0, 1 for clarity
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let code = 'HX';
   for (let i = 0; i < 6; i++) {
     code += chars.charAt(Math.floor(Math.random() * chars.length));
@@ -81,7 +97,6 @@ export const referralRouter = router({
     .mutation(async ({ ctx }) => {
       const userId = ctx.user.id;
 
-      // Check existing code
       const existing = await db.query<{
         code: string;
         uses_count: number;
@@ -91,7 +106,6 @@ export const referralRouter = router({
       );
 
       if (existing.rows.length > 0) {
-        // Get total earned
         const earned = await db.query<{ total: string }>(
           `SELECT COALESCE(SUM(referrer_reward_cents), 0) as total
            FROM referral_redemptions
@@ -106,7 +120,6 @@ export const referralRouter = router({
         };
       }
 
-      // Create new code
       let code = generateReferralCode();
       let attempts = 0;
       while (attempts < 5) {
@@ -130,7 +143,6 @@ export const referralRouter = router({
     .mutation(async ({ ctx, input }) => {
       const referredId = ctx.user.id;
 
-      // Check if already referred
       const alreadyReferred = await db.query(
         'SELECT id FROM referral_redemptions WHERE referred_id = $1',
         [referredId]
@@ -139,7 +151,6 @@ export const referralRouter = router({
         throw new TRPCError({ code: 'BAD_REQUEST', message: 'Already used a referral code' });
       }
 
-      // Find the referral code
       const codeResult = await db.query<{ id: string; user_id: string }>(
         'SELECT id, user_id FROM referral_codes WHERE code = $1 AND active = TRUE',
         [input.code.toUpperCase()]
@@ -151,19 +162,16 @@ export const referralRouter = router({
 
       const referralCode = codeResult.rows[0];
 
-      // Can't refer yourself
       if (referralCode.user_id === referredId) {
         throw new TRPCError({ code: 'BAD_REQUEST', message: 'Cannot use your own referral code' });
       }
 
-      // Create redemption (rewards given after first task completion)
       await db.query(
         `INSERT INTO referral_redemptions (referral_code_id, referrer_id, referred_id)
          VALUES ($1, $2, $3)`,
         [referralCode.id, referralCode.user_id, referredId]
       );
 
-      // Increment uses count
       await db.query(
         'UPDATE referral_codes SET uses_count = uses_count + 1 WHERE id = $1',
         [referralCode.id]
@@ -197,14 +205,6 @@ export const referralRouter = router({
       };
     }),
 
-  /**
-   * Called by the task-completion flow when a referred user finishes their
-   * first task.  Enforces the REFERRAL_REWARD_CAP before issuing the payout.
-   *
-   * Input:
-   *   redemptionId  — referral_redemptions.id
-   *   rewardCents   — reward amount (defaults to 500 = $5)
-   */
   issueReward: hustlerProcedure
     .input(
       z.object({
@@ -213,7 +213,6 @@ export const referralRouter = router({
       }),
     )
     .mutation(async ({ input }) => {
-      // Fetch referrer_id from the redemption row
       const redemption = await db.query<{ referrer_id: string }>(
         'SELECT referrer_id FROM referral_redemptions WHERE id = $1',
         [input.redemptionId],
