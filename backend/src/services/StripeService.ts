@@ -1,29 +1,9 @@
-/**
- * StripeService v1.0.0
- * 
- * CONSTITUTIONAL: Supports payment flow for escrow system
- * 
- * Stripe is authoritative for payment state (ARCHITECTURE.md §4).
- * This service handles:
- * - Payment intent creation (poster funds escrow)
- * - Transfer to worker (escrow release)
- * - Refunds (escrow refund)
- * - Webhook processing
- * 
- * @see PRODUCT_SPEC.md §4
- * @see ARCHITECTURE.md §1.1
- */
-
 import Stripe from 'stripe';
 import { config } from '../config.js';
 import { db } from '../db.js';
 import type { ServiceResult } from '../types.js';
 import { stripeBreaker } from '../middleware/circuit-breaker.js';
 import { stripeLogger } from '../logger.js';
-
-// ============================================================================
-// INITIALIZATION
-// ============================================================================
 
 let stripe: Stripe | null = null;
 
@@ -36,14 +16,10 @@ if (config.stripe.secretKey && !config.stripe.secretKey.includes('placeholder'))
   stripeLogger.warn('Stripe not configured (placeholder or missing key)');
 }
 
-// ============================================================================
-// TYPES
-// ============================================================================
-
 interface CreatePaymentIntentParams {
   taskId: string;
   posterId: string;
-  amount: number; // USD cents
+  amount: number;
   description?: string;
 }
 
@@ -54,11 +30,11 @@ interface CreatePaymentIntentResult {
 }
 
 interface CreateTransferParams {
-  escrowId: string; // P0: Required for metadata correlation
-  taskId: string; // P0: Required for metadata correlation
+  escrowId: string;
+  taskId: string;
   workerId: string;
   workerStripeAccountId: string;
-  amount: number; // USD cents
+  amount: number;
   description?: string;
 }
 
@@ -69,8 +45,8 @@ interface CreateTransferResult {
 
 interface CreateRefundParams {
   paymentIntentId: string;
-  escrowId: string; // P0: Required for metadata correlation
-  amount?: number; // USD cents, optional for partial refund
+  escrowId: string;
+  amount?: number;
   reason?: 'duplicate' | 'fraudulent' | 'requested_by_customer';
 }
 
@@ -87,13 +63,6 @@ interface WebhookEvent {
   };
 }
 
-// ============================================================================
-// IDEMPOTENCY
-// ============================================================================
-
-/**
- * Check if Stripe event already processed
- */
 async function isEventProcessed(eventId: string): Promise<boolean> {
   const result = await db.query(
     'SELECT id FROM processed_stripe_events WHERE event_id = $1',
@@ -102,9 +71,6 @@ async function isEventProcessed(eventId: string): Promise<boolean> {
   return result.rows.length > 0;
 }
 
-/**
- * Mark Stripe event as processed
- */
 async function markEventProcessed(
   eventId: string,
   eventType: string,
@@ -118,19 +84,9 @@ async function markEventProcessed(
   );
 }
 
-// ============================================================================
-// SERVICE
-// ============================================================================
-
 export const StripeService = {
-  /**
-   * Check if Stripe is configured
-   */
   isConfigured: (): boolean => stripe !== null,
 
-  /**
-   * Create payment intent for escrow funding
-   */
   createPaymentIntent: async (
     params: CreatePaymentIntentParams
   ): Promise<ServiceResult<CreatePaymentIntentResult>> => {
@@ -146,7 +102,6 @@ export const StripeService = {
 
     const { taskId, posterId, amount, description } = params;
 
-    // PRODUCT_SPEC §9: Minimum task value $5.00 (500 cents)
     if (amount < config.stripe.minimumTaskValueCents) {
       return {
         success: false,
@@ -158,24 +113,8 @@ export const StripeService = {
     }
 
     try {
-      // Calculate platform fee (PRODUCT_SPEC §9: 15% platform fee)
       const platformFee = Math.floor(amount * (config.stripe.platformFeePercent / 100));
 
-      // NOTE on application_fee_amount (FIX 2 analysis):
-      // `application_fee_amount` only works on Connect charges where the payment
-      // destination is a connected account (i.e. when `on_behalf_of` or
-      // `transfer_data.destination` is set on the PaymentIntent).  In HustleXP's
-      // architecture, the poster's payment goes to the *platform* account first
-      // (standard Stripe charge), and the worker payout is executed as a separate
-      // Stripe Transfer via StripeService.createTransfer().  Setting
-      // `application_fee_amount` here would cause a Stripe API error ("You cannot
-      // pass `application_fee_amount` on a non-Connect charge").
-      // The platform fee is therefore collected via the manual reconciliation
-      // approach: the fee amount is stored in metadata so EscrowService.release()
-      // can calculate and record it in the revenue ledger via RevenueService.logEvent().
-      // If the architecture is ever changed to route payments through a connected
-      // account (on_behalf_of + transfer_data), `application_fee_amount: platformFee`
-      // should be added here and the manual RevenueService.logEvent() call removed.
       const paymentIntent = await stripeBreaker.execute(() => stripe!.paymentIntents.create(
         {
           amount,
@@ -210,11 +149,6 @@ export const StripeService = {
     }
   },
 
-  /**
-   * Create payment intent for XP tax payments.
-   * Unlike escrow funding, tax payments have no minimum task value
-   * (Stripe minimum is 50 cents).
-   */
   createTaxPaymentIntent: async (
     userId: string,
     amountCents: number,
@@ -226,7 +160,6 @@ export const StripeService = {
       };
     }
 
-    // Stripe minimum is 50 cents
     if (amountCents < 50) {
       return {
         success: false,
@@ -265,10 +198,6 @@ export const StripeService = {
     }
   },
 
-  /**
-   * Verify a PaymentIntent has succeeded and return its amount.
-   * Used by XPTaxService to verify tax payment before releasing XP.
-   */
   verifyPaymentIntent: async (
     paymentIntentId: string,
   ): Promise<ServiceResult<{ status: string; amountCents: number; metadata: Record<string, string> }>> => {
@@ -300,16 +229,27 @@ export const StripeService = {
     }
   },
 
-  /**
-   * Create transfer to worker (escrow release)
-   */
+  // STOP-005 FIX: Added idempotencyKey to transfers.create() to prevent double-payout
+  // on retry/duplicate webhook delivery. Key format: tr_<escrowId> ensures one
+  // transfer per escrow regardless of how many times the release flow is invoked.
   createTransfer: async (
     params: CreateTransferParams
   ): Promise<ServiceResult<CreateTransferResult>> => {
     const { escrowId, workerId, workerStripeAccountId, amount, description } = params;
 
-    // Stripe stubbing for tests (Evil Test A)
+    // STOP-009 FIX: Block HX_STRIPE_STUB in production. The stub returns fake
+    // transfer IDs without touching Stripe, which would silently skip real payouts.
     if (process.env.HX_STRIPE_STUB === '1') {
+      if (config.app.isProduction) {
+        stripeLogger.error('FATAL: HX_STRIPE_STUB=1 is set in production — refusing to create stub transfer');
+        return {
+          success: false,
+          error: {
+            code: 'STRIPE_STUB_IN_PRODUCTION',
+            message: 'HX_STRIPE_STUB is not allowed in production',
+          },
+        };
+      }
       const crypto = await import('crypto');
       return {
         success: true,
@@ -331,16 +271,19 @@ export const StripeService = {
     }
 
     try {
-      const transfer = await stripeBreaker.execute(() => stripe!.transfers.create({
-        amount,
-        currency: 'usd',
-        destination: workerStripeAccountId,
-        metadata: {
-          escrow_id: escrowId,
-          worker_id: workerId,
+      const transfer = await stripeBreaker.execute(() => stripe!.transfers.create(
+        {
+          amount,
+          currency: 'usd',
+          destination: workerStripeAccountId,
+          metadata: {
+            escrow_id: escrowId,
+            worker_id: workerId,
+          },
+          description: description || `HustleXP Payout ${escrowId}`,
         },
-        description: description || `HustleXP Payout ${escrowId}`,
-      }));
+        { idempotencyKey: `tr_${escrowId}` }
+      ));
 
       return {
         success: true,
@@ -360,16 +303,25 @@ export const StripeService = {
     }
   },
 
-  /**
-   * Create refund (escrow refund)
-   */
+  // STOP-005 FIX: Added idempotencyKey to refunds.create() to prevent double-refund.
+  // Key format: re_<escrowId> ensures one refund per escrow.
   createRefund: async (
     params: CreateRefundParams
   ): Promise<ServiceResult<CreateRefundResult>> => {
     const { paymentIntentId, escrowId, amount, reason } = params;
 
-    // Stripe stubbing for tests (Evil Test A)
+    // STOP-009 FIX: Block HX_STRIPE_STUB in production.
     if (process.env.HX_STRIPE_STUB === '1') {
+      if (config.app.isProduction) {
+        stripeLogger.error('FATAL: HX_STRIPE_STUB=1 is set in production — refusing to create stub refund');
+        return {
+          success: false,
+          error: {
+            code: 'STRIPE_STUB_IN_PRODUCTION',
+            message: 'HX_STRIPE_STUB is not allowed in production',
+          },
+        };
+      }
       const crypto = await import('crypto');
       return {
         success: true,
@@ -392,15 +344,18 @@ export const StripeService = {
     }
 
     try {
-      const refund = await stripeBreaker.execute(() => stripe!.refunds.create({
-        payment_intent: paymentIntentId,
-        amount, // undefined = full refund
-        reason,
-        metadata: {
-          escrow_id: escrowId,
-          payment_intent_id: paymentIntentId,
+      const refund = await stripeBreaker.execute(() => stripe!.refunds.create(
+        {
+          payment_intent: paymentIntentId,
+          amount,
+          reason,
+          metadata: {
+            escrow_id: escrowId,
+            payment_intent_id: paymentIntentId,
+          },
         },
-      }));
+        { idempotencyKey: `re_${escrowId}` }
+      ));
 
       return {
         success: true,
@@ -421,9 +376,6 @@ export const StripeService = {
     }
   },
 
-  /**
-   * Verify webhook signature
-   */
   verifyWebhook: (
     payload: string | Buffer,
     signature: string
@@ -470,23 +422,30 @@ export const StripeService = {
     }
   },
 
-  /**
-   * Process webhook event (idempotent)
-   */
+  // STOP-008 FIX: Replaced check-then-insert with atomic INSERT ON CONFLICT.
+  // The old pattern had a TOCTOU race: two concurrent webhook deliveries could
+  // both pass the isEventProcessed check (both see 0 rows), then both execute
+  // the handler. Now the INSERT is atomic — the second call hits ON CONFLICT
+  // DO NOTHING and rowCount=0 signals "already processed".
   processWebhookEvent: async (
     eventId: string,
     eventType: string,
     objectId: string,
     handler: () => Promise<void>
   ): Promise<ServiceResult<void>> => {
-    // Check idempotency
-    if (await isEventProcessed(eventId)) {
-      return { success: true, data: undefined };
-    }
-
     try {
+      const claim = await db.query(
+        `INSERT INTO processed_stripe_events (event_id, event_type, object_id)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (event_id) DO NOTHING`,
+        [eventId, eventType, objectId]
+      );
+
+      if (claim.rowCount === 0) {
+        return { success: true, data: undefined };
+      }
+
       await handler();
-      await markEventProcessed(eventId, eventType, objectId);
       return { success: true, data: undefined };
     } catch (error) {
       return {
