@@ -319,6 +319,10 @@ export const userRouter = router({
         throw new TRPCError({ code: 'FORBIDDEN', message: 'Account registration not permitted.' });
       }
 
+      // Fraud guard: signup (fail-open — new user, no history yet)
+      const { fraudGuard } = await import('../middleware/fraud-guard.js');
+      await fraudGuard({ entityType: 'user', entityId: input.firebaseUid, action: 'signup' });
+
       // Normalize role: iOS sends "hustler" but DB stores "worker"
       const dbMode = normalizeRole(input.defaultMode);
 

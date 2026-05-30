@@ -289,6 +289,10 @@ export const taskRouter = router({
         });
       }
 
+      // Fraud guard: task post (fail-open)
+      const { fraudGuard } = await import('../middleware/fraud-guard.js');
+      await fraudGuard({ entityType: 'user', entityId: ctx.user.id, action: 'task_post' });
+
       // Run compliance check — hard blocks throw before any DB write
       const compliance = await ComplianceGuardianService.evaluate({
         description: input.description,

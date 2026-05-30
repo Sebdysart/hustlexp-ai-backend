@@ -67,6 +67,10 @@ vi.mock('../../src/services/XPService', () => ({
   },
 }));
 
+vi.mock('../../src/middleware/fraud-guard', () => ({
+  fraudGuard: vi.fn().mockResolvedValue(undefined),
+}));
+
 // ---------------------------------------------------------------------------
 // Imports (after mocks)
 // ---------------------------------------------------------------------------

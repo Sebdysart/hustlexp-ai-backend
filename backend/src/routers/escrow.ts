@@ -225,6 +225,10 @@ export const escrowRouter = router({
         throw new TRPCError({ code: 'FORBIDDEN', message: 'Only the escrow creator can release funds' });
       }
 
+      // Fraud guard: payout/release — fail-closed + block-on-medium (money leaving platform)
+      const { fraudGuard } = await import('../middleware/fraud-guard.js');
+      await fraudGuard({ entityType: 'user', entityId: ctx.user.id, action: 'payout', blockOnMedium: true, failClosed: true });
+
       const result = await EscrowService.release({
         escrowId: input.escrowId,
         stripeTransferId: input.stripeTransferId,
@@ -256,6 +260,10 @@ export const escrowRouter = router({
       if (escrow.data.poster_id !== ctx.user.id) {
         throw new TRPCError({ code: 'FORBIDDEN', message: 'Only the escrow creator can request a refund' });
       }
+
+      // Fraud guard: refund (fail-open for normal refunds)
+      const { fraudGuard } = await import('../middleware/fraud-guard.js');
+      await fraudGuard({ entityType: 'user', entityId: ctx.user.id, action: 'refund' });
 
       const result = await EscrowService.refund({
         escrowId: input.escrowId,

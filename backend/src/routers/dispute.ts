@@ -66,6 +66,10 @@ export const disputeRouter = router({
         });
       }
 
+      // Fraud guard: dispute (fail-open)
+      const { fraudGuard } = await import('../middleware/fraud-guard.js');
+      await fraudGuard({ entityType: 'user', entityId: userId, action: 'dispute' });
+
       // Resolve the escrow for this task.
       const escrowResult = await EscrowService.getByTaskId(input.taskId);
       if (!escrowResult.success) {
