@@ -1,18 +1,3 @@
-/**
- * XPService v1.0.0 (AtomicXPService)
- * 
- * CONSTITUTIONAL: Enforces INV-1, INV-5
- * 
- * INV-1: XP can only be awarded if escrow is RELEASED
- * INV-5: XP issuance is idempotent per escrow_id (one award per escrow)
- * 
- * The database triggers enforce these invariants. This service
- * catches the violations and returns appropriate errors.
- * 
- * @see schema.sql §2.1 (xp_ledger table)
- * @see PRODUCT_SPEC.md §5
- */
-
 import { db, isInvariantViolation, isUniqueViolation, getErrorMessage } from '../db.js';
 import { logger } from '../logger.js';
 import type { ServiceResult } from '../types.js';
@@ -34,10 +19,6 @@ function getXPRedis(): Redis | null {
 
 const DAILY_XP_CAP = 10000;
 
-// ============================================================================
-// TYPES
-// ============================================================================
-
 export interface XPLedgerEntry {
   id: string;
   user_id: string;
@@ -45,8 +26,8 @@ export interface XPLedgerEntry {
   escrow_id: string;
   base_xp: number;
   streak_multiplier: number;
-  trust_multiplier: number;      // SPEC ALIGNMENT: replaced decay_factor
-  live_mode_multiplier: number;  // SPEC ALIGNMENT: 1.25× for Live tasks
+  trust_multiplier: number;
+  live_mode_multiplier: number;
   effective_xp: number;
   reason: string;
   user_xp_before: number;
@@ -67,77 +48,34 @@ interface AwardXPParams {
 interface XPCalculation {
   baseXP: number;
   streakMultiplier: number;
-  trustMultiplier: number;       // SPEC ALIGNMENT: replaced decayFactor
-  liveModeMultiplier: number;    // SPEC ALIGNMENT: 1.25× for Live tasks
+  trustMultiplier: number;
+  liveModeMultiplier: number;
   effectiveXP: number;
 }
 
-// ============================================================================
-// XP MATH (PRODUCT_SPEC §5.2, §5.3)
-// ============================================================================
-
-/**
- * Level thresholds (PRODUCT_SPEC §5.1)
- */
 const LEVEL_THRESHOLDS = [
-  0,      // Level 1: 0 XP
-  100,    // Level 2: 100 XP
-  300,    // Level 3: 300 XP (100 + 200)
-  700,    // Level 4: 700 XP (300 + 400)
-  1500,   // Level 5: 1500 XP (700 + 800)
-  2700,   // Level 6: 2700 XP (1500 + 1200)
-  4500,   // Level 7: 4500 XP (2700 + 1800)
-  7000,   // Level 8: 7000 XP (4500 + 2500)
-  10500,  // Level 9: 10500 XP (7000 + 3500)
-  16500,  // Level 10: 16500 XP (10500 + 6000)
+  0, 100, 300, 700, 1500, 2700, 4500, 7000, 10500, 16500,
 ];
 
-/**
- * Streak multipliers (PRODUCT_SPEC §5.2)
- *
- * SPEC FORMULA: 1.0 + (streak_days × 0.05) capped at 2.0
- */
 function getStreakMultiplier(streak: number): number {
   const multiplier = 1.0 + (streak * 0.05);
-  return Math.min(multiplier, 2.0); // Cap at 2.0
+  return Math.min(multiplier, 2.0);
 }
 
-/**
- * Trust multipliers (PRODUCT_SPEC §5.2)
- *
- * SPEC ALIGNMENT:
- * | Trust Tier | Multiplier |
- * |------------|------------|
- * | ROOKIE (1) | 1.0×       |
- * | VERIFIED (2) | 1.5×     |
- * | TRUSTED (3) | 2.0×      |
- * | ELITE (4) | 2.0×        |
- */
 function getTrustMultiplier(trustTier: number): number {
   switch (trustTier) {
-    case 1: return 1.0;  // ROOKIE
-    case 2: return 1.5;  // VERIFIED
-    case 3: return 2.0;  // TRUSTED
-    case 4: return 2.0;  // ELITE (same as TRUSTED)
-    default: return 1.0; // Default to ROOKIE multiplier
+    case 1: return 1.0;
+    case 2: return 1.5;
+    case 3: return 2.0;
+    case 4: return 2.0;
+    default: return 1.0;
   }
 }
 
-/**
- * Live Mode XP multiplier (PRODUCT_SPEC §3.6)
- *
- * SPEC: Live tasks award 1.25× XP
- */
 function getLiveModeMultiplier(isLiveMode: boolean): number {
   return isLiveMode ? 1.25 : 1.0;
 }
 
-/**
- * Calculate effective XP (PRODUCT_SPEC §5.2)
- *
- * SPEC FORMULA: effective_xp = base_xp × streak_multiplier × trust_multiplier
- * Rounding: truncate toward zero
- */
 function calculateEffectiveXP(
   baseXP: number,
   streakMultiplier: number,
@@ -147,9 +85,6 @@ function calculateEffectiveXP(
   return Math.floor(baseXP * streakMultiplier * trustMultiplier * liveModeMultiplier);
 }
 
-/**
- * Calculate level from total XP
- */
 function calculateLevel(totalXP: number): number {
   for (let i = LEVEL_THRESHOLDS.length - 1; i >= 0; i--) {
     if (totalXP >= LEVEL_THRESHOLDS[i]) {
@@ -159,24 +94,13 @@ function calculateLevel(totalXP: number): number {
   return 1;
 }
 
-// ============================================================================
-// SERVICE
-// ============================================================================
-
 export const XPService = {
-  /**
-   * Calculate XP award (without saving)
-   *
-   * SPEC ALIGNMENT (PRODUCT_SPEC §5.2):
-   * effective_xp = base_xp × streak_multiplier × trust_multiplier × live_mode_multiplier
-   */
   calculateAward: async (
     userId: string,
     baseXP: number,
     taskId?: string
   ): Promise<ServiceResult<XPCalculation>> => {
     try {
-      // Get user's current streak and trust tier
       const userResult = await db.query<{
         current_streak: number;
         trust_tier: number;
@@ -188,16 +112,12 @@ export const XPService = {
       if (userResult.rows.length === 0) {
         return {
           success: false,
-          error: {
-            code: ErrorCodes.NOT_FOUND,
-            message: `User ${userId} not found`,
-          },
+          error: { code: ErrorCodes.NOT_FOUND, message: `User ${userId} not found` },
         };
       }
 
       const user = userResult.rows[0];
 
-      // Check if task is Live Mode (for 1.25× multiplier)
       let isLiveMode = false;
       if (taskId) {
         const taskResult = await db.query<{ mode: string }>(
@@ -207,7 +127,6 @@ export const XPService = {
         isLiveMode = taskResult.rows[0]?.mode === 'LIVE';
       }
 
-      // SPEC FORMULA: effective_xp = base_xp × streak_multiplier × trust_multiplier
       const streakMultiplier = getStreakMultiplier(user.current_streak);
       const trustMultiplier = getTrustMultiplier(user.trust_tier);
       const liveModeMultiplier = getLiveModeMultiplier(isLiveMode);
@@ -215,50 +134,26 @@ export const XPService = {
 
       return {
         success: true,
-        data: {
-          baseXP,
-          streakMultiplier,
-          trustMultiplier,
-          liveModeMultiplier,
-          effectiveXP,
-        },
+        data: { baseXP, streakMultiplier, trustMultiplier, liveModeMultiplier, effectiveXP },
       };
     } catch (error) {
       return {
         success: false,
-        error: {
-          code: 'CALCULATION_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
-        },
+        error: { code: 'CALCULATION_ERROR', message: error instanceof Error ? error.message : 'Unknown error' },
       };
     }
   },
 
-  /**
-   * Award XP for task completion
-   *
-   * SPEC ALIGNMENT (PRODUCT_SPEC §5.2):
-   * effective_xp = base_xp × streak_multiplier × trust_multiplier × live_mode_multiplier
-   *
-   * INV-1: Will fail if escrow is not RELEASED (HX101)
-   * INV-5: Will fail if XP already awarded for this escrow (23505)
-   */
   awardXP: async (params: AwardXPParams): Promise<ServiceResult<XPLedgerEntry>> => {
     const { userId, taskId, escrowId, baseXP } = params;
 
-    // Anti-farming: Check velocity (cap check moved inside transaction — see below)
-    // FIX 2: Hard-block large awards when velocity is suspicious
-    // REG-9 FIX: Raised from 1000 to 3000 — a $150 task (1500 XP) must not be blocked.
     const VELOCITY_BLOCK_THRESHOLD = 3000;
     const velocityCheck = await XPService.checkVelocity(userId);
     if (velocityCheck.suspicious && baseXP > VELOCITY_BLOCK_THRESHOLD) {
       log.warn({ userId, baseXP, velocityData: velocityCheck }, 'XP velocity block triggered');
       return {
         success: false,
-        error: {
-          code: 'XP_VELOCITY_EXCEEDED',
-          message: 'XP_VELOCITY_EXCEEDED: Award blocked due to suspicious velocity pattern',
-        },
+        error: { code: 'XP_VELOCITY_EXCEEDED', message: 'XP_VELOCITY_EXCEEDED: Award blocked due to suspicious velocity pattern' },
       };
     }
     if (velocityCheck.suspicious) {
@@ -269,7 +164,6 @@ export const XPService = {
 
     try {
       const result = await db.serializableTransaction(async (query) => {
-        // Get user's current state including trust tier
         const userResult = await query<{
           xp_total: number;
           current_level: number;
@@ -283,51 +177,36 @@ export const XPService = {
         if (userResult.rows.length === 0) {
           return {
             success: false as const,
-            error: {
-              code: ErrorCodes.NOT_FOUND,
-              message: `User ${userId} not found`,
-            },
+            error: { code: ErrorCodes.NOT_FOUND, message: `User ${userId} not found` },
           };
         }
 
         const user = userResult.rows[0];
 
-        // Check if task is Live Mode (for 1.25× multiplier)
         const taskResult = await query<{ mode: string }>(
           'SELECT mode FROM tasks WHERE id = $1',
           [taskId]
         );
         const isLiveMode = taskResult.rows[0]?.mode === 'LIVE';
 
-        // SPEC FORMULA: effective_xp = base_xp × streak_multiplier × trust_multiplier × live_mode_multiplier
         const streakMultiplier = getStreakMultiplier(user.current_streak);
         const trustMultiplier = getTrustMultiplier(user.trust_tier);
         const liveModeMultiplier = getLiveModeMultiplier(isLiveMode);
         const effectiveXP = calculateEffectiveXP(baseXP, streakMultiplier, trustMultiplier, liveModeMultiplier);
 
-        // Anti-farming: Check daily XP cap using effectiveXP (post-multiplier) so cap
-        // cannot be exceeded when streak/trust/live multipliers inflate the award.
-        // FIX: was checking baseXP pre-multiplier — cap could be bypassed up to 5×.
         const capCheck = await XPService.checkDailyXPCap(userId, effectiveXP);
         if (!capCheck.allowed) {
           return {
             success: false as const,
-            error: {
-              code: 'XP_DAILY_CAP',
-              message: `Daily XP cap reached (${capCheck.cap} XP). Try again tomorrow.`,
-            },
+            error: { code: 'XP_DAILY_CAP', message: `Daily XP cap reached (${capCheck.cap} XP). Try again tomorrow.` },
           };
         }
 
         const newXPTotal = user.xp_total + effectiveXP;
         const newLevel = calculateLevel(newXPTotal);
 
-        // Store effectiveXP for instrumentation (outside transaction)
         effectiveXPAwarded = effectiveXP;
 
-        // Insert XP ledger entry
-        // INV-1: Trigger will check escrow is RELEASED
-        // INV-5: UNIQUE constraint will prevent duplicates
         const ledgerResult = await query<XPLedgerEntry>(
           `INSERT INTO xp_ledger (
             user_id, task_id, escrow_id,
@@ -348,28 +227,20 @@ export const XPService = {
           ]
         );
 
-        // Update user's XP total and level
         await query(
-          `UPDATE users
-           SET xp_total = $1, current_level = $2, updated_at = NOW()
-           WHERE id = $3`,
+          `UPDATE users SET xp_total = $1, current_level = $2, updated_at = NOW() WHERE id = $3`,
           [newXPTotal, newLevel, userId]
         );
 
-        // INSERT...RETURNING should always return a row, but verify for safety
         if (!ledgerResult.rows[0]) {
           throw new Error('Failed to create XP ledger entry - no row returned');
         }
 
         return { success: true as const, data: ledgerResult.rows[0] };
       });
-      
-      // Alpha Instrumentation: Emit trust delta applied for XP
-      // Note: This happens outside the transaction to avoid blocking XP award
-      // The try-catch ensures silent failure
+
       if (result.success && effectiveXPAwarded > 0) {
         try {
-          // Determine role from user's default_mode (worker = hustler, poster = poster)
           const userRoleResult = await db.query<{ default_mode: string }>(
             'SELECT default_mode FROM users WHERE id = $1',
             [userId]
@@ -385,19 +256,11 @@ export const XPService = {
             task_id: taskId,
             timestamp: new Date(),
           });
-
-          // If streak changed, emit separate streak delta (outside transaction for consistency)
-          // Note: We don't track streak changes in XPService currently, but we can add this later
         } catch (error) {
-          // Silent fail - instrumentation should not break core flow
           log.warn({ err: error instanceof Error ? error.message : String(error), userId, taskId }, 'Failed to emit trust_delta_applied for XP award');
         }
       }
 
-      // Note: daily XP tracking is now performed atomically inside checkDailyXPCap
-      // via Redis INCRBY. No separate trackDailyXP call is needed here.
-
-      // Gamified streaks: update streak on task completion (after XP award)
       if (result.success) {
         try {
           const taskRow = await db.query<{ completed_at: Date | null }>(
@@ -429,102 +292,61 @@ export const XPService = {
 
       return result;
     } catch (error) {
-      // Check for INV-1 violation
       if (isInvariantViolation(error)) {
         const dbError = error as { code?: string };
         return {
           success: false,
-          error: {
-            code: ErrorCodes.INV_1_VIOLATION,
-            message: getErrorMessage(dbError.code || 'HX101'),
-          },
+          error: { code: ErrorCodes.INV_1_VIOLATION, message: getErrorMessage(dbError.code || 'HX101') },
         };
       }
-      
-      // Check for INV-5 violation (duplicate)
+
       if (isUniqueViolation(error)) {
         return {
           success: false,
-          error: {
-            code: ErrorCodes.INV_5_VIOLATION,
-            message: `XP already awarded for escrow ${escrowId}`,
-          },
+          error: { code: ErrorCodes.INV_5_VIOLATION, message: `XP already awarded for escrow ${escrowId}` },
         };
       }
-      
+
       return {
         success: false,
-        error: {
-          code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
-        },
+        error: { code: 'DB_ERROR', message: error instanceof Error ? error.message : 'Unknown error' },
       };
     }
   },
 
-  /**
-   * Get XP history for user
-   */
   getHistory: async (userId: string): Promise<ServiceResult<XPLedgerEntry[]>> => {
     try {
       const result = await db.query<XPLedgerEntry>(
         'SELECT * FROM xp_ledger WHERE user_id = $1 ORDER BY awarded_at DESC',
         [userId]
       );
-      
       return { success: true, data: result.rows };
     } catch (error) {
       return {
         success: false,
-        error: {
-          code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
-        },
+        error: { code: 'DB_ERROR', message: error instanceof Error ? error.message : 'Unknown error' },
       };
     }
   },
 
-  /**
-   * Get total XP awarded for a task
-   */
   getByTask: async (taskId: string): Promise<ServiceResult<XPLedgerEntry | null>> => {
     try {
       const result = await db.query<XPLedgerEntry>(
         'SELECT * FROM xp_ledger WHERE task_id = $1',
         [taskId]
       );
-
       return { success: true, data: result.rows[0] || null };
     } catch (error) {
       return {
         success: false,
-        error: {
-          code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
-        },
+        error: { code: 'DB_ERROR', message: error instanceof Error ? error.message : 'Unknown error' },
       };
     }
   },
 
-  /**
-   * Check daily XP cap for anti-farming.
-   *
-   * When Redis is available this performs an atomic INCRBY + cap check + DECRBY rollback
-   * to eliminate the TOCTOU race between concurrent awardXP calls for the same user.
-   * The pattern is:
-   *   1. INCRBY key awardAmount  (atomic — returns new total)
-   *   2. If new total > cap: DECRBY key awardAmount to roll back, return blocked
-   *   3. If new total <= cap: increment is committed, return allowed
-   *   4. EXPIRE key 86400 to auto-expire at end of day window
-   *
-   * This collapses checkDailyXPCap + trackDailyXP into a single atomic operation.
-   * When xpAmount is 0 (read-only probe), a GET is used instead to avoid spurious
-   * increments.
-   */
   checkDailyXPCap: async (userId: string, xpAmount: number = 0): Promise<{ allowed: boolean; earned: number; cap: number; remaining: number }> => {
     const redis = getXPRedis();
     if (!redis) {
-      // Redis absent — fall back to DB query so cap is always enforced
       try {
         const result = await db.query<{ total: string }>(
           `SELECT COALESCE(SUM(effective_xp), 0) as total
@@ -540,7 +362,6 @@ export const XPService = {
           remaining: Math.max(0, DAILY_XP_CAP - totalToday),
         };
       } catch {
-        // DB fallback failed — block to be safe (fail closed)
         return { allowed: false, earned: 0, cap: DAILY_XP_CAP, remaining: 0 };
       }
     }
@@ -549,7 +370,6 @@ export const XPService = {
     const key = `xp:daily:${userId}:${dateKey}`;
     try {
       if (xpAmount === 0) {
-        // Read-only probe: just read current value without modifying it
         const earned = Number(await redis.get(key) ?? 0);
         return {
           allowed: earned < DAILY_XP_CAP,
@@ -559,15 +379,10 @@ export const XPService = {
         };
       }
 
-      // Atomic increment: INCRBY returns the new total after adding xpAmount.
-      // If the new total exceeds the cap we immediately roll it back with DECRBY.
-      // Because INCRBY is atomic, no other concurrent call can observe an intermediate
-      // state — this eliminates the TOCTOU gap between the old GET + later INCRBY pattern.
       const newTotal = Number(await redis.incrby(key, xpAmount));
       await redis.expire(key, 86400);
 
       if (newTotal > DAILY_XP_CAP) {
-        // Roll back: this award would exceed the cap — undo the increment
         await redis.decrby(key, xpAmount);
         const earnedBeforeAward = newTotal - xpAmount;
         return {
@@ -578,7 +393,6 @@ export const XPService = {
         };
       }
 
-      // Increment committed — cap not exceeded
       const earnedBeforeAward = newTotal - xpAmount;
       return {
         allowed: true,
@@ -587,25 +401,16 @@ export const XPService = {
         remaining: Math.max(0, DAILY_XP_CAP - newTotal),
       };
     } catch {
-      // Fail CLOSED on Redis error — fail open allowed unlimited XP farming during outage.
       return { allowed: false, earned: 0, cap: DAILY_XP_CAP, remaining: 0 };
     }
   },
 
-  /**
-   * Track daily XP earned (no-op: tracking is now performed atomically inside
-   * checkDailyXPCap via INCRBY. This stub is preserved so any callers outside
-   * the normal awardXP flow (e.g. manual test tooling) continue to compile.
-   *
-   * @deprecated Tracking is now atomic inside checkDailyXPCap. Do not call directly.
-   */
-  trackDailyXP: async (_userId: string, _xpAmount: number): Promise<void> => {
-    // No-op: atomic INCRBY in checkDailyXPCap handles both check and tracking.
-  },
+  /** @deprecated Tracking is now atomic inside checkDailyXPCap. */
+  trackDailyXP: async (_userId: string, _xpAmount: number): Promise<void> => {},
 
-  /**
-   * Check XP velocity (anti-farming: flag if >5 events in 1 hour)
-   */
+  // STOP-011 FIX: catch block now returns suspicious: true (fail CLOSED).
+  // Previously returned suspicious: false on DB error, allowing unlimited
+  // XP farming during database outages.
   checkVelocity: async (userId: string): Promise<{ suspicious: boolean; recentEvents: number }> => {
     try {
       const result = await db.query<{ count: string }>(
@@ -616,22 +421,12 @@ export const XPService = {
       const recentEvents = parseInt(result.rows[0]?.count || '0', 10);
       return { suspicious: recentEvents > 5, recentEvents };
     } catch {
-      return { suspicious: false, recentEvents: 0 };
+      log.error({ userId }, 'checkVelocity DB query failed — failing closed');
+      return { suspicious: true, recentEvents: -1 };
     }
   },
 
-  /**
-   * Clawback XP awarded for an escrow that was subsequently refunded or lost in dispute.
-   *
-   * INV-4 compliance: The xp_ledger is immutable (no UPDATE/DELETE). We insert a
-   * debit entry with negative effective_xp to offset the original credit, then
-   * update the user's running xp_total.
-   *
-   * FIX 3: Closes the dispute-then-refund free-XP exploit.
-   */
   clawbackXP: async (userId: string, escrowId: string, reason: string, fraction = 1.0): Promise<void> => {
-    // Find the original XP award for this escrow — fetch base_xp too so we can
-    // record the fraction-adjusted debit accurately in the ledger.
     const award = await db.query<{ id: string; base_xp: number; effective_xp: number; task_id: string }>(
       `SELECT id, base_xp, effective_xp, task_id FROM xp_ledger
        WHERE user_id = $1 AND escrow_id = $2
@@ -639,29 +434,18 @@ export const XPService = {
       [userId, escrowId]
     );
     if (award.rows.length === 0) {
-      // No XP was ever awarded for this escrow — nothing to clawback
       log.info({ userId, escrowId, reason }, 'XP clawback: no award found for escrow, skipping');
       return;
     }
 
-    // REG-10 FIX: Apply fraction to support partial clawback (e.g. 60% for partial dispute).
-    // Clamp to [0, 1] to guard against bad callers.
     const clampedFraction = Math.min(1, Math.max(0, fraction));
     const xpToDeduct = Math.round(award.rows[0].effective_xp * clampedFraction);
     if (xpToDeduct === 0) return;
     const taskId = award.rows[0].task_id;
 
-    // BUG FIX: Compute fraction-adjusted base_xp for the ledger debit entry.
-    // Previously the INSERT used -base_xp (full amount) even for partial clawbacks,
-    // causing the ledger to record -1000 XP when only 600 XP was actually deducted.
     const adjustedBaseXP = -Math.round(award.rows[0].base_xp * clampedFraction);
     const adjustedEffectiveXP = -xpToDeduct;
 
-    // Insert a debit entry (negative effective_xp) to preserve ledger immutability (INV-4).
-    // SECURITY FIX: ON CONFLICT DO NOTHING RETURNING makes this idempotent — if the
-    // (user_id, escrow_id, reason) clawback row already exists (e.g. on retry), the
-    // INSERT silently no-ops and rowCount=0 signals "already applied" rather than
-    // swallowing a real unique-constraint error as a false success.
     const clawbackInsert = await db.query<{ id: string }>(
       `INSERT INTO xp_ledger (
         user_id, task_id, escrow_id,
@@ -687,12 +471,10 @@ export const XPService = {
     );
 
     if (clawbackInsert.rowCount === 0) {
-      // Clawback row already exists — idempotent success, no XP deducted again.
       log.info({ userId, escrowId, reason }, 'XP clawback: already applied (idempotent), skipping deduction');
       return;
     }
 
-    // Update the user's running XP total (floor at 0) and recalculate current_level
     const afterResult = await db.query<{ xp_total: number; current_level: number }>(
       `UPDATE users SET xp_total = GREATEST(0, xp_total - $1), updated_at = NOW() WHERE id = $2
        RETURNING xp_total, current_level`,
@@ -713,9 +495,6 @@ export const XPService = {
     log.info({ userId, xpDeducted: xpToDeduct, reason, escrowId }, 'XP clawback applied');
   },
 
-  /**
-   * Get daily XP leaderboard
-   */
   getDailyLeaderboard: async (limit: number = 25): Promise<ServiceResult<Array<{ userId: string; name: string; xpEarned: number; rank: number }>>> => {
     try {
       const today = new Date().toISOString().split('T')[0];
