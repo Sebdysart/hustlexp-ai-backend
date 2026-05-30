@@ -17,7 +17,7 @@ import type { ServiceResult } from '../types.js';
 // TYPES
 // ============================================================================
 
-interface SkillCategory {
+export interface SkillCategory {
   id: string;
   name: string;
   display_name: string;
@@ -41,7 +41,7 @@ interface Skill {
   sort_order: number;
 }
 
-interface WorkerSkill {
+export interface WorkerSkill {
   id: string;
   user_id: string;
   skill_id: string;
@@ -54,14 +54,14 @@ interface WorkerSkill {
   created_at: Date;
 }
 
-interface SkillWithDetails extends Skill {
+export interface SkillWithDetails extends Skill {
   category_name: string;
   category_display_name: string;
   worker_verified?: boolean;
   worker_tasks_completed?: number;
 }
 
-interface SkillEligibility {
+export interface SkillEligibility {
   eligible: boolean;
   reason?: string;
   requires_license: boolean;

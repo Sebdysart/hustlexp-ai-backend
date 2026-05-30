@@ -27,7 +27,7 @@ interface SelfInsurancePool {
 
 type ClaimStatus = 'pending' | 'approved' | 'denied' | 'paid';
 
-interface InsuranceClaim {
+export interface InsuranceClaim {
   id: string;
   task_id: string;
   hustler_id: string;
@@ -42,7 +42,7 @@ interface InsuranceClaim {
   created_at: Date;
 }
 
-interface PoolStatus {
+export interface PoolStatus {
   total_deposits_cents: number;
   total_claims_cents: number;
   available_balance_cents: number;

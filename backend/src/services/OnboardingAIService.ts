@@ -46,7 +46,7 @@ interface SubmitCalibrationParams {
   onboardingVersion: string;
 }
 
-interface InferenceResult {
+export interface InferenceResult {
   roleConfidenceWorker: number;
   roleConfidencePoster: number;
   certaintyTier: CertaintyTier;

@@ -25,7 +25,7 @@ interface GPSPoint {
   timestamp: Date;
 }
 
-interface MovementSession {
+export interface MovementSession {
   id: string;
   taskId: string;
   userId: string;
@@ -42,7 +42,7 @@ interface TrackingUpdate {
   location: GPSPoint;
 }
 
-interface MovementStats {
+export interface MovementStats {
   totalDistance: number;
   duration: number; // seconds
   averageSpeed: number;

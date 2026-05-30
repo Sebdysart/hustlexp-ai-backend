@@ -7,7 +7,7 @@ const log = logger.child({ service: 'XPTaxService' });
 
 type PaymentMethod = 'escrow' | 'offline_cash' | 'offline_venmo' | 'offline_cashapp';
 
-interface XPTaxLedger {
+export interface XPTaxLedger {
   id: string;
   user_id: string;
   task_id: string;
@@ -32,7 +32,7 @@ interface UserXPTaxStatus {
   last_updated_at: Date;
 }
 
-interface TaxStatus {
+export interface TaxStatus {
   unpaid_tax_cents: number;
   xp_held_back: number;
   blocked: boolean;

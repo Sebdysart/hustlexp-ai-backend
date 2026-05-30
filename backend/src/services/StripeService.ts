@@ -23,7 +23,7 @@ interface CreatePaymentIntentParams {
   description?: string;
 }
 
-interface CreatePaymentIntentResult {
+export interface CreatePaymentIntentResult {
   paymentIntentId: string;
   clientSecret: string;
   amount: number;

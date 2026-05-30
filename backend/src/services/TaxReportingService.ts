@@ -24,7 +24,7 @@ function getStripe(): Stripe | null {
   return stripe;
 }
 
-interface TaxFiling {
+export interface TaxFiling {
   id: string;
   user_id: string;
   tax_year: number;

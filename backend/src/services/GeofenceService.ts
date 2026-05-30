@@ -17,14 +17,14 @@ import type { ServiceResult } from '../types.js';
 // TYPES
 // ============================================================================
 
-interface GeofenceCheckResult {
+export interface GeofenceCheckResult {
   within_geofence: boolean;
   distance_meters: number;
   event_logged: boolean;
   auto_checkin_triggered: boolean;
 }
 
-interface GeofenceEvent {
+export interface GeofenceEvent {
   id: string;
   task_id: string;
   user_id: string;

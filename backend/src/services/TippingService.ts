@@ -21,7 +21,7 @@ import { logger } from '../logger.js';
 
 const log = logger.child({ service: 'TippingService' });
 
-interface Tip {
+export interface Tip {
   id: string;
   task_id: string;
   poster_id: string;

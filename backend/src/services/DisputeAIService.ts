@@ -73,7 +73,7 @@ interface SplitRatio {
   poster_pct: number;
 }
 
-interface DisputeAnalysis {
+export interface DisputeAnalysis {
   summary: string;
   fault_assessment: FaultAssessment;
   recommended_action: 'RELEASE' | 'REFUND' | 'SPLIT';
@@ -84,12 +84,12 @@ interface DisputeAnalysis {
   escalation_recommended: boolean;
 }
 
-interface EvidenceRequest {
+export interface EvidenceRequest {
   poster_questions: string[];
   worker_questions: string[];
 }
 
-interface EscalationAssessment {
+export interface EscalationAssessment {
   shouldEscalate: boolean;
   reason: string;
   urgency: 'low' | 'medium' | 'high';

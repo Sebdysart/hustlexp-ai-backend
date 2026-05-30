@@ -20,7 +20,7 @@ import type { ServiceResult } from '../types.js';
 // TYPES
 // ============================================================================
 
-interface PricingResult {
+export interface PricingResult {
   base_price_cents: number;
   surge_multiplier: number;
   surge_reason: string | null;

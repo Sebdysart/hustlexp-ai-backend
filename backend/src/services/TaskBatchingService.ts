@@ -31,7 +31,7 @@ interface Task {
   estimatedDuration?: number; // minutes
 }
 
-interface BatchRecommendation {
+export interface BatchRecommendation {
   primaryTask: Task;
   additionalTasks: Task[];
   totalEarnings: number; // cents
@@ -44,7 +44,7 @@ interface BatchRecommendation {
   reasoning: string;
 }
 
-interface BatchSavings {
+export interface BatchSavings {
   totalEarnings: number;
   combinedDuration: number;
   individualDuration: number;

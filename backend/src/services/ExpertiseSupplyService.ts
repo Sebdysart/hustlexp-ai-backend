@@ -37,7 +37,7 @@ const log = logger.child({ service: 'ExpertiseSupplyService' });
 // TYPES
 // ============================================================================
 
-interface ExpertiseInfo {
+export interface ExpertiseInfo {
   id: string;
   slug: string;
   displayName: string;
@@ -46,7 +46,7 @@ interface ExpertiseInfo {
   active: boolean;
 }
 
-interface CapacityStatus {
+export interface CapacityStatus {
   expertiseId: string;
   expertiseSlug: string;
   expertiseDisplayName: string;
@@ -74,7 +74,7 @@ interface CapacityStatus {
   waitlistLength: number;
 }
 
-interface UserExpertise {
+export interface UserExpertise {
   id: string;
   expertiseId: string;
   expertiseSlug: string;
@@ -91,7 +91,7 @@ interface UserExpertise {
   createdAt: string;
 }
 
-interface WaitlistEntry {
+export interface WaitlistEntry {
   id: string;
   expertiseSlug: string;
   expertiseDisplayName: string;
@@ -104,7 +104,7 @@ interface WaitlistEntry {
   createdAt: string;
 }
 
-interface SupplyDashboard {
+export interface SupplyDashboard {
   expertise: Array<CapacityStatus>;
   totals: {
     totalActiveHustlers: number;
