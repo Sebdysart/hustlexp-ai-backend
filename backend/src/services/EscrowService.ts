@@ -178,10 +178,10 @@ export const EscrowService = {
       return { success: false, error: { code: ErrorCodes.INVALID_STATE, message: 'stripeTransferId is required to release escrow — create the Stripe transfer first' } };
     }
 
-    let releasedEscrow: Escrow;
-    let workerId: string;
-    let grossPayoutCents: number;
-    let netPayoutCents: number;
+    let releasedEscrow!: Escrow;
+    let workerId = '';
+    let grossPayoutCents = 0;
+    let netPayoutCents = 0;
     let taskId: string;
     let paymentMethod: string;
     let escrowStateBefore: string;

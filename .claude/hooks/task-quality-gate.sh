@@ -5,11 +5,8 @@
 # Exit 0 = allow completion
 # Exit 2 = block completion
 #
-# AUDIT FIX (P3): Previous version ran the full test suite (6315 tests,
-# fileParallelism: false, ~2+ minutes). Now runs:
-#   1. tsc --noEmit --incremental (~5s with warm cache)
-#   2. vitest --changed --bail 1 (~10s for changed files only)
-# Full suite validation happens in CI (ci.yml), not in the task gate.
+# Runs incremental tsc + vitest on changed files only (~15s total).
+# Full suite validation happens in CI (ci.yml), not here.
 
 set -euo pipefail
 
@@ -22,15 +19,17 @@ if ! (cd "$CWD" && npx tsc --noEmit --incremental 2>&1); then
   exit 2
 fi
 
-# Run tests for changed files only
-TEST_OUTPUT=$(cd "$CWD" && npx vitest run --changed --bail 1 --reporter=dot 2>&1) || true
+# Run tests for changed files — capture exit code directly (no || true)
+VITEST_EXIT=0
+TEST_OUTPUT=$(cd "$CWD" && npx vitest run --changed --bail 1 --reporter=dot 2>&1) || VITEST_EXIT=$?
 
-# Check if tests passed or if there were no tests to run
-if echo "$TEST_OUTPUT" | grep -qiE '(fail|error.*test)'; then
-  if ! echo "$TEST_OUTPUT" | grep -qiE '(no test (files|suites) found)'; then
-    echo '{"decision": "block", "reason": "Tests for changed files are failing. Fix failing tests before marking task complete."}'
-    exit 2
+if [ "$VITEST_EXIT" -ne 0 ]; then
+  # Allow only "no test files found" (vitest exits non-zero for that too)
+  if echo "$TEST_OUTPUT" | grep -qiE 'no test (files|suites) found'; then
+    exit 0
   fi
+  echo '{"decision": "block", "reason": "Tests for changed files are failing. Fix failing tests before marking task complete."}'
+  exit 2
 fi
 
 exit 0
