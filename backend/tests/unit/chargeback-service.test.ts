@@ -246,6 +246,61 @@ describe('ChargebackService', () => {
       );
     });
 
+    it('restores trust tier when a downgraded dispute is won and no other disputes remain', async () => {
+      mockDb.query.mockResolvedValueOnce({
+        rows: [{
+          id: 'pd-1', stripe_dispute_id: 'dp_1', stripe_charge_id: 'ch_1',
+          user_id: 'user-1', escrow_id: 'esc-1', task_id: 'task-1',
+          amount_cents: 5000, status: 'open',
+          trust_was_downgraded: true, previous_trust_tier: 3,
+        }],
+        rowCount: 1,
+      } as never);
+      mockDb.query.mockResolvedValueOnce({ rows: [{ count: '0' }], rowCount: 1 } as never); // other open disputes (payout unlock)
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);               // unlock payouts
+      mockDb.query.mockResolvedValueOnce({ rows: [{ count: '0' }], rowCount: 1 } as never); // otherNonWon → 0
+      mockDb.query.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }], rowCount: 1 } as never); // current tier (still demoted)
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);               // UPDATE users trust_tier
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);               // INSERT trust_ledger
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);               // mark resolved
+
+      const result = await ChargebackService.handleDisputeClosed({
+        stripeDisputeId: 'dp_1', stripeEventId: 'evt_close', status: 'won', reason: null,
+      });
+      expect(result.success).toBe(true);
+
+      const calls = mockDb.query.mock.calls;
+      const restore = calls.find(c => typeof c[0] === 'string' && c[0].includes('UPDATE users SET trust_tier'));
+      expect(restore).toBeTruthy();
+      expect(restore?.[1]).toEqual(['user-1', 3]); // restored to previous tier
+      const ledger = calls.find(c => typeof c[0] === 'string' && c[0].includes('INSERT INTO trust_ledger'));
+      expect(ledger).toBeTruthy();
+    });
+
+    it('does NOT restore trust when other non-won disputes remain', async () => {
+      mockDb.query.mockResolvedValueOnce({
+        rows: [{
+          id: 'pd-1', stripe_dispute_id: 'dp_1', stripe_charge_id: 'ch_1',
+          user_id: 'user-1', escrow_id: null, task_id: null,
+          amount_cents: 5000, status: 'open',
+          trust_was_downgraded: true, previous_trust_tier: 3,
+        }],
+        rowCount: 1,
+      } as never);
+      mockDb.query.mockResolvedValueOnce({ rows: [{ count: '0' }], rowCount: 1 } as never); // payout other-open
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);               // unlock
+      mockDb.query.mockResolvedValueOnce({ rows: [{ count: '2' }], rowCount: 1 } as never); // otherNonWon → 2 → skip restore
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);               // mark resolved
+
+      const result = await ChargebackService.handleDisputeClosed({
+        stripeDisputeId: 'dp_1', stripeEventId: 'evt_close', status: 'won', reason: null,
+      });
+      expect(result.success).toBe(true);
+
+      const restore = mockDb.query.mock.calls.find(c => typeof c[0] === 'string' && c[0].includes('UPDATE users SET trust_tier'));
+      expect(restore).toBeFalsy();
+    });
+
     it('increments dispute_lost_count when dispute lost', async () => {
       mockDb.query.mockResolvedValueOnce({
         rows: [{

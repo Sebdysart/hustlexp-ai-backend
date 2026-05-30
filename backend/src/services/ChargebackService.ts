@@ -60,6 +60,8 @@ interface PaymentDispute {
   task_id: string | null;
   amount_cents: number;
   status: string;
+  trust_was_downgraded: boolean;
+  previous_trust_tier: number | null;
 }
 
 // ============================================================================
@@ -406,7 +408,7 @@ export const ChargebackService = {
       // Fetch the dispute record
       const disputeResult = await db.query<PaymentDispute>(
         `SELECT id, stripe_dispute_id, stripe_charge_id, user_id, escrow_id,
-                task_id, amount_cents, status
+                task_id, amount_cents, status, trust_was_downgraded, previous_trust_tier
          FROM payment_disputes
          WHERE stripe_dispute_id = $1`,
         [stripeDisputeId]
@@ -469,6 +471,56 @@ export const ChargebackService = {
                WHERE id = $1`,
               [dispute.user_id]
             );
+          }
+
+          // 3. Restore trust tier (truth-table row 9). The downgrade on
+          // dispute.created left the user demoted; a WON dispute should reverse it.
+          // Conservative: only restore when (a) THIS dispute caused the downgrade
+          // and (b) no OTHER non-won disputes remain that would justify keeping
+          // the user demoted — otherwise leave for admin (avoids over-restoring).
+          if (dispute.trust_was_downgraded && dispute.previous_trust_tier != null) {
+            const otherNonWon = await db.query<{ count: string }>(
+              `SELECT COUNT(*) as count FROM payment_disputes
+               WHERE user_id = $1 AND id != $2 AND status != 'won'`,
+              [dispute.user_id, dispute.id]
+            );
+            if (parseInt(otherNonWon.rows[0].count, 10) === 0) {
+              const cur = await db.query<{ trust_tier: number }>(
+                `SELECT trust_tier FROM users WHERE id = $1`,
+                [dispute.user_id]
+              );
+              const currentTier = cur.rows[0]?.trust_tier;
+              if (currentTier != null && currentTier < dispute.previous_trust_tier) {
+                await db.query(
+                  `UPDATE users SET trust_tier = $2 WHERE id = $1`,
+                  [dispute.user_id, dispute.previous_trust_tier]
+                );
+                // Compensating, idempotent trust_ledger entry (audit trail).
+                await db.query(
+                  `INSERT INTO trust_ledger (
+                     user_id, old_tier, new_tier, reason, reason_details,
+                     changed_by, idempotency_key, event_source, source_event_id
+                   )
+                   VALUES ($1, $2, $3, $4, $5, 'system', $6, 'chargeback_reversal', $7)
+                   ON CONFLICT (idempotency_key) DO NOTHING`,
+                  [
+                    dispute.user_id,
+                    currentTier,
+                    dispute.previous_trust_tier,
+                    'Trust restored: chargeback dispute won',
+                    JSON.stringify({
+                      stripe_dispute_id: stripeDisputeId,
+                      payment_dispute_id: dispute.id,
+                      restored_from: currentTier,
+                      restored_to: dispute.previous_trust_tier,
+                    }),
+                    `chargeback:${stripeDisputeId}:trust_restore`,
+                    stripeEventId,
+                  ]
+                );
+                log.info({ stripeDisputeId, userId: dispute.user_id, restoredTo: dispute.previous_trust_tier }, 'Trust tier restored after dispute won');
+              }
+            }
           }
         }
 
