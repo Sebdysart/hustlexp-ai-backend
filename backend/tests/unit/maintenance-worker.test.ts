@@ -22,16 +22,23 @@ vi.mock('../../src/services/NotificationService.js', () => ({
   NotificationService: { createNotification: vi.fn().mockResolvedValue({ success: true }) },
 }));
 
+vi.mock('../../src/services/AdminNotificationHelper.js', () => ({
+  notifyAdmins: vi.fn().mockResolvedValue({ sent: 1, failed: 0 }),
+}));
+
 import { db } from '../../src/db';
 import { processMaintenanceJob } from '../../src/jobs/maintenance-worker';
 import { EscrowService } from '../../src/services/EscrowService.js';
 import { NotificationService } from '../../src/services/NotificationService.js';
+import { notifyAdmins } from '../../src/services/AdminNotificationHelper.js';
 
 const mockDb = vi.mocked(db);
 const mockRefund = vi.mocked(EscrowService.refund);
 const mockNotify = vi.mocked(NotificationService.createNotification);
+const mockNotifyAdmins = vi.mocked(notifyAdmins);
 
 const job = (data: Record<string, unknown> = {}) => ({ name: 'cancel_stale_escrows', data } as never);
+const reconcileJob = (data: Record<string, unknown> = {}) => ({ name: 'reconcile_ledger', data } as never);
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -84,5 +91,28 @@ describe('maintenance: cancel_stale_escrows', () => {
     await processMaintenanceJob(job());
 
     expect(mockDb.query).toHaveBeenCalledWith(expect.stringContaining("state = 'FUNDED'"), [72]);
+  });
+});
+
+describe('maintenance: reconcile_ledger', () => {
+  it('is clean (no admin alert) when there is no drift', async () => {
+    mockDb.query.mockResolvedValueOnce({ rowCount: 0, rows: [] } as never); // missing-refund drift
+    mockDb.query.mockResolvedValueOnce({ rowCount: 0, rows: [] } as never); // missing-revenue drift
+
+    await processMaintenanceJob(reconcileJob({ windowDays: 7 }));
+
+    expect(mockNotifyAdmins).not.toHaveBeenCalled();
+  });
+
+  it('alerts admins (CRITICAL) when refund or revenue drift is found', async () => {
+    mockDb.query.mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'esc-1', task_id: 't-1' }] } as never); // REFUNDED w/o refund id
+    mockDb.query.mockResolvedValueOnce({ rowCount: 2, rows: [{ id: 'esc-2', task_id: 't-2' }, { id: 'esc-3', task_id: 't-3' }] } as never); // RELEASED w/o platform_fee
+
+    await processMaintenanceJob(reconcileJob());
+
+    expect(mockNotifyAdmins).toHaveBeenCalledWith(expect.objectContaining({
+      priority: 'CRITICAL',
+      metadata: expect.objectContaining({ refundDrift: 1, revenueDrift: 2 }),
+    }));
   });
 });

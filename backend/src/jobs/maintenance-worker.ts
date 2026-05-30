@@ -138,12 +138,78 @@ async function cancelStaleEscrows(job: Job): Promise<void> {
   log.info({ refunded, failed, staleHours }, 'Stale-escrow auto-refund pass complete');
 }
 
+// MONEY-INTEGRITY RECONCILIATION (truth-table B#4). DB-only drift detection that
+// guards the money invariants and alerts ops on mismatch. Catches the exact
+// signature of the refund bug fixed this session (REFUNDED escrow that captured a
+// PaymentIntent but never got a stripe_refund_id), plus unrecorded platform-fee
+// revenue (P&L drift). Read-only + alert; never mutates money state.
+async function reconcileLedger(job: Job): Promise<void> {
+  const windowDays = ((job.data as Record<string, unknown>)?.windowDays as number) || 7;
+
+  // Drift 1: REFUNDED escrow that captured money (has a PaymentIntent) but has no
+  // Stripe refund id → poster may not have been refunded.
+  const missingRefund = await db.query<{ id: string; task_id: string }>(
+    `SELECT id, task_id FROM escrows
+     WHERE state = 'REFUNDED'
+       AND stripe_payment_intent_id IS NOT NULL
+       AND stripe_refund_id IS NULL
+       AND refunded_at > NOW() - INTERVAL '1 day' * $1`,
+    [windowDays]
+  );
+
+  // Drift 2: RELEASED escrow with no platform_fee revenue_ledger entry → revenue
+  // not recorded (unauditable P&L).
+  const missingRevenue = await db.query<{ id: string; task_id: string }>(
+    `SELECT e.id, e.task_id FROM escrows e
+     LEFT JOIN revenue_ledger r ON r.escrow_id = e.id AND r.event_type = 'platform_fee'
+     WHERE e.state = 'RELEASED'
+       AND e.released_at > NOW() - INTERVAL '1 day' * $1
+       AND r.id IS NULL`,
+    [windowDays]
+  );
+
+  const refundDrift = missingRefund.rowCount;
+  const revenueDrift = missingRevenue.rowCount;
+
+  if (refundDrift === 0 && revenueDrift === 0) {
+    log.info({ windowDays }, 'Ledger reconciliation clean — no drift');
+    return;
+  }
+
+  log.error(
+    {
+      windowDays,
+      refundDrift,
+      revenueDrift,
+      refundEscrowIds: missingRefund.rows.slice(0, 25).map(r => r.id),
+      revenueEscrowIds: missingRevenue.rows.slice(0, 25).map(r => r.id),
+    },
+    'Ledger reconciliation DRIFT detected — manual review required'
+  );
+
+  try {
+    const { notifyAdmins } = await import('../services/AdminNotificationHelper.js');
+    await notifyAdmins({
+      title: 'Ledger drift detected',
+      body: `${refundDrift} REFUNDED escrow(s) missing Stripe refund id; ${revenueDrift} RELEASED escrow(s) missing platform_fee ledger entry (last ${windowDays}d).`,
+      deepLink: '/admin/reconciliation',
+      priority: 'CRITICAL',
+      metadata: { refundDrift, revenueDrift, windowDays },
+    });
+  } catch (notifyErr) {
+    log.error({ err: notifyErr instanceof Error ? notifyErr.message : String(notifyErr) }, 'Failed to alert admins of ledger drift');
+  }
+}
+
 export async function processMaintenanceJob(job: Job): Promise<void> {
   const jobType = job.name;
 
   switch (jobType) {
     case 'cancel_stale_escrows':
       await cancelStaleEscrows(job);
+      break;
+    case 'reconcile_ledger':
+      await reconcileLedger(job);
       break;
     case 'recover_stuck_stripe_events':
       await recoverStuckStripeEvents(job as Job<RecoveryStuckStripeEventsPayload>);
