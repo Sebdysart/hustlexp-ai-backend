@@ -278,6 +278,17 @@ async function registerScheduledJobs(): Promise<void> {
     }
   );
 
+  // Auto-refund stale unaccepted FUNDED escrows — hourly (truth-table row 37).
+  // Returns a poster's captured payment when no Hustler accepted within staleHours.
+  await maintenanceQueue.add(
+    'cancel_stale_escrows',
+    { staleHours: 72 },
+    {
+      repeat: { pattern: '15 * * * *' },
+      jobId: 'scheduled:cancel_stale_escrows',
+    }
+  );
+
   // Fraud detection scan — every 5 minutes
   await criticalTrustQueue.add(
     'fraud.scan_requested',

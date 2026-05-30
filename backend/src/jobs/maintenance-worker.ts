@@ -81,10 +81,70 @@ async function expireStaleStreaks(): Promise<void> {
   }
 }
 
+// MONEY-PATH FIX (truth-table row 37): auto-refund escrows that were FUNDED but
+// whose task was never accepted. Without this, a poster's captured payment sits
+// in FUNDED indefinitely when no Hustler ever accepts. After `staleHours`, return
+// the money — EscrowService.refund() now issues a real Stripe refund (fail-closed),
+// so a Stripe failure leaves the escrow FUNDED for retry on the next run.
+async function cancelStaleEscrows(job: Job): Promise<void> {
+  const staleHours = ((job.data as Record<string, unknown>)?.staleHours as number) || 72;
+
+  const stale = await db.query<{ id: string; poster_id: string; task_id: string }>(
+    `SELECT e.id, t.poster_id, t.id AS task_id
+     FROM escrows e
+     JOIN tasks t ON t.id = e.task_id
+     WHERE e.state = 'FUNDED'
+       AND e.funded_at IS NOT NULL
+       AND e.funded_at < NOW() - INTERVAL '1 hour' * $1
+       AND t.worker_id IS NULL`,
+    [staleHours]
+  );
+
+  if (stale.rowCount === 0) {
+    log.info({ staleHours }, 'No stale unaccepted FUNDED escrows to refund');
+    return;
+  }
+
+  const { EscrowService } = await import('../services/EscrowService.js');
+  let refunded = 0;
+  let failed = 0;
+
+  for (const row of stale.rows) {
+    const result = await EscrowService.refund({ escrowId: row.id });
+    if (result.success) {
+      refunded++;
+      log.info({ escrowId: row.id, taskId: row.task_id, posterId: row.poster_id }, 'Auto-refunded stale unaccepted escrow');
+      try {
+        const { NotificationService } = await import('../services/NotificationService.js');
+        await NotificationService.createNotification({
+          userId: row.poster_id,
+          category: 'refund_issued',
+          title: 'Task refunded — no one accepted',
+          body: "Your task wasn't accepted in time, so your payment has been fully refunded.",
+          taskId: row.task_id,
+          deepLink: `app://tasks/${row.task_id}`,
+          channels: ['in_app', 'push'],
+          priority: 'MEDIUM',
+        });
+      } catch (notifyErr) {
+        log.warn({ err: notifyErr instanceof Error ? notifyErr.message : String(notifyErr), escrowId: row.id }, 'Stale-escrow refund notification failed (refund stands)');
+      }
+    } else {
+      failed++;
+      log.error({ escrowId: row.id, err: result.error.message }, 'Stale-escrow auto-refund failed — will retry next run');
+    }
+  }
+
+  log.info({ refunded, failed, staleHours }, 'Stale-escrow auto-refund pass complete');
+}
+
 export async function processMaintenanceJob(job: Job): Promise<void> {
   const jobType = job.name;
 
   switch (jobType) {
+    case 'cancel_stale_escrows':
+      await cancelStaleEscrows(job);
+      break;
     case 'recover_stuck_stripe_events':
       await recoverStuckStripeEvents(job as Job<RecoveryStuckStripeEventsPayload>);
       break;
