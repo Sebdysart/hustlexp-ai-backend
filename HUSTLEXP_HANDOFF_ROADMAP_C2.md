@@ -58,6 +58,13 @@ Commit `8a3076d` on `HUSTLEXPFINAL1`. Next.js 16.2.6 + React 19 + Tailwind v4, c
 
 **AppRouter type-sharing decision (made at C2):** **generated standalone bundled `.d.ts`** (handoff fallback #2). Workspace reference was the user's first pick but the layout (two separate GitHub repos) made it equivalent in cost to the "last resort" submodule path (Vercel auth + slower builds + tighter cross-repo coupling). The bundled `.d.ts` keeps web builds self-contained on Vercel. Regen via `npm run emit:trpc-types` in the backend + `./scripts/sync-trpc-types.sh` in the web after every backend AppRouter change.
 
+### Roadmap C3 — Public Poster Funnel Homepage ✅
+| Repo | Commit | What |
+|------|--------|------|
+| Frontend (`HUSTLEXPFINAL1`) | `bff1607` | `feat(web): build poster funnel homepage` — replaces the C1 placeholder at `web/app/page.tsx` with the real funnel (server-rendered shell + `<FunnelForm>` client island at `web/components/funnel-form.tsx`). Above the fold: H1 "What can you get done today?", info-blue escrow promise, task textarea, 5-digit ZIP with Eastside allow-list (Redmond/Sammamish/Bellevue/Kirkland/Issaquah), 6 single-select category chips (moving help, furniture assembly, dump runs, yard cleanup, errands, event setup), purple "Get estimate" CTA. Non-Eastside ZIP shows honest waitlist signal. Submit shows a stub "Generating estimate…" panel (no backend call yet — C4 swaps in the real mutation + `/draft` route). Below the fold: 4 honest trust bullets with inline SVG icons (escrow / proof-before-release / "Poster feedback appears on Hustler profiles as tasks are completed." / identity & trust checks for higher-risk tasks — deliberately NOT "background-checked" until Checkr is live). Layout `<title>` retitled to mirror the H1. Verified: lint/typecheck/build EXIT 0; rendered HTML has 0 banned-term matches. |
+
+**Constraints honored in C3:** no fake liquidity, no fake completed-task counts, no fake response times, no "background-checked" copy, no insurance/self-protection claims, no green on the entry surface, no Hustler web flows, no new deps (shadcn deferred to C8 per "no detour" directive).
+
 ---
 
 ## 4. Do-Not-Forget Constraints
