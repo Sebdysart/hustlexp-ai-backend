@@ -1,12 +1,12 @@
-# HustleXP — Handoff: Roadmap C (C3 done, C4 next)
+# HustleXP — Handoff: Roadmap C (C4 done, C5 next)
 
-> Updated 2026-05-30 after C3 commit. For the next Claude Code session to pick up Roadmap C exactly where this one left off.
+> Updated 2026-05-30 after C4 acceptance. For the next Claude Code session to pick up Roadmap C exactly where this one left off.
 
 ---
 
 ## 1. Current Objective
 
-**Roadmap C: Poster-side web liquidity engine.** C3 is **done**. **Next step: C4 — backend `task.draftEstimate` + web `/draft` route + wire the homepage submit.**
+**Roadmap C: Poster-side web liquidity engine.** C4 is **accepted** (backend `task.draftEstimate` + web homepage wired with localStorage-persistent draft + browser manual acceptance passed). **Next step: C5 — backend `geo.availability` + a truthful availability module on the homepage.**
 
 Product goal (DONE-C): a Redmond stranger opens the web app, describes a real task, gets an estimate, signs up only at Dispatch, funds with Stripe test mode, and sees the task in a poster dashboard.
 
@@ -16,8 +16,8 @@ Product goal (DONE-C): a Redmond stranger opens the web app, describes a real ta
 
 | Repo | GitHub path | Branch | HEAD | Clean? |
 |------|------------|--------|------|--------|
-| Backend | `Sebdysart/hustlexp-ai-backend` | `claude/audit-backend-workflow-mFb7a` | `3e8b1c49` | Yes |
-| Frontend/mobile | `Sebdysart/HUSTLEXPFINAL1` | `claude/audit-backend-workflow-mFb7a` | `bff1607` | Yes |
+| Backend | `Sebdysart/hustlexp-ai-backend` | `claude/audit-backend-workflow-mFb7a` | `e3f09b9c` | Yes |
+| Frontend/mobile | `Sebdysart/HUSTLEXPFINAL1` | `claude/audit-backend-workflow-mFb7a` | `3559da1` | Yes |
 
 **PR #211** (`claude/audit-backend-workflow-mFb7a` → `main` on backend): open, not merged. Latest backend push was the C2 prerequisite (`chore(backend): emit AppRouter.d.ts for web type sharing`). CI gates that PR #211 already had green stayed green after the C2 push (typecheck, lint, tests, build, audit). The 4 pre-existing failures (codeql, snyk, security audit, dependency-review) are unchanged — same upstream dep vulns / infra issues that exist on `main`.
 
@@ -65,6 +65,31 @@ Commit `8a3076d` on `HUSTLEXPFINAL1`. Next.js 16.2.6 + React 19 + Tailwind v4, c
 
 **Constraints honored in C3:** no fake liquidity, no fake completed-task counts, no fake response times, no "background-checked" copy, no insurance/self-protection claims, no green on the entry surface, no Hustler web flows, no new deps (shadcn deferred to C8 per "no detour" directive).
 
+### Roadmap C4 — Draft Estimate Flow ✅ (manually accepted 2026-05-30)
+
+| Repo | Commit | What |
+|------|--------|------|
+| Backend (`hustlexp-ai-backend`) | `293a508d` | `feat(task): add public draftEstimate procedure (C4)` — adds `task.draftEstimate` `publicProcedure.mutation` mirroring the auth-gated `evaluateDraft` shape (compliance gate → ScoperAI scoping) but anonymous + write-free. Three-layer rate limit: per-IP burst (5/60s) + per-IP daily (30/day) fail OPEN, GLOBAL daily (2000/day) fails CLOSED on Redis outage. IP derived from `x-forwarded-for` → `x-real-ip`. Compliance `hard_block` → BAD_REQUEST with canonical "blocked by compliance check" message. Single LLM call, no retries. Description never logged in full (length + 40-char preview only). Extends `Context` with optional `req?: Request` so the public path can read headers; auth-narrowing middlewares strip it. Output: `{title, cleanedDescription, category, recommendedPriceCents, estimatedDurationMinutes, requiredTools, urgency, safetyNotes, followUpQuestions}`. Regenerates `dist-types/AppRouter.d.ts`. |
+| Backend (`hustlexp-ai-backend`) | `e3f09b9c` | `fix(task): allow draftEstimate from dev localhost without a reverse proxy (C4)` — surfaced by manual browser acceptance. Without a reverse proxy in front of the dev backend, browsers don't set `x-forwarded-for`/`x-real-ip` and every call was being rejected with BAD_REQUEST. `deriveIpKey` now falls back to a shared `'dev-local'` rate-limit key only when both headers are absent **and** `NODE_ENV !== 'production'`. Production still refuses unkeyed requests — no wallet-drain vector introduced. AppRouter bundle byte-identical (procedure shape unchanged). |
+| Frontend (`HUSTLEXPFINAL1`) | `3559da1` | `feat(web): wire homepage to draftEstimate (C4)` — replaces the C3 `setSubmitted(true)` stub in `web/components/funnel-form.tsx` with `trpc.task.draftEstimate.useMutation()`. Adds explicit C3-chip → backend-template-slug map (`moving`/`dump`/`yard`/`errands` → `standard_physical`, `assembly` → `in_home`, `event` → `event_appearance`) so unmapped slugs can't reach the procedure. Error mapping: `TOO_MANY_REQUESTS` → "You've made a lot of requests — try again in a minute"; `SERVICE_UNAVAILABLE` → "Our estimator is taking a breath — please try in a bit"; else server message. Result panel shows the eight output fields with hidden-when-empty sections for tools/safety/follow-ups. `localStorage["hustlexp.draft.v1"]` persists `{input, result, createdAt}` with 24h expiry and schema-mismatch guard; refresh restores; Start Over clears both UI and storage. Syncs `web/types/trpc/AppRouter.d.ts` from the backend bundle. |
+
+**Verification log:**
+- Backend: 14/14 `draftEstimate` tests, 128/128 task-router tests, `npx tsc -b` clean, `npx eslint backend/src` clean, `npm run emit:trpc-types` clean.
+- Web: `npm run lint` clean, `npx tsc --noEmit` clean, `npm run build` clean (all 5 routes prerendered).
+- Manual browser acceptance via Claude in Chrome agent against `localhost:8081` → backend on `localhost:3000`:
+  - Valid Eastside task ("Mount a 55-inch TV in my Bellevue apartment Saturday afternoon", ZIP 98004, Furniture assembly chip) → POST 200 in ~3s.
+  - Loading state observed (button "Estimating…", `aria-busy=true`).
+  - Result panel rendered: title, cleaned description, category `in_home`, $30.00, 1 hr 15 min, urgency Normal.
+  - Hard refresh restored the draft from `localStorage["hustlexp.draft.v1"]`.
+  - Start Over cleared both UI state and the localStorage key.
+  - Off-area ZIP `90210` blocked client-side with the Eastside-only message; no `draftEstimate` network call fired.
+  - Copy/legal audit: no `background checked` / `insurance` / `protection` / fake liquidity / fake response times / fake nearby counts. Existing copy ("identity and trust checks", "escrow until you approve", "photo or video proof") all describe real mechanics.
+
+**Open C4 caveat (carry forward):**
+- Local dev uses the shared `dev-local` rate-limit key only when `NODE_ENV !== 'production'` AND neither IP header is present. Every dev request lands in the same bucket. Production still rejects unkeyed requests, so this only relaxes the local-developer ergonomics.
+
+**Out-of-scope-for-C4 honored:** no signup gate, no task creation, no Stripe, no dashboard, no new routes, no new UI library, no analytics expansion, no Hustler-side flows, no SEO pages. The `/draft/[id]` route originally sketched in the C4 plan was intentionally dropped in favor of an inline result panel + localStorage persistence — simpler, refresh-safe, and removes the need for a new task_drafts table this round.
+
 ---
 
 ## 4. Do-Not-Forget Constraints
@@ -85,27 +110,14 @@ Commit `8a3076d` on `HUSTLEXPFINAL1`. Next.js 16.2.6 + React 19 + Tailwind v4, c
 
 ## 5. Roadmap C Next Steps (C4–C10)
 
-### C4 — Backend `task.draftEstimate` + web `/draft` route (NEXT)
-The C3 homepage captures task + ZIP + category and currently shows a stub "Generating estimate…" panel on submit. C4 makes that submit do real work.
+### C4 — Draft Estimate Flow ✅ DONE
+See **Roadmap C4 — Draft Estimate Flow ✅** in Section 3 above. Backend `293a508d` + `e3f09b9c`, web `3559da1`. Manual browser acceptance passed.
 
-**Backend (lands on the same audit branch):**
-- `task.draftEstimate`: `publicProcedure`, rate-limited, composes `ComplianceGuardianService.evaluate()` (no userId) → `ScoperAIService.analyzeTaskScope()` → `refineTaskDescription()`. All anonymous-safe.
-- Returns a draft id + the proposed scope/price band + any compliance flags.
-- `publicProcedure` exists at `backend/src/trpc.ts:112`. Rate limiting via manual `checkRateLimit()` inside the procedure (pattern at `task.ts:416–449`).
-- After the procedure lands: `npm run emit:trpc-types` in the backend + commit + push, then `./scripts/sync-trpc-types.sh` in `web/` to refresh `types/trpc/AppRouter.d.ts`.
-
-**Web:**
-- Add `web/app/draft/[id]/page.tsx` (server or client — TBD) that renders the AI estimate from the draft id.
-- Swap the C3 stub in `web/components/funnel-form.tsx` for `trpc.task.draftEstimate.useMutation()` + `router.push('/draft/' + result.id)`.
-- Loading + error states must be honest: real "Generating estimate…" while pending, friendly fallback if the AI fails (offer "Try again" or "Continue without estimate").
-
-**Verify:** create a draft estimate via the homepage end-to-end against a running backend, confirm the new route renders, and that re-submitting bumps a fresh estimate. CORS must already work since the API base URL is the same as for C2's `/dev/me`.
-
-**Strict scope reminder:** C4 is ONE backend procedure + ONE web route + the submit wiring. Do not also do C5 (geo.availability) or C6 (signup gate).
-
-### C5 — Backend `geo.availability` + web module
+### C5 — Backend `geo.availability` + web module (NEXT)
 - `geo.availability`: `publicProcedure`, rate-limited, PostGIS `ST_DWithin` queries on `tasks` table. Honest empty-state.
 - Web shows real activity ("3 tasks in your zip in the last 7 days") or "you'd be among the first" — never fabricated.
+- Apply the C4 dev-IP-fallback pattern: use the same `deriveIpKey` helper for rate limiting (now lifted to a reusable spot in `routers/task.ts`), or duplicate the per-IP burst + global kill switch shape — anonymous endpoints must keep a wallet-drain ceiling.
+- After the procedure lands: `npm run emit:trpc-types` in the backend + commit, then resync `web/types/trpc/AppRouter.d.ts`.
 
 ### C6 — Signup gate on Dispatch
 - Draft is fully usable pre-auth.
@@ -149,7 +161,7 @@ C8 poster dashboard shell → C9 local pages (zip-targeted SEO) → C10 analytic
 
 ---
 
-## 7. Recommended First Prompt for Next Session (C4)
+## 7. Recommended First Prompt for Next Session (C5)
 
 Paste this into a new Claude Code session:
 
@@ -159,37 +171,44 @@ Repo: Sebdysart/hustlexp-ai-backend
 Branch: claude/audit-backend-workflow-mFb7a
 File: HUSTLEXP_HANDOFF_ROADMAP_C2.md
 
-We are continuing HustleXP Roadmap C. Roadmap B is closed. C1 (scaffold), C2 (tRPC + Firebase foundation), and C3 (public poster funnel homepage) are all done. Your job is C4: backend `task.draftEstimate` + web `/draft` route + wire the C3 homepage submit to the real mutation.
+We are continuing HustleXP Roadmap C. Roadmap B is closed. C1 (scaffold), C2 (tRPC + Firebase foundation), C3 (public poster funnel homepage), and C4 (public draftEstimate procedure + homepage wiring + localStorage-persistent draft, manually accepted) are all done. Your job is C5 ONLY: backend `geo.availability` + a truthful local-availability module on the homepage.
 
 Repos:
-- Backend: Sebdysart/hustlexp-ai-backend, branch claude/audit-backend-workflow-mFb7a, HEAD 3e8b1c49
-- Frontend: Sebdysart/HUSTLEXPFINAL1, branch claude/audit-backend-workflow-mFb7a, HEAD bff1607
+- Backend: Sebdysart/hustlexp-ai-backend, branch claude/audit-backend-workflow-mFb7a, HEAD e3f09b9c
+- Frontend: Sebdysart/HUSTLEXPFINAL1, branch claude/audit-backend-workflow-mFb7a, HEAD 3559da1
 - Web app: HUSTLEXPFINAL1/web/ (Next.js 16 + Tailwind v4)
-- Homepage funnel: web/app/page.tsx (server) + web/components/funnel-form.tsx (client, currently shows a stub on submit)
+- Homepage: web/app/page.tsx (server shell) + web/components/funnel-form.tsx (C4 client funnel with live estimate + localStorage draft)
 
-C4 tasks (and ONLY C4):
-1. Backend — add `task.draftEstimate`:
-   - publicProcedure (no auth required), rate-limited.
-   - Composes ComplianceGuardianService.evaluate() (no userId) → ScoperAIService.analyzeTaskScope() → refineTaskDescription(). All anonymous-safe paths.
-   - Input: { task: string, zip: string, category?: string }. Output: { draftId, scope, priceBandCents: {low, high}, complianceFlags?: [] }.
-   - Persist the draft in a `task_drafts` table (or a Redis TTL key — pick whichever fits the existing patterns) so the /draft page can read it back by id.
-   - publicProcedure exists at backend/src/trpc.ts:112. Rate-limit pattern at backend/src/routers/task.ts:416–449.
-   - After the procedure lands: `npm run emit:trpc-types` in backend, commit + push.
+Read these before writing any code:
+- backend/src/routers/task.ts — model on `task.draftEstimate` (lines around the new C4 block) for: publicProcedure shape, IP key derivation via `deriveIpKey`, three-layer rate limit (per-IP burst, per-IP daily, GLOBAL kill switch with fail-CLOSED on Redis outage), the `dev-local` fallback that only fires when `NODE_ENV !== 'production'`.
+- backend/src/trpc.ts — `Context.req?: Request` is already wired through `createContext` for public procedures; do not narrow it in middleware.
 
-2. Web — bring the funnel to life:
-   - In web/, run ./scripts/sync-trpc-types.sh to pull the fresh AppRouter.d.ts.
-   - Replace the C3 stub in components/funnel-form.tsx with `trpc.task.draftEstimate.useMutation()`. On success, router.push(`/draft/${result.draftId}`).
-   - Add web/app/draft/[id]/page.tsx that calls `trpc.task.getDraft.useQuery({id})` (or however the read endpoint shapes up) and renders the proposed scope + price band + a "Continue → Sign up" CTA (the actual signup gate lands in C6).
-   - Honest loading + error states. No fake "average estimate" copy. If the AI fails, offer "Try again" or "Continue without an estimate."
+C5 tasks (and ONLY C5):
+
+1. Backend — add `geo.availability`:
+   - `publicProcedure.query` at backend/src/routers/geo.ts (create the router if absent; mount it in backend/src/routers/index.ts).
+   - Input: `{ zip: z.string().regex(/^\d{5}$/) }` and ONLY recognised Eastside zips (Redmond/Sammamish/Bellevue/Kirkland/Issaquah). Unknown → BAD_REQUEST.
+   - Rate-limit pattern: same three-layer shape as `task.draftEstimate`. Per-IP layers fail OPEN, GLOBAL fails CLOSED. Reuse `deriveIpKey` (refactor it out of routers/task.ts into a small shared helper if needed — minimal change, keep the dev-local fallback).
+   - Output is HONEST: `{ tasksLast7Days: number, dispatchedLast7Days: number, lastTaskAgo: string | null, isEastsideZip: boolean }`. Computed from real `tasks` rows (PostGIS `ST_DWithin` if the zip-centroid table exists; otherwise a straight `WHERE zip = $1 AND created_at > now() - interval '7 days'` is acceptable for the first cut). Never fabricate counts. When the count is zero, return zero — the web layer must surface "you'd be among the first" rather than rounding up.
+   - Tests in backend/tests/unit/geo-router.test.ts: happy path, unknown zip BAD_REQUEST, rate-limit fires, global kill switch fires, dev-local fallback works without IP headers. Mock DB and rate limit at module level the same way task-router.test.ts does.
+   - After: `npx tsc -b`, `npx eslint backend/src`, `npx vitest run backend/tests/unit/geo-router.test.ts`, then `npm run emit:trpc-types`.
+
+2. Web — truthful availability module on the homepage:
+   - Sync types: `web/scripts/sync-trpc-types.sh` if the gh path works, otherwise copy `backend/dist-types/AppRouter.d.ts` → `web/types/trpc/AppRouter.d.ts` directly.
+   - New component `web/components/local-availability.tsx` (client). Calls `trpc.geo.availability.useQuery({ zip })` only when the funnel form's ZIP is a 5-digit Eastside value (mirror the EASTSIDE_ZIPS allow-list already in funnel-form.tsx). Use enabled/keepPreviousData appropriately.
+   - Copy is honest:
+     - tasksLast7Days > 0 → "{n} tasks posted in your zip in the last 7 days." Add "last posted {lastTaskAgo}" when present.
+     - tasksLast7Days === 0 → "You'd be among the first in your zip — that's not a knock, it's an honest beta signal." Never invent counts. Never say "X Hustlers nearby" — we have no nearby-Hustler signal yet.
+   - Place the module under the funnel form, above the trust bullets. Hidden until a valid Eastside ZIP is entered. Never blocks the existing draftEstimate flow.
 
 Rules:
-- No fake liquidity, no fake trust badges, no "background-checked" copy, no insurance claims.
-- No Hustler web flows.
-- Strict scope: ONE backend procedure + ONE web route + the submit wiring. Do not also do C5 (geo.availability) or C6 (signup gate).
+- No fake liquidity, no fake "average response time", no fake nearby Hustler counts, no "background-checked" copy, no insurance/protection claims.
+- No signup gate, no task creation, no Stripe, no new UI library, no Hustler web flows.
+- Strict scope: ONE backend procedure (+ tests) + ONE web component + sync types + handoff update. Do not also do C6 (signup gate) or C7 (Stripe).
 - Commit separately:
-  - `feat(backend): task.draftEstimate publicProcedure for anonymous web funnel`
-  - `feat(web): wire homepage submit to task.draftEstimate and render /draft/[id]`
-- Run lint + typecheck + build in both repos after. Push to the branch.
+  - Backend: `feat(geo): add public geo.availability procedure (C5)`
+  - Web: `feat(web): add local availability module to homepage (C5)`
+- Run lint + typecheck + tests in both repos before each commit.
 
-Stop after C4 commits. Do not start C5 until I approve.
+Stop after the two C5 commits and the handoff update. Do not start C6.
 ```
