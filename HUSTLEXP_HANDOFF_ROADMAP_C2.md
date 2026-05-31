@@ -1,6 +1,6 @@
-# HustleXP — Handoff: Roadmap C (C5 backend done, C5 web pending)
+# HustleXP — Handoff: Roadmap C (C5 backend + web shipped, browser acceptance partial)
 
-> Updated 2026-05-30 after C5 backend ship. C5 web module + manual acceptance still to land on `HUSTLEXPFINAL1`. For the next Claude Code session to pick up Roadmap C exactly where this one left off.
+> Updated 2026-05-30 after C5 web ship. Backend `geo.availability` + web `<LocalAvailability>` module both landed. Static verification (lint/tsc/build) clean on both repos. Live browser acceptance against real data blocked by a pre-existing DB schema drift (Neon prod missing `tasks.city`). For the next Claude Code session.
 
 ---
 
@@ -16,8 +16,8 @@ Product goal (DONE-C): a Redmond stranger opens the web app, describes a real ta
 
 | Repo | GitHub path | Branch | HEAD | Clean? |
 |------|------------|--------|------|--------|
-| Backend | `Sebdysart/hustlexp-ai-backend` | `claude/audit-backend-workflow-mFb7a` | `6173fff0` | Yes |
-| Frontend/mobile | `Sebdysart/HUSTLEXPFINAL1` | `claude/audit-backend-workflow-mFb7a` | `3559da1` | Yes (still on C4) |
+| Backend | `Sebdysart/hustlexp-ai-backend` | `claude/audit-backend-workflow-mFb7a` | `3c536d5f` | Yes |
+| Frontend/mobile | `Sebdysart/HUSTLEXPFINAL1` | `claude/audit-backend-workflow-mFb7a` | `e9cba74` | Yes (C5 web landed) |
 
 **PR #211** (`claude/audit-backend-workflow-mFb7a` → `main` on backend): open, not merged. Latest backend push was the C2 prerequisite (`chore(backend): emit AppRouter.d.ts for web type sharing`). CI gates that PR #211 already had green stayed green after the C2 push (typecheck, lint, tests, build, audit). The 4 pre-existing failures (codeql, snyk, security audit, dependency-review) are unchanged — same upstream dep vulns / infra issues that exist on `main`.
 
@@ -109,13 +109,30 @@ Commit `8a3076d` on `HUSTLEXPFINAL1`. Next.js 16.2.6 + React 19 + Tailwind v4, c
 - `tasks.city` is the join key (no `zip` column on `tasks`). The static ZIP→city map in `geo.ts` mirrors the web funnel allow-list. Adding a ZIP outside the allow-list requires touching both surfaces.
 - No PostGIS / ST_DWithin. Simple city-equality WHERE clause. Acceptable until we serve multiple zips per city differently.
 
-**Open C5 web work (next operator):**
-- Sync `dist-types/AppRouter.d.ts` → `HUSTLEXPFINAL1/web/types/trpc/AppRouter.d.ts` via `web/scripts/sync-trpc-types.sh` (or direct copy if the script's gh path isn't configured locally).
-- New client component `web/components/local-availability.tsx`. Calls `trpc.geo.availability.useQuery({ zip }, { enabled: /^\d{5}$/.test(zip), staleTime: 5 * 60 * 1000 })`. Renders only fields whose underlying value is non-zero / non-null. Honest empty-state copy when `emptyState === true`. **Never** render a "Hustlers nearby" line in C5 — backend explicitly returns `hustlerSignalAvailable: false`. On error, render nothing (silent fail — must not break the homepage).
-- Mount under the funnel inputs in `web/components/funnel-form.tsx` once a valid 5-digit ZIP is entered (use the same ZIP state that drives `draftEstimate`).
-- Web verification: `npm run lint`, `npx tsc --noEmit`, `npm run build`.
-- Manual acceptance: enter ZIP 98004, confirm module renders; if backend returns zeros confirm empty-state copy; confirm C4 still works end-to-end; confirm localStorage persistence intact; confirm `99999` ZIP doesn't break the page.
-- Commit web separately: `feat(web): C5 local availability module on homepage`.
+### Roadmap C5 — Web `<LocalAvailability>` ✅ (live-data browser acceptance pending DB fix)
+
+| Repo | Commit | What |
+|------|--------|------|
+| Frontend (`HUSTLEXPFINAL1`) | `e9cba74` | `feat(web): add truthful local availability module` — synced `web/types/trpc/AppRouter.d.ts` from backend `dist-types/AppRouter.d.ts` (5831 lines; `geo.availability` query now visible to the client). New `web/components/local-availability.tsx` calls `trpc.geo.availability.useQuery({ zip }, { enabled, staleTime: 5min, refetchOnWindowFocus: false, retry: false })` and renders only fields backed by real backend values: `emptyState` → "HustleXP is opening availability in your area." + "Post a task to help us route the right Hustlers. Real marketplace data appears here as tasks complete."; `hustlerSignalAvailable === false` → no "Hustlers nearby" line at all (also gated on `nearbyHustlerCount > 0`); `averageTimeToAcceptMinutes === null` → hidden (k-anon); `popularCategories` rendered through a static slug→label map; error/undefined → subtle "Availability signal is temporarily unavailable." inline. Mounted at the bottom of `web/components/funnel-form.tsx` with `enabled={zipLooksValid && EASTSIDE_ZIPS.has(zip)}` so off-area ZIPs (`90210`, `99999`) never trigger a backend call. |
+
+**Verification log (C5 web):**
+- `npm run lint` → EXIT 0.
+- `npx tsc --noEmit` → EXIT 0.
+- `npm run build` → EXIT 0 (5 routes prerendered).
+- SSR HTML grep for banned terms (`background.checked` / `insurance` / `protect` / `guaranteed` / `0 Hustlers nearby`) → 0 matches.
+- Backend dev server starts; `GET /trpc/geo.availability?input={"zip":"98004"}` reaches the procedure (i.e. type contract is real and reachable).
+
+**C5 carry-forward — live-data browser acceptance blocked by DB schema drift:**
+- The Neon prod DB this branch is wired to is missing `tasks.city`. Live curl against `geo.availability` returns `500 { code: "INTERNAL_SERVER_ERROR", message: "column \"city\" does not exist" }`. The backend's `schema.sql` and `idx_tasks_city` index both expect the column at `tasks.city TEXT NOT NULL` (line 109), and `geo.ts` uses `tasks.city = $1` as the join key — so this is a migration drift, not a code bug. The web layer correctly degrades to its inline "Availability signal is temporarily unavailable." error state in this scenario; live-data acceptance (empty-state path, populated path) still needs to land once the column is reconciled.
+- Suggested follow-up (NOT in C5 scope): a thin migration that adds `tasks.city TEXT` (nullable so existing rows survive) + a backfill from `zip_code` against the same Eastside ZIP→city map already in `backend/src/routers/geo.ts` and `web/components/funnel-form.tsx`. After that, re-run the manual checklist below.
+
+**Manual browser acceptance checklist (re-run after DB fix):**
+- Eastside ZIP `98004` + valid task → confirm `<LocalAvailability>` appears under the form.
+- Real-data path: when backend returns non-zero counts → confirm tasksLast7Days / completedLast30Days / popularCategories render; confirm avg-time-to-accept hidden when null.
+- Empty-state path: confirm the honest early-market copy renders, NO fake numbers.
+- Off-area ZIP `90210` → confirm Eastside-block message and `<LocalAvailability>` does NOT mount (no network call in devtools).
+- Confirm C4 still works end-to-end (description + ZIP `98004` → estimate panel; refresh restores from `localStorage["hustlexp.draft.v1"]`; Start Over clears).
+- Confirm no "0 Hustlers nearby" / no fake response times / no background-check or insurance wording anywhere.
 
 ---
 
@@ -140,8 +157,8 @@ Commit `8a3076d` on `HUSTLEXPFINAL1`. Next.js 16.2.6 + React 19 + Tailwind v4, c
 ### C4 — Draft Estimate Flow ✅ DONE
 See **Roadmap C4 — Draft Estimate Flow ✅** in Section 3 above. Backend `293a508d` + `e3f09b9c`, web `3559da1`. Manual browser acceptance passed.
 
-### C5 — Backend `geo.availability` ✅ DONE / web module IN PROGRESS
-Backend shipped at `6173fff0`. See **Roadmap C5 — Backend `geo.availability` ✅** in Section 3 for the full contract, k-anon guard, refactored shared helper, and verification log. **Open web work** is listed at the bottom of that section — sync the AppRouter bundle into `HUSTLEXPFINAL1`, add `<LocalAvailability>` under the funnel, surface only non-zero fields, and run manual acceptance.
+### C5 — Backend `geo.availability` ✅ + web `<LocalAvailability>` ✅ (live-data acceptance pending DB fix)
+Backend shipped at `6173fff0`; web shipped at `e9cba74`. See **Roadmap C5 — Backend `geo.availability` ✅** and **Roadmap C5 — Web `<LocalAvailability>` ✅** in Section 3 for the contract, k-anon guard, the truthfulness rules the web component enforces, and the manual-acceptance checklist that still needs a live run after the `tasks.city` column is reconciled on the Neon DB.
 
 ### C6 — Signup gate on Dispatch
 - Draft is fully usable pre-auth.
