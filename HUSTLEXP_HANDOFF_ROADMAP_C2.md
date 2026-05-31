@@ -1,6 +1,6 @@
-# HustleXP — Handoff: Roadmap C (C5 closed, C6 not yet started)
+# HustleXP — Handoff: Roadmap C (C6 web shipped, manual acceptance pending)
 
-> Updated 2026-05-30 after C5.1 schema alignment. Backend `geo.availability` + web `<LocalAvailability>` both landed and **accepted live against the Neon DB**. Honest empty-state path verified (no fabricated activity). Next operator can start C6 (signup gate on Dispatch).
+> Updated 2026-05-30 after C6 web push. Dispatch auth gate + authenticated `task.create` landed on `HUSTLEXPFINAL1` `d96f8ca`. **No backend changes were required for C6** — existing `task.create`, `user.register`, `user.updateProfile`, and `user.me` procedures already cover the flow. Manual browser acceptance against a real Firebase test user + live Neon DB is the remaining gate before C7.
 
 ---
 
@@ -17,7 +17,7 @@ Product goal (DONE-C): a Redmond stranger opens the web app, describes a real ta
 | Repo | GitHub path | Branch | HEAD | Clean? |
 |------|------------|--------|------|--------|
 | Backend | `Sebdysart/hustlexp-ai-backend` | `claude/audit-backend-workflow-mFb7a` | `40268fde` | Yes |
-| Frontend/mobile | `Sebdysart/HUSTLEXPFINAL1` | `claude/audit-backend-workflow-mFb7a` | `e9cba74` | Yes |
+| Frontend/mobile | `Sebdysart/HUSTLEXPFINAL1` | `claude/audit-backend-workflow-mFb7a` | `d96f8ca` | Yes |
 
 **PR #211** (`claude/audit-backend-workflow-mFb7a` → `main` on backend): open, not merged. Latest backend push was the C2 prerequisite (`chore(backend): emit AppRouter.d.ts for web type sharing`). CI gates that PR #211 already had green stayed green after the C2 push (typecheck, lint, tests, build, audit). The 4 pre-existing failures (codeql, snyk, security audit, dependency-review) are unchanged — same upstream dep vulns / infra issues that exist on `main`.
 
@@ -140,6 +140,51 @@ Commit `8a3076d` on `HUSTLEXPFINAL1`. Next.js 16.2.6 + React 19 + Tailwind v4, c
   - `POST /trpc/task.draftEstimate {zip:"98004"}` → 200, full estimate returned (C4 unaffected).
 - Web SSR: homepage 200 OK, zero banned terms in HTML (`background.checked` / `insurance` / `protected` / `0 hustlers` / `hustlers nearby` all 0 matches).
 
+### Roadmap C6 — Signup gate on Dispatch ✅ (web shipped, manual acceptance pending)
+
+| Repo | Commit | What |
+|------|--------|------|
+| Frontend (`HUSTLEXPFINAL1`) | `d96f8ca` | `feat(web): add dispatch auth gate and task creation` — adds `web/components/dispatch-section.tsx` and wires it into the C4 result panel in `web/components/funnel-form.tsx`. Idle state shows a "Dispatch task" CTA. Clicking it expands an inline auth gate headlined "Create your account to dispatch this task" — sign-up (default) collects email/password/full name/DOB (`type="date"` capped at 13y ago for COPPA); sign-in toggle drops the name + DOB fields. A required "I agree to the Terms and Privacy Policy" checkbox gates the submit button. On submit: Firebase `createUserWithEmailAndPassword` or `signInWithEmailAndPassword`, then `getIdToken(true)` to force a fresh token, then `user.register` (idempotent — returns the existing user for sign-ins) with `defaultMode: 'poster'`, then `user.updateProfile({ defaultMode: 'poster' })` if the registered account came back as 'hustler' (existing accounts), then `task.create` with `{ title, description: cleanedDescription, price: recommendedPriceCents, location: zip, templateSlug: <C4-mapped slug>, requiresProof: true }`. Post-create state replaces the dispatch UI with "Task draft created. Secure payment is next." and hides the "Start over" button. The `hustlexp.draft.v1` localStorage entry is preserved through auth and only cleared after `task.create` returns successfully — every failure path (Firebase error, register error, role-flip error, create error) leaves the draft intact for retry. The returned task id is also persisted under `hustlexp.lastTaskId.v1` for the C7 funding step. **No backend changes** — the procedure shapes verified against `web/types/trpc/AppRouter.d.ts`. Web `npx tsc --noEmit` + `npm run lint` + `npm run build` all EXIT 0. |
+
+**Field mapping (C4 draft → `task.create`):**
+- `title` ← `result.title` (sliced to 255 chars defensively)
+- `description` ← `result.cleanedDescription` (backend requires ≥10 chars; the AI-cleaned output reliably satisfies this)
+- `price` ← `result.recommendedPriceCents`
+- `location` ← `zip` (5-digit string fits under the 500-char limit)
+- `templateSlug` ← the same backend slug used for the C4 `draftEstimate` call (already stored in form state)
+- `requiresProof` ← `true` (default)
+- `mode`, `instantMode`, `liveBroadcastRadiusMiles` ← omitted, defaults apply
+
+**Compliance / fraud / trust gates on `task.create` (verified, unchanged):**
+- `checkTaskCreateRateLimit` — 3 creates / 60s per user
+- `fraudGuard({ action: 'task_post' })` — fail-open
+- `ComplianceGuardianService.evaluate` — hard_block → BAD_REQUEST
+- Trust-tier vs. `template.requiredTrustTier` — fail-closed
+- `TaskRiskClassifier.classifyWithTemplate` — recorded
+- Care-content + content-release detection — auto-applied
+
+**Required copy verified present in source:**
+- CTA: "Dispatch task"
+- Auth gate headline: "Create your account to dispatch this task"
+- Clickwrap: "I agree to the Terms and Privacy Policy"
+- Post-create: "Task draft created. Secure payment is next."
+
+**Banned copy verified absent:** "on the way" / "is live" / "matched" / "accepted" / "guaranteed" / "protected" / "insured" / "background checked" / fake supply claims — `grep -inE` returns no UI hits (only one self-referential comment that documents the ban — not rendered).
+
+**Verification log (C6 web):**
+- `npx tsc --noEmit` → EXIT 0
+- `npm run lint` → EXIT 0
+- `npm run build` → EXIT 0 (5 routes prerendered, no new dependencies)
+- **Manual browser acceptance: PENDING.** Requires (1) backend dev server, (2) `cd web && npm run dev`, (3) a Firebase test user, and (4) a `default_mode='poster'` path through register. The implementer (running headless, no Firebase test credentials) could not exercise the live flow end-to-end. The next operator must: submit a valid C4 estimate, click Dispatch while logged out, confirm the gate appears, sign up with a Firebase test user, accept Terms/Privacy, confirm `task.create` succeeds and the post-create message renders, verify no Stripe call fires (Network tab), and hard-refresh mid-flow to confirm the draft survives.
+
+**Known C6 carry-forward / risks:**
+- The auth gate is inline within the result panel rather than a modal. Acceptable for a single-page funnel; revisit if the C8 dashboard needs a global auth flow.
+- For *existing* accounts registered as 'hustler' that have active hustler-side tasks, `user.updateProfile({ defaultMode: 'poster' })` fails with PRECONDITION_FAILED ("Cannot switch role while you have active tasks"). The error surfaces to the user verbatim and the dispatch fails cleanly — no half-created task. Realistically rare for web funnel posters; mention only if a tester sees it.
+- DOB is collected as YYYY-MM-DD (`<input type="date">`) and held in a module-level cache so it survives the Firebase sign-up round-trip even if the form unmounts. Reset is implicit — once a session signs up successfully, the cache is unused. No PII written to localStorage.
+- Returning users who sign in with a Firebase account that has no HustleXP row yet will get one created via `user.register` on first dispatch — the register procedure is fully idempotent and protected by Firebase ID-token ownership verification.
+
+---
+
 **C5 done criteria — all met:**
 - `geo.availability` no longer 500s on live DB ✅
 - `98004` returns valid JSON ✅
@@ -180,10 +225,8 @@ See **Roadmap C4 — Draft Estimate Flow ✅** in Section 3 above. Backend `293a
 ### C5 — Backend `geo.availability` ✅ + web `<LocalAvailability>` ✅ + live schema fix ✅
 Backend shipped at `6173fff0` (procedure) + `40268fde` (live schema alignment); web shipped at `e9cba74`. Live `GET /trpc/geo.availability?input={"zip":"98004"}` returns 200 with truthful `emptyState:true`. Non-Eastside ZIPs reject. C4 draftEstimate unaffected. Full verification log in Section 3 under **Roadmap C5.1 — Live schema alignment ✅**. **C5 is closed. Next operator can start C6.**
 
-### C6 — Signup gate on Dispatch
-- Draft is fully usable pre-auth.
-- Hitting "Dispatch" triggers the Firebase sign-in flow (use the existing `AuthProvider` plus a real sign-in UI; the C2 dev-only `/dev/me` form is the seed pattern).
-- After sign-in: dispatch proceeds via authenticated tRPC calls.
+### C6 — Signup gate on Dispatch ✅ (web shipped at `d96f8ca`, manual acceptance pending)
+Web `d96f8ca` ships the Dispatch CTA + inline auth gate + clickwrap + authenticated `task.create`. No backend changes were required. See **Roadmap C6 — Signup gate on Dispatch ✅** in Section 3 for the full mapping, copy audit, and verification log. Next operator must run the manual browser acceptance steps documented there before opening C7.
 
 ### C7 — Stripe Elements funding
 - Stripe Web SDK + Elements, publishable key from env (already in `env.ts`).
