@@ -1,6 +1,6 @@
 # HustleXP — Handoff: Roadmap E (Business Demand Mode)
 
-> Updated 2026-05-31 (E3). **E3 (backend lead capture + form wiring) DONE — see §8.** Added the `business_leads` table (migration `010-business-leads.sql` + mirrored into `constitutional-schema.sql`), a public `business.submitLead` tRPC mutation (anonymous, rate-limited, compliance-gated, PII-safe), and wired the E2 form to it. Every lead stores as `status='NEW'` + `requires_review=true` — **no auto-approval, no dashboard, no admin UI, no subscriptions, no bulk posting, no account creation, no analytics, no consumer-funnel changes.** Backend commit `7041596e`; web commit `26c7803`. **Migration is NOT yet applied to dev Neon and the backend is NOT yet deployed — live DB acceptance is a handoff step (see §8).** Next step: E4 — **NOT started, hard-gated.**
+> Updated 2026-05-31 (E3). **E3 (backend lead capture + form wiring) DONE & ACCEPTED — see §8.** Added the `business_leads` table (migration `010-business-leads.sql` + mirrored into `constitutional-schema.sql`), a public `business.submitLead` tRPC mutation (anonymous, rate-limited, compliance-gated, PII-safe), and wired the E2 form to it. Every lead stores as `status='NEW'` + `requires_review=true` — **no auto-approval, no dashboard, no admin UI, no subscriptions, no bulk posting, no account creation, no analytics, no consumer-funnel changes.** Backend commit `7041596e`; web commit `26c7803`; handoff commit `502c9eba`. **Live DB acceptance PASSED** against dev Neon (migration applied; valid submit from /business → 200 + success copy + NEW/requires_review row with ip_hash and no raw IP; hard-block phrase → BAD_REQUEST + no row). Next step: E4 — **NOT started, hard-gated.**
 >
 > Updated 2026-05-31 (E2). **E2 (business intake form) DONE — see §7.** Added a client-side intake form component (`web/components/business-intake-form.tsx`) wired into the `/business` `#register` section, with inline client-side validation and an honest no-submit placeholder success state. **Zero backend / tRPC / DB / admin / analytics / account / charge touched.** No network call on submit; no PII persisted; nothing written to localStorage. Web commit `c09aadb` (on `b1c5cfc` / E1). **Next step: E3 (backend lead capture) — NOT started.**
 >
@@ -122,23 +122,31 @@ E3 makes the E2 form real end-to-end — backend storage + a public intake mutat
 - **Web:** `npm run lint`, `npx tsc --noEmit`, `npm run build` → all clean. `/business` still prerenders `○ (Static)`; `/`, `/dashboard`, and all consumer/category routes still build static — **no consumer-funnel regression.**
 - **Web (live, local dev `:8081`):** `/business` renders the form. A valid submit fires **exactly one** POST to `/trpc/business.submitLead` (vs E2's zero calls), the failure (no local backend on the configured `apiUrl` `:3000`) is handled gracefully with the generic safe copy, and **`localStorage`/`sessionStorage` stay empty** — no PII, no analytics endpoint hit.
 
-### Live DB acceptance — HANDOFF (not done this session)
-Backend is **not** auto-deployed on push and migration 010 is **not** applied to dev Neon, so a true prod submit cannot be exercised yet. To complete acceptance:
-1. Apply 010 additively to dev Neon: `psql "$DATABASE_URL" -f backend/database/migrations/010-business-leads.sql` (do **not** run `db:migrate`).
-2. Deploy the backend branch so the web `apiUrl` serves `business.submitLead`.
-3. Submit a valid test lead from `/business`; confirm network **200** + the E3 success copy.
-4. Probe:
-   ```sql
-   SELECT id, business_name, email, status, requires_review, risk_flags, contact_preference, created_at
-   FROM business_leads ORDER BY created_at DESC LIMIT 1;
+### Live DB acceptance — PASSED (2026-05-31, dev Neon `neondb`)
+Run against dev Neon (`ep-young-shape-af9wgdv0-pooler…neon.tech`, `sslmode=require`) with the backend running locally on `:3000` (web `apiUrl`) and the web dev server on `:8081`.
+
+1. **Migration apply** — `psql` was not installed locally, so 010 was applied **additively** via Node + `pg` (loading `DATABASE_URL` from `.env`), running the exact `010-business-leads.sql` file — **not** `db:migrate`. Result: `business_leads` created (was absent), **28 columns**, indexes `business_leads_pkey, idx_business_leads_status_created, idx_business_leads_created, idx_business_leads_email`, trigger `business_leads_updated_at`.
+2. **Valid submit from `/business`** (Property manager, ZIP 98074, task "Event setup", risk flag "Entering homes"): network **200** to `/trpc/business.submitLead`; the exact E3 success copy rendered ("Thanks — we received your business registration interest…"); form unmounted; **`localStorage`/`sessionStorage` empty** (no PII, no analytics endpoint hit).
+3. **SQL probe** (`ORDER BY created_at DESC LIMIT 1`) →
    ```
-   Expect `status='NEW'`, `requires_review=true` (with risk flags), `risk_flags` persisted, `ip_hash` present, **no raw IP**, no auto-approval.
-5. Confirm a hard-block phrase in `notes` is rejected (`BAD_REQUEST`) with **no** row written.
+   id=e881b697-88e3-448f-8695-b31b1b589bd2  business_name='Eastside Acceptance LLC'
+   status=NEW  requires_review=true  contact_preference='form'
+   risk_flags={"enteringHomes":true, …7 others false}
+   ip_hash=32f6050ffbc1d8c0b7d607d81dd2c14b6fdab2d2bb1ff345e21fcc3f76c008ce  (sha256 — no raw IP)
+   ```
+   ✓ status NEW · ✓ requires_review true · ✓ risk_flags persisted · ✓ contact_preference persisted · ✓ ip_hash present · ✓ no raw IP · ✓ no auto-approval.
+4. **Hard-block test** — `notes` containing banned phrases ("discreet delivery, no questions asked…") → **HTTP 400 `BAD_REQUEST`** with the compliance-block copy; row count **unchanged (2 → 2)** — **no row written**.
+
+> Two acceptance rows remain in dev Neon (`Eastside Acceptance LLC` from the browser submit + a `Curl Sanity Co` backend sanity row). Harmless test data; clear if desired.
 
 ### Scope adherence
 Backend storage + one public mutation + form wiring only. **No** business dashboard · **no** admin review UI · **no** subscriptions · **no** bulk posting · **no** auto-approval · **no** account creation · **no** consumer-funnel changes · **no** analytics · **no** redirect · **no** localStorage. `status` always `NEW`; `requires_review` always `true`.
 
 ### Remaining risk (carried forward)
-Still **zero verified Hustler supply** (see §5) — leads are now captured but the platform promises nothing; all business-facing copy stays zero-promise. Strong fill rates are a **supply-recruitment** signal, not a green light for E4+. **E4/E5/E6 remain hard-gated.** Live DB acceptance is pending the migration apply + backend deploy above.
+Still **zero verified Hustler supply** (see §5) — leads are now captured but the platform promises nothing; all business-facing copy stays zero-promise. Strong fill rates are a **supply-recruitment** signal, not a green light for E4+. **E4/E5/E6 remain hard-gated.**
 
-**Acceptance:** pending Sebastian sign-off (+ live DB acceptance handoff).
+> **Deploy note:** acceptance was run against a *local* backend (`:3000`) pointed at dev Neon. The backend branch still needs to be **deployed** before the public web app's `apiUrl` serves `business.submitLead` in any non-local environment.
+
+**Commits:** backend `7041596e` · web `26c7803` · handoff `502c9eba` (+ this acceptance update).
+
+**Acceptance:** ✅ **E3 ACCEPTED** — code complete, all unit tests green, and live DB acceptance PASSED against dev Neon (valid submit → 200 + NEW/requires_review row with ip_hash/no-raw-IP; hard-block → BAD_REQUEST + no row).
