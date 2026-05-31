@@ -1,6 +1,6 @@
-# HustleXP — Handoff: Roadmap C (C6 web shipped, manual acceptance pending)
+# HustleXP — Handoff: Roadmap C (C6 web shipped, acceptance blocked on schema drift)
 
-> Updated 2026-05-30 after C6 web push. Dispatch auth gate + authenticated `task.create` landed on `HUSTLEXPFINAL1` `d96f8ca`. **No backend changes were required for C6** — existing `task.create`, `user.register`, `user.updateProfile`, and `user.me` procedures already cover the flow. Manual browser acceptance against a real Firebase test user + live Neon DB is the remaining gate before C7.
+> Updated 2026-05-30 after C6 manual acceptance attempt. Dispatch auth gate + authenticated `task.create` landed on `HUSTLEXPFINAL1` `d96f8ca`. **No web code changes were needed during acceptance** — the wiring works as written. Acceptance is **blocked at the backend / live-DB level by pre-existing schema drift** that C6 is simply the first roadmap item to actually exercise. A consolidated, idempotent fix-up migration (`backend/database/migrations/008-c6-schema-alignment.sql`) was written; steps 1–3 of it have already been applied to dev Neon, step 4 (`plan` columns) is the next blocker and is NOT yet applied. Until step 4 lands and a re-run of C6 acceptance shows the "Task draft created." state, **C7 stays closed**.
 
 ---
 
@@ -140,7 +140,46 @@ Commit `8a3076d` on `HUSTLEXPFINAL1`. Next.js 16.2.6 + React 19 + Tailwind v4, c
   - `POST /trpc/task.draftEstimate {zip:"98004"}` → 200, full estimate returned (C4 unaffected).
 - Web SSR: homepage 200 OK, zero banned terms in HTML (`background.checked` / `insurance` / `protected` / `0 hustlers` / `hustlers nearby` all 0 matches).
 
-### Roadmap C6 — Signup gate on Dispatch ✅ (web shipped, manual acceptance pending)
+### Roadmap C6 — Signup gate on Dispatch ⚠️ (web shipped, acceptance blocked on live-DB schema drift)
+
+**Acceptance attempt 2026-05-30 (test user `test.hustler@hustlexp.app` against live Neon + `hustlexp-fly-new` Firebase project):**
+
+| Step | Result |
+|------|--------|
+| Web env wired (`web/.env.local`, never committed; `web/.gitignore` matches `.env*`) | ✅ |
+| `npm run dev` web on `:8081`, backend dev on `:3000` (via `npx tsx --env-file=.env --watch backend/src/server.ts`) | ✅ |
+| Homepage loads, headline + escrow promise render | ✅ |
+| ZIP `98004` → C5 `<LocalAvailability>` renders truthful empty-state ("HustleXP is opening availability in your area.") — no fake counts, no "Hustlers nearby" line | ✅ |
+| C4 `task.draftEstimate` for "Mount a 55-inch TV…" → 200, panel shows $30.00 / 1 hr 15 min / `in_home` / Normal | ✅ |
+| "Dispatch task" CTA visible at bottom of result panel | ✅ |
+| Click Dispatch logged-out → auth gate expands with headline "Create your account to dispatch this task", clickwrap "I agree to the Terms and Privacy Policy", New account / I have an account toggle | ✅ |
+| Sign in with the Firebase test user via the "I have an account" tab | ✅ |
+| Draft survives auth (localStorage `hustlexp.draft.v1` still 492 B after sign-in) | ✅ |
+| Accept Terms + click Dispatch → `user.register` → 500 `column "is_banned" does not exist` | ❌ DRIFT-1 |
+| After applying drift fix → `user.register` → 500 `users_trust_tier_check` violation (code inserts tier 0, constraint required ≥ 1) | ❌ DRIFT-2 |
+| After relaxing constraint → `user.register` → 500 `relation "task_ratings" does not exist` (queried in `toMobileUser`) | ❌ DRIFT-3 |
+| After creating empty `task_ratings` → `user.register` → 200 ✅, `task.create` → 412 `requires verified trust level` (correct product gate — `in_home` requires `verified`, test user is `rookie`) | ⚠️ (product gate, not a bug) |
+| Re-ran with "Moving help" chip (`standard_physical`, accepts `rookie`) → C4 200 ✅, then `task.create` → 500 `column "plan" does not exist` (`PlanService.getUserPlan`) | ❌ DRIFT-4 |
+
+**State at pause:** the web flow is correct end-to-end through the auth gate, clickwrap, Firebase sign-in, `user.register` (now succeeding), and the click-through to `task.create`. The dispatch fails at `task.create` only because the live `users` table is missing the `plan` + `plan_expires_at` columns the existing `PlanService` already expects. No banned UI copy ever appeared; no Stripe / `escrow.createPaymentIntent` call was reachable from the new code path; the draft was correctly preserved across every failure. **The C6 web shipping commit `d96f8ca` is unchanged — no web code edits were made during acceptance.**
+
+**Schema drift remediation:**
+
+| Commit | What |
+|--------|------|
+| Backend (this handoff commit) | `feat(db): C6 schema alignment migration` — adds `backend/database/migrations/008-c6-schema-alignment.sql`. The migration is fully idempotent (every `ALTER` is `ADD COLUMN IF NOT EXISTS`, every `CREATE` is `IF NOT EXISTS`, the one constraint operation is `DROP IF EXISTS` + re-`ADD` with a strict superset of the prior range). Header documents every drift encountered. **Steps 1–3 are already live on dev Neon** (applied during the acceptance run with explicit per-step user approval); **step 4 (`plan`/`plan_expires_at`) is NOT yet applied** — applying it is the next action required to advance C6. After step 4, re-run the acceptance flow exactly as documented above; expect either a green "Task draft created." or one more iteration of the same drift pattern (in which case extend the migration with the next missing column / table and re-apply). |
+
+**Live-DB changes already applied to dev Neon on 2026-05-30 (steps 1–3 of the migration):**
+- `users`: added `is_banned BOOLEAN DEFAULT false`, `account_status TEXT DEFAULT 'ACTIVE'`, `date_of_birth DATE`, `is_minor BOOLEAN DEFAULT false`. All purely additive; existing rows take defaults.
+- `users_trust_tier_check`: relaxed from `1..4` to `0..4` to match the documented code intent (phone-less registration inserts tier 0 = UNVERIFIED). Strict superset — no rejection of any previously-accepted row.
+- `task_ratings`: created empty per the canonical definition in `backend/database/constitutional-schema.sql` + 3 supporting indexes. `toMobileUser` aggregates resolve correctly against an empty table.
+
+**Known follow-ons (NOT in C6 scope, but call out for the next operator):**
+- After step 4 lands, repeat the acceptance flow. If new drift surfaces inside `TaskService.create` downstream of `PlanService` (e.g. more missing columns / relations), append to migration `008` (same shape) and re-apply.
+- The `task_ratings` table is empty by design — the rating loop is not part of C6 scope. Adding real rows is a later roadmap item.
+- The systemic drift between `backend/database/schema.sql` / `constitutional-schema.sql` and live Neon is a separate ops problem already flagged in the C5.1 carry-forward. It is the root cause of every error above. Recommend a single ops ticket to dump the canonical schema, diff against live, and reconcile in a sweep — independent of further roadmap C work.
+
+### Roadmap C6 — Signup gate on Dispatch ✅ (web shipped 2026-05-30 at HUSTLEXPFINAL1 d96f8ca — code summary)
 
 | Repo | Commit | What |
 |------|--------|------|
@@ -225,8 +264,8 @@ See **Roadmap C4 — Draft Estimate Flow ✅** in Section 3 above. Backend `293a
 ### C5 — Backend `geo.availability` ✅ + web `<LocalAvailability>` ✅ + live schema fix ✅
 Backend shipped at `6173fff0` (procedure) + `40268fde` (live schema alignment); web shipped at `e9cba74`. Live `GET /trpc/geo.availability?input={"zip":"98004"}` returns 200 with truthful `emptyState:true`. Non-Eastside ZIPs reject. C4 draftEstimate unaffected. Full verification log in Section 3 under **Roadmap C5.1 — Live schema alignment ✅**. **C5 is closed. Next operator can start C6.**
 
-### C6 — Signup gate on Dispatch ✅ (web shipped at `d96f8ca`, manual acceptance pending)
-Web `d96f8ca` ships the Dispatch CTA + inline auth gate + clickwrap + authenticated `task.create`. No backend changes were required. See **Roadmap C6 — Signup gate on Dispatch ✅** in Section 3 for the full mapping, copy audit, and verification log. Next operator must run the manual browser acceptance steps documented there before opening C7.
+### C6 — Signup gate on Dispatch ⚠️ (web shipped at `d96f8ca`, acceptance blocked on schema drift)
+Web `d96f8ca` ships the Dispatch CTA + inline auth gate + clickwrap + authenticated `task.create`. **No web code changes were needed during the acceptance attempt — the wiring is correct.** Manual acceptance on 2026-05-30 surfaced four pre-existing live-Neon schema drifts; three are remediated, one (`users.plan` / `users.plan_expires_at`) is the next blocker. The consolidated, idempotent fix-up migration is at `backend/database/migrations/008-c6-schema-alignment.sql`. Next operator: (a) apply step 4 of that migration to live Neon, (b) re-run the acceptance flow as documented in **Section 3 → Roadmap C6 ⚠️**, (c) if green, mark C6 accepted and open C7. **Do not start C7 until C6 acceptance returns "Task draft created. Secure payment is next."**
 
 ### C7 — Stripe Elements funding
 - Stripe Web SDK + Elements, publishable key from env (already in `env.ts`).
