@@ -2312,17 +2312,33 @@ describe('task.draftEstimate', () => {
     expect(mockScoper.analyzeTaskScope).not.toHaveBeenCalled();
   });
 
-  it('rejects when no IP key can be derived from request headers', async () => {
+  it('rejects in production when no IP key can be derived from request headers', async () => {
+    const prev = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    try {
+      const caller = makePublicCaller(null);
+      await expect(
+        caller.draftEstimate({ description: DEFAULT_DESCRIPTION })
+      ).rejects.toMatchObject({
+        code: 'BAD_REQUEST',
+        message: expect.stringContaining('Unable to identify client'),
+      });
+      expect(mockCheckRateLimit).not.toHaveBeenCalled();
+      expect(mockCompliance.evaluate).not.toHaveBeenCalled();
+      expect(mockScoper.analyzeTaskScope).not.toHaveBeenCalled();
+    } finally {
+      process.env.NODE_ENV = prev;
+    }
+  });
+
+  it('falls back to a shared dev key when no IP header is present in non-production', async () => {
+    // vitest sets NODE_ENV='test' by default — dev/test should accept the call.
     const caller = makePublicCaller(null);
-    await expect(
-      caller.draftEstimate({ description: DEFAULT_DESCRIPTION })
-    ).rejects.toMatchObject({
-      code: 'BAD_REQUEST',
-      message: expect.stringContaining('Unable to identify client'),
-    });
-    expect(mockCheckRateLimit).not.toHaveBeenCalled();
-    expect(mockCompliance.evaluate).not.toHaveBeenCalled();
-    expect(mockScoper.analyzeTaskScope).not.toHaveBeenCalled();
+    const result = await caller.draftEstimate({ description: DEFAULT_DESCRIPTION });
+    expect(result.title).toBeTruthy();
+    // The rate-limit key used should be the shared dev sentinel, not a real IP.
+    const ipKeyArgs = mockCheckRateLimit.mock.calls.map((c) => c[0]);
+    expect(ipKeyArgs).toContain('dev-local');
   });
 
   it('cleans description whitespace and truncates the title to ≤ 80 chars', async () => {

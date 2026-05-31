@@ -142,21 +142,25 @@ export async function checkDraftEstimateRateLimit(ipKey: string): Promise<void> 
   }
 }
 
-// Derive a stable IP key from forwarded / real-ip / no-source headers.
-// Returns null when there is no usable source — callers MUST reject in that
-// case so an unkeyed request can never reach the LLM.
+// Derive a stable IP key from forwarded / real-ip headers. In production we
+// rely on a reverse proxy (Vercel / Cloudflare / nginx) to always set
+// x-forwarded-for, and refuse the request if it's missing so no unkeyed
+// call can hit the LLM. In dev/test there is no proxy, so a browser-direct
+// localhost request has neither header — we fall back to a fixed
+// `'dev-local'` key. All dev callers share that one rate-limit bucket,
+// which is fine because dev requests are cheap and not adversarial.
 function deriveIpKey(headers: Headers | undefined): string | null {
-  if (!headers) return null;
-  const xff = headers.get('x-forwarded-for');
+  const xff = headers?.get('x-forwarded-for');
   if (xff) {
     const first = xff.split(',')[0]?.trim();
     if (first) return first;
   }
-  const realIp = headers.get('x-real-ip');
+  const realIp = headers?.get('x-real-ip');
   if (realIp) {
     const trimmed = realIp.trim();
     if (trimmed) return trimmed;
   }
+  if (process.env.NODE_ENV !== 'production') return 'dev-local';
   return null;
 }
 
