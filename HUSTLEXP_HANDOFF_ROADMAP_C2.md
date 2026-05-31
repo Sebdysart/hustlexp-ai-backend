@@ -1,12 +1,12 @@
-# HustleXP — Handoff: Roadmap C (C4 done, C5 next)
+# HustleXP — Handoff: Roadmap C (C5 backend done, C5 web pending)
 
-> Updated 2026-05-30 after C4 acceptance. For the next Claude Code session to pick up Roadmap C exactly where this one left off.
+> Updated 2026-05-30 after C5 backend ship. C5 web module + manual acceptance still to land on `HUSTLEXPFINAL1`. For the next Claude Code session to pick up Roadmap C exactly where this one left off.
 
 ---
 
 ## 1. Current Objective
 
-**Roadmap C: Poster-side web liquidity engine.** C4 is **accepted** (backend `task.draftEstimate` + web homepage wired with localStorage-persistent draft + browser manual acceptance passed). **Next step: C5 — backend `geo.availability` + a truthful availability module on the homepage.**
+**Roadmap C: Poster-side web liquidity engine.** C4 is **accepted**; C5 backend (`geo.availability`) is **shipped** on backend HEAD `6173fff0` and the AppRouter bundle is regenerated. **Next step: sync the AppRouter bundle into `HUSTLEXPFINAL1` and add the truthful `<LocalAvailability>` module to `web/components/funnel-form.tsx`, then run web verification + manual acceptance.**
 
 Product goal (DONE-C): a Redmond stranger opens the web app, describes a real task, gets an estimate, signs up only at Dispatch, funds with Stripe test mode, and sees the task in a poster dashboard.
 
@@ -16,8 +16,8 @@ Product goal (DONE-C): a Redmond stranger opens the web app, describes a real ta
 
 | Repo | GitHub path | Branch | HEAD | Clean? |
 |------|------------|--------|------|--------|
-| Backend | `Sebdysart/hustlexp-ai-backend` | `claude/audit-backend-workflow-mFb7a` | `e3f09b9c` | Yes |
-| Frontend/mobile | `Sebdysart/HUSTLEXPFINAL1` | `claude/audit-backend-workflow-mFb7a` | `3559da1` | Yes |
+| Backend | `Sebdysart/hustlexp-ai-backend` | `claude/audit-backend-workflow-mFb7a` | `6173fff0` | Yes |
+| Frontend/mobile | `Sebdysart/HUSTLEXPFINAL1` | `claude/audit-backend-workflow-mFb7a` | `3559da1` | Yes (still on C4) |
 
 **PR #211** (`claude/audit-backend-workflow-mFb7a` → `main` on backend): open, not merged. Latest backend push was the C2 prerequisite (`chore(backend): emit AppRouter.d.ts for web type sharing`). CI gates that PR #211 already had green stayed green after the C2 push (typecheck, lint, tests, build, audit). The 4 pre-existing failures (codeql, snyk, security audit, dependency-review) are unchanged — same upstream dep vulns / infra issues that exist on `main`.
 
@@ -90,6 +90,33 @@ Commit `8a3076d` on `HUSTLEXPFINAL1`. Next.js 16.2.6 + React 19 + Tailwind v4, c
 
 **Out-of-scope-for-C4 honored:** no signup gate, no task creation, no Stripe, no dashboard, no new routes, no new UI library, no analytics expansion, no Hustler-side flows, no SEO pages. The `/draft/[id]` route originally sketched in the C4 plan was intentionally dropped in favor of an inline result panel + localStorage persistence — simpler, refresh-safe, and removes the need for a new task_drafts table this round.
 
+### Roadmap C5 — Backend `geo.availability` ✅ (web pending)
+
+| Repo | Commit | What |
+|------|--------|------|
+| Backend (`hustlexp-ai-backend`) | `6173fff0` | `feat(backend): C5 geo.availability — truthful local marketplace aggregate` — adds new `geo` router under SYSTEM domain with a single `availability` `publicProcedure.query`. Input: `{ zip: /^\d{5}$/ }` against an Eastside allow-list (Redmond/Sammamish/Bellevue/Kirkland/Issaquah) — unknown zips throw BAD_REQUEST. Three parallel SELECT aggregates over `tasks` + `task_assignments` for the mapped city: posted-last-7d totals + per-category breakdown, completed-last-30d totals + per-category counts, average minutes-to-accept. **k-anonymity guard:** `averageTimeToAcceptMinutes` returns `null` when N < 3 to prevent single-task inference. **Truthfulness invariants:** no PII columns selected (no email/phone/address/user_id/description), no writes, no fabrication; `nearbyHustlerCount` returns `0` with `hustlerSignalAvailable: false` until a real Hustler-proximity signal exists. `emptyState: true` when both 7-day and 30-day counts are zero. **Refactor:** `deriveIpKey` + the three-layer rate-limit (per-IP burst 5/60s fail-OPEN, per-IP daily 30/day fail-OPEN, GLOBAL 2000/day fail-CLOSED) lifted from `task.ts` into `backend/src/routers/_shared/publicRateLimit.ts` so all public anonymous endpoints share one invariant set. `task.draftEstimate` now imports the helper — behavior unchanged (128/128 task-router tests still pass). New tests in `backend/tests/unit/geo-router.test.ts`: 12 cases — happy path / empty state / k-anon below threshold / k-anon exact threshold / malformed ZIP / non-Eastside ZIP / burst rate-limit / global kill-switch / Redis-fail-closed / no-IP in production rejected / dev-local fallback / ZIP→city mapping (98075 → Sammamish). |
+
+**Verification log:**
+- `npx tsc -b` clean.
+- `npx eslint backend/src` clean.
+- `npx vitest run backend/tests/unit/geo-router.test.ts` → 12/12 passed.
+- `npx vitest run backend/tests/unit/task-router.test.ts` → 128/128 passed (refactor confirmed non-breaking).
+- `npm run emit:trpc-types` → `dist-types/AppRouter.d.ts` regenerated (5832 lines, +55 from C4 baseline for `geo.availability` route).
+
+**Known remaining risks / carry-forward:**
+- Hustler-proximity signal still absent. `nearbyHustlerCount` returns `0` + `hustlerSignalAvailable: false`; the web layer must hide any "Hustlers nearby" UI until a future roadmap item flips the signal on.
+- No Redis caching layer on the aggregates yet. Three SELECTs per call are cheap at C5 volume; revisit if homepage QPS climbs.
+- `tasks.city` is the join key (no `zip` column on `tasks`). The static ZIP→city map in `geo.ts` mirrors the web funnel allow-list. Adding a ZIP outside the allow-list requires touching both surfaces.
+- No PostGIS / ST_DWithin. Simple city-equality WHERE clause. Acceptable until we serve multiple zips per city differently.
+
+**Open C5 web work (next operator):**
+- Sync `dist-types/AppRouter.d.ts` → `HUSTLEXPFINAL1/web/types/trpc/AppRouter.d.ts` via `web/scripts/sync-trpc-types.sh` (or direct copy if the script's gh path isn't configured locally).
+- New client component `web/components/local-availability.tsx`. Calls `trpc.geo.availability.useQuery({ zip }, { enabled: /^\d{5}$/.test(zip), staleTime: 5 * 60 * 1000 })`. Renders only fields whose underlying value is non-zero / non-null. Honest empty-state copy when `emptyState === true`. **Never** render a "Hustlers nearby" line in C5 — backend explicitly returns `hustlerSignalAvailable: false`. On error, render nothing (silent fail — must not break the homepage).
+- Mount under the funnel inputs in `web/components/funnel-form.tsx` once a valid 5-digit ZIP is entered (use the same ZIP state that drives `draftEstimate`).
+- Web verification: `npm run lint`, `npx tsc --noEmit`, `npm run build`.
+- Manual acceptance: enter ZIP 98004, confirm module renders; if backend returns zeros confirm empty-state copy; confirm C4 still works end-to-end; confirm localStorage persistence intact; confirm `99999` ZIP doesn't break the page.
+- Commit web separately: `feat(web): C5 local availability module on homepage`.
+
 ---
 
 ## 4. Do-Not-Forget Constraints
@@ -113,11 +140,8 @@ Commit `8a3076d` on `HUSTLEXPFINAL1`. Next.js 16.2.6 + React 19 + Tailwind v4, c
 ### C4 — Draft Estimate Flow ✅ DONE
 See **Roadmap C4 — Draft Estimate Flow ✅** in Section 3 above. Backend `293a508d` + `e3f09b9c`, web `3559da1`. Manual browser acceptance passed.
 
-### C5 — Backend `geo.availability` + web module (NEXT)
-- `geo.availability`: `publicProcedure`, rate-limited, PostGIS `ST_DWithin` queries on `tasks` table. Honest empty-state.
-- Web shows real activity ("3 tasks in your zip in the last 7 days") or "you'd be among the first" — never fabricated.
-- Apply the C4 dev-IP-fallback pattern: use the same `deriveIpKey` helper for rate limiting (now lifted to a reusable spot in `routers/task.ts`), or duplicate the per-IP burst + global kill switch shape — anonymous endpoints must keep a wallet-drain ceiling.
-- After the procedure lands: `npm run emit:trpc-types` in the backend + commit, then resync `web/types/trpc/AppRouter.d.ts`.
+### C5 — Backend `geo.availability` ✅ DONE / web module IN PROGRESS
+Backend shipped at `6173fff0`. See **Roadmap C5 — Backend `geo.availability` ✅** in Section 3 for the full contract, k-anon guard, refactored shared helper, and verification log. **Open web work** is listed at the bottom of that section — sync the AppRouter bundle into `HUSTLEXPFINAL1`, add `<LocalAvailability>` under the funnel, surface only non-zero fields, and run manual acceptance.
 
 ### C6 — Signup gate on Dispatch
 - Draft is fully usable pre-auth.
