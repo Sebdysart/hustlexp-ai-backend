@@ -1,5 +1,7 @@
 # HustleXP — Handoff: Roadmap E (Business Demand Mode)
 
+> Updated 2026-05-31 (E4). **E4 (admin lead review queue) CODE COMPLETE — see §9.** Added two `adminProcedure` endpoints to `backend/src/routers/admin.ts`: `admin.listBusinessLeads` (offset pagination, `status` + `requiresReview` filters, newest-first) and `admin.reviewBusinessLead` (set `REVIEWED`/`APPROVED`/`REJECTED` + admin notes + optional approved template slugs; stamps `reviewed_at`/`reviewed_by`; lead UPDATE and `admin_actions` audit INSERT in one `db.transaction` so a review never commits without its audit row). Guards: missing lead → `NOT_FOUND`, `CONVERTED` lead → `CONFLICT` (E5 boundary, never set here), compliance-flagged APPROVE → `PRECONDITION_FAILED` unless `override:true`. **Backend only — no business dashboard, no admin UI, no account creation, no `CONVERTED`, no auto-approval, no subscriptions, no bulk posting, no analytics, no consumer-funnel / public / web changes.** Backend commit `d7015f23`. Unit tests: `admin-business-leads.test.ts` 20/20 + full unit suite 5807 pass. **Audit-schema finding resolved live (see §9).** Acceptance: pending Sebastian. **E5/E6 remain hard-gated — do NOT start E5.**
+>
 > Updated 2026-05-31 (E3). **E3 (backend lead capture + form wiring) DONE & ACCEPTED — see §8.** Added the `business_leads` table (migration `010-business-leads.sql` + mirrored into `constitutional-schema.sql`), a public `business.submitLead` tRPC mutation (anonymous, rate-limited, compliance-gated, PII-safe), and wired the E2 form to it. Every lead stores as `status='NEW'` + `requires_review=true` — **no auto-approval, no dashboard, no admin UI, no subscriptions, no bulk posting, no account creation, no analytics, no consumer-funnel changes.** Backend commit `7041596e`; web commit `26c7803`; handoff commit `502c9eba`. **Live DB acceptance PASSED** against dev Neon (migration applied; valid submit from /business → 200 + success copy + NEW/requires_review row with ip_hash and no raw IP; hard-block phrase → BAD_REQUEST + no row). Next step: E4 — **NOT started, hard-gated.**
 >
 > Updated 2026-05-31 (E2). **E2 (business intake form) DONE — see §7.** Added a client-side intake form component (`web/components/business-intake-form.tsx`) wired into the `/business` `#register` section, with inline client-side validation and an honest no-submit placeholder success state. **Zero backend / tRPC / DB / admin / analytics / account / charge touched.** No network call on submit; no PII persisted; nothing written to localStorage. Web commit `c09aadb` (on `b1c5cfc` / E1). **Next step: E3 (backend lead capture) — NOT started.**
@@ -150,3 +152,48 @@ Still **zero verified Hustler supply** (see §5) — leads are now captured but 
 **Commits:** backend `7041596e` · web `26c7803` · handoff `502c9eba` (+ this acceptance update).
 
 **Acceptance:** ✅ **E3 ACCEPTED** — code complete, all unit tests green, and live DB acceptance PASSED against dev Neon (valid submit → 200 + NEW/requires_review row with ip_hash/no-raw-IP; hard-block → BAD_REQUEST + no row).
+
+---
+
+## 9. E4 — Completed Work (admin lead review queue)
+
+E4 adds the **admin-only review surface** over the `business_leads` rows E3 captures — and nothing more. Two endpoints, an audit row, a transaction. No UI, no account creation, no `CONVERTED`, no auto-approval.
+
+### Backend (commit `d7015f23`)
+
+- **`backend/src/routers/admin.ts`** (EDIT) — two new `adminProcedure` procedures appended to the existing `adminRouter` (same offset-pagination + audit conventions as `listTasks`/`setUserBan`):
+  - **`admin.listBusinessLeads`** (`.query`) — input `{ limit 1..100=20, offset ≥0=0, status?: NEW|REVIEWED|APPROVED|REJECTED|CONVERTED, requiresReview?: boolean }`. Two-query offset pattern (`SELECT … ORDER BY created_at DESC LIMIT/OFFSET` + `COUNT(*)`), parameterized filters, returns `{ leads, total }`. Admin-gated, so contact PII is intentionally returned; `ip_hash` and `compliance_notes` are omitted from the list payload.
+  - **`admin.reviewBusinessLead`** (`.mutation`) — input `{ leadId: uuid, status: REVIEWED|APPROVED|REJECTED, adminNotes?: ≤2000, approvedTemplates?: known TaskTemplate slugs, override?: boolean=false }`. Wrapped in a single **`db.transaction`**:
+    1. `SELECT … FOR UPDATE`; missing → `NOT_FOUND`.
+    2. `CONVERTED` lead → `CONFLICT` (E5 boundary; this endpoint never sets `CONVERTED`).
+    3. On `APPROVED`, if `ComplianceGuardianService._scoreTotier(compliance_score) !== 'clean'` (score ≥21, soft-flag) and `!override` → `PRECONDITION_FAILED`. (Hard-block leads were never inserted by E3, so this gates soft-flag approvals; reuses the service threshold, not a magic number.)
+    4. `UPDATE business_leads SET status, admin_notes, approved_templates = COALESCE($::jsonb, approved_templates), reviewed_at = NOW(), reviewed_by = $admin, updated_at = NOW() … RETURNING …`.
+    5. `INSERT INTO admin_actions` audit row.
+  - Input validation: `status` Zod-enum excludes `NEW`/`CONVERTED` (rejected pre-DB); `approvedTemplates` validated against `TEMPLATE_SLUGS` from `TaskTemplateRegistry` (unknown slug rejected).
+- **`dist-types/AppRouter.d.ts`** — regenerated via `npm run emit:trpc-types` (E3 committed this file, so it's kept in sync); both new procedures present in the bundle.
+
+### Audit-schema finding (the approval blocker) — RESOLVED
+
+The codebase had **three conflicting `admin_actions` insert shapes**. Read-only introspection of the **live dev Neon** schema (`information_schema.columns`) settled it. Live `admin_actions` columns: `id, admin_user_id (NOT NULL), admin_role (NOT NULL), action_type (NOT NULL), action_details jsonb (NOT NULL), target_user_id/target_task_id/target_escrow_id/target_dispute_id (nullable), result (NOT NULL), result_details (nullable), performed_at`. **There is no `admin_id`, `target_id`, `reason`, or `metadata` column.**
+
+- E4 therefore uses the **live-valid** shape (the one `ui.ts`/`XPTaxService`/`server.ts`/`BetaService`/`ExpertiseSupplyService` already use): `INSERT INTO admin_actions (admin_user_id, admin_role, action_type, action_details, result) VALUES ($1, 'admin', 'business_lead_review', $2::jsonb, 'success')`. The business-lead id lives **inside `action_details`** because `target_user_id` FKs to `users(id)`, not leads.
+- The lead UPDATE + audit INSERT share one `db.transaction` (the helper ROLLBACKs + rethrows on any error), so **a review never commits without its audit row** — if the audit insert fails, the status change is rolled back. Unit-tested (case "audit-insert failure rolls back the review").
+
+> **⚠️ Pre-existing latent bug flagged (NOT fixed in E4, out of scope):** `admin.ts`'s own `setUserBan`/`escrowOverride` and `EarnedVerificationUnlockService.adminGrantUnlock` insert into `admin_actions` using columns that **do not exist live** (`admin_id, target_id, reason, metadata` / `target_type`). These audit writes would fail against the real DB. They are masked in unit tests by `db` mocks. **Recommend a separate ticket** to reconcile those inserts (or the schema) — do not rely on those audit trails until fixed.
+
+### Tests / verification run
+
+- **New:** `backend/tests/unit/admin-business-leads.test.ts` — **20/20 pass.** Covers: list returns `{leads,total}`; `total` is full count; `status` + `requiresReview` filters add the right SQL/params; newest-first ordering; non-admin → `FORBIDDEN` on list & review; missing lead → `NOT_FOUND` (no UPDATE); REVIEWED stamps `reviewed_by`/`reviewed_at` + audit row; APPROVE clean lead; REJECT; `approvedTemplates` persisted; APPROVE soft-flagged blocked without `override` and allowed with it; `CONVERTED` → `CONFLICT`; Zod rejects `CONVERTED`/`NEW`/unknown slug; audit-insert failure rolls back; no `INSERT INTO users` (no account created).
+- **Regression fix:** added a `ComplianceGuardianService` mock to `admin-router.test.ts`, `admin-branches.test.ts`, `attack-admin.test.ts` — `admin.ts` now imports that service (for `_scoreTotier`), which transitively pulls the `AIClient` chain; the mock keeps it out of those unit tests (same recipe `business-router.test.ts` already uses). No test logic changed.
+- `npx tsc -b` → clean. `npx eslint backend/src` → **EXIT 0**. `npx vitest run backend/tests/unit/` → **5807 pass / 7 skipped / 0 fail** (248 files). `npm run emit:trpc-types` → bundle contains `listBusinessLeads` + `reviewBusinessLead`.
+- `git status`: only `backend/src/routers/admin.ts`, the four test files, and `dist-types/AppRouter.d.ts` changed. **No web files, no migration files** (the `business_leads` and `admin_actions` tables already exist live).
+
+### Scope adherence
+Two admin endpoints + transactional audit only. **No** business dashboard · **no** admin/web UI · **no** account creation · **no** `CONVERTED` (never set; transition blocked) · **no** auto-approval (APPROVED only via explicit admin call) · **no** subscriptions · **no** bulk posting · **no** analytics · **no** consumer-funnel / public changes · **no** migrations.
+
+### Remaining risk (carried forward)
+Still **zero verified Hustler supply** (see §5) — admins can now triage business demand, but approving a lead grants **nothing** yet (no account, no access; that's E5). All business-facing copy stays zero-promise. Plus the flagged `admin_actions` column mismatch in the *other* (pre-existing) audit inserts above. **E5/E6 remain hard-gated.**
+
+**Acceptance:** pending Sebastian sign-off. Code complete; all unit tests green; live audit-insert shape verified against dev Neon by introspection. A full live mutation acceptance (run an admin review against dev Neon, confirm the `business_lead_review` row) can be done at sign-off.
+
+**Next step:** E5 — **NOT started, hard-gated. Do not start.**
