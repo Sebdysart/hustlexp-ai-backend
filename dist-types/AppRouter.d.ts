@@ -5791,6 +5791,40 @@ export declare const appRouter: import("@trpc/server").TRPCBuiltRouter<{
 			meta: object;
 		}>;
 	}>>;
+	geo: import("@trpc/server").TRPCBuiltRouter<{
+		ctx: Context;
+		meta: object;
+		errorShape: {
+			data: {
+				stack: undefined;
+				code: import("@trpc/server").TRPC_ERROR_CODE_KEY;
+				httpStatus: number;
+				path?: string;
+			};
+			message: string;
+			code: import("@trpc/server").TRPC_ERROR_CODE_NUMBER;
+		};
+		transformer: false;
+	}, import("@trpc/server").TRPCDecorateCreateRouterOptions<{
+		availability: import("@trpc/server").TRPCQueryProcedure<{
+			input: {
+				zip: string;
+			};
+			output: {
+				zip: string;
+				nearbyHustlerCount: number;
+				hustlerSignalAvailable: boolean;
+				tasksPostedLast7Days: number;
+				completedLast30Days: number;
+				completedByCategory: Record<string, number>;
+				averageTimeToAcceptMinutes: number | null;
+				popularCategories: string[];
+				emptyState: boolean;
+				generatedAt: string;
+			};
+			meta: object;
+		}>;
+	}>>;
 }>>;
 export type AppRouter = typeof appRouter;
 

@@ -20,6 +20,7 @@ import { ScoperAIService } from '../services/ScoperAIService.js';
 import { getTemplate, getManifest, isCareContent, isContentReleaseRequired } from '../services/TaskTemplateRegistry.js';
 import { TaskRiskClassifier } from '../services/TaskRiskClassifier.js';
 import { checkRateLimit } from '../cache/redis.js';
+import { checkPublicAnonRateLimit, deriveIpKey } from './_shared/publicRateLimit.js';
 
 const taskRouterLog = logger.child({ router: 'task' });
 
@@ -82,86 +83,28 @@ export async function checkTaskCreateRateLimit(userId: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Redis-backed rate limit for the anonymous public draftEstimate endpoint.
+// Anonymous public draftEstimate rate limit.
 //
-// Anonymous LLM-backed endpoints are a wallet-drain vector — a single
-// unkeyed request can chain into a paid Anthropic call. Three layers,
-// all enforced before any LLM call. Per-IP layers fail OPEN (consistent
-// with the rest of this router); the global kill switch fails CLOSED so a
-// Redis outage cannot allow uncapped LLM spend.
+// Three-layer Redis-backed shape — burst + daily fail OPEN, global kill
+// switch fails CLOSED so a Redis outage cannot allow uncapped LLM spend.
+// Implementation lives in _shared/publicRateLimit.ts so other public
+// endpoints (geo.availability, etc.) cannot drift from the same invariants.
 // ---------------------------------------------------------------------------
 
 export async function checkDraftEstimateRateLimit(ipKey: string): Promise<void> {
-  // Layer 1: per-IP burst — 5 requests / 60s
-  try {
-    const burst = await checkRateLimit(ipKey, 'task:draft-estimate:burst', 5, 60);
-    if (!burst.allowed) {
-      throw new TRPCError({
-        code: 'TOO_MANY_REQUESTS',
-        message: "You've made a lot of estimate requests. Please wait a minute before trying again.",
-      });
-    }
-  } catch (err) {
-    if (err instanceof TRPCError) throw err;
-    taskRouterLog.warn({ err, ipKey }, 'Redis unavailable for draft-estimate burst — allowing request');
-  }
-
-  // Layer 2: per-IP daily — 30 requests / 86400s
-  try {
-    const daily = await checkRateLimit(ipKey, 'task:draft-estimate:daily', 30, 86400);
-    if (!daily.allowed) {
-      throw new TRPCError({
-        code: 'TOO_MANY_REQUESTS',
-        message: "You've reached today's free estimate limit. Try again tomorrow.",
-      });
-    }
-  } catch (err) {
-    if (err instanceof TRPCError) throw err;
-    taskRouterLog.warn({ err, ipKey }, 'Redis unavailable for draft-estimate daily — allowing request');
-  }
-
-  // Layer 3: GLOBAL kill switch — 2000 requests / 86400s. Fails CLOSED.
-  try {
-    const global = await checkRateLimit('GLOBAL', 'task:draft-estimate:global', 2000, 86400);
-    if (!global.allowed) {
-      taskRouterLog.warn('Draft-estimate global daily kill switch fired');
-      throw new TRPCError({
-        code: 'SERVICE_UNAVAILABLE',
-        message: 'Our estimator is taking a breath — please try again later.',
-      });
-    }
-  } catch (err) {
-    if (err instanceof TRPCError) throw err;
-    // Fail CLOSED on the global cap: we cannot risk uncapped LLM spend if
-    // Redis is unavailable. Per-IP layers already failed open above.
-    taskRouterLog.error({ err }, 'Redis unavailable for draft-estimate global kill switch — failing closed');
-    throw new TRPCError({
-      code: 'SERVICE_UNAVAILABLE',
-      message: 'Our estimator is temporarily unavailable.',
-    });
-  }
-}
-
-// Derive a stable IP key from forwarded / real-ip headers. In production we
-// rely on a reverse proxy (Vercel / Cloudflare / nginx) to always set
-// x-forwarded-for, and refuse the request if it's missing so no unkeyed
-// call can hit the LLM. In dev/test there is no proxy, so a browser-direct
-// localhost request has neither header — we fall back to a fixed
-// `'dev-local'` key. All dev callers share that one rate-limit bucket,
-// which is fine because dev requests are cheap and not adversarial.
-function deriveIpKey(headers: Headers | undefined): string | null {
-  const xff = headers?.get('x-forwarded-for');
-  if (xff) {
-    const first = xff.split(',')[0]?.trim();
-    if (first) return first;
-  }
-  const realIp = headers?.get('x-real-ip');
-  if (realIp) {
-    const trimmed = realIp.trim();
-    if (trimmed) return trimmed;
-  }
-  if (process.env.NODE_ENV !== 'production') return 'dev-local';
-  return null;
+  return checkPublicAnonRateLimit(ipKey, {
+    category: 'task:draft-estimate',
+    burstLimit: 5,
+    burstWindowSec: 60,
+    dailyLimit: 30,
+    dailyWindowSec: 86400,
+    globalLimit: 2000,
+    globalWindowSec: 86400,
+    burstMessage:
+      "You've made a lot of estimate requests. Please wait a minute before trying again.",
+    dailyMessage: "You've reached today's free estimate limit. Try again tomorrow.",
+    globalMessage: 'Our estimator is taking a breath — please try again later.',
+  });
 }
 
 export const taskRouter = router({
