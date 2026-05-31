@@ -5825,6 +5825,55 @@ export declare const appRouter: import("@trpc/server").TRPCBuiltRouter<{
 			meta: object;
 		}>;
 	}>>;
+	business: import("@trpc/server").TRPCBuiltRouter<{
+		ctx: Context;
+		meta: object;
+		errorShape: {
+			data: {
+				stack: undefined;
+				code: import("@trpc/server").TRPC_ERROR_CODE_KEY;
+				httpStatus: number;
+				path?: string;
+			};
+			message: string;
+			code: import("@trpc/server").TRPC_ERROR_CODE_NUMBER;
+		};
+		transformer: false;
+	}, import("@trpc/server").TRPCDecorateCreateRouterOptions<{
+		submitLead: import("@trpc/server").TRPCMutationProcedure<{
+			input: {
+				email: string;
+				businessName: string;
+				zip: string;
+				contactName: string;
+				businessType: "Event venue" | "Office" | "Retail shop" | "Property manager" | "Moving & storage operator" | "Small service business" | "Other";
+				recurringTaskTypes: ("Event setup" | "Moving help" | "Pickup / dropoff" | "Errands" | "Furniture assembly" | "Cleanup" | "Inventory runs" | "Flexible labor support")[];
+				contactPreference: "form" | "call";
+				notes?: string | undefined;
+				phone?: string | undefined;
+				city?: string | undefined;
+				urgency?: "Low" | "Normal" | "High" | undefined;
+				expectedFrequency?: "Daily" | "A few times a week" | "Weekly" | "Monthly" | "Occasionally" | undefined;
+				avgBudgetCents?: number | undefined;
+				riskFlags?: {
+					enteringHomes?: boolean | undefined;
+					handlingKeys?: boolean | undefined;
+					drivingDelivery?: boolean | undefined;
+					regulatedGoods?: boolean | undefined;
+					minorsSchools?: boolean | undefined;
+					cashHandling?: boolean | undefined;
+					customerFacing?: boolean | undefined;
+					sensitiveLocations?: boolean | undefined;
+				} | undefined;
+			};
+			output: {
+				status: "NEW";
+				requiresReview: boolean;
+				message: string;
+			};
+			meta: object;
+		}>;
+	}>>;
 }>>;
 export type AppRouter = typeof appRouter;
 

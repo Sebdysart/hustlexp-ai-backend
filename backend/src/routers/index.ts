@@ -84,6 +84,7 @@ import { fraudRouter } from './fraud.js';
 import { flagsRouter } from './flags.js';
 import { alphaTelemetryRouter } from './alphaTelemetry.js';
 import { geoRouter } from './geo.js';
+import { businessRouter } from './business.js';
 
 // ============================================================================
 // APP ROUTER
@@ -149,6 +150,7 @@ export const appRouter = router({
   flags: flagsRouter,
   alphaTelemetry: alphaTelemetryRouter,
   geo: geoRouter,
+  business: businessRouter,
 });
 
 export type AppRouter = typeof appRouter;
