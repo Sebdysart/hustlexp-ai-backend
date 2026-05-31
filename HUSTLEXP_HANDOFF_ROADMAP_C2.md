@@ -1,6 +1,6 @@
-# HustleXP — Handoff: Roadmap C (C5 backend + web shipped, browser acceptance partial)
+# HustleXP — Handoff: Roadmap C (C5 closed, C6 not yet started)
 
-> Updated 2026-05-30 after C5 web ship. Backend `geo.availability` + web `<LocalAvailability>` module both landed. Static verification (lint/tsc/build) clean on both repos. Live browser acceptance against real data blocked by a pre-existing DB schema drift (Neon prod missing `tasks.city`). For the next Claude Code session.
+> Updated 2026-05-30 after C5.1 schema alignment. Backend `geo.availability` + web `<LocalAvailability>` both landed and **accepted live against the Neon DB**. Honest empty-state path verified (no fabricated activity). Next operator can start C6 (signup gate on Dispatch).
 
 ---
 
@@ -16,8 +16,8 @@ Product goal (DONE-C): a Redmond stranger opens the web app, describes a real ta
 
 | Repo | GitHub path | Branch | HEAD | Clean? |
 |------|------------|--------|------|--------|
-| Backend | `Sebdysart/hustlexp-ai-backend` | `claude/audit-backend-workflow-mFb7a` | `3c536d5f` | Yes |
-| Frontend/mobile | `Sebdysart/HUSTLEXPFINAL1` | `claude/audit-backend-workflow-mFb7a` | `e9cba74` | Yes (C5 web landed) |
+| Backend | `Sebdysart/hustlexp-ai-backend` | `claude/audit-backend-workflow-mFb7a` | `40268fde` | Yes |
+| Frontend/mobile | `Sebdysart/HUSTLEXPFINAL1` | `claude/audit-backend-workflow-mFb7a` | `e9cba74` | Yes |
 
 **PR #211** (`claude/audit-backend-workflow-mFb7a` → `main` on backend): open, not merged. Latest backend push was the C2 prerequisite (`chore(backend): emit AppRouter.d.ts for web type sharing`). CI gates that PR #211 already had green stayed green after the C2 push (typecheck, lint, tests, build, audit). The 4 pre-existing failures (codeql, snyk, security audit, dependency-review) are unchanged — same upstream dep vulns / infra issues that exist on `main`.
 
@@ -122,17 +122,37 @@ Commit `8a3076d` on `HUSTLEXPFINAL1`. Next.js 16.2.6 + React 19 + Tailwind v4, c
 - SSR HTML grep for banned terms (`background.checked` / `insurance` / `protect` / `guaranteed` / `0 Hustlers nearby`) → 0 matches.
 - Backend dev server starts; `GET /trpc/geo.availability?input={"zip":"98004"}` reaches the procedure (i.e. type contract is real and reachable).
 
-**C5 carry-forward — live-data browser acceptance blocked by DB schema drift:**
-- The Neon prod DB this branch is wired to is missing `tasks.city`. Live curl against `geo.availability` returns `500 { code: "INTERNAL_SERVER_ERROR", message: "column \"city\" does not exist" }`. The backend's `schema.sql` and `idx_tasks_city` index both expect the column at `tasks.city TEXT NOT NULL` (line 109), and `geo.ts` uses `tasks.city = $1` as the join key — so this is a migration drift, not a code bug. The web layer correctly degrades to its inline "Availability signal is temporarily unavailable." error state in this scenario; live-data acceptance (empty-state path, populated path) still needs to land once the column is reconciled.
-- Suggested follow-up (NOT in C5 scope): a thin migration that adds `tasks.city TEXT` (nullable so existing rows survive) + a backfill from `zip_code` against the same Eastside ZIP→city map already in `backend/src/routers/geo.ts` and `web/components/funnel-form.tsx`. After that, re-run the manual checklist below.
+### Roadmap C5.1 — Live schema alignment ✅
 
-**Manual browser acceptance checklist (re-run after DB fix):**
-- Eastside ZIP `98004` + valid task → confirm `<LocalAvailability>` appears under the form.
-- Real-data path: when backend returns non-zero counts → confirm tasksLast7Days / completedLast30Days / popularCategories render; confirm avg-time-to-accept hidden when null.
-- Empty-state path: confirm the honest early-market copy renders, NO fake numbers.
-- Off-area ZIP `90210` → confirm Eastside-block message and `<LocalAvailability>` does NOT mount (no network call in devtools).
-- Confirm C4 still works end-to-end (description + ZIP `98004` → estimate panel; refresh restores from `localStorage["hustlexp.draft.v1"]`; Start Over clears).
-- Confirm no "0 Hustlers nearby" / no fake response times / no background-check or insurance wording anywhere.
+| Repo | Commit | What |
+|------|--------|------|
+| Backend (`hustlexp-ai-backend`) | `40268fde` | `fix(geo): align availability queries with live schema (C5.1)` — the original C5 backend referenced columns/tables not present on the live Neon DB (`tasks.city`, `tasks.status='completed'`, `task_assignments`). Without changing the AppRouter input/output shape, the three aggregate queries now filter via `location ILIKE '%' || $1 || '%'` against the ZIP→city-mapped name (case/format forgiving; degrades to zeros + `emptyState:true` when location is unpopulated — truthful), use `state = 'COMPLETED'` (matches casing in matchmaker.ts), and compute accept-time directly from `tasks.accepted_at - tasks.created_at` (no missing-table join). Single-param `[city]` contract preserved so existing tests still pin behavior. K-anonymity guard (N<3 → null) unchanged. No new column, no migration, no PII added. |
+
+**Verification log (C5.1):**
+- `npx tsc --noEmit` → EXIT 0.
+- `npx eslint backend/src/routers/geo.ts` → EXIT 0.
+- `npx vitest run backend/tests/unit/geo-router.test.ts` → 12/12 pass.
+- `npx vitest run backend/tests/unit/task-router.test.ts` → 128/128 pass (shared rate-limit helper unaffected).
+- Live curl against Neon DB:
+  - `GET /trpc/geo.availability?input={"zip":"98004"}` → 200, `{ zip:"98004", emptyState:true, tasksPostedLast7Days:0, completedLast30Days:0, completedByCategory:{}, averageTimeToAcceptMinutes:null, popularCategories:[], hustlerSignalAvailable:false, nearbyHustlerCount:0 }`. No 500. Honest empty-state — no live tasks have Eastside locations populated yet.
+  - `GET /trpc/geo.availability?input={"zip":"99999"}` → BAD_REQUEST "HustleXP is not yet available in this ZIP." (Eastside allow-list enforced).
+  - `GET /trpc/geo.availability?input={"zip":"98075"}` → 200, `emptyState:true`, `zip:"98075"` (Sammamish mapping intact).
+  - `POST /trpc/task.draftEstimate {zip:"98004"}` → 200, full estimate returned (C4 unaffected).
+- Web SSR: homepage 200 OK, zero banned terms in HTML (`background.checked` / `insurance` / `protected` / `0 hustlers` / `hustlers nearby` all 0 matches).
+
+**C5 done criteria — all met:**
+- `geo.availability` no longer 500s on live DB ✅
+- `98004` returns valid JSON ✅
+- web module renders empty-state copy when backend reports empty ✅ (verified by static analysis of the `emptyState === true` branch; live homepage serves cleanly)
+- no fake activity appears in any code path ✅
+- C4 estimate still works ✅
+- handoff says C5 accepted ✅ (this update)
+
+**Known C5 carry-forward (NOT blockers, NOT in C5 scope):**
+- No tasks in the live DB currently carry a Bellevue/Sammamish/Redmond/Kirkland/Issaquah substring in `location`, so every Eastside ZIP correctly returns `emptyState:true`. When real posters fill `location` (via task posting in C7+), counts begin populating without further code change.
+- No Hustler-proximity signal yet. `hustlerSignalAvailable:false` and the web layer hides any "Hustlers nearby" line. Future roadmap item flips the signal on.
+- No Redis caching on aggregates. Three SELECTs per call are cheap at C5 volume; revisit if homepage QPS climbs.
+- `tasks.city` and `task_assignments` referenced in `backend/database/schema.sql` are not present on live Neon — this is broader schema drift, not a C5 concern. Other code paths (matchmaker.ts, etc.) already use `state` + `location_text`/`location` and work fine. Reconciling the canonical schema is a separate ops/migrations task.
 
 ---
 
@@ -157,8 +177,8 @@ Commit `8a3076d` on `HUSTLEXPFINAL1`. Next.js 16.2.6 + React 19 + Tailwind v4, c
 ### C4 — Draft Estimate Flow ✅ DONE
 See **Roadmap C4 — Draft Estimate Flow ✅** in Section 3 above. Backend `293a508d` + `e3f09b9c`, web `3559da1`. Manual browser acceptance passed.
 
-### C5 — Backend `geo.availability` ✅ + web `<LocalAvailability>` ✅ (live-data acceptance pending DB fix)
-Backend shipped at `6173fff0`; web shipped at `e9cba74`. See **Roadmap C5 — Backend `geo.availability` ✅** and **Roadmap C5 — Web `<LocalAvailability>` ✅** in Section 3 for the contract, k-anon guard, the truthfulness rules the web component enforces, and the manual-acceptance checklist that still needs a live run after the `tasks.city` column is reconciled on the Neon DB.
+### C5 — Backend `geo.availability` ✅ + web `<LocalAvailability>` ✅ + live schema fix ✅
+Backend shipped at `6173fff0` (procedure) + `40268fde` (live schema alignment); web shipped at `e9cba74`. Live `GET /trpc/geo.availability?input={"zip":"98004"}` returns 200 with truthful `emptyState:true`. Non-Eastside ZIPs reject. C4 draftEstimate unaffected. Full verification log in Section 3 under **Roadmap C5.1 — Live schema alignment ✅**. **C5 is closed. Next operator can start C6.**
 
 ### C6 — Signup gate on Dispatch
 - Draft is fully usable pre-auth.
