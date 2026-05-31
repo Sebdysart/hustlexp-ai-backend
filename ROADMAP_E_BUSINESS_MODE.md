@@ -1,5 +1,7 @@
 # HustleXP — Handoff: Roadmap E (Business Demand Mode)
 
+> Updated 2026-05-31 (E3). **E3 (backend lead capture + form wiring) DONE — see §8.** Added the `business_leads` table (migration `010-business-leads.sql` + mirrored into `constitutional-schema.sql`), a public `business.submitLead` tRPC mutation (anonymous, rate-limited, compliance-gated, PII-safe), and wired the E2 form to it. Every lead stores as `status='NEW'` + `requires_review=true` — **no auto-approval, no dashboard, no admin UI, no subscriptions, no bulk posting, no account creation, no analytics, no consumer-funnel changes.** Backend commit `7041596e`; web commit `26c7803`. **Migration is NOT yet applied to dev Neon and the backend is NOT yet deployed — live DB acceptance is a handoff step (see §8).** Next step: E4 — **NOT started, hard-gated.**
+>
 > Updated 2026-05-31 (E2). **E2 (business intake form) DONE — see §7.** Added a client-side intake form component (`web/components/business-intake-form.tsx`) wired into the `/business` `#register` section, with inline client-side validation and an honest no-submit placeholder success state. **Zero backend / tRPC / DB / admin / analytics / account / charge touched.** No network call on submit; no PII persisted; nothing written to localStorage. Web commit `c09aadb` (on `b1c5cfc` / E1). **Next step: E3 (backend lead capture) — NOT started.**
 >
 > Updated 2026-05-31 (E1). **E1 (business landing page) DONE & accepted.** Added a dedicated, **static** `/business` B2B demand-sensing landing page — a separate business-acquisition lane that does **not** touch the consumer poster funnel or C1–C10. Two net-new web files only: `web/app/business/page.tsx` (server route + `metadata`, renders `<BusinessLanding />`, no `<PageView>`) and `web/components/business-landing.tsx` (server component; no `"use client"`, no consumer `<FunnelForm>`; inline `TrustBullet` + SVG icons per existing convention). The page has a hero with two CTAs ("Register your business", "Request a call") that are **plain `<a href="#register">` anchors only** — they scroll to a `#register` placeholder ("We're onboarding Eastside businesses gradually. Registration opens in the next step."). Plus illustrative target business types, illustrative use cases, a mechanics-only trust/safety block, honest early-access framing, and the exact footer `© HustleXP · Eastside beta · No guaranteed timeline.` **Zero backend / tRPC / DB / admin / analytics touched.** Web commit `b1c5cfc`. **Next step: E2 (intake form component) — NOT started in this session.**
@@ -90,3 +92,53 @@ E3 = backend lead capture: a `submitLead` mutation (tRPC), persistence, and admi
 **Acceptance:** pending Sebastian sign-off.
 
 **Remaining risk (carried forward):** still **zero verified Hustler supply** (see §5) — the form now *collects* business demand but promises nothing; all copy stays zero-promise. The form intentionally drops its data on submit (no persistence) until E3, so no leads are captured yet — strong fill rates are a supply-recruitment signal, not a green light for E5/E6.
+
+---
+
+## 8. E3 — Completed Work
+
+E3 makes the E2 form real end-to-end — backend storage + a public intake mutation + form wiring — and **nothing more**.
+
+### Backend (commit `7041596e`)
+- **`backend/database/migrations/010-business-leads.sql`** (NEW) + mirrored into **`backend/database/constitutional-schema.sql`** — `business_leads` table:
+  - `id uuid pk`, identity (`business_name`, `contact_name`, `email`, `phone`, `business_type`, `city`, `zip`), demand signal (`recurring_task_types jsonb`, `expected_frequency`, `avg_budget_cents int`, `urgency`, `notes`), risk/compliance (`risk_flags jsonb`, `contact_preference` CHECK `('form','call')`, `status` default `'NEW'` CHECK `('NEW','REVIEWED','APPROVED','REJECTED','CONVERTED')`, `compliance_score int`, `compliance_notes jsonb`, `requires_review` default `true`), review/conversion (`admin_notes`, `reviewed_at`, `reviewed_by`→users, `approved_templates jsonb`, `converted_user_id`→users), provenance (`source`, `ip_hash`), `created_at`/`updated_at`.
+  - Indexes: `(status, created_at DESC)`, `(created_at DESC)`, `(email)`. Shared `update_updated_at_column()` trigger.
+  - Migration is **additive** (`CREATE TABLE IF NOT EXISTS`) — apply directly, **never** via `db:migrate` (`migrate-pg.mjs` drops/rebuilds the whole schema from `constitutional-schema.sql`).
+- **`backend/src/routers/business.ts`** (NEW) — `business.submitLead` `publicProcedure.mutation`:
+  - Anonymous, no auth. Server-side Zod validation (the authority): email, 5-digit Eastside-allowlisted ZIP, ≥1 recurring task type (enum), optional positive-int `avgBudgetCents`, notes ≤1000, risk-flag booleans, `contactPreference ∈ {form,call}`.
+  - Rate-limited via the shared 3-layer helper **before** any DB/compliance work — category `business:intake`, burst **3/60s**, daily **20/86400s**, global kill switch **500/86400s**.
+  - Derives IP via `deriveIpKey`; stores **only** `sha256(ip)` as `ip_hash` — never a raw IP (also passes the hash, not the raw IP, to compliance).
+  - Runs `ComplianceGuardianService.evaluate` on `notes + recurring task types`: **`hard_block` → `BAD_REQUEST`, writes no row**; `soft_flag`/`clean` insert. `status` hardcoded `'NEW'`, `requires_review` always `true` (no auto-approval). Persists `compliance_score`/`compliance_notes`.
+  - Returns safe output only: `{ status: 'NEW', requiresReview: true, message }` — **no `id`, no PII echoed back.**
+- **`backend/src/routers/index.ts`** — mounted `business: businessRouter`. Regenerated **`dist-types/AppRouter.d.ts`** (`npm run emit:trpc-types`).
+
+### Web (commit `26c7803`, repo `Sebdysart/HUSTLEXPFINAL1`)
+- **`web/components/business-intake-form.tsx`** — valid submit now calls `trpc.business.submitLead.useMutation().mutateAsync` (dollars → `avgBudgetCents`). Loading state (`Submitting…`, button disabled), E3 success card, safe error copy mapped from `err.data.code` (`TOO_MANY_REQUESTS` → "Too many attempts…"; `BAD_REQUEST` → compliance-block copy; else generic). **No** localStorage/sessionStorage, **no** analytics, **no** account, **no** redirect. Option arrays `as const` for typed payload.
+- **`web/types/trpc/AppRouter.d.ts`** — synced from the pushed backend branch via `scripts/sync-trpc-types.sh`; `trpc.business.submitLead` is typed.
+
+### Tests / verification run
+- **Backend:** `npx tsc -b` → clean. `npx eslint backend/src` → **EXIT 0**. `npx vitest run backend/tests/unit/business-router.test.ts` → **10/10 pass** (happy path → NEW row; hard_block → BAD_REQUEST + no row; soft_flag → row + `requires_review`; risk flag → `requires_review`; bad email rejected; non-Eastside ZIP rejected; zero task types rejected; rate-limit → `TOO_MANY_REQUESTS` + no row; `ip_hash`=sha256 stored, raw IP absent; status only `NEW`/no `id` in response). `npm run emit:trpc-types` → bundle contains `submitLead` with output `{status:"NEW";requiresReview;message}`.
+  - *Note:* `npx eslint backend/tests/...` errors with a pre-existing `parserOptions.project` quirk (reproduces on `geo-router.test.ts` too) — not introduced by E3; `eslint backend/src` is clean.
+- **Web:** `npm run lint`, `npx tsc --noEmit`, `npm run build` → all clean. `/business` still prerenders `○ (Static)`; `/`, `/dashboard`, and all consumer/category routes still build static — **no consumer-funnel regression.**
+- **Web (live, local dev `:8081`):** `/business` renders the form. A valid submit fires **exactly one** POST to `/trpc/business.submitLead` (vs E2's zero calls), the failure (no local backend on the configured `apiUrl` `:3000`) is handled gracefully with the generic safe copy, and **`localStorage`/`sessionStorage` stay empty** — no PII, no analytics endpoint hit.
+
+### Live DB acceptance — HANDOFF (not done this session)
+Backend is **not** auto-deployed on push and migration 010 is **not** applied to dev Neon, so a true prod submit cannot be exercised yet. To complete acceptance:
+1. Apply 010 additively to dev Neon: `psql "$DATABASE_URL" -f backend/database/migrations/010-business-leads.sql` (do **not** run `db:migrate`).
+2. Deploy the backend branch so the web `apiUrl` serves `business.submitLead`.
+3. Submit a valid test lead from `/business`; confirm network **200** + the E3 success copy.
+4. Probe:
+   ```sql
+   SELECT id, business_name, email, status, requires_review, risk_flags, contact_preference, created_at
+   FROM business_leads ORDER BY created_at DESC LIMIT 1;
+   ```
+   Expect `status='NEW'`, `requires_review=true` (with risk flags), `risk_flags` persisted, `ip_hash` present, **no raw IP**, no auto-approval.
+5. Confirm a hard-block phrase in `notes` is rejected (`BAD_REQUEST`) with **no** row written.
+
+### Scope adherence
+Backend storage + one public mutation + form wiring only. **No** business dashboard · **no** admin review UI · **no** subscriptions · **no** bulk posting · **no** auto-approval · **no** account creation · **no** consumer-funnel changes · **no** analytics · **no** redirect · **no** localStorage. `status` always `NEW`; `requires_review` always `true`.
+
+### Remaining risk (carried forward)
+Still **zero verified Hustler supply** (see §5) — leads are now captured but the platform promises nothing; all business-facing copy stays zero-promise. Strong fill rates are a **supply-recruitment** signal, not a green light for E4+. **E4/E5/E6 remain hard-gated.** Live DB acceptance is pending the migration apply + backend deploy above.
+
+**Acceptance:** pending Sebastian sign-off (+ live DB acceptance handoff).
