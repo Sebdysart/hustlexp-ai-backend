@@ -378,6 +378,9 @@ Web `d96f8ca` is the C6 web HEAD (unchanged). Manual acceptance passed end-to-en
 - A poster with no tasks **and** no `lastTaskId` sees an honest "No tasks yet." + "Post a task" link.
 - The C7 Stripe-iframe human test and migration 009 staging/prod application (below) still gate real launch — C8 does not change that.
 
+**C8 carry-forward before public launch:**
+The `lastTaskId` fallback is acceptable for the C8 shell only. Before public launch, Posters must reliably see their full task list through `task.listByPoster`; ensure funnel-created users are `default_mode === 'poster'` so the `posterProcedure` gate does not force fallback, and add pagination beyond the first 20-task page.
+
 ### C9–C10
 C9 local pages (zip-targeted SEO) → C10 analytics (PostHog already env-stubbed). **Do not start C9 in this session.**
 
