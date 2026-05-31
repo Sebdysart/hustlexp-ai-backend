@@ -148,6 +148,16 @@ vi.mock('../../src/services/EscrowService.js', () => ({
   },
 }));
 
+// admin.ts imports ComplianceGuardianService (for business-lead review, E4);
+// mock it so the heavy AIClient chain is not pulled into this unit test.
+vi.mock('../../src/services/ComplianceGuardianService.js', () => ({
+  ComplianceGuardianService: {
+    evaluate: vi.fn(),
+    _scoreTotier: (score: number) =>
+      score >= 61 ? 'hard_block' : score >= 21 ? 'soft_flag' : 'clean',
+  },
+}));
+
 vi.mock('../../src/services/XPTaxService.js', () => ({
   XPTaxService: { recordOfflinePayment: vi.fn() },
 }));

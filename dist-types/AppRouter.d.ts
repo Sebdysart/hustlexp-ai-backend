@@ -4997,6 +4997,37 @@ export declare const appRouter: import("@trpc/server").TRPCBuiltRouter<{
 			output: Escrow;
 			meta: object;
 		}>;
+		listBusinessLeads: import("@trpc/server").TRPCQueryProcedure<{
+			input: {
+				status?: "REJECTED" | "APPROVED" | "REVIEWED" | "NEW" | "CONVERTED" | undefined;
+				limit?: number | undefined;
+				offset?: number | undefined;
+				requiresReview?: boolean | undefined;
+			};
+			output: {
+				leads: Record<string, unknown>[];
+				total: number;
+			};
+			meta: object;
+		}>;
+		reviewBusinessLead: import("@trpc/server").TRPCMutationProcedure<{
+			input: {
+				status: "REJECTED" | "APPROVED" | "REVIEWED";
+				leadId: string;
+				override?: boolean | undefined;
+				adminNotes?: string | undefined;
+				approvedTemplates?: string[] | undefined;
+			};
+			output: {
+				id: string;
+				status: string;
+				reviewed_at: Date;
+				reviewed_by: string;
+				approved_templates: unknown;
+				admin_notes: string | null;
+			};
+			meta: object;
+		}>;
 	}>>;
 	disputeAI: import("@trpc/server").TRPCBuiltRouter<{
 		ctx: Context;
