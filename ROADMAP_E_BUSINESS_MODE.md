@@ -1,5 +1,7 @@
 # HustleXP — Handoff: Roadmap E (Business Demand Mode)
 
+> Updated 2026-05-31 (E2). **E2 (business intake form) DONE — see §7.** Added a client-side intake form component (`web/components/business-intake-form.tsx`) wired into the `/business` `#register` section, with inline client-side validation and an honest no-submit placeholder success state. **Zero backend / tRPC / DB / admin / analytics / account / charge touched.** No network call on submit; no PII persisted; nothing written to localStorage. Web commit `c09aadb` (on `b1c5cfc` / E1). **Next step: E3 (backend lead capture) — NOT started.**
+>
 > Updated 2026-05-31 (E1). **E1 (business landing page) DONE & accepted.** Added a dedicated, **static** `/business` B2B demand-sensing landing page — a separate business-acquisition lane that does **not** touch the consumer poster funnel or C1–C10. Two net-new web files only: `web/app/business/page.tsx` (server route + `metadata`, renders `<BusinessLanding />`, no `<PageView>`) and `web/components/business-landing.tsx` (server component; no `"use client"`, no consumer `<FunnelForm>`; inline `TrustBullet` + SVG icons per existing convention). The page has a hero with two CTAs ("Register your business", "Request a call") that are **plain `<a href="#register">` anchors only** — they scroll to a `#register` placeholder ("We're onboarding Eastside businesses gradually. Registration opens in the next step."). Plus illustrative target business types, illustrative use cases, a mechanics-only trust/safety block, honest early-access framing, and the exact footer `© HustleXP · Eastside beta · No guaranteed timeline.` **Zero backend / tRPC / DB / admin / analytics touched.** Web commit `b1c5cfc`. **Next step: E2 (intake form component) — NOT started in this session.**
 
 ---
@@ -17,7 +19,7 @@ Roadmap E opens a **separate business-acquisition lane**: local Eastside busines
 | Repo | GitHub path | Branch | HEAD | Clean? |
 |------|------------|--------|------|--------|
 | Backend | `Sebdysart/hustlexp-ai-backend` | `claude/audit-backend-workflow-mFb7a` | `5a3af4f9` (+ this handoff commit) | Yes |
-| Frontend/web | `Sebdysart/HUSTLEXPFINAL1` | `claude/audit-backend-workflow-mFb7a` | `b1c5cfc` (E1) | Yes |
+| Frontend/web | `Sebdysart/HUSTLEXPFINAL1` | `claude/audit-backend-workflow-mFb7a` | `c09aadb` (E2) | Yes |
 
 > Local web checkout: `~/Desktop/hustlexp-web` (symlink → `~/Documents/HUSTLEXPFINAL1/web`). Backend: `~/Desktop/hustlexp-ai-backend`. **Backend was not modified by E1** — this handoff doc is the only backend change.
 
@@ -59,6 +61,32 @@ E1 accepted by Sebastian (2026-05-31). All E1 done-criteria met: route 200, all 
 
 ---
 
-## 6. Next Step — E2 (NOT started)
+## 6. Next Step — E3 (NOT started)
 
-E2 = a business intake form **component** (`web/components/business-intake-form.tsx`) with client-side Zod validation (required fields, 5-digit ZIP, email, 8 risk-flag checkboxes, contact preference) and an honest post-submit state — **not yet wired to a backend** (that's E3). E2 must not add backend/DB/analytics. Do **not** start E2 in this session.
+E3 = backend lead capture: a `submitLead` mutation (tRPC), persistence, and admin manual-review surface to receive what the E2 form collects. E2 deliberately performs **no** network call — wiring it to a real endpoint is E3's job, hard-gated behind the same honesty/scope rules. E3 stays **out of scope** for this session. Do **not** start E3.
+
+---
+
+## 7. E2 — Completed Work
+
+**Files shipped (web): 1 net-new + 1 edit.**
+- `web/components/business-intake-form.tsx` (NEW, `"use client"`) — controlled intake form. Imports only `useState` / `FormEvent` from `react`. **No** `trpc`, **no** `capture`/analytics, **no** `localStorage`. Fields: business name\*, contact name\*, email\*, phone (optional), business type\* (select), city, ZIP\*, recurring task types (≥1 chip), expected frequency, average budget per task (optional), urgency, notes (≤1000), contact preference (radio: "Use this form" / soft "Prefer a call"), and the 8 risk-flag checkboxes (entering homes, handling keys, driving/delivery, alcohol/regulated goods, minors/schools, cash handling, customer-facing work, sensitive locations).
+- `web/components/business-landing.tsx` (EDIT) — replaced the E1 `#register` placeholder body with `<BusinessIntakeForm />`; kept the section wrapper + heading so the two hero anchor CTAs still scroll to it. Remains a server component. `app/business/page.tsx` unchanged.
+
+**Validation (inline, mirrors `funnel-form.tsx` convention — no Zod, no new dep):** required non-empty (business name / contact name / email / business type / ZIP); email regex; ZIP `^\d{5}$` **and** Eastside-allowlisted (allowlist duplicated locally — consumer funnel left untouched); ≥1 recurring task type; average budget, if given, a positive integer (digit-filtered input, rejects 0); notes ≤1000 chars; risk flags booleans. Errors render in a single `role="alert"`.
+
+**Submit behavior:** on valid submit, **no** network/fetch/mutation and **no** storage write — renders an honest `role="status"` card: *"Thanks — this form is ready for review wiring in the next step. No account created, nothing submitted, and nothing charged."*
+
+**Tests / verification run:**
+- `npm run lint` (eslint) → **EXIT 0**, no warnings.
+- `npx tsc --noEmit` → **EXIT 0**.
+- `npm run build` → **EXIT 0**. `/business` still prerenders `○ (Static)` (4.07 kB w/ client form); `/`, `/dashboard`, `/redmond`, `/sammamish`, `/bellevue` (+ category routes) still build static — no consumer-funnel regression.
+- Live (dev `:3000`): `/business` → form renders inside `#register`. Verified each validation path fires (empty required, bad email, non-Eastside/short ZIP, zero task types, budget=0). Valid submit → exact success copy shown, form unmounts. **Network log: only page load + static chunks + RSC prefetch — no POST / fetch / tRPC call on submit.** `localStorage` and `sessionStorage` both empty after submit — no PII persisted.
+
+**Copy audit — PASSED.** Source grep of `business-intake-form.tsx` (comments included) for forbidden trust claims → 0 hits. Rendered-DOM scan → 0 hits. Only `guarantee` match is the allowed honest negation "no guaranteed timeline". Contact radio reads "Prefer a call" (no implied/guaranteed callback). Per review revision, forbidden phrases are **not** enumerated in code comments.
+
+**Scope adherence:** Web only. No backend / tRPC / DB / `submitLead` / admin / dashboard / analytics / account / charge / auto-approval. No consumer-funnel changes (Eastside ZIP set duplicated, not imported).
+
+**Acceptance:** pending Sebastian sign-off.
+
+**Remaining risk (carried forward):** still **zero verified Hustler supply** (see §5) — the form now *collects* business demand but promises nothing; all copy stays zero-promise. The form intentionally drops its data on submit (no persistence) until E3, so no leads are captured yet — strong fill rates are a supply-recruitment signal, not a green light for E5/E6.
