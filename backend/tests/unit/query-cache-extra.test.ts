@@ -219,6 +219,32 @@ describe('invalidateCacheByTag', () => {
     expect(mockPipeline.del).toHaveBeenCalledWith('cache:tag:user:1');
     expect(mockPipelineExec).toHaveBeenCalledTimes(1);
   });
+
+  it('fail-open: returns 0 when smembers rejects (Upstash rate-limited)', async () => {
+    mockRedisClient.smembers.mockRejectedValueOnce(new Error('Your database has been temporarily rate-limited'));
+
+    const count = await invalidateCacheByTag('user:rate-limited');
+
+    expect(count).toBe(0);
+    expect(mockRedisClient.pipeline).not.toHaveBeenCalled();
+  });
+
+  it('fail-open: returns 0 when pipeline.exec rejects (res.map shape)', async () => {
+    mockRedisClient.smembers.mockResolvedValueOnce(['cache:query:k1']);
+    mockPipelineExec.mockRejectedValueOnce(new TypeError('res.map is not a function'));
+
+    const count = await invalidateCacheByTag('user:malformed');
+
+    expect(count).toBe(0);
+  });
+
+  it('fail-open: returns 0 when smembers resolves to non-array', async () => {
+    mockRedisClient.smembers.mockResolvedValueOnce({ error: 'rate-limited' } as unknown as string[]);
+
+    const count = await invalidateCacheByTag('user:weird');
+
+    expect(count).toBe(0);
+  });
 });
 
 // ============================================================================

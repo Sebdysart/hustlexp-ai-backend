@@ -118,7 +118,11 @@ async function storeInCache<T>(
     pipeline.sadd(`cache:tag:${tag}`, cacheKey);
     pipeline.expire(`cache:tag:${tag}`, fullTtl);
   }
-  await pipeline.exec();
+  try {
+    await pipeline.exec();
+  } catch (err) {
+    cacheLog.warn({ err, key: cacheKey }, 'Cache store pipeline.exec failed — fail-open');
+  }
 }
 
 // ============================================================================
@@ -126,37 +130,59 @@ async function storeInCache<T>(
 // ============================================================================
 
 /**
- * Invalidate a specific cache key
+ * Invalidate a specific cache key.
+ * Fail-open: a failing Upstash/Redis call must never break the caller's flow.
  */
 export async function invalidateCache(key: string): Promise<void> {
   const client = getClient();
   if (!client) return;
   const cacheKey = `cache:query:${key}`;
   const staleKey = `cache:stale:${key}`;
-  await client.del(cacheKey, staleKey);
-  cacheLog.debug({ key }, 'Cache invalidated');
+  try {
+    await client.del(cacheKey, staleKey);
+    cacheLog.debug({ key }, 'Cache invalidated');
+  } catch (err) {
+    cacheLog.warn({ err, key }, 'Cache invalidate failed — fail-open');
+  }
 }
 
 /**
- * Invalidate all cache entries with a specific tag
+ * Invalidate all cache entries with a specific tag.
+ * Fail-open: any Upstash/Redis error (rate limit, transport, malformed pipeline
+ * response such as `res.map is not a function`) is swallowed and logged. Money
+ * flows (task.create, escrow funding) must never break because the cache is
+ * unhealthy.
  */
 export async function invalidateCacheByTag(tag: string): Promise<number> {
   const client = getClient();
   if (!client) return 0;
   const tagKey = `cache:tag:${tag}`;
-  const keys = await client.smembers(tagKey) as string[];
+
+  let keys: string[];
+  try {
+    const raw = await client.smembers(tagKey);
+    keys = Array.isArray(raw) ? (raw as string[]) : [];
+  } catch (err) {
+    cacheLog.warn({ err, tag }, 'Cache smembers failed — fail-open');
+    return 0;
+  }
 
   if (keys.length === 0) return 0;
 
-  const pipeline = client.pipeline();
-  for (const key of keys) {
-    pipeline.del(key);
-    pipeline.del(key.replace('cache:query:', 'cache:stale:'));
+  try {
+    const pipeline = client.pipeline();
+    for (const key of keys) {
+      pipeline.del(key);
+      pipeline.del(key.replace('cache:query:', 'cache:stale:'));
+    }
+    pipeline.del(tagKey);
+    await pipeline.exec();
+    cacheLog.debug({ tag, count: keys.length }, 'Cache invalidated by tag');
+    return keys.length;
+  } catch (err) {
+    cacheLog.warn({ err, tag }, 'Cache pipeline.exec failed — fail-open');
+    return 0;
   }
-  pipeline.del(tagKey);
-  await pipeline.exec();
-  cacheLog.debug({ tag, count: keys.length }, 'Cache invalidated by tag');
-  return keys.length;
 }
 
 /**
@@ -178,14 +204,18 @@ export async function invalidateCacheByTags(tags: string[]): Promise<number> {
 export async function clearAllCache(): Promise<void> {
   const client = getClient();
   if (!client) return;
-  let cursor: number | string = 0;
-  do {
-    const result = await client.scan(cursor, { match: 'cache:*', count: 100 }) as unknown as { cursor: number; keys: string[] };
-    cursor = result.cursor;
-    const keys = result.keys ?? [];
-    if (keys.length > 0) await client.del(...keys);
-  } while (cursor !== 0);
-  cacheLog.info('All cache cleared');
+  try {
+    let cursor: number | string = 0;
+    do {
+      const result = await client.scan(cursor, { match: 'cache:*', count: 100 }) as unknown as { cursor: number; keys: string[] };
+      cursor = result.cursor;
+      const keys = result.keys ?? [];
+      if (keys.length > 0) await client.del(...keys);
+    } while (cursor !== 0);
+    cacheLog.info('All cache cleared');
+  } catch (err) {
+    cacheLog.warn({ err }, 'clearAllCache failed — fail-open');
+  }
 }
 
 // ============================================================================
