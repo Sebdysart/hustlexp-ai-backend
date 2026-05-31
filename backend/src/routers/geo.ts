@@ -102,11 +102,26 @@ export const geoRouter = router({
 
       // Run the three aggregate queries in parallel. Each query selects
       // only category + counts/timestamps — no user identifiers.
+      //
+      // SCHEMA NOTE (C5.1): the live `tasks` table has no city/zip column —
+      // only a free-text `location varchar`. We filter by case-insensitive
+      // substring match against the mapped city name. This is intentionally
+      // forgiving so that "Bellevue, WA", "Bellevue" and "bellevue" all
+      // count, and intentionally conservative so the endpoint degrades to
+      // emptyState (zeros) — not fabricated counts — when posters haven't
+      // populated location yet. Single $1 param preserves the test
+      // contract that every aggregate receives only the city as a
+      // parameter.
+      //
+      // Accept-time was previously computed by joining a `task_assignments`
+      // table that does not exist in the live schema. We now use
+      // `tasks.accepted_at - tasks.created_at` directly. The k-anonymity
+      // guard (N < 3 → null) below is unchanged.
       const [postedRes, completedRes, acceptRes] = await Promise.all([
         db.query<{ category: string; n: string }>(
           `SELECT category, COUNT(*)::TEXT AS n
              FROM tasks
-            WHERE city = $1
+            WHERE location ILIKE '%' || $1 || '%'
               AND created_at > NOW() - INTERVAL '7 days'
             GROUP BY category`,
           [city]
@@ -114,27 +129,22 @@ export const geoRouter = router({
         db.query<{ category: string; n: string }>(
           `SELECT category, COUNT(*)::TEXT AS n
              FROM tasks
-            WHERE city = $1
-              AND status = 'completed'
+            WHERE location ILIKE '%' || $1 || '%'
+              AND state = 'COMPLETED'
               AND completed_at IS NOT NULL
               AND completed_at > NOW() - INTERVAL '30 days'
             GROUP BY category`,
           [city]
         ),
         db.query<{ avg_minutes: string | null; n: string }>(
-          `WITH first_assignments AS (
-             SELECT task_id, MIN(created_at) AS first_at
-               FROM task_assignments
-              GROUP BY task_id
-           )
-           SELECT
-             AVG(EXTRACT(EPOCH FROM (fa.first_at - t.created_at)) / 60.0)::TEXT AS avg_minutes,
+          `SELECT
+             AVG(EXTRACT(EPOCH FROM (accepted_at - created_at)) / 60.0)::TEXT AS avg_minutes,
              COUNT(*)::TEXT AS n
-             FROM tasks t
-             JOIN first_assignments fa ON fa.task_id = t.id
-            WHERE t.city = $1
-              AND t.created_at > NOW() - INTERVAL '30 days'
-              AND fa.first_at >= t.created_at`,
+             FROM tasks
+            WHERE location ILIKE '%' || $1 || '%'
+              AND created_at > NOW() - INTERVAL '30 days'
+              AND accepted_at IS NOT NULL
+              AND accepted_at >= created_at`,
           [city]
         ),
       ]);
