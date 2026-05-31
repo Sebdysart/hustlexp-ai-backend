@@ -591,6 +591,119 @@ export const adminRouter = router({
         return updated.rows[0];
       });
     }),
+
+  /**
+   * Convert an APPROVED business lead: link it to an EXISTING user account and
+   * flip the lead to CONVERTED (the transition reviewBusinessLead reserves).
+   * This is a bookkeeping link only — it creates no account, posts no task, and
+   * grants no capability. Posting stays gated independently at task.create
+   * (posterProcedure + trust_tier vs template.requiredTrustTier);
+   * approved_templates is inert metadata. The lead UPDATE and the admin_actions
+   * audit INSERT run in a single transaction — if either fails, neither applies.
+   */
+  convertBusinessLead: adminProcedure
+    .input(z.object({
+      leadId: Schemas.uuid,
+      userId: Schemas.uuid,
+      approvedTemplates: z.array(z.enum(TEMPLATE_SLUG_VALUES)).max(TEMPLATE_SLUG_VALUES.length).optional(),
+      adminNotes: z.string().max(2000).optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      return db.transaction(async (query) => {
+        const current = await query<{ id: string; status: string; converted_user_id: string | null }>(
+          `SELECT id, status, converted_user_id FROM business_leads WHERE id = $1 FOR UPDATE`,
+          [input.leadId]
+        );
+
+        if (current.rows.length === 0) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: 'Business lead not found' });
+        }
+
+        const lead = current.rows[0];
+
+        // Already converted: a lead links to at most the first account that
+        // claimed it. Re-running must not silently re-point converted_user_id.
+        if (lead.status === 'CONVERTED' || lead.converted_user_id != null) {
+          throw new TRPCError({ code: 'CONFLICT', message: 'Lead already converted' });
+        }
+
+        // Only APPROVED leads convert. Blocks NEW / REVIEWED / REJECTED in one check.
+        if (lead.status !== 'APPROVED') {
+          throw new TRPCError({
+            code: 'CONFLICT',
+            message: `Lead must be APPROVED to convert (is ${lead.status})`,
+          });
+        }
+
+        // Target must be an existing, usable account. We do NOT require
+        // default_mode='poster' — a business owner may currently be in worker
+        // mode; posting is gated separately at task.create.
+        const targetUser = await query<{ id: string; is_banned: boolean; account_status: string }>(
+          `SELECT id, is_banned, account_status FROM users WHERE id = $1`,
+          [input.userId]
+        );
+
+        if (targetUser.rows.length === 0) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: 'Target user not found' });
+        }
+
+        const target = targetUser.rows[0];
+        if (
+          target.is_banned === true ||
+          target.account_status === 'SUSPENDED' ||
+          target.account_status === 'DELETED'
+        ) {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message: 'Target user account is not in a usable state',
+          });
+        }
+
+        const updated = await query<{
+          id: string;
+          status: string;
+          converted_user_id: string;
+          approved_templates: unknown;
+          updated_at: Date;
+        }>(
+          `UPDATE business_leads
+              SET status = 'CONVERTED',
+                  converted_user_id = $1,
+                  approved_templates = COALESCE($2::jsonb, approved_templates),
+                  updated_at = NOW()
+            WHERE id = $3
+            RETURNING id, status, converted_user_id, approved_templates, updated_at`,
+          [
+            input.userId,
+            input.approvedTemplates ? JSON.stringify(input.approvedTemplates) : null,
+            input.leadId,
+          ]
+        );
+
+        // Audit row — live-valid admin_actions shape with target_user_id (the
+        // XPTaxService pattern). Unlike review, conversion's target genuinely IS
+        // a user, so target_user_id is populated; leadId stays in action_details.
+        // The lead's own admin_notes (the review note) is left intact; any
+        // conversion note is recorded here only.
+        await query(
+          `INSERT INTO admin_actions (admin_user_id, admin_role, action_type, action_details, target_user_id, result)
+           VALUES ($1, 'admin', 'business_lead_conversion', $2::jsonb, $3, 'success')`,
+          [
+            ctx.user.id,
+            JSON.stringify({
+              leadId: input.leadId,
+              convertedUserId: input.userId,
+              approvedTemplates: input.approvedTemplates ?? null,
+              hadAdminNotes: Boolean(input.adminNotes),
+              adminNotes: input.adminNotes ?? null,
+            }),
+            input.userId,
+          ]
+        );
+
+        return updated.rows[0];
+      });
+    }),
 });
 
 export type AdminRouter = typeof adminRouter;

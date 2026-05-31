@@ -5028,6 +5028,22 @@ export declare const appRouter: import("@trpc/server").TRPCBuiltRouter<{
 			};
 			meta: object;
 		}>;
+		convertBusinessLead: import("@trpc/server").TRPCMutationProcedure<{
+			input: {
+				userId: string;
+				leadId: string;
+				adminNotes?: string | undefined;
+				approvedTemplates?: string[] | undefined;
+			};
+			output: {
+				id: string;
+				status: string;
+				converted_user_id: string;
+				approved_templates: unknown;
+				updated_at: Date;
+			};
+			meta: object;
+		}>;
 	}>>;
 	disputeAI: import("@trpc/server").TRPCBuiltRouter<{
 		ctx: Context;

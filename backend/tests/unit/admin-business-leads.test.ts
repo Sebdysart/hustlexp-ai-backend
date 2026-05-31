@@ -1,8 +1,10 @@
 /**
  * Admin Business Lead Review Queue — Unit Tests (Roadmap E4)
  *
- * Covers admin.listBusinessLeads (offset pagination + filters) and
- * admin.reviewBusinessLead (transactional status update + admin_actions audit).
+ * Covers admin.listBusinessLeads (offset pagination + filters),
+ * admin.reviewBusinessLead (transactional status update + admin_actions audit),
+ * and admin.convertBusinessLead (E5: link an APPROVED lead to an existing user
+ * account, flip to CONVERTED, audit with target_user_id — in one transaction).
  *
  * Patterns mirror admin-router.test.ts:
  *   - mock db at module level; createCaller with a fake admin context.
@@ -127,6 +129,71 @@ function mockReview(opts: { leadRow: LeadRow | null; updatedRow?: any; auditReje
   }
   // db.transaction mock: invoke callback with txQuery, propagate throws (mirrors
   // the real helper's ROLLBACK + rethrow on any error inside the callback).
+  mockDb.transaction.mockImplementationOnce(async (fn: any) => fn(txQuery));
+  return txQuery;
+}
+
+type ConvertLeadRow = {
+  id: string;
+  status: string;
+  converted_user_id: string | null;
+};
+
+type ConvertUserRow = {
+  id: string;
+  is_banned: boolean;
+  account_status: string;
+};
+
+/**
+ * Wire up a convertBusinessLead happy/guarded path:
+ *   call 1 (db.query):       admin_roles check
+ *   db.transaction(fn) -> txQuery:
+ *     call 1: SELECT lead ... FOR UPDATE   -> leadRow (or none)
+ *     call 2: SELECT target user           -> userRow (or none)
+ *     call 3: UPDATE lead ... RETURNING    -> updatedRow
+ *     call 4: INSERT admin_actions
+ * Guard cases short-circuit before later calls; queued-but-unconsumed mocks are
+ * harmless. Pass userRow:null to simulate a missing target user. Returns the
+ * txQuery mock for assertions.
+ */
+function mockConvert(opts: {
+  leadRow: ConvertLeadRow | null;
+  userRow?: ConvertUserRow | null;
+  updatedRow?: any;
+  auditRejects?: boolean;
+}) {
+  grantAdmin();
+  const userRow =
+    opts.userRow === undefined
+      ? { id: 'target-user-id', is_banned: false, account_status: 'ACTIVE' }
+      : opts.userRow;
+  const updatedRow = opts.updatedRow ?? {
+    id: opts.leadRow?.id ?? 'lead-1',
+    status: 'CONVERTED',
+    converted_user_id: userRow?.id ?? 'target-user-id',
+    approved_templates: null,
+    updated_at: new Date('2026-05-31T00:00:00Z'),
+  };
+  const txQuery = vi.fn();
+  // SELECT lead FOR UPDATE
+  txQuery.mockResolvedValueOnce({
+    rows: opts.leadRow ? [opts.leadRow] : [],
+    rowCount: opts.leadRow ? 1 : 0,
+  } as any);
+  // SELECT target user
+  txQuery.mockResolvedValueOnce({
+    rows: userRow ? [userRow] : [],
+    rowCount: userRow ? 1 : 0,
+  } as any);
+  // UPDATE RETURNING
+  txQuery.mockResolvedValueOnce({ rows: [updatedRow], rowCount: 1 } as any);
+  // audit INSERT
+  if (opts.auditRejects) {
+    txQuery.mockRejectedValueOnce(new Error('audit insert failed'));
+  } else {
+    txQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
+  }
   mockDb.transaction.mockImplementationOnce(async (fn: any) => fn(txQuery));
   return txQuery;
 }
@@ -427,5 +494,223 @@ describe('admin.reviewBusinessLead', () => {
     ];
     // No INSERT INTO users anywhere in this path.
     expect(allSql.some((s) => /INSERT\s+INTO\s+users/i.test(s))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// convertBusinessLead (E5)
+// ---------------------------------------------------------------------------
+
+const LEAD_ID = '11111111-1111-1111-1111-111111111111';
+const USER_ID = '22222222-2222-2222-2222-222222222222';
+
+describe('admin.convertBusinessLead', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('converts an APPROVED lead: sets CONVERTED + converted_user_id and audits with target_user_id', async () => {
+    const txQuery = mockConvert({
+      leadRow: { id: 'lead-1', status: 'APPROVED', converted_user_id: null },
+      userRow: { id: USER_ID, is_banned: false, account_status: 'ACTIVE' },
+      updatedRow: {
+        id: 'lead-1', status: 'CONVERTED', converted_user_id: USER_ID,
+        approved_templates: null, updated_at: new Date('2026-05-31T00:00:00Z'),
+      },
+    });
+
+    const result = await makeAdminCaller().convertBusinessLead({ leadId: LEAD_ID, userId: USER_ID });
+
+    expect(result.status).toBe('CONVERTED');
+    expect(result.converted_user_id).toBe(USER_ID);
+
+    // SELECT lead, SELECT user, UPDATE, audit INSERT.
+    expect(txQuery).toHaveBeenCalledTimes(4);
+
+    const updateSql = txQuery.mock.calls[2][0] as string;
+    const updateParams = txQuery.mock.calls[2][1] as unknown[];
+    expect(updateSql).toContain('UPDATE business_leads');
+    expect(updateSql).toContain("status = 'CONVERTED'");
+    expect(updateSql).toContain('converted_user_id = $1');
+    expect(updateParams).toContain(USER_ID);
+
+    const auditSql = txQuery.mock.calls[3][0] as string;
+    const auditParams = txQuery.mock.calls[3][1] as unknown[];
+    expect(auditSql).toContain('INSERT INTO admin_actions');
+    expect(auditSql).toContain('target_user_id');
+    expect(auditSql).toContain("'business_lead_conversion'");
+    // admin_user_id, action_details JSON, target_user_id = converted user id.
+    expect(auditParams[0]).toBe('admin-user-id');
+    expect(auditParams[2]).toBe(USER_ID);
+  });
+
+  it('blocks a NEW lead with CONFLICT and never updates', async () => {
+    const txQuery = mockConvert({ leadRow: { id: 'lead-1', status: 'NEW', converted_user_id: null } });
+
+    await expect(
+      makeAdminCaller().convertBusinessLead({ leadId: LEAD_ID, userId: USER_ID })
+    ).rejects.toMatchObject({ code: 'CONFLICT' });
+
+    expect(txQuery).toHaveBeenCalledTimes(1); // SELECT lead only
+  });
+
+  it('blocks a REVIEWED lead with CONFLICT and never updates', async () => {
+    const txQuery = mockConvert({ leadRow: { id: 'lead-1', status: 'REVIEWED', converted_user_id: null } });
+
+    await expect(
+      makeAdminCaller().convertBusinessLead({ leadId: LEAD_ID, userId: USER_ID })
+    ).rejects.toMatchObject({ code: 'CONFLICT' });
+
+    expect(txQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it('blocks a REJECTED lead with CONFLICT and never updates', async () => {
+    const txQuery = mockConvert({ leadRow: { id: 'lead-1', status: 'REJECTED', converted_user_id: null } });
+
+    await expect(
+      makeAdminCaller().convertBusinessLead({ leadId: LEAD_ID, userId: USER_ID })
+    ).rejects.toMatchObject({ code: 'CONFLICT' });
+
+    expect(txQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it('blocks an already-CONVERTED lead with CONFLICT and never updates', async () => {
+    const txQuery = mockConvert({
+      leadRow: { id: 'lead-1', status: 'CONVERTED', converted_user_id: 'someone-else' },
+    });
+
+    await expect(
+      makeAdminCaller().convertBusinessLead({ leadId: LEAD_ID, userId: USER_ID })
+    ).rejects.toMatchObject({ code: 'CONFLICT' });
+
+    expect(txQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it('throws NOT_FOUND for a missing lead and never queries the user', async () => {
+    const txQuery = mockConvert({ leadRow: null });
+
+    await expect(
+      makeAdminCaller().convertBusinessLead({ leadId: LEAD_ID, userId: USER_ID })
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+
+    expect(txQuery).toHaveBeenCalledTimes(1); // SELECT lead only — no user lookup, no UPDATE
+  });
+
+  it('throws NOT_FOUND for a missing target user and never updates', async () => {
+    const txQuery = mockConvert({
+      leadRow: { id: 'lead-1', status: 'APPROVED', converted_user_id: null },
+      userRow: null,
+    });
+
+    await expect(
+      makeAdminCaller().convertBusinessLead({ leadId: LEAD_ID, userId: USER_ID })
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+
+    expect(txQuery).toHaveBeenCalledTimes(2); // SELECT lead, SELECT user — no UPDATE
+  });
+
+  it.each([
+    ['banned', { id: USER_ID, is_banned: true, account_status: 'ACTIVE' }],
+    ['SUSPENDED', { id: USER_ID, is_banned: false, account_status: 'SUSPENDED' }],
+    ['DELETED', { id: USER_ID, is_banned: false, account_status: 'DELETED' }],
+  ])('blocks a %s target user with PRECONDITION_FAILED and never updates', async (_label, userRow) => {
+    const txQuery = mockConvert({
+      leadRow: { id: 'lead-1', status: 'APPROVED', converted_user_id: null },
+      userRow: userRow as ConvertUserRow,
+    });
+
+    await expect(
+      makeAdminCaller().convertBusinessLead({ leadId: LEAD_ID, userId: USER_ID })
+    ).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+
+    expect(txQuery).toHaveBeenCalledTimes(2); // SELECT lead, SELECT user — no UPDATE
+  });
+
+  it('writes the audit row on success', async () => {
+    const txQuery = mockConvert({
+      leadRow: { id: 'lead-1', status: 'APPROVED', converted_user_id: null },
+      updatedRow: {
+        id: 'lead-1', status: 'CONVERTED', converted_user_id: USER_ID,
+        approved_templates: null, updated_at: new Date(),
+      },
+    });
+
+    await makeAdminCaller().convertBusinessLead({ leadId: LEAD_ID, userId: USER_ID });
+
+    expect(txQuery.mock.calls[3][0]).toContain('INSERT INTO admin_actions');
+    expect(txQuery.mock.calls[3][0]).toContain("'business_lead_conversion'");
+    expect(txQuery.mock.calls[3][0]).toContain('target_user_id');
+  });
+
+  it('audit-insert failure rolls back the conversion (all-or-nothing)', async () => {
+    mockConvert({
+      leadRow: { id: 'lead-1', status: 'APPROVED', converted_user_id: null },
+      auditRejects: true,
+    });
+
+    await expect(
+      makeAdminCaller().convertBusinessLead({ leadId: LEAD_ID, userId: USER_ID })
+    ).rejects.toThrow('audit insert failed');
+  });
+
+  it('rejects a non-admin caller with FORBIDDEN and never opens a transaction', async () => {
+    denyAdmin();
+    await expect(
+      makeAdminCaller().convertBusinessLead({ leadId: LEAD_ID, userId: USER_ID })
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    expect(mockDb.transaction).not.toHaveBeenCalled();
+  });
+
+  it('never creates a user account', async () => {
+    const txQuery = mockConvert({
+      leadRow: { id: 'lead-1', status: 'APPROVED', converted_user_id: null },
+    });
+
+    await makeAdminCaller().convertBusinessLead({ leadId: LEAD_ID, userId: USER_ID });
+
+    const allSql = [
+      ...mockDb.query.mock.calls.map((c) => String(c[0])),
+      ...txQuery.mock.calls.map((c) => String(c[0])),
+    ];
+    expect(allSql.some((s) => /INSERT\s+INTO\s+users/i.test(s))).toBe(false);
+  });
+
+  it('preserves approved_templates when omitted (UPDATE param is null -> COALESCE keeps existing)', async () => {
+    const txQuery = mockConvert({
+      leadRow: { id: 'lead-1', status: 'APPROVED', converted_user_id: null },
+    });
+
+    await makeAdminCaller().convertBusinessLead({ leadId: LEAD_ID, userId: USER_ID });
+
+    const updateSql = txQuery.mock.calls[2][0] as string;
+    const updateParams = txQuery.mock.calls[2][1] as unknown[];
+    expect(updateSql).toContain('approved_templates = COALESCE($2::jsonb, approved_templates)');
+    // params: [userId, approvedTemplates(null), leadId]
+    expect(updateParams[1]).toBeNull();
+  });
+
+  it('overwrites approved_templates when provided (UPDATE param is the JSON)', async () => {
+    const txQuery = mockConvert({
+      leadRow: { id: 'lead-1', status: 'APPROVED', converted_user_id: null },
+    });
+
+    await makeAdminCaller().convertBusinessLead({
+      leadId: LEAD_ID,
+      userId: USER_ID,
+      approvedTemplates: ['in_home', 'standard_physical'],
+    });
+
+    const updateParams = txQuery.mock.calls[2][1] as unknown[];
+    expect(updateParams[1]).toBe(JSON.stringify(['in_home', 'standard_physical']));
+  });
+
+  it('Zod rejects an unknown approvedTemplates slug and never opens a transaction', async () => {
+    grantAdmin();
+    await expect(
+      makeAdminCaller().convertBusinessLead({
+        leadId: LEAD_ID,
+        userId: USER_ID,
+        approvedTemplates: ['not_a_real_template'] as any,
+      })
+    ).rejects.toBeInstanceOf(Error);
+    expect(mockDb.transaction).not.toHaveBeenCalled();
   });
 });
