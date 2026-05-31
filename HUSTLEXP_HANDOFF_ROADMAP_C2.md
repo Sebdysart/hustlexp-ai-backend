@@ -1,14 +1,18 @@
-# HustleXP — Handoff: Roadmap C (C6 ACCEPTED, C7 next)
+# HustleXP — Handoff: Roadmap C (C7 ACCEPTED, C8 next)
 
-> Updated 2026-05-31. C6 manual acceptance **passed end-to-end** against live Neon + Firebase project `hustlexp-fly-new` with test user `test.hustler@hustlexp.app`. `task.create` returned 200, task id `a90f33a1-99b0-4c13-852e-a8f52698f570` persisted to Neon (state=`OPEN`, price 3000¢, location `98004`, template `standard_physical`), post-create UI showed the exact required copy "Task draft created. Secure payment is next.", **no Stripe / escrow.createPaymentIntent call fired**, **no banned dispatch/match/insurance copy** appeared in any state. Web commit `HUSTLEXPFINAL1 d96f8ca` ships unchanged — no web code edits were needed during acceptance. Unblocking required two side-effects: (a) extending migration `008-c6-schema-alignment.sql` through step 5 and applying all 5 steps to dev Neon (additive only, all `IF NOT EXISTS`, one constraint relaxed to a strict superset); (b) running the local backend with empty `UPSTASH_REDIS_REST_*` env so the rate-limited Upstash account doesn't trigger an uncaught `res.map` in `invalidateCacheByTag` after `task.create` succeeds. **Next step: C7 (Stripe Elements funding) only.**
+> Updated 2026-05-31 (C7). **C7 (Stripe Elements funding) manual acceptance PASSED end-to-end** against live Neon + Firebase `hustlexp-fly-new` + Stripe **test** mode. Full poster loop C4 → C5 → C6 → C7 ran live: estimate ($30 / 1 hr 15 min / standard_physical), availability empty-state, auth gate + Firebase sign-in, `user.register` 200, `task.create` 200, `escrow.createPaymentIntent` 200 returning `{paymentIntentId, clientSecret, amount, escrowId}`, a PENDING `escrows` row persisted with the PI id, a **real Stripe test charge** on the PaymentIntent (4242 card via `pm_card_visa`, 3000¢, single charge `ch_3Td2eQ…`, status `succeeded`), then PENDING→FUNDED via the hardened `escrow.confirmFunding` (server-side PI verification), and the UI showed the exact copy **"Task funded. Next: Hustler matching."** only after the backend reported FUNDED. **DB probe (product state = backend state):** escrow `4b69768c-4af8-4cad-958b-63df11c60fba` task `349222ff-80f5-466f-990e-b92fd9cd61fd` → `state=FUNDED`, `stripe_payment_intent_id=pi_3Td2eQ…` (not null), `version=2`, `funded_at` set, single escrow row (no duplicate). **No banned dispatch/match/on-the-way/insurance copy** in any state. Two backend issues C7 exposed were fixed: (a) `invalidateCacheByTag` fail-open (Upstash crash from C6 — `task.create` now returns 200 under the real rate-limited Upstash, confirming the fix); (b) `escrows.version` column missing on live Neon (migration `009`, applied to dev Neon with explicit approval). **Next step: C8 (poster dashboard shell) — out of scope for this session.**
+>
+> **Acceptance method note (honest):** the literal "type 4242 into the Stripe Payment Element and click Pay" keystrokes could not be automated — the card inputs live in a cross-origin `js.stripe.com` iframe the headless preview can't type into. Instead the PaymentIntent was confirmed with the equivalent test card (`pm_card_visa` = 4242) via Stripe's API, and the funded path was driven through the real `return_url` redirect-resume → polling → `confirmFunding` flow (which also proves the webhook-off resilience path, since no `stripe listen` was running). This exercises the identical backend money path and the identical UI funded-gating; only the in-iframe keystrokes were substituted. The empty-field submit was exercised through the real UI and produced the correct error-recovery state ("Your card number is incomplete." + Try again).
+>
+> _(Prior: C6 manual acceptance passed end-to-end 2026-05-31 — `task.create` 200, task `a90f33a1-…` persisted, post-create copy "Task draft created. Secure payment is next.", zero Stripe calls, zero banned copy. Web `d96f8ca` unchanged during C6 acceptance.)_
 
 ---
 
 ## 1. Current Objective
 
-**Roadmap C: Poster-side web liquidity engine.** C4 is **accepted**; C5 backend (`geo.availability`) is **shipped** on backend HEAD `6173fff0` and the AppRouter bundle is regenerated. **Next step: sync the AppRouter bundle into `HUSTLEXPFINAL1` and add the truthful `<LocalAvailability>` module to `web/components/funnel-form.tsx`, then run web verification + manual acceptance.**
+**Roadmap C: Poster-side web liquidity engine.** C1–C7 are **done and accepted**. The full poster outcome loop is live: a stranger describes a task → AI estimate → signs up at Dispatch → `task.create` → **funds with Stripe test mode → escrow state FUNDED**. **Next step: C8 (poster dashboard shell). Do not start C8 in this session — C7 stops here.**
 
-Product goal (DONE-C): a Redmond stranger opens the web app, describes a real task, gets an estimate, signs up only at Dispatch, funds with Stripe test mode, and sees the task in a poster dashboard.
+Product goal (DONE-C): a Redmond stranger opens the web app, describes a real task, gets an estimate, signs up only at Dispatch, funds with Stripe test mode, and sees the task in a poster dashboard (C8).
 
 ---
 
@@ -16,8 +20,10 @@ Product goal (DONE-C): a Redmond stranger opens the web app, describes a real ta
 
 | Repo | GitHub path | Branch | HEAD | Clean? |
 |------|------------|--------|------|--------|
-| Backend | `Sebdysart/hustlexp-ai-backend` | `claude/audit-backend-workflow-mFb7a` | `40268fde` | Yes |
-| Frontend/mobile | `Sebdysart/HUSTLEXPFINAL1` | `claude/audit-backend-workflow-mFb7a` | `d96f8ca` | Yes |
+| Backend | `Sebdysart/hustlexp-ai-backend` | `claude/audit-backend-workflow-mFb7a` | `2c474abe` (+ handoff commit) | Yes |
+| Frontend/mobile | `Sebdysart/HUSTLEXPFINAL1` | `claude/audit-backend-workflow-mFb7a` | `e038545` | Yes |
+
+> Local web checkout for this session lives at `~/Desktop/hustlexp-web` (a symlink → `~/Documents/HUSTLEXPFINAL1/web`). Backend at `~/Desktop/hustlexp-ai-backend`.
 
 **PR #211** (`claude/audit-backend-workflow-mFb7a` → `main` on backend): open, not merged. Latest backend push was the C2 prerequisite (`chore(backend): emit AppRouter.d.ts for web type sharing`). CI gates that PR #211 already had green stayed green after the C2 push (typecheck, lint, tests, build, audit). The 4 pre-existing failures (codeql, snyk, security audit, dependency-review) are unchanged — same upstream dep vulns / infra issues that exist on `main`.
 
@@ -311,12 +317,44 @@ Backend shipped at `6173fff0` (procedure) + `40268fde` (live schema alignment); 
 ### C6 — Signup gate on Dispatch ✅ ACCEPTED 2026-05-31
 Web `d96f8ca` is the C6 web HEAD (unchanged). Manual acceptance passed end-to-end against live Neon + Firebase `hustlexp-fly-new`: dispatch from anonymous → auth gate → Firebase sign-in → clickwrap → `user.register` 200 → `task.create` 200 → post-create state with required copy. Task id `a90f33a1-99b0-4c13-852e-a8f52698f570` persisted. Zero Stripe / payment-intent calls. Zero banned copy. Full check list in **Section 3 → Roadmap C6 ✅**. The 5-step schema-alignment migration `008` is applied to dev Neon and committed to the repo. **Next step: C7 (Stripe Elements funding) only.**
 
-### C7 — Stripe Elements funding
-- Stripe Web SDK + Elements, publishable key from env (already in `env.ts`).
-- PaymentIntent created server-side via existing `escrow.create` flow (verify the procedure accepts the web client's payload shape).
+### C7 — Stripe Elements funding ✅ ACCEPTED 2026-05-31
+
+**Commits:**
+
+| Repo | Commit | What |
+|------|--------|------|
+| Backend | `cc0de76c` | `fix(cache): fail-open invalidateCacheByTag on Upstash error (C7 pre-req)` — wraps `pipeline.exec()` / `smembers` / `del` in `invalidateCacheByTag`, `invalidateCache`, `storeInCache`, `clearAllCache` in try/catch (log + no-op). Defensive `Array.isArray` guard on `smembers`. +3 fail-open unit tests (28/28 query-cache tests pass). This is the C6-documented `res.map is not a function` crash; confirmed fixed live (`task.create` 200 under the real rate-limited Upstash). |
+| Backend | `340d3ce8` | `feat(escrow): persist PENDING row + harden confirmFunding (C7)` — **(a)** `escrow.createPaymentIntent` now opens a `db.transaction` + `SELECT … FOR UPDATE` and reuses an existing PENDING escrow row or `INSERT`s one, attaches the new `stripe_payment_intent_id`, and returns `{…, escrowId}` (additive, non-breaking). FUNDED → `PRECONDITION_FAILED` (no double-charge); other terminal states → `CONFLICT`. This closed the gap where `EscrowService.create()` was only ever called from tests, so no production path created the PENDING row the webhook/confirmFunding need. **(b)** `escrow.confirmFunding` hardened: independently `StripeService.verifyPaymentIntent` and requires `status==='succeeded'` AND `metadata.task_id===escrow.task_id` AND `metadata.poster_id===caller` before funding; already-FUNDED with the same PI → idempotent success, different PI → `CONFLICT`. +12 escrow-router tests (77/77 pass); 5777/5777 backend unit tests pass; AppRouter bundle regenerated with `escrowId`. |
+| Backend | `2c474abe` | `fix(db): C7 escrow schema alignment — add escrows.version (C7)` — migration `009-c7-escrow-version.sql`, additive `ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 1` (canonical `constitutional-schema.sql:289`). Live Neon was missing the optimistic-locking column `EscrowService.fund()` needs. Applied to dev Neon with explicit user approval during acceptance. |
+| Frontend | `e038545` | `feat(web): add Stripe funding step (C7)` — installs `@stripe/stripe-js` + `@stripe/react-stripe-js`; `lib/stripe.ts` loader singleton; `components/funding-step.tsx` (Payment Element, single-shot createPaymentIntent guard, polls `escrow.getByTaskId` and shows "Task funded. Next: Hustler matching." ONLY on backend `state==='FUNDED'`, 20s `confirmFunding` fallback for webhook-down, `return_url` redirect-resume + query-param strip, `hustlexp.funding.v1` persistence w/ 24h TTL); wires FundingStep into `dispatch-section.tsx` post-create panel; `funnel-form.tsx` defers the `draft.v1` clear until funded + adds mount-time funding resume + Start-Over clears all session keys. Web lint + tsc + build all EXIT 0. |
+
+**Manual acceptance log (live Neon + Firebase `hustlexp-fly-new` + Stripe test mode, web `:8081` → backend `:3000`):**
+
+| Check | Result |
+|-------|--------|
+| C4 estimate (dump-run / standard_physical) → $30.00 / 1 hr 15 min | ✅ |
+| C5 `geo.availability` 98004 → 200 honest empty-state | ✅ |
+| C6 auth gate → `user.register` 200 → `task.create` 200 | ✅ |
+| `escrow.createPaymentIntent` → 200 `{paymentIntentId, clientSecret, amount:3000, escrowId}` | ✅ |
+| PENDING `escrows` row persisted with `stripe_payment_intent_id` (the Step-1 fix) | ✅ |
+| Funding UI: "SECURE PAYMENT" + "Your card is charged only through Stripe. Funds are released after proof is reviewed." + "Pay $30.00 to fund this task" | ✅ |
+| Real Stripe test charge on the PI (4242 via `pm_card_visa`) → `status=succeeded`, single charge `ch_3Td2eQ…`, 3000¢ | ✅ |
+| `return_url` redirect-resume → polling → 20s `confirmFunding` fallback (webhook-off) → PENDING→FUNDED | ✅ |
+| UI shows **"Task funded. Next: Hustler matching."** only after backend FUNDED | ✅ |
+| **DB probe:** escrow `4b69768c` task `349222ff` → `state=FUNDED`, `stripe_payment_intent_id` not null, `version=2`, `funded_at` set, **1 row** | ✅ |
+| No duplicate charge / no duplicate escrow row | ✅ |
+| Empty/incomplete card submit → clean error ("Your card number is incomplete.") + Try again | ✅ |
+| Step 0 Upstash fail-open: `task.create` 200 under real rate-limited Upstash (no `res.map` crash) | ✅ |
+| Banned copy ("on the way"/"matched"/"accepted"/"insured"/"protected"/"guaranteed"/"background checked") | ✅ 0 hits |
+
+**C7 carry-forward / known limits:**
+- **In-iframe keystrokes not automatable here.** Stripe Payment Element card inputs are in a cross-origin `js.stripe.com` iframe; the headless preview can't type into it. The PI was confirmed with the equivalent `pm_card_visa` (4242) via the Stripe API, and funding was driven through the real `return_url`→polling→`confirmFunding` path. A human running a real browser should still do one literal 4242-in-the-Element pass, plus a true hard-decline (`4000 0000 0000 0002`) and a 3DS card (`4000 0027 6000 3184`) — the code handles all three (`redirect:'if_required'` + error phase + redirect-resume) but only the incomplete-card error and the redirect-resume were exercised live.
+- **No `stripe listen` / webhook locally.** PENDING→FUNDED was driven by the `confirmFunding` fallback, which is the intended webhook-off resilience path. In production, set `STRIPE_WEBHOOK_SECRET` and run the webhook so `payment_intent.succeeded` funds escrow without the client fallback. (The fallback stays as defense-in-depth and is safe — it re-verifies the PI with Stripe server-side.)
+- **Migration `009` applied to dev Neon only.** Re-apply on any other env (idempotent). Same systemic schema-drift root cause flagged since C5.1 — a one-shot canonical-vs-live reconciliation is still the right ops ticket.
+- **Local dev side effects (not committed):** `web/.env.local` holds the Firebase web config + the Stripe `pk_test_…` publishable key; backend `.env` `STRIPE_SECRET_KEY` was set to the real `sk_test_…` (was a placeholder). Both gitignored.
 
 ### C8–C10
-C8 poster dashboard shell → C9 local pages (zip-targeted SEO) → C10 analytics (PostHog already env-stubbed).
+C8 poster dashboard shell → C9 local pages (zip-targeted SEO) → C10 analytics (PostHog already env-stubbed). **Do not start C8 in this session.**
 
 ---
 
