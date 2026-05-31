@@ -906,11 +906,6 @@ declare const TEMPLATE_SLUGS: {
 	readonly WILDCARD_BIZARRE: "wildcard_bizarre";
 };
 export type TemplateSlug = typeof TEMPLATE_SLUGS[keyof typeof TEMPLATE_SLUGS];
-export interface CreatePaymentIntentResult {
-	paymentIntentId: string;
-	clientSecret: string;
-	amount: number;
-}
 export interface XPLedgerEntry {
 	id: string;
 	user_id: string;
@@ -3635,7 +3630,12 @@ export declare const appRouter: import("@trpc/server").TRPCBuiltRouter<{
 				taskId: string;
 				amount?: number | undefined;
 			};
-			output: CreatePaymentIntentResult;
+			output: {
+				escrowId: string;
+				paymentIntentId: string;
+				clientSecret: string;
+				amount: number;
+			};
 			meta: object;
 		}>;
 		confirmFunding: import("@trpc/server").TRPCMutationProcedure<{

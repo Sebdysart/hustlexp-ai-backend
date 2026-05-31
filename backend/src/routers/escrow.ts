@@ -166,31 +166,134 @@ export const escrowRouter = router({
         posterId: ctx.user.id,
         amount,
       });
-      
+
       if (!result.success) {
         throw new TRPCError({
           code: 'INTERNAL_SERVER_ERROR',
           message: result.error.message,
         });
       }
-      
-      return result.data;
+
+      // C7: atomically reuse or create a PENDING escrow row and attach the new
+      // PaymentIntent id. Without this, the Stripe webhook (and the client
+      // confirmFunding fallback) have no row to transition PENDING→FUNDED.
+      //
+      // Idempotency layers:
+      //  - StripeService.createPaymentIntent already passes `pi_create_${taskId}`
+      //    as the Stripe idempotency key (StripeService.ts:92), so retries from
+      //    the same task return the same PaymentIntent.
+      //  - FOR UPDATE row-lock + state branch below collapses double-click into
+      //    a single PENDING row per task.
+      //  - FUNDED → PRECONDITION_FAILED prevents double-charging an already-funded
+      //    task. Other terminal states (RELEASED / REFUNDED / REFUND_PARTIAL /
+      //    LOCKED_DISPUTE) → CONFLICT.
+      const escrowId = await db.transaction(async (query) => {
+        const existing = await query<{ id: string; state: string }>(
+          `SELECT id, state FROM escrows WHERE task_id = $1 FOR UPDATE`,
+          [input.taskId]
+        );
+
+        if (existing.rows.length > 0) {
+          const row = existing.rows[0];
+          if (row.state === 'FUNDED') {
+            throw new TRPCError({
+              code: 'PRECONDITION_FAILED',
+              message: 'Escrow already funded for this task',
+            });
+          }
+          if (row.state !== 'PENDING') {
+            throw new TRPCError({
+              code: 'CONFLICT',
+              message: `Escrow for this task is in terminal state ${row.state}`,
+            });
+          }
+          // Reuse existing PENDING row; attach the new PI id (the old one — if
+          // any — is left orphaned at Stripe; only one PI per task can ever
+          // succeed because the Stripe idempotency key collapses creates).
+          await query(
+            `UPDATE escrows SET stripe_payment_intent_id = $1, updated_at = NOW()
+             WHERE id = $2 AND state = 'PENDING'`,
+            [result.data.paymentIntentId, row.id]
+          );
+          return row.id;
+        }
+
+        const inserted = await query<{ id: string }>(
+          `INSERT INTO escrows (task_id, amount, state, stripe_payment_intent_id)
+           VALUES ($1, $2, 'PENDING', $3)
+           RETURNING id`,
+          [input.taskId, amount, result.data.paymentIntentId]
+        );
+        return inserted.rows[0].id;
+      });
+
+      return { ...result.data, escrowId };
     }),
   
   /**
-   * Confirm escrow funding (after Stripe payment succeeds)
-   * SECURITY: Only the poster who created the escrow can confirm funding
+   * Confirm escrow funding (after Stripe payment succeeds).
+   *
+   * SECURITY:
+   *  - Only the poster who created the escrow can confirm funding (poster_id check).
+   *  - The client-supplied `stripePaymentIntentId` is independently re-fetched from
+   *    Stripe and must report status='succeeded' with metadata.task_id matching the
+   *    escrow's task_id and metadata.poster_id matching the caller. This blocks a
+   *    malicious or buggy client from advancing escrow state without a real payment.
+   *  - Already-FUNDED with the same PI id is treated as idempotent success (the
+   *    Stripe webhook may have beaten the client to PENDING→FUNDED). Already-FUNDED
+   *    with a DIFFERENT PI id is a CONFLICT — never silently accept it.
    */
   confirmFunding: posterProcedure
     .input(Schemas.fundEscrow)
     .mutation(async ({ ctx, input }) => {
-      // Authorization: verify caller is the poster
+      // Authorization: verify caller is the poster on the escrow's task.
       const escrow = await EscrowService.getById(input.escrowId);
       if (!escrow.success) {
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Escrow not found' });
       }
       if (escrow.data.poster_id !== ctx.user.id) {
         throw new TRPCError({ code: 'FORBIDDEN', message: 'Only the escrow creator can confirm funding' });
+      }
+
+      // Server-side Stripe verification — never trust the client's claim alone.
+      const piResult = await StripeService.verifyPaymentIntent(input.stripePaymentIntentId);
+      if (!piResult.success) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: 'Could not verify payment with Stripe',
+        });
+      }
+      const pi = piResult.data;
+      if (pi.status !== 'succeeded') {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: `Payment is not in succeeded state (status: ${pi.status})`,
+        });
+      }
+      const piTaskId = pi.metadata.task_id;
+      const piPosterId = pi.metadata.poster_id;
+      if (piTaskId !== escrow.data.task_id) {
+        throw new TRPCError({
+          code: 'FORBIDDEN',
+          message: 'PaymentIntent does not belong to this escrow\'s task',
+        });
+      }
+      if (piPosterId !== ctx.user.id) {
+        throw new TRPCError({
+          code: 'FORBIDDEN',
+          message: 'PaymentIntent does not belong to this poster',
+        });
+      }
+
+      // Idempotency: if the webhook already funded with this same PI, return success.
+      if (escrow.data.state === 'FUNDED') {
+        if (escrow.data.stripe_payment_intent_id === input.stripePaymentIntentId) {
+          return escrow.data;
+        }
+        throw new TRPCError({
+          code: 'CONFLICT',
+          message: 'Escrow is already funded with a different payment intent',
+        });
       }
 
       const result = await EscrowService.fund({

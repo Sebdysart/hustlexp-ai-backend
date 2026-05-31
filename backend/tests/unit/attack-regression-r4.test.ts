@@ -21,12 +21,18 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Mocks
 // ---------------------------------------------------------------------------
 
-vi.mock('../../src/db', () => ({
-  db: { query: vi.fn() },
-  isInvariantViolation: vi.fn(() => false),
-  isUniqueViolation: vi.fn(() => false),
-  getErrorMessage: vi.fn((code: string) => `Error ${code}`),
-}));
+vi.mock('../../src/db', () => {
+  const queryFn = vi.fn();
+  return {
+    db: {
+      query: queryFn,
+      transaction: vi.fn(async (fn: (query: typeof queryFn) => Promise<unknown>) => fn(queryFn)),
+    },
+    isInvariantViolation: vi.fn(() => false),
+    isUniqueViolation: vi.fn(() => false),
+    getErrorMessage: vi.fn((code: string) => `Error ${code}`),
+  };
+});
 
 vi.mock('../../src/auth/firebase', () => ({
   firebaseAuth: { verifyIdToken: vi.fn() },
@@ -204,7 +210,13 @@ describe('REG-2 — FIXED: Null task price is rejected (not silently coerced to 
 
   it('FIXED — Stripe is called normally when price is set (non-regression)', async () => {
     mockStripeService.isConfigured.mockReturnValue(true);
-    mockDb.query.mockResolvedValueOnce({ rows: [{ price: 5000 }], rowCount: 1 } as any);
+    mockDb.query
+      // 1) SELECT price FROM tasks
+      .mockResolvedValueOnce({ rows: [{ price: 5000 }], rowCount: 1 } as any)
+      // 2) SELECT id, state FROM escrows ... FOR UPDATE (no existing row, C7)
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as any)
+      // 3) INSERT INTO escrows ... RETURNING id (C7)
+      .mockResolvedValueOnce({ rows: [{ id: 'escrow-non-reg' }], rowCount: 1 } as any);
     mockStripeService.createPaymentIntent.mockResolvedValueOnce({
       success: true,
       data: { paymentIntentId: 'pi_abc', clientSecret: 'cs_abc', amount: 5000 },
