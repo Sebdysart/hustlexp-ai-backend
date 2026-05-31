@@ -28,7 +28,12 @@
 --   3. toMobileUser() in user.ts queries FROM task_ratings — table missing
 --      from live. [CREATED 2026-05-30, empty]
 --   4. PlanService.getUserPlan queries SELECT plan, plan_expires_at FROM
---      users — neither column exists. [NOT YET APPLIED — next C6 blocker]
+--      users — neither column exists. [APPLIED 2026-05-31]
+--   5. tasks INSERT in TaskService.create references xp_reward, risk_level,
+--      mode, live_broadcast_radius_miles, instant_mode, sensitive — none of
+--      these existed on live tasks. Defaults come from canonical migration
+--      005-mega-schema-alignment.sql (which was never applied to live).
+--      [APPLIED 2026-05-31]
 --
 -- ---------------------------------------------------------------------------
 -- STEP 1 — users: add the auth/COPPA/ban-status columns (APPLIED 2026-05-30)
@@ -86,7 +91,7 @@ CREATE INDEX IF NOT EXISTS idx_ratings_public
   WHERE is_public = true;
 
 -- ---------------------------------------------------------------------------
--- STEP 4 — users: add plan columns (NOT YET APPLIED — next C6 blocker)
+-- STEP 4 — users: add plan columns (APPLIED 2026-05-31)
 -- ---------------------------------------------------------------------------
 -- Surfaced by the *third* attempt at task.create during C6 acceptance:
 --   "column "plan" does not exist"
@@ -100,10 +105,49 @@ ALTER TABLE users
   ADD COLUMN IF NOT EXISTS plan_expires_at TIMESTAMPTZ;
 
 -- ---------------------------------------------------------------------------
--- KNOWN FOLLOW-ONS NOT INCLUDED HERE
+-- STEP 5 — tasks: add the columns TaskService.create's INSERT references
+--                  (APPLIED 2026-05-31)
 -- ---------------------------------------------------------------------------
--- After this migration runs, the C6 path may still hit further drift inside
--- TaskService.create (downstream of PlanService). Those should be discovered
--- by re-running C6 manual acceptance after applying this file and resolved
--- in a follow-up migration of the same shape (purely additive). DO NOT add
--- speculative columns here.
+-- The INSERT in backend/src/services/TaskService.ts:443 binds 17 columns;
+-- six of them did not exist on live `tasks`. Defaults are taken verbatim
+-- from the canonical (never-applied-on-live) 005-mega-schema-alignment.sql.
+-- The risk_level CHECK is added as a separate constraint guarded by
+-- pg_constraint so a re-run is idempotent.
+
+ALTER TABLE tasks
+  ADD COLUMN IF NOT EXISTS xp_reward                  INTEGER NOT NULL DEFAULT 10,
+  ADD COLUMN IF NOT EXISTS risk_level                 TEXT    NOT NULL DEFAULT 'LOW',
+  ADD COLUMN IF NOT EXISTS mode                       TEXT    DEFAULT 'standard',
+  ADD COLUMN IF NOT EXISTS live_broadcast_radius_miles NUMERIC,
+  ADD COLUMN IF NOT EXISTS instant_mode               BOOLEAN DEFAULT FALSE,
+  ADD COLUMN IF NOT EXISTS sensitive                  BOOLEAN DEFAULT FALSE;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'tasks_risk_level_check'
+  ) THEN
+    ALTER TABLE tasks
+      ADD CONSTRAINT tasks_risk_level_check
+      CHECK (risk_level IN ('LOW','MEDIUM','HIGH','IN_HOME'));
+  END IF;
+END$$;
+
+-- ---------------------------------------------------------------------------
+-- C6 ACCEPTANCE — passed end-to-end on 2026-05-31 after step 5 was applied.
+-- task.create returned 200, task persisted to Neon (id a90f33a1-99b0-4c13-
+-- 852e-a8f52698f570), post-create UI showed "Task draft created. Secure
+-- payment is next." No Stripe / payment-intent call fired. C7 (Stripe
+-- Elements funding) is the next roadmap item.
+-- ---------------------------------------------------------------------------
+--
+-- KNOWN NON-DB BLOCKER SURFACED DURING ACCEPTANCE (NOT in this migration):
+-- The Upstash Redis account is account-level rate-limited at the time of
+-- writing. invalidateCacheByTag in backend/src/cache/query-cache.ts:157 calls
+-- pipeline.exec() without a try/catch and surfaces TypeError "res.map is not
+-- a function" as INTERNAL_SERVER_ERROR after a successful task.create. The
+-- dev acceptance run worked around this by launching the backend with empty
+-- UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN (so getClient() returns
+-- null and the cache helpers no-op). This is a resilience bug independent
+-- of C6 — fix is to wrap pipeline.exec in the same fail-open shape as
+-- redis.get / checkRateLimit. Recommended follow-up for the next operator.

@@ -1,6 +1,6 @@
-# HustleXP — Handoff: Roadmap C (C6 web shipped, acceptance blocked on schema drift)
+# HustleXP — Handoff: Roadmap C (C6 ACCEPTED, C7 next)
 
-> Updated 2026-05-30 after C6 manual acceptance attempt. Dispatch auth gate + authenticated `task.create` landed on `HUSTLEXPFINAL1` `d96f8ca`. **No web code changes were needed during acceptance** — the wiring works as written. Acceptance is **blocked at the backend / live-DB level by pre-existing schema drift** that C6 is simply the first roadmap item to actually exercise. A consolidated, idempotent fix-up migration (`backend/database/migrations/008-c6-schema-alignment.sql`) was written; steps 1–3 of it have already been applied to dev Neon, step 4 (`plan` columns) is the next blocker and is NOT yet applied. Until step 4 lands and a re-run of C6 acceptance shows the "Task draft created." state, **C7 stays closed**.
+> Updated 2026-05-31. C6 manual acceptance **passed end-to-end** against live Neon + Firebase project `hustlexp-fly-new` with test user `test.hustler@hustlexp.app`. `task.create` returned 200, task id `a90f33a1-99b0-4c13-852e-a8f52698f570` persisted to Neon (state=`OPEN`, price 3000¢, location `98004`, template `standard_physical`), post-create UI showed the exact required copy "Task draft created. Secure payment is next.", **no Stripe / escrow.createPaymentIntent call fired**, **no banned dispatch/match/insurance copy** appeared in any state. Web commit `HUSTLEXPFINAL1 d96f8ca` ships unchanged — no web code edits were needed during acceptance. Unblocking required two side-effects: (a) extending migration `008-c6-schema-alignment.sql` through step 5 and applying all 5 steps to dev Neon (additive only, all `IF NOT EXISTS`, one constraint relaxed to a strict superset); (b) running the local backend with empty `UPSTASH_REDIS_REST_*` env so the rate-limited Upstash account doesn't trigger an uncaught `res.map` in `invalidateCacheByTag` after `task.create` succeeds. **Next step: C7 (Stripe Elements funding) only.**
 
 ---
 
@@ -140,7 +140,51 @@ Commit `8a3076d` on `HUSTLEXPFINAL1`. Next.js 16.2.6 + React 19 + Tailwind v4, c
   - `POST /trpc/task.draftEstimate {zip:"98004"}` → 200, full estimate returned (C4 unaffected).
 - Web SSR: homepage 200 OK, zero banned terms in HTML (`background.checked` / `insurance` / `protected` / `0 hustlers` / `hustlers nearby` all 0 matches).
 
-### Roadmap C6 — Signup gate on Dispatch ⚠️ (web shipped, acceptance blocked on live-DB schema drift)
+### Roadmap C6 — Signup gate on Dispatch ✅ (ACCEPTED 2026-05-31)
+
+**Acceptance run summary (2026-05-31, live Neon + Firebase `hustlexp-fly-new`, test user `test.hustler@hustlexp.app`):**
+
+| Check | Result |
+|-------|--------|
+| Homepage loads + escrow promise headline | ✅ |
+| ZIP 98004 → C5 LocalAvailability honest empty-state | ✅ |
+| C4 draftEstimate (Moving help / standard_physical) → $30 / 1 hr 15 min | ✅ |
+| Dispatch CTA visible in result panel | ✅ |
+| Click Dispatch logged-out → auth gate appears with required headline + clickwrap | ✅ |
+| Sign in via Firebase test user → draft preserved (492 B) | ✅ |
+| Clickwrap accepted → user.register 200 → task.create **200** | ✅ |
+| Post-create UI: "Task draft created. Secure payment is next." + "Nothing has been charged and no Hustler has been notified yet." | ✅ |
+| Task id `a90f33a1-99b0-4c13-852e-a8f52698f570` persisted to Neon (state=OPEN, price=3000¢, location=98004, template_slug=standard_physical) | ✅ |
+| Network audit: 0 Stripe / payment-intent / escrow.createPaymentIntent calls fired | ✅ |
+| Banned-copy grep against rendered DOM + source: 0 hits (one self-referential comment in app/page.tsx documenting the ban — not rendered) | ✅ |
+| Refresh after success: draft cleared, lastTaskId still in localStorage for C7, fresh-form view rendered | ✅ |
+| Regression: off-area ZIP 90210 blocked client-side, 0 draftEstimate calls fired | ✅ |
+| Regression: C4 estimate works, C5 availability works | ✅ |
+
+**All schema drifts encountered + remediation:**
+
+| # | Drift | Fix |
+|---|-------|-----|
+| 1 | `users` missing `is_banned`, `account_status`, `date_of_birth`, `is_minor` | Migration 008 step 1 (`ADD COLUMN IF NOT EXISTS` × 4) — applied |
+| 2 | `users_trust_tier_check` rejected tier 0 that the code explicitly inserts for phone-less signups | Migration 008 step 2 (DROP + ADD with strict superset 0..4) — applied |
+| 3 | `task_ratings` relation missing | Migration 008 step 3 (canonical CREATE TABLE IF NOT EXISTS + 3 indexes) — applied |
+| 4 | `users` missing `plan`, `plan_expires_at` (PlanService) | Migration 008 step 4 — applied |
+| 5 | `tasks` missing `xp_reward`, `risk_level`, `mode`, `live_broadcast_radius_miles`, `instant_mode`, `sensitive` (TaskService.create INSERT) | Migration 008 step 5 (extended) — applied |
+
+**Non-DB blocker also encountered (NOT remediated, workaround only):**
+- The Upstash Redis account is currently rate-limited at the account level ("Your database has been temporarily rate-limited"). When pipeline operations like `invalidateCacheByTag` (in `backend/src/cache/query-cache.ts:157`) call `pipeline.exec()` they don't catch the error-shaped response and surface a raw `TypeError: res.map is not a function` as INTERNAL_SERVER_ERROR. The acceptance run worked around this by launching the dev backend with `UPSTASH_REDIS_REST_URL=""` and `UPSTASH_REDIS_REST_TOKEN=""` so `getClient()` returns null and every cache op no-ops. **This is a real backend resilience bug, not a C6 issue** — the cache-invalidation helpers should fail-open like the rate-limit helper does. Recommend a small follow-up: wrap `pipeline.exec()` in `query-cache.ts` and any other invalidation helpers in try/catch, log + swallow, same shape as `redis.get`. Out of C6 scope but worth flagging for the next operator.
+
+**Commits this round:**
+
+| Commit | What |
+|--------|------|
+| Backend `0fcafea2` | `feat(db): C6 schema alignment migration + handoff update` — adds `backend/database/migrations/008-c6-schema-alignment.sql`. Idempotent (IF NOT EXISTS everywhere, the one constraint operation is DROP IF EXISTS + ADD strict superset). The migration file now documents all 5 steps. **Step 5 was extended after the original commit during the acceptance re-run** — the next operator should apply the file again on any non-dev env; re-running is a no-op for steps already in place. |
+
+**Local dev-only side effects of the acceptance run (NOT committed):**
+- `web/.env.local` was written with the Firebase web SDK config + test creds. `web/.gitignore` matches `.env*` so it is intentionally not tracked.
+- `.claude/launch.json` + a `hustlexp-web` symlink under `~/Desktop/` were set up so the Claude Preview MCP server could run `next dev --port 8081` rooted at the right cwd. Both are local-only.
+
+### Roadmap C6 — Signup gate on Dispatch ✅ (web shipped 2026-05-30 at HUSTLEXPFINAL1 d96f8ca — code summary, originally landed pre-acceptance)
 
 **Acceptance attempt 2026-05-30 (test user `test.hustler@hustlexp.app` against live Neon + `hustlexp-fly-new` Firebase project):**
 
@@ -264,8 +308,8 @@ See **Roadmap C4 — Draft Estimate Flow ✅** in Section 3 above. Backend `293a
 ### C5 — Backend `geo.availability` ✅ + web `<LocalAvailability>` ✅ + live schema fix ✅
 Backend shipped at `6173fff0` (procedure) + `40268fde` (live schema alignment); web shipped at `e9cba74`. Live `GET /trpc/geo.availability?input={"zip":"98004"}` returns 200 with truthful `emptyState:true`. Non-Eastside ZIPs reject. C4 draftEstimate unaffected. Full verification log in Section 3 under **Roadmap C5.1 — Live schema alignment ✅**. **C5 is closed. Next operator can start C6.**
 
-### C6 — Signup gate on Dispatch ⚠️ (web shipped at `d96f8ca`, acceptance blocked on schema drift)
-Web `d96f8ca` ships the Dispatch CTA + inline auth gate + clickwrap + authenticated `task.create`. **No web code changes were needed during the acceptance attempt — the wiring is correct.** Manual acceptance on 2026-05-30 surfaced four pre-existing live-Neon schema drifts; three are remediated, one (`users.plan` / `users.plan_expires_at`) is the next blocker. The consolidated, idempotent fix-up migration is at `backend/database/migrations/008-c6-schema-alignment.sql`. Next operator: (a) apply step 4 of that migration to live Neon, (b) re-run the acceptance flow as documented in **Section 3 → Roadmap C6 ⚠️**, (c) if green, mark C6 accepted and open C7. **Do not start C7 until C6 acceptance returns "Task draft created. Secure payment is next."**
+### C6 — Signup gate on Dispatch ✅ ACCEPTED 2026-05-31
+Web `d96f8ca` is the C6 web HEAD (unchanged). Manual acceptance passed end-to-end against live Neon + Firebase `hustlexp-fly-new`: dispatch from anonymous → auth gate → Firebase sign-in → clickwrap → `user.register` 200 → `task.create` 200 → post-create state with required copy. Task id `a90f33a1-99b0-4c13-852e-a8f52698f570` persisted. Zero Stripe / payment-intent calls. Zero banned copy. Full check list in **Section 3 → Roadmap C6 ✅**. The 5-step schema-alignment migration `008` is applied to dev Neon and committed to the repo. **Next step: C7 (Stripe Elements funding) only.**
 
 ### C7 — Stripe Elements funding
 - Stripe Web SDK + Elements, publishable key from env (already in `env.ts`).
