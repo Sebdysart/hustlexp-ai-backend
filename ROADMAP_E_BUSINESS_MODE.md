@@ -220,4 +220,46 @@ Proof:
 
 **Acceptance:** ✅ **E4 ACCEPTED** — code complete, unit tests green (20/20 targeted + 5807 full suite), and live DB acceptance PASSED against dev Neon (list + filters + review→REVIEWED with reviewed_at/reviewed_by/admin_notes + audit row result=success with leadId/status + non-admin FORBIDDEN; admin grant revoked, no account created).
 
-**Next step:** E5 — **NOT started, hard-gated. Do not start.**
+**Next step:** E5 — see §10 below.
+
+---
+
+## 10. E5 — Completed Work (business lead conversion hook)
+
+E5 adds the **only** thing E4 approval was missing: a link from an **APPROVED** lead to a **real, existing** account. One admin-only, backend-only mutation. It creates no account, posts no task, grants no capability — a bookkeeping link plus its audit row, in one transaction.
+
+### Backend (commit on `claude/audit-backend-workflow-mFb7a`)
+
+- **`backend/src/routers/admin.ts`** (EDIT) — one new `adminProcedure` appended to `adminRouter`, mirroring `reviewBusinessLead`'s transactional shape; reuses existing imports (no `ComplianceGuardianService`):
+  - **`admin.convertBusinessLead`** (`.mutation`) — input `{ leadId: uuid, userId: uuid, approvedTemplates?: known TaskTemplate slugs, adminNotes?: ≤2000 }` (no `status` field — always sets `CONVERTED`). Wrapped in a single **`db.transaction`**:
+    1. `SELECT id, status, converted_user_id … FOR UPDATE`; missing → `NOT_FOUND`.
+    2. `status === 'CONVERTED'` or `converted_user_id != null` → `CONFLICT` "Lead already converted".
+    3. `status !== 'APPROVED'` → `CONFLICT` "Lead must be APPROVED to convert (is X)" (blocks NEW/REVIEWED/REJECTED in one check).
+    4. `SELECT id, is_banned, account_status FROM users`; missing → `NOT_FOUND`; `is_banned`/`SUSPENDED`/`DELETED` → `PRECONDITION_FAILED`. **No `default_mode` check** — a business owner may be in worker mode; posting is gated separately at `task.create`.
+    5. `UPDATE business_leads SET status='CONVERTED', converted_user_id=$1, approved_templates = COALESCE($2::jsonb, approved_templates), updated_at = NOW() … RETURNING …` (`COALESCE` preserves existing templates when omitted).
+    6. `INSERT INTO admin_actions` audit row.
+  - Input validation: `approvedTemplates` validated against `TEMPLATE_SLUGS` (unknown slug rejected pre-DB by Zod).
+- **`dist-types/AppRouter.d.ts`** — regenerated via `npm run emit:trpc-types`; `convertBusinessLead` present in the bundle.
+
+### Audit shape — `target_user_id` populated (deliberate divergence from E4)
+
+Unlike E4 review (whose subject is a *lead*, so `leadId` rides in `action_details` and `target_user_id` is null), conversion's target genuinely **is** a user. E5 therefore uses the **`XPTaxService` shape** — `INSERT INTO admin_actions (admin_user_id, admin_role, action_type, action_details, target_user_id, result) VALUES ($1, 'admin', 'business_lead_conversion', $2::jsonb, $3, 'success')` — with `target_user_id = converted user id`; `leadId` still rides in `action_details`. The conversion `adminNotes` is recorded in `action_details` only — the lead's review `admin_notes` is **left intact**. The lead UPDATE + audit INSERT share one `db.transaction`, so a conversion never commits without its audit row (unit-tested rollback case).
+
+> Conversion grants **no capability**: `task.create` still gates posting (`posterProcedure` + `trust_tier` vs `template.requiredTrustTier`); `approved_templates` remains inert (verified: written only, never read to grant capability). A user may be `converted_user_id` of more than one lead (no unique constraint, no code check). Pre-existing broken `admin_actions` inserts in `setUserBan`/`escrowOverride`/`EarnedVerificationUnlockService` (flagged in §9) are **not** touched here — separate ticket.
+
+### Tests / verification run
+
+- **Extended** `backend/tests/unit/admin-business-leads.test.ts` — **37/37 pass** (E4 cases + new `convertBusinessLead` block via a `mockConvert` helper queuing SELECT lead → SELECT user → UPDATE → INSERT). New cases: converts APPROVED (status/converted_user_id + UPDATE params + audit `business_lead_conversion`/`target_user_id`); blocks NEW/REVIEWED/REJECTED/already-CONVERTED (`CONFLICT`, no UPDATE); missing lead/user (`NOT_FOUND`); banned/SUSPENDED/DELETED target (`PRECONDITION_FAILED`, no UPDATE); audit row written; audit-insert failure rolls back; non-admin `FORBIDDEN` (no transaction); no `INSERT INTO users`; `approved_templates` preserved-when-omitted vs overwritten-when-provided; Zod rejects unknown slug.
+- **Regression:** `admin-router.test.ts` + `admin-branches.test.ts` + `attack-admin.test.ts` → **68/68 pass** (unchanged; carry the E4 `ComplianceGuardianService` mock).
+- `npx tsc -b` → clean. `npx eslint backend/src` → **EXIT 0**. `npm run emit:trpc-types` → bundle contains `convertBusinessLead`.
+- `git status`: only `backend/src/routers/admin.ts`, `backend/tests/unit/admin-business-leads.test.ts`, `dist-types/AppRouter.d.ts`, and this roadmap changed. **No web, no migrations** (`business_leads`/`admin_actions`/`users` already exist live).
+
+### Scope adherence
+One admin endpoint + transactional audit only. **No** account creation (links an existing user) · **no** `task.create` / task creation / gate bypass · **no** subscriptions / billing · **no** dashboard or admin/web UI or public mutation · **no** consumer-funnel / analytics changes · **no** migrations · **no** E6.
+
+### Live DB acceptance — PENDING
+Run separately like E4 (admin test-caller against dev Neon: an APPROVED lead + an active target user, a disposable admin grant revoked in teardown). Not part of the implement step.
+
+**Acceptance:** ☐ **E5 code complete** — unit tests green (37 targeted + 68 admin regression), `tsc`/`eslint` clean, types emitted, committed & pushed. Live DB acceptance pending sign-off.
+
+**Next step:** E6 — the business-facing product (dashboards, recurring templates, bulk posting, billing) — **remains PARKED & hard-gated. Do not start.**
