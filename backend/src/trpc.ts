@@ -34,6 +34,11 @@ const log = logger.child({ module: 'trpc' });
 export interface Context extends Record<string, unknown> {
   user: User | null;
   firebaseUid: string | null;
+  // Raw request — only read by procedures that need it (e.g. draftEstimate
+  // derives an IP key for anonymous rate limiting). Middlewares that narrow
+  // the context (isAuthenticated, isAdmin, isHustler, isPoster) drop this,
+  // which is intentional: only publicProcedure paths can opt into it.
+  req?: Request;
 }
 
 export async function createContext(opts: {
@@ -43,7 +48,7 @@ export async function createContext(opts: {
   const authHeader = opts.req.headers.get('authorization');
 
   if (!authHeader?.startsWith('Bearer ')) {
-    return { user: null, firebaseUid: null };
+    return { user: null, firebaseUid: null, req: opts.req };
   }
 
   const token = authHeader.slice(7);
@@ -54,7 +59,7 @@ export async function createContext(opts: {
     if (revokedAt) {
       log.info({ uid: cached.firebaseUid }, 'tRPC cache hit invalidated by Redis revocation marker');
     } else {
-      return { user: cached.user, firebaseUid: cached.firebaseUid };
+      return { user: cached.user, firebaseUid: cached.firebaseUid, req: opts.req };
     }
   }
 
@@ -85,12 +90,12 @@ export async function createContext(opts: {
       }
     }
 
-    return { user, firebaseUid: decoded.uid };
+    return { user, firebaseUid: decoded.uid, req: opts.req };
   } catch (error) {
     const rawMsg = (error as Error).message ?? '';
     const safeMsg = rawMsg.replace(/eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]*/g, '[REDACTED_TOKEN]');
     log.error({ err: safeMsg }, 'Firebase token verification failed');
-    return { user: null, firebaseUid: null };
+    return { user: null, firebaseUid: null, req: opts.req };
   }
 }
 

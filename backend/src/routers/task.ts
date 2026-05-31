@@ -81,6 +81,85 @@ export async function checkTaskCreateRateLimit(userId: string): Promise<void> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Redis-backed rate limit for the anonymous public draftEstimate endpoint.
+//
+// Anonymous LLM-backed endpoints are a wallet-drain vector — a single
+// unkeyed request can chain into a paid Anthropic call. Three layers,
+// all enforced before any LLM call. Per-IP layers fail OPEN (consistent
+// with the rest of this router); the global kill switch fails CLOSED so a
+// Redis outage cannot allow uncapped LLM spend.
+// ---------------------------------------------------------------------------
+
+export async function checkDraftEstimateRateLimit(ipKey: string): Promise<void> {
+  // Layer 1: per-IP burst — 5 requests / 60s
+  try {
+    const burst = await checkRateLimit(ipKey, 'task:draft-estimate:burst', 5, 60);
+    if (!burst.allowed) {
+      throw new TRPCError({
+        code: 'TOO_MANY_REQUESTS',
+        message: "You've made a lot of estimate requests. Please wait a minute before trying again.",
+      });
+    }
+  } catch (err) {
+    if (err instanceof TRPCError) throw err;
+    taskRouterLog.warn({ err, ipKey }, 'Redis unavailable for draft-estimate burst — allowing request');
+  }
+
+  // Layer 2: per-IP daily — 30 requests / 86400s
+  try {
+    const daily = await checkRateLimit(ipKey, 'task:draft-estimate:daily', 30, 86400);
+    if (!daily.allowed) {
+      throw new TRPCError({
+        code: 'TOO_MANY_REQUESTS',
+        message: "You've reached today's free estimate limit. Try again tomorrow.",
+      });
+    }
+  } catch (err) {
+    if (err instanceof TRPCError) throw err;
+    taskRouterLog.warn({ err, ipKey }, 'Redis unavailable for draft-estimate daily — allowing request');
+  }
+
+  // Layer 3: GLOBAL kill switch — 2000 requests / 86400s. Fails CLOSED.
+  try {
+    const global = await checkRateLimit('GLOBAL', 'task:draft-estimate:global', 2000, 86400);
+    if (!global.allowed) {
+      taskRouterLog.warn('Draft-estimate global daily kill switch fired');
+      throw new TRPCError({
+        code: 'SERVICE_UNAVAILABLE',
+        message: 'Our estimator is taking a breath — please try again later.',
+      });
+    }
+  } catch (err) {
+    if (err instanceof TRPCError) throw err;
+    // Fail CLOSED on the global cap: we cannot risk uncapped LLM spend if
+    // Redis is unavailable. Per-IP layers already failed open above.
+    taskRouterLog.error({ err }, 'Redis unavailable for draft-estimate global kill switch — failing closed');
+    throw new TRPCError({
+      code: 'SERVICE_UNAVAILABLE',
+      message: 'Our estimator is temporarily unavailable.',
+    });
+  }
+}
+
+// Derive a stable IP key from forwarded / real-ip / no-source headers.
+// Returns null when there is no usable source — callers MUST reject in that
+// case so an unkeyed request can never reach the LLM.
+function deriveIpKey(headers: Headers | undefined): string | null {
+  if (!headers) return null;
+  const xff = headers.get('x-forwarded-for');
+  if (xff) {
+    const first = xff.split(',')[0]?.trim();
+    if (first) return first;
+  }
+  const realIp = headers.get('x-real-ip');
+  if (realIp) {
+    const trimmed = realIp.trim();
+    if (trimmed) return trimmed;
+  }
+  return null;
+}
+
 export const taskRouter = router({
   // --------------------------------------------------------------------------
   // READ OPERATIONS
@@ -445,6 +524,148 @@ export const taskRouter = router({
         suggestedAlternative: complianceResult.suggestedAlternative,
         notes: complianceResult.notes,
         scopeProposal: scopeResult.success ? scopeResult.data : null,
+      };
+    }),
+
+  /**
+   * Public draft estimate for the anonymous poster funnel (C4).
+   *
+   * SERVICES USED (each verified non-charging, non-DB-writing):
+   *   - ComplianceGuardianService.evaluate
+   *       writes DB: no  | charges/Stripe: no | paid LLM: yes (gated by AIRouter budget)
+   *   - ScoperAIService.analyzeTaskScope
+   *       writes DB: no  | charges/Stripe: no | paid LLM: yes (capped via ScoperProposalSchema)
+   *   - getManifest / getTemplate
+   *       writes DB: no  | charges/Stripe: no | paid LLM: no
+   *
+   * INVARIANTS:
+   *   - No DB writes. No Stripe. No task creation. No PII writes. No PII logging.
+   *   - Every paid-LLM path is gated by checkDraftEstimateRateLimit before the call.
+   *   - Description is never logged in full — only length + a 40-char preview.
+   *   - One LLM scoping call per request. No retries inside this procedure.
+   */
+  draftEstimate: publicProcedure
+    .input(
+      z.object({
+        description: z.string().trim().min(8).max(1500),
+        category: z.string().max(50).optional(),
+        zip: z.string().regex(/^\d{5}$/).optional(),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      const ipKey = deriveIpKey(ctx.req?.headers);
+      if (!ipKey) {
+        // No usable source — refuse rather than let an unkeyed request hit the LLM.
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: 'Unable to identify client. Refresh and try again.',
+        });
+      }
+
+      // Rate limit BEFORE any paid call.
+      await checkDraftEstimateRateLimit(ipKey);
+
+      // Validate category against the live template manifest.
+      if (input.category) {
+        const known = getManifest().some((t) => t.slug === input.category);
+        if (!known) {
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message: 'Unknown category.',
+          });
+        }
+      }
+
+      const descPreview =
+        input.description.length > 40
+          ? `${input.description.slice(0, 40)}…`
+          : input.description;
+      taskRouterLog.info(
+        {
+          descLen: input.description.length,
+          descPreview,
+          category: input.category,
+          hasZip: Boolean(input.zip),
+        },
+        'draft-estimate request'
+      );
+
+      // Compliance gate — first thing after the rate limit.
+      const compliance = await ComplianceGuardianService.evaluate({
+        description: input.description,
+        userId: 'anonymous-draft', // sentinel, NOT a real user id
+        templateSlug: input.category,
+      });
+
+      if (compliance.tier === 'hard_block') {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message:
+            'Task blocked by compliance check. HustleXP only allows legal IRL tasks.',
+        });
+      }
+
+      // Single scoping call. ScoperAIService self-caps LLM tokens (maxTokens
+      // for refine paths is 300 inside the service). No retries here — on
+      // failure surface a generic error so callers can re-prompt.
+      const scopeResult = await ScoperAIService.analyzeTaskScope({
+        description: input.description,
+        templateSlug: input.category,
+        complianceResult: compliance,
+      });
+
+      if (!scopeResult.success) {
+        taskRouterLog.warn(
+          { code: scopeResult.error.code },
+          'draft-estimate scoper failed'
+        );
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: 'Unable to generate estimate right now. Try again in a moment.',
+        });
+      }
+
+      const proposal = scopeResult.data;
+
+      // Synthesise the response from compliance + scope. We don't echo the raw
+      // description back beyond a trimmed cleaned copy — and we never store
+      // anything from this request.
+      const cleanedDescription = input.description
+        .trim()
+        .replace(/\s+/g, ' ')
+        .slice(0, 1500);
+      const titleSource =
+        cleanedDescription.split(/[.!?\n]/)[0]?.trim() || cleanedDescription;
+      const title =
+        titleSource.length > 80 ? `${titleSource.slice(0, 77)}…` : titleSource;
+      const flags = proposal.flags ?? [];
+      const urgency: 'low' | 'normal' | 'high' = flags.includes('urgent')
+        ? 'high'
+        : 'normal';
+      const safetyNotes =
+        compliance.tier === 'soft_flag' && compliance.triggeredRules?.length
+          ? compliance.triggeredRules.map(
+              (r) => `Flagged: ${r.replace(/_/g, ' ')}`
+            )
+          : [];
+      const followUpQuestions =
+        proposal.confidence_score < 0.6
+          ? [
+              'What is your budget range for this task?',
+              'When would you like this done?',
+            ]
+          : [];
+
+      return {
+        title,
+        cleanedDescription,
+        category: input.category ?? 'standard_physical',
+        recommendedPriceCents: proposal.suggested_price_cents,
+        estimatedDurationMinutes: proposal.estimated_duration_minutes ?? 60,
+        requiredTools: proposal.required_capabilities ?? [],
+        urgency,
+        safetyNotes,
+        followUpQuestions,
       };
     }),
 

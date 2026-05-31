@@ -203,6 +203,7 @@ export interface ServiceError {
 export interface Context extends Record<string, unknown> {
 	user: User | null;
 	firebaseUid: string | null;
+	req?: Request;
 }
 export interface MatchingScoreComponents {
 	trust_multiplier: number;
@@ -3377,6 +3378,25 @@ export declare const appRouter: import("@trpc/server").TRPCBuiltRouter<{
 				suggestedAlternative: string | undefined;
 				notes: ComplianceNotes;
 				scopeProposal: ScoperProposal | null;
+			};
+			meta: object;
+		}>;
+		draftEstimate: import("@trpc/server").TRPCMutationProcedure<{
+			input: {
+				description: string;
+				category?: string | undefined;
+				zip?: string | undefined;
+			};
+			output: {
+				title: string;
+				cleanedDescription: string;
+				category: string;
+				recommendedPriceCents: number;
+				estimatedDurationMinutes: number;
+				requiredTools: string[];
+				urgency: "high" | "normal";
+				safetyNotes: string[];
+				followUpQuestions: string[];
 			};
 			meta: object;
 		}>;
