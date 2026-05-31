@@ -1,6 +1,6 @@
 # HustleXP — Handoff: Roadmap E (Business Demand Mode)
 
-> Updated 2026-05-31 (E4). **E4 (admin lead review queue) CODE COMPLETE — see §9.** Added two `adminProcedure` endpoints to `backend/src/routers/admin.ts`: `admin.listBusinessLeads` (offset pagination, `status` + `requiresReview` filters, newest-first) and `admin.reviewBusinessLead` (set `REVIEWED`/`APPROVED`/`REJECTED` + admin notes + optional approved template slugs; stamps `reviewed_at`/`reviewed_by`; lead UPDATE and `admin_actions` audit INSERT in one `db.transaction` so a review never commits without its audit row). Guards: missing lead → `NOT_FOUND`, `CONVERTED` lead → `CONFLICT` (E5 boundary, never set here), compliance-flagged APPROVE → `PRECONDITION_FAILED` unless `override:true`. **Backend only — no business dashboard, no admin UI, no account creation, no `CONVERTED`, no auto-approval, no subscriptions, no bulk posting, no analytics, no consumer-funnel / public / web changes.** Backend commit `d7015f23`. Unit tests: `admin-business-leads.test.ts` 20/20 + full unit suite 5807 pass. **Audit-schema finding resolved live (see §9).** Acceptance: pending Sebastian. **E5/E6 remain hard-gated — do NOT start E5.**
+> Updated 2026-05-31 (E4). **E4 (admin lead review queue) DONE & ACCEPTED — see §9. Live DB acceptance PASSED** against dev Neon (19/19 checks). Added two `adminProcedure` endpoints to `backend/src/routers/admin.ts`: `admin.listBusinessLeads` (offset pagination, `status` + `requiresReview` filters, newest-first) and `admin.reviewBusinessLead` (set `REVIEWED`/`APPROVED`/`REJECTED` + admin notes + optional approved template slugs; stamps `reviewed_at`/`reviewed_by`; lead UPDATE and `admin_actions` audit INSERT in one `db.transaction` so a review never commits without its audit row). Guards: missing lead → `NOT_FOUND`, `CONVERTED` lead → `CONFLICT` (E5 boundary, never set here), compliance-flagged APPROVE → `PRECONDITION_FAILED` unless `override:true`. **Backend only — no business dashboard, no admin UI, no account creation, no `CONVERTED`, no auto-approval, no subscriptions, no bulk posting, no analytics, no consumer-funnel / public / web changes.** Backend commit `d7015f23`; handoff commit `07c76252`. Unit tests: `admin-business-leads.test.ts` 20/20 + full unit suite 5807 pass. **Audit-schema finding resolved live (see §9).** **E5/E6 remain hard-gated — do NOT start E5.**
 >
 > Updated 2026-05-31 (E3). **E3 (backend lead capture + form wiring) DONE & ACCEPTED — see §8.** Added the `business_leads` table (migration `010-business-leads.sql` + mirrored into `constitutional-schema.sql`), a public `business.submitLead` tRPC mutation (anonymous, rate-limited, compliance-gated, PII-safe), and wired the E2 form to it. Every lead stores as `status='NEW'` + `requires_review=true` — **no auto-approval, no dashboard, no admin UI, no subscriptions, no bulk posting, no account creation, no analytics, no consumer-funnel changes.** Backend commit `7041596e`; web commit `26c7803`; handoff commit `502c9eba`. **Live DB acceptance PASSED** against dev Neon (migration applied; valid submit from /business → 200 + success copy + NEW/requires_review row with ip_hash and no raw IP; hard-block phrase → BAD_REQUEST + no row). Next step: E4 — **NOT started, hard-gated.**
 >
@@ -194,6 +194,30 @@ Two admin endpoints + transactional audit only. **No** business dashboard · **n
 ### Remaining risk (carried forward)
 Still **zero verified Hustler supply** (see §5) — admins can now triage business demand, but approving a lead grants **nothing** yet (no account, no access; that's E5). All business-facing copy stays zero-promise. Plus the flagged `admin_actions` column mismatch in the *other* (pre-existing) audit inserts above. **E5/E6 remain hard-gated.**
 
-**Acceptance:** pending Sebastian sign-off. Code complete; all unit tests green; live audit-insert shape verified against dev Neon by introspection. A full live mutation acceptance (run an admin review against dev Neon, confirm the `business_lead_review` row) can be done at sign-off.
+### Live DB acceptance — PASSED (2026-05-31, dev Neon `neondb`) — 19/19 checks
+
+Run via the repo-blessed **admin test caller** path (`adminRouter.createCaller`) pointed at the **real dev Neon DB** (not mocks), so the actual procedure code + real SQL + the live `adminProcedure` middleware (`admin_roles` lookup) all executed. The HTTP server + Firebase-token path was unnecessary for this — `createCaller` exercises the identical procedure + gate. Throwaway harness (not committed) under `/tmp`, removed after.
+
+> **Admin grant — authorized, disposable, net-zero.** Dev Neon had **zero** `admin_roles` rows, so the harness temporarily granted `role='admin'` to an existing disposable test user (`test-poster-6@hustlexp.test`, `4d736d46…`) **with Sebastian's explicit authorization**, then **revoked it in teardown**. Post-run `SELECT COUNT(*) FROM admin_roles` = **0**. No users created; no standing privilege left behind.
+
+Proof:
+1. **`admin.listBusinessLeads`** → `{ leads, total }` with `total=2`; rows returned. ✓ leads array · ✓ numeric total.
+2. **Filters** — `status='NEW'` → 2 rows, all `status=NEW`; `status='REVIEWED'` (pre-review) → 0; `requiresReview=true` → 2 (all `requires_review=true`); `requiresReview=false` → 0. ✓ status filter · ✓ requiresReview filter.
+3. **`admin.reviewBusinessLead`** on a NEW lead (`a0362c75…`, disposable E3 "Curl Sanity Co" sanity row) with `status:'REVIEWED'`, `adminNotes:'E4 live smoke review'` → returned `status=REVIEWED`. DB row after: `status=REVIEWED` · `reviewed_at` set (`2026-05-31T20:44:21Z`) · `reviewed_by = 4d736d46…` (the admin) · `admin_notes='E4 live smoke review'`. ✓ all four.
+4. **Audit row** — `SELECT action_type, action_details, result FROM admin_actions WHERE action_type='business_lead_review' ORDER BY performed_at DESC LIMIT 1` →
+   ```
+   action_type   = business_lead_review
+   result        = success
+   admin_user_id = 4d736d46…  (the reviewing admin)
+   action_details = {"leadId":"a0362c75-0327-4130-9730-0605a6f113b1","status":"REVIEWED",
+                     "override":false,"hadAdminNotes":true,"approvedTemplates":null}
+   ```
+   ✓ action_type · ✓ result=success · ✓ action_details contains leadId + status. (Insert used the live-valid `admin_actions` column shape — no failure, confirming the §9 schema finding against the real DB.)
+5. **Non-admin blocked** — `listBusinessLeads` via a caller with no `admin_roles` grant (`test-worker-6`) → threw `FORBIDDEN`. ✓ live gate enforced.
+6. **CONVERTED** not exercised live (no disposable CONVERTED row; covered by unit test). No account created at any step.
+
+> Dev Neon now holds `business_leads`: NEW=1, REVIEWED=1 (the reviewed "Curl Sanity Co" row is harmless disposable E3 test data; clear if desired). `admin_roles` empty.
+
+**Acceptance:** ✅ **E4 ACCEPTED** — code complete, unit tests green (20/20 targeted + 5807 full suite), and live DB acceptance PASSED against dev Neon (list + filters + review→REVIEWED with reviewed_at/reviewed_by/admin_notes + audit row result=success with leadId/status + non-admin FORBIDDEN; admin grant revoked, no account created).
 
 **Next step:** E5 — **NOT started, hard-gated. Do not start.**
