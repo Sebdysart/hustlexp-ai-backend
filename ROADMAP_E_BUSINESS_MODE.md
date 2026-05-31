@@ -257,9 +257,21 @@ Unlike E4 review (whose subject is a *lead*, so `leadId` rides in `action_detail
 ### Scope adherence
 One admin endpoint + transactional audit only. **No** account creation (links an existing user) · **no** `task.create` / task creation / gate bypass · **no** subscriptions / billing · **no** dashboard or admin/web UI or public mutation · **no** consumer-funnel / analytics changes · **no** migrations · **no** E6.
 
-### Live DB acceptance — PENDING
-Run separately like E4 (admin test-caller against dev Neon: an APPROVED lead + an active target user, a disposable admin grant revoked in teardown). Not part of the implement step.
+### Live DB acceptance — PASSED (2026-05-31, dev Neon `neondb`)
 
-**Acceptance:** ☐ **E5 code complete** — unit tests green (37 targeted + 68 admin regression), `tsc`/`eslint` clean, types emitted, committed & pushed. Live DB acceptance pending sign-off.
+Run via the repo-blessed **admin test-caller** path (`adminRouter.createCaller`) pointed at the **real dev Neon DB** (not mocks), so the actual procedure code + real SQL + the live `adminProcedure` middleware (`admin_roles` lookup) all executed. Throwaway harness (not committed), removed after.
+
+> **Admin grant — authorized, disposable, net-zero.** `admin_roles` was empty (0 rows). With Sebastian's explicit authorization, the harness temporarily granted `role='admin'` to an existing disposable test user (`test-poster-6@hustlexp.test`, `4d736d46…`), ran the acceptance, then **revoked it in teardown**. Post-run `admin_roles` = **0 rows**. No users created; no standing privilege left behind.
+
+Proof (caller = `4d736d46…` admin; target = `test-worker-6@hustlexp.test` `78b0d087…`, active):
+1. **`admin.convertBusinessLead`** on an APPROVED lead (`a0362c75…` "Curl Sanity Co", moved REVIEWED→APPROVED via `admin.reviewBusinessLead` first) → returned `status=CONVERTED`, `converted_user_id=78b0d087…`, `approved_templates=["standard_physical"]`. ✓
+2. **`business_leads` probe** — `{status: CONVERTED, converted_user_id: 78b0d087…, approved_templates: ["standard_physical"], updated_at: 2026-05-31T21:31:02.200Z}`. ✓ status · ✓ converted_user_id · ✓ approved_templates set · ✓ updated_at bumped.
+3. **`admin_actions` audit probe** — `action_type=business_lead_conversion` · `result=success` · `target_user_id=78b0d087…` · `action_details={leadId: a0362c75…, convertedUserId: 78b0d087…, approvedTemplates: ["standard_physical"], hadAdminNotes: true, adminNotes: "E5 live smoke conversion"}`. ✓ (live-valid `admin_actions` shape with `target_user_id`, confirming the §9/E5 audit-shape choice against the real DB.)
+4. **Negative checks — 6/6:** NEW lead → `CONFLICT` (lead stayed NEW) · REVIEWED lead → `CONFLICT` · already-CONVERTED → `CONFLICT` · REJECTED lead → `CONFLICT` · missing target user → `NOT_FOUND` (lead stayed APPROVED, not converted) · non-admin caller → `FORBIDDEN`.
+5. **Invariants:** users `50 → 50` (no account created) · tasks `39 → 39` (no task created) · no subscription/plan granted · conversion touched only `business_leads` + `admin_actions` (no consumer-funnel changes).
+
+> Dev Neon after run: `business_leads` "Curl Sanity Co" now `CONVERTED` (linked to disposable `78b0d087…`), "Eastside Acceptance LLC" now `REJECTED` (negative-test side effect) — harmless disposable test data; clear if desired. `admin_roles` empty.
+
+**Acceptance:** ✅ **E5 ACCEPTED** — code complete (37 targeted + 68 admin regression tests green; `tsc`/`eslint` clean; types emitted; commits [`7a634675`](https://github.com/Sebdysart/hustlexp-ai-backend/commit/7a634675) feat + [`0ec77996`](https://github.com/Sebdysart/hustlexp-ai-backend/commit/0ec77996) roadmap) **and live DB acceptance PASSED** against dev Neon (convert→CONVERTED with converted_user_id/approved_templates/updated_at + audit row result=success with target_user_id/leadId/convertedUserId + 6/6 negatives + nothing created; admin grant revoked, admin_roles back to 0).
 
 **Next step:** E6 — the business-facing product (dashboards, recurring templates, bulk posting, billing) — **remains PARKED & hard-gated. Do not start.**
