@@ -10,8 +10,10 @@ import { TRPCError } from '@trpc/server';
 import { router, protectedProcedure, publicProcedure, hustlerProcedure, posterProcedure, Schemas } from '../trpc.js';
 import { TaskService } from '../services/TaskService.js';
 import { ProofService } from '../services/ProofService.js';
+import { MovementTrackingService } from '../services/MovementTrackingService.js';
+import { GeocodingService } from '../services/GeocodingService.js';
 import { db } from '../db.js';
-import type { Proof } from '../types.js';
+import type { Proof, TaskProgressState } from '../types.js';
 import { cachedDbQuery, invalidateTask, CACHE_KEYS, CACHE_TTL, CACHE_TAGS } from '../cache/db-cache.js';
 import { logger } from '../logger.js';
 import { z } from 'zod';
@@ -111,7 +113,78 @@ export const taskRouter = router({
   // --------------------------------------------------------------------------
   // READ OPERATIONS
   // --------------------------------------------------------------------------
-  
+
+  /**
+   * Post-acceptance tracking read (Track B, Phase 0).
+   *
+   * Poster-only. Returns the geocoded task destination plus the latest known
+   * hustler GPS point, but ONLY while the task is in a trackable progress state
+   * (ACCEPTED / TRAVELING / WORKING). Before acceptance it returns
+   * `trackable: false` and never any worker location. Route + ETA arrive in a
+   * later phase; this read never fabricates a live ETA.
+   */
+  getTracking: posterProcedure
+    .input(z.object({ taskId: Schemas.uuid }))
+    .query(async ({ ctx, input }) => {
+      const taskResult = await TaskService.getById(input.taskId);
+      if (!taskResult.success) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
+      }
+      const task = taskResult.data;
+      if (task.poster_id !== ctx.user.id) {
+        throw new TRPCError({
+          code: 'FORBIDDEN',
+          message: 'Only the task poster can view tracking',
+        });
+      }
+
+      const TRACKABLE_STATES: TaskProgressState[] = ['ACCEPTED', 'TRAVELING', 'WORKING'];
+      if (!TRACKABLE_STATES.includes(task.progress_state)) {
+        return {
+          trackable: false as const,
+          progressState: task.progress_state,
+          destination: null,
+          hustler: null,
+          eta: null,
+          lastUpdated: null,
+        };
+      }
+
+      // Destination: geocoded from the free-text task address (Redis-cached).
+      // No lat/lng is stored on tasks, so resolve on read; null if unset/unresolvable.
+      const destination = task.location
+        ? await GeocodingService.geocodeAddress(task.location)
+        : null;
+
+      // Latest known hustler position — only present once the worker's app is
+      // streaming GPS (Phase 2). Null until then; never exposed pre-acceptance.
+      let hustler: { lat: number; lng: number; accuracy: number; at: Date } | null = null;
+      let lastUpdated: Date | null = null;
+      const sessionResult = await MovementTrackingService.getLatestSessionByTaskId(input.taskId);
+      if (sessionResult.success && sessionResult.data) {
+        const trail = sessionResult.data.gpsTrail ?? [];
+        const latest = trail[trail.length - 1];
+        if (latest) {
+          hustler = {
+            lat: latest.latitude,
+            lng: latest.longitude,
+            accuracy: latest.accuracy,
+            at: latest.timestamp,
+          };
+          lastUpdated = latest.timestamp;
+        }
+      }
+
+      return {
+        trackable: true as const,
+        progressState: task.progress_state,
+        destination,
+        hustler,
+        eta: null, // Phase 3: Google Distance Matrix; always an estimate, never guaranteed.
+        lastUpdated,
+      };
+    }),
+
   /**
    * Get task by ID (cached in Redis; invalidated on task mutations)
    */

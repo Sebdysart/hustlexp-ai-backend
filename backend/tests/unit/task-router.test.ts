@@ -102,6 +102,18 @@ vi.mock('../../src/services/ProofService', () => ({
   },
 }));
 
+vi.mock('../../src/services/MovementTrackingService', () => ({
+  MovementTrackingService: {
+    getLatestSessionByTaskId: vi.fn(),
+  },
+}));
+
+vi.mock('../../src/services/GeocodingService', () => ({
+  GeocodingService: {
+    geocodeAddress: vi.fn(),
+  },
+}));
+
 vi.mock('../../src/cache/db-cache', () => ({
   // Pass-through: execute the wrapped function directly, no cache layer in tests
   cachedDbQuery: vi.fn().mockImplementation((_key: string, fn: () => Promise<unknown>) => fn()),
@@ -195,6 +207,8 @@ import { ProofService } from '../../src/services/ProofService';
 import { ComplianceGuardianService } from '../../src/services/ComplianceGuardianService';
 import { getTemplate, getManifest } from '../../src/services/TaskTemplateRegistry';
 import { ScoperAIService } from '../../src/services/ScoperAIService';
+import { MovementTrackingService } from '../../src/services/MovementTrackingService';
+import { GeocodingService } from '../../src/services/GeocodingService';
 import { taskRouter } from '../../src/routers/task';
 import { checkRateLimit } from '../../src/cache/redis';
 import { logger } from '../../src/logger';
@@ -209,6 +223,8 @@ const mockTaskService = vi.mocked(TaskService);
 const mockProofService = vi.mocked(ProofService);
 const mockCompliance = vi.mocked(ComplianceGuardianService);
 const mockGetTemplate = vi.mocked(getTemplate);
+const mockMovement = vi.mocked(MovementTrackingService);
+const mockGeocoding = vi.mocked(GeocodingService);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -2419,6 +2435,125 @@ describe('task.draftEstimate', () => {
     // The IP key passed to checkRateLimit is the first arg.
     const ipKeyArgs = mockCheckRateLimit.mock.calls.map((c) => c[0]);
     expect(ipKeyArgs).toContain('198.51.100.7');
+  });
+});
+
+// ===========================================================================
+// task.getTracking — poster-only post-acceptance tracking (Track B, Phase 0)
+// ===========================================================================
+
+describe('task.getTracking', () => {
+  const TASK_ID = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
+
+  function makeTrackTask(overrides: Record<string, unknown> = {}) {
+    return {
+      id: TASK_ID,
+      poster_id: USER_ID,
+      worker_id: OTHER_USER_ID,
+      title: 'Move a couch',
+      description: 'Move a 3-seat couch to a storage unit',
+      location: 'Redmond, WA 98052',
+      price: 12000,
+      state: 'ACCEPTED',
+      progress_state: 'ACCEPTED',
+      ...overrides,
+    };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGeocoding.geocodeAddress.mockResolvedValue({ lat: 47.674, lng: -122.121 });
+    mockMovement.getLatestSessionByTaskId.mockResolvedValue({ success: true, data: null } as any);
+  });
+
+  it('rejects non-poster callers (posterProcedure gate)', async () => {
+    const caller = makeCallerAsHustler(USER_ID);
+    await expect(caller.getTracking({ taskId: TASK_ID })).rejects.toThrow(/Poster access required/);
+  });
+
+  it('throws NOT_FOUND when the task does not exist', async () => {
+    mockTaskService.getById.mockResolvedValue({
+      success: false,
+      error: { code: 'NOT_FOUND', message: 'Task not found' },
+    } as any);
+    const caller = makeCallerAsPoster(USER_ID);
+    await expect(caller.getTracking({ taskId: TASK_ID })).rejects.toThrow(/not found/i);
+  });
+
+  it('throws FORBIDDEN when the caller is not the task poster', async () => {
+    mockTaskService.getById.mockResolvedValue({
+      success: true,
+      data: makeTrackTask({ poster_id: OTHER_USER_ID }),
+    } as any);
+    const caller = makeCallerAsPoster(USER_ID);
+    await expect(caller.getTracking({ taskId: TASK_ID })).rejects.toThrow(/only the task poster/i);
+  });
+
+  it('returns trackable:false for a non-trackable progress_state (POSTED)', async () => {
+    mockTaskService.getById.mockResolvedValue({
+      success: true,
+      data: makeTrackTask({ progress_state: 'POSTED' }),
+    } as any);
+    const caller = makeCallerAsPoster(USER_ID);
+    const result = await caller.getTracking({ taskId: TASK_ID });
+    expect(result.trackable).toBe(false);
+    expect(result.progressState).toBe('POSTED');
+    expect(result.destination).toBeNull();
+    expect(result.hustler).toBeNull();
+    expect(mockGeocoding.geocodeAddress).not.toHaveBeenCalled();
+  });
+
+  it('returns geocoded destination + null hustler when accepted with no GPS stream yet', async () => {
+    mockTaskService.getById.mockResolvedValue({ success: true, data: makeTrackTask() } as any);
+    const caller = makeCallerAsPoster(USER_ID);
+    const result = await caller.getTracking({ taskId: TASK_ID });
+    expect(result.trackable).toBe(true);
+    expect(result.progressState).toBe('ACCEPTED');
+    expect(result.destination).toEqual({ lat: 47.674, lng: -122.121 });
+    expect(result.hustler).toBeNull();
+    expect(result.eta).toBeNull();
+    expect(result.lastUpdated).toBeNull();
+  });
+
+  it('returns the latest hustler GPS point when a movement session exists', async () => {
+    mockTaskService.getById.mockResolvedValue({
+      success: true,
+      data: makeTrackTask({ progress_state: 'TRAVELING' }),
+    } as any);
+    const at = new Date('2026-06-01T12:00:00Z');
+    mockMovement.getLatestSessionByTaskId.mockResolvedValue({
+      success: true,
+      data: {
+        id: 'mvmt-1',
+        taskId: TASK_ID,
+        userId: OTHER_USER_ID,
+        startedAt: new Date('2026-06-01T11:50:00Z'),
+        gpsTrail: [
+          { latitude: 47.60, longitude: -122.20, accuracy: 8, timestamp: new Date('2026-06-01T11:55:00Z') },
+          { latitude: 47.65, longitude: -122.15, accuracy: 5, timestamp: at },
+        ],
+        totalDistance: 1000,
+        averageSpeed: 2,
+        status: 'active',
+      },
+    } as any);
+    const caller = makeCallerAsPoster(USER_ID);
+    const result = await caller.getTracking({ taskId: TASK_ID });
+    expect(result.trackable).toBe(true);
+    expect(result.hustler).toEqual({ lat: 47.65, lng: -122.15, accuracy: 5, at });
+    expect(result.lastUpdated).toEqual(at);
+  });
+
+  it('returns destination:null when the task has no location address', async () => {
+    mockTaskService.getById.mockResolvedValue({
+      success: true,
+      data: makeTrackTask({ location: undefined }),
+    } as any);
+    const caller = makeCallerAsPoster(USER_ID);
+    const result = await caller.getTracking({ taskId: TASK_ID });
+    expect(result.trackable).toBe(true);
+    expect(result.destination).toBeNull();
+    expect(mockGeocoding.geocodeAddress).not.toHaveBeenCalled();
   });
 });
 

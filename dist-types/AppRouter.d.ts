@@ -3253,6 +3253,35 @@ export declare const appRouter: import("@trpc/server").TRPCBuiltRouter<{
 		};
 		transformer: false;
 	}, import("@trpc/server").TRPCDecorateCreateRouterOptions<{
+		getTracking: import("@trpc/server").TRPCQueryProcedure<{
+			input: {
+				taskId: string;
+			};
+			output: {
+				trackable: false;
+				progressState: TaskProgressState;
+				destination: null;
+				hustler: null;
+				eta: null;
+				lastUpdated: null;
+			} | {
+				trackable: true;
+				progressState: TaskProgressState;
+				destination: {
+					lat: number;
+					lng: number;
+				} | null;
+				hustler: {
+					lat: number;
+					lng: number;
+					accuracy: number;
+					at: Date;
+				} | null;
+				eta: null;
+				lastUpdated: Date | null;
+			};
+			meta: object;
+		}>;
 		getById: import("@trpc/server").TRPCQueryProcedure<{
 			input: {
 				taskId: string;
