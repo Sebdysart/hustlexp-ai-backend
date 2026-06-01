@@ -2,14 +2,10 @@ name: CI — Lint, Typecheck, Test
 
 on:
   push:
-    branches: [main, "feat/*"]
+    branches: [main, "feat/*", "auto/*"]
   pull_request:
-    branches: [main, "feat/*"]
+    branches: [main, "feat/*", "auto/*"]
   workflow_call:
-
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
     outputs:
       typecheck_result:
         description: "TypeCheck job result"
@@ -23,6 +19,10 @@ concurrency:
       build_result:
         description: "Build job result"
         value: ${{ jobs.build.result }}
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   NODE_VERSION: 20
@@ -86,29 +86,6 @@ jobs:
           cache: npm
       - run: npm ci
       - name: "Security audit — fail on NEW high/critical GHSAs"
-        # npm 10.x does not support --ignore-ghsa, so we implement a GHSA baseline
-        # check in Node.js. The script below extracts all GHSA IDs from `npm audit
-        # --json` and fails CI if any advisory is NOT in the known baseline below.
-        #
-        # KNOWN BASELINE (all require `npm audit fix --force` — breaking semver):
-        #   GHSA-345P-7CG4-V4C7  high     @modelcontextprotocol/sdk — cross-client data leak
-        #   GHSA-37QJ-FRW5-HHJH  high     fast-xml-parser — RangeError DoS (via @aws-sdk)
-        #   GHSA-3VHC-576X-3QV4  high     hono — JWK Auth JWT algorithm confusion
-        #   GHSA-43P4-M455-4F4J  high     @trpc/server — prototype pollution
-        #   GHSA-67MH-4WV8-2F99  moderate tsx/esbuild — dev tooling only
-        #   GHSA-6WQW-2P9W-4VW4  moderate hono — cache middleware bypass
-        #   GHSA-9R54-Q6CX-XMH5  moderate hono — XSS through ErrorBoundary
-        #   GHSA-F67F-6CW9-8MQ4  high     hono — JWT algorithm confusion
-        #   GHSA-FJ3W-JWP8-X2G3  low      fast-xml-parser — stack overflow
-        #   GHSA-GQ3J-XVXP-8HRF  low      hono — timing comparison
-        #   GHSA-JMR7-XGP7-CMFJ  high     fast-xml-parser — DoS entity expansion
-        #   GHSA-M7JM-9GC2-MPF2  critical fast-xml-parser — entity encoding bypass
-        #   GHSA-R354-F388-2FHH  moderate hono — IPv4 validation bypass
-        #   GHSA-W332-Q679-J88P  moderate hono — arbitrary key read
-        #
-        # To add a new known advisory: append its GHSA ID to KNOWN_GHSAS below
-        # and document it above with severity and package name.
-        # Track remediation: https://github.com/your-org/hustlexp-ai-backend/issues/XXX
         run: |
           npm audit --json > /tmp/audit.json 2>/dev/null || true
           node - <<'EOF'

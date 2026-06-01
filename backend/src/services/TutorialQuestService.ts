@@ -18,7 +18,7 @@ import type { ServiceResult } from '../types.js';
 // TYPES
 // ============================================================================
 
-interface TutorialScenario {
+export interface TutorialScenario {
   id: string;
   title: string;
   description: string;
@@ -27,7 +27,7 @@ interface TutorialScenario {
   category: string;
 }
 
-interface TutorialResult {
+export interface TutorialResult {
   passed: boolean;
   score: number; // 0-100
   scenarios_attempted: number;
@@ -35,7 +35,7 @@ interface TutorialResult {
   feedback: string;
 }
 
-interface EquipmentScanResult {
+export interface EquipmentScanResult {
   detected_items: string[];
   suggested_skills: string[];
   confidence: number;

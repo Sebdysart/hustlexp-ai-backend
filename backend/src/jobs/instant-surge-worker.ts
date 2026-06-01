@@ -38,9 +38,9 @@ export async function processInstantSurgeJob(
   // HMAC signature verification (Attack 12 — Redis injection defence)
   // task.instant_surge_evaluate jobs dispatched via the outbox carry a _sig field
   // inside job.data.payload. Verify it when present.
-  const outerPayload = (job.data as Record<string, unknown>).payload;
+  const outerPayload = (job.data as unknown as Record<string, unknown>).payload;
   if (outerPayload && typeof outerPayload === 'object') {
-    const p = outerPayload as Record<string, unknown>;
+    const p = outerPayload as unknown as Record<string, unknown>;
     if ('_sig' in p) {
       const { _sig, ...payloadWithoutSig } = p;
       if (!verifyJobSignature(payloadWithoutSig, _sig as string)) {

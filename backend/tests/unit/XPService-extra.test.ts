@@ -528,12 +528,13 @@ describe('XPService.checkVelocity', () => {
     expect(result.recentEvents).toBe(6);
   });
 
-  it('returns suspicious=false on DB error (fail open)', async () => {
+  it('returns suspicious=true on DB error (fail CLOSED — anti-fraud)', async () => {
     mockQuery.mockRejectedValueOnce(new Error('DB error'));
 
     const result = await XPService.checkVelocity('user-1');
-    expect(result.suspicious).toBe(false);
-    expect(result.recentEvents).toBe(0);
+    // Security: a DB failure must not let velocity checks be bypassed.
+    expect(result.suspicious).toBe(true);
+    expect(result.recentEvents).toBe(-1);
   });
 
   it('handles missing count field gracefully (defaults to 0)', async () => {

@@ -42,7 +42,7 @@ function djb2Hash(str: string): number {
 // TYPES
 // ============================================================================
 
-interface FeatureFlag {
+export interface FeatureFlag {
   id: string;
   name: string;
   enabled: boolean;
@@ -54,7 +54,7 @@ interface FeatureFlag {
   updated_at: Date;
 }
 
-interface EvaluatedFlag {
+export interface EvaluatedFlag {
   name: string;
   enabled: boolean;
 }

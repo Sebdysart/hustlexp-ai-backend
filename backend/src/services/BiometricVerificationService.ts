@@ -66,7 +66,7 @@ async function getRekognitionClient(): Promise<import('@aws-sdk/client-rekogniti
 // TYPES
 // ============================================================================
 
-interface BiometricScores {
+export interface BiometricScores {
   liveness_score: number; // 0.0-1.0 (0=pre-recorded, 1=live)
   deepfake_score: number; // 0.0-1.0 (0=real, 1=fake)
   risk_level: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
@@ -93,7 +93,7 @@ interface LiDARValidationResult {
   spatial_anomalies: string[];
 }
 
-interface LivenessSessionResult {
+export interface LivenessSessionResult {
   sessionId: string;
   confidence: number; // 0-100 from AWS
   referenceImageUrl?: string;

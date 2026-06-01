@@ -27,7 +27,7 @@ const log = logger.child({ service: 'PushNotificationService' });
 // TYPES
 // ============================================================================
 
-interface PushResult {
+export interface PushResult {
   success: boolean;
   sent: number;
   failed: number;

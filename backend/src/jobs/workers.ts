@@ -278,6 +278,28 @@ async function registerScheduledJobs(): Promise<void> {
     }
   );
 
+  // Auto-refund stale unaccepted FUNDED escrows — hourly (truth-table row 37).
+  // Returns a poster's captured payment when no Hustler accepted within staleHours.
+  await maintenanceQueue.add(
+    'cancel_stale_escrows',
+    { staleHours: 72 },
+    {
+      repeat: { pattern: '15 * * * *' },
+      jobId: 'scheduled:cancel_stale_escrows',
+    }
+  );
+
+  // Ledger↔money reconciliation — daily at 02:00 (truth-table B#4).
+  // Alerts ops on drift (refund/revenue mismatches). Read-only.
+  await maintenanceQueue.add(
+    'reconcile_ledger',
+    { windowDays: 7 },
+    {
+      repeat: { pattern: '0 2 * * *' },
+      jobId: 'scheduled:reconcile_ledger',
+    }
+  );
+
   // Fraud detection scan — every 5 minutes
   await criticalTrustQueue.add(
     'fraud.scan_requested',

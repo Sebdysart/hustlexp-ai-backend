@@ -1,79 +1,43 @@
 /**
- * query-cache.ts Extra Unit Tests
+ * query-cache.ts Unit Tests
  *
  * Tests cachedQuery (hit/miss/stale/error), invalidateCache,
  * invalidateCacheByTag, invalidateCacheByTags, CACHE_TAGS, and Cached decorator.
+ *
+ * AUDIT FIX (P6): Rewrote mock strategy. Previous version mocked @upstash/redis
+ * directly and relied on globalThis.__mockRedisInstance. The real query-cache.ts
+ * imports getClient from ./redis.js, so we mock that module instead.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// ─── Mock Redis ────────────────────────────────────────────────────────────────
-// NOTE: vi.mock() is hoisted above all declarations.
-// We cannot reference top-level const variables inside the factory.
-// Instead, we define all vi.fn() calls inline within the class body,
-// and expose the last created instance via a module-level let.
-let __redisInstance: InstanceType<typeof MockRedisClass> | null = null;
+// ─── Mock Redis Client ─────────────────────────────────────────────────────
+const mockPipelineExec = vi.fn().mockResolvedValue([]);
+const mockPipeline = {
+  setex: vi.fn().mockReturnThis(),
+  del: vi.fn().mockReturnThis(),
+  sadd: vi.fn().mockReturnThis(),
+  expire: vi.fn().mockReturnThis(),
+  exec: mockPipelineExec,
+};
 
-class MockRedisClass {
-  get = vi.fn();
-  set = vi.fn();
-  del = vi.fn();
-  smembers = vi.fn();
-  sadd = vi.fn();
-  expire = vi.fn();
-  setex = vi.fn();
-  dbsize = vi.fn();
-  scan = vi.fn().mockResolvedValue(['0', []]);
-  pipeline = vi.fn().mockReturnValue({
-    setex: vi.fn().mockReturnThis(),
-    del: vi.fn().mockReturnThis(),
-    sadd: vi.fn().mockReturnThis(),
-    expire: vi.fn().mockReturnThis(),
-    exec: vi.fn().mockResolvedValue([]),
-  });
-}
+const mockRedisClient = {
+  get: vi.fn(),
+  set: vi.fn(),
+  del: vi.fn(),
+  smembers: vi.fn(),
+  sadd: vi.fn(),
+  expire: vi.fn(),
+  setex: vi.fn(),
+  dbsize: vi.fn(),
+  scan: vi.fn().mockResolvedValue({ cursor: 0, keys: [] }),
+  pipeline: vi.fn().mockReturnValue(mockPipeline),
+};
 
-vi.mock('@upstash/redis', () => {
-  return {
-    Redis: class MockRedis {
-      get = vi.fn();
-      set = vi.fn();
-      del = vi.fn();
-      smembers = vi.fn();
-      sadd = vi.fn();
-      expire = vi.fn();
-      setex = vi.fn();
-      dbsize = vi.fn();
-      scan = vi.fn().mockResolvedValue(['0', []]);
-      _pipelineExec = vi.fn().mockResolvedValue([]);
-      pipeline = vi.fn().mockReturnThis();
-
-      constructor() {
-        // Self-setup pipeline to return chainable mock with access to _pipelineExec
-        const self = this;
-        this.pipeline = vi.fn().mockReturnValue({
-          setex: vi.fn().mockReturnThis(),
-          del: vi.fn().mockReturnThis(),
-          sadd: vi.fn().mockReturnThis(),
-          expire: vi.fn().mockReturnThis(),
-          exec: self._pipelineExec,
-        });
-        // Store reference so tests can access the instance
-        (globalThis as Record<string, unknown>).__mockRedisInstance = this;
-      }
-    },
-  };
-});
-
-vi.mock('../../src/config', () => ({
-  config: {
-    redis: {
-      restUrl: 'https://test-redis.upstash.io',
-      restToken: 'test-token',
-    },
-  },
+vi.mock('../../src/cache/redis.js', () => ({
+  getClient: vi.fn(() => mockRedisClient),
 }));
 
-vi.mock('../../src/logger', () => ({
+vi.mock('../../src/logger.js', () => ({
   logger: {
     child: () => ({
       warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn(), fatal: vi.fn(),
@@ -90,60 +54,25 @@ import {
   getCacheStats,
   CACHE_TAGS,
   Cached,
-} from '../../src/cache/query-cache';
-
-// Helper to get the mock Redis instance created when the module loaded
-function getRedis() {
-  return (globalThis as Record<string, unknown>).__mockRedisInstance as {
-    get: ReturnType<typeof vi.fn>;
-    set: ReturnType<typeof vi.fn>;
-    del: ReturnType<typeof vi.fn>;
-    smembers: ReturnType<typeof vi.fn>;
-    sadd: ReturnType<typeof vi.fn>;
-    expire: ReturnType<typeof vi.fn>;
-    setex: ReturnType<typeof vi.fn>;
-    dbsize: ReturnType<typeof vi.fn>;
-    scan: ReturnType<typeof vi.fn>;
-    _pipelineExec: ReturnType<typeof vi.fn>;
-    pipeline: ReturnType<typeof vi.fn>;
-  };
-}
+} from '../../src/cache/query-cache.js';
 
 beforeEach(() => {
-  const r = getRedis();
-  r.get.mockReset();
-  r.set.mockReset();
-  r.del.mockReset();
-  r.smembers.mockReset();
-  r.sadd.mockReset();
-  r.expire.mockReset();
-  r.setex.mockReset();
-  r.dbsize.mockReset();
-  r.scan.mockReset().mockResolvedValue(['0', []]);
-  r._pipelineExec.mockReset().mockResolvedValue([]);
-
-  // Re-create a fresh pipeline mock that uses the same _pipelineExec
-  const pipelineMock = {
-    setex: vi.fn().mockReturnThis(),
-    del: vi.fn().mockReturnThis(),
-    sadd: vi.fn().mockReturnThis(),
-    expire: vi.fn().mockReturnThis(),
-    exec: r._pipelineExec,
-  };
-  r.pipeline.mockReset().mockReturnValue(pipelineMock);
+  mockRedisClient.get.mockReset();
+  mockRedisClient.set.mockReset();
+  mockRedisClient.del.mockReset();
+  mockRedisClient.smembers.mockReset();
+  mockRedisClient.sadd.mockReset();
+  mockRedisClient.expire.mockReset();
+  mockRedisClient.setex.mockReset();
+  mockRedisClient.dbsize.mockReset();
+  mockRedisClient.scan.mockReset().mockResolvedValue({ cursor: 0, keys: [] });
+  mockPipelineExec.mockReset().mockResolvedValue([]);
+  mockPipeline.setex.mockReset().mockReturnThis();
+  mockPipeline.del.mockReset().mockReturnThis();
+  mockPipeline.sadd.mockReset().mockReturnThis();
+  mockPipeline.expire.mockReset().mockReturnThis();
+  mockRedisClient.pipeline.mockReset().mockReturnValue(mockPipeline);
 });
-
-// Helper to get the current pipeline mock
-function getPipeline() {
-  const r = getRedis();
-  return r.pipeline.mock.results[0]?.value as {
-    setex: ReturnType<typeof vi.fn>;
-    del: ReturnType<typeof vi.fn>;
-    sadd: ReturnType<typeof vi.fn>;
-    expire: ReturnType<typeof vi.fn>;
-    exec: ReturnType<typeof vi.fn>;
-  } | undefined;
-}
 
 // ============================================================================
 // cachedQuery
@@ -151,7 +80,7 @@ function getPipeline() {
 
 describe('cachedQuery', () => {
   it('returns cached value on cache hit', async () => {
-    getRedis().get.mockResolvedValueOnce(JSON.stringify({ id: 1, name: 'cached' }));
+    mockRedisClient.get.mockResolvedValueOnce(JSON.stringify({ id: 1, name: 'cached' }));
 
     const queryFn = vi.fn().mockResolvedValue({ id: 1, name: 'fresh' });
     const result = await cachedQuery('test-key', queryFn);
@@ -161,20 +90,18 @@ describe('cachedQuery', () => {
   });
 
   it('calls queryFn on cache miss and stores result', async () => {
-    getRedis().get.mockResolvedValueOnce(null); // cache miss
+    mockRedisClient.get.mockResolvedValueOnce(null);
 
     const queryFn = vi.fn().mockResolvedValue({ id: 2, fresh: true });
     const result = await cachedQuery('miss-key', queryFn);
 
     expect(result).toEqual({ id: 2, fresh: true });
     expect(queryFn).toHaveBeenCalledTimes(1);
-    // pipeline.exec should have been called to store result
-    const pipe = getPipeline();
-    expect(pipe?.exec).toHaveBeenCalled();
+    expect(mockPipelineExec).toHaveBeenCalled();
   });
 
   it('falls back to queryFn when Redis throws', async () => {
-    getRedis().get.mockRejectedValueOnce(new Error('Redis connection failed'));
+    mockRedisClient.get.mockRejectedValueOnce(new Error('Redis connection failed'));
 
     const queryFn = vi.fn().mockResolvedValue({ fallback: true });
     const result = await cachedQuery('error-key', queryFn);
@@ -184,14 +111,13 @@ describe('cachedQuery', () => {
   });
 
   it('uses custom TTL options', async () => {
-    getRedis().get.mockResolvedValueOnce(null);
+    mockRedisClient.get.mockResolvedValueOnce(null);
     const queryFn = vi.fn().mockResolvedValue({ data: 'custom-ttl' });
 
     await cachedQuery('ttl-key', queryFn, { ttl: 60 });
 
     expect(queryFn).toHaveBeenCalledTimes(1);
-    const pipe = getPipeline();
-    expect(pipe?.setex).toHaveBeenCalledWith(
+    expect(mockPipeline.setex).toHaveBeenCalledWith(
       'cache:query:ttl-key',
       expect.any(Number),
       expect.any(String)
@@ -199,42 +125,37 @@ describe('cachedQuery', () => {
   });
 
   it('stores with tags when tags option provided', async () => {
-    getRedis().get.mockResolvedValueOnce(null);
+    mockRedisClient.get.mockResolvedValueOnce(null);
     const queryFn = vi.fn().mockResolvedValue({ tagged: true });
 
     await cachedQuery('tagged-key', queryFn, { tags: ['user:1', 'task:feed'] });
 
-    const pipe = getPipeline();
-    expect(pipe?.sadd).toHaveBeenCalledWith(
+    expect(mockPipeline.sadd).toHaveBeenCalledWith(
       'cache:tag:user:1',
       'cache:query:tagged-key'
     );
-    expect(pipe?.sadd).toHaveBeenCalledWith(
+    expect(mockPipeline.sadd).toHaveBeenCalledWith(
       'cache:tag:task:feed',
       'cache:query:tagged-key'
     );
   });
 
   it('triggers background refresh when stale marker exists', async () => {
-    // First get returns the cached data; second get (staleKey) returns '1' (stale)
-    getRedis().get
-      .mockResolvedValueOnce(JSON.stringify({ data: 'stale-data' })) // cacheKey hit
-      .mockResolvedValueOnce('1');                                     // staleKey = stale
+    mockRedisClient.get
+      .mockResolvedValueOnce(JSON.stringify({ data: 'stale-data' }))
+      .mockResolvedValueOnce('1');
 
     const queryFn = vi.fn().mockResolvedValue({ data: 'fresh' });
 
     const result = await cachedQuery('stale-key', queryFn, { staleWhileRevalidate: 30 });
 
-    // Returns stale data immediately
     expect(result).toEqual({ data: 'stale-data' });
-    // Background refresh is triggered (not awaited by caller)
   });
 
   it('returns cached value without background refresh when not stale', async () => {
-    // cacheKey hit, staleKey is null (not stale)
-    getRedis().get
+    mockRedisClient.get
       .mockResolvedValueOnce(JSON.stringify({ data: 'fresh-cached' }))
-      .mockResolvedValueOnce(null); // not stale
+      .mockResolvedValueOnce(null);
 
     const queryFn = vi.fn().mockResolvedValue({ data: 'very-fresh' });
 
@@ -245,7 +166,7 @@ describe('cachedQuery', () => {
   });
 
   it('handles queryFn error after cache miss gracefully when Redis also fails on store', async () => {
-    getRedis().get.mockRejectedValueOnce(new Error('Redis down'));
+    mockRedisClient.get.mockRejectedValueOnce(new Error('Redis down'));
     const queryFn = vi.fn().mockResolvedValue([1, 2, 3]);
 
     const result = await cachedQuery('fallback-key', queryFn);
@@ -260,11 +181,11 @@ describe('cachedQuery', () => {
 
 describe('invalidateCache', () => {
   it('deletes cache key and stale key', async () => {
-    getRedis().del.mockResolvedValueOnce(1);
+    mockRedisClient.del.mockResolvedValueOnce(1);
 
     await invalidateCache('some-key');
 
-    expect(getRedis().del).toHaveBeenCalledWith(
+    expect(mockRedisClient.del).toHaveBeenCalledWith(
       'cache:query:some-key',
       'cache:stale:some-key'
     );
@@ -277,28 +198,52 @@ describe('invalidateCache', () => {
 
 describe('invalidateCacheByTag', () => {
   it('returns 0 when no keys are tagged', async () => {
-    getRedis().smembers.mockResolvedValueOnce([]);
+    mockRedisClient.smembers.mockResolvedValueOnce([]);
 
     const count = await invalidateCacheByTag('empty-tag');
 
     expect(count).toBe(0);
-    // pipeline should not have been called
-    expect(getRedis().pipeline).not.toHaveBeenCalled();
+    expect(mockRedisClient.pipeline).not.toHaveBeenCalled();
   });
 
   it('deletes all keys in tag set and the tag set itself', async () => {
-    getRedis().smembers.mockResolvedValueOnce(['cache:query:key1', 'cache:query:key2']);
+    mockRedisClient.smembers.mockResolvedValueOnce(['cache:query:key1', 'cache:query:key2']);
 
     const count = await invalidateCacheByTag('user:1');
 
     expect(count).toBe(2);
-    const pipe = getPipeline();
-    expect(pipe?.del).toHaveBeenCalledWith('cache:query:key1');
-    expect(pipe?.del).toHaveBeenCalledWith('cache:stale:key1');
-    expect(pipe?.del).toHaveBeenCalledWith('cache:query:key2');
-    expect(pipe?.del).toHaveBeenCalledWith('cache:stale:key2');
-    expect(pipe?.del).toHaveBeenCalledWith('cache:tag:user:1');
-    expect(pipe?.exec).toHaveBeenCalledTimes(1);
+    expect(mockPipeline.del).toHaveBeenCalledWith('cache:query:key1');
+    expect(mockPipeline.del).toHaveBeenCalledWith('cache:stale:key1');
+    expect(mockPipeline.del).toHaveBeenCalledWith('cache:query:key2');
+    expect(mockPipeline.del).toHaveBeenCalledWith('cache:stale:key2');
+    expect(mockPipeline.del).toHaveBeenCalledWith('cache:tag:user:1');
+    expect(mockPipelineExec).toHaveBeenCalledTimes(1);
+  });
+
+  it('fail-open: returns 0 when smembers rejects (Upstash rate-limited)', async () => {
+    mockRedisClient.smembers.mockRejectedValueOnce(new Error('Your database has been temporarily rate-limited'));
+
+    const count = await invalidateCacheByTag('user:rate-limited');
+
+    expect(count).toBe(0);
+    expect(mockRedisClient.pipeline).not.toHaveBeenCalled();
+  });
+
+  it('fail-open: returns 0 when pipeline.exec rejects (res.map shape)', async () => {
+    mockRedisClient.smembers.mockResolvedValueOnce(['cache:query:k1']);
+    mockPipelineExec.mockRejectedValueOnce(new TypeError('res.map is not a function'));
+
+    const count = await invalidateCacheByTag('user:malformed');
+
+    expect(count).toBe(0);
+  });
+
+  it('fail-open: returns 0 when smembers resolves to non-array', async () => {
+    mockRedisClient.smembers.mockResolvedValueOnce({ error: 'rate-limited' } as unknown as string[]);
+
+    const count = await invalidateCacheByTag('user:weird');
+
+    expect(count).toBe(0);
   });
 });
 
@@ -308,9 +253,9 @@ describe('invalidateCacheByTag', () => {
 
 describe('invalidateCacheByTags', () => {
   it('returns total count across all tags', async () => {
-    getRedis().smembers
-      .mockResolvedValueOnce(['cache:query:k1']) // tag user:1 → 1 key
-      .mockResolvedValueOnce(['cache:query:k2', 'cache:query:k3']); // tag task:feed → 2 keys
+    mockRedisClient.smembers
+      .mockResolvedValueOnce(['cache:query:k1'])
+      .mockResolvedValueOnce(['cache:query:k2', 'cache:query:k3']);
 
     const total = await invalidateCacheByTags(['user:1', 'task:feed']);
 
@@ -323,7 +268,7 @@ describe('invalidateCacheByTags', () => {
   });
 
   it('returns 0 when all tags are empty', async () => {
-    getRedis().smembers.mockResolvedValue([]);
+    mockRedisClient.smembers.mockResolvedValue([]);
     const total = await invalidateCacheByTags(['no-keys', 'also-empty']);
     expect(total).toBe(0);
   });
@@ -335,7 +280,7 @@ describe('invalidateCacheByTags', () => {
 
 describe('getCacheStats', () => {
   it('returns stats object with numeric properties', async () => {
-    getRedis().dbsize.mockResolvedValue(42);
+    mockRedisClient.dbsize.mockResolvedValue(42);
 
     const stats = await getCacheStats();
 
@@ -385,12 +330,8 @@ describe('CACHE_TAGS', () => {
 
 describe('Cached decorator', () => {
   it('wraps a method to use cachedQuery on cache miss', async () => {
-    // Cache miss — calls the original method
-    getRedis().get.mockResolvedValueOnce(null);
+    mockRedisClient.get.mockResolvedValueOnce(null);
 
-    // Apply the decorator manually to avoid decorator-transform incompatibility.
-    // The @Cached decorator is a legacy stage-2 decorator; applying it as a
-    // function is equivalent to using @Cached syntax with experimentalDecorators.
     class TestService {
       async getItem(id: string) {
         return { id, value: 'from-db' };
@@ -405,12 +346,11 @@ describe('Cached decorator', () => {
     const service = new TestService();
     const result = await service.getItem('item-1');
 
-    // queryFn was called (cache miss) — result from original method
     expect(result).toEqual({ id: 'item-1', value: 'from-db' });
   });
 
   it('returns cached value when cache hit', async () => {
-    getRedis().get.mockResolvedValueOnce(JSON.stringify({ id: 'cached-item', value: 'from-cache' }));
+    mockRedisClient.get.mockResolvedValueOnce(JSON.stringify({ id: 'cached-item', value: 'from-cache' }));
 
     class CachedService {
       async getItem(id: string) {
@@ -430,7 +370,7 @@ describe('Cached decorator', () => {
   });
 
   it('generates cache key from class name, method name and arguments', async () => {
-    getRedis().get.mockResolvedValueOnce(null);
+    mockRedisClient.get.mockResolvedValueOnce(null);
 
     class KeyTestService {
       async getData(type: string, id: number) {
@@ -446,9 +386,7 @@ describe('Cached decorator', () => {
     const service = new KeyTestService();
     await service.getData('user', 42);
 
-    // The pipeline setex should have been called with a key containing the class name, method, and args
-    const pipe = getPipeline();
-    const setexCall = pipe?.setex.mock.calls[0];
+    const setexCall = mockPipeline.setex.mock.calls[0];
     expect(setexCall?.[0]).toContain('KeyTestService');
     expect(setexCall?.[0]).toContain('getData');
   });

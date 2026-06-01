@@ -18,6 +18,7 @@
 
 import { db } from '../db.js';
 import { RevenueService } from './RevenueService.js';
+import { StripeService } from './StripeService.js';
 import type { ServiceResult } from '../types.js';
 import { stripeLogger } from '../logger.js';
 
@@ -60,6 +61,8 @@ interface PaymentDispute {
   task_id: string | null;
   amount_cents: number;
   status: string;
+  trust_was_downgraded: boolean;
+  previous_trust_tier: number | null;
 }
 
 // ============================================================================
@@ -323,6 +326,13 @@ export const ChargebackService = {
         'Chargeback processed'
       );
 
+      // 7. Gather + submit evidence to Stripe (non-fatal).
+      try {
+        await ChargebackService.submitDisputeEvidence(stripeDisputeId, paymentDisputeId, taskId, escrowId);
+      } catch (evidenceErr) {
+        log.error({ err: evidenceErr instanceof Error ? evidenceErr.message : String(evidenceErr), stripeDisputeId }, 'Evidence submission failed (non-fatal)');
+      }
+
       return { success: true, data: { paymentDisputeId } };
     } catch (error) {
       log.error({ err: error instanceof Error ? error.message : String(error), stripeDisputeId }, 'handleDisputeCreated failed');
@@ -333,6 +343,133 @@ export const ChargebackService = {
           message: error instanceof Error ? error.message : 'Unknown error',
         },
       };
+    }
+  },
+
+  /**
+   * Gather and submit dispute evidence to Stripe (B#6).
+   *
+   * Quality gate: auto-submits only when strong evidence exists (proof photos,
+   * GPS validation, task timeline). Thin evidence is flagged for admin review
+   * rather than submitted blindly (weak evidence can hurt win rate).
+   */
+  submitDisputeEvidence: async (
+    stripeDisputeId: string,
+    paymentDisputeId: string,
+    taskId: string | null,
+    escrowId: string | null,
+  ): Promise<void> => {
+    if (!taskId) {
+      log.info({ stripeDisputeId }, 'No task_id — cannot gather evidence');
+      return;
+    }
+
+    // Gather evidence from multiple sources (read-only queries, any failure → partial)
+    let taskDesc = '';
+    let proofSummary = '';
+    let gpsSummary = '';
+    let messageSummary = '';
+    let escrowSummary = '';
+    let evidenceStrength = 0; // 0-5 scale
+
+    try {
+      const task = await db.query<{ title: string; description: string; price: number; created_at: Date; completed_at: Date | null; poster_id: string; worker_id: string | null }>(
+        `SELECT title, description, price, created_at, completed_at, poster_id, worker_id FROM tasks WHERE id = $1`, [taskId]
+      );
+      if (task.rows[0]) {
+        const t = task.rows[0];
+        taskDesc = `Task: "${t.title}" — ${t.description || 'No description'}. Price: $${(t.price / 100).toFixed(2)}. Created: ${t.created_at}. Completed: ${t.completed_at || 'N/A'}.`;
+        evidenceStrength++;
+      }
+    } catch { /* partial evidence ok */ }
+
+    try {
+      const proofs = await db.query<{ state: string; submitted_at: Date; description: string | null; photo_count: number }>(
+        `SELECT p.state, p.submitted_at, p.description, COUNT(pp.id)::int AS photo_count
+         FROM proofs p LEFT JOIN proof_photos pp ON pp.proof_id = p.id
+         WHERE p.task_id = $1 GROUP BY p.id ORDER BY p.submitted_at DESC LIMIT 3`,
+        [taskId]
+      );
+      if (proofs.rows.length > 0) {
+        const accepted = proofs.rows.filter(p => p.state === 'ACCEPTED');
+        proofSummary = `${proofs.rows.length} proof(s) submitted, ${accepted.length} ACCEPTED. ` +
+          proofs.rows.map(p => `[${p.state}] ${p.photo_count} photo(s) at ${p.submitted_at}`).join('; ');
+        if (accepted.length > 0) evidenceStrength += 2; // strong signal
+      }
+    } catch { /* partial evidence ok */ }
+
+    try {
+      const geo = await db.query<{ event_type: string; distance_meters: number; created_at: Date }>(
+        `SELECT event_type, distance_meters, created_at FROM geofence_events WHERE task_id = $1 ORDER BY created_at`, [taskId]
+      );
+      if (geo.rows.length > 0) {
+        const checkins = geo.rows.filter(g => g.event_type === 'checkin' || g.event_type === 'enter');
+        gpsSummary = `GPS: ${geo.rows.length} location events. ${checkins.length} check-in(s). ` +
+          geo.rows.slice(0, 5).map(g => `${g.event_type} @ ${g.distance_meters}m (${g.created_at})`).join('; ');
+        evidenceStrength++;
+      }
+    } catch { /* partial evidence ok */ }
+
+    try {
+      const msgs = await db.query<{ content: string; sender_id: string; created_at: Date }>(
+        `SELECT content, sender_id, created_at FROM task_messages WHERE task_id = $1 ORDER BY created_at LIMIT 10`, [taskId]
+      );
+      if (msgs.rows.length > 0) {
+        messageSummary = `${msgs.rows.length} message(s): ` +
+          msgs.rows.map(m => `[${m.created_at}] "${m.content?.slice(0, 60) || '(media)'}"`).join('; ');
+        evidenceStrength++;
+      }
+    } catch { /* partial evidence ok */ }
+
+    if (escrowId) {
+      try {
+        const esc = await db.query<{ amount: number; funded_at: Date | null; released_at: Date | null; stripe_payment_intent_id: string | null }>(
+          `SELECT amount, funded_at, released_at, stripe_payment_intent_id FROM escrows WHERE id = $1`, [escrowId]
+        );
+        if (esc.rows[0]) {
+          const e = esc.rows[0];
+          escrowSummary = `Escrow: $${(e.amount / 100).toFixed(2)}, funded ${e.funded_at || 'N/A'}, released ${e.released_at || 'N/A'}, PI ${e.stripe_payment_intent_id || 'N/A'}.`;
+        }
+      } catch { /* partial evidence ok */ }
+    }
+
+    // Quality gate: only auto-submit when evidence strength >= 3 (out of 5).
+    // Thin evidence is flagged for admin review.
+    const shouldAutoSubmit = evidenceStrength >= 3;
+
+    const evidence: Record<string, string> = {
+      product_description: `HustleXP local services marketplace task. ${taskDesc}`,
+      service_documentation: [proofSummary, gpsSummary].filter(Boolean).join(' | '),
+      uncategorized_text: [messageSummary, escrowSummary].filter(Boolean).join(' | '),
+    };
+    // Remove empty fields
+    for (const key of Object.keys(evidence)) {
+      if (!evidence[key]) delete evidence[key];
+    }
+
+    if (!shouldAutoSubmit) {
+      await db.query(
+        `UPDATE payment_disputes SET evidence_needs_review = TRUE WHERE id = $1`,
+        [paymentDisputeId]
+      );
+      log.warn({ stripeDisputeId, evidenceStrength, paymentDisputeId }, 'Evidence too thin for auto-submit — flagged for admin review');
+      return;
+    }
+
+    const result = await StripeService.submitDisputeEvidence(stripeDisputeId, evidence, true);
+
+    if (result.success) {
+      await db.query(
+        `UPDATE payment_disputes SET evidence_submitted_at = NOW() WHERE id = $1`,
+        [paymentDisputeId]
+      );
+      log.info({ stripeDisputeId, evidenceStrength, paymentDisputeId }, 'Evidence auto-submitted to Stripe');
+    } else {
+      await db.query(
+        `UPDATE payment_disputes SET evidence_submission_failed = TRUE WHERE id = $1`,
+        [paymentDisputeId]
+      );
+      log.error({ stripeDisputeId, err: result.error.message, paymentDisputeId }, 'Evidence submission to Stripe failed — flagged for retry');
     }
   },
 
@@ -406,7 +543,7 @@ export const ChargebackService = {
       // Fetch the dispute record
       const disputeResult = await db.query<PaymentDispute>(
         `SELECT id, stripe_dispute_id, stripe_charge_id, user_id, escrow_id,
-                task_id, amount_cents, status
+                task_id, amount_cents, status, trust_was_downgraded, previous_trust_tier
          FROM payment_disputes
          WHERE stripe_dispute_id = $1`,
         [stripeDisputeId]
@@ -469,6 +606,56 @@ export const ChargebackService = {
                WHERE id = $1`,
               [dispute.user_id]
             );
+          }
+
+          // 3. Restore trust tier (truth-table row 9). The downgrade on
+          // dispute.created left the user demoted; a WON dispute should reverse it.
+          // Conservative: only restore when (a) THIS dispute caused the downgrade
+          // and (b) no OTHER non-won disputes remain that would justify keeping
+          // the user demoted — otherwise leave for admin (avoids over-restoring).
+          if (dispute.trust_was_downgraded && dispute.previous_trust_tier != null) {
+            const otherNonWon = await db.query<{ count: string }>(
+              `SELECT COUNT(*) as count FROM payment_disputes
+               WHERE user_id = $1 AND id != $2 AND status != 'won'`,
+              [dispute.user_id, dispute.id]
+            );
+            if (parseInt(otherNonWon.rows[0].count, 10) === 0) {
+              const cur = await db.query<{ trust_tier: number }>(
+                `SELECT trust_tier FROM users WHERE id = $1`,
+                [dispute.user_id]
+              );
+              const currentTier = cur.rows[0]?.trust_tier;
+              if (currentTier != null && currentTier < dispute.previous_trust_tier) {
+                await db.query(
+                  `UPDATE users SET trust_tier = $2 WHERE id = $1`,
+                  [dispute.user_id, dispute.previous_trust_tier]
+                );
+                // Compensating, idempotent trust_ledger entry (audit trail).
+                await db.query(
+                  `INSERT INTO trust_ledger (
+                     user_id, old_tier, new_tier, reason, reason_details,
+                     changed_by, idempotency_key, event_source, source_event_id
+                   )
+                   VALUES ($1, $2, $3, $4, $5, 'system', $6, 'chargeback_reversal', $7)
+                   ON CONFLICT (idempotency_key) DO NOTHING`,
+                  [
+                    dispute.user_id,
+                    currentTier,
+                    dispute.previous_trust_tier,
+                    'Trust restored: chargeback dispute won',
+                    JSON.stringify({
+                      stripe_dispute_id: stripeDisputeId,
+                      payment_dispute_id: dispute.id,
+                      restored_from: currentTier,
+                      restored_to: dispute.previous_trust_tier,
+                    }),
+                    `chargeback:${stripeDisputeId}:trust_restore`,
+                    stripeEventId,
+                  ]
+                );
+                log.info({ stripeDisputeId, userId: dispute.user_id, restoredTo: dispute.previous_trust_tier }, 'Trust tier restored after dispute won');
+              }
+            }
           }
         }
 

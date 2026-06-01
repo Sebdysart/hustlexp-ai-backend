@@ -17,7 +17,7 @@ import type { ServiceResult } from '../types.js';
 // TYPES
 // ============================================================================
 
-interface NearbyTaskSuggestion {
+export interface NearbyTaskSuggestion {
   task_id: string;
   title: string;
   price_cents: number;
@@ -28,7 +28,7 @@ interface NearbyTaskSuggestion {
   match_reason: string;
 }
 
-interface BatchRoute {
+export interface BatchRoute {
   tasks: NearbyTaskSuggestion[];
   total_earnings_cents: number;
   total_distance_meters: number;

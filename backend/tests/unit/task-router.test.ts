@@ -102,6 +102,18 @@ vi.mock('../../src/services/ProofService', () => ({
   },
 }));
 
+vi.mock('../../src/services/MovementTrackingService', () => ({
+  MovementTrackingService: {
+    getLatestSessionByTaskId: vi.fn(),
+  },
+}));
+
+vi.mock('../../src/services/GeocodingService', () => ({
+  GeocodingService: {
+    geocodeAddress: vi.fn(),
+  },
+}));
+
 vi.mock('../../src/cache/db-cache', () => ({
   // Pass-through: execute the wrapped function directly, no cache layer in tests
   cachedDbQuery: vi.fn().mockImplementation((_key: string, fn: () => Promise<unknown>) => fn()),
@@ -159,6 +171,26 @@ vi.mock('../../src/services/TaskRiskClassifier', () => ({
   },
 }));
 
+vi.mock('../../src/services/ScoperAIService', () => ({
+  ScoperAIService: {
+    analyzeTaskScope: vi.fn().mockResolvedValue({
+      success: true,
+      data: {
+        suggested_price_cents: 6000,
+        price_reasoning: 'Default heuristic test value',
+        suggested_xp: 600,
+        xp_reasoning: 'price_cents / 10',
+        difficulty: 'medium',
+        difficulty_reasoning: 'Default test value',
+        confidence_score: 0.8,
+        flags: [],
+        estimated_duration_minutes: 90,
+        required_capabilities: ['vehicle'],
+      },
+    }),
+  },
+}));
+
 // Mock Redis so rate-limit checks are controlled in tests.
 // Default: allowed=true (no rate limiting). Individual tests can override.
 vi.mock('../../src/cache/redis', () => ({
@@ -173,17 +205,26 @@ import { db } from '../../src/db';
 import { TaskService } from '../../src/services/TaskService';
 import { ProofService } from '../../src/services/ProofService';
 import { ComplianceGuardianService } from '../../src/services/ComplianceGuardianService';
-import { getTemplate } from '../../src/services/TaskTemplateRegistry';
+import { getTemplate, getManifest } from '../../src/services/TaskTemplateRegistry';
+import { ScoperAIService } from '../../src/services/ScoperAIService';
+import { MovementTrackingService } from '../../src/services/MovementTrackingService';
+import { GeocodingService } from '../../src/services/GeocodingService';
 import { taskRouter } from '../../src/routers/task';
 import { checkRateLimit } from '../../src/cache/redis';
+import { logger } from '../../src/logger';
 
 const mockCheckRateLimit = vi.mocked(checkRateLimit);
+const mockScoper = vi.mocked(ScoperAIService);
+const mockGetManifest = vi.mocked(getManifest);
+const mockLogger = vi.mocked(logger);
 
 const mockDb = vi.mocked(db);
 const mockTaskService = vi.mocked(TaskService);
 const mockProofService = vi.mocked(ProofService);
 const mockCompliance = vi.mocked(ComplianceGuardianService);
 const mockGetTemplate = vi.mocked(getTemplate);
+const mockMovement = vi.mocked(MovementTrackingService);
+const mockGeocoding = vi.mocked(GeocodingService);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -2116,3 +2157,403 @@ describe('task.submitProof — video URLs branch', () => {
     expect(mockTaskService.submitProof).toHaveBeenCalled();
   });
 });
+
+// ===========================================================================
+// task.draftEstimate — public anonymous funnel endpoint (C4)
+// ===========================================================================
+
+describe('task.draftEstimate', () => {
+  const DEFAULT_DESCRIPTION =
+    'Mount a 55-inch TV in my Bellevue apartment Saturday afternoon';
+  const TEST_IP = '203.0.113.42';
+
+  function makePublicCaller(
+    headers: Record<string, string> | null = { 'x-forwarded-for': TEST_IP }
+  ) {
+    return taskRouter.createCaller({
+      user: null,
+      firebaseUid: null,
+      req: headers ? ({ headers: new Headers(headers) } as Request) : undefined,
+    } as any);
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Default mocks: clean compliance, healthy scoper, rate-limit allowed, manifest empty.
+    mockCheckRateLimit.mockResolvedValue({ allowed: true, remaining: 10 });
+    mockCompliance.evaluate.mockResolvedValue({
+      score: 0,
+      tier: 'clean',
+      triggeredRules: [],
+      notes: {
+        score: 0,
+        tier: 'clean',
+        triggered_rules: [],
+        suggested_alternative: null,
+        admin_review_id: null,
+        appeal_status: 'none',
+      },
+    });
+    mockScoper.analyzeTaskScope.mockResolvedValue({
+      success: true,
+      data: {
+        suggested_price_cents: 7500,
+        price_reasoning: 'Test heuristic',
+        suggested_xp: 750,
+        xp_reasoning: 'price_cents / 10',
+        difficulty: 'medium',
+        difficulty_reasoning: 'Test',
+        confidence_score: 0.82,
+        flags: [],
+        estimated_duration_minutes: 120,
+        required_capabilities: ['drill', 'stud finder'],
+      },
+    });
+    // Manifest mock returns no slugs by default — category validation passes
+    // only when a test explicitly populates the manifest.
+    mockGetManifest.mockReturnValue([]);
+  });
+
+  it('happy path: returns the full output shape with no DB writes', async () => {
+    const caller = makePublicCaller();
+
+    const result = await caller.draftEstimate({
+      description: DEFAULT_DESCRIPTION,
+    });
+
+    expect(result).toMatchObject({
+      title: expect.any(String),
+      cleanedDescription: expect.any(String),
+      category: 'standard_physical',
+      recommendedPriceCents: 7500,
+      estimatedDurationMinutes: 120,
+      requiredTools: ['drill', 'stud finder'],
+      urgency: 'normal',
+      safetyNotes: [],
+      followUpQuestions: [],
+    });
+    expect(mockCompliance.evaluate).toHaveBeenCalledTimes(1);
+    expect(mockScoper.analyzeTaskScope).toHaveBeenCalledTimes(1);
+    // No DB writes
+    expect(mockDb.query).not.toHaveBeenCalled();
+  });
+
+  it('throws BAD_REQUEST when compliance returns hard_block (scoper not called)', async () => {
+    mockCompliance.evaluate.mockResolvedValueOnce({
+      score: 85,
+      tier: 'hard_block',
+      triggeredRules: ['hard_block_pattern'],
+      notes: {
+        score: 85,
+        tier: 'hard_block',
+        triggered_rules: ['hard_block_pattern'],
+        suggested_alternative: null,
+        admin_review_id: null,
+        appeal_status: 'none',
+      },
+    });
+
+    const caller = makePublicCaller();
+    await expect(
+      caller.draftEstimate({ description: 'deliver package no questions asked' })
+    ).rejects.toMatchObject({
+      code: 'BAD_REQUEST',
+      message: expect.stringContaining('blocked by compliance'),
+    });
+    expect(mockScoper.analyzeTaskScope).not.toHaveBeenCalled();
+  });
+
+  it('throws TOO_MANY_REQUESTS when per-IP burst limit fires', async () => {
+    // First call (burst) rate-limited; compliance/scoper never reached.
+    mockCheckRateLimit.mockImplementationOnce(async () => ({
+      allowed: false,
+      remaining: 0,
+    }));
+
+    const caller = makePublicCaller();
+    await expect(
+      caller.draftEstimate({ description: DEFAULT_DESCRIPTION })
+    ).rejects.toMatchObject({ code: 'TOO_MANY_REQUESTS' });
+    expect(mockCompliance.evaluate).not.toHaveBeenCalled();
+    expect(mockScoper.analyzeTaskScope).not.toHaveBeenCalled();
+  });
+
+  it('throws SERVICE_UNAVAILABLE when global kill switch fires', async () => {
+    // Burst + daily allowed; global denied.
+    mockCheckRateLimit
+      .mockResolvedValueOnce({ allowed: true, remaining: 4 }) // burst
+      .mockResolvedValueOnce({ allowed: true, remaining: 29 }) // daily
+      .mockResolvedValueOnce({ allowed: false, remaining: 0 }); // global
+
+    const caller = makePublicCaller();
+    await expect(
+      caller.draftEstimate({ description: DEFAULT_DESCRIPTION })
+    ).rejects.toMatchObject({ code: 'SERVICE_UNAVAILABLE' });
+    expect(mockScoper.analyzeTaskScope).not.toHaveBeenCalled();
+  });
+
+  it('fails CLOSED on the global kill switch when Redis throws', async () => {
+    // Burst and daily are allowed via the same throwing mock — they fail OPEN.
+    // The third call (global) also throws and must fail CLOSED.
+    mockCheckRateLimit.mockRejectedValue(new Error('Redis ECONNREFUSED'));
+
+    const caller = makePublicCaller();
+    await expect(
+      caller.draftEstimate({ description: DEFAULT_DESCRIPTION })
+    ).rejects.toMatchObject({ code: 'SERVICE_UNAVAILABLE' });
+    expect(mockScoper.analyzeTaskScope).not.toHaveBeenCalled();
+  });
+
+  it('rejects descriptions below the 8-char minimum (zod)', async () => {
+    const caller = makePublicCaller();
+    await expect(
+      caller.draftEstimate({ description: 'short' })
+    ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+  });
+
+  it('rejects an unknown category', async () => {
+    mockGetManifest.mockReturnValue([
+      { slug: 'standard_physical' as any, display_name: 'Standard', one_line_desc: '' },
+    ]);
+    const caller = makePublicCaller();
+    await expect(
+      caller.draftEstimate({
+        description: DEFAULT_DESCRIPTION,
+        category: 'not_a_real_slug',
+      })
+    ).rejects.toMatchObject({
+      code: 'BAD_REQUEST',
+      message: expect.stringContaining('Unknown category'),
+    });
+    expect(mockScoper.analyzeTaskScope).not.toHaveBeenCalled();
+  });
+
+  it('rejects in production when no IP key can be derived from request headers', async () => {
+    const prev = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    try {
+      const caller = makePublicCaller(null);
+      await expect(
+        caller.draftEstimate({ description: DEFAULT_DESCRIPTION })
+      ).rejects.toMatchObject({
+        code: 'BAD_REQUEST',
+        message: expect.stringContaining('Unable to identify client'),
+      });
+      expect(mockCheckRateLimit).not.toHaveBeenCalled();
+      expect(mockCompliance.evaluate).not.toHaveBeenCalled();
+      expect(mockScoper.analyzeTaskScope).not.toHaveBeenCalled();
+    } finally {
+      process.env.NODE_ENV = prev;
+    }
+  });
+
+  it('falls back to a shared dev key when no IP header is present in non-production', async () => {
+    // vitest sets NODE_ENV='test' by default — dev/test should accept the call.
+    const caller = makePublicCaller(null);
+    const result = await caller.draftEstimate({ description: DEFAULT_DESCRIPTION });
+    expect(result.title).toBeTruthy();
+    // The rate-limit key used should be the shared dev sentinel, not a real IP.
+    const ipKeyArgs = mockCheckRateLimit.mock.calls.map((c) => c[0]);
+    expect(ipKeyArgs).toContain('dev-local');
+  });
+
+  it('cleans description whitespace and truncates the title to ≤ 80 chars', async () => {
+    const messyDesc =
+      '  Move    a   big\n\n   couch    from   Bellevue    to   Redmond   on   Saturday   afternoon   please   ';
+    const caller = makePublicCaller();
+    const result = await caller.draftEstimate({ description: messyDesc });
+
+    // Whitespace collapsed
+    expect(result.cleanedDescription).not.toMatch(/\s{2,}/);
+    expect(result.cleanedDescription.startsWith(' ')).toBe(false);
+    expect(result.cleanedDescription.endsWith(' ')).toBe(false);
+    // Title bounded
+    expect(result.title.length).toBeLessThanOrEqual(80);
+  });
+
+  it('flags urgency=high when scoper returns the urgent flag', async () => {
+    mockScoper.analyzeTaskScope.mockResolvedValueOnce({
+      success: true,
+      data: {
+        suggested_price_cents: 8000,
+        price_reasoning: '.',
+        suggested_xp: 800,
+        xp_reasoning: '.',
+        difficulty: 'medium',
+        difficulty_reasoning: '.',
+        confidence_score: 0.9,
+        flags: ['urgent'],
+        estimated_duration_minutes: 60,
+        required_capabilities: [],
+      },
+    });
+    const caller = makePublicCaller();
+    const result = await caller.draftEstimate({
+      description: DEFAULT_DESCRIPTION,
+    });
+    expect(result.urgency).toBe('high');
+  });
+
+  it('surfaces follow-up questions when scoper confidence is below 0.6', async () => {
+    mockScoper.analyzeTaskScope.mockResolvedValueOnce({
+      success: true,
+      data: {
+        suggested_price_cents: 5000,
+        price_reasoning: '.',
+        suggested_xp: 500,
+        xp_reasoning: '.',
+        difficulty: 'easy',
+        difficulty_reasoning: '.',
+        confidence_score: 0.45,
+        flags: [],
+        estimated_duration_minutes: 45,
+        required_capabilities: [],
+      },
+    });
+    const caller = makePublicCaller();
+    const result = await caller.draftEstimate({
+      description: DEFAULT_DESCRIPTION,
+    });
+    expect(result.followUpQuestions.length).toBeGreaterThan(0);
+  });
+
+  it('maps a scoper failure to INTERNAL_SERVER_ERROR without retrying', async () => {
+    mockScoper.analyzeTaskScope.mockResolvedValueOnce({
+      success: false,
+      error: { code: 'TASK_ANALYSIS_FAILED', message: 'AI down' },
+    });
+    const caller = makePublicCaller();
+    await expect(
+      caller.draftEstimate({ description: DEFAULT_DESCRIPTION })
+    ).rejects.toMatchObject({ code: 'INTERNAL_SERVER_ERROR' });
+    expect(mockScoper.analyzeTaskScope).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses x-real-ip when x-forwarded-for is absent', async () => {
+    const caller = makePublicCaller({ 'x-real-ip': '198.51.100.7' });
+    await caller.draftEstimate({ description: DEFAULT_DESCRIPTION });
+    // The IP key passed to checkRateLimit is the first arg.
+    const ipKeyArgs = mockCheckRateLimit.mock.calls.map((c) => c[0]);
+    expect(ipKeyArgs).toContain('198.51.100.7');
+  });
+});
+
+// ===========================================================================
+// task.getTracking — poster-only post-acceptance tracking (Track B, Phase 0)
+// ===========================================================================
+
+describe('task.getTracking', () => {
+  const TASK_ID = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
+
+  function makeTrackTask(overrides: Record<string, unknown> = {}) {
+    return {
+      id: TASK_ID,
+      poster_id: USER_ID,
+      worker_id: OTHER_USER_ID,
+      title: 'Move a couch',
+      description: 'Move a 3-seat couch to a storage unit',
+      location: 'Redmond, WA 98052',
+      price: 12000,
+      state: 'ACCEPTED',
+      progress_state: 'ACCEPTED',
+      ...overrides,
+    };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGeocoding.geocodeAddress.mockResolvedValue({ lat: 47.674, lng: -122.121 });
+    mockMovement.getLatestSessionByTaskId.mockResolvedValue({ success: true, data: null } as any);
+  });
+
+  it('rejects non-poster callers (posterProcedure gate)', async () => {
+    const caller = makeCallerAsHustler(USER_ID);
+    await expect(caller.getTracking({ taskId: TASK_ID })).rejects.toThrow(/Poster access required/);
+  });
+
+  it('throws NOT_FOUND when the task does not exist', async () => {
+    mockTaskService.getById.mockResolvedValue({
+      success: false,
+      error: { code: 'NOT_FOUND', message: 'Task not found' },
+    } as any);
+    const caller = makeCallerAsPoster(USER_ID);
+    await expect(caller.getTracking({ taskId: TASK_ID })).rejects.toThrow(/not found/i);
+  });
+
+  it('throws FORBIDDEN when the caller is not the task poster', async () => {
+    mockTaskService.getById.mockResolvedValue({
+      success: true,
+      data: makeTrackTask({ poster_id: OTHER_USER_ID }),
+    } as any);
+    const caller = makeCallerAsPoster(USER_ID);
+    await expect(caller.getTracking({ taskId: TASK_ID })).rejects.toThrow(/only the task poster/i);
+  });
+
+  it('returns trackable:false for a non-trackable progress_state (POSTED)', async () => {
+    mockTaskService.getById.mockResolvedValue({
+      success: true,
+      data: makeTrackTask({ progress_state: 'POSTED' }),
+    } as any);
+    const caller = makeCallerAsPoster(USER_ID);
+    const result = await caller.getTracking({ taskId: TASK_ID });
+    expect(result.trackable).toBe(false);
+    expect(result.progressState).toBe('POSTED');
+    expect(result.destination).toBeNull();
+    expect(result.hustler).toBeNull();
+    expect(mockGeocoding.geocodeAddress).not.toHaveBeenCalled();
+  });
+
+  it('returns geocoded destination + null hustler when accepted with no GPS stream yet', async () => {
+    mockTaskService.getById.mockResolvedValue({ success: true, data: makeTrackTask() } as any);
+    const caller = makeCallerAsPoster(USER_ID);
+    const result = await caller.getTracking({ taskId: TASK_ID });
+    expect(result.trackable).toBe(true);
+    expect(result.progressState).toBe('ACCEPTED');
+    expect(result.destination).toEqual({ lat: 47.674, lng: -122.121 });
+    expect(result.hustler).toBeNull();
+    expect(result.eta).toBeNull();
+    expect(result.lastUpdated).toBeNull();
+  });
+
+  it('returns the latest hustler GPS point when a movement session exists', async () => {
+    mockTaskService.getById.mockResolvedValue({
+      success: true,
+      data: makeTrackTask({ progress_state: 'TRAVELING' }),
+    } as any);
+    const at = new Date('2026-06-01T12:00:00Z');
+    mockMovement.getLatestSessionByTaskId.mockResolvedValue({
+      success: true,
+      data: {
+        id: 'mvmt-1',
+        taskId: TASK_ID,
+        userId: OTHER_USER_ID,
+        startedAt: new Date('2026-06-01T11:50:00Z'),
+        gpsTrail: [
+          { latitude: 47.60, longitude: -122.20, accuracy: 8, timestamp: new Date('2026-06-01T11:55:00Z') },
+          { latitude: 47.65, longitude: -122.15, accuracy: 5, timestamp: at },
+        ],
+        totalDistance: 1000,
+        averageSpeed: 2,
+        status: 'active',
+      },
+    } as any);
+    const caller = makeCallerAsPoster(USER_ID);
+    const result = await caller.getTracking({ taskId: TASK_ID });
+    expect(result.trackable).toBe(true);
+    expect(result.hustler).toEqual({ lat: 47.65, lng: -122.15, accuracy: 5, at });
+    expect(result.lastUpdated).toEqual(at);
+  });
+
+  it('returns destination:null when the task has no location address', async () => {
+    mockTaskService.getById.mockResolvedValue({
+      success: true,
+      data: makeTrackTask({ location: undefined }),
+    } as any);
+    const caller = makeCallerAsPoster(USER_ID);
+    const result = await caller.getTracking({ taskId: TASK_ID });
+    expect(result.trackable).toBe(true);
+    expect(result.destination).toBeNull();
+    expect(mockGeocoding.geocodeAddress).not.toHaveBeenCalled();
+  });
+});
+

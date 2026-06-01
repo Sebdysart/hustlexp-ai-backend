@@ -15,6 +15,7 @@ vi.mock('../../src/db', () => ({
 
 vi.mock('../../src/config', () => ({
   config: {
+    app: { isProduction: false },
     stripe: {
       secretKey: null, // Not configured by default for unit tests
       webhookSecret: 'whsec_test',
@@ -134,8 +135,9 @@ describe('StripeService', () => {
   // -------------------------------------------------------------------------
   describe('processWebhookEvent', () => {
     it('skips already-processed events', async () => {
-      // isEventProcessed returns true
-      mockDb.query.mockResolvedValueOnce({ rows: [{ id: '1' }], rowCount: 1 } as never);
+      // Atomic INSERT ... ON CONFLICT DO NOTHING → rowCount 0 means the event
+      // already existed (conflict), so the handler must be skipped.
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
 
       const handler = vi.fn();
       const result = await StripeService.processWebhookEvent('evt_123', 'payment_intent.succeeded', 'pi_123', handler);
@@ -145,9 +147,7 @@ describe('StripeService', () => {
     });
 
     it('processes new events and marks as processed', async () => {
-      // isEventProcessed returns false
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
-      // markEventProcessed
+      // rowCount 1 means the INSERT succeeded (new event) → handler runs.
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
 
       const handler = vi.fn().mockResolvedValue(undefined);
@@ -158,7 +158,8 @@ describe('StripeService', () => {
     });
 
     it('returns error when handler throws', async () => {
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+      // rowCount 1 → new event → handler runs and throws.
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
 
       const handler = vi.fn().mockRejectedValue(new Error('handler boom'));
       const result = await StripeService.processWebhookEvent('evt_err', 'payment_intent.succeeded', 'pi_123', handler);

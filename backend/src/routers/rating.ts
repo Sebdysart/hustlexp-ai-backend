@@ -47,6 +47,10 @@ export const ratingRouter = router({
         });
       }
       
+      // Fraud guard: review/rating (fail-open)
+      const { fraudGuard } = await import('../middleware/fraud-guard.js');
+      await fraudGuard({ entityType: 'user', entityId: ctx.user.id, action: 'review' });
+
       const result = await RatingService.submitRating({
         taskId: input.taskId,
         raterId: ctx.user.id, // Current user is the rater

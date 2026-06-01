@@ -319,6 +319,10 @@ export const userRouter = router({
         throw new TRPCError({ code: 'FORBIDDEN', message: 'Account registration not permitted.' });
       }
 
+      // Fraud guard: signup (fail-open — new user, no history yet)
+      const { fraudGuard } = await import('../middleware/fraud-guard.js');
+      await fraudGuard({ entityType: 'user', entityId: input.firebaseUid, action: 'signup' });
+
       // Normalize role: iOS sends "hustler" but DB stores "worker"
       const dbMode = normalizeRole(input.defaultMode);
 
@@ -413,7 +417,7 @@ export const userRouter = router({
                AND state NOT IN ('COMPLETED', 'CANCELLED', 'EXPIRED')`,
               [ctx.user.id]
             );
-            openTasksCount = parseInt(result.rows[0].count, 10);
+            openTasksCount = parseInt(result.rows[0].count as string, 10);
           } catch (err) {
             logger.error({ userId: ctx.user.id, err }, 'Failed to check open tasks for role switch');
             throw new TRPCError({

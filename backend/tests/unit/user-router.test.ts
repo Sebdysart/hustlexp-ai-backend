@@ -78,6 +78,10 @@ vi.mock('../../src/auth-cache', () => ({
   invalidateAuthCacheForUser: vi.fn(),
 }));
 
+vi.mock('../../src/middleware/fraud-guard', () => ({
+  fraudGuard: vi.fn().mockResolvedValue(undefined),
+}));
+
 // ---------------------------------------------------------------------------
 // Imports
 // ---------------------------------------------------------------------------

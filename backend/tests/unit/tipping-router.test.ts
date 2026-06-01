@@ -58,9 +58,12 @@ const mockService = vi.mocked(TippingService);
 const TEST_UUID = '11111111-1111-1111-1111-111111111111';
 const TEST_UUID_2 = '22222222-2222-2222-2222-222222222222';
 
-function makeCaller(userId = 'test-uid') {
+// Tips are sent by posters, so createTip/confirmTip/getMyTipsSent are
+// posterProcedure. getMyTipsReceived is hustlerProcedure. Default the caller to
+// 'poster' and pass 'worker' for the receiver-side tests.
+function makeCaller(userId = 'test-uid', mode: 'poster' | 'worker' = 'poster') {
   return tippingRouter.createCaller({
-    user: { id: userId, default_mode: 'worker' } as any,
+    user: { id: userId, default_mode: mode } as any,
     firebaseUid: 'fb-uid',
   });
 }
@@ -199,7 +202,7 @@ describe('tipping.getMyTipsReceived', () => {
     const data = { totalCents: 5000, count: 10 };
     mockService.getTotalTipsReceived.mockResolvedValueOnce({ success: true, data } as any);
 
-    const result = await makeCaller().getMyTipsReceived();
+    const result = await makeCaller('test-uid', 'worker').getMyTipsReceived();
 
     expect(result).toEqual(data);
     expect(mockService.getTotalTipsReceived).toHaveBeenCalledWith('test-uid');
@@ -211,7 +214,7 @@ describe('tipping.getMyTipsReceived', () => {
       error: { message: 'DB error' },
     } as any);
 
-    await expect(makeCaller().getMyTipsReceived()).rejects.toThrow('DB error');
+    await expect(makeCaller('test-uid', 'worker').getMyTipsReceived()).rejects.toThrow('DB error');
   });
 });
 

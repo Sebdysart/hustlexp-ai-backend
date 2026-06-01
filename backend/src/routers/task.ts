@@ -10,8 +10,10 @@ import { TRPCError } from '@trpc/server';
 import { router, protectedProcedure, publicProcedure, hustlerProcedure, posterProcedure, Schemas } from '../trpc.js';
 import { TaskService } from '../services/TaskService.js';
 import { ProofService } from '../services/ProofService.js';
+import { MovementTrackingService } from '../services/MovementTrackingService.js';
+import { GeocodingService } from '../services/GeocodingService.js';
 import { db } from '../db.js';
-import type { Proof } from '../types.js';
+import type { Proof, TaskProgressState } from '../types.js';
 import { cachedDbQuery, invalidateTask, CACHE_KEYS, CACHE_TTL, CACHE_TAGS } from '../cache/db-cache.js';
 import { logger } from '../logger.js';
 import { z } from 'zod';
@@ -20,6 +22,7 @@ import { ScoperAIService } from '../services/ScoperAIService.js';
 import { getTemplate, getManifest, isCareContent, isContentReleaseRequired } from '../services/TaskTemplateRegistry.js';
 import { TaskRiskClassifier } from '../services/TaskRiskClassifier.js';
 import { checkRateLimit } from '../cache/redis.js';
+import { checkPublicAnonRateLimit, deriveIpKey } from './_shared/publicRateLimit.js';
 
 const taskRouterLog = logger.child({ router: 'task' });
 
@@ -81,11 +84,107 @@ export async function checkTaskCreateRateLimit(userId: string): Promise<void> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Anonymous public draftEstimate rate limit.
+//
+// Three-layer Redis-backed shape — burst + daily fail OPEN, global kill
+// switch fails CLOSED so a Redis outage cannot allow uncapped LLM spend.
+// Implementation lives in _shared/publicRateLimit.ts so other public
+// endpoints (geo.availability, etc.) cannot drift from the same invariants.
+// ---------------------------------------------------------------------------
+
+export async function checkDraftEstimateRateLimit(ipKey: string): Promise<void> {
+  return checkPublicAnonRateLimit(ipKey, {
+    category: 'task:draft-estimate',
+    burstLimit: 5,
+    burstWindowSec: 60,
+    dailyLimit: 30,
+    dailyWindowSec: 86400,
+    globalLimit: 2000,
+    globalWindowSec: 86400,
+    burstMessage:
+      "You've made a lot of estimate requests. Please wait a minute before trying again.",
+    dailyMessage: "You've reached today's free estimate limit. Try again tomorrow.",
+    globalMessage: 'Our estimator is taking a breath — please try again later.',
+  });
+}
+
 export const taskRouter = router({
   // --------------------------------------------------------------------------
   // READ OPERATIONS
   // --------------------------------------------------------------------------
-  
+
+  /**
+   * Post-acceptance tracking read (Track B, Phase 0).
+   *
+   * Poster-only. Returns the geocoded task destination plus the latest known
+   * hustler GPS point, but ONLY while the task is in a trackable progress state
+   * (ACCEPTED / TRAVELING / WORKING). Before acceptance it returns
+   * `trackable: false` and never any worker location. Route + ETA arrive in a
+   * later phase; this read never fabricates a live ETA.
+   */
+  getTracking: posterProcedure
+    .input(z.object({ taskId: Schemas.uuid }))
+    .query(async ({ ctx, input }) => {
+      const taskResult = await TaskService.getById(input.taskId);
+      if (!taskResult.success) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
+      }
+      const task = taskResult.data;
+      if (task.poster_id !== ctx.user.id) {
+        throw new TRPCError({
+          code: 'FORBIDDEN',
+          message: 'Only the task poster can view tracking',
+        });
+      }
+
+      const TRACKABLE_STATES: TaskProgressState[] = ['ACCEPTED', 'TRAVELING', 'WORKING'];
+      if (!TRACKABLE_STATES.includes(task.progress_state)) {
+        return {
+          trackable: false as const,
+          progressState: task.progress_state,
+          destination: null,
+          hustler: null,
+          eta: null,
+          lastUpdated: null,
+        };
+      }
+
+      // Destination: geocoded from the free-text task address (Redis-cached).
+      // No lat/lng is stored on tasks, so resolve on read; null if unset/unresolvable.
+      const destination = task.location
+        ? await GeocodingService.geocodeAddress(task.location)
+        : null;
+
+      // Latest known hustler position — only present once the worker's app is
+      // streaming GPS (Phase 2). Null until then; never exposed pre-acceptance.
+      let hustler: { lat: number; lng: number; accuracy: number; at: Date } | null = null;
+      let lastUpdated: Date | null = null;
+      const sessionResult = await MovementTrackingService.getLatestSessionByTaskId(input.taskId);
+      if (sessionResult.success && sessionResult.data) {
+        const trail = sessionResult.data.gpsTrail ?? [];
+        const latest = trail[trail.length - 1];
+        if (latest) {
+          hustler = {
+            lat: latest.latitude,
+            lng: latest.longitude,
+            accuracy: latest.accuracy,
+            at: latest.timestamp,
+          };
+          lastUpdated = latest.timestamp;
+        }
+      }
+
+      return {
+        trackable: true as const,
+        progressState: task.progress_state,
+        destination,
+        hustler,
+        eta: null, // Phase 3: Google Distance Matrix; always an estimate, never guaranteed.
+        lastUpdated,
+      };
+    }),
+
   /**
    * Get task by ID (cached in Redis; invalidated on task mutations)
    */
@@ -289,6 +388,10 @@ export const taskRouter = router({
         });
       }
 
+      // Fraud guard: task post (fail-open)
+      const { fraudGuard } = await import('../middleware/fraud-guard.js');
+      await fraudGuard({ entityType: 'user', entityId: ctx.user.id, action: 'task_post' });
+
       // Run compliance check — hard blocks throw before any DB write
       const compliance = await ComplianceGuardianService.evaluate({
         description: input.description,
@@ -441,6 +544,148 @@ export const taskRouter = router({
         suggestedAlternative: complianceResult.suggestedAlternative,
         notes: complianceResult.notes,
         scopeProposal: scopeResult.success ? scopeResult.data : null,
+      };
+    }),
+
+  /**
+   * Public draft estimate for the anonymous poster funnel (C4).
+   *
+   * SERVICES USED (each verified non-charging, non-DB-writing):
+   *   - ComplianceGuardianService.evaluate
+   *       writes DB: no  | charges/Stripe: no | paid LLM: yes (gated by AIRouter budget)
+   *   - ScoperAIService.analyzeTaskScope
+   *       writes DB: no  | charges/Stripe: no | paid LLM: yes (capped via ScoperProposalSchema)
+   *   - getManifest / getTemplate
+   *       writes DB: no  | charges/Stripe: no | paid LLM: no
+   *
+   * INVARIANTS:
+   *   - No DB writes. No Stripe. No task creation. No PII writes. No PII logging.
+   *   - Every paid-LLM path is gated by checkDraftEstimateRateLimit before the call.
+   *   - Description is never logged in full — only length + a 40-char preview.
+   *   - One LLM scoping call per request. No retries inside this procedure.
+   */
+  draftEstimate: publicProcedure
+    .input(
+      z.object({
+        description: z.string().trim().min(8).max(1500),
+        category: z.string().max(50).optional(),
+        zip: z.string().regex(/^\d{5}$/).optional(),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      const ipKey = deriveIpKey(ctx.req?.headers);
+      if (!ipKey) {
+        // No usable source — refuse rather than let an unkeyed request hit the LLM.
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: 'Unable to identify client. Refresh and try again.',
+        });
+      }
+
+      // Rate limit BEFORE any paid call.
+      await checkDraftEstimateRateLimit(ipKey);
+
+      // Validate category against the live template manifest.
+      if (input.category) {
+        const known = getManifest().some((t) => t.slug === input.category);
+        if (!known) {
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message: 'Unknown category.',
+          });
+        }
+      }
+
+      const descPreview =
+        input.description.length > 40
+          ? `${input.description.slice(0, 40)}…`
+          : input.description;
+      taskRouterLog.info(
+        {
+          descLen: input.description.length,
+          descPreview,
+          category: input.category,
+          hasZip: Boolean(input.zip),
+        },
+        'draft-estimate request'
+      );
+
+      // Compliance gate — first thing after the rate limit.
+      const compliance = await ComplianceGuardianService.evaluate({
+        description: input.description,
+        userId: 'anonymous-draft', // sentinel, NOT a real user id
+        templateSlug: input.category,
+      });
+
+      if (compliance.tier === 'hard_block') {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message:
+            'Task blocked by compliance check. HustleXP only allows legal IRL tasks.',
+        });
+      }
+
+      // Single scoping call. ScoperAIService self-caps LLM tokens (maxTokens
+      // for refine paths is 300 inside the service). No retries here — on
+      // failure surface a generic error so callers can re-prompt.
+      const scopeResult = await ScoperAIService.analyzeTaskScope({
+        description: input.description,
+        templateSlug: input.category,
+        complianceResult: compliance,
+      });
+
+      if (!scopeResult.success) {
+        taskRouterLog.warn(
+          { code: scopeResult.error.code },
+          'draft-estimate scoper failed'
+        );
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: 'Unable to generate estimate right now. Try again in a moment.',
+        });
+      }
+
+      const proposal = scopeResult.data;
+
+      // Synthesise the response from compliance + scope. We don't echo the raw
+      // description back beyond a trimmed cleaned copy — and we never store
+      // anything from this request.
+      const cleanedDescription = input.description
+        .trim()
+        .replace(/\s+/g, ' ')
+        .slice(0, 1500);
+      const titleSource =
+        cleanedDescription.split(/[.!?\n]/)[0]?.trim() || cleanedDescription;
+      const title =
+        titleSource.length > 80 ? `${titleSource.slice(0, 77)}…` : titleSource;
+      const flags = proposal.flags ?? [];
+      const urgency: 'low' | 'normal' | 'high' = flags.includes('urgent')
+        ? 'high'
+        : 'normal';
+      const safetyNotes =
+        compliance.tier === 'soft_flag' && compliance.triggeredRules?.length
+          ? compliance.triggeredRules.map(
+              (r) => `Flagged: ${r.replace(/_/g, ' ')}`
+            )
+          : [];
+      const followUpQuestions =
+        proposal.confidence_score < 0.6
+          ? [
+              'What is your budget range for this task?',
+              'When would you like this done?',
+            ]
+          : [];
+
+      return {
+        title,
+        cleanedDescription,
+        category: input.category ?? 'standard_physical',
+        recommendedPriceCents: proposal.suggested_price_cents,
+        estimatedDurationMinutes: proposal.estimated_duration_minutes ?? 60,
+        requiredTools: proposal.required_capabilities ?? [],
+        urgency,
+        safetyNotes,
+        followUpQuestions,
       };
     }),
 
@@ -887,7 +1132,7 @@ export const taskRouter = router({
       if (task.poster_id === ctx.user.id) {
         throw new TRPCError({ code: 'BAD_REQUEST', message: 'Cannot apply for your own task' });
       }
-      if (task.trust_tier_required !== null && ctx.user.trust_tier < task.trust_tier_required) {
+      if (task.trust_tier_required != null && ctx.user.trust_tier < (task.trust_tier_required as number)) {
         throw new TRPCError({ code: 'FORBIDDEN', message: 'Your trust tier is insufficient for this task' });
       }
 

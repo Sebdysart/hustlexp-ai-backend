@@ -25,7 +25,7 @@ interface HeatMapCell {
   intensity: number; // 0-1 normalized
 }
 
-interface HeatMapData {
+export interface HeatMapData {
   cells: HeatMapCell[];
   bounds: { min_lat: number; max_lat: number; min_lng: number; max_lng: number };
   generated_at: Date;

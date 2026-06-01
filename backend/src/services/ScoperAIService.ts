@@ -41,7 +41,7 @@ interface ScoperInput {
   complianceResult?: ComplianceResult;  // NEW: Guardian outputs for multiplier decisions
 }
 
-interface ScoperProposal {
+export interface ScoperProposal {
   suggested_price_cents: number; // $15-$500 (1500-50000 cents)
   price_reasoning: string;
   suggested_xp: number;

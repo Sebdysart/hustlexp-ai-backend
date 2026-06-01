@@ -2393,6 +2393,60 @@ CREATE INDEX IF NOT EXISTS idx_email_outbox_suppressed ON email_outbox(to_email,
 CREATE UNIQUE INDEX IF NOT EXISTS idx_email_outbox_idempotency ON email_outbox(idempotency_key);
 
 -- ----------------------------------------------------------------------------
+-- BUSINESS LEADS (Roadmap E3 — Business Demand Mode)
+-- ----------------------------------------------------------------------------
+-- Anonymous, demand-sensing lead capture for the /business acquisition lane.
+-- Receives what the public, rate-limited business.submitLead mutation collects.
+-- INVARIANTS: every lead inserts as status='NEW' + requires_review=true (no
+-- auto-approval in E3); PII-minimized (ip_hash only, never a raw IP).
+CREATE TABLE IF NOT EXISTS business_leads (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    -- Business / contact identity
+    business_name TEXT NOT NULL,
+    contact_name TEXT NOT NULL,
+    email TEXT NOT NULL,
+    phone TEXT,
+    business_type TEXT NOT NULL,
+    city TEXT,
+    zip TEXT NOT NULL,
+
+    -- Demand signal
+    recurring_task_types JSONB NOT NULL DEFAULT '[]',
+    expected_frequency TEXT,
+    avg_budget_cents INTEGER,
+    urgency TEXT,
+    notes TEXT,
+
+    -- Risk + compliance
+    risk_flags JSONB NOT NULL DEFAULT '{}',
+    contact_preference TEXT NOT NULL DEFAULT 'form' CHECK (contact_preference IN ('form', 'call')),
+    status TEXT NOT NULL DEFAULT 'NEW' CHECK (status IN ('NEW', 'REVIEWED', 'APPROVED', 'REJECTED', 'CONVERTED')),
+    compliance_score INTEGER,
+    compliance_notes JSONB,
+    requires_review BOOLEAN NOT NULL DEFAULT true,
+
+    -- Manual review / conversion (populated by E4+, never by E3)
+    admin_notes TEXT,
+    reviewed_at TIMESTAMPTZ,
+    reviewed_by UUID REFERENCES users(id),
+    approved_templates JSONB,
+    converted_user_id UUID REFERENCES users(id),
+
+    -- Provenance (PII-safe — ip_hash only, never a raw IP)
+    source TEXT,
+    ip_hash TEXT,
+
+    -- Timestamps
+    created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
+    updated_at TIMESTAMPTZ DEFAULT NOW() NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_business_leads_status_created ON business_leads(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_business_leads_created ON business_leads(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_business_leads_email ON business_leads(email);
+
+-- ----------------------------------------------------------------------------
 -- TRIGGERS
 -- ----------------------------------------------------------------------------
 
@@ -2413,6 +2467,12 @@ END $do$;
 DROP TRIGGER IF EXISTS exports_updated_at ON exports;
 CREATE TRIGGER exports_updated_at
   BEFORE UPDATE ON exports
+  FOR EACH ROW
+  EXECUTE FUNCTION update_updated_at_column();
+
+DROP TRIGGER IF EXISTS business_leads_updated_at ON business_leads;
+CREATE TRIGGER business_leads_updated_at
+  BEFORE UPDATE ON business_leads
   FOR EACH ROW
   EXECUTE FUNCTION update_updated_at_column();
 

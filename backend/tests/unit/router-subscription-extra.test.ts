@@ -179,9 +179,10 @@ describe('subscription.subscribe — input validation', () => {
     expect(result.success).toBe(true);
     expect(result.plan).toBe('premium');
 
-    // Verify yearly price used in DB update
+    // subscribe() persists the Stripe subscription id; the plan/recurring_task_limit
+    // is applied later by confirmSubscription() after payment succeeds.
     const updateCall = (mockDb.query as any).mock.calls[1];
-    expect(updateCall[0]).toContain('recurring_task_limit');
+    expect(updateCall[0]).toContain('stripe_subscription_id');
   });
 
   it('accepts pro interval month', async () => {

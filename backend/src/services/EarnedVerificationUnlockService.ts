@@ -31,7 +31,7 @@ interface VerificationEarningsTracking {
   created_at: Date;
 }
 
-interface VerificationEarningsLedger {
+export interface VerificationEarningsLedger {
   id: string;
   user_id: string;
   task_id: string;
@@ -42,7 +42,7 @@ interface VerificationEarningsLedger {
   awarded_at: Date;
 }
 
-interface UnlockProgress {
+export interface UnlockProgress {
   earned_cents: number;
   threshold_cents: number;
   percentage: number;

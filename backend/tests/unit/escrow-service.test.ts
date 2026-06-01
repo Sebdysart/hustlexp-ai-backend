@@ -51,8 +51,16 @@ vi.mock('../../src/services/RevenueService', () => ({
   RevenueService: { logEvent: vi.fn().mockResolvedValue({ success: true, data: { id: 'rev-1' } }) },
 }));
 
+vi.mock('../../src/services/StripeService', () => ({
+  StripeService: {
+    isConfigured: vi.fn(() => false),
+    createRefund: vi.fn().mockResolvedValue({ success: true, data: { refundId: 're_test_esc', amount: 0, status: 'succeeded' } }),
+  },
+}));
+
 import { db, isInvariantViolation, isUniqueViolation, getErrorMessage } from '../../src/db';
 import { EscrowService } from '../../src/services/EscrowService';
+import { StripeService } from '../../src/services/StripeService';
 import { EarnedVerificationUnlockService } from '../../src/services/EarnedVerificationUnlockService';
 import { XPService } from '../../src/services/XPService';
 import { SelfInsurancePoolService } from '../../src/services/SelfInsurancePoolService.js';
@@ -336,6 +344,7 @@ describe('EscrowService', () => {
     it('refunds from FUNDED state', async () => {
       const refunded = makeEscrow({ state: 'REFUNDED' });
       mockDb.query
+        .mockResolvedValueOnce({ rows: [{ state: 'FUNDED', stripe_payment_intent_id: null, stripe_refund_id: null }], rowCount: 1 } as never) // preRead (no PI → no Stripe refund)
         .mockResolvedValueOnce({ rows: [{ task_id: 'task-1' }], rowCount: 1 } as never) // pre-check: task_id
         .mockResolvedValueOnce({ rows: [{ worker_id: 'worker-1' }], rowCount: 1 } as never) // pre-check: worker_id
         .mockResolvedValueOnce({ rows: [refunded], rowCount: 1 } as never) // UPDATE
@@ -346,8 +355,37 @@ describe('EscrowService', () => {
       if (result.success) expect(result.data.state).toBe('REFUNDED');
     });
 
+    it('issues a Stripe refund when configured and a PaymentIntent exists', async () => {
+      vi.mocked(StripeService.isConfigured).mockReturnValueOnce(true);
+      const refunded = makeEscrow({ state: 'REFUNDED' });
+      mockDb.query
+        .mockResolvedValueOnce({ rows: [{ state: 'FUNDED', stripe_payment_intent_id: 'pi_123', stripe_refund_id: null }], rowCount: 1 } as never) // preRead (has PI)
+        .mockResolvedValueOnce({ rows: [{ task_id: 'task-1' }], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [{ worker_id: 'worker-1' }], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [refunded], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+
+      const result = await EscrowService.refund({ escrowId: 'esc-1' });
+      expect(result.success).toBe(true);
+      expect(StripeService.createRefund).toHaveBeenCalledWith(
+        expect.objectContaining({ paymentIntentId: 'pi_123', escrowId: 'esc-1' })
+      );
+    });
+
+    it('fails closed (no state change) when the Stripe refund fails', async () => {
+      vi.mocked(StripeService.isConfigured).mockReturnValueOnce(true);
+      vi.mocked(StripeService.createRefund).mockResolvedValueOnce({ success: false, error: { code: 'STRIPE_ERROR', message: 'card_declined' } } as never);
+      mockDb.query
+        .mockResolvedValueOnce({ rows: [{ state: 'FUNDED', stripe_payment_intent_id: 'pi_123', stripe_refund_id: null }], rowCount: 1 } as never); // preRead only — must not reach UPDATE
+
+      const result = await EscrowService.refund({ escrowId: 'esc-1' });
+      expect(result.success).toBe(false);
+      if (!result.success) expect(result.error.code).toBe('STRIPE_REFUND_FAILED');
+    });
+
     it('returns ESCROW_TERMINAL when already refunded', async () => {
       mockDb.query
+        .mockResolvedValueOnce({ rows: [{ state: 'REFUNDED', stripe_payment_intent_id: null, stripe_refund_id: 're_x' }], rowCount: 1 } as never) // preRead
         .mockResolvedValueOnce({ rows: [{ task_id: 'task-1' }], rowCount: 1 } as never) // pre-check: task_id
         .mockResolvedValueOnce({ rows: [{ worker_id: 'worker-1' }], rowCount: 1 } as never) // pre-check: worker_id
         .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // UPDATE rowCount=0

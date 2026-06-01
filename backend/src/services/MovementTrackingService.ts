@@ -25,7 +25,7 @@ interface GPSPoint {
   timestamp: Date;
 }
 
-interface MovementSession {
+export interface MovementSession {
   id: string;
   taskId: string;
   userId: string;
@@ -42,7 +42,7 @@ interface TrackingUpdate {
   location: GPSPoint;
 }
 
-interface MovementStats {
+export interface MovementStats {
   totalDistance: number;
   duration: number; // seconds
   averageSpeed: number;
@@ -280,6 +280,41 @@ export const MovementTrackingService = {
           code: 'STATS_FETCH_FAILED',
           message: error instanceof Error ? error.message : 'Failed to get stats'
         }
+      };
+    }
+  },
+
+  /**
+   * Get the most recent movement session for a task (latest by started_at).
+   *
+   * Returns `data: null` when no session exists yet — e.g. before the worker's
+   * app begins streaming GPS. Powers the poster-facing `task.getTracking` read,
+   * which surfaces the latest known hustler position only while a task is
+   * in progress.
+   */
+  getLatestSessionByTaskId: async (
+    taskId: string
+  ): Promise<ServiceResult<MovementSession | null>> => {
+    try {
+      const result = await db.query<MovementSession>(
+        `SELECT * FROM movement_sessions
+         WHERE task_id = $1
+         ORDER BY started_at DESC
+         LIMIT 1`,
+        [taskId]
+      );
+      return { success: true, data: result.rows[0] ?? null };
+    } catch (error) {
+      log.error(
+        { err: error instanceof Error ? error.message : String(error), taskId },
+        'Failed to fetch latest movement session'
+      );
+      return {
+        success: false,
+        error: {
+          code: 'SESSION_FETCH_FAILED',
+          message: error instanceof Error ? error.message : 'Failed to fetch session',
+        },
       };
     }
   },

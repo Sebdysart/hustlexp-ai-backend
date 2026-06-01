@@ -67,13 +67,13 @@ interface LogEventParams {
   metadata?: Record<string, unknown>;
 }
 
-interface RevenueSummaryRow {
+export interface RevenueSummaryRow {
   event_type: string;
   count: string;
   total_cents: string;
 }
 
-interface PnlRow {
+export interface PnlRow {
   month: string;
   currency: string;
   platform_fee_revenue: string;

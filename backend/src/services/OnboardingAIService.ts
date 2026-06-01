@@ -46,7 +46,7 @@ interface SubmitCalibrationParams {
   onboardingVersion: string;
 }
 
-interface InferenceResult {
+export interface InferenceResult {
   roleConfidenceWorker: number;
   roleConfidencePoster: number;
   certaintyTier: CertaintyTier;
@@ -154,9 +154,9 @@ Respond with JSON only: {"worker": 0.0-1.0, "poster": 0.0-1.0, "certainty": "STR
             });
 
             inference = {
-              roleConfidenceWorker: aiResult.data.worker,
-              roleConfidencePoster: aiResult.data.poster,
-              certaintyTier: aiResult.data.certainty,
+              roleConfidenceWorker: aiResult.data.worker ?? 0,
+              roleConfidencePoster: aiResult.data.poster ?? 0,
+              certaintyTier: aiResult.data.certainty ?? 'WEAK',
             };
           }
         } catch (aiError) {

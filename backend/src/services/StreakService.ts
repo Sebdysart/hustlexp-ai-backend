@@ -1,12 +1,3 @@
-/**
- * StreakService – Gamified streaks (PRODUCT_SPEC §5.4, §5.5)
- *
- * Tracks consecutive calendar days with at least one completed task.
- * - One completion per UTC calendar day extends or maintains the streak.
- * - Missing a day resets streak to 1 on next completion.
- * - streak_grace_expires_at: end of the day after last completion (complete before to keep streak).
- */
-
 import { db } from '../db.js';
 import { logger } from '../logger.js';
 import type { ServiceResult } from '../types.js';
@@ -14,7 +5,8 @@ import { ErrorCodes } from '../types.js';
 
 const log = logger.child({ service: 'StreakService' });
 
-/** UTC date string YYYY-MM-DD for comparison */
+const MIN_TASK_PRICE_FOR_STREAK = 500; // $5.00 in cents
+
 function toUTCDate(d: Date): string {
   const y = d.getUTCFullYear();
   const m = String(d.getUTCMonth() + 1).padStart(2, '0');
@@ -22,14 +14,12 @@ function toUTCDate(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
-/** Add days to a UTC date string, return new YYYY-MM-DD */
 function addDays(dateStr: string, days: number): string {
   const d = new Date(dateStr + 'T12:00:00.000Z');
   d.setUTCDate(d.getUTCDate() + days);
   return toUTCDate(d);
 }
 
-/** End of the given UTC date (23:59:59.999) */
 function endOfUTCDate(dateStr: string): Date {
   return new Date(Date.UTC(
     parseInt(dateStr.slice(0, 4), 10),
@@ -51,18 +41,31 @@ export interface StreakStatus {
   last_task_completed_at: Date | null;
   streak_grace_expires_at: Date | null;
   longest_streak: number;
-  /** Human-readable hint for the UI */
   message: string;
 }
 
-/**
- * Update the user's streak when they complete a task (called after XP award on escrow release).
- * Uses task completion date in UTC for calendar-day logic.
- */
+// FIX: Added taskPriceCents parameter. Tasks below $5 (500 cents) still award
+// XP but do not qualify for streak extension. This prevents gaming streaks
+// with micro-tasks ($0.50/day) to farm the 2.0x streak multiplier.
 export async function updateStreakOnTaskCompletion(
   userId: string,
-  completedAt: Date
+  completedAt: Date,
+  taskPriceCents: number = 0
 ): Promise<ServiceResult<StreakUpdateResult>> {
+  // Tasks below minimum price don't qualify for streak advancement
+  if (taskPriceCents > 0 && taskPriceCents < MIN_TASK_PRICE_FOR_STREAK) {
+    log.info({ userId, taskPriceCents, min: MIN_TASK_PRICE_FOR_STREAK }, 'Task below streak minimum price — streak not updated');
+    const row = await db.query<{ current_streak: number }>(
+      'SELECT current_streak FROM users WHERE id = $1',
+      [userId]
+    );
+    const currentStreak = row.rows[0]?.current_streak ?? 0;
+    return {
+      success: true,
+      data: { previousStreak: currentStreak, newStreak: currentStreak, streakChanged: false, wasReset: false },
+    };
+  }
+
   const completionDate = toUTCDate(completedAt);
 
   try {
@@ -103,7 +106,6 @@ export async function updateStreakOnTaskCompletion(
 
     const graceEndDate = endOfUTCDate(addDays(completionDate, 1));
 
-    // Update users; longest_streak only if column exists (migration 005)
     await db.query(
       `UPDATE users
        SET current_streak = $1, last_task_completed_at = $2, streak_grace_expires_at = $3, updated_at = NOW()
@@ -116,33 +118,19 @@ export async function updateStreakOnTaskCompletion(
         `UPDATE users SET longest_streak = GREATEST(COALESCE(longest_streak, 0), $1) WHERE id = $2`,
         [newStreak, userId]
       );
-    } catch {
-      // Ignore if longest_streak column doesn't exist yet
-    }
+    } catch { /* Ignore if longest_streak column doesn't exist yet */ }
 
     if (streakChanged) {
-      log.info(
-        { userId, previousStreak, newStreak, wasReset, completionDate },
-        'Streak updated'
-      );
+      log.info({ userId, previousStreak, newStreak, wasReset, completionDate }, 'Streak updated');
     }
 
-    return {
-      success: true,
-      data: { previousStreak, newStreak, streakChanged, wasReset },
-    };
+    return { success: true, data: { previousStreak, newStreak, streakChanged, wasReset } };
   } catch (e) {
     log.error({ err: e, userId }, 'updateStreakOnTaskCompletion failed');
-    return {
-      success: false,
-      error: { code: 'DB_ERROR', message: e instanceof Error ? e.message : String(e) },
-    };
+    return { success: false, error: { code: 'DB_ERROR', message: e instanceof Error ? e.message : String(e) } };
   }
 }
 
-/**
- * Get current streak status for a user (for API / UI).
- */
 export async function getStreakStatus(userId: string): Promise<ServiceResult<StreakStatus>> {
   try {
     const r = await db.query<{
@@ -162,14 +150,10 @@ export async function getStreakStatus(userId: string): Promise<ServiceResult<Str
     const current_streak = row.current_streak ?? 0;
     let longest_streak = current_streak;
     try {
-      const lr = await db.query<{ longest_streak: number }>(
-        'SELECT longest_streak FROM users WHERE id = $1',
-        [userId]
-      );
+      const lr = await db.query<{ longest_streak: number }>('SELECT longest_streak FROM users WHERE id = $1', [userId]);
       if (lr.rows[0]?.longest_streak != null) longest_streak = lr.rows[0].longest_streak;
-    } catch {
-      // Column may not exist (pre–migration 005)
-    }
+    } catch { /* Column may not exist */ }
+
     let message: string;
     if (current_streak === 0) {
       message = 'Complete a task today to start your streak!';
@@ -181,19 +165,10 @@ export async function getStreakStatus(userId: string): Promise<ServiceResult<Str
 
     return {
       success: true,
-      data: {
-        current_streak,
-        last_task_completed_at: row.last_task_completed_at,
-        streak_grace_expires_at: row.streak_grace_expires_at,
-        longest_streak,
-        message,
-      },
+      data: { current_streak, last_task_completed_at: row.last_task_completed_at, streak_grace_expires_at: row.streak_grace_expires_at, longest_streak, message },
     };
   } catch (e) {
     log.error({ err: e, userId }, 'getStreakStatus failed');
-    return {
-      success: false,
-      error: { code: 'DB_ERROR', message: e instanceof Error ? e.message : String(e) },
-    };
+    return { success: false, error: { code: 'DB_ERROR', message: e instanceof Error ? e.message : String(e) } };
   }
 }

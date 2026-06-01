@@ -25,7 +25,7 @@ interface JuryCandidate {
   tasks_completed: number;
 }
 
-interface JuryVoteTally {
+export interface JuryVoteTally {
   dispute_id: string;
   total_votes: number;
   worker_complete: number;

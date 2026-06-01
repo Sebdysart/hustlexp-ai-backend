@@ -56,6 +56,14 @@ vi.mock('../../src/services/RevenueService', () => ({
   RevenueService: { logEvent: vi.fn().mockResolvedValue({ success: true, data: { id: 'rev-1' } }) },
 }));
 
+vi.mock('../../src/services/StripeService', () => ({
+  StripeService: {
+    isConfigured: vi.fn(() => false),
+    createRefund: vi.fn().mockResolvedValue({ success: true, data: { refundId: 're_test_x', amount: 0, status: 'succeeded' } }),
+    createTransfer: vi.fn().mockResolvedValue({ success: true, data: { transferId: 'tr_test_x', amount: 0 } }),
+  },
+}));
+
 import { db } from '../../src/db';
 import { EscrowService } from '../../src/services/EscrowService';
 import { EarnedVerificationUnlockService } from '../../src/services/EarnedVerificationUnlockService';
@@ -98,7 +106,7 @@ function mockReleaseHappyPath(
   workerHasConnect = true,
   payoutsEnabled = true,
 ) {
-  const escrowRow = { id: 'esc-1', task_id: 'task-1', amount: escrowAmount, state: escrowState };
+  const escrowRow = { id: 'esc-1', task_id: 'task-1', amount: escrowAmount, state: escrowState, version: 1 };
   const taskRow = { worker_id: 'worker-1', price: taskPrice };
   const kycRow = {
     payouts_enabled: payoutsEnabled,
@@ -115,7 +123,11 @@ function mockReleaseHappyPath(
 }
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  vi.resetAllMocks();
+  // resetAllMocks clears implementations, so restore db.transaction
+  (mockDb.transaction as ReturnType<typeof vi.fn>).mockImplementation(
+    (fn: (q: typeof mockDb.query) => Promise<unknown>) => fn(mockDb.query)
+  );
 });
 
 // ===========================================================================
@@ -293,32 +305,49 @@ describe('ATTACK 4: Concurrent release + dispute (TOCTOU race)', () => {
    * This is a product design decision, not a code bug, but it does mean the
    * "lock" name is misleading — it does not prevent release.
    */
-  it('release() succeeds on LOCKED_DISPUTE state — dispute lock does not prevent payout', async () => {
-    // Simulate: dispute lock won the race, escrow is now LOCKED_DISPUTE
+  it('FIXED (GAP-3): release() on LOCKED_DISPUTE without adminOverride returns INVALID_STATE', async () => {
     mockReleaseHappyPath(5000, 5000, 'LOCKED_DISPUTE');
 
     const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_atk' });
-    // This SUCCEEDS — confirming dispute lock does not block release
-    expect(result.success).toBe(true);
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.message).toContain('LOCKED_DISPUTE');
+      expect(result.error.message).toContain('admin override required');
+    }
+  });
 
-    // VERDICT: WRONG (design issue) — "lock" does not lock against release().
-    // File: backend/src/services/EscrowService.ts:396 (AND state IN ('FUNDED', 'LOCKED_DISPUTE'))
-    // File: backend/src/services/EscrowService.ts:74 (LOCKED_DISPUTE → RELEASED is valid)
+  it('release() with adminOverride succeeds on LOCKED_DISPUTE (dispute resolved in worker favor)', async () => {
+    const escrowRow = { id: 'esc-1', task_id: 'task-1', amount: 5000, state: 'LOCKED_DISPUTE', version: 1 };
+    const taskRow = { worker_id: 'worker-1', price: 5000 };
+    const adminWorkerRow = { stripe_connect_id: 'acct_test' };
+    const released = makeEscrow({ state: 'RELEASED', amount: 5000 });
+
+    mockDb.query
+      .mockResolvedValueOnce({ rows: [escrowRow], rowCount: 1 } as never)       // SELECT escrow FOR UPDATE
+      .mockResolvedValueOnce({ rows: [taskRow], rowCount: 1 } as never)          // SELECT task
+      .mockResolvedValueOnce({ rows: [adminWorkerRow], rowCount: 1 } as never)   // admin: SELECT stripe_connect_id
+      .mockResolvedValueOnce({ rows: [released], rowCount: 1 } as never)         // UPDATE → RELEASED
+      .mockResolvedValue({ rows: [], rowCount: 0 } as never);                    // post-commit side effects
+
+    mockDb.query
+      .mockResolvedValueOnce({ rows: [escrowRow], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [taskRow], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [adminWorkerRow], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [released], rowCount: 1 } as never)
+      .mockResolvedValue({ rows: [], rowCount: 0 } as never);
+
+    const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_atk', adminOverride: true });
+    expect(result.success).toBe(true);
   });
 
   it('lockForDispute cannot transition from PENDING state (correct guard)', async () => {
-    // window check returns no rows
+    // window check returns a row with completed_at=null (task not completed)
     mockDb.query
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // window check
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // UPDATE — 0 rows (PENDING, not FUNDED)
-      .mockResolvedValueOnce({ rows: [makeEscrow({ state: 'PENDING' })], rowCount: 1 } as never); // getById
+      .mockResolvedValueOnce({ rows: [{ completed_at: null, challenge_window_hours: 6, version: 1 }], rowCount: 1 } as never);
 
-    const result = await EscrowService.lockForDispute('esc-1');
-    expect(result.success).toBe(false);
-    if (!result.success) {
-      expect(result.error.message).toContain('expected FUNDED');
-    }
-    // VERDICT: SAFE — PENDING cannot be disputed.
+    // The completed_at==null guard now fires BEFORE the state check, throwing BAD_REQUEST.
+    await expect(EscrowService.lockForDispute('esc-1'))
+      .rejects.toThrow('Cannot dispute a task that has not been completed');
   });
 });
 
@@ -671,12 +700,11 @@ describe('ATTACK 12: Pool contribution path', () => {
     // VERDICT: SAFE — funded on every normal release.
   });
 
-  it('pool contribution is also called when releasing from LOCKED_DISPUTE (dispute worker-win)', async () => {
+  it('pool contribution is also called when releasing from LOCKED_DISPUTE (dispute worker-win, adminOverride)', async () => {
     mockReleaseHappyPath(10000, 10000, 'LOCKED_DISPUTE');
-    await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_atk' });
+    await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_atk', adminOverride: true });
 
     expect(SelfInsurancePoolService.recordContribution).toHaveBeenCalledTimes(1);
-    // VERDICT: SAFE — pool is funded even on dispute-resolution releases.
   });
 });
 

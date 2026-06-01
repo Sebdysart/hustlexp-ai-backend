@@ -29,7 +29,7 @@ const log = logger.child({ service: 'BetaService' });
 // TYPES
 // ============================================================================
 
-interface BetaStatus {
+export interface BetaStatus {
   enabled: boolean;
   region: string;
   bounds: { south: number; west: number; north: number; east: number };
@@ -47,7 +47,7 @@ interface BetaStatus {
   withinDateWindow: boolean;
 }
 
-interface BetaMetrics {
+export interface BetaMetrics {
   // 6 Core Metrics (from the beta roadmap)
   tasksCreated: number;
   tasksCompleted: number;

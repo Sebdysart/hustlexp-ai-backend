@@ -1,152 +1,233 @@
-/**
- * Maintenance Worker v1.0.0
- * 
- * SYSTEM GUARANTEES: Recovery and Cleanup Jobs
- * 
- * Handles recovery of stuck processing states and cleanup tasks.
- * 
- * @see ARCHITECTURE.md §2.4 (Recovery patterns)
- */
-
 import { db } from '../db.js';
 import type { Job } from 'bullmq';
 import { workerLogger } from '../logger.js';
 const log = workerLogger.child({ worker: 'maintenance' });
 
-// ============================================================================
-// TYPES
-// ============================================================================
-
 interface RecoveryStuckStripeEventsPayload {
-  timeoutMinutes?: number; // Default: 10 minutes
+  timeoutMinutes?: number;
 }
 
-// ============================================================================
-// MAINTENANCE WORKERS
-// ============================================================================
-
-/**
- * Recover stuck stripe events (worker crashed after claiming but before finalizing)
- * 
- * Finds events where:
- * - result = 'processing'
- * - processed_at IS NULL (not finalized)
- * - claimed_at < NOW() - interval (stuck for > timeout)
- * 
- * Resets them to unclaimed state so they can be retried.
- */
 export async function recoverStuckStripeEvents(job: Job<RecoveryStuckStripeEventsPayload>): Promise<void> {
   const timeoutMinutes = (job.data as Record<string, unknown>).timeoutMinutes as number || 10;
-  
-  // Use parameterized query for safety (INTERVAL requires string concatenation, but timeout is validated as number)
-  const result = await db.query<{
-    stripe_event_id: string;
-    claimed_at: Date;
-  }>(
+
+  const result = await db.query<{ stripe_event_id: string; claimed_at: Date }>(
     `UPDATE stripe_events
-     SET claimed_at = NULL,
-         result = NULL,
+     SET claimed_at = NULL, result = NULL,
          error_message = 'Recovered from stuck processing (worker crash)'
-     WHERE result = 'processing'
-       AND processed_at IS NULL
+     WHERE result = 'processing' AND processed_at IS NULL
        AND claimed_at < NOW() - INTERVAL '1 minute' * $1
      RETURNING stripe_event_id, claimed_at`,
     [timeoutMinutes]
   );
-  
+
   if (result.rowCount > 0) {
     log.info({ recoveredCount: result.rowCount, timeoutMinutes }, 'Recovered stuck stripe events');
-    result.rows.forEach(row => {
-      log.info({ stripeEventId: row.stripe_event_id, stuckSince: row.claimed_at }, 'Recovered stuck stripe event');
-    });
   } else {
     log.info({ timeoutMinutes }, 'No stuck stripe events found');
   }
 }
 
-/**
- * Clean up expired exports (files older than 30 days)
- *
- * - Deletes export DB records with status='ready' older than 30 days
- * - R2 object lifecycle rules handle the actual file deletion (set via bucket config)
- * - Also cleans up orphaned 'queued'/'generating' exports stuck for > 24 hours
- */
 async function cleanupExpiredExports(): Promise<void> {
-  // Clean up old completed exports (30+ days)
   const oldExports = await db.query<{ id: string }>(
     `DELETE FROM exports
      WHERE (status = 'ready' AND created_at < NOW() - INTERVAL '30 days')
         OR (status IN ('queued', 'generating') AND created_at < NOW() - INTERVAL '24 hours')
      RETURNING id`,
   );
-
   if (oldExports.rowCount > 0) {
     log.info({ cleanedCount: oldExports.rowCount }, 'Cleaned up expired/stuck exports');
-  } else {
-    log.info('No expired exports to clean up');
   }
 }
 
-/**
- * Clean up expired notifications (older than 30 days)
- *
- * - Deletes read notifications older than 30 days
- * - Deletes unread notifications that have expired (expires_at < NOW())
- */
 async function cleanupExpiredNotifications(): Promise<void> {
-  // Delete read notifications older than 30 days
   const readResult = await db.query<{ count: string }>(
     `WITH deleted AS (
-       DELETE FROM notifications
-       WHERE read_at IS NOT NULL AND created_at < NOW() - INTERVAL '30 days'
-       RETURNING 1
+       DELETE FROM notifications WHERE read_at IS NOT NULL AND created_at < NOW() - INTERVAL '30 days' RETURNING 1
      ) SELECT COUNT(*)::text as count FROM deleted`,
   );
-
-  // Delete expired notifications (unread but past expiry)
   const expiredResult = await db.query<{ count: string }>(
     `WITH deleted AS (
-       DELETE FROM notifications
-       WHERE expires_at IS NOT NULL AND expires_at < NOW()
-       RETURNING 1
+       DELETE FROM notifications WHERE expires_at IS NOT NULL AND expires_at < NOW() RETURNING 1
      ) SELECT COUNT(*)::text as count FROM deleted`,
   );
-
   const readCount = parseInt(readResult.rows[0]?.count || '0', 10);
   const expiredCount = parseInt(expiredResult.rows[0]?.count || '0', 10);
-
   if (readCount + expiredCount > 0) {
-    log.info({ readCount, expiredCount }, 'Cleaned up old read and expired notifications');
-  } else {
-    log.info('No expired notifications to clean up');
+    log.info({ readCount, expiredCount }, 'Cleaned up expired notifications');
   }
 }
 
-/**
- * Process maintenance job
- */
+// FIX: Expire stale streaks. The streak_grace_expires_at field is set by
+// StreakService when a user completes a task, but no cron job previously
+// checked for users who missed their grace window. This caused streaks
+// to display as active indefinitely in the UI even when the user hadn't
+// completed a task in days/weeks.
+async function expireStaleStreaks(): Promise<void> {
+  const result = await db.query<{ id: string; current_streak: number }>(
+    `UPDATE users
+     SET current_streak = 0, updated_at = NOW()
+     WHERE current_streak > 0
+       AND streak_grace_expires_at IS NOT NULL
+       AND streak_grace_expires_at < NOW()
+     RETURNING id, current_streak`,
+  );
+  if (result.rowCount > 0) {
+    log.info({ expiredCount: result.rowCount }, 'Expired stale streaks');
+    for (const row of result.rows) {
+      log.info({ userId: row.id, previousStreak: row.current_streak }, 'Streak expired');
+    }
+  } else {
+    log.info('No stale streaks to expire');
+  }
+}
+
+// MONEY-PATH FIX (truth-table row 37): auto-refund escrows that were FUNDED but
+// whose task was never accepted. Without this, a poster's captured payment sits
+// in FUNDED indefinitely when no Hustler ever accepts. After `staleHours`, return
+// the money — EscrowService.refund() now issues a real Stripe refund (fail-closed),
+// so a Stripe failure leaves the escrow FUNDED for retry on the next run.
+async function cancelStaleEscrows(job: Job): Promise<void> {
+  const staleHours = ((job.data as Record<string, unknown>)?.staleHours as number) || 72;
+
+  const stale = await db.query<{ id: string; poster_id: string; task_id: string }>(
+    `SELECT e.id, t.poster_id, t.id AS task_id
+     FROM escrows e
+     JOIN tasks t ON t.id = e.task_id
+     WHERE e.state = 'FUNDED'
+       AND e.funded_at IS NOT NULL
+       AND e.funded_at < NOW() - INTERVAL '1 hour' * $1
+       AND t.worker_id IS NULL`,
+    [staleHours]
+  );
+
+  if (stale.rowCount === 0) {
+    log.info({ staleHours }, 'No stale unaccepted FUNDED escrows to refund');
+    return;
+  }
+
+  const { EscrowService } = await import('../services/EscrowService.js');
+  let refunded = 0;
+  let failed = 0;
+
+  for (const row of stale.rows) {
+    const result = await EscrowService.refund({ escrowId: row.id });
+    if (result.success) {
+      refunded++;
+      log.info({ escrowId: row.id, taskId: row.task_id, posterId: row.poster_id }, 'Auto-refunded stale unaccepted escrow');
+      try {
+        const { NotificationService } = await import('../services/NotificationService.js');
+        await NotificationService.createNotification({
+          userId: row.poster_id,
+          category: 'refund_issued',
+          title: 'Task refunded — no one accepted',
+          body: "Your task wasn't accepted in time, so your payment has been fully refunded.",
+          taskId: row.task_id,
+          deepLink: `app://tasks/${row.task_id}`,
+          channels: ['in_app', 'push'],
+          priority: 'MEDIUM',
+        });
+      } catch (notifyErr) {
+        log.warn({ err: notifyErr instanceof Error ? notifyErr.message : String(notifyErr), escrowId: row.id }, 'Stale-escrow refund notification failed (refund stands)');
+      }
+    } else {
+      failed++;
+      log.error({ escrowId: row.id, err: result.error.message }, 'Stale-escrow auto-refund failed — will retry next run');
+    }
+  }
+
+  log.info({ refunded, failed, staleHours }, 'Stale-escrow auto-refund pass complete');
+}
+
+// MONEY-INTEGRITY RECONCILIATION (truth-table B#4). DB-only drift detection that
+// guards the money invariants and alerts ops on mismatch. Catches the exact
+// signature of the refund bug fixed this session (REFUNDED escrow that captured a
+// PaymentIntent but never got a stripe_refund_id), plus unrecorded platform-fee
+// revenue (P&L drift). Read-only + alert; never mutates money state.
+async function reconcileLedger(job: Job): Promise<void> {
+  const windowDays = ((job.data as Record<string, unknown>)?.windowDays as number) || 7;
+
+  // Drift 1: REFUNDED escrow that captured money (has a PaymentIntent) but has no
+  // Stripe refund id → poster may not have been refunded.
+  const missingRefund = await db.query<{ id: string; task_id: string }>(
+    `SELECT id, task_id FROM escrows
+     WHERE state = 'REFUNDED'
+       AND stripe_payment_intent_id IS NOT NULL
+       AND stripe_refund_id IS NULL
+       AND refunded_at > NOW() - INTERVAL '1 day' * $1`,
+    [windowDays]
+  );
+
+  // Drift 2: RELEASED escrow with no platform_fee revenue_ledger entry → revenue
+  // not recorded (unauditable P&L).
+  const missingRevenue = await db.query<{ id: string; task_id: string }>(
+    `SELECT e.id, e.task_id FROM escrows e
+     LEFT JOIN revenue_ledger r ON r.escrow_id = e.id AND r.event_type = 'platform_fee'
+     WHERE e.state = 'RELEASED'
+       AND e.released_at > NOW() - INTERVAL '1 day' * $1
+       AND r.id IS NULL`,
+    [windowDays]
+  );
+
+  const refundDrift = missingRefund.rowCount;
+  const revenueDrift = missingRevenue.rowCount;
+
+  if (refundDrift === 0 && revenueDrift === 0) {
+    log.info({ windowDays }, 'Ledger reconciliation clean — no drift');
+    return;
+  }
+
+  log.error(
+    {
+      windowDays,
+      refundDrift,
+      revenueDrift,
+      refundEscrowIds: missingRefund.rows.slice(0, 25).map(r => r.id),
+      revenueEscrowIds: missingRevenue.rows.slice(0, 25).map(r => r.id),
+    },
+    'Ledger reconciliation DRIFT detected — manual review required'
+  );
+
+  try {
+    const { notifyAdmins } = await import('../services/AdminNotificationHelper.js');
+    await notifyAdmins({
+      title: 'Ledger drift detected',
+      body: `${refundDrift} REFUNDED escrow(s) missing Stripe refund id; ${revenueDrift} RELEASED escrow(s) missing platform_fee ledger entry (last ${windowDays}d).`,
+      deepLink: '/admin/reconciliation',
+      priority: 'CRITICAL',
+      metadata: { refundDrift, revenueDrift, windowDays },
+    });
+  } catch (notifyErr) {
+    log.error({ err: notifyErr instanceof Error ? notifyErr.message : String(notifyErr) }, 'Failed to alert admins of ledger drift');
+  }
+}
+
 export async function processMaintenanceJob(job: Job): Promise<void> {
   const jobType = job.name;
-  
+
   switch (jobType) {
+    case 'cancel_stale_escrows':
+      await cancelStaleEscrows(job);
+      break;
+    case 'reconcile_ledger':
+      await reconcileLedger(job);
+      break;
     case 'recover_stuck_stripe_events':
       await recoverStuckStripeEvents(job as Job<RecoveryStuckStripeEventsPayload>);
       break;
-    
     case 'cleanup_expired_exports':
       await cleanupExpiredExports();
       break;
-
     case 'cleanup_expired_notifications':
       await cleanupExpiredNotifications();
       break;
-
+    case 'expire_stale_streaks':
+      await expireStaleStreaks();
+      break;
     case 'tax.annual_filing_requested': {
       const { processTaxReportingJob } = await import('./tax-reporting-worker');
       await processTaxReportingJob(job);
       break;
     }
-
     default:
       throw new Error(`Unknown maintenance job type: ${jobType}`);
   }

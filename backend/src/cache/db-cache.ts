@@ -9,7 +9,7 @@
  */
 
 import { cachedQuery, invalidateCache, invalidateCacheByTag } from './query-cache.js';
-import { CACHE_KEYS, CACHE_TTL } from './redis.js';
+import { CACHE_KEYS } from './redis.js';
 import { CACHE_TAGS } from './query-cache.js';
 
 export { cachedQuery, invalidateCache, invalidateCacheByTag, invalidateCacheByTags } from './query-cache.js';

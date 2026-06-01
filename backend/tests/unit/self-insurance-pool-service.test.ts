@@ -10,10 +10,22 @@ vi.mock('../../src/db', () => ({
   db: { query: vi.fn() },
 }));
 
+// Enable the self-insurance pool for these unit tests. In production the pool is
+// kill-switched OFF by default (legal hold); this mock spreads the real config and
+// only flips the feature flag so the pool's logic can be exercised.
+vi.mock('../../src/config', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/config')>();
+  return {
+    ...actual,
+    config: { ...actual.config, features: { ...actual.config.features, insurancePoolEnabled: true } },
+  };
+});
+
 vi.mock('../../src/logger', () => ({
   logger: {
     child: () => ({ warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() }),
   },
+  stripeLogger: { warn: vi.fn(), error: vi.fn(), info: vi.fn(), child: () => ({ warn: vi.fn(), error: vi.fn(), info: vi.fn() }) },
 }));
 
 import { db } from '../../src/db';

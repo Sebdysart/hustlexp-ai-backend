@@ -344,7 +344,7 @@ describe('processPaymentJob', () => {
 
       await expect(
         processPaymentJob(makeJob('payment_intent.succeeded'))
-      ).rejects.toThrow(/amount.*does not match/i);
+      ).rejects.toThrow(/PI amount.*!=.*escrow amount/i);
 
       const calls = mockQuery.mock.calls;
       const errorUpdateSql: string = calls[calls.length - 1][0] as string;

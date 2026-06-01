@@ -21,7 +21,7 @@ import { logger } from '../logger.js';
 
 const log = logger.child({ service: 'TippingService' });
 
-interface Tip {
+export interface Tip {
   id: string;
   task_id: string;
   poster_id: string;
@@ -220,7 +220,7 @@ export const TippingService = {
            VALUES ($1, 'tip_received', '💰 You received a tip!', $2, $3, $4, $5::JSONB, ARRAY['push']::TEXT[], 'HIGH', NOW())`,
           [tip.worker_id, notifBody, `/task/${tip.task_id}`, tip.task_id, JSON.stringify(notifMeta)]
         );
-      } catch (notifErr) {
+      } catch {
         try {
           await db.query(
             `INSERT INTO notifications (user_id, type, title, body, data, created_at)

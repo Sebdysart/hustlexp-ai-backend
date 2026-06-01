@@ -26,6 +26,16 @@ vi.mock('../../src/auth/firebase', () => ({
   firebaseAuth: { verifyIdToken: vi.fn() },
 }));
 
+// admin.ts imports ComplianceGuardianService (for business-lead review, E4);
+// mock it so the heavy AIClient chain is not pulled into this unit test.
+vi.mock('../../src/services/ComplianceGuardianService', () => ({
+  ComplianceGuardianService: {
+    evaluate: vi.fn(),
+    _scoreTotier: (score: number) =>
+      score >= 61 ? 'hard_block' : score >= 21 ? 'soft_flag' : 'clean',
+  },
+}));
+
 vi.mock('../../src/logger', () => ({
   logger: {
     child: () => ({ warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() }),

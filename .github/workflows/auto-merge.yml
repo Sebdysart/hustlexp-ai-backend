@@ -1,0 +1,46 @@
+name: Auto-merge autonomous branches
+
+# Enables auto-merge for PRs from auto/* branches when all CI checks pass.
+# CLAUDE.md convention: auto/{issue-number} branches are created by the
+# autonomous implementation loop and are eligible for auto-merge.
+#
+# Prerequisites (GitHub repo settings):
+# - Branch protection on main requiring CI status checks
+# - "Allow auto-merge" enabled in repo settings
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+  check_suite:
+    types: [completed]
+
+jobs:
+  auto-merge:
+    name: Enable auto-merge for autonomous PRs
+    runs-on: ubuntu-latest
+    if: startsWith(github.head_ref, 'auto/')
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Wait for CI to complete
+        uses: lewagon/wait-on-check-action@v1.3.4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          wait-interval: 30
+          running-workflow-name: 'Enable auto-merge for autonomous PRs'
+          check-regexp: 'TypeScript|Lint|Tests|Security audit|Build'
+
+      - name: Enable auto-merge
+        uses: peter-evans/enable-pull-request-automerge@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          pull-request-number: ${{ github.event.pull_request.number }}
+          merge-method: squash
+
+      - name: Auto-approve autonomous PR
+        uses: hmarr/auto-approve-action@v4
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}

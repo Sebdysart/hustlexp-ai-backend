@@ -1,40 +1,20 @@
-/**
- * HustleXP Backend Configuration v1.0.0
- * 
- * Centralized configuration for all backend services.
- * 
- * @see ARCHITECTURE.md
- */
-
 export const config = {
-  // Database (Neon PostgreSQL)
   database: {
     url: process.env.DATABASE_URL || '',
     pgbouncer: process.env.DB_PGBOUNCER === 'true',
   },
   
-  // Cache (Upstash Redis)
   redis: {
-    // REST API (for @upstash/redis client - caching, rate limiting)
     restUrl: process.env.UPSTASH_REDIS_REST_URL || process.env.REDIS_URL || '',
     restToken: process.env.UPSTASH_REDIS_REST_TOKEN || process.env.REDIS_TOKEN || '',
-    // Direct TCP (for BullMQ/ioredis - job queues)
-    // Upstash provides both REST and direct TCP endpoints
-    // Use UPSTASH_REDIS_URL (direct TCP connection string) for BullMQ
-    // Format: redis://default:{password}@{endpoint}:6379
-    // OR use separate Redis instance: REDIS_URL=redis://localhost:6379
-    url: process.env.UPSTASH_REDIS_URL || process.env.REDIS_URL || '',  // Direct TCP connection string
+    url: process.env.UPSTASH_REDIS_URL || process.env.REDIS_URL || '',
   },
   
-  // Payments (Stripe)
   stripe: {
     secretKey: process.env.STRIPE_SECRET_KEY || '',
     webhookSecret: process.env.STRIPE_WEBHOOK_SECRET || '',
-    // SECURITY FIX (v2.9.3): Clamp to [0, 100] at parse time. A negative or
-    // non-numeric env var would silently pass through parseInt and could cause
-    // the fee calculation to produce a negative value (overpaying the worker).
-    platformFeePercent: (() => { const raw = parseInt(process.env.PLATFORM_FEE_PERCENT || '15', 10); return isNaN(raw) || raw < 0 ? 15 : Math.min(raw, 100); })(), // PRODUCT_SPEC §9: 15% platform fee
-    minimumTaskValueCents: (() => { const raw = parseInt(process.env.MIN_TASK_VALUE_CENTS || '500', 10); return isNaN(raw) || raw < 0 ? 500 : raw; })(), // PRODUCT_SPEC §9: $5.00 minimum
+    platformFeePercent: (() => { const raw = parseInt(process.env.PLATFORM_FEE_PERCENT || '15', 10); return isNaN(raw) || raw < 0 ? 15 : Math.min(raw, 100); })(),
+    minimumTaskValueCents: (() => { const raw = parseInt(process.env.MIN_TASK_VALUE_CENTS || '500', 10); return isNaN(raw) || raw < 0 ? 500 : raw; })(),
     plans: {
       premium: {
         monthlyPriceCents: 1499,
@@ -51,7 +31,6 @@ export const config = {
     },
   },
   
-  // Authentication (Firebase)
   firebase: {
     projectId: process.env.FIREBASE_PROJECT_ID || '',
     privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n') || '',
@@ -59,7 +38,6 @@ export const config = {
     webApiKey: process.env.FIREBASE_WEB_API_KEY || '',
   },
   
-  // Storage (Cloudflare R2)
   cloudflare: {
     r2: {
       accountId: process.env.R2_ACCOUNT_ID || '',
@@ -69,12 +47,10 @@ export const config = {
     },
   },
 
-  // Maps & Geocoding (Google Maps Platform)
   googleMaps: {
     apiKey: process.env.GOOGLE_MAPS_API_KEY || '',
   },
 
-  // AI Services (Multi-model)
   ai: {
     openai: {
       apiKey: process.env.OPENAI_API_KEY || '',
@@ -96,7 +72,6 @@ export const config = {
       apiKey: process.env.ANTHROPIC_API_KEY || '',
       model: process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-20250514',
     },
-    // Model routing weights (configurable for A/B testing)
     routing: {
       primary: process.env.AI_ROUTE_PRIMARY || 'openai',
       fast: process.env.AI_ROUTE_FAST || 'groq',
@@ -107,7 +82,6 @@ export const config = {
     cacheTTL: parseInt(process.env.AI_CACHE_TTL || String(24 * 60 * 60), 10),
   },
   
-  // Identity Verification
   identity: {
     twilio: {
       accountSid: process.env.TWILIO_ACCOUNT_SID || '',
@@ -120,7 +94,6 @@ export const config = {
     },
   },
   
-  // Seattle Beta Configuration
   beta: {
     enabled: process.env.BETA_ENABLED === 'true',
     regionName: 'Seattle Metro',
@@ -139,7 +112,7 @@ export const config = {
     endDate: process.env.BETA_END_DATE || '2026-03-24',
     maxUsers: 100,
     maxTasks: 200,
-    maxGmvCents: 1_000_000, // $10,000
+    maxGmvCents: 1_000_000,
     plans: {
       free: { priceId: process.env.STRIPE_FREE_PRICE_ID || '', name: 'Free' },
       premium: { priceId: process.env.STRIPE_PREMIUM_PRICE_ID || '', name: 'Premium' },
@@ -147,14 +120,12 @@ export const config = {
     },
   },
 
-  // Error Tracking (Sentry)
   sentry: {
     dsn: process.env.SENTRY_DSN || '',
     environment: process.env.NODE_ENV || 'development',
     tracesSampleRate: parseFloat(process.env.SENTRY_TRACES_SAMPLE_RATE || '0.1'),
   },
 
-  // APM & Monitoring (Datadog)
   datadog: {
     enabled: process.env.DATADOG_ENABLED === 'true',
     agentHost: process.env.DD_AGENT_HOST || 'localhost',
@@ -164,24 +135,25 @@ export const config = {
     version: process.env.DD_VERSION || process.env.npm_package_version || '1.0.0',
   },
 
-  // Tax Compliance
   tax: {
-    // 32-byte hex key for AES-256-GCM TIN encryption.
-    // Generate with: openssl rand -hex 32
     encryptionKey: process.env.TAX_TIN_ENCRYPTION_KEY || '',
   },
 
-  // Job Queue Security
-  // SECURITY: No hardcoded fallback. In production the validator enforces this is set.
-  // In dev/test a clearly-labeled non-production value is used so the queue still functions locally.
   queue: {
     hmacSecret: process.env.QUEUE_HMAC_SECRET ||
       (process.env.NODE_ENV === 'production'
-        ? '' // will be caught by validateConfig() → process.exit(1)
+        ? ''
         : 'dev-only-hmac-secret-local-use'),
   },
 
-  // Application
+  // Feature flags — legal/safety kill switches. Default OFF; enable only via explicit env.
+  features: {
+    // Self-insurance pool gated OFF pending legal review (WA unauthorized-insurance
+    // risk; cf. WA Insurance Commissioner v. Airbnb, 2023). Gates BOTH the 2%
+    // contribution (collection) and all claims/payouts at the service layer.
+    insurancePoolEnabled: process.env.INSURANCE_POOL_ENABLED === 'true',
+  },
+
   app: {
     port: parseInt(process.env.PORT || '3000', 10),
     env: process.env.NODE_ENV || 'development',
@@ -194,20 +166,19 @@ export const config = {
   },
 };
 
-/**
- * Validate required configuration for production
- */
 export function validateConfig(): { valid: boolean; errors: string[]; warnings: string[] } {
   const errors: string[] = [];
   const warnings: string[] = [];
 
-  // Always required
   if (!config.database.url) {
     errors.push('DATABASE_URL is required');
   }
 
-  // Required in production
   if (config.app.isProduction) {
+    // STOP-009 FIX: Block HX_STRIPE_STUB in production at startup.
+    if (process.env.HX_STRIPE_STUB === '1') {
+      errors.push('HX_STRIPE_STUB=1 is forbidden in production — would stub all Stripe transfers/refunds with fake IDs');
+    }
     if (!process.env.QUEUE_HMAC_SECRET) {
       errors.push('QUEUE_HMAC_SECRET is required in production (HMAC signing for financial BullMQ jobs)');
     }
@@ -236,10 +207,6 @@ export function validateConfig(): { valid: boolean; errors: string[]; warnings: 
     }
   }
 
-  // SECURITY FIX (v2.9.4): In production, fatal config errors must crash the
-  // process immediately rather than silently continuing. A misconfigured
-  // deployment (e.g. missing Firebase credentials) would otherwise serve every
-  // authenticated request as a 401 with no alerting.
   if (config.app.isProduction && errors.length > 0) {
     // eslint-disable-next-line no-console
     console.error(

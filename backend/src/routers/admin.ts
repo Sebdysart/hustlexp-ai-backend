@@ -20,7 +20,23 @@ import { router, adminProcedure, Schemas, invalidateAuthCacheForUser } from '../
 import { db } from '../db.js';
 import { z } from 'zod';
 import { EscrowService } from '../services/EscrowService.js';
+import { ComplianceGuardianService } from '../services/ComplianceGuardianService.js';
+import { TEMPLATE_SLUGS } from '../services/TaskTemplateRegistry.js';
 import { forceDisconnectUser } from '../realtime/connection-registry.js';
+
+// ============================================================================
+// BUSINESS LEAD REVIEW (Roadmap E4) — admin-only review queue constants
+// ============================================================================
+
+// Statuses an admin may *set* via reviewBusinessLead. Deliberately excludes
+// 'NEW' (intake-only) and 'CONVERTED' (E5 — account creation, out of scope).
+const BUSINESS_LEAD_REVIEW_STATUSES = ['REVIEWED', 'APPROVED', 'REJECTED'] as const;
+
+// Full lifecycle set, used only to validate the list filter input.
+const BUSINESS_LEAD_STATUSES = ['NEW', 'REVIEWED', 'APPROVED', 'REJECTED', 'CONVERTED'] as const;
+
+// approvedTemplates must be known task-template slugs (TaskTemplateRegistry).
+const TEMPLATE_SLUG_VALUES = Object.values(TEMPLATE_SLUGS) as [string, ...string[]];
 
 // ============================================================================
 // ROUTER
@@ -407,6 +423,286 @@ export const adminRouter = router({
       );
 
       return serviceResult.data;
+    }),
+
+  // --------------------------------------------------------------------------
+  // BUSINESS LEAD REVIEW QUEUE (Roadmap E4)
+  // --------------------------------------------------------------------------
+  //
+  // Admin-only surface over `business_leads` (populated by the public E3
+  // `business.submitLead` intake). Scope is deliberately narrow:
+  //   - list + filter leads
+  //   - mark a lead REVIEWED / APPROVED / REJECTED with admin notes
+  //   - optionally record approved task-template slugs
+  // It must NOT: create accounts, set CONVERTED (E5), auto-approve, or touch
+  // any consumer funnel. Every review writes an admin_actions audit row in the
+  // same transaction as the lead update, so a review never commits without its
+  // audit record.
+
+  /**
+   * List business leads with pagination and optional filters (newest first).
+   */
+  listBusinessLeads: adminProcedure
+    .input(z.object({
+      limit: z.number().int().min(1).max(100).default(20),
+      offset: z.number().int().min(0).default(0),
+      status: z.enum(BUSINESS_LEAD_STATUSES).optional(),
+      requiresReview: z.boolean().optional(),
+    }))
+    .query(async ({ input }) => {
+      const conditions: string[] = ['1=1'];
+      const params: unknown[] = [];
+      let paramIndex = 1;
+
+      if (input.status) {
+        conditions.push(`status = $${paramIndex}`);
+        params.push(input.status);
+        paramIndex++;
+      }
+
+      if (input.requiresReview !== undefined) {
+        conditions.push(`requires_review = $${paramIndex}`);
+        params.push(input.requiresReview);
+        paramIndex++;
+      }
+
+      params.push(input.limit, input.offset);
+
+      // Admin-gated surface: contact PII is intentionally returned so an admin
+      // can act on the lead. ip_hash and compliance_notes are omitted to keep
+      // the list payload lean.
+      const result = await db.query(
+        `SELECT id, business_name, contact_name, email, phone, business_type, city, zip,
+                recurring_task_types, expected_frequency, avg_budget_cents, urgency, notes,
+                risk_flags, contact_preference, status, compliance_score, requires_review,
+                admin_notes, reviewed_at, reviewed_by, approved_templates, created_at
+         FROM business_leads
+         WHERE ${conditions.join(' AND ')}
+         ORDER BY created_at DESC
+         LIMIT $${paramIndex++} OFFSET $${paramIndex}`,
+        params
+      );
+
+      const countResult = await db.query<{ count: string }>(
+        `SELECT COUNT(*)::text as count FROM business_leads WHERE ${conditions.join(' AND ')}`,
+        params.slice(0, -2)
+      );
+
+      return {
+        leads: result.rows,
+        total: parseInt(countResult.rows[0]?.count || '0', 10),
+      };
+    }),
+
+  /**
+   * Review a business lead: set status (REVIEWED/APPROVED/REJECTED), attach
+   * admin notes, optionally record approved template slugs. Stamps reviewed_at
+   * and reviewed_by. The lead UPDATE and the admin_actions audit INSERT run in
+   * a single transaction — if either fails, neither is applied.
+   */
+  reviewBusinessLead: adminProcedure
+    .input(z.object({
+      leadId: Schemas.uuid,
+      status: z.enum(BUSINESS_LEAD_REVIEW_STATUSES),
+      adminNotes: z.string().max(2000).optional(),
+      approvedTemplates: z.array(z.enum(TEMPLATE_SLUG_VALUES)).max(TEMPLATE_SLUG_VALUES.length).optional(),
+      override: z.boolean().optional().default(false),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      return db.transaction(async (query) => {
+        const current = await query<{ id: string; status: string; compliance_score: number | null }>(
+          `SELECT id, status, compliance_score FROM business_leads WHERE id = $1 FOR UPDATE`,
+          [input.leadId]
+        );
+
+        if (current.rows.length === 0) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: 'Business lead not found' });
+        }
+
+        const lead = current.rows[0];
+
+        // E5 guard: a converted lead has graduated past review. Never re-review
+        // (and never set CONVERTED here — that transition belongs to E5).
+        if (lead.status === 'CONVERTED') {
+          throw new TRPCError({
+            code: 'CONFLICT',
+            message: 'Lead already converted; cannot re-review in E4',
+          });
+        }
+
+        // Compliance guard: approving a compliance-flagged lead requires an
+        // explicit override. Reuses the ComplianceGuardianService threshold
+        // (score >= 21 => soft_flag) rather than a magic number. Hard-block
+        // leads were never inserted by E3, so this gates soft-flag approvals.
+        if (input.status === 'APPROVED') {
+          const tier = ComplianceGuardianService._scoreTotier(lead.compliance_score ?? 0);
+          if (tier !== 'clean' && !input.override) {
+            throw new TRPCError({
+              code: 'PRECONDITION_FAILED',
+              message: 'Lead is compliance-flagged; pass override:true to approve',
+            });
+          }
+        }
+
+        const updated = await query<{
+          id: string;
+          status: string;
+          reviewed_at: Date;
+          reviewed_by: string;
+          approved_templates: unknown;
+          admin_notes: string | null;
+        }>(
+          `UPDATE business_leads
+              SET status = $1,
+                  admin_notes = $2,
+                  approved_templates = COALESCE($3::jsonb, approved_templates),
+                  reviewed_at = NOW(),
+                  reviewed_by = $4,
+                  updated_at = NOW()
+            WHERE id = $5
+            RETURNING id, status, reviewed_at, reviewed_by, approved_templates, admin_notes`,
+          [
+            input.status,
+            input.adminNotes ?? null,
+            input.approvedTemplates ? JSON.stringify(input.approvedTemplates) : null,
+            ctx.user.id,
+            input.leadId,
+          ]
+        );
+
+        // Audit row — live-valid admin_actions shape (admin_user_id, admin_role,
+        // action_type, action_details, result). The lead id lives in
+        // action_details because target_user_id FKs to users(id), not leads.
+        await query(
+          `INSERT INTO admin_actions (admin_user_id, admin_role, action_type, action_details, result)
+           VALUES ($1, 'admin', 'business_lead_review', $2::jsonb, 'success')`,
+          [
+            ctx.user.id,
+            JSON.stringify({
+              leadId: input.leadId,
+              status: input.status,
+              approvedTemplates: input.approvedTemplates ?? null,
+              override: input.override,
+              hadAdminNotes: Boolean(input.adminNotes),
+            }),
+          ]
+        );
+
+        return updated.rows[0];
+      });
+    }),
+
+  /**
+   * Convert an APPROVED business lead: link it to an EXISTING user account and
+   * flip the lead to CONVERTED (the transition reviewBusinessLead reserves).
+   * This is a bookkeeping link only — it creates no account, posts no task, and
+   * grants no capability. Posting stays gated independently at task.create
+   * (posterProcedure + trust_tier vs template.requiredTrustTier);
+   * approved_templates is inert metadata. The lead UPDATE and the admin_actions
+   * audit INSERT run in a single transaction — if either fails, neither applies.
+   */
+  convertBusinessLead: adminProcedure
+    .input(z.object({
+      leadId: Schemas.uuid,
+      userId: Schemas.uuid,
+      approvedTemplates: z.array(z.enum(TEMPLATE_SLUG_VALUES)).max(TEMPLATE_SLUG_VALUES.length).optional(),
+      adminNotes: z.string().max(2000).optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      return db.transaction(async (query) => {
+        const current = await query<{ id: string; status: string; converted_user_id: string | null }>(
+          `SELECT id, status, converted_user_id FROM business_leads WHERE id = $1 FOR UPDATE`,
+          [input.leadId]
+        );
+
+        if (current.rows.length === 0) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: 'Business lead not found' });
+        }
+
+        const lead = current.rows[0];
+
+        // Already converted: a lead links to at most the first account that
+        // claimed it. Re-running must not silently re-point converted_user_id.
+        if (lead.status === 'CONVERTED' || lead.converted_user_id != null) {
+          throw new TRPCError({ code: 'CONFLICT', message: 'Lead already converted' });
+        }
+
+        // Only APPROVED leads convert. Blocks NEW / REVIEWED / REJECTED in one check.
+        if (lead.status !== 'APPROVED') {
+          throw new TRPCError({
+            code: 'CONFLICT',
+            message: `Lead must be APPROVED to convert (is ${lead.status})`,
+          });
+        }
+
+        // Target must be an existing, usable account. We do NOT require
+        // default_mode='poster' — a business owner may currently be in worker
+        // mode; posting is gated separately at task.create.
+        const targetUser = await query<{ id: string; is_banned: boolean; account_status: string }>(
+          `SELECT id, is_banned, account_status FROM users WHERE id = $1`,
+          [input.userId]
+        );
+
+        if (targetUser.rows.length === 0) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: 'Target user not found' });
+        }
+
+        const target = targetUser.rows[0];
+        if (
+          target.is_banned === true ||
+          target.account_status === 'SUSPENDED' ||
+          target.account_status === 'DELETED'
+        ) {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message: 'Target user account is not in a usable state',
+          });
+        }
+
+        const updated = await query<{
+          id: string;
+          status: string;
+          converted_user_id: string;
+          approved_templates: unknown;
+          updated_at: Date;
+        }>(
+          `UPDATE business_leads
+              SET status = 'CONVERTED',
+                  converted_user_id = $1,
+                  approved_templates = COALESCE($2::jsonb, approved_templates),
+                  updated_at = NOW()
+            WHERE id = $3
+            RETURNING id, status, converted_user_id, approved_templates, updated_at`,
+          [
+            input.userId,
+            input.approvedTemplates ? JSON.stringify(input.approvedTemplates) : null,
+            input.leadId,
+          ]
+        );
+
+        // Audit row — live-valid admin_actions shape with target_user_id (the
+        // XPTaxService pattern). Unlike review, conversion's target genuinely IS
+        // a user, so target_user_id is populated; leadId stays in action_details.
+        // The lead's own admin_notes (the review note) is left intact; any
+        // conversion note is recorded here only.
+        await query(
+          `INSERT INTO admin_actions (admin_user_id, admin_role, action_type, action_details, target_user_id, result)
+           VALUES ($1, 'admin', 'business_lead_conversion', $2::jsonb, $3, 'success')`,
+          [
+            ctx.user.id,
+            JSON.stringify({
+              leadId: input.leadId,
+              convertedUserId: input.userId,
+              approvedTemplates: input.approvedTemplates ?? null,
+              hadAdminNotes: Boolean(input.adminNotes),
+              adminNotes: input.adminNotes ?? null,
+            }),
+            input.userId,
+          ]
+        );
+
+        return updated.rows[0];
+      });
     }),
 });
 
