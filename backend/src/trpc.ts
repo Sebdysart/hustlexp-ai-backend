@@ -47,6 +47,18 @@ export interface Context extends Record<string, unknown> {
   ip: string | null;
 }
 
+/**
+ * Context after `isAuthenticated` has run: `user` is guaranteed non-null.
+ * Used to force tRPC's middleware context-override inference — without an explicit
+ * type here, the `Record<string, unknown>` index signature on `Context` (required by
+ * the @hono/trpc-server adapter, which expects a `Record<string, unknown>` factory)
+ * swallows the narrowed `user: User` in the `next({ ctx })` override, so every
+ * protected-family procedure would otherwise see `ctx.user` as `User | null`.
+ */
+export interface AuthedContext extends Context {
+  user: User;
+}
+
 function extractIp(req: Request): string | null {
   // cf-connecting-ip: set by Cloudflare directly from the TCP connection;
   // cannot be forged by the client regardless of what they put in XFF.
@@ -208,7 +220,7 @@ const isAuthenticated = t.middleware(async ({ ctx, next }) => {
       message: 'Account suspended.',
     });
   }
-  return next({ ctx: { ...ctx, user: ctx.user } });
+  return next({ ctx: { ...ctx, user: ctx.user } as AuthedContext });
 });
 
 export const protectedProcedure = t.procedure.use(isAuthenticated);
@@ -237,7 +249,7 @@ const isAdminCheck = t.middleware(async ({ ctx, next }) => {
     });
   }
 
-  return next({ ctx: { ...ctx, user: ctx.user } });
+  return next({ ctx: { ...ctx, user: ctx.user } as AuthedContext });
 });
 
 export const adminProcedure = protectedProcedure.use(isAdminCheck);
@@ -251,7 +263,7 @@ const isHustlerCheck = t.middleware(async ({ ctx, next }) => {
       message: 'Hustler access required',
     });
   }
-  return next({ ctx: { ...ctx, user: ctx.user } });
+  return next({ ctx: { ...ctx, user: ctx.user } as AuthedContext });
 });
 
 export const hustlerProcedure = protectedProcedure.use(isHustlerCheck);
@@ -265,7 +277,7 @@ const isPosterCheck = t.middleware(async ({ ctx, next }) => {
       message: 'Poster access required',
     });
   }
-  return next({ ctx: { ...ctx, user: ctx.user } });
+  return next({ ctx: { ...ctx, user: ctx.user } as AuthedContext });
 });
 
 export const posterProcedure = protectedProcedure.use(isPosterCheck);
