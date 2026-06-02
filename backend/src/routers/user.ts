@@ -721,7 +721,7 @@ export const userRouter = router({
   xpLeaderboard: protectedProcedure
     .input(z.object({ limit: z.number().min(1).max(100).optional().default(25) }).optional())
     .query(async ({ input }) => {
-      const { XPService } = await import('../services/XPService');
+      const { XPService } = await import('../services/XPService.js');
       const result = await XPService.getDailyLeaderboard(input?.limit ?? 25);
       if (!result.success) {
         throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: result.error?.message || 'Failed to get leaderboard' });
@@ -732,7 +732,7 @@ export const userRouter = router({
   requestErasure: protectedProcedure
     .input(z.void())
     .mutation(async ({ ctx }) => {
-      const { GDPRService } = await import('../services/GDPRService');
+      const { GDPRService } = await import('../services/GDPRService.js');
       const result = await GDPRService.createRequest({
         userId: ctx.user.id,
         requestType: 'deletion',

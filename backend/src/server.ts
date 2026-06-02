@@ -360,7 +360,7 @@ app.get('/health/detailed', rateLimitMiddleware('auth'), async (c) => {
     openaiBreaker, anthropicBreaker, groqBreaker, deepseekBreaker,
     stripeBreaker, sendgridBreaker, twilioBreaker, awsRekognitionBreaker,
     gcpVisionBreaker, googleMapsBreaker,
-  } = await import('./middleware/circuit-breaker');
+  } = await import('./middleware/circuit-breaker.js');
   const circuitBreakers = {
     openai: openaiBreaker.getState(),
     anthropic: anthropicBreaker.getState(),
@@ -897,7 +897,7 @@ app.post('/webhooks/stripe', async (c) => {
   }
   
   // Phase D: Pure webhook ingestion (store-only, no business logic)
-  const { StripeWebhookService } = await import('./services/StripeWebhookService');
+  const { StripeWebhookService } = await import('./services/StripeWebhookService.js');
   const result = await StripeWebhookService.processWebhook(rawBody, sig);
   
   if (!result.success) {
@@ -978,7 +978,7 @@ app.post('/webhooks/checkr', async (c) => {
     return c.json({ error: 'Invalid webhook payload' }, 400);
   }
 
-  const { updateBackgroundCheckStatus } = await import('./services/BackgroundCheckService');
+  const { updateBackgroundCheckStatus } = await import('./services/BackgroundCheckService.js');
 
   try {
     const { type, data } = rawBody as { type: string; data?: { object?: { id?: string; result?: string } } };

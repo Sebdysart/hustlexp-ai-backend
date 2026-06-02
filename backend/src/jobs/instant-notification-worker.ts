@@ -70,7 +70,7 @@ export async function processInstantNotificationJob(
 
   try {
     // Launch Hardening v1: Kill switch check
-    const { InstantModeKillSwitch } = await import('../services/InstantModeKillSwitch');
+    const { InstantModeKillSwitch } = await import('../services/InstantModeKillSwitch.js');
     const flags = InstantModeKillSwitch.checkFlags({ taskId, operation: 'notification_delivery' });
     
     if (!flags.interruptsEnabled) {

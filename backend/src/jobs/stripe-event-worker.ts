@@ -424,7 +424,7 @@ async function handleAccountUpdated(event: StripeEventEnvelope): Promise<void> {
   const requirements = account.requirements as Record<string, unknown> | undefined;
   const currentlyDue = requirements?.currently_due as unknown[] | undefined;
   if (currentlyDue && currentlyDue.length > 0) {
-    const { NotificationService } = await import('../services/NotificationService');
+    const { NotificationService } = await import('../services/NotificationService.js');
     await NotificationService.createNotification({
       userId,
       category: 'security_alert',

@@ -145,7 +145,7 @@ export async function processMaintenanceJob(job: Job): Promise<void> {
       break;
 
     case 'tax.annual_filing_requested': {
-      const { processTaxReportingJob } = await import('./tax-reporting-worker');
+      const { processTaxReportingJob } = await import('./tax-reporting-worker.js');
       await processTaxReportingJob(job);
       break;
     }

@@ -67,7 +67,7 @@ export async function processInstantSurgeJob(
 
   try {
     // Launch Hardening v1: Kill switch check
-    const { InstantModeKillSwitch } = await import('../services/InstantModeKillSwitch');
+    const { InstantModeKillSwitch } = await import('../services/InstantModeKillSwitch.js');
     const flags = InstantModeKillSwitch.checkFlags({ taskId, operation: 'surge_evaluation' });
     
     if (!flags.surgeEnabled) {
@@ -392,6 +392,6 @@ async function handleSurgeLevel3(taskId: string): Promise<void> {
   log.info({ taskId }, 'Task transitioned to OPEN (Instant Mode failed)');
 
   // Launch Hardening v1: Observability - log surge fallback (outside transaction — fire-and-forget)
-  const { InstantObservability } = await import('../services/InstantObservability');
+  const { InstantObservability } = await import('../services/InstantObservability.js');
   InstantObservability.logSurgeFallback(taskId, elapsedSeconds);
 }

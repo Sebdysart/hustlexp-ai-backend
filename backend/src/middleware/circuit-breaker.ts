@@ -189,7 +189,7 @@ export class CircuitOpenError extends Error {
 function onCircuitStateChange(name: string, from: CircuitState, to: CircuitState): void {
   if (from === 'CLOSED' && to === 'OPEN') {
     // Lazy import to avoid circular dependencies — fire-and-forget
-    import('../db').then(({ db }) => {
+    import('../db.js').then(({ db }) => {
       db.query(
         `INSERT INTO incident_events (event_type, severity, service, details)
          VALUES ('circuit_breaker_open', 'warning', $1, $2)`,

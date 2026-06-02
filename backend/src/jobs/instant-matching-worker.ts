@@ -72,7 +72,7 @@ export async function processInstantMatchingJob(
 
   try {
     // Launch Hardening v1: Kill switch check
-    const { InstantModeKillSwitch } = await import('../services/InstantModeKillSwitch');
+    const { InstantModeKillSwitch } = await import('../services/InstantModeKillSwitch.js');
     const flags = InstantModeKillSwitch.checkFlags({ taskId, operation: 'matching_broadcast' });
     
     if (!flags.instantModeEnabled) {

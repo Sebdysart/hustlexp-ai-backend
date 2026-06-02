@@ -527,7 +527,7 @@ export const GDPRService = {
       const contentType = contentTypeMap[exportFormat] || 'application/json';
       
       // Use transaction to create export and outbox event atomically
-      const { generateIdempotencyKey } = await import('../jobs/queues');
+      const { generateIdempotencyKey } = await import('../jobs/queues.js');
       
       const result = await db.transaction(async (query) => {
         // Update GDPR request status to processing
