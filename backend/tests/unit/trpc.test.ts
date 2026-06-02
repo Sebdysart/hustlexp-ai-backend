@@ -93,7 +93,7 @@ describe('createContext', () => {
       firebase_uid: mockUser.firebase_uid,
     }));
     expect(ctx.firebaseUid).toBe('uid-1');
-    expect(mockVerifyIdToken).toHaveBeenCalledWith('valid-token');
+    expect(mockVerifyIdToken).toHaveBeenCalledWith('valid-token', true);
     expect(mockDbQuery).toHaveBeenCalledWith(
       'SELECT * FROM users WHERE firebase_uid = $1',
       ['uid-1']
@@ -143,7 +143,7 @@ describe('createContext', () => {
 
     await createContext({ req: makeRequest('Bearer my-actual-token'), resHeaders: new Headers() });
 
-    expect(mockVerifyIdToken).toHaveBeenCalledWith('my-actual-token');
+    expect(mockVerifyIdToken).toHaveBeenCalledWith('my-actual-token', true);
     // Should NOT be called with 'Bearer my-actual-token'
     expect(mockVerifyIdToken).not.toHaveBeenCalledWith('Bearer my-actual-token');
   });

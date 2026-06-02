@@ -140,6 +140,8 @@ export const recurringTaskRouter = router({
       timeOfDay: z.string().regex(/^\d{2}:\d{2}$/).optional(),
       startDate: z.string(), // ISO date
       endDate: z.string().optional(),
+      // Bug BB1-1: cap total occurrences to prevent amplification attack
+      maxOccurrences: z.number().int().min(1).max(500).optional(),
     }))
     .mutation(async ({ ctx, input }) => {
       // 1. Tier gate: Trusted (3+)
@@ -165,7 +167,30 @@ export const recurringTaskRouter = router({
         });
       }
 
-      // 3. Insert series
+      // 3. Bug BB1-1: Validate occurrence count cap before inserting.
+      //    For open-ended series (no endDate, no maxOccurrences), cap at 500.
+      //    For bounded series, compute projected occurrences and reject if > 500.
+      const MAX_OCCURRENCES = 500;
+      if (input.endDate) {
+        const { getNextOccurrenceDates } = await import('../services/RecurringTaskService.js');
+        const projected = getNextOccurrenceDates(
+          input.pattern,
+          input.startDate,
+          input.endDate,
+          input.dayOfWeek ?? null,
+          input.dayOfMonth ?? null,
+          MAX_OCCURRENCES + 1  // one extra so we can detect overflow
+        );
+        if (projected.length > MAX_OCCURRENCES) {
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message: `Recurring series would generate more than ${MAX_OCCURRENCES} occurrences. Shorten the date range or reduce frequency.`,
+          });
+        }
+      }
+      // Effective cap applied at generation time in generateOccurrencesForSeries
+
+      // 4. Insert series
       const paymentCents = Math.round(input.payment * 100);
       const result = await db.query<SeriesRow>(
         `INSERT INTO recurring_task_series
@@ -449,15 +474,32 @@ export const recurringTaskRouter = router({
       workerId: Schemas.uuid,
     }))
     .mutation(async ({ ctx, input }) => {
-      // Verify worker exists
-      const worker = await db.query(
-        `SELECT id FROM users WHERE id = $1`,
+      // Bug BB1-2a: Prevent self-dealing — poster cannot designate themselves as preferred worker
+      if (input.workerId === ctx.user.id) {
+        throw new TRPCError({
+          code: 'FORBIDDEN',
+          message: 'Cannot set yourself as preferred worker',
+        });
+      }
+
+      // Bug BB1-2b: Verify worker exists AND is ACTIVE (not banned/suspended)
+      const worker = await db.query<{ id: string; account_status: string }>(
+        `SELECT id, account_status FROM users WHERE id = $1`,
         [input.workerId]
       );
       if (worker.rows.length === 0) {
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Worker not found' });
       }
+      if (worker.rows[0].account_status !== 'ACTIVE') {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'Worker account is not active and cannot be set as preferred worker',
+        });
+      }
 
+      // Note (BB1-2c): preferred_worker_id is a preference hint only.
+      // Actual assignment on each occurrence requires the worker's explicit acceptWithConsent
+      // call on the spawned task instance — this field never forces auto-assignment.
       const result = await db.query(
         `UPDATE recurring_task_series
          SET preferred_worker_id = $1, updated_at = NOW()

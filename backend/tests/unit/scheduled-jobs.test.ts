@@ -83,7 +83,17 @@ vi.mock('../../src/config', () => ({
   config: {
     stripe: { secretKey: null },
     redis: { url: 'redis://localhost:6379' },
+    // W-5 FIX: workers.ts now imports PushNotificationService → firebase.ts → config.firebase.
+    // Provide the firebase sub-object so property access does not throw.
+    firebase: { projectId: null, clientEmail: null, privateKey: null },
   },
+}));
+
+// W-5 FIX: workers.ts now imports sendPushNotification from PushNotificationService.
+// PushNotificationService imports messaging from firebase.ts which tries to initialise
+// Firebase Admin SDK at module load time. Mock the whole service to prevent that chain.
+vi.mock('../../src/services/PushNotificationService', () => ({
+  sendPushNotification: vi.fn().mockResolvedValue({ success: true }),
 }));
 
 describe('Scheduled Jobs Registration', () => {
@@ -150,15 +160,16 @@ describe('Scheduled Jobs Registration', () => {
     const { startWorkers } = await import('../../src/jobs/workers');
     await startWorkers();
 
-    // Every scheduled job should have a jobId prefixed with 'scheduled:'
+    // Scheduled jobs now rely on BullMQ repeat keys for deduplication (W-19: custom jobId removed)
+    // Verify that scheduled jobs are registered with repeat options
     const scheduledJobs = queueAddCalls.filter(
-      c => (c.opts as Record<string, unknown>).jobId && ((c.opts as Record<string, unknown>).jobId as string).startsWith('scheduled:')
+      c => (c.opts as Record<string, unknown>).repeat != null
     );
     expect(scheduledJobs.length).toBeGreaterThanOrEqual(4);
 
-    // All jobIds should be unique
-    const jobIds = scheduledJobs.map(j => (j.opts as Record<string, unknown>).jobId);
-    expect(new Set(jobIds).size).toBe(jobIds.length);
+    // Job names should be unique across scheduled jobs
+    const jobNames = scheduledJobs.map(j => j.jobName);
+    expect(new Set(jobNames).size).toBe(jobNames.length);
   });
 });
 

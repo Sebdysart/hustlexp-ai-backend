@@ -65,18 +65,28 @@ export function addConnection(userId: string, conn: SSEConnection): void {
   // Reconnect flood check: count connection attempts within the sliding window
   const now = Date.now();
   const windowStart = now - RECONNECT_WINDOW_MS;
-  const timestamps = (reconnectTracker.get(userId) ?? []).filter(t => t > windowStart);
-  if (timestamps.length >= RECONNECT_LIMIT) {
+  const recentTimestamps = (reconnectTracker.get(userId) ?? []).filter(t => t > windowStart);
+  if (recentTimestamps.length >= RECONNECT_LIMIT) {
     throw new Error(
       `SSE_CONNECTION_LIMIT: User ${userId} has exceeded the reconnect rate limit of ${RECONNECT_LIMIT} connections per ${RECONNECT_WINDOW_MS / 1000}s`
     );
   }
-  timestamps.push(now);
-  // Clean up map entries whose window has fully expired to prevent unbounded growth.
-  if (timestamps.length === 0) {
-    reconnectTracker.delete(userId);
-  } else {
-    reconnectTracker.set(userId, timestamps);
+  // Record this connection attempt AFTER filtering expired entries.
+  recentTimestamps.push(now);
+  // Clean up Map entries whose window has fully expired to prevent unbounded growth.
+  // Note: recentTimestamps always has ≥ 1 entry here (we just pushed), so the delete
+  // branch is intentionally absent — the set always gets written back.
+  reconnectTracker.set(userId, recentTimestamps);
+
+  // Periodically sweep expired entries from OTHER users (~1% of calls = roughly every 100 connections).
+  // Running on every call would be O(n) per connection; the probabilistic approach amortises the cost.
+  if (Math.random() < 0.01) {
+    const windowStart = Date.now() - RECONNECT_WINDOW_MS;
+    for (const [uid, timestamps] of reconnectTracker.entries()) {
+      if (timestamps.filter((t: number) => t > windowStart).length === 0) {
+        reconnectTracker.delete(uid);
+      }
+    }
   }
 
   if (!existing) {
@@ -160,6 +170,9 @@ export function forceDisconnectUser(userId: string): void {
   }
 
   connections.delete(userId);
-  // Clear reconnect timestamps so the flood window resets (ban wipes history)
-  reconnectTracker.delete(userId);
+  // Do NOT clear reconnectTracker here. Wiping the tracker on a forced
+  // disconnect (e.g. after a ban) would give the banned user a fresh flood
+  // budget immediately, allowing them to hammer the SSE endpoint before auth
+  // rejection kicks in. The tracker entries expire naturally via the sliding-
+  // window filter in addConnection, so unbounded growth is not a concern.
 }

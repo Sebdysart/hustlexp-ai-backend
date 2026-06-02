@@ -25,18 +25,15 @@ describe('Encrypted Session Store', () => {
     _resetKeyCache();
   });
 
-  describe('Without encryption key (dev mode)', () => {
-    it('should store as plain JSON when no key set', () => {
+  describe('Without encryption key', () => {
+    it('should throw when encryptSession is called with no key set', () => {
       const user = { uid: 'user-1', email: 'test@test.com' };
-      const encrypted = encryptSession(user);
-      expect(encrypted).toBe(JSON.stringify(user));
+      expect(() => encryptSession(user)).toThrow('SESSION_ENCRYPTION_KEY is required');
     });
 
-    it('should decrypt plain JSON', () => {
-      const user = { uid: 'user-1', email: 'test@test.com' };
-      const stored = JSON.stringify(user);
-      const decrypted = decryptSession(stored);
-      expect(decrypted).toEqual(user);
+    it('should return null from decryptSession when no key set', () => {
+      const stored = JSON.stringify({ uid: 'user-1' });
+      expect(decryptSession(stored)).toBeNull();
     });
 
     it('should report encryption disabled', () => {

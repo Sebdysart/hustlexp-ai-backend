@@ -63,7 +63,9 @@ import { disputeRouter } from '../../src/routers/dispute';
 import { DisputeService } from '../../src/services/DisputeService';
 import { TaskService } from '../../src/services/TaskService';
 import { EscrowService } from '../../src/services/EscrowService';
+import { db } from '../../src/db';
 
+const mockDb = vi.mocked(db);
 const mockDispute = vi.mocked(DisputeService);
 const mockTask = vi.mocked(TaskService);
 const mockEscrow = vi.mocked(EscrowService);
@@ -85,6 +87,7 @@ const fakeTask = {
   escrow_id: ESCROW_UUID,
   completed_at: new Date().toISOString(),
   status: 'completed',
+  state: 'COMPLETED', // required by the router's early task-state validation (Bug 3 fix)
 };
 
 const fakeDispute = {
@@ -117,6 +120,8 @@ describe('dispute.create', () => {
   it('creates a dispute when worker initiates on their task', async () => {
     mockTask.getById.mockResolvedValueOnce({ success: true, data: fakeTask } as any);
     mockEscrow.getByTaskId.mockResolvedValueOnce({ success: true, data: { id: ESCROW_UUID } } as any);
+    // BUG-4 fix: duplicate dispute check — no existing active dispute
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
     mockDispute.create.mockResolvedValueOnce({ success: true, data: fakeDispute } as any);
 
     const result = await makeCaller(WORKER_ID).create({
@@ -142,6 +147,8 @@ describe('dispute.create', () => {
   it('creates a dispute when poster initiates', async () => {
     mockTask.getById.mockResolvedValueOnce({ success: true, data: fakeTask } as any);
     mockEscrow.getByTaskId.mockResolvedValueOnce({ success: true, data: { id: ESCROW_UUID } } as any);
+    // BUG-4 fix: duplicate dispute check — no existing active dispute
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
     mockDispute.create.mockResolvedValueOnce({
       success: true,
       data: { ...fakeDispute, initiated_by: POSTER_ID },
@@ -182,22 +189,23 @@ describe('dispute.create', () => {
     ).rejects.toThrow('No escrow found');
   });
 
-  it('throws FORBIDDEN when service returns FORBIDDEN', async () => {
+  it('throws NOT_FOUND when caller is not a task participant (hides task existence)', async () => {
+    // Bug 1 fix: non-participants receive NOT_FOUND (not FORBIDDEN) so task
+    // existence and lifecycle state are not leaked via differentiated errors.
     mockTask.getById.mockResolvedValueOnce({ success: true, data: fakeTask } as any);
-    mockEscrow.getByTaskId.mockResolvedValueOnce({ success: true, data: { id: ESCROW_UUID } } as any);
-    mockDispute.create.mockResolvedValueOnce({
-      success: false,
-      error: { code: 'FORBIDDEN', message: 'Only poster or worker can initiate disputes' },
-    } as any);
 
     await expect(
       makeCaller('other-user').create({ taskId: TASK_UUID, reason: 'test', description: 'test' })
-    ).rejects.toThrow('Only poster or worker can initiate disputes');
+    ).rejects.toThrow('Task not found');
+    // DisputeService.create must never be reached for non-participants.
+    expect(mockDispute.create).not.toHaveBeenCalled();
   });
 
   it('throws PRECONDITION_FAILED when service returns INVALID_STATE', async () => {
     mockTask.getById.mockResolvedValueOnce({ success: true, data: fakeTask } as any);
     mockEscrow.getByTaskId.mockResolvedValueOnce({ success: true, data: { id: ESCROW_UUID } } as any);
+    // BUG-4 fix: duplicate dispute check — no existing active dispute
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
     mockDispute.create.mockResolvedValueOnce({
       success: false,
       error: { code: 'INVALID_STATE', message: 'Disputes can only be opened for completed tasks' },
@@ -211,6 +219,8 @@ describe('dispute.create', () => {
   it('throws INTERNAL_SERVER_ERROR on unexpected service failure', async () => {
     mockTask.getById.mockResolvedValueOnce({ success: true, data: fakeTask } as any);
     mockEscrow.getByTaskId.mockResolvedValueOnce({ success: true, data: { id: ESCROW_UUID } } as any);
+    // BUG-4 fix: duplicate dispute check — no existing active dispute
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
     mockDispute.create.mockResolvedValueOnce({
       success: false,
       error: { code: 'DB_ERROR', message: 'Connection lost' },
@@ -315,7 +325,7 @@ describe('dispute.getMine', () => {
     const result = await makeCaller(WORKER_ID).getMine();
 
     expect(result).toHaveLength(1);
-    expect(mockDispute.getByUserId).toHaveBeenCalledWith(WORKER_ID);
+    expect(mockDispute.getByUserId).toHaveBeenCalledWith(WORKER_ID, 50, 0);
   });
 
   it('returns empty array when user has no disputes', async () => {

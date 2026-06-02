@@ -65,7 +65,6 @@ interface LeaderboardRow {
   name: string;
   emoji: string;
   tagline: string | null;
-  organizer_id: string;
   organizer_name: string;
   status: string;
   total_tasks_completed: number;
@@ -94,7 +93,7 @@ export const squadRouter = router({
   // CREATE SQUAD
   // --------------------------------------------------------------------------
 
-  create: posterProcedure
+  create: protectedProcedure
     .input(z.object({
       name: z.string().min(2).max(100),
       emoji: z.string().max(10).default('⚡️'),
@@ -273,7 +272,7 @@ export const squadRouter = router({
   // INVITE MEMBER
   // --------------------------------------------------------------------------
 
-  invite: posterProcedure
+  invite: protectedProcedure
     .input(z.object({
       squadId: Schemas.uuid,
       inviteeId: Schemas.uuid,
@@ -313,6 +312,11 @@ export const squadRouter = router({
         throw new TRPCError({ code: 'NOT_FOUND', message: 'User not found' });
       }
 
+      const inviteeTier = Number(invitee.rows[0].trust_tier);
+      if (isNaN(inviteeTier) || inviteeTier < REQUIRED_TRUST_TIER) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'Invitee does not meet Elite trust tier requirement' });
+      }
+
       const result = await db.query<{ id: string; status: string; expires_at: Date }>(
         `INSERT INTO squad_invites (squad_id, inviter_id, invitee_id)
          VALUES ($1, $2, $3)
@@ -343,11 +347,11 @@ export const squadRouter = router({
     }))
     .mutation(async ({ ctx, input }) => {
       return await db.transaction(async (query) => {
-        // Get and validate invite
+        // Get and validate invite (R-01: also reject expired invites)
         const invite = await query<{
           id: string; squad_id: string; invitee_id: string; status: string;
         }>(
-          `SELECT * FROM squad_invites WHERE id = $1 AND invitee_id = $2 AND status = 'pending'`,
+          `SELECT * FROM squad_invites WHERE id = $1 AND invitee_id = $2 AND status = 'pending' AND expires_at > NOW()`,
           [input.inviteId, ctx.user.id]
         );
 
@@ -365,6 +369,25 @@ export const squadRouter = router({
         );
 
         if (input.accept) {
+          // R-05: Verify squad is still active
+          const squadResult = await query<{ status: string; max_members: number }>(
+            `SELECT status, max_members FROM squads WHERE id = $1`,
+            [inv.squad_id]
+          );
+          if (squadResult.rows[0]?.status !== 'active') {
+            throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Squad is no longer active' });
+          }
+
+          // R-02: Check squad capacity under transaction lock
+          const countResult = await query<{ cnt: string }>(
+            `SELECT COUNT(*) as cnt FROM squad_members WHERE squad_id = $1`,
+            [inv.squad_id]
+          );
+          const currentCount = parseInt(countResult.rows[0].cnt, 10);
+          if (currentCount >= squadResult.rows[0].max_members) {
+            throw new TRPCError({ code: 'CONFLICT', message: 'Squad is full' });
+          }
+
           // Add as member
           await query(
             `INSERT INTO squad_members (squad_id, user_id, role)
@@ -452,7 +475,7 @@ export const squadRouter = router({
   // DISBAND SQUAD (organizer only)
   // --------------------------------------------------------------------------
 
-  disband: posterProcedure
+  disband: protectedProcedure
     .input(z.object({ squadId: Schemas.uuid }))
     .mutation(async ({ ctx, input }) => {
       const orgCheck = await db.query(
@@ -464,12 +487,22 @@ export const squadRouter = router({
         throw new TRPCError({ code: 'FORBIDDEN', message: 'Only the organizer can disband' });
       }
 
-      await db.query(
-        `UPDATE squads SET status = 'disbanded', updated_at = NOW() WHERE id = $1`,
-        [input.squadId]
-      );
+      return await db.transaction(async (query) => {
+        const activeTasksResult = await query(
+          `SELECT COUNT(*) as cnt FROM squad_task_assignments WHERE squad_id = $1 AND status NOT IN ('completed', 'cancelled')`,
+          [input.squadId]
+        );
+        if (parseInt(activeTasksResult.rows[0].cnt, 10) > 0) {
+          throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Cannot disband squad with active tasks — complete or cancel all tasks first' });
+        }
 
-      return { success: true };
+        await query(
+          `UPDATE squads SET status = 'disbanded', updated_at = NOW() WHERE id = $1`,
+          [input.squadId]
+        );
+
+        return { success: true };
+      });
     }),
 
   // --------------------------------------------------------------------------
@@ -631,9 +664,21 @@ export const squadRouter = router({
   getTeamTask: protectedProcedure
     .input(z.object({ squadTaskId: Schemas.uuid }))
     .query(async ({ ctx, input }) => {
+      // Step 1: Resolve squad_id from the task assignment.
+      // If the assignment doesn't exist we still throw FORBIDDEN (not NOT_FOUND)
+      // to avoid leaking whether the squadTaskId exists at all.
+      const assignSquad = await db.query<{ squad_id: string }>(
+        `SELECT squad_id FROM squad_task_assignments WHERE id = $1`,
+        [input.squadTaskId]
+      );
+      if (assignSquad.rows.length === 0) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'Not a member of this squad' });
+      }
+
+      // Step 2: Verify the caller is a member of that squad.
       const member = await db.query(
-        `SELECT 1 FROM squad_members WHERE squad_id = (SELECT squad_id FROM squad_task_assignments WHERE id = $1) AND user_id = $2`,
-        [input.squadTaskId, ctx.user.id]
+        `SELECT 1 FROM squad_members WHERE squad_id = $1 AND user_id = $2`,
+        [assignSquad.rows[0].squad_id, ctx.user.id]
       );
       if (member.rows.length === 0) {
         throw new TRPCError({ code: 'FORBIDDEN', message: 'Not a member of this squad' });
@@ -731,6 +776,17 @@ export const squadRouter = router({
   withdrawFromTeamTask: hustlerProcedure
     .input(z.object({ squadTaskId: Schemas.uuid }))
     .mutation(async ({ ctx, input }) => {
+      // Verify caller is a member of the squad containing this task
+      const membershipCheck = await db.query(
+        `SELECT 1 FROM squad_members sm
+         JOIN squad_task_assignments sta ON sta.squad_id = sm.squad_id
+         WHERE sta.id = $1 AND sm.user_id = $2`,
+        [input.squadTaskId, ctx.user.id]
+      );
+      if (!membershipCheck.rows[0]) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'Not a member of this squad' });
+      }
+
       const assignment = await db.query<{ id: string; status: string; required_workers: number }>(
         `SELECT id, status, required_workers FROM squad_task_assignments WHERE id = $1`,
         [input.squadTaskId]
@@ -799,7 +855,21 @@ export const squadRouter = router({
           throw new TRPCError({ code: 'FORBIDDEN', message: 'Not a member of this squad' });
         }
 
-        // 3. Insert worker (UNIQUE constraint prevents duplicates)
+        // 3. Self-dealing guard: organizer cannot accept their own squad task
+        const taskCreatorResult = await query<{ poster_id: string }>(
+          `SELECT t.poster_id FROM tasks t
+           JOIN squad_task_assignments sta ON sta.task_id = t.id
+           WHERE sta.id = $1`,
+          [input.squadTaskId]
+        );
+        if (taskCreatorResult.rows.length > 0 && taskCreatorResult.rows[0].poster_id === ctx.user.id) {
+          throw new TRPCError({
+            code: 'FORBIDDEN',
+            message: 'Organizer cannot accept their own squad task',
+          });
+        }
+
+        // 4. Insert worker (UNIQUE constraint prevents duplicates)
         const workerResult = await query(
           `INSERT INTO squad_task_workers (squad_task_id, worker_id)
            VALUES ($1, $2)
@@ -807,7 +877,7 @@ export const squadRouter = router({
           [input.squadTaskId, ctx.user.id]
         );
 
-        // 4. Check if now fully recruited → update status to 'ready'
+        // 5. Check if now fully recruited → update status to 'ready'
         const countResult = await query<CountRow>(
           `SELECT COUNT(*) as count FROM squad_task_workers WHERE squad_task_id = $1`,
           [input.squadTaskId]
@@ -843,7 +913,7 @@ export const squadRouter = router({
       const result = await db.query<LeaderboardRow>(
         `SELECT
            ROW_NUMBER() OVER (ORDER BY s.squad_xp DESC) as rank,
-           s.id, s.name, s.emoji, s.tagline, s.organizer_id,
+           s.id, s.name, s.emoji, s.tagline,
            u.full_name as organizer_name,
            s.status, s.total_tasks_completed, s.total_earnings_cents,
            s.squad_xp, s.squad_level, s.average_rating,
@@ -863,7 +933,6 @@ export const squadRouter = router({
         name: s.name,
         emoji: s.emoji,
         tagline: s.tagline,
-        organizerId: s.organizer_id,
         organizerName: s.organizer_name,
         status: s.status,
         maxMembers: s.max_members,

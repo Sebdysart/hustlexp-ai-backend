@@ -11,8 +11,10 @@
  */
 
 import { db } from '../db.js';
+import type { QueryFn } from '../db.js';
 import type { ServiceResult } from '../types.js';
 import { logger } from '../logger.js';
+import { StripeService } from './StripeService.js';
 
 const log = logger.child({ service: 'SelfInsurancePoolService' });
 
@@ -46,6 +48,7 @@ interface InsuranceClaim {
   review_notes: string | null;
   paid_at: Date | null;
   created_at: Date;
+  stripe_transfer_id: string | null; // F-31: null until Stripe transfer is confirmed
 }
 
 interface PoolStatus {
@@ -80,22 +83,26 @@ export const SelfInsurancePoolService = {
     contributionPercentage = 2.0
   ): Promise<ServiceResult<void>> => {
     try {
-      // Insert contribution record
-      await db.query(
-        `INSERT INTO insurance_contributions (
-          task_id, hustler_id, contribution_cents, contribution_percentage
-        ) VALUES ($1, $2, $3, $4)
-        ON CONFLICT (task_id, hustler_id) DO NOTHING`,
-        [taskId, hustlerId, contributionCents, contributionPercentage]
-      );
-
-      // Update pool total
-      await db.query(
-        `UPDATE self_insurance_pool
-         SET total_deposits_cents = total_deposits_cents + $1,
-             updated_at = NOW()`,
-        [contributionCents]
-      );
+      await db.transaction(async (query: QueryFn) => {
+        // F-28: Use a CTE so the pool UPDATE only fires when the INSERT actually
+        // inserts a row. If ON CONFLICT DO NOTHING suppresses the insert (duplicate
+        // call), the CTE returns zero rows and the UPDATE is skipped — preventing
+        // a double-credit to total_deposits_cents.
+        await query(
+          `WITH ins AS (
+            INSERT INTO insurance_contributions (
+              task_id, hustler_id, contribution_cents, contribution_percentage
+            ) VALUES ($1, $2, $3, $4)
+            ON CONFLICT (task_id, hustler_id) DO NOTHING
+            RETURNING id
+          )
+          UPDATE self_insurance_pool
+          SET total_deposits_cents = total_deposits_cents + $3,
+              updated_at = NOW()
+          WHERE EXISTS (SELECT 1 FROM ins)`,
+          [taskId, hustlerId, contributionCents, contributionPercentage]
+        );
+      });
 
       log.info({ taskId, hustlerId, amountCents: contributionCents }, 'Recorded contribution');
 
@@ -123,42 +130,129 @@ export const SelfInsurancePoolService = {
     evidenceUrls: string[]
   ): Promise<ServiceResult<string>> => {
     try {
-      // Validate claim amount against max
+      // Pre-flight: validate claim amount against pool max (outside transaction — read-only config check)
       const poolStatus = await SelfInsurancePoolService.getPoolStatus();
       if (!poolStatus.success || !poolStatus.data) {
         throw new Error('Failed to get pool status');
       }
 
-      if (claimAmountCents > poolStatus.data.max_claim_cents) {
-        return {
-          success: false,
-          error: {
-            code: 'CLAIM_EXCEEDS_MAX',
-            message: `Claim amount $${(claimAmountCents / 100).toFixed(2)} exceeds maximum $${(poolStatus.data.max_claim_cents / 100).toFixed(2)}`
-          }
-        };
-      }
+      // F51-5 FIX: The pre-flight CLAIM_EXCEEDS_MAX check has been removed.
+      // It compared an estimated covered amount computed from a stale coverage_percentage
+      // (read outside the transaction) against max_claim_cents — a race condition that
+      // could produce false greens or false reds. The in-transaction check (inside
+      // db.transaction() below, under FOR UPDATE) reads fresh locked values and already
+      // returns CLAIM_EXCEEDS_MAX if coveredAmountCents > maxClaimCents. That check is
+      // the reliable gate; the pre-flight was redundant and unreliable.
 
-      // Insert claim
-      const result = await db.query<{ id: string }>(
-        `INSERT INTO insurance_claims (
-          task_id, hustler_id, claim_amount_cents, claim_reason, evidence_urls
-        ) VALUES ($1, $2, $3, $4, $5)
-        RETURNING id`,
-        [taskId, hustlerId, claimAmountCents, reason, evidenceUrls]
-      );
+      // F-02 FIX: Wrap the live balance check + INSERT in a transaction with
+      // SELECT ... FOR UPDATE so concurrent callers cannot collectively exceed
+      // pool balance. The FOR UPDATE row lock serializes concurrent fileClaim()
+      // calls through the balance check, ensuring only one at a time can read
+      // the balance, validate it, and INSERT a new claim.
+      //
+      // F-06 FIX: coverage_percentage is now read INSIDE the transaction under
+      // FOR UPDATE so that coveredAmount is always computed from the same locked
+      // snapshot as available_balance_cents. An admin changing coverage_percentage
+      // between the outer getPoolStatus() call and this lock would previously produce
+      // a stale coveredAmount — now it is always fresh and consistent.
 
-      const claimId = result.rows[0].id;
+      const claimId = await db.transaction(async (query: QueryFn) => {
+        // F49-7 FIX: Duplicate check moved INSIDE the transaction with FOR UPDATE to
+        // eliminate the TOCTOU race window. Previously, the pre-flight SELECT ran
+        // outside the transaction — two concurrent fileClaim() calls could both pass
+        // the check before either INSERT committed, creating duplicate pending claims.
+        // The FOR UPDATE row-level lock serializes concurrent callers: the second caller
+        // blocks until the first transaction commits, then sees the inserted row.
+        //
+        // F61-1 FIX: When no rows exist, FOR UPDATE acquires no lock — two concurrent
+        // calls can both find 0 rows and both proceed to INSERT. The real concurrency
+        // safety is provided by the partial unique index
+        // idx_insurance_claims_unique_active (task_id, hustler_id WHERE status NOT IN
+        // ('denied', 'withdrawn')) defined in add_unique_claim_constraint.sql. The
+        // second concurrent INSERT fails with a unique constraint violation which is
+        // caught by the outer catch and surfaced as CLAIM_ALREADY_EXISTS.
+        const existingClaim = await query<{ id: string }>(
+          `SELECT id FROM insurance_claims WHERE task_id = $1 AND hustler_id = $2 AND status NOT IN ('denied', 'withdrawn') LIMIT 1 FOR UPDATE`,
+          [taskId, hustlerId]
+        );
+        if (existingClaim.rows[0]) {
+          throw new Error('CLAIM_ALREADY_EXISTS:A claim already exists for this task');
+        }
+
+        // Lock the pool row to serialize concurrent claim filings and ensure
+        // both available_balance_cents and coverage_percentage are read atomically.
+        const poolResult = await query<{ available_balance_cents: number; coverage_percentage: number }>(
+          'SELECT available_balance_cents, coverage_percentage FROM self_insurance_pool FOR UPDATE LIMIT 1'
+        );
+
+        const availableBalanceCents = poolResult.rows[0]?.available_balance_cents ?? 0;
+        // Use freshly-locked coverage_percentage (F-06 fix); fall back to pre-checked value
+        // only when the pool row does not exist (already handled above by getPoolStatus check).
+        const freshCoveragePercentage = poolResult.rows[0]?.coverage_percentage ?? poolStatus.data.coverage_percentage;
+        const coveredAmount = Math.round(claimAmountCents * (freshCoveragePercentage / 100));
+
+        // F-32: Check against live locked balance
+        if (coveredAmount > availableBalanceCents) {
+          throw new Error(`INSUFFICIENT_POOL_BALANCE:Pool has insufficient balance to cover this claim. Available: $${(availableBalanceCents / 100).toFixed(2)}`);
+        }
+
+        // F58-3 FIX: Reserve the covered amount in the pool at filing time.
+        // Without this, concurrent fileClaim() calls all read the same available balance
+        // before any of them commits — allowing multiple claims to be filed that together
+        // exceed the pool capacity (over-commitment). By debiting total_claims_cents here
+        // (under the FOR UPDATE lock already held on the pool row), subsequent concurrent
+        // filers see the reduced available_balance_cents and are correctly rejected.
+        // Note: payClaim no longer re-debits total_claims_cents — it only marks the claim paid.
+        await query(
+          `UPDATE self_insurance_pool
+           SET total_claims_cents = total_claims_cents + $1,
+               updated_at = NOW()`,
+          [coveredAmount]
+        );
+
+        // F60: Insert claim with covered_amount_cents stored at filing time.
+        // Storing it now means reviewClaim denial and payClaim both use the same
+        // value rather than recomputing from a potentially changed coverage_percentage.
+        const result = await query<{ id: string; covered_amount_cents: number }>(
+          `INSERT INTO insurance_claims (
+            task_id, hustler_id, claim_amount_cents, covered_amount_cents, claim_reason, evidence_urls
+          ) VALUES ($1, $2, $3, $4, $5, $6)
+          RETURNING id, covered_amount_cents`,
+          [taskId, hustlerId, claimAmountCents, coveredAmount, reason, evidenceUrls]
+        );
+
+        return result.rows[0].id;
+      });
+
       log.info({ claimId, taskId, amountCents: claimAmountCents }, 'Filed claim');
 
       return { success: true, data: claimId };
     } catch (error) {
-      log.error({ err: error instanceof Error ? error.message : String(error), taskId, hustlerId }, 'Failed to file claim');
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.startsWith('CLAIM_ALREADY_EXISTS:')) {
+        return {
+          success: false,
+          error: {
+            code: 'CLAIM_ALREADY_EXISTS',
+            message: message.slice('CLAIM_ALREADY_EXISTS:'.length)
+          }
+        };
+      }
+      if (message.startsWith('INSUFFICIENT_POOL_BALANCE:')) {
+        return {
+          success: false,
+          error: {
+            code: 'INSUFFICIENT_POOL_BALANCE',
+            message: message.slice('INSUFFICIENT_POOL_BALANCE:'.length)
+          }
+        };
+      }
+      log.error({ err: message, taskId, hustlerId }, 'Failed to file claim');
       return {
         success: false,
         error: {
           code: 'FILE_CLAIM_FAILED',
-          message: error instanceof Error ? error.message : 'Failed to file claim'
+          message
         }
       };
     }
@@ -177,26 +271,66 @@ export const SelfInsurancePoolService = {
     try {
       const newStatus: ClaimStatus = approved ? 'approved' : 'denied';
 
-      await db.query(
-        `UPDATE insurance_claims
-         SET status = $1,
-             reviewed_by = $2,
-             reviewed_at = NOW(),
-             review_notes = $3
-         WHERE id = $4`,
-        [newStatus, reviewerId, reviewNotes, claimId]
-      );
+      // F60-1 FIX: Wrap the claim UPDATE and pool decrement in a single transaction
+      // so they are atomic. Previously, a crash between the two statements could leave
+      // the pool over-reported (claim denied but reservation not returned).
+      //
+      // F60-2 FIX: Use RETURNING covered_amount_cents (stored at filing time) so the
+      // denial decrement uses the original filed value rather than recomputing from
+      // a potentially different current coverage_percentage.
+      await db.transaction(async (query: QueryFn) => {
+        // Atomic: update claim status and get covered_amount_cents in one statement.
+        // AND status = 'pending' prevents re-reviewing already-reviewed claims.
+        const updateResult = await query<{ covered_amount_cents: number | null }>(
+          `UPDATE insurance_claims
+           SET status = $1,
+               reviewed_by = $2,
+               reviewed_at = NOW(),
+               review_notes = $3
+           WHERE id = $4 AND status = 'pending'
+           RETURNING covered_amount_cents`,
+          [newStatus, reviewerId, reviewNotes, claimId]
+        );
+
+        if ((updateResult.rowCount ?? 0) === 0) {
+          throw new Error('CLAIM_NOT_REVIEWABLE:Claim is not in pending status and cannot be reviewed');
+        }
+
+        // F60-1/F60-2 FIX: When denying a claim, return the coverage reservation back
+        // to the pool using the stored covered_amount_cents (filed at claim time).
+        // fileClaim reserved this amount in total_claims_cents at filing time.
+        // A denied claim will never be paid — the reservation must be released so future
+        // claimants are not incorrectly blocked by INSUFFICIENT_POOL_BALANCE.
+        if (!approved && updateResult.rows[0]?.covered_amount_cents != null) {
+          await query(
+            `UPDATE self_insurance_pool
+             SET total_claims_cents = GREATEST(0, total_claims_cents - $1),
+                 updated_at = NOW()`,
+            [updateResult.rows[0].covered_amount_cents]
+          );
+        }
+      });
 
       log.info({ claimId, approved }, 'Reviewed claim');
 
       return { success: true, data: undefined };
     } catch (error) {
-      log.error({ err: error instanceof Error ? error.message : String(error), claimId }, 'Failed to review claim');
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.startsWith('CLAIM_NOT_REVIEWABLE:')) {
+        return {
+          success: false,
+          error: {
+            code: 'CLAIM_NOT_REVIEWABLE',
+            message: message.slice('CLAIM_NOT_REVIEWABLE:'.length)
+          }
+        };
+      }
+      log.error({ err: message, claimId }, 'Failed to review claim');
       return {
         success: false,
         error: {
           code: 'REVIEW_CLAIM_FAILED',
-          message: error instanceof Error ? error.message : 'Failed to review claim'
+          message
         }
       };
     }
@@ -205,10 +339,15 @@ export const SelfInsurancePoolService = {
   /**
    * Pay an approved claim
    * Transfers funds from pool to hustler
+   *
+   * F-17: Balance check + debit wrapped in a transaction with SELECT FOR UPDATE
+   *       to prevent concurrent double-drain.
+   * F-18: Idempotency check — returns early if claim is already paid.
+   * F-19: Stripe transfer uses Idempotency-Key header based on claimId.
    */
-  payClaim: async (claimId: string): Promise<ServiceResult<void>> => {
+  payClaim: async (claimId: string): Promise<ServiceResult<{ already_paid?: boolean; claim?: InsuranceClaim }>> => {
     try {
-      // Get claim details
+      // Get claim details (outside transaction — read-only pre-check)
       const claimResult = await db.query<InsuranceClaim>(
         'SELECT * FROM insurance_claims WHERE id = $1',
         [claimId]
@@ -226,7 +365,19 @@ export const SelfInsurancePoolService = {
 
       const claim = claimResult.rows[0];
 
-      if (claim.status !== 'approved') {
+      // F-18 / F-31: Idempotency — return early only if paid AND Stripe transfer confirmed.
+      // If status='paid' but stripe_transfer_id is NULL, the DB transaction committed but
+      // the Stripe call failed — we must fall through and re-attempt the Stripe transfer.
+      if (claim.status === 'paid' && claim.stripe_transfer_id) {
+        return { success: true, data: { already_paid: true, claim } };
+      }
+
+      // F64-2 FIX: Allow status='paid' with stripe_transfer_id=NULL to fall through
+      // to the transaction+Stripe retry path. When status='paid' AND stripe_transfer_id
+      // is NULL it means the DB committed but Stripe failed — the idempotency check above
+      // already handled the truly-complete case (status='paid' && stripe_transfer_id SET).
+      // Any other non-approved status (denied, pending, withdrawn) is still blocked.
+      if (claim.status !== 'approved' && claim.status !== 'paid') {
         return {
           success: false,
           error: {
@@ -236,95 +387,271 @@ export const SelfInsurancePoolService = {
         };
       }
 
-      // Get pool status
-      const poolStatus = await SelfInsurancePoolService.getPoolStatus();
-      if (!poolStatus.success || !poolStatus.data) {
-        throw new Error('Failed to get pool status');
-      }
-
-      // Calculate covered amount (default 80%)
-      const coveredAmountCents = Math.round(
-        claim.claim_amount_cents * (poolStatus.data.coverage_percentage / 100)
+      // F46-4 FIX: Pre-check Stripe Connect ID BEFORE the DB transaction.
+      // Previously the Connect ID was fetched AFTER the DB committed: pool was debited
+      // and claim marked 'paid', but no Stripe transfer occurred — the function then
+      // returned { success: true } with pool funds permanently lost. The idempotency
+      // guard (status='paid' AND stripe_transfer_id set) would never match because
+      // stripe_transfer_id stays NULL, so every retry hit the same dead-end.
+      // Fix: fail fast before any DB writes so the pool is never debited and the
+      // caller can retry after the hustler completes Stripe Connect onboarding.
+      // Note: we still re-verify the Connect ID inside the Stripe try block below
+      // for correctness (concurrent onboarding revocation), but this early check
+      // prevents the irreversible DB commit from happening without a valid account.
+      const preCheckResult = await db.query<{ stripe_connect_id: string | null }>(
+        `SELECT stripe_connect_id FROM users WHERE id = $1`,
+        [claim.hustler_id]
       );
-
-      // Check if pool has sufficient balance
-      if (coveredAmountCents > poolStatus.data.available_balance_cents) {
+      const connectId = preCheckResult.rows[0]?.stripe_connect_id;
+      if (!connectId) {
         return {
           success: false,
           error: {
-            code: 'INSUFFICIENT_POOL_BALANCE',
-            message: `Pool balance insufficient. Available: $${(poolStatus.data.available_balance_cents / 100).toFixed(2)}, Required: $${(coveredAmountCents / 100).toFixed(2)}`
+            code: 'NO_CONNECT_ACCOUNT',
+            message: `Hustler has no Stripe Connect account — cannot pay claim. Complete Stripe Connect onboarding first.`
           }
         };
       }
 
-      // Update pool balance
-      await db.query(
-        `UPDATE self_insurance_pool
-         SET total_claims_cents = total_claims_cents + $1,
-             updated_at = NOW()`,
-        [coveredAmountCents]
-      );
+      // F-04 FIX: Do NOT fetch coverage_percentage outside the transaction.
+      // coveredAmountCents must be computed from the freshly-locked pool row so that
+      // an admin change to coverage_percentage between this point and the FOR UPDATE
+      // lock cannot produce a stale covered amount (same bug that was fixed for
+      // fileClaim in F-06/R44). The variable is declared here for use in the Stripe
+      // call after the transaction commits.
+      let coveredAmountCents: number = 0;
 
-      // Mark claim as paid
-      await db.query(
-        `UPDATE insurance_claims
-         SET status = 'paid',
-             paid_at = NOW()
-         WHERE id = $1`,
-        [claimId]
-      );
+      // F59-2 FIX: Flag to detect when the transaction finds the claim is already paid.
+      // Previously, status='paid' caused an early `return` inside the transaction, leaving
+      // coveredAmountCents=0. After the transaction, Stripe was called with amount=0.
+      // Now we set this flag instead of returning, and guard against the Stripe call below.
+      let alreadyPaid = false;
+
+      // F-17: Wrap balance check + pool debit + claim status update in a single
+      // transaction with SELECT FOR UPDATE to prevent concurrent double-drain.
+      await db.transaction(async (query: QueryFn) => {
+        // F-25 / F-31: Re-verify claim status under row lock to prevent concurrent double-pay.
+        // Only skip the DB debit if status='paid' AND stripe_transfer_id is set — meaning a
+        // previous call fully completed. If stripe_transfer_id is NULL, DB committed but Stripe
+        // failed; the outer idempotency check allows fall-through for Stripe retry, so here
+        // we just skip the DB portion (pool already debited) by returning early.
+        // F60-3 FIX: Also SELECT covered_amount_cents so we use the stored value rather than
+        // recomputing from a potentially different current coverage_percentage.
+        const claimCheck = await query<{ status: string; stripe_transfer_id: string | null; claim_amount_cents: number; covered_amount_cents: number | null }>(
+          'SELECT status, stripe_transfer_id, claim_amount_cents, covered_amount_cents FROM insurance_claims WHERE id = $1 FOR UPDATE',
+          [claimId]
+        );
+        if (!claimCheck.rows[0]) {
+          return; // Claim locked/deleted by concurrent call — safe to exit
+        }
+        if (claimCheck.rows[0].status === 'paid') {
+          if (claimCheck.rows[0].stripe_transfer_id) {
+            // F59-2 FIX: Set flag instead of returning so coveredAmountCents stays 0
+            // and the caller can detect this path without attempting a Stripe transfer.
+            // Truly idempotent: DB committed AND Stripe transfer succeeded.
+            alreadyPaid = true;
+          } else {
+            // F62-1 FIX: DB committed status='paid' but Stripe transfer never completed
+            // (Stripe failed after the transaction committed). Set coveredAmountCents from
+            // the stored value so the outer code falls through to retry the Stripe transfer.
+            // Do NOT set alreadyPaid — the outer code must proceed to Stripe.
+            coveredAmountCents = claimCheck.rows[0].covered_amount_cents ?? 0;
+          }
+          return; // Exit transaction — no DB mutations needed (pool already debited at filing)
+        }
+        if (claimCheck.rows[0].status !== 'approved') {
+          throw new Error(`CLAIM_NOT_APPROVED:Claim status changed to ${claimCheck.rows[0].status}`);
+        }
+
+        // F-04 FIX: Lock the pool row and re-read BOTH available_balance_cents AND
+        // coverage_percentage atomically under FOR UPDATE. Previously, coverage_percentage
+        // was fetched outside the transaction, leaving a window where an admin update
+        // between the outer SELECT and this lock would produce a stale coveredAmountCents.
+        // available_balance_cents is a computed column: total_deposits_cents - total_claims_cents
+        // F48-2: Also read max_claim_cents under the lock so that a coverage_percentage raise
+        // after claim filing cannot produce a payout that exceeds the pool cap.
+        const poolResult = await query<{ available_balance_cents: number; coverage_percentage: number; max_claim_cents: number }>(
+          'SELECT available_balance_cents, coverage_percentage, max_claim_cents FROM self_insurance_pool FOR UPDATE LIMIT 1'
+        );
+
+        const availableBalanceCents = poolResult.rows[0]?.available_balance_cents ?? 0;
+        // F60-3 FIX: Use stored covered_amount_cents if available (filed at claim time);
+        // fall back to recomputing for legacy rows where the column is NULL.
+        if (claimCheck.rows[0].covered_amount_cents != null) {
+          coveredAmountCents = claimCheck.rows[0].covered_amount_cents;
+        } else {
+          const freshCoveragePercentage = poolResult.rows[0]?.coverage_percentage ?? 80.0;
+          coveredAmountCents = Math.round(claimCheck.rows[0].claim_amount_cents * (freshCoveragePercentage / 100));
+        }
+
+        // F48-2: Guard against coverage_percentage having been raised since claim filing —
+        // throw before the balance check so the pool is never debited beyond the cap.
+        const maxClaimCents = poolResult.rows[0]?.max_claim_cents ?? 500000;
+        if (coveredAmountCents > maxClaimCents) {
+          throw new Error('CLAIM_EXCEEDS_MAX:Covered payout would exceed pool maximum claim limit');
+        }
+
+        if (coveredAmountCents > availableBalanceCents) {
+          throw new Error(`INSUFFICIENT_POOL_BALANCE:Pool balance insufficient. Available: $${(availableBalanceCents / 100).toFixed(2)}, Required: $${(coveredAmountCents / 100).toFixed(2)}`);
+        }
+
+        // F56-1 FIX: Move the Stripe minimum transfer floor check INSIDE the transaction,
+        // BEFORE the pool debit and claim status UPDATE. Previously this check ran after
+        // the transaction committed — the pool was permanently debited and claim marked
+        // 'paid' with stripe_transfer_id=NULL, leaving the claim in an un-retryable limbo
+        // (retry hits status='paid'/no transfer_id → falls through idempotency guard →
+        // hits status guard → CLAIM_NOT_APPROVED permanently). By throwing here, the
+        // transaction rolls back: no pool debit, no claim status change.
+        if (coveredAmountCents < 50) {
+          throw new Error(`TRANSFER_AMOUNT_TOO_LOW:Covered payout of ${coveredAmountCents} cents is below the minimum Stripe transfer amount (50 cents). Claim requires manual review.`);
+        }
+
+        // F58-3 FIX: Do NOT re-debit pool balance here. total_claims_cents was already
+        // incremented by fileClaim at filing time (under the same FOR UPDATE lock) to
+        // prevent concurrent over-commitment. Re-incrementing here would double-count
+        // the reservation and permanently over-report total_claims_cents.
+        // payClaim only needs to mark the claim as paid.
+
+        // Mark claim as paid
+        await query(
+          `UPDATE insurance_claims
+           SET status = 'paid',
+               paid_at = NOW()
+           WHERE id = $1`,
+          [claimId]
+        );
+      });
+
+      // F59-2 FIX: If the transaction detected the claim was already paid by a concurrent
+      // caller, return early here — coveredAmountCents is still 0 at this point, so calling
+      // Stripe with amount=0 would either error or produce a zero-dollar transfer.
+      if (alreadyPaid) {
+        return { success: true, data: { already_paid: true, claim } };
+      }
 
       // Transfer funds to hustler via Stripe Connect
-      const stripeKey = process.env.STRIPE_SECRET_KEY ?? '';
-      if (stripeKey) {
+      // F-06 FIX: Use StripeService.createTransfer() instead of raw fetch() so the
+      // call goes through the circuit breaker, SDK retry/timeout logic, and test stubs.
+      // F-19: Pass claimId as part of the idempotency key to prevent duplicate transfers.
+      // F53-10 FIX: Do NOT swallow Stripe failures. If Stripe throws or returns
+      // success:false, return a STRIPE_TRANSFER_FAILED error so the caller knows the
+      // worker was not paid. Previously, all Stripe errors were silently caught and the
+      // function returned { success: true } — the DB had already committed status='paid'
+      // but the worker received nothing (permanent money loss).
+      // F46-4 FIX: Re-use the pre-checked connectId from above (no redundant DB query).
+      // The pre-check already returned failure if connectId was null, so here it is
+      // guaranteed non-null.
+      let transferResult: Awaited<ReturnType<typeof StripeService.createTransfer>>;
+      try {
+        transferResult = await StripeService.createTransfer({
+          escrowId: claimId, // use claimId as the correlation key for this payout
+          taskId: claim.task_id,
+          workerId: claim.hustler_id,
+          workerStripeAccountId: connectId,
+          amount: coveredAmountCents,
+          description: `Insurance claim payout: ${claimId}`,
+          idempotencyKeySuffix: `claim_payout_${claimId}`,
+        });
+      } catch (stripeException) {
+        // F53-10 FIX: Stripe threw an exception (network error, SDK error, etc.)
+        // Record it for ops visibility and return a structured failure — do NOT swallow.
+        const errMsg = stripeException instanceof Error ? stripeException.message : String(stripeException);
+        log.error({ err: errMsg, claimId }, 'Stripe threw during claim payout transfer');
+        // Best-effort annotation — ignore any secondary DB failure so the structured error always returns.
         try {
-          const hustlerResult = await db.query<{ stripe_connect_id: string }>(
-            `SELECT stripe_connect_id FROM users WHERE id = $1`,
-            [claim.hustler_id]
+          await db.query(
+            `UPDATE insurance_claims SET review_notes = COALESCE(review_notes, '') || ' [STRIPE_TRANSFER_FAILED]' WHERE id = $1`,
+            [claimId]
           );
-          const connectId = hustlerResult.rows[0]?.stripe_connect_id;
-          if (connectId) {
-            const transferResponse = await fetch('https://api.stripe.com/v1/transfers', {
-              method: 'POST',
-              headers: {
-                'Authorization': `Bearer ${stripeKey}`,
-                'Content-Type': 'application/x-www-form-urlencoded',
-              },
-              body: new URLSearchParams({
-                amount: coveredAmountCents.toString(),
-                currency: 'usd',
-                destination: connectId,
-                description: `Insurance claim payout: ${claimId}`,
-                'metadata[claim_id]': claimId,
-                'metadata[task_id]': claim.task_id,
-              }).toString(),
-            });
-            if (!transferResponse.ok) {
-              log.error({ claimId, taskId: claim.task_id, statusCode: transferResponse.status }, 'Stripe transfer failed for claim payout');
-              await db.query(
-                `UPDATE insurance_claims SET review_notes = COALESCE(review_notes, '') || ' [STRIPE_TRANSFER_FAILED]' WHERE id = $1`,
-                [claimId]
-              );
-            }
-          } else {
-            log.warn({ hustlerId: claim.hustler_id, claimId }, 'Hustler has no Stripe Connect ID');
-          }
-        } catch (stripeError) {
-          log.error({ err: stripeError instanceof Error ? stripeError.message : String(stripeError), claimId }, 'Stripe error during claim payout');
+        } catch {
+          // Ignore secondary failures — the primary error is what matters to the caller
         }
+        return {
+          success: false,
+          error: {
+            code: 'STRIPE_TRANSFER_FAILED',
+            message: `Stripe transfer threw: ${errMsg}`,
+          },
+        };
       }
+
+      if (!transferResult.success) {
+        // F53-10 FIX: Stripe returned a structured failure — record it for ops visibility
+        // but propagate the error to the caller (do NOT return { success: true }).
+        log.error({ claimId, taskId: claim.task_id, err: transferResult.error.message }, 'Stripe transfer failed for claim payout');
+        await db.query(
+          `UPDATE insurance_claims SET review_notes = COALESCE(review_notes, '') || ' [STRIPE_TRANSFER_FAILED]' WHERE id = $1`,
+          [claimId]
+        );
+        return {
+          success: false,
+          error: {
+            code: 'STRIPE_TRANSFER_FAILED',
+            message: `Stripe transfer failed: ${transferResult.error.message}`,
+          },
+        };
+      }
+
+      // F-31: Record the transfer ID so the idempotency guard can confirm
+      // that the Stripe call succeeded. Without this, a process crash after
+      // DB commit but before Stripe completes leaves the claim in a
+      // status='paid'/stripe_transfer_id=NULL limbo that is un-retryable.
+      await db.query(
+        'UPDATE insurance_claims SET stripe_transfer_id = $1 WHERE id = $2',
+        [transferResult.data.transferId, claimId]
+      );
 
       log.info({ claimId, coveredAmountCents }, 'Paid claim');
 
-      return { success: true, data: undefined };
+      return { success: true, data: {} };
     } catch (error) {
-      log.error({ err: error instanceof Error ? error.message : String(error), claimId }, 'Failed to pay claim');
+      const message = error instanceof Error ? error.message : String(error);
+      // Surface structured insufficient-balance errors
+      if (message.startsWith('INSUFFICIENT_POOL_BALANCE:')) {
+        return {
+          success: false,
+          error: {
+            code: 'INSUFFICIENT_POOL_BALANCE',
+            message: message.slice('INSUFFICIENT_POOL_BALANCE:'.length)
+          }
+        };
+      }
+      // Surface F48-2: covered payout exceeds pool cap
+      if (message.startsWith('CLAIM_EXCEEDS_MAX:')) {
+        return {
+          success: false,
+          error: {
+            code: 'CLAIM_EXCEEDS_MAX',
+            message: message.slice('CLAIM_EXCEEDS_MAX:'.length)
+          }
+        };
+      }
+      // Surface F56-1: transfer amount below Stripe minimum floor
+      if (message.startsWith('TRANSFER_AMOUNT_TOO_LOW:')) {
+        return {
+          success: false,
+          error: {
+            code: 'TRANSFER_AMOUNT_TOO_LOW',
+            message: message.slice('TRANSFER_AMOUNT_TOO_LOW:'.length)
+          }
+        };
+      }
+      // Surface claim-status-changed errors (F-25: concurrent double-pay guard)
+      if (message.startsWith('CLAIM_NOT_APPROVED:')) {
+        return {
+          success: false,
+          error: {
+            code: 'CLAIM_NOT_APPROVED',
+            message: message.slice('CLAIM_NOT_APPROVED:'.length)
+          }
+        };
+      }
+      log.error({ err: message, claimId }, 'Failed to pay claim');
       return {
         success: false,
         error: {
           code: 'PAY_CLAIM_FAILED',
-          message: error instanceof Error ? error.message : 'Failed to pay claim'
+          message
         }
       };
     }

@@ -14,6 +14,9 @@
 import { db, isInvariantViolation, isUniqueViolation, getErrorMessage } from '../db.js';
 import type { ServiceResult, TaskState } from '../types.js';
 import { ErrorCodes } from '../types.js';
+import { logger } from '../logger.js';
+
+const ratingServiceLog = logger.child({ service: 'RatingService' });
 
 // ============================================================================
 // TYPES
@@ -118,11 +121,12 @@ export const RatingService = {
         data: result.rows[0],
       };
     } catch (error) {
+      ratingServiceLog.error({ err: error instanceof Error ? error.message : String(error) }, 'RatingService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
@@ -147,11 +151,12 @@ export const RatingService = {
         data: result.rows,
       };
     } catch (error) {
+      ratingServiceLog.error({ err: error instanceof Error ? error.message : String(error) }, 'RatingService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
@@ -179,11 +184,12 @@ export const RatingService = {
         data: result.rows,
       };
     } catch (error) {
+      ratingServiceLog.error({ err: error instanceof Error ? error.message : String(error) }, 'RatingService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
@@ -229,11 +235,12 @@ export const RatingService = {
       }));
       return { success: true, data: rows };
     } catch (error) {
+      ratingServiceLog.error({ err: error instanceof Error ? error.message : String(error) }, 'RatingService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
@@ -277,11 +284,12 @@ export const RatingService = {
         data: result.rows[0],
       };
     } catch (error) {
+      ratingServiceLog.error({ err: error instanceof Error ? error.message : String(error) }, 'RatingService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
@@ -307,11 +315,12 @@ export const RatingService = {
         data: parseInt(result.rows[0]?.count || '0', 10) > 0,
       };
     } catch (error) {
+      ratingServiceLog.error({ err: error instanceof Error ? error.message : String(error) }, 'RatingService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
@@ -354,94 +363,156 @@ export const RatingService = {
         };
       }
       
-      // Get task details
-      const taskResult = await db.query<{
-        id: string;
-        poster_id: string;
-        worker_id: string | null;
-        state: TaskState;
-        completed_at: Date | null;
-      }>(
-        'SELECT id, poster_id, worker_id, state, completed_at FROM tasks WHERE id = $1',
-        [taskId]
-      );
-      
-      if (taskResult.rows.length === 0) {
-        return {
-          success: false,
-          error: {
-            code: ErrorCodes.NOT_FOUND,
-            message: `Task ${taskId} not found`,
-          },
-        };
-      }
-      
-      const task = taskResult.rows[0];
-      
-      // RATE-1: Rating only allowed after task COMPLETED (RATING_SYSTEM_SPEC.md §6)
-      if (task.state !== 'COMPLETED') {
-        return {
-          success: false,
-          error: {
-            code: ErrorCodes.INVALID_STATE,
-            message: `Cannot submit rating: task is in ${task.state} state. Ratings only allowed after task COMPLETED`,
-          },
-        };
-      }
-      
-      // RATE-2: Rating window: 7 days after completion (RATING_SYSTEM_SPEC.md §6)
-      if (!task.completed_at) {
-        return {
-          success: false,
-          error: {
-            code: ErrorCodes.INVALID_STATE,
-            message: 'Cannot submit rating: task completion date is missing',
-          },
-        };
-      }
-      
-      const completedAt = new Date(task.completed_at);
-      const ratingWindowEnd = new Date(completedAt.getTime() + RATING_WINDOW_DAYS * 24 * 60 * 60 * 1000);
-      const now = new Date();
-      
-      if (now > ratingWindowEnd) {
-        return {
-          success: false,
-          error: {
-            code: ErrorCodes.INVALID_STATE,
-            message: `Cannot submit rating: rating window has expired (7 days after completion). Rating window ended on ${ratingWindowEnd.toISOString()}`,
-          },
-        };
-      }
-      
-      // Verify rater is a participant (poster or worker)
-      if (task.poster_id !== raterId && task.worker_id !== raterId) {
-        return {
-          success: false,
-          error: {
-            code: ErrorCodes.FORBIDDEN,
-            message: 'You are not a participant in this task',
-          },
-        };
-      }
-      
-      // Determine ratee (the other party)
-      const rateeId = task.poster_id === raterId ? task.worker_id : task.poster_id;
-      
-      if (!rateeId) {
-        return {
-          success: false,
-          error: {
-            code: ErrorCodes.INVALID_STATE,
-            message: 'Cannot submit rating: no ratee (worker not assigned)',
-          },
-        };
-      }
-      
+      // R-15 FIX: Task state, completed_at, and participant validation are performed
+      // INSIDE the advisory-lock transaction with a SELECT FOR UPDATE on the task row.
+      // Previously these checks ran against a plain SELECT outside the transaction,
+      // creating a stale-read window where completed_at could be null between the task
+      // completing and the DB trigger updating it. Moving the read inside the same
+      // transaction that holds the advisory lock ensures the state check and the INSERT
+      // are consistent.
+      //
       // RATE-5: One rating per pair per task (DB UNIQUE constraint will enforce)
-      // Check if rating already exists
-      const existingResult = await RatingService.hasRated(taskId, raterId, rateeId);
-      if (existingResult.success && existingResult.data) {
+      // Wrap the task read, duplicate check, existingRatingsCount read, and INSERT in a
+      // single transaction with an advisory lock. This prevents two concurrent
+      // first-time rating requests from both passing the duplicate check and
+      // both computing is_blind from a stale count.
+      const { insertedRating, updatedRatingsCount } = await db.transaction(async (txQuery) => {
+        // Advisory lock serializes ALL concurrent ratings for the same task.
+        // Keyed on taskId only so that opposite-direction submissions (poster→worker
+        // and worker→poster) contend on the same lock and cannot both read
+        // existingRatingsCount === 0 simultaneously. Released automatically at tx end.
+        await txQuery(
+          `SELECT pg_advisory_xact_lock(hashtext($1))`,
+          [`rating:${taskId}`]
+        );
+
+        // R-15: Read task state under FOR UPDATE inside the same transaction as the
+        // advisory lock. This eliminates the stale-read window on completed_at.
+        const taskLockResult = await txQuery<{
+          id: string;
+          poster_id: string;
+          worker_id: string | null;
+          state: TaskState;
+          completed_at: Date | null;
+        }>(
+          'SELECT id, poster_id, worker_id, state, completed_at FROM tasks WHERE id = $1 FOR UPDATE',
+          [taskId]
+        );
+
+        if (taskLockResult.rows.length === 0) {
+          throw Object.assign(new Error(`Task ${taskId} not found`), { code: ErrorCodes.NOT_FOUND });
+        }
+
+        const task = taskLockResult.rows[0];
+
+        // RATE-1: Rating only allowed after task COMPLETED (RATING_SYSTEM_SPEC.md §6)
+        if (task.state !== 'COMPLETED') {
+          throw Object.assign(
+            new Error(`Cannot submit rating: task is in ${task.state} state. Ratings only allowed after task COMPLETED`),
+            { code: ErrorCodes.INVALID_STATE }
+          );
+        }
+
+        // RATE-2: Rating window: 7 days after completion (RATING_SYSTEM_SPEC.md §6)
+        if (!task.completed_at) {
+          throw Object.assign(
+            new Error('Cannot submit rating: task completion date is missing'),
+            { code: ErrorCodes.INVALID_STATE }
+          );
+        }
+
+        const completedAt = new Date(task.completed_at);
+        const ratingWindowEnd = new Date(completedAt.getTime() + RATING_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+        const now = new Date();
+
+        if (now > ratingWindowEnd) {
+          throw Object.assign(
+            new Error(`Cannot submit rating: rating window has expired (7 days after completion). Rating window ended on ${ratingWindowEnd.toISOString()}`),
+            { code: ErrorCodes.INVALID_STATE }
+          );
+        }
+
+        // Verify rater is a participant (poster or worker)
+        if (task.poster_id !== raterId && task.worker_id !== raterId) {
+          throw Object.assign(
+            new Error('You are not a participant in this task'),
+            { code: ErrorCodes.FORBIDDEN }
+          );
+        }
+
+        // Determine ratee (the other party)
+        const rateeId = task.poster_id === raterId ? task.worker_id : task.poster_id;
+
+        if (!rateeId) {
+          throw Object.assign(
+            new Error('Cannot submit rating: no ratee (worker not assigned)'),
+            { code: ErrorCodes.INVALID_STATE }
+          );
+        }
+
+        // Re-check for duplicate inside the transaction
+        const dupCheck = await txQuery<{ id: string }>(
+          `SELECT id FROM task_ratings WHERE task_id = $1 AND rater_id = $2 AND ratee_id = $3`,
+          [taskId, raterId, rateeId]
+        );
+        if (dupCheck.rows.length > 0) {
+          return { insertedRating: null, updatedRatingsCount: 0 };
+        }
+
+        // Re-read existingRatingsCount inside the transaction so it is
+        // consistent with the lock — prevents is_blind corruption under concurrency.
+        const bothRatingsResult = await txQuery<{ count: string }>(
+          `SELECT COUNT(*) as count FROM task_ratings
+           WHERE task_id = $1 AND (rater_id = $2 OR rater_id = $3)`,
+          [taskId, task.poster_id, task.worker_id]
+        );
+
+        const existingRatingsCount = parseInt(bothRatingsResult.rows[0]?.count || '0', 10);
+        const isBlind = existingRatingsCount === 0; // Blind until both parties rate
+        const isPublic = existingRatingsCount >= 1; // Public after at least one rating
+
+        // Create rating
+        const ratingResult = await txQuery<TaskRating>(
+          `INSERT INTO task_ratings (
+            task_id, rater_id, ratee_id, stars, comment, tags, is_public, is_blind, is_auto_rated
+          )
+          VALUES ($1, $2, $3, $4, $5, $6::TEXT[], $7, $8, false)
+          RETURNING *`,
+          [taskId, raterId, rateeId, stars, comment || null, tags || [], isPublic, isBlind]
+        );
+
+        const newCount = existingRatingsCount + 1;
+
+        // If both parties have now rated, make all ratings for this task
+        // public and not blind — INSIDE the advisory-lock transaction so
+        // there is no window where the first rating stays is_public=false.
+        if (newCount === 2) {
+          await txQuery(
+            `UPDATE task_ratings
+             SET is_public = true, is_blind = false, updated_at = NOW()
+             WHERE task_id = $1`,
+            [taskId]
+          );
+
+          // Re-fetch inside tx so the returned row reflects the UPDATE.
+          const updatedResult = await txQuery<TaskRating>(
+            'SELECT * FROM task_ratings WHERE id = $1',
+            [ratingResult.rows[0].id]
+          );
+
+          return {
+            insertedRating: updatedResult.rows[0],
+            updatedRatingsCount: newCount,
+          };
+        }
+
+        return {
+          insertedRating: ratingResult.rows[0],
+          updatedRatingsCount: newCount,
+        };
+      });
+
+      if (!insertedRating) {
         return {
           success: false,
           error: {
@@ -450,54 +521,10 @@ export const RatingService = {
           },
         };
       }
-      
-      // Check if both parties have rated (to determine if rating should be blind)
-      const bothRatingsResult = await db.query<{ count: string }>(
-        `SELECT COUNT(*) as count FROM task_ratings
-         WHERE task_id = $1 AND (rater_id = $2 OR rater_id = $3)`,
-        [taskId, task.poster_id, task.worker_id]
-      );
-      
-      const existingRatingsCount = parseInt(bothRatingsResult.rows[0]?.count || '0', 10);
-      const isBlind = existingRatingsCount === 0; // Blind until both parties rate
-      const isPublic = existingRatingsCount >= 1; // Public after at least one rating (will become public after both)
-      
-      // Create rating
-      const ratingResult = await db.query<TaskRating>(
-        `INSERT INTO task_ratings (
-          task_id, rater_id, ratee_id, stars, comment, tags, is_public, is_blind, is_auto_rated
-        )
-        VALUES ($1, $2, $3, $4, $5, $6::TEXT[], $7, $8, false)
-        RETURNING *`,
-        [taskId, raterId, rateeId, stars, comment || null, tags || [], isPublic, isBlind]
-      );
-      
-      // Check if both parties have now rated (update is_public and is_blind)
-      const updatedRatingsCount = existingRatingsCount + 1;
-      if (updatedRatingsCount === 2) {
-        // Both parties have rated - make all ratings public and not blind
-        await db.query(
-          `UPDATE task_ratings
-           SET is_public = true, is_blind = false, updated_at = NOW()
-           WHERE task_id = $1`,
-          [taskId]
-        );
-        
-        // Re-fetch rating to get updated values
-        const updatedResult = await db.query<TaskRating>(
-          'SELECT * FROM task_ratings WHERE id = $1',
-          [ratingResult.rows[0].id]
-        );
-        
-        return {
-          success: true,
-          data: updatedResult.rows[0],
-        };
-      }
-      
+
       return {
         success: true,
-        data: ratingResult.rows[0],
+        data: insertedRating,
       };
     } catch (error) {
       // Check for RATE-5 violation (duplicate rating)
@@ -510,7 +537,7 @@ export const RatingService = {
           },
         };
       }
-      
+
       if (isInvariantViolation(error)) {
         return {
           success: false,
@@ -520,17 +547,34 @@ export const RatingService = {
           },
         };
       }
-      
+
+      // R-15: Surface typed errors thrown inside the transaction (NOT_FOUND, INVALID_STATE, FORBIDDEN)
+      const errCode = (error as { code?: string }).code;
+      if (
+        errCode === ErrorCodes.NOT_FOUND ||
+        errCode === ErrorCodes.INVALID_STATE ||
+        errCode === ErrorCodes.FORBIDDEN
+      ) {
+        return {
+          success: false,
+          error: {
+            code: errCode,
+            message: error instanceof Error ? error.message : 'Unknown error',
+          },
+        };
+      }
+
+      ratingServiceLog.error({ err: error instanceof Error ? error.message : String(error) }, 'RatingService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
   },
-  
+
   // --------------------------------------------------------------------------
   // AUTO-RATING (Background Job)
   // --------------------------------------------------------------------------
@@ -551,20 +595,28 @@ export const RatingService = {
         worker_id: string | null;
         completed_at: Date;
       }>(
+        // BUG FIX: without LIMIT this fetches every unrated completed task in
+        // the database, which OOMs Node.js on large datasets and also causes the
+        // batch INSERT to exceed PostgreSQL's 65 535-parameter limit at ~10 923+
+        // tasks (3 params × 2 directions × N tasks). Process in batches of 500;
+        // the caller should loop until autoRated === 0 to drain the backlog.
         `SELECT t.id, t.poster_id, t.worker_id, t.completed_at
          FROM tasks t
          WHERE t.state = 'COMPLETED'
-           AND t.completed_at < NOW() - INTERVAL '${RATING_WINDOW_DAYS} days'
+           AND t.completed_at < NOW() - ($1 * INTERVAL '1 day')
            AND t.worker_id IS NOT NULL
-           AND NOT EXISTS (
-             SELECT 1 FROM task_ratings r1
-             WHERE r1.task_id = t.id AND r1.rater_id = t.poster_id AND r1.ratee_id = t.worker_id
+           AND (
+             NOT EXISTS (
+               SELECT 1 FROM task_ratings r1
+               WHERE r1.task_id = t.id AND r1.rater_id = t.poster_id AND r1.ratee_id = t.worker_id
+             )
+             OR NOT EXISTS (
+               SELECT 1 FROM task_ratings r2
+               WHERE r2.task_id = t.id AND r2.rater_id = t.worker_id AND r2.ratee_id = t.poster_id
+             )
            )
-           AND NOT EXISTS (
-             SELECT 1 FROM task_ratings r2
-             WHERE r2.task_id = t.id AND r2.rater_id = t.worker_id AND r2.ratee_id = t.poster_id
-           )`,
-        []
+         LIMIT 500`,
+        [RATING_WINDOW_DAYS]
       );
       
       // Filter out tasks without workers
@@ -574,45 +626,80 @@ export const RatingService = {
         return { success: true, data: { autoRated: 0 } };
       }
 
-      // Batch insert all auto-ratings in a single query (eliminates N+1)
-      // Generate both directions: poster→worker and worker→poster
-      const values: unknown[] = [];
-      const placeholders: string[] = [];
-      let paramIdx = 1;
+      // BUG 4 FIX: Process tasks one at a time, acquiring the same advisory lock
+      // key used by submitRating for each taskId. This serializes processAutoRatings
+      // against concurrent submitRating calls for the same task, preventing the race
+      // where a genuine human rating ends up permanently hidden (is_blind=true,
+      // is_public=false) because the auto-rate INSERT+mutual-reveal ran concurrently.
+      //
+      // Each task is wrapped in its own transaction so the advisory lock is released
+      // promptly after that task's INSERT+mutual-reveal completes, rather than
+      // holding all locks for the entire batch duration.
+      let autoRated = 0;
+      const processedTaskIds: string[] = [];
 
       for (const task of validTasks) {
-        // Poster → Worker
-        placeholders.push(`($${paramIdx}, $${paramIdx + 1}, $${paramIdx + 2}, 5, 'No rating submitted (auto-rated)', ARRAY[]::TEXT[], true, false, true)`);
-        values.push(task.id, task.poster_id, task.worker_id);
-        paramIdx += 3;
+        try {
+          const taskAutoRated = await db.transaction(async (txQuery) => {
+            // Acquire the same advisory lock key as submitRating uses.
+            // This blocks concurrent submitRating calls for this task until
+            // the auto-rate INSERT and mutual-reveal UPDATE commit.
+            await txQuery(
+              `SELECT pg_advisory_xact_lock(hashtext($1))`,
+              [`rating:${task.id}`]
+            );
 
-        // Worker → Poster
-        placeholders.push(`($${paramIdx}, $${paramIdx + 1}, $${paramIdx + 2}, 5, 'No rating submitted (auto-rated)', ARRAY[]::TEXT[], true, false, true)`);
-        values.push(task.id, task.worker_id, task.poster_id);
-        paramIdx += 3;
+            // Insert both directions inside the advisory lock.
+            // SELECT...FROM tasks WHERE state='COMPLETED' ensures the task
+            // hasn't been cancelled between the outer SELECT and this INSERT.
+            const insertResult = await txQuery(
+              `INSERT INTO task_ratings (
+                task_id, rater_id, ratee_id, stars, comment, tags, is_public, is_blind, is_auto_rated
+              )
+              SELECT $1::uuid, $2::uuid, $3::uuid, 5, 'No rating submitted (auto-rated)', ARRAY[]::TEXT[], true, false, true
+                FROM tasks WHERE id = $1::uuid AND state = 'COMPLETED'
+              UNION ALL
+              SELECT $1::uuid, $4::uuid, $2::uuid, 5, 'No rating submitted (auto-rated)', ARRAY[]::TEXT[], true, false, true
+                FROM tasks WHERE id = $1::uuid AND state = 'COMPLETED'
+              ON CONFLICT DO NOTHING`,
+              [task.id, task.poster_id, task.worker_id, task.worker_id]
+            );
+
+            // Mutual-reveal: flip any genuine blind rating that existed before
+            // the auto-rate filled the other direction, completing the pair.
+            await txQuery(
+              `UPDATE task_ratings SET is_public = true, is_blind = false, updated_at = NOW()
+               WHERE task_id = $1
+                 AND is_blind = true
+                 AND is_public = false
+                 AND task_id IN (
+                   SELECT task_id FROM task_ratings GROUP BY task_id HAVING COUNT(*) = 2
+                 )`,
+              [task.id]
+            );
+
+            return insertResult.rowCount ?? 0;
+          });
+
+          autoRated += taskAutoRated;
+          processedTaskIds.push(task.id);
+        } catch (_taskErr) {
+          // Non-fatal: if one task fails, continue processing the rest
+          // (e.g. lock contention or cancelled task)
+        }
       }
 
-      const batchResult = await db.query(
-        `INSERT INTO task_ratings (
-          task_id, rater_id, ratee_id, stars, comment, tags, is_public, is_blind, is_auto_rated
-        )
-        VALUES ${placeholders.join(', ')}
-        ON CONFLICT DO NOTHING`,
-        values
-      );
-
-      const autoRated = batchResult.rowCount;
-      
       return {
         success: true,
         data: { autoRated },
       };
     } catch (error) {
+      ratingServiceLog.error({ err: error instanceof Error ? error.message : String(error) }, 'RatingService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
@@ -659,11 +746,12 @@ export const RatingService = {
         },
       };
     } catch (error) {
+      ratingServiceLog.error({ err: error instanceof Error ? error.message : String(error) }, 'RatingService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }

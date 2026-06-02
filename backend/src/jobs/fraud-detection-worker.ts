@@ -22,6 +22,18 @@ import type { Job } from 'bullmq';
 import { workerLogger } from '../logger.js';
 const log = workerLogger.child({ worker: 'fraud-detection' });
 
+/**
+ * Race a promise against a timeout.
+ * Rejects with an Error(`Timeout after ${ms}ms`) if the promise does not settle in time.
+ */
+const withTimeout = <T>(promise: Promise<T>, ms: number): Promise<T> =>
+  Promise.race([
+    promise,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`Timeout after ${ms}ms`)), ms)
+    ),
+  ]);
+
 // ============================================================================
 // TYPES
 // ============================================================================
@@ -44,7 +56,7 @@ export const processFraudDetectionJob = async (_job: Job): Promise<void> => {
   try {
     log.info('Starting fraud scan');
 
-    // Get recent proof submissions with GPS data (last 10 minutes)
+    // Get recent proof submissions with GPS data (last 5 minutes — matches cron interval)
     const result = await db.query<{
       proof_id: string;
       user_id: string;
@@ -57,7 +69,7 @@ export const processFraudDetectionJob = async (_job: Job): Promise<void> => {
               ST_X(gps_coordinates::geometry) as gps_longitude,
               gps_timestamp
        FROM proof_submissions
-       WHERE gps_timestamp > NOW() - INTERVAL '10 minutes'
+       WHERE gps_timestamp > NOW() - INTERVAL '5 minutes'
          AND gps_coordinates IS NOT NULL
        ORDER BY user_id, gps_timestamp ASC`
     );
@@ -96,11 +108,26 @@ export const processFraudDetectionJob = async (_job: Job): Promise<void> => {
         const lastProof = proofs[i - 1];
         const currentProof = proofs[i];
 
-        const travelResult = await LogisticsAIService.detectImpossibleTravel(
-          userId,
-          { ...currentProof.gps_coordinates, timestamp: currentProof.gps_timestamp },
-          { ...lastProof.gps_coordinates, timestamp: lastProof.gps_timestamp }
-        );
+        let travelResult: Awaited<ReturnType<typeof LogisticsAIService.detectImpossibleTravel>>;
+        try {
+          travelResult = await withTimeout(
+            LogisticsAIService.detectImpossibleTravel(
+              userId,
+              { ...currentProof.gps_coordinates, timestamp: currentProof.gps_timestamp },
+              { ...lastProof.gps_coordinates, timestamp: lastProof.gps_timestamp }
+            ),
+            10_000
+          );
+        } catch (aiErr) {
+          const isTimeout = aiErr instanceof Error && aiErr.message.startsWith('Timeout after');
+          log.warn(
+            { userId, err: aiErr, isTimeout },
+            isTimeout
+              ? 'detectImpossibleTravel timed out — treating as non-fraud, continuing'
+              : 'detectImpossibleTravel threw unexpectedly — treating as non-fraud, continuing'
+          );
+          continue;
+        }
 
         if (travelResult.success && travelResult.data!.flagged) {
           flaggedCount++;
@@ -123,17 +150,9 @@ export const processFraudDetectionJob = async (_job: Job): Promise<void> => {
 // QUEUE CONFIGURATION
 // ============================================================================
 
-export const fraudDetectionQueueConfig = {
-  name: 'fraud-detection',
-  processor: processFraudDetectionJob,
-  options: {
-    repeat: {
-      pattern: '*/5 * * * *' // Every 5 minutes
-    },
-    attempts: 2,
-    backoff: {
-      type: 'fixed' as const,
-      delay: 30000 // 30 seconds
-    }
-  }
-};
+// W46-4 FIX: fraudDetectionQueueConfig is dead code — 'fraud-detection' is not
+// in the QueueName union and is never consumed by createWorker() in queues.ts.
+// The fraud scanner runs via setInterval inside outbox-worker.ts startOutboxWorker().
+// Exporting this config was misleading and unreachable. Removed to eliminate confusion.
+// If fraud detection needs to move to BullMQ, add 'fraud_detection' to QueueName first.
+export const _fraudDetectionWorkerProcessor = processFraudDetectionJob;

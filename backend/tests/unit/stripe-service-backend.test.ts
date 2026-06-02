@@ -146,7 +146,7 @@ describe('StripeService.createPaymentIntent (backend)', () => {
   });
 
   it('returns STRIPE_NOT_CONFIGURED for createTaxPaymentIntent as well', async () => {
-    const result = await StripeService.createTaxPaymentIntent('user-1', 500);
+    const result = await StripeService.createTaxPaymentIntent('user-1', 500, Date.now());
     expect(result.success).toBe(false);
     if (!result.success) {
       expect(result.error.code).toBe('STRIPE_NOT_CONFIGURED');
@@ -160,7 +160,7 @@ describe('StripeService.createPaymentIntent (backend)', () => {
 
 describe('StripeService.createTaxPaymentIntent (backend)', () => {
   it('returns STRIPE_NOT_CONFIGURED', async () => {
-    const result = await StripeService.createTaxPaymentIntent('user-2', 200);
+    const result = await StripeService.createTaxPaymentIntent('user-2', 200, Date.now());
     expect(result.success).toBe(false);
     if (!result.success) expect(result.error.code).toBe('STRIPE_NOT_CONFIGURED');
   });
@@ -275,6 +275,137 @@ describe('StripeService.createRefund (backend)', () => {
     expect(result.success).toBe(false);
     if (!result.success) expect(result.error.code).toBe('STRIPE_NOT_CONFIGURED');
   });
+
+  // FFF-03: Verify idempotency key is passed to refunds.create to prevent double-refund on retry.
+  // Uses vi.resetModules() + dynamic re-import to load StripeService with a live stripe key,
+  // since the module-level stripe singleton is initialized at import time.
+  it('passes idempotency key for partial refund: re_create_{piId}_{amount}', async () => {
+    vi.resetModules();
+
+    // Re-mock dependencies with a live stripe key for this test
+    vi.doMock('../../src/config', () => ({
+      config: {
+        stripe: {
+          secretKey: 'sk_test_live_for_idempotency',
+          webhookSecret: 'whsec_test_backend',
+          platformFeePercent: 15,
+          minimumTaskValueCents: 500,
+        },
+      },
+    }));
+
+    const localRefundsCreate = vi.fn().mockResolvedValue({
+      id: 're_partial_123',
+      amount: 2000,
+      status: 'succeeded',
+    });
+
+    // Must use a regular function (not arrow) — `new Stripe(...)` requires a constructor.
+    vi.doMock('stripe', () => ({
+      default: vi.fn(function StripeConstructor() {
+        return {
+          paymentIntents: { create: vi.fn(), retrieve: vi.fn() },
+          transfers: { create: vi.fn() },
+          refunds: { create: localRefundsCreate },
+          webhooks: { constructEvent: vi.fn() },
+        };
+      }),
+    }));
+
+    vi.doMock('../../src/middleware/circuit-breaker', () => ({
+      stripeBreaker: { execute: vi.fn((fn: () => Promise<unknown>) => fn()) },
+      CircuitBreaker: vi.fn(),
+      CircuitOpenError: class extends Error { retryAfterMs = 0; },
+    }));
+
+    vi.doMock('../../src/logger', () => ({
+      stripeLogger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      logger: { child: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }) },
+    }));
+
+    vi.doMock('../../src/db', () => ({ db: { query: vi.fn() } }));
+
+    const { StripeService: LiveStripeService } = await import('../../src/services/StripeService');
+
+    const result = await LiveStripeService.createRefund({
+      paymentIntentId: 'pi_partial_abc',
+      escrowId: 'esc-partial',
+      amount: 2000,
+      reason: 'requested_by_customer',
+    });
+
+    expect(result.success).toBe(true);
+    // FFF-03: partial refund key includes amount to distinguish from full refund
+    expect(localRefundsCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ payment_intent: 'pi_partial_abc', amount: 2000 }),
+      { idempotencyKey: 're_create_pi_partial_abc_2000' }
+    );
+
+    vi.resetModules();
+  });
+
+  it('passes idempotency key for full refund: re_create_{piId}_full', async () => {
+    vi.resetModules();
+
+    vi.doMock('../../src/config', () => ({
+      config: {
+        stripe: {
+          secretKey: 'sk_test_live_for_idempotency',
+          webhookSecret: 'whsec_test_backend',
+          platformFeePercent: 15,
+          minimumTaskValueCents: 500,
+        },
+      },
+    }));
+
+    const localRefundsCreate = vi.fn().mockResolvedValue({
+      id: 're_full_456',
+      amount: 10000,
+      status: 'succeeded',
+    });
+
+    // Must use a regular function (not arrow) — `new Stripe(...)` requires a constructor.
+    vi.doMock('stripe', () => ({
+      default: vi.fn(function StripeConstructor() {
+        return {
+          paymentIntents: { create: vi.fn(), retrieve: vi.fn() },
+          transfers: { create: vi.fn() },
+          refunds: { create: localRefundsCreate },
+          webhooks: { constructEvent: vi.fn() },
+        };
+      }),
+    }));
+
+    vi.doMock('../../src/middleware/circuit-breaker', () => ({
+      stripeBreaker: { execute: vi.fn((fn: () => Promise<unknown>) => fn()) },
+      CircuitBreaker: vi.fn(),
+      CircuitOpenError: class extends Error { retryAfterMs = 0; },
+    }));
+
+    vi.doMock('../../src/logger', () => ({
+      stripeLogger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      logger: { child: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }) },
+    }));
+
+    vi.doMock('../../src/db', () => ({ db: { query: vi.fn() } }));
+
+    const { StripeService: LiveStripeService } = await import('../../src/services/StripeService');
+
+    const result = await LiveStripeService.createRefund({
+      paymentIntentId: 'pi_full_xyz',
+      escrowId: 'esc-full',
+      // no amount = full refund
+    });
+
+    expect(result.success).toBe(true);
+    // FFF-03: full refund key uses '_full' suffix to distinguish from partial refunds
+    expect(localRefundsCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ payment_intent: 'pi_full_xyz', amount: undefined }),
+      { idempotencyKey: 're_create_pi_full_xyz_full' }
+    );
+
+    vi.resetModules();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -295,8 +426,8 @@ describe('StripeService.verifyWebhook (backend)', () => {
 
 describe('StripeService.processWebhookEvent (backend)', () => {
   it('returns success without calling handler for already-processed events', async () => {
-    // isEventProcessed returns true (rows.length > 0)
-    mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'existing' }], rowCount: 1 });
+    // markEventProcessedAtomic → INSERT ON CONFLICT DO NOTHING → 0 rows (already exists)
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
 
     const handler = vi.fn();
     const result = await StripeService.processWebhookEvent(
@@ -308,9 +439,7 @@ describe('StripeService.processWebhookEvent (backend)', () => {
   });
 
   it('calls handler and marks event processed for new events', async () => {
-    // isEventProcessed returns false (no rows)
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-    // markEventProcessed INSERT
+    // markEventProcessedAtomic → INSERT succeeds → rowCount: 1 (new event, we claimed it)
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 });
 
     const handler = vi.fn().mockResolvedValue(undefined);
@@ -320,16 +449,17 @@ describe('StripeService.processWebhookEvent (backend)', () => {
 
     expect(result.success).toBe(true);
     expect(handler).toHaveBeenCalledOnce();
-    // Verify markEventProcessed was called with correct args
+    // Verify markEventProcessedAtomic was called with correct args (INSERT first)
     expect(mockDb.query).toHaveBeenNthCalledWith(
-      2,
+      1,
       expect.stringContaining('INSERT INTO processed_stripe_events'),
       ['evt_new', 'transfer.created', 'tr_new'],
     );
   });
 
   it('returns WEBHOOK_PROCESSING_ERROR when handler throws', async () => {
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // not processed
+    // markEventProcessedAtomic → INSERT succeeds → rowCount: 1 (we claimed it)
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 });
 
     const handler = vi.fn().mockRejectedValue(new Error('Handler exploded'));
     const result = await StripeService.processWebhookEvent(
@@ -344,7 +474,8 @@ describe('StripeService.processWebhookEvent (backend)', () => {
   });
 
   it('returns WEBHOOK_PROCESSING_ERROR when handler throws with non-Error object', async () => {
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+    // markEventProcessedAtomic → INSERT succeeds → rowCount: 1 (we claimed it)
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 });
 
     const handler = vi.fn().mockRejectedValue('string-error');
     const result = await StripeService.processWebhookEvent(
@@ -358,20 +489,20 @@ describe('StripeService.processWebhookEvent (backend)', () => {
     }
   });
 
-  it('calls markEventProcessed with correct event metadata', async () => {
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // not processed
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 }); // mark processed
+  it('calls markEventProcessedAtomic with correct event metadata (INSERT first)', async () => {
+    // markEventProcessedAtomic → INSERT succeeds → rowCount: 1 (new event)
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 });
 
     const handler = vi.fn().mockResolvedValue(undefined);
     await StripeService.processWebhookEvent(
       'evt_mark_test', 'customer.updated', 'cus_123', handler,
     );
 
-    // Check the SELECT query for idempotency
+    // Verify the atomic INSERT query is the FIRST (and only) DB call
     expect(mockDb.query).toHaveBeenNthCalledWith(
       1,
-      'SELECT id FROM processed_stripe_events WHERE event_id = $1',
-      ['evt_mark_test'],
+      expect.stringContaining('INSERT INTO processed_stripe_events'),
+      ['evt_mark_test', 'customer.updated', 'cus_123'],
     );
   });
 });

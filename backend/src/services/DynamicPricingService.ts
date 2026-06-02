@@ -129,12 +129,13 @@ export const DynamicPricingService = {
           const { open_tasks, active_workers } = demandResult.rows[0];
           if (active_workers > 0) {
             const demandRatio = open_tasks / active_workers;
-            if (demandRatio > 3) {
-              surgeMultiplier = Math.min(1.5, MAX_SURGE_MULTIPLIER);
-              surgeReason = 'High demand in your area';
-            } else if (demandRatio > 5) {
+            // Bug 1 fix: check highest threshold first so the > 5 branch is reachable
+            if (demandRatio > 5) {
               surgeMultiplier = Math.min(2.0, MAX_SURGE_MULTIPLIER);
               surgeReason = 'Very high demand in your area';
+            } else if (demandRatio > 3) {
+              surgeMultiplier = Math.min(1.5, MAX_SURGE_MULTIPLIER);
+              surgeReason = 'High demand in your area';
             }
           }
         }
@@ -177,7 +178,8 @@ export const DynamicPricingService = {
         );
         if (workerResult.rows[0]) {
           const modifierPercent = workerResult.rows[0].price_modifier_percent;
-          workerModifierCents = Math.round(basePriceCents * (modifierPercent / 100));
+          const clampedModifier = Math.max(-25, Math.min(50, modifierPercent));
+          workerModifierCents = Math.round(basePriceCents * (clampedModifier / 100));
         }
       }
 
@@ -199,7 +201,7 @@ export const DynamicPricingService = {
             surge: surgedPrice - basePriceCents,
             urgency: urgencyPremiumCents,
             worker_modifier: workerModifierCents,
-            total: finalPrice,
+            total: Math.max(finalPrice, 500), // matches final_price_cents floor
           },
         },
       };
@@ -249,39 +251,66 @@ export const DynamicPricingService = {
    */
   bumpASAPPrice: async (taskId: string): Promise<ServiceResult<{ new_price_cents: number; bump_count: number }>> => {
     try {
-      // Get current task
-      const taskResult = await db.query<{ price: number; surge_multiplier: number; asap_bump_count: number }>(
-        `SELECT price, surge_multiplier, COALESCE(asap_bump_count, 0) AS asap_bump_count
-         FROM tasks WHERE id = $1 AND state = 'OPEN' AND mode = 'LIVE'`,
-        [taskId]
-      );
+      // Bug 2 fix: wrap in a transaction with FOR UPDATE to prevent concurrent
+      // bumps from reading the same price and both writing the same new value
+      const result = await db.transaction(async (query) => {
+        // SELECT FOR UPDATE acquires a row-level lock — concurrent callers wait
+        const taskResult = await query<{ price: number; surge_multiplier: number; asap_bump_count: number }>(
+          `SELECT price, surge_multiplier, COALESCE(asap_bump_count, 0) AS asap_bump_count
+           FROM tasks WHERE id = $1 AND state = 'OPEN' AND mode = 'LIVE'
+           FOR UPDATE`,
+          [taskId]
+        );
 
-      if (taskResult.rows.length === 0) {
+        if (taskResult.rows.length === 0) {
+          return { found: false } as const;
+        }
+
+        const task = taskResult.rows[0];
+
+        if (task.asap_bump_count >= ASAP_MAX_BUMPS) {
+          return { found: true, maxBumps: true } as const;
+        }
+
+        const newPrice = task.price + ASAP_NO_ACCEPT_BUMP_CENTS;
+        const newBumpCount = task.asap_bump_count + 1;
+
+        // Conditional UPDATE: only applies if bump_count hasn't changed since our
+        // SELECT FOR UPDATE (guards against a theoretical ABA scenario)
+        const updateResult = await query(
+          `UPDATE tasks
+           SET price = $1, asap_bump_count = $2
+           WHERE id = $3 AND asap_bump_count < $4`,
+          [newPrice, newBumpCount, taskId, ASAP_MAX_BUMPS]
+        );
+
+        if (updateResult.rowCount === 0) {
+          return { found: true, maxBumps: true } as const;
+        }
+
+        // Sync the escrow amount to the bumped price — but only for PENDING escrows.
+        // A FUNDED escrow means Stripe has already captured the original amount; the
+        // poster would need to pay the difference out-of-band, which is a separate
+        // flow. Updating the DB amount on a FUNDED escrow would cause a display/
+        // release divergence (escrow.amount > actual collected funds), so we skip it.
+        await query(
+          `UPDATE escrows SET amount = $1 WHERE task_id = $2 AND state = 'PENDING'`,
+          [newPrice, taskId]
+        );
+
+        return { found: true, maxBumps: false, newPrice, newBumpCount } as const;
+      });
+
+      if (!result.found) {
         return { success: false, error: { code: 'NOT_FOUND', message: 'ASAP task not found or not open' } };
       }
-
-      const task = taskResult.rows[0];
-
-      if (task.asap_bump_count >= ASAP_MAX_BUMPS) {
-        return {
-          success: false,
-          error: { code: 'MAX_BUMPS_REACHED', message: 'Maximum price bumps reached' },
-        };
+      if (result.maxBumps) {
+        return { success: false, error: { code: 'MAX_BUMPS_REACHED', message: 'Maximum price bumps reached' } };
       }
-
-      const newPrice = task.price + ASAP_NO_ACCEPT_BUMP_CENTS;
-      const newBumpCount = task.asap_bump_count + 1;
-
-      await db.query(
-        `UPDATE tasks
-         SET price = $1, asap_bump_count = $2
-         WHERE id = $3`,
-        [newPrice, newBumpCount, taskId]
-      );
 
       return {
         success: true,
-        data: { new_price_cents: newPrice, bump_count: newBumpCount },
+        data: { new_price_cents: result.newPrice, bump_count: result.newBumpCount },
       };
     } catch (error) {
       return {

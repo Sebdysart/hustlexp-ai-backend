@@ -51,6 +51,9 @@ vi.mock('../../src/config', () => ({
   },
 }));
 
+// Set ALLOWED_ORIGINS so isAllowedRedirectUrl accepts the test URLs used below.
+process.env.ALLOWED_ORIGINS = 'https://hustlexp.com,https://example.com';
+
 vi.mock('../../src/middleware/circuit-breaker', () => ({
   stripeBreaker: {
     execute: vi.fn((fn: () => Promise<unknown>) => fn()),

@@ -118,6 +118,10 @@ describe('biometric router', () => {
   // =========================================================================
   describe('submitBiometricProof', () => {
     it('returns approve recommendation when all checks pass', async () => {
+      // R-22: task ownership check
+      mockDb.query.mockResolvedValueOnce({ rows: [{ worker_id: UUID1 }], rowCount: 1 } as any);
+      // R-22: duplicate proof check
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
       mockGDPR.hasBiometricConsent.mockResolvedValue(true);
       mockBiometric.analyzeProofSubmission.mockResolvedValue({
         success: true,
@@ -152,6 +156,10 @@ describe('biometric router', () => {
     });
 
     it('returns reject when biometric recommendation is reject', async () => {
+      // R-22: task ownership check
+      mockDb.query.mockResolvedValueOnce({ rows: [{ worker_id: UUID1 }], rowCount: 1 } as any);
+      // R-22: duplicate proof check
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
       mockGDPR.hasBiometricConsent.mockResolvedValue(true);
       mockBiometric.analyzeProofSubmission.mockResolvedValue({
         success: true,
@@ -181,6 +189,10 @@ describe('biometric router', () => {
     });
 
     it('throws FORBIDDEN when BIPA consent not given', async () => {
+      // R-22: task ownership check
+      mockDb.query.mockResolvedValueOnce({ rows: [{ worker_id: UUID1 }], rowCount: 1 } as any);
+      // R-22: duplicate proof check
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
       mockGDPR.hasBiometricConsent.mockResolvedValue(false);
 
       const caller = makeCaller();
@@ -189,6 +201,10 @@ describe('biometric router', () => {
     });
 
     it('throws BAD_REQUEST when biometric verification fails', async () => {
+      // R-22: task ownership check
+      mockDb.query.mockResolvedValueOnce({ rows: [{ worker_id: UUID1 }], rowCount: 1 } as any);
+      // R-22: duplicate proof check
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
       mockGDPR.hasBiometricConsent.mockResolvedValue(true);
       mockBiometric.analyzeProofSubmission.mockResolvedValue({
         success: false,
@@ -201,6 +217,10 @@ describe('biometric router', () => {
     });
 
     it('throws BAD_REQUEST when GPS validation fails', async () => {
+      // R-22: task ownership check
+      mockDb.query.mockResolvedValueOnce({ rows: [{ worker_id: UUID1 }], rowCount: 1 } as any);
+      // R-22: duplicate proof check
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
       mockGDPR.hasBiometricConsent.mockResolvedValue(true);
       mockBiometric.analyzeProofSubmission.mockResolvedValue({
         success: true,
@@ -217,6 +237,10 @@ describe('biometric router', () => {
     });
 
     it('flags impossible travel', async () => {
+      // R-22: task ownership check
+      mockDb.query.mockResolvedValueOnce({ rows: [{ worker_id: UUID1 }], rowCount: 1 } as any);
+      // R-22: duplicate proof check
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
       mockGDPR.hasBiometricConsent.mockResolvedValue(true);
       mockBiometric.analyzeProofSubmission.mockResolvedValue({
         success: true,
@@ -244,6 +268,10 @@ describe('biometric router', () => {
     });
 
     it('flags time lock failure as manual_review', async () => {
+      // R-22: task ownership check
+      mockDb.query.mockResolvedValueOnce({ rows: [{ worker_id: UUID1 }], rowCount: 1 } as any);
+      // R-22: duplicate proof check
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
       mockGDPR.hasBiometricConsent.mockResolvedValue(true);
       mockBiometric.analyzeProofSubmission.mockResolvedValue({
         success: true,

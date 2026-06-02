@@ -15,7 +15,7 @@ import { firebaseAuth } from './auth/firebase.js';
 import { db } from './db.js';
 import type { User } from './types.js';
 import { logger } from './logger.js';
-import { authCacheGet, authCacheSet } from './auth-cache.js';
+import { authCache, authCacheKey, authCacheGet, authCacheSet } from './auth-cache.js';
 import { ensureUserRowForFirebaseUid } from './auth/ensure-user.js';
 import { redis } from './cache/redis.js';
 
@@ -43,6 +43,28 @@ const log = logger.child({ module: 'trpc' });
 export interface Context extends Record<string, unknown> {
   user: User | null;
   firebaseUid: string | null;
+  /** Server-derived client IP — extracted from x-forwarded-for / x-real-ip headers. Never caller-supplied. */
+  ip: string | null;
+}
+
+function extractIp(req: Request): string | null {
+  // cf-connecting-ip: set by Cloudflare directly from the TCP connection;
+  // cannot be forged by the client regardless of what they put in XFF.
+  const cfIp = req.headers.get('cf-connecting-ip');
+  if (cfIp) return cfIp.trim() || null;
+
+  // X-Forwarded-For: use the RIGHTMOST entry, which is appended by our
+  // trusted reverse proxy and cannot be forged by the client.
+  // A-22: NEVER use the leftmost entry — it is client-controlled and allows
+  // an attacker to spoof arbitrary IPs to bypass rate limiting.
+  const xff = req.headers.get('x-forwarded-for');
+  if (xff) {
+    const parts = xff.split(',').map((p) => p.trim()).filter(Boolean);
+    return parts[parts.length - 1] ?? null;
+  }
+
+  // x-real-ip: set by nginx/proxies from the connection address.
+  return req.headers.get('x-real-ip') || null;
 }
 
 export async function createContext(opts: {
@@ -54,7 +76,7 @@ export async function createContext(opts: {
   const authHeader = opts.req.headers.get('authorization');
 
   if (!authHeader?.startsWith('Bearer ')) {
-    return { user: null, firebaseUid: null };
+    return { user: null, firebaseUid: null, ip: extractIp(opts.req) };
   }
 
   const token = authHeader.slice(7);
@@ -65,19 +87,28 @@ export async function createContext(opts: {
     // Cross-invalidation check: if a Redis revocation marker exists (written by
     // invalidateAuthCacheForUser or revokeUserSessions) the in-process cache
     // entry is stale — evict it and fall through to Firebase re-verification.
-    const revokedAt = await redis.get<string>(REDIS_REVOKED_KEY(cached.firebaseUid));
-    if (revokedAt) {
-      log.info({ uid: cached.firebaseUid }, 'tRPC cache hit invalidated by Redis revocation marker');
-      // The in-process entry was already evicted by invalidateAuthCacheForUser,
-      // but guard against the case where it was set again before we got here.
+    // A-05 FIX: Wrap redis.get in try/catch so a Redis outage does not cause
+    // createContext to throw a 500 on every authenticated request. On failure,
+    // fall through to Firebase re-verification as a safe degraded path.
+    try {
+      const revokedAt = await redis.get<string>(REDIS_REVOKED_KEY(cached.firebaseUid));
+      if (revokedAt) {
+        log.info({ uid: cached.firebaseUid }, 'tRPC cache hit invalidated by Redis revocation marker');
+        // Evict the stale in-process cache entry immediately so it cannot be
+        // served again on this replica before the 5-minute TTL expires.
+        authCache.delete(authCacheKey(token));
+        // Fall through to Firebase re-verification below.
+      } else {
+        return { user: cached.user, firebaseUid: cached.firebaseUid, ip: extractIp(opts.req) };
+      }
+    } catch (redisErr) {
+      log.warn({ err: redisErr }, 'Redis unavailable for revocation check — falling through to Firebase verify');
       // Fall through to Firebase re-verification below.
-    } else {
-      return { user: cached.user, firebaseUid: cached.firebaseUid };
     }
   }
 
   try {
-    const decoded = await firebaseAuth.verifyIdToken(token);
+    const decoded = await firebaseAuth.verifyIdToken(token, true); // checkRevoked = true (explicit, not relying on default)
 
     // Get user from database
     const result = await db.query<User>(
@@ -95,10 +126,16 @@ export async function createContext(opts: {
     }
 
     if (user) {
-      // Populate is_admin from admin_roles table so escrow and other routers can use ctx.user.is_admin
+      // Populate is_admin from admin_roles table so escrow and other routers can use ctx.user.is_admin.
+      // A46-2 FIX: Use the same role allowlist as isAdminCheck's fallback path. The previous
+      // `SELECT 1` accepted any admin_roles row regardless of role value, creating an
+      // inconsistency: the fast-path (warm requests) would grant admin to any role, while
+      // the fallback path (undefined is_admin) correctly filtered by VALID_ADMIN_ROLES.
+      // Now both paths use identical role allowlist logic.
+      const VALID_ADMIN_ROLES = ['admin', 'support', 'finance', 'moderator', 'founder'];
       const adminResult = await db.query(
-        'SELECT 1 FROM admin_roles WHERE user_id = $1 LIMIT 1',
-        [user.id]
+        'SELECT 1 FROM admin_roles WHERE user_id = $1 AND role = ANY($2::text[]) LIMIT 1',
+        [user.id, VALID_ADMIN_ROLES]
       );
       user.is_admin = adminResult.rows.length > 0;
 
@@ -118,7 +155,7 @@ export async function createContext(opts: {
       }
     }
 
-    return { user, firebaseUid: decoded.uid };
+    return { user, firebaseUid: decoded.uid, ip: extractIp(opts.req) };
   } catch (error) {
     // SECURITY FIX (v2.9.4): Firebase Admin SDK error messages sometimes embed
     // the raw JWT in their text. Strip any JWT-shaped segments before logging to
@@ -126,7 +163,7 @@ export async function createContext(opts: {
     const rawMsg = (error as Error).message ?? '';
     const safeMsg = rawMsg.replace(/eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]*/g, '[REDACTED_TOKEN]');
     log.error({ err: safeMsg }, 'Firebase token verification failed');
-    return { user: null, firebaseUid: null };
+    return { user: null, firebaseUid: null, ip: extractIp(opts.req) };
   }
 }
 
@@ -176,34 +213,24 @@ const isAuthenticated = t.middleware(async ({ ctx, next }) => {
 
 export const protectedProcedure = t.procedure.use(isAuthenticated);
 
-// Middleware: require admin
-const isAdmin = t.middleware(async ({ ctx, next }) => {
-  if (!ctx.user) {
-    throw new TRPCError({
-      code: 'UNAUTHORIZED',
-      message: 'Authentication required',
-    });
+// Middleware: require admin role — composed on top of isAuthenticated (via protectedProcedure).
+// Ban/suspension/auth checks are already handled by isAuthenticated; this only does the role check.
+const isAdminCheck = t.middleware(async ({ ctx, next }) => {
+  // ctx.user is guaranteed non-null and not banned by isAuthenticated (already ran).
+  // createContext already populated user.is_admin from admin_roles — use that
+  // directly to avoid a redundant DB round-trip on every admin request.
+  // Only fall back to a DB query if is_admin is undefined (not yet populated).
+  let isAdmin = ctx.user!.is_admin;
+  if (isAdmin === undefined) {
+    const VALID_ADMIN_ROLES = ['admin', 'support', 'finance', 'moderator', 'founder'];
+    const adminResult = await db.query(
+      'SELECT role FROM admin_roles WHERE user_id = $1 AND role = ANY($2::text[])',
+      [ctx.user!.id, VALID_ADMIN_ROLES]
+    );
+    isAdmin = adminResult.rows.length > 0;
   }
 
-  // Banned/suspended/deleted admins must not retain admin access.
-  if (
-    ctx.user.is_banned ||
-    ctx.user.account_status === 'SUSPENDED' ||
-    ctx.user.account_status === 'DELETED'
-  ) {
-    throw new TRPCError({
-      code: 'UNAUTHORIZED',
-      message: 'Account suspended.',
-    });
-  }
-
-  // Check admin role
-  const adminResult = await db.query(
-    'SELECT role FROM admin_roles WHERE user_id = $1',
-    [ctx.user.id]
-  );
-
-  if (adminResult.rows.length === 0) {
+  if (!isAdmin) {
     throw new TRPCError({
       code: 'FORBIDDEN',
       message: 'Admin access required',
@@ -213,28 +240,12 @@ const isAdmin = t.middleware(async ({ ctx, next }) => {
   return next({ ctx: { ...ctx, user: ctx.user } });
 });
 
-export const adminProcedure = t.procedure.use(isAdmin);
+export const adminProcedure = protectedProcedure.use(isAdminCheck);
 
-// Middleware: require Hustler role (default_mode = 'worker')
-const isHustler = t.middleware(async ({ ctx, next }) => {
-  if (!ctx.user) {
-    throw new TRPCError({
-      code: 'UNAUTHORIZED',
-      message: 'Authentication required',
-    });
-  }
-  // Banned/suspended/deleted users must not access role-gated endpoints.
-  if (
-    ctx.user.is_banned ||
-    ctx.user.account_status === 'SUSPENDED' ||
-    ctx.user.account_status === 'DELETED'
-  ) {
-    throw new TRPCError({
-      code: 'UNAUTHORIZED',
-      message: 'Account suspended.',
-    });
-  }
-  if (ctx.user.default_mode !== 'worker') {
+// Middleware: require Hustler role (default_mode = 'worker') — composed on top of isAuthenticated.
+// Ban/suspension/auth checks are already handled by isAuthenticated; this only does the role check.
+const isHustlerCheck = t.middleware(async ({ ctx, next }) => {
+  if (ctx.user!.default_mode !== 'worker') {
     throw new TRPCError({
       code: 'FORBIDDEN',
       message: 'Hustler access required',
@@ -243,28 +254,12 @@ const isHustler = t.middleware(async ({ ctx, next }) => {
   return next({ ctx: { ...ctx, user: ctx.user } });
 });
 
-export const hustlerProcedure = t.procedure.use(isHustler);
+export const hustlerProcedure = protectedProcedure.use(isHustlerCheck);
 
-// Middleware: require Poster role (default_mode = 'poster')
-const isPoster = t.middleware(async ({ ctx, next }) => {
-  if (!ctx.user) {
-    throw new TRPCError({
-      code: 'UNAUTHORIZED',
-      message: 'Authentication required',
-    });
-  }
-  // Banned/suspended/deleted users must not access role-gated endpoints.
-  if (
-    ctx.user.is_banned ||
-    ctx.user.account_status === 'SUSPENDED' ||
-    ctx.user.account_status === 'DELETED'
-  ) {
-    throw new TRPCError({
-      code: 'UNAUTHORIZED',
-      message: 'Account suspended.',
-    });
-  }
-  if (ctx.user.default_mode !== 'poster') {
+// Middleware: require Poster role (default_mode = 'poster') — composed on top of isAuthenticated.
+// Ban/suspension/auth checks are already handled by isAuthenticated; this only does the role check.
+const isPosterCheck = t.middleware(async ({ ctx, next }) => {
+  if (ctx.user!.default_mode !== 'poster') {
     throw new TRPCError({
       code: 'FORBIDDEN',
       message: 'Poster access required',
@@ -273,7 +268,7 @@ const isPoster = t.middleware(async ({ ctx, next }) => {
   return next({ ctx: { ...ctx, user: ctx.user } });
 });
 
-export const posterProcedure = t.procedure.use(isPoster);
+export const posterProcedure = protectedProcedure.use(isPosterCheck);
 
 // ============================================================================
 // INPUT SCHEMAS (Zod validation)
@@ -285,12 +280,12 @@ export const Schemas = {
   
   // Task
   createTask: z.object({
-    title: z.string().min(1).max(255),
+    title: z.string().trim().min(1).max(255),
     description: z.string().trim().min(10).max(5000),
     price: z.number().int().positive().max(99999900), // USD cents, max $999,999
-    requirements: z.string().max(2000).optional(),
+    requirements: z.string().trim().max(2000).optional(),
     location: z.string().max(500).optional(),
-    category: z.string().max(100).optional(),
+    category: z.string().trim().max(100).optional(),
     deadline: z.string().datetime().optional(),
     requiresProof: z.boolean().default(true),
     // Live Mode (PRODUCT_SPEC §3.5)
@@ -318,7 +313,7 @@ export const Schemas = {
 
   acceptWithConsent: z.object({
     taskId: z.string().uuid(),
-    consentItems: z.array(z.string()).min(1).max(10),
+    consentItems: z.array(z.string().trim().min(1).max(500)).min(1).max(10),
   }),
   
   // Escrow

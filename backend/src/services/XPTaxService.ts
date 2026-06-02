@@ -89,25 +89,38 @@ export const XPTaxService = {
       const taxAmountCents = Math.round(grossPayoutCents * (taxPercentage / 100));
       const netPayoutCents = grossPayoutCents; // Tax doesn't reduce payout
 
-      // Insert tax record
-      await db.query(
-        `INSERT INTO xp_tax_ledger (
-          user_id, task_id, gross_payout_cents, tax_percentage,
-          tax_amount_cents, net_payout_cents, payment_method, xp_held_back
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE)
-        ON CONFLICT (task_id, user_id) DO NOTHING`,
-        [userId, taskId, grossPayoutCents, taxPercentage, taxAmountCents, netPayoutCents, paymentMethod]
-      );
+      // F46-2 FIX: Wrap both queries in a serializable transaction to prevent
+      // non-atomic double-credit. Previously, two independent db.query() calls were
+      // used: the first (xp_tax_ledger INSERT) had ON CONFLICT DO NOTHING for
+      // idempotency, but the second (user_xp_tax_status UPDATE) always ran, even on
+      // duplicate calls — double-billing total_unpaid_tax_cents for the same task.
+      // Fix: both queries run atomically. Only if the ledger INSERT inserted a new row
+      // (rowCount === 1) do we update the summary. Duplicate calls become true no-ops.
+      await db.serializableTransaction(async (query) => {
+        // Insert tax record
+        const insertResult = await query(
+          `INSERT INTO xp_tax_ledger (
+            user_id, task_id, gross_payout_cents, tax_percentage,
+            tax_amount_cents, net_payout_cents, payment_method, xp_held_back
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE)
+          ON CONFLICT (task_id, user_id) DO NOTHING`,
+          [userId, taskId, grossPayoutCents, taxPercentage, taxAmountCents, netPayoutCents, paymentMethod]
+        );
 
-      // Update summary table
-      await db.query(
-        `INSERT INTO user_xp_tax_status (user_id, total_unpaid_tax_cents)
-         VALUES ($1, $2)
-         ON CONFLICT (user_id) DO UPDATE SET
-           total_unpaid_tax_cents = user_xp_tax_status.total_unpaid_tax_cents + $2,
-           last_updated_at = NOW()`,
-        [userId, taxAmountCents]
-      );
+        // Only update the summary if a new ledger row was actually inserted.
+        // ON CONFLICT DO NOTHING sets rowCount=0 on a duplicate → skip the increment.
+        if ((insertResult.rowCount ?? 0) > 0) {
+          // Update summary table
+          await query(
+            `INSERT INTO user_xp_tax_status (user_id, total_unpaid_tax_cents)
+             VALUES ($1, $2)
+             ON CONFLICT (user_id) DO UPDATE SET
+               total_unpaid_tax_cents = user_xp_tax_status.total_unpaid_tax_cents + $2,
+               last_updated_at = NOW()`,
+            [userId, taxAmountCents]
+          );
+        }
+      });
 
       log.info({ userId, taskId, taxAmountCents }, 'Recorded offline payment');
 
@@ -189,18 +202,34 @@ export const XPTaxService = {
         };
       }
 
-      // IDEMPOTENCY CHECK: Return early if this Stripe payment intent was already processed.
-      // This prevents double-charging when the client retries a request (e.g. network error
-      // after Stripe succeeded but before the server responded).
+      // IDEMPOTENCY CHECK: Return early only if ALL unpaid rows have been processed for
+      // this payment intent — i.e. the PI is recorded AND no rows remain with tax_paid=FALSE.
+      // F47-2 FIX: The old guard returned early if ANY row was marked paid with this PI,
+      // which made a partially-completed loop (crash mid-FIFO) permanently irrecoverable —
+      // the remaining unpaid rows could never be finished. Now we only short-circuit when
+      // there are truly no remaining unpaid rows for this user.
+      // F58-1 FIX: Added AND user_id = $2 so a PI used by user A cannot trigger the
+      // idempotency short-circuit for user B. Without this filter, any PI that has been
+      // recorded as paid for any user would cause all other users submitting the same PI
+      // to silently return xp_released=0 without going through Stripe verification.
       const existingPayment = await db.query<{ id: string }>(
         `SELECT id FROM xp_tax_ledger
-         WHERE stripe_payment_intent_id = $1 AND tax_paid = TRUE
+         WHERE stripe_payment_intent_id = $1 AND user_id = $2 AND tax_paid = TRUE
          LIMIT 1`,
-        [stripePaymentIntentId]
+        [stripePaymentIntentId, userId]
       );
       if (existingPayment.rows.length > 0) {
-        log.info({ userId, stripePaymentIntentId }, 'payTax: idempotent replay — intent already processed');
-        return { success: true, data: { xp_released: 0 } };
+        // PI was seen before — but check whether any rows are still unpaid (partial failure)
+        const remainingUnpaid = await db.query<{ id: string }>(
+          `SELECT id FROM xp_tax_ledger WHERE user_id = $1 AND tax_paid = FALSE LIMIT 1`,
+          [userId]
+        );
+        if (remainingUnpaid.rows.length === 0) {
+          log.info({ userId, stripePaymentIntentId }, 'payTax: idempotent replay — all rows already processed');
+          return { success: true, data: { xp_released: 0 } };
+        }
+        // Some rows still unpaid — fall through to finish the FIFO loop
+        log.info({ userId, stripePaymentIntentId }, 'payTax: idempotent replay — resuming partial FIFO loop');
       }
 
       // Verify Stripe payment succeeded
@@ -208,7 +237,7 @@ export const XPTaxService = {
 
       let amountPaidCents: number;
 
-      if (piResult.success && piResult.data) {
+      if (piResult.success) {
         // Stripe is configured — verify payment status
         if (piResult.data.status !== 'succeeded') {
           return {
@@ -231,6 +260,21 @@ export const XPTaxService = {
           };
         }
 
+        // F46-5 FIX: Verify the payment intent belongs to the calling user.
+        // Without this check, any user holding a succeeded xp_tax PaymentIntent
+        // (even one created for a different user) could submit it to payTax() and
+        // have their own held XP released without actually paying. The PI metadata
+        // contains user_id set by createTaxPaymentIntent(), so we enforce the match.
+        if (!piResult.data.metadata.user_id || piResult.data.metadata.user_id !== userId) {
+          return {
+            success: false,
+            error: {
+              code: 'PAYMENT_NOT_OWNED',
+              message: 'This payment does not belong to you',
+            },
+          };
+        }
+
         amountPaidCents = piResult.data.amountCents;
       } else {
         // Stripe returned an error despite being configured — propagate it
@@ -247,58 +291,106 @@ export const XPTaxService = {
         return { success: true, data: { xp_released: 0 } };
       }
 
-      // Get unpaid tax entries (FIFO order)
-      const unpaidTaxes = await db.query<XPTaxLedger>(
-        'SELECT * FROM xp_tax_ledger WHERE user_id = $1 AND tax_paid = FALSE ORDER BY created_at ASC',
-        [userId]
-      );
+      // F47-2 FIX: Wrap the entire FIFO loop and the summary update in a single
+      // serializableTransaction so that all ledger row updates + XP awards + summary
+      // decrement are applied atomically. Previously, three independent db.query()
+      // calls per iteration meant a mid-loop crash left some rows paid+XP-awarded
+      // and others not — with the idempotency guard making the partial state
+      // irrecoverable. Now the whole loop either commits or rolls back as a unit.
+      const { totalXpReleased, totalTaxPaid } = await db.serializableTransaction(async (query) => {
+        // Get unpaid tax entries (FIFO order) — read inside the transaction for consistency
+        const unpaidTaxes = await query<XPTaxLedger>(
+          'SELECT * FROM xp_tax_ledger WHERE user_id = $1 AND tax_paid = FALSE ORDER BY created_at ASC',
+          [userId]
+        );
 
-      let remainingPayment = amountPaidCents;
-      let totalXpReleased = 0;
-      let totalTaxPaid = 0;
+        let remainingPayment = amountPaidCents;
+        let innerTotalXpReleased = 0;
+        let innerTotalTaxPaid = 0;
 
-      // Pay taxes in FIFO order
-      for (const tax of unpaidTaxes.rows) {
-        if (remainingPayment >= tax.tax_amount_cents) {
-          // Mark tax as paid and release held XP, recording the Stripe intent ID
-          // for idempotency (prevents double-charge on retry).
-          await db.query(
-            `UPDATE xp_tax_ledger
-             SET tax_paid = TRUE,
-                 tax_paid_at = NOW(),
-                 xp_released = TRUE,
-                 xp_released_at = NOW(),
-                 stripe_payment_intent_id = $2
-             WHERE id = $1`,
-            [tax.id, stripePaymentIntentId]
-          );
+        // Pay taxes in FIFO order
+        for (const tax of unpaidTaxes.rows) {
+          if (remainingPayment >= tax.tax_amount_cents) {
+            // F53-1 FIX: Per-PI per-row idempotency guard.
+            // INSERT a dedup record before processing this row. ON CONFLICT DO NOTHING
+            // means a duplicate (same PI + same ledger row) from a prior incomplete
+            // attempt returns rowCount=0 — in that case skip XP award entirely.
+            // Without this guard, a serializableTransaction retry (Postgres error 40001)
+            // re-runs the entire callback: the rows are still unpaid (rollback means no
+            // commits), so each row gets processed twice, double-awarding XP.
+            const dedupResult = await query(
+              `INSERT INTO xp_tax_payment_intent_idempotency (stripe_payment_intent_id, xp_tax_ledger_id)
+               VALUES ($1, $2)
+               ON CONFLICT (stripe_payment_intent_id, xp_tax_ledger_id) DO NOTHING`,
+              [stripePaymentIntentId, tax.id]
+            );
 
-          // Calculate held XP to release (100 XP per $1 of gross payout)
-          const xpAmount = Math.round(tax.gross_payout_cents / 10);
+            // Only award XP if this (PI, ledger row) pair was freshly inserted
+            if ((dedupResult.rowCount ?? 0) < 1) {
+              // Already processed in a prior attempt — skip to avoid double-award
+              remainingPayment -= tax.tax_amount_cents;
+              innerTotalTaxPaid += tax.tax_amount_cents;
+              continue;
+            }
 
-          // Release held XP directly to user's xp_total
-          // Note: This bypasses INV-1 (no escrow) because tax XP is already earned,
-          // just held back pending tax payment. We update the user directly.
-          await db.query(
-            `UPDATE users SET xp_total = xp_total + $1 WHERE id = $2`,
-            [xpAmount, userId]
-          );
+            // Mark tax as paid and release held XP, recording the Stripe intent ID
+            // for idempotency (prevents double-charge on retry).
+            // F61-3 FIX: Also set xp_held_back = FALSE so the row no longer appears
+            // as "held" after payment. Without this, user_xp_tax_status summary
+            // recomputes total_xp_held_back = COUNT(*) WHERE xp_held_back = TRUE and
+            // still sees these rows, leaving dashboards/XP-block checks stale.
+            await query(
+              `UPDATE xp_tax_ledger
+               SET tax_paid = TRUE,
+                   tax_paid_at = NOW(),
+                   xp_held_back = FALSE,
+                   xp_released = TRUE,
+                   xp_released_at = NOW(),
+                   stripe_payment_intent_id = $2
+               WHERE id = $1`,
+              [tax.id, stripePaymentIntentId]
+            );
 
-          remainingPayment -= tax.tax_amount_cents;
-          totalTaxPaid += tax.tax_amount_cents;
-          totalXpReleased += xpAmount;
+            // Calculate held XP to release (100 XP per $1 of gross payout)
+            const xpAmount = Math.round(tax.gross_payout_cents / 10);
+
+            // Release held XP directly to user's xp_total
+            // Note: This bypasses INV-1 (no escrow) because tax XP is already earned,
+            // just held back pending tax payment. We update the user directly.
+            await query(
+              `UPDATE users SET xp_total = xp_total + $1 WHERE id = $2`,
+              [xpAmount, userId]
+            );
+
+            remainingPayment -= tax.tax_amount_cents;
+            innerTotalTaxPaid += tax.tax_amount_cents;
+            innerTotalXpReleased += xpAmount;
+          }
         }
-      }
 
-      // Update summary table
-      await db.query(
-        `UPDATE user_xp_tax_status
-         SET total_unpaid_tax_cents = GREATEST(total_unpaid_tax_cents - $1, 0),
-             total_xp_held_back = GREATEST(total_xp_held_back - $2, 0),
-             last_updated_at = NOW()
-         WHERE user_id = $3`,
-        [totalTaxPaid, totalXpReleased, userId]
-      );
+        // Update summary table — full reconciliation against actual ledger rows so the
+        // result is correct regardless of prior partial runs (F52-2 FIX).
+        // Decrementing by innerTotalTaxPaid is unsafe when a previous run paid some rows
+        // and crashed before updating the summary; that leaves a stale positive balance
+        // that the decrement can never recover from.  Re-computing from the ledger is
+        // idempotent and always produces the authoritative value.
+        await query(
+          `UPDATE user_xp_tax_status
+           SET total_unpaid_tax_cents = COALESCE(
+             (SELECT SUM(tax_amount_cents) FROM xp_tax_ledger WHERE user_id = $1 AND tax_paid = false),
+             0
+           ),
+           total_xp_held_back = COALESCE(
+             (SELECT COUNT(*) FROM xp_tax_ledger WHERE user_id = $1 AND tax_paid = false AND xp_held_back = true),
+             0
+           ),
+           last_updated_at = NOW()
+           WHERE user_id = $1`,
+          [userId]
+        );
+
+        return { totalXpReleased: innerTotalXpReleased, totalTaxPaid: innerTotalTaxPaid };
+      });
 
       log.info({ userId, totalTaxPaidCents: totalTaxPaid, xpReleased: totalXpReleased }, 'Tax payment processed');
 
@@ -346,23 +438,57 @@ export const XPTaxService = {
    */
   adminForgiveTax: async (userId: string, adminId: string, reason: string): Promise<ServiceResult<void>> => {
     try {
-      // Mark all unpaid taxes as forgiven
-      await db.query(
-        `UPDATE xp_tax_ledger
-         SET tax_paid = TRUE,
-             tax_paid_at = NOW()
-         WHERE user_id = $1 AND tax_paid = FALSE`,
-        [userId]
-      );
+      // F49-2 FIX: Wrap both UPDATE queries in a serializableTransaction so that
+      // the ledger forgiveness and the summary reset are applied atomically.
+      // Previously, two independent db.query() calls meant a crash between them
+      // would leave the ledger rows forgiven but the summary still showing unpaid
+      // tax — causing XP-block checks to incorrectly block the user forever.
+      await db.serializableTransaction(async (query) => {
+        // F58-2 FIX: Compute XP held across all unforgiven rows so we can credit
+        // users.xp_total. Previously adminForgiveTax marked rows as paid and cleared
+        // the hold but never awarded the XP to the user — the held XP was permanently
+        // lost. We compute the sum first (before marking paid) then credit the user.
+        const xpSumResult = await query<{ total_xp: number }>(
+          `SELECT COALESCE(SUM(ROUND(gross_payout_cents / 10.0)), 0) AS total_xp
+           FROM xp_tax_ledger
+           WHERE user_id = $1 AND tax_paid = FALSE`,
+          [userId]
+        );
+        const totalXpToCredit = Number(xpSumResult.rows[0]?.total_xp ?? 0);
 
-      // Reset summary
-      await db.query(
-        `UPDATE user_xp_tax_status
-         SET total_unpaid_tax_cents = 0,
-             last_updated_at = NOW()
-         WHERE user_id = $1`,
-        [userId]
-      );
+        // Credit the user's xp_total with the forgiven XP (only if there is XP to release)
+        if (totalXpToCredit > 0) {
+          await query(
+            `UPDATE users SET xp_total = xp_total + $1 WHERE id = $2`,
+            [totalXpToCredit, userId]
+          );
+        }
+
+        // Mark all unpaid taxes as forgiven and clear the xp_held_back flag
+        // F47-1 FIX: Also reset xp_held_back = FALSE so the ledger rows no longer
+        // show as "held" after forgiveness. Without this, the ledger entries stayed
+        // in a permanently inconsistent state (tax_paid=TRUE but xp_held_back=TRUE).
+        await query(
+          `UPDATE xp_tax_ledger
+           SET tax_paid = TRUE,
+               tax_paid_at = NOW(),
+               xp_held_back = FALSE
+           WHERE user_id = $1 AND tax_paid = FALSE`,
+          [userId]
+        );
+
+        // Reset summary
+        // F47-1 FIX: Also reset total_xp_held_back = 0 so dashboards and future
+        // XP-blocked checks no longer see stale held-XP after forgiveness.
+        await query(
+          `UPDATE user_xp_tax_status
+           SET total_unpaid_tax_cents = 0,
+               total_xp_held_back = 0,
+               last_updated_at = NOW()
+           WHERE user_id = $1`,
+          [userId]
+        );
+      });
 
       // Log to admin_actions audit table
       log.info({ adminId, userId, reason }, 'Admin forgave XP taxes');

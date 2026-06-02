@@ -1,12 +1,18 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // ── Mocks (BEFORE imports) ──────────────────────────────────────────────────
-vi.mock('../../src/db', () => ({
-  db: { query: vi.fn() },
-  isInvariantViolation: vi.fn(() => false),
-  isUniqueViolation: vi.fn(() => false),
-  getErrorMessage: vi.fn((code: string) => `Error ${code}`),
-}));
+// db.transaction executes the callback with a query function identical to db.query
+// so tests can set up mockQuery sequences and they flow through both paths.
+vi.mock('../../src/db', () => {
+  const mockQuery = vi.fn();
+  const mockTransaction = vi.fn(async (fn: (q: typeof mockQuery) => Promise<unknown>) => fn(mockQuery));
+  return {
+    db: { query: mockQuery, transaction: mockTransaction },
+    isInvariantViolation: vi.fn(() => false),
+    isUniqueViolation: vi.fn(() => false),
+    getErrorMessage: vi.fn((code: string) => `Error ${code}`),
+  };
+});
 
 vi.mock('../../src/logger', () => ({
   logger: {
@@ -194,16 +200,52 @@ describe('DynamicPricingService.updateWorkerModifier', () => {
 // bumpASAPPrice
 // ═══════════════════════════════════════════════════════════════════════════
 describe('DynamicPricingService.bumpASAPPrice', () => {
-  it('bumps price by $3 and increments bump count', async () => {
+  it('bumps price by $3 and increments bump count (transactional)', async () => {
+    // Bug 2 fix: bumpASAPPrice now uses db.transaction with FOR UPDATE.
+    // The mock transaction executes the callback with the same mockQuery fn,
+    // so we set up sequences: SELECT FOR UPDATE → UPDATE tasks → UPDATE escrows.
     mockQuery
       .mockResolvedValueOnce({ rows: [{ price: 5000, surge_multiplier: 1.0, asap_bump_count: 0 }] })
-      .mockResolvedValueOnce({ rowCount: 1 });
+      .mockResolvedValueOnce({ rowCount: 1 })  // conditional UPDATE tasks succeeds
+      .mockResolvedValueOnce({ rowCount: 1 }); // UPDATE escrows (PENDING guard)
 
     const result = await DynamicPricingService.bumpASAPPrice('task-1');
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.data.new_price_cents).toBe(5300);
       expect(result.data.bump_count).toBe(1);
+    }
+    // Verify FOR UPDATE was in the SELECT
+    expect(mockQuery).toHaveBeenCalledWith(
+      expect.stringContaining('FOR UPDATE'),
+      ['task-1']
+    );
+    // Verify conditional UPDATE uses bump_count guard
+    expect(mockQuery).toHaveBeenCalledWith(
+      expect.stringContaining('asap_bump_count < $4'),
+      [5300, 1, 'task-1', 3]
+    );
+    // Verify escrow amount is synced — only for PENDING escrows (BUG UU-04 fix)
+    expect(mockQuery).toHaveBeenCalledWith(
+      expect.stringContaining("state = 'PENDING'"),
+      [5300, 'task-1']
+    );
+  });
+
+  it('syncs escrow amount only for PENDING state (skips FUNDED)', async () => {
+    // The escrow UPDATE targets only PENDING rows. If escrow is FUNDED the UPDATE
+    // matches zero rows and returns silently — no error, no wrong amount written.
+    mockQuery
+      .mockResolvedValueOnce({ rows: [{ price: 5000, surge_multiplier: 1.0, asap_bump_count: 1 }] })
+      .mockResolvedValueOnce({ rowCount: 1 })  // UPDATE tasks succeeds
+      .mockResolvedValueOnce({ rowCount: 0 }); // UPDATE escrows matches 0 rows (already FUNDED)
+
+    const result = await DynamicPricingService.bumpASAPPrice('task-1');
+    // Result is still success — FUNDED escrow not bumping is expected behaviour, not an error
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.new_price_cents).toBe(5300);
+      expect(result.data.bump_count).toBe(2);
     }
   });
 
@@ -219,6 +261,20 @@ describe('DynamicPricingService.bumpASAPPrice', () => {
 
   it('returns MAX_BUMPS_REACHED when at 3 bumps', async () => {
     mockQuery.mockResolvedValueOnce({ rows: [{ price: 5900, surge_multiplier: 1.0, asap_bump_count: 3 }] });
+
+    const result = await DynamicPricingService.bumpASAPPrice('task-1');
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.code).toBe('MAX_BUMPS_REACHED');
+    }
+  });
+
+  it('returns MAX_BUMPS_REACHED when conditional UPDATE returns rowCount=0 (race)', async () => {
+    // Simulate another concurrent bump winning the race: SELECT sees count=2 (below max),
+    // but the conditional UPDATE finds count is now 3 (max) and returns rowCount=0
+    mockQuery
+      .mockResolvedValueOnce({ rows: [{ price: 5600, surge_multiplier: 1.0, asap_bump_count: 2 }] })
+      .mockResolvedValueOnce({ rowCount: 0 }); // conditional UPDATE finds count already maxed
 
     const result = await DynamicPricingService.bumpASAPPrice('task-1');
     expect(result.success).toBe(false);

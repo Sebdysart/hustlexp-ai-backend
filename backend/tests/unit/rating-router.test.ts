@@ -70,7 +70,7 @@ function makeProtectedCaller() {
 
 function makeAdminCaller() {
   return ratingRouter.createCaller({
-    user: { id: TEST_UUID, email: 'admin@test.com', full_name: 'Admin', role: 'admin', firebase_uid: 'fb-admin' } as any,
+    user: { id: TEST_UUID, email: 'admin@test.com', full_name: 'Admin', role: 'admin', is_admin: true, firebase_uid: 'fb-admin' } as any,
     firebaseUid: 'fb-admin',
   });
 }
@@ -162,7 +162,12 @@ describe('rating router', () => {
   // getTaskRatings
   // =========================================================================
   describe('getTaskRatings', () => {
-    it('returns only public ratings', async () => {
+    it('returns only public ratings when caller is the poster', async () => {
+      // Participant check: caller is poster
+      mockDb.query.mockResolvedValueOnce({
+        rows: [{ poster_id: TEST_UUID, worker_id: TEST_UUID_2 }],
+        rowCount: 1,
+      } as any);
       const allRatings = [
         { id: 'r1', is_public: true, stars: 5 },
         { id: 'r2', is_public: false, stars: 3 },
@@ -176,7 +181,63 @@ describe('rating router', () => {
       expect(result[0].id).toBe('r1');
     });
 
+    it('returns only public ratings when caller is the worker', async () => {
+      // Participant check: caller is worker
+      mockDb.query.mockResolvedValueOnce({
+        rows: [{ poster_id: 'other-poster', worker_id: TEST_UUID }],
+        rowCount: 1,
+      } as any);
+      const allRatings = [{ id: 'r1', is_public: true, stars: 4 }];
+      mockRatingService.getRatingsForTask.mockResolvedValue({ success: true, data: allRatings } as any);
+
+      const caller = makeProtectedCaller();
+      const result = await caller.getTaskRatings({ taskId: TEST_UUID_2 });
+
+      expect(result).toHaveLength(1);
+    });
+
+    it('allows admin to view ratings even if not a participant', async () => {
+      // Participant check: caller is neither poster nor worker, but is admin
+      mockDb.query.mockResolvedValueOnce({
+        rows: [{ poster_id: 'poster-999', worker_id: 'worker-999' }],
+        rowCount: 1,
+      } as any);
+      const allRatings = [{ id: 'r1', is_public: true, stars: 5 }];
+      mockRatingService.getRatingsForTask.mockResolvedValue({ success: true, data: allRatings } as any);
+
+      const caller = makeAdminCaller();
+      const result = await caller.getTaskRatings({ taskId: TEST_UUID_2 });
+
+      expect(result).toHaveLength(1);
+    });
+
+    it('throws FORBIDDEN when caller is not a task participant', async () => {
+      // Participant check: caller is a random third party
+      mockDb.query.mockResolvedValueOnce({
+        rows: [{ poster_id: 'poster-999', worker_id: 'worker-999' }],
+        rowCount: 1,
+      } as any);
+
+      const caller = makeProtectedCaller(); // id = TEST_UUID, not poster-999 or worker-999
+      await expect(caller.getTaskRatings({ taskId: TEST_UUID_2 }))
+        .rejects.toThrow('Not authorized to view ratings for this task');
+    });
+
+    it('throws NOT_FOUND when task does not exist (participant check)', async () => {
+      // Participant check: task not found
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+
+      const caller = makeProtectedCaller();
+      await expect(caller.getTaskRatings({ taskId: TEST_UUID_2 }))
+        .rejects.toThrow('Task not found');
+    });
+
     it('throws NOT_FOUND when service returns NOT_FOUND error', async () => {
+      // Participant check passes (caller is poster)
+      mockDb.query.mockResolvedValueOnce({
+        rows: [{ poster_id: TEST_UUID, worker_id: null }],
+        rowCount: 1,
+      } as any);
       mockRatingService.getRatingsForTask.mockResolvedValue({
         success: false,
         error: { code: 'NOT_FOUND', message: 'Task not found' },
@@ -188,6 +249,11 @@ describe('rating router', () => {
     });
 
     it('throws INTERNAL_SERVER_ERROR on unknown service error', async () => {
+      // Participant check passes (caller is poster)
+      mockDb.query.mockResolvedValueOnce({
+        rows: [{ poster_id: TEST_UUID, worker_id: null }],
+        rowCount: 1,
+      } as any);
       mockRatingService.getRatingsForTask.mockResolvedValue({
         success: false,
         error: { code: 'DB_ERROR', message: 'connection lost' },
@@ -290,12 +356,17 @@ describe('rating router', () => {
     it('calls service and returns data on success', async () => {
       // Admin check
       mockDb.query.mockResolvedValueOnce({ rows: [{ role: 'admin' }], rowCount: 1 } as any);
-      mockRatingService.processAutoRatings.mockResolvedValue({ success: true, data: { processed: 5 } } as any);
+      // BUG FIX (Bug 6): Router now drains in a loop until autoRated === 0.
+      // Mock: first call returns 5 auto-rated, second call returns 0 to stop loop.
+      mockRatingService.processAutoRatings
+        .mockResolvedValueOnce({ success: true, data: { autoRated: 5 } } as any)
+        .mockResolvedValueOnce({ success: true, data: { autoRated: 0 } } as any);
 
       const caller = makeAdminCaller();
       const result = await caller.processAutoRatings();
 
-      expect(result).toEqual({ processed: 5 });
+      // Router aggregates total across all drain iterations
+      expect(result).toEqual({ autoRated: 5 });
     });
 
     it('throws on service failure', async () => {

@@ -14,6 +14,7 @@
  */
 
 import { randomUUID } from 'crypto';
+import Stripe from 'stripe';
 import { db, isInvariantViolation, getErrorMessage } from '../db.js';
 import type { ServiceResult } from '../types.js';
 import { ErrorCodes } from '../types.js';
@@ -21,8 +22,69 @@ import { NotificationService } from './NotificationService.js';
 import { EscrowService } from './EscrowService.js';
 import { TaskService } from './TaskService.js';
 import { logger } from '../logger.js';
+import { config } from '../config.js';
 import { invalidateAuthCacheForUser } from '../auth-cache.js';
 import { forceDisconnectUser } from '../realtime/connection-registry.js';
+import { revokeUserSessions } from '../auth/middleware.js';
+
+// Module-level Stripe singleton — only instantiated when a real key is present.
+// Matches the pattern used in TippingService.ts.
+let stripe: Stripe | null = null;
+if (config.stripe.secretKey && !config.stripe.secretKey.includes('placeholder')) {
+  stripe = new Stripe(config.stripe.secretKey, { apiVersion: '2025-11-17.clover' });
+}
+
+// ============================================================================
+// D53-4: PER-USER IN-MEMORY RATE LIMITER FOR GDPR ENDPOINTS
+// ============================================================================
+// Cooldown periods (milliseconds)
+const GDPR_DELETION_COOLDOWN_MS = 24 * 60 * 60 * 1000; // 24 hours
+const GDPR_EXPORT_COOLDOWN_MS = 60 * 60 * 1000;         // 1 hour
+
+// Map key: `${userId}:${requestType}` → timestamp of last allowed request
+const gdprRateLimitMap = new Map<string, number>();
+
+/**
+ * Check whether a GDPR request from userId is within the cooldown window.
+ * Returns { allowed: true } if the request can proceed and records the
+ * current timestamp. Returns { allowed: false, retryAfterMs } when within
+ * the cooldown window.
+ *
+ * Exported for unit-testing. Called by createRequest before any DB work.
+ */
+export function checkGDPRRateLimit(
+  userId: string,
+  requestType: 'deletion' | 'export' | string
+): { allowed: boolean; retryAfterMs?: number } {
+  const cooldownMs = requestType === 'deletion'
+    ? GDPR_DELETION_COOLDOWN_MS
+    : GDPR_EXPORT_COOLDOWN_MS;
+
+  const key = `${userId}:${requestType}`;
+  const now = Date.now();
+  const last = gdprRateLimitMap.get(key);
+
+  if (last !== undefined) {
+    const elapsed = now - last;
+    if (elapsed < cooldownMs) {
+      return { allowed: false, retryAfterMs: cooldownMs - elapsed };
+    }
+  }
+
+  // Record the timestamp and allow
+  gdprRateLimitMap.set(key, now);
+  return { allowed: true };
+}
+
+/**
+ * Clear all rate-limit state. ONLY for use in tests — never call in production.
+ * Vitest runs each test file in a separate module context but all tests within
+ * the same file share module state. This function allows beforeEach hooks to
+ * reset the Map so rate-limit tests don't bleed into createRequest tests.
+ */
+export function _resetGDPRRateLimitMapForTesting(): void {
+  gdprRateLimitMap.clear();
+}
 
 const log = logger.child({ service: 'GDPRService' });
 
@@ -103,8 +165,23 @@ export const GDPRService = {
     params: CreateGDPRRequestParams
   ): Promise<ServiceResult<GDPRDataRequest>> => {
     const { userId, requestType, exportFormat } = params;
-    
+
     try {
+      // D53-4: Enforce per-user rate limit before doing any DB work.
+      // Deletion: 24-hour cooldown. Export: 1-hour cooldown.
+      if (requestType === 'deletion' || requestType === 'export') {
+        const rateCheck = checkGDPRRateLimit(userId, requestType);
+        if (!rateCheck.allowed) {
+          return {
+            success: false,
+            error: {
+              code: 'RATE_LIMIT_EXCEEDED',
+              message: `Too many ${requestType} requests. Please wait before submitting another.`,
+            },
+          };
+        }
+      }
+
       // Validate request type and format
       if (requestType === 'export' && !exportFormat) {
         return {
@@ -115,7 +192,7 @@ export const GDPRService = {
           },
         };
       }
-      
+
       // Check for existing pending request of same type
       const existingResult = await db.query<{ id: string }>(
         `SELECT id FROM gdpr_data_requests
@@ -329,14 +406,28 @@ export const GDPRService = {
       }
       
       // Cancel request (schema uses 'cancelled', lowercase)
+      // CAS guard: only cancel if still in a cancellable state. This prevents a race
+      // where a concurrent export completion transitions the row to 'completed' between
+      // the status check above and this UPDATE, which would overwrite 'completed' with
+      // 'cancelled' (export file exists in R2 but user is told the request was cancelled).
       const result = await db.query<GDPRDataRequest>(
         `UPDATE gdpr_data_requests
          SET status = 'cancelled', processed_at = NOW()
-         WHERE id = $1 AND user_id = $2
+         WHERE id = $1 AND user_id = $2 AND status IN ('pending', 'processing')
          RETURNING *`,
         [requestId, userId]
       );
-      
+
+      if (result.rowCount === 0) {
+        return {
+          success: false,
+          error: {
+            code: ErrorCodes.INVALID_STATE,
+            message: 'Cannot cancel request: status has already changed (request may have completed concurrently)',
+          },
+        };
+      }
+
       return {
         success: true,
         data: result.rows[0],
@@ -585,7 +676,30 @@ export const GDPRService = {
           },
         };
       }
-      
+      if (request.status === 'completed') {
+        return {
+          success: false,
+          error: {
+            code: ErrorCodes.INVALID_STATE,
+            message: 'Erasure request already completed',
+          },
+        };
+      }
+      if (request.status === 'processing') {
+        return {
+          success: false,
+          error: {
+            code: ErrorCodes.INVALID_STATE,
+            message: 'Erasure request is already being processed',
+          },
+        };
+      }
+      // D52-3: 'rejected' means a previous anonymization attempt failed mid-flight.
+      // All 'rejected' paths in this service come from internal DB/transaction errors,
+      // not from permanent policy rejections (those result in 'cancelled' via cancelRequest).
+      // Therefore, allow 'rejected' requests to re-enter the deletion flow for
+      // admin-triggered retries. The CAS update below will re-transition to 'processing'.
+
       // Verify deadline has passed (grace period expired)
       const now = new Date();
       const deadline = new Date(request.deadline);
@@ -600,18 +714,42 @@ export const GDPRService = {
         };
       }
       
-      // Update status to processing
-      await db.query(
+      // CAS update: atomically transition from 'pending'/'rejected' → 'processing'.
+      // 'pending' = initial state, 'rejected' = prior attempt failed (retryable).
+      // If another worker already started processing, rowCount will be 0 and we bail
+      // immediately — preventing concurrent deleteAndAnonymizeUserData calls.
+      // D52-3: include 'rejected' to allow admin-triggered retries after failure.
+      const casResult = await db.query<{ id: string }>(
         `UPDATE gdpr_data_requests
          SET status = 'processing', processed_at = NOW()
-         WHERE id = $1`,
+         WHERE id = $1 AND status IN ('pending', 'rejected') AND deadline <= NOW()
+         RETURNING id`,
         [requestId]
       );
+      if (casResult.rowCount === 0) {
+        return {
+          success: false,
+          error: {
+            code: ErrorCodes.INVALID_STATE,
+            message: 'Erasure request is already being processed by another worker',
+          },
+        };
+      }
       
       // Execute data deletion/anonymization (GDPR_COMPLIANCE_SPEC.md §3.1, §3.2, §3.3)
       const userId = request.user_id;
+
+      // Look up firebase_uid BEFORE deletion so we can write the Redis revocation
+      // marker using the correct key namespace (auth:revoked:<firebaseUid>).
+      // BUG GG1 FIX: marker must be keyed on firebaseUid, not DB UUID.
+      const fbRow = await db.query<{ firebase_uid: string | null }>(
+        'SELECT firebase_uid FROM users WHERE id = $1',
+        [userId]
+      );
+      const firebaseUid = fbRow.rows[0]?.firebase_uid ?? undefined;
+
       const deletionResult = await deleteAndAnonymizeUserData(userId);
-      
+
       if (!deletionResult.success) {
         // Mark request as failed
         // TypeScript should narrow this to { success: false; error: ServiceError }
@@ -624,15 +762,25 @@ export const GDPRService = {
            WHERE id = $2`,
           [errorMessage, requestId]
         );
-        
+
         return deletionResult;
       }
-      
+
       // Immediately evict auth cache and force-disconnect SSE streams for the
       // deleted user so the cached pre-deletion user row cannot be reused and
       // any live connections are terminated without waiting for TTL expiry.
-      invalidateAuthCacheForUser(userId);
+      // BUG GG3 FIX: await the call (was fire-and-forget) so Redis errors surface.
+      await invalidateAuthCacheForUser(userId, firebaseUid);
       forceDisconnectUser(userId);
+
+      // BUG GG2 FIX: revoke Firebase refresh tokens and write the Redis revocation
+      // marker for the Hono middleware path.  This was never called on GDPR deletion,
+      // meaning deleted users could re-authenticate immediately.
+      if (firebaseUid) {
+        await revokeUserSessions(firebaseUid).catch(err => {
+          log.error({ err: err instanceof Error ? err.message : String(err), userId }, 'revokeUserSessions failed during GDPR deletion — user may be able to re-authenticate');
+        });
+      }
 
       const completedAt = new Date();
       const deletedAt = completedAt;
@@ -655,7 +803,7 @@ export const GDPRService = {
         title: 'Account Deletion Completed',
         body: 'Your account and personal data have been permanently deleted per your GDPR request. This action cannot be undone.',
         deepLink: 'app://support',
-        channels: ['in_app', 'email'],
+        channels: ['email'], // D51-8: no in_app channel — user is deleted and cannot log in to see it
         priority: 'HIGH',
         metadata: { requestId, deletedAt: deletedAt.toISOString() },
       }).catch(err => {
@@ -668,10 +816,10 @@ export const GDPRService = {
         data: { deletedAt },
       };
     } catch (error) {
-      // Mark request as failed
+      // Mark request as failed (use schema-valid 'rejected' status)
       await db.query(
         `UPDATE gdpr_data_requests
-         SET status = 'FAILED',
+         SET status = 'rejected',
              error_message = $1,
              updated_at = NOW()
          WHERE id = $2`,
@@ -812,6 +960,10 @@ export const GDPRService = {
       return false;
     }
   },
+
+  // D53-4: Expose checkGDPRRateLimit as a service method so it can be used
+  // by the tRPC router and tested directly through GDPRService.
+  checkGDPRRateLimit,
 };
 
 // ============================================================================
@@ -884,10 +1036,10 @@ export async function collectUserDataForExport(userId: string): Promise<Record<s
     
     // 5. Message history (last 90 days)
     const messagesResult = await db.query(
-      `SELECT id, task_id, sender_id, recipient_id, message_type, content,
+      `SELECT id, task_id, sender_id, receiver_id, message_type, content,
               photo_urls, created_at
        FROM task_messages
-       WHERE (sender_id = $1 OR recipient_id = $1)
+       WHERE (sender_id = $1 OR receiver_id = $1)
        AND created_at >= NOW() - INTERVAL '90 days'
        ORDER BY created_at DESC`,
       [userId]
@@ -936,24 +1088,39 @@ export async function collectUserDataForExport(userId: string): Promise<Record<s
     
     // 10. Notification preferences
     const notificationPrefsResult = await db.query(
-      `SELECT * FROM notification_preferences WHERE user_id = $1`,
+      `SELECT push_enabled, email_enabled, sms_enabled,
+              quiet_hours_enabled, quiet_hours_start, quiet_hours_end,
+              category_preferences, created_at, updated_at
+       FROM notification_preferences WHERE user_id = $1`,
       [userId]
     );
     
     // 11. GDPR consent history
     const consentHistoryResult = await db.query(
-      `SELECT * FROM user_consents WHERE user_id = $1
+      `SELECT consent_type, purpose, granted, granted_at, withdrawn_at,
+              ip_address, user_agent, created_at, updated_at
+       FROM user_consents WHERE user_id = $1
        ORDER BY created_at DESC`,
       [userId]
     );
     
     // 12. Saved searches
     const savedSearchesResult = await db.query(
-      `SELECT * FROM saved_searches WHERE user_id = $1
+      `SELECT id, name, query, filters, sort_by, created_at
+       FROM saved_searches WHERE user_id = $1
        ORDER BY created_at DESC`,
       [userId]
     );
-    
+
+    // 13. Task applications (D52-2: user's own applications as hustler)
+    const taskApplicationsResult = await db.query(
+      `SELECT ta.id, ta.task_id, ta.message, ta.status, ta.created_at AS applied_at
+       FROM task_applications ta
+       WHERE ta.hustler_id = $1
+       ORDER BY ta.created_at DESC`,
+      [userId]
+    );
+
     // Compile export data
     const exportData = {
       export_date: new Date().toISOString(),
@@ -971,6 +1138,7 @@ export async function collectUserDataForExport(userId: string): Promise<Record<s
       notification_preferences: notificationPrefsResult.rows[0] || null,
       consent_history: consentHistoryResult.rows,
       saved_searches: savedSearchesResult.rows,
+      task_applications: taskApplicationsResult.rows,
     };
     
     return exportData;
@@ -993,8 +1161,30 @@ export async function collectUserDataForExport(userId: string): Promise<Record<s
  */
 async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult<{ deletedAt: Date }>> {
   try {
-    // Generate anonymization ID
-    const anonymizedId = `DELETED_USER_${randomUUID().split('-')[0].toUpperCase()}`;
+    // D53-1 FIX: Use randomUUID() for the anonymizedId instead of a deterministic
+    // ID derived from the real userId. The old approach embedded the last 12 hex
+    // characters of userId in the node segment, making re-identification trivial.
+    //
+    // Idempotency (retry-safe): Before generating a new UUID we check whether the
+    // user row already has the deleted-*@deleted.hustlexp.app email pattern. If it
+    // does, the row was already anonymized by a previous run — return success early
+    // without overwriting existing anonymization data. This replaces the previous
+    // deterministic-ID approach as the idempotency mechanism.
+    const userEmailCheck = await db.query<{ email: string }>(
+      `SELECT email FROM users WHERE id = $1`,
+      [userId]
+    );
+    const existingEmail = userEmailCheck.rows[0]?.email ?? '';
+    if (/^deleted-.+@deleted\.hustlexp\.app$/.test(existingEmail)) {
+      // Already anonymized — return early (idempotent re-run)
+      log.info({ userId }, 'GDPR: user already anonymized — skipping re-run (idempotent)');
+      return { success: true, data: { deletedAt: new Date() } };
+    }
+
+    // Generate a cryptographically random UUID for the anonymizedId. This is safe
+    // for UUID-typed FK columns (proofs.submitter_id, task_applications.hustler_id,
+    // fraud_risk_scores.entity_id) and carries zero information about the real userId.
+    const anonymizedId = randomUUID();
     const anonymizedEmail = `deleted-${randomUUID().split('-')[0]}@deleted.hustlexp.app`;
     const deletedAt = new Date();
 
@@ -1010,19 +1200,86 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
       [userId]
     );
     for (const row of openPosterTasksResult.rows) {
-      const cancelResult = await TaskService.cancel(row.id);
-      if (!cancelResult.success) {
-        log.warn({ taskId: row.id, userId, err: cancelResult.error?.message }, 'GDPR: could not cancel poster task — continuing');
+      try {
+        const cancelResult = await TaskService.cancel(row.id);
+        if (!cancelResult.success) {
+          const errMsg = cancelResult.error?.message ?? '';
+          if (errMsg.includes('INVALID_STATE') || errMsg.includes('TASK_TERMINAL')) {
+            log.warn({ taskId: row.id, userId, err: errMsg }, 'GDPR: poster task already in terminal state — skipping cancel (idempotent retry)');
+          } else {
+            log.warn({ taskId: row.id, userId, err: errMsg }, 'GDPR: could not cancel poster task — continuing');
+          }
+        }
+      } catch (cancelErr) {
+        const errMsg = cancelErr instanceof Error ? cancelErr.message : String(cancelErr);
+        if (errMsg.includes('INVALID_STATE') || errMsg.includes('TASK_TERMINAL')) {
+          log.warn({ taskId: row.id, userId, err: errMsg }, 'GDPR: poster task cancel threw INVALID_STATE — skipping (idempotent retry)');
+        } else {
+          log.warn({ taskId: row.id, userId, err: errMsg }, 'GDPR: poster task cancel threw unexpectedly — continuing');
+        }
       }
-      // Refund any FUNDED escrow attached to this task
-      const escrowResult = await db.query<{ id: string }>(
-        `SELECT id FROM escrows WHERE task_id = $1 AND state = 'FUNDED'`,
+      // Refund any FUNDED or PENDING escrow attached to this task.
+      // PENDING escrows have a PaymentIntent created but not yet confirmed by
+      // Stripe — cancel the PI first so money never moves, then refund the
+      // escrow record. If Stripe later confirms the PI, the cancellation
+      // prevents a stranded charge.
+      // Also handle LOCKED_DISPUTE escrows where the poster is the deleted
+      // user — return the full amount to the poster (100%) since the worker
+      // cannot be paid to a deleted account's task.
+      const escrowResult = await db.query<{ id: string; state: string; stripe_payment_intent_id: string | null }>(
+        `SELECT id, state, stripe_payment_intent_id FROM escrows WHERE task_id = $1 AND state IN ('FUNDED', 'PENDING', 'LOCKED_DISPUTE')`,
         [row.id]
       );
       for (const escrow of escrowResult.rows) {
-        const refundResult = await EscrowService.refund({ escrowId: escrow.id });
-        if (!refundResult.success) {
-          log.warn({ escrowId: escrow.id, taskId: row.id, userId, err: refundResult.error?.message }, 'GDPR: could not refund poster task escrow — continuing');
+        if (escrow.state === 'PENDING' && escrow.stripe_payment_intent_id) {
+          try {
+            if (stripe) {
+              await stripe.paymentIntents.cancel(escrow.stripe_payment_intent_id);
+            }
+          } catch (stripeErr) {
+            log.warn({ escrowId: escrow.id, paymentIntentId: escrow.stripe_payment_intent_id, taskId: row.id, userId, err: stripeErr instanceof Error ? stripeErr.message : String(stripeErr) }, 'GDPR: could not cancel Stripe PaymentIntent for PENDING escrow — continuing with refund');
+          }
+        }
+        if (escrow.state === 'LOCKED_DISPUTE') {
+          // Poster is being deleted — return full amount to poster account
+          // (100% poster, 0% worker) since the poster's task is being cleaned up.
+          try {
+            const refundResult = await EscrowService.partialRefund({ escrowId: escrow.id, workerPercent: 0, posterPercent: 100 });
+            if (!refundResult.success) {
+              const errMsg = refundResult.error?.message ?? '';
+              if (errMsg.includes('INVALID_STATE')) {
+                log.warn({ escrowId: escrow.id, taskId: row.id, userId, err: errMsg }, 'GDPR: poster LOCKED_DISPUTE escrow already in terminal state — skipping (idempotent retry)');
+              } else {
+                log.warn({ escrowId: escrow.id, taskId: row.id, userId, err: errMsg }, 'GDPR: could not partialRefund poster LOCKED_DISPUTE escrow — continuing');
+              }
+            }
+          } catch (refundErr) {
+            const errMsg = refundErr instanceof Error ? refundErr.message : String(refundErr);
+            if (errMsg.includes('INVALID_STATE')) {
+              log.warn({ escrowId: escrow.id, taskId: row.id, userId, err: errMsg }, 'GDPR: poster LOCKED_DISPUTE escrow partialRefund threw INVALID_STATE — skipping (idempotent retry)');
+            } else {
+              log.warn({ escrowId: escrow.id, taskId: row.id, userId, err: errMsg }, 'GDPR: poster LOCKED_DISPUTE escrow partialRefund threw unexpectedly — continuing');
+            }
+          }
+        } else {
+          try {
+            const refundResult = await EscrowService.refund({ escrowId: escrow.id });
+            if (!refundResult.success) {
+              const errMsg = refundResult.error?.message ?? '';
+              if (errMsg.includes('INVALID_STATE')) {
+                log.warn({ escrowId: escrow.id, taskId: row.id, userId, err: errMsg }, 'GDPR: poster task escrow already in terminal state — skipping (idempotent retry)');
+              } else {
+                log.warn({ escrowId: escrow.id, taskId: row.id, userId, err: errMsg }, 'GDPR: could not refund poster task escrow — continuing');
+              }
+            }
+          } catch (refundErr) {
+            const errMsg = refundErr instanceof Error ? refundErr.message : String(refundErr);
+            if (errMsg.includes('INVALID_STATE')) {
+              log.warn({ escrowId: escrow.id, taskId: row.id, userId, err: errMsg }, 'GDPR: poster task escrow refund threw INVALID_STATE — skipping (idempotent retry)');
+            } else {
+              log.warn({ escrowId: escrow.id, taskId: row.id, userId, err: errMsg }, 'GDPR: poster task escrow refund threw unexpectedly — continuing');
+            }
+          }
         }
       }
     }
@@ -1041,16 +1298,66 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
     );
     for (const row of workerEscrowsResult.rows) {
       if (row.state === 'FUNDED') {
-        const refundResult = await EscrowService.refund({ escrowId: row.id });
-        if (!refundResult.success) {
-          log.warn({ escrowId: row.id, userId, err: refundResult.error?.message }, 'GDPR: could not refund worker FUNDED escrow — continuing');
+        try {
+          const refundResult = await EscrowService.refund({ escrowId: row.id });
+          if (!refundResult.success) {
+            const errMsg = refundResult.error?.message ?? '';
+            if (errMsg.includes('INVALID_STATE')) {
+              log.warn({ escrowId: row.id, userId, err: errMsg }, 'GDPR: worker FUNDED escrow already in terminal state — skipping (idempotent retry)');
+            } else {
+              log.warn({ escrowId: row.id, userId, err: errMsg }, 'GDPR: could not refund worker FUNDED escrow — continuing');
+            }
+          }
+        } catch (refundErr) {
+          const errMsg = refundErr instanceof Error ? refundErr.message : String(refundErr);
+          if (errMsg.includes('INVALID_STATE')) {
+            log.warn({ escrowId: row.id, userId, err: errMsg }, 'GDPR: worker FUNDED escrow refund threw INVALID_STATE — skipping (idempotent retry)');
+          } else {
+            log.warn({ escrowId: row.id, userId, err: errMsg }, 'GDPR: worker FUNDED escrow refund threw unexpectedly — continuing');
+          }
         }
       } else if (row.state === 'LOCKED_DISPUTE') {
         // Return full amount to poster (0% to deleted worker)
-        const refundResult = await EscrowService.partialRefund({ escrowId: row.id, workerPercent: 0, posterPercent: 100 });
-        if (!refundResult.success) {
-          log.warn({ escrowId: row.id, userId, err: refundResult.error?.message }, 'GDPR: could not partialRefund worker LOCKED_DISPUTE escrow — continuing');
+        try {
+          const refundResult = await EscrowService.partialRefund({ escrowId: row.id, workerPercent: 0, posterPercent: 100 });
+          if (!refundResult.success) {
+            const errMsg = refundResult.error?.message ?? '';
+            if (errMsg.includes('INVALID_STATE')) {
+              log.warn({ escrowId: row.id, userId, err: errMsg }, 'GDPR: worker LOCKED_DISPUTE escrow already in terminal state — skipping (idempotent retry)');
+            } else {
+              log.warn({ escrowId: row.id, userId, err: errMsg }, 'GDPR: could not partialRefund worker LOCKED_DISPUTE escrow — continuing');
+            }
+          }
+        } catch (refundErr) {
+          const errMsg = refundErr instanceof Error ? refundErr.message : String(refundErr);
+          if (errMsg.includes('INVALID_STATE')) {
+            log.warn({ escrowId: row.id, userId, err: errMsg }, 'GDPR: worker LOCKED_DISPUTE escrow partialRefund threw INVALID_STATE — skipping (idempotent retry)');
+          } else {
+            log.warn({ escrowId: row.id, userId, err: errMsg }, 'GDPR: worker LOCKED_DISPUTE escrow partialRefund threw unexpectedly — continuing');
+          }
         }
+      }
+    }
+
+    // -------------------------------------------------------------------------
+    // D58-8: Delete the Stripe customer via Stripe API before nulling the ID
+    // in the DB. This is best-effort: if Stripe is unavailable or the customer
+    // was already deleted, we log a warning and continue with the DB deletion.
+    // The stripe_customer_id is still nulled in the UPDATE users SET below.
+    // -------------------------------------------------------------------------
+    const stripeCustomerRow = await db.query<{ stripe_customer_id: string | null }>(
+      `SELECT stripe_customer_id FROM users WHERE id = $1`,
+      [userId]
+    );
+    const stripeCustomerId = stripeCustomerRow.rows[0]?.stripe_customer_id ?? null;
+    if (stripeCustomerId && stripe) {
+      try {
+        await stripe.customers.del(stripeCustomerId);
+      } catch (stripeErr) {
+        log.warn(
+          { userId, stripeCustomerId, err: stripeErr instanceof Error ? stripeErr.message : String(stripeErr) },
+          'GDPR: could not delete Stripe customer via API — continuing with DB anonymization (best-effort)'
+        );
       }
     }
 
@@ -1058,24 +1365,227 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
     await db.serializableTransaction(async (query) => {
       // 1. Immediate deletion (GDPR_COMPLIANCE_SPEC.md §3.1)
 
+      // D53-2 FIX: Delete from tables that contain PII but were missing from the
+      // original scrub. All confirmed in schema.sql with user_id FK columns.
+      // Identity verification data — contains email, phone, status
+      await query('DELETE FROM users_identity WHERE user_id = $1', [userId]);
+      // Verification attempt records — contains target (email/phone), code_hash, ip_address
+      await query('DELETE FROM verification_attempts WHERE user_id = $1', [userId]);
+      // Identity events — contains ip_address, channel, metadata
+      await query('DELETE FROM identity_events WHERE user_id = $1', [userId]);
+      // User stats — aggregated stats linked to userId (no anonymization needed, delete)
+      await query('DELETE FROM user_stats WHERE user_id = $1', [userId]);
+      // Boost purchases — linked to userId
+      await query('DELETE FROM user_boosts WHERE user_id = $1', [userId]);
+      // Leaderboard cache — stores username, name, avatar_url (display PII)
+      await query('DELETE FROM leaderboard_cache WHERE user_id = $1', [userId]);
+      // Proactive AI preferences — stores categories, schedule, device_tokens
+      await query('DELETE FROM proactive_preferences WHERE user_id = $1', [userId]);
+      // Direct messages (messages table) — sender_id is the author column per schema.sql
+      // messages.sender_id references users(id); content and image_url are PII
+      await query('DELETE FROM messages WHERE sender_id = $1', [userId]);
+
       // Delete tables added after GDPR service was written
       await query('DELETE FROM alpha_telemetry WHERE user_id = $1', [userId]);
       await query('DELETE FROM device_tokens WHERE user_id = $1', [userId]);
       await query('DELETE FROM worker_skills WHERE user_id = $1', [userId]);
       await query('DELETE FROM xp_tax_ledger WHERE user_id = $1', [userId]);
       await query('DELETE FROM user_xp_tax_status WHERE user_id = $1', [userId]);
-      await query('DELETE FROM insurance_contributions WHERE user_id = $1', [userId]);
-      await query('DELETE FROM insurance_claims WHERE user_id = $1', [userId]);
+
+      // D62-6: Delete legacy transactions table — user_id UUID NOT NULL REFERENCES users(id).
+      // Column is NOT NULL so rows cannot be updated; must DELETE for GDPR compliance.
+      await query('DELETE FROM transactions WHERE user_id = $1', [userId]);
+
+      // D62-7: Delete legacy task_assignments table — user_id UUID NOT NULL REFERENCES users(id).
+      // Column is NOT NULL so rows cannot be updated; must DELETE for GDPR compliance.
+      await query('DELETE FROM task_assignments WHERE user_id = $1', [userId]);
+      await query('DELETE FROM insurance_contributions WHERE hustler_id = $1', [userId]);
+      // D62-1: insurance_claims.hustler_id is the correct column (not user_id).
+      // Using user_id caused "column user_id does not exist" → transaction rollback.
+      await query('DELETE FROM insurance_claims WHERE hustler_id = $1', [userId]);
+
+      // D58-1: Delete worker_tax_info — contains SSN/EIN (CRITICAL PII).
+      // worker_tax_info.user_id FK references users(id); cascade never fires
+      // because users is UPDATEd not DELETEd.
+      await query('DELETE FROM worker_tax_info WHERE user_id = $1', [userId]);
+
+      // D58-2: Delete worker_stripe_accounts — contains Stripe Connect account IDs (CRITICAL).
+      // worker_stripe_accounts.worker_id FK references users(id).
+      await query('DELETE FROM worker_stripe_accounts WHERE worker_id = $1', [userId]);
+
+      // D58-3: Delete worker_payout_settings and worker_earnings_1099 (HIGH PII).
+      // Both use worker_id FK referencing users(id).
+      await query('DELETE FROM worker_payout_settings WHERE worker_id = $1', [userId]);
+      await query('DELETE FROM worker_earnings_1099 WHERE worker_id = $1', [userId]);
+
+      // D62-2: Delete capability_profiles — user_id UUID PRIMARY KEY REFERENCES users(id).
+      // ON DELETE CASCADE never fires because users is UPDATEd not DELETEd. Contains
+      // skills, licenses, background_check_status, insurance_status — all HIGH PII.
+      await query('DELETE FROM capability_profiles WHERE user_id = $1', [userId]);
+
+      // D62-3: Delete verified_trades — user_id UUID NOT NULL REFERENCES users(id).
+      // ON DELETE CASCADE never fires because users is UPDATEd not DELETEd.
+      // Trade verification records contain PII and must be erased.
+      await query('DELETE FROM verified_trades WHERE user_id = $1', [userId]);
+
+      // D58-4: Delete expertise tables — user_expertise, expertise_waitlist, expertise_change_log.
+      // All use user_id FK referencing users(id); cascade never fires because users is UPDATEd.
+      await query('DELETE FROM expertise_change_log WHERE user_id = $1', [userId]);
+      await query('DELETE FROM expertise_waitlist WHERE user_id = $1', [userId]);
+      await query('DELETE FROM user_expertise WHERE user_id = $1', [userId]);
+
+      // D58-5: Delete featured_listings — poster_id NOT NULL FK referencing users(id).
+      // Cascade never fires because users is UPDATEd not DELETEd.
+      await query('DELETE FROM featured_listings WHERE poster_id = $1', [userId]);
+
+      // D58-6: Delete task_matching_scores — hustler_id FK referencing users(id).
+      await query('DELETE FROM task_matching_scores WHERE hustler_id = $1', [userId]);
+
+      // D62-4: Null out ai_events UUID columns that reference the deleted user.
+      // actor_user_id and subject_user_id are both nullable UUIDs. The AI decision
+      // payload JSONB may contain PII. UUID references must be cleared for GDPR erasure.
+      await query('UPDATE ai_events SET actor_user_id = NULL WHERE actor_user_id = $1', [userId]);
+      await query('UPDATE ai_events SET subject_user_id = NULL WHERE subject_user_id = $1', [userId]);
+
+      // D54-1: Delete tax_forms — contains PII (name_on_file, address_line1, city,
+      // state, zip, tax_id_last4, stripe_connect_id, foreign_tax_id, signature_on_file).
+      // The users UPDATE (not DELETE) means ON DELETE CASCADE never fires.
+      await query('DELETE FROM tax_forms WHERE user_id = $1', [userId]);
+
+      // D54-3: Delete squad membership and invitation data.
+      // squad_members.user_id FK references users(id).
+      await query('DELETE FROM squad_members WHERE user_id = $1', [userId]);
+      // squad_invites has two user FK columns — delete rows where user is either party.
       await query(
-        `UPDATE dispute_jury_votes SET voter_id = NULL WHERE voter_id = $1`,
+        'DELETE FROM squad_invites WHERE inviter_id = $1 OR invitee_id = $1',
         [userId]
       );
+      // squad_task_workers.worker_id FK references users(id).
+      await query('DELETE FROM squad_task_workers WHERE worker_id = $1', [userId]);
+
+      // D54-4: Delete additional tables containing user PII.
+      // skill_verifications — contains skill_name, payment info linked to user.
+      await query('DELETE FROM skill_verifications WHERE user_id = $1', [userId]);
+      // insurance_subscriptions — contains tier, coverage, Stripe subscription ID linked to user.
+      await query('DELETE FROM insurance_subscriptions WHERE user_id = $1', [userId]);
+      // daily_challenge_completions — contains progress and completion status linked to user.
+      await query('DELETE FROM daily_challenge_completions WHERE user_id = $1', [userId]);
+      // tips — poster_id and worker_id both reference users(id); both sides must be covered.
+      await query(
+        'DELETE FROM tips WHERE poster_id = $1 OR worker_id = $1',
+        [userId]
+      );
+      // D55-2: Delete poster_ratings where user is the rated poster or the rater.
+      // Both poster_id and rated_by are NOT NULL and reference users(id).
+      await query(
+        'DELETE FROM poster_ratings WHERE poster_id = $1 OR rated_by = $1',
+        [userId]
+      );
+      // D55-3: Delete live_sessions for this user (user_id NOT NULL, contains
+      // earnings_cents and behavioural session data).
+      await query('DELETE FROM live_sessions WHERE user_id = $1', [userId]);
+      // D62-5: Null out live_broadcasts.accepted_by — nullable UUID FK referencing users(id).
+      // UUID reference to deleted user survives without this UPDATE.
+      await query('UPDATE live_broadcasts SET accepted_by = NULL WHERE accepted_by = $1', [userId]);
+      // D50-4: Delete evidence uploaded by this user (uploader_user_id is NOT NULL
+      // in the schema, so UPDATE NULL is not possible — DELETE is required).
+      // Note: evidence rows for active/completed disputes are not retained here
+      // because the user's right to erasure takes precedence over record-keeping
+      // for resolved disputes (GDPR Art. 17). Open dispute escrows are already
+      // refunded above before we reach this point.
+      await query('DELETE FROM evidence WHERE uploader_user_id = $1', [userId]);
+      // D55-1: Delete dispute_evidence uploaded by this user (uploaded_by NOT NULL;
+      // different table from evidence — has uploaded_by column, not uploader_user_id).
+      await query('DELETE FROM dispute_evidence WHERE uploaded_by = $1', [userId]);
+      // D60-A: dispute_jury_votes.juror_id is NOT NULL — must DELETE, not SET NULL.
+      // Previous bug used wrong column name 'voter_id' (doesn't exist) causing
+      // the entire transaction to roll back for users with jury vote records.
+      await query('DELETE FROM dispute_jury_votes WHERE juror_id = $1', [userId]);
       await query('DELETE FROM plan_entitlements WHERE user_id = $1', [userId]);
       await query('DELETE FROM task_geofence_events WHERE user_id = $1', [userId]);
+
+      // D57-1: Delete session_forecasts — financial behavioral forecasts per user.
+      // user_id NOT NULL REFERENCES users(id); no ON DELETE CASCADE, and users is
+      // UPDATEd (not DELETEd), so cascade never fires.
+      await query('DELETE FROM session_forecasts WHERE user_id = $1', [userId]);
+
+      // D57-2: Delete content_appeals — contains appeal_reason TEXT (PII).
+      // user_id NOT NULL REFERENCES users(id) ON DELETE CASCADE; cascade never fires
+      // because users is UPDATEd not DELETEd.
+      await query('DELETE FROM content_appeals WHERE user_id = $1', [userId]);
+
+      // D57-3: Delete content_reports — contains description TEXT (PII).
+      // Both reporter_user_id and reported_content_user_id are NOT NULL FKs.
+      // Must cover both columns so all rows linking to the deleted user are removed.
+      await query(
+        'DELETE FROM content_reports WHERE reporter_user_id = $1 OR reported_content_user_id = $1',
+        [userId]
+      );
+
+      // D57-4a: Delete recurring_task_series — poster_id NOT NULL, contains
+      // title/description/location PII. ON DELETE CASCADE declared but never fires
+      // because users is UPDATEd, not DELETEd.
+      await query('DELETE FROM recurring_task_series WHERE poster_id = $1', [userId]);
+
+      // D57-4b: Delete squads where user is the organizer.
+      // organizer_id NOT NULL REFERENCES users(id) ON DELETE CASCADE; cascade never
+      // fires since users is UPDATEd not DELETEd. organizer_id cannot be NULLed
+      // (NOT NULL constraint), so we must DELETE the squad row (squad_members,
+      // squad_invites, and squad_task_assignments cascade via their FK constraints).
+      await query('DELETE FROM squads WHERE organizer_id = $1', [userId]);
 
       // Delete notification preferences
       await query(
         `DELETE FROM notification_preferences WHERE user_id = $1`,
+        [userId]
+      );
+
+      // D50-2: Delete queued outbound emails containing PII (subject/body/recipient)
+      await query('DELETE FROM email_outbox WHERE user_id = $1', [userId]);
+
+      // D51-3: Delete outbox_events whose payload carries the deleted user's email
+      // (outbox_events has no user_id column; identify rows via payload JSONB).
+      await query(
+        `DELETE FROM outbox_events WHERE payload->>'userId' = $1::text`,
+        [userId]
+      );
+
+      // D51-4: Delete queued SMS rows (sms_outbox has a user_id column).
+      await query('DELETE FROM sms_outbox WHERE user_id = $1', [userId]);
+
+      // D50-3: Delete notification delivery log (contains PII in body/title columns)
+      await query('DELETE FROM notification_log WHERE user_id = $1', [userId]);
+
+      // Delete notifications (bodies contain PII: task descriptions, payment amounts, counterparty names)
+      await query('DELETE FROM notifications WHERE user_id = $1', [userId]);
+
+      // D50-6: Scrub notification bodies sent TO other users that contain this
+      // user's message text. The notifications table links to tasks via task_id,
+      // and task_messages links to tasks via task_id with sender_id. We clear the
+      // body for any notification whose task_id matches a task where the deleted
+      // user was the sender (covers message-preview notifications).
+      await query(
+        `UPDATE notifications n
+         SET body = '[Message deleted per GDPR request]'
+         WHERE n.task_id IN (
+           SELECT DISTINCT tm.task_id
+           FROM task_messages tm
+           WHERE tm.sender_id = $1
+         )
+         AND n.user_id != $1`,
+        [userId]
+      );
+
+      // D51-1: Remove senderId UUID from JSONB metadata on notifications for
+      // tasks where the deleted user sent messages (covers message-preview
+      // notifications sent to the counterparty that embed the sender's UUID).
+      await query(
+        `UPDATE notifications
+         SET metadata = metadata - 'senderId'
+         WHERE metadata ? 'senderId'
+           AND task_id IN (
+             SELECT DISTINCT task_id FROM task_messages WHERE sender_id = $1
+           )`,
         [userId]
       );
       
@@ -1085,11 +1595,9 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
         [userId]
       );
       
-      // Delete analytics events (last 90 days - older ones should already be purged)
+      // Delete analytics events (all records — GDPR Art. 17 requires full erasure)
       await query(
-        `DELETE FROM analytics_events 
-         WHERE user_id = $1 
-         AND created_at >= NOW() - INTERVAL '90 days'`,
+        `DELETE FROM analytics_events WHERE user_id = $1`,
         [userId]
       );
       
@@ -1104,9 +1612,15 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
       // (Stripe stores name/email behind them). They must be cleared to satisfy GDPR
       // erasure. avatar_url (hosted photo) and bio are also PII and must be cleared.
       await query(
+        // D64-7 FIX: Randomize firebase_uid — it is UNIQUE NOT NULL so cannot be
+        // NULLed, but leaving the original value allows re-identification (anyone
+        // who observed the user's JWT can extract the firebase_uid and locate the
+        // anonymized row). Replace with a random UUID to sever that link.
         `UPDATE users
          SET email = $1,
              name = 'Deleted User',
+             full_name = 'Deleted User',
+             firebase_uid = 'deleted-' || $4,
              phone = NULL,
              account_status = 'DELETED',
              paused_at = $2,
@@ -1116,7 +1630,7 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
              bio = NULL,
              flagged_phrase_counter = '{}'::jsonb
          WHERE id = $3`,
-        [anonymizedEmail, deletedAt, userId]
+        [anonymizedEmail, deletedAt, userId, randomUUID()]
       );
       
       // 3. Retention (7 years): Anonymize transaction/task/dispute data
@@ -1152,11 +1666,24 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
         [anonymizedId, userId]
       );
 
-      // Anonymize proof_submissions for the same user — GPS and biometric fields
-      // are PII that live on proof_submissions, not proofs
+      // D52-1: Anonymize task_applications where user was the hustler.
+      // hustler_id is NOT NULL UUID FK — replace with anonymizedId (valid UUID).
+      // message TEXT may contain PII — overwrite with GDPR notice.
+      await query(
+        `UPDATE task_applications
+         SET message = '[Application removed per GDPR request]',
+             hustler_id = $2
+         WHERE hustler_id = $1`,
+        [userId, anonymizedId]
+      );
+
+      // Anonymize proof_submissions for the same user — GPS, biometric, and photo fields
+      // are PII that live on proof_submissions, not proofs.
+      // D58-7: photo_url also contains PII (photo of the worker at the job site).
       await query(
         `UPDATE proof_submissions
-         SET gps_coordinates = NULL,
+         SET photo_url = NULL,
+             gps_coordinates = NULL,
              gps_accuracy_meters = NULL,
              biometric_verified = FALSE,
              biometric_confidence = NULL,
@@ -1166,15 +1693,20 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
         [userId]
       );
 
-      // Anonymize task messages (sender_id and recipient_id are NOT NULL in schema)
+      // Anonymize task messages (sender_id and receiver_id are NOT NULL in schema)
       // Since user record is anonymized (not deleted), foreign keys remain valid
-      // We anonymize content and remove photos for privacy
+      // We anonymize content and remove photos for privacy for ALL matched rows
+      // (both sent and received messages must be erased per GDPR)
+      // D50-1: also clear location columns (lat/lon/expires) which are PII
       await query(
         `UPDATE task_messages
-         SET content = CASE WHEN sender_id = $1 THEN '[Message deleted per GDPR request]' ELSE content END,
-             photo_urls = CASE WHEN sender_id = $1 THEN '{}'::TEXT[] ELSE photo_urls END,
-             moderation_status = 'quarantined'  -- Hide messages from deleted user
-         WHERE sender_id = $1 OR recipient_id = $1`,
+         SET content = '[Message deleted per GDPR request]',
+             photo_urls = '{}'::TEXT[],
+             location_latitude = NULL,
+             location_longitude = NULL,
+             location_expires_at = NULL,
+             moderation_status = 'quarantined'
+         WHERE sender_id = $1 OR receiver_id = $1`,
         [userId]
       );
       
@@ -1189,22 +1721,14 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
         [userId]
       );
       
-      // Anonymize XP ledger (keep XP data but anonymize user reference)
-      await query(
-        `UPDATE xp_ledger
-         SET user_id = $1  -- Replace with anonymized ID
-         WHERE user_id = $2`,
-        [anonymizedId, userId]
-      );
-      
-      // Anonymize trust ledger (keep trust data but anonymize user reference)
-      await query(
-        `UPDATE trust_ledger
-         SET user_id = $1  -- Replace with anonymized ID
-         WHERE user_id = $2`,
-        [anonymizedId, userId]
-      );
-      
+      // NOTE: xp_ledger and trust_ledger rows are financial audit records.
+      // Their user_id columns are UUID FKs referencing users(id).
+      // We do NOT update user_id here — the users row itself is already anonymized
+      // (name, email, phone, etc. nulled out above), so these ledger rows remain
+      // linked to the now-anonymized user row without violating FK constraints.
+      // Attempting to set user_id = anonymizedId (a non-UUID string) would cause
+      // a FK constraint violation and roll back the entire anonymization transaction.
+
       // Anonymize disputes (poster_id, worker_id, initiated_by are NOT NULL in schema)
       // Since user record is anonymized (not deleted), foreign keys remain valid
       // We anonymize description content for privacy
@@ -1219,8 +1743,8 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
       // Anonymize fraud patterns (keep pattern data but remove user references)
       await query(
         `UPDATE fraud_patterns
-         SET user_ids = array_remove(user_ids, $1::TEXT)
-         WHERE $1::TEXT = ANY(user_ids)`,
+         SET user_ids = array_remove(user_ids, $1::UUID)
+         WHERE $1::UUID = ANY(user_ids)`,
         [userId]
       );
       
@@ -1238,33 +1762,111 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
         [userId]
       );
 
-      // Anonymize referral_redemptions to remove user linkage
+      // D60-B: referral_redemptions.referrer_id and referred_id are both NOT NULL —
+      // cannot SET NULL. DELETE rows where user appears as either referrer or referred.
       await query(
-        `UPDATE referral_redemptions SET referrer_id = NULL WHERE referrer_id = $1`,
-        [userId]
-      );
-      await query(
-        `UPDATE referral_redemptions SET referred_id = NULL WHERE referred_id = $1`,
+        'DELETE FROM referral_redemptions WHERE referrer_id = $1 OR referred_id = $1',
         [userId]
       );
 
-      // Anonymize content moderation queue (keep moderation records but remove user reference)
+      // D61-2: content_moderation_queue.user_id is NOT NULL — DELETE rows instead of SET NULL.
+      await query('DELETE FROM content_moderation_queue WHERE user_id = $1', [userId]);
+
+      // D60-C: shadow_score_events.user_id is NOT NULL — must DELETE.
+      // Contains behavioral scoring events which are PII.
+      await query('DELETE FROM shadow_score_events WHERE user_id = $1', [userId]);
+
+      // D60-D: license_verifications.user_id is NOT NULL — must DELETE.
+      // Contains trade license numbers and issuing state data (PII).
+      await query('DELETE FROM license_verifications WHERE user_id = $1', [userId]);
+
+      // D60-E: insurance_verifications.user_id is NOT NULL — must DELETE.
+      // Contains policy numbers and coverage amounts (PII).
+      await query('DELETE FROM insurance_verifications WHERE user_id = $1', [userId]);
+
+      // D60-F: background_checks.user_id is NOT NULL — must DELETE.
+      // Contains background check results (PII).
+      await query('DELETE FROM background_checks WHERE user_id = $1', [userId]);
+
+      // D60-G: compliance_violations.user_id is nullable (ON DELETE SET NULL declared,
+      // but never fires because users is UPDATEd not DELETEd). NULL the user_id and
+      // also scrub ip_address and device_fingerprint which are PII.
       await query(
-        `UPDATE content_moderation_queue
-         SET user_id = NULL
+        `UPDATE compliance_violations
+         SET user_id = NULL,
+             ip_address = NULL,
+             device_fingerprint = NULL
          WHERE user_id = $1`,
         [userId]
       );
 
+      // D60-H: fraud_detection_events.user_id is nullable — SET NULL and clear details JSONB.
+      await query(
+        `UPDATE fraud_detection_events
+         SET user_id = NULL,
+             details = '{}'::JSONB
+         WHERE user_id = $1`,
+        [userId]
+      );
+
+      // D60-I: verification_earnings_ledger.user_id is NOT NULL — must DELETE.
+      await query('DELETE FROM verification_earnings_ledger WHERE user_id = $1', [userId]);
+
+      // D60-I: verification_earnings_tracking.user_id is the PK (NOT NULL) — must DELETE.
+      await query('DELETE FROM verification_earnings_tracking WHERE user_id = $1', [userId]);
+
+      // D61-9: Delete admin_roles — user_id NOT NULL UNIQUE FK references users(id).
+      // After erasure the user's UUID must not remain as a live PK reference.
+      await query('DELETE FROM admin_roles WHERE user_id = $1', [userId]);
+
+      // D64-2: Delete GDPR data export records — exports.user_id is NOT NULL FK.
+      // These files contain the user's personal data and must be purged on erasure.
+      await query('DELETE FROM exports WHERE user_id = $1', [userId]);
+
       // FIX: Anonymize admin_actions — keep rows for financial audit trail, but
       // clear the free-text reason field and mark metadata with gdpr_deleted so
       // it's clear the subject has been deleted. Do NOT delete rows (audit trail).
-      // The target_id UUID is retained as a legal gray area for audit purposes.
+      // D61-1: The correct column is target_user_id (not target_id).
       await query(
         `UPDATE admin_actions
          SET metadata = metadata || '{"gdpr_deleted": true}'::jsonb,
              reason = '[deleted]'
-         WHERE target_id = $1`,
+         WHERE target_user_id = $1`,
+        [userId]
+      );
+
+      // D63-1: revenue_ledger.user_id is nullable FK with ON DELETE SET NULL, but
+      // cascade never fires because users is UPDATEd not DELETEd. NULL it manually.
+      await query(
+        `UPDATE revenue_ledger SET user_id = NULL WHERE user_id = $1`,
+        [userId]
+      );
+
+      // D63-2: ai_cost_logs.user_id is nullable FK with ON DELETE SET NULL, but
+      // cascade never fires because users is UPDATEd not DELETEd. NULL it manually.
+      await query(
+        `UPDATE ai_cost_logs SET user_id = NULL WHERE user_id = $1`,
+        [userId]
+      );
+
+      // D63-3: payment_disputes.user_id is nullable FK with ON DELETE SET NULL, but
+      // cascade never fires because users is UPDATEd not DELETEd. NULL it manually.
+      await query(
+        `UPDATE payment_disputes SET user_id = NULL WHERE user_id = $1`,
+        [userId]
+      );
+
+      // D63-6: recurring_task_occurrences.worker_id is nullable FK (ON DELETE SET NULL)
+      // but cascade never fires because users is UPDATEd not DELETEd. NULL it manually.
+      await query(
+        `UPDATE recurring_task_occurrences SET worker_id = NULL WHERE worker_id = $1`,
+        [userId]
+      );
+
+      // D63-7: recurring_task_series.preferred_worker_id is nullable FK (ON DELETE SET NULL)
+      // but cascade never fires because users is UPDATEd not DELETEd. NULL it manually.
+      await query(
+        `UPDATE recurring_task_series SET preferred_worker_id = NULL WHERE preferred_worker_id = $1`,
         [userId]
       );
     });

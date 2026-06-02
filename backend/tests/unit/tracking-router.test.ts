@@ -43,6 +43,7 @@ vi.mock('../../src/services/MovementTrackingService', () => ({
 // Imports
 // ---------------------------------------------------------------------------
 
+import { db } from '../../src/db';
 import { trackingRouter } from '../../src/routers/tracking';
 import { MovementTrackingService } from '../../src/services/MovementTrackingService';
 
@@ -111,6 +112,7 @@ describe('tracking.updateLocation', () => {
   beforeEach(() => vi.clearAllMocks());
 
   it('updates location and returns success', async () => {
+    (db.query as any).mockResolvedValueOnce({ rows: [{ worker_id: 'test-uid' }], rowCount: 1 });
     mockService.updateLocation.mockResolvedValueOnce({ success: true } as any);
 
     const result = await makeCaller().updateLocation({
@@ -126,6 +128,7 @@ describe('tracking.updateLocation', () => {
   });
 
   it('throws when service returns failure', async () => {
+    (db.query as any).mockResolvedValueOnce({ rows: [{ worker_id: 'test-uid' }], rowCount: 1 });
     mockService.updateLocation.mockResolvedValueOnce({
       success: false,
       error: { message: 'Session not found' },
@@ -141,6 +144,7 @@ describe('tracking.stopSession', () => {
   beforeEach(() => vi.clearAllMocks());
 
   it('stops session and returns data', async () => {
+    (db.query as any).mockResolvedValueOnce({ rows: [{ worker_id: 'test-uid' }], rowCount: 1 });
     const stopData = { distance: 1500, duration: 3600 };
     mockService.stopSession.mockResolvedValueOnce({ success: true, data: stopData } as any);
 
@@ -151,6 +155,7 @@ describe('tracking.stopSession', () => {
   });
 
   it('throws when service returns failure', async () => {
+    (db.query as any).mockResolvedValueOnce({ rows: [{ worker_id: 'test-uid' }], rowCount: 1 });
     mockService.stopSession.mockResolvedValueOnce({
       success: false,
       error: { message: 'Session already stopped' },
@@ -166,6 +171,7 @@ describe('tracking.getStats', () => {
   beforeEach(() => vi.clearAllMocks());
 
   it('returns session stats', async () => {
+    (db.query as any).mockResolvedValueOnce({ rows: [{ worker_id: 'test-uid', poster_id: 'poster-uid' }], rowCount: 1 });
     const stats = { totalDistance: 5000, avgSpeed: 4.5 };
     mockService.getSessionStats.mockResolvedValueOnce({ success: true, data: stats } as any);
 
@@ -176,6 +182,7 @@ describe('tracking.getStats', () => {
   });
 
   it('throws when service returns failure', async () => {
+    (db.query as any).mockResolvedValueOnce({ rows: [{ worker_id: 'test-uid', poster_id: 'poster-uid' }], rowCount: 1 });
     mockService.getSessionStats.mockResolvedValueOnce({
       success: false,
       error: { message: 'Stats unavailable' },

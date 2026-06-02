@@ -22,6 +22,7 @@ import { notifyAdmins } from './AdminNotificationHelper.js';
 import { logger } from '../logger.js';
 import { invalidateAuthCacheForUser } from '../auth-cache.js';
 import { forceDisconnectUser } from '../realtime/connection-registry.js';
+import { revokeUserSessions } from '../auth/middleware.js';
 
 const log = logger.child({ service: 'FraudDetectionService' });
 
@@ -340,13 +341,18 @@ export const FraudDetectionService = {
     minRiskScore: number = 0.6,
     limit: number = 100
   ): Promise<ServiceResult<FraudRiskScore[]>> => {
+    if (minRiskScore < 0 || minRiskScore > 1) {
+      return { success: false, error: { code: 'INVALID_INPUT', message: 'minRiskScore must be between 0 and 1' } };
+    }
+    const cappedLimit = Math.min(limit, 500); // Hard cap at 500 to prevent runaway queries
+
     try {
       const result = await db.query<FraudRiskScore>(
         `SELECT * FROM fraud_risk_scores
          WHERE risk_score >= $1 AND status = 'active'
          ORDER BY risk_score DESC, calculated_at DESC
          LIMIT $2`,
-        [minRiskScore, limit]
+        [minRiskScore, cappedLimit]
       );
       
       return {
@@ -431,20 +437,22 @@ export const FraudDetectionService = {
       evidence = {},
     } = params;
     
+    // Validate: At least one user required
+    if (!userIds || userIds.length === 0) {
+      return {
+        success: false,
+        error: {
+          code: ErrorCodes.INVALID_INPUT,
+          message: 'At least one user_id is required for fraud pattern',
+        },
+      };
+    }
+
+    // Outer try/catch: INSERT only. A failure here means nothing was committed,
+    // so returning DB_ERROR and retrying is safe.
+    let result: Awaited<ReturnType<typeof db.query<FraudPattern>>>;
     try {
-      // Validate: At least one user required
-      if (!userIds || userIds.length === 0) {
-        return {
-          success: false,
-          error: {
-            code: ErrorCodes.INVALID_INPUT,
-            message: 'At least one user_id is required for fraud pattern',
-          },
-        };
-      }
-      
-      // Create fraud pattern
-      const result = await db.query<FraudPattern>(
+      result = await db.query<FraudPattern>(
         `INSERT INTO fraud_patterns (
           pattern_type, pattern_description, user_ids, task_ids, transaction_ids,
           evidence, status
@@ -460,41 +468,152 @@ export const FraudDetectionService = {
           JSON.stringify(evidence),
         ]
       );
-      
+    } catch (error) {
+      return {
+        success: false,
+        error: {
+          code: 'DB_ERROR',
+          message: error instanceof Error ? error.message : 'Unknown error',
+        },
+      };
+    }
+
+    // Bug 4 fix: declare suspension counters before the try/catch so they are
+    // accessible at the return site outside the try block.  Non-CRITICAL paths
+    // leave them at 0 (no suspensions attempted).
+    let suspensionApplied = 0;
+    let suspensionFailed = 0;
+
+    // Inner try/catch: side-effects only. The INSERT already committed, so
+    // side-effect failures must NOT return DB_ERROR (which would cause callers
+    // to retry and duplicate the suspension). Log and return success instead.
+    try {
       // Trigger automated actions based on pattern type
       // Determine risk level from pattern type
       const riskLevel = determinePatternRiskLevel(patternType);
-      
+
       // Apply automated actions based on risk level
       if (riskLevel === 'CRITICAL') {
         // CRITICAL patterns: Auto-suspend accounts, alert admins
         for (const userId of userIds) {
-          await db.query(
-            `UPDATE users
-             SET account_status = 'SUSPENDED', paused_at = NOW()
-             WHERE id = $1 AND account_status != 'SUSPENDED'`,
-            [userId]
-          );
+          try {
+            const suspendResult = await db.query<{ id: string }>(
+              `UPDATE users
+               SET account_status = 'SUSPENDED', paused_at = NOW()
+               WHERE id = $1 AND account_status != 'SUSPENDED'
+               RETURNING id`,
+              [userId]
+            );
 
-          // Immediately evict auth cache and terminate SSE connections so the
-          // suspended user is blocked without waiting for the 5-min cache TTL.
-          invalidateAuthCacheForUser(userId);
-          forceDisconnectUser(userId);
+            // Write audit log for auto-suspension so it appears in the admin
+            // audit trail alongside manual suspensions.  admin_id is NULL to
+            // indicate system-triggered action (not a human admin).
+            if (suspendResult.rows.length > 0) {
+              await db.query(
+                `INSERT INTO admin_actions (admin_id, action_type, target_id, reason, metadata)
+                 VALUES (NULL, 'user_suspend', $1, 'auto_fraud_detection', $2)`,
+                [
+                  userId,
+                  JSON.stringify({
+                    suspended: true,
+                    patternType,
+                    patternId: result.rows[0]?.id,
+                    triggeredBy: 'system',
+                  }),
+                ]
+              ).catch(err => log.warn({ err, userId }, '[FraudDetection] Failed to write auto-suspension audit log'));
+            }
 
-          // Create high-priority risk score for suspended user
-          await FraudDetectionService.calculateRiskScore({
-            entityType: 'user',
-            entityId: userId,
-            riskScore: 0.95, // CRITICAL risk
-            componentScores: {
-              pattern_detection: 0.95,
-            },
-            flags: [`fraud_pattern_${patternType}`, 'auto_suspended'],
-          });
+            // Create high-priority risk score for suspended user
+            await FraudDetectionService.calculateRiskScore({
+              entityType: 'user',
+              entityId: userId,
+              riskScore: 0.95, // CRITICAL risk
+              componentScores: {
+                pattern_detection: 0.95,
+              },
+              flags: [`fraud_pattern_${patternType}`, 'auto_suspended'],
+            });
+
+            // Immediately evict auth cache and terminate SSE connections so the
+            // suspended user is blocked without waiting for the 5-min cache TTL.
+            // BUG GG3 FIX: await the call (was fire-and-forget) so Redis errors surface.
+            try { await invalidateAuthCacheForUser(userId); } catch (e) { log.warn({ e, userId }, 'cache invalidation failed'); }
+
+            // Revoke Firebase refresh tokens so the user cannot re-authenticate after
+            // the Redis revocation marker expires. Look up firebase_uid for the revocation
+            // call, which requires a Firebase UID (not the DB UUID).
+            try {
+              const fbRow = await db.query<{ firebase_uid: string | null }>(
+                'SELECT firebase_uid FROM users WHERE id = $1',
+                [userId]
+              );
+              const firebaseUid = fbRow.rows[0]?.firebase_uid;
+              if (firebaseUid) {
+                await revokeUserSessions(firebaseUid);
+              } else {
+                log.warn({ userId }, '[FraudDetection] auto-suspension: firebase_uid is null — Firebase token revocation skipped, Redis marker still active');
+              }
+            } catch (e) { log.warn({ e, userId }, 'session revocation failed'); }
+
+            try { forceDisconnectUser(userId); } catch (e) { /* fire-and-forget */ }
+
+            // Lock funded escrows for the suspended user (best-effort, independent of the suspend tx)
+            try {
+              const activeEscrows = await db.query<{ id: string }>(
+                `SELECT e.id FROM escrows e
+                 JOIN tasks t ON t.id = e.task_id
+                 WHERE (e.poster_id = $1 OR e.worker_id = $1)
+                   AND e.state = 'FUNDED'
+                   AND t.state IN ('ACCEPTED', 'IN_PROGRESS', 'PROOF_SUBMITTED')`,
+                [userId]
+              );
+              for (const escrow of activeEscrows.rows) {
+                await db.query(
+                  `UPDATE escrows SET state = 'LOCKED_DISPUTE', updated_at = NOW()
+                   WHERE id = $1 AND state = 'FUNDED'`,
+                  [escrow.id]
+                ).catch(err => log.error({ err, escrowId: escrow.id, userId }, '[FraudDetection] failed to lock escrow on auto-suspension'));
+              }
+            } catch (err) {
+              log.error({ err, userId }, '[FraudDetection] failed to query active escrows for suspended user');
+            }
+
+            // Cancel all open and active tasks for the suspended user as poster OR worker
+            // (best-effort).
+            // A-09 FIX: previously only poster_id = $1 was checked, leaving tasks where
+            // the user is the worker (worker_id = $1) uncancelled — matching admin.setUserBan
+            // which uses (poster_id = $1 OR worker_id = $1).
+            try {
+              await db.query(
+                `UPDATE tasks SET state = 'CANCELLED', cancelled_at = NOW()
+                 WHERE (poster_id = $1 OR worker_id = $1)
+                   AND state IN ('OPEN', 'MATCHING', 'ACCEPTED', 'IN_PROGRESS', 'PROOF_SUBMITTED')`,
+                [userId]
+              );
+            } catch (err) {
+              log.error({ err, userId }, '[FraudDetection] failed to cancel tasks on auto-suspension');
+            }
+
+            suspensionApplied++;
+          } catch (err) {
+            log.error({ err, userId }, '[FraudDetection] failed to suspend user in fraud ring — continuing');
+            suspensionFailed++;
+            // DO NOT rethrow — process remaining users
+          }
         }
-        
+
+        // Bug 4 fix: if ALL suspensions failed, emit a CRITICAL log so on-call
+        // engineers are alerted that the fraud ring may still be active.
+        if (userIds.length > 0 && suspensionApplied === 0) {
+          log.error(
+            { patternId: result.rows[0].id, attempted: suspensionFailed },
+            '[FraudDetection] CRITICAL: all per-user suspensions failed — fraud ring may remain active'
+          );
+        }
+
         // Alert admins (send notification to admin team)
-        log.error({ patternType, userIds, riskLevel: 'CRITICAL' }, 'CRITICAL fraud pattern detected - accounts auto-suspended');
+        log.error({ patternType, userIds, riskLevel: 'CRITICAL', suspensionApplied, suspensionFailed }, 'CRITICAL fraud pattern detected - accounts auto-suspended');
         await notifyAdmins({
           title: '🚨 CRITICAL Fraud Pattern Detected',
           body: `Pattern "${patternType}" detected for ${userIds.length} user(s): ${userIds.join(', ')}. Accounts have been auto-suspended. Review in admin dashboard.`,
@@ -523,12 +642,12 @@ export const FraudDetectionService = {
         for (const userId of userIds) {
           // Update user with fraud flag (add to inconsistency_flags or create risk score)
           await db.query(
-            `UPDATE users 
+            `UPDATE users
              SET inconsistency_flags = array_append(COALESCE(inconsistency_flags, ARRAY[]::TEXT[]), $1)
              WHERE id = $2 AND ($1 = ANY(inconsistency_flags)) IS NOT TRUE`,
             [`fraud_pattern_${patternType}`, userId]
           );
-          
+
           // Create high-priority risk score for flagged user
           await FraudDetectionService.calculateRiskScore({
             entityType: 'user',
@@ -539,8 +658,30 @@ export const FraudDetectionService = {
             },
             flags: [`fraud_pattern_${patternType}`, 'requires_review'],
           });
+
+          // A-11 FIX: Write HIGH fraud flags to the admin audit log so they appear
+          // in the admin audit trail alongside CRITICAL auto-suspensions.
+          // admin_id=NULL indicates a system-triggered action (not a human admin).
+          // Wrapped in .catch() so audit log failure never blocks the fraud action.
+          db.query(
+            `INSERT INTO admin_actions (admin_id, action_type, target_id, reason, metadata)
+             VALUES (NULL, 'fraud_flag_high', $1, 'auto_fraud_detection', $2)`,
+            [
+              userId,
+              JSON.stringify({
+                patternType,
+                patternId: result.rows[0]?.id,
+                triggeredBy: 'system',
+                riskLevel: 'HIGH',
+              }),
+            ]
+          ).catch(err => log.warn({ err, userId }, '[FraudDetection] Failed to write HIGH fraud audit log'));
+
+          // Disconnect open SSE streams so HIGH-risk users stop receiving realtime
+          // task events, payment notifications, and messaging events immediately.
+          try { forceDisconnectUser(userId); } catch (err) { log.warn({ err, userId }, '[fraud] Failed to disconnect HIGH-risk user SSE stream'); }
         }
-        
+
         // Flag for admin review (add to review queue)
         log.warn({ patternType, userIds, riskLevel: 'HIGH' }, 'HIGH risk fraud pattern detected - requires manual review');
         await notifyAdmins({
@@ -564,22 +705,26 @@ export const FraudDetectionService = {
           });
         }
       }
-      
-      return {
-        success: true,
-        data: result.rows[0],
-      };
-    } catch (error) {
-      return {
-        success: false,
-        error: {
-          code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
-        },
-      };
+    } catch (sideEffectError) {
+      // Side-effect failure after a committed INSERT — log but do NOT return
+      // DB_ERROR, which would cause the caller to retry and duplicate the
+      // suspension record.
+      log.error(
+        { err: sideEffectError instanceof Error ? sideEffectError.message : String(sideEffectError), patternType, userIds },
+        '[FraudDetection] side-effect failed after INSERT committed — pattern recorded, side-effects partially applied'
+      );
     }
+
+    return {
+      success: true,
+      data: {
+        ...result.rows[0],
+        suspensionApplied,
+        suspensionFailed,
+      },
+    };
   },
-  
+
   /**
    * Get fraud patterns for a user
    */
@@ -622,13 +767,14 @@ export const FraudDetectionService = {
   getDetectedPatterns: async (
     limit: number = 100
   ): Promise<ServiceResult<FraudPattern[]>> => {
+    const cappedLimit = Math.min(limit, 500); // Hard cap at 500 to prevent runaway queries
     try {
       const result = await db.query<FraudPattern>(
         `SELECT * FROM fraud_patterns
          WHERE status = 'detected'
          ORDER BY detected_at DESC
          LIMIT $1`,
-        [limit]
+        [cappedLimit]
       );
       
       return {

@@ -12,9 +12,13 @@
  */
 
 import { db } from '../db.js';
+import type { QueryFn } from '../db.js';
 import { logger } from '../logger.js';
 import { AlphaInstrumentation } from './AlphaInstrumentation.js';
 import { invalidateAuthCacheForUser } from '../auth-cache.js';
+import { revokeUserSessions } from '../auth/middleware.js';
+import { forceDisconnectUser } from '../realtime/connection-registry.js';
+import { writeToOutbox } from '../lib/outbox-helpers.js';
 
 const log = logger.child({ service: 'TrustTierService' });
 
@@ -81,9 +85,31 @@ export const TrustTierService = {
 
   /**
    * Evaluate promotion eligibility (pure evaluation, no writes)
+   *
+   * @param userId - The user to evaluate
+   * @param queryFn - Optional query function to use instead of the module-level db.
+   *                  Pass the txQuery from a serializable transaction to ensure
+   *                  the eligibility re-check runs on the same connection and sees
+   *                  the same snapshot as the surrounding transaction.
    */
-  evaluatePromotion: async (userId: string): Promise<PromotionEligibility> => {
-    const currentTier = await TrustTierService.getTrustTier(userId);
+  evaluatePromotion: async (
+    userId: string,
+    queryFn?: QueryFn
+  ): Promise<PromotionEligibility> => {
+    const query: QueryFn = queryFn ?? ((sql: string, params?: unknown[]) => db.query(sql, params));
+    const currentTier = await (async () => {
+      const result = await query<{ trust_tier: number }>(
+        `SELECT trust_tier FROM users WHERE id = $1`,
+        [userId]
+      );
+      if (result.rowCount === 0) throw new Error(`User ${userId} not found`);
+      const tier = result.rows[0].trust_tier;
+      if (tier === 9) return TrustTier.BANNED;
+      if (tier >= 4) return TrustTier.ELITE;
+      if (tier >= 3) return TrustTier.TRUSTED;
+      if (tier >= 2) return TrustTier.VERIFIED;
+      return TrustTier.ROOKIE;
+    })();
 
     // Cannot promote if banned
     if (currentTier === TrustTier.BANNED) {
@@ -107,14 +133,14 @@ export const TrustTierService = {
     // Evaluate VERIFIED (ROOKIE → VERIFIED) - PRODUCT_SPEC §8.2: 5 tasks + ID verified
     if (currentTier === TrustTier.ROOKIE) {
       // Check verification requirements
-      const userResult = await db.query<{
+      const userResult = await query<{
         is_verified: boolean;
         verified_at: Date | null;
         phone: string | null;
         stripe_customer_id: string | null;
       }>(
-        `SELECT is_verified, verified_at, phone, stripe_customer_id 
-         FROM users 
+        `SELECT is_verified, verified_at, phone, stripe_customer_id
+         FROM users
          WHERE id = $1`,
         [userId]
       );
@@ -146,7 +172,7 @@ export const TrustTierService = {
     // Evaluate TRUSTED (VERIFIED → TRUSTED) - PRODUCT_SPEC §8.2: 20 tasks, 95%+ approval
     else if (currentTier === TrustTier.VERIFIED) {
       // Get user account age
-      const userAgeResult = await db.query<{ account_age_days: number }>(
+      const userAgeResult = await query<{ account_age_days: number }>(
         `SELECT EXTRACT(EPOCH FROM (NOW() - created_at)) / 86400 as account_age_days
          FROM users
          WHERE id = $1`,
@@ -155,7 +181,7 @@ export const TrustTierService = {
       const accountAgeDays = Math.floor(userAgeResult.rows[0]?.account_age_days || 0);
 
       // Get task completion stats
-      const statsResult = await db.query<{
+      const statsResult = await query<{
         completed_count: string;
         dispute_count: string;
         on_time_count: string;
@@ -182,7 +208,7 @@ export const TrustTierService = {
       const totalCount = parseInt(stats?.total_count || '0', 10);
 
       // Check risk tier constraint: only Tier 0-1 tasks
-      const riskCheckResult = await db.query<{ count: string }>(
+      const riskCheckResult = await query<{ count: string }>(
         `SELECT COUNT(*) as count
          FROM tasks t
          WHERE t.worker_id = $1
@@ -220,7 +246,7 @@ export const TrustTierService = {
     // Evaluate ELITE (TRUSTED → ELITE) - PRODUCT_SPEC §8.2: 100+ tasks, <1% dispute, 4.8+ rating
     else if (currentTier === TrustTier.TRUSTED) {
       // Get user account age
-      const userAgeResult = await db.query<{ account_age_days: number }>(
+      const userAgeResult = await query<{ account_age_days: number }>(
         `SELECT EXTRACT(EPOCH FROM (NOW() - created_at)) / 86400 as account_age_days
          FROM users
          WHERE id = $1`,
@@ -229,23 +255,7 @@ export const TrustTierService = {
       const accountAgeDays = Math.floor(userAgeResult.rows[0]?.account_age_days || 0);
 
       // Get task completion stats
-      // DIAGNOSTIC: Log the query context before executing
-      const queryContext = await db.query<{
-        current_database: string;
-        current_schema: string;
-        worker_id_exists: boolean;
-      }>(
-        `SELECT 
-          current_database(),
-          current_schema(),
-          EXISTS (
-            SELECT 1 FROM information_schema.columns 
-            WHERE table_name = 'tasks' AND column_name = 'worker_id'
-          ) as worker_id_exists`
-      );
-      log.warn({ queryContext: queryContext.rows[0] }, 'IN_HOME evaluation query context');
-      
-      const statsResult = await db.query<{
+      const statsResult = await query<{
         completed_count: string;
       }>(
         `SELECT COUNT(*) FILTER (WHERE t.state = 'COMPLETED' AND t.worker_id = $1) as completed_count
@@ -260,7 +270,7 @@ export const TrustTierService = {
       // Get distinct poster reviews (5-star only)
       // Note: Assuming reviews are stored in a reviews table or derived from task completion
       // For alpha, we'll check for 5 distinct posters with completed tasks
-      const _reviewsResult = await db.query<{ distinct_posters: string }>(
+      const _reviewsResult = await query<{ distinct_posters: string }>(
         `SELECT COUNT(DISTINCT t.poster_id)::text as distinct_posters
          FROM public.tasks t
          WHERE t.worker_id = $1
@@ -272,7 +282,7 @@ export const TrustTierService = {
       // Check security deposit (escrow)
       // For alpha, we'll check if user has a security deposit locked
       // Escrows table references tasks, so we join through tasks to get worker_id
-      const _depositResult = await db.query<{ has_deposit: boolean }>(
+      const _depositResult = await query<{ has_deposit: boolean }>(
         `SELECT EXISTS(
            SELECT 1 FROM escrows e
            JOIN tasks t ON e.task_id = t.id
@@ -290,7 +300,7 @@ export const TrustTierService = {
       }
 
       // Get dispute rate for ELITE (must be <1%)
-      const disputeStatsResult = await db.query<{
+      const disputeStatsResult = await query<{
         total_tasks: string;
         dispute_count: string;
       }>(
@@ -312,7 +322,7 @@ export const TrustTierService = {
       }
 
       // Get average rating for ELITE (must be 4.8+)
-      const ratingResult = await db.query<{ avg_rating: string }>(
+      const ratingResult = await query<{ avg_rating: string }>(
         `SELECT AVG(r.score)::text as avg_rating
          FROM ratings r
          JOIN tasks t ON r.task_id = t.id
@@ -348,42 +358,93 @@ export const TrustTierService = {
     userId: string,
     targetTier: TrustTier,
     source: 'system' | 'admin'
-  ): Promise<void> => {
-    const currentTier = await TrustTierService.getTrustTier(userId);
+  ): Promise<{ success: true; alreadyApplied?: boolean }> => {
+    // Quick pre-flight guards outside the transaction (cheap, non-blocking)
+    const preLockTier = await TrustTierService.getTrustTier(userId);
 
-    // Guards
-    if (currentTier === TrustTier.BANNED) {
+    if (preLockTier === TrustTier.BANNED) {
       throw new Error('Cannot promote banned user');
     }
 
-    if (targetTier <= currentTier) {
-      throw new Error(`Cannot promote to tier ${targetTier} (current: ${currentTier})`);
+    if (targetTier <= preLockTier) {
+      throw new Error(`Cannot promote to tier ${targetTier} (current: ${preLockTier})`);
     }
 
-    // Re-validate preconditions inside transaction
-    const eligibility = await TrustTierService.evaluatePromotion(userId);
-    if (!eligibility.eligible || eligibility.targetTier !== targetTier) {
-      throw new Error(`Promotion preconditions not met: ${eligibility.reasons.join(', ')}`);
-    }
+    // Run eligibility check and CAS UPDATE under a single serializable transaction
+    // with a FOR UPDATE row lock so a concurrent dispute filing cannot sneak in
+    // between evaluation and the write.
+    let updateRowCount = 0;
+    let currentTier: TrustTier = preLockTier;
 
-    // Apply promotion in transaction
-    await db.query(
-      `UPDATE users
-       SET trust_tier = $1, updated_at = NOW()
-       WHERE id = $2
-         AND trust_tier = $3`,
-      [targetTier, userId, currentTier]
-    );
+    await db.serializableTransaction(async (txQuery) => {
+      // Lock the user row for the duration of this transaction
+      const lockResult = await txQuery<{ trust_tier: number }>(
+        `SELECT trust_tier FROM users WHERE id = $1 FOR UPDATE`,
+        [userId]
+      );
+
+      if (lockResult.rowCount === 0) {
+        throw new Error(`User ${userId} not found`);
+      }
+
+      const rawTier = lockResult.rows[0].trust_tier;
+      currentTier = rawTier === 9 ? TrustTier.BANNED
+        : rawTier >= 4 ? TrustTier.ELITE
+        : rawTier >= 3 ? TrustTier.TRUSTED
+        : rawTier >= 2 ? TrustTier.VERIFIED
+        : TrustTier.ROOKIE;
+
+      // If the tier changed since the pre-flight check, abort
+      if (currentTier !== preLockTier) {
+        updateRowCount = 0;
+        return;
+      }
+
+      // Re-evaluate eligibility inside the lock so concurrent state changes
+      // (e.g. a dispute filing) are visible before we commit the promotion.
+      // Pass txQuery so the re-check runs on the same serializable connection
+      // instead of opening a separate connection via the module-level db.
+      const eligibility = await TrustTierService.evaluatePromotion(userId, txQuery);
+      if (!eligibility.eligible || eligibility.targetTier !== targetTier) {
+        throw new Error(`Promotion preconditions not met: ${eligibility.reasons.join(', ')}`);
+      }
+
+      // CAS UPDATE — tier must still match what we read under the lock
+      const updateResult = await txQuery(
+        `UPDATE users
+         SET trust_tier = $1, updated_at = NOW()
+         WHERE id = $2
+           AND trust_tier = $3`,
+        [targetTier, userId, currentTier]
+      );
+
+      updateRowCount = updateResult.rowCount;
+    });
+
+    if (updateRowCount === 0) {
+      // Concurrent promotion already applied — silently return, don't fire events
+      return { success: true, alreadyApplied: true };
+    }
 
     // Invalidate auth cache so the new tier is visible immediately
-    invalidateAuthCacheForUser(userId);
+    // BUG GG3 FIX: await the call (was fire-and-forget) so Redis errors surface.
+    // A59-2 FIX: Pre-fetch firebase_uid so the Redis revocation marker is written
+    // correctly even when the in-process cache is cold (user not yet cached on
+    // this replica). Without this, invalidateAuthCacheForUser(userId) falls back
+    // to a DB lookup internally which may fail silently.
+    const firebaseUidResult = await db.query<{ firebase_uid: string }>(
+      'SELECT firebase_uid FROM users WHERE id = $1',
+      [userId]
+    );
+    const firebaseUid = firebaseUidResult.rows[0]?.firebase_uid;
+    await invalidateAuthCacheForUser(userId, firebaseUid);
 
     // Log transition (if trust_ledger exists)
     try {
       // trust_ledger requires old_tier >= 1, but we might have UNVERIFIED (0) or BANNED (9)
       // Only log if both tiers are in valid range (1-4)
       if (currentTier >= 1 && currentTier <= 4 && targetTier >= 1 && targetTier <= 4) {
-        const idempotencyKey = `trust_promotion:${userId}:${targetTier}:${Date.now()}`;
+        const idempotencyKey = `trust_promotion:${userId}:${targetTier}`;
         await db.query(
           `INSERT INTO trust_ledger (user_id, old_tier, new_tier, reason, changed_by, idempotency_key, event_source)
            VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -428,6 +489,8 @@ export const TrustTierService = {
       // Silent fail - instrumentation should not break core flow
       log.warn({ err: error instanceof Error ? error.message : String(error), userId, targetTier }, 'Failed to emit trust_delta_applied for promotion');
     }
+
+    return { success: true };
   },
 
   /**
@@ -439,28 +502,211 @@ export const TrustTierService = {
    * Currently, both applyPromotion and banUser already emit this event correctly.
    */
   banUser: async (userId: string, reason: string): Promise<void> => {
-    const currentTier = await TrustTierService.getTrustTier(userId);
+    // Read the current tier and apply the CAS UPDATE atomically inside a single
+    // transaction with a FOR UPDATE row lock.  Without the lock there is a TOCTOU
+    // window: a concurrent promotion can commit between getTrustTier() and the
+    // UPDATE, making `currentTier` stale for the instrumentation delta.
+    let currentTier: TrustTier = TrustTier.ROOKIE; // placeholder; set inside txn
+    let banRowCount = 0;
 
-    if (currentTier === TrustTier.BANNED) {
+    await db.transaction(async (txQuery) => {
+      const lockResult = await txQuery<{ trust_tier: number }>(
+        `SELECT trust_tier FROM users WHERE id = $1 FOR UPDATE`,
+        [userId]
+      );
+
+      if (lockResult.rowCount === 0) {
+        return; // User not found — treat as no-op
+      }
+
+      const rawTier = lockResult.rows[0].trust_tier;
+      currentTier = rawTier === 9 ? TrustTier.BANNED
+        : rawTier >= 4 ? TrustTier.ELITE
+        : rawTier >= 3 ? TrustTier.TRUSTED
+        : rawTier >= 2 ? TrustTier.VERIFIED
+        : TrustTier.ROOKIE;
+
+      if (currentTier === TrustTier.BANNED) {
+        return; // Already banned — early exit inside txn
+      }
+
+      const banResult = await txQuery(
+        `UPDATE users
+         SET trust_tier = $1, is_banned = TRUE, updated_at = NOW()
+         WHERE id = $2 AND trust_tier != $1`,
+        [TrustTier.BANNED, userId]
+      );
+
+      banRowCount = banResult.rowCount;
+    });
+
+    if ((currentTier as TrustTier) === TrustTier.BANNED) {
       return; // Already banned
     }
 
-    // Apply ban in transaction
-    await db.query(
-      `UPDATE users 
-       SET trust_tier = $1, updated_at = NOW()
-       WHERE id = $2`,
-      [TrustTier.BANNED, userId]
-    );
+    if (banRowCount === 0) {
+      // Another concurrent call already applied the ban — return early without
+      // touching outbox or tasks to prevent duplicate events.
+      return;
+    }
 
-    // Cancel active tasks
+    // Look up firebase_uid before evicting the auth cache so we can pass it
+    // directly to invalidateAuthCacheForUser.
+    // BUG 5 FIX: previously invalidateAuthCacheForUser(userId) was called
+    // without firebaseUid, so if the in-process cache was cold the Redis
+    // revocation marker was never written — the user could re-authenticate
+    // on other replicas until the Firebase token expired naturally.
+    let firebaseUid: string | null = null;
+    try {
+      const fbRow = await db.query<{ firebase_uid: string | null }>(
+        'SELECT firebase_uid FROM users WHERE id = $1',
+        [userId]
+      );
+      firebaseUid = fbRow.rows[0]?.firebase_uid ?? null;
+      if (!firebaseUid) {
+        log.warn({ userId }, '[TrustTierService] banUser: firebase_uid is null — Redis revocation marker will rely on in-process cache entries only');
+      }
+    } catch (fbLookupErr) {
+      log.error({ err: fbLookupErr instanceof Error ? fbLookupErr.message : String(fbLookupErr), userId }, '[TrustTierService] banUser: firebase_uid lookup failed');
+    }
+
+    // Evict the auth cache so the banned status is enforced immediately.
+    // Pass firebaseUid so the Redis revocation marker is written even when
+    // the in-process cache is cold (mirrors admin.setUserBan).
+    if (firebaseUid) {
+      await invalidateAuthCacheForUser(userId, firebaseUid);
+    } else {
+      await invalidateAuthCacheForUser(userId);
+    }
+
+    // Revoke Firebase refresh tokens so the user cannot re-authenticate after
+    // the Redis revocation marker expires.
+    try {
+      if (firebaseUid) {
+        await revokeUserSessions(firebaseUid);
+      } else {
+        log.warn({ userId }, '[TrustTierService] banUser: firebase_uid is null — Firebase token revocation skipped, Redis marker still active');
+      }
+    } catch (revokeErr) {
+      // A Firebase failure must not block the ban — the Redis marker still
+      // provides short-term protection via the cache TTL.
+      log.error({ err: revokeErr instanceof Error ? revokeErr.message : String(revokeErr), userId }, '[TrustTierService] banUser: revokeUserSessions failed');
+    }
+
+    // Close any open SSE connections immediately so the stream does not persist
+    // after the ban is applied.
+    try {
+      forceDisconnectUser(userId);
+    } catch {
+      // fire-and-forget
+    }
+
+    // Emit escrow refund outbox events for any funded escrows on active tasks
+    // before cancelling them, so escrows are not stranded on ban.
+    // MATCHING, ACCEPTED, IN_PROGRESS, PROOF_SUBMITTED are all states where a
+    // worker has an active assignment. DISPUTED tasks have LOCKED_DISPUTE escrows
+    // handled separately and are intentionally excluded here.
+    const activeTasks = await db.query<{ id: string }>(
+      `SELECT id FROM tasks WHERE worker_id = $1 AND state IN ('MATCHING', 'ACCEPTED', 'IN_PROGRESS', 'PROOF_SUBMITTED')`,
+      [userId]
+    );
+    for (const task of activeTasks.rows) {
+      const escrow = await db.query<{ id: string }>(
+        `SELECT id FROM escrows WHERE task_id = $1 AND state = 'FUNDED'`,
+        [task.id]
+      );
+      if (escrow.rows[0]) {
+        await writeToOutbox({
+          eventType: 'escrow.refund_requested',
+          aggregateType: 'escrow',
+          aggregateId: escrow.rows[0].id,
+          eventVersion: 1,
+          payload: { escrowId: escrow.rows[0].id, reason: 'worker_banned', taskId: task.id },
+          queueName: 'critical_payments',
+          idempotencyKey: `ban_refund:${task.id}`,
+        });
+      }
+    }
+
+    // Cancel active tasks (worker-side) — must match exactly the state set used for escrow refund queries above.
     await db.query(
       `UPDATE tasks
        SET state = 'CANCELLED', updated_at = NOW()
        WHERE worker_id = $1
-         AND state IN ('ACCEPTED', 'PROOF_SUBMITTED', 'WORKING')`,
+         AND state IN ('MATCHING', 'ACCEPTED', 'IN_PROGRESS', 'PROOF_SUBMITTED')`,
       [userId]
     );
+
+    // Refund idle funded escrows where the banned user is poster and task is not actively worked.
+    // (Bucket A: OPEN/MATCHING tasks with FUNDED escrows — poster's side)
+    try {
+      const posterEscrows = await db.query<{ escrow_id: string; task_id: string }>(
+        `SELECT e.id as escrow_id, t.id as task_id FROM escrows e
+         JOIN tasks t ON t.id = e.task_id
+         WHERE e.poster_id = $1
+           AND e.state = 'FUNDED'
+           AND t.state NOT IN ('ACCEPTED', 'IN_PROGRESS', 'PROOF_SUBMITTED', 'COMPLETED')`,
+        [userId]
+      );
+      for (const row of posterEscrows.rows) {
+        await writeToOutbox({
+          eventType: 'escrow.refund_requested',
+          aggregateType: 'escrow',
+          aggregateId: row.escrow_id,
+          eventVersion: 1,
+          payload: { escrowId: row.escrow_id, reason: 'poster_banned', taskId: row.task_id },
+          queueName: 'critical_payments',
+          idempotencyKey: `ban_poster_refund:${row.task_id}`,
+        }).catch(err => log.error({ err, escrowId: row.escrow_id, taskId: row.task_id, userId }, '[TrustTierService] banUser: failed to enqueue poster escrow refund'));
+      }
+    } catch (err) {
+      log.error({ err, userId }, '[TrustTierService] banUser: failed to query poster funded escrows');
+    }
+
+    // Bucket B: poster's active tasks (ACCEPTED/IN_PROGRESS/PROOF_SUBMITTED) — a worker
+    // has done real work so the escrow must be locked for dispute (not refunded) and
+    // an outbox event is emitted for admin adjudication. Same pattern as admin.setUserBan.
+    try {
+      const activePosterEscrows = await db.query<{ escrow_id: string; task_id: string }>(
+        `SELECT e.id as escrow_id, t.id as task_id FROM escrows e
+         JOIN tasks t ON t.id = e.task_id
+         WHERE e.poster_id = $1
+           AND e.state = 'FUNDED'
+           AND t.state IN ('ACCEPTED', 'IN_PROGRESS', 'PROOF_SUBMITTED')`,
+        [userId]
+      );
+      for (const row of activePosterEscrows.rows) {
+        await db.query(
+          `UPDATE escrows SET state = 'LOCKED_DISPUTE', updated_at = NOW()
+           WHERE id = $1 AND state = 'FUNDED'`,
+          [row.escrow_id]
+        ).catch(err => log.error({ err, escrowId: row.escrow_id, userId }, '[TrustTierService] banUser: failed to lock active poster escrow'));
+        await writeToOutbox({
+          eventType: 'escrow.locked_on_ban',
+          aggregateType: 'escrow',
+          aggregateId: row.escrow_id,
+          eventVersion: 1,
+          payload: { escrowId: row.escrow_id, reason: 'poster_banned', taskId: row.task_id, bannedUserId: userId },
+          queueName: 'critical_payments',
+          idempotencyKey: `ban_poster_lock:${row.task_id}`,
+        }).catch(err => log.error({ err, escrowId: row.escrow_id, taskId: row.task_id, userId }, '[TrustTierService] banUser: failed to enqueue active poster escrow lock event'));
+      }
+    } catch (err) {
+      log.error({ err, userId }, '[TrustTierService] banUser: failed to query active poster funded escrows');
+    }
+
+    // Cancel poster's OPEN/MATCHING/ACCEPTED/IN_PROGRESS/PROOF_SUBMITTED tasks (best-effort).
+    // Expanded from OPEN/MATCHING to include all active states so tasks with a banned
+    // poster are not left stuck in an un-completable state.
+    try {
+      await db.query(
+        `UPDATE tasks SET state = 'CANCELLED', cancelled_at = NOW()
+         WHERE poster_id = $1 AND state IN ('OPEN', 'MATCHING', 'ACCEPTED', 'IN_PROGRESS', 'PROOF_SUBMITTED')`,
+        [userId]
+      );
+    } catch (err) {
+      log.error({ err, userId }, '[TrustTierService] banUser: failed to cancel poster active tasks');
+    }
 
     // Log ban
     try {

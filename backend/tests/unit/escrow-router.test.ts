@@ -61,6 +61,39 @@ vi.mock('../../src/services/StripeService', () => ({
   },
 }));
 
+// ---------------------------------------------------------------------------
+// Stripe SDK mock — used by confirmFunding and release security checks
+//
+// vi.hoisted() is required because vi.mock() factories are hoisted to the top
+// of the file by Vitest, before const declarations. Without hoisting, the mock
+// factory closes over undefined variables.
+// ---------------------------------------------------------------------------
+const { mockStripePaymentIntentsRetrieve, mockStripeTransfersRetrieve } = vi.hoisted(() => ({
+  mockStripePaymentIntentsRetrieve: vi.fn(),
+  mockStripeTransfersRetrieve: vi.fn(),
+}));
+
+vi.mock('stripe', () => ({
+  default: vi.fn().mockImplementation(function StripeConstructor() {
+    return {
+      paymentIntents: { retrieve: mockStripePaymentIntentsRetrieve },
+      transfers: { retrieve: mockStripeTransfersRetrieve },
+    };
+  }),
+}));
+
+// Config mock: provide a non-empty, non-placeholder Stripe key so getStripe()
+// does not throw PRECONDITION_FAILED in tests (actual Stripe calls are mocked above).
+vi.mock('../../src/config', () => ({
+  config: {
+    stripe: {
+      secretKey: 'sk_test_mock_key_for_unit_tests',
+      platformFeePercent: 15,
+      minimumTaskValueCents: 500,
+    },
+  },
+}));
+
 vi.mock('../../src/services/XPService', () => ({
   XPService: {
     awardXP: vi.fn(),
@@ -117,7 +150,7 @@ function makeEscrow(overrides: Record<string, unknown> = {}) {
 
 function makeCaller(userId: string = POSTER_ID, role: string = 'user', defaultMode: 'worker' | 'poster' = 'poster') {
   return escrowRouter.createCaller({
-    user: { id: userId, role, default_mode: defaultMode } as any,
+    user: { id: userId, role, is_admin: role === 'admin', default_mode: defaultMode } as any,
     firebaseUid: `fb-${userId}`,
   });
 }
@@ -276,14 +309,10 @@ describe('escrow.getByTaskId', () => {
   describe('return shape', () => {
     it('returns escrow data for a valid task', async () => {
       const escrow = makeEscrow();
+      // R-14 FIX: getByTaskId now JOINs tasks in one query — no second getById call.
       mockEscrowService.getByTaskId.mockResolvedValueOnce({
         success: true,
-        data: escrow as any,
-      });
-      // getByTaskId also calls getById for auth check
-      mockEscrowService.getById.mockResolvedValueOnce({
-        success: true,
-        data: escrow as any,
+        data: { ...escrow, poster_id: POSTER_ID, worker_id: WORKER_ID } as any,
       });
 
       const caller = makeCaller(POSTER_ID);
@@ -310,14 +339,10 @@ describe('escrow.getByTaskId', () => {
 
   describe('service delegation', () => {
     it('calls EscrowService.getByTaskId with the correct taskId', async () => {
+      // R-14 FIX: getByTaskId now JOINs tasks — poster_id/worker_id in single result.
       mockEscrowService.getByTaskId.mockResolvedValueOnce({
         success: true,
-        data: makeEscrow() as any,
-      });
-      // Auth check also calls getById
-      mockEscrowService.getById.mockResolvedValueOnce({
-        success: true,
-        data: makeEscrow() as any,
+        data: { ...makeEscrow(), poster_id: POSTER_ID, worker_id: WORKER_ID } as any,
       });
 
       await makeCaller().getByTaskId({ taskId: TASK_ID });
@@ -340,7 +365,10 @@ describe('escrow.createPaymentIntent', () => {
     it('returns payment intent data on success with explicit amount', async () => {
       mockStripeService.isConfigured.mockReturnValue(true);
       // Router queries task price first
-      mockDb.query.mockResolvedValueOnce({ rows: [{ price: 5000 }], rowCount: 1 } as any);
+      // F-30: tasks.price is DECIMAL dollars — mock with 50.00 (= $50 = 5000 cents)
+      mockDb.query.mockResolvedValueOnce({ rows: [{ price: 50.00 }], rowCount: 1 } as any);
+      // Router then looks up the pending escrow for this task
+      mockDb.query.mockResolvedValueOnce({ rows: [{ id: ESCROW_ID }], rowCount: 1 } as any);
       mockStripeService.createPaymentIntent.mockResolvedValueOnce({
         success: true,
         data: {
@@ -364,7 +392,10 @@ describe('escrow.createPaymentIntent', () => {
     it('derives amount from task price when amount is omitted', async () => {
       mockStripeService.isConfigured.mockReturnValue(true);
       // Router queries task price first (used as the amount when none provided)
-      mockDb.query.mockResolvedValueOnce({ rows: [{ price: 7500 }], rowCount: 1 } as any);
+      // F-30: tasks.price is DECIMAL dollars — 75.00 = $75 = 7500 cents
+      mockDb.query.mockResolvedValueOnce({ rows: [{ price: 75.00 }], rowCount: 1 } as any);
+      // Router then looks up the pending escrow for this task
+      mockDb.query.mockResolvedValueOnce({ rows: [{ id: ESCROW_ID }], rowCount: 1 } as any);
       mockStripeService.createPaymentIntent.mockResolvedValueOnce({
         success: true,
         data: {
@@ -417,7 +448,10 @@ describe('escrow.createPaymentIntent', () => {
     it('passes poster_id from context as the second query parameter (ownership enforcement)', async () => {
       // Confirm the SQL ownership clause receives ctx.user.id as $2
       mockStripeService.isConfigured.mockReturnValue(true);
-      mockDb.query.mockResolvedValueOnce({ rows: [{ price: 3000 }], rowCount: 1 } as any);
+      // F-30: tasks.price is DECIMAL dollars — 30.00 = $30 = 3000 cents
+      mockDb.query.mockResolvedValueOnce({ rows: [{ price: 30.00 }], rowCount: 1 } as any);
+      // Router then looks up the pending escrow for this task
+      mockDb.query.mockResolvedValueOnce({ rows: [{ id: ESCROW_ID }], rowCount: 1 } as any);
       mockStripeService.createPaymentIntent.mockResolvedValueOnce({
         success: true,
         data: { paymentIntentId: 'pi_own', clientSecret: 'cs_own', amount: 3000 },
@@ -457,7 +491,10 @@ describe('escrow.createPaymentIntent', () => {
 
     it('throws INTERNAL_SERVER_ERROR when Stripe call fails', async () => {
       mockStripeService.isConfigured.mockReturnValue(true);
-      mockDb.query.mockResolvedValueOnce({ rows: [{ price: 5000 }], rowCount: 1 } as any);
+      // F-30: tasks.price is DECIMAL dollars — 50.00 = $50 = 5000 cents
+      mockDb.query.mockResolvedValueOnce({ rows: [{ price: 50.00 }], rowCount: 1 } as any);
+      // Router then looks up the pending escrow for this task
+      mockDb.query.mockResolvedValueOnce({ rows: [{ id: ESCROW_ID }], rowCount: 1 } as any);
       mockStripeService.createPaymentIntent.mockResolvedValueOnce({
         success: false,
         error: { code: 'STRIPE_ERROR', message: 'Card declined' },
@@ -470,9 +507,12 @@ describe('escrow.createPaymentIntent', () => {
   });
 
   describe('service delegation', () => {
-    it('passes posterId from context to StripeService', async () => {
+    it('passes posterId and escrowId from context to StripeService', async () => {
       mockStripeService.isConfigured.mockReturnValue(true);
-      mockDb.query.mockResolvedValueOnce({ rows: [{ price: 1000 }], rowCount: 1 } as any);
+      // F-30: tasks.price is DECIMAL dollars — 10.00 = $10 = 1000 cents
+      mockDb.query.mockResolvedValueOnce({ rows: [{ price: 10.00 }], rowCount: 1 } as any);
+      // Router looks up the pending escrow to get escrowId for PI idempotency scoping
+      mockDb.query.mockResolvedValueOnce({ rows: [{ id: ESCROW_ID }], rowCount: 1 } as any);
       mockStripeService.createPaymentIntent.mockResolvedValueOnce({
         success: true,
         data: { paymentIntentId: 'pi_x', clientSecret: 'cs_x', amount: 1000 },
@@ -483,6 +523,7 @@ describe('escrow.createPaymentIntent', () => {
       expect(mockStripeService.createPaymentIntent).toHaveBeenCalledWith({
         taskId: TASK_ID,
         posterId: POSTER_ID,
+        escrowId: ESCROW_ID,
         amount: 1000,
       });
     });
@@ -505,6 +546,16 @@ describe('escrow.confirmFunding', () => {
         success: true,
         data: makeEscrow({ state: 'PENDING' }) as any,
       });
+      // Stripe verification: PI succeeded and amount matches escrow (5000 cents)
+      mockStripePaymentIntentsRetrieve.mockResolvedValueOnce({
+        id: 'pi_test_fund',
+        status: 'succeeded',
+        amount: 5000,
+        metadata: { task_id: TASK_ID },
+        latest_charge: { refunded: false },
+      });
+      // LL1-C: dedup check — no other escrow uses this PI
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
       mockEscrowService.fund.mockResolvedValueOnce({
         success: true,
         data: fundedEscrow as any,
@@ -571,6 +622,16 @@ describe('escrow.confirmFunding', () => {
         success: true,
         data: makeEscrow() as any,
       });
+      // Stripe check passes; EscrowService.fund then fails
+      mockStripePaymentIntentsRetrieve.mockResolvedValueOnce({
+        id: 'pi_test_fund',
+        status: 'succeeded',
+        amount: 5000,
+        metadata: { task_id: TASK_ID },
+        latest_charge: { refunded: false },
+      });
+      // LL1-C: dedup check — no other escrow uses this PI
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
       mockEscrowService.fund.mockResolvedValueOnce({
         success: false,
         error: { code: 'INVALID_STATE', message: 'Cannot fund: wrong state' },
@@ -590,6 +651,15 @@ describe('escrow.confirmFunding', () => {
         success: true,
         data: makeEscrow() as any,
       });
+      mockStripePaymentIntentsRetrieve.mockResolvedValueOnce({
+        id: 'pi_test_delegate',
+        status: 'succeeded',
+        amount: 5000,
+        metadata: { task_id: TASK_ID },
+        latest_charge: { refunded: false },
+      });
+      // LL1-C: dedup check — no other escrow uses this PI
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
       mockEscrowService.fund.mockResolvedValueOnce({
         success: true,
         data: makeEscrow({ state: 'FUNDED' }) as any,
@@ -624,6 +694,10 @@ describe('escrow.release', () => {
         success: true,
         data: makeEscrow({ state: 'FUNDED' }) as any,
       });
+      // Stripe verification: transfer exists and amount is valid (platform fee applied: 4250/5000)
+      mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_test_123', amount: 4250, metadata: { escrow_id: ESCROW_ID } });
+      // F-30: tasks.price is DECIMAL dollars — 50.00 = $50 = 5000 cents; floor = 4000 cents; 4250 >= 4000 ✓
+      mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'COMPLETED', price: 50.00 }] });
       mockEscrowService.release.mockResolvedValueOnce({
         success: true,
         data: releasedEscrow as any,
@@ -669,6 +743,9 @@ describe('escrow.release', () => {
         success: true,
         data: makeEscrow() as any,
       });
+      mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_test_123', amount: 4250, metadata: { escrow_id: ESCROW_ID } });
+      // Task price lookup for 80% floor calculation
+      mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'COMPLETED', price: 50.00 }] }); // F-30: DECIMAL dollars
       mockEscrowService.release.mockResolvedValueOnce({
         success: true,
         data: releasedEscrow as any,
@@ -697,6 +774,9 @@ describe('escrow.release', () => {
         success: true,
         data: makeEscrow() as any,
       });
+      mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_test_123', amount: 4250, metadata: { escrow_id: ESCROW_ID } });
+      // Task price lookup for 80% floor calculation
+      mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'COMPLETED', price: 50.00 }] }); // F-30: DECIMAL dollars
       mockEscrowService.release.mockResolvedValueOnce({
         success: false,
         error: { code: 'HX201', message: 'Escrow release requires completed task' },
@@ -712,6 +792,9 @@ describe('escrow.release', () => {
         success: true,
         data: makeEscrow() as any,
       });
+      mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_test_123', amount: 4250, metadata: { escrow_id: ESCROW_ID } });
+      // Task price lookup for 80% floor calculation
+      mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'COMPLETED', price: 50.00 }] }); // F-30: DECIMAL dollars
       mockEscrowService.release.mockResolvedValueOnce({
         success: false,
         error: { code: 'INVALID_STATE', message: 'Wrong state' },
@@ -729,6 +812,9 @@ describe('escrow.release', () => {
         success: true,
         data: makeEscrow() as any,
       });
+      mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_test_123', amount: 4250, metadata: { escrow_id: ESCROW_ID } });
+      // Task price lookup for 80% floor calculation
+      mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'COMPLETED', price: 50.00 }] }); // F-30: DECIMAL dollars
       mockEscrowService.release.mockResolvedValueOnce({
         success: true,
         data: makeEscrow({ state: 'RELEASED' }) as any,
@@ -773,6 +859,7 @@ describe('escrow.refund', () => {
         success: true,
         data: makeEscrow() as any,
       });
+      // LL4 fix: task state check moved into EscrowService.refund() — no router-level db.query needed
       mockEscrowService.refund.mockResolvedValueOnce({
         success: true,
         data: refundedEscrow as any,
@@ -830,6 +917,7 @@ describe('escrow.refund', () => {
         success: true,
         data: makeEscrow() as any,
       });
+      // LL4 fix: task state check moved into EscrowService.refund() — no router-level db.query needed
       mockEscrowService.refund.mockResolvedValueOnce({
         success: false,
         error: { code: 'INVALID_STATE', message: 'Cannot refund: wrong state' },
@@ -847,6 +935,7 @@ describe('escrow.refund', () => {
         success: true,
         data: makeEscrow() as any,
       });
+      // LL4 fix: task state check moved into EscrowService.refund() — no router-level db.query needed
       mockEscrowService.refund.mockResolvedValueOnce({
         success: true,
         data: makeEscrow({ state: 'REFUNDED' }) as any,
@@ -878,6 +967,8 @@ describe('escrow.lockForDispute', () => {
         success: true,
         data: makeEscrow() as any,
       });
+      // NOTE: Router no longer calls db.query for task state — TOCTOU fix moves
+      // that check inside EscrowService.lockForDispute via allowedTaskStates param.
       mockEscrowService.lockForDispute.mockResolvedValueOnce({
         success: true,
         data: lockedEscrow as any,
@@ -924,6 +1015,7 @@ describe('escrow.lockForDispute', () => {
         success: true,
         data: makeEscrow() as any,
       });
+      // NOTE: No db.query mock needed — task state validation is now inside the service.
       mockEscrowService.lockForDispute.mockResolvedValueOnce({
         success: false,
         error: { code: 'INVALID_STATE', message: 'Cannot lock: wrong state' },
@@ -941,6 +1033,7 @@ describe('escrow.lockForDispute', () => {
         success: true,
         data: makeEscrow() as any,
       });
+      // NOTE: No db.query mock needed — task state validation is now inside the service.
       mockEscrowService.lockForDispute.mockResolvedValueOnce({
         success: true,
         data: makeEscrow({ state: 'LOCKED_DISPUTE' }) as any,
@@ -967,78 +1060,130 @@ describe('escrow.getHistory', () => {
   });
 
   describe('return shape', () => {
-    it('returns an array of escrow rows', async () => {
+    it('returns paginated shape with items, total, offset', async () => {
       const rows = [
         makeEscrow({ id: 'esc-1' }),
         makeEscrow({ id: 'esc-2', state: 'RELEASED' }),
       ];
-      mockDb.query.mockResolvedValueOnce({
-        rows,
-        rowCount: rows.length,
-      } as any);
+      // First call: COUNT query; second call: rows query
+      mockDb.query.mockResolvedValueOnce({ rows: [{ count: '2' }], rowCount: 1 } as any);
+      mockDb.query.mockResolvedValueOnce({ rows, rowCount: rows.length } as any);
 
       const caller = makeCaller(POSTER_ID);
       const result = await caller.getHistory({ limit: 50 });
 
-      expect(Array.isArray(result)).toBe(true);
-      expect(result).toHaveLength(2);
-      expect(result[0]).toHaveProperty('id', 'esc-1');
-      expect(result[1]).toHaveProperty('state', 'RELEASED');
+      expect(result).toHaveProperty('total', 2);
+      expect(result).toHaveProperty('offset', 0);
+      expect(Array.isArray(result.items)).toBe(true);
+      expect(result.items).toHaveLength(2);
+      expect(result.items[0]).toHaveProperty('id', 'esc-1');
+      expect(result.items[1]).toHaveProperty('state', 'RELEASED');
     });
 
-    it('returns empty array when user has no history', async () => {
-      mockDb.query.mockResolvedValueOnce({
-        rows: [],
-        rowCount: 0,
-      } as any);
+    it('returns empty items array when user has no history', async () => {
+      mockDb.query.mockResolvedValueOnce({ rows: [{ count: '0' }], rowCount: 1 } as any);
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
 
       const caller = makeCaller(POSTER_ID);
       const result = await caller.getHistory({ limit: 50 });
 
-      expect(result).toEqual([]);
+      expect(result.items).toEqual([]);
+      expect(result.total).toBe(0);
+    });
+
+    it('strips stripe_payment_intent_id for non-admin callers', async () => {
+      const rows = [makeEscrow({ id: 'esc-1', stripe_payment_intent_id: 'pi_secret_123' })];
+      mockDb.query.mockResolvedValueOnce({ rows: [{ count: '1' }], rowCount: 1 } as any);
+      mockDb.query.mockResolvedValueOnce({ rows, rowCount: rows.length } as any);
+
+      const result = await makeCaller(POSTER_ID, 'user').getHistory({ limit: 50 });
+
+      expect(result.items).toHaveLength(1);
+      expect(result.items[0]).not.toHaveProperty('stripe_payment_intent_id');
+      expect(result.items[0]).toHaveProperty('id', 'esc-1');
+    });
+
+    it('includes stripe_payment_intent_id for admin callers', async () => {
+      const rows = [makeEscrow({ id: 'esc-1', stripe_payment_intent_id: 'pi_secret_123' })];
+      mockDb.query.mockResolvedValueOnce({ rows: [{ count: '1' }], rowCount: 1 } as any);
+      mockDb.query.mockResolvedValueOnce({ rows, rowCount: rows.length } as any);
+
+      const result = await makeCaller(POSTER_ID, 'admin').getHistory({ limit: 50 });
+
+      expect(result.items).toHaveLength(1);
+      expect(result.items[0]).toHaveProperty('stripe_payment_intent_id', 'pi_secret_123');
+    });
+
+    it('strips stripe_transfer_id for non-admin callers', async () => {
+      const rows = [makeEscrow({ id: 'esc-1', stripe_transfer_id: 'tr_secret_456' })];
+      mockDb.query.mockResolvedValueOnce({ rows: [{ count: '1' }], rowCount: 1 } as any);
+      mockDb.query.mockResolvedValueOnce({ rows, rowCount: rows.length } as any);
+
+      const result = await makeCaller(POSTER_ID, 'user').getHistory({ limit: 50 });
+
+      expect(result.items).toHaveLength(1);
+      expect(result.items[0]).not.toHaveProperty('stripe_transfer_id');
+      expect(result.items[0]).toHaveProperty('id', 'esc-1');
+    });
+
+    it('includes stripe_transfer_id for admin callers', async () => {
+      const rows = [makeEscrow({ id: 'esc-1', stripe_transfer_id: 'tr_secret_456' })];
+      mockDb.query.mockResolvedValueOnce({ rows: [{ count: '1' }], rowCount: 1 } as any);
+      mockDb.query.mockResolvedValueOnce({ rows, rowCount: rows.length } as any);
+
+      const result = await makeCaller(POSTER_ID, 'admin').getHistory({ limit: 50 });
+
+      expect(result.items).toHaveLength(1);
+      expect(result.items[0]).toHaveProperty('stripe_transfer_id', 'tr_secret_456');
     });
   });
 
   describe('pagination', () => {
     it('passes limit to db.query', async () => {
+      mockDb.query.mockResolvedValueOnce({ rows: [{ count: '0' }], rowCount: 1 } as any);
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
 
       await makeCaller(POSTER_ID).getHistory({ limit: 25 });
 
-      const [sql, params] = (mockDb.query as any).mock.calls[0];
+      // Second call is the rows query; first is the COUNT
+      const [sql, params] = (mockDb.query as any).mock.calls[1];
       expect(sql).toContain('LIMIT');
       expect(params).toContain(25);
     });
 
     it('uses default limit of 50 when input is omitted', async () => {
+      mockDb.query.mockResolvedValueOnce({ rows: [{ count: '0' }], rowCount: 1 } as any);
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
 
       await makeCaller(POSTER_ID).getHistory();
 
-      const [, params] = (mockDb.query as any).mock.calls[0];
+      const [, params] = (mockDb.query as any).mock.calls[1];
       expect(params).toContain(50);
     });
   });
 
   describe('db interaction', () => {
     it('queries escrows joined with tasks for the current user', async () => {
+      mockDb.query.mockResolvedValueOnce({ rows: [{ count: '0' }], rowCount: 1 } as any);
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
 
       await makeCaller(POSTER_ID).getHistory({ limit: 10 });
 
-      const [sql, params] = (mockDb.query as any).mock.calls[0];
+      // Second call is the rows query
+      const [sql, params] = (mockDb.query as any).mock.calls[1];
       expect(sql).toContain('FROM escrows');
       expect(sql).toContain('JOIN tasks');
       expect(sql).toContain('ORDER BY');
       expect(params[0]).toBe(POSTER_ID);
     });
 
-    it('makes exactly 1 db.query call', async () => {
+    it('makes exactly 2 db.query calls (count + rows)', async () => {
+      mockDb.query.mockResolvedValueOnce({ rows: [{ count: '0' }], rowCount: 1 } as any);
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
 
       await makeCaller(POSTER_ID).getHistory({ limit: 10 });
 
-      expect(mockDb.query).toHaveBeenCalledTimes(1);
+      expect(mockDb.query).toHaveBeenCalledTimes(2);
     });
   });
 });
@@ -1050,11 +1195,12 @@ describe('escrow.getHistory', () => {
 describe('escrow.awardXP', () => {
   // Helper: mock the DB query that the router now uses to derive baseXP server-side.
   // The escrow has amount=5000 cents, so derivedBaseXP = Math.round(5000/10) = 500.
-  function mockReleasedEscrow(overrides: { amount?: number; worker_id?: string } = {}) {
+  function mockReleasedEscrow(overrides: { amount?: number; worker_id?: string; task_id?: string } = {}) {
     mockDb.query.mockResolvedValueOnce({
       rows: [{
         amount: overrides.amount ?? 5000,
         worker_id: overrides.worker_id ?? WORKER_ID,
+        task_id: overrides.task_id ?? TASK_ID,
       }],
     });
   }
@@ -1261,24 +1407,31 @@ describe('Financial Safety — cross-cutting', () => {
     expect(mockEscrowService.refund).not.toHaveBeenCalled();
   });
 
-  it('INV-2: release blocked when task is not COMPLETED (HX201 maps to PRECONDITION_FAILED)', async () => {
+  it('INV-2: release blocked when task is not COMPLETED (BUG-5 fix: router now enforces task.state check)', async () => {
+    // BUG-5 FIX: The router now checks task.state === 'COMPLETED' via db.query BEFORE
+    // calling EscrowService.release. The PRECONDITION_FAILED is thrown at the router layer.
+    // Previously this relied on the service returning HX201 (database trigger enforcement).
+    // Both paths converge on PRECONDITION_FAILED — the router check runs first.
     mockEscrowService.getById.mockResolvedValueOnce({
       success: true,
       data: makeEscrow() as any,
     });
-    mockEscrowService.release.mockResolvedValueOnce({
-      success: false,
-      error: { code: 'HX201', message: 'Task must be COMPLETED' },
-    });
+    mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_test_123', amount: 4250, metadata: { escrow_id: ESCROW_ID } });
+    // Task state + price lookup — return IN_PROGRESS state (not COMPLETED) to trigger the BUG-5 guard
+    mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'IN_PROGRESS', price: 50.00 }] }); // F-30: DECIMAL dollars
+    // Note: EscrowService.release is NOT called — router throws before reaching the service
 
     await expect(makeCaller(POSTER_ID).release({ escrowId: ESCROW_ID, stripeTransferId: 'tr_test_123' }))
       .rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+
+    // BUG-5 FIX: The service must NOT be reached when task state is not COMPLETED.
+    expect(mockEscrowService.release).not.toHaveBeenCalled();
   });
 
   it('INV-5: double XP award blocked (23505 maps to CONFLICT)', async () => {
     // Router now queries DB to derive baseXP — mock the escrow lookup first
     mockDb.query.mockResolvedValueOnce({
-      rows: [{ amount: 5000, worker_id: WORKER_ID }],
+      rows: [{ amount: 5000, worker_id: WORKER_ID, task_id: TASK_ID }],
     });
     mockXPService.awardXP.mockResolvedValueOnce({
       success: false,
@@ -1299,5 +1452,251 @@ describe('Financial Safety — cross-cutting', () => {
 
     await expect(makeCaller(OTHER_USER_ID).getById({ escrowId: ESCROW_ID }))
       .rejects.toMatchObject({ code: 'FORBIDDEN' });
+  });
+});
+
+// =============================================================================
+// SECURITY FIX v2.9.4: Stripe verification in confirmFunding and release
+// =============================================================================
+
+describe('SECURITY FIX v2.9.4 — confirmFunding: Stripe PI verification', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('throws PRECONDITION_FAILED when Stripe cannot find the payment intent (fabricated PI ID)', async () => {
+    mockEscrowService.getById.mockResolvedValueOnce({
+      success: true,
+      data: makeEscrow({ state: 'PENDING' }) as any,
+    });
+    // Simulate Stripe throwing for an unknown PI
+    mockStripePaymentIntentsRetrieve.mockRejectedValueOnce(
+      Object.assign(new Error('No such payment_intent: pi_fake_123'), { type: 'StripeInvalidRequestError' })
+    );
+
+    await expect(makeCaller(POSTER_ID).confirmFunding({
+      escrowId: ESCROW_ID,
+      stripePaymentIntentId: 'pi_fake_123',
+    })).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      message: 'Payment intent not found or could not be verified',
+    });
+
+    // EscrowService.fund must NOT be called — escrow stays PENDING
+    expect(mockEscrowService.fund).not.toHaveBeenCalled();
+  });
+
+  it('throws PRECONDITION_FAILED when PI status is not succeeded (e.g. requires_payment_method)', async () => {
+    mockEscrowService.getById.mockResolvedValueOnce({
+      success: true,
+      data: makeEscrow({ state: 'PENDING' }) as any,
+    });
+    mockStripePaymentIntentsRetrieve.mockResolvedValueOnce({
+      id: 'pi_test_pending',
+      status: 'requires_payment_method',
+      amount: 5000,
+    });
+
+    await expect(makeCaller(POSTER_ID).confirmFunding({
+      escrowId: ESCROW_ID,
+      stripePaymentIntentId: 'pi_test_pending',
+    })).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      message: expect.stringContaining('requires_payment_method'),
+    });
+
+    expect(mockEscrowService.fund).not.toHaveBeenCalled();
+  });
+
+  it('throws PRECONDITION_FAILED when PI status is processing (payment not yet confirmed)', async () => {
+    mockEscrowService.getById.mockResolvedValueOnce({
+      success: true,
+      data: makeEscrow({ state: 'PENDING' }) as any,
+    });
+    mockStripePaymentIntentsRetrieve.mockResolvedValueOnce({
+      id: 'pi_test_processing',
+      status: 'processing',
+      amount: 5000,
+    });
+
+    await expect(makeCaller(POSTER_ID).confirmFunding({
+      escrowId: ESCROW_ID,
+      stripePaymentIntentId: 'pi_test_processing',
+    })).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      message: expect.stringContaining('processing'),
+    });
+
+    expect(mockEscrowService.fund).not.toHaveBeenCalled();
+  });
+
+  it('throws PRECONDITION_FAILED when PI amount does not match escrow amount (underpayment attack)', async () => {
+    // Escrow amount is 5000 cents; attacker found a PI for 100 cents from another transaction
+    mockEscrowService.getById.mockResolvedValueOnce({
+      success: true,
+      data: makeEscrow({ state: 'PENDING', amount: 5000 }) as any,
+    });
+    mockStripePaymentIntentsRetrieve.mockResolvedValueOnce({
+      id: 'pi_recycled',
+      status: 'succeeded',
+      amount: 100, // $1 PI used to fund a $50 escrow
+    });
+
+    await expect(makeCaller(POSTER_ID).confirmFunding({
+      escrowId: ESCROW_ID,
+      stripePaymentIntentId: 'pi_recycled',
+    })).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      message: 'Payment intent amount does not match escrow amount',
+    });
+
+    expect(mockEscrowService.fund).not.toHaveBeenCalled();
+  });
+
+  it('proceeds to EscrowService.fund after Stripe verification passes', async () => {
+    mockEscrowService.getById.mockResolvedValueOnce({
+      success: true,
+      data: makeEscrow({ state: 'PENDING' }) as any,
+    });
+    mockStripePaymentIntentsRetrieve.mockResolvedValueOnce({
+      id: 'pi_real_succeeded',
+      status: 'succeeded',
+      amount: 5000,
+      metadata: { task_id: TASK_ID },
+      latest_charge: { refunded: false },
+    });
+    // LL1-C: dedup check — no other escrow uses this PI
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+    mockEscrowService.fund.mockResolvedValueOnce({
+      success: true,
+      data: makeEscrow({ state: 'FUNDED' }) as any,
+    });
+
+    const result = await makeCaller(POSTER_ID).confirmFunding({
+      escrowId: ESCROW_ID,
+      stripePaymentIntentId: 'pi_real_succeeded',
+    });
+
+    expect(mockStripePaymentIntentsRetrieve).toHaveBeenCalledWith('pi_real_succeeded', { expand: ['latest_charge'] });
+    expect(mockEscrowService.fund).toHaveBeenCalledWith({
+      escrowId: ESCROW_ID,
+      stripePaymentIntentId: 'pi_real_succeeded',
+    });
+    expect(result).toHaveProperty('state', 'FUNDED');
+  });
+});
+
+describe('SECURITY FIX v2.9.4 — release: Stripe transfer verification', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('throws PRECONDITION_FAILED when Stripe cannot find the transfer (fabricated transfer ID)', async () => {
+    mockEscrowService.getById.mockResolvedValueOnce({
+      success: true,
+      data: makeEscrow({ state: 'FUNDED' }) as any,
+    });
+    // Simulate Stripe throwing for an unknown transfer
+    mockStripeTransfersRetrieve.mockRejectedValueOnce(
+      Object.assign(new Error('No such transfer: tr_fake_123'), { type: 'StripeInvalidRequestError' })
+    );
+
+    await expect(makeCaller(POSTER_ID).release({
+      escrowId: ESCROW_ID,
+      stripeTransferId: 'tr_fake_123',
+    })).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      message: 'Stripe transfer not found or could not be verified',
+    });
+
+    // EscrowService.release must NOT be called — escrow stays FUNDED
+    expect(mockEscrowService.release).not.toHaveBeenCalled();
+  });
+
+  it('throws PRECONDITION_FAILED when transfer amount is zero or negative', async () => {
+    mockEscrowService.getById.mockResolvedValueOnce({
+      success: true,
+      data: makeEscrow({ state: 'FUNDED' }) as any,
+    });
+    mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_zero', amount: 0 });
+
+    await expect(makeCaller(POSTER_ID).release({
+      escrowId: ESCROW_ID,
+      stripeTransferId: 'tr_zero',
+    })).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      message: 'Stripe transfer amount is not consistent with escrow amount',
+    });
+
+    expect(mockEscrowService.release).not.toHaveBeenCalled();
+  });
+
+  it('throws PRECONDITION_FAILED when transfer amount exceeds escrow amount (inflated transfer attack)', async () => {
+    // Escrow is 5000 cents; transfer claims 99999 cents — impossible without fraud
+    mockEscrowService.getById.mockResolvedValueOnce({
+      success: true,
+      data: makeEscrow({ state: 'FUNDED', amount: 5000 }) as any,
+    });
+    mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_inflated', amount: 99999 });
+
+    await expect(makeCaller(POSTER_ID).release({
+      escrowId: ESCROW_ID,
+      stripeTransferId: 'tr_inflated',
+    })).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      message: 'Stripe transfer amount is not consistent with escrow amount',
+    });
+
+    expect(mockEscrowService.release).not.toHaveBeenCalled();
+  });
+
+  it('proceeds to EscrowService.release after Stripe verification passes', async () => {
+    mockEscrowService.getById.mockResolvedValueOnce({
+      success: true,
+      data: makeEscrow({ state: 'FUNDED' }) as any,
+    });
+    // Valid transfer: amount is 4250 (platform fee 15% deducted from 5000)
+    mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_real_123', amount: 4250, metadata: { escrow_id: ESCROW_ID } });
+    // Task state + price lookup (router checks state=COMPLETED first, then price for 80% floor)
+    mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'COMPLETED', price: 50.00 }] }); // F-30: DECIMAL dollars
+    mockEscrowService.release.mockResolvedValueOnce({
+      success: true,
+      data: makeEscrow({ state: 'RELEASED' }) as any,
+    });
+
+    const result = await makeCaller(POSTER_ID).release({
+      escrowId: ESCROW_ID,
+      stripeTransferId: 'tr_real_123',
+    });
+
+    expect(mockStripeTransfersRetrieve).toHaveBeenCalledWith('tr_real_123');
+    expect(mockEscrowService.release).toHaveBeenCalledWith({
+      escrowId: ESCROW_ID,
+      stripeTransferId: 'tr_real_123',
+    });
+    expect(result).toHaveProperty('state', 'RELEASED');
+  });
+
+  it('accepts transfer equal to full escrow amount (no platform fee deducted)', async () => {
+    // Some releases may transfer the full amount (dispute resolution, etc.)
+    mockEscrowService.getById.mockResolvedValueOnce({
+      success: true,
+      data: makeEscrow({ state: 'FUNDED', amount: 5000 }) as any,
+    });
+    mockStripeTransfersRetrieve.mockResolvedValueOnce({ id: 'tr_full', amount: 5000, metadata: { escrow_id: ESCROW_ID } });
+    // Task state + price lookup (router checks state=COMPLETED first, then price for 80% floor)
+    mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'COMPLETED', price: 50.00 }] }); // F-30: DECIMAL dollars
+    mockEscrowService.release.mockResolvedValueOnce({
+      success: true,
+      data: makeEscrow({ state: 'RELEASED' }) as any,
+    });
+
+    const result = await makeCaller(POSTER_ID).release({
+      escrowId: ESCROW_ID,
+      stripeTransferId: 'tr_full',
+    });
+
+    expect(result).toHaveProperty('state', 'RELEASED');
+    expect(mockEscrowService.release).toHaveBeenCalled();
   });
 });

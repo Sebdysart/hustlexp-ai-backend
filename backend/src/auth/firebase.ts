@@ -31,6 +31,13 @@ export async function verifyIdToken(token: string, checkRevoked: boolean = true)
   return auth.verifyIdToken(token, checkRevoked);
 }
 
+export const revokeFirebaseRefreshTokens = async (uid: string): Promise<void> => {
+  if (!auth) {
+    throw new Error("Firebase Admin is not configured — cannot revoke refresh tokens");
+  }
+  await auth.revokeRefreshTokens(uid);
+};
+
 /** Load Firebase Auth user record (email, displayName) for lazy DB provisioning. */
 export async function getFirebaseUserRecord(uid: string): Promise<UserRecord> {
   if (!auth) {

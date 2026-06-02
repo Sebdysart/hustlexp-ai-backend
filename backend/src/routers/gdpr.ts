@@ -30,7 +30,11 @@ export const gdprRouter = router({
       requestType: z.enum(['export', 'deletion', 'rectification', 'restriction']),
       exportFormat: z.enum(['json', 'csv', 'pdf']).optional(), // Required for 'export'
       scope: z.array(z.string().max(50)).max(20).optional(), // Optional: specific data categories for export
-      requestDetails: z.record(z.any()).optional(), // Optional JSONB details
+      requestDetails: z.record(z.string().max(64), z.string().max(512)).superRefine((val, ctx) => {
+        if (Object.keys(val).length > 10) {
+          ctx.addIssue({ code: 'too_big', type: 'array', maximum: 10, inclusive: true, message: 'requestDetails must have at most 10 entries' });
+        }
+      }).optional(), // Optional JSONB details — bounded keys/values
     }))
     .mutation(async ({ input, ctx }) => {
       if (!ctx.user) {
@@ -198,11 +202,20 @@ export const gdprRouter = router({
    */
   updateConsent: protectedProcedure
     .input(z.object({
-      consentType: z.string().min(1).max(50), // VARCHAR(50) in schema
-      purpose: z.string().min(1), // Required in schema (TEXT)
+      consentType: z.enum([
+        'marketing',
+        'analytics',
+        'location',
+        'notifications',
+        'profiling',
+        'account_creation',
+        'email_notifications',
+        'biometric_data',
+      ]), // Restricted to known valid types — prevents consent record pollution
+      purpose: z.string().min(1).max(500), // Required in schema (TEXT) — max 500 chars
       granted: z.boolean(), // true = grant, false = revoke/withdraw
-      ipAddress: z.string().optional(), // Optional IP address for audit
       userAgent: z.string().optional(), // Optional user agent for audit
+      // ipAddress intentionally removed from input — derived server-side from ctx.ip
     }))
     .mutation(async ({ input, ctx }) => {
       if (!ctx.user) {
@@ -211,13 +224,13 @@ export const gdprRouter = router({
           message: 'Authentication required',
         });
       }
-      
+
       const result = await GDPRService.updateConsent({
         userId: ctx.user.id,
         consentType: input.consentType,
         purpose: input.purpose,
         granted: input.granted,
-        ipAddress: input.ipAddress,
+        ipAddress: ctx.ip ?? undefined, // Server-derived, never caller-supplied
         userAgent: input.userAgent,
       });
       

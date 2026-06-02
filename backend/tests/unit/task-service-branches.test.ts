@@ -181,10 +181,11 @@ describe('TaskService.getByPoster — cursor pagination', () => {
 
   it('uses cursor-based query when cursor is provided', async () => {
     const cursorTs = '2024-01-14T10:00:00.000Z';
+    const cursorId = 'task-2';
     const tasks = [makeTask({ id: 'task-2', created_at: new Date('2024-01-13T10:00:00Z') })];
     mockQuery.mockResolvedValueOnce({ rows: tasks, rowCount: 1 } as never);
 
-    const result = await TaskService.getByPoster('poster-1', { cursor: cursorTs, limit: 20 });
+    const result = await TaskService.getByPoster('poster-1', { cursor: `${cursorTs}|${cursorId}`, limit: 20 });
 
     expect(result.success).toBe(true);
     expect(result.data?.tasks).toHaveLength(1);
@@ -227,9 +228,10 @@ describe('TaskService.getByWorker — cursor pagination', () => {
 
   it('uses cursor-based query when cursor is provided', async () => {
     const cursorTs = '2024-01-13T10:00:00.000Z';
+    const cursorId = 'task-3';
     mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
 
-    await TaskService.getByWorker('worker-1', { cursor: cursorTs, limit: 20 });
+    await TaskService.getByWorker('worker-1', { cursor: `${cursorTs}|${cursorId}`, limit: 20 });
 
     const callArgs = mockQuery.mock.calls[0];
     expect(callArgs[1]).toContain(cursorTs);
@@ -433,14 +435,16 @@ describe('TaskService.advanceProgress — escrow terminal freeze', () => {
   it('returns INVALID_STATE when escrow is in terminal state RELEASED', async () => {
     // Sequence inside transaction:
     // 1. FOR UPDATE task select
-    // 2. disputes SELECT → empty (no active dispute)
-    // 3. escrows SELECT → escrow with state='RELEASED' (terminal)
+    // 2. disputes SELECT SKIP LOCKED → empty (no active dispute)
+    // 3. disputes COUNT → 0 (BUG3 fix: double-checks for locked dispute rows)
+    // 4. escrows SELECT FOR SHARE → escrow with state='RELEASED' (terminal)
     mockQuery
       .mockResolvedValueOnce({
         rows: [{ id: 'task-1', poster_id: 'poster-1', worker_id: 'worker-1', progress_state: 'ACCEPTED', state: 'ACCEPTED' }],
         rowCount: 1,
       } as never)
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // no disputes
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // no disputes (SKIP LOCKED)
+      .mockResolvedValueOnce({ rows: [{ count: '0' }], rowCount: 1 } as never) // dispute COUNT = 0
       .mockResolvedValueOnce({ rows: [{ state: 'RELEASED' }], rowCount: 1 } as never); // terminal escrow
 
     const result = await TaskService.advanceProgress({
@@ -465,15 +469,17 @@ describe('TaskService.advanceProgress — success', () => {
 
     // Sequence:
     // 1. FOR UPDATE task select (progress_state='ACCEPTED', worker_id='worker-1')
-    // 2. disputes SELECT → empty
-    // 3. escrows SELECT → empty
-    // 4. UPDATE task SET progress_state='TRAVELING' → returns updated task
+    // 2. disputes SELECT SKIP LOCKED → empty
+    // 3. disputes COUNT → 0 (BUG3 fix: double-checks for locked dispute rows)
+    // 4. escrows SELECT FOR SHARE → empty (no escrow)
+    // 5. UPDATE task SET progress_state='TRAVELING' → returns updated task
     mockQuery
       .mockResolvedValueOnce({
         rows: [{ id: 'task-1', poster_id: 'poster-1', worker_id: 'worker-1', progress_state: 'ACCEPTED', state: 'ACCEPTED' }],
         rowCount: 1,
       } as never)
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)  // no disputes
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)  // no disputes (SKIP LOCKED)
+      .mockResolvedValueOnce({ rows: [{ count: '0' }], rowCount: 1 } as never) // dispute COUNT = 0
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)  // no escrow
       .mockResolvedValueOnce({ rows: [updatedTask], rowCount: 1 } as never); // UPDATE result
 

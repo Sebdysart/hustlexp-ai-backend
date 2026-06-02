@@ -695,7 +695,6 @@ describe('SPEC ALIGNMENT: Trust Tier Promotion Thresholds (PRODUCT_SPEC §8.2)',
       db.query
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ trust_tier: 3 }] }) // getTrustTier
         .mockResolvedValueOnce({ rows: [{ account_age_days: 60 }] }) // account age
-        .mockResolvedValueOnce({ rows: [{ current_database: 'test', current_schema: 'public', worker_id_exists: true }] }) // query context diagnostic
         .mockResolvedValueOnce({ rows: [{ completed_count: '50' }] }) // stats
         .mockResolvedValueOnce({ rows: [{ distinct_posters: '10' }] }) // reviews
         .mockResolvedValueOnce({ rows: [{ has_deposit: true }] }) // deposit
@@ -711,7 +710,6 @@ describe('SPEC ALIGNMENT: Trust Tier Promotion Thresholds (PRODUCT_SPEC §8.2)',
       db.query
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ trust_tier: 3 }] })
         .mockResolvedValueOnce({ rows: [{ account_age_days: 60 }] })
-        .mockResolvedValueOnce({ rows: [{ current_database: 'test', current_schema: 'public', worker_id_exists: true }] })
         .mockResolvedValueOnce({ rows: [{ completed_count: '100' }] })
         .mockResolvedValueOnce({ rows: [{ distinct_posters: '10' }] })
         .mockResolvedValueOnce({ rows: [{ has_deposit: true }] })
@@ -727,7 +725,6 @@ describe('SPEC ALIGNMENT: Trust Tier Promotion Thresholds (PRODUCT_SPEC §8.2)',
       db.query
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ trust_tier: 3 }] })
         .mockResolvedValueOnce({ rows: [{ account_age_days: 60 }] })
-        .mockResolvedValueOnce({ rows: [{ current_database: 'test', current_schema: 'public', worker_id_exists: true }] })
         .mockResolvedValueOnce({ rows: [{ completed_count: '100' }] })
         .mockResolvedValueOnce({ rows: [{ distinct_posters: '10' }] })
         .mockResolvedValueOnce({ rows: [{ has_deposit: true }] })

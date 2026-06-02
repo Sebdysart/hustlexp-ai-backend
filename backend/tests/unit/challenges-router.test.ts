@@ -138,9 +138,14 @@ describe('challenges router', () => {
   // =========================================================================
   describe('updateProgress', () => {
     it('updates progress and returns completed=true when target reached', async () => {
-      // Challenge lookup
+      // Challenge lookup — use complete_task so server-side verification runs
       mockDb.query.mockResolvedValueOnce({
-        rows: [{ target_value: 3, xp_reward: 20 }],
+        rows: [{ target_value: 3, xp_reward: 20, challenge_type: 'complete_task' }],
+        rowCount: 1,
+      } as any);
+      // Server verification: 3 actual completed tasks today
+      mockDb.query.mockResolvedValueOnce({
+        rows: [{ completed_tasks: '3' }],
         rowCount: 1,
       } as any);
       // Upsert progress
@@ -174,14 +179,67 @@ describe('challenges router', () => {
       expect(result.xpReward).toBe(0);
     });
 
-    it('throws NOT_FOUND when challenge does not exist', async () => {
+    it('throws NOT_FOUND when challenge does not exist or is not active today', async () => {
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
 
       const caller = makeCaller();
       await expect(caller.updateProgress({
         challengeId: CHALLENGE_ID,
         progress: 1,
-      })).rejects.toThrow('Challenge not found');
+      })).rejects.toThrow("Challenge not found or is not today's active challenge");
+    });
+
+    it('caps progress at actual completed tasks for complete_task type', async () => {
+      // Challenge lookup returns complete_task type
+      mockDb.query.mockResolvedValueOnce({
+        rows: [{ target_value: 3, xp_reward: 20, challenge_type: 'complete_task' }],
+        rowCount: 1,
+      } as any);
+      // Server verification: only 1 actual completed task today
+      mockDb.query.mockResolvedValueOnce({
+        rows: [{ completed_tasks: '1' }],
+        rowCount: 1,
+      } as any);
+      // Upsert
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
+
+      const caller = makeCaller();
+      const result = await caller.updateProgress({
+        challengeId: CHALLENGE_ID,
+        progress: 3, // client claims 3 but only 1 verified
+      });
+
+      expect(result.completed).toBe(false);
+      expect(result.xpReward).toBe(0);
+    });
+
+    it('caps fast_completion progress using duration filter', async () => {
+      // Challenge lookup returns fast_completion type
+      mockDb.query.mockResolvedValueOnce({
+        rows: [{ target_value: 1, xp_reward: 15, challenge_type: 'fast_completion' }],
+        rowCount: 1,
+      } as any);
+      // Server verification: 1 task completed within 30 minutes today
+      mockDb.query.mockResolvedValueOnce({
+        rows: [{ completed_tasks: '1' }],
+        rowCount: 1,
+      } as any);
+      // Upsert
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
+
+      const caller = makeCaller();
+      const result = await caller.updateProgress({
+        challengeId: CHALLENGE_ID,
+        progress: 1,
+      });
+
+      expect(result.completed).toBe(true);
+      expect(result.xpReward).toBe(15);
+
+      // Verify the fast_completion query included the duration filter
+      const fastCompletionCall = (mockDb.query as any).mock.calls[1];
+      expect(fastCompletionCall[0]).toContain('accepted_at');
+      expect(fastCompletionCall[0]).toContain('30 minutes');
     });
   });
 });

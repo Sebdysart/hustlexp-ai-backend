@@ -354,6 +354,8 @@ describe('squad.respondToInvite', () => {
           rowCount: 1,
         })
         .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // UPDATE invite status
+        .mockResolvedValueOnce({ rows: [{ status: 'active', max_members: 5 }], rowCount: 1 }) // R-05: squad active check
+        .mockResolvedValueOnce({ rows: [{ cnt: '2' }], rowCount: 1 }) // R-02: capacity check
         .mockResolvedValueOnce({ rows: [], rowCount: 1 }); // INSERT member
       return fn(txQuery);
     });
@@ -429,8 +431,15 @@ describe('squad.disband', () => {
   });
 
   it('updates status to disbanded and returns success', async () => {
+    // Organizer check (outside transaction)
     mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'org' }], rowCount: 1 } as any);
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any); // UPDATE
+    // R-04: disband now uses transaction — active tasks count + UPDATE
+    mockDb.transaction.mockImplementationOnce(async (fn: any) => {
+      const txQuery = vi.fn()
+        .mockResolvedValueOnce({ rows: [{ cnt: '0' }], rowCount: 1 }) // no active tasks
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 }); // UPDATE squads
+      return fn(txQuery);
+    });
 
     const result = await makeEliteCaller().disband({ squadId: SQUAD_UUID });
     expect(result.success).toBe(true);
@@ -479,6 +488,8 @@ describe('squad.acceptTask', () => {
           rowCount: 1,
         })
         .mockResolvedValueOnce({ rows: [{ id: 'member-row' }], rowCount: 1 })
+        // Self-dealing guard: poster_id is different from the caller → allowed
+        .mockResolvedValueOnce({ rows: [{ poster_id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' }], rowCount: 1 })
         .mockResolvedValueOnce({ rows: [{ id: 'worker-row', accepted_at: new Date() }], rowCount: 1 })
         .mockResolvedValueOnce({ rows: [{ count: '1' }], rowCount: 1 }); // count < required
       return fn(txQuery);
@@ -496,6 +507,8 @@ describe('squad.acceptTask', () => {
           rowCount: 1,
         })
         .mockResolvedValueOnce({ rows: [{ id: 'member-row' }], rowCount: 1 })
+        // Self-dealing guard: poster_id is different from the caller → allowed
+        .mockResolvedValueOnce({ rows: [{ poster_id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' }], rowCount: 1 })
         .mockResolvedValueOnce({ rows: [{ id: 'worker-row', accepted_at: new Date() }], rowCount: 1 })
         .mockResolvedValueOnce({ rows: [{ count: '2' }], rowCount: 1 }) // count >= required
         .mockResolvedValueOnce({ rows: [], rowCount: 1 }); // UPDATE status to ready

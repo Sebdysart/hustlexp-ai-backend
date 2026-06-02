@@ -47,6 +47,7 @@ export interface XPLedgerEntry {
   streak_multiplier: number;
   trust_multiplier: number;      // SPEC ALIGNMENT: replaced decay_factor
   live_mode_multiplier: number;  // SPEC ALIGNMENT: 1.25× for Live tasks
+  surge_multiplier: number;      // M5 FIX: stored for full audit trail
   effective_xp: number;
   reason: string;
   user_xp_before: number;
@@ -69,6 +70,7 @@ interface XPCalculation {
   streakMultiplier: number;
   trustMultiplier: number;       // SPEC ALIGNMENT: replaced decayFactor
   liveModeMultiplier: number;    // SPEC ALIGNMENT: 1.25× for Live tasks
+  surgeMultiplier: number;       // Bug 3b fix: Instant Surge Level 2+ bonus (up to 2.0×)
   effectiveXP: number;
 }
 
@@ -133,18 +135,40 @@ function getLiveModeMultiplier(isLiveMode: boolean): number {
 }
 
 /**
+ * Instant Surge XP multiplier (Instant Surge Incentives v1)
+ *
+ * Bug 3b fix: Surge Level 2 awards 2.0× XP as the XP boost incentive for hustlers
+ * who accept a task that has been waiting 120+ seconds for a match.
+ * Surge Level 1 and 0 award no bonus (1.0×).
+ * Surge Level 3 is a graceful-fail transition to OPEN — no XP bonus needed.
+ *
+ * @see instant-surge-worker.ts — surge_level 2 comment: "XP boost increase to 2.0x cap"
+ */
+function getSurgeMultiplier(surgeLevel: number): number {
+  if (surgeLevel >= 2) return 2.0;
+  return 1.0;
+}
+
+/**
  * Calculate effective XP (PRODUCT_SPEC §5.2)
  *
- * SPEC FORMULA: effective_xp = base_xp × streak_multiplier × trust_multiplier
+ * SPEC FORMULA: effective_xp = base_xp × streak_multiplier × trust_multiplier × live_mode_multiplier × surge_multiplier
  * Rounding: truncate toward zero
+ *
+ * MM11: Combined multiplier is capped at 5.0× to prevent runaway XP awards from
+ * fully-stacked params (streak 2.0 × trust 2.0 × live 1.25 × surge 2.0 = 10.0×).
  */
 function calculateEffectiveXP(
   baseXP: number,
   streakMultiplier: number,
   trustMultiplier: number,
-  liveModeMultiplier: number = 1.0
+  liveModeMultiplier: number = 1.0,
+  surgeMultiplier: number = 1.0
 ): number {
-  return Math.floor(baseXP * streakMultiplier * trustMultiplier * liveModeMultiplier);
+  const MAX_COMBINED_MULTIPLIER = 5.0; // max 5× regardless of stacking
+  const rawMultiplier = streakMultiplier * trustMultiplier * liveModeMultiplier * surgeMultiplier;
+  const effectiveMultiplier = Math.min(rawMultiplier, MAX_COMBINED_MULTIPLIER);
+  return Math.floor(baseXP * effectiveMultiplier);
 }
 
 /**
@@ -197,21 +221,24 @@ export const XPService = {
 
       const user = userResult.rows[0];
 
-      // Check if task is Live Mode (for 1.25× multiplier)
+      // Check if task is Live Mode (for 1.25× multiplier) and surge_level (for surge bonus)
       let isLiveMode = false;
+      let surgeLevel = 0;
       if (taskId) {
-        const taskResult = await db.query<{ mode: string }>(
-          'SELECT mode FROM tasks WHERE id = $1',
+        const taskResult = await db.query<{ mode: string; surge_level: number }>(
+          'SELECT mode, COALESCE(surge_level, 0) AS surge_level FROM tasks WHERE id = $1',
           [taskId]
         );
         isLiveMode = taskResult.rows[0]?.mode === 'LIVE';
+        surgeLevel = taskResult.rows[0]?.surge_level ?? 0;
       }
 
-      // SPEC FORMULA: effective_xp = base_xp × streak_multiplier × trust_multiplier
+      // SPEC FORMULA: effective_xp = base_xp × streak_multiplier × trust_multiplier × live_mode_multiplier × surge_multiplier
       const streakMultiplier = getStreakMultiplier(user.current_streak);
       const trustMultiplier = getTrustMultiplier(user.trust_tier);
       const liveModeMultiplier = getLiveModeMultiplier(isLiveMode);
-      const effectiveXP = calculateEffectiveXP(baseXP, streakMultiplier, trustMultiplier, liveModeMultiplier);
+      const surgeMultiplier = getSurgeMultiplier(surgeLevel);
+      const effectiveXP = calculateEffectiveXP(baseXP, streakMultiplier, trustMultiplier, liveModeMultiplier, surgeMultiplier);
 
       return {
         success: true,
@@ -220,6 +247,7 @@ export const XPService = {
           streakMultiplier,
           trustMultiplier,
           liveModeMultiplier,
+          surgeMultiplier,
           effectiveXP,
         },
       };
@@ -292,29 +320,59 @@ export const XPService = {
 
         const user = userResult.rows[0];
 
-        // Check if task is Live Mode (for 1.25× multiplier)
-        const taskResult = await query<{ mode: string }>(
-          'SELECT mode FROM tasks WHERE id = $1',
+        // Check if task is Live Mode (for 1.25× multiplier) and surge_level (for surge bonus)
+        const taskResult = await query<{ mode: string; surge_level: number }>(
+          'SELECT mode, COALESCE(surge_level, 0) AS surge_level FROM tasks WHERE id = $1',
           [taskId]
         );
         const isLiveMode = taskResult.rows[0]?.mode === 'LIVE';
+        const surgeLevel = taskResult.rows[0]?.surge_level ?? 0;
 
-        // SPEC FORMULA: effective_xp = base_xp × streak_multiplier × trust_multiplier × live_mode_multiplier
+        // SPEC FORMULA: effective_xp = base_xp × streak_multiplier × trust_multiplier × live_mode_multiplier × surge_multiplier
         const streakMultiplier = getStreakMultiplier(user.current_streak);
         const trustMultiplier = getTrustMultiplier(user.trust_tier);
         const liveModeMultiplier = getLiveModeMultiplier(isLiveMode);
-        const effectiveXP = calculateEffectiveXP(baseXP, streakMultiplier, trustMultiplier, liveModeMultiplier);
+        const surgeMultiplier = getSurgeMultiplier(surgeLevel);
+        const effectiveXP = calculateEffectiveXP(baseXP, streakMultiplier, trustMultiplier, liveModeMultiplier, surgeMultiplier);
+
+        // MM3: Re-check velocity INSIDE the serializable transaction so that concurrent
+        // requests cannot all see the pre-commit count and all proceed. The FOR UPDATE
+        // row lock above ensures serialized user access; this COUNT sees committed rows
+        // under the same SERIALIZABLE isolation, making the velocity gate race-free.
+        const VELOCITY_BLOCK_THRESHOLD = 3000;
+        const inTxVelocityResult = await query<{ count: string }>(
+          `SELECT COUNT(*) as count FROM xp_ledger
+           WHERE user_id = $1 AND awarded_at > NOW() - INTERVAL '1 hour'`,
+          [userId]
+        );
+        const inTxRecentEvents = parseInt(inTxVelocityResult.rows[0]?.count ?? '0', 10);
+        if (inTxRecentEvents > 5 && baseXP > VELOCITY_BLOCK_THRESHOLD) {
+          return {
+            success: false as const,
+            error: {
+              code: 'XP_VELOCITY_EXCEEDED',
+              message: 'XP_VELOCITY_EXCEEDED: Award blocked due to suspicious velocity pattern',
+            },
+          };
+        }
 
         // Anti-farming: Check daily XP cap using effectiveXP (post-multiplier) so cap
         // cannot be exceeded when streak/trust/live multipliers inflate the award.
         // FIX: was checking baseXP pre-multiplier — cap could be bypassed up to 5×.
-        const capCheck = await XPService.checkDailyXPCap(userId, effectiveXP);
-        if (!capCheck.allowed) {
+        //
+        // H6 FIX: Use a read-only probe (xpAmount=0) here so that no Redis INCRBY
+        // fires inside the serializable transaction. On a serializable retry the INCRBY
+        // was firing again for the same logical award, double-counting the cap.
+        // The actual INCRBY is deferred to after db.serializableTransaction() returns
+        // successfully, ensuring at-most-once semantics even under retry.
+        const capProbe = await XPService.checkDailyXPCap(userId, 0);
+        const wouldExceedCap = capProbe.earned + effectiveXP > DAILY_XP_CAP;
+        if (wouldExceedCap) {
           return {
             success: false as const,
             error: {
               code: 'XP_DAILY_CAP',
-              message: `Daily XP cap reached (${capCheck.cap} XP). Try again tomorrow.`,
+              message: `Daily XP cap reached (${capProbe.cap} XP). Try again tomorrow.`,
             },
           };
         }
@@ -328,19 +386,20 @@ export const XPService = {
         // Insert XP ledger entry
         // INV-1: Trigger will check escrow is RELEASED
         // INV-5: UNIQUE constraint will prevent duplicates
+        // M5 FIX: surge_multiplier is now stored so every award is fully auditable.
         const ledgerResult = await query<XPLedgerEntry>(
           `INSERT INTO xp_ledger (
             user_id, task_id, escrow_id,
-            base_xp, streak_multiplier, trust_multiplier, live_mode_multiplier, effective_xp,
+            base_xp, streak_multiplier, trust_multiplier, live_mode_multiplier, surge_multiplier, effective_xp,
             reason,
             user_xp_before, user_xp_after,
             user_level_before, user_level_after,
             user_streak_at_award
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
           RETURNING *`,
           [
             userId, taskId, escrowId,
-            baseXP, streakMultiplier, trustMultiplier, liveModeMultiplier, effectiveXP,
+            baseXP, streakMultiplier, trustMultiplier, liveModeMultiplier, surgeMultiplier, effectiveXP,
             'task_completion',
             user.xp_total, newXPTotal,
             user.current_level, newLevel,
@@ -364,6 +423,36 @@ export const XPService = {
         return { success: true as const, data: ledgerResult.rows[0] };
       });
       
+      // H6 FIX: Commit the Redis daily-cap INCRBY AFTER the DB transaction has
+      // committed successfully. This prevents double-counting on serializable retries —
+      // the INCRBY now fires at most once per logical award event.
+      // Only runs when Redis is configured; DB-fallback path needs no action here
+      // because the xp_ledger INSERT (now committed) is already counted by the
+      // DB-fallback SUM query used in subsequent cap probes.
+      if (result.success && effectiveXPAwarded > 0) {
+        const redis = getXPRedis();
+        if (redis) {
+          try {
+            const capResult = await XPService.checkDailyXPCap(userId, effectiveXPAwarded);
+            if (!capResult.allowed) {
+              // Overage detected — checkDailyXPCap already rolled back Redis via DECRBY.
+              // Log a warning so we can detect race conditions that slipped past the
+              // in-transaction probe (e.g. two concurrent awards both committed before
+              // either post-commit INCRBY fired).
+              log.warn(
+                { userId, effectiveXPAwarded, earned: capResult.earned, cap: capResult.cap },
+                'XP cap overage detected post-commit — Redis corrected via DECRBY rollback'
+              );
+            }
+          } catch {
+            // Non-fatal: cap counter may be slightly off if Redis is flaky.
+            // The DB-fallback inside checkDailyXPCap will compensate on the
+            // next award attempt if Redis is unavailable at that point.
+            log.warn({ userId, effectiveXPAwarded }, 'Post-commit Redis cap INCRBY failed — cap may be under-counted');
+          }
+        }
+      }
+
       // Alpha Instrumentation: Emit trust delta applied for XP
       // Note: This happens outside the transaction to avoid blocking XP award
       // The try-catch ensures silent failure
@@ -463,16 +552,29 @@ export const XPService = {
   },
 
   /**
-   * Get XP history for user
+   * Get XP history for user (paginated)
+   *
+   * Returns { items, total, offset } to prevent DoS/OOM from fetching unbounded
+   * ledger history. Default limit=50, max=100 enforced at the router layer.
    */
-  getHistory: async (userId: string): Promise<ServiceResult<XPLedgerEntry[]>> => {
+  getHistory: async (
+    userId: string,
+    limit: number = 50,
+    offset: number = 0
+  ): Promise<ServiceResult<{ items: XPLedgerEntry[]; total: number; offset: number }>> => {
     try {
-      const result = await db.query<XPLedgerEntry>(
-        'SELECT * FROM xp_ledger WHERE user_id = $1 ORDER BY awarded_at DESC',
+      const totalResult = await db.query<{ count: string }>(
+        'SELECT COUNT(*)::text as count FROM xp_ledger WHERE user_id = $1',
         [userId]
       );
-      
-      return { success: true, data: result.rows };
+      const total = parseInt(totalResult.rows[0]?.count ?? '0', 10);
+
+      const result = await db.query<XPLedgerEntry>(
+        'SELECT * FROM xp_ledger WHERE user_id = $1 ORDER BY awarded_at DESC LIMIT $2 OFFSET $3',
+        [userId, limit, offset]
+      );
+
+      return { success: true, data: { items: result.rows, total, offset } };
     } catch (error) {
       return {
         success: false,
@@ -526,10 +628,15 @@ export const XPService = {
     if (!redis) {
       // Redis absent — fall back to DB query so cap is always enforced
       try {
+        // MM7: Use explicit UTC date truncation so the DB day boundary matches the
+        // UTC-keyed Redis date string. CURRENT_DATE reflects the DB server's local
+        // timezone which may differ from UTC, causing split-brain between Redis and DB.
         const result = await db.query<{ total: string }>(
           `SELECT COALESCE(SUM(effective_xp), 0) as total
            FROM xp_ledger
-           WHERE user_id = $1 AND awarded_at::date = CURRENT_DATE`,
+           WHERE user_id = $1
+             AND awarded_at >= DATE_TRUNC('day', NOW() AT TIME ZONE 'UTC')
+             AND awarded_at <  DATE_TRUNC('day', NOW() AT TIME ZONE 'UTC') + INTERVAL '1 day'`,
           [userId]
         );
         const totalToday = parseInt(result.rows[0]?.total ?? '0', 10);
@@ -564,7 +671,12 @@ export const XPService = {
       // Because INCRBY is atomic, no other concurrent call can observe an intermediate
       // state — this eliminates the TOCTOU gap between the old GET + later INCRBY pattern.
       const newTotal = Number(await redis.incrby(key, xpAmount));
-      await redis.expire(key, 86400);
+      // MM7: Use EXPIREAT at next UTC midnight instead of EXPIRE 86400 so that the TTL
+      // always aligns with the calendar day boundary regardless of when the key was first
+      // written. A rolling 86400s window would let a key created at 23:59 survive until
+      // 23:59 the next day, accumulating two days worth of XP under one cap.
+      const nextMidnightUtc = Math.floor(new Date(new Date().toISOString().split('T')[0] + 'T24:00:00.000Z').getTime() / 1000);
+      await redis.expireat(key, nextMidnightUtc);
 
       if (newTotal > DAILY_XP_CAP) {
         // Roll back: this award would exceed the cap — undo the increment
@@ -615,8 +727,12 @@ export const XPService = {
       );
       const recentEvents = parseInt(result.rows[0]?.count || '0', 10);
       return { suspicious: recentEvents > 5, recentEvents };
-    } catch {
-      return { suspicious: false, recentEvents: 0 };
+    } catch (err) {
+      // MM5: Fail CLOSED — returning suspicious:false on DB error would disable velocity
+      // enforcement during DB stress, allowing unlimited XP farming. Return suspicious:true
+      // so the caller blocks large awards until the DB recovers.
+      logger.error('checkVelocity DB error — failing closed', { err, userId });
+      return { suspicious: true, recentEvents: 999 };
     }
   },
 
@@ -630,87 +746,106 @@ export const XPService = {
    * FIX 3: Closes the dispute-then-refund free-XP exploit.
    */
   clawbackXP: async (userId: string, escrowId: string, reason: string, fraction = 1.0): Promise<void> => {
-    // Find the original XP award for this escrow — fetch base_xp too so we can
-    // record the fraction-adjusted debit accurately in the ledger.
-    const award = await db.query<{ id: string; base_xp: number; effective_xp: number; task_id: string }>(
-      `SELECT id, base_xp, effective_xp, task_id FROM xp_ledger
-       WHERE user_id = $1 AND escrow_id = $2
-       ORDER BY awarded_at DESC LIMIT 1`,
-      [userId, escrowId]
-    );
-    if (award.rows.length === 0) {
-      // No XP was ever awarded for this escrow — nothing to clawback
-      log.info({ userId, escrowId, reason }, 'XP clawback: no award found for escrow, skipping');
-      return;
-    }
-
-    // REG-10 FIX: Apply fraction to support partial clawback (e.g. 60% for partial dispute).
-    // Clamp to [0, 1] to guard against bad callers.
-    const clampedFraction = Math.min(1, Math.max(0, fraction));
-    const xpToDeduct = Math.round(award.rows[0].effective_xp * clampedFraction);
-    if (xpToDeduct === 0) return;
-    const taskId = award.rows[0].task_id;
-
-    // BUG FIX: Compute fraction-adjusted base_xp for the ledger debit entry.
-    // Previously the INSERT used -base_xp (full amount) even for partial clawbacks,
-    // causing the ledger to record -1000 XP when only 600 XP was actually deducted.
-    const adjustedBaseXP = -Math.round(award.rows[0].base_xp * clampedFraction);
-    const adjustedEffectiveXP = -xpToDeduct;
-
-    // Insert a debit entry (negative effective_xp) to preserve ledger immutability (INV-4).
-    // SECURITY FIX: ON CONFLICT DO NOTHING RETURNING makes this idempotent — if the
-    // (user_id, escrow_id, reason) clawback row already exists (e.g. on retry), the
-    // INSERT silently no-ops and rowCount=0 signals "already applied" rather than
-    // swallowing a real unique-constraint error as a false success.
-    const clawbackInsert = await db.query<{ id: string }>(
-      `INSERT INTO xp_ledger (
-        user_id, task_id, escrow_id,
-        base_xp, streak_multiplier, trust_multiplier, live_mode_multiplier, effective_xp,
-        reason,
-        user_xp_before, user_xp_after,
-        user_level_before, user_level_after,
-        user_streak_at_award
-      )
-      SELECT
-        $1, $3, $2,
-        $5, streak_multiplier, trust_multiplier, live_mode_multiplier, $6,
-        $4,
-        user_xp_after, GREATEST(0, user_xp_after - $7),
-        user_level_after, user_level_before,
-        user_streak_at_award
-      FROM xp_ledger
-      WHERE user_id = $1 AND escrow_id = $2
-      ORDER BY awarded_at DESC LIMIT 1
-      ON CONFLICT ON CONSTRAINT xp_ledger_escrow_reason_unique DO NOTHING
-      RETURNING id`,
-      [userId, escrowId, taskId, reason, adjustedBaseXP, adjustedEffectiveXP, xpToDeduct]
-    );
-
-    if (clawbackInsert.rowCount === 0) {
-      // Clawback row already exists — idempotent success, no XP deducted again.
-      log.info({ userId, escrowId, reason }, 'XP clawback: already applied (idempotent), skipping deduction');
-      return;
-    }
-
-    // Update the user's running XP total (floor at 0) and recalculate current_level
-    const afterResult = await db.query<{ xp_total: number; current_level: number }>(
-      `UPDATE users SET xp_total = GREATEST(0, xp_total - $1), updated_at = NOW() WHERE id = $2
-       RETURNING xp_total, current_level`,
-      [xpToDeduct, userId]
-    );
-
-    if (afterResult.rows.length > 0) {
-      const newXPTotal = afterResult.rows[0].xp_total;
-      const newLevel = calculateLevel(newXPTotal);
-      if (newLevel !== afterResult.rows[0].current_level) {
-        await db.query(
-          `UPDATE users SET current_level = $1, updated_at = NOW() WHERE id = $2`,
-          [newLevel, userId]
-        );
+    // YY-04 FIX: Move the award SELECT inside the transaction so it is protected by the
+    // FOR UPDATE lock on the user row. Previously the SELECT ran outside the transaction,
+    // allowing a concurrent awardXP() to slip in between the SELECT and the transaction
+    // start, producing a stale base_xp/effective_xp in the clawback ledger entry.
+    //
+    // Both awardXP() and clawbackXP() now acquire FOR UPDATE on the user row first,
+    // so they serialize correctly — neither can see a partially-applied peer operation.
+    await db.transaction(async (txQuery) => {
+      // Lock the user row FIRST so no concurrent awardXP() can slip in.
+      const lockResult = await txQuery<{ xp_total: number; current_level: number }>(
+        `SELECT xp_total, current_level FROM users WHERE id = $1 FOR UPDATE`,
+        [userId]
+      );
+      if (lockResult.rows.length === 0) {
+        log.warn({ userId, escrowId, reason }, 'XP clawback: user row not found inside transaction, skipping');
+        return;
       }
-    }
 
-    log.info({ userId, xpDeducted: xpToDeduct, reason, escrowId }, 'XP clawback applied');
+      // Now read the original award inside the transaction (consistent with the lock).
+      const award = await txQuery<{ id: string; base_xp: number; effective_xp: number; task_id: string; surge_multiplier: number }>(
+        `SELECT id, base_xp, effective_xp, task_id, surge_multiplier FROM xp_ledger
+         WHERE user_id = $1 AND escrow_id = $2
+         ORDER BY awarded_at DESC LIMIT 1`,
+        [userId, escrowId]
+      );
+      if (award.rows.length === 0) {
+        // No XP was ever awarded for this escrow — nothing to clawback.
+        log.info({ userId, escrowId, reason }, 'XP clawback: no award found for escrow, skipping');
+        return;
+      }
+
+      // REG-10 FIX: Apply fraction to support partial clawback (e.g. 60% for partial dispute).
+      // Clamp to [0, 1] to guard against bad callers.
+      const clampedFraction = Math.min(1, Math.max(0, fraction));
+      const xpToDeduct = Math.round(award.rows[0].effective_xp * clampedFraction);
+      if (xpToDeduct === 0) return;
+      const taskId = award.rows[0].task_id;
+
+      // BUG FIX: Compute fraction-adjusted base_xp for the ledger debit entry.
+      // Previously the INSERT used -base_xp (full amount) even for partial clawbacks,
+      // causing the ledger to record -1000 XP when only 600 XP was actually deducted.
+      const adjustedBaseXP = -Math.round(award.rows[0].base_xp * clampedFraction);
+      const adjustedEffectiveXP = -xpToDeduct;
+
+      // Insert a debit entry (negative effective_xp) to preserve ledger immutability (INV-4).
+      // SECURITY FIX: ON CONFLICT DO NOTHING RETURNING makes this idempotent — if the
+      // (user_id, escrow_id, reason) clawback row already exists (e.g. on retry), the
+      // INSERT silently no-ops and rowCount=0 signals "already applied" rather than
+      // swallowing a real unique-constraint error as a false success.
+      const clawbackInsert = await txQuery<{ id: string }>(
+        `INSERT INTO xp_ledger (
+          user_id, task_id, escrow_id,
+          base_xp, streak_multiplier, trust_multiplier, live_mode_multiplier, surge_multiplier, effective_xp,
+          reason,
+          user_xp_before, user_xp_after,
+          user_level_before, user_level_after,
+          user_streak_at_award
+        )
+        SELECT
+          $1, $3, $2,
+          $5, streak_multiplier, trust_multiplier, live_mode_multiplier, surge_multiplier, $6,
+          $4,
+          user_xp_after, GREATEST(0, user_xp_after - $7),
+          user_level_after, user_level_before,
+          user_streak_at_award
+        FROM xp_ledger
+        WHERE user_id = $1 AND escrow_id = $2
+        ORDER BY awarded_at DESC LIMIT 1
+        ON CONFLICT ON CONSTRAINT xp_ledger_escrow_reason_unique DO NOTHING
+        RETURNING id`,
+        [userId, escrowId, taskId, reason, adjustedBaseXP, adjustedEffectiveXP, xpToDeduct]
+      );
+
+      if (clawbackInsert.rowCount === 0) {
+        // Clawback row already exists — idempotent success, no XP deducted again.
+        log.info({ userId, escrowId, reason }, 'XP clawback: already applied (idempotent), skipping deduction');
+        return;
+      }
+
+      // Update the user's running XP total (floor at 0) and recalculate current_level.
+      // Both updates are inside this transaction so no concurrent write can interleave.
+      const afterResult = await txQuery<{ xp_total: number; current_level: number }>(
+        `UPDATE users SET xp_total = GREATEST(0, xp_total - $1), updated_at = NOW() WHERE id = $2
+         RETURNING xp_total, current_level`,
+        [xpToDeduct, userId]
+      );
+
+      if (afterResult.rows.length > 0) {
+        const newXPTotal = afterResult.rows[0].xp_total;
+        const newLevel = calculateLevel(newXPTotal);
+        if (newLevel !== afterResult.rows[0].current_level) {
+          await txQuery(
+            `UPDATE users SET current_level = $1, updated_at = NOW() WHERE id = $2`,
+            [newLevel, userId]
+          );
+        }
+      }
+
+      log.info({ userId, xpDeducted: xpToDeduct, reason, escrowId }, 'XP clawback applied');
+    });
   },
 
   /**
@@ -718,16 +853,18 @@ export const XPService = {
    */
   getDailyLeaderboard: async (limit: number = 25): Promise<ServiceResult<Array<{ userId: string; name: string; xpEarned: number; rank: number }>>> => {
     try {
-      const today = new Date().toISOString().split('T')[0];
       const result = await db.query<{ user_id: string; name: string; xp_earned: string }>(
         `SELECT xl.user_id, u.full_name as name, SUM(xl.effective_xp)::INTEGER as xp_earned
          FROM xp_ledger xl
          JOIN users u ON u.id = xl.user_id
-         WHERE xl.awarded_at::DATE = $1::DATE
+         WHERE xl.awarded_at AT TIME ZONE 'UTC' >= DATE_TRUNC('day', NOW() AT TIME ZONE 'UTC')
+           AND xl.awarded_at AT TIME ZONE 'UTC' < DATE_TRUNC('day', NOW() AT TIME ZONE 'UTC') + INTERVAL '1 day'
+           AND u.is_banned = false
+           AND u.account_status NOT IN ('DELETED', 'SUSPENDED')
          GROUP BY xl.user_id, u.full_name
          ORDER BY xp_earned DESC
-         LIMIT $2`,
-        [today, limit]
+         LIMIT $1`,
+        [limit]
       );
 
       return {

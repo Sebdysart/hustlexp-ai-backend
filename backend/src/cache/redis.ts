@@ -71,7 +71,7 @@ export const CACHE_TTL = {
   aiCache: 24 * 60 * 60,
   taskDetails: 10 * 60,
   userStats: 30 * 60,
-  sessionToken: 7 * 24 * 60 * 60,
+  sessionToken: 300, // 5 minutes — matches TOKEN_CACHE_TTL_SECONDS in auth/middleware.ts
   rateLimit: 60,
 } as const;
 
@@ -100,7 +100,12 @@ export async function set(
   ttl?: number
 ): Promise<void> {
   const client = getClient();
-  if (!client) return;
+  if (!client) {
+    if (config.app.isProduction) {
+      throw new Error('Redis unavailable — cache set fail-closed');
+    }
+    return;
+  }
 
   try {
     if (ttl) {
@@ -110,17 +115,26 @@ export async function set(
     }
   } catch (error) {
     redisLog.error({ err: error, key }, 'Redis SET error');
+    if (config.app.isProduction) {
+      throw error; // re-throw so callers can detect write failures (e.g. revocation marker)
+    }
   }
 }
 
 export async function del(key: string): Promise<void> {
   const client = getClient();
-  if (!client) return;
+  if (!client) {
+    if (config.app.isProduction) {
+      throw new Error('Redis unavailable — cache del fail-closed');
+    }
+    return;
+  }
 
   try {
     await client.del(key);
-  } catch (error) {
-    redisLog.error({ err: error, key }, 'Redis DEL error');
+  } catch (err) {
+    redisLog.error({ err, key }, 'Redis del failed');
+    throw err; // re-throw so callers can handle or log appropriately
   }
 }
 
@@ -157,6 +171,54 @@ export async function expire(key: string, ttl: number): Promise<void> {
     await client.expire(key, ttl);
   } catch (error) {
     redisLog.error({ err: error, key }, 'Redis EXPIRE error');
+  }
+}
+
+/**
+ * Atomically increment a counter and set its TTL on first creation.
+ *
+ * Uses a Lua script so that the INCR and the conditional EXPIRE are executed
+ * as a single atomic operation on the Redis server.  This prevents the
+ * "immortal key" race where a process crash between a bare INCR and a
+ * subsequent EXPIRE leaves a key with no expiry, permanently rate-limiting
+ * the affected user/IP.
+ *
+ * The EXPIRE is applied only when current === 1 (i.e. the key was just
+ * created).  Setting it on every call would reset the window on each
+ * request, allowing unlimited throughput at (windowSeconds - ε) intervals.
+ *
+ * @param key          Redis key to increment.
+ * @param windowSeconds TTL to apply on first creation, in seconds.
+ * @returns The post-increment counter value.
+ * @throws  Re-throws any Redis error — callers are responsible for deciding
+ *          whether to fail-open (dev) or fail-closed (production).
+ */
+export async function incrWithTtl(key: string, windowSeconds: number): Promise<number> {
+  const client = getClient();
+  if (!client) {
+    if (config.app.isProduction) {
+      throw new Error('Redis unavailable — rate limiting fail-closed');
+    }
+    return 1; // dev/test: allow
+  }
+
+  // Lua script: INCR the key, then EXPIRE only if this is the first increment
+  // (current === 1).  Executed atomically — no race window between the two
+  // Redis commands.
+  const luaScript = `
+    local current = redis.call('INCR', KEYS[1])
+    if current == 1 then
+      redis.call('EXPIRE', KEYS[1], ARGV[1])
+    end
+    return current
+  `;
+
+  try {
+    const result = await client.eval(luaScript, [key], [String(windowSeconds)]);
+    return typeof result === 'number' ? result : Number(result);
+  } catch (error) {
+    redisLog.error({ err: error, key }, 'Redis incrWithTtl (Lua) error');
+    throw error; // Let callers decide fail-open vs fail-closed
   }
 }
 
@@ -253,6 +315,7 @@ export const redis = {
   exists,
   incr,
   expire,
+  incrWithTtl,
   zadd,
   zrange,
   zrevrange,

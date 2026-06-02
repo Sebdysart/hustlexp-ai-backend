@@ -16,6 +16,11 @@ vi.mock('../../src/logger', () => ({
   logger: {
     child: () => ({ error: vi.fn(), warn: vi.fn(), info: vi.fn() }),
   },
+  authLogger: { error: vi.fn(), warn: vi.fn(), info: vi.fn() },
+}));
+
+vi.mock('../../src/auth/middleware', () => ({
+  revokeUserSessions: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('../../src/services/NotificationService', () => ({
@@ -211,6 +216,12 @@ describe('FraudDetectionService', () => {
         rows: [{ id: 'rs-auto', risk_score: 0.95 }],
         rowCount: 1,
       } as never);
+      // SELECT firebase_uid for revokeUserSessions
+      mockDb.query.mockResolvedValueOnce({ rows: [{ firebase_uid: 'firebase-user-1' }], rowCount: 1 } as never);
+      // SELECT active funded escrows (BUG 2 fix)
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+      // UPDATE tasks CANCELLED for poster's OPEN tasks (BUG 2 fix)
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
 
       const result = await FraudDetectionService.detectPattern({
         patternType: 'payment_fraud',
@@ -225,6 +236,46 @@ describe('FraudDetectionService', () => {
         (call) => typeof call[0] === 'string' && call[0].includes("account_status = 'SUSPENDED'")
       );
       expect(suspendCall).toBeDefined();
+    });
+
+    it('CRITICAL auto-suspend locks funded escrows and cancels poster OPEN tasks (BUG 2)', async () => {
+      // INSERT fraud_patterns
+      mockDb.query.mockResolvedValueOnce({
+        rows: [{ id: 'fp-escrow', pattern_type: 'payment_fraud', status: 'detected' }],
+        rowCount: 1,
+      } as never);
+      // UPDATE users SET SUSPENDED
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      // calculateRiskScore INSERT
+      mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'rs-1', risk_score: 0.95 }], rowCount: 1 } as never);
+      // SELECT firebase_uid for revokeUserSessions
+      mockDb.query.mockResolvedValueOnce({ rows: [{ firebase_uid: 'fb-u1' }], rowCount: 1 } as never);
+      // SELECT active funded escrows — one escrow found
+      mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'escrow-42' }], rowCount: 1 } as never);
+      // UPDATE escrows SET LOCKED_DISPUTE
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      // UPDATE tasks CANCELLED for poster's OPEN tasks
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 2 } as never);
+
+      const result = await FraudDetectionService.detectPattern({
+        patternType: 'payment_fraud',
+        patternDescription: 'Test escrow locking',
+        userIds: ['user-escrow'],
+      });
+
+      expect(result.success).toBe(true);
+
+      // Verify escrow lock query was called
+      const escrowLockCall = mockDb.query.mock.calls.find(
+        (call) => typeof call[0] === 'string' && call[0].includes('LOCKED_DISPUTE')
+      );
+      expect(escrowLockCall).toBeDefined();
+
+      // Verify poster OPEN task cancel was called
+      const cancelCall = mockDb.query.mock.calls.find(
+        (call) => typeof call[0] === 'string' && call[0].includes("poster_id") && call[0].includes('CANCELLED')
+      );
+      expect(cancelCall).toBeDefined();
     });
 
     it('flags users for HIGH risk patterns like self_matching', async () => {
@@ -254,6 +305,40 @@ describe('FraudDetectionService', () => {
         (call) => typeof call[0] === 'string' && call[0].includes('inconsistency_flags')
       );
       expect(flagCall).toBeDefined();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // getHighRiskScores — parameter bounds (BUG 7)
+  // -------------------------------------------------------------------------
+  describe('getHighRiskScores', () => {
+    it('rejects minRiskScore below 0', async () => {
+      const result = await FraudDetectionService.getHighRiskScores(-0.1, 100);
+      expect(result.success).toBe(false);
+      if (!result.success) expect(result.error.code).toBe('INVALID_INPUT');
+      expect(mockDb.query).not.toHaveBeenCalled();
+    });
+
+    it('rejects minRiskScore above 1', async () => {
+      const result = await FraudDetectionService.getHighRiskScores(1.5, 100);
+      expect(result.success).toBe(false);
+      if (!result.success) expect(result.error.code).toBe('INVALID_INPUT');
+    });
+
+    it('caps limit at 500', async () => {
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+      await FraudDetectionService.getHighRiskScores(0.6, 9999);
+      const callArgs = mockDb.query.mock.calls[0][1] as unknown[];
+      expect(callArgs[1]).toBe(500);
+    });
+
+    it('passes valid minRiskScore and limit through', async () => {
+      mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'rs-1', risk_score: 0.8 }], rowCount: 1 } as never);
+      const result = await FraudDetectionService.getHighRiskScores(0.7, 50);
+      expect(result.success).toBe(true);
+      const callArgs = mockDb.query.mock.calls[0][1] as unknown[];
+      expect(callArgs[0]).toBe(0.7);
+      expect(callArgs[1]).toBe(50);
     });
   });
 

@@ -30,6 +30,7 @@ vi.mock('../../src/db', () => {
 
 vi.mock('../../src/logger', () => ({
   escrowLogger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
+  stripeLogger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
   logger: { child: () => ({ warn: vi.fn(), error: vi.fn(), info: vi.fn() }) },
 }));
 
@@ -160,12 +161,13 @@ describe('ATTACK 1: Fee calculation base (escrow.amount vs task.price)', () => {
     const expectedFeeOnEscrow = Math.round(4000 * 0.15); // 600 cents
     const expectedFeeOnTaskPrice = Math.round(6000 * 0.15); // 900 cents
 
-    // recordEarnings receives netPayoutCents = escrowAmount - platformFee
+    // recordEarnings receives finalPayout = escrowAmount - platformFee - 2% insurance on gross
+    // net = 4000 - 600 = 3400; insurance = Math.round(4000*0.02) = 80; final = 3400 - 80 = 3320
     expect(EarnedVerificationUnlockService.recordEarnings).toHaveBeenCalledWith(
       'worker-1',
       'task-1',
       'esc-1',
-      escrowAmount - expectedFeeOnEscrow, // 3400
+      3320, // F54-2: insurance = 2% of gross 4000 = 80; resolvedNet = 3400 - 80 = 3320
     );
 
     // Confirm fee was NOT deducted on task.price basis
@@ -310,6 +312,7 @@ describe('ATTACK 4: Concurrent release + dispute (TOCTOU race)', () => {
     // window check returns no rows
     mockDb.query
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // window check
+      .mockResolvedValueOnce({ rows: [{ count: '0' }], rowCount: 1 } as never) // dup dispute check
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // UPDATE — 0 rows (PENDING, not FUNDED)
       .mockResolvedValueOnce({ rows: [makeEscrow({ state: 'PENDING' })], rowCount: 1 } as never); // getById
 
@@ -381,11 +384,17 @@ describe('ATTACK 6: Fund escrow twice (double-funding)', () => {
    * VERDICT: SAFE — state machine prevents double-funding.
    */
   it('second fund() call on FUNDED escrow returns INVALID_STATE', async () => {
-    // fund() is now wrapped in db.transaction(). The SELECT FOR UPDATE returns
-    // the row with state='FUNDED' — state check fires before any UPDATE.
+    // fund() is now wrapped in db.transaction():
+    //   1st: SELECT FOR UPDATE → row with state='FUNDED'
+    //   2nd: cross-escrow PI dedup check → no conflict (runs before the state check)
+    //   state check then fires and returns INVALID_STATE
     mockDb.query.mockResolvedValueOnce({
       rows: [{ state: 'FUNDED', version: 1 }],
       rowCount: 1,
+    } as never);
+    mockDb.query.mockResolvedValueOnce({
+      rows: [],
+      rowCount: 0,
     } as never);
 
     const result = await EscrowService.fund({ escrowId: 'esc-1', stripePaymentIntentId: 'pi_second' });
@@ -503,43 +512,42 @@ describe('ATTACK 8: Partial payout math — pennies lost or gained', () => {
     const platformFeeCents = Math.round(grossPayoutCents * (platformFeePercent / 100)); // 75
     const netPayoutCents = grossPayoutCents - platformFeeCents; // 425
 
+    // F54-2: insurance = 2% of gross (500), not net (425)
+    // insurance = Math.round(500 * 0.02) = 10; resolvedNet = 425 - 10 = 415
     expect(EarnedVerificationUnlockService.recordEarnings).toHaveBeenCalledWith(
-      'worker-1', 'task-1', 'esc-1', netPayoutCents,
+      'worker-1', 'task-1', 'esc-1', netPayoutCents - Math.round(grossPayoutCents * 0.02), // 425 - 10 = 415
     );
     expect(platformFeeCents + netPayoutCents).toBe(grossPayoutCents);
     // VERDICT: SAFE
   });
 
-  it('self-insurance contribution is 2% of GROSS (before platform fee)', async () => {
+  it('self-insurance contribution is 2% of GROSS (task price) — F54-2 fix', async () => {
     /**
-     * ANALYSIS: SelfInsurancePoolService.recordContribution is called with:
+     * F54-2 FIX: SelfInsurancePoolService.recordContribution is called with:
      *   insuranceContributionCents = Math.round(grossPayoutCents * 0.02)
-     * (EscrowService.ts:430)
      *
-     * This means the worker effectively pays:
-     *   platform_fee (15%) + insurance (2%) = 17% total deductions
-     *   but netPayoutCents = gross - platform_fee only (insurance is "recorded"
-     *   not subtracted from the Stripe transfer amount).
+     * Per spec: contribution = 2% of task price (gross), matching
+     * SelfInsurancePoolService.calculateContribution(taskPriceCents).
      *
-     * The insurance contribution is an accounting entry, not a money movement
-     * in EscrowService. The actual fund transfer happens elsewhere.
-     * So the worker receives netPayoutCents (gross - 15% platform fee),
-     * and separately the pool is credited 2% (from the platform's cut, conceptually).
+     * gross=10000, fee=1500 (15%), netBeforeInsurance=8500,
+     * insurance=Math.round(10000*0.02)=200
+     * resolvedNet = 8500 - 200 = 8300
      *
-     * VERDICT: SAFE — insurance is not double-subtracted from worker payout.
+     * VERDICT: FIXED (F54-2) — insurance is now on gross, matching the spec.
      */
     mockReleaseHappyPath(10000, 10000);
     await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_atk' });
 
-    const expectedInsurance = Math.round(10000 * 0.02); // 200 cents = $2
+    const expectedInsurance = Math.round(10000 * 0.02); // 200 cents ($2.00) — 2% of gross
     expect(SelfInsurancePoolService.recordContribution).toHaveBeenCalledWith(
       'task-1', 'worker-1', expectedInsurance,
     );
 
-    // Net payout to worker is gross minus ONLY platform fee (not insurance)
+    // Net payout to worker is gross minus platform fee minus 2% insurance on gross
     const expectedNet = 10000 - Math.round(10000 * 0.15); // 8500
+    const expectedTransfer = expectedNet - Math.round(10000 * 0.02); // 8500 - 200 = 8300
     expect(EarnedVerificationUnlockService.recordEarnings).toHaveBeenCalledWith(
-      'worker-1', 'task-1', 'esc-1', expectedNet,
+      'worker-1', 'task-1', 'esc-1', expectedTransfer,
     );
   });
 });
@@ -561,13 +569,10 @@ describe('ATTACK 9: Refund on LOCKED_DISPUTE state', () => {
    * VERDICT: FIXED — poster cannot shortcut an active dispute.
    */
   it('refund() on LOCKED_DISPUTE now returns INVALID_STATE — exploit closed', async () => {
-    // FIX 3: refund() pre-fetches task_id + worker_id before the UPDATE
-    // UPDATE WHERE state = 'FUNDED' — misses because state is LOCKED_DISPUTE
+    // T1 pre-check returns state=LOCKED_DISPUTE — the guard triggers immediately before T2 is reached.
+    // The T1 LOCKED_DISPUTE guard (line ~794) returns INVALID_STATE for non-admin callers.
     mockDb.query
-      .mockResolvedValueOnce({ rows: [{ task_id: 'task-1' }], rowCount: 1 } as never) // SELECT task_id
-      .mockResolvedValueOnce({ rows: [{ worker_id: null }], rowCount: 1 } as never)   // SELECT worker_id
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // UPDATE returns 0 rows
-      .mockResolvedValueOnce({ rows: [makeEscrow({ state: 'LOCKED_DISPUTE' })], rowCount: 1 } as never); // getById
+      .mockResolvedValueOnce({ rows: [{ task_id: 'task-1', state: 'LOCKED_DISPUTE' }], rowCount: 1 } as never); // T1 pre-check: LOCKED_DISPUTE triggers guard
 
     const result = await EscrowService.refund({ escrowId: 'esc-1' });
     expect(result.success).toBe(false);
@@ -588,12 +593,13 @@ describe('ATTACK 10: Double refund', () => {
    * VERDICT: SAFE — double refund blocked by terminal state check.
    */
   it('second refund() call returns ESCROW_TERMINAL', async () => {
-    // FIX 3: refund() pre-fetches task_id + worker_id before the UPDATE
+    // FIX 3 + F-05: T1 pre-checks, then T2 FOR UPDATE NOWAIT re-read (FUNDED), UPDATE misses, getById sees REFUNDED
     mockDb.query
-      .mockResolvedValueOnce({ rows: [{ task_id: 'task-1' }], rowCount: 1 } as never) // SELECT task_id
-      .mockResolvedValueOnce({ rows: [{ worker_id: null }], rowCount: 1 } as never)   // SELECT worker_id
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // UPDATE miss (already REFUNDED)
-      .mockResolvedValueOnce({ rows: [makeEscrow({ state: 'REFUNDED' })], rowCount: 1 } as never);
+      .mockResolvedValueOnce({ rows: [{ task_id: 'task-1' }], rowCount: 1 } as never) // T1: SELECT task_id
+      .mockResolvedValueOnce({ rows: [{ worker_id: null }], rowCount: 1 } as never)   // T1: SELECT worker_id
+      .mockResolvedValueOnce({ rows: [{ id: 'esc-1', version: 1, state: 'FUNDED' }], rowCount: 1 } as never) // F-05: T2 FOR UPDATE NOWAIT
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // T2: UPDATE miss (already REFUNDED)
+      .mockResolvedValueOnce({ rows: [makeEscrow({ state: 'REFUNDED' })], rowCount: 1 } as never); // getById fallback
 
     const result = await EscrowService.refund({ escrowId: 'esc-1' });
     expect(result.success).toBe(false);
@@ -626,8 +632,10 @@ describe('ATTACK 11: Refund amount vs original charge amount', () => {
     const funded = makeEscrow({ state: 'FUNDED', amount: 5000 });
     // fund() is wrapped in db.transaction():
     //   1st query: SELECT state, version FOR UPDATE → lock row with state=PENDING
-    //   2nd query: UPDATE escrows ... RETURNING *   → funded row with unchanged amount
+    //   2nd query: cross-escrow PI dedup check → no conflict
+    //   3rd query: UPDATE escrows ... RETURNING *   → funded row with unchanged amount
     mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'PENDING', version: 0 }], rowCount: 1 } as never);
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
     mockDb.query.mockResolvedValueOnce({ rows: [funded], rowCount: 1 } as never);
 
     const result = await EscrowService.fund({ escrowId: 'esc-1', stripePaymentIntentId: 'pi_123' });
@@ -646,10 +654,12 @@ describe('ATTACK 11: Refund amount vs original charge amount', () => {
 
 describe('ATTACK 12: Pool contribution path', () => {
   /**
-   * SelfInsurancePoolService.recordContribution() is called from EscrowService.release()
-   * at line 430: `Math.round(grossPayoutCents * 0.02)`
+   * F54-2 FIX: SelfInsurancePoolService.recordContribution() is called from EscrowService.release()
+   * with: `Math.round(grossPayoutCents * 0.02)`
    *
-   * This means: contribution is 2% of escrow.amount (gross, before platform fee).
+   * Per spec: contribution = 2% of task price (gross), matching
+   * SelfInsurancePoolService.calculateContribution(taskPriceCents).
+   *
    * It is called on EVERY successful release, regardless of task type.
    *
    * The contribution uses ON CONFLICT (task_id, hustler_id) DO NOTHING,
@@ -658,7 +668,7 @@ describe('ATTACK 12: Pool contribution path', () => {
    *
    * VERDICT: SAFE — pool is funded on every release, idempotent.
    */
-  it('pool contribution is 2% of gross payout, called on every release', async () => {
+  it('pool contribution is 2% of gross (task price), called on every release — F54-2', async () => {
     mockReleaseHappyPath(10000, 10000);
     await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_atk' });
 
@@ -666,9 +676,9 @@ describe('ATTACK 12: Pool contribution path', () => {
     expect(SelfInsurancePoolService.recordContribution).toHaveBeenCalledWith(
       'task-1',
       'worker-1',
-      200, // 2% of 10000
+      200, // F54-2: 2% of gross 10000 = 200 (not 170 which was 2% of net 8500)
     );
-    // VERDICT: SAFE — funded on every normal release.
+    // VERDICT: FIXED (F54-2) — funded on every release, calculated on gross amount per spec.
   });
 
   it('pool contribution is also called when releasing from LOCKED_DISPUTE (dispute worker-win)', async () => {
@@ -856,23 +866,39 @@ describe('ATTACK 17: XP formula uses gross payout (not net) — XP over-award', 
 
 describe('ATTACK 18: Dispute window bypass — lockForDispute after window expires', () => {
   /**
-   * SECURITY FIX (v2.9.3): lockForDispute() now explicitly rejects when
-   * completed_at is null. Previously null completed_at silently skipped the
-   * window guard, allowing any authenticated user to lock an in-progress
-   * task's escrow indefinitely.
+   * BUG-2 FIX: The service-level completed_at == null guard has been removed.
+   * The defence is now at the router layer (escrow.lockForDispute validates that
+   * the task is in an active disputeable state: ACCEPTED/IN_PROGRESS/PROOF_SUBMITTED/DISPUTED).
+   * The service-level guard created contradictory preconditions — the router allowed active
+   * tasks while the service required completed_at IS NOT NULL, making the feature completely
+   * non-functional for legitimate non-admin users.
    *
-   * VERDICT: FIXED — a dispute can only be filed on a completed task.
+   * Challenge-window enforcement (completed_at + challenge_window_hours) still runs when
+   * completed_at is non-null, so completed tasks outside the window are still rejected.
+   *
+   * VERDICT: FIXED at the router layer. Service-level guard removed (was contradictory).
+   * Active task disputes (completed_at = null) now proceed through the service;
+   * the router's task-state allowlist prevents abuse.
    */
-  it('lockForDispute on escrow with null completed_at now throws BAD_REQUEST — exploit closed', async () => {
-    // Window check returns completed_at = null → new guard fires BAD_REQUEST
+  it('lockForDispute on escrow with null completed_at proceeds (router guards task state; service no longer blocks)', async () => {
+    // Window check returns completed_at = null → no window check runs (skipped for active tasks)
+    // Dup dispute check returns 0 open disputes
+    // UPDATE: returns 0 rows (version mismatch / wrong state) → service calls getById for error message
+    // getById: returns an escrow row (so the INVALID_STATE path returns a meaningful message)
     mockDb.query
-      .mockResolvedValueOnce({ rows: [{ completed_at: null, challenge_window_hours: 6 }], rowCount: 1 } as never);
+      .mockResolvedValueOnce({ rows: [{ completed_at: null, challenge_window_hours: 6, version: 1 }], rowCount: 1 } as never)  // window check (FOR UPDATE)
+      .mockResolvedValueOnce({ rows: [{ count: '0' }], rowCount: 1 } as never)   // dup dispute check
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)                  // UPDATE escrows SET state=LOCKED_DISPUTE → 0 rows (wrong state)
+      .mockResolvedValueOnce({ rows: [{ id: 'esc-1', state: 'REFUNDED', poster_id: 'p1', worker_id: 'w1' }], rowCount: 1 } as never); // getById fallback
 
-    await expect(EscrowService.lockForDispute('esc-1')).rejects.toMatchObject({
-      code: 'BAD_REQUEST',
-      message: 'Cannot dispute a task that has not been completed',
-    });
-    // VERDICT: FIXED — uncompleted tasks can no longer be locked for dispute.
+    // The service now proceeds past the completed_at check and attempts the UPDATE.
+    // The UPDATE returns 0 rows (escrow not in FUNDED state) → INVALID_STATE returned.
+    const result = await EscrowService.lockForDispute('esc-1');
+    expect(result.success).toBe(false);
+    // The error should be INVALID_STATE (from the UPDATE returning 0 rows) — not BAD_REQUEST.
+    // This confirms the completed_at guard is gone and the service proceeds to the UPDATE attempt.
+    expect((result as { success: false; error: { code: string } }).error.code).toBe('INVALID_STATE');
+    expect((result as { success: false; error: { code: string } }).error.code).not.toBe('BAD_REQUEST');
   });
 });
 

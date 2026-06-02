@@ -17,6 +17,21 @@ const log = logger.child({ service: 'RecurringTaskService' });
 const DEFAULT_OCCURRENCES_TO_GENERATE = 30;
 const MAX_OCCURRENCES_PER_CALL = 100;
 
+/**
+ * Bug BB1-1 (occurrence amplification): Hard global cap across the lifetime of a series.
+ * No series may ever accumulate more than MAX_OCCURRENCES total occurrences.
+ * This cap is enforced both at creation time (router Zod schema) and here at
+ * generation time so that incremental calls (e.g. from a cron job) cannot bypass it.
+ *
+ * Bug BB1-3 (price drift): When a task instance is eventually spawned from an occurrence,
+ * the spawner MUST read `payment_cents` from `recurring_task_series` (set at series creation
+ * and treated as immutable). It must NOT re-query from any mutable price source.
+ * The series row is the price snapshot. Any price change requires explicit cancellation
+ * of the series and creation of a new one — the preferred worker (if any) must then
+ * re-accept on the new series.
+ */
+const MAX_OCCURRENCES_LIFETIME = 500;
+
 type Pattern = 'daily' | 'weekly' | 'biweekly' | 'monthly';
 
 /** YYYY-MM-DD string from Date */
@@ -160,7 +175,17 @@ export async function generateOccurrencesForSeries(
     const maxNum = existingResult.rows.length
       ? Math.max(...existingResult.rows.map((r) => r.occurrence_number))
       : 0;
-    const toInsert = dates.filter((d) => !existingSet.has(d)).slice(0, maxOccurrences);
+
+    // Bug BB1-1: Enforce the lifetime occurrence cap. If the series already has
+    // MAX_OCCURRENCES_LIFETIME occurrences, refuse to generate more.
+    const remainingSlots = MAX_OCCURRENCES_LIFETIME - existingResult.rows.length;
+    if (remainingSlots <= 0) {
+      log.warn({ seriesId, existing: existingResult.rows.length }, 'Series has reached MAX_OCCURRENCES_LIFETIME cap — no new occurrences generated');
+      return { success: true, data: { generated: 0 } };
+    }
+    const effectiveMax = Math.min(maxOccurrences, remainingSlots);
+
+    const toInsert = dates.filter((d) => !existingSet.has(d)).slice(0, effectiveMax);
     if (toInsert.length === 0) {
       return { success: true, data: { generated: 0 } };
     }

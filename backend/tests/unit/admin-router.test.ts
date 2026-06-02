@@ -234,11 +234,11 @@ describe('admin.listUsers — offset-based pagination', () => {
     it('passes trustTier filter as a SQL parameter', async () => {
       setupAdminAndUsers([]);
 
-      await makeAdminCaller().listUsers({ limit: 10, offset: 0, trustTier: 'VETERAN' });
+      await makeAdminCaller().listUsers({ limit: 10, offset: 0, trustTier: '2' });
 
       const [sql, params] = (mockDb.query as any).mock.calls[1];
       expect(sql).toContain('trust_tier =');
-      expect(params).toContain('VETERAN');
+      expect(params).toContain('2');
     });
 
     it('passes isBanned filter as a SQL parameter', async () => {
@@ -395,11 +395,11 @@ describe('admin.listTasks — offset-based pagination', () => {
     it('passes state filter as a SQL parameter', async () => {
       setupAdminAndTasks([]);
 
-      await makeAdminCaller().listTasks({ limit: 10, offset: 0, state: 'open' });
+      await makeAdminCaller().listTasks({ limit: 10, offset: 0, state: 'OPEN' });
 
       const [sql, params] = (mockDb.query as any).mock.calls[1];
       expect(sql).toContain('t.state =');
-      expect(params).toContain('open');
+      expect(params).toContain('OPEN');
     });
   });
 
@@ -525,11 +525,11 @@ describe('admin.listDisputes — offset-based pagination', () => {
     it('passes status filter as a SQL parameter', async () => {
       setupAdminAndDisputes([]);
 
-      await makeAdminCaller().listDisputes({ limit: 10, offset: 0, status: 'open' });
+      await makeAdminCaller().listDisputes({ limit: 10, offset: 0, status: 'OPEN' });
 
       const [sql, params] = (mockDb.query as any).mock.calls[1];
-      expect(sql).toContain('d.status =');
-      expect(params).toContain('open');
+      expect(sql).toContain('d.state =');
+      expect(params).toContain('OPEN');
     });
   });
 

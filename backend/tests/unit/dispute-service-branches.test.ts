@@ -82,7 +82,8 @@ describe('DisputeService.getByTaskId', () => {
 
     const result = await DisputeService.getByTaskId('t1');
     expect(result.success).toBe(false);
-    if (!result.success) expect(result.error.message).toBe('Unknown error');
+    // R-13 FIX: DB error messages are sanitized — raw message never exposed to callers
+    if (!result.success) expect(result.error.message).toBe('A database error occurred. Please try again.');
   });
 });
 
@@ -110,7 +111,8 @@ describe('DisputeService.getById', () => {
 
     const result = await DisputeService.getById('d1');
     expect(result.success).toBe(false);
-    if (!result.success) expect(result.error.message).toBe('Unknown error');
+    // R-13 FIX: DB error messages are sanitized — raw message never exposed to callers
+    if (!result.success) expect(result.error.message).toBe('A database error occurred. Please try again.');
   });
 });
 
@@ -135,10 +137,11 @@ describe('DisputeService.create', () => {
   });
 
   it('rejects when task is not completed', async () => {
-    mockTaskService.getById.mockResolvedValueOnce({
-      success: true,
-      data: { id: 't1', completed_at: null } as any,
-    });
+    // Inside transaction: SELECT task FOR UPDATE → task with no completed_at
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ id: 't1', completed_at: null }],
+      rowCount: 1,
+    } as any);
 
     const result = await DisputeService.create(baseParams);
     expect(result.success).toBe(false);
@@ -147,31 +150,36 @@ describe('DisputeService.create', () => {
 
   it('rejects when outside dispute window (>48h)', async () => {
     const oldDate = new Date(Date.now() - 49 * 60 * 60 * 1000);
-    mockTaskService.getById.mockResolvedValueOnce({
-      success: true,
-      data: { id: 't1', completed_at: oldDate } as any,
-    });
+    // Inside transaction: SELECT task FOR UPDATE → task with old completed_at
+    // R-3 FIX: state check now runs before the 48h window check — must include state.
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ id: 't1', completed_at: oldDate, state: 'COMPLETED' }],
+      rowCount: 1,
+    } as any);
 
     const result = await DisputeService.create(baseParams);
     expect(result.success).toBe(false);
     if (!result.success) expect(result.error.message).toContain('48 hours');
   });
 
-  it('rejects when escrow is not FUNDED', async () => {
-    mockTaskService.getById.mockResolvedValueOnce({
-      success: true,
-      data: { id: 't1', completed_at: new Date() } as any,
-    });
-    // EscrowService.getById is no longer called outside the transaction.
-    // The state check now happens via SELECT FOR UPDATE inside the transaction.
+  it('rejects when escrow is in an invalid state (REFUNDED)', async () => {
+    // BUG FIX (HIGH): FUNDED and RELEASED are both valid states for filing a dispute.
+    // Only truly terminal/locked states like REFUNDED, LOCKED_DISPUTE, etc. are rejected.
+    // Inside transaction:
+    // Query 1: SELECT task FOR UPDATE → completed task
     mockDb.query.mockResolvedValueOnce({
-      rows: [{ id: 'e1', state: 'RELEASED' }],
+      rows: [{ id: 't1', completed_at: new Date() }],
+      rowCount: 1,
+    } as any);
+    // Query 2: SELECT escrow FOR UPDATE → REFUNDED escrow (invalid state)
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ id: 'e1', state: 'REFUNDED' }],
       rowCount: 1,
     } as any);
 
     const result = await DisputeService.create(baseParams);
     expect(result.success).toBe(false);
-    if (!result.success) expect(result.error.message).toContain('FUNDED');
+    if (!result.success) expect(result.error.code).toBe('INVALID_STATE');
   });
 
   it('returns error when TaskService fails', async () => {
@@ -454,5 +462,194 @@ describe('DisputeService.resolve', () => {
     const result = await DisputeService.resolve(baseResolveParams);
     expect(result.success).toBe(false);
     if (!result.success) expect(result.error.code).toBe('DB_ERROR');
+  });
+
+  it('T56-1: REFUND path transitions task DISPUTED → CANCELLED (poster wins)', async () => {
+    // Arrange: admin has permission
+    mockDb.query.mockResolvedValueOnce({ rows: [{ can_resolve_disputes: true }], rowCount: 1 } as any);
+
+    const disputeRow = {
+      id: 'd1',
+      task_id: 'task-1',
+      escrow_id: 'escrow-1',
+      worker_id: 'worker-1',
+      poster_id: 'poster-1',
+      state: 'OPEN',
+      version: 1,
+    };
+    const escrowRow = { id: 'escrow-1', state: 'LOCKED_DISPUTE', amount: 10000, version: 1 };
+
+    const taskUpdateSqlCalls: string[] = [];
+
+    mockDb.transaction.mockImplementationOnce(async (fn: (q: typeof db.query) => Promise<unknown>) => {
+      const captureQuery = vi.fn(async (sql: string, _params?: unknown[]) => {
+        if (sql.includes('FROM disputes') && sql.includes('FOR UPDATE')) {
+          return { rows: [disputeRow], rowCount: 1 };
+        }
+        if (sql.includes('FROM escrows') && sql.includes('FOR UPDATE')) {
+          return { rows: [escrowRow], rowCount: 1 };
+        }
+        if (sql.includes('UPDATE disputes')) {
+          return { rows: [{ ...disputeRow, state: 'RESOLVED', version: 2 }], rowCount: 1 };
+        }
+        if (sql.includes('UPDATE tasks')) {
+          taskUpdateSqlCalls.push(sql.trim());
+          return { rows: [{ id: 'task-1', state: 'CANCELLED' }], rowCount: 1 };
+        }
+        if (sql.includes('INSERT INTO outbox') || sql.includes('outbox')) {
+          return { rows: [{ id: 'outbox-1' }], rowCount: 1 };
+        }
+        return { rows: [], rowCount: 0 };
+      });
+      return fn(captureQuery);
+    });
+
+    const result = await DisputeService.resolve({
+      disputeId: 'd1',
+      resolvedBy: 'admin-1',
+      resolution: 'Poster wins — refund issued',
+      outcomeEscrowAction: 'REFUND',
+    });
+
+    expect(result.success).toBe(true);
+
+    // T56-1: task must be transitioned to CANCELLED (not left in DISPUTED)
+    const cancelledTransition = taskUpdateSqlCalls.find(sql =>
+      sql.includes("'CANCELLED'") && sql.includes("'DISPUTED'")
+    );
+    expect(cancelledTransition).toBeDefined();
+  });
+
+  it('T56-1: SPLIT path transitions task DISPUTED → CANCELLED (partial payout)', async () => {
+    // Arrange: admin has permission
+    mockDb.query.mockResolvedValueOnce({ rows: [{ can_resolve_disputes: true }], rowCount: 1 } as any);
+
+    const disputeRow = {
+      id: 'd1',
+      task_id: 'task-1',
+      escrow_id: 'escrow-1',
+      worker_id: 'worker-1',
+      poster_id: 'poster-1',
+      state: 'OPEN',
+      version: 1,
+    };
+    const escrowRow = { id: 'escrow-1', state: 'LOCKED_DISPUTE', amount: 10000, version: 1 };
+
+    const taskUpdateSqlCalls: string[] = [];
+
+    mockDb.transaction.mockImplementationOnce(async (fn: (q: typeof db.query) => Promise<unknown>) => {
+      const captureQuery = vi.fn(async (sql: string, _params?: unknown[]) => {
+        if (sql.includes('FROM disputes') && sql.includes('FOR UPDATE')) {
+          return { rows: [disputeRow], rowCount: 1 };
+        }
+        if (sql.includes('FROM escrows') && sql.includes('FOR UPDATE')) {
+          return { rows: [escrowRow], rowCount: 1 };
+        }
+        if (sql.includes('UPDATE disputes')) {
+          return { rows: [{ ...disputeRow, state: 'RESOLVED', version: 2 }], rowCount: 1 };
+        }
+        if (sql.includes('UPDATE tasks')) {
+          taskUpdateSqlCalls.push(sql.trim());
+          return { rows: [{ id: 'task-1', state: 'CANCELLED' }], rowCount: 1 };
+        }
+        if (sql.includes('INSERT INTO outbox') || sql.includes('outbox')) {
+          return { rows: [{ id: 'outbox-1' }], rowCount: 1 };
+        }
+        return { rows: [], rowCount: 0 };
+      });
+      return fn(captureQuery);
+    });
+
+    const result = await DisputeService.resolve({
+      disputeId: 'd1',
+      resolvedBy: 'admin-1',
+      resolution: 'Split — partial payout to both parties',
+      outcomeEscrowAction: 'SPLIT',
+      refundAmount: 6000,
+      releaseAmount: 4000,
+    });
+
+    expect(result.success).toBe(true);
+
+    // T56-1: task must be transitioned to CANCELLED (not left in DISPUTED)
+    const cancelledTransition = taskUpdateSqlCalls.find(sql =>
+      sql.includes("'CANCELLED'") && sql.includes("'DISPUTED'")
+    );
+    expect(cancelledTransition).toBeDefined();
+  });
+
+  it('T55-1: RELEASE path accepts proof and completes task BEFORE emitting escrow event', async () => {
+    // Arrange: admin has permission
+    mockDb.query.mockResolvedValueOnce({ rows: [{ can_resolve_disputes: true }], rowCount: 1 } as any);
+
+    const disputeRow = {
+      id: 'd1',
+      task_id: 'task-1',
+      escrow_id: 'escrow-1',
+      worker_id: 'worker-1',
+      poster_id: 'poster-1',
+      state: 'OPEN',
+      version: 1,
+    };
+    const escrowRow = { id: 'escrow-1', state: 'LOCKED_DISPUTE', amount: 10000, version: 1 };
+
+    // Track all query SQL strings issued inside the transaction
+    const querySqlLog: string[] = [];
+
+    mockDb.transaction.mockImplementationOnce(async (fn: (q: typeof db.query) => Promise<unknown>) => {
+      const captureQuery = vi.fn(async (sql: string, _params?: unknown[]) => {
+        querySqlLog.push(sql.trim().split('\n')[0].trim()); // first line for identification
+        if (sql.includes('FROM disputes') && sql.includes('FOR UPDATE')) {
+          return { rows: [disputeRow], rowCount: 1 };
+        }
+        if (sql.includes('FROM escrows') && sql.includes('FOR UPDATE')) {
+          return { rows: [escrowRow], rowCount: 1 };
+        }
+        if (sql.includes('UPDATE disputes')) {
+          return { rows: [{ ...disputeRow, state: 'RESOLVED', version: 2 }], rowCount: 1 };
+        }
+        // proof accept
+        if (sql.includes('UPDATE proofs') && sql.includes("'ACCEPTED'")) {
+          return { rows: [], rowCount: 1 };
+        }
+        // task complete from disputed
+        if (sql.includes('UPDATE tasks') && sql.includes("'COMPLETED'")) {
+          return { rows: [{ id: 'task-1', state: 'COMPLETED' }], rowCount: 1 };
+        }
+        // outbox writes
+        if (sql.includes('INSERT INTO outbox') || sql.includes('outbox')) {
+          return { rows: [{ id: 'outbox-1' }], rowCount: 1 };
+        }
+        return { rows: [], rowCount: 0 };
+      });
+      return fn(captureQuery);
+    });
+
+    const result = await DisputeService.resolve({
+      disputeId: 'd1',
+      resolvedBy: 'admin-1',
+      resolution: 'Worker wins',
+      outcomeEscrowAction: 'RELEASE',
+    });
+
+    // The resolve itself must succeed
+    expect(result.success).toBe(true);
+
+    // T55-1 CRITICAL: proof must be accepted AND task must be completed BEFORE
+    // the escrow.release_requested outbox event is emitted — otherwise the
+    // payment-worker's RELEASED→escrow UPDATE will fail INV-2 (task not COMPLETED)
+    const proofAcceptIdx = querySqlLog.findIndex(sql => sql.includes('UPDATE proofs'));
+    const taskCompleteIdx = querySqlLog.findIndex(sql => sql.includes('UPDATE tasks') && !sql.includes('disputes'));
+    const escrowEventIdx = querySqlLog.findIndex(sql =>
+      sql.includes('outbox') || sql.includes('INSERT INTO outbox')
+    );
+
+    expect(proofAcceptIdx).toBeGreaterThanOrEqual(0);  // proof must be accepted
+    expect(taskCompleteIdx).toBeGreaterThanOrEqual(0); // task must be completed
+    // Both must happen before the escrow release outbox event
+    if (escrowEventIdx >= 0) {
+      expect(proofAcceptIdx).toBeLessThan(escrowEventIdx);
+      expect(taskCompleteIdx).toBeLessThan(escrowEventIdx);
+    }
   });
 });

@@ -57,106 +57,124 @@ export async function processSMSJob(job: Job<SMSJobData>): Promise<void> {
   const jobIdempotencyKey = job.id || `sms:${smsId}`;
 
   try {
-    // Get SMS record from sms_outbox table with FOR UPDATE lock (prevents concurrent processing)
-    const smsResult = await db.query<{
-      id: string;
-      user_id: string | null;
-      to_phone: string;
-      body: string;
-      status: string;
-      retry_count: number;
-      max_retries: number;
-      idempotency_key: string;
-      twilio_sid: string | null;
-    }>(
-      `SELECT id, user_id, to_phone, body, status, retry_count, max_retries, idempotency_key, twilio_sid
-       FROM sms_outbox
-       WHERE id = $1
-       FOR UPDATE`,
-      [smsId]
-    );
+    // Phase 1: Atomic claim inside a transaction
+    // SELECT FOR UPDATE + all idempotency/crash-recovery checks + CAS UPDATE must be atomic.
+    // The row lock is held for the entire transaction, preventing concurrent workers from
+    // reading the same 'pending' status and both attempting to claim the same SMS.
+    type SmsClaimResult = {
+      smsRecord: { id: string; user_id: string | null; to_phone: string; body: string; status: string; retry_count: number; max_retries: number; idempotency_key: string; twilio_sid: string | null };
+      claimed: boolean;
+      shouldReturn: boolean;
+      outboxKey?: string;
+    };
 
-    if (smsResult.rows.length === 0) {
-      throw new Error(`SMS ${smsId} not found in sms_outbox`);
-    }
-
-    const smsRecord = smsResult.rows[0];
-
-    // Structured log: job started
-    log.info({ smsId, jobId: job.id, idempotencyKey: smsRecord.idempotency_key, currentStatus: smsRecord.status, retryCount: smsRecord.retry_count }, 'SMS job started');
-
-    // Idempotency check: If already sent, skip processing (idempotent replay)
-    if (smsRecord.status === 'sent') {
-      log.info({ smsId, jobId: job.id, idempotencyKey: smsRecord.idempotency_key, status: smsRecord.status, twilioSid: smsRecord.twilio_sid }, 'SMS already sent, replay skipped');
-      // Mark outbox event as processed (if processing from outbox)
-      const outboxKey = smsRecord.idempotency_key || jobIdempotencyKey;
-      if (outboxKey) {
-        await markOutboxEventProcessed(outboxKey);
-      }
-      return;
-    }
-
-    // Crash recovery check: If twilio_sid exists, SMS was already sent (Twilio succeeded but DB update failed)
-    if (smsRecord.twilio_sid && smsRecord.status !== 'sent') {
-      // SMS was already sent - mark as sent and exit
-      await db.query(
-        `UPDATE sms_outbox
-         SET status = 'sent',
-             sent_at = COALESCE(sent_at, NOW()),
-             updated_at = NOW()
-         WHERE id = $1`,
+    const claimResult = await db.transaction(async (txQuery) => {
+      // Get SMS record from sms_outbox table with FOR UPDATE lock (prevents concurrent processing)
+      const smsResult = await txQuery<{
+        id: string;
+        user_id: string | null;
+        to_phone: string;
+        body: string;
+        status: string;
+        retry_count: number;
+        max_retries: number;
+        idempotency_key: string;
+        twilio_sid: string | null;
+      }>(
+        `SELECT id, user_id, to_phone, body, status, retry_count, max_retries, idempotency_key, twilio_sid
+         FROM sms_outbox
+         WHERE id = $1
+         FOR UPDATE`,
         [smsId]
       );
 
-      log.warn({ smsId, jobId: job.id, idempotencyKey: smsRecord.idempotency_key, twilioSid: smsRecord.twilio_sid }, 'SMS crash recovery: twilio_sid exists but status not sent');
+      if (smsResult.rows.length === 0) {
+        throw new Error(`SMS ${smsId} not found in sms_outbox`);
+      }
 
-      const outboxKey = smsRecord.idempotency_key || jobIdempotencyKey;
-      if (outboxKey) {
-        await markOutboxEventProcessed(outboxKey);
+      const smsRecord = smsResult.rows[0];
+
+      // Structured log: job started
+      log.info({ smsId, jobId: job.id, idempotencyKey: smsRecord.idempotency_key, currentStatus: smsRecord.status, retryCount: smsRecord.retry_count }, 'SMS job started');
+
+      // Idempotency check: If already sent, skip processing (idempotent replay)
+      if (smsRecord.status === 'sent') {
+        log.info({ smsId, jobId: job.id, idempotencyKey: smsRecord.idempotency_key, status: smsRecord.status, twilioSid: smsRecord.twilio_sid }, 'SMS already sent, replay skipped');
+        const outboxKey = smsRecord.idempotency_key || jobIdempotencyKey;
+        return { smsRecord, claimed: false, shouldReturn: true, outboxKey } satisfies SmsClaimResult;
+      }
+
+      // Crash recovery check: If twilio_sid exists, SMS was already sent (Twilio succeeded but DB update failed)
+      if (smsRecord.twilio_sid && smsRecord.status !== 'sent') {
+        await txQuery(
+          `UPDATE sms_outbox
+           SET status = 'sent',
+               sent_at = COALESCE(sent_at, NOW()),
+               updated_at = NOW()
+           WHERE id = $1`,
+          [smsId]
+        );
+
+        log.warn({ smsId, jobId: job.id, idempotencyKey: smsRecord.idempotency_key, twilioSid: smsRecord.twilio_sid }, 'SMS crash recovery: twilio_sid exists but status not sent');
+
+        const outboxKey = smsRecord.idempotency_key || jobIdempotencyKey;
+        return { smsRecord, claimed: false, shouldReturn: true, outboxKey } satisfies SmsClaimResult;
+      }
+
+      // Check if max retries exceeded (poison message)
+      if (smsRecord.retry_count >= smsRecord.max_retries) {
+        log.warn({ smsId, jobId: job.id, idempotencyKey: smsRecord.idempotency_key, retryCount: smsRecord.retry_count, maxRetries: smsRecord.max_retries }, 'SMS max retries exceeded');
+        throw new Error(`Max retries (${smsRecord.max_retries}) exceeded for SMS ${smsId}`);
+      }
+
+      // ATOMIC CLAIM: Update status to sending only if still in claimable state
+      // CRITICAL: This is the atomic claim - only one worker can transition pending/failed -> sending
+      const casResult = await txQuery<{
+        id: string;
+        status: string;
+        retry_count: number;
+      }>(
+        `UPDATE sms_outbox
+         SET status = 'sending',
+             retry_count = retry_count + 1,
+             updated_at = NOW()
+         WHERE id = $1
+           AND status IN ('pending', 'failed')
+         RETURNING id, status, retry_count`,
+        [smsId]
+      );
+
+      // If no row returned, another worker already claimed this SMS (or status changed)
+      if (casResult.rowCount === 0) {
+        log.warn({ smsId, jobId: job.id, idempotencyKey: smsRecord.idempotency_key, currentStatus: smsRecord.status }, 'SMS claim failed: already claimed or invalid status');
+        return { smsRecord, claimed: false, shouldReturn: true } satisfies SmsClaimResult;
+      }
+
+      const claimedSMS = casResult.rows[0];
+
+      // Structured log: claim successful
+      log.info({ smsId, jobId: job.id, idempotencyKey: smsRecord.idempotency_key, statusTransition: `${smsRecord.status} -> sending`, retryCount: claimedSMS.retry_count }, 'SMS claimed');
+
+      // Structured log: sending attempt
+      log.info({ smsId, jobId: job.id, idempotencyKey: smsRecord.idempotency_key, retryCount: claimedSMS.retry_count, toPhone: toPhone || smsRecord.to_phone }, 'SMS sending');
+
+      return { smsRecord, claimed: true, shouldReturn: false } satisfies SmsClaimResult;
+    });
+
+    // Handle early-return cases from the transaction (already-sent, crash-recovery, claim-lost)
+    if (claimResult.shouldReturn) {
+      if (claimResult.outboxKey) {
+        await markOutboxEventProcessed(claimResult.outboxKey);
       }
       return;
     }
 
-    // Check if max retries exceeded (poison message)
-    if (smsRecord.retry_count >= smsRecord.max_retries) {
-      log.warn({ smsId, jobId: job.id, idempotencyKey: smsRecord.idempotency_key, retryCount: smsRecord.retry_count, maxRetries: smsRecord.max_retries }, 'SMS max retries exceeded');
-      throw new Error(`Max retries (${smsRecord.max_retries}) exceeded for SMS ${smsId}`);
-    }
-
-    // ATOMIC CLAIM: Update status to sending only if still in claimable state
-    // CRITICAL: This is the atomic claim - only one worker can transition pending/failed -> sending
-    const claimResult = await db.query<{
-      id: string;
-      status: string;
-      retry_count: number;
-    }>(
-      `UPDATE sms_outbox
-       SET status = 'sending',
-           retry_count = retry_count + 1,
-           updated_at = NOW()
-       WHERE id = $1
-         AND status IN ('pending', 'failed')
-       RETURNING id, status, retry_count`,
-      [smsId]
-    );
-
-    // If no row returned, another worker already claimed this SMS (or status changed)
-    if (claimResult.rowCount === 0) {
-      log.warn({ smsId, jobId: job.id, idempotencyKey: smsRecord.idempotency_key, currentStatus: smsRecord.status }, 'SMS claim failed: already claimed or invalid status');
-      return; // Another worker claimed it or status changed - exit gracefully
-    }
-
-    const claimedSMS = claimResult.rows[0];
-
-    // Structured log: claim successful
-    log.info({ smsId, jobId: job.id, idempotencyKey: smsRecord.idempotency_key, statusTransition: `${smsRecord.status} -> sending`, retryCount: claimedSMS.retry_count }, 'SMS claimed');
-
-    // Structured log: sending attempt
-    log.info({ smsId, jobId: job.id, idempotencyKey: smsRecord.idempotency_key, retryCount: claimedSMS.retry_count, toPhone: toPhone || smsRecord.to_phone }, 'SMS sending');
-
-    // Send SMS via TwilioSMSService
-    const smsBody = body || smsRecord.body;
-    const smsTo = toPhone || smsRecord.to_phone;
+    // Phase 2: External Twilio call (outside transaction — never hold a DB transaction
+    // open while waiting for a network call to an external service)
+    const smsBody = body || claimResult.smsRecord.body;
+    const smsTo = toPhone || claimResult.smsRecord.to_phone;
+    // Alias for use in the rest of the function (mirrors original variable names)
+    const smsRecord = claimResult.smsRecord;
     const result = await sendSMS(smsTo, smsBody);
 
     if (!result.success) {
@@ -206,7 +224,7 @@ export async function processSMSJob(job: Job<SMSJobData>): Promise<void> {
     }
 
     // Structured log: SMS sent successfully
-    log.info({ smsId, jobId: job.id, idempotencyKey: smsRecord.idempotency_key, outboxEventId: outboxKey, retryCount: claimedSMS.retry_count, twilioSid: finalSMS.twilio_sid || twilioSid, toPhone: smsTo }, 'SMS sent successfully');
+    log.info({ smsId, jobId: job.id, idempotencyKey: smsRecord.idempotency_key, outboxEventId: outboxKey, retryCount: smsRecord.retry_count + 1, twilioSid: finalSMS.twilio_sid || twilioSid, toPhone: smsTo }, 'SMS sent successfully');
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
 

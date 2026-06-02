@@ -67,8 +67,8 @@ export const matchmakerRouter = router({
           COALESCE((SELECT COUNT(*) FILTER(WHERE state = 'COMPLETED')::float / NULLIF(COUNT(*) FILTER(WHERE state IN ('COMPLETED','CANCELLED')), 0) FROM tasks WHERE worker_id = u.id), 1.0) as completion_rate,
           (SELECT AVG(stars)::float FROM task_ratings WHERE ratee_id = u.id) as average_rating
          FROM users u
-         WHERE u.default_mode IN ('hustler', 'flex')
-         AND u.account_status = 'active'
+         WHERE u.default_mode IN ('worker', 'poster')
+         AND u.account_status = 'ACTIVE'
          LIMIT 50`);
 
       const candidates = candidateResult.rows.map((c) => ({
@@ -107,13 +107,13 @@ export const matchmakerRouter = router({
       taskId: z.string().uuid(),
       userId: z.string().uuid(),
     }))
-    .query(async ({ input }) => {
-      // Fetch task from DB
+    .query(async ({ input, ctx }) => {
+      // Fetch task from DB — include poster_id and worker_id for the IDOR check below.
       const taskResult = await db.query<{
         id: string; title: string; description: string;
         category: string | null; location_text: string | null; price: number;
-        requirements: string | null;
-      }>('SELECT id, title, description, category, location_text, price, requirements FROM tasks WHERE id = $1', [input.taskId]);
+        requirements: string | null; poster_id: string; worker_id: string | null;
+      }>('SELECT id, title, description, category, location_text, price, requirements, poster_id, worker_id FROM tasks WHERE id = $1', [input.taskId]);
 
       if (taskResult.rows.length === 0) {
         throw new TRPCError({
@@ -123,6 +123,35 @@ export const matchmakerRouter = router({
       }
 
       const taskRow = taskResult.rows[0];
+
+      // T53-4 FIX: Matchmaker IDOR — verify the requesting user is a participant
+      // (poster or assigned worker) of the task before returning any task details.
+      // Without this check any authenticated user can query explainMatch with an
+      // arbitrary taskId and learn task title, description, location, and price.
+      const callerId = ctx.user.id;
+      const isParticipant = callerId === taskRow.poster_id || callerId === taskRow.worker_id;
+      if (!isParticipant) {
+        throw new TRPCError({
+          code: 'FORBIDDEN',
+          message: 'You are not authorized to view match details for this task',
+        });
+      }
+
+      // T57-1 FIX: Also validate input.userId is a task participant or the caller.
+      // The isParticipant check above only guards the CALLER — input.userId could still
+      // reference any user UUID, leaking trust_tier, completion_rate, and rating data
+      // for users not involved in this task.
+      const isUserIdParticipant =
+        input.userId === taskRow.poster_id ||
+        input.userId === taskRow.worker_id ||
+        input.userId === callerId;
+      if (!isUserIdParticipant) {
+        throw new TRPCError({
+          code: 'FORBIDDEN',
+          message: 'The requested user is not a participant of this task',
+        });
+      }
+
       const task = {
         id: taskRow.id,
         title: taskRow.title,

@@ -36,21 +36,33 @@ export async function processInstantSurgeJob(
   job: Job<InstantSurgeJobData>
 ): Promise<void> {
   // HMAC signature verification (Attack 12 — Redis injection defence)
-  // task.instant_surge_evaluate jobs dispatched via the outbox carry a _sig field
-  // inside job.data.payload. Verify it when present.
+  // task.instant_surge_evaluate jobs dispatched via the outbox MUST carry a _sig field
+  // inside job.data.payload. The check is mandatory — jobs without a signature are
+  // rejected outright to prevent unsigned payloads injected directly into Redis
+  // (bypassing the outbox) from executing with elevated trust.
   const outerPayload = (job.data as Record<string, unknown>).payload;
-  if (outerPayload && typeof outerPayload === 'object') {
-    const p = outerPayload as Record<string, unknown>;
-    if ('_sig' in p) {
-      const { _sig, ...payloadWithoutSig } = p;
-      if (!verifyJobSignature(payloadWithoutSig, _sig as string)) {
-        log.error({ jobId: job.id }, 'Job signature verification failed — possible Redis injection attack');
-        throw new Error('JOB_SIGNATURE_INVALID: Payload signature verification failed');
-      }
-    }
+  // A50-1 FIX: Fail-closed HMAC guard. Any job that arrives without a valid
+  // object payload is rejected immediately — the previous conditional silently
+  // skipped the entire HMAC block (including the R49 mandatory-sig throw) when
+  // outerPayload was null/undefined/non-object, leaving an unsigned-injection
+  // bypass open for malformed jobs.
+  if (!outerPayload || typeof outerPayload !== 'object') {
+    log.error({ jobId: job.id }, 'Job payload is missing or not an object — rejecting for security');
+    throw new Error('Invalid job payload — job rejected for security');
+  }
+  const p = outerPayload as Record<string, unknown>;
+  // A49-3 FIX: Signature is now mandatory. Missing or empty _sig rejects the job.
+  if (!('_sig' in p) || !p._sig) {
+    log.error({ jobId: job.id }, 'Job is missing required HMAC signature — rejecting for security');
+    throw new Error('Missing job signature — job rejected for security');
+  }
+  const { _sig, ...payloadWithoutSig } = p;
+  if (!verifyJobSignature(payloadWithoutSig, _sig as string)) {
+    log.error({ jobId: job.id }, 'Job signature verification failed — possible Redis injection attack');
+    throw new Error('JOB_SIGNATURE_INVALID: Payload signature verification failed');
   }
 
-  const { taskId, location, riskLevel, sensitive } = job.data;
+  const { taskId, location, riskLevel, sensitive } = (job.data as Record<string, unknown>).payload as InstantSurgeJobData;
   const startTime = Date.now();
 
   try {
@@ -125,15 +137,9 @@ export async function processInstantSurgeJob(
     return;
   }
 
-  // Apply surge level
-  await db.query(
-    `UPDATE tasks SET surge_level = $1, updated_at = NOW() WHERE id = $2`,
-    [targetSurgeLevel, taskId]
-  );
-
-  log.info({ taskId, targetSurgeLevel }, 'Task escalated to surge level');
-
-  // Handle surge level actions
+  // Bug 3 fix: wrap surge_level UPDATE and the outbox INSERT together in a single
+  // transaction so an outbox write failure can never leave surge_level updated
+  // without a corresponding event firing (and vice-versa).
   if (targetSurgeLevel === 1) {
     // Surge Level 1: Visibility boost - rebroadcast to lower tier
     await handleSurgeLevel1(taskId, location, riskLevel, sensitive || false);
@@ -144,6 +150,8 @@ export async function processInstantSurgeJob(
     // Surge Level 3: Fail gracefully - transition to OPEN
     await handleSurgeLevel3(taskId);
   }
+
+  log.info({ taskId, targetSurgeLevel }, 'Task escalated to surge level');
 
     const latency = Date.now() - startTime;
     log.info({ taskId, targetSurgeLevel, latency, stage: 'surge_evaluation' }, 'Instant surge evaluation completed');
@@ -172,7 +180,8 @@ async function handleSurgeLevel1(
 
   log.info({ taskId, expandedTier, minTrustTier }, 'Surge Level 1: Expanding visibility to lower tier');
 
-  // Find eligible hustlers (including lower tier)
+  // Find eligible hustlers (including lower tier) — read outside transaction to
+  // avoid holding the lock during the PlanService check loop
   const eligibleHustlers = await db.query<{ id: string; trust_tier: number }>(
     `SELECT u.id, u.trust_tier
      FROM users u
@@ -191,32 +200,48 @@ async function handleSurgeLevel1(
 
   log.info({ taskId, eligibleCount: eligibleHustlers.rowCount, expandedTier }, 'Surge Level 1: Rebroadcasting to eligible hustlers');
 
-  // Send notifications with urgency copy
+  // Filter eligible hustlers outside the transaction (plan check hits external service)
+  const allowed: Array<{ id: string; trust_tier: number }> = [];
   for (const hustler of eligibleHustlers.rows) {
     const planCheck = await PlanService.canAcceptTaskWithRisk(hustler.id, riskLevel);
-    
-    if (!planCheck.allowed) {
-      continue;
+    if (planCheck.allowed) allowed.push(hustler);
+  }
+
+  // Bug 3 fix: UPDATE surge_level + all outbox INSERTs in a single transaction so
+  // they are atomic — if any outbox write fails the surge_level UPDATE is rolled back
+  // W-03 fix: CAS guard (AND surge_level < 1) prevents double fan-out when two
+  // concurrent workers both pass the pre-transaction surge_level check.
+  await db.transaction(async (query) => {
+    const updateResult = await query(
+      `UPDATE tasks SET surge_level = 1, updated_at = NOW() WHERE id = $1 AND surge_level < 1`,
+      [taskId]
+    );
+
+    if (updateResult.rowCount === 0) {
+      log.info({ taskId }, 'Surge Level 1: another worker already applied this surge level, skipping fan-out');
+      return;
     }
 
-    await writeToOutbox({
-      eventType: 'task.instant_available',
-      aggregateType: 'task',
-      aggregateId: taskId,
-      eventVersion: 1,
-      idempotencyKey: `task.instant_available:${taskId}:${hustler.id}:surge1`,
-      payload: {
-        taskId,
-        hustlerId: hustler.id,
-        location,
-        riskLevel,
-        sensitive,
-        surgeLevel: 1,
-        urgencyCopy: 'Urgent Instant — limited availability',
-      },
-      queueName: 'critical_payments',
-    });
-  }
+    for (const hustler of allowed) {
+      await writeToOutbox({
+        eventType: 'task.instant_available',
+        aggregateType: 'task',
+        aggregateId: taskId,
+        eventVersion: 1,
+        idempotencyKey: `task.instant_available:${taskId}:${hustler.id}:surge1`,
+        payload: {
+          taskId,
+          hustlerId: hustler.id,
+          location,
+          riskLevel,
+          sensitive,
+          surgeLevel: 1,
+          urgencyCopy: 'Urgent Instant — limited availability',
+        },
+        queueName: 'user_notifications',
+      }, query);
+    }
+  });
 }
 
 /**
@@ -235,7 +260,7 @@ async function handleSurgeLevel2(
 
   log.info({ taskId }, 'Surge Level 2: XP boost active, rebroadcasting with high-priority copy');
 
-  // Find eligible hustlers
+  // Find eligible hustlers — read outside transaction
   const eligibleHustlers = await db.query<{ id: string; trust_tier: number }>(
     `SELECT u.id, u.trust_tier
      FROM users u
@@ -252,32 +277,47 @@ async function handleSurgeLevel2(
     [expandedTier]
   );
 
-  // Send notifications with XP boost copy
+  // Filter eligible hustlers outside the transaction (plan check hits external service)
+  const allowed: Array<{ id: string; trust_tier: number }> = [];
   for (const hustler of eligibleHustlers.rows) {
     const planCheck = await PlanService.canAcceptTaskWithRisk(hustler.id, riskLevel);
-    
-    if (!planCheck.allowed) {
-      continue;
+    if (planCheck.allowed) allowed.push(hustler);
+  }
+
+  // Bug 3 fix: UPDATE surge_level + all outbox INSERTs in a single transaction
+  // W-03 fix: CAS guard (AND surge_level < 2) prevents double fan-out when two
+  // concurrent workers both pass the pre-transaction surge_level check.
+  await db.transaction(async (query) => {
+    const updateResult = await query(
+      `UPDATE tasks SET surge_level = 2, updated_at = NOW() WHERE id = $1 AND surge_level < 2`,
+      [taskId]
+    );
+
+    if (updateResult.rowCount === 0) {
+      log.info({ taskId }, 'Surge Level 2: another worker already applied this surge level, skipping fan-out');
+      return;
     }
 
-    await writeToOutbox({
-      eventType: 'task.instant_available',
-      aggregateType: 'task',
-      aggregateId: taskId,
-      eventVersion: 1,
-      idempotencyKey: `task.instant_available:${taskId}:${hustler.id}:surge2`,
-      payload: {
-        taskId,
-        hustlerId: hustler.id,
-        location,
-        riskLevel,
-        sensitive,
-        surgeLevel: 2,
-        urgencyCopy: 'High-priority Instant — bonus XP',
-      },
-      queueName: 'critical_payments',
-    });
-  }
+    for (const hustler of allowed) {
+      await writeToOutbox({
+        eventType: 'task.instant_available',
+        aggregateType: 'task',
+        aggregateId: taskId,
+        eventVersion: 1,
+        idempotencyKey: `task.instant_available:${taskId}:${hustler.id}:surge2`,
+        payload: {
+          taskId,
+          hustlerId: hustler.id,
+          location,
+          riskLevel,
+          sensitive,
+          surgeLevel: 2,
+          urgencyCopy: 'High-priority Instant — bonus XP',
+        },
+        queueName: 'user_notifications',
+      }, query);
+    }
+  });
 }
 
 /**
@@ -287,50 +327,48 @@ async function handleSurgeLevel2(
 async function handleSurgeLevel3(taskId: string): Promise<void> {
   log.info({ taskId }, 'Surge Level 3: Failing gracefully - transitioning to OPEN');
 
-  // Get elapsed time for observability
+  // Get elapsed time for observability (read-only, outside transaction)
   const taskResult = await db.query<{ matched_at: Date }>(
     `SELECT matched_at FROM tasks WHERE id = $1`,
     [taskId]
   );
   const matchedAt = taskResult.rows[0]?.matched_at;
-  const elapsedSeconds = matchedAt 
+  const elapsedSeconds = matchedAt
     ? Math.floor((Date.now() - matchedAt.getTime()) / 1000)
     : 0;
 
-  // Transition to OPEN state (non-instant)
-  // Note: instant_mode = FALSE allows task to be in OPEN state (constraint allows this)
-  const result = await db.query(
-    `UPDATE tasks 
-     SET state = 'OPEN', 
-         instant_mode = FALSE,
-         surge_level = 3,
-         updated_at = NOW()
-     WHERE id = $1 
-       AND state = 'MATCHING'
-       AND instant_mode = TRUE
-     RETURNING id`,
-    [taskId]
-  );
+  // Bug 3 fix: wrap state transition UPDATE + outbox INSERT in a single transaction
+  // so if the outbox write fails the surge_level/state change is also rolled back
+  let transitioned = false;
+  let posterId: string | null = null;
 
-  if (result.rowCount === 0) {
-    log.warn({ taskId }, 'Task could not be transitioned (may have been accepted or cancelled)');
-    return;
-  }
+  await db.transaction(async (query) => {
+    // Transition to OPEN state (non-instant)
+    // Note: instant_mode = FALSE allows task to be in OPEN state (constraint allows this)
+    // W-03 fix: AND surge_level < 3 guards against two concurrent workers both
+    // entering handleSurgeLevel3 before either completes the UPDATE.
+    const result = await query<{ id: string; poster_id: string }>(
+      `UPDATE tasks
+       SET state = 'OPEN',
+           instant_mode = FALSE,
+           surge_level = 3,
+           updated_at = NOW()
+       WHERE id = $1
+         AND state = 'MATCHING'
+         AND instant_mode = TRUE
+         AND surge_level < 3
+       RETURNING id, poster_id`,
+      [taskId]
+    );
 
-  log.info({ taskId }, 'Task transitioned to OPEN (Instant Mode failed)');
+    if (result.rowCount === 0) {
+      // Task already accepted/cancelled — nothing to do; transaction will COMMIT with no-op
+      return;
+    }
 
-  // Launch Hardening v1: Observability - log surge fallback
-  const { InstantObservability } = await import('../services/InstantObservability');
-  InstantObservability.logSurgeFallback(taskId, elapsedSeconds);
+    transitioned = true;
+    posterId = result.rows[0].poster_id;
 
-  // Notify poster (via outbox)
-  const posterResult = await db.query<{ poster_id: string }>(
-    `SELECT poster_id FROM tasks WHERE id = $1`,
-    [taskId]
-  );
-
-  if (posterResult.rowCount && posterResult.rowCount > 0) {
-    const posterId = posterResult.rows[0].poster_id;
     await writeToOutbox({
       eventType: 'task.instant_failed',
       aggregateType: 'task',
@@ -343,6 +381,17 @@ async function handleSurgeLevel3(taskId: string): Promise<void> {
         reason: 'No trusted hustler available right now',
       },
       queueName: 'user_notifications',
-    });
+    }, query);
+  });
+
+  if (!transitioned) {
+    log.warn({ taskId }, 'Task could not be transitioned (may have been accepted or cancelled)');
+    return;
   }
+
+  log.info({ taskId }, 'Task transitioned to OPEN (Instant Mode failed)');
+
+  // Launch Hardening v1: Observability - log surge fallback (outside transaction — fire-and-forget)
+  const { InstantObservability } = await import('../services/InstantObservability');
+  InstantObservability.logSurgeFallback(taskId, elapsedSeconds);
 }

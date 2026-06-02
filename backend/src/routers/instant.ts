@@ -6,7 +6,7 @@
  * Not production-ready UI.
  */
 
-import { router, hustlerProcedure } from '../trpc.js';
+import { router, hustlerProcedure, adminProcedure } from '../trpc.js';
 import { TaskService } from '../services/TaskService.js';
 import { db } from '../db.js';
 import { z } from 'zod';
@@ -29,10 +29,13 @@ export const instantRouter = router({
         title: string;
         description: string;
         price: number;
-        location: string | null;
+        latitude: number | null;
+        longitude: number | null;
         created_at: Date;
       }>(
-        `SELECT id, title, description, price, location, created_at
+        // Bug-AA1/5: Select only lat/lng columns — never address/street/full_address —
+        // so unassigned workers see only ~1km-precision approximate location.
+        `SELECT id, title, description, price, latitude, longitude, created_at
          FROM tasks
          WHERE mode = 'LIVE'
            AND state = 'OPEN'
@@ -42,15 +45,24 @@ export const instantRouter = router({
         [limit]
       );
 
-      return result.rows.map(task => ({
-        id: task.id,
-        title: task.title,
-        description: task.description,
-        price: task.price,
-        location: task.location,
-        createdAt: task.created_at,
-        waitingSeconds: Math.floor((Date.now() - task.created_at.getTime()) / 1000),
-      }));
+      return result.rows.map(task => {
+        const waitingSeconds = Math.floor((Date.now() - task.created_at.getTime()) / 1000);
+        return {
+          id: task.id,
+          title: task.title,
+          description: task.description,
+          price: task.price,
+          // Round to 2 decimal places (~1.1 km precision) — full address revealed only after accept
+          approximateLat: task.latitude !== null ? Math.round(task.latitude * 100) / 100 : null,
+          approximateLng: task.longitude !== null ? Math.round(task.longitude * 100) / 100 : null,
+          // MM9: createdAt removed — exact DB timestamp combined with the exposed task UUID
+          // enables timing-based poster re-identification. Use bucketed waitingMinutes for
+          // urgency UI instead; waitingSeconds retained for backward-compat but is low-res
+          // relative to the fingerprinting risk of a precise timestamp.
+          waitingSeconds,
+          waitingMinutes: Math.floor(waitingSeconds / 60),
+        };
+      });
     }),
 
   /**
@@ -123,10 +135,12 @@ export const instantRouter = router({
     }),
 
   /**
-   * Get instant task metrics (for testing)
+   * Get instant task metrics (aggregate platform timing data)
+   * R-16: Restricted to adminProcedure — aggregate timing data must not be exposed
+   * to all hustlers as it reveals platform throughput and demand patterns.
    * Notification Urgency Design v1: Includes notification-to-accept latency
    */
-  metrics: hustlerProcedure.input(z.void()).query(async () => {
+  metrics: adminProcedure.input(z.void()).query(async () => {
     // Time-to-accept (created_at → accepted_at for LIVE mode tasks)
     const timeToAcceptResult = await db.query<{
       created_at: Date;

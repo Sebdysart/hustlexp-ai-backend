@@ -60,14 +60,31 @@ export async function processPushJob(job: Job<PushJobData>): Promise<void> {
     // Structured log: job started
     log.info({ notificationId, jobId: job.id, idempotencyKey, userId }, 'Push job started');
 
-    // Check if this outbox event was already processed (idempotency)
-    const outboxCheck = await db.query<{ status: string }>(
-      `SELECT status FROM outbox_events WHERE idempotency_key = $1`,
+    // W-20 FIX: Atomic claim before FCM call to prevent concurrent workers from
+    // both passing the idempotency check and both sending the push notification.
+    // The prior SELECT→FCM pattern had a race: two workers could both read status
+    // != 'processed', both call FCM, causing double-send.
+    // Atomic UPDATE: only the worker that transitions the row wins the race.
+    //
+    // W-26 FIX: Also reclaim rows stuck in 'processing' for more than 5 minutes.
+    // Without this clause, a process crash between claim and FCM leaves the row
+    // permanently in 'processing', causing BullMQ retries to exit early (0 rows
+    // claimed) and silently drop the notification forever.
+    const claimResult = await db.query<{ id: string }>(
+      `UPDATE outbox_events
+       SET status = 'processing', updated_at = NOW()
+       WHERE idempotency_key = $1
+         AND (
+           status NOT IN ('processed', 'processing')
+           OR (status = 'processing' AND updated_at < NOW() - INTERVAL '5 minutes')
+         )
+       RETURNING id`,
       [idempotencyKey]
     );
 
-    if (outboxCheck.rows.length > 0 && outboxCheck.rows[0].status === 'processed') {
-      log.info({ notificationId, jobId: job.id, idempotencyKey }, 'Push job already processed, skipping');
+    if (claimResult.rowCount === 0) {
+      // Row is already processing or processed by another worker — skip
+      log.info({ notificationId, jobId: job.id, idempotencyKey }, 'Push job already claimed or processed by another worker, skipping');
       return;
     }
 

@@ -69,7 +69,7 @@ export const messagingRouter = router({
       taskId: Schemas.uuid,
       messageType: z.enum(['TEXT', 'AUTO']),
       content: z.string().trim().min(1).max(500).optional(), // Required for TEXT
-      autoMessageTemplate: z.enum(['on_my_way', 'running_late', 'completed', 'question']).optional(), // Required for AUTO
+      autoMessageTemplate: z.enum(['on_my_way', 'running_late', 'completed', 'need_clarification']).optional(), // Required for AUTO
     }))
     .mutation(async ({ input, ctx }) => {
       if (!ctx.user) {
@@ -127,7 +127,7 @@ export const messagingRouter = router({
     .input(z.object({
       taskId: Schemas.uuid,
       photoUrls: z.array(approvedPhotoUrl).min(1).max(3), // 1-3 photos — approved storage domain only
-      caption: z.string().max(200).optional(),
+      caption: z.string().trim().max(200).optional(),
     }))
     .mutation(async ({ input, ctx }) => {
       if (!ctx.user) {
@@ -297,38 +297,89 @@ export const messagingRouter = router({
    * Returns one entry per task with latest message and unread count
    */
   getConversations: protectedProcedure
-    .input(z.void())
-    .query(async ({ ctx }) => {
+    .input(z.object({
+      limit: z.number().int().min(1).max(50).default(20),
+      offset: z.number().int().min(0).default(0),
+    }).optional())
+    .query(async ({ ctx, input }) => {
       if (!ctx.user) {
         throw new TRPCError({ code: 'UNAUTHORIZED', message: 'Authentication required' });
       }
 
+      const limit = input?.limit ?? 20;
+      const offset = input?.offset ?? 0;
+
+      // BUG-6 FIX: Moderation side-channel prevention.
+      //
+      // Original behaviour: quarantined/flagged messages were hidden entirely from
+      // lastMessage AND excluded from unread_count. This created a side-channel:
+      // a sender could watch the recipient's unread count not increment after sending
+      // a message and infer their message had been flagged — without the system
+      // ever telling them directly.
+      //
+      // Fixed behaviour:
+      //   - For the SENDER of a flagged/quarantined message: show
+      //     '[Message under review]' as lastMessage (they know it's under review).
+      //   - For the RECIPIENT: do NOT show the content (moderation preserved); the
+      //     flagged message does not appear as lastMessage to them.
+      //   - unread_count for recipients still excludes flagged/quarantined messages
+      //     (consistent with what they can see), but now lastMessage also uses the
+      //     same filter so the counts are coherent and no side-channel leaks.
+      //   - A 'hasFlaggedMessage' boolean is returned so the sender can confirm
+      //     their own message status via the API response rather than side-channel.
       const result = await db.query(
-        `SELECT DISTINCT ON (t.id)
-          t.id as "taskId",
-          t.id as id,
-          t.title as "taskTitle",
-          CASE WHEN t.poster_id = $1 THEN t.worker_id ELSE t.poster_id END as "otherUserId",
-          CASE WHEN t.poster_id = $1 THEN wu.full_name ELSE pu.full_name END as "otherUserName",
-          CASE WHEN t.poster_id = $1 THEN 'worker' ELSE 'poster' END as "otherUserRole",
-          m.content as "lastMessage",
-          m.created_at as "lastMessageAt",
-          COALESCE(unread.cnt, 0)::int as "unreadCount"
-        FROM tasks t
-        LEFT JOIN users wu ON wu.id = t.worker_id
-        LEFT JOIN users pu ON pu.id = t.poster_id
-        LEFT JOIN LATERAL (
-          SELECT content, created_at FROM task_messages
-          WHERE task_id = t.id ORDER BY created_at DESC LIMIT 1
-        ) m ON true
-        LEFT JOIN LATERAL (
-          SELECT COUNT(*)::int as cnt FROM task_messages
-          WHERE task_id = t.id AND sender_id != $1 AND read_at IS NULL
-        ) unread ON true
-        WHERE (t.poster_id = $1 OR t.worker_id = $1)
-          AND t.state IN ('ACCEPTED', 'PROOF_SUBMITTED', 'DISPUTED')
-        ORDER BY t.id, m.created_at DESC NULLS LAST`,
-        [ctx.user.id]
+        `SELECT * FROM (
+          SELECT DISTINCT ON (t.id)
+            t.id as "taskId",
+            t.id as id,
+            t.title as "taskTitle",
+            CASE WHEN t.poster_id = $1 THEN t.worker_id ELSE t.poster_id END as "otherUserId",
+            CASE WHEN t.poster_id = $1 THEN wu.full_name ELSE pu.full_name END as "otherUserName",
+            CASE WHEN t.poster_id = $1 THEN 'worker' ELSE 'poster' END as "otherUserRole",
+            COALESCE(
+              CASE
+                WHEN m.moderation_status IN ('quarantined', 'flagged') AND m.sender_id = $1
+                  THEN '[Message under review]'
+                WHEN m.moderation_status IN ('quarantined', 'flagged') AND m.sender_id != $1
+                  THEN NULL
+                ELSE m.content
+              END,
+              '[No messages yet]'
+            ) as "lastMessage",
+            m.created_at as "lastMessageAt",
+            COALESCE(unread.cnt, 0)::int as "unreadCount",
+            COALESCE(flagged.has_flagged, false) as "hasFlaggedMessage"
+          FROM tasks t
+          LEFT JOIN users wu ON wu.id = t.worker_id
+          LEFT JOIN users pu ON pu.id = t.poster_id
+          LEFT JOIN LATERAL (
+            SELECT content, created_at, sender_id, moderation_status FROM task_messages
+            WHERE task_id = t.id
+            ORDER BY created_at DESC LIMIT 1
+          ) m ON true
+          LEFT JOIN LATERAL (
+            SELECT COUNT(*)::int as cnt FROM task_messages
+            WHERE task_id = t.id
+              AND sender_id != $1
+              AND read_at IS NULL
+              AND (moderation_status IS NULL OR moderation_status NOT IN ('quarantined', 'flagged'))
+          ) unread ON true
+          LEFT JOIN LATERAL (
+            SELECT EXISTS (
+              SELECT 1 FROM task_messages
+              WHERE task_id = t.id
+                AND sender_id = $1
+                AND moderation_status IN ('quarantined', 'flagged')
+            ) as has_flagged
+          ) flagged ON true
+          WHERE (t.poster_id = $1 OR t.worker_id = $1)
+            AND t.state IN ('ACCEPTED', 'PROOF_SUBMITTED', 'DISPUTED', 'COMPLETED', 'CANCELLED')
+            AND (t.state NOT IN ('COMPLETED', 'CANCELLED') OR t.updated_at >= NOW() - INTERVAL '7 days')
+          ORDER BY t.id, m.created_at DESC NULLS LAST
+        ) conversations
+        ORDER BY "lastMessageAt" DESC NULLS LAST, "taskId"
+        LIMIT $2 OFFSET $3`,
+        [ctx.user.id, limit, offset]
       );
 
       return result.rows;

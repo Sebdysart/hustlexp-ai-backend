@@ -59,77 +59,106 @@ export async function processExportJob(job: Job<ExportJobData>): Promise<void> {
   const { exportId, userId, format, gdprRequestId } = job.data.payload;
   const idempotencyKey = job.id || `export:${exportId}`;
   
+  // Claim the export row atomically: SELECT FOR UPDATE + CAS UPDATE in one transaction.
+  // The lock is held for the entire duration of both statements, closing the window
+  // where two workers could both read the row, both pass the status checks, and
+  // then race on the CAS UPDATE — with one silently losing the claim.
+  let exportRecord: {
+    id: string;
+    user_id: string;
+    export_format: string;
+    content_type: string;
+    status: string;
+    created_at: Date;
+    updated_at: Date;
+    object_key: string | null;
+  } | null = null;
+
   try {
-    // Get export record with FOR UPDATE lock (prevents race condition)
-    // Also check for stuck generating state (>10 minutes old)
-    const exportResult = await db.query<{
-      id: string;
-      user_id: string;
-      export_format: string;
-      content_type: string;
-      status: string;
-      created_at: Date;
-      updated_at: Date;
-      object_key: string | null;
-    }>(
-      `SELECT id, user_id, export_format, content_type, status, created_at, updated_at, object_key
-       FROM exports
-       WHERE id = $1
-       FOR UPDATE`, // Lock row for update (prevents concurrent processing)
-      [exportId]
-    );
-    
-    if (exportResult.rows.length === 0) {
-      throw new Error(`Export ${exportId} not found`);
-    }
-    
-    const exportRecord = exportResult.rows[0];
-    
-    // Idempotency check: If already ready, skip processing (idempotent replay)
-    if (exportRecord.status === 'ready') {
+    const claimed = await db.transaction(async (txQuery) => {
+      // Lock the row for the duration of this transaction
+      const lockResult = await txQuery<{
+        id: string;
+        user_id: string;
+        export_format: string;
+        content_type: string;
+        status: string;
+        created_at: Date;
+        updated_at: Date;
+        object_key: string | null;
+      }>(
+        `SELECT id, user_id, export_format, content_type, status, created_at, updated_at, object_key
+         FROM exports
+         WHERE id = $1
+         FOR UPDATE`, // Lock row for update (prevents concurrent processing)
+        [exportId]
+      );
+
+      if (lockResult.rows.length === 0) {
+        throw new Error(`Export ${exportId} not found`);
+      }
+
+      const row = lockResult.rows[0];
+
+      // Idempotency check: already ready — skip (no claim needed)
+      if (row.status === 'ready') {
+        return { skip: 'already_ready', row } as const;
+      }
+
+      // Check if status is valid for processing
+      if (row.status !== 'queued' && row.status !== 'generating') {
+        throw new Error(`Cannot process export: status is ${row.status}`);
+      }
+
+      // Check for stuck generating state (>10 minutes old) - recovery mechanism
+      if (row.status === 'generating') {
+        const stuckThreshold = new Date(Date.now() - 10 * 60 * 1000); // 10 minutes ago
+        if (row.updated_at && new Date(row.updated_at) > stuckThreshold) {
+          // Still actively generating (updated within last 10 minutes), skip
+          return { skip: 'still_generating', row } as const;
+        } else {
+          // Stuck in generating state (>10 minutes old), treat as retryable
+          log.warn({ exportId, updatedAt: row.updated_at }, 'Export stuck in generating state, treating as retryable');
+        }
+      }
+
+      // CAS UPDATE inside the same transaction — lock is still held here
+      const updateResult = await txQuery(
+        `UPDATE exports
+         SET status = 'generating',
+             updated_at = NOW()
+         WHERE id = $1
+           AND (status = 'queued'
+                OR (status = 'generating' AND updated_at < NOW() - INTERVAL '10 minutes'))`, // Recovery: allow retry if stuck >10 min
+        [exportId]
+      );
+
+      if (updateResult.rowCount === 0) {
+        // Should not happen given the FOR UPDATE lock, but guard anyway
+        return { skip: 'already_claimed', row } as const;
+      }
+
+      return { skip: null, row } as const;
+    });
+
+    // Handle skip cases (outside the transaction — lock already released)
+    if (claimed.skip === 'already_ready') {
       log.info({ exportId }, 'Export already processed (status: ready), skipping - idempotent replay');
-      // Mark outbox event as processed (if processing from outbox)
       if (idempotencyKey) {
         await markOutboxEventProcessed(idempotencyKey);
       }
       return;
     }
-    
-    // Check if status is valid for processing
-    if (exportRecord.status !== 'queued' && exportRecord.status !== 'generating') {
-      throw new Error(`Cannot process export: status is ${exportRecord.status}`);
+    if (claimed.skip === 'still_generating') {
+      log.info({ exportId, updatedAt: claimed.row.updated_at }, 'Export is still generating, skipping retry');
+      return;
     }
-    
-    // Check for stuck generating state (>10 minutes old) - recovery mechanism
-    if (exportRecord.status === 'generating') {
-      const stuckThreshold = new Date(Date.now() - 10 * 60 * 1000); // 10 minutes ago
-      if (exportRecord.updated_at && new Date(exportRecord.updated_at) > stuckThreshold) {
-        // Still actively generating (updated within last 10 minutes), skip
-        log.info({ exportId, updatedAt: exportRecord.updated_at }, 'Export is still generating, skipping retry');
-        return;
-      } else {
-        // Stuck in generating state (>10 minutes old), treat as retryable
-        log.warn({ exportId, updatedAt: exportRecord.updated_at }, 'Export stuck in generating state, treating as retryable');
-      }
-    }
-    
-    // Update status to generating (with WHERE clause to prevent race conditions)
-    // Only update if status is 'queued' or stuck 'generating' (>10 minutes old)
-    const updateResult = await db.query(
-      `UPDATE exports
-       SET status = 'generating',
-           updated_at = NOW()
-       WHERE id = $1
-         AND (status = 'queued' 
-              OR (status = 'generating' AND updated_at < NOW() - INTERVAL '10 minutes'))`, // Recovery: allow retry if stuck >10 min
-      [exportId]
-    );
-    
-    // If update affected 0 rows, another worker already claimed this export
-    if (updateResult.rowCount === 0) {
+    if (claimed.skip === 'already_claimed') {
       log.info({ exportId }, 'Export already claimed by another worker, skipping');
       return;
     }
+
+    exportRecord = claimed.row;
     
     // Generate deterministic R2 object key (based on export's created_at, not "now")
     // CRITICAL: Use export's created_at to ensure retries overwrite same key, not create duplicates

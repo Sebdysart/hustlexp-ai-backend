@@ -34,6 +34,7 @@ vi.mock('../../src/db', () => {
 
 vi.mock('../../src/logger', () => ({
   escrowLogger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
+  stripeLogger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
   logger: { child: () => ({ warn: vi.fn(), error: vi.fn(), info: vi.fn() }) },
   taskLogger: { child: () => ({ warn: vi.fn(), error: vi.fn(), info: vi.fn() }) },
   aiLogger: { child: () => ({ warn: vi.fn(), error: vi.fn(), info: vi.fn() }) },
@@ -86,6 +87,16 @@ vi.mock('../../src/services/PhotoVerificationService', () => ({
   PhotoVerificationService: {
     compareBeforeAfter: vi.fn().mockResolvedValue({ success: false }),
   },
+}));
+
+// Mock the Redis cache module used by the advisory lock (FIX YY-03).
+// Default: set() returns 'OK' (lock acquired) so all existing attack tests
+// pass through the AI pipeline as before. del() is a no-op.
+vi.mock('../../src/cache/redis', () => ({
+  getClient: vi.fn(() => ({
+    set: vi.fn().mockResolvedValue('OK'),
+    del: vi.fn().mockResolvedValue(1),
+  })),
 }));
 
 vi.mock('../../src/services/EarnedVerificationUnlockService', () => ({
@@ -554,6 +565,7 @@ describe('Attack #11 — prorate_on_abort=false, abort mid-task (should get $0)'
     mockDb.query
       .mockResolvedValueOnce({ rows: [{ task_id: 'task-1' }], rowCount: 1 } as never) // pre-check: task_id
       .mockResolvedValueOnce({ rows: [{ worker_id: null }], rowCount: 1 } as never)   // pre-check: worker_id (no worker yet)
+      .mockResolvedValueOnce({ rows: [{ id: 'esc-1', version: 1, state: 'FUNDED' }], rowCount: 1 } as never) // F-05: T2 FOR UPDATE NOWAIT
       .mockResolvedValueOnce({ rows: [refunded], rowCount: 1 } as never)               // UPDATE
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);                      // logEscrowEvent
 
@@ -632,10 +644,12 @@ describe('Attack #13 — Dispute submitted after challenge window expires', () =
   it('SAFE — lockForDispute rejects late dispute with PRECONDITION_FAILED', async () => {
     const completedAt = new Date(Date.now() - 8 * 60 * 60 * 1000); // 8 hours ago
     // First query: window check JOIN
-    mockDb.query.mockResolvedValueOnce({
-      rows: [{ completed_at: completedAt, challenge_window_hours: 6 }],
-      rowCount: 1,
-    } as never);
+    mockDb.query
+      .mockResolvedValueOnce({
+        rows: [{ completed_at: completedAt, challenge_window_hours: 6 }],
+        rowCount: 1,
+      } as never)
+      .mockResolvedValueOnce({ rows: [{ count: '0' }], rowCount: 1 } as never); // dup dispute check
 
     await expect(
       EscrowService.lockForDispute('esc-1')
@@ -647,6 +661,7 @@ describe('Attack #13 — Dispute submitted after challenge window expires', () =
     const locked = makeEscrow({ state: 'LOCKED_DISPUTE' });
     mockDb.query
       .mockResolvedValueOnce({ rows: [{ completed_at: completedAt, challenge_window_hours: 6 }], rowCount: 1 } as never) // window check
+      .mockResolvedValueOnce({ rows: [{ count: '0' }], rowCount: 1 } as never) // dup dispute check
       .mockResolvedValueOnce({ rows: [locked], rowCount: 1 } as never); // UPDATE
 
     const result = await EscrowService.lockForDispute('esc-1');
@@ -666,6 +681,7 @@ describe('Attack #14 — Dispute after escrow auto-released', () => {
   it('SAFE — lockForDispute fails on RELEASED escrow', async () => {
     mockDb.query
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)  // window check — no rows (skips window guard)
+      .mockResolvedValueOnce({ rows: [{ count: '0' }], rowCount: 1 } as never)  // dup dispute check
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)  // UPDATE — no FUNDED row
       .mockResolvedValueOnce({
         rows: [makeEscrow({ state: 'RELEASED', poster_id: 'poster-1', worker_id: 'hustler-1' })],
@@ -697,12 +713,17 @@ describe('Attack #15 — Reviewer approves proof with wrong taskId', () => {
 
     // review() DB query sequence when decision=ACCEPTED and proof has no photo_url/gps:
     //   1. SELECT proofs JOIN proof_submissions (proof row — no photo_url, no gps_coordinates)
-    //   2. SELECT description, before_photo_url FROM tasks (biometric/GPS skipped due to null fields)
-    //   3. UPDATE proofs SET state = ACCEPTED
+    //   2. T53-8: SELECT poster_id FROM tasks WHERE id = proof.task_id (ownership check)
+    //   3. SELECT description, before_photo_url FROM tasks (biometric/GPS skipped due to null fields)
+    //   4. (tx) SELECT state FROM proofs FOR UPDATE  — concurrency lock
+    //   5. (tx) UPDATE proofs SET state = ACCEPTED AND state = 'SUBMITTED'
     mockDb.query
-      .mockResolvedValueOnce({ rows: [proof], rowCount: 1 } as never)     // 1. SELECT proof
-      .mockResolvedValueOnce({ rows: [{ description: 'task', before_photo_url: null }], rowCount: 1 } as never) // 2. task description
-      .mockResolvedValueOnce({ rows: [accepted], rowCount: 1 } as never); // 3. UPDATE
+      .mockResolvedValueOnce({ rows: [proof], rowCount: 1 } as never)                                              // 1. SELECT proof (outside tx)
+      .mockResolvedValueOnce({ rows: [{ poster_id: 'reviewer-1' }], rowCount: 1 } as never)                       // 2. T53-8 ownership check (reviewer is poster)
+      .mockResolvedValueOnce({ rows: [{ description: 'task', before_photo_url: null }], rowCount: 1 } as never)   // 3. task description (AI pipeline)
+      .mockResolvedValueOnce({ rows: [{ state: 'SUBMITTED', task_id: 'task-B' }], rowCount: 1 } as never)         // 4. SELECT state, task_id FOR UPDATE (inside tx)
+      .mockResolvedValueOnce({ rows: [{ state: 'PROOF_SUBMITTED' }], rowCount: 1 } as never)                      // 5. T60-1: SELECT task state (inside tx)
+      .mockResolvedValueOnce({ rows: [accepted], rowCount: 1 } as never);                                         // 6. UPDATE (inside tx)
 
     const result = await ProofService.review({
       proofId: 'proof-A',
@@ -833,6 +854,7 @@ describe('Attack #18 — XP retained after dispute loss', () => {
   it('SAFE — dispute cannot be filed on RELEASED escrow (state machine enforces ordering)', async () => {
     mockDb.query
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)  // window check — no rows (skips window guard)
+      .mockResolvedValueOnce({ rows: [{ count: '0' }], rowCount: 1 } as never)  // dup dispute check
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)  // lockForDispute UPDATE — no FUNDED row
       .mockResolvedValueOnce({
         rows: [makeEscrow({ state: 'RELEASED', poster_id: 'poster-1', worker_id: 'hustler-1' })],

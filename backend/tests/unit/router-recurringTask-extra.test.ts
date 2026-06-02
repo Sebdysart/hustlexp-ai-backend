@@ -352,7 +352,7 @@ describe('recurringTask.setPreferredWorker', () => {
   });
 
   it('throws NOT_FOUND when series not found or not owned by poster', async () => {
-    mockDb.query.mockResolvedValueOnce({ rows: [{ id: WORKER_UUID }], rowCount: 1 } as any);
+    mockDb.query.mockResolvedValueOnce({ rows: [{ id: WORKER_UUID, account_status: 'ACTIVE' }], rowCount: 1 } as any);
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
 
     await expect(
@@ -361,7 +361,7 @@ describe('recurringTask.setPreferredWorker', () => {
   });
 
   it('returns success when preferred worker set', async () => {
-    mockDb.query.mockResolvedValueOnce({ rows: [{ id: WORKER_UUID }], rowCount: 1 } as any);
+    mockDb.query.mockResolvedValueOnce({ rows: [{ id: WORKER_UUID, account_status: 'ACTIVE' }], rowCount: 1 } as any);
     mockDb.query.mockResolvedValueOnce({ rows: [{ id: SERIES_UUID }], rowCount: 1 } as any);
 
     const result = await makeCaller().setPreferredWorker({ seriesId: SERIES_UUID, workerId: WORKER_UUID });
@@ -369,7 +369,7 @@ describe('recurringTask.setPreferredWorker', () => {
   });
 
   it('passes correct params to update query', async () => {
-    mockDb.query.mockResolvedValueOnce({ rows: [{ id: WORKER_UUID }], rowCount: 1 } as any);
+    mockDb.query.mockResolvedValueOnce({ rows: [{ id: WORKER_UUID, account_status: 'ACTIVE' }], rowCount: 1 } as any);
     mockDb.query.mockResolvedValueOnce({ rows: [{ id: SERIES_UUID }], rowCount: 1 } as any);
 
     await makeCaller().setPreferredWorker({ seriesId: SERIES_UUID, workerId: WORKER_UUID });

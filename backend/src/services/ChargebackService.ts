@@ -20,6 +20,7 @@ import { db } from '../db.js';
 import { RevenueService } from './RevenueService.js';
 import type { ServiceResult } from '../types.js';
 import { stripeLogger } from '../logger.js';
+import { invalidateAuthCacheForUser } from '../auth-cache.js';
 
 const log = stripeLogger.child({ service: 'ChargebackService' });
 
@@ -227,22 +228,41 @@ export const ChargebackService = {
 
       // 4. Freeze user payouts (if user identified)
       if (userId) {
+        // F61-2 FIX: Split into two separate UPDATE statements so that dispute_count
+        // is always incremented regardless of whether payouts_locked is already TRUE.
+        // The original single UPDATE had AND payouts_locked = FALSE which prevented
+        // dispute_count from incrementing on repeat chargebacks — so the tier-downgrade
+        // logic never fired for users with an already-frozen account.
+
+        // Step 1: Always increment dispute_count (no payouts_locked guard).
         await db.query(
+          `UPDATE users
+           SET dispute_count = COALESCE(dispute_count, 0) + 1,
+               last_dispute_at = NOW(),
+               updated_at = NOW()
+           WHERE id = $1`,
+          [userId]
+        );
+
+        // Step 2: Conditionally lock payouts (only if not already locked).
+        const lockResult = await db.query(
           `UPDATE users
            SET payouts_locked = TRUE,
                payouts_locked_at = NOW(),
                payouts_locked_reason = $2,
-               dispute_count = COALESCE(dispute_count, 0) + 1,
-               last_dispute_at = NOW()
+               updated_at = NOW()
            WHERE id = $1
              AND payouts_locked = FALSE`,
           [userId, `Chargeback: ${stripeDisputeId} (${reason || 'unknown'})`]
         );
 
-        // Update payment dispute to record the freeze
+        // F64-3 FIX: Only record payouts_were_frozen=TRUE when this dispute actually
+        // froze the account (Step 2 matched a row). If payouts_locked was already TRUE
+        // when this dispute arrived, lockResult.rowCount=0 — recording frozen=TRUE would
+        // corrupt the audit trail, falsely attributing the freeze to this dispute.
         await db.query(
-          `UPDATE payment_disputes SET payouts_were_frozen = TRUE WHERE id = $1`,
-          [paymentDisputeId]
+          `UPDATE payment_disputes SET payouts_were_frozen = $2 WHERE id = $1`,
+          [paymentDisputeId, (lockResult.rowCount ?? 0) > 0]
         );
 
         // 5. Downgrade trust tier if dispute_count >= 2
@@ -273,6 +293,16 @@ export const ChargebackService = {
               `UPDATE users SET trust_tier = $2 WHERE id = $1`,
               [userId, newTier]
             );
+
+            // Invalidate auth cache so the downgraded tier is visible immediately
+            // A60-4 FIX: trust_tier change without cache invalidation leaves cached
+            // sessions with stale tier for up to 5 minutes.
+            const fbUidResult = await db.query<{ firebase_uid: string }>(
+              'SELECT firebase_uid FROM users WHERE id = $1',
+              [userId]
+            );
+            const fbUid = fbUidResult.rows[0]?.firebase_uid;
+            await invalidateAuthCacheForUser(userId, fbUid, false); // writeRevocationMarker=false — tier change is not a security event
 
             // Record in trust_ledger for audit
             await db.query(
@@ -486,25 +516,16 @@ export const ChargebackService = {
             [dispute.user_id]
           );
 
-          // 3. Unlock payouts if no OTHER open disputes (even on loss, we don't perma-lock)
-          const otherOpenDisputes = await db.query<{ count: string }>(
-            `SELECT COUNT(*) as count FROM payment_disputes
-             WHERE user_id = $1
-               AND id != $2
-               AND status NOT IN ('won', 'lost', 'closed')`,
-            [dispute.user_id, dispute.id]
+          // Bug 4 fix: Do NOT unlock payouts when the chargeback is LOST.
+          // A lost chargeback means the platform was fined — the user's account must
+          // remain frozen and require admin manual review before payouts are reinstated.
+          // Previously this branch unconditionally unlocked payouts on loss, which
+          // allowed fraudulent posters to immediately receive payouts after losing a
+          // chargeback, defeating the payout freeze entirely.
+          log.warn(
+            { stripeDisputeId, userId: dispute.user_id, amountCents: dispute.amount_cents },
+            'Chargeback lost — payouts remain frozen, manual admin review required to reinstate'
           );
-
-          if (parseInt(otherOpenDisputes.rows[0].count, 10) === 0) {
-            await db.query(
-              `UPDATE users
-               SET payouts_locked = FALSE,
-                   payouts_locked_at = NULL,
-                   payouts_locked_reason = NULL
-               WHERE id = $1`,
-              [dispute.user_id]
-            );
-          }
         }
 
         log.warn({ stripeDisputeId, amountCents: dispute.amount_cents, resolution: 'lost' }, 'Dispute lost - funds lost permanently');

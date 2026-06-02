@@ -183,7 +183,7 @@ function makeCtx(overrides: Record<string, unknown> = {}) {
 function makeTaskRow(overrides: Record<string, unknown> = {}) {
   return {
     id: 'task-1',
-    state: 'POSTED',
+    state: 'OPEN',
     poster_id: 'poster-1',
     worker_id: null,
     template_slug: 'standard_physical',
@@ -206,13 +206,14 @@ describe('assignWorker — transaction locking (FIX 1)', () => {
   });
 
   it('db.transaction() is entered — all state-mutating ops use a single tx', async () => {
-    // Happy path: task is POSTED, worker has pending application
+    // Happy path: task is OPEN, worker has pending application.
+    // SECURITY FIX: no pre-tx slug lookup — template_slug is now fetched INSIDE the
+    // transaction along with state/poster_id (FOR UPDATE row includes template_slug).
     mockQuery
-      .mockResolvedValueOnce({ rows: [{ template_slug: 'standard_physical' }], rowCount: 1 } as never) // pre-tx template slug
-      .mockResolvedValueOnce({ rows: [makeTaskRow()], rowCount: 1 } as never)                         // tx: FOR UPDATE
-      .mockResolvedValueOnce({ rows: [{ id: 'app-1' }], rowCount: 1 } as never)                       // tx: SELECT application
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)                                       // tx: UPDATE accepted
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)                                       // tx: UPDATE rejected
+      .mockResolvedValueOnce({ rows: [makeTaskRow()], rowCount: 1 } as never)     // tx: FOR UPDATE (includes template_slug)
+      .mockResolvedValueOnce({ rows: [{ id: 'app-1' }], rowCount: 1 } as never)   // tx: SELECT application
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)                   // tx: UPDATE accepted
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)                   // tx: UPDATE rejected
       .mockResolvedValueOnce({
         rows: [{ id: 'task-1', state: 'ACCEPTED', worker_id: 'worker-1' }],
         rowCount: 1,
@@ -231,9 +232,10 @@ describe('assignWorker — transaction locking (FIX 1)', () => {
   });
 
   it('first query inside the transaction contains FOR UPDATE (row-level lock)', async () => {
+    // SECURITY FIX: template_slug is now part of the FOR UPDATE SELECT (no pre-tx query).
+    // The very first mockQuery call is the FOR UPDATE — it must contain FOR UPDATE.
     mockQuery
-      .mockResolvedValueOnce({ rows: [{ template_slug: 'standard_physical' }], rowCount: 1 } as never)
-      .mockResolvedValueOnce({ rows: [makeTaskRow()], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [makeTaskRow()], rowCount: 1 } as never)  // tx: FOR UPDATE
       .mockResolvedValueOnce({ rows: [{ id: 'app-1' }], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
@@ -247,18 +249,18 @@ describe('assignWorker — transaction locking (FIX 1)', () => {
       input: { taskId: 'task-1', workerId: 'worker-1' },
     });
 
-    // The second query call is the first inside the transaction (after the pre-tx slug lookup)
+    // The FIRST query call is the FOR UPDATE (inside the transaction — no pre-tx slug lookup)
     const allCalls = mockQuery.mock.calls;
-    expect(allCalls.length).toBeGreaterThanOrEqual(2);
-    const firstTxSql = allCalls[1][0] as string;
+    expect(allCalls.length).toBeGreaterThanOrEqual(1);
+    const firstTxSql = allCalls[0][0] as string;
     expect(firstTxSql).toContain('FOR UPDATE');
     expect(firstTxSql.toUpperCase()).toContain('SELECT');
   });
 
   it('second concurrent call gets PRECONDITION_FAILED when task state changes mid-race', async () => {
     // Simulate: second caller's FOR UPDATE returns state='ACCEPTED' (first caller already won)
+    // SECURITY FIX: no pre-tx slug mock — FOR UPDATE is first and only pre-ownership query
     mockQuery
-      .mockResolvedValueOnce({ rows: [{ template_slug: 'standard_physical' }], rowCount: 1 } as never) // pre-tx template slug
       .mockResolvedValueOnce({
         rows: [makeTaskRow({ state: 'ACCEPTED', worker_id: 'worker-1' })],
         rowCount: 1,
@@ -278,8 +280,8 @@ describe('assignWorker — transaction locking (FIX 1)', () => {
   it('only one application ends up accepted: the chosen worker, all others rejected', async () => {
     const acceptedApp = { id: 'app-worker-1' };
 
+    // SECURITY FIX: no pre-tx slug mock — FOR UPDATE includes template_slug
     mockQuery
-      .mockResolvedValueOnce({ rows: [{ template_slug: 'standard_physical' }], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [makeTaskRow()], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [acceptedApp], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
@@ -315,22 +317,25 @@ describe('assignWorker — transaction locking (FIX 1)', () => {
     expect(rejectCall).toBeDefined();
   });
 
-  it('throws NOT_FOUND when task does not exist at template-slug pre-check', async () => {
-    // Pre-tx SELECT finds nothing → early exit before transaction is entered
-    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+  it('throws FORBIDDEN when task does not exist (UUID enumeration prevention)', async () => {
+    // SECURITY FIX: non-existent task now returns FORBIDDEN (not NOT_FOUND) so callers
+    // cannot enumerate task UUIDs via error discrimination. The transaction IS entered
+    // since the FOR UPDATE is the first op inside it.
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // FOR UPDATE returns nothing
 
     await expect(
       resolver({ ctx: makeCtx(), input: { taskId: 'task-1', workerId: 'worker-1' } })
     ).rejects.toThrow(TRPCError);
 
-    // Transaction is never entered
-    expect(mockTransaction).not.toHaveBeenCalled();
+    // Transaction IS entered (FOR UPDATE is the first statement inside)
+    expect(mockTransaction).toHaveBeenCalledOnce();
   });
 
-  it('throws NOT_FOUND when task disappears between pre-tx lookup and FOR UPDATE', async () => {
+  it('throws FORBIDDEN when task disappears inside the transaction FOR UPDATE', async () => {
+    // SECURITY FIX: previously two queries (pre-tx slug + FOR UPDATE). Now there is
+    // only one: the FOR UPDATE inside the transaction. Empty result → FORBIDDEN.
     mockQuery
-      .mockResolvedValueOnce({ rows: [{ template_slug: 'standard_physical' }], rowCount: 1 } as never) // pre-tx
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);                                       // FOR UPDATE finds nothing
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // FOR UPDATE finds nothing
 
     await expect(
       resolver({ ctx: makeCtx(), input: { taskId: 'task-1', workerId: 'worker-1' } })
@@ -340,8 +345,8 @@ describe('assignWorker — transaction locking (FIX 1)', () => {
   it('throws PRECONDITION_FAILED and rolls back when tasks UPDATE affects 0 rows', async () => {
     // This simulates the edge case where the FOR UPDATE check passed but the final
     // UPDATE tasks returns rowCount=0 (state changed by another process after lock check)
+    // SECURITY FIX: no pre-tx slug mock — FOR UPDATE is first and includes template_slug
     mockQuery
-      .mockResolvedValueOnce({ rows: [{ template_slug: 'standard_physical' }], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [makeTaskRow()], rowCount: 1 } as never)    // FOR UPDATE
       .mockResolvedValueOnce({ rows: [{ id: 'app-1' }], rowCount: 1 } as never) // SELECT app
       .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)                 // UPDATE accepted

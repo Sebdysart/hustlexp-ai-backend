@@ -5,7 +5,9 @@
 export const TOKEN_CACHE_TTL_SECONDS = 5 * 60; // 5 minutes — do not increase above 300
 
 /**
- * Revocation marker TTL — must exceed TOKEN_CACHE_TTL_SECONDS by at least 60s
- * to ensure the marker is still present when the cached token expires.
+ * Revocation marker TTL — set to TOKEN_CACHE_TTL_SECONDS * 2 + 120 (720s) to
+ * guarantee the marker outlives any cached session regardless of when the session
+ * was last refreshed. The previous 60s buffer was too narrow: a session refreshed
+ * near the marker expiry could survive past the marker's lifetime.
  */
-export const REVOCATION_MARKER_TTL_SECONDS = TOKEN_CACHE_TTL_SECONDS + 60; // 360s
+export const REVOCATION_MARKER_TTL_SECONDS = TOKEN_CACHE_TTL_SECONDS * 2 + 120; // 720s

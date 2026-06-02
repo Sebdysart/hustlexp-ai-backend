@@ -21,7 +21,7 @@ import { trpcServer } from '@hono/trpc-server';
 import { appRouter } from './routers/index.js';
 import { createContext } from './trpc.js';
 import { config } from './config.js';
-import { securityHeaders, rateLimitMiddleware, publicIpRateLimitMiddleware } from './middleware/security.js';
+import { securityHeaders, rateLimitMiddleware, publicIpRateLimitMiddleware, aiRateLimitMiddleware } from './middleware/security.js';
 import { requestIdMiddleware, serverTimingMiddleware } from './middleware/request-id.js';
 import { httpMetricsMiddleware } from './monitoring/http-metrics.js';
 import { createMetricsEndpoint } from './monitoring/metrics.js';
@@ -68,6 +68,7 @@ type AppVariables = {
 import { compress } from 'hono/compress';
 import { bodyLimit } from 'hono/body-limit';
 import { logger as pinoLogger } from './logger.js';
+import { createHmac, timingSafeEqual } from 'crypto';
 
 // ============================================================================
 // APP INITIALIZATION
@@ -120,7 +121,7 @@ app.use('*', async (c, next) => {
     path: c.req.path,
     status,
     duration,
-    ip: (() => { const xff = c.req.header('x-forwarded-for'); if (!xff) return c.req.header('x-real-ip') || 'unknown'; const parts = xff.split(','); return parts[parts.length - 1]?.trim() || 'unknown'; })(),
+    ip: (() => { const cfIp = c.req.header('cf-connecting-ip'); if (cfIp) return cfIp.trim(); const xff = c.req.header('x-forwarded-for'); if (xff) { const parts = xff.split(',').map((s) => s.trim()).filter(Boolean); if (parts.length > 0) return parts[parts.length - 1]; } return c.req.header('x-real-ip') || 'unknown'; })(),
   }, `${c.req.method} ${c.req.path} → ${status} (${duration}ms)`);
 });
 
@@ -168,10 +169,17 @@ app.use('/trpc/subscription.*', rateLimitMiddleware('financial')); // 10/min —
 app.use('/trpc/fraud.*', rateLimitMiddleware('financial'));         // 10/min — fraud reporting
 
 // Tier 3: AI (20/min) — cost protection
-app.use('/trpc/ai.*', rateLimitMiddleware('ai'));                  // 20/min — AI cost protection
+// A-07 FIX: Also apply per-user per-provider AI rate limiters (aiRateLimitMiddleware).
+// Previously only the IP-based general limiter ran on /trpc/ai.* routes; the
+// per-provider limits defined in AI_RATE_LIMITS were never wired to any route.
+app.use('/trpc/ai.*', rateLimitMiddleware('ai'));                  // 20/min — AI cost protection (IP-based)
+app.use('/trpc/ai.*', aiRateLimitMiddleware('openai'));            // per-user openai limit
 app.use('/trpc/disputeAI.*', rateLimitMiddleware('ai'));           // 20/min — AI dispute resolution
+app.use('/trpc/disputeAI.*', aiRateLimitMiddleware('openai'));     // per-user openai limit for dispute AI
 app.use('/trpc/matchmaker.*', rateLimitMiddleware('ai'));          // 20/min — AI matchmaking
+app.use('/trpc/matchmaker.*', aiRateLimitMiddleware('openai'));    // per-user openai limit for matchmaker
 app.use('/trpc/taskDiscovery.getAISuggestions', rateLimitMiddleware('ai')); // 20/min — AI task suggestions
+app.use('/trpc/taskDiscovery.getAISuggestions', aiRateLimitMiddleware('openai')); // per-user openai limit
 
 // Tier 3b: Public browse (30/min, IP-based) — DoS protection for unauthenticated endpoint.
 // Must precede the general /trpc/* catch-all and the taskDiscovery.* pattern below
@@ -179,7 +187,13 @@ app.use('/trpc/taskDiscovery.getAISuggestions', rateLimitMiddleware('ai')); // 2
 app.use('/trpc/taskDiscovery.browseTasks', rateLimitMiddleware('browse')); // 30/min — public task browse
 
 // Tier 4: Domain-specific
+// A-04: escrow.refund and escrow.confirmFunding trigger Stripe API calls — they must use
+// the tighter 'financial' bucket (10/min) not the general 'escrow' bucket (30/min).
+// These rules must precede the escrow.* catch-all so Hono's first-match wins.
+app.use('/trpc/escrow.refund*', rateLimitMiddleware('financial'));           // 10/min — Stripe refund API
+app.use('/trpc/escrow.confirmFunding*', rateLimitMiddleware('financial'));   // 10/min — Stripe payment confirmation
 app.use('/trpc/escrow.*', rateLimitMiddleware('escrow'));           // 30/min — other escrow ops
+app.use('/trpc/live.*', rateLimitMiddleware('live'));               // 20/min — live mode (multi-table JOIN, geo amplification risk)
 app.use('/trpc/task.*', rateLimitMiddleware('task'));               // 60/min — core task ops
 
 // Tier 5: Mutation (60/min) — write-heavy routes
@@ -194,13 +208,22 @@ app.use('/trpc/dispute.*', rateLimitMiddleware('mutation'));        // 60/min �
 app.use('/trpc/xpTax.*', rateLimitMiddleware('mutation'));          // 60/min — XP tax mutations
 app.use('/trpc/incidents.*', rateLimitMiddleware('mutation'));      // 60/min — incident reporting (admin-authed separately)
 
-// Tier 6: Public IP rate limit (60/min) — unauthenticated tRPC requests only.
-// Runs before the user-bucket catch-all; skipped automatically when a Bearer
-// token is present (publicIpRateLimitMiddleware bails out early in that case).
+// Tier 5b: Sensitive user mutations — explicit limits to prevent queue flooding
+// user.requestErasure gets auth tier (20/min) — GDPR erasure queue flood protection
+// Must precede the general /trpc/* catch-all so this tighter limit wins.
+app.use('/trpc/user.requestErasure', rateLimitMiddleware('auth'));        // 20/min — GDPR erasure queue flood protection
+app.use('/trpc/user.updateProfile', rateLimitMiddleware('mutation'));     // 60/min — profile write mutations
+app.use('/trpc/user.completeOnboarding', rateLimitMiddleware('mutation')); // 60/min — onboarding write mutations
+
+// Tier 6: Public IP rate limit (60/min) — ALL tRPC requests, authenticated and unauthenticated.
+// Runs before the user-bucket catch-all; applies to every request regardless of whether a
+// Bearer token is present. Authenticated users are intentionally not exempt — this is a
+// defence-in-depth IP-level limit. Per-user limits are enforced separately by rateLimitMiddleware.
 app.use('/trpc/*', publicIpRateLimitMiddleware());                 // 60/min per IP — public/unauthenticated access
 
 // Tier 7: General (120/min) — catch-all for remaining tRPC and REST routes
 app.use('/trpc/*', rateLimitMiddleware('general'));                 // 120/min — all other tRPC routes
+app.use('/api/*', publicIpRateLimitMiddleware());                   // 60/min per IP — A48-2: defence-in-depth (prevents Firebase quota exhaustion via unauthenticated /api/* requests)
 app.use('/api/*', rateLimitMiddleware('general'));                  // 120/min — REST endpoints
 
 // ============================================================================
@@ -213,24 +236,27 @@ createMetricsEndpoint(app);
 // HEALTH CHECK
 // ============================================================================
 
+// A49-2 FIX: Apply IP-based rate limiting to all health endpoints.
+// Without this, an attacker can flood /health, /health/readiness, and
+// /health/liveness at unbounded rates, triggering DB queries (/health,
+// /health/readiness) on every request and consuming connection pool budget.
+// /health/liveness has no DB cost but still benefits from DoS protection.
+// The /health/detailed route already has rateLimitMiddleware('auth') and
+// now also gets publicIpRateLimitMiddleware() via the wildcard below.
+app.use('/health*', publicIpRateLimitMiddleware());
+
 app.get('/health', async (c) => {
   try {
-    // Check database
-    const dbResult = await db.query('SELECT version FROM schema_versions ORDER BY applied_at DESC LIMIT 1');
-    const schemaVersion = dbResult.rows[0]?.version || 'unknown';
-    
+    // Verify database is reachable without leaking schema internals to unauthenticated callers
+    await db.query('SELECT 1');
     return c.json({
       status: 'healthy',
       timestamp: new Date().toISOString(),
-      version: '1.0.0',
-      schema: schemaVersion,
-      environment: config.app.env,
     });
   } catch (error) {
     return c.json({
       status: 'unhealthy',
       timestamp: new Date().toISOString(),
-      error: error instanceof Error ? error.message : 'Unknown error',
     }, 503);
   }
 });
@@ -239,12 +265,8 @@ app.get('/health', async (c) => {
 // Returns 200 only if database is reachable (critical dependency)
 app.get('/health/readiness', async (c) => {
   try {
-    const start = Date.now();
     await db.query('SELECT 1');
-    return c.json({
-      ready: true,
-      dbLatencyMs: Date.now() - start,
-    });
+    return c.json({ ready: true });
   } catch {
     return c.json({ ready: false }, 503);
   }
@@ -255,8 +277,34 @@ app.get('/health/liveness', (c) => {
   return c.json({ alive: true, uptime: process.uptime() });
 });
 
-// Detailed health for monitoring
-app.get('/health/detailed', async (c) => {
+// Detailed health for monitoring — internal only, requires INTERNAL_API_KEY
+app.get('/health/detailed', rateLimitMiddleware('auth'), async (c) => {
+  // Gate behind internal API key to prevent leaking circuit breaker states,
+  // DB pool config, memory usage, and uptime to unauthenticated callers.
+  const internalApiKey = process.env.INTERNAL_API_KEY;
+  if (!internalApiKey) {
+    pinoLogger.warn('INTERNAL_API_KEY is not configured — /health/detailed is disabled');
+    return c.json({ error: 'Service Unavailable', message: 'Internal API key not configured' }, 503);
+  }
+  const authHeader = c.req.header('Authorization');
+  const provided = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  // A46-4 FIX: The previous length pre-check (`providedBuf.length === expectedBuf.length`)
+  // leaked the byte length of INTERNAL_API_KEY via a timing side-channel — an attacker
+  // could binary-search the key length by observing which requests fail fast vs. slow.
+  // Fix: pad both buffers to the same length (max of the two) with zeros before calling
+  // timingSafeEqual, which requires equal-length buffers without revealing which is longer.
+  const rawProvided = Buffer.from(provided || '', 'utf8');
+  const expectedBuf = Buffer.from(internalApiKey, 'utf8');
+  const maxLen = Math.max(rawProvided.length, expectedBuf.length);
+  const providedBuf = Buffer.alloc(maxLen);
+  const paddedExpected = Buffer.alloc(maxLen);
+  rawProvided.copy(providedBuf);
+  expectedBuf.copy(paddedExpected);
+  const match = timingSafeEqual(providedBuf, paddedExpected);
+  if (!provided || !match) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
+
   const checks: Record<string, { status: string; latency?: number; error?: string }> = {};
   
   // Database check
@@ -345,7 +393,8 @@ app.get('/health/detailed', async (c) => {
 
 // SSE endpoint for task progress updates
 // SECURITY: rate-limited to 10 new connection attempts/min per user (connection-flood protection)
-app.use('/realtime/stream', rateLimitMiddleware('sse'));
+// Also applies the global publicIpRateLimitMiddleware (60/min per IP) to match /trpc/* protection
+app.use('/realtime/stream', publicIpRateLimitMiddleware(), rateLimitMiddleware('sse'));
 app.get('/realtime/stream', sseHandler);
 
 // ============================================================================
@@ -367,6 +416,13 @@ function serveStatic(path: string, _contentType = 'text/html') {
     return c.text('Not found', 404);
   };
 }
+
+// A50-3 FIX: Apply rate limiting to static legal pages. Without this guard,
+// the pages were unauthenticated and unmetered, making them an easy amplification
+// vector (large HTML responses, no throttle). Pattern matches /health* protection.
+app.use('/privacy*', publicIpRateLimitMiddleware());
+app.use('/terms*', publicIpRateLimitMiddleware());
+app.use('/legal*', publicIpRateLimitMiddleware());
 
 app.get('/privacy-policy', serveStatic('privacy-policy.html'));
 app.get('/privacy', serveStatic('privacy-policy.html'));
@@ -421,6 +477,41 @@ app.use('/trpc/*', async (c, next) => {
     );
   }
 
+  // A-06 FIX: Batch amplification — a batch of N operations must consume N tokens
+  // from the general rate limiter, not just 1. Without this a client can batch 10
+  // operations in one HTTP request and bypass per-request limits 10×.
+  // We call the middleware N-1 extra times (the Hono middleware registered below
+  // already fires once for this request, so we only need the additional N-1 checks).
+  if (operationCount > 1) {
+    const identifier = `ip:${(() => {
+      // A-22: use proxy-confirmed IP (cf-connecting-ip first, then rightmost XFF).
+      // Never use leftmost XFF — it is client-controlled and trivially spoofable.
+      const cfIp = c.req.header('cf-connecting-ip');
+      if (cfIp) return cfIp.trim();
+      const xff = c.req.header('x-forwarded-for');
+      if (xff) {
+        const ips = xff.split(',').map((ip) => ip.trim()).filter(Boolean);
+        if (ips.length > 0) return ips[ips.length - 1]; // rightmost = proxy-confirmed
+      }
+      return c.req.header('x-real-ip') || 'unknown';
+    })()}`;
+    const { checkRateLimit } = await import('./cache/redis.js');
+    for (let i = 1; i < operationCount; i++) {
+      const result = await checkRateLimit(identifier, 'general', 120, 60);
+      if (!result.allowed) {
+        c.header('Retry-After', '60');
+        return c.json(
+          {
+            error: 'Too Many Requests',
+            message: 'Rate limit exceeded (batch amplification). Try again in 60 seconds.',
+            retryAfter: 60,
+          },
+          429,
+        );
+      }
+    }
+  }
+
   await next();
 });
 
@@ -440,10 +531,12 @@ app.use('/trpc/*', trpcServer({
 // They internally call tRPC endpoints for type safety
 
 import { firebaseAuth } from './auth/firebase.js';
+import { redis } from './cache/redis.js';
 import { db } from './db.js';
 import type { User } from './types.js';
 import { sseHandler } from './realtime/sse-handler.js';
 import { z } from 'zod';
+import { HTTPException } from 'hono/http-exception';
 
 // Helper to get authenticated user from Bearer token
 async function getAuthUser(c: Context): Promise<User | null> {
@@ -451,16 +544,31 @@ async function getAuthUser(c: Context): Promise<User | null> {
   if (!authHeader?.startsWith('Bearer ')) {
     return null;
   }
-  
+
   const token = authHeader.slice(7);
   try {
-    const decoded = await firebaseAuth.verifyIdToken(token);
+    const decoded = await firebaseAuth.verifyIdToken(token, true); // checkRevoked = true
+    // A51-1 FIX: Check Redis revocation marker (set by revokeUserSessions on sign-out /
+    // password change). Firebase's checkRevoked=true above only catches revoked *refresh*
+    // tokens; the Redis marker provides a fast-path check for our own revocation events.
+    const REVOKED_KEY = (uid: string) => `auth:revoked:${uid}`;
+    const revoked = await redis.get(REVOKED_KEY(decoded.uid));
+    if (revoked) {
+      return null;
+    }
     const result = await db.query<User>(
-      'SELECT * FROM users WHERE firebase_uid = $1',
+      'SELECT id, firebase_uid, email, full_name, is_banned, account_status, default_mode, role, trust_tier, stripe_connect_id FROM users WHERE firebase_uid = $1',
       [decoded.uid]
     );
-    return result.rows[0] || null;
-  } catch {
+    const user = result.rows[0] || null;
+    if (user && (user.is_banned || user.account_status === 'SUSPENDED' || user.account_status === 'DELETED')) {
+      throw new HTTPException(403, { message: 'Account suspended' });
+    }
+    return user;
+  } catch (err) {
+    if (err instanceof HTTPException) {
+      throw err;
+    }
     return null;
   }
 }
@@ -472,8 +580,12 @@ const timestampBody = z.object({ timestamp: z.string().datetime().optional() }).
 // Animation Tracking Endpoints
 
 app.get('/api/users/:userId/xp-celebration-status', async (c) => {
+  const userId = c.req.param('userId');
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(userId)) {
+    return c.json({ error: 'Invalid user ID' }, 400);
+  }
   const user = await getAuthUser(c);
-  if (!user || user.id !== c.req.param('userId')) {
+  if (!user || user.id !== userId) {
     return c.json({ error: 'Unauthorized' }, 401);
   }
 
@@ -494,8 +606,12 @@ app.get('/api/users/:userId/xp-celebration-status', async (c) => {
 });
 
 app.post('/api/users/:userId/xp-celebration-shown', async (c) => {
+  const userId = c.req.param('userId');
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(userId)) {
+    return c.json({ error: 'Invalid user ID' }, 400);
+  }
   const user = await getAuthUser(c);
-  if (!user || user.id !== c.req.param('userId')) {
+  if (!user || user.id !== userId) {
     return c.json({ error: 'Unauthorized' }, 401);
   }
 
@@ -522,8 +638,12 @@ app.post('/api/users/:userId/xp-celebration-shown', async (c) => {
 });
 
 app.get('/api/users/:userId/badges/:badgeId/animation-status', async (c) => {
+  const userId = c.req.param('userId');
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(userId)) {
+    return c.json({ error: 'Invalid user ID' }, 400);
+  }
   const user = await getAuthUser(c);
-  if (!user || user.id !== c.req.param('userId')) {
+  if (!user || user.id !== userId) {
     return c.json({ error: 'Unauthorized' }, 401);
   }
 
@@ -552,8 +672,12 @@ app.get('/api/users/:userId/badges/:badgeId/animation-status', async (c) => {
 });
 
 app.post('/api/users/:userId/badges/:badgeId/animation-shown', async (c) => {
+  const userId = c.req.param('userId');
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(userId)) {
+    return c.json({ error: 'Invalid user ID' }, 400);
+  }
   const user = await getAuthUser(c);
-  if (!user || user.id !== c.req.param('userId')) {
+  if (!user || user.id !== userId) {
     return c.json({ error: 'Unauthorized' }, 401);
   }
 
@@ -598,14 +722,19 @@ app.get('/api/tasks/:taskId/state', async (c) => {
   }
 
   try {
-    const result = await db.query<{ state: string }>(
-      `SELECT state FROM tasks WHERE id = $1`,
+    const result = await db.query<{ state: string; poster_id: string; worker_id: string | null }>(
+      `SELECT state, poster_id, worker_id FROM tasks WHERE id = $1`,
       [taskId]
     );
     if (result.rows.length === 0) {
       return c.json({ error: 'Task not found' }, 404);
     }
-    return c.json({ state: result.rows[0].state });
+    const task = result.rows[0];
+    if (task.poster_id !== user.id && task.worker_id !== user.id) {
+      // Return 404 to avoid leaking existence to unauthorized callers
+      return c.json({ error: 'Task not found' }, 404);
+    }
+    return c.json({ state: task.state });
   } catch (err) {
     pinoLogger.error({ err, taskId }, 'Failed to fetch task state');
     return c.json({ error: 'Internal server error' }, 500);
@@ -624,14 +753,22 @@ app.get('/api/escrows/:escrowId/state', async (c) => {
   }
 
   try {
-    const result = await db.query<{ state: string }>(
-      `SELECT state FROM escrows WHERE id = $1`,
+    const result = await db.query<{ state: string; poster_id: string; worker_id: string | null }>(
+      `SELECT e.state, t.poster_id, t.worker_id
+       FROM escrows e
+       INNER JOIN tasks t ON t.id = e.task_id
+       WHERE e.id = $1`,
       [escrowId]
     );
     if (result.rows.length === 0) {
       return c.json({ error: 'Escrow not found' }, 404);
     }
-    return c.json({ state: result.rows[0].state });
+    const escrow = result.rows[0];
+    if (escrow.poster_id !== user.id && escrow.worker_id !== user.id) {
+      // Return 404 to avoid leaking existence to unauthorized callers
+      return c.json({ error: 'Escrow not found' }, 404);
+    }
+    return c.json({ state: escrow.state });
   } catch (err) {
     pinoLogger.error({ err, escrowId }, 'Failed to fetch escrow state');
     return c.json({ error: 'Internal server error' }, 500);
@@ -644,7 +781,11 @@ const violationSchema = z.object({
   type: z.string().min(1).max(100),
   rule: z.string().min(1).max(200),
   component: z.string().min(1).max(200).optional(),
-  context: z.record(z.unknown()).optional(),
+  context: z.record(z.string().max(128), z.string().max(512)).superRefine((val, ctx) => {
+    if (Object.keys(val).length > 10) {
+      ctx.addIssue({ code: z.ZodIssueCode.too_big, maximum: 10, type: 'array', inclusive: true, message: 'context may have at most 10 keys' });
+    }
+  }).optional(),
   severity: z.enum(['ERROR', 'WARNING', 'INFO']).default('ERROR'),
 });
 
@@ -652,6 +793,17 @@ app.post('/api/ui/violations', async (c) => {
   const user = await getAuthUser(c);
   if (!user) {
     return c.json({ error: 'Unauthorized' }, 401);
+  }
+
+  // A-10 FIX: Only admin users may write to admin_actions. Any authenticated user
+  // could previously write arbitrary rows to the admin audit log, polluting it or
+  // forging admin action records. Check the admin_roles table before inserting.
+  const adminRoleResult = await db.query<{ user_id: string }>(
+    'SELECT user_id FROM admin_roles WHERE user_id = $1 LIMIT 1',
+    [user.id]
+  );
+  if (adminRoleResult.rows.length === 0) {
+    return c.json({ error: 'Forbidden' }, 403);
   }
 
   const rawBody = await c.req.json().catch(() => null);
@@ -663,13 +815,13 @@ app.post('/api/ui/violations', async (c) => {
 
   try {
     await db.query(
-      `INSERT INTO admin_actions (admin_user_id, admin_role, action_type, action_details, result)
-       VALUES ($1, 'user', 'UI_VIOLATION', $2, 'logged')`,
+      `INSERT INTO admin_actions (admin_id, action_type, target_id, reason, metadata)
+       VALUES ($1, 'UI_VIOLATION', NULL, $2, $3)`,
       [
         user.id,
+        body.rule,
         JSON.stringify({
           violationType: body.type,
-          rule: body.rule,
           component: body.component,
           context: body.context,
           severity: body.severity,
@@ -690,8 +842,12 @@ app.post('/api/ui/violations', async (c) => {
 // User Onboarding Status
 
 app.get('/api/users/:userId/onboarding-status', async (c) => {
+  const userId = c.req.param('userId');
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(userId)) {
+    return c.json({ error: 'Invalid user ID' }, 400);
+  }
   const user = await getAuthUser(c);
-  if (!user || user.id !== c.req.param('userId')) {
+  if (!user || user.id !== userId) {
     return c.json({ error: 'Unauthorized' }, 401);
   }
 
@@ -725,6 +881,13 @@ app.get('/api/users/:userId/onboarding-status', async (c) => {
 // STRIPE WEBHOOKS (Raw body needed)
 // ============================================================================
 
+/// A-06 FIX: Rate-limit all /webhooks/* routes to bound the compute cost of
+// HMAC verification even though signatures are checked before DB writes.
+// A47-4 FIX: Also apply publicIpRateLimitMiddleware (60/min per IP) as
+// defence-in-depth, matching the protection applied to /trpc/* and /realtime/stream.
+app.use('/webhooks/*', publicIpRateLimitMiddleware());
+app.use('/webhooks/*', rateLimitMiddleware('general'));
+
 app.post('/webhooks/stripe', async (c) => {
   const sig = c.req.header('stripe-signature');
   const rawBody = await c.req.text();
@@ -744,8 +907,8 @@ app.post('/webhooks/stripe', async (c) => {
         result.error?.code === 'STRIPE_NOT_CONFIGURED') {
       return c.json({ error: result.error.message }, 400);
     }
-    // Return 500 for storage errors (retryable)
-    return c.json({ error: result.error?.message ?? 'Unknown webhook error' }, 500);
+    // Return 500 for storage errors (retryable) — do not expose internal error details
+    return c.json({ error: 'Webhook processing failed' }, 500);
   }
   
   // Always return 200 for successful ingestion (even if duplicate/replay)
@@ -762,7 +925,54 @@ app.post('/webhooks/stripe', async (c) => {
 // ============================================================================
 
 app.post('/webhooks/checkr', async (c) => {
-  const rawBody = await c.req.json().catch(() => null);
+  // SECURITY: Verify Checkr HMAC-SHA256 signature before processing any payload.
+  // Checkr signs the raw request body using the webhook secret and sends the
+  // hex digest in the X-Checkr-Signature header.
+  const checkrWebhookSecret = process.env.CHECKR_WEBHOOK_SECRET;
+  if (!checkrWebhookSecret) {
+    pinoLogger.warn('CHECKR_WEBHOOK_SECRET is not configured — rejecting Checkr webhook');
+    return c.json({ error: 'Service Unavailable', message: 'Webhook secret not configured' }, 503);
+  }
+
+  // Read raw body as text so the HMAC is computed over the exact bytes Checkr signed.
+  const rawBodyText = await c.req.text().catch(() => null);
+  if (rawBodyText === null) {
+    return c.json({ error: 'Invalid webhook payload' }, 400);
+  }
+
+  const providedSig = c.req.header('X-Checkr-Signature');
+  if (!providedSig) {
+    return c.json({ error: 'Missing signature header' }, 401);
+  }
+
+  const expectedSig = createHmac('sha256', checkrWebhookSecret)
+    .update(rawBodyText, 'utf8')
+    .digest('hex');
+
+  // A51-3 FIX: Use constant-time comparison with padding so that a length mismatch
+  // (e.g. non-hex or truncated input) does not leak signature length via early-return
+  // timing.  Both buffers are padded to the longer length before timingSafeEqual so
+  // the comparison always takes the same amount of time regardless of input length.
+  const expectedBuf = Buffer.from(expectedSig, 'hex');
+  const providedBuf = Buffer.from(providedSig, 'hex');
+  const maxLen = Math.max(providedBuf.length, expectedBuf.length);
+  const paddedProvided = Buffer.alloc(maxLen);
+  const paddedExpected = Buffer.alloc(maxLen);
+  providedBuf.copy(paddedProvided);
+  expectedBuf.copy(paddedExpected);
+  const valid = timingSafeEqual(paddedProvided, paddedExpected);
+  if (!valid) {
+    pinoLogger.warn({ sigLength: (providedSig ?? '').length }, 'Checkr webhook signature verification failed');
+    return c.json({ error: 'Invalid signature' }, 401);
+  }
+
+  // Parse JSON only after signature is confirmed valid.
+  let rawBody: Record<string, unknown>;
+  try {
+    rawBody = JSON.parse(rawBodyText);
+  } catch {
+    return c.json({ error: 'Invalid JSON payload' }, 400);
+  }
 
   if (!rawBody || !rawBody.type) {
     return c.json({ error: 'Invalid webhook payload' }, 400);
@@ -771,10 +981,14 @@ app.post('/webhooks/checkr', async (c) => {
   const { updateBackgroundCheckStatus } = await import('./services/BackgroundCheckService');
 
   try {
-    const { type, data } = rawBody;
+    const { type, data } = rawBody as { type: string; data?: { object?: { id?: string; result?: string } } };
     const reportId = data?.object?.id;
 
     if (type === 'report.completed' || type === 'report.suspended' || type === 'report.disputed') {
+      if (!reportId) {
+        pinoLogger.warn({ type }, 'Checkr webhook missing report ID — skipping status update');
+        return c.json({ received: true, processed: false, reason: 'missing report id' }, 200);
+      }
       const statusMap: Record<string, 'IN_PROGRESS' | 'CLEAR' | 'CONSIDER' | 'FAILED'> = {
         'report.completed': 'CLEAR',
         'report.suspended': 'CONSIDER',
@@ -794,13 +1008,9 @@ app.post('/webhooks/checkr', async (c) => {
 // 404 HANDLER
 // ============================================================================
 
-app.notFound((c) => {
-  return c.json({
-    error: 'Not Found',
-    path: c.req.path,
-    method: c.req.method,
-    requestId: c.get('requestId'),
-  }, 404);
+app.notFound((_c) => {
+  // Return only a static body — reflecting path/method/requestId enables log injection.
+  return _c.json({ error: 'Not Found' }, 404);
 });
 
 // ============================================================================

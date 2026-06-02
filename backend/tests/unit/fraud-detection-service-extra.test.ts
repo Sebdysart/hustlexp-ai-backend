@@ -22,6 +22,11 @@ vi.mock('../../src/logger', () => ({
   logger: {
     child: () => ({ error: vi.fn(), warn: vi.fn(), info: vi.fn() }),
   },
+  authLogger: { error: vi.fn(), warn: vi.fn(), info: vi.fn() },
+}));
+
+vi.mock('../../src/auth/middleware', () => ({
+  revokeUserSessions: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('../../src/services/NotificationService', () => ({

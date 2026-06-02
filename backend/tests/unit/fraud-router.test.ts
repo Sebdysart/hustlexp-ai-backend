@@ -77,6 +77,8 @@ function makeAdminCaller() {
 describe('fraud router', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockDb.query.mockResolvedValue({ rows: [], rowCount: 0 } as any);
+    mockFraud.getLatestRiskScore.mockResolvedValue({ success: false } as any);
   });
 
   // =========================================================================
@@ -118,18 +120,19 @@ describe('fraud router', () => {
       })).rejects.toThrow('bad data');
     });
 
-    it('throws INTERNAL_SERVER_ERROR on unknown error', async () => {
+    it('throws INTERNAL_SERVER_ERROR on unknown error with generic message', async () => {
       mockFraud.calculateRiskScore.mockResolvedValue({
         success: false,
         error: { code: 'DB_ERROR', message: 'connection lost' },
       } as any);
 
       const caller = makeAdminCaller();
+      // A-25: raw DB error messages must not leak to callers — generic message only
       await expect(caller.calculateRiskScore({
         entityType: 'transaction',
         entityId: UUID2,
         riskScore: 0.3,
-      })).rejects.toThrow('connection lost');
+      })).rejects.toThrow('An internal error occurred. Contact support if this persists.');
     });
   });
 
@@ -147,15 +150,16 @@ describe('fraud router', () => {
       expect(result).toEqual(data);
     });
 
-    it('throws on failure', async () => {
+    it('throws INTERNAL_SERVER_ERROR with generic message on failure', async () => {
       mockFraud.getLatestRiskScore.mockResolvedValue({
         success: false,
         error: { code: 'DB_ERROR', message: 'failed' },
       } as any);
 
       const caller = makeAdminCaller();
+      // A-25: raw DB error messages must not leak to callers — generic message only
       await expect(caller.getLatestRiskScore({ entityType: 'user', entityId: UUID2 }))
-        .rejects.toThrow('failed');
+        .rejects.toThrow('An internal error occurred. Contact support if this persists.');
     });
   });
 
@@ -263,18 +267,16 @@ describe('fraud router', () => {
       expect(result).toEqual(data);
     });
 
-    it('throws BAD_REQUEST on INVALID_INPUT', async () => {
-      mockFraud.detectPattern.mockResolvedValue({
-        success: false,
-        error: { code: 'INVALID_INPUT', message: 'Invalid pattern' },
-      } as any);
-
+    it('throws BAD_REQUEST on invalid patternType (Zod enum)', async () => {
+      // A-3 FIX: patternType is now a Zod .enum([...]) — 'x' is rejected by Zod
+      // input validation before the service is ever called. The Zod error message
+      // describes which enum values are valid rather than 'Invalid pattern'.
       const caller = makeAdminCaller();
       await expect(caller.detectPattern({
-        patternType: 'x',
+        patternType: 'x' as any,
         patternDescription: 'test',
         userIds: [UUID2],
-      })).rejects.toThrow('Invalid pattern');
+      })).rejects.toThrow('Invalid enum value');
     });
   });
 

@@ -121,11 +121,12 @@ export const TaskService = {
       
       return { success: true, data: result.rows[0] };
     } catch (error) {
+      log.error({ err: error instanceof Error ? error.message : String(error) }, 'TaskService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
@@ -133,7 +134,9 @@ export const TaskService = {
 
   /**
    * Get tasks by poster — cursor-paginated.
-   * Cursor = ISO timestamp of the last-seen task's created_at.
+   * Cursor = compound "ISO-timestamp|uuid" encoding of the last-seen task's
+   * (created_at, id) pair. Using both columns eliminates the tie-drop bug
+   * that occurred when multiple tasks share the same created_at timestamp.
    * Returns up to `limit` tasks + a nextCursor to fetch the next page.
    */
   getByPoster: async (
@@ -145,36 +148,51 @@ export const TaskService = {
     const fetchLimit = limit + 1;
 
     try {
-      const result = cursor
-        ? await db.query<Task>(
-            `SELECT * FROM tasks
-             WHERE poster_id = $1
-               AND created_at < $2::timestamptz
-             ORDER BY created_at DESC
-             LIMIT $3`,
-            [posterId, cursor, fetchLimit]
-          )
-        : await db.query<Task>(
-            `SELECT * FROM tasks
-             WHERE poster_id = $1
-             ORDER BY created_at DESC
-             LIMIT $2`,
-            [posterId, fetchLimit]
-          );
+      let result: Awaited<ReturnType<typeof db.query<Task>>>;
+      if (cursor) {
+        if (!cursor.includes('|')) {
+          return {
+            success: false,
+            error: {
+              code: 'BAD_REQUEST',
+              message: 'Invalid cursor format',
+            },
+          };
+        }
+        const [cursorTs, cursorId] = cursor.split('|');
+        result = await db.query<Task>(
+          `SELECT * FROM tasks
+           WHERE poster_id = $1
+             AND (created_at, id) < ($2::timestamptz, $3::uuid)
+           ORDER BY created_at DESC, id DESC
+           LIMIT $4`,
+          [posterId, cursorTs, cursorId, fetchLimit]
+        );
+      } else {
+        result = await db.query<Task>(
+          `SELECT * FROM tasks
+           WHERE poster_id = $1
+           ORDER BY created_at DESC, id DESC
+           LIMIT $2`,
+          [posterId, fetchLimit]
+        );
+      }
 
       const hasMore = result.rows.length > limit;
       const tasks = hasMore ? result.rows.slice(0, limit) : result.rows;
+      const lastTask = tasks[tasks.length - 1] as Task & { created_at: string | Date };
       const nextCursor = hasMore
-        ? (tasks[tasks.length - 1] as Task & { created_at: string | Date }).created_at?.toString()
+        ? `${new Date(lastTask.created_at).toISOString()}|${lastTask.id}`
         : undefined;
 
       return { success: true, data: { tasks, nextCursor } };
     } catch (error) {
+      log.error({ err: error instanceof Error ? error.message : String(error) }, 'TaskService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
@@ -182,7 +200,9 @@ export const TaskService = {
 
   /**
    * Get tasks by worker — cursor-paginated.
-   * Cursor = ISO timestamp of the last-seen task's created_at.
+   * Cursor = compound "ISO-timestamp|uuid" encoding of the last-seen task's
+   * (created_at, id) pair. Using both columns eliminates the tie-drop bug
+   * that occurred when multiple tasks share the same created_at timestamp.
    */
   getByWorker: async (
     workerId: string,
@@ -192,36 +212,51 @@ export const TaskService = {
     const fetchLimit = limit + 1;
 
     try {
-      const result = cursor
-        ? await db.query<Task>(
-            `SELECT * FROM tasks
-             WHERE worker_id = $1
-               AND created_at < $2::timestamptz
-             ORDER BY created_at DESC
-             LIMIT $3`,
-            [workerId, cursor, fetchLimit]
-          )
-        : await db.query<Task>(
-            `SELECT * FROM tasks
-             WHERE worker_id = $1
-             ORDER BY created_at DESC
-             LIMIT $2`,
-            [workerId, fetchLimit]
-          );
+      let result: Awaited<ReturnType<typeof db.query<Task>>>;
+      if (cursor) {
+        if (!cursor.includes('|')) {
+          return {
+            success: false,
+            error: {
+              code: 'BAD_REQUEST',
+              message: 'Invalid cursor format',
+            },
+          };
+        }
+        const [cursorTs, cursorId] = cursor.split('|');
+        result = await db.query<Task>(
+          `SELECT * FROM tasks
+           WHERE worker_id = $1
+             AND (created_at, id) < ($2::timestamptz, $3::uuid)
+           ORDER BY created_at DESC, id DESC
+           LIMIT $4`,
+          [workerId, cursorTs, cursorId, fetchLimit]
+        );
+      } else {
+        result = await db.query<Task>(
+          `SELECT * FROM tasks
+           WHERE worker_id = $1
+           ORDER BY created_at DESC, id DESC
+           LIMIT $2`,
+          [workerId, fetchLimit]
+        );
+      }
 
       const hasMore = result.rows.length > limit;
       const tasks = hasMore ? result.rows.slice(0, limit) : result.rows;
+      const lastTask = tasks[tasks.length - 1] as Task & { created_at: string | Date };
       const nextCursor = hasMore
-        ? (tasks[tasks.length - 1] as Task & { created_at: string | Date }).created_at?.toString()
+        ? `${new Date(lastTask.created_at).toISOString()}|${lastTask.id}`
         : undefined;
 
       return { success: true, data: { tasks, nextCursor } };
     } catch (error) {
+      log.error({ err: error instanceof Error ? error.message : String(error) }, 'TaskService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
@@ -258,11 +293,12 @@ export const TaskService = {
       const result = await db.query<Task>(sql, params);
       return { success: true, data: result.rows };
     } catch (error) {
+      log.error({ err: error instanceof Error ? error.message : String(error) }, 'TaskService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
@@ -476,7 +512,7 @@ export const TaskService = {
           eventVersion: 1,
           idempotencyKey: `task.instant_matching_started:${createdTask.id}`,
           payload: { taskId: createdTask.id, location, riskLevel },
-          queueName: 'critical_payments', // Use critical queue for instant tasks
+          queueName: 'user_notifications', // Instant matching is non-financial — use notification queue to avoid starving Stripe events
         });
       }
       
@@ -491,11 +527,12 @@ export const TaskService = {
           },
         };
       }
+      log.error({ err: error instanceof Error ? error.message : String(error) }, 'TaskService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
@@ -524,8 +561,9 @@ export const TaskService = {
           state: string;
           worker_id: string | null;
           poster_id: string;
+          trust_tier_required: number | null;
         }>(
-          `SELECT risk_level, instant_mode, sensitive, price, state, worker_id, poster_id
+          `SELECT risk_level, instant_mode, sensitive, price, state, worker_id, poster_id, trust_tier_required
            FROM tasks WHERE id = $1 FOR UPDATE`,
           [taskId]
         );
@@ -553,13 +591,16 @@ export const TaskService = {
           };
         }
 
-        // Early exit if task is already taken (before expensive eligibility checks)
-        if (task.state !== 'OPEN' && task.state !== 'MATCHING') {
+        // BUG R-2 FIX: task.accept (worker self-accept) is only valid for MATCHING state
+        // (instant mode). Standard OPEN tasks require the application workflow:
+        // applyForTask → poster reviews → assignWorker. Allowing OPEN here lets workers
+        // bypass that workflow entirely, skipping application review.
+        if (task.state !== 'MATCHING') {
           return {
             success: false,
             error: {
               code: ErrorCodes.INVALID_STATE,
-              message: `Cannot accept task: current state is ${task.state}, expected OPEN or MATCHING`,
+              message: `Cannot accept task: current state is ${task.state}, expected MATCHING (instant mode only). Standard tasks require applying via the application workflow.`,
             },
           };
         }
@@ -591,6 +632,39 @@ export const TaskService = {
               details: eligibilityResult.details,
             },
           };
+        }
+
+        // MM2 FIX: Enforce poster-specified trust_tier_required on the direct-accept
+        // path. EligibilityGuard maps risk_level → a system trust tier floor, but
+        // it never reads tasks.trust_tier_required. A poster can set
+        // trust_tier_required=3 and a VERIFIED-tier (tier 2) worker would previously
+        // bypass it. We fetch the worker's trust_tier here (the instant-mode branch
+        // below also fetches it; this pre-check covers the non-instant path and
+        // acts as an early exit before any further expensive checks).
+        if (task.trust_tier_required !== null && task.trust_tier_required !== undefined) {
+          const workerTierResult = await query<{ trust_tier: number }>(
+            `SELECT trust_tier FROM users WHERE id = $1`,
+            [workerId]
+          );
+          if (workerTierResult.rowCount === 0) {
+            return {
+              success: false,
+              error: {
+                code: ErrorCodes.NOT_FOUND,
+                message: `Worker ${workerId} not found`,
+              },
+            };
+          }
+          const workerTrustTier = workerTierResult.rows[0].trust_tier;
+          if (workerTrustTier < task.trust_tier_required) {
+            return {
+              success: false,
+              error: {
+                code: ErrorCodes.INSTANT_TASK_TRUST_INSUFFICIENT,
+                message: `Task requires trust tier ${task.trust_tier_required}. Your tier: ${workerTrustTier}`,
+              },
+            };
+          }
         }
 
         // Trust-Tier Tightening: Enforce minimum trust tier for Instant tasks
@@ -724,14 +798,15 @@ export const TaskService = {
           }
         }
 
-        // Instant mode: accept from MATCHING state; Standard: accept from OPEN state
+        // BUG R-2 FIX: Only MATCHING state is accepted here (instant mode self-accept).
+        // Standard OPEN tasks must go through the assignWorker poster-driven path.
         const result = await query<Task>(
           `UPDATE tasks
            SET state = 'ACCEPTED',
                worker_id = $2,
                accepted_at = NOW()
            WHERE id = $1
-             AND state IN ('OPEN', 'MATCHING')
+             AND state = 'MATCHING'
              AND worker_id IS NULL
            RETURNING *`,
           [taskId, workerId]
@@ -753,7 +828,7 @@ export const TaskService = {
             success: false,
             error: {
               code: ErrorCodes.INVALID_STATE,
-              message: `Cannot accept task: current state is ${existing.data.state}, expected ${task.instant_mode ? 'MATCHING' : 'OPEN'}`,
+              message: `Cannot accept task: current state is ${existing.data.state}, expected MATCHING`,
             },
           };
         }
@@ -777,7 +852,7 @@ export const TaskService = {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
@@ -857,11 +932,12 @@ export const TaskService = {
         return { success: true, data: result.rows[0] };
       });
     } catch (error) {
+      log.error({ err: error instanceof Error ? error.message : String(error) }, 'TaskService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
@@ -878,12 +954,16 @@ export const TaskService = {
    * transition the task from PROOF_SUBMITTED to both COMPLETED and ACCEPTED in
    * separate connections. The FOR UPDATE lock serialises these callers.
    */
-  complete: async (taskId: string): Promise<ServiceResult<Task>> => {
+  complete: async (taskId: string, posterId?: string): Promise<ServiceResult<Task>> => {
     try {
       return await db.transaction(async (query) => {
-        // Acquire row-level lock before reading state
-        const lockResult = await query<{ state: string }>(
-          `SELECT state FROM tasks WHERE id = $1 FOR UPDATE`,
+        // Acquire row-level lock before reading state.
+        // Also fetch poster_id so ownership can be verified inside the same
+        // transaction that holds the FOR UPDATE lock (prevents TOCTOU: a task
+        // cannot be transferred to a different poster between the auth check
+        // and the state-transition UPDATE).
+        const lockResult = await query<{ state: string; poster_id: string }>(
+          `SELECT state, poster_id FROM tasks WHERE id = $1 FOR UPDATE`,
           [taskId]
         );
 
@@ -893,6 +973,18 @@ export const TaskService = {
             error: {
               code: ErrorCodes.NOT_FOUND,
               message: `Task ${taskId} not found`,
+            },
+          };
+        }
+
+        // UU-02 FIX: verify poster ownership inside the lock so the auth
+        // check and the state update are atomic.
+        if (posterId !== undefined && lockResult.rows[0].poster_id !== posterId) {
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.FORBIDDEN,
+              message: 'Only the task poster can mark it complete',
             },
           };
         }
@@ -957,11 +1049,12 @@ export const TaskService = {
         }
       }
 
+      log.error({ err: error instanceof Error ? error.message : String(error) }, 'TaskService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
@@ -1031,11 +1124,12 @@ export const TaskService = {
         return { success: true, data: result.rows[0] };
       });
     } catch (error) {
+      log.error({ err: error instanceof Error ? error.message : String(error) }, 'TaskService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
@@ -1103,30 +1197,37 @@ export const TaskService = {
         return { success: true, data: result.rows[0] };
       });
     } catch (error) {
+      log.error({ err: error instanceof Error ? error.message : String(error) }, 'TaskService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
   },
 
   /**
-   * Cancel task: OPEN/ACCEPTED → CANCELLED
+   * Cancel task: OPEN/MATCHING/ACCEPTED → CANCELLED
    *
    * RACE CONDITION FIX: Wrapped in transaction with SELECT FOR UPDATE to prevent
    * simultaneous accept+cancel producing both an ACCEPTED and CANCELLED record.
    * The FOR UPDATE lock is acquired before the state check and held through the
    * final UPDATE, so only one concurrent caller can proceed.
+   *
+   * MM8/MM10 FIX: MATCHING state added to the cancel allow-list. The state machine
+   * declares MATCHING → CANCELLED as a valid transition (instant-mode tasks awaiting
+   * a worker match). The code previously only allowed OPEN and ACCEPTED, making it
+   * impossible to cancel a task once it entered the matchmaker queue. MATCHING tasks
+   * have a funded escrow and must trigger the same full-refund path as OPEN tasks.
    */
-  cancel: async (taskId: string): Promise<ServiceResult<Task>> => {
+  cancel: async (taskId: string, posterId?: string): Promise<ServiceResult<Task>> => {
     try {
       return await db.transaction(async (query) => {
         // Acquire row-level lock before reading state
-        const lockResult = await query<{ state: string }>(
-          `SELECT state FROM tasks WHERE id = $1 FOR UPDATE`,
+        const lockResult = await query<{ state: string; poster_id: string; late_cancel_pct: number | null; cancellation_window_hours: number | null; accepted_at: Date | null }>(
+          `SELECT state, poster_id, late_cancel_pct, cancellation_window_hours, accepted_at FROM tasks WHERE id = $1 FOR UPDATE`,
           [taskId]
         );
 
@@ -1136,6 +1237,19 @@ export const TaskService = {
             error: {
               code: ErrorCodes.NOT_FOUND,
               message: `Task ${taskId} not found`,
+            },
+          };
+        }
+
+        // YY-01 FIX: verify poster ownership inside the FOR UPDATE lock so the
+        // auth check and the state-transition UPDATE are atomic (same TOCTOU fix
+        // applied to complete() in UU-02).
+        if (posterId !== undefined && lockResult.rows[0].poster_id !== posterId) {
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.FORBIDDEN,
+              message: 'Not task owner',
             },
           };
         }
@@ -1152,7 +1266,9 @@ export const TaskService = {
           };
         }
 
-        if (!['OPEN', 'ACCEPTED'].includes(currentState)) {
+        // MM8/MM10: MATCHING added — instant-mode tasks in the matchmaker queue
+        // must be cancellable, and MATCHING → CANCELLED is a declared valid transition.
+        if (!['OPEN', 'MATCHING', 'ACCEPTED'].includes(currentState)) {
           return {
             success: false,
             error: {
@@ -1167,7 +1283,7 @@ export const TaskService = {
            SET state = 'CANCELLED',
                cancelled_at = NOW()
            WHERE id = $1
-             AND state IN ('OPEN', 'ACCEPTED')
+             AND state IN ('OPEN', 'MATCHING', 'ACCEPTED')
            RETURNING *`,
           [taskId]
         );
@@ -1187,35 +1303,83 @@ export const TaskService = {
         // event in the same transaction. Without this, cancelling a task with a
         // funded escrow strands the poster's funds — no automatic refund trigger
         // exists and they would need to file a manual support request.
+        //
+        // MM4 FIX: When the task is in ACCEPTED state, respect late_cancel_pct.
+        // Previously the code always emitted a full refund. If late_cancel_pct > 0
+        // and the cancellation window has expired, the worker is owed their cut —
+        // emit escrow.partial_refund_requested so the payment worker splits the
+        // escrow. If we are still within the cancellation window (or the task was
+        // not ACCEPTED / has no late_cancel_pct), a full refund is correct.
+        // MATCHING and OPEN cancellations always get a full refund — no worker
+        // was assigned so there is nobody to compensate.
         const escrowResult = await query<{ id: string; state: string }>(
           `SELECT id, state FROM escrows WHERE task_id = $1 AND state = 'FUNDED'`,
           [taskId]
         );
         if (escrowResult.rows.length > 0) {
           const escrowId = escrowResult.rows[0].id;
-          await writeToOutbox(
-            {
-              eventType: 'escrow.refund_requested',
-              aggregateType: 'escrow',
-              aggregateId: escrowId,
-              eventVersion: 1,
-              payload: { escrowId, reason: 'task_cancelled', taskId },
-              queueName: 'critical_payments',
-              idempotencyKey: `escrow.refund_on_cancel:${escrowId}:${taskId}`,
-            },
-            query
-          );
-          log.info({ escrowId, taskId }, 'Escrow refund requested on task cancellation');
+
+          const lateCancelPct = lockResult.rows[0].late_cancel_pct ?? 0;
+          const windowHours = lockResult.rows[0].cancellation_window_hours ?? 0;
+          const acceptedAt = lockResult.rows[0].accepted_at;
+
+          // Determine whether this is a late ACCEPTED-state cancellation that
+          // triggers a partial payout to the worker.
+          const isLateAcceptedCancel =
+            currentState === 'ACCEPTED' &&
+            lateCancelPct > 0 &&
+            acceptedAt !== null &&
+            windowHours > 0 &&
+            (Date.now() - new Date(acceptedAt).getTime()) > windowHours * 60 * 60 * 1000;
+
+          if (isLateAcceptedCancel) {
+            // Partial refund: worker receives late_cancel_pct of escrow amount.
+            // The payment worker resolves the exact split from the escrow record.
+            await writeToOutbox(
+              {
+                eventType: 'escrow.partial_refund_requested',
+                aggregateType: 'escrow',
+                aggregateId: escrowId,
+                eventVersion: 1,
+                payload: {
+                  escrowId,
+                  reason: 'task_cancelled_late',
+                  taskId,
+                  workerPercent: lateCancelPct,
+                },
+                queueName: 'critical_payments',
+                idempotencyKey: `escrow.partial_refund_on_late_cancel:${escrowId}:${taskId}`,
+              },
+              query
+            );
+            log.info({ escrowId, taskId, lateCancelPct }, 'Partial escrow refund requested on late ACCEPTED-state cancellation');
+          } else {
+            // Full refund: OPEN, MATCHING, or within-window ACCEPTED cancellation.
+            await writeToOutbox(
+              {
+                eventType: 'escrow.refund_requested',
+                aggregateType: 'escrow',
+                aggregateId: escrowId,
+                eventVersion: 1,
+                payload: { escrowId, reason: 'task_cancelled', taskId },
+                queueName: 'critical_payments',
+                idempotencyKey: `escrow.refund_on_cancel:${escrowId}:${taskId}`,
+              },
+              query
+            );
+            log.info({ escrowId, taskId }, 'Escrow refund requested on task cancellation');
+          }
         }
 
         return { success: true, data: result.rows[0] };
       });
     } catch (error) {
+      log.error({ err: error instanceof Error ? error.message : String(error) }, 'TaskService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
@@ -1223,37 +1387,99 @@ export const TaskService = {
 
   /**
    * Expire task: * → EXPIRED (called by cron job)
+   *
+   * UU-03 FIX: When a MATCHING-state task expires the poster's escrow is
+   * stranded unless we emit a refund outbox event in the same transaction.
+   * MATCHING tasks have a funded escrow (the matchmaker was holding it) and
+   * no worker was ever assigned, so a full refund is always correct — the
+   * same path used by cancel() for OPEN/MATCHING tasks.
+   *
+   * The method is now wrapped in a transaction so the UPDATE and the outbox
+   * write are atomic.  If the task was not in MATCHING state (e.g. it was
+   * OPEN) there is no escrow to refund and the extra escrow query returns
+   * zero rows, so the path is a no-op.
    */
   expire: async (taskId: string): Promise<ServiceResult<Task>> => {
     try {
-      const result = await db.query<Task>(
-        `UPDATE tasks
-         SET state = 'EXPIRED',
-             expired_at = NOW()
-         WHERE id = $1
-           AND state NOT IN ('COMPLETED', 'CANCELLED', 'EXPIRED', 'PROOF_SUBMITTED', 'DISPUTED', 'IN_REVIEW', 'ACCEPTED', 'IN_PROGRESS')
-           AND deadline < NOW()
-         RETURNING *`,
-        [taskId]
-      );
-      
-      if (result.rowCount === 0) {
-        return {
-          success: false,
-          error: {
-            code: ErrorCodes.INVALID_STATE,
-            message: 'Task cannot be expired (already terminal or deadline not passed)',
-          },
-        };
-      }
-      
-      return { success: true, data: result.rows[0] };
+      return await db.transaction(async (query) => {
+        // Read current state under a row-level lock so the expiry and any
+        // subsequent outbox write are fully serialised.
+        const lockResult = await query<{ state: string }>(
+          `SELECT state FROM tasks WHERE id = $1 FOR UPDATE`,
+          [taskId]
+        );
+
+        if (lockResult.rows.length === 0) {
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.INVALID_STATE,
+              message: 'Task cannot be expired (already terminal or deadline not passed)',
+            },
+          };
+        }
+
+        const preExpireState = lockResult.rows[0].state;
+
+        const result = await query<Task>(
+          `UPDATE tasks
+           SET state = 'EXPIRED',
+               expired_at = NOW()
+           WHERE id = $1
+             AND state NOT IN ('COMPLETED', 'CANCELLED', 'EXPIRED', 'PROOF_SUBMITTED', 'DISPUTED', 'IN_REVIEW')
+             AND deadline < NOW()
+           RETURNING *`,
+          [taskId]
+        );
+
+        if (result.rowCount === 0) {
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.INVALID_STATE,
+              message: 'Task cannot be expired (already terminal or deadline not passed)',
+            },
+          };
+        }
+
+        // CCC-02 FIX: If the task was in MATCHING or OPEN state it may have had
+        // a funded escrow.  MATCHING tasks have a funded escrow held by the
+        // matchmaker.  OPEN tasks can also have a funded escrow if the poster
+        // pre-funded before a worker was ever matched.  In both cases we must
+        // emit a refund outbox event so the payment worker returns the poster's
+        // funds; without this the escrow is permanently stranded.
+        if (preExpireState === 'MATCHING' || preExpireState === 'OPEN') {
+          const escrowResult = await query<{ id: string }>(
+            `SELECT id FROM escrows WHERE task_id = $1 AND state = 'FUNDED'`,
+            [taskId]
+          );
+          if (escrowResult.rows.length > 0) {
+            const escrowId = escrowResult.rows[0].id;
+            await writeToOutbox(
+              {
+                eventType: 'escrow.refund_requested',
+                aggregateType: 'escrow',
+                aggregateId: escrowId,
+                eventVersion: 1,
+                payload: { escrowId, reason: 'task_expired', taskId },
+                queueName: 'critical_payments',
+                idempotencyKey: `escrow.refund_on_expire:${escrowId}:${taskId}`,
+              },
+              query
+            );
+            log.info({ escrowId, taskId }, `Escrow refund requested on ${preExpireState} task expiry`);
+          }
+        }
+
+        return { success: true, data: result.rows[0] };
+      });
     } catch (error) {
+      log.error({ err: error instanceof Error ? error.message : String(error) }, 'TaskService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
@@ -1339,30 +1565,60 @@ export const TaskService = {
           }
         }
 
-        // 5. Dispute freeze: check if active dispute exists
+        // 5. Dispute freeze: check if active dispute exists.
+        // BUG 3 FIX: Use FOR UPDATE SKIP LOCKED so a concurrent dispute.create
+        // cannot insert a dispute row between this read and the progress UPDATE.
+        // If SKIP LOCKED causes no row to be returned (the disputes row is
+        // locked by a concurrent inserter), we treat that as "dispute exists"
+        // and block the progress advance — same as if we had read the row.
         const disputeResult = await query<{ state: string }>(
           `SELECT state
            FROM disputes
            WHERE task_id = $1
+             AND state NOT IN ('RESOLVED')
            ORDER BY created_at DESC
-           LIMIT 1`,
+           LIMIT 1
+           FOR UPDATE SKIP LOCKED`,
           [taskId]
         );
 
+        // Check for non-RESOLVED dispute row.
+        // A locked-away row (SKIP LOCKED returned nothing but another tx holds
+        // an inserting lock) is treated as a dispute exists — block is correct.
         if (disputeResult.rows.length > 0) {
           const disputeState = disputeResult.rows[0].state;
-          if (disputeState !== 'RESOLVED') {
-            throw new Error(
-              `Cannot advance progress: task ${taskId} has active dispute (state: ${disputeState})`
-            );
-          }
+          throw new Error(
+            `Cannot advance progress: task ${taskId} has active dispute (state: ${disputeState})`
+          );
+        }
+
+        // Also check if a dispute row exists in any non-resolved state but is
+        // currently locked (SKIP LOCKED skipped it). Re-check without SKIP LOCKED
+        // to catch the locked-row case — if it's there, block.
+        const disputeAnyResult = await query<{ count: string }>(
+          `SELECT COUNT(*) AS count
+           FROM disputes
+           WHERE task_id = $1
+             AND state NOT IN ('RESOLVED')`,
+          [taskId]
+        );
+        if (parseInt(disputeAnyResult.rows[0]?.count ?? '0', 10) > 0) {
+          throw new Error(
+            `Cannot advance progress: task ${taskId} has active dispute (locked by concurrent transaction)`
+          );
         }
 
         // 6. Escrow terminal freeze: check if escrow is terminal
+        // BUG 9 FIX: Use FOR SHARE so a concurrent payment-worker cannot transition
+        // the escrow to RELEASED in the gap between this read and the task UPDATE.
+        // FOR SHARE blocks concurrent exclusive locks (write operations) on the escrow
+        // row while allowing other readers, ensuring the state we read here is the
+        // state that persists through the end of this transaction.
         const escrowResult = await query<{ state: string }>(
           `SELECT state
            FROM escrows
-           WHERE task_id = $1`,
+           WHERE task_id = $1
+           FOR SHARE`,
           [taskId]
         );
 
@@ -1404,7 +1660,7 @@ export const TaskService = {
         aggregateType: 'task',
         aggregateId: taskId,
         eventVersion: 1,
-        idempotencyKey: `task.progress_updated:${taskId}:${to}`,
+        idempotencyKey: `task.progress_updated:${taskId}:${result.from ?? 'null'}:${to}`,
         payload: {
           taskId,
           from: result.from,
@@ -1470,6 +1726,152 @@ export const TaskService = {
         error: {
           code: 'INTERNAL_ERROR',
           message: error instanceof Error ? error.message : 'Unknown error',
+        },
+      };
+    }
+  },
+
+  // --------------------------------------------------------------------------
+  // WORKER ABANDONMENT
+  // --------------------------------------------------------------------------
+
+  /**
+   * Worker abandons an ACCEPTED task.
+   *
+   * Emits a full escrow.refund_requested outbox event so the payment worker
+   * returns funds to the poster. Worker abandonment = full refund; the poster
+   * bears no partial-refund liability for the worker walking away.
+   *
+   * RACE CONDITION SAFETY: Wrapped in a transaction with SELECT FOR UPDATE.
+   * The worker_id and state checks are performed under the lock so a
+   * concurrent complete() or poster cancel() cannot race with this call.
+   */
+  workerAbandon: async (taskId: string, workerId: string, reason?: string): Promise<ServiceResult<Task>> => {
+    try {
+      return await db.transaction(async (query) => {
+        // Acquire row-level lock before reading state
+        const lockResult = await query<{ state: string; worker_id: string | null; poster_id: string }>(
+          `SELECT state, worker_id, poster_id FROM tasks WHERE id = $1 FOR UPDATE`,
+          [taskId]
+        );
+
+        if (lockResult.rows.length === 0) {
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.NOT_FOUND,
+              message: `Task ${taskId} not found`,
+            },
+          };
+        }
+
+        const { state: currentState, worker_id: assignedWorkerId } = lockResult.rows[0];
+
+        // Verify the caller is the assigned worker
+        if (assignedWorkerId !== workerId) {
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.FORBIDDEN,
+              message: 'Only the assigned worker can abandon this task',
+            },
+          };
+        }
+
+        // Only ACCEPTED tasks can be abandoned
+        if (!['ACCEPTED'].includes(currentState)) {
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.INVALID_STATE,
+              message: `Cannot abandon task: current state is ${currentState}. Only ACCEPTED tasks can be abandoned.`,
+            },
+          };
+        }
+
+        // Transition to CANCELLED — worker abandonment is a terminal event for this assignment.
+        // The task creator can re-post if needed. OPEN is not a valid transition from ACCEPTED
+        // per VALID_TRANSITIONS, and the escrow would be in LOCKED_DISPUTE state making any
+        // new worker unpayable.
+        const result = await query<Task>(
+          `UPDATE tasks
+           SET state = 'CANCELLED',
+               worker_id = NULL,
+               accepted_at = NULL,
+               updated_at = NOW()
+           WHERE id = $1
+             AND state = 'ACCEPTED'
+             AND worker_id = $2
+           RETURNING *`,
+          [taskId, workerId]
+        );
+
+        if (result.rowCount === 0) {
+          // Should be unreachable given the FOR UPDATE lock above, but guard anyway
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.INVALID_STATE,
+              message: 'Cannot abandon task: state changed unexpectedly',
+            },
+          };
+        }
+
+        // Log the abandonment reason to task_events if the table exists
+        // (fire-and-forget inside the transaction — failure is non-fatal)
+        if (reason) {
+          await query(
+            `INSERT INTO task_events (task_id, event_type, actor_id, metadata, created_at)
+             VALUES ($1, 'worker_abandoned', $2, $3, NOW())
+             ON CONFLICT DO NOTHING`,
+            [taskId, workerId, JSON.stringify({ reason })]
+          ).catch(() => {
+            // task_events table is best-effort; swallow if it doesn't exist
+          });
+        }
+
+        // Worker abandonment = full refund to poster. Lock the escrow to
+        // LOCKED_DISPUTE state atomically before emitting the outbox event.
+        // This prevents a new worker from being assigned to the same escrow
+        // if the payment worker fails to process the refund in time.
+        // escrow-action-worker requires state=LOCKED_DISPUTE to process
+        // escrow.refund_requested events (see escrow-action-worker.ts:208).
+        const escrowLock = await query<{ id: string }>(
+          `UPDATE escrows
+           SET state = 'LOCKED_DISPUTE',
+               version = version + 1,
+               updated_at = NOW()
+           WHERE task_id = $1 AND state = 'FUNDED'
+           RETURNING id`,
+          [taskId]
+        );
+
+        if ((escrowLock.rowCount ?? 0) > 0) {
+          const escrowId = escrowLock.rows[0].id;
+          await writeToOutbox(
+            {
+              eventType: 'escrow.refund_requested',
+              aggregateType: 'escrow',
+              aggregateId: escrowId,
+              eventVersion: 1,
+              payload: { escrowId, reason: 'worker_abandoned', taskId, workerId },
+              queueName: 'critical_payments',
+              idempotencyKey: `escrow.refund_on_worker_abandon:${escrowId}:${taskId}`,
+            },
+            query
+          );
+          log.info({ escrowId, taskId, workerId }, 'Escrow locked (FUNDED→LOCKED_DISPUTE) and refund requested on worker abandonment');
+        }
+
+        return { success: true, data: result.rows[0] };
+      });
+    } catch (error) {
+      log.error({ err: error instanceof Error ? error.message : String(error) }, 'TaskService DB error');
+      return {
+        success: false,
+        error: {
+          code: 'DB_ERROR',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }

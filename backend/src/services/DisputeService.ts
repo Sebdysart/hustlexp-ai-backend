@@ -15,8 +15,10 @@ import { db, isInvariantViolation, isUniqueViolation, getErrorMessage } from '..
 import type { ServiceResult, Dispute, DisputeState, Escrow } from '../types.js';
 import { ErrorCodes } from '../types.js';
 import { writeToOutbox } from '../lib/outbox-helpers.js';
-import { TaskService } from './TaskService.js';
 import { EscrowService } from './EscrowService.js';
+import { logger } from '../logger.js';
+
+const disputeServiceLog = logger.child({ service: 'DisputeService' });
 
 // ============================================================================
 // HELPERS
@@ -106,11 +108,12 @@ export const DisputeService = {
       
       return { success: true, data: result.rows[0] };
     } catch (error) {
+      disputeServiceLog.error({ err: error instanceof Error ? error.message : String(error) }, 'DisputeService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
@@ -121,18 +124,21 @@ export const DisputeService = {
    */
   getByTaskId: async (taskId: string): Promise<ServiceResult<Dispute[]>> => {
     try {
+      // R-12: LIMIT 50 prevents DoS via accumulated resolved disputes.
+      // Any reasonable UI use case fits within this bound.
       const result = await db.query<Dispute>(
-        'SELECT * FROM disputes WHERE task_id = $1 ORDER BY created_at DESC',
+        'SELECT * FROM disputes WHERE task_id = $1 ORDER BY created_at DESC LIMIT 50',
         [taskId]
       );
       
       return { success: true, data: result.rows };
     } catch (error) {
+      disputeServiceLog.error({ err: error instanceof Error ? error.message : String(error) }, 'DisputeService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
@@ -141,22 +147,30 @@ export const DisputeService = {
   /**
    * Get disputes for a user (as poster or worker)
    */
-  getByUserId: async (userId: string): Promise<ServiceResult<Dispute[]>> => {
+  getByUserId: async (userId: string, limit = 50, offset = 0): Promise<ServiceResult<Dispute[]>> => {
     try {
+      // SECURITY FIX (MEDIUM): Removed `OR initiated_by = $1` clause.
+      // An admin who initiates a dispute on behalf of a task they are not party to
+      // would previously see that dispute — and the other user's task details — in
+      // their own consumer feed. The initiator for normal disputes is always the
+      // poster or worker (enforced at creation), so the clause was redundant in the
+      // non-admin case and a leakage vector in the admin-override case.
       const result = await db.query<Dispute>(
-        `SELECT * FROM disputes 
-         WHERE poster_id = $1 OR worker_id = $1 OR initiated_by = $1
-         ORDER BY created_at DESC`,
-        [userId]
+        `SELECT * FROM disputes
+         WHERE poster_id = $1 OR worker_id = $1
+         ORDER BY created_at DESC
+         LIMIT $2 OFFSET $3`,
+        [userId, limit, offset]
       );
-      
+
       return { success: true, data: result.rows };
     } catch (error) {
+      disputeServiceLog.error({ err: error instanceof Error ? error.message : String(error) }, 'DisputeService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
@@ -174,6 +188,19 @@ export const DisputeService = {
     const { taskId, escrowId, initiatedBy, posterId, workerId, reason, description } = params;
     
     try {
+      // T60-4 FIX: Guard against tasks with no assigned worker.
+      // A dispute without a payout target (workerId=null) is meaningless and would
+      // produce escrow actions with no recipient — reject early before any DB writes.
+      if (!workerId) {
+        return {
+          success: false,
+          error: {
+            code: 'INVALID_TASK',
+            message: 'Task has no assigned worker — cannot open a dispute',
+          },
+        };
+      }
+
       // Precondition: Check authorization
       if (initiatedBy !== posterId && initiatedBy !== workerId) {
         return {
@@ -184,42 +211,74 @@ export const DisputeService = {
           },
         };
       }
-      
-      // Precondition: Get task (check completed_at exists and within 48h)
-      const taskResult = await TaskService.getById(taskId);
-      if (!taskResult.success) return taskResult;
-      const task = taskResult.data;
-      
-      if (!task.completed_at) {
+
+      // T53-3 FIX: Block self-disputes where the same user holds both roles.
+      // This prevents a user who is both poster and worker on a task from filing
+      // a dispute against themselves (e.g., via a crafted API call). This scenario
+      // should be prevented at task creation, but we enforce it here as a belt-and-
+      // suspenders guard at the financial boundary.
+      if (posterId === workerId) {
         return {
           success: false,
           error: {
-            code: ErrorCodes.INVALID_STATE,
-            message: 'Disputes can only be opened for completed tasks',
+            code: ErrorCodes.FORBIDDEN,
+            message: 'Cannot file a dispute on a task where you are both the poster and worker',
           },
         };
       }
       
-      const disputeWindowHours = 48;
-      const disputeWindowMs = disputeWindowHours * 60 * 60 * 1000;
-      const now = new Date();
-      const completedAt = new Date(task.completed_at);
-      
-      if (now.getTime() - completedAt.getTime() > disputeWindowMs) {
-        return {
-          success: false,
-          error: {
-            code: ErrorCodes.INVALID_STATE,
-            message: `Disputes must be opened within ${disputeWindowHours} hours of task completion`,
-          },
-        };
-      }
-      
-      // Transaction: Create dispute + lock escrow + outbox event
-      // BUG FIX: Escrow state check moved INSIDE the transaction with FOR UPDATE
-      // to eliminate TOCTOU race between the state check and the locking UPDATE.
+      // Transaction: Create dispute + lock task + lock escrow + outbox event
+      // Task fetch and 48h window check are performed INSIDE the transaction under
+      // a FOR UPDATE lock to eliminate the TOCTOU race where a concurrent
+      // completed_at update between the pre-check and the lock could allow
+      // disputes outside the intended window.
       const result = await db.transaction(async (query) => {
-        // Lock escrow row first to prevent concurrent state changes
+        // Lock task row first to prevent concurrent completed_at changes
+        const taskSelect = await query(
+          `SELECT * FROM tasks WHERE id = $1 FOR UPDATE`,
+          [taskId]
+        );
+
+        if (taskSelect.rows.length === 0) {
+          throw Object.assign(new Error(`Task ${taskId} not found`), { code: ErrorCodes.NOT_FOUND });
+        }
+
+        const task = taskSelect.rows[0];
+
+        // BUG R-3 FIX: Accept both COMPLETED and PROOF_SUBMITTED tasks for dispute creation.
+        // PROOF_SUBMITTED tasks do not have completed_at set — the 48-hour window only
+        // applies to COMPLETED tasks (post-completion dispute period). For PROOF_SUBMITTED
+        // tasks the window check is skipped; the poster disputes the proof itself, not the
+        // completed work.
+        const validDisputeTaskStates = ['COMPLETED', 'PROOF_SUBMITTED'];
+        if (!validDisputeTaskStates.includes(task.state)) {
+          throw Object.assign(
+            new Error('Disputes can only be opened for completed tasks or tasks with submitted proof'),
+            { code: ErrorCodes.INVALID_STATE }
+          );
+        }
+
+        if (task.state === 'COMPLETED') {
+          if (!task.completed_at) {
+            throw Object.assign(
+              new Error('Completed task is missing completed_at timestamp'),
+              { code: ErrorCodes.INVALID_STATE }
+            );
+          }
+
+          const disputeWindowHours = 48;
+          const disputeWindowMs = disputeWindowHours * 60 * 60 * 1000;
+          const completedAt = new Date(task.completed_at);
+
+          if (Date.now() - completedAt.getTime() > disputeWindowMs) {
+            throw Object.assign(
+              new Error(`Disputes must be opened within ${disputeWindowHours} hours of task completion`),
+              { code: ErrorCodes.INVALID_STATE }
+            );
+          }
+        }
+
+        // Lock escrow row to prevent concurrent state changes
         const escrowSelect = await query<Escrow>(
           `SELECT * FROM escrows WHERE id = $1 FOR UPDATE`,
           [escrowId]
@@ -231,16 +290,30 @@ export const DisputeService = {
 
         const escrow = escrowSelect.rows[0];
 
-        if (escrow.state !== 'FUNDED') {
-          throw Object.assign(new Error(`Escrow must be FUNDED to open dispute (current: ${escrow.state})`), { code: ErrorCodes.INVALID_STATE });
+        // BUG FIX (HIGH): Accept both FUNDED and RELEASED escrow states.
+        // A task marked COMPLETED typically has its escrow auto-released (RELEASED)
+        // via the payment worker before a user can file a dispute. Requiring only
+        // FUNDED made it impossible to dispute a completed task — the two conditions
+        // (completed_at IS NOT NULL AND escrow.state = 'FUNDED') were mutually
+        // exclusive in the normal payment flow.
+        if (!['FUNDED', 'RELEASED'].includes(escrow.state)) {
+          throw Object.assign(new Error(`Dispute can only be filed when escrow is FUNDED or RELEASED (current: ${escrow.state})`), { code: ErrorCodes.INVALID_STATE });
         }
 
-        // Lock escrow: FUNDED → LOCKED_DISPUTE (versioned)
+        // Lock escrow: FUNDED or RELEASED → LOCKED_DISPUTE (versioned)
+        // BUG FIX (HIGH - Part A): When the escrow is RELEASED a Stripe transfer has
+        // already been sent to the worker. We clear stripe_transfer_id so that the
+        // escrow-action-worker's handleReleaseRequest idempotency guard (which checks
+        // for a non-null stripe_transfer_id) does NOT fire and skip payment if the
+        // dispute is later resolved in the worker's favour. The original transfer ID
+        // is preserved in an escrow_events row below so the refund path can reverse it
+        // if the poster wins.
         const escrowUpdate = await query<Escrow>(
           `UPDATE escrows
            SET state = 'LOCKED_DISPUTE',
+               stripe_transfer_id = NULL,
                version = version + 1
-           WHERE id = $1 AND state = 'FUNDED'
+           WHERE id = $1 AND state IN ('FUNDED', 'RELEASED')
            RETURNING *`,
           [escrowId]
         );
@@ -248,7 +321,22 @@ export const DisputeService = {
         if (escrowUpdate.rowCount === 0) {
           throw new Error('Failed to lock escrow (may have been locked by another process)');
         }
-        
+
+        // BUG FIX (HIGH - Part B): If the escrow was RELEASED, persist the original
+        // transfer ID into escrow_events so handleRefundRequest can reverse it if the
+        // poster wins the dispute. We use escrow_events (which has a JSONB metadata
+        // column) because the disputes table has no metadata column.
+        if (escrow.stripe_transfer_id) {
+          await query(
+            `INSERT INTO escrow_events (escrow_id, from_state, to_state, actor_id, actor_type, metadata)
+             VALUES ($1, 'RELEASED', 'LOCKED_DISPUTE', NULL, 'system', $2)`,
+            [escrowId, JSON.stringify({
+              event_type: 'dispute_locked_after_release',
+              original_transfer_id: escrow.stripe_transfer_id,
+            })]
+          );
+        }
+
         // Create dispute (version=1)
         const disputeResult = await query<Dispute>(
           `INSERT INTO disputes (
@@ -277,7 +365,31 @@ export const DisputeService = {
           },
           queueName: 'critical_trust',
         });
-        
+
+        // T59-3 FIX: Update task state to DISPUTED atomically within this transaction.
+        // Prevents proof review racing between dispute-created commit and a separate
+        // openDispute commit. When a dispute is created on a PROOF_SUBMITTED task, the
+        // task must move to DISPUTED in the same transaction so no concurrent
+        // reviewProof call can review proof after the dispute row exists.
+        //
+        // T61-1 FIX: Also transition COMPLETED tasks to DISPUTED so the resolution
+        // path (REFUND/SPLIT → CANCELLED, RELEASE → stays COMPLETED) works correctly.
+        // Without this, a dispute on a COMPLETED task leaves the task in COMPLETED
+        // permanently after a REFUND/SPLIT resolution because the UPDATE:
+        //   UPDATE tasks SET state = 'CANCELLED' WHERE id = $1 AND state = 'DISPUTED'
+        // matches 0 rows.
+        if (task.state === 'PROOF_SUBMITTED') {
+          await query(
+            `UPDATE tasks SET state = 'DISPUTED', updated_at = NOW() WHERE id = $1 AND state = 'PROOF_SUBMITTED'`,
+            [taskId]
+          );
+        } else if (task.state === 'COMPLETED') {
+          await query(
+            `UPDATE tasks SET state = 'DISPUTED', updated_at = NOW() WHERE id = $1 AND state = 'COMPLETED'`,
+            [taskId]
+          );
+        }
+
         return dispute;
       });
       
@@ -312,11 +424,12 @@ export const DisputeService = {
           },
         };
       }
+      disputeServiceLog.error({ err: error instanceof Error ? error.message : String(error) }, 'DisputeService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
@@ -381,16 +494,17 @@ export const DisputeService = {
           },
         };
       }
+      disputeServiceLog.error({ err: error instanceof Error ? error.message : String(error) }, 'DisputeService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
   },
-  
+
   /**
    * Resolve dispute
    * MVP: Admin check + preconditions + versioned update + outbox events
@@ -464,11 +578,26 @@ export const DisputeService = {
         
         // Precondition: Validate SPLIT amounts
         if (outcomeEscrowAction === 'SPLIT') {
-          if (!refundAmount || !releaseAmount) {
+          if (refundAmount === undefined || refundAmount === null || releaseAmount === undefined || releaseAmount === null) {
             throw new Error('SPLIT resolution requires refund_amount and release_amount');
           }
           if (refundAmount < 0 || releaseAmount < 0) {
             throw new Error('SPLIT amounts must be non-negative');
+          }
+          if (refundAmount === 0 || releaseAmount === 0) {
+            throw Object.assign(
+              new Error('SPLIT requires both amounts to be positive. Use RELEASE or REFUND for full payouts.'),
+              { code: 'BAD_REQUEST' }
+            );
+          }
+          // BUG 4 FIX: Validate integer-ness BEFORE the sum check. Math.round() allows
+          // float values like 4999.4 + 500.6 = 5000 to pass while storing non-integer
+          // cents. Reject non-integers explicitly first.
+          if (!Number.isInteger(refundAmount) || !Number.isInteger(releaseAmount)) {
+            throw Object.assign(
+              new Error('Split amounts must be whole cents'),
+              { code: 'INVALID_INPUT' }
+            );
           }
           if (refundAmount + releaseAmount !== escrow.amount) {
             throw new Error(`SPLIT amounts (${refundAmount} + ${releaseAmount} = ${refundAmount + releaseAmount}) must sum to escrow amount (${escrow.amount})`);
@@ -499,8 +628,8 @@ export const DisputeService = {
             outcomeEscrowAction,
             workerPenalty,
             posterPenalty,
-            refundAmount || null,
-            releaseAmount || null,
+            refundAmount ?? null,
+            releaseAmount ?? null,
             newVersion,
             disputeId,
             dispute.version,
@@ -528,7 +657,7 @@ export const DisputeService = {
             version: newVersion,
           },
           queueName: 'critical_trust',
-        });
+        }, query);
         
         // Write trust events: trust.dispute_resolved.worker and trust.dispute_resolved.poster
         // Generate deterministic idempotency keys
@@ -556,7 +685,7 @@ export const DisputeService = {
           },
           queueName: 'critical_trust',
           idempotencyKey: workerTrustIdempotencyKey,
-        });
+        }, query);
         
         // Poster trust event
         await writeToOutbox({
@@ -576,8 +705,46 @@ export const DisputeService = {
           },
           queueName: 'critical_trust',
           idempotencyKey: posterTrustIdempotencyKey,
-        });
+        }, query);
         
+        // T55-1 FIX: When the worker wins (RELEASE), the task is still in DISPUTED
+        // state. The payment-worker later sets escrow.state = 'RELEASED', but the
+        // PostgreSQL trigger enforce_released_requires_completed() (INV-2/HX201)
+        // blocks that UPDATE unless the task is already COMPLETED.
+        //
+        // Fix: inside this same transaction, accept the submitted proof and transition
+        // the task DISPUTED → COMPLETED BEFORE the escrow.release_requested event is
+        // written, making both writes atomic with the dispute resolution.
+        //
+        // T56-1 FIX: For REFUND and SPLIT outcomes the task was left permanently in
+        // DISPUTED state with no API path to advance it. Transition DISPUTED → CANCELLED
+        // atomically with the dispute resolution so the task reaches a terminal state.
+        // CANCELLED is correct for both: REFUND means the poster won (work rejected),
+        // and SPLIT means work was partially disputed (settlement, not completion).
+        if (outcomeEscrowAction === 'RELEASE') {
+          // Accept any submitted OR rejected proof so INV-3 (completed task requires accepted proof) is satisfied.
+          // T62-1 FIX: Also accept REJECTED proofs — a proof may have been prematurely rejected between
+          // the ProofService.review() and TaskService.rejectProof() calls in the task router before a
+          // concurrent dispute.create() locked the task. If we only accept SUBMITTED proofs, a prior
+          // rejection leaves the proof in REJECTED state and the task transition to COMPLETED fails
+          // (INV-3 fires), permanently blocking dispute resolution with a RELEASE outcome.
+          await query(
+            `UPDATE proofs SET state = 'ACCEPTED', reviewed_at = NOW() WHERE task_id = $1 AND state IN ('SUBMITTED', 'REJECTED')`,
+            [dispute.task_id]
+          );
+          // Transition task DISPUTED → COMPLETED.
+          await query(
+            `UPDATE tasks SET state = 'COMPLETED', completed_at = NOW() WHERE id = $1 AND state = 'DISPUTED'`,
+            [dispute.task_id]
+          );
+        } else if (outcomeEscrowAction === 'REFUND' || outcomeEscrowAction === 'SPLIT') {
+          // Transition task DISPUTED → CANCELLED.
+          await query(
+            `UPDATE tasks SET state = 'CANCELLED' WHERE id = $1 AND state = 'DISPUTED'`,
+            [dispute.task_id]
+          );
+        }
+
         // Write escrow action request outbox event (exactly one)
         const escrowEventType = outcomeEscrowAction === 'RELEASE'
           ? 'escrow.release_requested'
@@ -594,11 +761,12 @@ export const DisputeService = {
             task_id: dispute.task_id,
             dispute_id: dispute.id,
             reason: 'dispute_resolution',
+            outcome_escrow_action: outcomeEscrowAction,
             refund_amount: refundAmount,
             release_amount: releaseAmount,
           },
           queueName: 'critical_payments',
-        });
+        }, query);
         
         return resolvedDispute;
       });
@@ -634,6 +802,16 @@ export const DisputeService = {
           };
         }
       }
+      const errCode = (error as { code?: string }).code;
+      if (errCode === 'BAD_REQUEST') {
+        return {
+          success: false,
+          error: {
+            code: 'BAD_REQUEST',
+            message: error instanceof Error ? error.message : 'Unknown error',
+          },
+        };
+      }
       if (isInvariantViolation(error)) {
         return {
           success: false,
@@ -643,16 +821,17 @@ export const DisputeService = {
           },
         };
       }
+      disputeServiceLog.error({ err: error instanceof Error ? error.message : String(error) }, 'DisputeService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }
   },
-  
+
   /**
    * Escalate dispute to higher authority
    */
@@ -712,11 +891,12 @@ export const DisputeService = {
           },
         };
       }
+      disputeServiceLog.error({ err: error instanceof Error ? error.message : String(error) }, 'DisputeService DB error');
       return {
         success: false,
         error: {
           code: 'DB_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown error',
+          message: 'A database error occurred. Please try again.',
         },
       };
     }

@@ -66,12 +66,7 @@ function getKey(): Buffer | null {
   if (_cachedKey !== undefined) return _cachedKey;
   _cachedKey = getEncryptionKey();
   if (!_cachedKey) {
-    const isProduction = process.env.NODE_ENV === 'production';
-    if (isProduction) {
-      log.error('SESSION_ENCRYPTION_KEY is required in production. Sessions will be rejected.');
-    } else {
-      log.warn('SESSION_ENCRYPTION_KEY not set. Sessions stored unencrypted (dev only).');
-    }
+    log.error('SESSION_ENCRYPTION_KEY is not set. Sessions will be rejected — encryptSession throws and decryptSession returns null.');
   }
   return _cachedKey;
 }
@@ -88,15 +83,14 @@ function getKey(): Buffer | null {
  * - authTag: 16 bytes
  * - ciphertext: variable
  *
- * Falls back to JSON.stringify if no encryption key (dev only).
+ * Throws if SESSION_ENCRYPTION_KEY is not set — encryption is always required.
  */
 export function encryptSession(data: object): string {
   const key = getKey();
   const json = JSON.stringify(data);
 
   if (!key) {
-    // Dev fallback — plaintext
-    return json;
+    throw new Error('SESSION_ENCRYPTION_KEY is required — cannot store session without encryption');
   }
 
   const iv = randomBytes(IV_LENGTH);
@@ -117,8 +111,7 @@ export function encryptSession(data: object): string {
 /**
  * Decrypt a session string from Redis.
  *
- * Returns null if decryption fails (tampered data, wrong key, or format error).
- * Falls back to JSON.parse if no encryption key (dev only).
+ * Returns null if decryption fails (tampered data, wrong key, format error, or missing key).
  */
 export function decryptSession<T = object>(stored: string | null): T | null {
   if (!stored) return null;
@@ -126,12 +119,7 @@ export function decryptSession<T = object>(stored: string | null): T | null {
   const key = getKey();
 
   if (!key) {
-    // Dev fallback — try plain JSON
-    try {
-      return JSON.parse(stored) as T;
-    } catch {
-      return null;
-    }
+    return null;
   }
 
   try {

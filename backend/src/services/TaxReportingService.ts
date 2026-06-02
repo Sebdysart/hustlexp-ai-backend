@@ -5,6 +5,7 @@
  * Integrates with Stripe Tax Reporting API for form generation.
  */
 
+import { TRPCError } from '@trpc/server';
 import { db } from '../db.js';
 import type { ServiceResult } from '../types.js';
 import { logger } from '../logger.js';
@@ -48,19 +49,34 @@ export const TaxReportingService = {
    */
   getWorkersAboveThreshold: async (taxYear: number): Promise<ServiceResult<WorkerEarnings[]>> => {
     try {
+      const feePercent = config.stripe.platformFeePercent;
       const result = await db.query<WorkerEarnings>(
-        `SELECT t.worker_id as user_id,
-                SUM(e.amount)::BIGINT as total_earnings_cents,
-                COUNT(DISTINCT t.id)::INTEGER as task_count
-         FROM tasks t
-         JOIN escrows e ON e.task_id = t.id
-         WHERE e.state = 'RELEASED'
-           AND EXTRACT(YEAR FROM e.released_at) = $1
-           AND t.worker_id IS NOT NULL
-         GROUP BY t.worker_id
-         HAVING SUM(e.amount) >= $2
+        `SELECT user_id,
+                SUM(earnings_cents)::BIGINT as total_earnings_cents,
+                SUM(task_count)::INTEGER as task_count
+         FROM (
+           SELECT t.worker_id as user_id,
+                  ROUND(e.amount * (1.0 - $3 / 100.0)) as earnings_cents,
+                  1 as task_count
+           FROM tasks t
+           JOIN escrows e ON e.task_id = t.id
+           WHERE e.state = 'RELEASED'
+             AND EXTRACT(YEAR FROM e.released_at) = $1
+             AND t.worker_id IS NOT NULL
+           UNION ALL
+           SELECT tp.worker_id as user_id,
+                  tp.amount_cents as earnings_cents,
+                  0 as task_count
+           FROM tips tp
+           WHERE tp.status = 'completed'
+             AND EXTRACT(YEAR FROM tp.completed_at) = $1
+             AND tp.completed_at IS NOT NULL
+             AND tp.worker_id IS NOT NULL
+         ) combined
+         GROUP BY user_id
+         HAVING SUM(earnings_cents) >= $2
          ORDER BY total_earnings_cents DESC`,
-        [taxYear, REPORTING_THRESHOLD_CENTS]
+        [taxYear, REPORTING_THRESHOLD_CENTS, feePercent]
       );
       return { success: true, data: result.rows };
     } catch (error) {
@@ -74,14 +90,26 @@ export const TaxReportingService = {
   createTaxFiling: async (userId: string, taxYear: number, totalEarningsCents: number): Promise<ServiceResult<TaxFiling>> => {
     try {
       const result = await db.query<TaxFiling>(
-        `INSERT INTO tax_filings (user_id, tax_year, total_earnings_cents, status)
-         VALUES ($1, $2, $3, 'pending')
+        `INSERT INTO tax_filings (user_id, tax_year, total_earnings_cents, status, form_type)
+         VALUES ($1, $2, $3, 'pending', '1099-NEC')
          ON CONFLICT (user_id, tax_year, form_type) DO UPDATE SET
            total_earnings_cents = EXCLUDED.total_earnings_cents,
            updated_at = NOW()
+         WHERE tax_filings.status = 'pending'
          RETURNING *`,
         [userId, taxYear, totalEarningsCents]
       );
+      // ON CONFLICT DO UPDATE WHERE returns 0 rows when status != 'pending' (filing already finalized).
+      // Return a descriptive error instead of { success: true, data: undefined }.
+      if (!result.rows[0]) {
+        return {
+          success: false,
+          error: {
+            code: 'FILING_ALREADY_FINALIZED',
+            message: `Tax filing for user ${userId} tax year ${taxYear} has already been finalized (status is not 'pending') — no update applied`,
+          },
+        };
+      }
       return { success: true, data: result.rows[0] };
     } catch (error) {
       return { success: false, error: { code: 'DB_ERROR', message: error instanceof Error ? error.message : 'Unknown error' } };
@@ -122,6 +150,9 @@ export const TaxReportingService = {
           Number(worker.total_earnings_cents)
         );
         if (filingResult.success) {
+          processed++;
+        } else if (filingResult.error.code === 'FILING_ALREADY_FINALIZED') {
+          // Filing already finalized for this worker/year — treat as success (idempotent)
           processed++;
         } else {
           errors++;
@@ -170,8 +201,19 @@ export const TaxReportingService = {
         return { success: false, error: { code: 'NO_FILING', message: 'No tax filing record found — run processAnnualFilings first' } };
       }
 
+      // F-8 FIX: IRS requires 1099-NEC only for payments >= $600 (60000 cents).
+      // Reject form generation below threshold to avoid filing incorrect forms.
+      const totalEarningsCents = Number(filingResult.rows[0].total_earnings_cents);
+      if (totalEarningsCents < REPORTING_THRESHOLD_CENTS) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: '1099-NEC not required: total payments below $600 threshold',
+        });
+      }
+
       // Use Stripe Tax Forms API via raw request (SDK types may not include forms resource)
       // Stripe handles form generation and IRS e-filing for Connect platforms
+      const ALREADY_FILED_SENTINEL = '__already_filed__';
       const taxForm = await (s as unknown as { rawRequest: (method: string, path: string, params: Record<string, string>) => Promise<{ body: string }> }).rawRequest(
         'POST',
         '/v1/tax/forms',
@@ -181,24 +223,40 @@ export const TaxReportingService = {
           tax_year: taxYear.toString(),
         }
       ).then((res: { body: string }) => JSON.parse(res.body)).catch((err: unknown) => {
+        // F-4 FIX: FILING_ALREADY_FINALIZED is not an error — the form was already
+        // successfully filed. Treat it as idempotent success so callers can safely retry.
+        const stripeCode = (err as Error & { code?: string }).code;
+        if (stripeCode === 'filing_already_finalized') {
+          log.info({ connectId, taxYear }, '1099-NEC already filed (filing_already_finalized) — treating as success');
+          return ALREADY_FILED_SENTINEL;
+        }
         log.error({ err: err instanceof Error ? err.message : String(err), connectId, taxYear }, 'Stripe Tax Form API call failed');
         return null;
       });
+
+      if (taxForm === ALREADY_FILED_SENTINEL) {
+        return { success: true, data: { formId: 'already_filed', status: 'already_filed' } };
+      }
 
       if (!taxForm) {
         return { success: false, error: { code: 'STRIPE_API_ERROR', message: 'Failed to create 1099-NEC form via Stripe' } };
       }
 
       // Update filing record with Stripe form ID
+      // BUG 5 FIX: Add form_type filter to prevent overwriting ALL filings for this
+      // user+year. Without it, a user with multiple form types (e.g. 1099-NEC and a
+      // future 1099-K) would have all their filings updated with the same Stripe form ID.
       await db.query(
         `UPDATE tax_filings SET stripe_tax_form_id = $1, status = 'generated', updated_at = NOW()
-         WHERE user_id = $2 AND tax_year = $3`,
+         WHERE user_id = $2 AND tax_year = $3 AND form_type = '1099-NEC'`,
         [taxForm.id, userId, taxYear]
       );
 
       log.info({ userId, taxYear, formId: taxForm.id }, '1099-NEC form generated via Stripe');
       return { success: true, data: { formId: taxForm.id, status: 'generated' } };
     } catch (error) {
+      // Re-throw TRPCErrors (e.g. BAD_REQUEST for below-threshold) so they surface correctly to callers.
+      if (error instanceof TRPCError) throw error;
       log.error({ userId, taxYear, err: error instanceof Error ? error.message : 'unknown' }, 'Failed to generate 1099 form');
       return { success: false, error: { code: 'FORM_GENERATION_ERROR', message: error instanceof Error ? error.message : 'Unknown error' } };
     }
@@ -216,14 +274,25 @@ export const TaxReportingService = {
     try {
       const year = taxYear || new Date().getFullYear();
 
+      const feePercent = config.stripe.platformFeePercent;
       const result = await db.query<{ total_earnings_cents: string }>(
-        `SELECT COALESCE(SUM(e.amount), 0)::BIGINT as total_earnings_cents
-         FROM tasks t
-         JOIN escrows e ON e.task_id = t.id
-         WHERE e.state = 'RELEASED'
-           AND EXTRACT(YEAR FROM e.released_at) = $1
-           AND t.worker_id = $2`,
-        [year, userId]
+        `SELECT COALESCE(SUM(earnings_cents), 0)::BIGINT as total_earnings_cents
+         FROM (
+           SELECT ROUND(e.amount * (1.0 - $3 / 100.0)) as earnings_cents
+           FROM tasks t
+           JOIN escrows e ON e.task_id = t.id
+           WHERE e.state = 'RELEASED'
+             AND EXTRACT(YEAR FROM e.released_at) = $1
+             AND t.worker_id = $2
+           UNION ALL
+           SELECT tp.amount_cents as earnings_cents
+           FROM tips tp
+           WHERE tp.worker_id = $2
+             AND tp.status = 'completed'
+             AND EXTRACT(YEAR FROM tp.completed_at) = $1
+             AND tp.completed_at IS NOT NULL
+         ) combined`,
+        [year, userId, feePercent]
       );
 
       const totalEarnings = parseInt(result.rows[0]?.total_earnings_cents || '0', 10);

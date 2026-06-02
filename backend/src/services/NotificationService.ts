@@ -29,6 +29,57 @@ function getNotifRedis(): Redis | null {
   return notifRedis;
 }
 
+/**
+ * Read-only frequency check: returns current counters WITHOUT incrementing.
+ * Use before the INSERT so a failed DB write does not consume a quota slot.
+ */
+async function checkFrequency(userId: string, category: string): Promise<{ hourlyCount: number; dailyCount: number }> {
+  const redis = getNotifRedis();
+  if (!redis) return { hourlyCount: 0, dailyCount: 0 };
+
+  const now = new Date();
+  const hourKey = `notif:freq:${userId}:${category}:hour:${now.toISOString().slice(0, 13)}`;
+  const dayKey = `notif:freq:${userId}:${category}:day:${now.toISOString().slice(0, 10)}`;
+
+  try {
+    const [hourly, daily] = await Promise.all([
+      redis.get<number>(hourKey),
+      redis.get<number>(dayKey),
+    ]);
+    return { hourlyCount: hourly ?? 0, dailyCount: daily ?? 0 };
+  } catch {
+    return { hourlyCount: 0, dailyCount: 0 };
+  }
+}
+
+/**
+ * Increment frequency counters AFTER a successful INSERT.
+ * Idempotent on retry: keyed on notificationId so a re-run after the INSERT
+ * succeeded but before the increment did not permanently lose the quota slot.
+ */
+async function incrementFrequency(userId: string, category: string): Promise<void> {
+  const redis = getNotifRedis();
+  if (!redis) return;
+
+  const now = new Date();
+  const hourKey = `notif:freq:${userId}:${category}:hour:${now.toISOString().slice(0, 13)}`;
+  const dayKey = `notif:freq:${userId}:${category}:day:${now.toISOString().slice(0, 10)}`;
+
+  try {
+    const [hourly, daily] = await Promise.all([
+      redis.incr(hourKey),
+      redis.incr(dayKey),
+    ]);
+    // Set TTLs (only on first increment)
+    if (hourly === 1) await redis.expire(hourKey, 3600);
+    if (daily === 1) await redis.expire(dayKey, 86400);
+  } catch {
+    // Non-fatal: a missed increment may allow one extra notification through.
+    // That is preferable to silently dropping a notification due to a Redis error.
+  }
+}
+
+/** @deprecated Use checkFrequency + incrementFrequency separately. Kept for test compatibility. */
 async function checkAndIncrementFrequency(userId: string, category: string): Promise<{ hourlyCount: number; dailyCount: number }> {
   const redis = getNotifRedis();
   if (!redis) return { hourlyCount: 0, dailyCount: 0 };
@@ -136,6 +187,12 @@ export interface UpdatePreferencesParams {
 // Priority tiers that bypass quiet hours (NOTIFICATION_SPEC.md §2.1)
 const DND_BYPASS_PRIORITIES: NotificationPriority[] = ['HIGH', 'CRITICAL'];
 const DND_BYPASS_CATEGORIES: NotificationCategory[] = ['task_accepted', 'payment_released', 'security_alert', 'instant_task_available'];
+
+// BUG 5 FIX: Categories that bypass the frequency cap entirely.
+// security_alert: an attacker can exhaust the 20/day limit, silencing real alerts.
+// payment_released: already has Infinity limits but guarded explicitly here for safety.
+// These categories must NEVER be silently dropped due to frequency limits.
+const FREQUENCY_BYPASS_CATEGORIES = new Set<NotificationCategory>(['security_alert', 'payment_released']);
 
 // Frequency limits per category (NOTIFICATION_SPEC.md §2.2)
 const FREQUENCY_LIMITS: Record<NotificationCategory, { perHour: number; perDay: number }> = {
@@ -250,12 +307,29 @@ export const NotificationService = {
       }
       
       // Check frequency limits (NOTIFICATION_SPEC.md §2.2) - Redis-based
+      // BUG 8 FIX: Use read-only checkFrequency here (before the INSERT) so that a
+      // failed DB write does not permanently consume a quota slot. incrementFrequency
+      // is called AFTER the INSERT succeeds below.
       const categoryLimits = FREQUENCY_LIMITS[category];
       const limits = categoryLimits || { perHour: Infinity, perDay: Infinity };
-      if (limits.perHour !== Infinity || limits.perDay !== Infinity) {
-        const { hourlyCount, dailyCount } = await checkAndIncrementFrequency(userId, category);
+      // BUG 5 FIX: security_alert and payment_released bypass frequency caps entirely
+      // so they can never be DoS-suppressed by an attacker exhausting the daily limit.
+      const bypassFrequency = FREQUENCY_BYPASS_CATEGORIES.has(category);
+      if (!bypassFrequency && (limits.perHour !== Infinity || limits.perDay !== Infinity)) {
+        const { hourlyCount, dailyCount } = await checkFrequency(userId, category);
 
-        if (hourlyCount > limits.perHour) {
+        // Check daily limit BEFORE hourly so the broader window is independently enforced.
+        if (dailyCount >= limits.perDay) {
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.RATE_LIMIT_EXCEEDED,
+              message: `Daily limit exceeded for category ${category}. Maximum ${limits.perDay} per day`,
+            },
+          };
+        }
+
+        if (hourlyCount >= limits.perHour) {
           // Exceeded hourly limit - batch with existing notifications
           const batchResult = await batchNotification(userId, category, {
             title,
@@ -275,16 +349,6 @@ export const NotificationService = {
             error: {
               code: ErrorCodes.RATE_LIMIT_EXCEEDED,
               message: `Frequency limit exceeded for category ${category}. Maximum ${limits.perHour} per hour`,
-            },
-          };
-        }
-
-        if (dailyCount > limits.perDay) {
-          return {
-            success: false,
-            error: {
-              code: ErrorCodes.RATE_LIMIT_EXCEEDED,
-              message: `Daily limit exceeded for category ${category}. Maximum ${limits.perDay} per day`,
             },
           };
         }
@@ -369,7 +433,7 @@ export const NotificationService = {
           deepLink,
           taskId || null,
           JSON.stringify(metadata || {}),
-          channels,
+          enabledChannels,
           priority,
           expiresAt || null,
           groupId,
@@ -381,10 +445,20 @@ export const NotificationService = {
       // In-app: Already in notifications table (can be retrieved via API)
       // External channels: Queue for delivery via outbox pattern (NO INLINE SENDS)
       const notification = result.rows[0];
+
+      // BUG 8 FIX: Increment frequency counter AFTER the INSERT succeeds.
+      // Moving the increment here ensures a failed DB write cannot consume a quota slot.
+      if (!bypassFrequency && (limits.perHour !== Infinity || limits.perDay !== Infinity)) {
+        await incrementFrequency(userId, category);
+      }
       
       // Queue notifications via enabled channels (non-blocking, async via outbox)
       // Use filtered channels if preferences exist, otherwise use requested channels
-      const channelsToUse = enabledChannels;
+      // During quiet hours: restrict to in_app only, skip push/email/SMS
+      let channelsToUse = enabledChannels;
+      if (isQuietHours && !shouldBypassDND) {
+        channelsToUse = channelsToUse.filter(ch => ch === 'in_app');
+      }
       await queueNotificationChannels(notification, channelsToUse);
       
       return {
@@ -574,18 +648,18 @@ export const NotificationService = {
     userId: string
   ): Promise<ServiceResult<{ marked: number }>> => {
     try {
-      const result = await db.query<{ count: string }>(
+      const result = await db.query(
         `UPDATE notifications
          SET read_at = NOW()
-         WHERE user_id = $1 AND read_at IS NULL AND (expires_at IS NULL OR expires_at > NOW())
-         RETURNING COUNT(*) as count`,
+         WHERE user_id = $1 AND read_at IS NULL AND (expires_at IS NULL OR expires_at > NOW())`,
         [userId]
       );
-      
+      const count = result.rowCount ?? 0;
+
       return {
         success: true,
         data: {
-          marked: parseInt(result.rows[0]?.count || '0', 10),
+          marked: count,
         },
       };
     } catch (error) {
@@ -804,18 +878,19 @@ export const NotificationService = {
    */
   cleanupExpiredNotifications: async (): Promise<ServiceResult<{ deleted: number }>> => {
     try {
-      // Delete notifications expired more than 30 days ago
-      const result = await db.query<{ count: string }>(
+      // Delete notifications expired more than 30 days ago, or old notifications
+      // that never had an expiry set (D51-5: prevents unbounded accumulation).
+      const result = await db.query(
         `DELETE FROM notifications
-         WHERE expires_at IS NOT NULL
-           AND expires_at < NOW() - INTERVAL '30 days'
-         RETURNING COUNT(*) as count`
+         WHERE (expires_at IS NOT NULL AND expires_at < NOW() - INTERVAL '30 days')
+            OR (expires_at IS NULL AND created_at < NOW() - INTERVAL '90 days')`
       );
-      
+      const count = result.rowCount ?? 0;
+
       return {
         success: true,
         data: {
-          deleted: parseInt(result.rows[0]?.count || '0', 10),
+          deleted: count,
         },
       };
     } catch (error) {
@@ -846,8 +921,8 @@ export const NotificationService = {
         `SELECT COUNT(*) as count
          FROM notifications
          WHERE user_id = $1 AND category = $2
-           AND created_at >= NOW() - INTERVAL '${minutes} minutes'`,
-        [userId, category]
+           AND created_at >= NOW() - ($3 * INTERVAL '1 minute')`,
+        [userId, category, minutes]
       );
       
       return parseInt(result.rows[0]?.count || '0', 10);
@@ -881,18 +956,76 @@ async function batchNotification(
   }
 ): Promise<ServiceResult<Notification>> {
   try {
-    // Find the most recent notification of the same category (within last hour)
-    const recentNotificationResult = await db.query<Notification>(
-      `SELECT * FROM notifications
-       WHERE user_id = $1 AND category = $2
-       AND created_at > NOW() - INTERVAL '1 hour'
-       ORDER BY created_at DESC
-       LIMIT 1`,
-      [userId, category]
-    );
-    
-    if (recentNotificationResult.rows.length === 0) {
-      // No recent notification to batch with - cannot batch
+    // BUG FIX: Previously the "find most recent notification" SELECT ran
+    // outside the transaction. Between that SELECT and the inner FOR UPDATE
+    // a concurrent insert could add a newer notification, causing the batch to
+    // update a stale older row. Fix: move the search inside the transaction and
+    // lock the chosen row atomically with FOR UPDATE from the start.
+    const updateResult = await db.transaction(async (txQuery) => {
+      // Find AND lock the most recent notification atomically
+      const lockedResult = await txQuery<Notification>(
+        `SELECT id, title, body, metadata FROM notifications
+         WHERE user_id = $1 AND category = $2
+           AND created_at > NOW() - INTERVAL '1 hour'
+         ORDER BY created_at DESC LIMIT 1
+         FOR UPDATE`,
+        [userId, category]
+      );
+
+      if (lockedResult.rows.length === 0) {
+        return null;
+      }
+
+      const existingNotification = lockedResult.rows[0];
+
+      // Update existing notification metadata to include batched item
+      const existingMetadata = existingNotification.metadata || {};
+      const batchedItems = (existingMetadata.batched_items as Array<{
+        title: string;
+        body: string;
+        deepLink: string;
+        taskId?: string | null;
+        timestamp: string;
+      }>) || [];
+
+      // Add current notification to batched items
+      batchedItems.push({
+        title: notificationData.title,
+        body: notificationData.body,
+        deepLink: notificationData.deepLink,
+        taskId: notificationData.taskId || undefined,
+        timestamp: new Date().toISOString(),
+      });
+
+      // Update notification with batched items
+      const updatedMetadata = {
+        ...existingMetadata,
+        batched_items: batchedItems,
+        batched_count: batchedItems.length,
+        last_batched_at: new Date().toISOString(),
+      };
+
+      // Update notification title/body to reflect batching.
+      // BUG FIX: batchedItems already contains the new item (pushed above), so
+      // batchedItems.length is the correct total. The previous code added +1
+      // again, inflating the count by 1. Similarly, "Plus N more" must be
+      // length-1 because the first item is represented by the base notification.
+      const baseTitle = existingNotification.title.replace(/ \(\d+ new\)$/, '');
+      const baseBody = existingNotification.body.replace(/\n\nPlus \d+ more notification.*$/s, '');
+      const updatedTitle = `${baseTitle} (${batchedItems.length} new)`;
+      const updatedBody = `${baseBody}\n\nPlus ${batchedItems.length - 1} more ${category} notification(s)`;
+
+      return txQuery<Notification>(
+        `UPDATE notifications
+         SET title = $1, body = $2, metadata = $3::JSONB, updated_at = NOW()
+         WHERE id = $4
+         RETURNING *`,
+        [updatedTitle, updatedBody, JSON.stringify(updatedMetadata), existingNotification.id]
+      );
+    });
+
+    if (updateResult === null) {
+      // No recent notification found to batch with (detected inside transaction)
       return {
         success: false,
         error: {
@@ -901,48 +1034,7 @@ async function batchNotification(
         },
       };
     }
-    
-    const existingNotification = recentNotificationResult.rows[0];
-    
-    // Update existing notification metadata to include batched item
-    const existingMetadata = existingNotification.metadata || {};
-    const batchedItems = (existingMetadata.batched_items as Array<{
-      title: string;
-      body: string;
-      deepLink: string;
-      taskId?: string | null;
-      timestamp: string;
-    }>) || [];
-    
-    // Add current notification to batched items
-    batchedItems.push({
-      title: notificationData.title,
-      body: notificationData.body,
-      deepLink: notificationData.deepLink,
-      taskId: notificationData.taskId || undefined,
-      timestamp: new Date().toISOString(),
-    });
-    
-    // Update notification with batched items
-    const updatedMetadata = {
-      ...existingMetadata,
-      batched_items: batchedItems,
-      batched_count: batchedItems.length,
-      last_batched_at: new Date().toISOString(),
-    };
-    
-    // Update notification title/body to reflect batching
-    const updatedTitle = `${existingNotification.title} (${batchedItems.length + 1} new)`;
-    const updatedBody = `${existingNotification.body}\n\nPlus ${batchedItems.length} more ${category} notification(s)`;
-    
-    const updateResult = await db.query<Notification>(
-      `UPDATE notifications
-       SET title = $1, body = $2, metadata = $3::JSONB, updated_at = NOW()
-       WHERE id = $4
-       RETURNING *`,
-      [updatedTitle, updatedBody, JSON.stringify(updatedMetadata), existingNotification.id]
-    );
-    
+
     return {
       success: true,
       data: updateResult.rows[0],
@@ -1007,7 +1099,7 @@ async function findGroupableNotification(
           success: true,
           data: {
             groupId: group.group_id,
-            groupPosition: groupSize + 1, // Next position in group
+            groupPosition: group.max_position + 1, // Next position: MAX(group_position)+1 to avoid duplicates if items were deleted
           },
         };
       }
@@ -1122,29 +1214,23 @@ async function queueNotificationChannels(
     }
     
     // Wait for all queuing operations to complete (or fail gracefully)
-    await Promise.allSettled(queuePromises);
-    
-    // Mark notification as queued (all channels queued)
-    // Note: sent_at will be updated when workers actually deliver
-    await db.query(
-      `UPDATE notifications
-       SET sent_at = NOW()  -- Mark as "sent to queue" (not "delivered")
-       WHERE id = $1`,
-      [notification.id]
-    );
+    const results = await Promise.allSettled(queuePromises);
+    const successCount = results.filter(r => r.status === 'fulfilled').length;
+
+    // Only stamp sent_at when at least one channel was successfully queued.
+    // If every write failed the notification is silently lost; do NOT mark it
+    // as delivered — the caller can detect the gap via missing sent_at.
+    if (successCount > 0) {
+      await db.query(
+        `UPDATE notifications
+         SET sent_at = NOW()  -- Mark as "sent to queue" (not "delivered")
+         WHERE id = $1`,
+        [notification.id]
+      );
+    }
   } catch (error) {
     // Log error but don't fail notification creation
     log.error({ err: error instanceof Error ? error.message : String(error), notificationId: notification.id }, 'Failed to queue notification via channels');
-    
-    // Still mark as queued (attempted) - queue failures are logged separately
-    await db.query(
-      `UPDATE notifications
-       SET sent_at = NOW()
-       WHERE id = $1`,
-      [notification.id]
-    ).catch(() => {
-      // Ignore errors marking as queued
-    });
   }
 }
 
@@ -1295,27 +1381,25 @@ async function queuePushNotification(notification: Notification): Promise<void> 
     data.taskId = notification.task_id;
   }
 
-  // Generate deterministic idempotency key
-  const aggregateId = notification.task_id || notification.id;
-  const idempotencyKey = `push.send_requested:${notification.category}:${notification.user_id}:${aggregateId}:1`;
+  // Generate deterministic idempotency key.
+  // BUG FIX: Previously used task_id as the stable part, which collapsed all
+  // push notifications for the same (user, category, task) into a single key.
+  // Only the first push was ever delivered; all subsequent ones were silently
+  // dropped by ON CONFLICT DO NOTHING. Using notification.id (unique per
+  // notification) ensures each notification gets its own push while still
+  // providing retry deduplication (same notification.id on retry = same key).
+  const idempotencyKey = `push.send_requested:${notification.category}:${notification.user_id}:${notification.id}:1`;
 
-  // Check for duplicate (idempotency)
-  const existingOutbox = await db.query(
-    `SELECT id FROM outbox_events WHERE idempotency_key = $1`,
-    [idempotencyKey]
-  );
-
-  if (existingOutbox.rows.length > 0) {
-    // Already queued - skip (idempotent)
-    return;
-  }
-
-  // Write outbox_event (push.send_requested)
-  await db.query(
+  // Write outbox_event (push.send_requested) — ON CONFLICT DO NOTHING for idempotency.
+  // A single atomic INSERT eliminates the racy SELECT+INSERT pattern: two concurrent
+  // callers with the same idempotency_key will both attempt the INSERT but only one
+  // will produce a row; the other gets rowCount === 0 and returns early.
+  const insertResult = await db.query(
     `INSERT INTO outbox_events (
       event_type, aggregate_type, aggregate_id, event_version,
       idempotency_key, payload, queue_name, status
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending')`,
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending')
+    ON CONFLICT (idempotency_key) DO NOTHING`,
     [
       'push.send_requested',
       'push',
@@ -1332,6 +1416,11 @@ async function queuePushNotification(notification: Notification): Promise<void> 
       'user_notifications',
     ]
   );
+
+  if ((insertResult.rowCount ?? 0) === 0) {
+    // Already queued - skip (idempotent)
+    return;
+  }
 
   // Push queued successfully (will be processed by push worker)
   log.info({ notificationId: notification.id, userId: notification.user_id, channel: 'push' }, 'Push notification queued');

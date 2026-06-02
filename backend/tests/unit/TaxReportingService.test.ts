@@ -19,7 +19,7 @@ vi.mock('../../src/db', () => ({
 
 vi.mock('../../src/config', () => ({
   config: {
-    stripe: { secretKey: 'sk_test_placeholder' },
+    stripe: { secretKey: 'sk_test_placeholder', platformFeePercent: 15 },
     redis: { url: null },
   },
 }));
@@ -102,10 +102,15 @@ describe('TaxReportingService', () => {
       expect(result.data).toHaveLength(2);
       expect(result.data![0].total_earnings_cents).toBe(60000);
 
-      // Verify the query was called with the threshold constant (60000 cents)
+      // F-14 FIX: Query now uses a UNION ALL subquery to combine escrow earnings and
+      // tip earnings, then HAVINGs on the combined SUM.
       const [sql, params] = mockDb.query.mock.calls[0] as [string, unknown[]];
-      expect(sql).toContain('HAVING SUM(e.amount) >=');
+      expect(sql).toContain('HAVING SUM(earnings_cents) >= $2');
+      expect(sql).toContain('UNION ALL');
+      expect(sql).toContain('tips');
       expect(params).toContain(60000);
+      // Third param is platformFeePercent from config (defaults to 15)
+      expect(params[2]).toBe(15);
     });
 
     it('returns an empty array when no workers are above the threshold', async () => {

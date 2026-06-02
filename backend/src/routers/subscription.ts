@@ -282,7 +282,34 @@ export const subscriptionRouter = router({
 
       if (config.stripe.secretKey && !config.stripe.secretKey.includes('placeholder')) {
         const stripe = new Stripe(config.stripe.secretKey, { apiVersion: '2025-11-17.clover' });
+
+        // Fetch user's stripe_customer_id for ownership verification
+        const userResult = await db.query<{ stripe_customer_id: string | null }>(
+          'SELECT stripe_customer_id FROM users WHERE id = $1',
+          [userId]
+        );
+
         const subscription = await stripe.subscriptions.retrieve(input.stripeSubscriptionId);
+
+        // Verify the subscription belongs to the calling user via metadata and customer
+        if (subscription.metadata.user_id !== userId) {
+          throw new TRPCError({
+            code: 'FORBIDDEN',
+            message: 'Subscription does not belong to this user',
+          });
+        }
+
+        const userStripeCustomerId = userResult.rows[0]?.stripe_customer_id;
+        const subscriptionCustomerId = typeof subscription.customer === 'string'
+          ? subscription.customer
+          : subscription.customer?.id;
+
+        if (userStripeCustomerId && subscriptionCustomerId && subscriptionCustomerId !== userStripeCustomerId) {
+          throw new TRPCError({
+            code: 'FORBIDDEN',
+            message: 'Subscription customer does not match this user',
+          });
+        }
 
         if (subscription.status !== 'active' && subscription.status !== 'trialing') {
           throw new TRPCError({

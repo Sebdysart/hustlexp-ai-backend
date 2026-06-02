@@ -5,21 +5,64 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+// serializableTransaction and transaction both run the callback with a txQuery
+// that delegates to db.query, so all query calls share the same mock queue.
+const { mockSerializableTransaction, mockTransaction } = vi.hoisted(() => {
+  const mockSerializableTransaction = vi.fn().mockImplementation(
+    async (fn: (txQuery: typeof import('../../src/db').db.query) => Promise<void>) => {
+      const { db: mockDb } = await import('../../src/db');
+      return fn(mockDb.query as typeof mockDb.query);
+    }
+  );
+  const mockTransaction = vi.fn().mockImplementation(
+    async (fn: (txQuery: typeof import('../../src/db').db.query) => Promise<void>) => {
+      const { db: mockDb } = await import('../../src/db');
+      return fn(mockDb.query as typeof mockDb.query);
+    }
+  );
+  return { mockSerializableTransaction, mockTransaction };
+});
+
 vi.mock('../../src/db', () => ({
-  db: { query: vi.fn() },
+  db: {
+    query: vi.fn(),
+    serializableTransaction: mockSerializableTransaction,
+    transaction: mockTransaction,
+  },
   isInvariantViolation: vi.fn(() => false),
   getErrorMessage: vi.fn((code: string) => `Error ${code}`),
 }));
 
+// Mock auth-cache so invalidateAuthCacheForUser doesn't make extra db.query calls
+vi.mock('../../src/auth-cache', () => ({
+  invalidateAuthCacheForUser: vi.fn().mockResolvedValue(undefined),
+  authCache: new Map(),
+  authCacheKey: vi.fn(),
+  authCacheGet: vi.fn().mockReturnValue(null),
+  authCacheSet: vi.fn(),
+}));
+
 vi.mock('../../src/logger', () => {
   const child = () => ({ warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() });
-  return { logger: { child }, aiLogger: { child } };
+  return { logger: { child }, aiLogger: { child }, authLogger: { child, warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() } };
 });
+
+vi.mock('../../src/auth/middleware', () => ({
+  revokeUserSessions: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock('../../src/realtime/connection-registry', () => ({
+  forceDisconnectUser: vi.fn(),
+}));
 
 vi.mock('../../src/services/AlphaInstrumentation', () => ({
   AlphaInstrumentation: {
     emitTrustDeltaApplied: vi.fn().mockResolvedValue(undefined),
   },
+}));
+
+vi.mock('../../src/lib/outbox-helpers', () => ({
+  writeToOutbox: vi.fn().mockResolvedValue({ id: 'outbox-1', idempotencyKey: 'key-1' }),
 }));
 
 import { TrustTierService, TrustTier } from '../../src/services/TrustTierService';
@@ -188,11 +231,13 @@ describe('TrustTierService.applyPromotion', () => {
   });
 
   it('throws when preconditions not met', async () => {
-    // getTrustTier for applyPromotion
+    // getTrustTier for applyPromotion (pre-flight)
     mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }], rowCount: 1 });
-    // evaluatePromotion -> getTrustTier
+    // serializableTransaction → txQuery: SELECT trust_tier FOR UPDATE
     mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }], rowCount: 1 });
-    // evaluatePromotion -> user details (missing verification)
+    // evaluatePromotion -> getTrustTier (inside transaction)
+    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }], rowCount: 1 });
+    // evaluatePromotion -> user details (missing verification — not eligible)
     mockQuery.mockResolvedValueOnce({
       rows: [{ is_verified: false, verified_at: null, phone: null, stripe_customer_id: null }],
       rowCount: 1,
@@ -204,25 +249,79 @@ describe('TrustTierService.applyPromotion', () => {
   });
 
   it('successfully promotes when eligible', async () => {
-    // getTrustTier for applyPromotion
+    // getTrustTier for applyPromotion (pre-flight)
     mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }], rowCount: 1 });
-    // evaluatePromotion -> getTrustTier
+    // serializableTransaction → txQuery: SELECT trust_tier FOR UPDATE
     mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }], rowCount: 1 });
-    // evaluatePromotion -> user details
+    // evaluatePromotion -> getTrustTier (inside transaction)
+    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }], rowCount: 1 });
+    // evaluatePromotion -> user details (inside transaction)
     mockQuery.mockResolvedValueOnce({
       rows: [{ is_verified: true, verified_at: new Date(), phone: '+1234', stripe_customer_id: 'cus_1' }],
       rowCount: 1,
     });
-    // UPDATE users SET trust_tier
-    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'u1', trust_tier: 2 }] });
+    // serializableTransaction → txQuery: UPDATE users SET trust_tier (CAS matched → rowCount=1)
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'u1', trust_tier: 2 }], rowCount: 1 });
+    // A59-2 FIX: SELECT firebase_uid FROM users for invalidateAuthCacheForUser
+    mockQuery.mockResolvedValueOnce({ rows: [{ firebase_uid: 'firebase-u1' }], rowCount: 1 });
     // INSERT trust_ledger
     mockQuery.mockResolvedValueOnce({ rows: [] });
-    // SELECT default_mode for instrumentation
+    // SELECT default_mode for AlphaInstrumentation
     mockQuery.mockResolvedValueOnce({ rows: [{ default_mode: 'worker' }] });
 
-    await expect(
-      TrustTierService.applyPromotion('u1', TrustTier.VERIFIED, 'system'),
-    ).resolves.toBeUndefined();
+    const result = await TrustTierService.applyPromotion('u1', TrustTier.VERIFIED, 'system');
+    expect(result).toEqual({ success: true });
+  });
+
+  it('returns alreadyApplied when concurrent promotion beats CAS', async () => {
+    // getTrustTier for applyPromotion (pre-flight)
+    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }], rowCount: 1 });
+    // serializableTransaction → txQuery: SELECT trust_tier FOR UPDATE
+    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }], rowCount: 1 });
+    // evaluatePromotion -> getTrustTier (inside transaction)
+    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }], rowCount: 1 });
+    // evaluatePromotion -> user details (inside transaction)
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ is_verified: true, verified_at: new Date(), phone: '+1234', stripe_customer_id: 'cus_1' }],
+      rowCount: 1,
+    });
+    // serializableTransaction → txQuery: UPDATE users SET trust_tier — rowCount=0: concurrent promotion already applied
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+
+    const result = await TrustTierService.applyPromotion('u1', TrustTier.VERIFIED, 'system');
+    expect(result).toEqual({ success: true, alreadyApplied: true });
+    // No further queries (trust_ledger, instrumentation) should be fired
+    expect(mockQuery).toHaveBeenCalledTimes(5);
+  });
+
+  it('A59-2: invalidateAuthCacheForUser is called with both userId AND firebaseUid on successful promotion', async () => {
+    const { invalidateAuthCacheForUser } = await import('../../src/auth-cache');
+    const mockInvalidate = vi.mocked(invalidateAuthCacheForUser);
+
+    // getTrustTier for applyPromotion (pre-flight)
+    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }], rowCount: 1 });
+    // serializableTransaction → txQuery: SELECT trust_tier FOR UPDATE
+    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }], rowCount: 1 });
+    // evaluatePromotion -> getTrustTier (inside transaction)
+    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }], rowCount: 1 });
+    // evaluatePromotion -> user details (inside transaction)
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ is_verified: true, verified_at: new Date(), phone: '+1234', stripe_customer_id: 'cus_1' }],
+      rowCount: 1,
+    });
+    // serializableTransaction → txQuery: UPDATE users SET trust_tier (CAS matched → rowCount=1)
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'u1', trust_tier: 2 }], rowCount: 1 });
+    // A59-2 FIX: SELECT firebase_uid FROM users
+    mockQuery.mockResolvedValueOnce({ rows: [{ firebase_uid: 'firebase-abc' }], rowCount: 1 });
+    // INSERT trust_ledger
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    // SELECT default_mode for AlphaInstrumentation
+    mockQuery.mockResolvedValueOnce({ rows: [{ default_mode: 'worker' }] });
+
+    await TrustTierService.applyPromotion('u1', TrustTier.VERIFIED, 'system');
+
+    // Must be called with both userId AND the firebaseUid fetched from DB
+    expect(mockInvalidate).toHaveBeenCalledWith('u1', 'firebase-abc');
   });
 });
 
@@ -230,12 +329,20 @@ describe('TrustTierService.applyPromotion', () => {
 // banUser
 // ============================================================================
 describe('TrustTierService.banUser', () => {
-  it('bans a normal user', async () => {
+  it('bans a normal user with no active tasks', async () => {
     // getTrustTier
     mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 2 }], rowCount: 1 });
     // UPDATE users SET trust_tier = BANNED
     mockQuery.mockResolvedValueOnce({ rows: [] });
-    // UPDATE tasks (cancel active)
+    // SELECT firebase_uid FROM users (for revokeUserSessions)
+    mockQuery.mockResolvedValueOnce({ rows: [{ firebase_uid: 'firebase-u1' }], rowCount: 1 });
+    // SELECT active tasks — none
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+    // UPDATE tasks (cancel worker-side active)
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    // SELECT poster funded escrows (BUG 3) — none
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+    // UPDATE tasks cancel poster OPEN tasks (BUG 3)
     mockQuery.mockResolvedValueOnce({ rows: [] });
     // SELECT default_mode for instrumentation
     mockQuery.mockResolvedValueOnce({ rows: [{ default_mode: 'hustler' }] });
@@ -256,12 +363,155 @@ describe('TrustTierService.banUser', () => {
   it('cancels active tasks on ban', async () => {
     mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 3 }], rowCount: 1 });
     mockQuery.mockResolvedValueOnce({ rows: [] }); // update users
-    mockQuery.mockResolvedValueOnce({ rows: [] }); // cancel tasks
+    mockQuery.mockResolvedValueOnce({ rows: [{ firebase_uid: 'firebase-u1' }], rowCount: 1 }); // SELECT firebase_uid
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // select active tasks — none
+    mockQuery.mockResolvedValueOnce({ rows: [] }); // cancel worker-side tasks UPDATE
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // SELECT poster funded escrows (BUG 3)
+    mockQuery.mockResolvedValueOnce({ rows: [] }); // cancel poster OPEN tasks (BUG 3)
     mockQuery.mockResolvedValueOnce({ rows: [{ default_mode: 'poster' }] }); // instrumentation
 
     await TrustTierService.banUser('u1', 'abuse');
-    // The third call should be the cancel tasks query
-    const cancelCall = mockQuery.mock.calls[2];
+    // The fifth call (index 4) should be the cancel worker-side tasks query
+    const cancelCall = mockQuery.mock.calls[4];
     expect(cancelCall[0]).toContain('CANCELLED');
+  });
+
+  it('emits escrow refund outbox events for funded escrows on active tasks', async () => {
+    const { writeToOutbox: mockWriteToOutbox } = await import('../../src/lib/outbox-helpers');
+    const mockWrite = mockWriteToOutbox as ReturnType<typeof vi.fn>;
+
+    // getTrustTier
+    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 2 }], rowCount: 1 });
+    // UPDATE users SET trust_tier = BANNED
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    // SELECT firebase_uid FROM users (for revokeUserSessions)
+    mockQuery.mockResolvedValueOnce({ rows: [{ firebase_uid: 'firebase-u1' }], rowCount: 1 });
+    // SELECT active tasks — one task with id 'task-1'
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'task-1' }], rowCount: 1 });
+    // SELECT escrow for task-1 — funded escrow exists
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'escrow-1' }], rowCount: 1 });
+    // UPDATE tasks (cancel worker-side active tasks)
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    // SELECT poster funded escrows (BUG 3) — none for this user
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+    // UPDATE tasks cancel poster OPEN tasks (BUG 3)
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    // SELECT default_mode for instrumentation
+    mockQuery.mockResolvedValueOnce({ rows: [{ default_mode: 'hustler' }] });
+
+    await TrustTierService.banUser('u1', 'fraud');
+
+    expect(mockWrite).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: 'escrow.refund_requested',
+        aggregateType: 'escrow',
+        aggregateId: 'escrow-1',
+        queueName: 'critical_payments',
+        idempotencyKey: 'ban_refund:task-1',
+        payload: expect.objectContaining({ escrowId: 'escrow-1', taskId: 'task-1', reason: 'worker_banned' }),
+      })
+    );
+  });
+
+  it('skips outbox event when active task has no funded escrow', async () => {
+    const { writeToOutbox: mockWriteToOutbox } = await import('../../src/lib/outbox-helpers');
+    const mockWrite = mockWriteToOutbox as ReturnType<typeof vi.fn>;
+    mockWrite.mockClear();
+
+    // getTrustTier
+    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 2 }], rowCount: 1 });
+    // UPDATE users SET trust_tier = BANNED
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    // SELECT firebase_uid FROM users (for revokeUserSessions)
+    mockQuery.mockResolvedValueOnce({ rows: [{ firebase_uid: 'firebase-u1' }], rowCount: 1 });
+    // SELECT active tasks — one task with id 'task-2'
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'task-2' }], rowCount: 1 });
+    // SELECT escrow for task-2 — no funded escrow
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+    // UPDATE tasks (cancel worker-side active tasks)
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    // SELECT poster funded escrows (BUG 3 fix) — none
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+    // UPDATE tasks cancel poster OPEN tasks (BUG 3 fix)
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    // SELECT default_mode for instrumentation
+    mockQuery.mockResolvedValueOnce({ rows: [{ default_mode: 'hustler' }] });
+
+    await TrustTierService.banUser('u1', 'fraud');
+
+    expect(mockWrite).not.toHaveBeenCalled();
+  });
+
+  it('enqueues poster escrow refund and cancels poster OPEN tasks on ban (BUG 3)', async () => {
+    const { writeToOutbox: mockWriteToOutbox } = await import('../../src/lib/outbox-helpers');
+    const mockWrite = mockWriteToOutbox as ReturnType<typeof vi.fn>;
+    mockWrite.mockClear();
+
+    // getTrustTier
+    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 2 }], rowCount: 1 });
+    // UPDATE users SET trust_tier = BANNED
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    // SELECT firebase_uid FROM users
+    mockQuery.mockResolvedValueOnce({ rows: [{ firebase_uid: 'firebase-poster' }], rowCount: 1 });
+    // SELECT worker active tasks — none for this test
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+    // UPDATE tasks cancel worker-side
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    // SELECT poster funded escrows — one funded escrow
+    mockQuery.mockResolvedValueOnce({ rows: [{ escrow_id: 'escrow-p1', task_id: 'task-p1' }], rowCount: 1 });
+    // UPDATE tasks cancel poster OPEN tasks
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    // SELECT default_mode for instrumentation
+    mockQuery.mockResolvedValueOnce({ rows: [{ default_mode: 'poster' }] });
+
+    await TrustTierService.banUser('poster-u1', 'fraud');
+
+    expect(mockWrite).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: 'escrow.refund_requested',
+        aggregateId: 'escrow-p1',
+        payload: expect.objectContaining({ escrowId: 'escrow-p1', taskId: 'task-p1', reason: 'poster_banned' }),
+        idempotencyKey: 'ban_poster_refund:task-p1',
+      })
+    );
+
+    // Verify poster cancel query was called
+    const cancelCall = mockQuery.mock.calls.find(
+      (call) => typeof call[0] === 'string' && call[0].includes("poster_id") && call[0].includes("CANCELLED")
+    );
+    expect(cancelCall).toBeDefined();
+  });
+
+  // A60-1: banUser must set is_banned = TRUE in addition to trust_tier = 9
+  it('A60-1: banUser UPDATE includes is_banned = TRUE', async () => {
+    // transaction -> SELECT trust_tier FOR UPDATE
+    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 2 }], rowCount: 1 });
+    // transaction -> UPDATE users SET trust_tier = BANNED (the call under test)
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+    // SELECT firebase_uid FROM users
+    mockQuery.mockResolvedValueOnce({ rows: [{ firebase_uid: 'firebase-u1' }], rowCount: 1 });
+    // SELECT active tasks — none
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+    // UPDATE tasks (cancel worker-side active)
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    // SELECT poster funded escrows — none
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+    // UPDATE tasks cancel poster active tasks
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    // SELECT default_mode for instrumentation
+    mockQuery.mockResolvedValueOnce({ rows: [{ default_mode: 'worker' }] });
+
+    await TrustTierService.banUser('u1', 'fraud');
+
+    // The UPDATE query that sets trust_tier = BANNED must also set is_banned = TRUE
+    const banUpdateCall = mockQuery.mock.calls.find(
+      (call) =>
+        typeof call[0] === 'string' &&
+        call[0].includes('UPDATE users') &&
+        call[0].includes('trust_tier') &&
+        (call[1] as unknown[])?.includes(9)
+    );
+    expect(banUpdateCall).toBeDefined();
+    expect(banUpdateCall![0]).toMatch(/is_banned\s*=\s*TRUE/i);
   });
 });

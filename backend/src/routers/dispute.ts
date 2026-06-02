@@ -22,6 +22,7 @@ import { router, protectedProcedure, Schemas } from '../trpc.js';
 import { DisputeService } from '../services/DisputeService.js';
 import { TaskService } from '../services/TaskService.js';
 import { EscrowService } from '../services/EscrowService.js';
+import { db } from '../db.js';
 
 export const disputeRouter = router({
   // --------------------------------------------------------------------------
@@ -58,11 +59,35 @@ export const disputeRouter = router({
 
       const task = taskResult.data;
 
+      // Early participant check — non-participants receive NOT_FOUND (not FORBIDDEN)
+      // so task existence and lifecycle state are not leaked to unrelated callers.
+      if (task.poster_id !== userId && task.worker_id !== userId) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
+      }
+
       // Validate that a worker is assigned — disputes require two parties.
       if (!task.worker_id) {
         throw new TRPCError({
           code: 'BAD_REQUEST',
           message: 'Cannot open dispute on task with no assigned worker',
+        });
+      }
+
+      // Early task-state validation — reject before any DB transaction is opened in the
+      // service, reducing unnecessary lock contention on the DB critical path.
+      // The service validates this too (INVALID_STATE), but this fast-path check avoids
+      // acquiring FOR UPDATE locks for clearly invalid states.
+      //
+      // BUG R-3 FIX: PROOF_SUBMITTED is a valid dispute state. A poster who disagrees
+      // with the submitted proof should be able to open a dispute at that point rather
+      // than being forced to wait until the task reaches COMPLETED. Without this,
+      // the poster's only option after an unacceptable proof submission was to reject
+      // it and hope the worker resubmits — there was no escalation path.
+      const validDisputeStates = ['COMPLETED', 'PROOF_SUBMITTED'];
+      if (!validDisputeStates.includes(task.state)) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'Disputes can only be opened for completed tasks or tasks with submitted proof',
         });
       }
 
@@ -72,6 +97,25 @@ export const disputeRouter = router({
         throw new TRPCError({
           code: 'PRECONDITION_FAILED',
           message: escrowResult.error.message ?? 'Task has no associated escrow — cannot open dispute',
+        });
+      }
+
+      // R-11: ADVISORY BEST-EFFORT CHECK ONLY — NOT a TOCTOU guard.
+      // This SELECT runs outside any transaction, so two concurrent requests can
+      // both read zero rows and both proceed to DisputeService.create(). The real
+      // duplicate-prevention guard is the FOR UPDATE lock inside
+      // DisputeService.create() (which locks both the task and escrow rows before
+      // inserting the dispute). This outer check is retained solely as a cheap
+      // fast-path to avoid entering the service transaction for obvious duplicates
+      // on non-concurrent traffic. Do NOT rely on it for correctness.
+      const existingDispute = await db.query<{ id: string }>(
+        `SELECT id FROM disputes WHERE task_id = $1 AND state NOT IN ('RESOLVED')`,
+        [task.id]
+      );
+      if ((existingDispute.rowCount ?? 0) > 0) {
+        throw new TRPCError({
+          code: 'CONFLICT',
+          message: 'A dispute already exists for this task',
         });
       }
 
@@ -184,9 +228,14 @@ export const disputeRouter = router({
    * Fetch all disputes for the current user (as poster or worker).
    */
   getMine: protectedProcedure
-    .input(z.void())
-    .query(async ({ ctx }) => {
-      const result = await DisputeService.getByUserId(ctx.user!.id);
+    .input(z.object({
+      limit: z.number().int().min(1).max(100).default(50),
+      offset: z.number().int().min(0).default(0),
+    }).optional())
+    .query(async ({ ctx, input }) => {
+      const limit = input?.limit ?? 50;
+      const offset = input?.offset ?? 0;
+      const result = await DisputeService.getByUserId(ctx.user!.id, limit, offset);
 
       if (!result.success) {
         throw new TRPCError({

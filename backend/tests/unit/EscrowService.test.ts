@@ -20,6 +20,7 @@ vi.mock('../../src/db', () => {
 
 vi.mock('../../src/logger', () => ({
   escrowLogger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+  stripeLogger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
   logger: { child: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }) },
 }));
 
@@ -74,8 +75,10 @@ describe('EscrowService', () => {
     it('should fund PENDING escrow', async () => {
       // fund() is now wrapped in db.transaction():
       //   1st query: SELECT state, version FOR UPDATE → lock row
-      //   2nd query: UPDATE escrows ... RETURNING *   → funded row
+      //   2nd query: cross-escrow PI dedup check → no conflict
+      //   3rd query: UPDATE escrows ... RETURNING *   → funded row
       (db.query as any).mockResolvedValueOnce({ rows: [{ state: 'PENDING', version: 0 }], rowCount: 1 });
+      (db.query as any).mockResolvedValueOnce({ rows: [], rowCount: 0 });
       (db.query as any).mockResolvedValueOnce({ rows: [{ id: 'e1', state: 'FUNDED' }], rowCount: 1 });
       const result = await EscrowService.fund({ escrowId: 'e1', stripePaymentIntentId: 'pi_123' });
       expect(result.success).toBe(true);
@@ -87,6 +90,7 @@ describe('EscrowService', () => {
       // FIX 3: refund() now pre-fetches task_id + worker_id before the UPDATE
       (db.query as any).mockResolvedValueOnce({ rows: [{ task_id: 'task-1' }], rowCount: 1 }); // SELECT task_id
       (db.query as any).mockResolvedValueOnce({ rows: [{ worker_id: null }], rowCount: 1 });   // SELECT worker_id (null = no clawback)
+      (db.query as any).mockResolvedValueOnce({ rows: [{ id: 'e1', version: 0, state: 'FUNDED' }], rowCount: 1 }); // F-05: T2 FOR UPDATE NOWAIT
       (db.query as any).mockResolvedValueOnce({ rows: [{ id: 'e1', state: 'REFUNDED' }], rowCount: 1 }); // UPDATE
       (db.query as any).mockResolvedValueOnce({ rowCount: 1 }); // logEscrowEvent
       const result = await EscrowService.refund({ escrowId: 'e1' });
@@ -99,6 +103,7 @@ describe('EscrowService', () => {
       // FIX 5: lockForDispute now does a window-check query first.
       // Return no rows so the window guard is skipped (no completed_at to check).
       (db.query as any).mockResolvedValueOnce({ rows: [], rowCount: 0 }); // window check
+      (db.query as any).mockResolvedValueOnce({ rows: [{ count: '0' }], rowCount: 1 }); // dup dispute check
       (db.query as any).mockResolvedValueOnce({ rows: [{ id: 'e1', state: 'LOCKED_DISPUTE' }], rowCount: 1 });
       const result = await EscrowService.lockForDispute('e1');
       expect(result.success).toBe(true);
@@ -145,12 +150,58 @@ describe('EscrowService', () => {
         'w-1',
         't-surge',
         'e-surge',
-        10200  // derived from escrow.amount=12000, NOT task.price=10000 (which would give 8500)
+        9960  // gross=12000, platformFee=15%=1800, netBeforeInsurance=10200, insurance=2% of gross=240, resolvedNet=9960
       );
 
       // XP = Math.round(12000 / 10) = 1200, NOT 1000 (which task.price/10 would give)
       expect(XPService.awardXP).toHaveBeenCalledWith(
         expect.objectContaining({ baseXP: 1200 })
+      );
+    });
+  });
+
+  describe('release — insurance contribution base (F54-2)', () => {
+    it('calculates insurance contribution from gross escrow amount, not net-of-platform-fee (F54-2)', async () => {
+      // Spec: insurance = 2% of task price (gross), not 2% of (gross - platformFee)
+      // gross=12000, platformFee=15%=1800, net-before-insurance=10200
+      // BUGGY:  insurance = 2% of 10200 = 204  → resolvedNet = 10200 - 204 = 9996
+      // CORRECT: insurance = 2% of 12000 = 240  → resolvedNet = 10200 - 240 = 9960
+      const { EarnedVerificationUnlockService } = await import('../../src/services/EarnedVerificationUnlockService');
+      const { XPService } = await import('../../src/services/XPService');
+
+      // Query 1: fetch escrow
+      (db.query as any).mockResolvedValueOnce({
+        rows: [{ id: 'e-ins', task_id: 't-ins', amount: 12000, state: 'FUNDED' }],
+        rowCount: 1,
+      });
+      // Query 2: fetch task
+      (db.query as any).mockResolvedValueOnce({
+        rows: [{ worker_id: 'w-ins', price: 12000 }],
+        rowCount: 1,
+      });
+      // Query 3: KYC check
+      (db.query as any).mockResolvedValueOnce({
+        rows: [{ payouts_enabled: true, stripe_connect_id: 'acct_ins', stripe_connect_status: 'active' }],
+        rowCount: 1,
+      });
+      // Query 4: UPDATE escrows SET state = 'RELEASED'
+      (db.query as any).mockResolvedValueOnce({
+        rows: [{ id: 'e-ins', task_id: 't-ins', amount: 12000, state: 'RELEASED' }],
+        rowCount: 1,
+      });
+
+      const result = await EscrowService.release({ escrowId: 'e-ins', stripeTransferId: 'tr_ins' });
+
+      expect(result.success).toBe(true);
+
+      // gross=12000, platformFee=15% of 12000=1800, netBeforeInsurance=10200
+      // insurance = 2% of gross=12000 = 240 (NOT 2% of 10200=204)
+      // resolvedNet = 10200 - 240 = 9960
+      expect(EarnedVerificationUnlockService.recordEarnings).toHaveBeenCalledWith(
+        'w-ins',
+        't-ins',
+        'e-ins',
+        9960  // 2% insurance on gross 12000 = 240; net = 10200 - 240 = 9960
       );
     });
   });

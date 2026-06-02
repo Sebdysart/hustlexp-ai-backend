@@ -19,6 +19,33 @@ import { getStreakStatus } from '../services/StreakService.js';
 import { z } from 'zod';
 import { firebaseAuth } from '../auth/firebase.js';
 
+const log = logger.child({ router: 'user' });
+
+// --------------------------------------------------------------------------
+// Avatar URL allowlist — mirrors isApprovedPhotoHost in messaging.ts
+// Only R2-hosted URLs are accepted to prevent SSRF / tracking-pixel attacks.
+// R2_PUBLIC_URL is read lazily inside the function so test environments can
+// set the env var without relying on module-load-time evaluation.
+// --------------------------------------------------------------------------
+function isApprovedAvatarHost(url: string): boolean {
+  try {
+    const { hostname } = new URL(url);
+    // Custom R2 public domain (configured via R2_PUBLIC_URL env var)
+    const r2Raw = process.env.R2_PUBLIC_URL || '';
+    if (r2Raw) {
+      try {
+        const r2Hostname = new URL(r2Raw).hostname;
+        if (hostname === r2Hostname) return true;
+      } catch { /* ignore malformed env var */ }
+    }
+    // Default Cloudflare R2 public URL pattern: pub-<hash>.r2.dev
+    if (/^pub-[a-f0-9]+\.r2\.dev$/.test(hostname)) return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 // --------------------------------------------------------------------------
 // Helper: Transform DB user row → iOS-compatible JSON
 // --------------------------------------------------------------------------
@@ -109,9 +136,12 @@ export const userRouter = router({
     .query(async ({ ctx }) => {
       const result = await getStreakStatus(ctx.user!.id);
       if (!result.success) {
+        // A-07 FIX: Log the real error server-side; return a generic message to the client
+        // to prevent DB column names or internal details from leaking.
+        log.error({ err: result.error, userId: ctx.user!.id }, '[user.getStreakStatus] service error');
         throw new TRPCError({
           code: result.error.code === 'NOT_FOUND' ? 'NOT_FOUND' : 'INTERNAL_SERVER_ERROR',
-          message: result.error.message,
+          message: result.error.code === 'NOT_FOUND' ? 'User not found' : 'Unable to fetch data. Please try again.',
         });
       }
       return result.data;
@@ -144,7 +174,7 @@ export const userRouter = router({
             created_at: Date;
           }>(
             `SELECT id, full_name, avatar_url, bio, trust_tier, xp_total, is_verified, default_mode, created_at
-             FROM users WHERE id = $1`,
+             FROM users WHERE id = $1 AND is_banned = false AND account_status NOT IN ('DELETED', 'SUSPENDED')`,
             [input.userId]
           );
           if (result.rows.length === 0) {
@@ -183,20 +213,29 @@ export const userRouter = router({
     }),
   
   /**
-   * Get XP history
+   * Get XP history (paginated)
+   * Default limit=50, max=100 to prevent DoS/OOM from unbounded queries.
    */
   xpHistory: protectedProcedure
-    .input(z.void())
-    .query(async ({ ctx }) => {
-      const result = await XPService.getHistory(ctx.user.id);
-      
+    .input(z.object({
+      limit: z.number().int().min(1).max(100).default(50),
+      offset: z.number().int().nonnegative().default(0),
+    }).optional())
+    .query(async ({ ctx, input }) => {
+      const limit = input?.limit ?? 50;
+      const offset = input?.offset ?? 0;
+      const result = await XPService.getHistory(ctx.user.id, limit, offset);
+
       if (!result.success) {
+        // A-07 FIX: Log the real error server-side; return a generic message to the client
+        // to prevent DB column names or internal details from leaking.
+        log.error({ err: result.error, userId: ctx.user.id }, '[user.xpHistory] service error');
         throw new TRPCError({
           code: 'INTERNAL_SERVER_ERROR',
-          message: result.error.message,
+          message: 'Unable to fetch data. Please try again.',
         });
       }
-      
+
       return result.data;
     }),
   
@@ -207,7 +246,7 @@ export const userRouter = router({
     .input(z.void())
     .query(async ({ ctx }) => {
       const result = await db.query(
-        `SELECT * FROM badges WHERE user_id = $1 ORDER BY awarded_at DESC`,
+        `SELECT * FROM badges WHERE user_id = $1 ORDER BY awarded_at DESC LIMIT 200`,
         [ctx.user.id]
       );
       
@@ -229,7 +268,7 @@ export const userRouter = router({
       idToken: z.string().min(1),
       firebaseUid: z.string().max(128),
       email: z.string().email().max(254),
-      fullName: z.string().min(1).max(255),
+      fullName: z.string().trim().min(1).max(255),
       // Accept "hustler", "worker", or "poster" from frontend
       defaultMode: z.string().max(20).default('worker'),
       // COPPA compliance: date of birth for age verification (AUDIT FIX)
@@ -246,7 +285,7 @@ export const userRouter = router({
       // --------------------------------------------------------------------------
       let decodedToken;
       try {
-        decodedToken = await firebaseAuth.verifyIdToken(input.idToken);
+        decodedToken = await firebaseAuth.verifyIdToken(input.idToken, true); // checkRevoked = true (explicit, not relying on default)
       } catch {
         throw new TRPCError({
           code: 'UNAUTHORIZED',
@@ -257,6 +296,20 @@ export const userRouter = router({
         throw new TRPCError({
           code: 'UNAUTHORIZED',
           message: 'Firebase ID token does not match the provided firebaseUid.',
+        });
+      }
+      // --------------------------------------------------------------------------
+      // R48-1 IDOR FIX: Cross-check input.email against Firebase token email.
+      // Without this, an attacker can supply their own valid Firebase token (for
+      // their UID) but a victim's email address, causing the OR-based SELECT below
+      // to return the victim's profile row and leak it to the attacker.
+      // Sign-in-with-Apple and some OAuth providers omit email from the token —
+      // fail-open for those cases (decodedToken.email is undefined/null).
+      // --------------------------------------------------------------------------
+      if (decodedToken.email && decodedToken.email.toLowerCase() !== input.email.toLowerCase()) {
+        throw new TRPCError({
+          code: 'FORBIDDEN',
+          message: 'Email address does not match the provided Firebase ID token.',
         });
       }
 
@@ -294,6 +347,10 @@ export const userRouter = router({
 
       // FIX 3: Ban evasion via new Firebase account — phone number cross-reference.
       // A banned user with phone A registering with email B is detected here.
+      // NOTE: Phone ban check only runs when phone is provided. A banned user can evade by
+      // re-registering without a phone number. Accepted mitigation: phone-less accounts
+      // receive trust_tier=0 which restricts access to high-value task categories.
+      // Product decision: phone requirement deferred post-beta.
       if (input.phone) {
         const bannedPhone = await db.query<{ id: string }>(
           `SELECT id FROM users WHERE phone = $1 AND is_banned = true`,
@@ -311,8 +368,15 @@ export const userRouter = router({
       // Also guard against the case where phone is omitted entirely (no phone check
       // above), by assigning trust_tier=0 (UNVERIFIED) so the account is restricted
       // until phone verification is completed.
+      // A58-2 FIX: The old condition `AND account_status != 'DELETED'` excluded ALL
+      // DELETED rows, which allowed a user who was banned AND GDPR-deleted to
+      // re-register with the same email. The corrected logic only excludes a DELETED
+      // row when it is NOT banned — a legitimately erased non-banned user. A row that
+      // is DELETED AND banned still triggers the FORBIDDEN guard.
       const bannedByEmail = await db.query<{ id: string }>(
-        `SELECT id FROM users WHERE email = $1 AND is_banned = true`,
+        `SELECT id FROM users WHERE email = $1
+          AND (is_banned = true OR account_status = 'SUSPENDED')
+          AND NOT (account_status = 'DELETED' AND is_banned = false)`,
         [input.email]
       );
       if (bannedByEmail.rows.length > 0) {
@@ -322,20 +386,47 @@ export const userRouter = router({
       // Normalize role: iOS sends "hustler" but DB stores "worker"
       const dbMode = normalizeRole(input.defaultMode);
 
+      // A64-1 FIX: When decodedToken.email is absent (anonymous, phone, or
+      // Sign-in-with-Apple auth), the email guard above was skipped. To prevent
+      // IDOR — an attacker supplying a victim's email with their own valid token —
+      // we only match by firebase_uid when the token has no email. Matching by
+      // email without a token-verified email would allow any anonymous-auth user
+      // to claim another user's profile just by knowing their email address.
       // Check if user already exists
-      const existing = await db.query<User>(
-        'SELECT * FROM users WHERE firebase_uid = $1 OR email = $2',
-        [input.firebaseUid, input.email]
-      );
+      const existing = decodedToken.email
+        ? await db.query<User>(
+            'SELECT * FROM users WHERE firebase_uid = $1 OR email = $2',
+            [input.firebaseUid, input.email]
+          )
+        : await db.query<User>(
+            'SELECT * FROM users WHERE firebase_uid = $1',
+            [input.firebaseUid]
+          );
 
       if (existing.rows.length > 0) {
         let existingUser: User | null = existing.rows[0];
 
-        // FIX 4: If the matched row is a GDPR-deleted account, treat it as
-        // non-existent and create a fresh account instead of returning the
-        // dead row. Without this check, re-using the same Firebase UID after
-        // GDPR deletion permanently locks the user into the anonymized account.
+        // BUG 3 FIX: A banned user who changes their Firebase email and
+        // re-registers is matched here by firebase_uid. Without this check,
+        // the router would return their banned profile via toMobileUser,
+        // effectively re-admitting the banned account.
+        if (existingUser.is_banned) {
+          throw new TRPCError({ code: 'FORBIDDEN', message: 'Account is banned' });
+        }
+
+        // A56-2: A suspended user must not be re-admitted via re-registration.
+        if (existingUser.account_status === 'SUSPENDED') {
+          throw new TRPCError({ code: 'FORBIDDEN', message: 'Account is suspended' });
+        }
+
+        // FIX 4: If the matched row is a GDPR-deleted account, delete it so
+        // the INSERT below can proceed with a fresh account. Without this
+        // deletion the ON CONFLICT (firebase_uid) DO NOTHING clause would
+        // still hit the constraint (same firebase_uid on the DELETED row) and
+        // return 0 rows — permanently blocking re-registration and leaking the
+        // anonymized profile back to the caller via the fallback SELECT.
         if (existingUser.account_status === 'DELETED') {
+          await db.query('DELETE FROM users WHERE id = $1', [existingUser.id]);
           existingUser = null;
         }
 
@@ -353,9 +444,38 @@ export const userRouter = router({
       const result = await db.query<User>(
         `INSERT INTO users (firebase_uid, email, full_name, default_mode, date_of_birth, is_minor, trust_tier)
          VALUES ($1, $2, $3, $4, $5, $6, $7)
+         ON CONFLICT (firebase_uid) DO NOTHING
          RETURNING *`,
         [input.firebaseUid, input.email, input.fullName, dbMode, input.dateOfBirth, age < 18, initialTrustTier]
       );
+
+      if (result.rows.length === 0) {
+        // Concurrent registration — another request inserted the same firebase_uid first.
+        // Fetch the row that won the race and return it.
+        const existing = await db.query<User>(
+          'SELECT * FROM users WHERE firebase_uid = $1',
+          [input.firebaseUid]
+        );
+        if (!existing.rows[0]) {
+          throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: 'Registration conflict — please retry' });
+        }
+        // A56-1: The winning concurrent request may have been a banned or suspended
+        // account. Guard against re-admitting such accounts via the conflict path.
+        // A63-1 FIX: Also guard against DELETED accounts — the concurrent winner
+        // may be a GDPR-deleted row. Returning a DELETED profile would expose
+        // anonymized data and block the caller from ever re-registering.
+        const winner = existing.rows[0];
+        if (winner.is_banned) {
+          throw new TRPCError({ code: 'FORBIDDEN', message: 'Account is banned' });
+        }
+        if (winner.account_status === 'SUSPENDED') {
+          throw new TRPCError({ code: 'FORBIDDEN', message: 'Account is suspended' });
+        }
+        if (winner.account_status === 'DELETED') {
+          throw new TRPCError({ code: 'FORBIDDEN', message: 'Account has been deleted' });
+        }
+        return await toMobileUser(winner);
+      }
 
       return await toMobileUser(result.rows[0]);
     }),
@@ -369,12 +489,12 @@ export const userRouter = router({
    */
   updateProfile: protectedProcedure
     .input(z.object({
-      fullName: z.string().min(1).max(255).optional(),
-      bio: z.string().max(500).optional(),
-      avatarUrl: z.string().url().max(2048).optional(),
-      phone: z.string().max(20).optional(),
+      fullName: z.string().trim().min(1).max(255).optional(),
+      bio: z.string().trim().max(500).optional(),
+      avatarUrl: z.string().url().max(2048).refine(isApprovedAvatarHost, { message: 'Avatar must be hosted on approved storage (R2 only)' }).optional(),
+      phone: z.string().trim().max(20).regex(/^[+\d\s\-().]{7,20}$/, 'Invalid phone number format').optional(),
       // Accept "hustler", "worker", or "poster" from frontend
-      defaultMode: z.string().max(20).optional(),
+      defaultMode: z.string().trim().max(20).optional(),
     }))
     .mutation(async ({ ctx, input }) => {
       const updates: string[] = [];
@@ -397,37 +517,10 @@ export const userRouter = router({
         updates.push(`phone = $${paramIndex++}`);
         values.push(input.phone);
       }
+      const isRoleSwitch = input.defaultMode !== undefined && normalizeRole(input.defaultMode) !== ctx.user.default_mode;
+
       if (input.defaultMode !== undefined) {
         const newMode = normalizeRole(input.defaultMode);
-        if (newMode !== ctx.user.default_mode) {
-          // Guard: no open tasks in current role before switching
-          // REG-11 FIX: EXPIRED is a terminal TaskState — include it here so expired
-          // tasks don't block role switching. REFUNDED is EscrowState, not TaskState —
-          // removed. Terminal TaskStates: COMPLETED, CANCELLED, EXPIRED.
-          // REG-13 FIX: Wrap in try/catch to sanitize DB errors before surfacing to caller.
-          let openTasksCount: number;
-          try {
-            const result = await db.query(
-              `SELECT COUNT(*) FROM tasks
-               WHERE (poster_id = $1 OR worker_id = $1)
-               AND state NOT IN ('COMPLETED', 'CANCELLED', 'EXPIRED')`,
-              [ctx.user.id]
-            );
-            openTasksCount = parseInt(result.rows[0].count, 10);
-          } catch (err) {
-            logger.error({ userId: ctx.user.id, err }, 'Failed to check open tasks for role switch');
-            throw new TRPCError({
-              code: 'INTERNAL_SERVER_ERROR',
-              message: 'Unable to verify account status. Please try again.',
-            });
-          }
-          if (openTasksCount > 0) {
-            throw new TRPCError({
-              code: 'PRECONDITION_FAILED',
-              message: 'Cannot switch role while you have active tasks. Complete or cancel all tasks first.',
-            });
-          }
-        }
         updates.push(`default_mode = $${paramIndex++}`);
         // Normalize: iOS sends "hustler" but DB stores "worker"
         values.push(newMode);
@@ -440,16 +533,52 @@ export const userRouter = router({
       updates.push(`updated_at = NOW()`);
       values.push(ctx.user.id);
 
-      const result = await db.query<User>(
-        `UPDATE users SET ${updates.join(', ')} WHERE id = $${paramIndex} RETURNING *`,
-        values
-      );
+      // T53-2 FIX: When switching roles, wrap the open-task COUNT check and
+      // the user UPDATE in a single SERIALIZABLE transaction so that no new task
+      // assignment can sneak in between the check and the write (TOCTOU race).
+      // Non-role-switch updates use a plain query — no locking needed.
+      let updatedUser: User;
+      if (isRoleSwitch) {
+        updatedUser = await db.serializableTransaction(async (txQuery) => {
+          // REG-11 FIX: EXPIRED is terminal — include it so expired tasks don't
+          // block role switching. Terminal TaskStates: COMPLETED, CANCELLED, EXPIRED.
+          const countResult = await txQuery<{ count: string }>(
+            `SELECT COUNT(*) FROM tasks
+             WHERE (poster_id = $1 OR worker_id = $1)
+             AND state NOT IN ('COMPLETED', 'CANCELLED', 'EXPIRED')`,
+            [ctx.user.id]
+          );
+          const openTasksCount = parseInt(countResult.rows[0].count, 10);
+          if (openTasksCount > 0) {
+            throw new TRPCError({
+              code: 'PRECONDITION_FAILED',
+              message: 'Cannot switch role while you have active tasks. Complete or cancel all tasks first.',
+            });
+          }
+          const result = await txQuery<User>(
+            `UPDATE users SET ${updates.join(', ')} WHERE id = $${paramIndex} RETURNING *`,
+            values
+          );
+          return result.rows[0];
+        });
+      } else {
+        const result = await db.query<User>(
+          `UPDATE users SET ${updates.join(', ')} WHERE id = $${paramIndex} RETURNING *`,
+          values
+        );
+        updatedUser = result.rows[0];
+      }
+
       await invalidateUser(ctx.user.id);
       // SEC-FIX: Evict the in-process auth token cache so the new default_mode
       // is enforced immediately rather than after the 5-minute TTL expires.
       // This matches the pattern used by ban, GDPR deletion, and trust-tier changes.
-      invalidateAuthCacheForUser(ctx.user.id);
-      return await toMobileUser(result.rows[0]);
+      // BUG GG3 FIX: await the call (was fire-and-forget) so Redis errors surface.
+      // A58-1 FIX: Pass writeRevocationMarker=false so a normal profile update does
+      // NOT write a Redis auth:revoked:<uid> key (which would force 12 minutes of
+      // Firebase re-verification for ordinary users).
+      await invalidateAuthCacheForUser(ctx.user.id, undefined, false);
+      return await toMobileUser(updatedUser);
     }),
   
   /**
@@ -498,7 +627,7 @@ export const userRouter = router({
       roleConfidenceWorker: z.number().min(0).max(1),
       roleConfidencePoster: z.number().min(0).max(1),
       roleCertaintyTier: z.enum(['STRONG', 'MODERATE', 'WEAK']),
-      inconsistencyFlags: z.array(z.string().max(100)).max(20).optional(),
+      inconsistencyFlags: z.array(z.string().trim().max(100)).max(20).optional(),
     }))
     .mutation(async ({ ctx, input }) => {
       const result = await db.query<User>(

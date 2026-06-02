@@ -41,21 +41,33 @@ export async function processInstantMatchingJob(
   job: Job<InstantMatchingJobData>
 ): Promise<void> {
   // HMAC signature verification (Attack 12 — Redis injection defence)
-  // task.instant_matching_started jobs dispatched via the outbox carry a _sig field
-  // inside job.data.payload. Verify it when present.
+  // task.instant_matching_started jobs dispatched via the outbox MUST carry a _sig field
+  // inside job.data.payload. The check is mandatory — jobs without a signature are
+  // rejected outright to prevent unsigned payloads injected directly into Redis
+  // (bypassing the outbox) from executing with elevated trust.
   const outerPayload = (job.data as Record<string, unknown>).payload;
-  if (outerPayload && typeof outerPayload === 'object') {
-    const p = outerPayload as Record<string, unknown>;
-    if ('_sig' in p) {
-      const { _sig, ...payloadWithoutSig } = p;
-      if (!verifyJobSignature(payloadWithoutSig, _sig as string)) {
-        log.error({ jobId: job.id }, 'Job signature verification failed — possible Redis injection attack');
-        throw new Error('JOB_SIGNATURE_INVALID: Payload signature verification failed');
-      }
-    }
+  // A50-1 FIX: Fail-closed HMAC guard. Any job that arrives without a valid
+  // object payload is rejected immediately — the previous conditional silently
+  // skipped the entire HMAC block (including the R49 mandatory-sig throw) when
+  // outerPayload was null/undefined/non-object, leaving an unsigned-injection
+  // bypass open for malformed jobs.
+  if (!outerPayload || typeof outerPayload !== 'object') {
+    log.error({ jobId: job.id }, 'Job payload is missing or not an object — rejecting for security');
+    throw new Error('Invalid job payload — job rejected for security');
+  }
+  const p = outerPayload as Record<string, unknown>;
+  // A49-3 FIX: Signature is now mandatory. Missing or empty _sig rejects the job.
+  if (!('_sig' in p) || !p._sig) {
+    log.error({ jobId: job.id }, 'Job is missing required HMAC signature — rejecting for security');
+    throw new Error('Missing job signature — job rejected for security');
+  }
+  const { _sig, ...payloadWithoutSig } = p;
+  if (!verifyJobSignature(payloadWithoutSig, _sig as string)) {
+    log.error({ jobId: job.id }, 'Job signature verification failed — possible Redis injection attack');
+    throw new Error('JOB_SIGNATURE_INVALID: Payload signature verification failed');
   }
 
-  const { taskId, location, riskLevel } = job.data;
+  const { taskId, location, riskLevel } = (job.data as Record<string, unknown>).payload as InstantMatchingJobData;
   const startTime = Date.now();
 
   try {
@@ -101,12 +113,8 @@ export async function processInstantMatchingJob(
   // Trust tier enforcement: only hustlers with trust_tier >= minTrustTier can accept Instant tasks
   // v1: Broadcast to all eligible hustlers. v2 will add location-based filtering.
   
-  // Get task risk level for eligibility filtering
-  const taskRiskResult = await db.query<{ risk_level: string }>(
-    `SELECT risk_level FROM tasks WHERE id = $1`,
-    [taskId]
-  );
-  const taskRiskLevel = taskRiskResult.rows[0]?.risk_level || 'LOW';
+  // Get task risk level for eligibility filtering (already fetched above)
+  const taskRiskLevel = task.risk_level || 'LOW';
   
   // Map risk level to required trust tier
   // TIER_0/1 → VERIFIED (1), TIER_2 → IN_HOME (3), TIER_3 → BLOCKED
@@ -162,7 +170,7 @@ export async function processInstantMatchingJob(
         location,
         riskLevel,
       },
-      queueName: 'critical_payments', // High priority for instant tasks
+      queueName: 'user_notifications', // Notifications are not financial — must not block critical_payments (concurrency:1)
     });
   }
 

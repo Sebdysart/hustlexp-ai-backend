@@ -212,8 +212,8 @@ describe('CACHE_TTL', () => {
     expect(CACHE_TTL.aiCache).toBe(24 * 60 * 60);
   });
 
-  it('sessionToken TTL is 7 days in seconds', () => {
-    expect(CACHE_TTL.sessionToken).toBe(7 * 24 * 60 * 60);
+  it('sessionToken TTL is 5 minutes (300 seconds)', () => {
+    expect(CACHE_TTL.sessionToken).toBe(300);
   });
 });
 
@@ -286,9 +286,16 @@ describe('set', () => {
     expect(mockRedisSet).toHaveBeenCalledWith('count-key', 999);
   });
 
-  it('does not throw on Redis error', async () => {
+  it('does not throw on Redis error in development (non-production)', async () => {
+    mockConfig.app.isProduction = false;
     mockRedisSet.mockRejectedValue(new Error('set failed'));
     await expect(set('err-key', 'val')).resolves.toBeUndefined();
+  });
+
+  it('re-throws on Redis error in production so callers can detect write failures', async () => {
+    mockConfig.app.isProduction = true;
+    mockRedisSet.mockRejectedValue(new Error('set failed in prod'));
+    await expect(set('err-key', 'val')).rejects.toThrow('set failed in prod');
   });
 });
 
@@ -302,9 +309,9 @@ describe('del', () => {
     expect(mockRedisDel).toHaveBeenCalledWith('delete-me');
   });
 
-  it('does not throw on Redis error', async () => {
+  it('re-throws on Redis error so callers can handle fail-closed', async () => {
     mockRedisDel.mockRejectedValue(new Error('del failed'));
-    await expect(del('bad-del-key')).resolves.toBeUndefined();
+    await expect(del('bad-del-key')).rejects.toThrow('del failed');
   });
 });
 

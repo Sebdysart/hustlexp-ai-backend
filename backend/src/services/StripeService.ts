@@ -20,6 +20,7 @@ import { db } from '../db.js';
 import type { ServiceResult } from '../types.js';
 import { stripeBreaker } from '../middleware/circuit-breaker.js';
 import { stripeLogger } from '../logger.js';
+import { notifyAdmins } from './AdminNotificationHelper.js';
 
 // ============================================================================
 // INITIALIZATION
@@ -43,6 +44,7 @@ if (config.stripe.secretKey && !config.stripe.secretKey.includes('placeholder'))
 interface CreatePaymentIntentParams {
   taskId: string;
   posterId: string;
+  escrowId: string;
   amount: number; // USD cents
   description?: string;
 }
@@ -60,6 +62,13 @@ interface CreateTransferParams {
   workerStripeAccountId: string;
   amount: number; // USD cents
   description?: string;
+  /** Optional suffix appended to the Stripe idempotency key.
+   * Use distinct suffixes when different callers issue transfers for the same
+   * escrow with different amounts (e.g. EscrowService.partialRefund vs
+   * escrow-action-worker.handlePartialRefundRequest) so Stripe does not
+   * mask a real duplicate as an idempotent replay.
+   */
+  idempotencyKeySuffix?: string;
 }
 
 interface CreateTransferResult {
@@ -72,6 +81,8 @@ interface CreateRefundParams {
   escrowId: string; // P0: Required for metadata correlation
   amount?: number; // USD cents, optional for partial refund
   reason?: 'duplicate' | 'fraudulent' | 'requested_by_customer';
+  /** Optional suffix appended to idempotency key to distinguish callers that share the same paymentIntentId+amount */
+  idempotencyKeySuffix?: string;
 }
 
 interface CreateRefundResult {
@@ -92,30 +103,22 @@ interface WebhookEvent {
 // ============================================================================
 
 /**
- * Check if Stripe event already processed
+ * Atomically claim a Stripe event for processing.
+ * Returns true if this caller won the INSERT race (event not yet processed),
+ * false if another worker already claimed it (ON CONFLICT → 0 rows returned).
  */
-async function isEventProcessed(eventId: string): Promise<boolean> {
-  const result = await db.query(
-    'SELECT id FROM processed_stripe_events WHERE event_id = $1',
-    [eventId]
-  );
-  return result.rows.length > 0;
-}
-
-/**
- * Mark Stripe event as processed
- */
-async function markEventProcessed(
+async function markEventProcessedAtomic(
   eventId: string,
   eventType: string,
   objectId: string
-): Promise<void> {
-  await db.query(
+): Promise<boolean> {
+  const result = await db.query(
     `INSERT INTO processed_stripe_events (event_id, event_type, object_id)
      VALUES ($1, $2, $3)
      ON CONFLICT (event_id) DO NOTHING`,
     [eventId, eventType, objectId]
   );
+  return (result.rowCount ?? 0) === 1;
 }
 
 // ============================================================================
@@ -144,7 +147,7 @@ export const StripeService = {
       };
     }
 
-    const { taskId, posterId, amount, description } = params;
+    const { taskId, posterId, escrowId, amount, description } = params;
 
     // PRODUCT_SPEC §9: Minimum task value $5.00 (500 cents)
     if (amount < config.stripe.minimumTaskValueCents) {
@@ -188,7 +191,7 @@ export const StripeService = {
           },
           description: description || `HustleXP Task ${taskId}`,
         },
-        { idempotencyKey: `pi_create_${taskId}` }
+        { idempotencyKey: `pi_create_${escrowId}` }
       ));
 
       return {
@@ -214,10 +217,15 @@ export const StripeService = {
    * Create payment intent for XP tax payments.
    * Unlike escrow funding, tax payments have no minimum task value
    * (Stripe minimum is 50 cents).
+   *
+   * @param timestamp - A per-call Unix ms timestamp (pass Date.now()). Included
+   * in the Stripe idempotency key to prevent key collisions when the same user
+   * owes the same tax amount twice within Stripe's 24-hour idempotency window.
    */
   createTaxPaymentIntent: async (
     userId: string,
     amountCents: number,
+    timestamp: number,
   ): Promise<ServiceResult<CreatePaymentIntentResult>> => {
     if (!stripe) {
       return {
@@ -244,7 +252,7 @@ export const StripeService = {
           user_id: userId,
         },
         description: `HustleXP XP Tax Payment`,
-      }));
+      }, { idempotencyKey: `xp_tax_pi_${userId}_${amountCents}_${timestamp}` }));
 
       return {
         success: true,
@@ -306,10 +314,10 @@ export const StripeService = {
   createTransfer: async (
     params: CreateTransferParams
   ): Promise<ServiceResult<CreateTransferResult>> => {
-    const { escrowId, workerId, workerStripeAccountId, amount, description } = params;
+    const { escrowId, workerId, workerStripeAccountId, amount, description, idempotencyKeySuffix } = params;
 
-    // Stripe stubbing for tests (Evil Test A)
-    if (process.env.HX_STRIPE_STUB === '1') {
+    // Stripe stubbing for tests (Evil Test A) — never active in production
+    if (process.env.HX_STRIPE_STUB === '1' && process.env.NODE_ENV !== 'production') {
       const crypto = await import('crypto');
       return {
         success: true,
@@ -331,16 +339,31 @@ export const StripeService = {
     }
 
     try {
-      const transfer = await stripeBreaker.execute(() => stripe!.transfers.create({
-        amount,
-        currency: 'usd',
-        destination: workerStripeAccountId,
-        metadata: {
-          escrow_id: escrowId,
-          worker_id: workerId,
+      // BUG 7 FIX: Include idempotencyKeySuffix in the key so that callers with
+      // different roles (EscrowService.partialRefund vs escrow-action-worker) produce
+      // distinct keys for the same escrow. Without distinct keys, Stripe would treat
+      // the second call as an idempotent replay of the first, masking a real duplicate
+      // that sends two transfers for different amounts to the same worker.
+      // F-29: Also include the last 8 chars of the destination account so that a
+      // transfer to a different worker for the same escrow+amount is never treated
+      // as an idempotent replay of a prior transfer to a different account.
+      const destSuffix = workerStripeAccountId ? `_${workerStripeAccountId.slice(-8)}` : '';
+      const idempotencyKey = idempotencyKeySuffix
+        ? `tr_create_${escrowId}_${amount}${destSuffix}_${idempotencyKeySuffix}`
+        : `tr_create_${escrowId}_${amount}${destSuffix}`;
+      const transfer = await stripeBreaker.execute(() => stripe!.transfers.create(
+        {
+          amount,
+          currency: 'usd',
+          destination: workerStripeAccountId,
+          metadata: {
+            escrow_id: escrowId,
+            worker_id: workerId,
+          },
+          description: description || `HustleXP Payout ${escrowId}`,
         },
-        description: description || `HustleXP Payout ${escrowId}`,
-      }));
+        { idempotencyKey }
+      ));
 
       return {
         success: true,
@@ -366,10 +389,10 @@ export const StripeService = {
   createRefund: async (
     params: CreateRefundParams
   ): Promise<ServiceResult<CreateRefundResult>> => {
-    const { paymentIntentId, escrowId, amount, reason } = params;
+    const { paymentIntentId, escrowId, amount, reason, idempotencyKeySuffix } = params;
 
-    // Stripe stubbing for tests (Evil Test A)
-    if (process.env.HX_STRIPE_STUB === '1') {
+    // Stripe stubbing for tests (Evil Test A) — never active in production
+    if (process.env.HX_STRIPE_STUB === '1' && process.env.NODE_ENV !== 'production') {
       const crypto = await import('crypto');
       return {
         success: true,
@@ -392,15 +415,22 @@ export const StripeService = {
     }
 
     try {
-      const refund = await stripeBreaker.execute(() => stripe!.refunds.create({
-        payment_intent: paymentIntentId,
-        amount, // undefined = full refund
-        reason,
-        metadata: {
-          escrow_id: escrowId,
-          payment_intent_id: paymentIntentId,
+      const idempotencyKey = idempotencyKeySuffix
+        ? `re_create_${paymentIntentId}_${amount ?? 'full'}_${idempotencyKeySuffix}`
+        : `re_create_${paymentIntentId}_${amount ?? 'full'}`;
+
+      const refund = await stripeBreaker.execute(() => stripe!.refunds.create(
+        {
+          payment_intent: paymentIntentId,
+          amount, // undefined = full refund
+          reason,
+          metadata: {
+            escrow_id: escrowId,
+            payment_intent_id: paymentIntentId,
+          },
         },
-      }));
+        { idempotencyKey }
+      ));
 
       return {
         success: true,
@@ -411,6 +441,74 @@ export const StripeService = {
         },
       };
     } catch (error) {
+      return {
+        success: false,
+        error: {
+          code: 'STRIPE_ERROR',
+          message: error instanceof Error ? error.message : 'Unknown Stripe error',
+        },
+      };
+    }
+  },
+
+  /**
+   * Cancel a Stripe refund (best-effort double-spend recovery).
+   * Stripe only allows cancellation of refunds in 'pending' state.
+   * Returns success=true if cancelled or already in a terminal state that is not 'failed'.
+   */
+  cancelRefund: async (refundId: string): Promise<ServiceResult<{ refundId: string; status: string }>> => {
+    if (!stripe) {
+      return {
+        success: false,
+        error: { code: 'STRIPE_NOT_CONFIGURED', message: 'Stripe is not configured' },
+      };
+    }
+
+    try {
+      const cancelled = await stripeBreaker.execute(() => stripe!.refunds.cancel(refundId));
+      return { success: true, data: { refundId: cancelled.id, status: cancelled.status ?? 'cancelled' } };
+    } catch (error) {
+      return {
+        success: false,
+        error: {
+          code: 'STRIPE_ERROR',
+          message: error instanceof Error ? error.message : 'Unknown Stripe error',
+        },
+      };
+    }
+  },
+
+  /**
+   * Reverse a Stripe transfer (used when a dispute reverses a previously-released escrow).
+   * Idempotent: if the reversal already exists (resource_already_exists), resolves successfully.
+   */
+  createTransferReversal: async (
+    transferId: string,
+    escrowId: string,
+  ): Promise<ServiceResult<{ reversalId: string }>> => {
+    if (!stripe) {
+      return {
+        success: false,
+        error: {
+          code: 'STRIPE_NOT_CONFIGURED',
+          message: 'Stripe is not configured',
+        },
+      };
+    }
+
+    const idempotencyKey = `tr_reversal_${escrowId}`;
+
+    try {
+      const reversal = await stripeBreaker.execute(() =>
+        stripe!.transfers.createReversal(transferId, {}, { idempotencyKey })
+      );
+      return { success: true, data: { reversalId: reversal.id } };
+    } catch (error) {
+      const stripeCode = (error as Error & { code?: string }).code;
+      if (stripeCode === 'resource_already_exists') {
+        // Reversal already issued on a prior attempt — safe to continue
+        return { success: true, data: { reversalId: 'already_reversed' } };
+      }
       return {
         success: false,
         error: {
@@ -479,16 +577,54 @@ export const StripeService = {
     objectId: string,
     handler: () => Promise<void>
   ): Promise<ServiceResult<void>> => {
-    // Check idempotency
-    if (await isEventProcessed(eventId)) {
+    // Atomically claim the event — INSERT first, process only if we won the race.
+    // This eliminates the TOCTOU window between isEventProcessed (SELECT) and
+    // markEventProcessed (INSERT): two concurrent deliveries both attempting the
+    // INSERT will have exactly one succeed (rowCount === 1) and one be silently
+    // ignored by ON CONFLICT DO NOTHING. Only the winner proceeds to call handler().
+    const claimed = await markEventProcessedAtomic(eventId, eventType, objectId);
+    if (!claimed) {
+      stripeLogger.info({ eventId }, 'Webhook event already processed, skipping');
       return { success: true, data: undefined };
     }
 
     try {
       await handler();
-      await markEventProcessed(eventId, eventType, objectId);
       return { success: true, data: undefined };
     } catch (error) {
+      // Roll back the idempotency row so Stripe's retry delivery can re-claim
+      // the event.  Without this DELETE, the INSERT above is already committed;
+      // the next delivery attempt sees the existing row, returns claimed=false,
+      // and skips the event permanently — causing silent data loss.
+      try {
+        await db.query(
+          'DELETE FROM processed_stripe_events WHERE event_id = $1',
+          [eventId]
+        );
+        stripeLogger.warn({ eventId }, 'Handler failed — rolled back idempotency row so retry can re-claim');
+      } catch (deleteError) {
+        // BUG 7 FIX: The DELETE failed, meaning the idempotency row is permanently stuck.
+        // Stripe's next retry delivery will see the existing row, return claimed=false, and
+        // skip the event — causing silent permanent data loss. Alert ops immediately.
+        stripeLogger.error(
+          { err: deleteError instanceof Error ? deleteError.message : String(deleteError), eventId },
+          '[stripe-webhook] PERMANENT: Failed to delete idempotency row — this Stripe event will never be retried. Manual intervention required.'
+        );
+        try {
+          await notifyAdmins({
+            title: 'Stripe Event Permanently Stuck',
+            body: `Stripe event ${eventId} is permanently stuck — idempotency row deletion failed. Manual DB intervention required.`,
+            deepLink: `/admin/stripe-events/${eventId}`,
+            priority: 'CRITICAL',
+            metadata: { event_id: eventId, delete_error: deleteError instanceof Error ? deleteError.message : String(deleteError) },
+          });
+        } catch (notifyError) {
+          stripeLogger.error(
+            { err: notifyError instanceof Error ? notifyError.message : String(notifyError), eventId },
+            '[stripe-webhook] Failed to notify admins of stuck event — check both DB and notification service'
+          );
+        }
+      }
       return {
         success: false,
         error: {

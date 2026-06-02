@@ -41,9 +41,11 @@ vi.mock('../../src/services/GeofenceService', () => ({
 // Imports
 // ---------------------------------------------------------------------------
 
+import { db } from '../../src/db';
 import { geofenceRouter } from '../../src/routers/geofence';
 import { GeofenceService } from '../../src/services/GeofenceService';
 
+const mockDb = vi.mocked(db);
 const mockService = vi.mocked(GeofenceService);
 
 // ---------------------------------------------------------------------------
@@ -68,6 +70,8 @@ describe('geofence.checkProximity', () => {
 
   it('checks proximity for a task', async () => {
     const result_ = { withinRadius: true, distanceMeters: 50 };
+    // Participant check: caller is worker_id
+    mockDb.query.mockResolvedValueOnce({ rows: [{ poster_id: 'other-uid', worker_id: 'test-uid' }], rowCount: 1 } as any);
     mockService.checkProximity.mockResolvedValueOnce(result_ as any);
 
     const result = await makeCaller().checkProximity({
@@ -103,6 +107,7 @@ describe('geofence.getTaskEvents', () => {
       { type: 'check_in', timestamp: new Date().toISOString() },
       { type: 'check_out', timestamp: new Date().toISOString() },
     ];
+    mockDb.query.mockResolvedValueOnce({ rows: [{ poster_id: 'test-uid', worker_id: 'test-uid' }], rowCount: 1 } as any);
     mockService.getTaskEvents.mockResolvedValueOnce(events as any);
 
     const result = await makeCaller().getTaskEvents({ taskId: TEST_UUID });
@@ -117,6 +122,8 @@ describe('geofence.verifyPresence', () => {
 
   it('verifies presence during task', async () => {
     const presence = { verified: true, durationMinutes: 45 };
+    // Participant check: caller is poster_id
+    mockDb.query.mockResolvedValueOnce({ rows: [{ poster_id: 'test-uid', worker_id: 'other-uid' }], rowCount: 1 } as any);
     mockService.verifyPresenceDuringTask.mockResolvedValueOnce(presence as any);
 
     const result = await makeCaller().verifyPresence({ taskId: TEST_UUID });

@@ -20,15 +20,22 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // ALL vi.mock CALLS MUST BE BEFORE ANY IMPORTS
 // ============================================================================
 
-vi.mock('../../src/db', () => ({
-  db: {
-    query: vi.fn(),
-    readQuery: vi.fn(),
-  },
-  isInvariantViolation: vi.fn(() => false),
-  isUniqueViolation: vi.fn(() => false),
-  getErrorMessage: vi.fn((code: string) => `Error ${code}`),
-}));
+vi.mock('../../src/db', () => {
+  const queryFn = vi.fn();
+  return {
+    db: {
+      query: queryFn,
+      readQuery: vi.fn(),
+      // serializableTransaction calls the callback with the same query spy so
+      // mockResolvedValueOnce sequences set on mockDb.query work seamlessly
+      // inside transaction callbacks (mirrors EscrowService.test.ts pattern).
+      serializableTransaction: vi.fn((fn: (q: typeof queryFn) => Promise<unknown>) => fn(queryFn)),
+    },
+    isInvariantViolation: vi.fn(() => false),
+    isUniqueViolation: vi.fn(() => false),
+    getErrorMessage: vi.fn((code: string) => `Error ${code}`),
+  };
+});
 
 vi.mock('../../src/logger', () => ({
   logger: {
@@ -117,7 +124,18 @@ const mockStripe = vi.mocked(StripeService);
 const mockIsInvariantViolation = vi.mocked(isInvariantViolation);
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  // resetAllMocks clears both call history AND once-queues, preventing mock
+  // bleed across tests when a previous test fails before consuming all its
+  // queued mockResolvedValueOnce / mockRejectedValueOnce responses.
+  vi.resetAllMocks();
+  // Re-apply default implementations that were wiped by resetAllMocks.
+  vi.mocked(isInvariantViolation).mockReturnValue(false);
+  // isEligible is the default for feed tests — all tasks eligible unless overridden.
+  mockIsEligible.mockReturnValue({ eligible: true, code: 'HX200', reasons: [] });
+  // Stripe configured by default so payTax tests hit the verification path.
+  mockStripe.isConfigured.mockReturnValue(true);
+  // AIClient not configured by default (avoids real AI calls).
+  mockAIClient.isConfigured.mockReturnValue(false);
 });
 
 // ============================================================================
@@ -1285,10 +1303,19 @@ describe('XPTaxService.payTax', () => {
 
 describe('XPTaxService.adminForgiveTax', () => {
   it('forgives unpaid taxes and logs admin action', async () => {
+    // F58-2 FIX: adminForgiveTax now first SELECTs the XP sum, then (if > 0)
+    // credits users.xp_total, then marks ledger rows paid, then resets summary.
+    // Updated mock sequence (all inside serializableTransaction + admin_actions outside):
+    // 1. SELECT SUM(gross_payout_cents/10) → total_xp to credit
+    // 2. UPDATE users SET xp_total = xp_total + N  (skipped when total_xp = 0)
+    // 3. UPDATE xp_tax_ledger SET tax_paid = TRUE
+    // 4. UPDATE user_xp_tax_status SET total_unpaid_tax_cents = 0
+    // 5. INSERT admin_actions (fire-and-forget, outside transaction)
     mockDb.query
-      .mockResolvedValueOnce({ rows: [], rowCount: 5 })   // UPDATE xp_tax_ledger
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 })   // UPDATE user_xp_tax_status
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 });  // INSERT admin_actions
+      .mockResolvedValueOnce({ rows: [{ total_xp: 0 }], rowCount: 1 })  // SELECT SUM (F58-2) — 0 so no UPDATE users
+      .mockResolvedValueOnce({ rows: [], rowCount: 5 })                   // UPDATE xp_tax_ledger
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 })                   // UPDATE user_xp_tax_status
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 });                  // INSERT admin_actions
 
     const result = await XPTaxService.adminForgiveTax(
       'user-1',

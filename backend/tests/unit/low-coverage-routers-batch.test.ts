@@ -841,7 +841,9 @@ describe('instantRouter', () => {
   // ---- metrics -------------------------------------------------------------
 
   describe('metrics', () => {
+    // R-16 FIX: metrics is now adminProcedure — use makeAdminCtx() + seedAdminRoleCheck()
     it('returns computed stats object with correct shape', async () => {
+      seedAdminRoleCheck(); // adminProcedure calls db.query for admin_roles
       // Call 1: time-to-accept rows
       const createdAt1 = new Date('2026-03-01T10:00:00Z');
       const acceptedAt1 = new Date('2026-03-01T10:00:45Z'); // 45s
@@ -864,7 +866,7 @@ describe('instantRouter', () => {
         rowCount: 1,
       } as any);
 
-      const caller = instantRouter.createCaller(makeProtectedCtx());
+      const caller = instantRouter.createCaller(makeAdminCtx());
       const result = await caller.metrics();
 
       expect(result).toHaveProperty('timeToAccept');
@@ -878,6 +880,7 @@ describe('instantRouter', () => {
     });
 
     it('returns nulls for stats when no time-to-accept data', async () => {
+      seedAdminRoleCheck(); // adminProcedure calls db.query for admin_roles
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
       mockDb.query.mockResolvedValueOnce({
@@ -885,7 +888,7 @@ describe('instantRouter', () => {
         rowCount: 1,
       } as any);
 
-      const caller = instantRouter.createCaller(makeProtectedCtx());
+      const caller = instantRouter.createCaller(makeAdminCtx());
       const result = await caller.metrics();
 
       expect(result.timeToAccept.median).toBeNull();
@@ -1154,30 +1157,30 @@ describe('liveRouter', () => {
 
   describe('toggle', () => {
     it('activates live mode and returns updated user row', async () => {
-      const updatedUser = { id: 'user-123', live_mode_state: 'ACTIVE' };
-      mockDb.query.mockResolvedValueOnce({ rows: [updatedUser], rowCount: 1 } as any);
+      const dbRow = { live_mode_state: 'ACTIVE', live_mode_session_started_at: null };
+      mockDb.query.mockResolvedValueOnce({ rows: [dbRow], rowCount: 1 } as any);
 
       const caller = liveRouter.createCaller(
         makeProtectedCtx({ live_mode_state: 'OFF', live_mode_banned_until: null })
       );
       const result = await caller.toggle({ enabled: true });
 
-      expect(result).toEqual(updatedUser);
+      expect(result).toEqual({ state: 'ACTIVE', sessionStartedAt: null });
       const [sql, params] = (mockDb.query as any).mock.calls[0];
       expect(sql).toContain('live_mode_state =');
       expect(params).toContain('ACTIVE');
     });
 
     it('deactivates live mode — sets state to OFF', async () => {
-      const updatedUser = { id: 'user-123', live_mode_state: 'OFF' };
-      mockDb.query.mockResolvedValueOnce({ rows: [updatedUser], rowCount: 1 } as any);
+      const dbRow = { live_mode_state: 'OFF', live_mode_session_started_at: null };
+      mockDb.query.mockResolvedValueOnce({ rows: [dbRow], rowCount: 1 } as any);
 
       const caller = liveRouter.createCaller(
         makeProtectedCtx({ live_mode_state: 'ACTIVE', live_mode_banned_until: null })
       );
       const result = await caller.toggle({ enabled: false });
 
-      expect(result).toEqual(updatedUser);
+      expect(result).toEqual({ state: 'OFF', sessionStartedAt: null });
       const [, params] = (mockDb.query as any).mock.calls[0];
       expect(params).toContain('OFF');
     });

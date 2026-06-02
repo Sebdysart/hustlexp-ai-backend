@@ -72,7 +72,9 @@ describe('ChargebackService (extra coverage)', () => {
       mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'pd-feat' }], rowCount: 1 } as never);
       // UPDATE reversal link
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
-      // freeze payouts
+      // always-increment dispute_count (F61-2 step 1)
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      // conditional payouts_locked (F61-2 step 2)
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
       // payouts_were_frozen
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
@@ -146,7 +148,8 @@ describe('ChargebackService (extra coverage)', () => {
       mockDb.query.mockResolvedValueOnce({ rows: [{ poster_id: 'user-1' }], rowCount: 1 } as never);
       mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'pd-first' }], rowCount: 1 } as never);
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // link reversal
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // freeze payouts
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // always-increment dispute_count (F61-2 step 1)
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // conditional payouts_locked (F61-2 step 2)
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // payouts_were_frozen
       // 1st dispute, tier 3 — newTier should remain 3 (no change)
       mockDb.query.mockResolvedValueOnce({
@@ -173,9 +176,10 @@ describe('ChargebackService (extra coverage)', () => {
       } as never);
       mockDb.query.mockResolvedValueOnce({ rows: [{ poster_id: 'user-1' }], rowCount: 1 } as never);
       mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'pd-loss' }], rowCount: 1 } as never);
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // link reversal
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // always-increment dispute_count (F61-2)
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // conditional payouts_locked (F61-2)
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // payouts_were_frozen
       mockDb.query.mockResolvedValueOnce({
         rows: [{ trust_tier: 2, dispute_count: 1 }], rowCount: 1,
       } as never);
@@ -197,9 +201,10 @@ describe('ChargebackService (extra coverage)', () => {
       } as never);
       mockDb.query.mockResolvedValueOnce({ rows: [{ poster_id: 'user-1' }], rowCount: 1 } as never);
       mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'pd-ref' }], rowCount: 1 } as never);
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // link reversal
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // always-increment dispute_count (F61-2)
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // conditional payouts_locked (F61-2)
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // payouts_were_frozen
       mockDb.query.mockResolvedValueOnce({
         rows: [{ trust_tier: 2, dispute_count: 1 }], rowCount: 1,
       } as never);
@@ -228,7 +233,9 @@ describe('ChargebackService (extra coverage)', () => {
       mockDb.query.mockResolvedValueOnce({ rows: [{ poster_id: 'user-1' }], rowCount: 1 } as never);
       mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'pd-soft' }], rowCount: 1 } as never);
       // No reversal link update (ledger failed → ledgerResult.success = false)
-      // freeze payouts
+      // always-increment dispute_count (F61-2 step 1)
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      // conditional payouts_locked (F61-2 step 2)
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
       // payouts_were_frozen
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
@@ -401,9 +408,7 @@ describe('ChargebackService (extra coverage)', () => {
       } as never);
       // increment dispute_lost_count
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
-      // Other open disputes = 1 (no unlock)
-      mockDb.query.mockResolvedValueOnce({ rows: [{ count: '1' }], rowCount: 1 } as never);
-      // Mark resolved
+      // Mark resolved (no other-disputes query — lost branch never unlocks payouts)
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
 
       const result = await ChargebackService.handleDisputeClosed({
@@ -413,7 +418,7 @@ describe('ChargebackService (extra coverage)', () => {
 
       expect(result.success).toBe(true);
 
-      // Verify payouts were NOT unlocked
+      // Payouts remain locked because the lost branch never calls unfreezePayouts()
       const unlockCall = mockDb.query.mock.calls.find(
         (call) => typeof call[0] === 'string' && call[0].includes('payouts_locked = FALSE')
       );

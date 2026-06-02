@@ -197,29 +197,34 @@ describe('FIX 1b: invalidateAuthCacheForUser — Redis cross-invalidation', () =
     authCache.clear();
   });
 
-  it('writes a Redis revocation marker at auth:revoked:{userId}', async () => {
-    invalidateAuthCacheForUser('user-to-ban');
+  it('writes a Redis revocation marker at auth:revoked:{firebaseUid} when firebaseUid is passed', async () => {
+    // GG1 fix: the Redis key must use firebaseUid (not the DB UUID) because
+    // trpc.ts and middleware.ts read auth:revoked:<firebaseUid>.
+    // Callers that know the firebaseUid pass it directly; the function writes
+    // the key immediately rather than waiting to collect it from in-process cache.
+    invalidateAuthCacheForUser('user-to-ban', 'firebase-uid-of-banned-user');
 
     // Fire-and-forget — give the promise microtask a tick to execute
     await Promise.resolve();
 
     expect(hoisted.redisSet).toHaveBeenCalledWith(
-      'auth:revoked:user-to-ban',
+      'auth:revoked:firebase-uid-of-banned-user',
       expect.any(String), // ISO timestamp
       360,               // REVOCATION_MARKER_TTL_SECONDS
     );
   });
 
-  it('does NOT skip Redis write when in-process cache is empty', async () => {
+  it('does NOT skip Redis write when in-process cache is empty (firebaseUid supplied)', async () => {
     // Even if the Map has no entries for this user, the Redis marker must still
-    // be written so the Hono middleware path is protected.
+    // be written so the Hono middleware path is protected. Callers must pass
+    // firebaseUid directly when the in-process cache may be empty (e.g. admin ban).
     expect(authCache.size).toBe(0);
 
-    invalidateAuthCacheForUser('user-not-in-map');
+    invalidateAuthCacheForUser('user-not-in-map', 'firebase-uid-not-in-map');
     await Promise.resolve();
 
     expect(hoisted.redisSet).toHaveBeenCalledWith(
-      'auth:revoked:user-not-in-map',
+      'auth:revoked:firebase-uid-not-in-map',
       expect.any(String),
       360,
     );

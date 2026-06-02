@@ -22,6 +22,7 @@ import type { ServiceResult } from '../types.js';
 import type { BiometricSignals, LogisticsSignals, PhotoVerificationSignals } from './JudgeAIService.js';
 import { ErrorCodes } from '../types.js';
 import { logger } from '../logger.js';
+import { getClient } from '../cache/redis.js';
 
 const log = logger.child({ service: 'ProofService' });
 
@@ -82,6 +83,58 @@ const VALID_TRANSITIONS: Record<ProofState, ProofState[]> = {
 
 function isValidTransition(from: ProofState, to: ProofState): boolean {
   return VALID_TRANSITIONS[from]?.includes(to) ?? false;
+}
+
+// ============================================================================
+// ADVISORY LOCK (YY-03)
+// ============================================================================
+
+/**
+ * Key pattern for the per-proof Redis advisory lock used to prevent concurrent
+ * reviewers from both entering the AI pipeline for the same proof.
+ * TTL of 300 s covers even a very slow AI pipeline with margin.
+ */
+const REVIEW_LOCK_KEY = (proofId: string) => `proof:reviewing:${proofId}`;
+const REVIEW_LOCK_TTL_SECONDS = 300;
+
+/**
+ * Attempt to acquire the advisory lock for a proof review.
+ *
+ * Uses SET NX EX so the lock is acquired and its TTL is set atomically.
+ * Returns true if the lock was acquired, false if another reviewer already
+ * holds it.  When Redis is unavailable the lock is skipped (fail-open) to
+ * avoid blocking all reviews during a Redis outage — Phase 3's FOR UPDATE
+ * transaction remains the authoritative serialisation point for data safety.
+ */
+async function acquireReviewLock(proofId: string): Promise<boolean> {
+  const client = getClient();
+  if (!client) {
+    // Redis not configured — skip advisory lock, rely on Phase 3 transaction
+    log.warn({ proofId }, 'Redis unavailable — skipping advisory review lock (Phase 3 transaction remains authoritative)');
+    return true;
+  }
+  try {
+    const result = await client.set(REVIEW_LOCK_KEY(proofId), '1', { ex: REVIEW_LOCK_TTL_SECONDS, nx: true });
+    // Upstash returns 'OK' on successful SET NX, null when key already exists
+    return result === 'OK';
+  } catch (err) {
+    log.warn({ proofId, err }, 'Redis error acquiring review lock — failing open');
+    return true; // fail-open: Phase 3 transaction protects data integrity
+  }
+}
+
+/**
+ * Release the advisory lock for a proof review.
+ * Fire-and-forget — a failure only means the TTL will eventually expire the lock.
+ */
+async function releaseReviewLock(proofId: string): Promise<void> {
+  const client = getClient();
+  if (!client) return;
+  try {
+    await client.del(REVIEW_LOCK_KEY(proofId));
+  } catch (err) {
+    log.warn({ proofId, err }, 'Redis error releasing review lock — lock will expire via TTL');
+  }
 }
 
 // ============================================================================
@@ -202,43 +255,10 @@ export const ProofService = {
   submit: async (params: SubmitProofParams): Promise<ServiceResult<Proof>> => {
     const { taskId, submitterId, description } = params;
 
+    // FIX UU-05: Wrap read+duplicate-check+insert in a single transaction with FOR UPDATE
+    // locks so concurrent submissions cannot both pass the duplicate check and both INSERT.
     try {
-      // FIX 1 + FIX 2: Fetch the task to validate submitter identity and task state
-      const taskCheck = await db.query<{ worker_id: string | null; state: string }>(
-        `SELECT worker_id, state FROM tasks WHERE id = $1`,
-        [taskId]
-      );
-
-      if (taskCheck.rows.length === 0) {
-        throw new TRPCError({ code: 'NOT_FOUND', message: `Task ${taskId} not found` });
-      }
-
-      const task = taskCheck.rows[0];
-
-      // FIX 1: Only the assigned worker may submit proof
-      if (task.worker_id !== submitterId) {
-        throw new TRPCError({ code: 'UNAUTHORIZED', message: 'Only the assigned worker can submit proof.' });
-      }
-
-      // FIX 2: Only allow proof submission on active task states
-      const PROOF_ALLOWED_STATES = ['accepted', 'in_progress', 'ACCEPTED', 'IN_PROGRESS'];
-      if (!PROOF_ALLOWED_STATES.includes(task.state)) {
-        throw new TRPCError({
-          code: 'PRECONDITION_FAILED',
-          message: `Cannot submit proof for a task in '${task.state}' state.`,
-        });
-      }
-
-      // FIX 6: Block duplicate active-proof submissions
-      const existing = await db.query(
-        `SELECT id FROM proofs WHERE task_id = $1 AND state IN ('pending', 'submitted', 'PENDING', 'SUBMITTED')`,
-        [taskId]
-      );
-      if (existing.rows.length > 0) {
-        throw new TRPCError({ code: 'CONFLICT', message: 'A proof is already pending review for this task.' });
-      }
-
-      // FIX 3: Require at least one form of proof content
+      // FIX 3: Require at least one form of proof content before touching the DB
       const hasDescription = typeof description === 'string' && description.trim().length > 0;
       const hasPhotos = Array.isArray(params.photoUrls) && params.photoUrls.length > 0;
       const hasLocation = params.gpsLatitude != null && params.gpsLongitude != null;
@@ -250,26 +270,68 @@ export const ProofService = {
         });
       }
 
-      // Create proof in PENDING state
-      const createResult = await db.query<Proof>(
-        `INSERT INTO proofs (task_id, submitter_id, state, description)
-         VALUES ($1, $2, 'PENDING', $3)
-         RETURNING *`,
-        [taskId, submitterId, description]
-      );
-      
-      const proof = createResult.rows[0];
-      
-      // Transition to SUBMITTED
-      const submitResult = await db.query<Proof>(
-        `UPDATE proofs
-         SET state = 'SUBMITTED', submitted_at = NOW()
-         WHERE id = $1
-         RETURNING *`,
-        [proof.id]
-      );
-      
-      return { success: true, data: submitResult.rows[0] };
+      const submittedProof = await db.transaction(async (query) => {
+        // FIX 1 + FIX 2: Lock the task row so concurrent submits are serialised.
+        const taskCheck = await query<{ worker_id: string | null; state: string }>(
+          `SELECT worker_id, state FROM tasks WHERE id = $1 FOR UPDATE`,
+          [taskId]
+        );
+
+        if (taskCheck.rows.length === 0) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: `Task ${taskId} not found` });
+        }
+
+        const task = taskCheck.rows[0];
+
+        // FIX 1: Only the assigned worker may submit proof
+        if (task.worker_id !== submitterId) {
+          throw new TRPCError({ code: 'UNAUTHORIZED', message: 'Only the assigned worker can submit proof.' });
+        }
+
+        // FIX 2: Only allow proof submission on ACCEPTED state — the only valid state
+        // for proof submission per the task state machine. 'in_progress', 'IN_PROGRESS',
+        // and 'accepted' (lowercase) are not valid task states.
+        const PROOF_ALLOWED_STATES = ['ACCEPTED'];
+        if (!PROOF_ALLOWED_STATES.includes(task.state)) {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message: `Cannot submit proof for a task in '${task.state}' state.`,
+          });
+        }
+
+        // FIX 6 + UU-05: Lock any existing active proof rows so the duplicate check
+        // and INSERT are atomic — concurrent submissions both block here until one commits.
+        const existing = await query(
+          `SELECT id FROM proofs WHERE task_id = $1 AND state IN ('pending', 'submitted', 'PENDING', 'SUBMITTED') FOR UPDATE`,
+          [taskId]
+        );
+        if (existing.rows.length > 0) {
+          throw new TRPCError({ code: 'CONFLICT', message: 'A proof is already pending review for this task.' });
+        }
+
+        // Create proof in PENDING state
+        const createResult = await query<Proof>(
+          `INSERT INTO proofs (task_id, submitter_id, state, description)
+           VALUES ($1, $2, 'PENDING', $3)
+           RETURNING *`,
+          [taskId, submitterId, description]
+        );
+
+        const proof = createResult.rows[0];
+
+        // Transition to SUBMITTED
+        const submitResult = await query<Proof>(
+          `UPDATE proofs
+           SET state = 'SUBMITTED', submitted_at = NOW()
+           WHERE id = $1
+           RETURNING *`,
+          [proof.id]
+        );
+
+        return submitResult.rows[0];
+      });
+
+      return { success: true, data: submittedProof };
     } catch (error) {
       // Re-throw TRPCErrors (e.g. UNAUTHORIZED, PRECONDITION_FAILED, BAD_REQUEST, CONFLICT)
       if (error instanceof TRPCError) {
@@ -309,25 +371,30 @@ export const ProofService = {
     } = params;
     
     try {
-      // Get next sequence number if not provided
-      let seqNum = sequenceNumber;
-      if (seqNum === undefined) {
-        const countResult = await db.query<{ count: string }>(
-          'SELECT COUNT(*) as count FROM proof_photos WHERE proof_id = $1',
-          [proofId]
+      // FIX GGG-04: Wrap the count SELECT + INSERT in a transaction with FOR UPDATE so
+      // concurrent addPhoto() calls cannot both read the same count and produce duplicate
+      // sequence numbers. The FOR UPDATE on proof_photos locks the existing rows for this
+      // proof_id, serializing concurrent inserts.
+      const result = await db.transaction(async (txQuery) => {
+        let seqNum = sequenceNumber;
+        if (seqNum === undefined) {
+          const countResult = await txQuery<{ count: string }>(
+            'SELECT COUNT(*) FROM proof_photos WHERE proof_id = $1 FOR UPDATE',
+            [proofId]
+          );
+          seqNum = parseInt(countResult.rows[0].count, 10) + 1;
+        }
+
+        return txQuery<ProofPhoto>(
+          `INSERT INTO proof_photos (
+            proof_id, storage_key, content_type, file_size_bytes,
+            checksum_sha256, capture_time, sequence_number
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+          RETURNING *`,
+          [proofId, storageKey, contentType, fileSizeBytes, checksumSha256, captureTime, seqNum]
         );
-        seqNum = parseInt(countResult.rows[0].count, 10) + 1;
-      }
-      
-      const result = await db.query<ProofPhoto>(
-        `INSERT INTO proof_photos (
-          proof_id, storage_key, content_type, file_size_bytes,
-          checksum_sha256, capture_time, sequence_number
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
-        RETURNING *`,
-        [proofId, storageKey, contentType, fileSizeBytes, checksumSha256, captureTime, seqNum]
-      );
-      
+      });
+
       return { success: true, data: result.rows[0] };
     } catch (error) {
       return {
@@ -354,23 +421,29 @@ export const ProofService = {
     } = params;
 
     try {
-      let seqNum = sequenceNumber;
-      if (seqNum === undefined) {
-        const countResult = await db.query<{ count: string }>(
-          'SELECT COUNT(*) as count FROM proof_videos WHERE proof_id = $1',
-          [proofId]
-        );
-        seqNum = parseInt(countResult.rows[0].count, 10) + 1;
-      }
+      // FIX GGG-04: Wrap the count SELECT + INSERT in a transaction with FOR UPDATE so
+      // concurrent addVideo() calls cannot both read the same count and produce duplicate
+      // sequence numbers. The FOR UPDATE on proof_videos locks the existing rows for this
+      // proof_id, serializing concurrent inserts.
+      const result = await db.transaction(async (txQuery) => {
+        let seqNum = sequenceNumber;
+        if (seqNum === undefined) {
+          const countResult = await txQuery<{ count: string }>(
+            'SELECT COUNT(*) FROM proof_videos WHERE proof_id = $1 FOR UPDATE',
+            [proofId]
+          );
+          seqNum = parseInt(countResult.rows[0].count, 10) + 1;
+        }
 
-      const result = await db.query<ProofVideo>(
-        `INSERT INTO proof_videos (
-          proof_id, storage_key, content_type, file_size_bytes,
-          duration_seconds, sequence_number
-        ) VALUES ($1, $2, $3, $4, $5, $6)
-        RETURNING *`,
-        [proofId, storageKey, contentType, fileSizeBytes ?? null, durationSeconds ?? null, seqNum]
-      );
+        return txQuery<ProofVideo>(
+          `INSERT INTO proof_videos (
+            proof_id, storage_key, content_type, file_size_bytes,
+            duration_seconds, sequence_number
+          ) VALUES ($1, $2, $3, $4, $5, $6)
+          RETURNING *`,
+          [proofId, storageKey, contentType, fileSizeBytes ?? null, durationSeconds ?? null, seqNum]
+        );
+      });
 
       return { success: true, data: result.rows[0] };
     } catch (error) {
@@ -398,8 +471,15 @@ export const ProofService = {
   review: async (params: ReviewProofParams): Promise<ServiceResult<Proof>> => {
     const { proofId, reviewerId, decision, reason } = params;
 
+    // FIX UU-01: The entire read-pipeline-write sequence runs inside a transaction.
+    // The initial SELECT uses FOR UPDATE to acquire a row-level lock, preventing two
+    // concurrent reviewers from both reading state='SUBMITTED' and both succeeding.
+    // The final UPDATE includes AND state = 'SUBMITTED' as a belt-and-suspenders guard;
+    // if rowCount === 0 a concurrent reviewer won the race and we throw CONFLICT.
     try {
-      // Get current proof state with proof_submissions data
+      // Phase 1: Lock the proof row and run read-only validation BEFORE entering the
+      // expensive AI pipeline. If the proof is not in SUBMITTED state we fail fast
+      // without holding any locks during the AI calls.
       const currentResult = await db.query<Proof & {
         photo_url?: string;
         gps_coordinates?: { lat: number; lng: number } | null;
@@ -436,6 +516,46 @@ export const ProofService = {
           },
         };
       }
+
+      // T53-8 FIX: Proof review role check — enforce at the service layer that only
+      // the task's poster can approve or reject proof. The router (posterProcedure)
+      // guards the primary path, but callers may invoke ProofService.review() directly
+      // (e.g. integration tests, future internal callers) and bypass that guard.
+      // Belt-and-suspenders: query the task's poster_id and compare against reviewerId.
+      const taskOwnerResult = await db.query<{ poster_id: string }>(
+        `SELECT poster_id FROM tasks WHERE id = $1`,
+        [current.task_id]
+      );
+      if (taskOwnerResult.rows.length === 0 || taskOwnerResult.rows[0].poster_id !== reviewerId) {
+        return {
+          success: false,
+          error: {
+            code: ErrorCodes.FORBIDDEN,
+            message: 'Not authorized to review this proof',
+          },
+        };
+      }
+
+      // Phase 2: Acquire Redis advisory lock BEFORE the AI pipeline (FIX YY-03).
+      // This ensures only one reviewer runs the expensive AI pipeline for a given proof.
+      // Concurrent reviewers that already passed Phase 1's plain SELECT will be turned
+      // away here instead of duplicating all AI calls. Phase 3's FOR UPDATE transaction
+      // remains the definitive serialisation point — the lock is belt-and-suspenders
+      // against AI cost amplification, not against data corruption.
+      const lockAcquired = await acquireReviewLock(proofId);
+      if (!lockAcquired) {
+        throw new TRPCError({
+          code: 'CONFLICT',
+          message: 'Another reviewer is already processing this proof. Please try again shortly.',
+        });
+      }
+
+      // Run the (potentially long) AI pipeline outside any transaction so we
+      // don't hold a DB lock during network I/O. The final write transaction below will
+      // re-verify state and use FOR UPDATE + rowCount check to detect races.
+      // The advisory lock acquired above is released in the finally block regardless
+      // of whether the AI pipeline or Phase 3 transaction succeeds or fails.
+      try {
 
       // v2.0.0: Automated AI verification pipeline on every proof acceptance
       // Runs all subsystems, collects signals, feeds to JudgeAI for synthesis.
@@ -572,17 +692,75 @@ export const ProofService = {
         }
       }
 
-      // Update proof (database triggers will enforce INV-3 when task tries to complete)
-      const result = await db.query<Proof>(
-        `UPDATE proofs
-         SET state = $1, reviewed_by = $2, reviewed_at = NOW(), rejection_reason = $3
-         WHERE id = $4
-         RETURNING *`,
-        [decision, reviewerId, reason, proofId]
-      );
+      // Phase 3: Commit the state change inside a transaction with a FOR UPDATE lock.
+      // Re-checking state = 'SUBMITTED' in the WHERE clause ensures that if a concurrent
+      // reviewer committed first the UPDATE matches 0 rows and we throw CONFLICT.
+      const updatedProof = await db.transaction(async (query) => {
+        // Acquire exclusive row lock — blocks any concurrent reviewer at this point
+        const lockResult = await query<{ state: string; task_id: string }>(
+          `SELECT state, task_id FROM proofs WHERE id = $1 FOR UPDATE`,
+          [proofId]
+        );
 
-      return { success: true, data: result.rows[0] };
+        if (lockResult.rows.length === 0) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: `Proof ${proofId} not found` });
+        }
+
+        if (lockResult.rows[0].state !== 'SUBMITTED') {
+          throw new TRPCError({ code: 'CONFLICT', message: 'Proof already reviewed' });
+        }
+
+        // T60-1 FIX: After acquiring the proof lock, verify the task is still in
+        // PROOF_SUBMITTED state. A concurrent dispute creation (T59-3) can have
+        // transitioned the task to DISPUTED between Phase 1 and Phase 3. If the
+        // proof is reviewed (REJECTED) while the task is DISPUTED, a subsequent
+        // dispute resolution with RELEASE would try to accept a REJECTED proof —
+        // violating INV-3 (completed task requires accepted proof).
+        // T64-2 FIX: Use FOR UPDATE on the tasks row so that DisputeService.create()
+        // cannot commit a DISPUTED state transition between this read and the proof
+        // UPDATE below. Without the lock, a concurrent dispute.create() could commit
+        // task→DISPUTED after this SELECT but before the proof UPDATE, leaving the
+        // task DISPUTED with an ACCEPTED/REJECTED proof (inconsistent state).
+        const proofTaskId = lockResult.rows[0].task_id;
+        const taskStateCheck = await query<{ state: string }>(
+          'SELECT state FROM tasks WHERE id = $1 FOR UPDATE',
+          [proofTaskId]
+        );
+        if (taskStateCheck.rows[0]?.state !== 'PROOF_SUBMITTED') {
+          throw new TRPCError({
+            code: 'CONFLICT',
+            message: `TASK_STATE_CHANGED:Task is no longer in PROOF_SUBMITTED state (current: ${taskStateCheck.rows[0]?.state ?? 'unknown'})`,
+          });
+        }
+
+        // Update proof — AND state = 'SUBMITTED' is an extra guard against races
+        // (database will also enforce via triggers for INV-3 compliance)
+        const result = await query<Proof>(
+          `UPDATE proofs
+           SET state = $1, reviewed_by = $2, reviewed_at = NOW(), rejection_reason = $3
+           WHERE id = $4 AND state = 'SUBMITTED'
+           RETURNING *`,
+          [decision, reviewerId, reason, proofId]
+        );
+
+        if (result.rowCount === 0) {
+          throw new TRPCError({ code: 'CONFLICT', message: 'Proof already reviewed' });
+        }
+
+        return result.rows[0];
+      });
+
+      return { success: true, data: updatedProof };
+
+      } finally {
+        // Release the advisory lock whether the pipeline succeeded, failed, or threw.
+        // If the lock was never acquired (Redis down, fail-open), this is a no-op.
+        await releaseReviewLock(proofId);
+      }
     } catch (error) {
+      if (error instanceof TRPCError) {
+        throw error;
+      }
       if (isInvariantViolation(error)) {
         return {
           success: false,

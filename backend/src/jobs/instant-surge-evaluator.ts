@@ -89,7 +89,7 @@ export async function evaluateInstantSurges(): Promise<void> {
           riskLevel: task.risk_level as 'LOW' | 'MEDIUM' | 'HIGH' | 'IN_HOME',
           sensitive: task.sensitive || false,
         },
-        queueName: 'critical_payments',
+        queueName: 'user_notifications',
       });
 
       evaluatedCount++;

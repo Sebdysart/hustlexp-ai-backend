@@ -5,6 +5,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('../../src/db', () => ({
   db: {
     query: vi.fn(),
+    transaction: vi.fn(),
     serializableTransaction: vi.fn(),
   },
   isInvariantViolation: vi.fn(() => false),
@@ -44,6 +45,7 @@ import { AlphaInstrumentation } from '../../src/services/AlphaInstrumentation';
 
 const mockQuery = db.query as ReturnType<typeof vi.fn>;
 const mockTx = db.serializableTransaction as ReturnType<typeof vi.fn>;
+const mockDbTx = db.transaction as ReturnType<typeof vi.fn>;
 const mockIsInvariant = isInvariantViolation as ReturnType<typeof vi.fn>;
 const mockIsUnique = isUniqueViolation as ReturnType<typeof vi.fn>;
 
@@ -193,6 +195,43 @@ describe('XPService.calculateAward', () => {
       expect(result.data.trustMultiplier).toBe(1.0);
     }
   });
+
+  // Bug 3b fix: surge multiplier
+  it('applies 2.0x surge multiplier for surge_level >= 2', async () => {
+    mockQuery
+      .mockResolvedValueOnce({ rows: [{ current_streak: 0, trust_tier: 1 }] })
+      .mockResolvedValueOnce({ rows: [{ mode: 'STANDARD', surge_level: 2 }] });
+
+    const result = await XPService.calculateAward('user-1', 100, 'task-surge');
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.surgeMultiplier).toBe(2.0);
+      expect(result.data.effectiveXP).toBe(200); // 100 * 1.0 * 1.0 * 1.0 * 2.0
+    }
+  });
+
+  it('does not apply surge bonus for surge_level 0 or 1', async () => {
+    mockQuery
+      .mockResolvedValueOnce({ rows: [{ current_streak: 0, trust_tier: 1 }] })
+      .mockResolvedValueOnce({ rows: [{ mode: 'STANDARD', surge_level: 1 }] });
+
+    const result = await XPService.calculateAward('user-1', 100, 'task-surge1');
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.surgeMultiplier).toBe(1.0);
+      expect(result.data.effectiveXP).toBe(100);
+    }
+  });
+
+  it('returns 1.0x surge multiplier when no taskId provided', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ current_streak: 0, trust_tier: 1 }] });
+
+    const result = await XPService.calculateAward('user-1', 100);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.surgeMultiplier).toBe(1.0);
+    }
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -234,6 +273,7 @@ describe('XPService.awardXP', () => {
       const txQuery = vi.fn()
         .mockResolvedValueOnce({ rows: [{ xp_total: 0, current_level: 1, current_streak: 0, trust_tier: 1 }] })
         .mockResolvedValueOnce({ rows: [{ mode: 'STANDARD' }] })
+        .mockResolvedValueOnce({ rows: [{ count: '0' }] }) // MM3: in-tx velocity re-check
         .mockResolvedValueOnce({ rows: [ledgerRow] })
         .mockResolvedValueOnce({ rowCount: 1 });
       return fn(txQuery);
@@ -321,6 +361,7 @@ describe('XPService.awardXP', () => {
       const txQuery = vi.fn()
         .mockResolvedValueOnce({ rows: [{ xp_total: 50, current_level: 1, current_streak: 0, trust_tier: 1 }] })
         .mockResolvedValueOnce({ rows: [{ mode: 'STANDARD' }] })
+        .mockResolvedValueOnce({ rows: [{ count: '0' }] }) // MM3: in-tx velocity re-check
         .mockResolvedValueOnce({ rows: [ledgerRow] })
         .mockResolvedValueOnce({ rowCount: 1 });
       return fn(txQuery);
@@ -344,6 +385,7 @@ describe('XPService.awardXP', () => {
       const txQuery = vi.fn()
         .mockResolvedValueOnce({ rows: [{ xp_total: 0, current_level: 1, current_streak: 0, trust_tier: 1 }] })
         .mockResolvedValueOnce({ rows: [{ mode: 'STANDARD' }] })
+        .mockResolvedValueOnce({ rows: [{ count: '0' }] }) // MM3: in-tx velocity re-check
         .mockResolvedValueOnce({ rows: [ledgerRow] })
         .mockResolvedValueOnce({ rowCount: 1 });
       return fn(txQuery);
@@ -365,6 +407,7 @@ describe('XPService.awardXP', () => {
       const txQuery = vi.fn()
         .mockResolvedValueOnce({ rows: [{ xp_total: 0, current_level: 1, current_streak: 0, trust_tier: 1 }] })
         .mockResolvedValueOnce({ rows: [{ mode: 'STANDARD' }] })
+        .mockResolvedValueOnce({ rows: [{ count: '0' }] }) // MM3: in-tx velocity re-check
         .mockResolvedValueOnce({ rows: [ledgerRow] })
         .mockResolvedValueOnce({ rowCount: 1 });
       return fn(txQuery);
@@ -389,6 +432,7 @@ describe('XPService.awardXP', () => {
       const txQuery = vi.fn()
         .mockResolvedValueOnce({ rows: [{ xp_total: 0, current_level: 1, current_streak: 0, trust_tier: 1 }] })
         .mockResolvedValueOnce({ rows: [{ mode: 'STANDARD' }] })
+        .mockResolvedValueOnce({ rows: [{ count: '0' }] }) // MM3: in-tx velocity re-check
         .mockResolvedValueOnce({ rows: [ledgerRow] })
         .mockResolvedValueOnce({ rowCount: 1 });
       return fn(txQuery);
@@ -404,28 +448,33 @@ describe('XPService.awardXP', () => {
 // getHistory
 // ═══════════════════════════════════════════════════════════════════════════
 describe('XPService.getHistory', () => {
-  it('returns XP history entries for a user', async () => {
+  it('returns paginated XP history entries for a user', async () => {
     const entry = {
       id: 'xp-1', user_id: 'user-1', task_id: 'task-1',
       escrow_id: 'escrow-1', effective_xp: 100, awarded_at: new Date(),
     };
+    // First call: COUNT query; second call: rows query
+    mockQuery.mockResolvedValueOnce({ rows: [{ count: '1' }] });
     mockQuery.mockResolvedValueOnce({ rows: [entry] });
 
     const result = await XPService.getHistory('user-1');
     expect(result.success).toBe(true);
     if (result.success) {
-      expect(result.data).toHaveLength(1);
-      expect(result.data[0].id).toBe('xp-1');
+      expect(result.data.total).toBe(1);
+      expect(result.data.items).toHaveLength(1);
+      expect(result.data.items[0].id).toBe('xp-1');
     }
   });
 
-  it('returns empty array when no history', async () => {
+  it('returns empty items when no history', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] });
     mockQuery.mockResolvedValueOnce({ rows: [] });
 
     const result = await XPService.getHistory('user-new');
     expect(result.success).toBe(true);
     if (result.success) {
-      expect(result.data).toHaveLength(0);
+      expect(result.data.total).toBe(0);
+      expect(result.data.items).toHaveLength(0);
     }
   });
 
@@ -528,12 +577,12 @@ describe('XPService.checkVelocity', () => {
     expect(result.recentEvents).toBe(6);
   });
 
-  it('returns suspicious=false on DB error (fail open)', async () => {
+  it('returns suspicious=true on DB error (fail closed — MM5)', async () => {
     mockQuery.mockRejectedValueOnce(new Error('DB error'));
 
     const result = await XPService.checkVelocity('user-1');
-    expect(result.suspicious).toBe(false);
-    expect(result.recentEvents).toBe(0);
+    expect(result.suspicious).toBe(true);
+    expect(result.recentEvents).toBe(999);
   });
 
   it('handles missing count field gracefully (defaults to 0)', async () => {
@@ -607,22 +656,47 @@ describe('XPService.getDailyLeaderboard', () => {
       expect(result.error.code).toBe('DB_ERROR');
     }
   });
+
+  it('A62-3: leaderboard query filters out banned and deleted/suspended users', async () => {
+    // The SQL must include is_banned = false AND account_status NOT IN ('DELETED', 'SUSPENDED')
+    // so banned/GDPR-deleted users are excluded from the public leaderboard.
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+
+    await XPService.getDailyLeaderboard(25);
+
+    const sqlArg = mockQuery.mock.calls[0][0] as string;
+    expect(sqlArg).toMatch(/u\.is_banned\s*=\s*false/i);
+    expect(sqlArg).toMatch(/u\.account_status\s+NOT\s+IN\s*\(\s*'DELETED'\s*,\s*'SUSPENDED'\s*\)/i);
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
 // clawbackXP — FIX 2: idempotency on retry (unique constraint)
+//              BUG UU-06 FIX: atomicity via db.transaction + FOR UPDATE lock
+//              BUG YY-04 FIX: award SELECT moved inside transaction (no outer query)
+//
+// Mock shape after YY-04 fix:
+//   mockDbTx call 0: callback receives txQuery mock with:
+//     txQuery call 0: SELECT users FOR UPDATE (lock user row)
+//     txQuery call 1: SELECT award from xp_ledger (now inside transaction)
+//     txQuery call 2: INSERT clawback row
+//     txQuery call 3: UPDATE users SET xp_total
+//     txQuery call 4 (optional): UPDATE users SET current_level
 // ═══════════════════════════════════════════════════════════════════════════
 describe('XPService.clawbackXP', () => {
   it('deducts XP when original award exists', async () => {
-    // 1st query: find the original award
-    mockQuery.mockResolvedValueOnce({
-      rows: [{ id: 'xp-1', effective_xp: 500, task_id: 'task-1' }],
-    });
-    // 2nd query: INSERT ... ON CONFLICT ... RETURNING — new row inserted
-    mockQuery.mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'xp-clawback-1' }] });
-    // 3rd query: UPDATE users SET xp_total
-    mockQuery.mockResolvedValueOnce({
-      rows: [{ xp_total: 0, current_level: 1 }],
+    // No outer db.query — award SELECT is now txQuery call 1 (after FOR UPDATE)
+    let capturedInsertSql = '';
+    mockDbTx.mockImplementationOnce(async (fn: (q: unknown) => Promise<unknown>) => {
+      const txQuery = vi.fn()
+        .mockResolvedValueOnce({ rows: [{ xp_total: 500, current_level: 2 }], rowCount: 1 }) // FOR UPDATE
+        .mockResolvedValueOnce({ rows: [{ id: 'xp-1', base_xp: 500, effective_xp: 500, task_id: 'task-1' }], rowCount: 1 }) // SELECT award
+        .mockImplementationOnce((sql: string) => {
+          capturedInsertSql = sql;
+          return Promise.resolve({ rowCount: 1, rows: [{ id: 'xp-clawback-1' }] }); // INSERT
+        })
+        .mockResolvedValueOnce({ rows: [{ xp_total: 0, current_level: 1 }], rowCount: 1 }); // UPDATE xp_total
+      return fn(txQuery);
     });
 
     await expect(
@@ -630,49 +704,67 @@ describe('XPService.clawbackXP', () => {
     ).resolves.not.toThrow();
 
     // The INSERT must have been called with ON CONFLICT clause
-    const insertCall = mockQuery.mock.calls[1];
-    expect(insertCall[0]).toContain('ON CONFLICT');
-    expect(insertCall[0]).toContain('DO NOTHING');
+    expect(capturedInsertSql).toContain('ON CONFLICT');
+    expect(capturedInsertSql).toContain('DO NOTHING');
   });
 
   it('is idempotent — second clawback call is a no-op (rowCount=0)', async () => {
-    // 1st query: find the original award
-    mockQuery.mockResolvedValueOnce({
-      rows: [{ id: 'xp-1', effective_xp: 500, task_id: 'task-1' }],
+    // No outer db.query — award SELECT is txQuery call 1
+    // Transaction: FOR UPDATE + SELECT award + INSERT conflicts (rowCount=0) — no UPDATE follows
+    let txQueryCallCount = 0;
+    mockDbTx.mockImplementationOnce(async (fn: (q: unknown) => Promise<unknown>) => {
+      const txQuery = vi.fn()
+        .mockResolvedValueOnce({ rows: [{ xp_total: 500, current_level: 2 }], rowCount: 1 }) // FOR UPDATE
+        .mockResolvedValueOnce({ rows: [{ id: 'xp-1', base_xp: 500, effective_xp: 500, task_id: 'task-1' }], rowCount: 1 }) // SELECT award
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }); // INSERT conflicts — already applied
+      const result = await fn(txQuery);
+      txQueryCallCount = txQuery.mock.calls.length;
+      return result;
     });
-    // 2nd query: INSERT conflicts — rowCount=0 (already applied)
-    mockQuery.mockResolvedValueOnce({ rowCount: 0, rows: [] });
-    // No UPDATE should follow — if it does, the mock will return undefined and the
-    // test will still pass, but we assert the UPDATE was NOT called.
 
     await expect(
       XPService.clawbackXP('user-1', 'escrow-1', 'refund')
     ).resolves.not.toThrow();
 
-    // Only 2 queries: SELECT award + INSERT (no UPDATE since rowCount=0)
-    expect(mockQuery).toHaveBeenCalledTimes(2);
+    // Inside transaction: FOR UPDATE + SELECT award + INSERT (no UPDATE users since rowCount=0)
+    expect(txQueryCallCount).toBe(3);
+    expect(mockDbTx).toHaveBeenCalledTimes(1);
   });
 
   it('skips entirely when no XP award exists for the escrow', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [] }); // no award found
+    // Award SELECT is now inside the transaction — no outer db.query needed.
+    // Transaction enters for the user lock, finds no award in txQuery[1], returns early.
+    mockDbTx.mockImplementationOnce(async (fn: (q: unknown) => Promise<unknown>) => {
+      const txQuery = vi.fn()
+        .mockResolvedValueOnce({ rows: [{ xp_total: 0, current_level: 1 }], rowCount: 1 }) // FOR UPDATE
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 }); // SELECT award — none found
+      return fn(txQuery);
+    });
 
     await expect(
       XPService.clawbackXP('user-1', 'escrow-none', 'refund')
     ).resolves.not.toThrow();
 
-    expect(mockQuery).toHaveBeenCalledTimes(1); // only the SELECT
+    // No outer db.query; transaction was entered once (for the user lock)
+    expect(mockQuery).not.toHaveBeenCalled();
+    expect(mockDbTx).toHaveBeenCalledTimes(1);
   });
 
   it('skips when xpToDeduct rounds to 0 (partial fraction of tiny award)', async () => {
-    mockQuery.mockResolvedValueOnce({
-      rows: [{ id: 'xp-1', effective_xp: 1, task_id: 'task-1' }],
+    // Award SELECT is inside the transaction; fraction=0 → xpToDeduct=0 → early return
+    mockDbTx.mockImplementationOnce(async (fn: (q: unknown) => Promise<unknown>) => {
+      const txQuery = vi.fn()
+        .mockResolvedValueOnce({ rows: [{ xp_total: 100, current_level: 1 }], rowCount: 1 }) // FOR UPDATE
+        .mockResolvedValueOnce({ rows: [{ id: 'xp-1', base_xp: 1, effective_xp: 1, task_id: 'task-1' }], rowCount: 1 }); // SELECT award
+      return fn(txQuery);
     });
 
-    // fraction=0 means nothing to deduct — returns early before INSERT
+    // fraction=0 means nothing to deduct — returns early inside transaction after computing xpToDeduct=0
     await expect(
       XPService.clawbackXP('user-1', 'escrow-1', 'refund', 0)
     ).resolves.not.toThrow();
 
-    expect(mockQuery).toHaveBeenCalledTimes(1); // only the SELECT
+    expect(mockQuery).not.toHaveBeenCalled(); // no outer SELECT anymore
+    expect(mockDbTx).toHaveBeenCalledTimes(1);
   });
 });

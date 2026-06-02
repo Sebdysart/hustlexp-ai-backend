@@ -11,11 +11,15 @@
  */
 
 import { z } from 'zod';
+import { TRPCError } from '@trpc/server';
 import { router, protectedProcedure } from '../trpc.js';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
+import { db } from '../db.js';
+import { randomBytes } from 'crypto';
+import path from 'path';
 
 const log = logger.child({ router: 'upload' });
 
@@ -60,8 +64,25 @@ export const uploadRouter = router({
       purpose: z.enum(['proof', 'message']).optional().default('proof'),
     }))
     .mutation(async ({ ctx, input }) => {
+      // IDOR fix: verify caller is a participant (poster or worker) of the task
+      const taskCheck = await db.query<{ poster_id: string; worker_id: string | null }>(
+        'SELECT poster_id, worker_id FROM tasks WHERE id = $1',
+        [input.taskId],
+      );
+      if (taskCheck.rows.length === 0) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
+      }
+      const { poster_id, worker_id } = taskCheck.rows[0];
+      if (ctx.user.id !== poster_id && ctx.user.id !== worker_id) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'Not authorized to upload files for this task' });
+      }
+
       const prefix = input.purpose === 'message' ? 'messages' : 'proofs';
-      const key = `${prefix}/${input.taskId}/${ctx.user.id}/${Date.now()}_${input.filename}`;
+      // BUG010: Use an opaque cryptographic key — never embed user-supplied filename in
+      // the storage path, as Date.now() + filename makes URLs predictable and enumerable.
+      const ext = path.extname(input.filename).toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 4);
+      const opaqueKey = `${prefix}/${ctx.user.id}/${randomBytes(16).toString('hex')}${ext ? '.' + ext : ''}`;
+      const key = opaqueKey;
       const baseUrl = process.env.R2_PUBLIC_URL || `https://${r2Config.bucketName}.r2.dev`;
 
       // Generate real presigned URL if R2 is configured
@@ -74,6 +95,7 @@ export const uploadRouter = router({
           Metadata: {
             'uploaded-by': ctx.user.id,
             'task-id': input.taskId,
+            'original-filename': input.filename, // preserved as metadata only — not used in key
           },
         });
 

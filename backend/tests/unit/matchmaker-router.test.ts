@@ -79,6 +79,9 @@ const TASK_ROW = {
   location_text: 'Chicago',
   price: 5000,
   requirements: 'Experience needed',
+  // T53-4: caller (UUID1) is the poster so ownership check passes
+  poster_id: UUID1,
+  worker_id: UUID3,
 };
 
 const CANDIDATE_ROW = {

@@ -16,13 +16,19 @@
 
 import { Context, Next } from 'hono';
 import { ulid } from 'ulidx';
+import { randomUUID } from 'crypto';
 
 /**
  * Hono middleware — inject request ID into every request
  */
 export async function requestIdMiddleware(c: Context, next: Next): Promise<void> {
-  // Reuse client-provided ID or generate new one
-  const requestId = c.req.header('x-request-id') || `req_${ulid()}`;
+  // A48-1 FIX: Validate the X-Request-Id header before using it in structured logs.
+  // An attacker could inject arbitrary JSON keys via an unvalidated header value.
+  // Strip to alphanumeric + hyphens + underscores, max 64 chars. If absent or
+  // invalid, generate a new UUID (not a ULID — randomUUID is the safe fallback
+  // when the raw header cannot be trusted).
+  const rawId = c.req.header('X-Request-Id');
+  const requestId = (rawId && /^[a-zA-Z0-9_-]{1,64}$/.test(rawId)) ? rawId : randomUUID();
 
   // Make available to downstream handlers via Hono context
   c.set('requestId', requestId);

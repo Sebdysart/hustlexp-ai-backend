@@ -1,3 +1,4 @@
+import { timingSafeEqual } from 'crypto';
 import { Hono } from 'hono';
 import { Registry, Histogram, Counter, Gauge, collectDefaultMetrics } from 'prom-client';
 
@@ -69,7 +70,36 @@ const escrowTotalValue = new Gauge({
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function createMetricsEndpoint(app: Hono<any>): void {
+  const internalApiKey = process.env.INTERNAL_API_KEY;
+
+  if (!internalApiKey) {
+    console.warn(
+      '[metrics] INTERNAL_API_KEY is not configured — /metrics endpoint will NOT be registered. ' +
+      'Set INTERNAL_API_KEY to enable Prometheus scraping.'
+    );
+    return;
+  }
+
   app.get('/metrics', async (c) => {
+    const authHeader = c.req.header('Authorization');
+    const provided = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
+
+    // A47-2 FIX: Use timingSafeEqual to prevent timing side-channel leaking
+    // the INTERNAL_API_KEY length/bytes. Pad both buffers to the same length
+    // (max of the two) before comparison — timingSafeEqual requires equal-length buffers.
+    const rawProvided = Buffer.from(provided || '', 'utf8');
+    const expectedBuf = Buffer.from(internalApiKey, 'utf8');
+    const maxLen = Math.max(rawProvided.length, expectedBuf.length);
+    const providedBuf = Buffer.alloc(maxLen);
+    const paddedExpected = Buffer.alloc(maxLen);
+    rawProvided.copy(providedBuf);
+    expectedBuf.copy(paddedExpected);
+    const match = timingSafeEqual(providedBuf, paddedExpected);
+
+    if (!provided || !match) {
+      return c.text('Unauthorized', 401);
+    }
+
     const metrics = await registry.metrics();
     return c.text(metrics, 200, {
       'Content-Type': registry.contentType,

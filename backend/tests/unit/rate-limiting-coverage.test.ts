@@ -146,3 +146,45 @@ describe('Rate Limiting Coverage', () => {
     expect(firstMatch('/trpc/stripeConnect.getOnboardingLink')).toBe('financial');
   });
 });
+
+// ============================================================================
+// A47-4 FIX: /webhooks/* must have publicIpRateLimitMiddleware applied
+// (defence-in-depth matching /trpc/* and /realtime/stream protection)
+// ============================================================================
+
+describe('A47-4: Webhook IP rate-limit defence-in-depth', () => {
+  it('server.ts applies publicIpRateLimitMiddleware to /webhooks/* before rateLimitMiddleware', () => {
+    // This is a structural assertion: verify that the source code of server.ts
+    // includes publicIpRateLimitMiddleware() on the /webhooks/* route.
+    // We read the source and assert the call appears before rateLimitMiddleware on that path.
+    const fs = require('fs');
+    const path = require('path');
+    const serverSrc: string = fs.readFileSync(
+      path.resolve(__dirname, '../../src/server.ts'),
+      'utf8',
+    );
+
+    // Both middleware must be applied to /webhooks/*
+    expect(serverSrc).toContain("app.use('/webhooks/*', publicIpRateLimitMiddleware())");
+    expect(serverSrc).toContain("app.use('/webhooks/*', rateLimitMiddleware('general'))");
+
+    // publicIpRateLimitMiddleware must appear before rateLimitMiddleware on the webhooks path
+    const publicIpIdx = serverSrc.indexOf("app.use('/webhooks/*', publicIpRateLimitMiddleware())");
+    const generalIdx = serverSrc.indexOf("app.use('/webhooks/*', rateLimitMiddleware('general'))");
+    expect(publicIpIdx).toBeGreaterThan(-1);
+    expect(generalIdx).toBeGreaterThan(-1);
+    expect(publicIpIdx).toBeLessThan(generalIdx);
+  });
+
+  it('publicIpRateLimitMiddleware is also applied to /trpc/* and /realtime/stream (consistent defence-in-depth)', () => {
+    const fs = require('fs');
+    const path = require('path');
+    const serverSrc: string = fs.readFileSync(
+      path.resolve(__dirname, '../../src/server.ts'),
+      'utf8',
+    );
+
+    expect(serverSrc).toContain("app.use('/trpc/*', publicIpRateLimitMiddleware())");
+    expect(serverSrc).toMatch(/app\.use\('\/realtime\/stream',\s*publicIpRateLimitMiddleware\(\)/);
+  });
+});

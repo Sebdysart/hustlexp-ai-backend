@@ -144,6 +144,7 @@ export const MessagingService = {
           read_at, moderation_status, moderation_flags, created_at, updated_at
         FROM task_messages
         WHERE task_id = $1
+          AND (moderation_status IS NULL OR moderation_status NOT IN ('quarantined', 'flagged'))
         ORDER BY created_at ASC
         LIMIT $2 OFFSET $3`,
         [taskId, PAGE_SIZE, offset]
@@ -175,7 +176,8 @@ export const MessagingService = {
       const result = await db.query<{ count: string }>(
         `SELECT COUNT(*) as count
          FROM task_messages
-         WHERE receiver_id = $1 AND read_at IS NULL`,
+         WHERE receiver_id = $1 AND read_at IS NULL
+           AND (moderation_status IS NULL OR moderation_status NOT IN ('quarantined', 'flagged'))`,
         [userId]
       );
       
@@ -264,27 +266,6 @@ export const MessagingService = {
           },
         };
       }
-      
-      // Per-sender-per-task rate limit: 30 messages per minute per conversation.
-      // Uses Redis INCR + EXPIRE to maintain a sliding counter.
-      // If Redis is unavailable the incr() helper returns 1, so the check is
-      // always allowed — same fail-open behaviour as the rest of the cache layer.
-      const MSG_RATE_LIMIT = 30;
-      const MSG_RATE_WINDOW_SECONDS = 60;
-      const rateLimitKey = `msg_rate:${senderId}:${taskId}`;
-      const msgCount = await incr(rateLimitKey);
-      if (msgCount === 1) {
-        await expire(rateLimitKey, MSG_RATE_WINDOW_SECONDS);
-      }
-      if (msgCount > MSG_RATE_LIMIT) {
-        return {
-          success: false,
-          error: {
-            code: ErrorCodes.RATE_LIMIT_EXCEEDED,
-            message: `Message rate limit exceeded. You can send at most ${MSG_RATE_LIMIT} messages per minute per conversation.`,
-          },
-        };
-      }
 
       // Determine recipient
       const recipientId = task.poster_id === senderId ? task.worker_id : task.poster_id;
@@ -334,17 +315,36 @@ export const MessagingService = {
             },
           };
         }
-        
-        // Use template as fallback content, or allow user-provided custom content
-        const templateContent = AUTO_MESSAGE_TEMPLATES[autoMessageTemplate];
-        if (!content) {
-          // No custom content provided — use default template text
-          content = templateContent;
-        }
-        // If content IS provided by the user, it overrides the template text
-        // (the auto_message_template field still records which template was selected)
+
+        // SECURITY: AUTO message content must always come from server-side templates.
+        // Discard any client-supplied content to prevent moderation bypass.
+        content = AUTO_MESSAGE_TEMPLATES[autoMessageTemplate];
       }
-      
+
+      // Per-sender-per-task rate limit: 30 messages per minute per conversation.
+      // BUG FIX: Rate limit is checked AFTER content validation so that invalid-content
+      // requests (which return early above) do not burn the sender's quota. A client
+      // sending N invalid messages would otherwise exhaust their own rate limit.
+      // Uses Redis INCR + EXPIRE to maintain a sliding counter.
+      // If Redis is unavailable the incr() helper returns 1, so the check is
+      // always allowed — same fail-open behaviour as the rest of the cache layer.
+      const MSG_RATE_LIMIT = 30;
+      const MSG_RATE_WINDOW_SECONDS = 60;
+      const rateLimitKey = `msg_rate:${senderId}:${taskId}`;
+      const msgCount = await incr(rateLimitKey);
+      if (msgCount === 1) {
+        await expire(rateLimitKey, MSG_RATE_WINDOW_SECONDS);
+      }
+      if (msgCount > MSG_RATE_LIMIT) {
+        return {
+          success: false,
+          error: {
+            code: ErrorCodes.RATE_LIMIT_EXCEEDED,
+            message: `Message rate limit exceeded. You can send at most ${MSG_RATE_LIMIT} messages per minute per conversation.`,
+          },
+        };
+      }
+
       // Create message (moderation_status defaults to 'pending' in schema)
       const messageResult = await db.query<TaskMessage>(
         `INSERT INTO task_messages (
@@ -555,6 +555,29 @@ export const MessagingService = {
         };
       }
       
+      // Per-sender-per-task rate limit: shared with sendMessage so that switching
+      // from text to photo messages cannot bypass the 30-per-minute quota.
+      // Uses the SAME Redis key (`msg_rate:${senderId}:${taskId}`) so photo and
+      // text messages count against the same shared bucket.
+      // Checked AFTER input validation so invalid requests do not burn the quota.
+      // Fail-open: if Redis is unavailable, incr() returns 1 and the send proceeds.
+      const MSG_RATE_LIMIT = 30;
+      const MSG_RATE_WINDOW_SECONDS = 60;
+      const rateLimitKey = `msg_rate:${senderId}:${taskId}`;
+      const msgCount = await incr(rateLimitKey);
+      if (msgCount === 1) {
+        await expire(rateLimitKey, MSG_RATE_WINDOW_SECONDS);
+      }
+      if (msgCount > MSG_RATE_LIMIT) {
+        return {
+          success: false,
+          error: {
+            code: ErrorCodes.RATE_LIMIT_EXCEEDED,
+            message: `Message rate limit exceeded. You can send at most ${MSG_RATE_LIMIT} messages per minute per conversation.`,
+          },
+        };
+      }
+
       // Photo size validation should happen at upload time (before URLs are generated)
       // MESSAGING_SPEC.md §2.3: Maximum 3 photos per message, 5MB per photo
       // Since this service receives photoUrls (already uploaded), validation must occur
@@ -563,7 +586,13 @@ export const MessagingService = {
       // Store photos in evidence table for audit/dispute trail (MESSAGING_SPEC.md §2.3)
       for (const photoUrl of photoUrls) {
         // Extract storage key from URL (R2 URL format: https://.../{bucket}/{key})
-        const storageKey = photoUrl.includes('/') ? photoUrl.split('/').slice(-2).join('/') : photoUrl;
+        const storageKey = (() => {
+          try {
+            return new URL(photoUrl).pathname.slice(1); // removes leading '/'
+          } catch {
+            return photoUrl; // fallback for non-URL values
+          }
+        })();
         db.query(
           `INSERT INTO evidence (task_id, uploader_user_id, storage_key, content_type, access_scope)
            VALUES ($1, $2, $3, 'image', 'messaging')
@@ -618,20 +647,53 @@ export const MessagingService = {
             aiConfidence: detectedPatterns.includes('phone') || detectedPatterns.includes('email') ? 0.8 : 0.6,
             aiRecommendation: detectedPatterns.includes('phone') || detectedPatterns.includes('email') ? 'flag' : 'approve',
           });
-          
+
           // moderation_flags is TEXT[] in schema, cast array properly
           await db.query(
-            `UPDATE task_messages 
+            `UPDATE task_messages
              SET moderation_status = 'flagged', moderation_flags = $1::TEXT[]
              WHERE id = $2`,
             [detectedPatterns, message.id]
           );
-          
+
           message.moderation_status = 'flagged';
           message.moderation_flags = detectedPatterns;
         }
       }
-      
+
+      // Publish to Redis pub/sub for realtime delivery
+      try {
+        const { Redis } = await import('@upstash/redis');
+        const { config } = await import('../config');
+        if (config.redis.restUrl && config.redis.restToken) {
+          const redis = new Redis({ url: config.redis.restUrl, token: config.redis.restToken });
+          await redis.publish(`realtime:user:${recipientId}`, JSON.stringify({
+            event: 'message.new',
+            data: { messageId: message.id, taskId, senderId, content: message.content, createdAt: message.created_at },
+          }));
+        }
+      } catch (pubError) {
+        log.warn({ err: pubError instanceof Error ? pubError.message : String(pubError) }, 'Failed to publish photo message to realtime');
+      }
+
+      // Send notification to recipient
+      await NotificationService.createNotification({
+        userId: recipientId,
+        category: 'message_received',
+        title: 'New Message',
+        body: caption
+          ? (caption.length > 50 ? caption.substring(0, 50) + '...' : caption)
+          : 'You received a photo',
+        deepLink: `app://task/${taskId}/messages`,
+        taskId,
+        metadata: { messageId: message.id, messageType: 'PHOTO', senderId },
+        channels: ['in_app', 'push'],
+        priority: 'MEDIUM',
+      }).catch(error => {
+        // Log error but don't fail message creation
+        log.error({ err: error instanceof Error ? error.message : String(error), recipientId, taskId }, 'Failed to send photo message notification');
+      });
+
       return {
         success: true,
         data: message,
@@ -659,12 +721,17 @@ export const MessagingService = {
     userId: string
   ): Promise<ServiceResult<TaskMessage>> => {
     try {
-      // Verify user is the receiver
+      // Verify user is the receiver.
+      // BUG FIX: Also filter quarantined/flagged messages so that a message
+      // that is later approved does not appear as already-read. Only messages
+      // visible to the user (not quarantined or flagged) can be marked read.
       const verifyResult = await db.query<{ receiver_id: string }>(
-        'SELECT receiver_id FROM task_messages WHERE id = $1',
+        `SELECT receiver_id FROM task_messages
+         WHERE id = $1
+           AND (moderation_status IS NULL OR moderation_status NOT IN ('quarantined', 'flagged'))`,
         [messageId]
       );
-      
+
       if (verifyResult.rows.length === 0) {
         return {
           success: false,
@@ -674,7 +741,7 @@ export const MessagingService = {
           },
         };
       }
-      
+
       if (verifyResult.rows[0].receiver_id !== userId) {
         return {
           success: false,
@@ -684,13 +751,15 @@ export const MessagingService = {
           },
         };
       }
-      
-      // Mark as read
+
+      // Mark as read (same moderation filter on the UPDATE prevents a race
+      // where the message is quarantined between the SELECT above and here).
       const result = await db.query<TaskMessage>(
         `UPDATE task_messages
          SET read_at = NOW(), updated_at = NOW()
          WHERE id = $1 AND receiver_id = $2 AND read_at IS NULL
-         RETURNING 
+           AND (moderation_status IS NULL OR moderation_status NOT IN ('quarantined', 'flagged'))
+         RETURNING
            id, task_id, sender_id, receiver_id, message_type, content,
            auto_message_template, photo_urls, photo_count,
            location_latitude, location_longitude, location_expires_at,
@@ -762,19 +831,23 @@ export const MessagingService = {
         };
       }
       
-      // Mark all unread messages as read
-      const result = await db.query<{ count: string }>(
+      // Mark all unread messages as read.
+      // NOTE: RETURNING COUNT(*) is invalid in PostgreSQL DML — it returns no rows.
+      // Use rowCount from the query result instead, which is the actual affected count.
+      // BUG FIX: Exclude quarantined/flagged messages so that a message that is later
+      // approved does not appear as already-read (mirrors the filter in markAsRead).
+      const result = await db.query(
         `UPDATE task_messages
          SET read_at = NOW(), updated_at = NOW()
          WHERE task_id = $1 AND receiver_id = $2 AND read_at IS NULL
-         RETURNING COUNT(*) as count`,
+           AND (moderation_status IS NULL OR moderation_status NOT IN ('quarantined', 'flagged'))`,
         [taskId, userId]
       );
-      
+
       return {
         success: true,
         data: {
-          marked: parseInt(result.rows[0]?.count || '0', 10),
+          marked: result.rowCount ?? 0,
         },
       };
     } catch (error) {

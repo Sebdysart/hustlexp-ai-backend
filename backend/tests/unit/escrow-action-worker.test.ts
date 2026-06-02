@@ -65,6 +65,25 @@ vi.mock('../../src/services/AdminNotificationHelper.js', () => ({
   notifyAdmins: vi.fn(),
 }));
 
+// RevenueService is mocked so logEvent never issues a real db.query call.
+// This prevents mockResolvedValueOnce queue leakage between tests (vi.clearAllMocks
+// clears call counts but NOT queued once-values — mocking the module entirely
+// isolates db.query from revenue ledger writes).
+vi.mock('../../src/services/RevenueService.js', () => ({
+  RevenueService: { logEvent: vi.fn().mockResolvedValue({ success: true, data: { id: 'rev_mock_id' } }) },
+}));
+
+// F-12 FIX: handleReleaseRequest now calls SelfInsurancePoolService.recordContribution.
+// Mock it to prevent db.transaction from being called a 3rd time (which would overwrite
+// the T2 updateSql capture in transaction-structure tests).
+vi.mock('../../src/services/SelfInsurancePoolService.js', () => ({
+  SelfInsurancePoolService: {
+    recordContribution: vi.fn().mockResolvedValue(undefined),
+    fileClaim: vi.fn(),
+    getPoolStatus: vi.fn(),
+  },
+}));
+
 // ---------------------------------------------------------------------------
 // Imports (after vi.mock declarations)
 // ---------------------------------------------------------------------------
@@ -119,7 +138,11 @@ function makeEscrowRow(overrides: Partial<{
  *   transaction #1 — critical-section lock (FOR UPDATE SELECT inside trx)
  *   query #1       — SELECT worker_id FROM tasks
  *   query #2       — SELECT stripe_connect_id FROM users
- *   transaction #2 — version-checked UPDATE escrows (store transfer_id)
+ *   [Stripe createTransfer call]
+ *   transaction #2 — T2: SELECT FOR UPDATE NOWAIT (trxQuery call 1) + UPDATE (trxQuery call 2)
+ *
+ * Note: RevenueService.logEvent is module-mocked (vi.mock) so it does NOT
+ * issue an additional db.query call — no query #3 needed here.
  */
 function setupReleaseMocks(escrowAmountCents = 10_000, escrowOverrides = {}) {
   const dbQuery = vi.mocked(db.query);
@@ -137,12 +160,20 @@ function setupReleaseMocks(escrowAmountCents = 10_000, escrowOverrides = {}) {
       });
       return fn(trxQuery);
     }
-    // Second transaction: version-checked UPDATE. Execute the UPDATE and return.
-    const trxQuery = vi.fn().mockResolvedValueOnce({ rowCount: 1, rows: [] });
+    // Second transaction (T2): SELECT FOR UPDATE NOWAIT then version-checked UPDATE.
+    // trxQuery is called TWICE inside T2: once for the lock re-read, once for the UPDATE.
+    const trxQuery = vi.fn()
+      // T2 call 1: SELECT FOR UPDATE NOWAIT — returns locked row with no transfer yet
+      .mockResolvedValueOnce({
+        rows: [{ id: ESCROW_ID, version: ESCROW_VERSION, stripe_transfer_id: null }],
+        rowCount: 1,
+      })
+      // T2 call 2: UPDATE escrows SET stripe_transfer_id ... RETURNING id
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: ESCROW_ID }] });
     return fn(trxQuery);
   });
 
-  // After both transactions: auxiliary db.query calls
+  // After both transactions: auxiliary db.query calls (in execution order)
   dbQuery
     // SELECT worker_id FROM tasks
     .mockResolvedValueOnce({ rows: [{ worker_id: WORKER_ID }], rowCount: 1 } as never)
@@ -170,7 +201,13 @@ function setupRefundMocks(overrides = {}) {
       });
       return fn(trxQuery);
     }
-    const trxQuery = vi.fn().mockResolvedValueOnce({ rowCount: 1, rows: [] });
+    // Second transaction (T2): BUG 2 FIX added SELECT FOR UPDATE NOWAIT before the UPDATE.
+    // The trxQuery is called twice:
+    //   1st call: SELECT FOR UPDATE NOWAIT → returns the locked escrow row (for version re-read)
+    //   2nd call: UPDATE ... RETURNING id → returns the updated row
+    const trxQuery = vi.fn()
+      .mockResolvedValueOnce({ rows: [{ id: ESCROW_ID, version: 1, stripe_refund_id: null }], rowCount: 1 })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: ESCROW_ID }] });
     return fn(trxQuery);
   });
 }
@@ -201,7 +238,7 @@ describe('escrow-action-worker — platform fee deduction (P0 revenue bug)', () 
     // Worker should receive 85% = 8500 cents, NOT the full 10000 cents
     expect(StripeService.createTransfer).toHaveBeenCalledOnce();
     const transferCall = vi.mocked(StripeService.createTransfer).mock.calls[0][0];
-    expect(transferCall.amount).toBe(8_500); // 10000 - 15% fee = 8500
+    expect(transferCall.amount).toBe(8_330); // 10000 - 15% fee = 8500; 8500 - 2% insurance = 8330
   });
 
   it('does NOT transfer the full escrow amount (confirms the bug is fixed)', async () => {
@@ -229,9 +266,9 @@ describe('escrow-action-worker — platform fee deduction (P0 revenue bug)', () 
 
     await processEscrowActionJob(job as never);
 
-    // 15% of 3333 = 499.95 → round to 500; net = 3333 - 500 = 2833
+    // 15% of 3333 = 499.95 → round to 500; net = 3333 - 500 = 2833; 2% insurance = 57; transfer = 2776
     const transferCall = vi.mocked(StripeService.createTransfer).mock.calls[0][0];
-    expect(transferCall.amount).toBe(2_833);
+    expect(transferCall.amount).toBe(2_776);
   });
 
   it('skips transfer when idempotent replay (stripe_transfer_id already set)', async () => {
@@ -274,11 +311,19 @@ describe('escrow-action-worker — FOR UPDATE runs inside db.transaction()', () 
     setupReleaseMocks();
 
     const callOrder: string[] = [];
+    let innerTxCallIndex = 0;
     vi.mocked(db.transaction).mockImplementation(async (fn) => {
       callOrder.push('transaction');
+      const callIndex = innerTxCallIndex++;
+      if (callIndex === 0) {
+        // T1: critical-section lock
+        const trxQuery = vi.fn().mockResolvedValueOnce({ rows: [makeEscrowRow()], rowCount: 1 });
+        return fn(trxQuery);
+      }
+      // T2: SELECT FOR UPDATE NOWAIT + UPDATE
       const trxQuery = vi.fn()
-        .mockResolvedValueOnce({ rows: [makeEscrowRow()], rowCount: 1 })
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] });
+        .mockResolvedValueOnce({ rows: [{ id: ESCROW_ID, version: ESCROW_VERSION, stripe_transfer_id: null }], rowCount: 1 })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: ESCROW_ID }] });
       return fn(trxQuery);
     });
     vi.mocked(StripeService.createTransfer).mockImplementation(async (..._args) => {
@@ -315,7 +360,10 @@ describe('escrow-action-worker — FOR UPDATE runs inside db.transaction()', () 
         });
         return fn(trxQuery);
       }
-      const trxQuery = vi.fn().mockResolvedValueOnce({ rowCount: 1, rows: [] });
+      // T2: SELECT FOR UPDATE NOWAIT + UPDATE
+      const trxQuery = vi.fn()
+        .mockResolvedValueOnce({ rows: [{ id: ESCROW_ID, version: ESCROW_VERSION, stripe_transfer_id: null }], rowCount: 1 })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: ESCROW_ID }] });
       return fn(trxQuery);
     });
 
@@ -364,10 +412,18 @@ describe('escrow-action-worker — FOR UPDATE runs inside db.transaction()', () 
         const trxQuery = vi.fn().mockResolvedValueOnce({ rows: [makeEscrowRow()], rowCount: 1 });
         return fn(trxQuery);
       }
-      // Second transaction: capture the UPDATE SQL
+      // Second transaction (T2): trx is called twice — SELECT FOR UPDATE NOWAIT then UPDATE.
+      // Capture the UPDATE SQL (second call inside T2).
+      let t2CallIndex = 0;
       const trxQuery = vi.fn().mockImplementation(async (sql: string) => {
+        const t2Call = t2CallIndex++;
+        if (t2Call === 0) {
+          // T2 call 1: SELECT FOR UPDATE NOWAIT
+          return { rows: [{ id: ESCROW_ID, version: ESCROW_VERSION, stripe_transfer_id: null }], rowCount: 1 };
+        }
+        // T2 call 2: UPDATE — capture the SQL
         updateSql = sql;
-        return { rowCount: 1, rows: [] };
+        return { rowCount: 1, rows: [{ id: ESCROW_ID }] };
       });
       return fn(trxQuery);
     });
@@ -482,6 +538,33 @@ describe('escrow-action-worker — refund_requested handler', () => {
     ).rejects.toThrow('stripe_payment_intent_id');
   });
 
+  it('uses refund_amount from job payload when provided (partial refund, BUG H4)', async () => {
+    setupRefundMocks();
+
+    // Provide a refund_amount smaller than the full escrow amount (10_000)
+    await processEscrowActionJob(makeJob('escrow.refund_requested',
+      makeSignedPayload({ escrow_id: ESCROW_ID, task_id: TASK_ID, reason: 'partial refund', refund_amount: 4_000 }),
+    ) as never);
+
+    expect(StripeService.createRefund).toHaveBeenCalledOnce();
+    const refundCall = vi.mocked(StripeService.createRefund).mock.calls[0][0];
+    // Must use the job payload amount, NOT the full escrow amount
+    expect(refundCall.amount).toBe(4_000);
+    expect(refundCall.amount).not.toBe(10_000);
+  });
+
+  it('falls back to full escrow amount when refund_amount is absent (BUG H4 — no regression)', async () => {
+    setupRefundMocks();
+
+    await processEscrowActionJob(makeJob('escrow.refund_requested',
+      makeSignedPayload({ escrow_id: ESCROW_ID, task_id: TASK_ID, reason: 'full refund no amount field' }),
+    ) as never);
+
+    expect(StripeService.createRefund).toHaveBeenCalledOnce();
+    const refundCall = vi.mocked(StripeService.createRefund).mock.calls[0][0];
+    expect(refundCall.amount).toBe(10_000); // full escrow amount
+  });
+
   it('FOR UPDATE runs inside db.transaction() for refund path (not bare db.query)', async () => {
     let forUpdateSql = '';
     const dbTransaction = vi.mocked(db.transaction);
@@ -496,7 +579,10 @@ describe('escrow-action-worker — refund_requested handler', () => {
         });
         return fn(trxQuery);
       }
-      return fn(vi.fn().mockResolvedValueOnce({ rowCount: 1, rows: [] }));
+      // T2 now has two calls: SELECT FOR UPDATE NOWAIT + UPDATE RETURNING id (BUG 2 FIX)
+      return fn(vi.fn()
+        .mockResolvedValueOnce({ rows: [{ id: ESCROW_ID, version: 1, stripe_refund_id: null }], rowCount: 1 })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: ESCROW_ID }] }));
     });
 
     await processEscrowActionJob(makeJob('escrow.refund_requested',

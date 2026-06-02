@@ -126,6 +126,7 @@ describe('insurance router', () => {
   // =========================================================================
   describe('fileClaim', () => {
     it('files claim with snake_case params', async () => {
+      mockDb.query.mockResolvedValueOnce({ rows: [{ poster_id: UUID1, worker_id: UUID1 }], rowCount: 1 } as any);
       mockInsurance.fileClaim.mockResolvedValue({ success: true, data: 'claim-1' } as any);
 
       const caller = makeCaller();
@@ -133,17 +134,18 @@ describe('insurance router', () => {
         task_id: UUID2,
         claim_amount_cents: 10000,
         reason: 'Property damaged during task',
-        evidence_urls: ['https://example.com/photo.jpg'],
+        evidence_urls: ['https://hustlexp.r2.cloudflarestorage.com/photo.jpg'],
       });
 
       expect(result.success).toBe(true);
       expect(result.claim_id).toBe('claim-1');
       expect(mockInsurance.fileClaim).toHaveBeenCalledWith(
-        UUID2, UUID1, 10000, 'Property damaged during task', ['https://example.com/photo.jpg'],
+        UUID2, UUID1, 10000, 'Property damaged during task', ['https://hustlexp.r2.cloudflarestorage.com/photo.jpg'],
       );
     });
 
     it('files claim with camelCase params', async () => {
+      mockDb.query.mockResolvedValueOnce({ rows: [{ poster_id: UUID1, worker_id: UUID1 }], rowCount: 1 } as any);
       mockInsurance.fileClaim.mockResolvedValue({ success: true, data: 'claim-2' } as any);
 
       const caller = makeCaller();
@@ -151,6 +153,7 @@ describe('insurance router', () => {
         taskId: UUID2,
         requestedAmountCents: 5000,
         incidentDescription: 'Tool was broken',
+        evidence_urls: ['https://hustlexp.r2.cloudflarestorage.com/evidence.jpg'],
       });
 
       expect(result.success).toBe(true);
@@ -164,6 +167,7 @@ describe('insurance router', () => {
     });
 
     it('throws on service failure', async () => {
+      mockDb.query.mockResolvedValueOnce({ rows: [{ poster_id: UUID1, worker_id: UUID1 }], rowCount: 1 } as any);
       mockInsurance.fileClaim.mockResolvedValue({
         success: false,
         error: { message: 'Pool depleted' },
@@ -174,6 +178,7 @@ describe('insurance router', () => {
         task_id: UUID2,
         claim_amount_cents: 500000,
         reason: 'Major damage occurred during task',
+        evidence_urls: ['https://hustlexp.r2.cloudflarestorage.com/evidence.jpg'],
       })).rejects.toThrow('Pool depleted');
     });
   });

@@ -53,7 +53,10 @@ function createRedisConnection(): Redis {
   // Create ioredis client (BullMQ-compatible)
   // Upstash requires TLS for direct connections
   const redis = new Redis(redisUrl, {
-    maxRetriesPerRequest: 3,
+    // W46-1 FIX: BullMQ requires maxRetriesPerRequest=null. Any non-null value
+    // causes MaxRetriesPerRequestError on transient Redis blips, crashing all
+    // workers instead of retrying the job via the BullMQ backoff strategy.
+    maxRetriesPerRequest: null,
     enableReadyCheck: true,
     lazyConnect: true,
     // Upstash-specific settings: requires TLS for direct TCP connections
@@ -127,6 +130,11 @@ export const QUEUE_CONFIGS: Record<QueueName, QueueConfig> = {
     },
     workerOptions: {
       maxStalledCount: 2,
+      // W-18 FIX: Fraud detection makes nested AI calls (LogisticsAIService.detectImpossibleTravel)
+      // that can exceed BullMQ's default 30s lockDuration. Without this, BullMQ considers the
+      // worker stalled and re-queues the job, causing overlap and duplicate AI calls.
+      lockDuration: 120000, // 2 minutes — sufficient for nested AI call chains
+      lockRenewTime: 30000, // Renew lock every 30s to keep it alive during long runs
     },
   },
 
@@ -292,6 +300,27 @@ export const QUEUE_CONFIGS: Record<QueueName, QueueConfig> = {
 
 const queueInstances = new Map<QueueName, Queue>();
 
+// Tracks every ioredis connection created by getQueue / createWorker so they
+// can all be cleanly disconnected on graceful shutdown (W-06 fix).
+const connectionInstances = new Map<string, Redis>();
+
+/**
+ * Close all tracked ioredis connections.
+ * Call this during graceful shutdown before the process exits.
+ */
+export async function closeAllConnections(): Promise<void> {
+  const closePromises: Promise<void>[] = [];
+  for (const [key, conn] of connectionInstances.entries()) {
+    closePromises.push(
+      conn.quit().then(() => undefined).catch((err: unknown) => {
+        rootLogger.warn({ err, connectionKey: key }, 'Error closing Redis connection');
+      })
+    );
+  }
+  await Promise.all(closePromises);
+  connectionInstances.clear();
+}
+
 /**
  * Get or create a BullMQ queue
  * Singleton pattern to ensure one queue instance per name
@@ -300,15 +329,16 @@ export function getQueue(queueName: QueueName): Queue {
   if (queueInstances.has(queueName)) {
     return queueInstances.get(queueName)!;
   }
-  
-  const config = QUEUE_CONFIGS[queueName];
+
+  const queueConfig = QUEUE_CONFIGS[queueName];
   const connection = createRedisConnection();
-  
+  connectionInstances.set(`${queueName}:queue`, connection);
+
   const queue = new Queue(queueName, {
     connection: connection as unknown as QueueOptions['connection'],
-    defaultJobOptions: config.defaultJobOptions,
+    defaultJobOptions: queueConfig.defaultJobOptions,
   });
-  
+
   queueInstances.set(queueName, queue);
   return queue;
 }
@@ -332,7 +362,15 @@ export function generateIdempotencyKey(
 }
 
 /**
- * Parse idempotency key to extract components
+ * Parse idempotency key to extract components.
+ *
+ * Supports both the standard 3-segment format ({eventType}:{aggregateId}:{version})
+ * and extended surge/discriminator keys with 4+ segments
+ * (e.g. 'task.instant_available:taskId:hustlerId:surge1').
+ * For extended keys, parts[0] is eventType, parts[1] is aggregateId, and
+ * parts.slice(2).join(':') is treated as the discriminator suffix (returned as
+ * a non-numeric NaN eventVersion — callers that need the raw suffix should use
+ * the key directly).
  */
 export function parseIdempotencyKey(key: string): {
   eventType: string;
@@ -340,12 +378,16 @@ export function parseIdempotencyKey(key: string): {
   eventVersion: number;
 } {
   const parts = key.split(':');
-  if (parts.length !== 3) {
+  if (parts.length < 3) {
     throw new Error(`Invalid idempotency key format: ${key}`);
   }
   return {
     eventType: parts[0],
     aggregateId: parts[1],
+    // W46-3 FIX: For 4+-segment surge keys (e.g., 'eventType:aggregateId:version:suffix'),
+    // parse only parts[2] as the numeric version. Previously, parts.slice(2).join(':')
+    // produced a non-numeric string like 'version:suffix' → parseInt → NaN, which
+    // corrupted deduplication IDs. The surge discriminator suffix lives in parts[3+].
     eventVersion: parseInt(parts[2], 10),
   };
 }
@@ -376,13 +418,18 @@ export function createWorker(
 ): Worker {
   const queueConfig = QUEUE_CONFIGS[queueName];
   const connection = createRedisConnection();
+  // Use a unique key per worker in case multiple workers share the same queue name
+  const connKey = `${queueName}:worker:${connectionInstances.size}`;
+  connectionInstances.set(connKey, connection);
 
   // For the critical_payments queue, override removeOnFail so that any job
   // that exhausts all retries is preserved indefinitely in Redis for audit and
-  // manual replay. { count: 0 } is BullMQ's convention for "keep all".
+  // manual replay. `false` means keep all failed jobs indefinitely (BullMQ v5).
+  // { count: 0 } is NOT equivalent — it means "keep zero failed jobs" and will
+  // silently delete exhausted financial jobs immediately (Bug W-1 fix).
   // Other queues keep their configured age-based retention.
   const removeOnFailOverride: Partial<WorkerOptions> =
-    queueName === 'critical_payments' ? { removeOnFail: { count: 0 } } : {};
+    queueName === 'critical_payments' ? { removeOnFail: false } : {};
 
   const worker = new Worker(
     queueName,
@@ -469,6 +516,18 @@ export function verifyJobSignature(payload: Record<string, unknown>, signature: 
   }
   return diff === 0;
 }
+
+// ============================================================================
+// GRACEFUL SHUTDOWN — close all tracked Redis connections
+// ============================================================================
+
+const shutdownHandler = async (signal: string) => {
+  rootLogger.info({ signal }, 'queues: received shutdown signal, closing Redis connections');
+  await closeAllConnections();
+};
+
+process.on('SIGTERM', () => { void shutdownHandler('SIGTERM'); });
+process.on('SIGINT',  () => { void shutdownHandler('SIGINT'); });
 
 // ============================================================================
 // EXPORTS

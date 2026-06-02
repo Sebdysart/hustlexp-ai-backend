@@ -40,6 +40,7 @@ vi.mock('../../src/services/EscrowService', () => ({
   EscrowService: {
     release: vi.fn(),
     refund: vi.fn(),
+    lockForDispute: vi.fn(),
   },
 }));
 
@@ -96,7 +97,11 @@ describe('admin.setUserBan branches', () => {
     } as any);
     // INSERT admin_actions
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
-    // SELECT funded escrows (none)
+    // GG1 fix: SELECT firebase_uid for Redis revocation key namespace
+    mockDb.query.mockResolvedValueOnce({ rows: [{ firebase_uid: 'firebase-test-uid' }], rowCount: 1 } as any);
+    // LL6 fix — Bucket A: SELECT idle FUNDED escrows (task NOT in active states) → refund
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+    // LL6 fix — Bucket B: SELECT active FUNDED escrows (task IN active states) → lockForDispute
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
     // UPDATE tasks SET state = 'CANCELLED' for OPEN tasks
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
@@ -112,10 +117,15 @@ describe('admin.setUserBan branches', () => {
 
   it('returns updated row on success (ban=false)', async () => {
     prependAdminCheck();
+    // UPDATE users SET is_banned
     mockDb.query.mockResolvedValueOnce({
       rows: [{ id: USER_UUID, is_banned: false }],
       rowCount: 1,
     } as any);
+    // INSERT admin_actions audit log
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
+    // GG1 fix: SELECT firebase_uid for Redis revocation key
+    mockDb.query.mockResolvedValueOnce({ rows: [{ firebase_uid: 'firebase-test-uid' }], rowCount: 1 } as any);
 
     const result = await makeAdminCaller().setUserBan({
       userId: USER_UUID,
@@ -143,7 +153,11 @@ describe('admin.setUserBan branches', () => {
     } as any);
     // INSERT admin_actions
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
-    // SELECT funded escrows (none)
+    // GG1 fix: SELECT firebase_uid for Redis revocation key namespace
+    mockDb.query.mockResolvedValueOnce({ rows: [{ firebase_uid: 'firebase-test-uid' }], rowCount: 1 } as any);
+    // LL6 fix — Bucket A: SELECT idle FUNDED escrows (task NOT in active states) → refund
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+    // LL6 fix — Bucket B: SELECT active FUNDED escrows (task IN active states) → lockForDispute
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
     // UPDATE tasks SET state = 'CANCELLED' for OPEN tasks
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
@@ -366,11 +380,15 @@ describe('admin.escrowOverride branches', () => {
     });
   });
 
-  it('throws NOT_FOUND when EscrowService returns failure', async () => {
+  it('throws NOT_FOUND when EscrowService returns NOT_FOUND failure', async () => {
+    // Bug 2 fix: error code is now mapped correctly — NOT_FOUND code → tRPC NOT_FOUND.
     prependAdminCheck();
+    // The failure audit log INSERT also fires (fire-and-forget) — mock it so the
+    // db mock queue is not left in an unexpected state.
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
     mockEscrowService.release.mockResolvedValueOnce({
       success: false,
-      error: { message: 'Escrow not found or not in overridable state' },
+      error: { code: 'NOT_FOUND', message: 'Escrow not found or not in overridable state' },
     } as any);
 
     await expect(
@@ -388,6 +406,7 @@ describe('admin.escrowOverride branches', () => {
       success: true,
       data: { id: ESC_UUID, state: 'RELEASED', amount: 1000 },
     } as any);
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // close orphaned disputes
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
 
     await makeAdminCaller().escrowOverride({
@@ -396,8 +415,8 @@ describe('admin.escrowOverride branches', () => {
       reason: 'Test',
     });
 
-    // Second db.query call is the admin_actions INSERT (first is isAdmin check)
-    const [sql, params] = (mockDb.query as any).mock.calls[1];
+    // Third db.query call is the admin_actions INSERT (first is isAdmin check, second is UPDATE disputes)
+    const [sql, params] = (mockDb.query as any).mock.calls[2];
     expect(sql).toContain('admin_actions');
     expect(params[0]).toBe(ADMIN_UUID); // admin_id
     expect(params[2]).toBe(ESC_UUID);   // target_id

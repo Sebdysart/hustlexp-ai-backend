@@ -87,7 +87,10 @@ vi.mock('@aws-sdk/s3-request-presigner', () => ({
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
 
+import { db } from '../../src/db';
 import { uploadRouter } from '../../src/routers/upload';
+
+const mockDb = vi.mocked(db);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -109,6 +112,11 @@ function makeCaller(userId = 'test-uid') {
 describe('upload.getPresignedUrl — R2 configured (presigned URL path)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Default: participant check passes — caller ('test-uid') is the poster of the task
+    mockDb.query.mockResolvedValue({
+      rows: [{ poster_id: 'test-uid', worker_id: 'other-worker' }],
+      rowCount: 1,
+    } as any);
   });
 
   it('calls getSignedUrl and returns the real presigned URL', async () => {
@@ -197,6 +205,11 @@ describe('upload.getPresignedUrl — R2 configured (presigned URL path)', () => 
   });
 
   it('includes uploaded-by and task-id in PutObjectCommand Metadata', async () => {
+    // Override participant check: caller is 'user-abc' as the poster
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ poster_id: 'user-abc', worker_id: 'other-worker' }],
+      rowCount: 1,
+    } as any);
     mocks.mockGetSignedUrl.mockResolvedValue('https://presigned.example.com?sig=meta');
 
     await makeCaller('user-abc').getPresignedUrl({
@@ -243,7 +256,7 @@ describe('upload.getPresignedUrl — R2 configured (presigned URL path)', () => 
     expect(result.key).not.toContain('messages/');
   });
 
-  it('accepts image/heic content type', async () => {
+  it('accepts image/heic content type and preserves extension in key', async () => {
     mocks.mockGetSignedUrl.mockResolvedValue('https://presigned.example.com?sig=heic');
 
     const result = await makeCaller().getPresignedUrl({
@@ -253,7 +266,7 @@ describe('upload.getPresignedUrl — R2 configured (presigned URL path)', () => 
       fileSize: 3000000,
     });
 
-    expect(result.key).toContain('photo.heic');
+    expect(result.key).toMatch(/\.heic$/);
     expect(mocks.mockGetSignedUrl).toHaveBeenCalledTimes(1);
   });
 

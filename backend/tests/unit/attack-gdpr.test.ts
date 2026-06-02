@@ -37,6 +37,7 @@ vi.mock('../../src/logger', () => {
   return {
     logger: base,
     escrowLogger: base,
+    stripeLogger: base,
     taskLogger: base,
     aiLogger: base,
   };
@@ -51,6 +52,14 @@ vi.mock('../../src/config', () => ({
 
 vi.mock('../../src/services/NotificationService', () => ({
   NotificationService: { createNotification: vi.fn().mockResolvedValue({ success: true, data: {} }) },
+}));
+
+// GG1 fix: GDPRService now imports revokeUserSessions from auth/middleware.
+// Mock auth/middleware to prevent firebase.ts from crashing at module load
+// time (firebase.ts reads config.firebase.projectId which is not set in tests).
+vi.mock('../../src/auth/middleware.js', () => ({
+  revokeUserSessions: vi.fn().mockResolvedValue(undefined),
+  authMiddleware: vi.fn(),
 }));
 
 // Mock TaskService to avoid pulling in ScoperAIService → AIClient → config.ai chain.
@@ -109,7 +118,7 @@ vi.mock('../../src/realtime/connection-registry', () => ({
 }));
 
 import { db } from '../../src/db';
-import { GDPRService } from '../../src/services/GDPRService';
+import { GDPRService, _resetGDPRRateLimitMapForTesting } from '../../src/services/GDPRService';
 import { EscrowService } from '../../src/services/EscrowService';
 
 const mockDb = db as {
@@ -134,6 +143,8 @@ function setupTransaction() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // D53-4: reset in-memory rate-limit Map so each test starts with an empty bucket
+  _resetGDPRRateLimitMapForTesting();
 });
 
 // ===========================================================================
@@ -363,37 +374,14 @@ describe('Attack 4: Delete while XP job is pending in BullMQ', () => {
   it('should confirm XPService.awardXP does NOT check account_status before writing to ledger', async () => {
     const { XPService } = await import('../../src/services/XPService');
 
-    // Restore real implementation for this one test to inspect actual behavior
-    vi.mocked(XPService.awardXP).mockRestore?.();
+    // This test is a structural code-reading finding — no DB calls are made.
+    // XPService.awardXP is a vi.mock() — mockRestore is a no-op here.
+    // IMPORTANT: Do NOT queue mockResolvedValueOnce values that won't be consumed;
+    // vi.clearAllMocks() between tests does NOT drain the once-queue, so leftover
+    // values would poison subsequent tests (Attack 5 → 6 → 7).
 
-    // The real awardXP does: SELECT ... FROM users WHERE id = $1 FOR UPDATE
-    // It does NOT check account_status = 'DELETED'
-    // We simulate: user exists but account_status = 'DELETED'
-    setupSerializableTransaction();
-    mockDb.query
-      // Daily cap check (checkDailyXPCap → Redis fallback to DB)
-      .mockResolvedValueOnce({ rows: [{ total_xp_today: 0 }], rowCount: 1 })
-      // Velocity check
-      .mockResolvedValueOnce({ rows: [{ count: '0' }], rowCount: 1 })
-      // Inside serializableTransaction: SELECT FOR UPDATE — returns DELETED user
-      .mockResolvedValueOnce({
-        rows: [{ xp_total: 500, current_level: 2, current_streak: 3, trust_tier: 1 }],
-        rowCount: 1
-      })
-      // SELECT mode FROM tasks
-      .mockResolvedValueOnce({ rows: [{ mode: 'STANDARD' }], rowCount: 1 })
-      // INSERT INTO xp_ledger
-      .mockResolvedValueOnce({
-        rows: [{ id: 'xp-new', user_id: 'user-deleted', effective_xp: 50, task_id: 't1', escrow_id: 'e1' }],
-        rowCount: 1
-      })
-      // UPDATE users SET xp_total
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 });
-
-    // The call succeeds even though account_status = 'DELETED' — there is no guard
-    // (We're testing the structural absence of a check, not the real result)
-    // FINDING: No account_status check exists in XPService.awardXP flow
-    // This is confirmed by reading XPService.ts lines 283-362 — zero check for
+    // FINDING: No account_status check exists in XPService.awardXP flow.
+    // Confirmed by reading XPService.ts lines 283-362 — zero check for
     // account_status or 'DELETED' before writing the ledger entry.
     expect(true).toBe(true); // Structural finding — documented in verdict above
   });
@@ -459,9 +447,11 @@ describe('Attack 5: Delete and re-register with same email', () => {
 
     // register() check: SELECT id FROM users WHERE firebase_uid = $1 OR email = $2
     // firebase_uid matches — returns the deleted row
+    // Only one db.query is called in this test (the existingCheck).
+    // Do NOT add a second mockResolvedValueOnce — unconsumed values persist
+    // across vi.clearAllMocks() and poison subsequent tests.
     mockDb.query
-      .mockResolvedValueOnce({ rows: [{ id: deletedUser.id }], rowCount: 1 })  // firebase_uid hit
-      .mockResolvedValueOnce({ rows: [deletedUser], rowCount: 1 });             // full row fetch
+      .mockResolvedValueOnce({ rows: [{ id: deletedUser.id }], rowCount: 1 });  // firebase_uid hit
 
     // FINDING: the register handler at user.ts:268-274 does NOT check account_status.
     // It returns the existing row regardless of whether it is 'DELETED'.
@@ -560,7 +550,10 @@ describe('Attack 6: Partial deletion — PII erasure vs financial record retenti
     expect(bioCleared).toBe(true); // FIX 6 applied — bio cleared on deletion
   });
 
-  it('should confirm analytics_events older than 90 days are NOT deleted', async () => {
+  it('D48-2 FIX: analytics_events deletion has NO 90-day cutoff — all records deleted', async () => {
+    // FINDING WAS: GDPRService deleted only events created_at >= NOW() - INTERVAL '90 days',
+    // leaving older events linked to real user_id indefinitely (GDPR Art. 17 violation).
+    // D48-2 FIX: The 90-day filter was removed — all analytics_events for user are now deleted.
     const requestId = 'req-del-analytics';
     const pastDeadline = new Date(Date.now() - 1000);
 
@@ -575,14 +568,13 @@ describe('Attack 6: Partial deletion — PII erasure vs financial record retenti
 
     const sqlCalls = mockDb.query.mock.calls.map((call: unknown[]) => (call[0] as string).toLowerCase());
 
-    // GDPRService.ts:1022 deletes only 'created_at >= NOW() - INTERVAL 90 days'
     const analyticsDeleteSql = sqlCalls.find((sql: string) =>
       sql.includes('analytics_events') && sql.includes('delete')
     );
     expect(analyticsDeleteSql).toBeTruthy();
-    // The SQL contains the 90-day filter — older events are never deleted
-    expect(analyticsDeleteSql).toContain('90 days');
-    // FINDING: Events older than 90 days remain linked to real user_id forever.
+    // D48-2: The 90-day filter is GONE — all records deleted, not just recent ones
+    expect(analyticsDeleteSql).not.toContain('90 days');
+    expect(analyticsDeleteSql).not.toContain('interval');
   });
 });
 
@@ -849,6 +841,336 @@ describe('Attack 11: Account merge — phone number collision', () => {
     // GDPRService has no mergeAccounts method
     expect((gdpr as Record<string, unknown>).mergeAccounts).toBeUndefined();
     expect((gdpr as Record<string, unknown>).merge).toBeUndefined();
+  });
+});
+
+// ===========================================================================
+// D53-1 — RE-IDENTIFIABLE ANONYMIZED ID
+// ===========================================================================
+describe('D53-1 (HIGH): Re-identifiable anonymizedId', () => {
+  /**
+   * BUG: anonymizedId is constructed as:
+   *   `00000000-0000-0000-0000-${userId.replace(/-/g, '').slice(-12)}`
+   * This embeds the last 12 hex characters of the real userId, making
+   * re-identification trivial for anyone with the original userId.
+   *
+   * FIX: Use randomUUID() for the anonymizedId. For idempotency, check
+   * whether the user row already has the deleted-*@deleted.hustlexp.app
+   * email pattern before generating a new UUID — if already anonymized,
+   * return early without re-generating.
+   */
+  it('D53-1: anonymizedId in proofs/fraud_risk_scores/task_applications must NOT embed last-12 of real userId', async () => {
+    const userId = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
+    const last12 = userId.replace(/-/g, '').slice(-12); // ef1234567890
+
+    const requestId = 'req-d53-1';
+    const pastDeadline = new Date(Date.now() - 1000);
+
+    mockDb.query
+      .mockResolvedValueOnce({
+        rows: [{ id: requestId, user_id: userId, status: 'pending', request_type: 'deletion', deadline: pastDeadline }],
+        rowCount: 1,
+      })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 }); // update to processing
+
+    setupSerializableTransaction();
+    mockDb.query.mockResolvedValue({ rows: [], rowCount: 1 });
+
+    await GDPRService.executeDeletion(requestId);
+
+    // Find any SQL call that includes a UUID-format value derived from the real userId.
+    // The bad pattern: 00000000-0000-0000-0000-<last12ofUserId>
+    const allSqlCalls = mockDb.query.mock.calls.map((c: unknown[]) => String(c[0]).toLowerCase());
+    const allParamCalls = mockDb.query.mock.calls.flatMap((c: unknown[]) =>
+      Array.isArray(c[1]) ? c[1].map(String) : []
+    );
+
+    const badAnonymizedId = `00000000-0000-0000-0000-${last12}`;
+
+    // Assert: no SQL string or parameter contains the bad deterministic ID
+    const badIdInSql = allSqlCalls.some((sql: string) => sql.includes(badAnonymizedId.toLowerCase()));
+    const badIdInParams = allParamCalls.some((p: string) => p.toLowerCase() === badAnonymizedId.toLowerCase());
+
+    expect(badIdInSql).toBe(false); // D53-1 FIX: anonymizedId must NOT be derived from userId
+    expect(badIdInParams).toBe(false); // D53-1 FIX: no param should be the re-identifiable ID
+  });
+
+  it('D53-1: anonymizedId passed as param must be a valid random UUID (not all-zeros-prefix)', async () => {
+    const userId = 'deadbeef-0000-1111-2222-333344445555';
+    const requestId = 'req-d53-1b';
+    const pastDeadline = new Date(Date.now() - 1000);
+
+    mockDb.query
+      .mockResolvedValueOnce({
+        rows: [{ id: requestId, user_id: userId, status: 'pending', request_type: 'deletion', deadline: pastDeadline }],
+        rowCount: 1,
+      })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 });
+
+    setupSerializableTransaction();
+    mockDb.query.mockResolvedValue({ rows: [], rowCount: 1 });
+
+    await GDPRService.executeDeletion(requestId);
+
+    // Collect all UUID-shaped params that were passed to query calls
+    const allParams = mockDb.query.mock.calls.flatMap((c: unknown[]) =>
+      Array.isArray(c[1]) ? c[1].map(String) : []
+    );
+
+    // The anonymized ID will be passed as a param in UPDATE proofs SET submitter_id = $1,
+    // UPDATE task_applications SET hustler_id = $2,
+    // UPDATE fraud_risk_scores SET entity_id = $1
+    // It must look like a proper random UUID, NOT the deterministic pattern
+    const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const deterministicPrefix = '00000000-0000-0000-0000-';
+
+    const uuidParams = allParams.filter((p: string) => uuidPattern.test(p) && p !== userId);
+
+    // At least one UUID param should be the anonymizedId (used in proofs/applications/scores updates)
+    // None of them should use the deterministic prefix
+    const hasDeterministicId = uuidParams.some((p: string) =>
+      p.toLowerCase().startsWith(deterministicPrefix)
+    );
+
+    expect(hasDeterministicId).toBe(false); // D53-1 FIX: no deterministic 00000000-prefix UUID
+  });
+
+  it('D53-1: idempotency — already-anonymized user (email matches pattern) returns early without re-running', async () => {
+    const userId = 'cafe1234-5678-9abc-def0-111122223333';
+    const requestId = 'req-d53-1c';
+    const pastDeadline = new Date(Date.now() - 1000);
+
+    // The request row is 'pending' (a retry scenario where the row was already anonymized)
+    mockDb.query
+      // Call 1: executeDeletion — fetch GDPR request row
+      .mockResolvedValueOnce({
+        rows: [{ id: requestId, user_id: userId, status: 'pending', request_type: 'deletion', deadline: pastDeadline }],
+        rowCount: 1,
+      })
+      // Call 2: executeDeletion — CAS update to 'processing'
+      .mockResolvedValueOnce({ rows: [{ id: requestId }], rowCount: 1 })
+      // Call 3: executeDeletion — firebase_uid lookup (before deleteAndAnonymizeUserData)
+      .mockResolvedValueOnce({ rows: [{ firebase_uid: 'firebase-uid-abc' }], rowCount: 1 })
+      // Call 4: deleteAndAnonymizeUserData — idempotency email check
+      // Returns already-anonymized email → triggers early return
+      .mockResolvedValueOnce({
+        rows: [{ email: 'deleted-abc12345@deleted.hustlexp.app' }],
+        rowCount: 1,
+      })
+      // Call 5: executeDeletion — UPDATE request to 'completed' (after deletion succeeds)
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 });
+    // Any further calls (notification, etc.) get the fallback:
+    mockDb.query.mockResolvedValue({ rows: [], rowCount: 1 });
+
+    const result = await GDPRService.executeDeletion(requestId);
+
+    // Must succeed (idempotent re-run should not crash)
+    expect(result.success).toBe(true);
+
+    // The idempotency check must have queried for the user's current email
+    const sqlCalls = mockDb.query.mock.calls.map((c: unknown[]) => String(c[0]).toLowerCase());
+    const checkedEmail = sqlCalls.some((sql: string) =>
+      sql.includes('select') && sql.includes('email') && sql.includes('users') && sql.includes('where')
+    );
+    expect(checkedEmail).toBe(true); // D53-1: idempotency check must query the users table
+  });
+});
+
+// ===========================================================================
+// D53-2 — MISSING TABLE DELETIONS IN GDPR SCRUB
+// ===========================================================================
+describe('D53-2 (CRITICAL): Missing table deletions in GDPR scrub', () => {
+  /**
+   * BUG: deleteAndAnonymizeUserData() does NOT delete from these tables that
+   * contain PII, confirmed present in schema.sql:
+   *   - users_identity    (identity verification data)
+   *   - verification_attempts (identity verification attempts)
+   *   - identity_events   (identity events)
+   *   - user_stats        (user statistics)
+   *   - user_boosts       (boost purchases)
+   *   - leaderboard_cache (caches display name)
+   *   - proactive_preferences (user preference data)
+   *   - messages          (direct messages — sender_id)
+   *
+   * FIX: Add DELETE FROM each missing table inside deleteAndAnonymizeUserData.
+   */
+
+  function runDeletion(requestId: string, userId: string) {
+    const pastDeadline = new Date(Date.now() - 1000);
+    mockDb.query
+      .mockResolvedValueOnce({
+        rows: [{ id: requestId, user_id: userId, status: 'pending', request_type: 'deletion', deadline: pastDeadline }],
+        rowCount: 1,
+      })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 }); // update to processing
+
+    setupSerializableTransaction();
+    mockDb.query.mockResolvedValue({ rows: [], rowCount: 1 });
+
+    return GDPRService.executeDeletion(requestId);
+  }
+
+  it('D53-2: DELETE FROM users_identity WHERE user_id = $1', async () => {
+    await runDeletion('req-d53-2-identity', 'user-d53-2a');
+    const sqlCalls = mockDb.query.mock.calls.map((c: unknown[]) => String(c[0]).toLowerCase());
+    const deleted = sqlCalls.some((sql: string) =>
+      sql.includes('delete') && sql.includes('users_identity')
+    );
+    expect(deleted).toBe(true); // D53-2 FIX: users_identity must be deleted
+  });
+
+  it('D53-2: DELETE FROM verification_attempts WHERE user_id = $1', async () => {
+    await runDeletion('req-d53-2-verif', 'user-d53-2b');
+    const sqlCalls = mockDb.query.mock.calls.map((c: unknown[]) => String(c[0]).toLowerCase());
+    const deleted = sqlCalls.some((sql: string) =>
+      sql.includes('delete') && sql.includes('verification_attempts')
+    );
+    expect(deleted).toBe(true); // D53-2 FIX: verification_attempts must be deleted
+  });
+
+  it('D53-2: DELETE FROM identity_events WHERE user_id = $1', async () => {
+    await runDeletion('req-d53-2-ievents', 'user-d53-2c');
+    const sqlCalls = mockDb.query.mock.calls.map((c: unknown[]) => String(c[0]).toLowerCase());
+    const deleted = sqlCalls.some((sql: string) =>
+      sql.includes('delete') && sql.includes('identity_events')
+    );
+    expect(deleted).toBe(true); // D53-2 FIX: identity_events must be deleted
+  });
+
+  it('D53-2: DELETE FROM user_stats WHERE user_id = $1', async () => {
+    await runDeletion('req-d53-2-stats', 'user-d53-2d');
+    const sqlCalls = mockDb.query.mock.calls.map((c: unknown[]) => String(c[0]).toLowerCase());
+    const deleted = sqlCalls.some((sql: string) =>
+      sql.includes('delete') && sql.includes('user_stats')
+    );
+    expect(deleted).toBe(true); // D53-2 FIX: user_stats must be deleted
+  });
+
+  it('D53-2: DELETE FROM user_boosts WHERE user_id = $1', async () => {
+    await runDeletion('req-d53-2-boosts', 'user-d53-2e');
+    const sqlCalls = mockDb.query.mock.calls.map((c: unknown[]) => String(c[0]).toLowerCase());
+    const deleted = sqlCalls.some((sql: string) =>
+      sql.includes('delete') && sql.includes('user_boosts')
+    );
+    expect(deleted).toBe(true); // D53-2 FIX: user_boosts must be deleted
+  });
+
+  it('D53-2: DELETE FROM leaderboard_cache WHERE user_id = $1', async () => {
+    await runDeletion('req-d53-2-lb', 'user-d53-2f');
+    const sqlCalls = mockDb.query.mock.calls.map((c: unknown[]) => String(c[0]).toLowerCase());
+    const deleted = sqlCalls.some((sql: string) =>
+      sql.includes('delete') && sql.includes('leaderboard_cache')
+    );
+    expect(deleted).toBe(true); // D53-2 FIX: leaderboard_cache must be deleted
+  });
+
+  it('D53-2: DELETE FROM proactive_preferences WHERE user_id = $1', async () => {
+    await runDeletion('req-d53-2-pp', 'user-d53-2g');
+    const sqlCalls = mockDb.query.mock.calls.map((c: unknown[]) => String(c[0]).toLowerCase());
+    const deleted = sqlCalls.some((sql: string) =>
+      sql.includes('delete') && sql.includes('proactive_preferences')
+    );
+    expect(deleted).toBe(true); // D53-2 FIX: proactive_preferences must be deleted
+  });
+
+  it('D53-2: DELETE FROM messages WHERE sender_id = $1 (direct messages PII)', async () => {
+    await runDeletion('req-d53-2-msgs', 'user-d53-2h');
+    const sqlCalls = mockDb.query.mock.calls.map((c: unknown[]) => String(c[0]).toLowerCase());
+    // messages table (not task_messages) uses sender_id (confirmed in schema.sql)
+    // Must match "from messages" or "delete from messages" — not task_messages
+    const deleted = sqlCalls.some((sql: string) => {
+      if (!sql.includes('delete')) return false;
+      if (!sql.includes('sender_id')) return false;
+      // Must reference the bare 'messages' table, not 'task_messages'
+      // Strip 'task_messages' from the SQL and check if 'messages' still appears
+      const withoutTaskMessages = sql.replace(/task_messages/g, '');
+      return withoutTaskMessages.includes('messages');
+    });
+    expect(deleted).toBe(true); // D53-2 FIX: messages table must be deleted by sender_id
+  });
+});
+
+// ===========================================================================
+// D53-4 — NO RATE LIMITING ON GDPR ENDPOINTS
+// ===========================================================================
+describe('D53-4 (HIGH): Rate limiting on GDPR tRPC endpoints', () => {
+  /**
+   * BUG: The GDPR tRPC procedures (createRequest: deletion/export) have no
+   * rate limiting. A malicious user can spam deletion or export requests.
+   *
+   * FIX: Add a per-userId in-memory cooldown:
+   *   - Deletion requests: 24-hour cooldown per userId
+   *   - Export requests: 1-hour cooldown per userId
+   *
+   * The rate limiter is added to GDPRService so it can be tested without
+   * going through the tRPC router. It's a module-level Map keyed by userId
+   * with last-request timestamps.
+   */
+
+  it('D53-4: second deletion request within 24 hours from same user is rejected', async () => {
+    // D53-4: GDPRService.checkGDPRRateLimit must exist and enforce cooldown
+    const userId = 'rate-limit-user-1';
+    const requestType = 'deletion';
+
+    // First call — should be allowed
+    const first = GDPRService.checkGDPRRateLimit(userId, requestType);
+    expect(first.allowed).toBe(true); // First deletion request is allowed
+
+    // Second call within 24 hours — should be rejected
+    const second = GDPRService.checkGDPRRateLimit(userId, requestType);
+    expect(second.allowed).toBe(false); // D53-4 FIX: rate limit blocks second request within 24h
+    expect(second.retryAfterMs).toBeGreaterThan(0); // retryAfterMs must indicate wait time
+  });
+
+  it('D53-4: second export request within 1 hour from same user is rejected', async () => {
+    const userId = 'rate-limit-user-2';
+    const requestType = 'export';
+
+    const first = GDPRService.checkGDPRRateLimit(userId, requestType);
+    expect(first.allowed).toBe(true);
+
+    const second = GDPRService.checkGDPRRateLimit(userId, requestType);
+    expect(second.allowed).toBe(false); // D53-4 FIX: export rate limit blocks second request within 1h
+    expect(second.retryAfterMs).toBeGreaterThan(0);
+  });
+
+  it('D53-4: deletion and export have independent cooldown buckets per userId', async () => {
+    const userId = 'rate-limit-user-3';
+
+    // Use up the deletion bucket
+    GDPRService.checkGDPRRateLimit(userId, 'deletion');
+
+    // Export bucket should still be open (different cooldown key)
+    const exportCheck = GDPRService.checkGDPRRateLimit(userId, 'export');
+    expect(exportCheck.allowed).toBe(true); // D53-4: deletion and export are independent buckets
+  });
+
+  it('D53-4: different users have independent rate limit buckets', async () => {
+    const userA = 'rate-limit-user-4a';
+    const userB = 'rate-limit-user-4b';
+
+    // Use up userA's deletion bucket
+    GDPRService.checkGDPRRateLimit(userA, 'deletion');
+
+    // userB should still be allowed (independent bucket)
+    const userBCheck = GDPRService.checkGDPRRateLimit(userB, 'deletion');
+    expect(userBCheck.allowed).toBe(true); // D53-4: different users have independent buckets
+  });
+
+  it('D53-4: createRequest calls checkGDPRRateLimit and returns RATE_LIMIT_EXCEEDED error when blocked', async () => {
+    const userId = 'rate-limit-user-5';
+
+    // First call primes the bucket
+    GDPRService.checkGDPRRateLimit(userId, 'deletion');
+
+    // Now createRequest should be rate-limited (no DB queries needed — early exit)
+    const result = await GDPRService.createRequest({
+      userId,
+      requestType: 'deletion',
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error?.code).toBe('RATE_LIMIT_EXCEEDED');
   });
 });
 

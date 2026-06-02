@@ -39,9 +39,11 @@ vi.mock('../../src/services/JuryPoolService', () => ({
 // Imports
 // ---------------------------------------------------------------------------
 
+import { db } from '../../src/db';
 import { juryRouter } from '../../src/routers/jury';
 import { JuryPoolService } from '../../src/services/JuryPoolService';
 
+const mockDb = vi.mocked(db);
 const mockService = vi.mocked(JuryPoolService);
 
 // ---------------------------------------------------------------------------
@@ -64,7 +66,16 @@ function makeCaller(userId = 'test-uid') {
 describe('jury.submitVote', () => {
   beforeEach(() => vi.clearAllMocks());
 
+  // Helper: seed dispute db.query response (poster_id and worker_id differ from caller)
+  function seedDisputeCheck(posterId = 'poster-uid', workerId = 'worker-uid') {
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ poster_id: posterId, worker_id: workerId }],
+      rowCount: 1,
+    } as any);
+  }
+
   it('submits a vote for worker_complete', async () => {
+    seedDisputeCheck();
     const voteResult = { id: 'vote-1', recorded: true };
     mockService.submitVote.mockResolvedValueOnce(voteResult as any);
 
@@ -81,6 +92,7 @@ describe('jury.submitVote', () => {
   });
 
   it('submits a vote for worker_incomplete', async () => {
+    seedDisputeCheck();
     mockService.submitVote.mockResolvedValueOnce({ recorded: true } as any);
 
     await makeCaller().submitVote({
@@ -95,6 +107,7 @@ describe('jury.submitVote', () => {
   });
 
   it('submits a vote for inconclusive', async () => {
+    seedDisputeCheck();
     mockService.submitVote.mockResolvedValueOnce({ recorded: true } as any);
 
     await makeCaller().submitVote({
@@ -106,6 +119,36 @@ describe('jury.submitVote', () => {
     expect(mockService.submitVote).toHaveBeenCalledWith(
       TEST_UUID, 'test-uid', 'inconclusive', 0.5
     );
+  });
+
+  it('throws NOT_FOUND when dispute does not exist', async () => {
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+
+    await expect(
+      makeCaller().submitVote({ disputeId: TEST_UUID, vote: 'worker_complete', confidence: 0.8 })
+    ).rejects.toThrow('Dispute not found');
+  });
+
+  it('throws FORBIDDEN when caller is the poster', async () => {
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ poster_id: 'test-uid', worker_id: 'worker-uid' }],
+      rowCount: 1,
+    } as any);
+
+    await expect(
+      makeCaller().submitVote({ disputeId: TEST_UUID, vote: 'worker_complete', confidence: 0.8 })
+    ).rejects.toThrow('Dispute parties cannot vote on their own case');
+  });
+
+  it('throws FORBIDDEN when caller is the worker', async () => {
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ poster_id: 'poster-uid', worker_id: 'test-uid' }],
+      rowCount: 1,
+    } as any);
+
+    await expect(
+      makeCaller().submitVote({ disputeId: TEST_UUID, vote: 'worker_complete', confidence: 0.8 })
+    ).rejects.toThrow('Dispute parties cannot vote on their own case');
   });
 
   it('rejects invalid vote value', async () => {
@@ -147,6 +190,7 @@ describe('jury.getVoteTally', () => {
       inconclusive: 1,
       total: 5,
     };
+    mockDb.query.mockResolvedValueOnce({ rows: [{ poster_id: 'test-uid', worker_id: 'test-uid' }], rowCount: 1 } as any);
     mockService.getVoteTally.mockResolvedValueOnce(tally as any);
 
     const result = await makeCaller().getVoteTally({ disputeId: TEST_UUID });

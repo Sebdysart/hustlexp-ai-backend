@@ -52,11 +52,14 @@ export const liveRouter = router({
            SET live_mode_state = $1,
                live_mode_session_started_at = $2
            WHERE id = $3
-           RETURNING *`,
+           RETURNING id, live_mode_state, live_mode_session_started_at`,
           [newState, sessionStartedAt, user.id]
         );
-        
-        return result.rows[0];
+
+        return {
+          state: result.rows[0].live_mode_state,
+          sessionStartedAt: result.rows[0].live_mode_session_started_at,
+        };
       } catch (error) {
         throw new TRPCError({
           code: 'INTERNAL_SERVER_ERROR',
@@ -92,9 +95,9 @@ export const liveRouter = router({
    */
   listBroadcasts: hustlerProcedure
     .input(z.object({
-      latitude: z.number(),
-      longitude: z.number(),
-      radiusMiles: z.number().default(5),
+      latitude: z.number().min(-90).max(90),
+      longitude: z.number().min(-180).max(180),
+      radiusMiles: z.number().positive().max(100).default(5),
       limit: z.number().int().min(1).max(100).default(50).optional(),
       offset: z.number().int().min(0).default(0).optional(),
     }))

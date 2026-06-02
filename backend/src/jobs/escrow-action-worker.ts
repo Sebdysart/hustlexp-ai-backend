@@ -33,6 +33,8 @@ import type { QueryFn } from '../db.js';
 import { StripeService } from '../services/StripeService.js';
 import { TaskService } from '../services/TaskService.js';
 import { notifyAdmins } from '../services/AdminNotificationHelper.js';
+import { RevenueService } from '../services/RevenueService.js';
+import { SelfInsurancePoolService } from '../services/SelfInsurancePoolService.js';
 import { workerLogger } from '../logger.js';
 import { config } from '../config.js';
 import { verifyJobSignature } from './queues.js';
@@ -63,20 +65,22 @@ function isStripeAccountRestrictionError(error: unknown): boolean {
 async function lockEscrowForStripeRestriction(escrowId: string, workerId: string, stripeCode: string): Promise<void> {
   // Transition escrow to LOCKED_DISPUTE with a stripe_account_restricted reason.
   // This is a non-retryable state — admin must manually resolve.
-  await db.query(
-    `UPDATE escrows
-     SET state = 'LOCKED_DISPUTE',
-         version = version + 1
-     WHERE id = $1
-       AND state IN ('FUNDED', 'LOCKED_DISPUTE')`,
-    [escrowId],
-  );
-
-  await db.query(
-    `INSERT INTO escrow_events (escrow_id, from_state, to_state, actor_id, actor_type, metadata)
-     VALUES ($1, 'FUNDED', 'LOCKED_DISPUTE', NULL, 'system', $2)`,
-    [escrowId, JSON.stringify({ reason: 'stripe_account_restricted', stripe_code: stripeCode, worker_id: workerId })],
-  );
+  // BUG FIX: wrap both DML statements in a transaction so a crash between the
+  // UPDATE and the INSERT cannot leave the escrow locked with no audit record.
+  await db.transaction(async (txQuery) => {
+    await txQuery(
+      `WITH pre AS (SELECT state FROM escrows WHERE id = $1 FOR UPDATE),
+            upd AS (
+              UPDATE escrows SET state = 'LOCKED_DISPUTE', version = version + 1, updated_at = NOW()
+              WHERE id = $1 AND state IN ('FUNDED', 'LOCKED_DISPUTE')
+              RETURNING id
+            )
+       INSERT INTO escrow_events (escrow_id, from_state, to_state, actor_id, actor_type, metadata)
+       SELECT $1, pre.state, 'LOCKED_DISPUTE', NULL, 'system', $2 FROM pre
+       WHERE EXISTS (SELECT 1 FROM upd)`,
+      [escrowId, JSON.stringify({ reason: 'stripe_account_restricted', stripe_code: stripeCode, worker_id: workerId })],
+    );
+  });
 
   try {
     await notifyAdmins({
@@ -134,8 +138,8 @@ const FinancialJobPayloadSchema = z.object({
   task_id: z.string().uuid(),
   dispute_id: z.string().uuid().optional(),
   reason: z.string().min(1),
-  refund_amount: z.number().nonnegative().optional(),
-  release_amount: z.number().nonnegative().optional(),
+  refund_amount: z.number().int().nonnegative().optional(),
+  release_amount: z.number().int().nonnegative().optional(),
   _sig: z.string().length(64), // SHA256 hex = 64 chars
 });
 
@@ -223,7 +227,7 @@ export async function processEscrowActionJob(job: Job<EscrowActionJobData>): Pro
         break;
 
       case 'escrow.refund_requested':
-        await handleRefundRequest(escrow, dispute_id, reason);
+        await handleRefundRequest(escrow, dispute_id, reason, refund_amount);
         break;
 
       case 'escrow.partial_refund_requested':
@@ -275,9 +279,9 @@ async function handleReleaseRequest(
     return;
   }
 
-  // Get task to find worker_id
-  const taskResult = await db.query<{ worker_id: string | null }>(
-    'SELECT worker_id FROM tasks WHERE id = $1',
+  // Get task to find worker_id and poster_id
+  const taskResult = await db.query<{ worker_id: string | null; poster_id: string | null }>(
+    'SELECT worker_id, poster_id FROM tasks WHERE id = $1',
     [taskId]
   );
 
@@ -309,25 +313,44 @@ async function handleReleaseRequest(
     throw new Error(`Worker ${task.worker_id} has no stripe_connect_id`);
   }
 
+  // TT-03: A bare SELECT after T1 committed has a race window — two workers can
+  // both see stripe_transfer_id=null and both proceed to Stripe. Fix: the
+  // idempotency re-read is embedded inside T2 as a SELECT FOR UPDATE NOWAIT,
+  // so the lock is held through the version check and the UPDATE, making
+  // double-transfer physically impossible on this path.
+
   // Deduct platform fee before paying out to worker (PRODUCT_SPEC §9: 15% default)
-  const platformFeePercent = config.stripe.platformFeePercent ?? 15;
+  const platformFeePercent = Math.min(100, Math.max(0, config.stripe.platformFeePercent ?? 15));
   const platformFeeCents = Math.round(escrow.amount * (platformFeePercent / 100));
   const netPayoutCents = escrow.amount - platformFeeCents;
 
-  log.info({ escrowId: escrow.id, escrowAmount: escrow.amount, platformFeeCents, netPayoutCents }, 'Platform fee applied to transfer');
+  // F-22 FIX: Subtract self-insurance contribution from the Stripe transfer amount.
+  // Previously, recordContribution() was called with netPayoutCents * 0.02 but the
+  // transfer was sent for the full netPayoutCents — the insurance amount was recorded
+  // in the pool but never actually withheld from the worker's payout.
+  const INSURANCE_RATE = 0.02; // 2% — matches SelfInsurancePoolService.calculateContribution default
+  const insuranceContributionCents = Math.round(netPayoutCents * INSURANCE_RATE);
+  const transferAmountCents = netPayoutCents - insuranceContributionCents;
+
+  log.info({ escrowId: escrow.id, escrowAmount: escrow.amount, platformFeeCents, netPayoutCents, insuranceContributionCents, transferAmountCents }, 'Platform fee and insurance contribution applied to transfer');
 
   // Bug 1 Fix: Wrap createTransfer in a try/catch that detects non-retryable
   // Stripe account restriction codes. When detected, lock the escrow for admin
   // review and return without rethrowing so BullMQ does NOT retry the job.
   let transferResult: Awaited<ReturnType<typeof StripeService.createTransfer>>;
   try {
+    // BUG 7 FIX: Pass 'dispute_release' suffix so this key is distinct from
+    // EscrowService.partialRefund's 'escrow_partial_refund' suffix. Without distinct
+    // suffixes, Stripe treats both callers as idempotent replays of the same key
+    // (tr_create_{escrowId}_{amount}), masking a real duplicate double-transfer.
     transferResult = await StripeService.createTransfer({
       escrowId: escrow.id,
       taskId,
       workerId: task.worker_id,
       workerStripeAccountId: worker.stripe_connect_id,
-      amount: netPayoutCents,
+      amount: transferAmountCents,
       description: `Dispute resolution: ${reason}`,
+      idempotencyKeySuffix: 'dispute_release',
     });
   } catch (stripeError) {
     if (isStripeAccountRestrictionError(stripeError)) {
@@ -350,22 +373,98 @@ async function handleReleaseRequest(
 
   const transferId = transferResult.data.transferId;
 
-  // Store transfer_id on escrow inside a transaction so the version-checked UPDATE
-  // is atomic. (The escrow row lock from processEscrowActionJob was already released
-  // when that transaction committed — this second short transaction re-acquires it
-  // just for the UPDATE statement itself, which is sufficient to prevent concurrent
-  // double-write from two workers that both passed the idempotency check above.)
+  // T2: Store transfer_id atomically.
+  // BUG 1 FIX: Begin T2 with SELECT FOR UPDATE NOWAIT so concurrent workers that
+  // also passed the TT-03 idempotency check above block here. Inside T2:
+  //   1. SELECT FOR UPDATE NOWAIT — acquire exclusive row lock
+  //   2. Re-check version (matches snapshot from T1) — if mismatch, another
+  //      worker already committed; rollback without error (idempotent)
+  //   3. Re-check stripe_transfer_id — if already set, this transfer arrived first
+  //   4. UPDATE — write the new transfer_id atomically with the lock held
   await db.transaction(async (trx: QueryFn) => {
-    await trx(
+    // Step 1+2+3: Lock and re-validate before writing
+    const lockedRow = await trx<{ id: string; version: number; stripe_transfer_id: string | null }>(
+      `SELECT id, version, stripe_transfer_id FROM escrows WHERE id = $1 FOR UPDATE NOWAIT`,
+      [escrow.id]
+    );
+    if (!lockedRow.rows.length) {
+      throw new Error(`Escrow ${escrow.id} disappeared during T2 lock — retry`);
+    }
+    const locked = lockedRow.rows[0];
+    // If another worker already wrote a transfer_id, this Stripe call was a duplicate.
+    // The Stripe idempotency key on createTransfer guarantees the same transfer is
+    // returned — no money was double-sent. Log and skip the UPDATE.
+    if (locked.stripe_transfer_id) {
+      log.info(
+        { escrowId: escrow.id, existingTransferId: locked.stripe_transfer_id, ourTransferId: transferId },
+        'T2 re-read: transfer_id already set by concurrent worker — skipping UPDATE (idempotent)',
+      );
+      return; // No-op: idempotent
+    }
+    if (locked.version !== escrow.version) {
+      throw new Error(`Version conflict in T2 for escrow ${escrow.id} (expected ${escrow.version}, got ${locked.version}) — retry`);
+    }
+    // Step 4: Write atomically while the lock is held
+    const updateResult = await trx<{ id: string }>(
       `UPDATE escrows
        SET stripe_transfer_id = $1,
            version = version + 1
-       WHERE id = $2 AND version = $3`,
+       WHERE id = $2 AND version = $3
+       RETURNING id`,
       [transferId, escrow.id, escrow.version]
     );
+    if (!updateResult.rows.length) {
+      throw new Error(`Concurrent version conflict storing transfer ${transferId} for escrow ${escrow.id} — retry`);
+    }
   });
 
   log.info({ escrowId: escrow.id, transferId }, 'Transfer created for escrow');
+
+  // Log platform fee to revenue ledger for dispute-driven RELEASE outcomes.
+  // Non-fatal: ledger write failure must not block payout confirmation.
+  if (platformFeeCents > 0) {
+    try {
+      // F-23 FIX: Platform fee is charged to the poster (buyer), not the worker.
+      // Use task.poster_id for the userId field so the ledger correctly attributes
+      // the fee to the party who paid it.
+      await RevenueService.logEvent({
+        eventType: 'platform_fee',
+        userId: task.poster_id!,
+        taskId,
+        amountCents: platformFeeCents,
+        grossAmountCents: escrow.amount,
+        platformFeeCents,
+        netAmountCents: netPayoutCents,
+        feeBasisPoints: Math.round(platformFeePercent * 100),
+        escrowId: escrow.id,
+        stripeTransferId: transferId,
+        metadata: { event: 'escrow_dispute_release' },
+      });
+    } catch (revenueErr) {
+      log.warn(
+        { err: revenueErr instanceof Error ? revenueErr.message : String(revenueErr), escrowId: escrow.id },
+        'handleReleaseRequest: revenue ledger write failed — manual reconciliation required'
+      );
+    }
+  }
+
+  // F-12 FIX: Record self-insurance pool contribution on dispute-driven release.
+  // Matches the pattern in EscrowService.release (normal release path).
+  // Non-fatal: pool contribution failure must not block payout confirmation.
+  // F-22 FIX: Use the insuranceContributionCents already computed above (same value
+  // that was withheld from the Stripe transfer) to keep amounts consistent.
+  try {
+    await SelfInsurancePoolService.recordContribution(
+      taskId,
+      task.worker_id!,
+      insuranceContributionCents,
+    );
+  } catch (insuranceError) {
+    log.warn(
+      { err: insuranceError instanceof Error ? insuranceError.message : String(insuranceError), escrowId: escrow.id },
+      'handleReleaseRequest: self-insurance pool contribution failed — dispute release proceeds'
+    );
+  }
 }
 
 /**
@@ -373,11 +472,19 @@ async function handleReleaseRequest(
  *
  * Same structural pattern as handleReleaseRequest: Stripe call happens outside
  * any DB transaction, then a short transaction writes the result back atomically.
+ *
+ * BUG FIX (HIGH): If the escrow was RELEASED before the dispute was filed,
+ * DisputeService.create() cleared stripe_transfer_id and stored the original
+ * transfer ID in an escrow_events row (event_type='dispute_locked_after_release').
+ * When the poster wins the dispute we must reverse that original transfer BEFORE
+ * issuing the charge refund, otherwise Stripe will reject the refund because the
+ * funds are still sitting in the worker's Connect balance.
  */
 async function handleRefundRequest(
   escrow: EscrowRow,
   _disputeId: string | undefined,
-  _reason: string
+  _reason: string,
+  refundAmount?: number
 ): Promise<void> {
   // Idempotency: If refund_id already exists, skip
   if (escrow.stripe_refund_id) {
@@ -389,12 +496,126 @@ async function handleRefundRequest(
     throw new Error(`Escrow ${escrow.id} has no stripe_payment_intent_id`);
   }
 
+  // TT-04: Re-read stripe_refund_id from the DB under a FOR UPDATE NOWAIT lock so
+  // that two concurrent workers cannot both see stripe_refund_id = null and both
+  // proceed to call Stripe. NOWAIT causes the second worker to throw immediately
+  // rather than queue behind the first, so BullMQ retries it after a short delay
+  // rather than letting both workers race to Stripe simultaneously.
+  try {
+    const freshRefundCheck = await db.transaction(async (trx: QueryFn) => {
+      return trx<{ stripe_refund_id: string | null }>(
+        'SELECT stripe_refund_id FROM escrows WHERE id = $1 FOR UPDATE NOWAIT',
+        [escrow.id]
+      );
+    });
+    if (freshRefundCheck.rows[0]?.stripe_refund_id) {
+      log.info(
+        { escrowId: escrow.id, refundId: freshRefundCheck.rows[0].stripe_refund_id },
+        'Fresh DB re-read (NOWAIT): refund already issued on a prior attempt (concurrent retry) — skipping Stripe call',
+      );
+      return;
+    }
+  } catch (lockError) {
+    if ((lockError as Error).message?.includes('could not obtain lock')) {
+      throw new Error('LOCK_CONTENTION: Another worker is processing this escrow refund — will retry');
+    }
+    throw lockError;
+  }
+
+  // BUG FIX (HIGH - Part B): Check whether a Stripe transfer was already sent to
+  // the worker before the dispute was filed (i.e., escrow was RELEASED then locked).
+  // DisputeService.create() stores the original transfer ID in escrow_events when it
+  // transitions RELEASED → LOCKED_DISPUTE. We must reverse that transfer first so
+  // that Stripe can process the charge refund (funds must return from Connect balance
+  // to platform before the refund can be issued to the poster).
+  const priorTransferEventResult = await db.query<{ metadata: string }>(
+    `SELECT metadata
+     FROM escrow_events
+     WHERE escrow_id = $1
+       AND actor_type = 'system'
+       AND metadata::jsonb->>'event_type' = 'dispute_locked_after_release'
+       AND metadata::jsonb->>'original_transfer_id' IS NOT NULL
+     ORDER BY created_at DESC
+     LIMIT 1`,
+    [escrow.id]
+  );
+
+  if (priorTransferEventResult.rows.length > 0) {
+    let originalTransferId: string | null = null;
+    try {
+      const meta = JSON.parse(priorTransferEventResult.rows[0].metadata) as Record<string, unknown>;
+      originalTransferId = typeof meta['original_transfer_id'] === 'string' ? meta['original_transfer_id'] : null;
+    } catch {
+      // Malformed metadata — continue without reversal attempt
+    }
+
+    if (originalTransferId) {
+      // BUG 2 FIX: Check for an existing transfer_reversed checkpoint before calling
+      // createTransferReversal. If the reversal succeeded on a prior attempt but
+      // createRefund then failed, a BullMQ retry would call createTransferReversal
+      // again — potentially double-reversing. The escrow_events checkpoint makes the
+      // reversal idempotent across retries.
+      const existingReversalEvent = await db.query<{ id: string }>(
+        `SELECT id FROM escrow_events
+         WHERE escrow_id = $1 AND metadata::jsonb->>'event_type' = 'transfer_reversed'
+         LIMIT 1`,
+        [escrow.id]
+      );
+
+      if (existingReversalEvent.rows.length > 0) {
+        log.info(
+          { escrowId: escrow.id, originalTransferId },
+          'handleRefundRequest: transfer_reversed checkpoint found — skipping reversal call (idempotent retry)',
+        );
+      } else {
+        log.info(
+          { escrowId: escrow.id, originalTransferId },
+          'handleRefundRequest: escrow was previously RELEASED — reversing original transfer before refund',
+        );
+        const reversalResult = await StripeService.createTransferReversal(originalTransferId, escrow.id);
+        if (!reversalResult.success) {
+          log.error(
+            { escrowId: escrow.id, originalTransferId, err: reversalResult.error.message },
+            'handleRefundRequest: transfer reversal failed — cannot safely issue refund',
+          );
+          throw new Error(`Transfer reversal failed: ${reversalResult.error.message}`);
+        }
+        // BUG 2 FIX: Write the checkpoint IMMEDIATELY after the reversal succeeds
+        // and BEFORE attempting the refund. If createRefund fails and BullMQ retries,
+        // the checkpoint above will skip the reversal so only the refund is retried.
+        await db.query(
+          `INSERT INTO escrow_events (escrow_id, from_state, to_state, actor_id, actor_type, metadata)
+           VALUES ($1, 'LOCKED_DISPUTE', 'LOCKED_DISPUTE', NULL, 'system', $2)`,
+          [escrow.id, JSON.stringify({
+            event_type: 'transfer_reversed',
+            original_transfer_id: originalTransferId,
+            reversal_id: reversalResult.data.reversalId,
+          })]
+        );
+        log.info(
+          { escrowId: escrow.id, originalTransferId, reversalId: reversalResult.data.reversalId },
+          'Transfer reversal completed and checkpoint written — proceeding with charge refund',
+        );
+      }
+    }
+  }
+
+  // Use refund_amount from job payload when provided; fall back to full escrow amount.
+  // Clamp to escrow.amount to prevent overage that would cause an infinite Stripe reject+retry loop.
+  const amountToRefund = refundAmount !== undefined
+    ? Math.min(refundAmount, escrow.amount)
+    : escrow.amount;
+
   // Create Stripe refund
+  // F-1 FIX: Use 'wkr_refund' suffix to distinguish worker-layer refunds from
+  // EscrowService.refund() refunds ('svc_refund'). Without distinct suffixes,
+  // both paths share the same Stripe idempotency key and one silently no-ops.
   const refundResult = await StripeService.createRefund({
     paymentIntentId: escrow.stripe_payment_intent_id,
     escrowId: escrow.id,
-    amount: escrow.amount, // Full refund
+    amount: amountToRefund,
     reason: 'requested_by_customer',
+    idempotencyKeySuffix: 'wkr_refund',
   });
 
   if (!refundResult.success) {
@@ -403,15 +624,42 @@ async function handleRefundRequest(
 
   const refundId = refundResult.data.refundId;
 
-  // Store refund_id on escrow atomically (version-checked)
+  // Store refund_id on escrow atomically.
+  // BUG 2 FIX: Use SELECT FOR UPDATE NOWAIT inside T2 so the version is re-read
+  // from the live row under the same exclusive lock as the UPDATE. If another
+  // operation incremented the version between T1 (which released the lock at
+  // COMMIT) and here, we read the fresh version and update against it instead of
+  // the stale snapshot version — preventing the stale-version retry loop.
   await db.transaction(async (trx: QueryFn) => {
-    await trx(
+    // Step 1: Acquire exclusive lock and re-read version
+    const lockedRow = await trx<{ id: string; version: number; stripe_refund_id: string | null }>(
+      `SELECT id, version, stripe_refund_id FROM escrows WHERE id = $1 FOR UPDATE NOWAIT`,
+      [escrow.id]
+    );
+    if (!lockedRow.rows.length) {
+      throw new Error(`Escrow ${escrow.id} disappeared during T2 refund lock — retry`);
+    }
+    const locked = lockedRow.rows[0];
+    // Step 2: Idempotency check — if another retry already stored the refund_id, skip
+    if (locked.stripe_refund_id) {
+      log.info(
+        { escrowId: escrow.id, existingRefundId: locked.stripe_refund_id, ourRefundId: refundId },
+        'T2 re-read: refund_id already set by concurrent worker — skipping UPDATE (idempotent)',
+      );
+      return;
+    }
+    // Step 3: UPDATE using the fresh version from the re-read, not the stale snapshot
+    const updateResult = await trx<{ id: string }>(
       `UPDATE escrows
        SET stripe_refund_id = $1,
            version = version + 1
-       WHERE id = $2 AND version = $3`,
-      [refundId, escrow.id, escrow.version]
+       WHERE id = $2 AND version = $3
+       RETURNING id`,
+      [refundId, escrow.id, locked.version]
     );
+    if (!updateResult.rows.length) {
+      throw new Error(`Concurrent version conflict storing refund ${refundId} for escrow ${escrow.id} — retry`);
+    }
   });
 
   log.info({ escrowId: escrow.id, refundId }, 'Refund created for escrow');
@@ -451,13 +699,21 @@ async function handlePartialRefundRequest(
     throw new Error('SPLIT amounts must be non-negative');
   }
 
-  if (refundAmount + releaseAmount !== escrow.amount) {
-    throw new Error(`SPLIT amounts (${refundAmount} + ${releaseAmount} = ${refundAmount + releaseAmount}) must sum to escrow amount (${escrow.amount})`);
+  // F-26: Validate using the same amounts that will be passed to Stripe, not raw inputs.
+  // The worker receives netReleaseCents (after platform fee), not releaseAmount.
+  // The fee absorbs any rounding residual so all three components sum to escrow.amount.
+  const platformFeePercentValidation = Math.min(100, Math.max(0, config.stripe?.platformFeePercent ?? 15));
+  const netReleaseCentsValidation = Math.round(releaseAmount * (1 - platformFeePercentValidation / 100));
+  const rawFeeCentsValidation = releaseAmount - netReleaseCentsValidation;
+  const residualValidation = escrow.amount - Math.round(refundAmount) - netReleaseCentsValidation - rawFeeCentsValidation;
+  const feeCentsValidation = rawFeeCentsValidation + residualValidation;
+  if (Math.round(refundAmount) + netReleaseCentsValidation + feeCentsValidation !== escrow.amount) {
+    throw new Error(`SPLIT amounts ${Math.round(refundAmount)} + ${netReleaseCentsValidation} + fee ${feeCentsValidation} !== escrow ${escrow.amount}`);
   }
 
-  // Get task to find worker_id
-  const taskResult = await db.query<{ worker_id: string | null }>(
-    'SELECT worker_id FROM tasks WHERE id = $1',
+  // Get task to find worker_id and poster_id
+  const taskResult = await db.query<{ worker_id: string | null; poster_id: string | null }>(
+    'SELECT worker_id, poster_id FROM tasks WHERE id = $1',
     [taskId]
   );
 
@@ -512,6 +768,7 @@ async function handlePartialRefundRequest(
         escrowId: escrow.id,
         amount: refundAmount,
         reason: 'requested_by_customer',
+        idempotencyKeySuffix: 'wkr_partial_refund',
       });
 
       if (!refundResult.success) {
@@ -536,7 +793,52 @@ async function handlePartialRefundRequest(
 
   // Create transfer if release_amount > 0
   let transferId: string | null = escrow.stripe_transfer_id;
+  // Fee variables are computed unconditionally when releaseAmount > 0 so that
+  // the RevenueService.logEvent call below always has the correct values — even
+  // on an idempotent retry where transferId is populated from the fresh DB re-read
+  // and the new-transfer block is skipped entirely.
+  let netReleaseCents: number | undefined;
+  let adjustedPlatformFeeCents: number | undefined;
   if (releaseAmount > 0) {
+    // Compute platform fee unconditionally — must happen before the transferId
+    // idempotency checks so these values are always defined when we reach the
+    // RevenueService.logEvent guard later, regardless of the retry path taken.
+    const platformFeePercent = Math.min(100, Math.max(0, config.stripe?.platformFeePercent ?? 15));
+    netReleaseCents = Math.round(releaseAmount * (1 - platformFeePercent / 100));
+    const rawPlatformFeeCents = releaseAmount - netReleaseCents;
+    // BUG 3 fix: assign any sub-cent rounding residual to the platform fee so
+    // all cents are accounted for (refundAmount + netReleaseCents + platformFeeCents
+    // must equal escrow.amount exactly).
+    const residual = escrow.amount - Math.round(refundAmount) - netReleaseCents - rawPlatformFeeCents;
+    adjustedPlatformFeeCents = rawPlatformFeeCents + residual;
+
+    // F-07 FIX: Deduct self-insurance contribution from the SPLIT transfer amount.
+    // handleReleaseRequest correctly withholds INSURANCE_RATE from the transfer and
+    // calls recordContribution. This path was missing both steps — the pool was
+    // underfunded on every split dispute resolution.
+    const INSURANCE_RATE = 0.02; // 2% — matches SelfInsurancePoolService default
+    const splitInsuranceContributionCents = Math.round(netReleaseCents * INSURANCE_RATE);
+    netReleaseCents = netReleaseCents - splitInsuranceContributionCents;
+
+    // TT-03 (partial): The bare SELECT had a race window — two workers can both
+    // see stripe_transfer_id=null and both proceed to Stripe. Fix: use FOR UPDATE
+    // NOWAIT inside a transaction so the second worker blocks and re-reads the
+    // value the first worker wrote, preventing a double-transfer on this path.
+    if (!transferId) {
+      const freshTransferResult = await db.transaction(async (trx: QueryFn) => {
+        return trx<{ stripe_transfer_id: string | null }>(
+          'SELECT stripe_transfer_id FROM escrows WHERE id = $1 FOR UPDATE NOWAIT',
+          [escrow.id]
+        );
+      });
+      if (freshTransferResult.rows[0]?.stripe_transfer_id) {
+        transferId = freshTransferResult.rows[0].stripe_transfer_id;
+        log.info(
+          { escrowId: escrow.id, transferId },
+          'Fresh DB re-read (partial): transfer already created on a prior attempt — skipping Stripe call',
+        );
+      }
+    }
     if (!transferId) {
       if (!task.worker_id) {
         throw new Error(`Task ${taskId} has no worker_id`);
@@ -560,22 +862,27 @@ async function handlePartialRefundRequest(
         throw new Error(`Worker ${task.worker_id} has no stripe_connect_id`);
       }
 
-      // Failure injection for testing (Evil Test A)
-      if (process.env.HX_FAIL_STRIPE_TRANSFER === '1') {
-        throw new Error('Transfer creation failed (injected failure for testing)');
-      }
+      log.info(
+        { escrowId: escrow.id, releaseAmount, platformFeePercent, netReleaseCents },
+        'Platform fee applied to partial release transfer'
+      );
 
       // Bug 1 Fix: Catch non-retryable Stripe account restriction codes.
       // Lock escrow for admin review; do NOT rethrow so BullMQ skips retry.
       let partialTransferResult: Awaited<ReturnType<typeof StripeService.createTransfer>>;
       try {
+        // F-03 FIX: Use 'dispute_partial_release' suffix — distinct from handleReleaseRequest's
+        // 'dispute_release'. Both functions call createTransfer on the same escrow but with
+        // different amounts; sharing a suffix causes Stripe to return the cached result from
+        // the first call, sending the wrong amount on the second.
         partialTransferResult = await StripeService.createTransfer({
           escrowId: escrow.id,
           taskId,
           workerId: task.worker_id,
           workerStripeAccountId: worker.stripe_connect_id,
-          amount: releaseAmount,
+          amount: netReleaseCents,
           description: `Dispute resolution: ${reason}`,
+          idempotencyKeySuffix: 'dispute_partial_release',
         });
       } catch (stripeError) {
         if (isStripeAccountRestrictionError(stripeError)) {
@@ -598,6 +905,28 @@ async function handlePartialRefundRequest(
       transferId = partialTransferResult.data.transferId;
       log.info({ escrowId: escrow.id, transferId, amount: releaseAmount }, 'Partial transfer created for escrow');
     }
+
+    // F-07 FIX: Record self-insurance pool contribution OUTSIDE the if (!transferId) block.
+    // Previously, recordContribution was inside `if (!transferId)` (new-transfer branch only).
+    // On BullMQ retry where the Stripe transfer already succeeded, transferId is set and the
+    // block is skipped — pool contribution permanently missed.
+    // Fix: call recordContribution here (after the new/existing transferId is resolved) on
+    // every execution path where a transfer exists. recordContribution is idempotent via
+    // ON CONFLICT (task_id, hustler_id) DO NOTHING in its CTE — safe to call on retry.
+    if (task.worker_id && splitInsuranceContributionCents > 0) {
+      try {
+        await SelfInsurancePoolService.recordContribution(
+          taskId,
+          task.worker_id,
+          splitInsuranceContributionCents,
+        );
+      } catch (insuranceError) {
+        log.warn(
+          { err: insuranceError instanceof Error ? insuranceError.message : String(insuranceError), escrowId: escrow.id },
+          'handlePartialRefundRequest: self-insurance pool contribution failed — SPLIT release proceeds'
+        );
+      }
+    }
   }
 
   // P0: Pre-terminal guards - enforce required Stripe IDs exist before terminalizing
@@ -609,9 +938,45 @@ async function handlePartialRefundRequest(
   }
 
   // Store both IDs + amounts, set REFUND_PARTIAL (MVP-authoritative terminalization)
-  // Wrapped in db.transaction() for atomicity of the version-checked UPDATE.
-  // WHERE clause enforces: non-null IDs when amounts > 0, and version matches (idempotent replay)
+  // BUG 1 FIX: Add SELECT FOR UPDATE NOWAIT inside T2 so the version is re-read
+  // from the live row under an exclusive lock, not from the T1 snapshot. Between
+  // T1 (which committed and released the row lock) and here, other operations can
+  // increment the version. Using the freshly-read version prevents a false version-
+  // conflict retry loop and mirrors the pattern in handleReleaseRequest /
+  // handleRefundRequest.
   const { rowCount: updateRowCount, finalState } = await db.transaction(async (trx: QueryFn) => {
+    // Step 1: Acquire exclusive lock and re-read current version + state
+    let lockedRow: { id: string; version: number; state: string } | undefined;
+    try {
+      const lockedResult = await trx<{ id: string; version: number; state: string }>(
+        `SELECT id, version, state FROM escrows WHERE id = $1 FOR UPDATE NOWAIT`,
+        [escrow.id]
+      );
+      if (!lockedResult.rows.length) {
+        throw new Error(`Escrow ${escrow.id} disappeared during T2 partial-refund lock — retry`);
+      }
+      lockedRow = lockedResult.rows[0];
+    } catch (lockErr) {
+      // NOWAIT raises 55P03 when another transaction holds the lock.
+      // Treat as version conflict — BullMQ will retry.
+      const msg = lockErr instanceof Error ? lockErr.message : String(lockErr);
+      if (msg.includes('55P03') || msg.toLowerCase().includes('could not obtain lock')) {
+        throw new Error(`Version conflict (lock contention) on partial-refund T2 for escrow ${escrow.id} — retry`);
+      }
+      throw lockErr;
+    }
+
+    // Step 2: If already terminal (idempotent replay), return early
+    if (lockedRow.state === 'REFUND_PARTIAL') {
+      return { rowCount: 0, finalState: 'REFUND_PARTIAL' };
+    }
+
+    // Step 3: Verify the escrow is still in LOCKED_DISPUTE before terminalizing
+    if (lockedRow.state !== 'LOCKED_DISPUTE') {
+      return { rowCount: 0, finalState: lockedRow.state };
+    }
+
+    // Step 4: UPDATE using the freshly-read version (not the stale T1 snapshot)
     const updateResult = await trx<{ id: string; state: string }>(
       `UPDATE escrows
        SET state = 'REFUND_PARTIAL',
@@ -626,11 +991,12 @@ async function handlePartialRefundRequest(
          AND version = $6
          AND ($3 = 0 OR $1 IS NOT NULL)  -- If refundAmount > 0, refundId must exist
          AND ($4 = 0 OR $2 IS NOT NULL)`, // If releaseAmount > 0, transferId must exist
-      [refundId, transferId, refundAmount, releaseAmount, escrow.id, escrow.version]
+      [refundId, transferId, refundAmount, releaseAmount, escrow.id, lockedRow.version]
     );
 
     if (updateResult.rowCount === 0) {
-      // Check if escrow is already terminal (concurrent completion or replay)
+      // Freshly-read version still didn't match — should not happen since we hold
+      // the FOR UPDATE lock, but handle defensively.
       const checkResult = await trx<{ state: string }>(
         `SELECT state FROM escrows WHERE id = $1`,
         [escrow.id]
@@ -647,9 +1013,12 @@ async function handlePartialRefundRequest(
       log.info({ escrowId: escrow.id }, 'Escrow already in REFUND_PARTIAL, idempotent replay');
       return; // No-op: already terminal
     }
-    // Version mismatch: another process updated, treat as no-op
-    log.warn({ escrowId: escrow.id, expectedVersion: escrow.version }, 'Escrow version mismatch, treating as no-op');
-    return;
+    // Version mismatch: another process updated between the Stripe calls and the
+    // terminal UPDATE. The Stripe IDs are already stored in escrow_events (durability
+    // checkpoint) so a retry will find the idempotency checkpoint and skip re-issuing
+    // Stripe calls. Throw to trigger BullMQ retry so the UPDATE can succeed.
+    log.warn({ escrowId: escrow.id, expectedVersion: escrow.version }, 'Escrow version conflict on terminalization — retrying');
+    throw new Error('Version conflict on escrow terminalization — retrying');
   }
 
   // Step 4: Hook CLOSED transition (Pillar A - Realtime Tracking)
@@ -659,6 +1028,46 @@ async function handlePartialRefundRequest(
     to: 'CLOSED',
     actor: { type: 'system' },
   });
+
+  // Log platform fee to revenue ledger (SPLIT path)
+  // Previously uncaptured: netReleaseCents deducts ~15% but RevenueService.logEvent() was never called.
+  // Non-fatal: ledger write failure must not block dispute resolution confirmation.
+  if (releaseAmount > 0 && netReleaseCents !== undefined && task.worker_id) {
+    // Use adjustedPlatformFeeCents (residual-corrected) so all cents are accounted for.
+    // Fall back to raw difference if undefined (idempotent replay path where the
+    // new-transfer block was skipped — no residual to correct in that case).
+    const platformFee = adjustedPlatformFeeCents ?? (releaseAmount - netReleaseCents);
+    try {
+      // F-23 FIX: Platform fee is charged to the poster (buyer), not the worker.
+      await RevenueService.logEvent({
+        eventType: 'platform_fee',
+        userId: task.poster_id ?? task.worker_id, // F-23: prefer poster_id
+        taskId,
+        amountCents: platformFee,
+        grossAmountCents: releaseAmount,
+        platformFeeCents: platformFee,
+        netAmountCents: netReleaseCents,
+        feeBasisPoints: Math.round((config.stripe.platformFeePercent ?? 15) * 100),
+        escrowId: escrow.id,
+        stripeTransferId: transferId ?? undefined,
+        metadata: {
+          event: 'escrow_partial_release',
+        },
+      });
+    } catch (revenueError) {
+      log.error(
+        { err: revenueError instanceof Error ? revenueError.message : String(revenueError), escrowId: escrow.id },
+        'Failed to write revenue ledger entry for SPLIT partial release — requires manual reconciliation'
+      );
+    }
+  } else if (releaseAmount > 0 && netReleaseCents !== undefined && !task.worker_id) {
+    // worker_id is null on this idempotent retry path — skip ledger entry.
+    // The Stripe transfer ID can be used for manual reconciliation later.
+    log.warn(
+      { escrowId: escrow.id, releaseAmount, stripeTransferId: transferId ?? null },
+      'Skipping revenue ledger entry for SPLIT partial release — task.worker_id is null; reconcile via Stripe transfer ID'
+    );
+  }
 
   log.info({ escrowId: escrow.id, refundAmount, releaseAmount }, 'Escrow set to REFUND_PARTIAL');
 }

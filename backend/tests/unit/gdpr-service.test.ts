@@ -46,12 +46,14 @@ vi.mock('crypto', async (importOriginal) => {
 });
 
 import { db } from '../../src/db';
-import { GDPRService } from '../../src/services/GDPRService';
+import { GDPRService, _resetGDPRRateLimitMapForTesting } from '../../src/services/GDPRService';
 
 const mockDb = vi.mocked(db);
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // D53-4: reset the in-memory rate-limit Map so each test gets a fresh bucket
+  _resetGDPRRateLimitMapForTesting();
 });
 
 describe('GDPRService', () => {

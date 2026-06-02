@@ -6,12 +6,19 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-vi.mock('../../src/db', () => ({
-  db: { query: vi.fn() },
-  isInvariantViolation: vi.fn(() => false),
-  isUniqueViolation: vi.fn(() => false),
-  getErrorMessage: vi.fn((code: string) => `Error ${code}`),
-}));
+vi.mock('../../src/db', () => {
+  const queryFn = vi.fn();
+  return {
+    db: {
+      query: queryFn,
+      transaction: vi.fn((fn: (q: typeof queryFn) => Promise<unknown>) => fn(queryFn)),
+      serializableTransaction: vi.fn((fn: (q: typeof queryFn) => Promise<unknown>) => fn(queryFn)),
+    },
+    isInvariantViolation: vi.fn(() => false),
+    isUniqueViolation: vi.fn(() => false),
+    getErrorMessage: vi.fn((code: string) => `Error ${code}`),
+  };
+});
 
 vi.mock('../../src/logger', () => ({
   logger: {
@@ -46,6 +53,18 @@ vi.mock('../../src/services/PhotoVerificationService', () => ({
   },
 }));
 
+// Mock the Redis cache module used by the advisory lock (FIX YY-03).
+// By default the mock Redis client returns 'OK' for set() (lock acquired)
+// and resolves for del() (lock released). Individual tests can override
+// set() to return null to simulate lock contention.
+const mockRedisSet = vi.fn().mockResolvedValue('OK');
+const mockRedisDel = vi.fn().mockResolvedValue(1);
+const mockRedisClient = { set: mockRedisSet, del: mockRedisDel };
+
+vi.mock('../../src/cache/redis', () => ({
+  getClient: vi.fn(() => mockRedisClient),
+}));
+
 import { db, isInvariantViolation } from '../../src/db';
 import { ProofService } from '../../src/services/ProofService';
 import { BiometricVerificationService } from '../../src/services/BiometricVerificationService';
@@ -57,7 +76,14 @@ const mockDb = vi.mocked(db);
 const mockIsInvariantViolation = vi.mocked(isInvariantViolation);
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  vi.resetAllMocks();
+  // Restore advisory lock defaults: set() returns 'OK' (acquired), del() resolves.
+  mockRedisSet.mockResolvedValue('OK');
+  mockRedisDel.mockResolvedValue(1);
+  // Restore transaction mock after resetAllMocks() wipes the implementation
+  mockDb.transaction.mockImplementation(async (fn: (q: typeof mockDb.query) => Promise<unknown>) => fn(mockDb.query));
+  // Restore JudgeAIService.logVerdict — fire-and-forget call in review() needs a Promise
+  vi.mocked(JudgeAIService.logVerdict).mockResolvedValue(undefined as never);
 });
 
 // ============================================================================
@@ -89,6 +115,20 @@ function makePhoto(overrides: Record<string, unknown> = {}) {
     file_size_bytes: 12345,
     checksum_sha256: 'abc123',
     capture_time: null,
+    sequence_number: 1,
+    created_at: new Date(),
+    ...overrides,
+  };
+}
+
+function makeVideo(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'video-1',
+    proof_id: 'proof-1',
+    storage_key: 'proofs/video1.mp4',
+    content_type: 'video/mp4',
+    file_size_bytes: 500000,
+    duration_seconds: 30,
     sequence_number: 1,
     created_at: new Date(),
     ...overrides,
@@ -265,6 +305,97 @@ describe('ProofService', () => {
       expect(result.success).toBe(false);
       if (!result.success) expect(result.error.code).toBe('DB_ERROR');
     });
+
+    // T53-1: Verify the proof submission race condition fix.
+    // The task row must be locked with FOR UPDATE before the duplicate-proof check
+    // and INSERT so that concurrent submissions cannot both pass the guard.
+    it('T53-1: uses FOR UPDATE on task row inside transaction to prevent concurrent submissions', async () => {
+      const pendingProof = makeProof({ state: 'PENDING' });
+      const submittedProof = makeProof({ state: 'SUBMITTED' });
+
+      mockDb.query
+        .mockResolvedValueOnce({ rows: [{ worker_id: 'user-1', state: 'ACCEPTED' }], rowCount: 1 } as never) // task FOR UPDATE
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)   // dup check FOR UPDATE on proofs
+        .mockResolvedValueOnce({ rows: [pendingProof], rowCount: 1 } as never) // INSERT
+        .mockResolvedValueOnce({ rows: [submittedProof], rowCount: 1 } as never); // UPDATE to SUBMITTED
+
+      const result = await ProofService.submit({
+        taskId: 'task-1',
+        submitterId: 'user-1',
+        description: 'Completed',
+      });
+
+      expect(result.success).toBe(true);
+      // Verify the transaction was used (not a bare db.query)
+      expect(mockDb.transaction).toHaveBeenCalledOnce();
+      // Verify FOR UPDATE was present in the task lock query
+      const firstCallSql: string = mockDb.query.mock.calls[0][0];
+      expect(firstCallSql).toMatch(/FOR UPDATE/i);
+    });
+
+    it('T53-1: throws CONFLICT when a duplicate pending/submitted proof exists (race guard)', async () => {
+      // Simulate: task lock passes, but duplicate proof check finds an existing proof
+      mockDb.query
+        .mockResolvedValueOnce({ rows: [{ worker_id: 'user-1', state: 'ACCEPTED' }], rowCount: 1 } as never) // task FOR UPDATE
+        .mockResolvedValueOnce({ rows: [{ id: 'existing-proof' }], rowCount: 1 } as never); // existing PENDING proof
+
+      await expect(
+        ProofService.submit({
+          taskId: 'task-1',
+          submitterId: 'user-1',
+          description: 'My proof',
+        })
+      ).rejects.toMatchObject({ code: 'CONFLICT' });
+    });
+
+    it('T53-1: throws UNAUTHORIZED when submitter is not the assigned worker', async () => {
+      mockDb.query.mockResolvedValueOnce({
+        rows: [{ worker_id: 'other-worker', state: 'ACCEPTED' }], rowCount: 1,
+      } as never);
+
+      await expect(
+        ProofService.submit({
+          taskId: 'task-1',
+          submitterId: 'user-1', // not the assigned worker
+          description: 'Fake proof',
+        })
+      ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+    });
+
+    // T58-4: PROOF_ALLOWED_STATES must NOT include non-existent states
+    it('T58-4: rejects proof submission when task state is IN_PROGRESS (non-existent state)', async () => {
+      // IN_PROGRESS is not a valid task state — proof submission should be rejected
+      mockDb.query.mockResolvedValueOnce({
+        rows: [{ worker_id: 'user-1', state: 'IN_PROGRESS' }], rowCount: 1,
+      } as never);
+
+      await expect(
+        ProofService.submit({
+          taskId: 'task-1',
+          submitterId: 'user-1',
+          description: 'Proof attempt',
+        })
+      ).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    });
+
+    it('T58-4: allows proof submission when task state is ACCEPTED (valid state)', async () => {
+      const pendingProof = makeProof({ state: 'PENDING' });
+      const submittedProof = makeProof({ state: 'SUBMITTED' });
+
+      mockDb.query
+        .mockResolvedValueOnce({ rows: [{ worker_id: 'user-1', state: 'ACCEPTED' }], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+        .mockResolvedValueOnce({ rows: [pendingProof], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [submittedProof], rowCount: 1 } as never);
+
+      const result = await ProofService.submit({
+        taskId: 'task-1',
+        submitterId: 'user-1',
+        description: 'Proof done',
+      });
+
+      expect(result.success).toBe(true);
+    });
   });
 
   // --------------------------------------------------------------------------
@@ -288,9 +419,11 @@ describe('ProofService', () => {
       expect(mockDb.query).toHaveBeenCalledTimes(1); // No count query
     });
 
-    it('auto-calculates sequence number if not provided', async () => {
+    it('auto-calculates sequence number via FOR UPDATE transaction if not provided', async () => {
+      // The transaction mock delegates to mockDb.query, so two mockDb.query calls are needed:
+      // call 0: COUNT FOR UPDATE (returns count=2), call 1: INSERT (returns photo row with seqNum=3)
       mockDb.query
-        .mockResolvedValueOnce({ rows: [{ count: '2' }], rowCount: 1 } as never) // COUNT
+        .mockResolvedValueOnce({ rows: [{ count: '2' }], rowCount: 1 } as never) // COUNT FOR UPDATE
         .mockResolvedValueOnce({ rows: [makePhoto({ sequence_number: 3 })], rowCount: 1 } as never); // INSERT
 
       const result = await ProofService.addPhoto({
@@ -323,6 +456,62 @@ describe('ProofService', () => {
   });
 
   // --------------------------------------------------------------------------
+  // addVideo
+  // --------------------------------------------------------------------------
+  describe('addVideo', () => {
+    it('adds video with explicit sequence number', async () => {
+      const video = makeVideo();
+      mockDb.query.mockResolvedValueOnce({ rows: [video], rowCount: 1 } as never);
+
+      const result = await ProofService.addVideo({
+        proofId: 'proof-1',
+        storageKey: 'proofs/video1.mp4',
+        contentType: 'video/mp4',
+        fileSizeBytes: 500000,
+        durationSeconds: 30,
+        sequenceNumber: 1,
+      });
+
+      expect(result.success).toBe(true);
+      expect(mockDb.query).toHaveBeenCalledTimes(1); // No count query when sequenceNumber is provided
+    });
+
+    it('auto-calculates sequence number via FOR UPDATE transaction if not provided', async () => {
+      // The transaction mock delegates to mockDb.query, so two mockDb.query calls are needed:
+      // call 0: COUNT query (returns count=1), call 1: INSERT (returns video row with seqNum=2)
+      mockDb.query
+        .mockResolvedValueOnce({ rows: [{ count: '1' }], rowCount: 1 } as never) // COUNT FOR UPDATE
+        .mockResolvedValueOnce({ rows: [makeVideo({ sequence_number: 2 })], rowCount: 1 } as never); // INSERT
+
+      const result = await ProofService.addVideo({
+        proofId: 'proof-1',
+        storageKey: 'proofs/video2.mp4',
+        fileSizeBytes: 250000,
+        durationSeconds: 15,
+      });
+
+      expect(result.success).toBe(true);
+      if (result.success) expect(result.data.sequence_number).toBe(2);
+      expect(mockDb.query).toHaveBeenCalledTimes(2);
+    });
+
+    it('returns DB_ERROR on failure', async () => {
+      mockDb.query.mockRejectedValueOnce(new Error('insert failed'));
+
+      const result = await ProofService.addVideo({
+        proofId: 'proof-1',
+        storageKey: 'key',
+        contentType: 'video/mp4',
+        fileSizeBytes: 1,
+        sequenceNumber: 1,
+      });
+
+      expect(result.success).toBe(false);
+      if (!result.success) expect(result.error.code).toBe('DB_ERROR');
+    });
+  });
+
+  // --------------------------------------------------------------------------
   // review
   // --------------------------------------------------------------------------
   describe('review', () => {
@@ -337,6 +526,29 @@ describe('ProofService', () => {
 
       expect(result.success).toBe(false);
       if (!result.success) expect(result.error.code).toBe('NOT_FOUND');
+    });
+
+    it('throws CONFLICT when advisory lock is already held by another reviewer (FIX YY-03)', async () => {
+      // Phase 1 SELECT succeeds — proof is SUBMITTED and transition is valid
+      const proof = makeProof({ state: 'SUBMITTED' });
+      mockDb.query.mockResolvedValueOnce({ rows: [proof], rowCount: 1 } as never);
+      // T53-8 ownership check — reviewer 'admin-2' is the poster
+      mockDb.query.mockResolvedValueOnce({ rows: [{ poster_id: 'admin-2' }], rowCount: 1 } as never);
+
+      // Simulate lock contention: Redis SET NX returns null (key already exists)
+      mockRedisSet.mockResolvedValueOnce(null);
+
+      await expect(
+        ProofService.review({
+          proofId: 'proof-1',
+          reviewerId: 'admin-2',
+          decision: 'ACCEPTED',
+        })
+      ).rejects.toMatchObject({ code: 'CONFLICT' });
+
+      // AI pipeline must NOT have been invoked — that is the whole point of the fix
+      expect(JudgeAIService.synthesizeVerdict).not.toHaveBeenCalled();
+      expect(BiometricVerificationService.analyzeProofSubmission).not.toHaveBeenCalled();
     });
 
     it('rejects invalid state transition', async () => {
@@ -358,8 +570,11 @@ describe('ProofService', () => {
       const rejectedProof = makeProof({ state: 'REJECTED', reviewed_by: 'admin-1', rejection_reason: 'Bad quality' });
 
       mockDb.query
-        .mockResolvedValueOnce({ rows: [proof], rowCount: 1 } as never) // SELECT proof
-        .mockResolvedValueOnce({ rows: [rejectedProof], rowCount: 1 } as never); // UPDATE
+        .mockResolvedValueOnce({ rows: [proof], rowCount: 1 } as never)                                                 // SELECT proof (outside tx)
+        .mockResolvedValueOnce({ rows: [{ poster_id: 'admin-1' }], rowCount: 1 } as never)                             // T53-8 ownership check
+        .mockResolvedValueOnce({ rows: [{ state: 'SUBMITTED', task_id: 'task-1' }], rowCount: 1 } as never)            // SELECT state, task_id FOR UPDATE (inside tx)
+        .mockResolvedValueOnce({ rows: [{ state: 'PROOF_SUBMITTED' }], rowCount: 1 } as never)                         // T60-1: SELECT task state (inside tx)
+        .mockResolvedValueOnce({ rows: [rejectedProof], rowCount: 1 } as never);                                       // UPDATE (inside tx)
 
       const result = await ProofService.review({
         proofId: 'proof-1',
@@ -377,9 +592,12 @@ describe('ProofService', () => {
       const acceptedProof = makeProof({ state: 'ACCEPTED', reviewed_by: 'admin-1' });
 
       mockDb.query
-        .mockResolvedValueOnce({ rows: [proof], rowCount: 1 } as never) // SELECT proof
-        .mockResolvedValueOnce({ rows: [{ description: 'Fix pipe', before_photo_url: null }], rowCount: 1 } as never) // SELECT task desc
-        .mockResolvedValueOnce({ rows: [acceptedProof], rowCount: 1 } as never); // UPDATE
+        .mockResolvedValueOnce({ rows: [proof], rowCount: 1 } as never)                                                     // SELECT proof (outside tx)
+        .mockResolvedValueOnce({ rows: [{ poster_id: 'admin-1' }], rowCount: 1 } as never)                                 // T53-8 ownership check
+        .mockResolvedValueOnce({ rows: [{ description: 'Fix pipe', before_photo_url: null }], rowCount: 1 } as never)       // SELECT task desc (AI pipeline)
+        .mockResolvedValueOnce({ rows: [{ state: 'SUBMITTED', task_id: 'task-1' }], rowCount: 1 } as never)                 // SELECT state, task_id FOR UPDATE (inside tx)
+        .mockResolvedValueOnce({ rows: [{ state: 'PROOF_SUBMITTED' }], rowCount: 1 } as never)                             // T60-1: SELECT task state (inside tx)
+        .mockResolvedValueOnce({ rows: [acceptedProof], rowCount: 1 } as never);                                           // UPDATE (inside tx)
 
       vi.mocked(JudgeAIService.synthesizeVerdict).mockResolvedValueOnce({
         success: true,
@@ -407,8 +625,10 @@ describe('ProofService', () => {
       const proof = makeProof({ state: 'SUBMITTED' });
 
       mockDb.query
-        .mockResolvedValueOnce({ rows: [proof], rowCount: 1 } as never) // SELECT proof
-        .mockResolvedValueOnce({ rows: [{ description: 'Clean house', before_photo_url: null }], rowCount: 1 } as never); // SELECT task desc
+        .mockResolvedValueOnce({ rows: [proof], rowCount: 1 } as never)                                                   // SELECT proof (outside tx)
+        .mockResolvedValueOnce({ rows: [{ poster_id: 'admin-1' }], rowCount: 1 } as never)                               // T53-8 ownership check
+        .mockResolvedValueOnce({ rows: [{ description: 'Clean house', before_photo_url: null }], rowCount: 1 } as never); // SELECT task desc (AI pipeline)
+      // JUDGE_REJECTED path — no transaction/UPDATE reached
 
       vi.mocked(JudgeAIService.synthesizeVerdict).mockResolvedValueOnce({
         success: true,
@@ -437,9 +657,12 @@ describe('ProofService', () => {
       const acceptedProof = makeProof({ state: 'ACCEPTED', reviewed_by: 'admin-1' });
 
       mockDb.query
-        .mockResolvedValueOnce({ rows: [proof], rowCount: 1 } as never)
-        .mockResolvedValueOnce({ rows: [{ description: 'Yard work', before_photo_url: null }], rowCount: 1 } as never)
-        .mockResolvedValueOnce({ rows: [acceptedProof], rowCount: 1 } as never);
+        .mockResolvedValueOnce({ rows: [proof], rowCount: 1 } as never)                                                     // SELECT proof (outside tx)
+        .mockResolvedValueOnce({ rows: [{ poster_id: 'admin-1' }], rowCount: 1 } as never)                                 // T53-8 ownership check
+        .mockResolvedValueOnce({ rows: [{ description: 'Yard work', before_photo_url: null }], rowCount: 1 } as never)       // SELECT task desc (AI pipeline)
+        .mockResolvedValueOnce({ rows: [{ state: 'SUBMITTED', task_id: 'task-1' }], rowCount: 1 } as never)                 // SELECT state, task_id FOR UPDATE (inside tx)
+        .mockResolvedValueOnce({ rows: [{ state: 'PROOF_SUBMITTED' }], rowCount: 1 } as never)                             // T60-1: SELECT task state (inside tx)
+        .mockResolvedValueOnce({ rows: [acceptedProof], rowCount: 1 } as never);                                           // UPDATE (inside tx)
 
       vi.mocked(JudgeAIService.synthesizeVerdict).mockResolvedValueOnce({
         success: true,
@@ -467,9 +690,12 @@ describe('ProofService', () => {
       const acceptedProof = makeProof({ state: 'ACCEPTED', reviewed_by: 'admin-1' });
 
       mockDb.query
-        .mockResolvedValueOnce({ rows: [proof], rowCount: 1 } as never)
-        .mockResolvedValueOnce({ rows: [{ description: 'task', before_photo_url: null }], rowCount: 1 } as never)
-        .mockResolvedValueOnce({ rows: [acceptedProof], rowCount: 1 } as never);
+        .mockResolvedValueOnce({ rows: [proof], rowCount: 1 } as never)                                                     // SELECT proof (outside tx)
+        .mockResolvedValueOnce({ rows: [{ poster_id: 'admin-1' }], rowCount: 1 } as never)                                 // T53-8 ownership check
+        .mockResolvedValueOnce({ rows: [{ description: 'task', before_photo_url: null }], rowCount: 1 } as never)           // SELECT task desc (AI pipeline)
+        .mockResolvedValueOnce({ rows: [{ state: 'SUBMITTED', task_id: 'task-1' }], rowCount: 1 } as never)                 // SELECT state, task_id FOR UPDATE (inside tx)
+        .mockResolvedValueOnce({ rows: [{ state: 'PROOF_SUBMITTED' }], rowCount: 1 } as never)                             // T60-1: SELECT task state (inside tx)
+        .mockResolvedValueOnce({ rows: [acceptedProof], rowCount: 1 } as never);                                           // UPDATE (inside tx)
 
       vi.mocked(JudgeAIService.synthesizeVerdict).mockResolvedValueOnce({
         success: false,
@@ -496,10 +722,13 @@ describe('ProofService', () => {
       const acceptedProof = makeProof({ state: 'ACCEPTED' });
 
       mockDb.query
-        .mockResolvedValueOnce({ rows: [proof], rowCount: 1 } as never) // SELECT proof + submissions
-        .mockResolvedValueOnce({ rows: [{ location_lat: 40.7128, location_lng: -74.006 }], rowCount: 1 } as never) // task location
-        .mockResolvedValueOnce({ rows: [{ description: 'task', before_photo_url: 'https://r2.dev/before.jpg' }], rowCount: 1 } as never) // task desc
-        .mockResolvedValueOnce({ rows: [acceptedProof], rowCount: 1 } as never); // UPDATE
+        .mockResolvedValueOnce({ rows: [proof], rowCount: 1 } as never)                                                                     // SELECT proof (outside tx)
+        .mockResolvedValueOnce({ rows: [{ poster_id: 'admin-1' }], rowCount: 1 } as never)                                                  // T53-8 ownership check
+        .mockResolvedValueOnce({ rows: [{ location_lat: 40.7128, location_lng: -74.006 }], rowCount: 1 } as never)                          // task location (GPS pipeline)
+        .mockResolvedValueOnce({ rows: [{ description: 'task', before_photo_url: 'https://r2.dev/before.jpg' }], rowCount: 1 } as never)    // task desc (photo pipeline)
+        .mockResolvedValueOnce({ rows: [{ state: 'SUBMITTED', task_id: 'task-1' }], rowCount: 1 } as never)                                 // SELECT state, task_id FOR UPDATE (inside tx)
+        .mockResolvedValueOnce({ rows: [{ state: 'PROOF_SUBMITTED' }], rowCount: 1 } as never)                                             // T60-1: SELECT task state (inside tx)
+        .mockResolvedValueOnce({ rows: [acceptedProof], rowCount: 1 } as never);                                                            // UPDATE (inside tx)
 
       vi.mocked(BiometricVerificationService.analyzeProofSubmission).mockResolvedValueOnce({
         success: true,
@@ -541,15 +770,38 @@ describe('ProofService', () => {
       expect(JudgeAIService.synthesizeVerdict).toHaveBeenCalled();
     });
 
+    // T58-2: auth check must NOT be skipped when task not found (rows.length === 0)
+    it('returns FORBIDDEN when task does not exist for the proof (T58-2: orphaned proof)', async () => {
+      const proof = makeProof({ state: 'SUBMITTED' });
+      // Phase 1 SELECT — proof found, SUBMITTED state is valid for ACCEPTED transition
+      mockDb.query.mockResolvedValueOnce({ rows: [proof], rowCount: 1 } as never);
+      // T53-8 ownership check — task_id row NOT found (orphaned proof)
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+
+      const result = await ProofService.review({
+        proofId: 'proof-1',
+        reviewerId: 'any-caller',
+        decision: 'ACCEPTED',
+      });
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.code).toBe('FORBIDDEN');
+      }
+    });
+
     it('handles invariant violation during review', async () => {
       const proof = makeProof({ state: 'SUBMITTED' });
 
-      mockDb.query.mockResolvedValueOnce({ rows: [proof], rowCount: 1 } as never);
-
-      // For REJECTED decision, no AI pipeline runs — goes straight to UPDATE
       const invariantError = { code: 'HX003', message: 'invariant' };
-      mockDb.query.mockRejectedValueOnce(invariantError);
       mockIsInvariantViolation.mockReturnValueOnce(true);
+
+      mockDb.query
+        .mockResolvedValueOnce({ rows: [proof], rowCount: 1 } as never)                                       // SELECT proof (outside tx)
+        .mockResolvedValueOnce({ rows: [{ poster_id: 'admin-1' }], rowCount: 1 } as never)                   // T53-8 ownership check
+        .mockResolvedValueOnce({ rows: [{ state: 'SUBMITTED', task_id: 'task-1' }], rowCount: 1 } as never)  // SELECT state, task_id FOR UPDATE (inside tx)
+        .mockResolvedValueOnce({ rows: [{ state: 'PROOF_SUBMITTED' }], rowCount: 1 } as never)               // T60-1: SELECT task state (inside tx)
+        .mockRejectedValueOnce(invariantError);                                                               // UPDATE throws invariant violation (inside tx)
 
       const result = await ProofService.review({
         proofId: 'proof-1',
@@ -560,6 +812,65 @@ describe('ProofService', () => {
 
       expect(result.success).toBe(false);
       if (!result.success) expect(result.error.code).toBe('HX003');
+    });
+
+    // T60-1: Phase 3 must check that task is still PROOF_SUBMITTED before committing review.
+    // A concurrent dispute creation can set task→DISPUTED between Phase 1 and Phase 3.
+    // If we allow the proof review to proceed when the task is DISPUTED, a subsequent
+    // dispute resolution with RELEASE would try to accept an already-REJECTED proof, which
+    // violates INV-3 (completed task requires accepted proof).
+    it('T60-1: throws CONFLICT when Phase 3 finds task is DISPUTED (not PROOF_SUBMITTED)', async () => {
+      const proof = makeProof({ state: 'SUBMITTED', task_id: 'task-1' });
+
+      mockDb.query
+        .mockResolvedValueOnce({ rows: [proof], rowCount: 1 } as never)                      // Phase 1: SELECT proof
+        .mockResolvedValueOnce({ rows: [{ poster_id: 'admin-1' }], rowCount: 1 } as never)   // T53-8 ownership check
+        // No AI pipeline queries (decision is REJECTED)
+        // Phase 3: SELECT state, task_id FOR UPDATE on proof — still SUBMITTED
+        .mockResolvedValueOnce({ rows: [{ state: 'SUBMITTED', task_id: 'task-1' }], rowCount: 1 } as never)
+        // T60-1: SELECT task state inside Phase 3 — task has moved to DISPUTED
+        .mockResolvedValueOnce({ rows: [{ state: 'DISPUTED' }], rowCount: 1 } as never);
+        // No UPDATE should happen after task state check fails
+
+      // TRPCErrors are re-thrown by ProofService.review — check the thrown error
+      await expect(
+        ProofService.review({
+          proofId: 'proof-1',
+          reviewerId: 'admin-1',
+          decision: 'REJECTED',
+          reason: 'Concurrent dispute opened',
+        })
+      ).rejects.toMatchObject({ code: 'CONFLICT' });
+
+      // The proof UPDATE must NOT have been called — task state guard must fire first
+      const allSqls = mockDb.query.mock.calls.map(c => (c[0] as string).toLowerCase());
+      const updateProofCall = allSqls.find(sql => sql.includes('update proofs') && sql.includes('state = $1'));
+      expect(updateProofCall).toBeUndefined();
+    });
+
+    it('T60-1: proceeds normally when Phase 3 finds task is still PROOF_SUBMITTED', async () => {
+      const proof = makeProof({ state: 'SUBMITTED', task_id: 'task-1' });
+      const rejectedProof = makeProof({ state: 'REJECTED', reviewed_by: 'admin-1' });
+
+      mockDb.query
+        .mockResolvedValueOnce({ rows: [proof], rowCount: 1 } as never)                      // Phase 1: SELECT proof
+        .mockResolvedValueOnce({ rows: [{ poster_id: 'admin-1' }], rowCount: 1 } as never)   // T53-8 ownership check
+        // Phase 3: SELECT state, task_id FOR UPDATE on proof
+        .mockResolvedValueOnce({ rows: [{ state: 'SUBMITTED', task_id: 'task-1' }], rowCount: 1 } as never)
+        // T60-1: SELECT task state — still PROOF_SUBMITTED → allowed
+        .mockResolvedValueOnce({ rows: [{ state: 'PROOF_SUBMITTED' }], rowCount: 1 } as never)
+        // UPDATE proof
+        .mockResolvedValueOnce({ rows: [rejectedProof], rowCount: 1 } as never);
+
+      const result = await ProofService.review({
+        proofId: 'proof-1',
+        reviewerId: 'admin-1',
+        decision: 'REJECTED',
+        reason: 'Bad quality',
+      });
+
+      expect(result.success).toBe(true);
+      if (result.success) expect(result.data.state).toBe('REJECTED');
     });
   });
 });

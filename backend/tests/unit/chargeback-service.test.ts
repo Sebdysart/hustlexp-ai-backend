@@ -23,9 +23,14 @@ vi.mock('../../src/logger', () => ({
   logger: { child: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }) },
 }));
 
+vi.mock('../../src/auth-cache', () => ({
+  invalidateAuthCacheForUser: vi.fn().mockResolvedValue(undefined),
+}));
+
 import { db } from '../../src/db';
 import { ChargebackService } from '../../src/services/ChargebackService';
 import { RevenueService } from '../../src/services/RevenueService';
+import { invalidateAuthCacheForUser } from '../../src/auth-cache';
 
 const mockDb = vi.mocked(db);
 const mockRevenueLog = vi.mocked(RevenueService.logEvent);
@@ -70,15 +75,17 @@ describe('ChargebackService', () => {
       } as never);
       // 4. UPDATE payment_disputes with reversal ledger
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
-      // 5. UPDATE users SET payouts_locked
+      // 5. UPDATE users SET dispute_count (F61-2: always-increment, step 1)
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
-      // 6. UPDATE payment_disputes SET payouts_were_frozen
+      // 6. UPDATE users SET payouts_locked = TRUE WHERE payouts_locked = FALSE (step 2)
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
-      // 7. SELECT trust_tier, dispute_count
+      // 7. UPDATE payment_disputes SET payouts_were_frozen
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      // 8. SELECT trust_tier, dispute_count
       mockDb.query.mockResolvedValueOnce({
         rows: [{ trust_tier: 3, dispute_count: 1 }], rowCount: 1,
       } as never);
-      // 8. UPDATE escrows SET state = LOCKED_DISPUTE
+      // 9. UPDATE escrows SET state = LOCKED_DISPUTE
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
 
       const result = await ChargebackService.handleDisputeCreated(params);
@@ -128,12 +135,15 @@ describe('ChargebackService', () => {
       mockDb.query.mockResolvedValueOnce({ rows: [{ poster_id: 'user-1' }], rowCount: 1 } as never);
       mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'pd-2' }], rowCount: 1 } as never);
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // link reversal
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // freeze payouts
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // always-increment dispute_count (F61-2 step 1)
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // conditional payouts_locked (F61-2 step 2)
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // payouts_were_frozen
       // dispute_count = 2, trust_tier = 3 -> should drop to 2
       mockDb.query.mockResolvedValueOnce({ rows: [{ trust_tier: 3, dispute_count: 2 }], rowCount: 1 } as never);
       // UPDATE users SET trust_tier
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      // SELECT firebase_uid (A60-4)
+      mockDb.query.mockResolvedValueOnce({ rows: [{ firebase_uid: 'fb-user-1' }], rowCount: 1 } as never);
       // INSERT trust_ledger
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
       // UPDATE payment_disputes trust_was_downgraded
@@ -158,15 +168,17 @@ describe('ChargebackService', () => {
       mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'esc-1', task_id: 'task-1', state: 'FUNDED' }], rowCount: 1 } as never);
       mockDb.query.mockResolvedValueOnce({ rows: [{ poster_id: 'user-1' }], rowCount: 1 } as never);
       mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'pd-3' }], rowCount: 1 } as never);
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // link reversal
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // always-increment dispute_count (F61-2 step 1)
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // conditional payouts_locked (F61-2 step 2)
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // payouts_were_frozen
       // dispute_count = 3 -> drop to tier 1
       mockDb.query.mockResolvedValueOnce({ rows: [{ trust_tier: 4, dispute_count: 3 }], rowCount: 1 } as never);
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // UPDATE users SET trust_tier = 1
+      mockDb.query.mockResolvedValueOnce({ rows: [{ firebase_uid: 'fb-u1' }], rowCount: 1 } as never); // SELECT firebase_uid
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // INSERT trust_ledger
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // UPDATE payment_disputes trust_was_downgraded
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // LOCK escrow
 
       const result = await ChargebackService.handleDisputeCreated(params);
       expect(result.success).toBe(true);
@@ -257,10 +269,8 @@ describe('ChargebackService', () => {
       } as never);
       // increment dispute_lost_count
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
-      // check other open disputes
-      mockDb.query.mockResolvedValueOnce({ rows: [{ count: '0' }], rowCount: 1 } as never);
-      // unlock payouts
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      // Bug 4 fix: LOST path no longer checks other open disputes or unlocks payouts.
+      // Payouts remain frozen and require admin manual review.
       // mark resolved
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
 
@@ -324,5 +334,219 @@ describe('ChargebackService', () => {
         expect(result.data.isAtRisk).toBe(false); // 0.1% < 0.75%
       }
     });
+  });
+
+  // -------------------------------------------------------------------------
+  // A60-4: invalidateAuthCacheForUser after trust_tier downgrade
+  // -------------------------------------------------------------------------
+  describe('A60-4: auth cache invalidation after trust_tier downgrade', () => {
+    it('calls invalidateAuthCacheForUser with userId after trust_tier downgrade', async () => {
+      const mockInvalidate = vi.mocked(invalidateAuthCacheForUser);
+      mockInvalidate.mockClear();
+
+      const params = makeDisputeParams();
+
+      // Find escrow
+      mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'esc-1', task_id: 'task-1', state: 'FUNDED' }], rowCount: 1 } as never);
+      // Find poster
+      mockDb.query.mockResolvedValueOnce({ rows: [{ poster_id: 'user-1' }], rowCount: 1 } as never);
+      // INSERT payment_disputes
+      mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'pd-2' }], rowCount: 1 } as never);
+      // link reversal ledger
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      // always-increment dispute_count (F61-2 step 1)
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      // conditional payouts_locked (F61-2 step 2)
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      // payouts_were_frozen
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      // trust_tier=3, dispute_count=2 → downgrade to tier 2
+      mockDb.query.mockResolvedValueOnce({ rows: [{ trust_tier: 3, dispute_count: 2 }], rowCount: 1 } as never);
+      // UPDATE users SET trust_tier
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      // SELECT firebase_uid (for cache invalidation)
+      mockDb.query.mockResolvedValueOnce({ rows: [{ firebase_uid: 'fb-user-1' }], rowCount: 1 } as never);
+      // INSERT trust_ledger
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      // UPDATE payment_disputes trust_was_downgraded
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      // LOCK escrow
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+      const result = await ChargebackService.handleDisputeCreated(params);
+      expect(result.success).toBe(true);
+
+      expect(mockInvalidate).toHaveBeenCalledWith('user-1', 'fb-user-1', false);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // F61-2: dispute_count incremented even when payouts_locked=TRUE
+  // -------------------------------------------------------------------------
+  describe('F61-2: dispute_count always incremented regardless of payouts_locked state', () => {
+    it('F61-2: increments dispute_count even when payouts_locked is already TRUE (repeat fraudster)', async () => {
+      // Simulates a user who already has payouts_locked=TRUE from a prior chargeback.
+      // The original bug: a single UPDATE with AND payouts_locked = FALSE would match
+      // 0 rows and skip the dispute_count increment entirely.
+      // Fix: two separate UPDATEs — first always increments dispute_count,
+      // second conditionally sets payouts_locked (matches 0 rows when already locked, harmless).
+      const params = makeDisputeParams({ stripeDisputeId: 'dp_repeat_fraud' });
+
+      // 1. Find escrow by payment intent
+      mockDb.query.mockResolvedValueOnce({
+        rows: [{ id: 'esc-1', task_id: 'task-1', state: 'RELEASED' }], rowCount: 1,
+      } as never);
+      // 2. Find poster from task
+      mockDb.query.mockResolvedValueOnce({
+        rows: [{ poster_id: 'user-1' }], rowCount: 1,
+      } as never);
+      // 3. INSERT payment_disputes (new)
+      mockDb.query.mockResolvedValueOnce({
+        rows: [{ id: 'pd-repeat' }], rowCount: 1,
+      } as never);
+      // 4. UPDATE payment_disputes with reversal ledger
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      // 5. UPDATE users SET dispute_count = COALESCE(dispute_count,0)+1 (always — F61-2 fix, step 1)
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      // 6. UPDATE users SET payouts_locked = TRUE WHERE payouts_locked = FALSE
+      //    (matches 0 rows because already locked — this is fine)
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+      // 7. UPDATE payment_disputes SET payouts_were_frozen = TRUE
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      // 8. SELECT trust_tier, dispute_count (now reflects incremented count = 3 → drop to tier 1)
+      mockDb.query.mockResolvedValueOnce({
+        rows: [{ trust_tier: 2, dispute_count: 3 }], rowCount: 1,
+      } as never);
+      // 9. UPDATE users SET trust_tier = 1
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      // 10. SELECT firebase_uid
+      mockDb.query.mockResolvedValueOnce({ rows: [{ firebase_uid: 'fb-user-1' }], rowCount: 1 } as never);
+      // 11. INSERT trust_ledger
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      // 12. UPDATE payment_disputes trust_was_downgraded
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      // 13. UPDATE escrows SET state = LOCKED_DISPUTE (escrow was RELEASED → no match, harmless)
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+
+      const result = await ChargebackService.handleDisputeCreated(params);
+      expect(result.success).toBe(true);
+
+      // Verify: the dispute_count increment UPDATE was issued (no payouts_locked guard)
+      const allSqls = mockDb.query.mock.calls.map(c => c[0] as string);
+      const disputeCountUpdate = allSqls.find(
+        (sql) => sql.includes('dispute_count') && sql.includes('UPDATE users') && !sql.includes('payouts_locked = FALSE')
+      );
+      expect(disputeCountUpdate).toBeDefined();
+
+      // Verify: a separate conditional payouts_locked update exists
+      const payoutsLockUpdate = allSqls.find(
+        (sql) => sql.includes('payouts_locked = TRUE') && sql.includes('payouts_locked = FALSE')
+      );
+      expect(payoutsLockUpdate).toBeDefined();
+    });
+
+    it('F61-2: trust tier downgrade fires on 3rd chargeback even when payouts were already locked', async () => {
+      // User has payouts_locked=TRUE. Receives 3rd chargeback. Because dispute_count is
+      // always incremented (F61-2), the SELECT after the update returns dispute_count=3
+      // and the tier-downgrade logic fires correctly.
+      const params = makeDisputeParams({ stripeDisputeId: 'dp_3rd_chargeback' });
+
+      // Escrow lookup
+      mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'esc-1', task_id: 'task-1', state: 'FUNDED' }], rowCount: 1 } as never);
+      // Poster lookup
+      mockDb.query.mockResolvedValueOnce({ rows: [{ poster_id: 'user-1' }], rowCount: 1 } as never);
+      // INSERT payment_disputes
+      mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'pd-3rd' }], rowCount: 1 } as never);
+      // Link reversal ledger
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      // Always-increment dispute_count (F61-2 step 1)
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      // Conditional payouts_locked (already locked → 0 rows matched)
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+      // UPDATE payouts_were_frozen
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      // SELECT trust_tier=3, dispute_count=3 → must drop to tier 1
+      mockDb.query.mockResolvedValueOnce({ rows: [{ trust_tier: 3, dispute_count: 3 }], rowCount: 1 } as never);
+      // UPDATE users SET trust_tier = 1
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      // SELECT firebase_uid
+      mockDb.query.mockResolvedValueOnce({ rows: [{ firebase_uid: 'fb-u1' }], rowCount: 1 } as never);
+      // INSERT trust_ledger
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      // UPDATE payment_disputes trust_was_downgraded
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      // UPDATE escrows (FUNDED → LOCKED_DISPUTE)
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+      const result = await ChargebackService.handleDisputeCreated(params);
+      expect(result.success).toBe(true);
+
+      // Tier-downgrade query must have been called with tier=1
+      const trustUpdateCall = mockDb.query.mock.calls.find(
+        (call) => typeof call[0] === 'string' && (call[0] as string).includes('UPDATE users SET trust_tier')
+      );
+      expect(trustUpdateCall).toBeDefined();
+      expect(trustUpdateCall![1]).toContain(1); // downgraded to tier 1
+    });
+  });
+});
+
+// --------------------------------------------------------------------------
+// F64-3: payouts_were_frozen should only be TRUE when this dispute actually froze account
+// --------------------------------------------------------------------------
+describe('F64-3: payouts_were_frozen set correctly based on actual lock result', () => {
+  it('F64-3: sets payouts_were_frozen=FALSE when account was already locked (rowCount=0 on Step 2)', async () => {
+    const params = makeDisputeParams({ stripeDisputeId: 'dp_already_locked' });
+
+    mockDb.query
+      .mockResolvedValueOnce({ rows: [{ id: 'esc-1', task_id: 'task-1', state: 'RELEASED' }], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [{ poster_id: 'user-1' }], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [{ id: 'pd-f64' }], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // reversal ledger
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // step 1: dispute_count increment
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // step 2: payouts_locked (0 = already locked)
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // payouts_were_frozen UPDATE
+      .mockResolvedValueOnce({ rows: [{ trust_tier: 2, dispute_count: 2 }], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // trust_tier UPDATE
+      .mockResolvedValueOnce({ rows: [{ firebase_uid: 'fb-u1' }], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // trust_ledger INSERT
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // payment_disputes trust_was_downgraded
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // escrow LOCKED_DISPUTE
+
+    const result = await ChargebackService.handleDisputeCreated(params);
+    expect(result.success).toBe(true);
+
+    // Find the payouts_were_frozen UPDATE call
+    const frozenCall = mockDb.query.mock.calls.find(
+      (call) => typeof call[0] === 'string' && (call[0] as string).includes('payouts_were_frozen')
+    );
+    expect(frozenCall).toBeDefined();
+    // F64-3 fix: rowCount was 0 (already locked) → should pass FALSE as $2
+    expect(frozenCall![1][1]).toBe(false);
+  });
+
+  it('F64-3: sets payouts_were_frozen=TRUE when this dispute freshly locked the account (rowCount=1 on Step 2)', async () => {
+    const params = makeDisputeParams({ stripeDisputeId: 'dp_fresh_lock' });
+
+    mockDb.query
+      .mockResolvedValueOnce({ rows: [{ id: 'esc-2', task_id: 'task-2', state: 'FUNDED' }], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [{ poster_id: 'user-2' }], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [{ id: 'pd-f64b' }], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // reversal ledger
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // step 1: dispute_count increment
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // step 2: payouts_locked (1 = freshly locked)
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // payouts_were_frozen UPDATE
+      .mockResolvedValueOnce({ rows: [{ trust_tier: 3, dispute_count: 1 }], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // escrow LOCKED_DISPUTE
+
+    const result = await ChargebackService.handleDisputeCreated(params);
+    expect(result.success).toBe(true);
+
+    const frozenCall = mockDb.query.mock.calls.find(
+      (call) => typeof call[0] === 'string' && (call[0] as string).includes('payouts_were_frozen')
+    );
+    expect(frozenCall).toBeDefined();
+    // F64-3 fix: rowCount was 1 (freshly locked) → should pass TRUE as $2
+    expect(frozenCall![1][1]).toBe(true);
   });
 });

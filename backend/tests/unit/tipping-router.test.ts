@@ -65,6 +65,13 @@ function makeCaller(userId = 'test-uid') {
   });
 }
 
+function makePosterCaller(userId = 'test-uid') {
+  return tippingRouter.createCaller({
+    user: { id: userId, default_mode: 'poster' } as any,
+    firebaseUid: 'fb-uid',
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -76,7 +83,7 @@ describe('tipping.createTip', () => {
     const tipData = { id: TEST_UUID, amountCents: 500, clientSecret: 'cs_test' };
     mockService.createTip.mockResolvedValueOnce({ success: true, data: tipData } as any);
 
-    const result = await makeCaller().createTip({ taskId: TEST_UUID_2, amountCents: 500 });
+    const result = await makePosterCaller().createTip({ taskId: TEST_UUID_2, amountCents: 500 });
 
     expect(result).toEqual(tipData);
     expect(mockService.createTip).toHaveBeenCalledWith({
@@ -93,19 +100,19 @@ describe('tipping.createTip', () => {
     } as any);
 
     await expect(
-      makeCaller().createTip({ taskId: TEST_UUID, amountCents: 500 })
+      makePosterCaller().createTip({ taskId: TEST_UUID, amountCents: 500 })
     ).rejects.toThrow('Task not completed');
   });
 
   it('enforces minimum amount of 100 cents', async () => {
     await expect(
-      makeCaller().createTip({ taskId: TEST_UUID, amountCents: 50 })
+      makePosterCaller().createTip({ taskId: TEST_UUID, amountCents: 50 })
     ).rejects.toThrow();
   });
 
   it('enforces maximum amount of 50000 cents', async () => {
     await expect(
-      makeCaller().createTip({ taskId: TEST_UUID, amountCents: 60000 })
+      makePosterCaller().createTip({ taskId: TEST_UUID, amountCents: 60000 })
     ).rejects.toThrow();
   });
 });
@@ -116,14 +123,14 @@ describe('tipping.confirmTip', () => {
   it('confirms tip when caller is the poster', async () => {
     // Tip ownership check
     mockDb.query.mockResolvedValueOnce({
-      rows: [{ poster_id: 'test-uid' }],
+      rows: [{ poster_id: 'test-uid', stripe_payment_intent_id: 'pi_test' }],
       rowCount: 1,
     } as any);
 
     const confirmData = { confirmed: true };
     mockService.confirmTip.mockResolvedValueOnce({ success: true, data: confirmData } as any);
 
-    const result = await makeCaller().confirmTip({
+    const result = await makePosterCaller().confirmTip({
       tipId: TEST_UUID,
       stripePaymentIntentId: 'pi_test',
     });
@@ -136,7 +143,7 @@ describe('tipping.confirmTip', () => {
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
 
     await expect(
-      makeCaller().confirmTip({ tipId: TEST_UUID, stripePaymentIntentId: 'pi_test' })
+      makePosterCaller().confirmTip({ tipId: TEST_UUID, stripePaymentIntentId: 'pi_test' })
     ).rejects.toThrow('Tip not found');
   });
 
@@ -147,13 +154,13 @@ describe('tipping.confirmTip', () => {
     } as any);
 
     await expect(
-      makeCaller().confirmTip({ tipId: TEST_UUID, stripePaymentIntentId: 'pi_test' })
+      makePosterCaller().confirmTip({ tipId: TEST_UUID, stripePaymentIntentId: 'pi_test' })
     ).rejects.toThrow('Not authorized to confirm this tip');
   });
 
   it('throws BAD_REQUEST when service fails', async () => {
     mockDb.query.mockResolvedValueOnce({
-      rows: [{ poster_id: 'test-uid' }],
+      rows: [{ poster_id: 'test-uid', stripe_payment_intent_id: 'pi_test' }],
       rowCount: 1,
     } as any);
     mockService.confirmTip.mockResolvedValueOnce({
@@ -162,7 +169,7 @@ describe('tipping.confirmTip', () => {
     } as any);
 
     await expect(
-      makeCaller().confirmTip({ tipId: TEST_UUID, stripePaymentIntentId: 'pi_test' })
+      makePosterCaller().confirmTip({ tipId: TEST_UUID, stripePaymentIntentId: 'pi_test' })
     ).rejects.toThrow('Payment not confirmed');
   });
 });
@@ -170,7 +177,12 @@ describe('tipping.confirmTip', () => {
 describe('tipping.getTipsForTask', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('returns tips for a task', async () => {
+  it('returns tips when caller is the poster of the task', async () => {
+    // Participant check: caller is poster
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ poster_id: 'test-uid', worker_id: 'some-worker' }],
+      rowCount: 1,
+    } as any);
     const tips = [{ id: TEST_UUID, amountCents: 500 }];
     mockService.getTipsForTask.mockResolvedValueOnce({ success: true, data: tips } as any);
 
@@ -180,7 +192,46 @@ describe('tipping.getTipsForTask', () => {
     expect(mockService.getTipsForTask).toHaveBeenCalledWith(TEST_UUID_2);
   });
 
+  it('returns tips when caller is the worker of the task', async () => {
+    // Participant check: caller is worker
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ poster_id: 'some-poster', worker_id: 'test-uid' }],
+      rowCount: 1,
+    } as any);
+    const tips = [{ id: TEST_UUID, amountCents: 750 }];
+    mockService.getTipsForTask.mockResolvedValueOnce({ success: true, data: tips } as any);
+
+    const result = await makeCaller().getTipsForTask({ taskId: TEST_UUID_2 });
+
+    expect(result).toEqual(tips);
+  });
+
+  it('throws FORBIDDEN when caller is not a task participant', async () => {
+    // Participant check: caller is a random third party
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ poster_id: 'other-poster', worker_id: 'other-worker' }],
+      rowCount: 1,
+    } as any);
+
+    await expect(
+      makeCaller().getTipsForTask({ taskId: TEST_UUID_2 })
+    ).rejects.toThrow('Not authorized to view tips for this task');
+  });
+
+  it('throws NOT_FOUND when task does not exist (participant check)', async () => {
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+
+    await expect(
+      makeCaller().getTipsForTask({ taskId: TEST_UUID_2 })
+    ).rejects.toThrow('Task not found');
+  });
+
   it('throws NOT_FOUND when service fails', async () => {
+    // Participant check passes (caller is poster)
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ poster_id: 'test-uid', worker_id: null }],
+      rowCount: 1,
+    } as any);
     mockService.getTipsForTask.mockResolvedValueOnce({
       success: false,
       error: { message: 'Task not found' },
@@ -222,7 +273,7 @@ describe('tipping.getMyTipsSent', () => {
     const data = [{ id: TEST_UUID, amountCents: 500, taskId: TEST_UUID_2 }];
     mockService.getTipsSentByUser.mockResolvedValueOnce({ success: true, data } as any);
 
-    const result = await makeCaller().getMyTipsSent({ limit: 10, offset: 0 });
+    const result = await makePosterCaller().getMyTipsSent({ limit: 10, offset: 0 });
 
     expect(result).toEqual(data);
     expect(mockService.getTipsSentByUser).toHaveBeenCalledWith('test-uid', 10, 0);
@@ -231,7 +282,7 @@ describe('tipping.getMyTipsSent', () => {
   it('uses default limit and offset', async () => {
     mockService.getTipsSentByUser.mockResolvedValueOnce({ success: true, data: [] } as any);
 
-    await makeCaller().getMyTipsSent({});
+    await makePosterCaller().getMyTipsSent({});
 
     expect(mockService.getTipsSentByUser).toHaveBeenCalledWith('test-uid', 50, 0);
   });
@@ -242,6 +293,6 @@ describe('tipping.getMyTipsSent', () => {
       error: { message: 'Failed to get tips sent' },
     } as any);
 
-    await expect(makeCaller().getMyTipsSent({})).rejects.toThrow('Failed to get tips sent');
+    await expect(makePosterCaller().getMyTipsSent({})).rejects.toThrow('Failed to get tips sent');
   });
 });

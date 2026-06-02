@@ -24,6 +24,7 @@ import { markOutboxEventProcessed, markOutboxEventFailed } from './outbox-worker
 import { workerLogger } from '../logger.js';
 import type { Job } from 'bullmq';
 import { sendgridBreaker } from '../middleware/circuit-breaker.js';
+import { notifyAdmins } from '../services/AdminNotificationHelper.js';
 
 const log = workerLogger.child({ worker: 'email' });
 
@@ -187,110 +188,139 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
   }
   
   try {
-    // Get email record from email_outbox table with FOR UPDATE lock (prevents concurrent processing)
-    const emailResult = await db.query<{
-      id: string;
-      user_id: string | null;
-      to_email: string;
-      template: string;
-      params_json: Record<string, unknown>;
-      status: string;
-      attempts: number;
-      max_attempts: number;
-      suppressed_reason: string | null;
-      idempotency_key: string;
-      provider_msg_id: string | null;
-    }>(
-      `SELECT id, user_id, to_email, template, params_json, status, attempts, max_attempts, suppressed_reason, idempotency_key, provider_msg_id
-       FROM email_outbox
-       WHERE id = $1
-       FOR UPDATE`, // Lock row for update (prevents concurrent processing)
-      [emailId]
-    );
-    
-    if (emailResult.rows.length === 0) {
-      throw new Error(`Email ${emailId} not found in email_outbox`);
-    }
-    
-    const emailRecord = emailResult.rows[0];
-    
-    // Structured log: job started
-    log.info({ emailId, jobId: job.id, idempotencyKey: emailRecord.idempotency_key, currentStatus: emailRecord.status, attempt: emailRecord.attempts }, 'Email job started');
-    
-    // Idempotency check: If already sent, skip processing (idempotent replay)
-    if (emailRecord.status === 'sent') {
-      log.info({ emailId, jobId: job.id, idempotencyKey: emailRecord.idempotency_key, status: emailRecord.status, providerMsgId: emailRecord.provider_msg_id }, 'Email already sent, replay skipped');
-      // Mark outbox event as processed (if processing from outbox)
-      const outboxKey = emailRecord.idempotency_key || idempotencyKey;
-      if (outboxKey) {
-        await markOutboxEventProcessed(outboxKey);
-      }
-      return;
-    }
-    
-    // Crash recovery check: If provider_msg_id exists, email was already sent (SendGrid succeeded but DB update failed)
-    if (emailRecord.provider_msg_id && emailRecord.status !== 'sent') {
-      // Email was already sent - mark as sent and exit
-      await db.query(
-        `UPDATE email_outbox
-         SET status = 'sent',
-             sent_at = COALESCE(sent_at, NOW()),
-             updated_at = NOW()
-         WHERE id = $1`,
+    // Phase 1: Atomic claim inside a transaction
+    // SELECT FOR UPDATE + all idempotency/crash-recovery checks + CAS UPDATE must be atomic.
+    // The row lock is held for the entire transaction, preventing concurrent workers from
+    // reading the same 'pending' status and both attempting to claim the same email.
+    type EmailClaimResult = {
+      emailRecord: { id: string; user_id: string | null; to_email: string; template: string; params_json: Record<string, unknown>; status: string; attempts: number; max_attempts: number; suppressed_reason: string | null; idempotency_key: string; provider_msg_id: string | null };
+      claimed: boolean;
+      shouldReturn: boolean;
+      outboxKey?: string;
+    };
+
+    const claimResult = await db.transaction(async (txQuery) => {
+      // Get email record from email_outbox table with FOR UPDATE lock (prevents concurrent processing)
+      const emailResult = await txQuery<{
+        id: string;
+        user_id: string | null;
+        to_email: string;
+        template: string;
+        params_json: Record<string, unknown>;
+        status: string;
+        attempts: number;
+        max_attempts: number;
+        suppressed_reason: string | null;
+        idempotency_key: string;
+        provider_msg_id: string | null;
+      }>(
+        `SELECT id, user_id, to_email, template, params_json, status, attempts, max_attempts, suppressed_reason, idempotency_key, provider_msg_id
+         FROM email_outbox
+         WHERE id = $1
+         FOR UPDATE`, // Lock row for update (prevents concurrent processing)
         [emailId]
       );
-      
-      log.warn({ emailId, jobId: job.id, idempotencyKey: emailRecord.idempotency_key, providerMsgId: emailRecord.provider_msg_id }, 'Email crash recovery: provider_msg_id exists but status not sent');
-      
-      const outboxKey = emailRecord.idempotency_key || idempotencyKey;
-      if (outboxKey) {
-        await markOutboxEventProcessed(outboxKey);
+
+      if (emailResult.rows.length === 0) {
+        throw new Error(`Email ${emailId} not found in email_outbox`);
+      }
+
+      const emailRecord = emailResult.rows[0];
+
+      // Structured log: job started
+      log.info({ emailId, jobId: job.id, idempotencyKey: emailRecord.idempotency_key, currentStatus: emailRecord.status, attempt: emailRecord.attempts }, 'Email job started');
+
+      // Idempotency check: If already sent, skip processing (idempotent replay)
+      if (emailRecord.status === 'sent') {
+        log.info({ emailId, jobId: job.id, idempotencyKey: emailRecord.idempotency_key, status: emailRecord.status, providerMsgId: emailRecord.provider_msg_id }, 'Email already sent, replay skipped');
+        const outboxKey = emailRecord.idempotency_key || idempotencyKey;
+        return { emailRecord, claimed: false, shouldReturn: true, outboxKey } satisfies EmailClaimResult;
+      }
+
+      // Crash recovery check: If provider_msg_id exists, email was already sent (SendGrid succeeded but DB update failed)
+      if (emailRecord.provider_msg_id && emailRecord.status !== 'sent') {
+        await txQuery(
+          `UPDATE email_outbox
+           SET status = 'sent',
+               sent_at = COALESCE(sent_at, NOW()),
+               updated_at = NOW()
+           WHERE id = $1`,
+          [emailId]
+        );
+
+        log.warn({ emailId, jobId: job.id, idempotencyKey: emailRecord.idempotency_key, providerMsgId: emailRecord.provider_msg_id }, 'Email crash recovery: provider_msg_id exists but status not sent');
+
+        const outboxKey = emailRecord.idempotency_key || idempotencyKey;
+        return { emailRecord, claimed: false, shouldReturn: true, outboxKey } satisfies EmailClaimResult;
+      }
+
+      // Check if email is suppressed
+      if (emailRecord.status === 'suppressed' || emailRecord.suppressed_reason) {
+        log.warn({ emailId, jobId: job.id, idempotencyKey: emailRecord.idempotency_key, suppressedReason: emailRecord.suppressed_reason || 'status_suppressed' }, 'Email suppressed, skipping');
+        throw new Error(`Email is suppressed: ${emailRecord.suppressed_reason || 'suppressed'}`);
+      }
+
+      // Check if max attempts exceeded (poison message)
+      if (emailRecord.attempts >= emailRecord.max_attempts) {
+        log.warn({ emailId, jobId: job.id, idempotencyKey: emailRecord.idempotency_key, attempts: emailRecord.attempts, maxAttempts: emailRecord.max_attempts }, 'Email max attempts exceeded');
+        throw new Error(`Max attempts (${emailRecord.max_attempts}) exceeded for email ${emailId}`);
+      }
+
+      // ATOMIC CLAIM: Update status to sending only if still in claimable state.
+      // CRITICAL: This is the atomic claim - only one worker can transition pending/failed -> sending.
+      // Using UPDATE ... RETURNING ensures we only proceed if we successfully claimed the row.
+      //
+      // BUG 7 FIX: Add a staleness recovery clause for rows stuck in 'sending'.
+      // If the process crashes after the claim commit but before the suppression UPDATE,
+      // the row is permanently stuck in 'sending' and can never be re-claimed.
+      // The additional OR clause recovers rows that have been in 'sending' for more than
+      // 5 minutes (indicating a crashed worker), making them re-claimable on the next retry.
+      const casResult = await txQuery<{
+        id: string;
+        status: string;
+        attempts: number;
+      }>(
+        `UPDATE email_outbox
+         SET status = 'sending',
+             attempts = CASE WHEN status = 'sending' THEN attempts ELSE attempts + 1 END,
+             updated_at = NOW()
+         WHERE id = $1
+           AND (
+             status IN ('pending', 'failed')
+             OR (status = 'sending' AND updated_at < NOW() - INTERVAL '5 minutes')
+           )
+         RETURNING id, status, attempts`,
+        [emailId]
+      );
+
+      // If no row returned, another worker already claimed this email (or status changed)
+      if (casResult.rowCount === 0) {
+        // Structured log for verification
+        log.warn({ emailId, jobId: job.id, idempotencyKey: emailRecord.idempotency_key, currentStatus: emailRecord.status }, 'Email claim failed: already claimed or invalid status');
+        const outboxKey = emailRecord.idempotency_key || idempotencyKey;
+        return { emailRecord, claimed: false, shouldReturn: true, outboxKey } satisfies EmailClaimResult;
+      }
+
+      const claimedEmail = casResult.rows[0];
+
+      // Structured log: claim successful
+      log.info({ emailId, jobId: job.id, idempotencyKey: emailRecord.idempotency_key, statusTransition: `${emailRecord.status} -> sending`, attempt: claimedEmail.attempts }, 'Email claimed');
+
+      return { emailRecord, claimed: true, shouldReturn: false } satisfies EmailClaimResult;
+    });
+
+    // Handle early-return cases from the transaction (already-sent, crash-recovery, claim-lost)
+    if (claimResult.shouldReturn) {
+      if (claimResult.outboxKey) {
+        await markOutboxEventProcessed(claimResult.outboxKey);
       }
       return;
     }
-    
-    // Check if email is suppressed
-    if (emailRecord.status === 'suppressed' || emailRecord.suppressed_reason) {
-      log.warn({ emailId, jobId: job.id, idempotencyKey: emailRecord.idempotency_key, suppressedReason: emailRecord.suppressed_reason || 'status_suppressed' }, 'Email suppressed, skipping');
-      throw new Error(`Email is suppressed: ${emailRecord.suppressed_reason || 'suppressed'}`);
-    }
-    
-    // Check if max attempts exceeded (poison message)
-    if (emailRecord.attempts >= emailRecord.max_attempts) {
-      log.warn({ emailId, jobId: job.id, idempotencyKey: emailRecord.idempotency_key, attempts: emailRecord.attempts, maxAttempts: emailRecord.max_attempts }, 'Email max attempts exceeded');
-      throw new Error(`Max attempts (${emailRecord.max_attempts}) exceeded for email ${emailId}`);
-    }
-    
-    // ATOMIC CLAIM: Update status to sending only if still in claimable state
-    // CRITICAL: This is the atomic claim - only one worker can transition pending/failed -> sending
-    // Using UPDATE ... RETURNING ensures we only proceed if we successfully claimed the row
-    const claimResult = await db.query<{
-      id: string;
-      status: string;
-      attempts: number;
-    }>(
-      `UPDATE email_outbox
-       SET status = 'sending',
-           attempts = attempts + 1,
-           updated_at = NOW()
-       WHERE id = $1
-         AND status IN ('pending', 'failed')
-       RETURNING id, status, attempts`,
-      [emailId]
-    );
-    
-    // If no row returned, another worker already claimed this email (or status changed)
-    if (claimResult.rowCount === 0) {
-      // Structured log for verification
-      log.warn({ emailId, jobId: job.id, idempotencyKey: emailRecord.idempotency_key, currentStatus: emailRecord.status }, 'Email claim failed: already claimed or invalid status');
-      return; // Another worker claimed it or status changed - exit gracefully
-    }
-    
-    const claimedEmail = claimResult.rows[0];
-    
-    // Structured log: claim successful
-    log.info({ emailId, jobId: job.id, idempotencyKey: emailRecord.idempotency_key, statusTransition: `${emailRecord.status} -> sending`, attempt: claimedEmail.attempts }, 'Email claimed');
-    
+
+    // Phase 2: External SendGrid call (outside transaction — never hold a DB transaction
+    // open while waiting for a network call to an external service)
+    const emailRecord = claimResult.emailRecord;
+
     // Check if user is suppressed BEFORE sending (additional safety check)
     if (userId || emailRecord.user_id) {
       const userCheck = await db.query<{ do_not_email: boolean }>(
@@ -311,7 +341,14 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
         );
         
         log.info({ emailId, jobId: job.id, idempotencyKey: emailRecord.idempotency_key, userId: userId || emailRecord.user_id }, 'Email suppressed: user do_not_email flag');
-        
+
+        // Mark the outbox event processed so the row does not remain stuck as
+        // 'enqueued' and the poller never re-enqueues this suppressed email.
+        const suppressionOutboxKey = emailRecord.idempotency_key || idempotencyKey;
+        if (suppressionOutboxKey) {
+          await markOutboxEventProcessed(suppressionOutboxKey);
+        }
+
         return; // Exit without sending
       }
     }
@@ -339,7 +376,7 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
     };
     
     // Structured log: sending attempt
-    log.info({ emailId, jobId: job.id, idempotencyKey: emailRecord.idempotency_key, attempt: claimedEmail.attempts, toEmail: toEmail || emailRecord.to_email, template }, 'Email sending');
+    log.info({ emailId, jobId: job.id, idempotencyKey: emailRecord.idempotency_key, attempt: emailRecord.attempts + 1, toEmail: toEmail || emailRecord.to_email, template }, 'Email sending');
     
     const [response] = await sendgridBreaker.execute(() => sgMail.send(msg));
     
@@ -391,16 +428,17 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
     }
     
     // Structured log: email sent successfully
-    log.info({ emailId, jobId: job.id, idempotencyKey: emailRecord.idempotency_key, outboxEventId: outboxKey, attempt: claimedEmail.attempts, providerMsgId: finalEmail.provider_msg_id || providerMsgId, toEmail: toEmail || emailRecord.to_email, template }, 'Email sent successfully');
+    log.info({ emailId, jobId: job.id, idempotencyKey: emailRecord.idempotency_key, outboxEventId: outboxKey, attempt: emailRecord.attempts + 1, providerMsgId: finalEmail.provider_msg_id || providerMsgId, toEmail: toEmail || emailRecord.to_email, template }, 'Email sent successfully');
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     
     // Get email record idempotency key for logging (may be null if error before SELECT)
-    // Use idempotencyKey as fallback
-    let outboxKey = idempotencyKey;
+    // Do NOT fall back to job.id — that is a BullMQ job ID, not the DB idempotency_key.
+    // markOutboxEventFailed/Processed keyed on job.id silently finds no row.
+    let outboxKey: string | null = null;
     let currentAttempts = 0;
     let maxAttempts = 3;
-    
+
     try {
       // Try to get current state for logging
       const currentState = await db.query<{
@@ -413,9 +451,9 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
         `SELECT idempotency_key, attempts, max_attempts, status, user_id FROM email_outbox WHERE id = $1`,
         [emailId]
       );
-      
+
       if (currentState.rows.length > 0) {
-        outboxKey = currentState.rows[0].idempotency_key || idempotencyKey;
+        outboxKey = currentState.rows[0].idempotency_key || null;
         currentAttempts = currentState.rows[0].attempts;
         maxAttempts = currentState.rows[0].max_attempts;
         userId = userId || currentState.rows[0].user_id || undefined;
@@ -426,26 +464,81 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
     
     // Structured log: error occurred
     log.error({ emailId, jobId: job.id, idempotencyKey: outboxKey, err: errorMessage, attempt: currentAttempts }, 'Email send error');
-    
+
+    // Suppression early-exit: the email_outbox row already has status='suppressed' (or a
+    // suppressed_reason set). The throw inside the transaction is intentional — it exits
+    // cleanly and signals "do not send". Without this guard, the error would fall through
+    // to the retry path below and reset status to 'pending'/'failed', causing an infinite
+    // BullMQ retry loop until max_attempts is exhausted.
+    if (errorMessage.includes('Email is suppressed')) {
+      log.info({ emailId, jobId: job.id, idempotencyKey: outboxKey, error: errorMessage }, 'Email suppressed, skipping retry');
+      // Mark the outbox row as suppressed so the poller never re-enqueues it
+      try {
+        await db.query(
+          `UPDATE email_outbox
+              SET status = 'suppressed',
+                  suppressed_at = NOW(),
+                  suppressed_reason = COALESCE(suppressed_reason, 'detected_on_send')
+            WHERE id = $1
+              AND status != 'suppressed'`,
+          [emailId]
+        );
+      } catch (dbErr) {
+        log.error({ emailId, err: dbErr }, 'Failed to mark email as suppressed');
+      }
+      // BUG FIX: mark the outbox_events row done so the poller never re-enqueues
+      // this email. Without this call the row stays 'enqueued' indefinitely,
+      // causing an infinite re-enqueue storm.
+      if (outboxKey) {
+        await markOutboxEventFailed(outboxKey, errorMessage);
+      }
+      return;
+    }
+
     // Handle SendGrid suppression errors (bounces, complaints, unsubscribes)
-    const isSuppressionError = errorMessage.includes('suppressed') ||
-                               errorMessage.includes('bounce') ||
-                               errorMessage.includes('complaint') ||
-                               errorMessage.includes('unsubscribe');
-    
-    if (isSuppressionError && userId) {
-      // Mark user as do_not_email
-      await db.query(
-        `UPDATE users
-         SET do_not_email = true,
-             updated_at = NOW()
-         WHERE id = $1`,
-        [userId]
-      ).catch(dbError => {
-        log.error({ userId, err: dbError instanceof Error ? dbError.message : 'Unknown error' }, 'Suppression user update failed');
-      });
-      
-      // Update email_outbox with suppression reason
+    // Only treat as a hard suppression when SendGrid returns a structured delivery-failure
+    // status code. Raw string matching on errorMessage risks permanently silencing a user
+    // on a transient error whose message coincidentally contains "bounce" or "suppressed".
+    //
+    // SendGrid permanent-failure codes:
+    //   550  — Mailbox does not exist / hard bounce
+    //   551  — User not local / forwarding failed
+    //   552  — Mailbox full (treated as hard bounce by SG)
+    //   553  — Mailbox name not allowed
+    //   554  — Transaction failed / permanent rejection
+    //   421  — (transient) — NOT a suppression signal
+    //
+    // The @sendgrid/mail client wraps HTTP errors as objects with a `code` field and
+    // a nested `response.body.errors[].message`. We inspect the structured code first,
+    // then fall back to checking the top-level error code property.
+    const sgError = error as Record<string, unknown>;
+    const sgCode = typeof sgError.code === 'number' ? sgError.code : NaN;
+    // HTTP 400 from SendGrid on known suppression list membership
+    const sgBody = sgError.response as Record<string, unknown> | undefined;
+    const sgResponseBody = sgBody?.body as Record<string, unknown> | undefined;
+    const sgErrors: Array<{ message?: string }> = Array.isArray(sgResponseBody?.errors)
+      ? (sgResponseBody!.errors as Array<{ message?: string }>)
+      : [];
+
+    // Structured suppression: HTTP 4xx hard-bounce codes or explicit suppression list hit
+    const HARD_BOUNCE_HTTP_CODES = new Set([550, 551, 552, 553, 554]);
+    const isSgHardBounce = HARD_BOUNCE_HTTP_CODES.has(sgCode);
+    // SendGrid returns HTTP 400 with error messages referencing suppression lists
+    const SUPPRESSION_ERROR_MESSAGES = [
+      'The from address does not match a verified Sender Identity',
+    ] as const;
+    // Only match exact known SendGrid suppression list error messages — not substring
+    const isSgSuppressionListError = sgCode === 400 && sgErrors.some(e =>
+      typeof e.message === 'string' && SUPPRESSION_ERROR_MESSAGES.some(known => e.message === known)
+    );
+
+    const isSuppressionError = isSgHardBounce || isSgSuppressionListError;
+
+    // Truncate suppressed_reason to 500 chars before storing — prevent oversized DB writes
+    const suppressedReason = errorMessage.substring(0, 500);
+
+    if (isSuppressionError) {
+      // Always update email_outbox status to suppressed regardless of whether we have a userId
       await db.query(
         `UPDATE email_outbox
          SET status = 'suppressed',
@@ -453,10 +546,26 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
              suppressed_at = NOW(),
              updated_at = NOW()
          WHERE id = $2`,
-        [errorMessage, emailId]
+        [suppressedReason, emailId]
       );
-      
-      log.info({ emailId, jobId: job.id, idempotencyKey: outboxKey, suppressedReason: errorMessage, userId }, 'Email suppressed due to bounce/complaint');
+
+      // Only set do_not_email flag if we can resolve a user ID.
+      // Note: userId was already updated above in the currentState fetch block
+      // (userId = userId || currentState.rows[0].user_id || undefined), so it
+      // already incorporates any user_id resolved from the email_outbox record.
+      if (userId) {
+        await db.query(
+          `UPDATE users
+           SET do_not_email = true,
+               updated_at = NOW()
+           WHERE id = $1`,
+          [userId]
+        ).catch(dbError => {
+          log.error({ userId, err: dbError instanceof Error ? dbError.message : 'Unknown error' }, 'Suppression user update failed');
+        });
+      }
+
+      log.info({ emailId, jobId: job.id, idempotencyKey: outboxKey, suppressedReason, userId, sgCode }, 'Email suppressed due to hard bounce/complaint');
     } else {
       // Update email_outbox with error (for retry)
       // Check current attempts to determine if we should mark as failed (poison message)
@@ -473,6 +582,23 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
       
       if (shouldMarkFailed) {
         log.error({ emailId, jobId: job.id, idempotencyKey: outboxKey, attempts: currentAttempts, maxAttempts, err: errorMessage }, 'Email poison message: max attempts exceeded');
+
+        // BUG FIX: Dead-lettered emails were silently dropped with no admin
+        // visibility. Send a non-fatal admin alert so the failure is surfaced
+        // for manual review. Errors here must not interfere with the normal
+        // error-handling / retry path below.
+        const emailType = job.data?.payload?.template ?? 'unknown';
+        try {
+          await notifyAdmins({
+            title: 'Email delivery permanently failed',
+            body: `emailId ${emailId} (type: ${emailType}) exhausted all retries. Manual review required.`,
+            deepLink: 'app://admin/email-outbox',
+            priority: 'HIGH',
+            metadata: { emailId, emailType, attempts: currentAttempts, maxAttempts, lastError: errorMessage },
+          });
+        } catch (alertErr) {
+          log.error({ alertErr }, 'Failed to send dead-letter admin alert');
+        }
       }
     }
     

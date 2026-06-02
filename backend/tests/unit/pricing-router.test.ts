@@ -62,12 +62,24 @@ const mockSmartPricing = vi.mocked(SmartPricingService);
 
 const UUID1 = '00000000-0000-0000-0000-000000000001';
 
-function makeCaller() {
+/** Poster caller — for calculate / getSmartPrice (posterProcedure) */
+function makePosterCaller() {
   return pricingRouter.createCaller({
     user: { id: UUID1, email: 'user@test.com', full_name: 'User', firebase_uid: 'fb-1', default_mode: 'poster' } as any,
     firebaseUid: 'fb-1',
   });
 }
+
+/** Hustler caller — for updateMyModifier (hustlerProcedure) */
+function makeHustlerCaller() {
+  return pricingRouter.createCaller({
+    user: { id: UUID1, email: 'user@test.com', full_name: 'User', firebase_uid: 'fb-1', default_mode: 'worker' } as any,
+    firebaseUid: 'fb-1',
+  });
+}
+
+// Backwards-compatible alias used by calculate / getSmartPrice tests
+function makeCaller() { return makePosterCaller(); }
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -201,7 +213,8 @@ describe('pricing router', () => {
       const data = { modifierPercent: 10, applied: true };
       mockPricing.updateWorkerModifier.mockResolvedValue(data as any);
 
-      const caller = makeCaller();
+      // Bug 4 fix: must use hustler (worker) caller — posterProcedure was wrong
+      const caller = makeHustlerCaller();
       const result = await caller.updateMyModifier({ modifierPercent: 10 });
 
       expect(result).toEqual(data);
@@ -211,7 +224,7 @@ describe('pricing router', () => {
     it('allows negative modifier', async () => {
       mockPricing.updateWorkerModifier.mockResolvedValue({ modifierPercent: -25 } as any);
 
-      const caller = makeCaller();
+      const caller = makeHustlerCaller();
       const result = await caller.updateMyModifier({ modifierPercent: -25 });
 
       expect(result).toEqual({ modifierPercent: -25 });
@@ -220,10 +233,17 @@ describe('pricing router', () => {
     it('allows max modifier of 50', async () => {
       mockPricing.updateWorkerModifier.mockResolvedValue({ modifierPercent: 50 } as any);
 
-      const caller = makeCaller();
+      const caller = makeHustlerCaller();
       const result = await caller.updateMyModifier({ modifierPercent: 50 });
 
       expect(result).toEqual({ modifierPercent: 50 });
+    });
+
+    it('rejects poster caller with FORBIDDEN', async () => {
+      const caller = makePosterCaller();
+      await expect(
+        caller.updateMyModifier({ modifierPercent: 10 })
+      ).rejects.toThrow();
     });
   });
 });

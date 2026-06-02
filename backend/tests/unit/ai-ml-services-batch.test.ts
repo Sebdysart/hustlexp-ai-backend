@@ -1528,10 +1528,11 @@ describe('DisputeService', () => {
     });
 
     it('returns INVALID_STATE when task is not completed', async () => {
-      mockTaskService.getById.mockResolvedValueOnce({
-        success: true,
-        data: makeTask({ completed_at: null }) as never,
-      });
+      // Inside transaction: SELECT task FOR UPDATE → task with no completed_at
+      mockDb.query.mockResolvedValueOnce({
+        rows: [makeTask({ completed_at: null })],
+        rowCount: 1,
+      } as never);
 
       const svc = await getService();
       const result = await svc.create({
@@ -1552,10 +1553,11 @@ describe('DisputeService', () => {
 
     it('returns INVALID_STATE when dispute window has expired (> 48h)', async () => {
       const oldDate = new Date(Date.now() - 50 * 3600 * 1000).toISOString(); // 50h ago
-      mockTaskService.getById.mockResolvedValueOnce({
-        success: true,
-        data: makeTask({ completed_at: oldDate }) as never,
-      });
+      // Inside transaction: SELECT task FOR UPDATE → task with old completed_at
+      mockDb.query.mockResolvedValueOnce({
+        rows: [makeTask({ completed_at: oldDate })],
+        rowCount: 1,
+      } as never);
 
       const svc = await getService();
       const result = await svc.create({
@@ -1575,16 +1577,19 @@ describe('DisputeService', () => {
       }
     });
 
-    it('returns INVALID_STATE when escrow is not FUNDED', async () => {
-      mockTaskService.getById.mockResolvedValueOnce({
-        success: true,
-        data: makeTask() as never,
-      });
-      // EscrowService.getById is no longer called outside the transaction.
-      // The escrow state check now happens inside the transaction via SELECT FOR UPDATE.
-      // query 1 (inside transaction): SELECT escrow FOR UPDATE → returns RELEASED escrow
+    it('returns INVALID_STATE when escrow is in an invalid state (REFUNDED)', async () => {
+      // BUG FIX (HIGH): FUNDED and RELEASED are both valid states for filing a dispute
+      // (completed tasks typically have RELEASED escrow). Only truly terminal states
+      // like REFUNDED or LOCKED_DISPUTE are invalid for dispute creation.
+      // Inside transaction:
+      // query 1: SELECT task FOR UPDATE → completed task
       mockDb.query.mockResolvedValueOnce({
-        rows: [makeEscrow({ state: 'RELEASED' })],
+        rows: [makeTask()],
+        rowCount: 1,
+      } as never);
+      // query 2: SELECT escrow FOR UPDATE → REFUNDED escrow (truly invalid state)
+      mockDb.query.mockResolvedValueOnce({
+        rows: [makeEscrow({ state: 'REFUNDED' })],
         rowCount: 1,
       } as never);
 
@@ -1606,16 +1611,16 @@ describe('DisputeService', () => {
     });
 
     it('creates dispute and locks escrow on happy path', async () => {
-      mockTaskService.getById.mockResolvedValueOnce({
-        success: true,
-        data: makeTask() as never,
-      });
-      // EscrowService.getById is no longer called outside the transaction.
-      // Inside the transaction:
-      // query 1: SELECT escrow FOR UPDATE (state check + lock)
-      // query 2: UPDATE escrows ... LOCKED_DISPUTE
-      // query 3: INSERT INTO disputes
+      // Inside transaction:
+      // query 1: SELECT task FOR UPDATE → completed task (within window)
+      // query 2: SELECT escrow FOR UPDATE (state check + lock)
+      // query 3: UPDATE escrows ... LOCKED_DISPUTE
+      // query 4: INSERT INTO disputes
       mockDb.query
+        .mockResolvedValueOnce({
+          rows: [makeTask()],
+          rowCount: 1,
+        } as never)
         .mockResolvedValueOnce({
           rows: [makeEscrow({ state: 'FUNDED' })],
           rowCount: 1,
@@ -1787,7 +1792,10 @@ describe('DisputeService', () => {
       mockDb.query
         .mockResolvedValueOnce({ rows: [dispute], rowCount: 1 } as never)   // FOR UPDATE dispute
         .mockResolvedValueOnce({ rows: [escrow], rowCount: 1 } as never)    // FOR UPDATE escrow
-        .mockResolvedValueOnce({ rows: [resolved], rowCount: 1 } as never); // UPDATE dispute
+        .mockResolvedValueOnce({ rows: [resolved], rowCount: 1 } as never)  // UPDATE dispute
+        // T55-1 FIX: RELEASE path accepts proof then completes task before outbox
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)           // UPDATE proofs ACCEPTED
+        .mockResolvedValueOnce({ rows: [{ id: 'task-1', state: 'COMPLETED' }], rowCount: 1 } as never); // UPDATE tasks COMPLETED
 
       const svc = await getService();
       const result = await svc.resolve({
