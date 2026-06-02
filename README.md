@@ -117,7 +117,8 @@ Layer 3 — 4 AI Agents: proposal-only authority, deterministic fallbacks, cost 
 ```bash
 npm install                    # Install dependencies
 cp .env.template .env          # Configure environment
-npm run db:migrate             # Run database migrations
+npm run db:validate            # Verify DB schema (read-only). To align schema, use the reviewed alignment process.
+                               # (For a DEV-ONLY full wipe+rebuild: HX_ALLOW_DESTRUCTIVE_MIGRATE=1 NODE_ENV=development npm run db:reset:destructive)
 npm run dev                    # Start dev server (port 3000)
 npm run dev:workers            # Start background workers (separate terminal)
 ```

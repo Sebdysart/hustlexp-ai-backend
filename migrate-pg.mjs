@@ -19,6 +19,32 @@ if (!DATABASE_URL) {
 }
 
 async function main() {
+  // ── SAFETY GUARD ─────────────────────────────────────────────────────────
+  // This script is DESTRUCTIVE: Step 2 runs `DROP SCHEMA public CASCADE` and
+  // rebuilds from constitutional-schema.sql — it WIPES ALL DATA. It must never
+  // run by accident (deploy release phase, a stray `db:migrate`/`db:check`, or a
+  // local run pointed at a real DB). It is reachable only via the explicitly
+  // named `npm run db:reset:destructive`, and only when BOTH conditions hold:
+  //   1) HX_ALLOW_DESTRUCTIVE_MIGRATE=1 is set, AND
+  //   2) NODE_ENV is not production/staging.
+  // The checks run BEFORE any DB connection, so a refused run never drops or
+  // even connects.
+  const nodeEnv = (process.env.NODE_ENV || '').toLowerCase();
+  if (nodeEnv === 'production' || nodeEnv === 'staging') {
+    console.error(`🛑 REFUSED: destructive schema reset is blocked when NODE_ENV=${nodeEnv}.`);
+    console.error('   migrate-pg.mjs runs DROP SCHEMA public CASCADE (full data wipe). Never in prod/staging.');
+    process.exit(1);
+  }
+  if (process.env.HX_ALLOW_DESTRUCTIVE_MIGRATE !== '1') {
+    console.error('🛑 REFUSED: destructive schema reset requires HX_ALLOW_DESTRUCTIVE_MIGRATE=1.');
+    console.error('   migrate-pg.mjs runs DROP SCHEMA public CASCADE — full wipe + rebuild from constitutional-schema.sql.');
+    console.error('   Dev resets only:  HX_ALLOW_DESTRUCTIVE_MIGRATE=1 NODE_ENV=development npm run db:reset:destructive');
+    console.error('   To align an existing DB without wiping it, use the reviewed alignment process (NOT this script).');
+    process.exit(1);
+  }
+  console.log('⚠️  HX_ALLOW_DESTRUCTIVE_MIGRATE=1 set — proceeding with DESTRUCTIVE schema reset.');
+  // ─────────────────────────────────────────────────────────────────────────
+
   console.log('🚀 HustleXP Schema Migration (pg Pool)');
   console.log('=' .repeat(60));
   console.log('Database:', DATABASE_URL.replace(/:[^:@]+@/, ':***@'));
