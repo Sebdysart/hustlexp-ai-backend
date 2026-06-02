@@ -69,21 +69,21 @@ function registerWorkers(): void {
         await processEmailJob(job);
       } else if (eventType === 'push.send_requested' || (job.data.payload && job.data.payload.notificationId && !job.data.payload.emailId && !job.data.payload.smsId)) {
         // Push notification delivery (FCM)
-        const { processPushJob } = await import('./push-worker');
+        const { processPushJob } = await import('./push-worker.js');
         await processPushJob(job);
       } else if (eventType === 'sms.send_requested' || (job.data.payload && job.data.payload.smsId)) {
         // SMS delivery (Twilio)
-        const { processSMSJob } = await import('./sms-worker');
+        const { processSMSJob } = await import('./sms-worker.js');
         await processSMSJob(job);
       } else if (eventType === 'task.instant_available') {
         // Route instant availability notifications to InstantNotificationWorker
         // NOTE: Moved from critical_payments to user_notifications to prevent
         // availability notification floods from starving actual payment jobs (W-14 fix)
-        const { processInstantNotificationJob } = await import('./instant-notification-worker');
+        const { processInstantNotificationJob } = await import('./instant-notification-worker.js');
         await processInstantNotificationJob(job);
       } else if (eventType === 'task.progress_updated') {
         // Realtime task progress updates (Step 10 - Pillar A)
-        const { processRealtimeJob } = await import('./realtime-worker');
+        const { processRealtimeJob } = await import('./realtime-worker.js');
         await processRealtimeJob(job);
       } else if (eventType === 'escrow.funded') {
         // Notify poster that their payment was captured and escrow is now funded
@@ -149,23 +149,23 @@ function registerWorkers(): void {
       // Explicit routing: only known event types are allowed
       if (eventType === 'escrow.release_requested' || eventType === 'escrow.refund_requested' || eventType === 'escrow.partial_refund_requested') {
         // Route escrow action requests to EscrowActionWorker
-        const { processEscrowActionJob } = await import('./escrow-action-worker');
+        const { processEscrowActionJob } = await import('./escrow-action-worker.js');
         await processEscrowActionJob(job);
       } else if (eventType.startsWith('payment.')) {
         // Route Stripe events (payment.*) to PaymentWorker
-        const { processPaymentJob } = await import('./payment-worker');
+        const { processPaymentJob } = await import('./payment-worker.js');
         await processPaymentJob(job);
       } else if (eventType === 'stripe.event_received') {
         // Route Stripe webhook events to StripeEventWorker (Step 9-D)
-        const { processStripeEventJob } = await import('./stripe-event-worker');
+        const { processStripeEventJob } = await import('./stripe-event-worker.js');
         await processStripeEventJob(job);
       } else if (eventType === 'task.instant_matching_started') {
         // Route instant matching to InstantMatchingWorker (IEM v1)
-        const { processInstantMatchingJob } = await import('./instant-matching-worker');
+        const { processInstantMatchingJob } = await import('./instant-matching-worker.js');
         await processInstantMatchingJob(job);
       } else if (eventType === 'task.instant_surge_evaluate') {
         // Route instant surge evaluation to InstantSurgeWorker (Instant Surge Incentives v1)
-        const { processInstantSurgeJob } = await import('./instant-surge-worker');
+        const { processInstantSurgeJob } = await import('./instant-surge-worker.js');
         await processInstantSurgeJob(job);
       } else {
         // Unknown event type: reject to prevent processing invalid jobs
@@ -190,11 +190,11 @@ function registerWorkers(): void {
       // Explicit routing: only known event types are allowed
       if (eventType === 'trust.dispute_resolved.worker' || eventType === 'trust.dispute_resolved.poster') {
         // Route trust events to TrustWorker
-        const { processTrustJob } = await import('./trust-worker');
+        const { processTrustJob } = await import('./trust-worker.js');
         await processTrustJob(job);
       } else if (eventType === 'fraud.scan_requested') {
         // Route fraud detection scans to FraudDetectionWorker (scheduled every 5 min)
-        const { processFraudDetectionJob } = await import('./fraud-detection-worker');
+        const { processFraudDetectionJob } = await import('./fraud-detection-worker.js');
         await processFraudDetectionJob(job);
       } else {
         // Unknown event type: reject to prevent processing invalid jobs
@@ -214,7 +214,7 @@ function registerWorkers(): void {
   activeWorkers.push(createWorker(
     'maintenance',
     async (job: Job) => {
-      const { processMaintenanceJob } = await import('./maintenance-worker');
+      const { processMaintenanceJob } = await import('./maintenance-worker.js');
       await processMaintenanceJob(job);
     },
     {
@@ -228,7 +228,7 @@ function registerWorkers(): void {
   activeWorkers.push(createWorker(
     'tax_reporting',
     async (job: Job) => {
-      const { processTaxReportingJob } = await import('./tax-reporting-worker');
+      const { processTaxReportingJob } = await import('./tax-reporting-worker.js');
       await processTaxReportingJob(job);
     },
     {

@@ -364,7 +364,7 @@ export const MessagingService = {
       // Publish to Redis pub/sub for realtime delivery
       try {
         const { Redis } = await import('@upstash/redis');
-        const { config } = await import('../config');
+        const { config } = await import('../config.js');
         if (config.redis.restUrl && config.redis.restToken) {
           const redis = new Redis({ url: config.redis.restUrl, token: config.redis.restToken });
           await redis.publish(`realtime:user:${recipientId}`, JSON.stringify({
@@ -664,7 +664,7 @@ export const MessagingService = {
       // Publish to Redis pub/sub for realtime delivery
       try {
         const { Redis } = await import('@upstash/redis');
-        const { config } = await import('../config');
+        const { config } = await import('../config.js');
         if (config.redis.restUrl && config.redis.restToken) {
           const redis = new Redis({ url: config.redis.restUrl, token: config.redis.restToken });
           await redis.publish(`realtime:user:${recipientId}`, JSON.stringify({

@@ -292,7 +292,7 @@ export function startOutboxWorker(intervalMs: number = 5000): OutboxWorkerHandle
     }
     surgeRunning = true;
     try {
-      const { evaluateInstantSurges } = await import('./instant-surge-evaluator');
+      const { evaluateInstantSurges } = await import('./instant-surge-evaluator.js');
       await evaluateInstantSurges();
     } catch (err) {
       log.error({ err }, '[outbox-worker] surgeInterval error');
@@ -343,7 +343,7 @@ export function startOutboxWorker(intervalMs: number = 5000): OutboxWorkerHandle
         return; // Skip this run entirely — will retry on next interval tick
       }
       try {
-        const { processTrustTierPromotionJob } = await import('./trust-tier-promotion-worker');
+        const { processTrustTierPromotionJob } = await import('./trust-tier-promotion-worker.js');
         await processTrustTierPromotionJob();
       } catch (error) {
         log.error({ err: error }, 'Trust tier promotion error');
