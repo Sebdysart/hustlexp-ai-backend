@@ -92,7 +92,7 @@
 | Required? | ✅ Required |
 | Setup Complexity | Medium |
 
-**Notes:** Serverless Postgres. PostGIS extension must be enabled. 53 migration files across 3 directories. Run `npm run db:migrate` after configuring.
+**Notes:** Serverless Postgres. PostGIS extension must be enabled. 53 migration files across 3 directories. After configuring, verify schema with `npm run db:validate` (read-only); apply schema changes via the reviewed alignment process. ⚠️ Do NOT run `db:migrate`/`db:reset:destructive` against a DB with real data — they run `DROP SCHEMA public CASCADE` (dev-only, gated by `HX_ALLOW_DESTRUCTIVE_MIGRATE=1` + non-prod `NODE_ENV`).
 
 ---
 
