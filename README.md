@@ -18,12 +18,10 @@ HustleXP is a **gamified local task marketplace** — think "Uber for local help
 
 ---
 
-## Current Status
+## Current Status (April 2, 2026)
 
 | Metric | Value |
 |--------|-------|
-| Ecosystem Health | **100/100** |
-| Beta Gate | **100/100 — Private Beta Ready** |
 | Test Files | 239 passing, 0 failing |
 | Tests | 5,448 passing |
 | Statement Coverage | 89.6% |
@@ -32,6 +30,33 @@ HustleXP is a **gamified local task marketplace** — think "Uber for local help
 | Database | 103 tables, PostGIS |
 | Deployed | Railway — auto-deploy from `main` |
 | Production URL | `https://hustlexp-ai-backend-staging-production.up.railway.app` |
+| **Audit Status** | **7 stress test loops completed — 3 CRITICAL, 4 HIGH open** |
+| **Stripe** | **Unconfigured (STOP-001) — payment flow non-functional** |
+
+### Open Critical/High Issues (from [HUSTLEXP-ERRORS-AND-TODOS](https://github.com/Sebdysart/HUSTLEXP-ERRORS-AND-TODOS))
+
+| ID | Issue | Severity |
+|----|-------|----------|
+| STOP-001 | Stripe dashboard empty — no products, no webhooks | HIGH |
+| STOP-005 | `transfers.create()` missing idempotency key — double-payout risk | CRITICAL |
+| STOP-006 | Post-commit side effects outside transaction in EscrowService | CRITICAL |
+| STOP-007 | SelfInsurancePool direct `fetch()` bypasses StripeService | CRITICAL |
+| STOP-008 | Webhook idempotency TOCTOU race | HIGH |
+| STOP-009 | `HX_STRIPE_STUB=1` no production guard | HIGH |
+| STOP-010 | Referral rewards marked paid but never transferred | HIGH |
+| STOP-011 | XP velocity check fails open on error | HIGH |
+
+**64 total TODOs tracked** — see [TODOS-BY-PRIORITY.md](https://github.com/Sebdysart/HUSTLEXP-ERRORS-AND-TODOS/blob/main/TODOS-BY-PRIORITY.md) for the full prioritized list.
+
+### Confirmed Architectural Strengths
+
+These patterns were validated as production-ready by adversarial stress testing:
+
+- **PaymentWorker**: Atomic claims via CAS (`claimed_at IS NULL`), HMAC-signed payloads, Zod schema validation
+- **EscrowActionWorker**: Optimistic locking (`WHERE version = $N`), Stripe account restriction handling, partial refund checkpointing
+- **Outbox pattern**: Triple-layer deduplication (DB unique constraint → CAS UPDATE → BullMQ jobId)
+- **Queue system**: HMAC-SHA256 signing on all financial events, DLQ monitoring, `critical_payments` job preservation
+- **NotificationService**: All external channels via outbox (no inline sends), frequency limiting, quiet hours
 
 ---
 
@@ -92,7 +117,8 @@ Layer 3 — 4 AI Agents: proposal-only authority, deterministic fallbacks, cost 
 ```bash
 npm install                    # Install dependencies
 cp .env.template .env          # Configure environment
-npm run db:migrate             # Run database migrations
+npm run db:validate            # Verify DB schema (read-only). To align schema, use the reviewed alignment process.
+                               # (For a DEV-ONLY full wipe+rebuild: HX_ALLOW_DESTRUCTIVE_MIGRATE=1 NODE_ENV=development npm run db:reset:destructive)
 npm run dev                    # Start dev server (port 3000)
 npm run dev:workers            # Start background workers (separate terminal)
 ```
@@ -395,22 +421,39 @@ Production URL: `https://hustlexp-ai-backend-staging-production.up.railway.app`
 
 ## Roadmap
 
-**Next 90 days (Private Beta):**
-1. Fix Stripe `application_fee_amount` enforcement — fee is calculated but not enforced at the Stripe API level
-2. Wire dispute submission — currently a UI stub on iOS, needs real backend connection
-3. AWS Rekognition integration — step-up biometric auth at task location
-4. Wire insurance contribution collection — `recordContribution()` is never called from escrow flow
-5. Branch coverage to 85% (currently 77.6%)
-6. Checkr background check unblock — account authorization pending
+**Week 1 — Critical Financial Patches (~15 hours):**
+1. STOP-005: Add idempotency keys to Stripe `transfers.create()` and `refunds.create()` (2h)
+2. STOP-006: Move post-commit side effects into transaction or transactional outbox (4-6h)
+3. STOP-007: Refactor SelfInsurancePool to use StripeService (2h)
+4. STOP-009: Add startup assertion blocking `HX_STRIPE_STUB=1` in production (15min)
+5. STOP-011: Change XP velocity check to fail closed on error (30min)
+6. STOP-008: Fix webhook dedup with atomic `INSERT ON CONFLICT` (2h)
 
-**6–12 months:**
+**Week 2 — High Priority (~10 hours):**
+7. STOP-001: Configure Stripe dashboard (products, prices, webhooks)
+8. STOP-010: Wire actual Stripe transfer in referral rewards (2h)
+9. STOP-012: Fix ASAP price bump / escrow amount mismatch (3-4h)
+10. Rate-limit account creation per IP/device (Sybil defense phase 1) (3h)
+
+**Weeks 3-4 — Anti-Abuse & Growth:**
+- Require phone verification for account activation
+- Implement graph-based collusion detection
+- Integrate Checkr API for background checks
+- Build 5-tier verification ladder (email → phone → ID → background → expertise)
+- Dual-sided referral rewards ($5 referrer + $3 new user)
+- Neighborhood-level geo-fenced task feed
+
+**6-12 months:**
 - Android client
 - AI agents shift from assistive to predictive (demand forecasting, hot zone routing)
-- Subscription renewal revenue logging (currently only month 1 captured)
-- Squad commercial contract access (Poster posts $500+ commercial job → requires squad bid)
+- Earned wage advance at Trusted+ tier
+- Squad commercial contract access (Poster posts $500+ job → requires squad bid)
+- Insurance pool sustainability controls (min balance, claim frequency limits, reinsurance)
 
 **2-year north star:**
-HustleXP becomes a skilled-labor credentialing network. A Master Hustler with 4.95+ stars and $10k+ earned is more verifiable than a resume. The XP economy extends into insurance discounts, earned wage advance at Trusted+, and portable verified identity exportable to other gig platforms.
+HustleXP becomes a skilled-labor credentialing network. A Master Hustler with 4.95+ stars and $10k+ earned is more verifiable than a resume. The XP economy extends into insurance discounts, earned wage advance, and portable verified identity exportable to other gig platforms.
+
+**Full roadmap**: See [HUSTLEXP-ERRORS-AND-TODOS](https://github.com/Sebdysart/HUSTLEXP-ERRORS-AND-TODOS) for the complete 64-item prioritized TODO list.
 
 ---
 
@@ -418,11 +461,17 @@ HustleXP becomes a skilled-labor credentialing network. A Master Hustler with 4.
 
 | Feature | Status | Reason |
 |---------|--------|--------|
-| Checkr background checks | Blocked | Account authorization pending |
+| Checkr background checks | Stub (INFO-001) | `initiateBackgroundCheck()` generates fake ID, never calls API |
+| Fraud detection graph analysis | Stub | Pattern types defined but detection logic is TBD |
 | AWS Rekognition liveness | Planned | Amplify SDK not yet installed on iOS |
 | Android client | Roadmap | iOS private beta first |
 | Video proof / LiDAR | Roadmap | Judge Agent Phase 2 |
 | AI-dynamic insurance premiums | Roadmap | Risk Engine Phase 2 |
+| Surge pricing manipulation guards | TODO-056 | Cap demand signal changes per 15-min window |
+
+## Audit Trail
+
+Full source-level audit and adversarial stress testing performed April 1-2, 2026. Documentation in [HustleXP-Vault](https://github.com/Sebdysart/HustleXP-Vault) (16 pages, 5,200+ lines). Actionable tracking in [HUSTLEXP-ERRORS-AND-TODOS](https://github.com/Sebdysart/HUSTLEXP-ERRORS-AND-TODOS) (64 TODOs, 12 STOP errors).
 
 ---
 

@@ -8,8 +8,10 @@
  *
  * Env vars:
  *   DATABASE_URL   - Postgres connection string
- *   OPENAI_API_KEY - OpenAI API key for embeddings
- *   DOCS_REPO_PATH - Default docs path (overridden by --docs-path)
+ *   OPENAI_API_KEY  - API key for embeddings (OpenAI or compatible provider)
+ *   OPENAI_BASE_URL - Custom base URL (e.g. https://api.moonshot.cn/v1 for Kimi)
+ *   EMBEDDING_MODEL - Override embedding model (default: text-embedding-3-small)
+ *   DOCS_REPO_PATH  - Default docs path (overridden by --docs-path)
  */
 
 import pg from 'pg';
@@ -31,7 +33,7 @@ function getDocsPath(): string {
   return path.resolve(process.env.DOCS_REPO_PATH || '../HustleXP/HUSTLEXP-DOCS');
 }
 
-const EMBEDDING_MODEL = 'text-embedding-3-small';
+const EMBEDDING_MODEL = process.env.EMBEDDING_MODEL || 'text-embedding-3-small';
 const EMBEDDING_DIMENSIONS = 1536;
 const BATCH_SIZE = 100;
 const MAX_SECTION_LENGTH = 2000;
@@ -174,7 +176,10 @@ async function main() {
   }
 
   const pool = new Pool({ connectionString: process.env.DATABASE_URL });
-  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  const openai = new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY,
+    ...(process.env.OPENAI_BASE_URL && { baseURL: process.env.OPENAI_BASE_URL }),
+  });
 
   // Find all markdown files
   const mdFiles = findMarkdownFiles(docsPath);

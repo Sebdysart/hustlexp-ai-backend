@@ -191,7 +191,14 @@ CREATE TABLE IF NOT EXISTS tasks (
     completed_at TIMESTAMPTZ,
     cancelled_at TIMESTAMPTZ,
     expired_at TIMESTAMPTZ,
-    
+
+    -- Realtime progress + proof-review alignment (see migration 011-proof-alignment.sql)
+    progress_state VARCHAR(20) NOT NULL DEFAULT 'POSTED'
+        CHECK (progress_state IN ('POSTED','ACCEPTED','TRAVELING','WORKING','COMPLETED','CLOSED')),
+    location_lat NUMERIC,
+    location_lng NUMERIC,
+    before_photo_url TEXT,
+
     -- Proof requirement
     requires_proof BOOLEAN DEFAULT TRUE,
     proof_instructions TEXT,
@@ -456,6 +463,28 @@ CREATE TABLE IF NOT EXISTS proof_videos (
 );
 
 CREATE INDEX IF NOT EXISTS idx_proof_videos_proof ON proof_videos(proof_id);
+
+-- ----------------------------------------------------------------------------
+-- 1.4.3 PROOF SUBMISSIONS TABLE (verification metadata — read by ProofService.review)
+-- See migration 011-proof-alignment.sql for existing-DB alignment.
+-- ----------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS proof_submissions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    proof_id UUID REFERENCES proofs(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    photo_url TEXT,
+    gps_coordinates JSONB,
+    gps_accuracy_meters NUMERIC,
+    lidar_depth_map_url TEXT,
+    biometric_verified BOOLEAN DEFAULT FALSE,
+    biometric_confidence NUMERIC(4,3),
+    face_match_score NUMERIC(4,3),
+    liveness_score NUMERIC(4,3),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_proof_submissions_proof ON proof_submissions(proof_id);
 
 -- ============================================================================
 -- SECTION 2: XP SYSTEM (PRODUCT_SPEC §5)

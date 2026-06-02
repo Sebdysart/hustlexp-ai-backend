@@ -33,6 +33,24 @@ const CRITICAL_TABLES = [
   'ledger_entries',
   'payments',
   'ai_cost_logs',
+  'proof_submissions',
+];
+
+/**
+ * Columns the proof-review + completion paths require. Drift guard for
+ * migration 011-proof-alignment.sql (proof_submissions + strict progress_state
+ * + geo/photo cols). Missing any of these breaks task.reviewProof / task.complete.
+ */
+const REQUIRED_COLUMNS: { table: string; column: string }[] = [
+  { table: 'tasks', column: 'progress_state' },
+  { table: 'tasks', column: 'location_lat' },
+  { table: 'tasks', column: 'location_lng' },
+  { table: 'tasks', column: 'before_photo_url' },
+  { table: 'proofs', column: 'state' },
+  { table: 'proofs', column: 'reviewed_by' },
+  { table: 'proofs', column: 'reviewed_at' },
+  { table: 'proofs', column: 'rejection_reason' },
+  { table: 'proofs', column: 'submitted_at' },
 ];
 
 /** Financial invariant triggers that must be present for data integrity */
@@ -272,10 +290,48 @@ function verifyFinancialTriggers(
 }
 
 /**
+ * Verify required proof-review / completion columns exist (migration 011).
+ */
+function verifyRequiredColumns(schema: LiveSchema): { missing: string[] } {
+  const missing: string[] = [];
+  for (const { table, column } of REQUIRED_COLUMNS) {
+    const cols = schema.tables[table] || [];
+    if (!cols.some((c) => c.column_name === column)) {
+      missing.push(`${table}.${column}`);
+    }
+  }
+  return { missing };
+}
+
+/**
+ * Verify tasks.progress_state is strict: exists, NOT NULL, DEFAULT 'POSTED'
+ * (migration 011). The CHECK constraint + null-row count are verified separately
+ * via a live query in validateSchema().
+ */
+function verifyProgressStateStrict(schema: LiveSchema): string[] {
+  const errs: string[] = [];
+  const col = (schema.tables['tasks'] || []).find(
+    (c) => c.column_name === 'progress_state'
+  );
+  if (!col) {
+    errs.push('tasks.progress_state column is missing');
+    return errs;
+  }
+  if (col.is_nullable !== 'NO') {
+    errs.push('tasks.progress_state must be NOT NULL');
+  }
+  if (!col.column_default || !col.column_default.includes('POSTED')) {
+    errs.push("tasks.progress_state must DEFAULT 'POSTED'");
+  }
+  return errs;
+}
+
+/**
  * Validate schema against requirements
  * Checks:
- * - Critical tables exist
+ * - Critical tables exist (incl. proof_submissions)
  * - Financial invariant triggers exist
+ * - Required proof-review columns exist + tasks.progress_state strict (migration 011)
  * - Schema hash matches expected (if SCHEMA_HASH env var set)
  */
 export async function validateSchema(): Promise<ValidationResult> {
@@ -303,6 +359,39 @@ export async function validateSchema(): Promise<ValidationResult> {
   if (triggersMissing.length > 0) {
     errors.push(
       `Missing financial invariant triggers: ${triggersMissing.join(', ')}`
+    );
+  }
+
+  // Required proof-review / completion columns (migration 011)
+  const { missing: columnsMissing } = verifyRequiredColumns(schema);
+  if (columnsMissing.length > 0) {
+    errors.push(`Missing required columns: ${columnsMissing.join(', ')}`);
+  }
+
+  // tasks.progress_state strict (NOT NULL + DEFAULT 'POSTED')
+  for (const e of verifyProgressStateStrict(schema)) {
+    errors.push(e);
+  }
+
+  // progress_state CHECK constraint + no NULL rows (live query)
+  try {
+    const chk = await db.query<{ exists: boolean }>(
+      `SELECT EXISTS(SELECT 1 FROM pg_constraint WHERE conname = 'tasks_progress_state_check') AS exists`
+    );
+    if (!chk.rows[0]?.exists) {
+      errors.push('Missing CHECK constraint: tasks_progress_state_check');
+    }
+    const nulls = await db.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM tasks WHERE progress_state IS NULL`
+    );
+    if (nulls.rows[0] && Number(nulls.rows[0].n) > 0) {
+      errors.push(`tasks.progress_state has ${nulls.rows[0].n} NULL row(s)`);
+    }
+  } catch (e) {
+    warnings.push(
+      `progress_state constraint/null check skipped: ${
+        e instanceof Error ? e.message : String(e)
+      }`
     );
   }
 
