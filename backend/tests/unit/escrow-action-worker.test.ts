@@ -92,6 +92,7 @@ import { db } from '../../src/db';
 import { StripeService } from '../../src/services/StripeService.js';
 import { processEscrowActionJob } from '../../src/jobs/escrow-action-worker.js';
 import { signJobPayload } from '../../src/jobs/queues.js';
+import { notifyAdmins } from '../../src/services/AdminNotificationHelper.js';
 import type { Job } from 'bullmq';
 
 // ---------------------------------------------------------------------------
@@ -622,4 +623,159 @@ describe('escrow-action-worker — input validation', () => {
     );
     await expect(processEscrowActionJob(job as never)).rejects.toThrow('Unknown escrow action event type');
   });
+});
+
+// ---------------------------------------------------------------------------
+// INV-11 safety net: a failed Stripe transfer on the dispute-release path must
+// NEVER advance the escrow. EscrowService.release() does not call Stripe inline;
+// the worker→Stripe transfer happens HERE, and the escrow only gains a
+// stripe_transfer_id (T2) AFTER a successful transfer. These tests prove that a
+// Stripe failure leaves the escrow in LOCKED_DISPUTE with no transfer_id stored.
+// ---------------------------------------------------------------------------
+describe('escrow-action-worker — release path: failed Stripe transfer must not advance escrow (INV-11)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  // Wire mocks up to (but not past) the Stripe createTransfer call:
+  //   transaction #1 — critical-section FOR UPDATE lock → returns LOCKED_DISPUTE escrow
+  //   query #1       — SELECT worker_id, poster_id FROM tasks
+  //   query #2       — SELECT stripe_connect_id FROM users
+  // Any transaction AFTER #1 (e.g. lockEscrowForStripeRestriction T, or T2) records
+  // its (sql, params) into the returned array so we can assert what did/didn't run.
+  function setupReleaseUpToStripe(escrowOverrides = {}) {
+    const dbQuery = vi.mocked(db.query);
+    const dbTransaction = vi.mocked(db.transaction);
+    const txCalls: Array<{ sql: string; params: unknown[] }> = [];
+    let txCallIndex = 0;
+
+    dbTransaction.mockImplementation(async (fn) => {
+      const idx = txCallIndex++;
+      if (idx === 0) {
+        const trxQuery = vi.fn().mockResolvedValueOnce({
+          rows: [makeEscrowRow(escrowOverrides)],
+          rowCount: 1,
+        });
+        return fn(trxQuery);
+      }
+      // Subsequent transactions (T2 store-transfer, or restriction-lock): record SQL.
+      const trxQuery = vi.fn((sql: string, params: unknown[]) => {
+        txCalls.push({ sql, params });
+        return Promise.resolve({ rows: [], rowCount: 1 });
+      });
+      return fn(trxQuery as never);
+    });
+
+    dbQuery
+      .mockResolvedValueOnce({ rows: [{ worker_id: WORKER_ID, poster_id: 'poster-001' }], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [{ stripe_connect_id: STRIPE_CONNECT_ID }], rowCount: 1 } as never);
+
+    return txCalls;
+  }
+
+  const releaseJob = () =>
+    makeJob('escrow.release_requested',
+      makeSignedPayload({ escrow_id: ESCROW_ID, task_id: TASK_ID, reason: 'worker wins dispute' }),
+    );
+
+  it('(a) a non-restriction Stripe transfer failure rethrows (BullMQ retry) and never stores a transfer_id', async () => {
+    const txCalls = setupReleaseUpToStripe();
+    vi.mocked(StripeService.createTransfer).mockRejectedValueOnce(
+      Object.assign(new Error('Stripe 500 internal error'), { code: 'api_error' }),
+    );
+
+    await expect(processEscrowActionJob(releaseJob() as never)).rejects.toThrow(/Stripe 500 internal error/);
+
+    expect(StripeService.createTransfer).toHaveBeenCalledTimes(1);
+    // Only the critical-section lock transaction ran — T2 (store transfer_id) was never reached,
+    // so the escrow keeps state=LOCKED_DISPUTE and stripe_transfer_id=null (not advanced/released).
+    expect(vi.mocked(db.transaction)).toHaveBeenCalledTimes(1);
+    expect(txCalls.some((c) => /stripe_transfer_id\s*=/.test(c.sql))).toBe(false);
+  });
+
+  it('(c) a transient network timeout during transfer rethrows for retry and does not store a transfer_id', async () => {
+    setupReleaseUpToStripe();
+    vi.mocked(StripeService.createTransfer).mockRejectedValueOnce(
+      Object.assign(new Error('ETIMEDOUT: connection timed out'), { code: 'ETIMEDOUT' }),
+    );
+
+    await expect(processEscrowActionJob(releaseJob() as never)).rejects.toThrow(/ETIMEDOUT/);
+
+    // Transient error is surfaced (rethrown) so BullMQ retries — it is NOT swallowed,
+    // and the escrow is not advanced (no T2 transaction).
+    expect(vi.mocked(db.transaction)).toHaveBeenCalledTimes(1);
+  });
+
+  it('(b) a Stripe account restriction (account_closed) locks the escrow for admin review, does NOT rethrow, and stores no transfer_id', async () => {
+    const txCalls = setupReleaseUpToStripe();
+    vi.mocked(StripeService.createTransfer).mockRejectedValueOnce(
+      Object.assign(new Error('The account is closed'), { code: 'account_closed' }),
+    );
+
+    // Must NOT rethrow — a non-retryable restriction means BullMQ should not retry forever.
+    await expect(processEscrowActionJob(releaseJob() as never)).resolves.toBeUndefined();
+
+    expect(StripeService.createTransfer).toHaveBeenCalledTimes(1);
+    // Two transactions: #1 critical-section lock, #2 lockEscrowForStripeRestriction.
+    expect(vi.mocked(db.transaction)).toHaveBeenCalledTimes(2);
+
+    // The restriction-lock transaction moved the escrow to LOCKED_DISPUTE (recoverable, NOT released)
+    // and recorded the reason for admin reconciliation.
+    const lockSql = txCalls.find((c) => /LOCKED_DISPUTE/.test(c.sql));
+    expect(lockSql).toBeDefined();
+    expect(JSON.stringify(lockSql!.params)).toContain('stripe_account_restricted');
+
+    // Crucially: no transfer_id was ever written, so the escrow was not advanced/released.
+    expect(txCalls.some((c) => /stripe_transfer_id\s*=/.test(c.sql))).toBe(false);
+
+    // Admins are paged at CRITICAL priority for manual resolution.
+    expect(vi.mocked(notifyAdmins)).toHaveBeenCalledWith(
+      expect.objectContaining({ priority: 'CRITICAL' }),
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Money conservation + non-negative payout on the release path.
+// Proves gross = platformFee + insurance + workerTransfer (no cents lost) and
+// that the worker transfer amount is never negative, across round and non-round
+// amounts. The transfer amount is captured from the StripeService.createTransfer call.
+// ---------------------------------------------------------------------------
+describe('escrow-action-worker — release payout math: conservation & non-negativity', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(StripeService.createTransfer).mockResolvedValue({
+      success: true,
+      data: { transferId: 'tr_conservation' },
+    } as never);
+  });
+
+  it.each([10_000, 3_333, 99, 1])(
+    'gross=%i cents: platformFee + insurance + workerTransfer === gross, all non-negative',
+    async (gross) => {
+      setupReleaseMocks(gross);
+
+      await processEscrowActionJob(
+        makeJob('escrow.release_requested',
+          makeSignedPayload({ escrow_id: ESCROW_ID, task_id: TASK_ID, reason: 'payout math' }),
+        ) as never,
+      );
+
+      // Capture the amount actually sent to the worker via Stripe.
+      const transferArg = vi.mocked(StripeService.createTransfer).mock.calls[0][0] as { amount: number };
+      const workerTransfer = transferArg.amount;
+
+      // Re-derive the source decomposition (15% platform fee, then 2% insurance of net).
+      const platformFee = Math.round(gross * 0.15);
+      const net = gross - platformFee;
+      const insurance = Math.round(net * 0.02);
+      const expectedTransfer = net - insurance;
+
+      expect(workerTransfer).toBe(expectedTransfer);          // payout amount pinned
+      expect(platformFee + insurance + workerTransfer).toBe(gross); // money conserved, no cents lost
+      expect(workerTransfer).toBeGreaterThanOrEqual(0);       // never negative
+      expect(platformFee).toBeGreaterThanOrEqual(0);
+      expect(insurance).toBeGreaterThanOrEqual(0);
+    },
+  );
 });
