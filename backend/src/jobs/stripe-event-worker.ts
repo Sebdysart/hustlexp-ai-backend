@@ -92,7 +92,7 @@ export async function processStripeEventJob(job: Job<StripeEventJobData>): Promi
   // job.data.payload. A missing or empty _sig is rejected immediately — it indicates
   // a job that was enqueued without going through the signed-dispatch path, which is
   // the exact attack vector this guard is designed to block.
-  const outerPayload = (job.data as Record<string, unknown>).payload;
+  const outerPayload = (job.data as unknown as Record<string, unknown>).payload;
   if (!outerPayload || typeof outerPayload !== 'object') {
     log.error(
       { jobId: job.id, stripeEventId },
