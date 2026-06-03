@@ -698,3 +698,77 @@ describe('processPaymentJob', () => {
     });
   });
 });
+
+// ===========================================================================
+// PR 2.5: transfer.created must NOT double-log platform_fee.
+//
+// handleTransferCreated() writes a fallback platform_fee ledger row, guarded by:
+//   SELECT id FROM revenue_ledger WHERE stripe_event_id = $1 AND event_type = 'platform_fee'
+// If a row already exists for that stripe_event_id (e.g. EscrowService.release()
+// already logged it), the block must be a no-op — no second RevenueService.logEvent,
+// no duplicate ledger insert. The control case proves the guard is what gates it
+// (so the no-double-log assertion can't trivially pass because logEvent is simply
+// never reached on this path).
+// ===========================================================================
+describe('processPaymentJob — transfer.created platform_fee double-log guard (PR 2.5)', () => {
+  const STRIPE_EVENT_ID = 'evt_transfer_dup_fee';
+  const ESCROW_ID = 'escrow-dup-fee';
+
+  /** Mocks the release transaction (claim → SELECT escrow → UPDATE → RELEASED) up to the fee guard. */
+  function setupReleaseUpToFeeGuard() {
+    // 1. atomic claim
+    setupClaim('transfer.created', { id: 'tr_dup', metadata: { escrow_id: ESCROW_ID } }, STRIPE_EVENT_ID);
+    // 2. SELECT escrow FOR UPDATE → LOCKED_DISPUTE (releasable, not terminal)
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ id: ESCROW_ID, task_id: 'task-dup', state: 'LOCKED_DISPUTE', version: 3, amount: 10_000, stripe_transfer_id: null }],
+      rowCount: 1,
+    } as never);
+    // 3. UPDATE escrows → RELEASED
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ id: ESCROW_ID, state: 'RELEASED', version: 4 }],
+      rowCount: 1,
+    } as never);
+  }
+
+  it('does NOT call RevenueService.logEvent when a platform_fee row already exists for the stripe_event_id', async () => {
+    setupReleaseUpToFeeGuard();
+    // 4. fee idempotency guard SELECT → a platform_fee row ALREADY exists for this event
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'rev-existing' }], rowCount: 1 } as never);
+    // 5. final success UPDATE stripe_events
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+    await expect(processPaymentJob(makeJob('transfer.created', STRIPE_EVENT_ID))).resolves.toBeUndefined();
+
+    // Core invariant: dedup hit → no duplicate platform_fee ledger write.
+    expect(vi.mocked(RevenueService.logEvent)).not.toHaveBeenCalled();
+
+    const sqls = mockQuery.mock.calls.map((c) => c[0] as string);
+    // The guard query was actually issued, keyed on stripe_event_id + event_type='platform_fee'.
+    const guardSql = sqls.find(
+      (s) => /FROM revenue_ledger/.test(s) && /event_type = 'platform_fee'/.test(s) && /stripe_event_id/.test(s),
+    );
+    expect(guardSql).toBeDefined();
+    // Skip happens before the task attribution lookup — no worker_id/poster_id SELECT.
+    expect(sqls.some((s) => /worker_id, poster_id FROM tasks/.test(s))).toBe(false);
+    // Event still finalizes successfully.
+    expect(sqls[sqls.length - 1]).toContain("result = 'success'");
+  });
+
+  it('control: DOES log platform_fee exactly once when no existing row (proves the guard gates it)', async () => {
+    setupReleaseUpToFeeGuard();
+    // 4. fee guard SELECT → no existing platform_fee row
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+    // 5. task attribution lookup (worker_id, poster_id)
+    mockQuery.mockResolvedValueOnce({ rows: [{ worker_id: 'worker-dup', poster_id: 'poster-dup' }], rowCount: 1 } as never);
+    // 6. final success UPDATE stripe_events
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+    await expect(processPaymentJob(makeJob('transfer.created', STRIPE_EVENT_ID))).resolves.toBeUndefined();
+
+    expect(vi.mocked(RevenueService.logEvent)).toHaveBeenCalledTimes(1);
+    const arg = vi.mocked(RevenueService.logEvent).mock.calls[0][0];
+    expect(arg.eventType).toBe('platform_fee');
+    expect(arg.escrowId).toBe(ESCROW_ID);
+    expect(arg.stripeEventId).toBe(STRIPE_EVENT_ID);
+  });
+});
