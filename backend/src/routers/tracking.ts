@@ -33,7 +33,12 @@ export const trackingRouter = router({
       const result = await MovementTrackingService.startSession(
         input.taskId,
         ctx.user.id,
-        input.initialLocation
+        // A missing accuracy reading is treated as worst-case (100m, the max
+        // allowed value) rather than 0 (which would imply perfect accuracy and
+        // weaken any future anti-spoof checks). accuracy is currently stored but
+        // not read by the service; this only normalises the optional schema field
+        // to the required GPSPoint shape.
+        { ...input.initialLocation, accuracy: input.initialLocation.accuracy ?? 100 }
       );
 
       if (!result.success) {
@@ -66,7 +71,9 @@ export const trackingRouter = router({
 
       const result = await MovementTrackingService.updateLocation({
         sessionId: input.sessionId,
-        location: input.location,
+        // A missing accuracy reading is treated as worst-case (100m, the max
+        // allowed value) rather than 0; see startSession above.
+        location: { ...input.location, accuracy: input.location.accuracy ?? 100 },
       });
 
       if (!result.success) {
