@@ -372,6 +372,105 @@ describe('EscrowService', () => {
       expect(logCall.eventType).toBe('platform_fee');
       expect(logCall.metadata).toMatchObject({ event: 'admin_override_release', admin_manual_payout_required: true });
     });
+
+    // -----------------------------------------------------------------------
+    // PR3 value-pinning: admin_override_release platform_fee attribution (F-23)
+    // These pin the EXACT logEvent payload (not just "was called"), because the
+    // DB provides no backstop for ledger attribution. The poster-attribution
+    // assertion is RED on pre-fix source (line 641 evaluates to `undefined`,
+    // serialized to SQL NULL) and GREEN after the Option B source fix.
+    // -----------------------------------------------------------------------
+    it('PR3: admin_override_release logs platform_fee with exact poster-attributed payload (F-23)', async () => {
+      const escrowRow = { id: 'esc-1', task_id: 'task-1', amount: 5000, state: 'FUNDED' };
+      // poster_id seeded — production tasks.poster_id is NOT NULL
+      const taskRow = { worker_id: 'worker-1', price: 5000, payment_method: 'escrow', poster_id: 'poster-9' };
+      const workerNoStripeRow = { stripe_connect_id: null }; // → adminManualPayoutRequired=true
+      const released = makeEscrow({ state: 'RELEASED' });
+
+      mockDb.query
+        .mockResolvedValueOnce({ rows: [escrowRow], rowCount: 1 } as never)        // SELECT escrow FOR UPDATE
+        .mockResolvedValueOnce({ rows: [taskRow], rowCount: 1 } as never)          // SELECT task
+        .mockResolvedValueOnce({ rows: [workerNoStripeRow], rowCount: 1 } as never)// adminOverride: stripe_connect_id
+        .mockResolvedValueOnce({ rows: [released], rowCount: 1 } as never);        // UPDATE → RELEASED
+
+      const result = await EscrowService.release({ escrowId: 'esc-1', adminOverride: true, reason: 'Admin force release' });
+      expect(result.success).toBe(true);
+
+      expect(vi.mocked(RevenueService.logEvent)).toHaveBeenCalledOnce();
+      const logCall = vi.mocked(RevenueService.logEvent).mock.calls[0][0];
+      // gross=5000, fee=Math.round(5000*0.15)=750, insurance=Math.round(5000*0.02)=100, net=5000-750-100=4150
+      expect(logCall).toMatchObject({
+        eventType: 'platform_fee',
+        userId: 'poster-9',        // F-23: fee attributed to the poster (the payer), exact value
+        taskId: 'task-1',
+        escrowId: 'esc-1',
+        amountCents: 750,          // === platformFeeCents
+        grossAmountCents: 5000,
+        netAmountCents: 4150,
+        platformFeeCents: 750,
+      });
+      expect(logCall.userId).toBe('poster-9');     // exact attribution, not toBeDefined
+      expect(logCall.stripeEventId).toBeUndefined(); // admin manual payout has no Stripe event
+      expect(logCall.metadata).toMatchObject({ event: 'admin_override_release', admin_manual_payout_required: true });
+    });
+
+    it('PR3 F-06: admin_override_release does NOT call logEvent when platform fee rounds to 0', async () => {
+      const escrowRow = { id: 'esc-1', task_id: 'task-1', amount: 1, state: 'FUNDED' };
+      const taskRow = { worker_id: 'worker-1', price: 1, payment_method: 'escrow', poster_id: 'poster-9' };
+      const workerNoStripeRow = { stripe_connect_id: null };
+      const released = makeEscrow({ state: 'RELEASED', amount: 1 });
+
+      mockDb.query
+        .mockResolvedValueOnce({ rows: [escrowRow], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [taskRow], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [workerNoStripeRow], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [released], rowCount: 1 } as never);
+
+      const result = await EscrowService.release({ escrowId: 'esc-1', adminOverride: true });
+      expect(result.success).toBe(true);
+      // fee = Math.round(1 * 0.15) = 0 → F-06 skip path
+      expect(vi.mocked(RevenueService.logEvent)).not.toHaveBeenCalled();
+    });
+
+    it('PR3 F-10: normal release writes zero platform_fee via RevenueService.logEvent', async () => {
+      const escrowRow = { id: 'esc-1', task_id: 'task-1', amount: 5000, state: 'FUNDED' };
+      const taskRow = { worker_id: 'worker-1', price: 5000, payment_method: 'escrow', poster_id: 'poster-9' };
+      const workerKycRow = { payouts_enabled: true, stripe_connect_id: 'acct_test', stripe_connect_status: 'complete' };
+      const released = makeEscrow({ state: 'RELEASED' });
+
+      mockDb.query
+        .mockResolvedValueOnce({ rows: [escrowRow], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [taskRow], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [workerKycRow], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [released], rowCount: 1 } as never);
+
+      const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_123' });
+      expect(result.success).toBe(true);
+      // F-10: payment-worker's handleTransferCreated is the sole platform_fee source on normal release
+      expect(vi.mocked(RevenueService.logEvent)).not.toHaveBeenCalled();
+    });
+
+    // DEFENSIVE / SCHEMA-INVALID: production tasks.poster_id is NOT NULL, so a missing
+    // poster models only a corrupt/legacy row. Asserts the F-23 worker fallback and that
+    // attribution never regresses to null. Not a production proof — do not over-weight.
+    it('PR3 defensive (schema-invalid): admin_override falls back to worker when poster_id is missing', async () => {
+      const escrowRow = { id: 'esc-1', task_id: 'task-1', amount: 5000, state: 'FUNDED' };
+      const taskRow = { worker_id: 'worker-1', price: 5000, payment_method: 'escrow', poster_id: null };
+      const workerNoStripeRow = { stripe_connect_id: null };
+      const released = makeEscrow({ state: 'RELEASED' });
+
+      mockDb.query
+        .mockResolvedValueOnce({ rows: [escrowRow], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [taskRow], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [workerNoStripeRow], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [released], rowCount: 1 } as never);
+
+      const result = await EscrowService.release({ escrowId: 'esc-1', adminOverride: true });
+      expect(result.success).toBe(true);
+      const logCall = vi.mocked(RevenueService.logEvent).mock.calls[0][0];
+      expect(logCall.userId).toBe('worker-1'); // F-23 fallback
+      expect(logCall.userId).not.toBeNull();
+    });
   });
 
   // -------------------------------------------------------------------------
