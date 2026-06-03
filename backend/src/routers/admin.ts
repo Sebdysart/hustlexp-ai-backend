@@ -239,7 +239,7 @@ export const adminRouter = router({
               title: 'Escrow Refund Failed on User Ban',
               body: `Escrow ${escrow.id} failed to refund when user ${input.userId} was banned — manual intervention required`,
               deepLink: `hustlexp://admin/escrows/${escrow.id}`,
-              priority: 'high',
+              priority: 'HIGH',
               metadata: { escrowId: escrow.id, userId: input.userId, error: refundResult.error?.message },
             }).catch(err => log.warn({ err }, '[admin.setUserBan] notifyAdmins failed'));
           }
@@ -360,7 +360,7 @@ export const adminRouter = router({
               title: 'Escrow Refund Failed on User Suspension',
               body: `Escrow ${escrow.id} failed to refund when user ${input.userId} was suspended — manual intervention required`,
               deepLink: `hustlexp://admin/escrows/${escrow.id}`,
-              priority: 'high',
+              priority: 'HIGH',
               metadata: { escrowId: escrow.id, userId: input.userId, error: refundResult.error?.message },
             }).catch(err => log.warn({ err }, '[admin.setSuspension] notifyAdmins failed'));
           }
