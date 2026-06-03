@@ -385,18 +385,27 @@ export const EscrowService = {
       };
     }
 
-    // Variables populated inside the transaction, used by post-commit side effects
-    let releasedEscrow: Escrow;
-    let workerId: string;
-    let grossPayoutCents: number;
-    let netPayoutCents: number;
-    let platformFeeCents: number;
-    let platformFeePercent: number;
-    let insuranceContributionCents: number = 0; // F-22: captured for recordContribution post-commit
-    let taskId: string;
-    let paymentMethod: string;
-    let escrowStateBefore: string;
-    let adminManualPayoutRequired = false;
+    // PR3 (return-threading): post-commit side-effect values are RETURNED from the
+    // transaction's success result and destructured below the success gate, so the
+    // compiler can prove they are assigned — no `!` assertions, no sentinel defaults.
+    type ReleasePost = {
+      workerId: string;
+      grossPayoutCents: number;
+      netPayoutCents: number;
+      platformFeeCents: number;
+      platformFeePercent: number;
+      insuranceContributionCents: number; // F-22: recorded post-commit via recordContribution
+      taskId: string;
+      paymentMethod: string;
+      escrowStateBefore: string;
+      adminManualPayoutRequired: boolean;
+      posterId: string | null; // F-23: poster (the payer) is attributed the platform fee
+    };
+    // `post` is optional so the existing `as ServiceResult<Escrow>` failure-arm casts
+    // below remain valid without modification; it is always present on the success path.
+    type ReleaseTxResult =
+      | Extract<ServiceResult<Escrow>, { success: false }>
+      | { success: true; data: Escrow; post?: ReleasePost };
 
     try {
       // RACE CONDITION FIX: Wrap the entire read-check-write sequence in a
@@ -404,7 +413,10 @@ export const EscrowService = {
       // until COMMIT/ROLLBACK. Without the transaction wrapper, db.query()
       // releases the connection (and the lock) immediately after the SELECT,
       // so two concurrent calls could both pass the state check and both UPDATE.
-      const txResult = await db.transaction(async (query) => {
+      const txResult = await db.transaction<ReleaseTxResult>(async (query) => {
+        // F-01/F-03: tracks whether an adminOverride release needs a manual payout
+        // (worker has no Stripe Connect account). Closure-scoped; threaded out via `post`.
+        let adminManualPayoutRequired = false;
         // 1. Lock the escrow row for the duration of the transaction
         const escrowResult = await query<{
           id: string;
@@ -429,13 +441,16 @@ export const EscrowService = {
 
         const escrow = escrowResult.rows[0];
 
-        // Get task details for worker_id, price, and payment_method
+        // Get task details for worker_id, price, payment_method, and poster_id.
+        // F-23: poster_id is needed so the admin_override platform_fee is attributed
+        // to the poster (the payer), matching every other platform_fee call site.
         const taskResult = await query<{
           worker_id: string | null;
           price: number;
           payment_method: string | null;
+          poster_id: string | null;
         }>(
-          `SELECT worker_id, price, payment_method FROM tasks WHERE id = $1`,
+          `SELECT worker_id, price, payment_method, poster_id FROM tasks WHERE id = $1`,
           [escrow.task_id]
         );
 
@@ -453,6 +468,8 @@ export const EscrowService = {
         const resolvedWorkerId = task.worker_id!;
         const resolvedPaymentMethod: string = task.payment_method ?? 'escrow';
         const resolvedGross = escrow.amount;
+        // F-23: prefer poster attribution for the platform fee; worker fallback applied at use site.
+        const resolvedPosterId = task.poster_id ?? null;
 
         // KYC GATE: Verify worker has completed Stripe Connect onboarding
         // before releasing funds (FinCEN/BSA compliance).
@@ -523,10 +540,10 @@ export const EscrowService = {
         // Calculate platform fee (from config - default 15%)
         // SECURITY FIX (v2.9.3): Clamp to [0, 100] — a negative env var must not
         // produce a negative fee (which would overpay the worker).
-        // Assign directly to outer let variables so they are available for
-        // post-commit side effects without a duplicate recalculation outside.
-        platformFeePercent = Math.min(100, Math.max(0, config.stripe.platformFeePercent ?? 15));
-        platformFeeCents = Math.round(resolvedGross * (platformFeePercent / 100));
+        // Computed once inside the transaction and threaded out via `post` so the
+        // post-commit side effects reuse the exact same values (no recalculation).
+        const platformFeePercent = Math.min(100, Math.max(0, config.stripe.platformFeePercent ?? 15));
+        const platformFeeCents = Math.round(resolvedGross * (platformFeePercent / 100));
         // F-22 FIX: Subtract self-insurance contribution (2%) from net payout so
         // the amount is actually withheld from the worker transfer, not just recorded.
         // netPayoutCents (used for recordContribution and logged) is the post-platform-fee
@@ -582,26 +599,60 @@ export const EscrowService = {
           } as ServiceResult<Escrow>;
         }
 
-        // Capture for post-commit side effects
-        workerId = resolvedWorkerId;
-        grossPayoutCents = resolvedGross;
-        netPayoutCents = resolvedNet;
-        insuranceContributionCents = txInsuranceContributionCents; // F-22: capture for post-commit recordContribution
-        taskId = escrow.task_id;
-        paymentMethod = resolvedPaymentMethod;
-        escrowStateBefore = escrow.state;
-        releasedEscrow = result.rows[0];
-
-        return { success: true, data: result.rows[0] } as ServiceResult<Escrow>;
+        // PR3: return post-commit captures from the transaction success result
+        // (return-threading) so they are provably assigned below the success gate.
+        return {
+          success: true,
+          data: result.rows[0],
+          post: {
+            workerId: resolvedWorkerId,
+            grossPayoutCents: resolvedGross,
+            netPayoutCents: resolvedNet,
+            platformFeeCents,
+            platformFeePercent,
+            insuranceContributionCents: txInsuranceContributionCents, // F-22
+            taskId: escrow.task_id,
+            paymentMethod: resolvedPaymentMethod,
+            escrowStateBefore: escrow.state,
+            adminManualPayoutRequired,
+            posterId: resolvedPosterId,
+          },
+        };
       });
 
       if (!txResult.success) {
         return txResult;
       }
 
+      const { post } = txResult;
+      if (!post) {
+        // Unreachable: the transaction always returns `post` on the success path.
+        // This guard lets the compiler prove the captures are present without a
+        // non-null assertion.
+        escrowLogger.error({ escrowId }, 'release: post-commit captures missing after successful transaction');
+        return {
+          success: false,
+          error: { code: 'DB_ERROR', message: 'Internal error finalizing escrow release' },
+        };
+      }
+      const {
+        workerId,
+        grossPayoutCents,
+        netPayoutCents,
+        platformFeeCents,
+        platformFeePercent,
+        insuranceContributionCents,
+        taskId,
+        paymentMethod,
+        escrowStateBefore,
+        adminManualPayoutRequired,
+        posterId,
+      } = post;
+      const releasedEscrow = txResult.data;
+
       await logEscrowEvent(
         escrowId,
-        escrowStateBefore!,
+        escrowStateBefore,
         'RELEASED',
         undefined,
         adminOverride ? 'admin' : 'system',
@@ -638,7 +689,7 @@ export const EscrowService = {
           try {
             await RevenueService.logEvent({
               eventType: 'platform_fee',
-              userId: releasedEscrow!.task_id ? undefined : null, // prefer poster via escrow lookup below
+              userId: posterId ?? workerId, // F-23: attribute the platform fee to the poster (payer), worker fallback
               taskId: taskId!,
               amountCents: platformFeeCents,
               grossAmountCents: grossPayoutCents!,
