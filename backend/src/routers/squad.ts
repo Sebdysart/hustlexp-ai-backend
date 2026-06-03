@@ -488,7 +488,7 @@ export const squadRouter = router({
       }
 
       return await db.transaction(async (query) => {
-        const activeTasksResult = await query(
+        const activeTasksResult = await query<{ cnt: string }>(
           `SELECT COUNT(*) as cnt FROM squad_task_assignments WHERE squad_id = $1 AND status NOT IN ('completed', 'cancelled')`,
           [input.squadId]
         );

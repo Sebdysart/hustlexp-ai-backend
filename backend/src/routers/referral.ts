@@ -50,7 +50,7 @@ export async function issueReferralReward(
     }
 
     // --- Cap check: count already-paid rewards for this referrer (inside the transaction) ---
-    const capCheck = await trx(
+    const capCheck = await trx<{ count: string }>(
       `SELECT COUNT(*) AS count
        FROM referral_redemptions
        WHERE referrer_id = $1 AND referrer_reward_paid = TRUE`,

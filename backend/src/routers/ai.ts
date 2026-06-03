@@ -65,7 +65,7 @@ export const aiRouter = router({
     .mutation(async ({ ctx, input }) => {
       // Guard: ai.confirmRole is an onboarding-only path.
       // Block role change if the user has any task history (ever participated as poster or worker).
-      const taskCount = await db.query(
+      const taskCount = await db.query<{ count: string }>(
         `SELECT COUNT(*) FROM tasks WHERE poster_id = $1 OR worker_id = $1`,
         [ctx.user.id]
       );
