@@ -683,3 +683,50 @@ describe('EscrowService', () => {
     });
   });
 });
+
+// ===========================================================================
+// INV: no XP (and no payout side-effects) without a successfully RELEASED escrow.
+// release() only reaches the post-commit side-effects (XP award, insurance
+// contribution, earnings unlock) AFTER the version-checked UPDATE actually flips
+// the row to RELEASED. If the UPDATE affects 0 rows (already terminal / raced),
+// none of those side-effects must fire. The refund path must never award XP.
+// ===========================================================================
+describe('EscrowService — XP/payout side-effects gated on successful RELEASE', () => {
+  it('does NOT award XP / record insurance / record earnings when release UPDATE affects 0 rows (already terminal)', async () => {
+    const escrowRow = { id: 'esc-1', task_id: 'task-1', amount: 5000, state: 'FUNDED' };
+    const taskRow = { worker_id: 'worker-1', price: 5000 };
+    const workerKycRow = { payouts_enabled: true, stripe_connect_id: 'acct_test', stripe_connect_status: 'complete' };
+
+    mockDb.query
+      .mockResolvedValueOnce({ rows: [escrowRow], rowCount: 1 } as never)   // SELECT escrow FOR UPDATE
+      .mockResolvedValueOnce({ rows: [taskRow], rowCount: 1 } as never)     // SELECT task
+      .mockResolvedValueOnce({ rows: [workerKycRow], rowCount: 1 } as never) // KYC check
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)            // UPDATE → 0 rows (terminal/raced)
+      .mockResolvedValueOnce({ rows: [makeEscrow({ state: 'RELEASED' })], rowCount: 1 } as never); // getById fallback
+
+    const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_x' });
+
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error.code).toBe('HX002'); // ESCROW_TERMINAL
+    // No release occurred → no XP, no insurance contribution, no earnings unlock.
+    expect(vi.mocked(XPService.awardXP)).not.toHaveBeenCalled();
+    expect(vi.mocked(SelfInsurancePoolService.recordContribution)).not.toHaveBeenCalled();
+    expect(vi.mocked(EarnedVerificationUnlockService.recordEarnings)).not.toHaveBeenCalled();
+  });
+
+  it('does NOT award XP on a successful refund (XP requires RELEASED; refund terminalizes to REFUNDED)', async () => {
+    const refunded = makeEscrow({ state: 'REFUNDED' });
+    mockDb.query
+      .mockResolvedValueOnce({ rows: [{ task_id: 'task-1', version: 0, state: 'FUNDED', stripe_payment_intent_id: 'pi_test', amount: 5000 }], rowCount: 1 } as never) // T1 pre-check
+      .mockResolvedValueOnce({ rows: [{ worker_id: 'worker-1', state: 'OPEN' }], rowCount: 1 } as never) // T1 task state check
+      .mockResolvedValueOnce({ rows: [{ id: 'esc-1', version: 0, state: 'FUNDED' }], rowCount: 1 } as never) // T2 FOR UPDATE NOWAIT
+      .mockResolvedValueOnce({ rows: [refunded], rowCount: 1 } as never) // T2 UPDATE → REFUNDED
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // logEscrowEvent
+
+    const result = await EscrowService.refund({ escrowId: 'esc-1' });
+
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.state).toBe('REFUNDED');
+    expect(vi.mocked(XPService.awardXP)).not.toHaveBeenCalled();
+  });
+});
