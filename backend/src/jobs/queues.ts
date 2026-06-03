@@ -424,12 +424,16 @@ export function createWorker(
 
   // For the critical_payments queue, override removeOnFail so that any job
   // that exhausts all retries is preserved indefinitely in Redis for audit and
-  // manual replay. `false` means keep all failed jobs indefinitely (BullMQ v5).
-  // { count: 0 } is NOT equivalent — it means "keep zero failed jobs" and will
-  // silently delete exhausted financial jobs immediately (Bug W-1 fix).
+  // manual replay. WorkerOptions.removeOnFail is typed as KeepJobs (boolean is
+  // not accepted, unlike per-job BaseJobOptions). `{ count: -1 }` means "keep an
+  // unlimited number of failed jobs" — i.e. never auto-remove — which is the
+  // exact runtime value BullMQ derives internally from the legacy boolean
+  // `false` (scripts.getKeepJobs: `false || { count: -1 }`), so behavior is
+  // unchanged. `{ count: 0 }` is NOT equivalent — it would mean "keep zero
+  // failed jobs" and delete exhausted financial jobs (Bug W-1 fix).
   // Other queues keep their configured age-based retention.
   const removeOnFailOverride: Partial<WorkerOptions> =
-    queueName === 'critical_payments' ? { removeOnFail: false } : {};
+    queueName === 'critical_payments' ? { removeOnFail: { count: -1 } } : {};
 
   const worker = new Worker(
     queueName,
