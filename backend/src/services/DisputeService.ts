@@ -12,7 +12,7 @@
  */
 
 import { db, isInvariantViolation, isUniqueViolation, getErrorMessage } from '../db.js';
-import type { ServiceResult, Dispute, DisputeState, Escrow } from '../types.js';
+import type { ServiceResult, Dispute, DisputeState, Escrow, Task } from '../types.js';
 import { ErrorCodes } from '../types.js';
 import { writeToOutbox } from '../lib/outbox-helpers.js';
 import { EscrowService } from './EscrowService.js';
@@ -234,7 +234,7 @@ export const DisputeService = {
       // disputes outside the intended window.
       const result = await db.transaction(async (query) => {
         // Lock task row first to prevent concurrent completed_at changes
-        const taskSelect = await query(
+        const taskSelect = await query<Task>(
           `SELECT * FROM tasks WHERE id = $1 FOR UPDATE`,
           [taskId]
         );

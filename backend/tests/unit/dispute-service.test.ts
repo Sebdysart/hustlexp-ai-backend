@@ -428,6 +428,85 @@ describe('DisputeService', () => {
       expect(completedToDisputed).toBeUndefined();
     });
   });
+
+  // PR1: these guards exercise the two fields read off the now-`Task`-typed task row
+  // (task.state at the includes() guard, task.completed_at at the 48h window check).
+  // They lock in the runtime behavior so the `db.query<Task>` typing change cannot
+  // silently alter dispute-window enforcement.
+  describe('PR1: task-state and 48h dispute-window guards (db.query<Task> typing)', () => {
+    const baseCreateArgs = {
+      taskId: 'task-1',
+      escrowId: 'escrow-1',
+      initiatedBy: 'poster-1',
+      posterId: 'poster-1',
+      workerId: 'worker-1',
+      reason: 'Bad work',
+      description: 'Details',
+    };
+
+    it('rejects a dispute on a task in a non-disputable state (e.g. ACCEPTED) — exercises task.state guard', async () => {
+      const { DisputeService } = await import('../../src/services/DisputeService');
+
+      // Only the task FOR UPDATE query is reached before the state guard throws.
+      mockDb.query.mockResolvedValueOnce({
+        rows: [{ id: 'task-1', state: 'ACCEPTED', completed_at: null, poster_id: 'poster-1', worker_id: 'worker-1' }],
+        rowCount: 1,
+      } as never);
+
+      const result = await DisputeService.create({ ...baseCreateArgs });
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.code).toBe('INVALID_STATE');
+        expect(result.error.message).toMatch(/completed tasks or tasks with submitted proof/i);
+      }
+      // Guard fires before the escrow lock.
+      const sqls = mockDb.query.mock.calls.map((c) => c[0] as string);
+      expect(sqls.some((s) => s.includes('FROM escrows'))).toBe(false);
+    });
+
+    it('rejects a dispute on a COMPLETED task whose completed_at is older than the 48h window — exercises new Date(task.completed_at)', async () => {
+      const { DisputeService } = await import('../../src/services/DisputeService');
+
+      const fiftyHoursAgo = new Date(Date.now() - 50 * 60 * 60 * 1000).toISOString();
+      mockDb.query.mockResolvedValueOnce({
+        rows: [{ id: 'task-1', state: 'COMPLETED', completed_at: fiftyHoursAgo, poster_id: 'poster-1', worker_id: 'worker-1' }],
+        rowCount: 1,
+      } as never);
+
+      const result = await DisputeService.create({ ...baseCreateArgs });
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.code).toBe('INVALID_STATE');
+        expect(result.error.message).toMatch(/within 48 hours/i);
+      }
+    });
+
+    // Caveat 1 (review): the `if (!task.completed_at)` guard must reject null — not just
+    // undefined — BEFORE `new Date(task.completed_at)` runs. Otherwise new Date(null) → epoch 0,
+    // and every COMPLETED task with a null timestamp would be wrongly rejected as "outside window"
+    // (or, worse, silently accepted). This asserts the explicit "missing completed_at" path fires.
+    it('caveat-1: rejects a COMPLETED task with null completed_at before constructing a Date', async () => {
+      const { DisputeService } = await import('../../src/services/DisputeService');
+
+      mockDb.query.mockResolvedValueOnce({
+        rows: [{ id: 'task-1', state: 'COMPLETED', completed_at: null, poster_id: 'poster-1', worker_id: 'worker-1' }],
+        rowCount: 1,
+      } as never);
+
+      const result = await DisputeService.create({ ...baseCreateArgs });
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.code).toBe('INVALID_STATE');
+        expect(result.error.message).toMatch(/missing completed_at/i);
+      }
+      // The null guard must short-circuit before the escrow FOR UPDATE query.
+      const sqls = mockDb.query.mock.calls.map((c) => c[0] as string);
+      expect(sqls.some((s) => s.includes('FROM escrows'))).toBe(false);
+    });
+  });
 });
 
 // =============================================================================
