@@ -715,13 +715,14 @@ export const FraudDetectionService = {
       );
     }
 
+    // Note: suspensionApplied / suspensionFailed are local telemetry counters
+    // already emitted via the structured log above (search "accounts
+    // auto-suspended"). They are NOT columns of fraud_patterns and are not part
+    // of the FraudPattern contract returned to typed callers (the fraud router
+    // returns this as FraudPattern), so they are not included in the payload.
     return {
       success: true,
-      data: {
-        ...result.rows[0],
-        suspensionApplied,
-        suspensionFailed,
-      },
+      data: result.rows[0],
     };
   },
 
