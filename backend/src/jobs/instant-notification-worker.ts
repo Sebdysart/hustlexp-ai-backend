@@ -43,7 +43,7 @@ export async function processInstantNotificationJob(
   // inside job.data.payload. The check is mandatory — jobs without a signature are
   // rejected outright to prevent unsigned payloads injected directly into Redis
   // (bypassing the outbox) from executing with elevated trust.
-  const outerPayload = (job.data as Record<string, unknown>).payload;
+  const outerPayload = (job.data as unknown as Record<string, unknown>).payload;
   // A50-1 FIX: Fail-closed HMAC guard. Any job that arrives without a valid
   // object payload is rejected immediately — the previous conditional silently
   // skipped the entire HMAC block (including the R49 mandatory-sig throw) when
@@ -65,7 +65,7 @@ export async function processInstantNotificationJob(
     throw new Error('JOB_SIGNATURE_INVALID: Payload signature verification failed');
   }
 
-  const { taskId, hustlerId, location, riskLevel, sensitive, urgencyCopy, surgeLevel } = (job.data as Record<string, unknown>).payload as InstantNotificationJobData;
+  const { taskId, hustlerId, location, riskLevel, sensitive, urgencyCopy, surgeLevel } = (job.data as unknown as Record<string, unknown>).payload as InstantNotificationJobData;
   const startTime = Date.now();
 
   try {
