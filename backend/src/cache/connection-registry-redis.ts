@@ -136,7 +136,7 @@ export async function unregisterConnection(
   let connection: ConnectionMetadata;
   try {
     connection = JSON.parse(connData);
-  } catch (e) {
+  } catch {
     registryLog.warn({ key: KEYS.connection(connectionId), raw: connData }, 'connection-registry: failed to parse Redis value, skipping');
     return;
   }
@@ -203,7 +203,7 @@ export async function updateHeartbeat(
   let connection: ConnectionMetadata;
   try {
     connection = JSON.parse(connData);
-  } catch (e) {
+  } catch {
     registryLog.warn({ key: KEYS.connection(connectionId), raw: connData }, 'connection-registry: failed to parse Redis value, skipping');
     return;
   }
@@ -263,7 +263,7 @@ export async function getConnection(connectionId: string): Promise<ConnectionMet
   if (!data) return null;
   try {
     return JSON.parse(data) as ConnectionMetadata;
-  } catch (e) {
+  } catch {
     registryLog.warn({ key: KEYS.connection(connectionId), raw: data }, 'connection-registry: failed to parse Redis value, skipping');
     return null;
   }
@@ -286,7 +286,7 @@ export async function getUserPresence(userId: string): Promise<{
   if (data) {
     try {
       return JSON.parse(data) as { online: boolean; lastSeen: number; connections: number };
-    } catch (e) {
+    } catch {
       registryLog.warn({ key: KEYS.userPresence(userId), raw: data }, 'connection-registry: failed to parse Redis value, skipping');
     }
   }
@@ -318,7 +318,7 @@ export async function subscribeToChannel(
   let connection: ConnectionMetadata;
   try {
     connection = JSON.parse(connData);
-  } catch (e) {
+  } catch {
     registryLog.warn({ key: KEYS.connection(connectionId), raw: connData }, 'connection-registry: failed to parse Redis value, skipping');
     throw new Error('Connection data is corrupted');
   }
@@ -356,7 +356,7 @@ export async function unsubscribeFromChannel(
   let connection: ConnectionMetadata;
   try {
     connection = JSON.parse(connData);
-  } catch (e) {
+  } catch {
     registryLog.warn({ key: KEYS.connection(connectionId), raw: connData }, 'connection-registry: failed to parse Redis value, skipping');
     return;
   }

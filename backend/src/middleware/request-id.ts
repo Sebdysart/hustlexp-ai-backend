@@ -15,7 +15,6 @@
  */
 
 import { Context, Next } from 'hono';
-import { ulid } from 'ulidx';
 import { randomUUID } from 'crypto';
 
 /**

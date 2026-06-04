@@ -24,7 +24,7 @@
 
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
-import { router, adminProcedure, protectedProcedure } from '../trpc.js';
+import { router, adminProcedure } from '../trpc.js';
 import { BetaService } from '../services/BetaService.js';
 import { RevenueService } from '../services/RevenueService.js';
 import { ChargebackService } from '../services/ChargebackService.js';

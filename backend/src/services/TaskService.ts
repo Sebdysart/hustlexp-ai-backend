@@ -846,7 +846,7 @@ export const TaskService = {
         // Transaction commits automatically on successful return
         return { success: true, data: acceptedTask };
       });
-    } catch (error) {
+    } catch {
       // Transaction automatically rolls back on thrown error
       return {
         success: false,

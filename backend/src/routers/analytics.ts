@@ -10,7 +10,7 @@
 
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
-import { router, protectedProcedure, publicProcedure, adminProcedure, Schemas } from '../trpc.js';
+import { router, protectedProcedure, adminProcedure, Schemas } from '../trpc.js';
 import { AnalyticsService, type EventType } from '../services/AnalyticsService.js';
 import { db } from '../db.js';
 
