@@ -1,8 +1,10 @@
 name: Deploy to AWS ECS
 
+# RETIRED (manual-only): HustleXP deploys via Railway (Dockerfile + Procfile).
+# The push:main auto-trigger was removed to stop unattended ECS deploys and to
+# eliminate the dual-target ambiguity. This workflow is retained — NOT deleted —
+# so AWS ECS can be revived on demand via "Run workflow" if scale demands it.
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 env:
