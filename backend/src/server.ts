@@ -20,7 +20,7 @@ import { cors } from 'hono/cors';
 import { trpcServer } from '@hono/trpc-server';
 import { appRouter } from './routers/index.js';
 import { createContext } from './trpc.js';
-import { config } from './config.js';
+import { config, validateConfig } from './config.js';
 import { securityHeaders, rateLimitMiddleware, publicIpRateLimitMiddleware, aiRateLimitMiddleware } from './middleware/security.js';
 import { requestIdMiddleware, serverTimingMiddleware } from './middleware/request-id.js';
 import { httpMetricsMiddleware } from './monitoring/http-metrics.js';
@@ -29,6 +29,13 @@ import { createMetricsEndpoint } from './monitoring/metrics.js';
 // ============================================================================
 // SECURITY VALIDATION (Fail-Fast in Production)
 // ============================================================================
+
+// Fail-fast: validate ALL required production configuration before the
+// server binds. In production validateConfig() calls process.exit(1) on
+// missing/invalid required vars (DATABASE_URL, Firebase, Stripe,
+// Redis REST+TCP, QUEUE_HMAC_SECRET, TAX_TIN_ENCRYPTION_KEY). Returns a
+// no-op result in dev/test (never exits).
+validateConfig();
 
 // CRITICAL: Fail-fast if CORS is misconfigured in production
 if (config.app.isProduction) {
