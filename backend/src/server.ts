@@ -253,7 +253,7 @@ app.get('/health', async (c) => {
       status: 'healthy',
       timestamp: new Date().toISOString(),
     });
-  } catch (error) {
+  } catch {
     return c.json({
       status: 'unhealthy',
       timestamp: new Date().toISOString(),
