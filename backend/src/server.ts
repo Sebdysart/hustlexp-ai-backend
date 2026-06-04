@@ -20,7 +20,7 @@ import { cors } from 'hono/cors';
 import { trpcServer } from '@hono/trpc-server';
 import { appRouter } from './routers/index.js';
 import { createContext } from './trpc.js';
-import { config } from './config.js';
+import { config, validateConfig } from './config.js';
 import { securityHeaders, rateLimitMiddleware, publicIpRateLimitMiddleware, aiRateLimitMiddleware } from './middleware/security.js';
 import { requestIdMiddleware, serverTimingMiddleware } from './middleware/request-id.js';
 import { httpMetricsMiddleware } from './monitoring/http-metrics.js';
@@ -1071,6 +1071,13 @@ app.onError((err, c) => {
 // ============================================================================
 
 async function startServer() {
+  // Fail-fast: validate required production configuration before the server does
+  // any boot work (DB connect, migrations, port bind). In production
+  // validateConfig() calls process.exit(1) on missing/invalid required vars; in
+  // dev/test it is a no-op. Placed inside startServer() (the real boot path) — no
+  // test imports this module, so plain `{ app }`-style imports never trigger it.
+  validateConfig();
+
   const startLog = pinoLogger.child({ module: 'startup' });
 
   startLog.info('═══════════════════════════════════════════════════════════');
