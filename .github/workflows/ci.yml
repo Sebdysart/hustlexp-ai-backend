@@ -6,10 +6,6 @@ on:
   pull_request:
     branches: [main, "feat/*"]
   workflow_call:
-
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
     outputs:
       typecheck_result:
         description: "TypeCheck job result"
@@ -23,6 +19,10 @@ concurrency:
       build_result:
         description: "Build job result"
         value: ${{ jobs.build.result }}
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   NODE_VERSION: 20
