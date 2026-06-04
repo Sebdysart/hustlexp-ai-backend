@@ -15,7 +15,6 @@ import { db, isInvariantViolation, isUniqueViolation, getErrorMessage } from '..
 import type { ServiceResult, Dispute, DisputeState, Escrow, Task } from '../types.js';
 import { ErrorCodes } from '../types.js';
 import { writeToOutbox } from '../lib/outbox-helpers.js';
-import { EscrowService } from './EscrowService.js';
 import { logger } from '../logger.js';
 
 const disputeServiceLog = logger.child({ service: 'DisputeService' });

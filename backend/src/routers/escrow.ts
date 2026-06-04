@@ -171,7 +171,7 @@ export const escrowRouter = router({
 
       // SECURITY FIX (v2.9.3): Enforce escrow amount >= task price.
       // Without this guard a poster can fund $1 for a $50 task, underpaying the worker.
-      let amount = input.amount !== undefined ? input.amount : taskPriceCents;
+      const amount = input.amount !== undefined ? input.amount : taskPriceCents;
       if (amount < taskPriceCents) {
         throw new TRPCError({
           code: 'BAD_REQUEST',

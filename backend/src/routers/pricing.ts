@@ -42,7 +42,7 @@ export const pricingRouter = router({
       isASAP: z.boolean().optional(),
       workerId: z.string().uuid().optional(),
     }))
-    .query(async ({ input, ctx }) => {
+    .query(async ({ input }) => {
       const result = await SmartPricingService.getSmartPrice({
         title: input.title,
         description: input.description ?? '',
