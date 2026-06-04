@@ -1,6 +1,12 @@
 # ============================================================================
 # Railway Production Configuration
 # Auto-scaling, health checks, multi-service deployment
+#
+# NOTE: The AUTHORITATIVE build + start commands are the Dockerfile (CMD) and
+# Procfile (web/worker) — both run COMPILED JS (node dist/...). Railway builds
+# via `builder: DOCKERFILE`. The start:/command: values here are kept in sync
+# with the compiled entrypoints. Do NOT use `tsx` here: the runner image ships
+# only dist/ + production node_modules (no .ts source), so tsx would ENOENT.
 # ============================================================================
 
 version: 2
@@ -24,7 +30,7 @@ services:
   # API Web Service
   # ============================================================================
   web:
-    start: npx tsx backend/src/server.ts
+    start: node dist/backend/src/server.js
     
     # Resource allocation
     resources:
@@ -95,7 +101,7 @@ services:
   # Background Worker Service
   # ============================================================================
   worker:
-    start: npx tsx backend/src/jobs/workers.ts
+    start: node dist/backend/src/jobs/workers.js
     
     resources:
       memory: 512Mi
@@ -185,14 +191,14 @@ cron:
   # Queue monitoring
   - name: queue-monitor
     schedule: "*/5 * * * *"  # Every 5 minutes
-    command: npx tsx backend/src/jobs/monitor-queues.ts
+    command: node dist/backend/src/jobs/monitor-queues.js
     resources:
       memory: 256Mi
   
   # Cleanup old data
   - name: data-cleanup
     schedule: "0 2 * * *"  # Daily at 2 AM
-    command: npx tsx backend/src/jobs/cleanup-old-data.ts
+    command: node dist/backend/src/jobs/cleanup-old-data.js
     resources:
       memory: 512Mi
 
