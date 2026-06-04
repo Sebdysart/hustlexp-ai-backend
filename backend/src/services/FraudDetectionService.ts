@@ -556,7 +556,7 @@ export const FraudDetectionService = {
               }
             } catch (e) { log.warn({ e, userId }, 'session revocation failed'); }
 
-            try { forceDisconnectUser(userId); } catch (e) { /* fire-and-forget */ }
+            try { forceDisconnectUser(userId); } catch { /* fire-and-forget */ }
 
             // Lock funded escrows for the suspended user (best-effort, independent of the suspend tx)
             try {

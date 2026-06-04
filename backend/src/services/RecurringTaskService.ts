@@ -58,7 +58,7 @@ export function getNextOccurrenceDates(
 ): string[] {
   const out: string[] = [];
   const end = endDate ? parseDate(endDate).getTime() : null;
-  let current = parseDate(startDate);
+  const current = parseDate(startDate);
 
   if (pattern === 'daily') {
     for (let i = 0; i < maxCount; i++) {
