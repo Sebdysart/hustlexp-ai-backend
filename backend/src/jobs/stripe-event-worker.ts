@@ -20,7 +20,6 @@ import { db } from '../db.js';
 import { processSubscriptionEvent } from '../services/StripeSubscriptionProcessor.js';
 import { processEntitlementPurchase } from '../services/StripeEntitlementProcessor.js';
 import { EscrowService } from '../services/EscrowService.js';
-import { RevenueService } from '../services/RevenueService.js';
 import { ChargebackService } from '../services/ChargebackService.js';
 import { verifyJobSignature } from './queues.js';
 import type { Job } from 'bullmq';
