@@ -28,6 +28,7 @@ import { processExpertiseRecalcJob } from './expertise-recalc-worker.js';
 import { processXPTaxReminderJob } from './xp-tax-reminder-worker.js';
 import { workerLogger as log } from '../logger.js';
 import { db } from '../db.js';
+import { validateConfig } from '../config.js';
 import { sendPushNotification } from '../services/PushNotificationService.js';
 import type { Job, Worker } from 'bullmq';
 
@@ -366,6 +367,11 @@ async function registerScheduledJobs(): Promise<void> {
  */
 async function startWorkers(): Promise<void> {
   log.info('Starting HustleXP Worker Runtime...');
+
+  // Fail-fast: validate required worker configuration (DATABASE_URL,
+  // Redis TCP for BullMQ, QUEUE_HMAC_SECRET, Stripe, TAX key) before any
+  // queue/Redis connection. Exits in production on missing/invalid vars.
+  validateConfig();
 
   try {
     // Register all BullMQ workers
