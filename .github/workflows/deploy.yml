@@ -1,23 +1,26 @@
-# Deploy to Railway — runs only after CI succeeds on main (no duplicate test runs).
+# Deploy to Railway — MANUAL ONLY (workflow_dispatch).
+# Auto-deploy-on-CI-success was intentionally disabled for the pre-launch phase
+# so no unattended deploy can happen on merge. A human triggers this via
+# "Run workflow" only after the launch gates pass (launch DB created + db:validate
+# + liveness/readiness smoke green). To restore auto-deploy at launch, swap the
+# trigger back to the workflow_run block (kept in git history) and revert the
+# job `if:`/`ref:` lines below.
 name: Deploy
 
 on:
-  workflow_run:
-    workflows: ["CI — Lint, Typecheck, Test"]
-    types: [completed]
-    branches: [main]
+  workflow_dispatch:
 
 jobs:
   deploy-staging:
     name: Deploy to Railway (staging)
-    if: github.event.workflow_run.conclusion == 'success'
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     environment: staging
     steps:
-      - name: Checkout commit that passed CI
+      - name: Checkout the dispatched commit
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ github.sha }}
 
       - name: Install Railway CLI
         run: npm i -g @railway/cli
@@ -38,15 +41,15 @@ jobs:
 
   deploy-production:
     name: Deploy to Railway (production)
-    if: github.event.workflow_run.conclusion == 'success'
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     needs: [deploy-staging]
     environment: production
     steps:
-      - name: Checkout commit that passed CI
+      - name: Checkout the dispatched commit
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ github.sha }}
 
       - name: Install Railway CLI
         run: npm i -g @railway/cli
