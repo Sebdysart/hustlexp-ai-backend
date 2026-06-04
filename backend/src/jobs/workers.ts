@@ -28,6 +28,7 @@ import { processExpertiseRecalcJob } from './expertise-recalc-worker.js';
 import { processXPTaxReminderJob } from './xp-tax-reminder-worker.js';
 import { workerLogger as log } from '../logger.js';
 import { db } from '../db.js';
+import { validateConfig } from '../config.js';
 import { sendPushNotification } from '../services/PushNotificationService.js';
 import type { Job, Worker } from 'bullmq';
 
@@ -445,10 +446,29 @@ process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 // START WORKERS
 // ============================================================================
 
+/**
+ * Worker process entry point.
+ *
+ * Runs fail-fast config validation BEFORE starting any workers. In production
+ * validateConfig() calls process.exit(1) on missing/invalid required vars
+ * (DATABASE_URL, Redis TCP for BullMQ, QUEUE_HMAC_SECRET, Stripe, Firebase,
+ * TAX_TIN_ENCRYPTION_KEY); in dev/test it is a no-op that never exits.
+ *
+ * IMPORTANT: validateConfig() is intentionally NOT called inside startWorkers().
+ * Unit tests (e.g. scheduled-jobs.test.ts) invoke startWorkers() directly while
+ * mocking '../config' WITHOUT a validateConfig export — calling it there would
+ * throw "validateConfig is not a function" and break those tests. Keeping it in
+ * this process-entry guard means direct startWorkers() unit calls are unaffected.
+ */
+export async function bootWorkerProcess(): Promise<void> {
+  validateConfig();
+  await startWorkers();
+}
+
 // Start workers if this file is run directly (ESM-compatible entry point guard)
 const __filename = fileURLToPath(import.meta.url);
 if (process.argv[1] === __filename) {
-  startWorkers().catch(error => {
+  bootWorkerProcess().catch(error => {
     log.fatal({ err: error }, 'Fatal error starting workers');
     process.exit(1);
   });
