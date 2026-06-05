@@ -820,7 +820,6 @@ export const EscrowService = {
     let stripeRefundId: string | null = null;
     let stripeTransferId: string | null = null;
     let refundAmount: number = 0;
-    let escrowVersion: number | undefined;
     let allowedStates: string[];
 
     try {
@@ -882,7 +881,6 @@ export const EscrowService = {
 
         // Capture values for Stripe call and T2
         escrowStateBefore = currentState ?? 'FUNDED';
-        escrowVersion = escrowPreCheck.rows[0]?.version;
         stripePaymentIntentId = escrowPreCheck.rows[0]?.stripe_payment_intent_id ?? null;
         stripeRefundId = escrowPreCheck.rows[0]?.stripe_refund_id ?? null;
         stripeTransferId = escrowPreCheck.rows[0]?.stripe_transfer_id ?? null;
@@ -984,7 +982,7 @@ export const EscrowService = {
       // F-05 FIX: Add SELECT FOR UPDATE NOWAIT before the UPDATE so we re-read
       // the current version under an exclusive lock. T1 committed and released its
       // lock; between T1 and T2 any concurrent operation can increment the version,
-      // making the stale escrowVersion from T1 miss the UPDATE (0 rows) even though
+      // making a stale T1 version snapshot miss the UPDATE (0 rows) even though
       // the Stripe refund already succeeded. Mirroring the partialRefund T2 pattern.
       // -----------------------------------------------------------------------
       const termResult = await db.transaction(async (query) => {
@@ -1364,7 +1362,6 @@ export const EscrowService = {
       // This keeps the lock tight and ensures we read the most recent data
       // without allowing a concurrent caller to race past the state check.
       // -----------------------------------------------------------------------
-      let escrowVersion: number;
 
       const readResult = await db.transaction(async (query) => {
         const lockResult = await query<{
@@ -1398,7 +1395,6 @@ export const EscrowService = {
           } as ServiceResult<Escrow>;
         }
 
-        escrowVersion = row.version;
         txTaskId = row.task_id;
         txAmount = row.amount;
         txStripePaymentIntentId = row.stripe_payment_intent_id ?? null;
@@ -1540,7 +1536,7 @@ export const EscrowService = {
       // F-05 FIX: Re-read the version under FOR UPDATE NOWAIT so the UPDATE
       // predicate uses the freshly-locked version rather than the stale T1
       // snapshot. Any operation that incremented the version between T1 and T2
-      // would cause escrowVersion! to match 0 rows — orphaning the Stripe calls.
+      // would cause a stale T1 version snapshot to match 0 rows — orphaning the Stripe calls.
       // -----------------------------------------------------------------------
       const termResult = await db.transaction(async (query) => {
         // Step 1: Acquire exclusive lock and re-read live version
