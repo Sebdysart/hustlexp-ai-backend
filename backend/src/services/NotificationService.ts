@@ -79,29 +79,6 @@ async function incrementFrequency(userId: string, category: string): Promise<voi
   }
 }
 
-/** @deprecated Use checkFrequency + incrementFrequency separately. Kept for test compatibility. */
-async function checkAndIncrementFrequency(userId: string, category: string): Promise<{ hourlyCount: number; dailyCount: number }> {
-  const redis = getNotifRedis();
-  if (!redis) return { hourlyCount: 0, dailyCount: 0 };
-
-  const now = new Date();
-  const hourKey = `notif:freq:${userId}:${category}:hour:${now.toISOString().slice(0, 13)}`;
-  const dayKey = `notif:freq:${userId}:${category}:day:${now.toISOString().slice(0, 10)}`;
-
-  try {
-    const [hourly, daily] = await Promise.all([
-      redis.incr(hourKey),
-      redis.incr(dayKey),
-    ]);
-    // Set TTLs (only on first increment)
-    if (hourly === 1) await redis.expire(hourKey, 3600);
-    if (daily === 1) await redis.expire(dayKey, 86400);
-    return { hourlyCount: hourly, dailyCount: daily };
-  } catch {
-    return { hourlyCount: 0, dailyCount: 0 };
-  }
-}
-
 // ============================================================================
 // TYPES
 // ============================================================================
