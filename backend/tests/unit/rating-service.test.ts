@@ -287,9 +287,9 @@ describe('RatingService.submitRating', () => {
     mockQuery.mockResolvedValueOnce({ rows: [{ count: '1' }] });
     // 5. INSERT rating (inside transaction)
     mockQuery.mockResolvedValueOnce({ rows: [{ id: 'r2', is_blind: false, is_public: true }] });
-    // 6. UPDATE all to public (outside transaction, updatedRatingsCount === 2)
+    // 6. UPDATE all to public (inside transaction, newCount === 2)
     mockQuery.mockResolvedValueOnce({ rows: [] });
-    // 7. Re-fetch updated rating (outside transaction)
+    // 7. Re-fetch updated rating (inside transaction)
     mockQuery.mockResolvedValueOnce({ rows: [{ id: 'r2', is_public: true, is_blind: false }] });
 
     const result = await RatingService.submitRating({
