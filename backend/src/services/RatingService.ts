@@ -376,7 +376,7 @@ export const RatingService = {
       // single transaction with an advisory lock. This prevents two concurrent
       // first-time rating requests from both passing the duplicate check and
       // both computing is_blind from a stale count.
-      const { insertedRating, updatedRatingsCount } = await db.transaction(async (txQuery) => {
+      const { insertedRating } = await db.transaction(async (txQuery) => {
         // Advisory lock serializes ALL concurrent ratings for the same task.
         // Keyed on taskId only so that opposite-direction submissions (poster→worker
         // and worker→poster) contend on the same lock and cannot both read
@@ -456,7 +456,7 @@ export const RatingService = {
           [taskId, raterId, rateeId]
         );
         if (dupCheck.rows.length > 0) {
-          return { insertedRating: null, updatedRatingsCount: 0 };
+          return { insertedRating: null };
         }
 
         // Re-read existingRatingsCount inside the transaction so it is
@@ -502,13 +502,11 @@ export const RatingService = {
 
           return {
             insertedRating: updatedResult.rows[0],
-            updatedRatingsCount: newCount,
           };
         }
 
         return {
           insertedRating: ratingResult.rows[0],
-          updatedRatingsCount: newCount,
         };
       });
 
