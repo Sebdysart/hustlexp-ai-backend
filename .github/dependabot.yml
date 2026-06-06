@@ -1,0 +1,59 @@
+# Dependabot configuration — grouped security & version updates.
+# Takes effect once Dependabot is enabled in Settings → Code security
+# (Dependency graph + Dependabot alerts + Dependabot security updates).
+#
+# Grouping mirrors the launch-readiness audit plan:
+#   - runtime-security: prod-dependency advisories (ship in the production image)
+#   - dev-tooling:      test/build tooling advisories (never reach runtime)
+# so the two streams land as separate, reviewable PRs.
+version: 2
+updates:
+  # ---- npm: grouped SECURITY updates (driven by Dependabot alerts) ----
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "security"
+    commit-message:
+      prefix: "chore(security)"
+    groups:
+      runtime-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+        exclude-patterns:
+          - "vitest"
+          - "@vitest/*"
+          - "vite"
+          - "esbuild"
+          - "tsx"
+          - "postcss"
+          - "picomatch"
+      dev-tooling:
+        applies-to: security-updates
+        patterns:
+          - "vitest"
+          - "@vitest/*"
+          - "vite"
+          - "esbuild"
+          - "tsx"
+          - "postcss"
+          - "picomatch"
+
+  # ---- GitHub Actions: keep workflow actions current (addresses Node 20 deprecation) ----
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "chore(ci)"
+    groups:
+      actions:
+        patterns:
+          - "*"
