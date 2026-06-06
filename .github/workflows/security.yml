@@ -5,6 +5,14 @@ on:
   pull_request:
     branches: [main]
 
+# NOTE on the gated jobs below:
+# This repo is PRIVATE. `codeql` (code-scanning upload) and `dependency-review`
+# both require GitHub Advanced Security (GHAS) on a private repo, so they hard-fail
+# on every PR today. They are gated to run only when the repo is public; when the
+# repo goes public OR GHAS is purchased, drop the `github.event.repository.visibility`
+# guard to re-enable them. `snyk` is guarded on SNYK_TOKEN so it no-ops (green) until
+# a token is added. This keeps PR check-lists honest instead of permanently red.
+
 jobs:
   audit:
     runs-on: ubuntu-latest
@@ -19,6 +27,8 @@ jobs:
 
   codeql:
     runs-on: ubuntu-latest
+    # Code scanning on a PRIVATE repo requires GHAS. Skip cleanly until public/GHAS.
+    if: github.event.repository.visibility == 'public'
     permissions:
       security-events: write
     steps:
@@ -31,21 +41,29 @@ jobs:
 
   dependency-review:
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
+    # dependency-review-action is unsupported on private repos without GHAS. Skip until public/GHAS.
+    if: github.event_name == 'pull_request' && github.event.repository.visibility == 'public'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/dependency-review-action@v4
 
   snyk:
     runs-on: ubuntu-latest
-    continue-on-error: true  # Pass even if SNYK_TOKEN is unset or Snyk finds issues; review Security tab
+    continue-on-error: true  # never block on Snyk; review findings in the Security tab
     steps:
+      - name: Detect Snyk token
+        id: token
+        run: echo "present=${{ secrets.SNYK_TOKEN != '' }}" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
+        if: steps.token.outputs.present == 'true'
       - uses: actions/setup-node@v4
+        if: steps.token.outputs.present == 'true'
         with:
           node-version: '20'
       - run: npm ci
+        if: steps.token.outputs.present == 'true'
       - uses: snyk/actions/node@master
+        if: steps.token.outputs.present == 'true'
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         with:
