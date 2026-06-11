@@ -19,6 +19,9 @@ import { db } from '../db.js';
 import { RevenueService } from './RevenueService.js';
 import type { ServiceResult } from '../types.js';
 import { logger } from '../logger.js';
+// AUDIT FIX H4: every Stripe call in this service must go through the breaker —
+// a Stripe outage on the tip path previously piled up with no fast-fail.
+import { stripeBreaker } from '../middleware/circuit-breaker.js';
 
 // H3 FIX: Module-level Stripe singleton — instantiated once, not per request.
 // Matches the pattern used in StripeService.ts. Per-request instantiation
@@ -174,7 +177,8 @@ export const TippingService = {
 
       // Step 2 — Create Stripe PI outside any DB transaction.
       //   If the subsequent INSERT fails we cancel the PI to avoid orphaning it.
-      const paymentIntent = await stripe!.paymentIntents.create(
+      //   AUDIT FIX H4: via stripeBreaker.
+      const paymentIntent = await stripeBreaker.execute(() => stripe!.paymentIntents.create(
         {
           amount: amountCents,
           currency: 'usd',
@@ -193,7 +197,7 @@ export const TippingService = {
           description: `HustleXP Tip for Task ${taskId}`,
         },
         { idempotencyKey: `tip_pi_${taskId}_${posterId}_${amountCents}` }
-      );
+      ));
 
       // Step 3 — Insert the tip row referencing the newly created PI.
       //   On failure, cancel the PI to keep Stripe clean.
@@ -211,7 +215,7 @@ export const TippingService = {
       } catch (insertError) {
         // Attempt to cancel the orphaned PI before re-throwing.
         try {
-          await stripe!.paymentIntents.cancel(paymentIntent.id);
+          await stripeBreaker.execute(() => stripe!.paymentIntents.cancel(paymentIntent.id)); // AUDIT FIX H4
           log.warn({ piId: paymentIntent.id, taskId }, 'Cancelled orphaned Stripe PI after tip INSERT failure');
         } catch (cancelError) {
           log.error(
@@ -252,7 +256,7 @@ export const TippingService = {
         return { success: false, error: { code: 'STRIPE_NOT_CONFIGURED', message: 'Stripe not configured' } };
       }
 
-      const payment = await stripe.paymentIntents.retrieve(stripePaymentIntentId);
+      const payment = await stripeBreaker.execute(() => stripe!.paymentIntents.retrieve(stripePaymentIntentId)); // AUDIT FIX H4
 
       if (payment.status !== 'succeeded') {
         return { success: false, error: { code: 'PAYMENT_NOT_SUCCEEDED', message: `Payment status: ${payment.status}` } };

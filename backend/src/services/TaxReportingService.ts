@@ -11,6 +11,7 @@ import type { ServiceResult } from '../types.js';
 import { logger } from '../logger.js';
 import { config } from '../config.js';
 import Stripe from 'stripe';
+import { stripeBreaker } from '../middleware/circuit-breaker.js'; // AUDIT FIX M4
 
 const log = logger.child({ service: 'TaxReportingService' });
 
@@ -213,15 +214,18 @@ export const TaxReportingService = {
 
       // Use Stripe Tax Forms API via raw request (SDK types may not include forms resource)
       // Stripe handles form generation and IRS e-filing for Connect platforms
+      // AUDIT FIX M4: via stripeBreaker — 1099 generation must fast-fail on outage.
       const ALREADY_FILED_SENTINEL = '__already_filed__';
-      const taxForm = await (s as unknown as { rawRequest: (method: string, path: string, params: Record<string, string>) => Promise<{ body: string }> }).rawRequest(
-        'POST',
-        '/v1/tax/forms',
-        {
-          type: '1099_nec',
-          account: connectId,
-          tax_year: taxYear.toString(),
-        }
+      const taxForm = await stripeBreaker.execute(() =>
+        (s as unknown as { rawRequest: (method: string, path: string, params: Record<string, string>) => Promise<{ body: string }> }).rawRequest(
+          'POST',
+          '/v1/tax/forms',
+          {
+            type: '1099_nec',
+            account: connectId,
+            tax_year: taxYear.toString(),
+          }
+        )
       ).then((res: { body: string }) => JSON.parse(res.body)).catch((err: unknown) => {
         // F-4 FIX: FILING_ALREADY_FINALIZED is not an error — the form was already
         // successfully filed. Treat it as idempotent success so callers can safely retry.

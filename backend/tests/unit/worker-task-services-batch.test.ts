@@ -34,6 +34,8 @@ vi.mock('../../src/middleware/circuit-breaker', () => ({
   awsRekognitionBreaker: { execute: vi.fn((fn: () => unknown) => fn()) },
   gcpVisionBreaker: { execute: vi.fn((fn: () => unknown) => fn()) },
   googleMapsBreaker: { execute: vi.fn((fn: () => unknown) => fn()) },
+  // AUDIT FIX M6: TutorialQuestService.scanEquipment now routes through openaiBreaker
+  openaiBreaker: { execute: vi.fn((fn: () => unknown) => fn()) },
 }));
 
 vi.mock('../../src/lib/url-safety', () => ({
@@ -1016,13 +1018,19 @@ describe('TutorialQuestService.scanEquipment', () => {
     vi.unstubAllGlobals();
   });
 
-  it('returns empty result on fetch failure (graceful degradation)', async () => {
+  it('surfaces fetch failure as an error (AUDIT FIX M6 — no more fake-success)', async () => {
+    // Pre-fix behavior returned success:true with an empty scan on ANY error,
+    // so OpenAI outages masqueraded as "no tools detected" and were invisible
+    // to callers and monitoring. Failures must now be honest.
     process.env.OPENAI_API_KEY = 'sk-test';
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network error')));
 
     const result = await TutorialQuestService.scanEquipment('https://example.com/tools.jpg');
-    expect(result.success).toBe(true);
-    expect(result.data?.detected_items).toHaveLength(0);
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.code).toBe('EQUIPMENT_SCAN_FAILED');
+      expect(result.error.message).toContain('network error');
+    }
 
     delete process.env.OPENAI_API_KEY;
     vi.unstubAllGlobals();

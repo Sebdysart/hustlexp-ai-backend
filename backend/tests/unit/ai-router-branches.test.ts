@@ -81,6 +81,15 @@ vi.mock('../../src/ai/UserAIBudget', () => ({
   trackGlobalCost:   mockTrackGlobalCost,
 }));
 
+// AUDIT FIX H6: AIRouter now imports circuit breakers (module chain pulls in
+// logger → real config). Pass-through mock keeps this suite hermetic.
+vi.mock('../../src/middleware/circuit-breaker', () => ({
+  openaiBreaker: { execute: (fn: () => unknown) => fn() },
+  groqBreaker: { execute: (fn: () => unknown) => fn() },
+  deepseekBreaker: { execute: (fn: () => unknown) => fn() },
+  alibabaBreaker: { execute: (fn: () => unknown) => fn() },
+}));
+
 vi.mock('groq-sdk', () => ({
   Groq: class MockGroq {
     chat = { completions: { create: mockGroqCreate } };

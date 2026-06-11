@@ -17,6 +17,7 @@ import { StripeService } from '../services/StripeService.js';
 import { XPService } from '../services/XPService.js';
 import { db } from '../db.js';
 import { config } from '../config.js';
+import { stripeBreaker } from '../middleware/circuit-breaker.js'; // AUDIT FIX M5
 import { z } from 'zod';
 
 // Module-level Stripe instance — reused across requests (same pattern as StripeService.ts)
@@ -236,7 +237,8 @@ export const escrowRouter = router({
       // to FUNDED with no real money backing it — causing platform reserve leakage on release.
       let pi: Stripe.PaymentIntent;
       try {
-        pi = await getStripe().paymentIntents.retrieve(input.stripePaymentIntentId, { expand: ['latest_charge'] });
+        // AUDIT FIX M5: via stripeBreaker
+        pi = await stripeBreaker.execute(() => getStripe().paymentIntents.retrieve(input.stripePaymentIntentId, { expand: ['latest_charge'] }));
       } catch {
         throw new TRPCError({
           code: 'PRECONDITION_FAILED',
@@ -334,7 +336,8 @@ export const escrowRouter = router({
       // as RELEASED with no corresponding funds reaching the worker.
       let transfer: Stripe.Transfer;
       try {
-        transfer = await getStripe().transfers.retrieve(input.stripeTransferId);
+        // AUDIT FIX M5: via stripeBreaker
+        transfer = await stripeBreaker.execute(() => getStripe().transfers.retrieve(input.stripeTransferId));
       } catch {
         throw new TRPCError({
           code: 'PRECONDITION_FAILED',

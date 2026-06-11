@@ -10,9 +10,9 @@ import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
 import { router, posterProcedure } from '../trpc.js';
 import { db } from '../db.js';
-import Stripe from 'stripe';
-import { config } from '../config.js';
 import { RevenueService } from '../services/RevenueService.js';
+import { getSharedStripe } from '../lib/stripe-client.js'; // AUDIT FIX M5
+import { stripeBreaker } from '../middleware/circuit-breaker.js';
 
 const FEATURE_PRICING: Record<string, { cents: number; hours: number }> = {
   promoted: { cents: 299, hours: 24 },
@@ -63,9 +63,10 @@ export const featuredRouter = router({
       let clientSecret: string | null = null;
       let paymentIntentId: string | null = null;
 
-      if (config.stripe.secretKey && !config.stripe.secretKey.includes('placeholder')) {
-        const stripe = new Stripe(config.stripe.secretKey, { apiVersion: '2025-11-17.clover' });
-        const pi = await stripe.paymentIntents.create({
+      // AUDIT FIX M5: shared client + breaker (was per-request `new Stripe`, no breaker)
+      const stripe = getSharedStripe();
+      if (stripe) {
+        const pi = await stripeBreaker.execute(() => stripe.paymentIntents.create({
           amount: pricing.cents,
           currency: 'usd',
           automatic_payment_methods: { enabled: true },
@@ -74,7 +75,7 @@ export const featuredRouter = router({
             task_id: input.taskId,
             feature_type: input.featureType,
           },
-        });
+        }));
         clientSecret = pi.client_secret;
         paymentIntentId = pi.id;
       }
@@ -110,9 +111,10 @@ export const featuredRouter = router({
       const userId = ctx.user.id;
 
       // 1. Verify PaymentIntent status in Stripe
-      if (config.stripe.secretKey && !config.stripe.secretKey.includes('placeholder')) {
-        const stripe = new Stripe(config.stripe.secretKey, { apiVersion: '2025-11-17.clover' });
-        const pi = await stripe.paymentIntents.retrieve(input.stripePaymentIntentId);
+      // AUDIT FIX M5: shared client + breaker
+      const stripeClient = getSharedStripe();
+      if (stripeClient) {
+        const pi = await stripeBreaker.execute(() => stripeClient.paymentIntents.retrieve(input.stripePaymentIntentId));
 
         if (pi.status !== 'succeeded') {
           throw new TRPCError({

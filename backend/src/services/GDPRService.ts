@@ -26,6 +26,7 @@ import { config } from '../config.js';
 import { invalidateAuthCacheForUser } from '../auth-cache.js';
 import { forceDisconnectUser } from '../realtime/connection-registry.js';
 import { revokeUserSessions } from '../auth/middleware.js';
+import { stripeBreaker } from '../middleware/circuit-breaker.js'; // AUDIT FIX M3
 
 // Module-level Stripe singleton — only instantiated when a real key is present.
 // Matches the pattern used in TippingService.ts.
@@ -1234,7 +1235,9 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
         if (escrow.state === 'PENDING' && escrow.stripe_payment_intent_id) {
           try {
             if (stripe) {
-              await stripe.paymentIntents.cancel(escrow.stripe_payment_intent_id);
+              // AUDIT FIX M3: via stripeBreaker — GDPR deletion must not hold
+              // open calls against a failing Stripe.
+              await stripeBreaker.execute(() => stripe!.paymentIntents.cancel(escrow.stripe_payment_intent_id!));
             }
           } catch (stripeErr) {
             log.warn({ escrowId: escrow.id, paymentIntentId: escrow.stripe_payment_intent_id, taskId: row.id, userId, err: stripeErr instanceof Error ? stripeErr.message : String(stripeErr) }, 'GDPR: could not cancel Stripe PaymentIntent for PENDING escrow — continuing with refund');
@@ -1352,7 +1355,8 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
     const stripeCustomerId = stripeCustomerRow.rows[0]?.stripe_customer_id ?? null;
     if (stripeCustomerId && stripe) {
       try {
-        await stripe.customers.del(stripeCustomerId);
+        // AUDIT FIX M3: via stripeBreaker
+        await stripeBreaker.execute(() => stripe!.customers.del(stripeCustomerId));
       } catch (stripeErr) {
         log.warn(
           { userId, stripeCustomerId, err: stripeErr instanceof Error ? stripeErr.message : String(stripeErr) },
