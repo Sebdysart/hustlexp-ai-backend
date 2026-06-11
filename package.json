@@ -46,7 +46,7 @@
     "@aws-sdk/client-rekognition": "3.994.0",
     "@aws-sdk/client-s3": "^3.999.0",
     "@aws-sdk/s3-request-presigner": "^3.999.0",
-    "@hono/node-server": "1.19.7",
+    "@hono/node-server": "1.19.14",
     "@hono/trpc-server": "0.4.0",
     "@neondatabase/serverless": "1.0.2",
     "@opentelemetry/api": "^1.9.0",
@@ -85,7 +85,7 @@
     "typescript": "5.9.3",
     "ulidx": "2.4.1",
     "uuid": "10.0.0",
-    "ws": "8.19.0",
+    "ws": "8.21.0",
     "zod": "3.23.8"
   },
   "overrides": {

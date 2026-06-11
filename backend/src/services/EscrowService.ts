@@ -18,7 +18,7 @@ import { TRPCError } from '@trpc/server';
 import { db, isInvariantViolation, isUniqueViolation, getErrorMessage } from '../db.js';
 import type { QueryFn } from '../db.js';
 import { config } from '../config.js';
-import { computeFeeBreakdown, computePlatformFeeCents, clampFeePercent } from '../lib/money.js';
+import { computeFeeBreakdown, computePlatformFeeCents, clampFeePercent, computeInsuranceContributionCents } from '../lib/money.js';
 import { EarnedVerificationUnlockService } from './EarnedVerificationUnlockService.js';
 import { XPTaxService } from './XPTaxService.js';
 import { XPService } from './XPService.js';
@@ -1518,7 +1518,15 @@ export const EscrowService = {
       // AUDIT FIX H3: was round(worker × (1 − pct/100)), which disagrees with the
       // complement form by 1¢ on .5 boundaries (e.g. 1050¢ @15%: 893 vs 892) —
       // the full-release path uses fee-then-complement. Unified: net = worker − fee.
-      const netWorkerCents = workerCents - computePlatformFeeCents(workerCents, platformFeePercent);
+      const netWorkerCentsBeforeInsurance = workerCents - computePlatformFeeCents(workerCents, platformFeePercent);
+      // REVIEW FIX (PR242 follow-up): this path previously withheld NO self-
+      // insurance contribution and never funded the pool, while the worker-queue
+      // split path and the full-release path both do — same split paid the
+      // worker differently and left the pool underfunded on service-path
+      // disputes. Withhold 2% of the worker's GROSS share (matching the
+      // full-release F54-2 convention) and record the contribution below.
+      const partialInsuranceContributionCents = computeInsuranceContributionCents(workerCents);
+      const netWorkerCents = netWorkerCentsBeforeInsurance - partialInsuranceContributionCents;
       if (workerCents > 0) {
         if (txExistingTransferId) {
           // Idempotency: transfer already recorded from a prior attempt — skip.
@@ -1677,11 +1685,14 @@ export const EscrowService = {
         }
       }
       if (workerCents > 0 && resolvedTransferId) {
-        // Reuse the same netWorkerCents computed for the Stripe transfer (line ~1233) to
-        // guarantee the ledger records the exact amount transferred — not an independently
-        // rounded value that could diverge with non-integer fee percentages.
-        const netWorkerCentsForLedger = netWorkerCents;
-        const feeCents = workerCents - netWorkerCentsForLedger;
+        // REVIEW FIX (PR242 follow-up): the platform_fee event must record the
+        // PLATFORM fee only — NOT the insurance contribution (which is tracked
+        // separately in the self-insurance pool). feeCents is therefore derived
+        // from the PRE-insurance net (workerCents − fee), while netAmountCents
+        // reflects the ACTUAL transfer (net − insurance), matching the
+        // full-release ledger convention where insurance is excluded from the
+        // platform_fee decomposition.
+        const feeCents = workerCents - netWorkerCentsBeforeInsurance;
         if (feeCents > 0) {
           try {
             // F-23 FIX: Platform fee is charged to the poster (buyer), not the worker.
@@ -1693,7 +1704,7 @@ export const EscrowService = {
               amountCents: feeCents,
               grossAmountCents: workerCents,
               platformFeeCents: feeCents,
-              netAmountCents: netWorkerCentsForLedger,
+              netAmountCents: netWorkerCents, // actual transfer (net − insurance)
               feeBasisPoints: Math.round(platformFeePercent * 100),
               escrowId,
               stripeTransferId: resolvedTransferId,
@@ -1703,6 +1714,26 @@ export const EscrowService = {
             escrowLogger.error(
               { err: revenueErr instanceof Error ? revenueErr.message : String(revenueErr), escrowId },
               '[EscrowService.partialRefund] revenue ledger write failed — manual reconciliation required'
+            );
+          }
+        }
+
+        // REVIEW FIX (PR242 follow-up): record the self-insurance pool
+        // contribution withheld from the worker transfer. Idempotent via
+        // ON CONFLICT (task_id, hustler_id) DO NOTHING in recordContribution —
+        // safe on BullMQ-style retries. Non-fatal: a pool-write failure must not
+        // block the already-committed partial refund (mirrors the worker queue).
+        if (partialInsuranceContributionCents > 0 && txWorkerId && txTaskId) {
+          try {
+            await SelfInsurancePoolService.recordContribution(
+              txTaskId,
+              txWorkerId,
+              partialInsuranceContributionCents,
+            );
+          } catch (insuranceErr) {
+            escrowLogger.warn(
+              { err: insuranceErr instanceof Error ? insuranceErr.message : String(insuranceErr), escrowId },
+              '[EscrowService.partialRefund] self-insurance pool contribution failed — partial refund proceeds'
             );
           }
         }
