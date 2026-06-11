@@ -56,11 +56,13 @@ async function generateQueryEmbedding(text: string): Promise<number[]> {
   const tokensUsed = response.usage?.total_tokens ?? 0;
   if (tokensUsed > 0) {
     try {
+      // REVIEW FIX (PR242): model column is NOT NULL — omitting it made this
+      // INSERT fail silently on real Postgres.
       await db.query(
-        `INSERT INTO ai_cost_logs (agent_type, user_id, provider, tokens_used, estimated_cost_cents, created_at)
-         VALUES ($1, NULL, $2, $3, $4, NOW())`,
+        `INSERT INTO ai_cost_logs (agent_type, user_id, provider, model, tokens_used, estimated_cost_cents, created_at)
+         VALUES ($1, NULL, $2, $3, $4, $5, NOW())`,
         // text-embedding-3-small: $0.02 / 1M tokens → cents = tokens × 0.000002
-        ['knowledge_graph_embedding', 'openai', tokensUsed, Math.ceil(tokensUsed * 0.000002)]
+        ['knowledge_graph_embedding', 'openai', 'text-embedding-3-small', tokensUsed, Math.ceil(tokensUsed * 0.000002)]
       );
     } catch (costErr) {
       kgLog.warn(

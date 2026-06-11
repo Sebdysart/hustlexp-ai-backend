@@ -221,10 +221,12 @@ Respond with JSON only: {"similarity_score": 0-1, "completion_score": 0-1, "chan
       const pvTokensUsed = data.usage?.total_tokens ?? 0;
       if (pvTokensUsed > 0) {
         try {
+          // REVIEW FIX (PR242): model column is NOT NULL — omitting it made
+          // this INSERT fail silently on real Postgres.
           await db.query(
-            `INSERT INTO ai_cost_logs (agent_type, user_id, provider, tokens_used, estimated_cost_cents, created_at)
-             VALUES ($1, NULL, $2, $3, $4, NOW())`,
-            ['photo_verification', 'openai', pvTokensUsed, Math.ceil(pvTokensUsed * 0.001)]
+            `INSERT INTO ai_cost_logs (agent_type, user_id, provider, model, tokens_used, estimated_cost_cents, created_at)
+             VALUES ($1, NULL, $2, $3, $4, $5, NOW())`,
+            ['photo_verification', 'openai', 'gpt-4o', pvTokensUsed, Math.ceil(pvTokensUsed * 0.001)]
           );
         } catch {
           // cost logging must never break verification

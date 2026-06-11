@@ -803,9 +803,16 @@ async function handlePartialRefundRequest(
     // Compute platform fee unconditionally — must happen before the transferId
     // idempotency checks so these values are always defined when we reach the
     // RevenueService.logEvent guard later, regardless of the retry path taken.
-    const platformFeePercent = Math.min(100, Math.max(0, config.stripe?.platformFeePercent ?? 15));
-    netReleaseCents = Math.round(releaseAmount * (1 - platformFeePercent / 100));
-    const rawPlatformFeeCents = releaseAmount - netReleaseCents;
+    // REVIEW FIX (PR242): this execution path still used the old direct form
+    // round(amount × (1 − pct)) while the F-26 validation above and
+    // EscrowService.partialRefund had been migrated to the complement form —
+    // they disagree by 1¢ on .5 boundaries, which both reduced the validation
+    // to a tautology and reintroduced the exact path-dependent fee divergence
+    // H3 exists to eliminate. Now complement form, in lockstep with both.
+    const platformFeePercent = clampFeePercent(config.stripe?.platformFeePercent);
+    const releaseAmountCentsExec = Math.round(releaseAmount);
+    netReleaseCents = releaseAmountCentsExec - computePlatformFeeCents(releaseAmountCentsExec, platformFeePercent);
+    const rawPlatformFeeCents = releaseAmountCentsExec - netReleaseCents;
     // BUG 3 fix: assign any sub-cent rounding residual to the platform fee so
     // all cents are accounted for (refundAmount + netReleaseCents + platformFeeCents
     // must equal escrow.amount exactly).
@@ -1047,7 +1054,7 @@ async function handlePartialRefundRequest(
         grossAmountCents: releaseAmount,
         platformFeeCents: platformFee,
         netAmountCents: netReleaseCents,
-        feeBasisPoints: Math.round((config.stripe.platformFeePercent ?? 15) * 100),
+        feeBasisPoints: Math.round(clampFeePercent(config.stripe.platformFeePercent) * 100), // REVIEW FIX (PR242): clamped, consistent with line 436
         escrowId: escrow.id,
         stripeTransferId: transferId ?? undefined,
         metadata: {

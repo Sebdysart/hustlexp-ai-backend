@@ -184,9 +184,13 @@ describe('callAI — happy path', () => {
 
     expect(mockIncrby).toHaveBeenCalled();
     expect(mockExpire).toHaveBeenCalled();
+    // REVIEW FIX (PR242): the old `expect.any(Array)` hid a real bug — the
+    // INSERT omitted the NOT NULL `model` column, so every cost row was
+    // rejected by Postgres while CI stayed green. Pin the column list AND the
+    // param shape so a schema-violating insert can never pass again.
     expect(mockQuery).toHaveBeenCalledWith(
-      expect.stringContaining('INSERT INTO ai_cost_logs'),
-      expect.any(Array),
+      expect.stringContaining('INSERT INTO ai_cost_logs (agent_type, user_id, provider, model, tokens_used, estimated_cost_cents, created_at)'),
+      ['judge', USER_ID, 'groq', 'llama-3.3-70b-versatile', expect.any(Number), expect.any(Number)],
     );
     expect(mockTrackUserCost).toHaveBeenCalled();
     expect(mockTrackGlobalCost).toHaveBeenCalled();

@@ -51,6 +51,7 @@ vi.mock('../../src/logger', () => ({
 vi.mock('../../src/services/TaskService', () => ({
   TaskService: {
     create: vi.fn().mockResolvedValue({ success: true, data: { id: 'task-from-service' } }),
+    cancel: vi.fn().mockResolvedValue({ success: true, data: { id: 'task-from-service' } }), // REVIEW FIX PR242: compensation path
   },
 }));
 

@@ -106,7 +106,7 @@ describe('ChargebackService (extra coverage)', () => {
       }
     });
 
-    it('handles no user found anywhere — system user fallback', async () => {
+    it('handles no user found anywhere — NULL user on the ledger row (FK-safe)', async () => {
       // No escrow
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
       // No featured_listings
@@ -124,10 +124,13 @@ describe('ChargebackService (extra coverage)', () => {
         expect(result.data.paymentDisputeId).toBe('pd-nouser');
       }
 
-      // Revenue log should use system user UUID (2nd arg = tx executor, audit H1)
+      // REVIEW FIX (PR242): unattributable disputes log with NULL user_id —
+      // the old '00000000-…' sentinel exists in no users row, so the FK
+      // rejected it; combined with the H1 in-tx abort that meant infinite
+      // retries and a never-recorded chargeback.
       expect(mockRevenueLog).toHaveBeenCalledWith(
         expect.objectContaining({
-          userId: '00000000-0000-0000-0000-000000000000',
+          userId: null,
         }),
         expect.anything()
       );

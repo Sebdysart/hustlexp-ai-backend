@@ -583,37 +583,67 @@ export const squadRouter = router({
       }
       const taskId = createResult.data.id;
 
-      return await db.transaction(async (query) => {
-        try {
-          await query(
-            `UPDATE tasks SET squad_id = $1 WHERE id = $2`,
-            [input.squadId, taskId]
+      // REVIEW FIX (PR242): TaskService.create commits the task before this
+      // transaction. If the link/assignment tx fails, the old code's atomicity
+      // meant no task existed — the restructured flow would have left an
+      // orphaned, publicly-claimable OPEN task with no squad economics.
+      // COMPENSATION: on tx failure, cancel the just-created task (guarded
+      // OPEN→CANCELLED via the owning service) and rethrow. A brief window
+      // where the task is OPEN-but-unlinked remains (ms-scale, claim requires
+      // matching/accept flow) — documented residual, strictly narrower than an
+      // orphan that lives forever.
+      try {
+        return await db.transaction(async (query) => {
+          try {
+            await query(
+              `UPDATE tasks SET squad_id = $1 WHERE id = $2`,
+              [input.squadId, taskId]
+            );
+          } catch (linkErr) {
+            // squad_id column may not exist if migration not run; continue — but
+            // LOUDLY (AUDIT FIX M2: this was a silent swallow).
+            squadLog.warn(
+              { taskId, squadId: input.squadId, err: linkErr instanceof Error ? linkErr.message : String(linkErr) },
+              'createTeamTask: could not link task to squad (squad_id column missing?) — task created unlinked'
+            );
+          }
+
+          const assignResult = await query<{ id: string }>(
+            `INSERT INTO squad_task_assignments (squad_id, task_id, required_workers, payment_split_mode, per_worker_payment_cents, status)
+             VALUES ($1, $2, $3, $4, $5, 'recruiting')
+             RETURNING id`,
+            [input.squadId, taskId, input.requiredWorkers, input.paymentSplit, perWorkerCents]
           );
-        } catch (linkErr) {
-          // squad_id column may not exist if migration not run; continue — but
-          // LOUDLY (AUDIT FIX M2: this was a silent swallow).
+
+          return {
+            id: assignResult.rows[0].id,
+            taskId,
+            squadId: input.squadId,
+            requiredWorkers: input.requiredWorkers,
+            perWorkerPaymentCents: perWorkerCents,
+            status: 'recruiting',
+          };
+        });
+      } catch (txErr) {
+        // Compensate: the squad assignment failed — the task must not survive
+        // as a claimable solo task with wrong economics.
+        const cancelResult = await TaskService.cancel(taskId, ctx.user.id).catch((cancelErr: unknown) => ({
+          success: false as const,
+          error: { code: 'CANCEL_THREW', message: cancelErr instanceof Error ? cancelErr.message : String(cancelErr) },
+        }));
+        if (!cancelResult.success) {
+          squadLog.error(
+            { taskId, squadId: input.squadId, cancelError: cancelResult.error },
+            'CRITICAL: squad assignment failed AND compensation cancel failed — orphaned OPEN task requires manual cleanup'
+          );
+        } else {
           squadLog.warn(
-            { taskId, squadId: input.squadId, err: linkErr instanceof Error ? linkErr.message : String(linkErr) },
-            'createTeamTask: could not link task to squad (squad_id column missing?) — task created unlinked'
+            { taskId, squadId: input.squadId },
+            'createTeamTask: assignment tx failed — compensated by cancelling the created task'
           );
         }
-
-        const assignResult = await query<{ id: string }>(
-          `INSERT INTO squad_task_assignments (squad_id, task_id, required_workers, payment_split_mode, per_worker_payment_cents, status)
-           VALUES ($1, $2, $3, $4, $5, 'recruiting')
-           RETURNING id`,
-          [input.squadId, taskId, input.requiredWorkers, input.paymentSplit, perWorkerCents]
-        );
-
-        return {
-          id: assignResult.rows[0].id,
-          taskId,
-          squadId: input.squadId,
-          requiredWorkers: input.requiredWorkers,
-          perWorkerPaymentCents: perWorkerCents,
-          status: 'recruiting',
-        };
-      });
+        throw txErr;
+      }
     }),
 
   // --------------------------------------------------------------------------

@@ -14,7 +14,7 @@ import { db } from '../db.js';
 import { checkUserBudget, trackUserCost, checkGlobalBudget, trackGlobalCost } from './UserAIBudget.js';
 // AUDIT FIX H6: provider calls must go through circuit breakers — a dead
 // provider now fast-fails instead of being hammered by the fallback chain.
-import { openaiBreaker, groqBreaker, deepseekBreaker, alibabaBreaker } from '../middleware/circuit-breaker.js';
+import { openaiBreaker, groqBreaker, deepseekBreaker, alibabaBreaker, CircuitOpenError } from '../middleware/circuit-breaker.js';
 
 interface AICallConfig {
   maxTokensPerCall: number;
@@ -86,10 +86,15 @@ async function trackCost(agent: string, userId: string, provider: AIProvider, to
     // AUDIT FIX L3: INCRBY and EXPIRE must be atomic — a crash between them
     // left a budget key with no TTL, permanently locking the user out of AI.
     await getRedis().multi().incrby(budgetKey, cost).expire(budgetKey, 86400).exec();
+    // REVIEW FIX (PR242): ai_cost_logs.model is NOT NULL with no default — this
+    // INSERT (and the three service-level metering inserts) previously omitted
+    // it, so EVERY cost row was silently rejected by Postgres while the
+    // try/catch swallowed the error. Cost governance was recording nothing.
+    const model = config.ai[provider]?.model ?? 'unknown';
     await db.query(
-      `INSERT INTO ai_cost_logs (agent_type, user_id, provider, tokens_used, estimated_cost_cents, created_at)
-       VALUES ($1, $2, $3, $4, $5, NOW())`,
-      [agent, userId, provider, tokensUsed, cost]
+      `INSERT INTO ai_cost_logs (agent_type, user_id, provider, model, tokens_used, estimated_cost_cents, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
+      [agent, userId, provider, model, tokensUsed, cost]
     );
   } catch (error) {
     console.error(`[AI Router] Failed to track cost:`, error);
@@ -165,6 +170,13 @@ async function retryWithBackoff<T>(fn: () => Promise<T>, maxRetries: number = 3,
     try {
       return await fn();
     } catch (error) {
+      // REVIEW FIX (PR242): an OPEN circuit breaker cannot recover within the
+      // retry window (resetTimeout ≫ backoff) — retrying just burns ~3-4s of
+      // dead sleep per provider before the fallback chain advances. Fail fast
+      // to the next provider instead.
+      if (error instanceof CircuitOpenError) {
+        throw error;
+      }
       lastError = error instanceof Error ? error : new Error(String(error));
       if (attempt < maxRetries) {
         const delay = baseDelayMs * Math.pow(2, attempt) + Math.random() * 500;

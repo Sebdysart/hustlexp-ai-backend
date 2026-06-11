@@ -207,7 +207,12 @@ export const ChargebackService = {
 
         const ledgerResult = await RevenueService.logEvent({
           eventType: 'chargeback',
-          userId: userId || '00000000-0000-0000-0000-000000000000', // system user fallback
+          // REVIEW FIX (PR242): was a '00000000-…' sentinel that exists in no
+          // users row — the FK rejected it, and with the H1 in-tx hard-abort an
+          // unattributable chargeback would roll back and retry FOREVER while
+          // never being recorded. revenue_ledger.user_id is a nullable FK
+          // (D63-1): NULL is the correct value for unattributable disputes.
+          userId: userId || null,
           taskId: taskId || undefined,
           amountCents: -amountCents, // NEGATIVE = loss
           // V2: Financial decomposition
@@ -520,7 +525,7 @@ export const ChargebackService = {
           //    terminal status below. Failure aborts the whole close.
           const reversalResult = await RevenueService.logEvent({
             eventType: 'chargeback_reversal',
-            userId: dispute.user_id || '00000000-0000-0000-0000-000000000000',
+            userId: dispute.user_id || null, // REVIEW FIX (PR242): NULL, not unseeded sentinel (FK-safe)
             taskId: dispute.task_id || undefined,
             amountCents: dispute.amount_cents, // POSITIVE = reversal of loss
             // V2: Financial decomposition

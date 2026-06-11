@@ -18,8 +18,17 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Mocks — must come before any imports that transitively touch these modules
 // ---------------------------------------------------------------------------
 
+// REVIEW FIX (PR242): createTeamTask now uses db.transaction for the
+// link+assignment pair — delegating tx executor keeps sequences working.
+const dbMocks = vi.hoisted(() => {
+  const query = vi.fn();
+  const txQuery = vi.fn((sql: string, params?: unknown[]) => query(sql, params));
+  const transaction = vi.fn(async (fn: (q: typeof txQuery) => Promise<unknown>) => fn(txQuery));
+  return { query, txQuery, transaction };
+});
+
 vi.mock('../../src/db', () => ({
-  db: { query: vi.fn() },
+  db: { query: dbMocks.query, transaction: dbMocks.transaction },
 }));
 
 vi.mock('../../src/auth/firebase', () => ({
@@ -48,9 +57,12 @@ vi.mock('../../src/logger', () => ({
 }));
 
 // AUDIT FIX M2: createTeamTask delegates task creation to TaskService.
+// REVIEW FIX (PR242): cancel added — the compensation path invokes it when the
+// assignment transaction fails after the task was committed.
 vi.mock('../../src/services/TaskService', () => ({
   TaskService: {
     create: vi.fn().mockResolvedValue({ success: true, data: { id: 'task-from-service' } }),
+    cancel: vi.fn().mockResolvedValue({ success: true, data: { id: 'task-from-service' } }),
   },
 }));
 
@@ -493,5 +505,94 @@ describe('squad.listTasks — offset-based pagination', () => {
       const [, params] = calls[1];
       expect(params).toContain(SQUAD_ID);
     });
+  });
+});
+
+// ===========================================================================
+// squad.createTeamTask — service-routed creation + compensation (REVIEW FIX PR242)
+// ===========================================================================
+
+import { TaskService } from '../../src/services/TaskService';
+const mockTaskService = vi.mocked(TaskService);
+
+function makePosterCaller(userId = 'organizer-1') {
+  const fakeUser = {
+    id: userId,
+    email: 'poster@hustlexp.com',
+    full_name: 'Organizer',
+    role: 'poster',
+    trust_tier: 4,
+    firebase_uid: 'fb-poster',
+    default_mode: 'poster',
+  };
+  return squadRouter.createCaller({
+    user: fakeUser as any,
+    firebaseUid: 'fb-poster',
+  });
+}
+
+const TEAM_TASK_INPUT = {
+  squadId: '11111111-2222-3333-4444-555555555555',
+  title: 'Clean the warehouse',
+  description: 'Deep clean of the whole warehouse floor before Monday.',
+  totalPriceCents: 20000,
+  requiredWorkers: 2,
+  paymentSplit: 'equal' as const,
+};
+
+describe('squad.createTeamTask — creation via TaskService + compensation', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbMocks.query.mockReset();
+    mockTaskService.create.mockResolvedValue({ success: true, data: { id: 'task-from-service' } } as any);
+    mockTaskService.cancel.mockResolvedValue({ success: true, data: { id: 'task-from-service' } } as any);
+  });
+
+  it('creates the task through TaskService and links it atomically with the assignment', async () => {
+    // organizer check (outside tx)
+    dbMocks.query.mockResolvedValueOnce({ rows: [{ id: TEAM_TASK_INPUT.squadId }], rowCount: 1 } as any);
+    // tx: squad_id link
+    dbMocks.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
+    // tx: assignment INSERT
+    dbMocks.query.mockResolvedValueOnce({ rows: [{ id: 'sta-1' }], rowCount: 1 } as any);
+
+    const result = await makePosterCaller().createTeamTask(TEAM_TASK_INPUT);
+
+    expect(result.taskId).toBe('task-from-service');
+    expect(result.status).toBe('recruiting');
+    expect(mockTaskService.create).toHaveBeenCalledWith(
+      expect.objectContaining({ price: 20000, title: TEAM_TASK_INPUT.title })
+    );
+    // Link + assignment ran inside ONE transaction
+    expect(dbMocks.transaction).toHaveBeenCalledTimes(1);
+    const txSql = dbMocks.txQuery.mock.calls.map((c) => String(c[0]));
+    expect(txSql.some((s) => s.includes('squad_id'))).toBe(true);
+    expect(txSql.some((s) => s.includes('squad_task_assignments'))).toBe(true);
+    expect(mockTaskService.cancel).not.toHaveBeenCalled();
+  });
+
+  it('COMPENSATES on assignment failure: cancels the committed task and rethrows (no orphaned claimable task)', async () => {
+    // organizer check
+    dbMocks.query.mockResolvedValueOnce({ rows: [{ id: TEAM_TASK_INPUT.squadId }], rowCount: 1 } as any);
+    // tx: squad_id link succeeds
+    dbMocks.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
+    // tx: assignment INSERT blows up
+    dbMocks.query.mockRejectedValueOnce(new Error('squad_task_assignments constraint violation'));
+
+    await expect(makePosterCaller().createTeamTask(TEAM_TASK_INPUT))
+      .rejects.toThrow('squad_task_assignments constraint violation');
+
+    // The just-created task must have been cancelled by the owning service
+    expect(mockTaskService.cancel).toHaveBeenCalledWith('task-from-service', 'organizer-1');
+  });
+
+  it('does not create any task when the caller is not the squad organizer', async () => {
+    dbMocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // organizer check fails
+
+    await expect(makePosterCaller().createTeamTask(TEAM_TASK_INPUT))
+      .rejects.toThrow('Only the squad organizer can create team tasks');
+
+    expect(mockTaskService.create).not.toHaveBeenCalled();
+    expect(dbMocks.transaction).not.toHaveBeenCalled();
   });
 });
