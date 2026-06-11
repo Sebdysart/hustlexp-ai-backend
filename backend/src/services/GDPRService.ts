@@ -1837,6 +1837,10 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
 
       // D63-1: revenue_ledger.user_id is nullable FK with ON DELETE SET NULL, but
       // cascade never fires because users is UPDATEd not DELETEd. NULL it manually.
+      // AUDIT FIX C1: this UPDATE succeeds ONLY via the narrow GDPR exemption in
+      // prevent_revenue_ledger_update() (user_id → NULL, no other column changed) —
+      // see migrations/revenue_ledger_gdpr_user_id_exemption.sql. Any other ledger
+      // UPDATE still raises HX701 (INV-4 append-only).
       await query(
         `UPDATE revenue_ledger SET user_id = NULL WHERE user_id = $1`,
         [userId]

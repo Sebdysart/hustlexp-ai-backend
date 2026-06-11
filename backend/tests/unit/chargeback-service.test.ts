@@ -6,8 +6,20 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+// AUDIT H1/H2: ChargebackService now wraps all mutations in db.transaction.
+// The tx executor DELEGATES to the same `query` spy so the existing
+// mockResolvedValueOnce sequences keep driving both paths, while `txQuery`
+// separately records which statements ran INSIDE the transaction (assertable).
+// The transaction mock propagates rejections (real rollback-then-rethrow shape).
+const dbMocks = vi.hoisted(() => {
+  const query = vi.fn();
+  const txQuery = vi.fn((sql: string, params?: unknown[]) => query(sql, params));
+  const transaction = vi.fn(async (fn: (q: typeof txQuery) => Promise<unknown>) => fn(txQuery));
+  return { query, txQuery, transaction };
+});
+
 vi.mock('../../src/db', () => ({
-  db: { query: vi.fn() },
+  db: { query: dbMocks.query, transaction: dbMocks.transaction },
 }));
 
 vi.mock('../../src/services/RevenueService', () => ({
@@ -50,6 +62,9 @@ function makeDisputeParams(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // clearAllMocks does NOT flush mockResolvedValueOnce queues — reset fully so
+  // under-consumed queues can never bleed across tests (audit H1/H2 hardening).
+  dbMocks.query.mockReset();
   mockRevenueLog.mockResolvedValue({ success: true, data: { id: 'rev-1' } });
 });
 
@@ -98,7 +113,8 @@ describe('ChargebackService', () => {
         expect.objectContaining({
           eventType: 'chargeback',
           amountCents: -5000,
-        })
+        }),
+        expect.anything() // tx executor (audit H1)
       );
     });
 
@@ -254,7 +270,8 @@ describe('ChargebackService', () => {
         expect.objectContaining({
           eventType: 'chargeback_reversal',
           amountCents: 5000, // positive
-        })
+        }),
+        expect.anything() // tx executor (audit H2)
       );
     });
 
@@ -548,5 +565,144 @@ describe('F64-3: payouts_were_frozen set correctly based on actual lock result',
     expect(frozenCall).toBeDefined();
     // F64-3 fix: rowCount was 1 (freshly locked) → should pass TRUE as $2
     expect(frozenCall![1][1]).toBe(true);
+  });
+});
+
+// =============================================================================
+// AUDIT FIXES H1/H2 (2026-06-11): chargeback handlers must be ATOMIC.
+// H1: handleDisputeCreated — all mutations in ONE db.transaction; a ledger-write
+//     failure aborts everything (no partially-applied chargeback that the
+//     idempotent early-return would then permanently skip on retry).
+// H2: handleDisputeClosed — dispute row locked FOR UPDATE; reversal ledger entry
+//     and terminal status written in the SAME transaction (no duplicate
+//     chargeback_reversal on Stripe webhook redelivery).
+// =============================================================================
+describe('ChargebackService — H1/H2 atomicity (audit fixes)', () => {
+  const txSql = () => dbMocks.txQuery.mock.calls.map((c) => String(c[0]));
+
+  function seedCreatedHappyPath() {
+    mockDb.query
+      .mockResolvedValueOnce({ rows: [{ id: 'esc-1', task_id: 'task-1', state: 'FUNDED' }], rowCount: 1 } as never) // escrow lookup (read, outside tx)
+      .mockResolvedValueOnce({ rows: [{ poster_id: 'user-1' }], rowCount: 1 } as never) // poster lookup (read, outside tx)
+      .mockResolvedValueOnce({ rows: [{ id: 'pd-1' }], rowCount: 1 } as never) // INSERT payment_disputes
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // link reversal ledger
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // dispute_count++
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // conditional payouts lock
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // payouts_were_frozen
+      .mockResolvedValueOnce({ rows: [{ trust_tier: 3, dispute_count: 1 }], rowCount: 1 } as never) // tier check (no downgrade)
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // escrow → LOCKED_DISPUTE
+  }
+
+  it('H1: runs every chargeback mutation inside exactly one transaction', async () => {
+    seedCreatedHappyPath();
+
+    const result = await ChargebackService.handleDisputeCreated(makeDisputeParams());
+
+    expect(result.success).toBe(true);
+    expect(dbMocks.transaction).toHaveBeenCalledTimes(1);
+
+    // Mutations all went through the tx executor…
+    const inTx = txSql();
+    expect(inTx.some((s) => s.includes('INSERT INTO payment_disputes'))).toBe(true);
+    expect(inTx.some((s) => s.includes('dispute_count'))).toBe(true);
+    expect(inTx.some((s) => s.includes('payouts_locked = TRUE'))).toBe(true);
+    expect(inTx.some((s) => s.includes("LOCKED_DISPUTE"))).toBe(true);
+
+    // …and the ledger write joined the SAME transaction (received the tx executor).
+    expect(mockRevenueLog).toHaveBeenCalledTimes(1);
+    expect(mockRevenueLog.mock.calls[0][1]).toBe(dbMocks.txQuery);
+
+    // Only the two Stripe-ID lookups ran outside the transaction.
+    expect(mockDb.query.mock.calls.length - dbMocks.txQuery.mock.calls.length).toBe(2);
+  });
+
+  it('H1: ledger write failure aborts the whole transaction — no partial chargeback', async () => {
+    seedCreatedHappyPath();
+    mockRevenueLog.mockResolvedValueOnce({
+      success: false,
+      error: { code: 'REVENUE_LOG_FAILED', message: 'boom' },
+    } as never);
+
+    const result = await ChargebackService.handleDisputeCreated(makeDisputeParams());
+
+    expect(result.success).toBe(false);
+    // Nothing after the ledger failure may execute: no reversal link, no freeze, no escrow lock.
+    const inTx = txSql();
+    expect(inTx.some((s) => s.includes('reversal_ledger_id'))).toBe(false);
+    expect(inTx.some((s) => s.includes('payouts_locked = TRUE'))).toBe(false);
+    expect(inTx.some((s) => s.includes('LOCKED_DISPUTE'))).toBe(false);
+  });
+
+  it('H1: duplicate dispute (idempotent re-entry) exits inside the tx without writing anything else', async () => {
+    mockDb.query
+      .mockResolvedValueOnce({ rows: [{ id: 'esc-1', task_id: 'task-1', state: 'FUNDED' }], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [{ poster_id: 'user-1' }], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // INSERT ON CONFLICT DO NOTHING → no row
+      .mockResolvedValueOnce({ rows: [{ id: 'pd-existing' }], rowCount: 1 } as never); // SELECT existing
+
+    const result = await ChargebackService.handleDisputeCreated(makeDisputeParams());
+
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.paymentDisputeId).toBe('pd-existing');
+    expect(mockRevenueLog).not.toHaveBeenCalled();
+    expect(txSql().some((s) => s.includes('payouts_locked'))).toBe(false);
+  });
+
+  it('H2: close locks the dispute row FOR UPDATE and writes reversal + terminal status in one tx', async () => {
+    mockDb.query
+      .mockResolvedValueOnce({
+        rows: [{ id: 'pd-1', user_id: 'user-1', escrow_id: 'esc-1', task_id: 'task-1', amount_cents: 5000, status: 'open', stripe_charge_id: 'ch_1' }],
+        rowCount: 1,
+      } as never) // SELECT … FOR UPDATE
+      .mockResolvedValueOnce({ rows: [{ count: '0' }], rowCount: 1 } as never) // other open disputes
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // unlock payouts
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // terminal status UPDATE
+
+    const result = await ChargebackService.handleDisputeClosed({
+      stripeDisputeId: 'dp_test_123', stripeEventId: 'evt_close_1', status: 'won',
+    });
+
+    expect(result.success).toBe(true);
+    expect(dbMocks.transaction).toHaveBeenCalledTimes(1);
+
+    const inTx = txSql();
+    expect(inTx[0]).toContain('FOR UPDATE');
+    expect(mockRevenueLog).toHaveBeenCalledTimes(1);
+    expect(mockRevenueLog.mock.calls[0][1]).toBe(dbMocks.txQuery);
+    expect(inTx.some((s) => s.includes('resolved_at'))).toBe(true);
+  });
+
+  it('H2: redelivery after terminal status writes NO second reversal entry', async () => {
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ id: 'pd-1', user_id: 'user-1', escrow_id: null, task_id: null, amount_cents: 5000, status: 'won', stripe_charge_id: 'ch_1' }],
+      rowCount: 1,
+    } as never);
+
+    const result = await ChargebackService.handleDisputeClosed({
+      stripeDisputeId: 'dp_test_123', stripeEventId: 'evt_close_redelivery', status: 'won',
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.resolved).toBe(false);
+    expect(mockRevenueLog).not.toHaveBeenCalled();
+    expect(txSql().some((s) => s.includes('resolved_at'))).toBe(false);
+  });
+
+  it('H2: reversal ledger failure on won aborts — terminal status NOT written, retry stays possible', async () => {
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ id: 'pd-1', user_id: 'user-1', escrow_id: null, task_id: null, amount_cents: 5000, status: 'open', stripe_charge_id: 'ch_1' }],
+      rowCount: 1,
+    } as never);
+    mockRevenueLog.mockResolvedValueOnce({
+      success: false,
+      error: { code: 'REVENUE_LOG_FAILED', message: 'ledger down' },
+    } as never);
+
+    const result = await ChargebackService.handleDisputeClosed({
+      stripeDisputeId: 'dp_test_123', stripeEventId: 'evt_close_2', status: 'won',
+    });
+
+    expect(result.success).toBe(false);
+    expect(txSql().some((s) => s.includes('resolved_at'))).toBe(false);
   });
 });

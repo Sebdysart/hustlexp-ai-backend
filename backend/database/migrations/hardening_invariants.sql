@@ -152,10 +152,24 @@ $$ LANGUAGE plpgsql;
 -- ============================================================================
 
 -- 3a. Prevent UPDATE on revenue_ledger
+-- AUDIT FIX C1 (2026-06-11): single sanctioned exemption — GDPR PII unlink
+-- (user_id → NULL with every other column unchanged; row-generic comparison
+-- so future columns are automatically covered). All other UPDATEs raise HX701.
+-- Mirror of migrations/revenue_ledger_gdpr_user_id_exemption.sql.
 CREATE OR REPLACE FUNCTION prevent_revenue_ledger_update()
 RETURNS TRIGGER AS $$
+DECLARE
+    old_with_user_nulled revenue_ledger%ROWTYPE;
 BEGIN
-    RAISE EXCEPTION 'INV-7_VIOLATION: revenue_ledger is append-only. Cannot update entry: %. To correct, insert a compensating entry.',
+    IF OLD.user_id IS NOT NULL AND NEW.user_id IS NULL THEN
+        old_with_user_nulled := OLD;
+        old_with_user_nulled.user_id := NULL;
+        IF NEW IS NOT DISTINCT FROM old_with_user_nulled THEN
+            RETURN NEW;
+        END IF;
+    END IF;
+
+    RAISE EXCEPTION 'INV-7_VIOLATION: revenue_ledger is append-only. Cannot update entry: %. To correct, insert a compensating entry. (Sole exemption: GDPR user_id -> NULL with no other change.)',
         OLD.id
         USING ERRCODE = 'HX701';
 END;

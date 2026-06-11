@@ -521,7 +521,7 @@ async function handleChargeDisputeCreated(
   const dispute = getEventObject<Record<string, unknown>>(event);
   if (!dispute) throw new Error('charge.dispute.created missing dispute object');
 
-  await ChargebackService.handleDisputeCreated({
+  const result = await ChargebackService.handleDisputeCreated({
     stripeDisputeId: dispute.id as string,
     stripeChargeId: dispute.charge as string,
     stripePaymentIntentId: (dispute.payment_intent as string | null) ?? null,
@@ -530,6 +530,14 @@ async function handleChargeDisputeCreated(
     currency: (dispute.currency as string) || 'usd',
     reason: (dispute.reason as string | null) ?? null,
   });
+
+  // AUDIT FIX H1 (2026-06-11): the ServiceResult was previously ignored — a
+  // failed chargeback returned success:false, the worker never threw, and the
+  // event was marked processed: the chargeback was silently LOST with no retry.
+  // Throw so claimed_at resets and BullMQ retries (the service is atomic now).
+  if (!result.success) {
+    throw new Error(`handleDisputeCreated failed (${result.error.code}): ${result.error.message}`);
+  }
 }
 
 async function handleChargeDisputeUpdated(
@@ -539,12 +547,17 @@ async function handleChargeDisputeUpdated(
   const dispute = getEventObject<Record<string, unknown>>(event);
   if (!dispute) throw new Error('charge.dispute.updated missing dispute object');
 
-  await ChargebackService.handleDisputeUpdated({
+  const result = await ChargebackService.handleDisputeUpdated({
     stripeDisputeId: dispute.id as string,
     stripeEventId,
     status: dispute.status as string,
     reason: (dispute.reason as string | null) ?? null,
   });
+
+  // AUDIT FIX H1: propagate failures so BullMQ retries instead of marking processed.
+  if (!result.success) {
+    throw new Error(`handleDisputeUpdated failed (${result.error.code}): ${result.error.message}`);
+  }
 }
 
 async function handleChargeDisputeClosed(
@@ -557,10 +570,15 @@ async function handleChargeDisputeClosed(
   const rawStatus = dispute.status as string;
   const status: 'won' | 'lost' = rawStatus === 'won' ? 'won' : 'lost';
 
-  await ChargebackService.handleDisputeClosed({
+  const result = await ChargebackService.handleDisputeClosed({
     stripeDisputeId: dispute.id as string,
     stripeEventId,
     status,
     reason: (dispute.reason as string | null) ?? null,
   });
+
+  // AUDIT FIX H2: propagate failures so BullMQ retries instead of marking processed.
+  if (!result.success) {
+    throw new Error(`handleDisputeClosed failed (${result.error.code}): ${result.error.message}`);
+  }
 }

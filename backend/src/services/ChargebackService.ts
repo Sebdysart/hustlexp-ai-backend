@@ -144,216 +144,265 @@ export const ChargebackService = {
         }
       }
 
-      // 2. Insert payment_disputes record (idempotent on stripe_dispute_id)
-      const insertResult = await db.query<{ id: string }>(
-        `INSERT INTO payment_disputes (
-           stripe_dispute_id, stripe_charge_id, stripe_payment_intent_id,
-           stripe_event_id, user_id, escrow_id, task_id,
-           amount_cents, currency, reason, status
-         )
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'open')
-         ON CONFLICT (stripe_dispute_id) DO NOTHING
-         RETURNING id`,
-        [
-          stripeDisputeId,
-          stripeChargeId,
-          stripePaymentIntentId,
-          stripeEventId,
-          userId,
-          escrowId,
-          taskId,
-          amountCents,
-          currency,
-          reason,
-        ]
-      );
-
-      // Already processed → idempotent exit
-      if (insertResult.rowCount === 0) {
-        const existing = await db.query<{ id: string }>(
-          `SELECT id FROM payment_disputes WHERE stripe_dispute_id = $1`,
-          [stripeDisputeId]
+      // AUDIT FIX H1 (2026-06-11): steps 2-6 previously ran as ~10 sequential
+      // db.query calls with NO transaction. Because step 2's INSERT is the
+      // idempotency witness (ON CONFLICT DO NOTHING → early return on retry),
+      // a crash after step 2 committed left the chargeback PERMANENTLY
+      // half-applied: no ledger loss entry, payouts never frozen, escrow never
+      // locked — and every retry skipped straight to "already processed".
+      // All mutations now commit atomically in ONE transaction; the ledger
+      // write joins it via logEvent's executor parameter, and a ledger failure
+      // aborts everything (INV-6 restored). Auth-cache invalidation is a Redis
+      // side effect and runs AFTER commit (never invalidate for state that may
+      // roll back); its failure must not undo a committed chargeback.
+      const txResult = await db.transaction(async (q) => {
+        // 2. Insert payment_disputes record (idempotent on stripe_dispute_id)
+        const insertResult = await q<{ id: string }>(
+          `INSERT INTO payment_disputes (
+             stripe_dispute_id, stripe_charge_id, stripe_payment_intent_id,
+             stripe_event_id, user_id, escrow_id, task_id,
+             amount_cents, currency, reason, status
+           )
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'open')
+           ON CONFLICT (stripe_dispute_id) DO NOTHING
+           RETURNING id`,
+          [
+            stripeDisputeId,
+            stripeChargeId,
+            stripePaymentIntentId,
+            stripeEventId,
+            userId,
+            escrowId,
+            taskId,
+            amountCents,
+            currency,
+            reason,
+          ]
         );
-        return {
-          success: true,
-          data: { paymentDisputeId: existing.rows[0]?.id || 'already_processed' },
-        };
-      }
 
-      const paymentDisputeId = insertResult.rows[0].id;
+        // Already processed → idempotent exit (safe now: with atomic commit a
+        // pre-existing row implies the WHOLE chargeback was applied).
+        if (insertResult.rowCount === 0) {
+          const existing = await q<{ id: string }>(
+            `SELECT id FROM payment_disputes WHERE stripe_dispute_id = $1`,
+            [stripeDisputeId]
+          );
+          return {
+            alreadyProcessed: true as const,
+            paymentDisputeId: existing.rows[0]?.id || 'already_processed',
+            invalidateCacheFbUid: null as string | null | undefined,
+            tierDowngraded: false,
+          };
+        }
 
-      // 3. Insert negative revenue_ledger entry (chargeback loss)
-      // Classify loss: if escrow already RELEASED, platform eats the loss.
-      // If escrow still FUNDED, payout is blocked — no platform loss.
-      const lossType = escrowState === 'RELEASED' ? 'platform_loss'
-                     : escrowState === 'FUNDED' ? 'payout_blocked'
-                     : escrowState ? 'escrow_' + escrowState.toLowerCase()
-                     : 'no_escrow';
+        const paymentDisputeId = insertResult.rows[0].id;
 
-      const ledgerResult = await RevenueService.logEvent({
-        eventType: 'chargeback',
-        userId: userId || '00000000-0000-0000-0000-000000000000', // system user fallback
-        taskId: taskId || undefined,
-        amountCents: -amountCents, // NEGATIVE = loss
-        // V2: Financial decomposition
-        currency: currency || 'usd',
-        grossAmountCents: -amountCents,
-        platformFeeCents: 0,
-        netAmountCents: -amountCents,
-        feeBasisPoints: 0,
-        escrowId: escrowId || undefined,
-        stripeEventId: stripeEventId,
-        stripeChargeId: stripeChargeId,
-        stripePaymentIntentId: stripePaymentIntentId || undefined,
-        metadata: {
-          stripe_dispute_id: stripeDisputeId,
-          stripe_charge_id: stripeChargeId,
-          reason,
-          payment_dispute_id: paymentDisputeId,
-          currency,
-          loss_type: lossType,       // platform_loss | payout_blocked | no_escrow
-          escrow_state: escrowState,  // snapshot at dispute time
-        },
-      });
+        // 3. Insert negative revenue_ledger entry (chargeback loss)
+        // Classify loss: if escrow already RELEASED, platform eats the loss.
+        // If escrow still FUNDED, payout is blocked — no platform loss.
+        const lossType = escrowState === 'RELEASED' ? 'platform_loss'
+                       : escrowState === 'FUNDED' ? 'payout_blocked'
+                       : escrowState ? 'escrow_' + escrowState.toLowerCase()
+                       : 'no_escrow';
 
-      // Link reversal ledger entry to payment dispute
-      if (ledgerResult.success) {
-        await db.query(
+        const ledgerResult = await RevenueService.logEvent({
+          eventType: 'chargeback',
+          userId: userId || '00000000-0000-0000-0000-000000000000', // system user fallback
+          taskId: taskId || undefined,
+          amountCents: -amountCents, // NEGATIVE = loss
+          // V2: Financial decomposition
+          currency: currency || 'usd',
+          grossAmountCents: -amountCents,
+          platformFeeCents: 0,
+          netAmountCents: -amountCents,
+          feeBasisPoints: 0,
+          escrowId: escrowId || undefined,
+          stripeEventId: stripeEventId,
+          stripeChargeId: stripeChargeId,
+          stripePaymentIntentId: stripePaymentIntentId || undefined,
+          metadata: {
+            stripe_dispute_id: stripeDisputeId,
+            stripe_charge_id: stripeChargeId,
+            reason,
+            payment_dispute_id: paymentDisputeId,
+            currency,
+            loss_type: lossType,       // platform_loss | payout_blocked | no_escrow
+            escrow_state: escrowState,  // snapshot at dispute time
+          },
+        }, q);
+
+        // AUDIT FIX H1: the loss ledger entry is MANDATORY — a chargeback
+        // without its ledger row is an unbalanced book. Abort the whole
+        // transaction so BullMQ retries reprocess from scratch.
+        if (!ledgerResult.success) {
+          throw new Error(
+            `chargeback ledger write failed (${ledgerResult.error.code}): ${ledgerResult.error.message}`
+          );
+        }
+
+        // Link reversal ledger entry to payment dispute
+        await q(
           `UPDATE payment_disputes
            SET reversal_ledger_id = $2, reversal_amount_cents = $3
            WHERE id = $1`,
           [paymentDisputeId, ledgerResult.data.id, amountCents]
         );
+
+        let invalidateCacheFbUid: string | null | undefined = null;
+        let tierDowngraded = false;
+
+        // 4. Freeze user payouts (if user identified)
+        if (userId) {
+          // F61-2 FIX: Split into two separate UPDATE statements so that dispute_count
+          // is always incremented regardless of whether payouts_locked is already TRUE.
+          // The original single UPDATE had AND payouts_locked = FALSE which prevented
+          // dispute_count from incrementing on repeat chargebacks — so the tier-downgrade
+          // logic never fired for users with an already-frozen account.
+
+          // Step 1: Always increment dispute_count (no payouts_locked guard).
+          await q(
+            `UPDATE users
+             SET dispute_count = COALESCE(dispute_count, 0) + 1,
+                 last_dispute_at = NOW(),
+                 updated_at = NOW()
+             WHERE id = $1`,
+            [userId]
+          );
+
+          // Step 2: Conditionally lock payouts (only if not already locked).
+          const lockResult = await q(
+            `UPDATE users
+             SET payouts_locked = TRUE,
+                 payouts_locked_at = NOW(),
+                 payouts_locked_reason = $2,
+                 updated_at = NOW()
+             WHERE id = $1
+               AND payouts_locked = FALSE`,
+            [userId, `Chargeback: ${stripeDisputeId} (${reason || 'unknown'})`]
+          );
+
+          // F64-3 FIX: Only record payouts_were_frozen=TRUE when this dispute actually
+          // froze the account (Step 2 matched a row). If payouts_locked was already TRUE
+          // when this dispute arrived, lockResult.rowCount=0 — recording frozen=TRUE would
+          // corrupt the audit trail, falsely attributing the freeze to this dispute.
+          await q(
+            `UPDATE payment_disputes SET payouts_were_frozen = $2 WHERE id = $1`,
+            [paymentDisputeId, (lockResult.rowCount ?? 0) > 0]
+          );
+
+          // 5. Downgrade trust tier if dispute_count >= 2
+          const userResult = await q<{
+            trust_tier: number;
+            dispute_count: number;
+          }>(
+            `SELECT trust_tier, dispute_count FROM users WHERE id = $1`,
+            [userId]
+          );
+
+          if (userResult.rows.length > 0) {
+            const { trust_tier, dispute_count } = userResult.rows[0];
+
+            // Downgrade rules:
+            // 1st dispute: freeze only, no tier change
+            // 2nd dispute: drop 1 tier
+            // 3rd+ dispute: drop to tier 1
+            let newTier = trust_tier;
+            if (dispute_count >= 3) {
+              newTier = 1;
+            } else if (dispute_count >= 2 && trust_tier > 1) {
+              newTier = trust_tier - 1;
+            }
+
+            if (newTier !== trust_tier) {
+              await q(
+                `UPDATE users SET trust_tier = $2 WHERE id = $1`,
+                [userId, newTier]
+              );
+
+              // A60-4: auth cache must be invalidated so the downgraded tier is
+              // visible immediately — but only AFTER this transaction commits.
+              // Collect the firebase_uid here; the Redis call happens post-commit.
+              const fbUidResult = await q<{ firebase_uid: string }>(
+                'SELECT firebase_uid FROM users WHERE id = $1',
+                [userId]
+              );
+              invalidateCacheFbUid = fbUidResult.rows[0]?.firebase_uid;
+              tierDowngraded = true;
+
+              // Record in trust_ledger for audit
+              await q(
+                `INSERT INTO trust_ledger (
+                   user_id, old_tier, new_tier, reason, reason_details,
+                   changed_by, idempotency_key, event_source, source_event_id
+                 )
+                 VALUES ($1, $2, $3, $4, $5, 'system', $6, 'chargeback', $7)
+                 ON CONFLICT (idempotency_key) DO NOTHING`,
+                [
+                  userId,
+                  trust_tier,
+                  newTier,
+                  `Trust downgrade: ${dispute_count} chargebacks`,
+                  JSON.stringify({
+                    stripe_dispute_id: stripeDisputeId,
+                    dispute_count,
+                    previous_tier: trust_tier,
+                  }),
+                  `chargeback:${stripeDisputeId}:trust_downgrade`,
+                  stripeEventId,
+                ]
+              );
+
+              // Update payment dispute to record the downgrade
+              await q(
+                `UPDATE payment_disputes
+                 SET trust_was_downgraded = TRUE, previous_trust_tier = $2
+                 WHERE id = $1`,
+                [paymentDisputeId, trust_tier]
+              );
+            }
+          }
+        }
+
+        // 6. Lock related escrow if it's still FUNDED (not yet released)
+        if (escrowId) {
+          await q(
+            `UPDATE escrows
+             SET state = 'LOCKED_DISPUTE'
+             WHERE id = $1 AND state = 'FUNDED'`,
+            [escrowId]
+          );
+        }
+
+        return { alreadyProcessed: false as const, paymentDisputeId, invalidateCacheFbUid, tierDowngraded };
+      });
+
+      if (txResult.alreadyProcessed) {
+        return {
+          success: true,
+          data: { paymentDisputeId: txResult.paymentDisputeId },
+        };
       }
 
-      // 4. Freeze user payouts (if user identified)
-      if (userId) {
-        // F61-2 FIX: Split into two separate UPDATE statements so that dispute_count
-        // is always incremented regardless of whether payouts_locked is already TRUE.
-        // The original single UPDATE had AND payouts_locked = FALSE which prevented
-        // dispute_count from incrementing on repeat chargebacks — so the tier-downgrade
-        // logic never fired for users with an already-frozen account.
-
-        // Step 1: Always increment dispute_count (no payouts_locked guard).
-        await db.query(
-          `UPDATE users
-           SET dispute_count = COALESCE(dispute_count, 0) + 1,
-               last_dispute_at = NOW(),
-               updated_at = NOW()
-           WHERE id = $1`,
-          [userId]
-        );
-
-        // Step 2: Conditionally lock payouts (only if not already locked).
-        const lockResult = await db.query(
-          `UPDATE users
-           SET payouts_locked = TRUE,
-               payouts_locked_at = NOW(),
-               payouts_locked_reason = $2,
-               updated_at = NOW()
-           WHERE id = $1
-             AND payouts_locked = FALSE`,
-          [userId, `Chargeback: ${stripeDisputeId} (${reason || 'unknown'})`]
-        );
-
-        // F64-3 FIX: Only record payouts_were_frozen=TRUE when this dispute actually
-        // froze the account (Step 2 matched a row). If payouts_locked was already TRUE
-        // when this dispute arrived, lockResult.rowCount=0 — recording frozen=TRUE would
-        // corrupt the audit trail, falsely attributing the freeze to this dispute.
-        await db.query(
-          `UPDATE payment_disputes SET payouts_were_frozen = $2 WHERE id = $1`,
-          [paymentDisputeId, (lockResult.rowCount ?? 0) > 0]
-        );
-
-        // 5. Downgrade trust tier if dispute_count >= 2
-        const userResult = await db.query<{
-          trust_tier: number;
-          dispute_count: number;
-        }>(
-          `SELECT trust_tier, dispute_count FROM users WHERE id = $1`,
-          [userId]
-        );
-
-        if (userResult.rows.length > 0) {
-          const { trust_tier, dispute_count } = userResult.rows[0];
-
-          // Downgrade rules:
-          // 1st dispute: freeze only, no tier change
-          // 2nd dispute: drop 1 tier
-          // 3rd+ dispute: drop to tier 1
-          let newTier = trust_tier;
-          if (dispute_count >= 3) {
-            newTier = 1;
-          } else if (dispute_count >= 2 && trust_tier > 1) {
-            newTier = trust_tier - 1;
-          }
-
-          if (newTier !== trust_tier) {
-            await db.query(
-              `UPDATE users SET trust_tier = $2 WHERE id = $1`,
-              [userId, newTier]
-            );
-
-            // Invalidate auth cache so the downgraded tier is visible immediately
-            // A60-4 FIX: trust_tier change without cache invalidation leaves cached
-            // sessions with stale tier for up to 5 minutes.
-            const fbUidResult = await db.query<{ firebase_uid: string }>(
-              'SELECT firebase_uid FROM users WHERE id = $1',
-              [userId]
-            );
-            const fbUid = fbUidResult.rows[0]?.firebase_uid;
-            await invalidateAuthCacheForUser(userId, fbUid, false); // writeRevocationMarker=false — tier change is not a security event
-
-            // Record in trust_ledger for audit
-            await db.query(
-              `INSERT INTO trust_ledger (
-                 user_id, old_tier, new_tier, reason, reason_details,
-                 changed_by, idempotency_key, event_source, source_event_id
-               )
-               VALUES ($1, $2, $3, $4, $5, 'system', $6, 'chargeback', $7)
-               ON CONFLICT (idempotency_key) DO NOTHING`,
-              [
-                userId,
-                trust_tier,
-                newTier,
-                `Trust downgrade: ${dispute_count} chargebacks`,
-                JSON.stringify({
-                  stripe_dispute_id: stripeDisputeId,
-                  dispute_count,
-                  previous_tier: trust_tier,
-                }),
-                `chargeback:${stripeDisputeId}:trust_downgrade`,
-                stripeEventId,
-              ]
-            );
-
-            // Update payment dispute to record the downgrade
-            await db.query(
-              `UPDATE payment_disputes
-               SET trust_was_downgraded = TRUE, previous_trust_tier = $2
-               WHERE id = $1`,
-              [paymentDisputeId, trust_tier]
-            );
-          }
+      // Post-commit side effect (A60-4): invalidate auth cache for the COMMITTED
+      // tier change. Failure here is logged but never unwinds the chargeback —
+      // the cached tier self-heals within the 5-minute TTL.
+      if (txResult.tierDowngraded && userId) {
+        try {
+          await invalidateAuthCacheForUser(userId, txResult.invalidateCacheFbUid ?? undefined, false); // writeRevocationMarker=false — tier change is not a security event
+        } catch (cacheError) {
+          log.error(
+            { err: cacheError instanceof Error ? cacheError.message : String(cacheError), userId, stripeDisputeId },
+            'Auth cache invalidation failed after committed trust downgrade (stale tier ≤5min)'
+          );
         }
       }
 
-      // 6. Lock related escrow if it's still FUNDED (not yet released)
-      if (escrowId) {
-        await db.query(
-          `UPDATE escrows
-           SET state = 'LOCKED_DISPUTE'
-           WHERE id = $1 AND state = 'FUNDED'`,
-          [escrowId]
-        );
-      }
-
       log.info(
-        { stripeDisputeId, amountCents, userId: userId || 'unknown', escrowId: escrowId || 'none', paymentDisputeId },
+        { stripeDisputeId, amountCents, userId: userId || 'unknown', escrowId: escrowId || 'none', paymentDisputeId: txResult.paymentDisputeId },
         'Chargeback processed'
       );
 
-      return { success: true, data: { paymentDisputeId } };
+      return { success: true, data: { paymentDisputeId: txResult.paymentDisputeId } };
     } catch (error) {
       log.error({ err: error instanceof Error ? error.message : String(error), stripeDisputeId }, 'handleDisputeCreated failed');
       return {
@@ -433,114 +482,143 @@ export const ChargebackService = {
     const { stripeDisputeId, stripeEventId, status, reason: _reason } = params;
 
     try {
-      // Fetch the dispute record
-      const disputeResult = await db.query<PaymentDispute>(
-        `SELECT id, stripe_dispute_id, stripe_charge_id, user_id, escrow_id,
-                task_id, amount_cents, status
-         FROM payment_disputes
-         WHERE stripe_dispute_id = $1`,
-        [stripeDisputeId]
-      );
+      // AUDIT FIX H2 (2026-06-11): the reversal ledger write, payout unlock and
+      // terminal status update were separate non-transactional statements, with
+      // the already-terminal guard read BEFORE the writes. A crash between the
+      // reversal write and the status update left the dispute non-terminal, so
+      // a Stripe redelivery passed the guard again and wrote a SECOND positive
+      // chargeback_reversal — double-crediting recovered funds in the P&L.
+      // Everything now runs in ONE transaction with the dispute row locked
+      // FOR UPDATE: the terminal status is the idempotency witness and commits
+      // atomically with the reversal entry.
+      const txOutcome = await db.transaction(async (q) => {
+        // Fetch + lock the dispute record (serializes concurrent close events)
+        const disputeResult = await q<PaymentDispute>(
+          `SELECT id, stripe_dispute_id, stripe_charge_id, user_id, escrow_id,
+                  task_id, amount_cents, status
+           FROM payment_disputes
+           WHERE stripe_dispute_id = $1
+           FOR UPDATE`,
+          [stripeDisputeId]
+        );
 
-      if (disputeResult.rows.length === 0) {
-        log.info({ stripeDisputeId }, 'Dispute close skipped (not found)');
-        return { success: true, data: { resolved: false } };
-      }
+        if (disputeResult.rows.length === 0) {
+          return { outcome: 'not_found' as const, dispute: null };
+        }
 
-      const dispute = disputeResult.rows[0];
+        const dispute = disputeResult.rows[0];
 
-      // Already resolved → idempotent
-      if (['won', 'lost', 'closed'].includes(dispute.status)) {
-        return { success: true, data: { resolved: false } };
-      }
+        // Already resolved → idempotent (checked under the row lock, in-tx)
+        if (['won', 'lost', 'closed'].includes(dispute.status)) {
+          return { outcome: 'already_terminal' as const, dispute };
+        }
 
-      if (status === 'won') {
-        // === DISPUTE WON: We keep the money ===
+        if (status === 'won') {
+          // === DISPUTE WON: We keep the money ===
 
-        // 1. Insert positive reversal entry in ledger
-        await RevenueService.logEvent({
-          eventType: 'chargeback_reversal',
-          userId: dispute.user_id || '00000000-0000-0000-0000-000000000000',
-          taskId: dispute.task_id || undefined,
-          amountCents: dispute.amount_cents, // POSITIVE = reversal of loss
-          // V2: Financial decomposition
-          currency: 'usd',
-          grossAmountCents: dispute.amount_cents,
-          platformFeeCents: 0,
-          netAmountCents: dispute.amount_cents,
-          feeBasisPoints: 0,
-          escrowId: dispute.escrow_id || undefined,
-          stripeEventId: stripeEventId,
-          stripeChargeId: dispute.stripe_charge_id,
-          metadata: {
-            stripe_dispute_id: stripeDisputeId,
-            stripe_charge_id: dispute.stripe_charge_id,
-            payment_dispute_id: dispute.id,
-            resolution: 'won',
-          },
-        });
+          // 1. Insert positive reversal entry in ledger — atomic with the
+          //    terminal status below. Failure aborts the whole close.
+          const reversalResult = await RevenueService.logEvent({
+            eventType: 'chargeback_reversal',
+            userId: dispute.user_id || '00000000-0000-0000-0000-000000000000',
+            taskId: dispute.task_id || undefined,
+            amountCents: dispute.amount_cents, // POSITIVE = reversal of loss
+            // V2: Financial decomposition
+            currency: 'usd',
+            grossAmountCents: dispute.amount_cents,
+            platformFeeCents: 0,
+            netAmountCents: dispute.amount_cents,
+            feeBasisPoints: 0,
+            escrowId: dispute.escrow_id || undefined,
+            stripeEventId: stripeEventId,
+            stripeChargeId: dispute.stripe_charge_id,
+            metadata: {
+              stripe_dispute_id: stripeDisputeId,
+              stripe_charge_id: dispute.stripe_charge_id,
+              payment_dispute_id: dispute.id,
+              resolution: 'won',
+            },
+          }, q);
 
-        // 2. Unlock payouts if no OTHER open disputes
-        if (dispute.user_id) {
-          const otherOpenDisputes = await db.query<{ count: string }>(
-            `SELECT COUNT(*) as count FROM payment_disputes
-             WHERE user_id = $1
-               AND id != $2
-               AND status NOT IN ('won', 'lost', 'closed')`,
-            [dispute.user_id, dispute.id]
-          );
+          if (!reversalResult.success) {
+            throw new Error(
+              `chargeback reversal ledger write failed (${reversalResult.error.code}): ${reversalResult.error.message}`
+            );
+          }
 
-          if (parseInt(otherOpenDisputes.rows[0].count, 10) === 0) {
-            await db.query(
+          // 2. Unlock payouts if no OTHER open disputes
+          if (dispute.user_id) {
+            const otherOpenDisputes = await q<{ count: string }>(
+              `SELECT COUNT(*) as count FROM payment_disputes
+               WHERE user_id = $1
+                 AND id != $2
+                 AND status NOT IN ('won', 'lost', 'closed')`,
+              [dispute.user_id, dispute.id]
+            );
+
+            if (parseInt(otherOpenDisputes.rows[0].count, 10) === 0) {
+              await q(
+                `UPDATE users
+                 SET payouts_locked = FALSE,
+                     payouts_locked_at = NULL,
+                     payouts_locked_reason = NULL
+                 WHERE id = $1`,
+                [dispute.user_id]
+              );
+            }
+          }
+        } else {
+          // === DISPUTE LOST: Money is gone ===
+
+          // 1. Negative ledger entry already exists from creation — no new entry needed
+          // 2. Increment lost count
+          if (dispute.user_id) {
+            await q(
               `UPDATE users
-               SET payouts_locked = FALSE,
-                   payouts_locked_at = NULL,
-                   payouts_locked_reason = NULL
+               SET dispute_lost_count = COALESCE(dispute_lost_count, 0) + 1
                WHERE id = $1`,
               [dispute.user_id]
             );
+            // Bug 4 fix: Do NOT unlock payouts when the chargeback is LOST.
+            // A lost chargeback means the platform was fined — the user's account must
+            // remain frozen and require admin manual review before payouts are reinstated.
           }
         }
 
-        log.info({ stripeDisputeId, amountCents: dispute.amount_cents, resolution: 'won' }, 'Dispute won - funds recovered');
+        // 4. Mark dispute as resolved — SAME transaction as the ledger write
+        //    (the terminal status is what makes redelivery a no-op).
+        await q(
+          `UPDATE payment_disputes
+           SET status = $2,
+               resolved_at = NOW(),
+               resolution_stripe_event_id = $3,
+               updated_at = NOW()
+           WHERE id = $1`,
+          [dispute.id, status, stripeEventId]
+        );
+
+        return { outcome: 'resolved' as const, dispute };
+      });
+
+      // Post-commit logging (no financial effects)
+      if (txOutcome.outcome === 'not_found') {
+        log.info({ stripeDisputeId }, 'Dispute close skipped (not found)');
+        return { success: true, data: { resolved: false } };
+      }
+      if (txOutcome.outcome === 'already_terminal') {
+        return { success: true, data: { resolved: false } };
+      }
+      if (status === 'won') {
+        log.info({ stripeDisputeId, amountCents: txOutcome.dispute?.amount_cents, resolution: 'won' }, 'Dispute won - funds recovered');
       } else {
-        // === DISPUTE LOST: Money is gone ===
-
-        // 1. Negative ledger entry already exists from creation — no new entry needed
-        // 2. Increment lost count
-        if (dispute.user_id) {
-          await db.query(
-            `UPDATE users
-             SET dispute_lost_count = COALESCE(dispute_lost_count, 0) + 1
-             WHERE id = $1`,
-            [dispute.user_id]
-          );
-
-          // Bug 4 fix: Do NOT unlock payouts when the chargeback is LOST.
-          // A lost chargeback means the platform was fined — the user's account must
-          // remain frozen and require admin manual review before payouts are reinstated.
-          // Previously this branch unconditionally unlocked payouts on loss, which
-          // allowed fraudulent posters to immediately receive payouts after losing a
-          // chargeback, defeating the payout freeze entirely.
+        if (txOutcome.dispute?.user_id) {
           log.warn(
-            { stripeDisputeId, userId: dispute.user_id, amountCents: dispute.amount_cents },
+            { stripeDisputeId, userId: txOutcome.dispute.user_id, amountCents: txOutcome.dispute.amount_cents },
             'Chargeback lost — payouts remain frozen, manual admin review required to reinstate'
           );
         }
-
-        log.warn({ stripeDisputeId, amountCents: dispute.amount_cents, resolution: 'lost' }, 'Dispute lost - funds lost permanently');
+        log.warn({ stripeDisputeId, amountCents: txOutcome.dispute?.amount_cents, resolution: 'lost' }, 'Dispute lost - funds lost permanently');
       }
-
-      // 4. Mark dispute as resolved
-      await db.query(
-        `UPDATE payment_disputes
-         SET status = $2,
-             resolved_at = NOW(),
-             resolution_stripe_event_id = $3,
-             updated_at = NOW()
-         WHERE id = $1`,
-        [dispute.id, status, stripeEventId]
-      );
 
       return { success: true, data: { resolved: true } };
     } catch (error) {
