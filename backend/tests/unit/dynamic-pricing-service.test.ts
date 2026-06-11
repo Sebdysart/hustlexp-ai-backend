@@ -14,13 +14,26 @@ vi.mock('../../src/db', () => {
   };
 });
 
-vi.mock('../../src/logger', () => ({
-  logger: {
-    child: () => ({ warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() }),
-    warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn(),
-  },
-  escrowLogger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
-}));
+// AUDIT FIX M1: DynamicPricingService now calls EscrowService.syncPendingAmount,
+// pulling EscrowService's module graph into this suite — mock every named
+// logger export that graph touches. (makeLog lives inside the factory:
+// vi.mock factories are hoisted above top-level declarations.)
+vi.mock('../../src/logger', () => {
+  const makeLog = () => ({
+    child: () => ({ warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn(), fatal: vi.fn() }),
+    warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn(), fatal: vi.fn(),
+  });
+  return {
+    logger: makeLog(),
+    escrowLogger: makeLog(),
+    stripeLogger: makeLog(),
+    taskLogger: makeLog(),
+    aiLogger: makeLog(),
+    workerLogger: makeLog(),
+    dbLogger: makeLog(),
+    authLogger: makeLog(),
+  };
+});
 
 // ── Imports ─────────────────────────────────────────────────────────────────
 import { DynamicPricingService } from '../../src/services/DynamicPricingService';

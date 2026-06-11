@@ -94,30 +94,10 @@ describe('UserRepository — BaseRepository methods', () => {
     expect(result).toBe(false);
   });
 
-  it('count returns total count without where clause', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [{ count: 42 }], rowCount: 1 });
-    const result = await repo.count();
-    expect(result).toBe(42);
-    expect(mockQuery).toHaveBeenCalledWith(
-      expect.stringContaining('SELECT COUNT(*)::int as count FROM users'),
-      undefined
-    );
-  });
-
-  it('count returns filtered count with where clause', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [{ count: 5 }], rowCount: 1 });
-    const result = await repo.count('default_mode = $1', ['worker']);
-    expect(result).toBe(5);
-    expect(mockQuery).toHaveBeenCalledWith(
-      expect.stringContaining('WHERE default_mode = $1'),
-      ['worker']
-    );
-  });
-
-  it('count returns 0 when no rows', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-    const result = await repo.count();
-    expect(result).toBe(0);
+  it('count() no longer exists on repositories (AUDIT FIX L1 — raw WHERE interpolation removed)', () => {
+    // The method interpolated `WHERE ${where}` unparameterized — deleted as a
+    // latent injection sink. This test pins the removal.
+    expect((repo as unknown as Record<string, unknown>).count).toBeUndefined();
   });
 
   it('uses transaction query when ctx is provided', async () => {

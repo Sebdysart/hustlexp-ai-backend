@@ -67,19 +67,9 @@ export abstract class BaseRepository<T, ID = string> {
     return result.rowCount > 0;
   }
 
-  /**
-   * Count all records in the table, optionally with a WHERE clause.
-   */
-  async count(
-    where?: string,
-    params?: unknown[],
-    ctx?: RepositoryContext
-  ): Promise<number> {
-    const query = this.getQuery(ctx);
-    const sql = where
-      ? `SELECT COUNT(*)::int as count FROM ${this.tableName} WHERE ${where}`
-      : `SELECT COUNT(*)::int as count FROM ${this.tableName}`;
-    const result = await query<{ count: number }>(sql, params);
-    return result.rows[0]?.count ?? 0;
-  }
+  // AUDIT FIX L1 (2026-06-11): count(where?: string) was removed. It
+  // interpolated a raw `WHERE ${where}` fragment — zero production callers,
+  // but a loaded SQL-injection gun for any future caller passing user data.
+  // If counting is needed, add a purpose-built method with a fully
+  // parameterized predicate.
 }

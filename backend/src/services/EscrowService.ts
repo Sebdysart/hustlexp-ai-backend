@@ -16,6 +16,7 @@
 
 import { TRPCError } from '@trpc/server';
 import { db, isInvariantViolation, isUniqueViolation, getErrorMessage } from '../db.js';
+import type { QueryFn } from '../db.js';
 import { config } from '../config.js';
 import { computeFeeBreakdown, computePlatformFeeCents, clampFeePercent } from '../lib/money.js';
 import { EarnedVerificationUnlockService } from './EarnedVerificationUnlockService.js';
@@ -258,6 +259,41 @@ export const EscrowService = {
    * initial version, only the first COMMIT increments the version — the second
    * UPDATE hits version already incremented → 0 rows → clean INVALID_STATE error.
    */
+  /**
+   * Sync a PENDING escrow's amount to a changed task price.
+   *
+   * AUDIT FIX M1 (2026-06-11): DynamicPricingService previously issued a raw
+   * `UPDATE escrows SET amount` — escrow mutations must be owned by
+   * EscrowService so invariants live in one place. PENDING-only by design:
+   * a FUNDED escrow's amount is what Stripe actually captured (the HX004
+   * trigger also blocks post-funding amount changes at the DB).
+   *
+   * INV-1/INV-5: amount must be a positive integer in cents.
+   * Accepts an optional transaction executor so callers already holding a
+   * lock on the task row (e.g. the ASAP bump transaction) keep atomicity.
+   */
+  syncPendingAmount: async (
+    taskId: string,
+    newAmountCents: number,
+    q?: QueryFn
+  ): Promise<ServiceResult<{ updated: boolean }>> => {
+    if (!Number.isInteger(newAmountCents) || newAmountCents <= 0) {
+      return {
+        success: false,
+        error: {
+          code: ErrorCodes.INVALID_STATE,
+          message: 'Escrow amount must be a positive integer (cents)',
+        },
+      };
+    }
+    const exec: QueryFn = q ?? db.query;
+    const result = await exec(
+      `UPDATE escrows SET amount = $1 WHERE task_id = $2 AND state = 'PENDING'`,
+      [newAmountCents, taskId]
+    );
+    return { success: true, data: { updated: (result.rowCount ?? 0) > 0 } };
+  },
+
   fund: async (params: FundEscrowParams): Promise<ServiceResult<Escrow>> => {
     const { escrowId, stripePaymentIntentId } = params;
 
