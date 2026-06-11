@@ -121,12 +121,22 @@ jobs:
         #     `uuid` refs in src are SQL `::uuid[]` casts and zod `.uuid()`).
         #     Fix is uuid@14 (4 majors); deferred to a dependency-cleanup pass.
         #
+        # SCOPE: this gate audits PRODUCTION dependencies only (`--omit=dev`).
+        # Dev tooling (vitest, esbuild, tsx, build scripts) is NOT in the
+        # deployed artifact — it never runs in production, never touches user
+        # data or money — and its advisory set varies by the runner's npm
+        # version (Node 20 vs 22 traversal differs), which made a full-tree
+        # by-GHSA-ID baseline perpetually flaky. The production runtime tree is
+        # deterministic and contains exactly the 11 unreachable advisories
+        # baselined below. (Dev-tooling advisories are still visible via the
+        # non-blocking `npm audit` job in security.yml.)
+        #
         # FOLLOW-UP (tracked in PRODUCTION_READINESS doc): remove unused
         # OpenTelemetry + uuid deps, or bump OTEL to a protobufjs-8.0.1+ line.
         # To add a NEW known advisory: append its GHSA ID and document it above
         # WITH a reachability assessment (not just severity).
         run: |
-          npm audit --json > /tmp/audit.json 2>/dev/null || true
+          npm audit --omit=dev --json > /tmp/audit.json 2>/dev/null || true
           node - <<'EOF'
           const fs = require('fs');
           const KNOWN_GHSAS = new Set([
