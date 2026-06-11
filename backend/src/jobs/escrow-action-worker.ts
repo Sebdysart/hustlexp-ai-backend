@@ -37,7 +37,7 @@ import { RevenueService } from '../services/RevenueService.js';
 import { SelfInsurancePoolService } from '../services/SelfInsurancePoolService.js';
 import { workerLogger } from '../logger.js';
 import { config } from '../config.js';
-import { computeFeeBreakdown, computePlatformFeeCents, clampFeePercent } from '../lib/money.js';
+import { computeFeeBreakdown, computePlatformFeeCents, clampFeePercent, computeInsuranceContributionCents } from '../lib/money.js';
 import { verifyJobSignature } from './queues.js';
 import { z } from 'zod';
 import type { Job } from 'bullmq';
@@ -823,8 +823,12 @@ async function handlePartialRefundRequest(
     // handleReleaseRequest correctly withholds INSURANCE_RATE from the transfer and
     // calls recordContribution. This path was missing both steps — the pool was
     // underfunded on every split dispute resolution.
-    const INSURANCE_RATE = 0.02; // 2% — matches SelfInsurancePoolService default
-    const splitInsuranceContributionCents = Math.round(netReleaseCents * INSURANCE_RATE);
+    // REVIEW FIX (PR242 follow-up): was round(netReleaseCents × 2%) (NET basis),
+    // which disagreed with the full-release path AND EscrowService.partialRefund,
+    // both of which use the GROSS basis round(workerShare × 2%). Unified on gross
+    // via computeInsuranceContributionCents so all three payout paths withhold an
+    // identical amount for the same worker share.
+    const splitInsuranceContributionCents = computeInsuranceContributionCents(releaseAmountCentsExec);
     netReleaseCents = netReleaseCents - splitInsuranceContributionCents;
 
     // TT-03 (partial): The bare SELECT had a race window — two workers can both

@@ -247,8 +247,10 @@ describe('F53-7: handlePartialRefundRequest — self-insurance pool funding path
   it('calls SelfInsurancePoolService.recordContribution when releaseAmount > 0 (F53-7)', async () => {
     // This exercises the pool funding path in handlePartialRefundRequest.
     // escrow.amount=10000, refundAmount=4000, releaseAmount=6000
-    // Platform fee 15% on 6000 = 900, net = 5100, insurance 2% = 102
-    // splitInsuranceContributionCents = round(5100 * 0.02) = 102
+    // REVIEW FIX (PR242 follow-up): insurance is now GROSS basis (the worker's
+    // gross share × 2%), unified with the full-release path and
+    // EscrowService.partialRefund. Was NET basis round((6000−900)×2%)=102.
+    // splitInsuranceContributionCents = round(6000 * 0.02) = 120
 
     mockStripeService.createRefund.mockResolvedValue({ success: true, data: { refundId: 'ref_f53_7' } } as any);
     mockStripeService.createTransfer.mockResolvedValue({ success: true, data: { transferId: 'tr_f53_7' } } as any);
@@ -310,7 +312,7 @@ describe('F53-7: handlePartialRefundRequest — self-insurance pool funding path
     const contributionCall = mockSelfInsurancePool.recordContribution.mock.calls[0];
     expect(contributionCall[0]).toBe(TASK_ID);   // taskId
     expect(contributionCall[1]).toBe(WORKER_ID); // hustlerId
-    expect(contributionCall[2]).toBe(102);        // splitInsuranceContributionCents
+    expect(contributionCall[2]).toBe(120);        // splitInsuranceContributionCents (gross basis: round(6000×0.02))
   });
 
   it('does NOT call recordContribution when releaseAmount is 0 (refund-only SPLIT, F53-7)', async () => {

@@ -617,6 +617,41 @@ describe('EscrowService', () => {
       expect(updateCalls[0][1]).toEqual(['esc-1', 0, 'tr_test', 're_test']);
     });
 
+    it('REVIEW FIX (PR242): withholds 2% self-insurance (gross basis) and records the pool contribution', async () => {
+      // 60/40 split on a $50 escrow: workerCents = round(5000×0.60) = 3000.
+      // fee = round(3000×0.15) = 450 → net = 2550.
+      // insurance = round(3000×0.02) = 60 (GROSS basis, matching full release & worker queue).
+      // worker transfer = 2550 − 60 = 2490. pool contribution = 60.
+      const partial = makeEscrow({ state: 'REFUND_PARTIAL' });
+      mockDb.query.mockResolvedValueOnce({
+        rows: [{ version: 0, state: 'LOCKED_DISPUTE', task_id: 'task-1', amount: 5000, stripe_payment_intent_id: 'pi_test', stripe_transfer_id: null, stripe_refund_id: null }],
+        rowCount: 1,
+      } as never);
+      mockDb.query.mockResolvedValueOnce({ rows: [{ worker_id: 'worker-1' }], rowCount: 1 } as never);
+      mockDb.query.mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_test' }], rowCount: 1 } as never);
+      mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'esc-1', version: 0, state: 'LOCKED_DISPUTE' }], rowCount: 1 } as never);
+      mockDb.query.mockResolvedValueOnce({ rows: [partial], rowCount: 1 } as never);
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // logEscrowEvent
+      // platform_fee ledger idempotency pre-check (workerCents>0 && resolvedTransferId set → not hit;
+      // but the ledger-skip branch queries only when !resolvedTransferId, so no extra query here)
+
+      const { StripeService: MockStripe } = await import('../../src/services/StripeService');
+
+      const result = await EscrowService.partialRefund({
+        escrowId: 'esc-1', workerPercent: 60, posterPercent: 40,
+      });
+      expect(result.success).toBe(true);
+
+      // Worker transfer is net-of-fee MINUS insurance
+      const transferArg = vi.mocked(MockStripe.createTransfer).mock.calls[0][0] as { amount: number };
+      expect(transferArg.amount).toBe(2490);
+
+      // Pool contribution recorded for the worker's gross share (gross basis)
+      expect(SelfInsurancePoolService.recordContribution).toHaveBeenCalledWith(
+        'task-1', 'worker-1', 60,
+      );
+    });
+
     it('skips Stripe transfer when stripe_transfer_id already recorded (idempotency)', async () => {
       const partial = makeEscrow({ state: 'REFUND_PARTIAL', stripe_transfer_id: 'tr_existing' });
       // Tx1: SELECT FOR UPDATE returns existing stripe_transfer_id — transfer already done

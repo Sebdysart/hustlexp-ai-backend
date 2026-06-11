@@ -97,3 +97,19 @@ export function xpForPriceCents(priceCents: number): number {
   assertIntegerCents(priceCents, 'priceCents');
   return Math.round(priceCents / 10);
 }
+
+/**
+ * Self-insurance pool contribution for a worker's GROSS share (task price, or
+ * the worker's portion of it on a split). 2% of gross, Math.round.
+ *
+ * REVIEW FIX (PR242 follow-up): single home so all three payout paths withhold
+ * an IDENTICAL amount for the same worker share — previously the full-release
+ * path used round(gross×2%) (F54-2), the worker-queue split used the NET basis
+ * round((gross−fee)×2%), and EscrowService.partialRefund withheld NOTHING. The
+ * service path and the worker queue now both call this on the worker's gross
+ * share, matching the full-release convention.
+ */
+export function computeInsuranceContributionCents(grossShareCents: number): number {
+  assertIntegerCents(grossShareCents, 'grossShareCents');
+  return Math.round(grossShareCents * INSURANCE_RATE);
+}

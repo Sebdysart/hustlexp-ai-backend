@@ -5,6 +5,27 @@ on:
   pull_request:
     branches: [main]
 
+# ---------------------------------------------------------------------------
+# ENFORCING security gate = the GHSA-baseline `npm audit` check in ci.yml
+# ("Security audit — no NEW high/critical vulnerabilities"). That job runs on
+# every PR and FAILS on any new high/critical advisory not triaged into the
+# documented baseline.
+#
+# The jobs below are BEST-EFFORT. codeql and dependency-review both require
+# GitHub Advanced Security (code scanning / dependency graph), which is not
+# enabled on this repository — without it they fail on every run regardless of
+# the code under review (codeql fails at the SARIF-upload step; dependency-
+# review errors "Dependency review is not supported on this repository").
+# snyk requires a SNYK_TOKEN secret that is not provisioned. Rather than emit a
+# permanently-red signal that trains reviewers to ignore CI, each is marked
+# continue-on-error / gated on its prerequisite and surfaces results in the
+# Security tab when the prerequisite is later enabled.
+#
+# TO MAKE THESE ENFORCING: enable GitHub Advanced Security (Settings →
+# Code security and analysis) for codeql + dependency-review, and add a
+# SNYK_TOKEN repo secret for snyk. See PRODUCTION_READINESS doc.
+# ---------------------------------------------------------------------------
+
 jobs:
   audit:
     runs-on: ubuntu-latest
@@ -19,8 +40,11 @@ jobs:
 
   codeql:
     runs-on: ubuntu-latest
+    # Requires GitHub Advanced Security to upload results; non-blocking until enabled.
+    continue-on-error: true
     permissions:
       security-events: write
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: github/codeql-action/init@v3
@@ -32,6 +56,8 @@ jobs:
   dependency-review:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
+    # Requires GitHub Advanced Security dependency graph; non-blocking until enabled.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/dependency-review-action@v4
@@ -39,14 +65,18 @@ jobs:
   snyk:
     runs-on: ubuntu-latest
     continue-on-error: true  # Pass even if SNYK_TOKEN is unset or Snyk finds issues; review Security tab
+    env:
+      SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
       - run: npm ci
-      - uses: snyk/actions/node@master
-        env:
-          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+      # Only run the scan when a token is actually configured — avoids a
+      # guaranteed auth-error on repos/forks without the secret.
+      - name: Snyk scan (only if SNYK_TOKEN is set)
+        if: ${{ env.SNYK_TOKEN != '' }}
+        uses: snyk/actions/node@master
         with:
           args: --severity-threshold=high

@@ -123,11 +123,12 @@ $$;
 -- TABLE COMMENTS
 -- ============================================
 
-COMMENT ON TABLE ai_cost_logs IS 
-    'Audit log for all AI/LLM API calls. Tracks costs, tokens, latency, and errors for governance and optimization. ' ||
-    'Used for: cost monitoring, budget alerts, usage analytics, performance tracking, and audit compliance. ' ||
-    'Cost is stored in USD cents to avoid floating-point precision issues. ' ||
-    'Request/response hashes enable deduplication detection and response integrity verification.';
+-- REVIEW FIX (PR242 follow-up): COMMENT ... IS takes a single string literal,
+-- not a `||` expression — the prior multi-line concatenations were a hard
+-- syntax error (42601) that prevented this entire migration from applying.
+-- Collapsed into single literals.
+COMMENT ON TABLE ai_cost_logs IS
+    'Audit log for all AI/LLM API calls. Tracks costs, tokens, latency, and errors for governance and optimization. Used for: cost monitoring, budget alerts, usage analytics, performance tracking, and audit compliance. Cost is stored in USD cents to avoid floating-point precision issues. Request/response hashes enable deduplication detection and response integrity verification.';
 
 COMMENT ON COLUMN ai_cost_logs.agent_type IS 
     'Identifier for which AI agent made the call: judge, matchmaker, chatbot, recommender, etc.';
@@ -150,14 +151,11 @@ COMMENT ON COLUMN ai_cost_logs.response_hash IS
 COMMENT ON COLUMN ai_cost_logs.error_code IS 
     'HustleXP-specific error codes: HX701 (Timeout), HX702 (Rate Limit), HX703 (Provider Error), etc.';
 
-COMMENT ON MATERIALIZED VIEW ai_daily_spend_summary IS 
-    'Pre-aggregated daily cost and usage metrics by agent, provider, and model. ' ||
-    'Refresh periodically using refresh_ai_spend_summary() function. ' ||
-    'Used for dashboards, cost alerts, and budgeting reports.';
+COMMENT ON MATERIALIZED VIEW ai_daily_spend_summary IS
+    'Pre-aggregated daily cost and usage metrics by agent, provider, and model. Refresh periodically using refresh_ai_spend_summary() function. Used for dashboards, cost alerts, and budgeting reports.';
 
-COMMENT ON FUNCTION refresh_ai_spend_summary() IS 
-    'Refreshes the ai_daily_spend_summary materialized view concurrently. ' ||
-    'Call this after bulk inserts or on a schedule (e.g., every 5 minutes) to keep dashboards current.';
+COMMENT ON FUNCTION refresh_ai_spend_summary() IS
+    'Refreshes the ai_daily_spend_summary materialized view concurrently. Call this after bulk inserts or on a schedule (e.g., every 5 minutes) to keep dashboards current.';
 
 -- ============================================
 -- GRANTS (adjust based on your security model)
