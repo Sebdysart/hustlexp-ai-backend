@@ -167,51 +167,67 @@ export async function generateOccurrencesForSeries(
       maxOccurrences + 50
     );
 
-    const existingResult = await db.query<{ scheduled_date: string; occurrence_number: number }>(
-      `SELECT scheduled_date, occurrence_number FROM recurring_task_occurrences WHERE series_id = $1`,
-      [seriesId]
-    );
-    const existingSet = new Set(existingResult.rows.map((r) => r.scheduled_date));
-    const maxNum = existingResult.rows.length
-      ? Math.max(...existingResult.rows.map((r) => r.occurrence_number))
-      : 0;
+    // AUDIT FIX M7 (2026-06-11): the read (existing occurrences / maxNum) →
+    // compute → INSERT → counter UPDATE sequence was non-transactional
+    // check-then-act. Concurrent generation (cron tick + manual trigger) read
+    // the same maxNum and existing set, producing duplicate occurrence_numbers
+    // and drifting occurrence_count past MAX_OCCURRENCES_LIFETIME. Everything
+    // now runs in ONE transaction with the series row locked FOR UPDATE so
+    // concurrent generators serialize.
+    const generated = await db.transaction(async (q) => {
+      await q(
+        `SELECT id FROM recurring_task_series WHERE id = $1 FOR UPDATE`,
+        [seriesId]
+      );
 
-    // Bug BB1-1: Enforce the lifetime occurrence cap. If the series already has
-    // MAX_OCCURRENCES_LIFETIME occurrences, refuse to generate more.
-    const remainingSlots = MAX_OCCURRENCES_LIFETIME - existingResult.rows.length;
-    if (remainingSlots <= 0) {
-      log.warn({ seriesId, existing: existingResult.rows.length }, 'Series has reached MAX_OCCURRENCES_LIFETIME cap — no new occurrences generated');
-      return { success: true, data: { generated: 0 } };
-    }
-    const effectiveMax = Math.min(maxOccurrences, remainingSlots);
+      const existingResult = await q<{ scheduled_date: string; occurrence_number: number }>(
+        `SELECT scheduled_date, occurrence_number FROM recurring_task_occurrences WHERE series_id = $1`,
+        [seriesId]
+      );
+      const existingSet = new Set(existingResult.rows.map((r) => r.scheduled_date));
+      const maxNum = existingResult.rows.length
+        ? Math.max(...existingResult.rows.map((r) => r.occurrence_number))
+        : 0;
 
-    const toInsert = dates.filter((d) => !existingSet.has(d)).slice(0, effectiveMax);
-    if (toInsert.length === 0) {
-      return { success: true, data: { generated: 0 } };
-    }
+      // Bug BB1-1: Enforce the lifetime occurrence cap. If the series already has
+      // MAX_OCCURRENCES_LIFETIME occurrences, refuse to generate more.
+      const remainingSlots = MAX_OCCURRENCES_LIFETIME - existingResult.rows.length;
+      if (remainingSlots <= 0) {
+        log.warn({ seriesId, existing: existingResult.rows.length }, 'Series has reached MAX_OCCURRENCES_LIFETIME cap — no new occurrences generated');
+        return 0;
+      }
+      const effectiveMax = Math.min(maxOccurrences, remainingSlots);
 
-    const nextOccurrenceNum = maxNum + 1;
-    const params: unknown[] = [];
-    const placeholders: string[] = [];
-    toInsert.forEach((scheduledDate, i) => {
-      const base = 1 + i * 3;
-      placeholders.push(`($${base}, $${base + 1}, $${base + 2}, 'scheduled')`);
-      params.push(seriesId, nextOccurrenceNum + i, scheduledDate);
+      const toInsert = dates.filter((d) => !existingSet.has(d)).slice(0, effectiveMax);
+      if (toInsert.length === 0) {
+        return 0;
+      }
+
+      const nextOccurrenceNum = maxNum + 1;
+      const params: unknown[] = [];
+      const placeholders: string[] = [];
+      toInsert.forEach((scheduledDate, i) => {
+        const base = 1 + i * 3;
+        placeholders.push(`($${base}, $${base + 1}, $${base + 2}, 'scheduled')`);
+        params.push(seriesId, nextOccurrenceNum + i, scheduledDate);
+      });
+      await q(
+        `INSERT INTO recurring_task_occurrences (series_id, occurrence_number, scheduled_date, status)
+         VALUES ${placeholders.join(', ')}`,
+        params
+      );
+
+      const nextAt = toInsert[0] + 'T12:00:00.000Z';
+      await q(
+        `UPDATE recurring_task_series SET occurrence_count = occurrence_count + $1, next_occurrence_at = $2, updated_at = NOW() WHERE id = $3`,
+        [toInsert.length, nextAt, seriesId]
+      );
+
+      log.info({ seriesId, generated: toInsert.length, first: toInsert[0] }, 'Generated recurring occurrences');
+      return toInsert.length;
     });
-    await db.query(
-      `INSERT INTO recurring_task_occurrences (series_id, occurrence_number, scheduled_date, status)
-       VALUES ${placeholders.join(', ')}`,
-      params
-    );
 
-    const nextAt = toInsert[0] + 'T12:00:00.000Z';
-    await db.query(
-      `UPDATE recurring_task_series SET occurrence_count = occurrence_count + $1, next_occurrence_at = $2, updated_at = NOW() WHERE id = $3`,
-      [toInsert.length, nextAt, seriesId]
-    );
-
-    log.info({ seriesId, generated: toInsert.length, first: toInsert[0] }, 'Generated recurring occurrences');
-    return { success: true, data: { generated: toInsert.length } };
+    return { success: true, data: { generated } };
   } catch (e) {
     log.error({ err: e, seriesId }, 'generateOccurrencesForSeries failed');
     return {

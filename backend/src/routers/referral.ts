@@ -149,7 +149,14 @@ export const referralRouter = router({
     .mutation(async ({ ctx, input }) => {
       const referredId = ctx.user.id;
 
-      // Check if already referred
+      // AUDIT FIX M8 (2026-06-11): the check-then-act ("already referred?" →
+      // INSERT) and the separate uses_count UPDATE were non-transactional —
+      // concurrent redemptions could double-redeem and drift the counter.
+      // Now: one transaction; the INSERT is the idempotency witness via
+      // ON CONFLICT (referred_id) DO NOTHING (unique index added in
+      // migrations/audit_fixes_concurrency.sql); uses_count increments only
+      // when the INSERT actually landed.
+      // Check if already referred (fast-path UX error; the unique index is the guarantee)
       const alreadyReferred = await db.query(
         'SELECT id FROM referral_redemptions WHERE referred_id = $1',
         [referredId]
@@ -175,18 +182,30 @@ export const referralRouter = router({
         throw new TRPCError({ code: 'BAD_REQUEST', message: 'Cannot use your own referral code' });
       }
 
-      // Create redemption (rewards given after first task completion)
-      await db.query(
-        `INSERT INTO referral_redemptions (referral_code_id, referrer_id, referred_id)
-         VALUES ($1, $2, $3)`,
-        [referralCode.id, referralCode.user_id, referredId]
-      );
+      const redeemed = await db.transaction(async (q) => {
+        // Create redemption (rewards given after first task completion)
+        const insertResult = await q(
+          `INSERT INTO referral_redemptions (referral_code_id, referrer_id, referred_id)
+           VALUES ($1, $2, $3)
+           ON CONFLICT (referred_id) DO NOTHING`,
+          [referralCode.id, referralCode.user_id, referredId]
+        );
 
-      // Increment uses count
-      await db.query(
-        'UPDATE referral_codes SET uses_count = uses_count + 1 WHERE id = $1',
-        [referralCode.id]
-      );
+        if ((insertResult.rowCount ?? 0) === 0) {
+          return false; // raced: another request redeemed first
+        }
+
+        // Increment uses count — same transaction as the redemption row
+        await q(
+          'UPDATE referral_codes SET uses_count = uses_count + 1 WHERE id = $1',
+          [referralCode.id]
+        );
+        return true;
+      });
+
+      if (!redeemed) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'Already used a referral code' });
+      }
 
       return { success: true, message: 'Referral code applied! Complete your first task to earn $5.' };
     }),

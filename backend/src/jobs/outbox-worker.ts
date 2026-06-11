@@ -283,7 +283,15 @@ export function startOutboxWorker(intervalMs: number = 5000): OutboxWorkerHandle
   });
 
   // Start periodic surge evaluator (every 10 seconds)
-  // Concurrency guard: prevents overlapping executions when the evaluator is slow.
+  // AUDIT FIX M12 (2026-06-11): the in-process `surgeRunning` flag only
+  // prevented overlap within ONE pod — in multi-pod deployments every pod ran
+  // the evaluation each tick. Now guarded by the same Redis NX lock + Lua
+  // CAS-delete pattern as the trust-tier job below (in-process flag kept as a
+  // cheap first gate). Lock TTL 30s covers a slow evaluation; surge enqueues
+  // remain idempotency-keyed as defense-in-depth.
+  const SURGE_LOCK_KEY = `lock:${config.app.env ?? 'production'}:surge_evaluation`;
+  const SURGE_LOCK_TTL_MS = 30 * 1000;
+  const SURGE_LOCK_HOLDER_ID = randomUUID();
   let surgeRunning = false;
   const surgeInterval = setInterval(async () => {
     if (surgeRunning) {
@@ -292,8 +300,35 @@ export function startOutboxWorker(intervalMs: number = 5000): OutboxWorkerHandle
     }
     surgeRunning = true;
     try {
-      const { evaluateInstantSurges } = await import('./instant-surge-evaluator.js');
-      await evaluateInstantSurges();
+      const redisClient = getRedisClient();
+      if (!redisClient) {
+        // Without Redis there is no distributed lock — skip (matches W48-1
+        // trust-tier behavior) rather than risk every pod evaluating at once.
+        log.warn('[outbox-worker] Redis unavailable — skipping surge evaluation to avoid multi-pod duplication');
+        return;
+      }
+      const acquired = await redisClient.set(SURGE_LOCK_KEY, SURGE_LOCK_HOLDER_ID, {
+        nx: true,
+        px: SURGE_LOCK_TTL_MS,
+      });
+      if (!acquired) {
+        return; // another pod holds the lock this tick
+      }
+      try {
+        const { evaluateInstantSurges } = await import('./instant-surge-evaluator.js');
+        await evaluateInstantSurges();
+      } finally {
+        // Lua CAS-delete: only the holder may release (W-02 pattern)
+        try {
+          await redisClient.eval(
+            `if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end`,
+            [SURGE_LOCK_KEY],
+            [SURGE_LOCK_HOLDER_ID]
+          );
+        } catch (unlockErr) {
+          log.warn({ err: unlockErr }, '[outbox-worker] surge lock release failed (TTL will expire it)');
+        }
+      }
     } catch (err) {
       log.error({ err }, '[outbox-worker] surgeInterval error');
     } finally {

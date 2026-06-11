@@ -509,14 +509,30 @@ export async function getRegistryStats(): Promise<{
 // ============================================================================
 // Heartbeat Manager (run in each instance)
 // ============================================================================
-export function startHeartbeatManager(instanceId: string): void {
-  setInterval(async () => {
-    const connections = await getInstanceConnections(instanceId);
-    
-    for (const connectionId of connections) {
-      await updateHeartbeat(connectionId, instanceId);
+// AUDIT FIX M9 (2026-06-11): the interval kept no handle (could never be
+// stopped) and its async callback had no try/catch — every tick during a
+// Redis blip produced an unhandled promise rejection. Now returns a stop
+// function for shutdown wiring and swallows-with-logging per tick.
+export function startHeartbeatManager(instanceId: string): () => void {
+  const interval = setInterval(async () => {
+    try {
+      const connections = await getInstanceConnections(instanceId);
+
+      for (const connectionId of connections) {
+        await updateHeartbeat(connectionId, instanceId);
+      }
+    } catch (err) {
+      registryLog.warn(
+        { instanceId, err: err instanceof Error ? err.message : String(err) },
+        'Heartbeat tick failed (will retry next interval)'
+      );
     }
   }, HEARTBEAT_INTERVAL);
-  
+
   registryLog.info({ instanceId }, 'Heartbeat manager started');
+
+  return () => {
+    clearInterval(interval);
+    registryLog.info({ instanceId }, 'Heartbeat manager stopped');
+  };
 }

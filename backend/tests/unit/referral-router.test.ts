@@ -13,8 +13,17 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Mocks
 // ---------------------------------------------------------------------------
 
+// AUDIT FIX M8: redeemCode now wraps INSERT + uses_count in db.transaction.
+// The tx executor delegates to the same `query` spy so sequences keep working.
+const dbMocks = vi.hoisted(() => {
+  const query = vi.fn();
+  const txQuery = vi.fn((sql: string, params?: unknown[]) => query(sql, params));
+  const transaction = vi.fn(async (fn: (q: typeof txQuery) => Promise<unknown>) => fn(txQuery));
+  return { query, txQuery, transaction };
+});
+
 vi.mock('../../src/db', () => ({
-  db: { query: vi.fn() },
+  db: { query: dbMocks.query, transaction: dbMocks.transaction },
 }));
 
 vi.mock('../../src/auth/firebase', () => ({
@@ -137,6 +146,31 @@ describe('referral router', () => {
 
       expect(result.success).toBe(true);
       expect(result.message).toContain('first task');
+      // M8: redemption + counter increment ran in one transaction
+      expect(dbMocks.transaction).toHaveBeenCalledTimes(1);
+      expect(String(dbMocks.txQuery.mock.calls[0][0])).toContain('ON CONFLICT (referred_id) DO NOTHING');
+    });
+
+    it('throws Already-used when the INSERT loses the race (ON CONFLICT rowCount=0) — AUDIT FIX M8', async () => {
+      // Fast-path check passes (no redemption visible yet)…
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+      // Find code
+      mockDb.query.mockResolvedValueOnce({
+        rows: [{ id: 'code-id', user_id: UUID2 }],
+        rowCount: 1,
+      } as any);
+      // …but a concurrent request inserted first: ON CONFLICT DO NOTHING → 0 rows
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+
+      const caller = makeCaller();
+      await expect(caller.redeemCode({ code: 'HXABC123' }))
+        .rejects.toThrow('Already used a referral code');
+
+      // uses_count must NOT have been incremented for the losing request
+      const incrementCall = dbMocks.txQuery.mock.calls.find(
+        (c) => String(c[0]).includes('uses_count')
+      );
+      expect(incrementCall).toBeUndefined();
     });
 
     it('throws BAD_REQUEST when already referred', async () => {

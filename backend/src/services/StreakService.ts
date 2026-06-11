@@ -66,59 +66,70 @@ export async function updateStreakOnTaskCompletion(
   const completionDate = toUTCDate(completedAt);
 
   try {
-    const row = await db.query<{
-      current_streak: number;
-      last_task_completed_at: Date | null;
-      streak_grace_expires_at: Date | null;
-    }>(
-      'SELECT current_streak, last_task_completed_at, streak_grace_expires_at FROM users WHERE id = $1',
-      [userId]
-    ).then(r => r.rows[0]);
+    // AUDIT FIX H7 (2026-06-11): this was a read-modify-write race — SELECT
+    // streak → compute in JS → UPDATE → second UPDATE for longest_streak, all
+    // non-transactional. Two concurrent completions read the same previous
+    // streak and double-incremented/clobbered each other, and a crash between
+    // the two UPDATEs desynced longest_streak.
+    //
+    // Now ONE atomic statement: the new streak is computed in SQL against the
+    // row's current values (SET expressions re-evaluate on the locked row, so
+    // concurrent statements serialize correctly), and longest_streak updates
+    // in the same statement. The CTE captures pre-update values for the
+    // result/flags. UTC calendar-day semantics identical to the old JS logic.
+    const grace = endOfUTCDate(addDays(completionDate, 1));
 
+    const streakCase = `CASE
+        WHEN u.last_task_completed_at IS NULL THEN 1
+        WHEN (u.last_task_completed_at AT TIME ZONE 'UTC')::date = ($2::timestamptz AT TIME ZONE 'UTC')::date THEN u.current_streak
+        WHEN ((u.last_task_completed_at AT TIME ZONE 'UTC')::date + 1) = ($2::timestamptz AT TIME ZONE 'UTC')::date THEN u.current_streak + 1
+        ELSE 1
+      END`;
+
+    const runAtomicUpdate = (withLongest: boolean) => db.query<{
+      new_streak: number;
+      previous_streak: number | null;
+      prev_last_at: Date | null;
+    }>(
+      `WITH prev AS (
+         SELECT current_streak AS previous_streak, last_task_completed_at AS prev_last_at
+         FROM users WHERE id = $1
+       )
+       UPDATE users u
+       SET current_streak = ${streakCase},
+           ${withLongest ? `longest_streak = GREATEST(COALESCE(u.longest_streak, 0), ${streakCase}),` : ''}
+           last_task_completed_at = $2,
+           streak_grace_expires_at = $3,
+           updated_at = NOW()
+       FROM prev
+       WHERE u.id = $1
+       RETURNING u.current_streak AS new_streak, prev.previous_streak, prev.prev_last_at`,
+      [userId, completedAt, grace]
+    );
+
+    let result;
+    try {
+      result = await runAtomicUpdate(true);
+    } catch (err) {
+      // longest_streak column may not exist pre-migration-005 — retry without it
+      if (err instanceof Error && /longest_streak/.test(err.message)) {
+        result = await runAtomicUpdate(false);
+      } else {
+        throw err;
+      }
+    }
+
+    const row = result.rows[0];
     if (!row) {
       return { success: false, error: { code: ErrorCodes.NOT_FOUND, message: `User ${userId} not found` } };
     }
 
-    const previousStreak = row.current_streak ?? 0;
-    const lastAt = row.last_task_completed_at;
-    const lastDate = lastAt ? toUTCDate(new Date(lastAt)) : null;
-
-    let newStreak: number;
-    let streakChanged = false;
-    let wasReset = false;
-
-    if (!lastDate) {
-      newStreak = 1;
-      streakChanged = true;
-    } else if (lastDate === completionDate) {
-      newStreak = previousStreak;
-    } else if (addDays(lastDate, 1) === completionDate) {
-      newStreak = previousStreak + 1;
-      streakChanged = true;
-    } else {
-      newStreak = 1;
-      streakChanged = true;
-      wasReset = true;
-    }
-
-    const graceEndDate = endOfUTCDate(addDays(completionDate, 1));
-
-    // Update users; longest_streak only if column exists (migration 005)
-    await db.query(
-      `UPDATE users
-       SET current_streak = $1, last_task_completed_at = $2, streak_grace_expires_at = $3, updated_at = NOW()
-       WHERE id = $4`,
-      [newStreak, completedAt, graceEndDate, userId]
-    );
-
-    try {
-      await db.query(
-        `UPDATE users SET longest_streak = GREATEST(COALESCE(longest_streak, 0), $1) WHERE id = $2`,
-        [newStreak, userId]
-      );
-    } catch {
-      // Ignore if longest_streak column doesn't exist yet
-    }
+    const previousStreak = row.previous_streak ?? 0;
+    const newStreak = row.new_streak;
+    const lastDate = row.prev_last_at ? toUTCDate(new Date(row.prev_last_at)) : null;
+    const sameDay = lastDate !== null && lastDate === completionDate;
+    const streakChanged = !sameDay;
+    const wasReset = !sameDay && lastDate !== null && addDays(lastDate, 1) !== completionDate;
 
     if (streakChanged) {
       log.info(
