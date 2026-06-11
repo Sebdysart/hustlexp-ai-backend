@@ -4,6 +4,15 @@ export default defineConfig({
   test: {
     bail: 0,
     environment: 'node',
+    // HERMETICITY (audit H8): the suite must be immune to ambient shell env.
+    // A machine-level `NODE_ENV=production` export was observed flipping 19 tests
+    // red (db.ts fail-fast, HX_STRIPE_STUB gated off, rate-limiter fail-closed).
+    // Force NODE_ENV=test for every worker regardless of inherited environment.
+    // NOTE: deliberately NOT setting a dummy DATABASE_URL here — `hasDb` skip
+    // logic in DB-backed invariant suites must keep skipping when no real DB.
+    env: {
+      NODE_ENV: 'test',
+    },
     testTimeout: 30000,
     include: ['backend/tests/**/*.test.ts'],
     // Exclude pre-existing broken test files that import non-existent modules or
