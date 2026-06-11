@@ -16,6 +16,7 @@
  */
 
 import { db } from '../db.js';
+import type { QueryFn } from '../db.js';
 import type { ServiceResult } from '../types.js';
 import { logger } from '../logger.js';
 
@@ -117,7 +118,11 @@ export const RevenueService = {
    *   netAmountCents = amountCents (100% revenue)
    *   amountCents = what was charged
    */
-  logEvent: async (params: LogEventParams): Promise<ServiceResult<{ id: string }>> => {
+  // AUDIT FIX H1/H2: optional `q` lets callers run the ledger INSERT inside
+  // their own transaction (e.g. ChargebackService) so the ledger entry commits
+  // atomically with the rest of the financial mutation. Defaults to db.query —
+  // all existing call sites are unchanged.
+  logEvent: async (params: LogEventParams, q?: QueryFn): Promise<ServiceResult<{ id: string }>> => {
     // BUG 6 FIX: Added 'per_task_fee' and 'insurance_premium' which are revenue-positive
     // event types that should never be logged with a non-positive amount. Removed 'tip_fee'
     // which is not in the RevenueEventType union and was a phantom entry.
@@ -133,7 +138,8 @@ export const RevenueService = {
       };
     }
     try {
-      const result = await db.query<{ id: string }>(
+      const exec: QueryFn = q ?? db.query;
+      const result = await exec<{ id: string }>(
         `INSERT INTO revenue_ledger
            (event_type, user_id, task_id, amount_cents,
             currency, gross_amount_cents, platform_fee_cents, net_amount_cents,

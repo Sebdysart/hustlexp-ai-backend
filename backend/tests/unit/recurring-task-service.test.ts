@@ -1,8 +1,19 @@
 // backend/tests/unit/recurring-task-service.test.ts
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+// AUDIT FIX M7: generateOccurrencesForSeries now wraps generation in
+// db.transaction with a FOR UPDATE lock on the series row. The tx executor
+// delegates to the same `query` spy so sequences keep driving both paths —
+// each generating test gains ONE leading mock for the lock SELECT.
+const dbMocks = vi.hoisted(() => {
+  const query = vi.fn();
+  const txQuery = vi.fn((sql: string, params?: unknown[]) => query(sql, params));
+  const transaction = vi.fn(async (fn: (q: typeof txQuery) => Promise<unknown>) => fn(txQuery));
+  return { query, txQuery, transaction };
+});
+
 vi.mock('../../src/db.js', () => ({
-  db: { query: vi.fn() },
+  db: { query: dbMocks.query, transaction: dbMocks.transaction },
 }));
 
 vi.mock('../../src/logger.js', () => ({
@@ -145,6 +156,7 @@ describe('generateOccurrencesForSeries', () => {
   it('generates occurrences for an active weekly series', async () => {
     mockDb.query
       .mockResolvedValueOnce({ rows: [makeSeries()], rowCount: 1 } as any) // SELECT series
+      .mockResolvedValueOnce({ rows: [{ id: SERIES_ID }], rowCount: 1 } as any) // FOR UPDATE lock (M7)
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as any) // SELECT existing occurrences
       .mockResolvedValueOnce({ rows: [], rowCount: 5 } as any) // INSERT occurrences
       .mockResolvedValueOnce({ rows: [], rowCount: 1 } as any); // UPDATE series
@@ -153,6 +165,9 @@ describe('generateOccurrencesForSeries', () => {
 
     expect(result.success).toBe(true);
     expect(result.data!.generated).toBeGreaterThan(0);
+    // M7: generation runs inside one transaction with the series locked
+    expect(dbMocks.transaction).toHaveBeenCalledTimes(1);
+    expect(String(dbMocks.txQuery.mock.calls[0][0])).toContain('FOR UPDATE');
   });
 
   it('returns NOT_FOUND when series does not exist', async () => {
@@ -190,6 +205,7 @@ describe('generateOccurrencesForSeries', () => {
 
     mockDb.query
       .mockResolvedValueOnce({ rows: [makeSeries()], rowCount: 1 } as any)
+      .mockResolvedValueOnce({ rows: [{ id: SERIES_ID }], rowCount: 1 } as any) // FOR UPDATE lock (M7)
       .mockResolvedValueOnce({ rows: existingDates, rowCount: existingDates.length } as any);
 
     const result = await generateOccurrencesForSeries(SERIES_ID);
@@ -202,6 +218,7 @@ describe('generateOccurrencesForSeries', () => {
     // First occurrence (2026-03-09) exists; only subsequent ones should be inserted
     mockDb.query
       .mockResolvedValueOnce({ rows: [makeSeries()], rowCount: 1 } as any)
+      .mockResolvedValueOnce({ rows: [{ id: SERIES_ID }], rowCount: 1 } as any) // FOR UPDATE lock (M7)
       .mockResolvedValueOnce({
         rows: [{ scheduled_date: '2026-03-09', occurrence_number: 1 }],
         rowCount: 1,
@@ -218,6 +235,7 @@ describe('generateOccurrencesForSeries', () => {
   it('accepts paused series and generates occurrences', async () => {
     mockDb.query
       .mockResolvedValueOnce({ rows: [makeSeries({ status: 'paused' })], rowCount: 1 } as any)
+      .mockResolvedValueOnce({ rows: [{ id: SERIES_ID }], rowCount: 1 } as any) // FOR UPDATE lock (M7)
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as any)
       .mockResolvedValueOnce({ rows: [], rowCount: 5 } as any)
       .mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
@@ -231,6 +249,7 @@ describe('generateOccurrencesForSeries', () => {
   it('respects the maxOccurrences option', async () => {
     mockDb.query
       .mockResolvedValueOnce({ rows: [makeSeries()], rowCount: 1 } as any)
+      .mockResolvedValueOnce({ rows: [{ id: SERIES_ID }], rowCount: 1 } as any) // FOR UPDATE lock (M7)
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as any)
       .mockResolvedValueOnce({ rows: [], rowCount: 3 } as any)
       .mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);

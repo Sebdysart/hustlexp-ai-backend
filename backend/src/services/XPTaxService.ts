@@ -17,6 +17,7 @@ import { db } from '../db.js';
 import { logger } from '../logger.js';
 import type { ServiceResult } from '../types.js';
 import { StripeService } from './StripeService.js';
+import { xpForPriceCents } from '../lib/money.js';
 
 const log = logger.child({ service: 'XPTaxService' });
 
@@ -352,7 +353,9 @@ export const XPTaxService = {
             );
 
             // Calculate held XP to release (100 XP per $1 of gross payout)
-            const xpAmount = Math.round(tax.gross_payout_cents / 10);
+            // AUDIT FIX M11: unified formula — JS xpForPriceCents matches the SQL
+            // ROUND(gross_payout_cents / 10.0) in adminForgiveTax for positive values.
+            const xpAmount = xpForPriceCents(tax.gross_payout_cents);
 
             // Release held XP directly to user's xp_total
             // Note: This bypasses INV-1 (no escrow) because tax XP is already earned,

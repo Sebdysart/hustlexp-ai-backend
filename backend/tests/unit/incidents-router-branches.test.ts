@@ -29,6 +29,18 @@ vi.mock('../../src/services/IncidentDiagnosisService', () => ({
   IncidentDiagnosisService: { diagnoseIncident: vi.fn() },
 }));
 
+// HERMETICITY (audit M13): incidents.diagnose calls checkRateLimit, whose real
+// implementation depends on ambient config (fails CLOSED in production when
+// Redis is unconfigured). Mock it explicitly so these tests never depend on
+// NODE_ENV / Redis availability. All other exports stay real via importOriginal.
+vi.mock('../../src/cache/redis', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/cache/redis')>();
+  return {
+    ...actual,
+    checkRateLimit: vi.fn().mockResolvedValue({ allowed: true, remaining: 20 }),
+  };
+});
+
 import { db } from '../../src/db';
 import { IncidentDiagnosisService } from '../../src/services/IncidentDiagnosisService';
 import incidentsRouter from '../../src/routers/incidents';

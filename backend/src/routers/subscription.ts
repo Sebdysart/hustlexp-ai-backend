@@ -14,10 +14,12 @@ import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
 import { router, posterProcedure } from '../trpc.js';
 import { db } from '../db.js';
-import Stripe from 'stripe';
+import type Stripe from 'stripe';
 import { config } from '../config.js';
 import { RevenueService } from '../services/RevenueService.js';
 import { logger } from '../logger.js';
+import { getSharedStripe } from '../lib/stripe-client.js'; // AUDIT FIX M5
+import { stripeBreaker } from '../middleware/circuit-breaker.js';
 
 const log = logger.child({ router: 'subscription' });
 
@@ -119,16 +121,16 @@ export const subscriptionRouter = router({
       let clientSecret: string | null = null;
       let stripeSubscriptionId: string | null = null;
 
-      if (config.stripe.secretKey && !config.stripe.secretKey.includes('placeholder')) {
-        const stripe = new Stripe(config.stripe.secretKey, { apiVersion: '2025-11-17.clover' });
-
+      // AUDIT FIX M5: shared client + breaker (was per-request `new Stripe`, no breaker)
+      const stripe = getSharedStripe();
+      if (stripe) {
         // 3. Create Stripe customer if needed
         if (!stripeCustomerId) {
-          const customer = await stripe.customers.create({
+          const customer = await stripeBreaker.execute(() => stripe.customers.create({
             email: userResult.rows[0].email,
             name: userResult.rows[0].full_name,
             metadata: { user_id: userId },
-          });
+          }));
           stripeCustomerId = customer.id;
 
           await db.query(
@@ -138,14 +140,17 @@ export const subscriptionRouter = router({
         }
 
         // 4. Create Stripe Product for subscription
-        const product = await stripe.products.create({
+        const product = await stripeBreaker.execute(() => stripe.products.create({
           name: `HustleXP ${input.plan.charAt(0).toUpperCase() + input.plan.slice(1)} Plan`,
           metadata: { type: 'subscription', plan: input.plan },
-        });
+        }));
 
         // 5. Create Stripe Subscription
-        const subscription = await stripe.subscriptions.create({
-          customer: stripeCustomerId,
+        // (const capture: the breaker closure defeats TS narrowing on the mutable let,
+        // but stripeCustomerId is guaranteed non-null here — created above if missing)
+        const resolvedCustomerId: string = stripeCustomerId;
+        const subscription = await stripeBreaker.execute(() => stripe.subscriptions.create({
+          customer: resolvedCustomerId,
           items: [{
             price_data: {
               currency: 'usd',
@@ -165,7 +170,7 @@ export const subscriptionRouter = router({
             plan: input.plan,
             interval: input.interval,
           },
-        });
+        }));
 
         stripeSubscriptionId = subscription.id;
 
@@ -224,10 +229,11 @@ export const subscriptionRouter = router({
       const stripeSubId = userResult.rows[0].stripe_subscription_id;
 
       // 2. Cancel Stripe subscription
-      if (stripeSubId && config.stripe.secretKey && !config.stripe.secretKey.includes('placeholder')) {
-        const stripe = new Stripe(config.stripe.secretKey, { apiVersion: '2025-11-17.clover' });
+      // AUDIT FIX M5: shared client + breaker
+      const cancelStripe = getSharedStripe();
+      if (stripeSubId && cancelStripe) {
         try {
-          await stripe.subscriptions.cancel(stripeSubId);
+          await stripeBreaker.execute(() => cancelStripe.subscriptions.cancel(stripeSubId));
         } catch (err) {
           log.error({ err: err instanceof Error ? err.message : String(err) }, 'Failed to cancel Stripe subscription');
           // Continue with local downgrade even if Stripe cancel fails
@@ -280,16 +286,16 @@ export const subscriptionRouter = router({
     .mutation(async ({ ctx, input }) => {
       const userId = ctx.user.id;
 
-      if (config.stripe.secretKey && !config.stripe.secretKey.includes('placeholder')) {
-        const stripe = new Stripe(config.stripe.secretKey, { apiVersion: '2025-11-17.clover' });
-
+      // AUDIT FIX M5: shared client + breaker
+      const stripe = getSharedStripe();
+      if (stripe) {
         // Fetch user's stripe_customer_id for ownership verification
         const userResult = await db.query<{ stripe_customer_id: string | null }>(
           'SELECT stripe_customer_id FROM users WHERE id = $1',
           [userId]
         );
 
-        const subscription = await stripe.subscriptions.retrieve(input.stripeSubscriptionId);
+        const subscription = await stripeBreaker.execute(() => stripe.subscriptions.retrieve(input.stripeSubscriptionId));
 
         // Verify the subscription belongs to the calling user via metadata and customer
         if (subscription.metadata.user_id !== userId) {

@@ -39,6 +39,20 @@ vi.mock('../../src/logger', () => ({
     child: () => ({ warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() }),
     warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn(),
   },
+  // AUDIT FIX M2: squad.ts now routes createTeamTask through TaskService,
+  // whose module graph needs taskLogger.
+  taskLogger: {
+    child: () => ({ warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() }),
+    warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn(),
+  },
+}));
+
+// AUDIT FIX M2: createTeamTask delegates task creation to TaskService.
+vi.mock('../../src/services/TaskService', () => ({
+  TaskService: {
+    create: vi.fn().mockResolvedValue({ success: true, data: { id: 'task-from-service' } }),
+    cancel: vi.fn().mockResolvedValue({ success: true, data: { id: 'task-from-service' } }), // REVIEW FIX PR242: compensation path
+  },
 }));
 
 vi.mock('../../src/services/ComplianceGuardianService', () => ({

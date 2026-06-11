@@ -13,8 +13,17 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+// AUDIT H1/H2: tx executor delegates to `query` so existing sequences drive
+// both inside-tx and outside-tx statements (see chargeback-service.test.ts).
+const dbMocks = vi.hoisted(() => {
+  const query = vi.fn();
+  const txQuery = vi.fn((sql: string, params?: unknown[]) => query(sql, params));
+  const transaction = vi.fn(async (fn: (q: typeof txQuery) => Promise<unknown>) => fn(txQuery));
+  return { query, txQuery, transaction };
+});
+
 vi.mock('../../src/db', () => ({
-  db: { query: vi.fn() },
+  db: { query: dbMocks.query, transaction: dbMocks.transaction },
 }));
 
 vi.mock('../../src/services/RevenueService', () => ({
@@ -52,6 +61,10 @@ function makeDisputeParams(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // clearAllMocks does NOT flush mockResolvedValueOnce queues — reset the query
+  // mock fully so a test that under-consumes its queue can never bleed stale
+  // values into the next test (audit H1/H2 hardening).
+  dbMocks.query.mockReset();
   mockRevenueLog.mockResolvedValue({ success: true, data: { id: 'rev-1' } });
 });
 
@@ -93,7 +106,7 @@ describe('ChargebackService (extra coverage)', () => {
       }
     });
 
-    it('handles no user found anywhere — system user fallback', async () => {
+    it('handles no user found anywhere — NULL user on the ledger row (FK-safe)', async () => {
       // No escrow
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
       // No featured_listings
@@ -111,11 +124,15 @@ describe('ChargebackService (extra coverage)', () => {
         expect(result.data.paymentDisputeId).toBe('pd-nouser');
       }
 
-      // Revenue log should use system user UUID
+      // REVIEW FIX (PR242): unattributable disputes log with NULL user_id —
+      // the old '00000000-…' sentinel exists in no users row, so the FK
+      // rejected it; combined with the H1 in-tx abort that meant infinite
+      // retries and a never-recorded chargeback.
       expect(mockRevenueLog).toHaveBeenCalledWith(
         expect.objectContaining({
-          userId: '00000000-0000-0000-0000-000000000000',
-        })
+          userId: null,
+        }),
+        expect.anything()
       );
     });
 
@@ -190,7 +207,8 @@ describe('ChargebackService (extra coverage)', () => {
       expect(mockRevenueLog).toHaveBeenCalledWith(
         expect.objectContaining({
           metadata: expect.objectContaining({ loss_type: 'platform_loss' }),
-        })
+        }),
+        expect.anything()
       );
     });
 
@@ -215,16 +233,21 @@ describe('ChargebackService (extra coverage)', () => {
       expect(mockRevenueLog).toHaveBeenCalledWith(
         expect.objectContaining({
           metadata: expect.objectContaining({ loss_type: 'escrow_refunded' }),
-        })
+        }),
+        expect.anything()
       );
     });
   });
 
   // -------------------------------------------------------------------------
-  // handleDisputeCreated — ledger failure (soft)
+  // handleDisputeCreated — ledger failure (AUDIT FIX H1: now a HARD abort)
   // -------------------------------------------------------------------------
-  describe('handleDisputeCreated — ledger failure is soft', () => {
-    it('continues processing when RevenueService.logEvent fails', async () => {
+  // Pre-fix behavior was "soft": a failed ledger write was skipped and the
+  // chargeback still reported success — leaving an unbalanced book that the
+  // idempotent early-return then made permanent. The ledger entry is now
+  // mandatory; failure rolls back the entire transaction so the worker retries.
+  describe('handleDisputeCreated — ledger failure aborts atomically (H1)', () => {
+    it('fails the chargeback and rolls back when RevenueService.logEvent fails', async () => {
       mockRevenueLog.mockResolvedValueOnce({ success: false, error: { code: 'LEDGER_ERROR', message: 'fail' } });
 
       mockDb.query.mockResolvedValueOnce({
@@ -232,23 +255,21 @@ describe('ChargebackService (extra coverage)', () => {
       } as never);
       mockDb.query.mockResolvedValueOnce({ rows: [{ poster_id: 'user-1' }], rowCount: 1 } as never);
       mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'pd-soft' }], rowCount: 1 } as never);
-      // No reversal link update (ledger failed → ledgerResult.success = false)
-      // always-increment dispute_count (F61-2 step 1)
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
-      // conditional payouts_locked (F61-2 step 2)
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
-      // payouts_were_frozen
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
-      // trust check
-      mockDb.query.mockResolvedValueOnce({
-        rows: [{ trust_tier: 2, dispute_count: 1 }], rowCount: 1,
-      } as never);
-      // escrow lock
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      // Nothing after the ledger failure should run.
 
       const result = await ChargebackService.handleDisputeCreated(makeDisputeParams());
 
-      expect(result.success).toBe(true);
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.code).toBe('CHARGEBACK_PROCESSING_FAILED');
+        expect(result.error.message).toContain('LEDGER_ERROR');
+      }
+      // No payout freeze / escrow lock may have been issued after the abort
+      const postAbortCall = mockDb.query.mock.calls.find(
+        (call) => typeof call[0] === 'string' &&
+          (call[0].includes('payouts_locked') || call[0].includes('LOCKED_DISPUTE'))
+      );
+      expect(postAbortCall).toBeUndefined();
     });
   });
 

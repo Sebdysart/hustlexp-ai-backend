@@ -28,13 +28,14 @@ describe('StreakService.updateStreakOnTaskCompletion', () => {
     vi.resetAllMocks();
   });
 
+  // AUDIT FIX H7: updateStreakOnTaskCompletion is now ONE atomic CTE UPDATE
+  // (streak computed in SQL on the locked row; longest_streak in the same
+  // statement). The mock returns the RETURNING row {new_streak,
+  // previous_streak, prev_last_at}; flags are derived from prev_last_at.
   it('starts streak at 1 when user has no previous completions', async () => {
-    mockDb.query
-      .mockResolvedValueOnce({
-        rows: [{ current_streak: 0, last_task_completed_at: null, streak_grace_expires_at: null }],
-      } as any)
-      .mockResolvedValueOnce({ rows: [] } as any) // UPDATE current_streak
-      .mockResolvedValueOnce({ rows: [] } as any); // UPDATE longest_streak
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ new_streak: 1, previous_streak: 0, prev_last_at: null }],
+    } as any);
 
     const completedAt = new Date('2026-03-10T14:00:00.000Z');
     const result = await updateStreakOnTaskCompletion(USER_ID, completedAt);
@@ -44,19 +45,20 @@ describe('StreakService.updateStreakOnTaskCompletion', () => {
     expect(result.data!.streakChanged).toBe(true);
     expect(result.data!.wasReset).toBe(false);
     expect(result.data!.previousStreak).toBe(0);
+    // Exactly ONE statement — the read-modify-write race is structurally gone
+    expect(mockDb.query).toHaveBeenCalledTimes(1);
+    expect(String(mockDb.query.mock.calls[0][0])).toContain('UPDATE users');
   });
 
   it('extends streak by 1 when completion is the day after last', async () => {
     mockDb.query
       .mockResolvedValueOnce({
         rows: [{
-          current_streak: 5,
-          last_task_completed_at: new Date('2026-03-09T12:00:00.000Z'),
-          streak_grace_expires_at: new Date('2026-03-10T23:59:59.999Z'),
+          new_streak: 6,
+          previous_streak: 5,
+          prev_last_at: new Date('2026-03-09T12:00:00.000Z'),
         }],
-      } as any)
-      .mockResolvedValueOnce({ rows: [] } as any)
-      .mockResolvedValueOnce({ rows: [] } as any);
+      } as any);
 
     const completedAt = new Date('2026-03-10T10:00:00.000Z');
     const result = await updateStreakOnTaskCompletion(USER_ID, completedAt);
@@ -71,13 +73,11 @@ describe('StreakService.updateStreakOnTaskCompletion', () => {
     mockDb.query
       .mockResolvedValueOnce({
         rows: [{
-          current_streak: 3,
-          last_task_completed_at: new Date('2026-03-10T08:00:00.000Z'),
-          streak_grace_expires_at: new Date('2026-03-11T23:59:59.999Z'),
+          new_streak: 3,
+          previous_streak: 3,
+          prev_last_at: new Date('2026-03-10T08:00:00.000Z'),
         }],
-      } as any)
-      .mockResolvedValueOnce({ rows: [] } as any)
-      .mockResolvedValueOnce({ rows: [] } as any);
+      } as any);
 
     const completedAt = new Date('2026-03-10T20:00:00.000Z'); // same UTC day
     const result = await updateStreakOnTaskCompletion(USER_ID, completedAt);
@@ -92,13 +92,11 @@ describe('StreakService.updateStreakOnTaskCompletion', () => {
     mockDb.query
       .mockResolvedValueOnce({
         rows: [{
-          current_streak: 10,
-          last_task_completed_at: new Date('2026-03-07T12:00:00.000Z'), // 3 days ago
-          streak_grace_expires_at: new Date('2026-03-08T23:59:59.999Z'),
+          new_streak: 1,
+          previous_streak: 10,
+          prev_last_at: new Date('2026-03-07T12:00:00.000Z'), // 3 days ago
         }],
-      } as any)
-      .mockResolvedValueOnce({ rows: [] } as any)
-      .mockResolvedValueOnce({ rows: [] } as any);
+      } as any);
 
     const completedAt = new Date('2026-03-10T12:00:00.000Z');
     const result = await updateStreakOnTaskCompletion(USER_ID, completedAt);
@@ -130,17 +128,18 @@ describe('StreakService.updateStreakOnTaskCompletion', () => {
 
   it('handles longest_streak column not existing gracefully', async () => {
     mockDb.query
+      .mockRejectedValueOnce(new Error('column "longest_streak" does not exist')) // first attempt (with longest_streak)
       .mockResolvedValueOnce({
-        rows: [{ current_streak: 2, last_task_completed_at: null, streak_grace_expires_at: null }],
-      } as any)
-      .mockResolvedValueOnce({ rows: [] } as any) // UPDATE current_streak
-      .mockRejectedValueOnce(new Error('column "longest_streak" does not exist')); // longest_streak update fails
+        rows: [{ new_streak: 1, previous_streak: 2, prev_last_at: null }],
+      } as any); // retry without longest_streak
 
     const result = await updateStreakOnTaskCompletion(USER_ID, new Date('2026-03-10T10:00:00.000Z'));
 
-    // Should still succeed — the longest_streak failure is swallowed
+    // Should still succeed — retried without the longest_streak column
     expect(result.success).toBe(true);
     expect(result.data!.newStreak).toBe(1);
+    expect(mockDb.query).toHaveBeenCalledTimes(2);
+    expect(String(mockDb.query.mock.calls[1][0])).not.toContain('longest_streak');
   });
 });
 

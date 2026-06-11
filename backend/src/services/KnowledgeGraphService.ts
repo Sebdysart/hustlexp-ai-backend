@@ -8,6 +8,12 @@
 
 import { db } from '../db.js';
 import OpenAI from 'openai';
+// AUDIT FIX H5: embeddings previously hit OpenAI with no circuit breaker and
+// no cost accounting — unmetered, unprotected spend invisible to AI governance.
+import { openaiBreaker } from '../middleware/circuit-breaker.js';
+import { logger } from '../logger.js';
+
+const kgLog = logger.child({ service: 'KnowledgeGraphService' });
 
 // ============================================================================
 // TYPES
@@ -36,11 +42,36 @@ function getOpenAI(): OpenAI {
 
 async function generateQueryEmbedding(text: string): Promise<number[]> {
   const openai = getOpenAI();
-  const response = await openai.embeddings.create({
+  // AUDIT FIX H5: breaker-protected — an OpenAI outage fast-fails instead of
+  // hanging every doc query.
+  const response = await openaiBreaker.execute(() => openai.embeddings.create({
     model: 'text-embedding-3-small',
     input: text,
     dimensions: 1536,
-  });
+  }));
+
+  // AUDIT FIX H5: record token usage in the AI cost ledger (system call —
+  // no user attribution; user_id is nullable per GDPR D63-2). Non-fatal:
+  // a cost-log failure must never break doc search.
+  const tokensUsed = response.usage?.total_tokens ?? 0;
+  if (tokensUsed > 0) {
+    try {
+      // REVIEW FIX (PR242): model column is NOT NULL — omitting it made this
+      // INSERT fail silently on real Postgres.
+      await db.query(
+        `INSERT INTO ai_cost_logs (agent_type, user_id, provider, model, tokens_used, estimated_cost_cents, created_at)
+         VALUES ($1, NULL, $2, $3, $4, $5, NOW())`,
+        // text-embedding-3-small: $0.02 / 1M tokens → cents = tokens × 0.000002
+        ['knowledge_graph_embedding', 'openai', 'text-embedding-3-small', tokensUsed, Math.ceil(tokensUsed * 0.000002)]
+      );
+    } catch (costErr) {
+      kgLog.warn(
+        { err: costErr instanceof Error ? costErr.message : String(costErr), tokensUsed },
+        'Failed to record embedding cost (non-fatal)'
+      );
+    }
+  }
+
   return response.data[0].embedding;
 }
 

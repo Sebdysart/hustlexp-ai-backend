@@ -20,6 +20,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { fileURLToPath } from 'node:url';
 
 // ---------------------------------------------------------------------------
 // Mocks — must precede all imports that touch these modules
@@ -131,7 +132,7 @@ describe('Bug 1 — SQL interval must use parameterized multiplication', () => {
   it('revenueBreakdown query does NOT use string concatenation for interval', async () => {
     const src = await import('fs').then(fs =>
       fs.promises.readFile(
-        new URL('../../src/routers/admin.ts', import.meta.url).pathname,
+        fileURLToPath(new URL('../../src/routers/admin.ts', import.meta.url)),
         'utf-8'
       )
     );
@@ -259,7 +260,7 @@ describe('Bug 3 — escrowOverride closes open dispute row', () => {
      */
     const src = await import('fs').then(fs =>
       fs.promises.readFile(
-        new URL('../../src/routers/admin.ts', import.meta.url).pathname,
+        fileURLToPath(new URL('../../src/routers/admin.ts', import.meta.url)),
         'utf-8'
       )
     );
@@ -330,7 +331,7 @@ describe('Bug 4 — Chargeback LOST path does not unfreeze payouts', () => {
   it('WON branch retains payouts unlock logic (regression guard)', async () => {
     const src = await import('fs').then(fs =>
       fs.promises.readFile(
-        new URL('../../src/services/ChargebackService.ts', import.meta.url).pathname,
+        fileURLToPath(new URL('../../src/services/ChargebackService.ts', import.meta.url)),
         'utf-8'
       )
     );
@@ -358,7 +359,7 @@ describe('Bug 4 — Chargeback LOST path does not unfreeze payouts', () => {
   it('LOST branch does NOT contain payouts_locked = FALSE assignment', async () => {
     const src = await import('fs').then(fs =>
       fs.promises.readFile(
-        new URL('../../src/services/ChargebackService.ts', import.meta.url).pathname,
+        fileURLToPath(new URL('../../src/services/ChargebackService.ts', import.meta.url)),
         'utf-8'
       )
     );
@@ -388,7 +389,7 @@ describe('Bug 4 — Chargeback LOST path does not unfreeze payouts', () => {
   it('LOST branch contains explicit admin-review warning comment', async () => {
     const src = await import('fs').then(fs =>
       fs.promises.readFile(
-        new URL('../../src/services/ChargebackService.ts', import.meta.url).pathname,
+        fileURLToPath(new URL('../../src/services/ChargebackService.ts', import.meta.url)),
         'utf-8'
       )
     );

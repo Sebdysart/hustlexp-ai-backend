@@ -235,6 +235,13 @@ export const deepseekBreaker = new CircuitBreaker('deepseek', {
   onStateChange: onCircuitStateChange,
 });
 
+/** Alibaba (DashScope) breaker — AUDIT FIX H6: AIRouter fallback chain provider */
+export const alibabaBreaker = new CircuitBreaker('alibaba', {
+  failureThreshold: 5,
+  resetTimeoutMs: 60_000,
+  onStateChange: onCircuitStateChange,
+});
+
 /** Google Cloud Vision breaker */
 export const gcpVisionBreaker = new CircuitBreaker('gcp-vision', {
   failureThreshold: 5,

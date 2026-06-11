@@ -12,6 +12,9 @@ import { TRPCError } from '@trpc/server';
 import { config } from '../config.js';
 import { db } from '../db.js';
 import { checkUserBudget, trackUserCost, checkGlobalBudget, trackGlobalCost } from './UserAIBudget.js';
+// AUDIT FIX H6: provider calls must go through circuit breakers — a dead
+// provider now fast-fails instead of being hammered by the fallback chain.
+import { openaiBreaker, groqBreaker, deepseekBreaker, alibabaBreaker, CircuitOpenError } from '../middleware/circuit-breaker.js';
 
 interface AICallConfig {
   maxTokensPerCall: number;
@@ -80,12 +83,18 @@ async function trackCost(agent: string, userId: string, provider: AIProvider, to
   const cost = estimateCost(provider, tokensUsed);
   const budgetKey = getBudgetKey(agent, userId);
   try {
-    await getRedis().incrby(budgetKey, cost);
-    await getRedis().expire(budgetKey, 86400);
+    // AUDIT FIX L3: INCRBY and EXPIRE must be atomic — a crash between them
+    // left a budget key with no TTL, permanently locking the user out of AI.
+    await getRedis().multi().incrby(budgetKey, cost).expire(budgetKey, 86400).exec();
+    // REVIEW FIX (PR242): ai_cost_logs.model is NOT NULL with no default — this
+    // INSERT (and the three service-level metering inserts) previously omitted
+    // it, so EVERY cost row was silently rejected by Postgres while the
+    // try/catch swallowed the error. Cost governance was recording nothing.
+    const model = config.ai[provider]?.model ?? 'unknown';
     await db.query(
-      `INSERT INTO ai_cost_logs (agent_type, user_id, provider, tokens_used, estimated_cost_cents, created_at)
-       VALUES ($1, $2, $3, $4, $5, NOW())`,
-      [agent, userId, provider, tokensUsed, cost]
+      `INSERT INTO ai_cost_logs (agent_type, user_id, provider, model, tokens_used, estimated_cost_cents, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
+      [agent, userId, provider, model, tokensUsed, cost]
     );
   } catch (error) {
     console.error(`[AI Router] Failed to track cost:`, error);
@@ -97,11 +106,11 @@ interface AIResponse { text: string; usage: { prompt_tokens: number; completion_
 async function callGroq(prompt: string, maxTokens: number): Promise<AIResponse> {
   const { Groq } = await import('groq-sdk');
   const groq = new Groq({ apiKey: config.ai.groq.apiKey });
-  const response = await groq.chat.completions.create({
+  const response = await groqBreaker.execute(() => groq.chat.completions.create({
     model: config.ai.groq.model,
     messages: [{ role: 'user', content: prompt }],
     max_tokens: maxTokens,
-  });
+  }));
   return {
     text: response.choices[0]?.message?.content || '',
     usage: { prompt_tokens: response.usage?.prompt_tokens || 0, completion_tokens: response.usage?.completion_tokens || 0, total_tokens: response.usage?.total_tokens || 0 },
@@ -112,11 +121,11 @@ async function callGroq(prompt: string, maxTokens: number): Promise<AIResponse> 
 async function callOpenAI(prompt: string, maxTokens: number): Promise<AIResponse> {
   const { OpenAI } = await import('openai');
   const openai = new OpenAI({ apiKey: config.ai.openai.apiKey });
-  const response = await openai.chat.completions.create({
+  const response = await openaiBreaker.execute(() => openai.chat.completions.create({
     model: config.ai.openai.model,
     messages: [{ role: 'user', content: prompt }],
     max_tokens: maxTokens,
-  });
+  }));
   return {
     text: response.choices[0]?.message?.content || '',
     usage: { prompt_tokens: response.usage?.prompt_tokens || 0, completion_tokens: response.usage?.completion_tokens || 0, total_tokens: response.usage?.total_tokens || 0 },
@@ -127,11 +136,11 @@ async function callOpenAI(prompt: string, maxTokens: number): Promise<AIResponse
 async function callDeepSeek(prompt: string, maxTokens: number): Promise<AIResponse> {
   const { OpenAI } = await import('openai');
   const deepseek = new OpenAI({ apiKey: config.ai.deepseek.apiKey, baseURL: 'https://api.deepseek.com' });
-  const response = await deepseek.chat.completions.create({
+  const response = await deepseekBreaker.execute(() => deepseek.chat.completions.create({
     model: config.ai.deepseek.model,
     messages: [{ role: 'user', content: prompt }],
     max_tokens: maxTokens,
-  });
+  }));
   return {
     text: response.choices[0]?.message?.content || '',
     usage: { prompt_tokens: response.usage?.prompt_tokens || 0, completion_tokens: response.usage?.completion_tokens || 0, total_tokens: response.usage?.total_tokens || 0 },
@@ -142,11 +151,11 @@ async function callDeepSeek(prompt: string, maxTokens: number): Promise<AIRespon
 async function callAlibaba(prompt: string, maxTokens: number): Promise<AIResponse> {
   const { OpenAI } = await import('openai');
   const alibaba = new OpenAI({ apiKey: config.ai.alibaba.apiKey, baseURL: 'https://dashscope.aliyuncs.com/compatible-mode/v1' });
-  const response = await alibaba.chat.completions.create({
+  const response = await alibabaBreaker.execute(() => alibaba.chat.completions.create({
     model: config.ai.alibaba.model,
     messages: [{ role: 'user', content: prompt }],
     max_tokens: maxTokens,
-  });
+  }));
   return {
     text: response.choices[0]?.message?.content || '',
     usage: { prompt_tokens: response.usage?.prompt_tokens || 0, completion_tokens: response.usage?.completion_tokens || 0, total_tokens: response.usage?.total_tokens || 0 },
@@ -161,6 +170,13 @@ async function retryWithBackoff<T>(fn: () => Promise<T>, maxRetries: number = 3,
     try {
       return await fn();
     } catch (error) {
+      // REVIEW FIX (PR242): an OPEN circuit breaker cannot recover within the
+      // retry window (resetTimeout ≫ backoff) — retrying just burns ~3-4s of
+      // dead sleep per provider before the fallback chain advances. Fail fast
+      // to the next provider instead.
+      if (error instanceof CircuitOpenError) {
+        throw error;
+      }
       lastError = error instanceof Error ? error : new Error(String(error));
       if (attempt < maxRetries) {
         const delay = baseDelayMs * Math.pow(2, attempt) + Math.random() * 500;

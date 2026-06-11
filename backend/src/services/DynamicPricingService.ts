@@ -15,6 +15,7 @@
 
 import { db } from '../db.js';
 import type { ServiceResult } from '../types.js';
+import { EscrowService } from './EscrowService.js'; // AUDIT FIX M1
 
 // ============================================================================
 // TYPES
@@ -293,10 +294,13 @@ export const DynamicPricingService = {
         // poster would need to pay the difference out-of-band, which is a separate
         // flow. Updating the DB amount on a FUNDED escrow would cause a display/
         // release divergence (escrow.amount > actual collected funds), so we skip it.
-        await query(
-          `UPDATE escrows SET amount = $1 WHERE task_id = $2 AND state = 'PENDING'`,
-          [newPrice, taskId]
-        );
+        // AUDIT FIX M1: escrow mutations are owned by EscrowService; pass our tx
+        // executor so the sync stays atomic with the price bump.
+        const syncResult = await EscrowService.syncPendingAmount(taskId, newPrice, query);
+        if (!syncResult.success) {
+          // Invalid amount — abort the whole bump (cannot have price/escrow divergence)
+          throw new Error(`escrow amount sync rejected: ${syncResult.error.message}`);
+        }
 
         return { found: true, maxBumps: false, newPrice, newBumpCount } as const;
       });

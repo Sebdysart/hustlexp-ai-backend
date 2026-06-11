@@ -19,6 +19,10 @@ import { z } from 'zod';
 import { router, protectedProcedure, hustlerProcedure, posterProcedure, Schemas } from '../trpc.js';
 import { db } from '../db.js';
 import { ComplianceGuardianService } from '../services/ComplianceGuardianService.js';
+import { TaskService } from '../services/TaskService.js'; // AUDIT FIX M2
+import { logger } from '../logger.js';
+
+const squadLog = logger.child({ router: 'squad' });
 
 // Trust tier gate: Only Elite (tier 4) can create/join squads
 const REQUIRED_TRUST_TIER = 4;
@@ -523,71 +527,123 @@ export const squadRouter = router({
     .mutation(async ({ ctx, input }) => {
       assertEliteTier(ctx.user.trust_tier);
 
-      return await db.transaction(async (query) => {
-        const organizerCheck = await query<{ id: string }>(
-          `SELECT s.id FROM squads s
-           JOIN squad_members sm ON sm.squad_id = s.id AND sm.user_id = $2
-           WHERE s.id = $1 AND s.status = 'active' AND sm.role = 'organizer'`,
-          [input.squadId, ctx.user.id]
-        );
-        if (organizerCheck.rows.length === 0) {
-          throw new TRPCError({ code: 'FORBIDDEN', message: 'Only the squad organizer can create team tasks' });
-        }
+      // AUDIT FIX M2 (2026-06-11): this previously did a raw
+      // `INSERT INTO tasks ... risk_level='LOW'` inside the transaction —
+      // bypassing TaskService.create entirely (no price validation, no
+      // plan-gating, no XP computation, no outbox event) and force-labelling
+      // every squad task LOW-risk. It also held an external AI compliance call
+      // open INSIDE a DB transaction. Restructured: reads + compliance + task
+      // creation (which owns its own atomicity) happen first; the squad link +
+      // assignment insert stay atomic in one transaction.
+      const organizerCheck = await db.query<{ id: string }>(
+        `SELECT s.id FROM squads s
+         JOIN squad_members sm ON sm.squad_id = s.id AND sm.user_id = $2
+         WHERE s.id = $1 AND s.status = 'active' AND sm.role = 'organizer'`,
+        [input.squadId, ctx.user.id]
+      );
+      if (organizerCheck.rows.length === 0) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'Only the squad organizer can create team tasks' });
+      }
 
-        const perWorkerCents = Math.floor(input.totalPriceCents / input.requiredWorkers);
-        if (perWorkerCents < 100) {
-          throw new TRPCError({
-            code: 'BAD_REQUEST',
-            message: 'Total price too low for required workers (min $1 per worker)',
-          });
-        }
-
-        // Run compliance check — hard blocks throw before any DB write
-        const compliance = await ComplianceGuardianService.evaluate({
-          description: input.description,
-          userId: ctx.user.id,
-          templateSlug: 'standard_physical',
+      const perWorkerCents = Math.floor(input.totalPriceCents / input.requiredWorkers);
+      if (perWorkerCents < 100) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: 'Total price too low for required workers (min $1 per worker)',
         });
-        if (compliance.tier === 'hard_block') {
-          throw new TRPCError({
-            code: 'BAD_REQUEST',
-            message: 'Task blocked by compliance check. HustleXP only allows legal IRL tasks.',
-          });
-        }
+      }
 
-        const taskResult = await query<{ id: string }>(
-          `INSERT INTO tasks (poster_id, title, description, price, requirements, location, category, risk_level, state)
-           VALUES ($1, $2, $3, $4, '', $5, $6, 'LOW', 'OPEN')
-           RETURNING id`,
-          [ctx.user.id, input.title, input.description, input.totalPriceCents, input.location ?? null, input.category ?? null]
-        );
-        const taskId = taskResult.rows[0].id;
-
-        try {
-          await query(
-            `UPDATE tasks SET squad_id = $1 WHERE id = $2`,
-            [input.squadId, taskId]
-          );
-        } catch {
-          // squad_id column may not exist if migration not run; continue
-        }
-
-        const assignResult = await query<{ id: string }>(
-          `INSERT INTO squad_task_assignments (squad_id, task_id, required_workers, payment_split_mode, per_worker_payment_cents, status)
-           VALUES ($1, $2, $3, $4, $5, 'recruiting')
-           RETURNING id`,
-          [input.squadId, taskId, input.requiredWorkers, input.paymentSplit, perWorkerCents]
-        );
-
-        return {
-          id: assignResult.rows[0].id,
-          taskId,
-          squadId: input.squadId,
-          requiredWorkers: input.requiredWorkers,
-          perWorkerPaymentCents: perWorkerCents,
-          status: 'recruiting',
-        };
+      // Run compliance check — hard blocks throw before any DB write
+      const compliance = await ComplianceGuardianService.evaluate({
+        description: input.description,
+        userId: ctx.user.id,
+        templateSlug: 'standard_physical',
       });
+      if (compliance.tier === 'hard_block') {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: 'Task blocked by compliance check. HustleXP only allows legal IRL tasks.',
+        });
+      }
+
+      // Create through the owning service (validation, plan-gating, XP, outbox).
+      // Risk: non-clean compliance results raise the floor to MEDIUM instead of
+      // the old hardcoded LOW.
+      const createResult = await TaskService.create({
+        posterId: ctx.user.id,
+        title: input.title,
+        description: input.description,
+        price: input.totalPriceCents,
+        location: input.location,
+        category: input.category,
+        riskLevel: compliance.tier === 'clean' ? 'LOW' : 'MEDIUM',
+      });
+      if (!createResult.success) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: `Could not create squad task: ${createResult.error.message}` });
+      }
+      const taskId = createResult.data.id;
+
+      // REVIEW FIX (PR242): TaskService.create commits the task before this
+      // transaction. If the link/assignment tx fails, the old code's atomicity
+      // meant no task existed — the restructured flow would have left an
+      // orphaned, publicly-claimable OPEN task with no squad economics.
+      // COMPENSATION: on tx failure, cancel the just-created task (guarded
+      // OPEN→CANCELLED via the owning service) and rethrow. A brief window
+      // where the task is OPEN-but-unlinked remains (ms-scale, claim requires
+      // matching/accept flow) — documented residual, strictly narrower than an
+      // orphan that lives forever.
+      try {
+        return await db.transaction(async (query) => {
+          try {
+            await query(
+              `UPDATE tasks SET squad_id = $1 WHERE id = $2`,
+              [input.squadId, taskId]
+            );
+          } catch (linkErr) {
+            // squad_id column may not exist if migration not run; continue — but
+            // LOUDLY (AUDIT FIX M2: this was a silent swallow).
+            squadLog.warn(
+              { taskId, squadId: input.squadId, err: linkErr instanceof Error ? linkErr.message : String(linkErr) },
+              'createTeamTask: could not link task to squad (squad_id column missing?) — task created unlinked'
+            );
+          }
+
+          const assignResult = await query<{ id: string }>(
+            `INSERT INTO squad_task_assignments (squad_id, task_id, required_workers, payment_split_mode, per_worker_payment_cents, status)
+             VALUES ($1, $2, $3, $4, $5, 'recruiting')
+             RETURNING id`,
+            [input.squadId, taskId, input.requiredWorkers, input.paymentSplit, perWorkerCents]
+          );
+
+          return {
+            id: assignResult.rows[0].id,
+            taskId,
+            squadId: input.squadId,
+            requiredWorkers: input.requiredWorkers,
+            perWorkerPaymentCents: perWorkerCents,
+            status: 'recruiting',
+          };
+        });
+      } catch (txErr) {
+        // Compensate: the squad assignment failed — the task must not survive
+        // as a claimable solo task with wrong economics.
+        const cancelResult = await TaskService.cancel(taskId, ctx.user.id).catch((cancelErr: unknown) => ({
+          success: false as const,
+          error: { code: 'CANCEL_THREW', message: cancelErr instanceof Error ? cancelErr.message : String(cancelErr) },
+        }));
+        if (!cancelResult.success) {
+          squadLog.error(
+            { taskId, squadId: input.squadId, cancelError: cancelResult.error },
+            'CRITICAL: squad assignment failed AND compensation cancel failed — orphaned OPEN task requires manual cleanup'
+          );
+        } else {
+          squadLog.warn(
+            { taskId, squadId: input.squadId },
+            'createTeamTask: assignment tx failed — compensated by cancelling the created task'
+          );
+        }
+        throw txErr;
+      }
     }),
 
   // --------------------------------------------------------------------------

@@ -153,7 +153,10 @@ export function reportSystemMetrics(): void {
 }
 
 // Report system metrics every 30 seconds
-setInterval(reportSystemMetrics, 30000);
+// AUDIT FIX L2: unref() — a metrics timer must never pin the event loop open
+// during shutdown; handle kept for completeness.
+const systemMetricsInterval = setInterval(reportSystemMetrics, 30000);
+systemMetricsInterval.unref();
 
 // ============================================================================
 // Graceful Shutdown

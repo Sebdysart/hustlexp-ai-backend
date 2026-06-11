@@ -21,6 +21,7 @@ import type { ServiceResult } from '../types.js';
 import { stripeBreaker } from '../middleware/circuit-breaker.js';
 import { stripeLogger } from '../logger.js';
 import { notifyAdmins } from './AdminNotificationHelper.js';
+import { computePlatformFeeCents } from '../lib/money.js';
 
 // ============================================================================
 // INITIALIZATION
@@ -162,7 +163,10 @@ export const StripeService = {
 
     try {
       // Calculate platform fee (PRODUCT_SPEC §9: 15% platform fee)
-      const platformFee = Math.floor(amount * (config.stripe.platformFeePercent / 100));
+      // AUDIT FIX H3: was Math.floor while every release path used Math.round —
+      // the same gross produced path-dependent fees differing by 1¢, breaking
+      // ledger reconciliation. Unified on Math.round via lib/money.
+      const platformFee = computePlatformFeeCents(amount);
 
       // NOTE on application_fee_amount (FIX 2 analysis):
       // `application_fee_amount` only works on Connect charges where the payment

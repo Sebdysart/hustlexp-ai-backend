@@ -16,7 +16,13 @@ import { z } from 'zod';
 vi.mock('../../src/db.js', () => ({
   db: {
     query: vi.fn(),
-    transaction: vi.fn(),
+    // AUDIT FIX M7: real transaction shape — runs fn with an executor that
+    // delegates to the CURRENT db.query (so tests that patch db.query still
+    // drive in-transaction statements).
+    transaction: vi.fn(async (fn: (q: unknown) => Promise<unknown>) => {
+      const mod = await import('../../src/db.js');
+      return fn((sql: string, params?: unknown[]) => (mod.db.query as (s: string, p?: unknown[]) => unknown)(sql, params));
+    }),
   },
 }));
 
@@ -141,7 +147,10 @@ describe('Bug BB1-1 — Occurrence amplification cap', () => {
       }],
     });
 
-    // Call 2: existing occurrences — 500 rows (at cap)
+    // Call 2: FOR UPDATE series lock inside the transaction (AUDIT FIX M7)
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: SERIES_ID }] });
+
+    // Call 3: existing occurrences — 500 rows (at cap)
     const existingRows = Array.from({ length: 500 }, (_, i) => ({
       scheduled_date: `2025-${String(Math.floor(i / 30) + 1).padStart(2, '0')}-${String((i % 30) + 1).padStart(2, '0')}`,
       occurrence_number: i + 1,

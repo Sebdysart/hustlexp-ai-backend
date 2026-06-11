@@ -26,6 +26,7 @@ import { config } from '../config.js';
 import { invalidateAuthCacheForUser } from '../auth-cache.js';
 import { forceDisconnectUser } from '../realtime/connection-registry.js';
 import { revokeUserSessions } from '../auth/middleware.js';
+import { stripeBreaker } from '../middleware/circuit-breaker.js'; // AUDIT FIX M3
 
 // Module-level Stripe singleton — only instantiated when a real key is present.
 // Matches the pattern used in TippingService.ts.
@@ -1234,7 +1235,9 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
         if (escrow.state === 'PENDING' && escrow.stripe_payment_intent_id) {
           try {
             if (stripe) {
-              await stripe.paymentIntents.cancel(escrow.stripe_payment_intent_id);
+              // AUDIT FIX M3: via stripeBreaker — GDPR deletion must not hold
+              // open calls against a failing Stripe.
+              await stripeBreaker.execute(() => stripe!.paymentIntents.cancel(escrow.stripe_payment_intent_id!));
             }
           } catch (stripeErr) {
             log.warn({ escrowId: escrow.id, paymentIntentId: escrow.stripe_payment_intent_id, taskId: row.id, userId, err: stripeErr instanceof Error ? stripeErr.message : String(stripeErr) }, 'GDPR: could not cancel Stripe PaymentIntent for PENDING escrow — continuing with refund');
@@ -1352,7 +1355,8 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
     const stripeCustomerId = stripeCustomerRow.rows[0]?.stripe_customer_id ?? null;
     if (stripeCustomerId && stripe) {
       try {
-        await stripe.customers.del(stripeCustomerId);
+        // AUDIT FIX M3: via stripeBreaker
+        await stripeBreaker.execute(() => stripe!.customers.del(stripeCustomerId));
       } catch (stripeErr) {
         log.warn(
           { userId, stripeCustomerId, err: stripeErr instanceof Error ? stripeErr.message : String(stripeErr) },
@@ -1837,6 +1841,10 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
 
       // D63-1: revenue_ledger.user_id is nullable FK with ON DELETE SET NULL, but
       // cascade never fires because users is UPDATEd not DELETEd. NULL it manually.
+      // AUDIT FIX C1: this UPDATE succeeds ONLY via the narrow GDPR exemption in
+      // prevent_revenue_ledger_update() (user_id → NULL, no other column changed) —
+      // see migrations/revenue_ledger_gdpr_user_id_exemption.sql. Any other ledger
+      // UPDATE still raises HX701 (INV-4 append-only).
       await query(
         `UPDATE revenue_ledger SET user_id = NULL WHERE user_id = $1`,
         [userId]

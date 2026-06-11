@@ -50,3 +50,14 @@ When implementing from an issue or fixing review comments:
 
 - Autonomous branches: `auto/{issue-number}` (eligible for auto-merge)
 - Human branches: any other pattern (require manual merge)
+
+## Decision Log
+
+**2026-06-11 — audit-fixes-2026-06-11 (full-codebase audit remediation):**
+- **Money math convention = `Math.round`**, single source of truth in `backend/src/lib/money.ts` (`computePlatformFeeCents`, `computeFeeBreakdown`, `xpForPriceCents`). Decompositions are complements of gross: fee + insurance + net === gross, always. Insurance basis is **GROSS** (F54-2) on every release path. Do not reintroduce inline fee/XP math.
+- **revenue_ledger append-only has exactly ONE exemption**: GDPR PII unlink (`user_id → NULL`, all other columns unchanged, row-generic comparison) — `migrations/revenue_ledger_gdpr_user_id_exemption.sql`. Everything else still raises HX701.
+- **Chargeback handlers are atomic** (one `db.transaction` each; ledger writes join via `RevenueService.logEvent(params, q)`); the stripe-event-worker dispatcher throws on `success:false` so BullMQ retries instead of marking failures processed.
+- **Isolation-level doctrine (codified)**: money paths use `db.transaction` (READ COMMITTED) + `SELECT … FOR UPDATE` + `version` optimistic guards — this pattern, not SERIALIZABLE, is the sanctioned standard (XP paths keep `serializableTransaction`). DB backstops: `escrow_terminal_guard` (HX301) + `escrow_amount_immutable` (HX004) enforce single-release at the DB; verified against real Postgres.
+- **External calls**: every Stripe/AI call goes through its CircuitBreaker; routers use the shared client (`lib/stripe-client.ts`), never `new Stripe(...)`. All AI spend is metered to `ai_cost_logs` (including embeddings/vision fetches).
+- **Test hermeticity**: `vitest.config.ts` forces `NODE_ENV=test` (a machine-level `NODE_ENV=production` export was flipping 19 tests red). Never set a global dummy `DATABASE_URL` — `hasDb` skip logic must keep skipping.
+- **Referral redemption**: unique index on `referral_redemptions(referred_id)` + `ON CONFLICT DO NOTHING` is the idempotency witness (`migrations/audit_fixes_concurrency.sql`).

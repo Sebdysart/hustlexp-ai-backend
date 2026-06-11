@@ -45,6 +45,17 @@ vi.mock('@upstash/redis', () => ({
     get    = mockGet;
     incrby = mockIncrby;
     expire = mockExpire;
+    // AUDIT FIX L3: trackCost now uses an atomic MULTI/EXEC chain
+    // (incrby + expire in one transaction). The chainable mock records the
+    // same incrby/expire spies so existing assertions keep working.
+    multi = () => {
+      const chain = {
+        incrby: (key: string, value: number) => { mockIncrby(key, value); return chain; },
+        expire: (key: string, seconds: number) => { mockExpire(key, seconds); return chain; },
+        exec: vi.fn().mockResolvedValue([]),
+      };
+      return chain;
+    };
     constructor(_opts: unknown) {}
   },
 }));
@@ -63,6 +74,15 @@ vi.mock('../../src/config', () => ({
       alibaba:  { apiKey: 'alibaba-key',  model: 'qwen-max' },
     },
   },
+}));
+
+// AUDIT FIX H6: AIRouter now imports circuit breakers (module chain pulls in
+// logger → real config). Pass-through mock keeps this suite hermetic.
+vi.mock('../../src/middleware/circuit-breaker', () => ({
+  openaiBreaker: { execute: (fn: () => unknown) => fn() },
+  groqBreaker: { execute: (fn: () => unknown) => fn() },
+  deepseekBreaker: { execute: (fn: () => unknown) => fn() },
+  alibabaBreaker: { execute: (fn: () => unknown) => fn() },
 }));
 
 vi.mock('../../src/ai/UserAIBudget', () => ({
@@ -164,9 +184,13 @@ describe('callAI — happy path', () => {
 
     expect(mockIncrby).toHaveBeenCalled();
     expect(mockExpire).toHaveBeenCalled();
+    // REVIEW FIX (PR242): the old `expect.any(Array)` hid a real bug — the
+    // INSERT omitted the NOT NULL `model` column, so every cost row was
+    // rejected by Postgres while CI stayed green. Pin the column list AND the
+    // param shape so a schema-violating insert can never pass again.
     expect(mockQuery).toHaveBeenCalledWith(
-      expect.stringContaining('INSERT INTO ai_cost_logs'),
-      expect.any(Array),
+      expect.stringContaining('INSERT INTO ai_cost_logs (agent_type, user_id, provider, model, tokens_used, estimated_cost_cents, created_at)'),
+      ['judge', USER_ID, 'groq', 'llama-3.3-70b-versatile', expect.any(Number), expect.any(Number)],
     );
     expect(mockTrackUserCost).toHaveBeenCalled();
     expect(mockTrackGlobalCost).toHaveBeenCalled();

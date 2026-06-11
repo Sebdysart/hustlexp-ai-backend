@@ -14,6 +14,7 @@
 
 import { db, isInvariantViolation, getErrorMessage } from '../db.js';
 import { writeToOutbox } from '../lib/outbox-helpers.js';
+import { xpForPriceCents } from '../lib/money.js';
 import { PlanService } from './PlanService.js';
 import { ScoperAIService } from './ScoperAIService.js';
 import { MIN_INSTANT_TIER, MIN_SENSITIVE_INSTANT_TIER } from './InstantTrustConfig.js';
@@ -354,12 +355,9 @@ export const TaskService = {
       }
     }
 
-    // Calculate XP reward if not set by Scoper AI (formula: price / 10)
-    if (!xpReward) {
-      xpReward = Math.round(finalPrice / 10);
-    }
-
-    // Validate price is positive integer (cents)
+    // Validate price is positive integer (cents) — MUST precede any derived
+    // money math: xpForPriceCents (INV-5) throws on non-integer input, and the
+    // caller deserves this structured error, not an exception.
     if (!Number.isInteger(finalPrice) || finalPrice <= 0) {
       return {
         success: false,
@@ -368,6 +366,12 @@ export const TaskService = {
           message: 'Price must be a positive integer (cents)',
         },
       };
+    }
+
+    // Calculate XP reward if not set by Scoper AI (formula: price / 10)
+    // AUDIT FIX M11: single home for the formula in lib/money
+    if (!xpReward) {
+      xpReward = xpForPriceCents(finalPrice);
     }
 
     // SPEC ALIGNMENT (PRODUCT_SPEC §3.5): Minimum price enforcement

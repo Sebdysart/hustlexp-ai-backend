@@ -16,7 +16,9 @@
 
 import { TRPCError } from '@trpc/server';
 import { db, isInvariantViolation, isUniqueViolation, getErrorMessage } from '../db.js';
+import type { QueryFn } from '../db.js';
 import { config } from '../config.js';
+import { computeFeeBreakdown, computePlatformFeeCents, clampFeePercent } from '../lib/money.js';
 import { EarnedVerificationUnlockService } from './EarnedVerificationUnlockService.js';
 import { XPTaxService } from './XPTaxService.js';
 import { XPService } from './XPService.js';
@@ -257,6 +259,41 @@ export const EscrowService = {
    * initial version, only the first COMMIT increments the version — the second
    * UPDATE hits version already incremented → 0 rows → clean INVALID_STATE error.
    */
+  /**
+   * Sync a PENDING escrow's amount to a changed task price.
+   *
+   * AUDIT FIX M1 (2026-06-11): DynamicPricingService previously issued a raw
+   * `UPDATE escrows SET amount` — escrow mutations must be owned by
+   * EscrowService so invariants live in one place. PENDING-only by design:
+   * a FUNDED escrow's amount is what Stripe actually captured (the HX004
+   * trigger also blocks post-funding amount changes at the DB).
+   *
+   * INV-1/INV-5: amount must be a positive integer in cents.
+   * Accepts an optional transaction executor so callers already holding a
+   * lock on the task row (e.g. the ASAP bump transaction) keep atomicity.
+   */
+  syncPendingAmount: async (
+    taskId: string,
+    newAmountCents: number,
+    q?: QueryFn
+  ): Promise<ServiceResult<{ updated: boolean }>> => {
+    if (!Number.isInteger(newAmountCents) || newAmountCents <= 0) {
+      return {
+        success: false,
+        error: {
+          code: ErrorCodes.INVALID_STATE,
+          message: 'Escrow amount must be a positive integer (cents)',
+        },
+      };
+    }
+    const exec: QueryFn = q ?? db.query;
+    const result = await exec(
+      `UPDATE escrows SET amount = $1 WHERE task_id = $2 AND state = 'PENDING'`,
+      [newAmountCents, taskId]
+    );
+    return { success: true, data: { updated: (result.rowCount ?? 0) > 0 } };
+  },
+
   fund: async (params: FundEscrowParams): Promise<ServiceResult<Escrow>> => {
     const { escrowId, stripePaymentIntentId } = params;
 
@@ -537,24 +574,19 @@ export const EscrowService = {
           }
         }
 
-        // Calculate platform fee (from config - default 15%)
-        // SECURITY FIX (v2.9.3): Clamp to [0, 100] — a negative env var must not
-        // produce a negative fee (which would overpay the worker).
-        // Computed once inside the transaction and threaded out via `post` so the
-        // post-commit side effects reuse the exact same values (no recalculation).
-        const platformFeePercent = Math.min(100, Math.max(0, config.stripe.platformFeePercent ?? 15));
-        const platformFeeCents = Math.round(resolvedGross * (platformFeePercent / 100));
-        // F-22 FIX: Subtract self-insurance contribution (2%) from net payout so
-        // the amount is actually withheld from the worker transfer, not just recorded.
-        // netPayoutCents (used for recordContribution and logged) is the post-platform-fee
-        // amount; the insurance contribution is deducted from it before paying out.
-        const INSURANCE_RATE = 0.02; // 2% — matches SelfInsurancePoolService default
-        const resolvedNetBeforeInsurance = resolvedGross - platformFeeCents;
-        // F54-2 FIX: Insurance contribution is 2% of gross escrow amount (task price),
-        // not 2% of net-of-platform-fee. This matches SelfInsurancePoolService.calculateContribution
-        // which takes taskPriceCents (gross) as its input.
-        const txInsuranceContributionCents = Math.round(resolvedGross * INSURANCE_RATE);
-        const resolvedNet = resolvedNetBeforeInsurance - txInsuranceContributionCents;
+        // Calculate platform fee + insurance + net via the unified money helper
+        // (AUDIT FIX H3: single source of truth, Math.round convention — this is
+        // byte-identical to the math previously inlined here).
+        // SECURITY FIX (v2.9.3) preserved: percent clamped to [0,100] inside helper.
+        // F-22 / F54-2 preserved: insurance is 2% of GROSS, deducted from the
+        // worker transfer. Computed once inside the transaction and threaded out
+        // via `post` so post-commit side effects reuse the exact same values.
+        const platformFeePercent = clampFeePercent(config.stripe.platformFeePercent);
+        const {
+          platformFeeCents,
+          insuranceContributionCents: txInsuranceContributionCents,
+          netPayoutCents: resolvedNet,
+        } = computeFeeBreakdown(resolvedGross, platformFeePercent);
 
         // 2. Release escrow (SPEC FIX: Allow release from both FUNDED and LOCKED_DISPUTE states)
         // The version = $3 optimistic-lock guard is a secondary safety net: if somehow
@@ -1437,7 +1469,7 @@ export const EscrowService = {
       // that workerCents + posterCents === partialAmount always (no residual cent).
       const workerCents = Math.round(partialAmount * (workerPercent / 100));
       const posterCents = partialAmount - workerCents;
-      const platformFeePercent = Math.min(100, Math.max(0, config.stripe.platformFeePercent ?? 15));
+      const platformFeePercent = clampFeePercent(config.stripe.platformFeePercent);
 
       let resolvedTransferId: string | null = txExistingTransferId;
       let resolvedRefundId: string | null = txExistingRefundId;
@@ -1483,7 +1515,10 @@ export const EscrowService = {
       // already set) still produce the correct value for the revenue ledger below.
       // Hoisted so the same rounded value is reused in the revenue ledger block below,
       // preventing divergence from a second independent Math.round() call.
-      const netWorkerCents = Math.round(workerCents * (1 - platformFeePercent / 100));
+      // AUDIT FIX H3: was round(worker × (1 − pct/100)), which disagrees with the
+      // complement form by 1¢ on .5 boundaries (e.g. 1050¢ @15%: 893 vs 892) —
+      // the full-release path uses fee-then-complement. Unified: net = worker − fee.
+      const netWorkerCents = workerCents - computePlatformFeeCents(workerCents, platformFeePercent);
       if (workerCents > 0) {
         if (txExistingTransferId) {
           // Idempotency: transfer already recorded from a prior attempt — skip.
