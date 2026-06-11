@@ -78,7 +78,10 @@ describe('RATE_LIMITS', () => {
 
 describe('BUSINESS', () => {
   it('should have expected values', () => {
-    expect(BUSINESS.PLATFORM_FEE_PERCENT).toBe(15);
+    // AUDIT FIX M10: PLATFORM_FEE_PERCENT must NOT exist here — it was an
+    // orphan that could silently diverge from config.stripe.platformFeePercent.
+    // Fee math lives in lib/money.ts.
+    expect('PLATFORM_FEE_PERCENT' in BUSINESS).toBe(false);
     expect(BUSINESS.MIN_TASK_VALUE_CENTS).toBe(500);
     expect(BUSINESS.MAX_TASK_VALUE_CENTS).toBe(100_000);
   });

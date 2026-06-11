@@ -16,6 +16,7 @@ import { AIClient } from './AIClient.js';
 import { ScoperProposalSchema } from '../lib/ai-response-schemas.js';
 import { aiLogger } from '../logger.js';
 import { scrubPII } from '../lib/pii-scrubber.js';
+import { xpForPriceCents } from '../lib/money.js';
 import { getTemplate, applyWildcardMultipliers, TEMPLATE_SLUGS } from './TaskTemplateRegistry.js';
 import type { ComplianceResult } from './ComplianceGuardianService.js';
 
@@ -402,7 +403,8 @@ ${input.location ? `Location: ${input.location.city}, ${input.location.state}` :
     }
 
     // Rule 2: XP calculation (price/10 ±20%)
-    const expectedXp = Math.round(proposal.suggested_price_cents / 10);
+    // AUDIT FIX M11: unified formula from lib/money
+    const expectedXp = xpForPriceCents(proposal.suggested_price_cents);
     const xpTolerance = expectedXp * XP_TOLERANCE_PERCENTAGE;
     if (Math.abs(proposal.suggested_xp - expectedXp) > xpTolerance) {
       errors.push(`SCOPER-ERR-003: XP ${proposal.suggested_xp} deviates >20% from expected ${expectedXp}`);

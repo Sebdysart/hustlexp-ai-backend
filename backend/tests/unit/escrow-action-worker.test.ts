@@ -239,7 +239,10 @@ describe('escrow-action-worker — platform fee deduction (P0 revenue bug)', () 
     // Worker should receive 85% = 8500 cents, NOT the full 10000 cents
     expect(StripeService.createTransfer).toHaveBeenCalledOnce();
     const transferCall = vi.mocked(StripeService.createTransfer).mock.calls[0][0];
-    expect(transferCall.amount).toBe(8_330); // 10000 - 15% fee = 8500; 8500 - 2% insurance = 8330
+    // AUDIT FIX H3: insurance basis unified on GROSS (F54-2, matches
+    // EscrowService.release): 10000 − 1500 fee − round(10000×2%)=200 → 8300.
+    // (Old NET basis gave 8330 — the two release paths paid different amounts.)
+    expect(transferCall.amount).toBe(8_300);
   });
 
   it('does NOT transfer the full escrow amount (confirms the bug is fixed)', async () => {
@@ -267,9 +270,10 @@ describe('escrow-action-worker — platform fee deduction (P0 revenue bug)', () 
 
     await processEscrowActionJob(job as never);
 
-    // 15% of 3333 = 499.95 → round to 500; net = 3333 - 500 = 2833; 2% insurance = 57; transfer = 2776
+    // AUDIT FIX H3 (gross-basis insurance): 15% of 3333 = 499.95 → round 500;
+    // insurance = round(3333×2%) = round(66.66) = 67; transfer = 3333−500−67 = 2766.
     const transferCall = vi.mocked(StripeService.createTransfer).mock.calls[0][0];
-    expect(transferCall.amount).toBe(2_776);
+    expect(transferCall.amount).toBe(2_766);
   });
 
   it('skips transfer when idempotent replay (stripe_transfer_id already set)', async () => {
@@ -765,11 +769,12 @@ describe('escrow-action-worker — release payout math: conservation & non-negat
       const transferArg = vi.mocked(StripeService.createTransfer).mock.calls[0][0] as { amount: number };
       const workerTransfer = transferArg.amount;
 
-      // Re-derive the source decomposition (15% platform fee, then 2% insurance of net).
+      // Re-derive the source decomposition via the unified convention
+      // (AUDIT FIX H3: 15% fee on gross, 2% insurance on GROSS — F54-2 basis,
+      // identical to EscrowService.release; transfer is the exact complement).
       const platformFee = Math.round(gross * 0.15);
-      const net = gross - platformFee;
-      const insurance = Math.round(net * 0.02);
-      const expectedTransfer = net - insurance;
+      const insurance = Math.round(gross * 0.02);
+      const expectedTransfer = gross - platformFee - insurance;
 
       expect(workerTransfer).toBe(expectedTransfer);          // payout amount pinned
       expect(platformFee + insurance + workerTransfer).toBe(gross); // money conserved, no cents lost

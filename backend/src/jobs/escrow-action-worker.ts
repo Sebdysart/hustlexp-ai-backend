@@ -37,6 +37,7 @@ import { RevenueService } from '../services/RevenueService.js';
 import { SelfInsurancePoolService } from '../services/SelfInsurancePoolService.js';
 import { workerLogger } from '../logger.js';
 import { config } from '../config.js';
+import { computeFeeBreakdown, computePlatformFeeCents, clampFeePercent } from '../lib/money.js';
 import { verifyJobSignature } from './queues.js';
 import { z } from 'zod';
 import type { Job } from 'bullmq';
@@ -319,18 +320,15 @@ async function handleReleaseRequest(
   // so the lock is held through the version check and the UPDATE, making
   // double-transfer physically impossible on this path.
 
-  // Deduct platform fee before paying out to worker (PRODUCT_SPEC §9: 15% default)
-  const platformFeePercent = Math.min(100, Math.max(0, config.stripe.platformFeePercent ?? 15));
-  const platformFeeCents = Math.round(escrow.amount * (platformFeePercent / 100));
-  const netPayoutCents = escrow.amount - platformFeeCents;
-
-  // F-22 FIX: Subtract self-insurance contribution from the Stripe transfer amount.
-  // Previously, recordContribution() was called with netPayoutCents * 0.02 but the
-  // transfer was sent for the full netPayoutCents — the insurance amount was recorded
-  // in the pool but never actually withheld from the worker's payout.
-  const INSURANCE_RATE = 0.02; // 2% — matches SelfInsurancePoolService.calculateContribution default
-  const insuranceContributionCents = Math.round(netPayoutCents * INSURANCE_RATE);
-  const transferAmountCents = netPayoutCents - insuranceContributionCents;
+  // Deduct platform fee + insurance via the unified money helper (PRODUCT_SPEC §9).
+  // AUDIT FIX H3 (2026-06-11): this path previously computed insurance on the
+  // NET payout (round(net × 2%)) while EscrowService.release uses the GROSS
+  // basis (F54-2: matches SelfInsurancePoolService.calculateContribution, which
+  // takes taskPriceCents). The two release paths therefore withheld DIFFERENT
+  // amounts for identical escrows. Unified on the gross basis — the dispute
+  // release now pays exactly what a normal release pays.
+  const { platformFeeCents, insuranceContributionCents, netPayoutCents: transferAmountCents, netBeforeInsuranceCents: netPayoutCents } =
+    computeFeeBreakdown(escrow.amount, config.stripe.platformFeePercent);
 
   log.info({ escrowId: escrow.id, escrowAmount: escrow.amount, platformFeeCents, netPayoutCents, insuranceContributionCents, transferAmountCents }, 'Platform fee and insurance contribution applied to transfer');
 
@@ -435,7 +433,7 @@ async function handleReleaseRequest(
         grossAmountCents: escrow.amount,
         platformFeeCents,
         netAmountCents: netPayoutCents,
-        feeBasisPoints: Math.round(platformFeePercent * 100),
+        feeBasisPoints: Math.round(clampFeePercent(config.stripe.platformFeePercent) * 100),
         escrowId: escrow.id,
         stripeTransferId: transferId,
         metadata: { event: 'escrow_dispute_release' },
@@ -702,9 +700,11 @@ async function handlePartialRefundRequest(
   // F-26: Validate using the same amounts that will be passed to Stripe, not raw inputs.
   // The worker receives netReleaseCents (after platform fee), not releaseAmount.
   // The fee absorbs any rounding residual so all three components sum to escrow.amount.
-  const platformFeePercentValidation = Math.min(100, Math.max(0, config.stripe?.platformFeePercent ?? 15));
-  const netReleaseCentsValidation = Math.round(releaseAmount * (1 - platformFeePercentValidation / 100));
-  const rawFeeCentsValidation = releaseAmount - netReleaseCentsValidation;
+  // AUDIT FIX H3: complement form via the unified helper — must stay in lockstep
+  // with EscrowService.partialRefund's netWorkerCents computation.
+  const releaseAmountCents = Math.round(releaseAmount);
+  const netReleaseCentsValidation = releaseAmountCents - computePlatformFeeCents(releaseAmountCents, config.stripe?.platformFeePercent);
+  const rawFeeCentsValidation = releaseAmountCents - netReleaseCentsValidation;
   const residualValidation = escrow.amount - Math.round(refundAmount) - netReleaseCentsValidation - rawFeeCentsValidation;
   const feeCentsValidation = rawFeeCentsValidation + residualValidation;
   if (Math.round(refundAmount) + netReleaseCentsValidation + feeCentsValidation !== escrow.amount) {

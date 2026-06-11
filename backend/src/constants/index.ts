@@ -39,7 +39,9 @@ export const RATE_LIMITS = {
 // BUSINESS LOGIC
 // ============================================================================
 export const BUSINESS = {
-  PLATFORM_FEE_PERCENT: 15,
+  // AUDIT FIX M10: PLATFORM_FEE_PERCENT removed — it was an orphan constant
+  // (zero consumers) that could silently diverge from the real env-driven
+  // config.stripe.platformFeePercent. Fee math lives in lib/money.ts.
   MIN_TASK_VALUE_CENTS: 500,       // $5.00
   MAX_TASK_VALUE_CENTS: 100_000,   // $1,000
   PREMIUM_MONTHLY_CENTS: 1499,

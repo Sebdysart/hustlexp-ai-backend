@@ -35,6 +35,7 @@ import { notifyAdmins } from '../services/AdminNotificationHelper.js';
 import { workerLogger } from '../logger.js';
 import { verifyJobSignature } from './queues.js';
 import { config } from '../config.js';
+import { computePlatformFeeCents, clampFeePercent } from '../lib/money.js';
 import type { Job } from 'bullmq';
 import type Stripe from 'stripe';
 import type { QueryFn } from '../db.js';
@@ -468,8 +469,9 @@ async function handleTransferCreated(transfer: Stripe.Transfer, stripeEventId: s
       const workerId = taskRow.rows[0]?.worker_id ?? null;
       const posterId = taskRow.rows[0]?.poster_id ?? null;
       if (workerId && escrowAmount > 0) {
-        const platformFeePercent = config.stripe.platformFeePercent ?? 15;
-        const platformFeeCents = Math.round(escrowAmount * (platformFeePercent / 100));
+        // AUDIT FIX H3: unified money helper (same Math.round result, adds clamping)
+        const platformFeePercent = clampFeePercent(config.stripe.platformFeePercent);
+        const platformFeeCents = computePlatformFeeCents(escrowAmount, platformFeePercent);
         if (platformFeeCents > 0) {
           const netAmountCents = escrowAmount - platformFeeCents;
           await RevenueService.logEvent({
@@ -673,8 +675,9 @@ async function handleChargeRefunded(charge: Stripe.Charge, stripeEventId: string
 
           // Only emit reversal if the transition was from RELEASED (fee was previously collected)
           if (priorFromState === 'RELEASED') {
-            const platformFeePercent = config.stripe.platformFeePercent ?? 15;
-            const platformFeeCents = Math.round(phase1Escrow.amount * (platformFeePercent / 100));
+            // AUDIT FIX H3: unified money helper (same Math.round result, adds clamping)
+            const platformFeePercent = clampFeePercent(config.stripe.platformFeePercent);
+            const platformFeeCents = computePlatformFeeCents(phase1Escrow.amount, platformFeePercent);
             await RevenueService.logEvent({
               eventType: 'platform_fee_reversal',
               userId: null,
@@ -839,8 +842,9 @@ async function handleChargeRefunded(charge: Stripe.Charge, stripeEventId: string
   // If logEvent itself fails (DB transient), the .catch() swallows the error. The Phase 1
   // retry-recovery path handles the case where the entire handler fails after the DB commit.
   if (escrow.state === 'RELEASED') {
-    const platformFeePercent = config.stripe.platformFeePercent ?? 15;
-    const platformFeeCents = Math.round(escrow.amount * (platformFeePercent / 100));
+    // AUDIT FIX H3: unified money helper (same Math.round result, adds clamping)
+    const platformFeePercent = clampFeePercent(config.stripe.platformFeePercent);
+    const platformFeeCents = computePlatformFeeCents(escrow.amount, platformFeePercent);
     await RevenueService.logEvent({
       eventType: 'platform_fee_reversal',
       userId: null,
