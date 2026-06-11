@@ -8,6 +8,14 @@
 
 import { TRPCError } from '@trpc/server';
 import { router, protectedProcedure, publicProcedure, hustlerProcedure, posterProcedure, Schemas } from '../trpc.js';
+import {
+  notifyApplicationReceived,
+  notifyWorkerAssigned,
+  notifyTaskAccepted,
+  notifyProofSubmitted,
+  notifyProofRejected,
+  notifyTaskCompleted,
+} from '../lib/task-lifecycle-notifications.js';
 import { TaskService } from '../services/TaskService.js';
 import { ProofService } from '../services/ProofService.js';
 import { db } from '../db.js';
@@ -629,6 +637,13 @@ export const taskRouter = router({
         });
       }
       await invalidateTask(input.taskId);
+
+      // Lifecycle notification (post-commit): instant-accept → tell the poster
+      const acceptedTask = result.data as { poster_id?: string | null; title?: string | null };
+      if (acceptedTask.poster_id) {
+        await notifyTaskAccepted(acceptedTask.poster_id, input.taskId, acceptedTask.title ?? 'your task');
+      }
+
       return result.data;
     }),
   
@@ -808,6 +823,13 @@ export const taskRouter = router({
       }
 
       await invalidateTask(input.taskId);
+
+      // Lifecycle notification (post-commit): tell the poster to review
+      const provenTask = taskResult.data as { poster_id?: string | null; title?: string | null };
+      if (provenTask.poster_id) {
+        await notifyProofSubmitted(provenTask.poster_id, input.taskId, provenTask.title ?? 'your task');
+      }
+
       return {
         task: taskResult.data,
         proof: proofResult.data,
@@ -976,6 +998,12 @@ export const taskRouter = router({
             message: `Proof marked rejected but task state could not be reverted: ${rejectTaskResult.error.message}`,
           });
         }
+
+        // Lifecycle notification (post-commit): tell the worker to resubmit
+        const rejectedTask = rejectTaskResult.data as { worker_id?: string | null; title?: string | null };
+        if (rejectedTask.worker_id) {
+          await notifyProofRejected(rejectedTask.worker_id, proofResult.data.task_id, rejectedTask.title ?? 'your task', reason);
+        }
       }
 
       await invalidateTask(proofResult.data.task_id);
@@ -1015,6 +1043,13 @@ export const taskRouter = router({
         throw new TRPCError({ code, message: result.error.message });
       }
       await invalidateTask(input.taskId);
+
+      // Lifecycle notification (post-commit): tell the worker the task is approved
+      const completedTask = result.data as { worker_id?: string | null; title?: string | null };
+      if (completedTask.worker_id) {
+        await notifyTaskCompleted(completedTask.worker_id, input.taskId, completedTask.title ?? 'your task');
+      }
+
       return result.data;
     }),
 
@@ -1069,8 +1104,8 @@ export const taskRouter = router({
       // The FOR UPDATE lock serializes concurrent callers: the second caller blocks
       // until the first transaction commits, then sees the updated task state.
       const appRow = await db.transaction(async (query) => {
-        const taskResult = await query<{ state: string; poster_id: string; trust_tier_required: number | null }>(
-          `SELECT state, poster_id, trust_tier_required FROM tasks WHERE id = $1 FOR UPDATE`,
+        const taskResult = await query<{ state: string; poster_id: string; trust_tier_required: number | null; title: string }>(
+          `SELECT state, poster_id, trust_tier_required, title FROM tasks WHERE id = $1 FOR UPDATE`,
           [input.taskId]
         );
         if (taskResult.rows.length === 0) {
@@ -1103,15 +1138,18 @@ export const taskRouter = router({
         if ((result.rowCount ?? 0) === 0) {
           throw new TRPCError({ code: 'CONFLICT', message: 'You already have an active application for this task' });
         }
-        return result.rows[0];
+        return { app: result.rows[0], posterId: task.poster_id, taskTitle: task.title };
       });
 
+      // Lifecycle notification (post-commit, fire-and-forget — never blocks the response)
+      await notifyApplicationReceived(appRow.posterId, input.taskId, appRow.taskTitle);
+
       return {
-        id: appRow.id,
-        taskId: appRow.task_id,
-        status: appRow.status,
-        message: appRow.message,
-        appliedAt: appRow.created_at,
+        id: appRow.app.id,
+        taskId: appRow.app.task_id,
+        status: appRow.app.status,
+        message: appRow.app.message,
+        appliedAt: appRow.app.created_at,
       };
     }),
 
@@ -1236,8 +1274,8 @@ export const taskRouter = router({
         // Step 1: Lock the task row for the duration of the transaction.
         // FOR UPDATE prevents concurrent assignWorker calls from both reading
         // state='OPEN' and proceeding to assign different workers.
-        const taskResult = await txn<{ id: string; state: string; poster_id: string; trust_tier_required: number | null; template_slug: string | null }>(
-          `SELECT id, state, poster_id, trust_tier_required, template_slug FROM tasks WHERE id = $1 FOR UPDATE`,
+        const taskResult = await txn<{ id: string; state: string; poster_id: string; trust_tier_required: number | null; template_slug: string | null; title: string }>(
+          `SELECT id, state, poster_id, trust_tier_required, template_slug, title FROM tasks WHERE id = $1 FOR UPDATE`,
           [input.taskId]
         );
         if (taskResult.rows.length === 0) {
@@ -1344,11 +1382,19 @@ export const taskRouter = router({
           });
         }
 
-        return acceptResult.rows[0];
+        return { ...acceptResult.rows[0], _taskTitle: taskResult.rows[0].title };
       });
 
       await invalidateTask(input.taskId);
-      return result;
+
+      // Lifecycle notification (post-commit): tell the worker they were assigned
+      if (result.worker_id) {
+        await notifyWorkerAssigned(result.worker_id, input.taskId, result._taskTitle);
+      }
+
+      const { _taskTitle, ...assignedTask } = result;
+      void _taskTitle;
+      return assignedTask;
     }),
 
   /**
