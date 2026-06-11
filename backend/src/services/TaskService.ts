@@ -1035,7 +1035,49 @@ export const TaskService = {
           };
         }
 
-        return { success: true, data: result.rows[0] };
+        const completedTask = result.rows[0];
+
+        // ------------------------------------------------------------------
+        // Completion-release orchestration (transactional outbox — INV-6):
+        // when the completed task has a FUNDED escrow paid in-app, request the
+        // payout in the SAME transaction as the COMPLETED transition so the
+        // state change and the release request commit atomically. The
+        // completion-release worker creates the Stripe transfer and releases
+        // via EscrowService.release (single audited FUNDED→RELEASED path).
+        // Offline payments and non-FUNDED escrows are deliberately excluded —
+        // money never moves automatically for those.
+        // @see docs/plans/2026-06-11-completion-release-orchestration.md
+        // ------------------------------------------------------------------
+        const paymentMethod = (completedTask as Task & { payment_method?: string | null }).payment_method ?? 'escrow';
+        const escrowLookup = await query<{ id: string; state: string }>(
+          `SELECT id, state FROM escrows WHERE task_id = $1`,
+          [taskId]
+        );
+        const escrowRow = escrowLookup.rows[0];
+        if (escrowRow && escrowRow.state === 'FUNDED' && paymentMethod === 'escrow') {
+          await writeToOutbox(
+            {
+              eventType: 'escrow.completion_release_requested',
+              aggregateType: 'escrow',
+              aggregateId: escrowRow.id,
+              payload: {
+                escrow_id: escrowRow.id,
+                task_id: taskId,
+                reason: 'task_completed',
+              },
+              queueName: 'critical_payments',
+            },
+            query
+          );
+        } else if (escrowRow && paymentMethod === 'escrow' && escrowRow.state !== 'FUNDED') {
+          // COMPLETED with a non-FUNDED in-app escrow: no auto-release; ops-visible.
+          log.warn(
+            { taskId, escrowId: escrowRow.id, escrowState: escrowRow.state },
+            'Task completed but escrow is not FUNDED — payout requires manual review'
+          );
+        }
+
+        return { success: true, data: completedTask };
       });
     } catch (error) {
       // Check for INV-3 violation from trigger

@@ -152,6 +152,10 @@ function registerWorkers(): void {
         // Route escrow action requests to EscrowActionWorker
         const { processEscrowActionJob } = await import('./escrow-action-worker.js');
         await processEscrowActionJob(job);
+      } else if (eventType === 'escrow.completion_release_requested') {
+        // Happy-path payout: task COMPLETED → transfer → EscrowService.release
+        const { processCompletionReleaseJob } = await import('./completion-release-worker.js');
+        await processCompletionReleaseJob(job);
       } else if (eventType.startsWith('payment.')) {
         // Route Stripe events (payment.*) to PaymentWorker
         const { processPaymentJob } = await import('./payment-worker.js');

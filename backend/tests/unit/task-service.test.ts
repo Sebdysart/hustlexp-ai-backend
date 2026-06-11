@@ -806,7 +806,8 @@ describe('TaskService.complete', () => {
     const completed = makeTask({ state: 'COMPLETED' });
     mockQuery
       .mockResolvedValueOnce({ rows: [makeTask({ state: 'PROOF_SUBMITTED', poster_id: 'poster-1' })], rowCount: 1 } as never) // SELECT FOR UPDATE
-      .mockResolvedValueOnce({ rows: [completed], rowCount: 1 } as never); // UPDATE
+      .mockResolvedValueOnce({ rows: [completed], rowCount: 1 } as never) // UPDATE
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // escrow lookup (completion-release orchestration) — none
 
     const result = await TaskService.complete('task-1');
 
@@ -818,7 +819,8 @@ describe('TaskService.complete', () => {
     const completed = makeTask({ state: 'COMPLETED' });
     mockQuery
       .mockResolvedValueOnce({ rows: [makeTask({ state: 'PROOF_SUBMITTED', poster_id: 'poster-1' })], rowCount: 1 } as never)
-      .mockResolvedValueOnce({ rows: [completed], rowCount: 1 } as never);
+      .mockResolvedValueOnce({ rows: [completed], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // escrow lookup (completion-release orchestration) — none
 
     const result = await TaskService.complete('task-1', 'poster-1');
 
