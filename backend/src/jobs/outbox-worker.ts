@@ -30,8 +30,10 @@ const log = workerLogger.child({ worker: 'outbox' });
 const MAX_OUTBOX_ATTEMPTS = 5;
 
 // Financial event types that require HMAC payload signing
-const FINANCIAL_EVENT_TYPES = new Set([
+// Exported for test assertion (membership is financial-critical).
+export const FINANCIAL_EVENT_TYPES = new Set([
   'escrow.release_requested',
+  'escrow.completion_release_requested',
   'escrow.refund_requested',
   'escrow.partial_refund_requested',
   // Stripe event forwarding — both job types route through critical_payments and can
