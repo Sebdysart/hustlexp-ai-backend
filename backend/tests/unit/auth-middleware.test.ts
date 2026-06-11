@@ -8,6 +8,7 @@
  * - A53-5: Role switch clears session cache (revocation marker written for Hono path)
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { fileURLToPath } from 'node:url';
 
 // ─── Mock dependencies ──────────────────────────────────────────────────────
 
@@ -367,7 +368,7 @@ describe('A53-4: Admin gate uses consistent is_admin check', () => {
     const fs = await import('fs');
     const path = await import('path');
     const taskRouterPath = path.resolve(
-      new URL(import.meta.url).pathname,
+      fileURLToPath(import.meta.url),
       '../../../src/routers/task.ts'
     );
     const taskRouterSrc = fs.readFileSync(taskRouterPath, 'utf8');
@@ -388,7 +389,7 @@ describe('A53-4: Admin gate uses consistent is_admin check', () => {
     const path = await import('path');
 
     const srcDir = path.resolve(
-      new URL(import.meta.url).pathname,
+      fileURLToPath(import.meta.url),
       '../../../src'
     );
 

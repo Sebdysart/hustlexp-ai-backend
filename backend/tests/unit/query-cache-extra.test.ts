@@ -11,7 +11,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // We cannot reference top-level const variables inside the factory.
 // Instead, we define all vi.fn() calls inline within the class body,
 // and expose the last created instance via a module-level let.
-let __redisInstance: InstanceType<typeof MockRedisClass> | null = null;
+const __redisInstance: InstanceType<typeof MockRedisClass> | null = null;
 
 class MockRedisClass {
   get = vi.fn();
