@@ -45,7 +45,19 @@ function createR2Client(): S3Client {
   });
 }
 
-const r2Client = createR2Client();
+// LAZY INIT (2026-06-11): creating the client at module scope made ANY import
+// of this module throw when R2 env vars are absent — which crash-looped the
+// dedicated worker process (workers.ts → export-worker.ts → this module) on
+// deployments without R2 configured, taking down ALL queue processing
+// (payouts, push, outbox) over an export-only dependency. The client is now
+// created on first use: same error, but only when R2 is actually exercised.
+let r2ClientInstance: S3Client | null = null;
+function getR2Client(): S3Client {
+  if (!r2ClientInstance) {
+    r2ClientInstance = createR2Client();
+  }
+  return r2ClientInstance;
+}
 const bucketName = config.cloudflare.r2.bucketName;
 
 // ============================================================================
@@ -115,7 +127,7 @@ export async function uploadFile(
     },
   });
   
-  await r2Client.send(command);
+  await getR2Client().send(command);
   
   return {
     key,
@@ -149,7 +161,7 @@ export async function getSignedUrlForObject(
   });
   
   try {
-    await r2Client.send(headCommand);
+    await getR2Client().send(headCommand);
   } catch (_error) {
     throw new Error(`R2 object not found: ${key}`);
   }
@@ -160,7 +172,7 @@ export async function getSignedUrlForObject(
     Key: key,
   });
   
-  const signedUrl = await getSignedUrl(r2Client, getCommand, {
+  const signedUrl = await getSignedUrl(getR2Client(), getCommand, {
     expiresIn: expiresInSeconds,
   });
   
@@ -187,7 +199,7 @@ export async function verifyFile(key: string): Promise<{
       Key: key,
     });
     
-    const response = await r2Client.send(command);
+    const response = await getR2Client().send(command);
     
     return {
       exists: true,
