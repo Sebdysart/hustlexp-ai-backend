@@ -274,10 +274,15 @@ export const TaskService = {
     const { limit = 50, offset = 0, category } = options;
     
     try {
+      // SCHEMA-DRIFT FIX (2026-06-12): the previous column list selected
+      // trust_tier_required, expires_at, estimated_duration_minutes and is_remote
+      // — none of which exist on the live tasks table — so this query threw on
+      // every call and hustlers always got "A database error occurred". Select
+      // only columns that exist in the live schema (verified against a live row).
       let sql = `
         SELECT id, title, description, price, state, category, location,
-               template_slug, trust_tier_required, created_at, expires_at,
-               estimated_duration_minutes, is_remote
+               template_slug, created_at, estimated_duration, requires_proof,
+               deadline, expired_at
         FROM tasks
         WHERE state = 'OPEN'
       `;
@@ -478,21 +483,46 @@ export const TaskService = {
     try {
       // Instant mode: start in MATCHING state, not OPEN
       const initialState = instantMode ? 'MATCHING' : 'OPEN';
-      
-      const result = await db.query<Task>(
-        `INSERT INTO tasks (
-          poster_id, title, description, price, xp_reward,
-          requirements, location, category, deadline, requires_proof,
-          risk_level, mode, live_broadcast_radius_miles, instant_mode, sensitive, state,
-          template_slug
-        )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
-        RETURNING *`,
-        [posterId, title, description, finalPrice, xpReward, requirements, location, category, deadline, requiresProof, riskLevel, mode, liveBroadcastRadiusMiles, instantMode, sensitive, initialState, templateSlug || null]
-      );
-      
-      let createdTask = result.rows[0];
-      
+
+      // BETA CONTRACT FIX (escrow-at-create): the task row AND its PENDING escrow
+      // row are created atomically in a single transaction. Before this, no
+      // production path ever inserted an escrow, so escrow.createPaymentIntent
+      // ("requires a PENDING escrow") always failed and posters could never fund
+      // a task — the whole money loop was dead.
+      //
+      // Invariants honored:
+      //   INV-1 / INV-5: escrow.amount = finalPrice, already validated as a
+      //                  positive integer in cents above; DB CHECK (amount > 0).
+      //   INV-3:         escrows.task_id has a UNIQUE constraint, so a task can
+      //                  never have two escrows even under a retry/race.
+      //   INV-6:         task INSERT + escrow INSERT commit together or not at all.
+      let createdTask = await db.transaction(async (query) => {
+        const result = await query<Task>(
+          `INSERT INTO tasks (
+            poster_id, title, description, price, xp_reward,
+            requirements, location, category, deadline, requires_proof,
+            risk_level, mode, live_broadcast_radius_miles, instant_mode, sensitive, state,
+            template_slug
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+          RETURNING *`,
+          [posterId, title, description, finalPrice, xpReward, requirements, location, category, deadline, requiresProof, riskLevel, mode, liveBroadcastRadiusMiles, instantMode, sensitive, initialState, templateSlug || null]
+        );
+        const task = result.rows[0];
+
+        // Atomically create the PENDING escrow for this task. The amount is the
+        // task price in cents. The escrow stays PENDING — NOT funded — until the
+        // poster completes payment and escrow.confirmFunding verifies the Stripe
+        // PaymentIntent. We never represent the task as funded here.
+        await query(
+          `INSERT INTO escrows (task_id, amount, state)
+           VALUES ($1, $2, 'PENDING')`,
+          [task.id, finalPrice]
+        );
+
+        return task;
+      });
+
       // If instant mode, trigger matching broadcast (async, non-blocking)
       if (instantMode) {
         // Set matched_at timestamp immediately (authority: DB NOW())
@@ -500,14 +530,14 @@ export const TaskService = {
           `UPDATE tasks SET matched_at = NOW() WHERE id = $1`,
           [createdTask.id]
         );
-        
+
         // Reload task to get matched_at
         const reloaded = await db.query<Task>(
           `SELECT * FROM tasks WHERE id = $1`,
           [createdTask.id]
         );
         createdTask = reloaded.rows[0];
-        
+
         // Enqueue matching broadcast job (non-blocking)
         await writeToOutbox({
           eventType: 'task.instant_matching_started',
@@ -519,7 +549,7 @@ export const TaskService = {
           queueName: 'user_notifications', // Instant matching is non-financial — use notification queue to avoid starving Stripe events
         });
       }
-      
+
       return { success: true, data: createdTask };
     } catch (error) {
       if (isInvariantViolation(error)) {
@@ -800,6 +830,28 @@ export const TaskService = {
             // Don't block if background check service is unavailable
             log.warn({ workerId, taskId, err: bgCheckError instanceof Error ? bgCheckError.message : String(bgCheckError) }, 'Background check lookup failed, allowing acceptance');
           }
+        }
+
+        // BETA DISPATCH RULE (honest dispatch): a worker may only be committed
+        // to a task whose escrow is FUNDED. The escrow is created PENDING at task
+        // creation and only becomes FUNDED after the poster pays and
+        // escrow.confirmFunding verifies the Stripe PaymentIntent. This prevents a
+        // hustler from starting work that the platform cannot pay out. Checked
+        // inside the same FOR UPDATE transaction so it is consistent with the
+        // assignment. An unfunded task stays visible/applicable — only the commit
+        // is gated.
+        const fundingGate = await query<{ state: string }>(
+          `SELECT state FROM escrows WHERE task_id = $1 ORDER BY created_at DESC LIMIT 1`,
+          [taskId]
+        );
+        if (fundingGate.rows.length === 0 || fundingGate.rows[0].state !== 'FUNDED') {
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.INVALID_STATE,
+              message: 'This task is not funded yet. The poster must complete payment before it can be accepted.',
+            },
+          };
         }
 
         // BUG R-2 FIX: Only MATCHING state is accepted here (instant mode self-accept).

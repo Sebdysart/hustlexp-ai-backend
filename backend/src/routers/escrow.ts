@@ -147,17 +147,22 @@ export const escrowRouter = router({
       // SECURITY FIX: AND poster_id = $2 enforces ownership — callers cannot
       // attach a payment to a task belonging to another poster. NOT_FOUND is
       // returned (not FORBIDDEN) to avoid leaking whether the task exists.
-      const taskRow = await db.query<{ price: number }>(
+      const taskRow = await db.query<{ price: number | string }>(
         `SELECT price FROM tasks WHERE id = $1 AND poster_id = $2`,
         [input.taskId, ctx.user.id]
       );
       if (taskRow.rows.length === 0) {
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
       }
-      // F-30 FIX: tasks.price is DECIMAL(10,2) dollars (e.g. 50.00 for a $50 task).
-      // Convert to cents so all downstream comparisons and Stripe calls use cents.
-      const taskPriceCents = taskRow.rows[0].price != null
-        ? Math.round(Number(taskRow.rows[0].price) * 100)
+      // CENTS FIX (2026-06-12): tasks.price is INTEGER USD cents end-to-end — the
+      // createTask zod schema documents "USD cents", TaskService validates it as a
+      // positive integer in cents, and live rows store cents (a $65 task is
+      // price=6500). The previous F-30 ×100 conversion assumed dollars and produced
+      // a 100× overcharge ($65 → a $6,500 PaymentIntent). node-postgres can return
+      // INTEGER/NUMERIC as a string, so coerce via Number() before use.
+      const rawPrice = taskRow.rows[0].price;
+      const taskPriceCents = rawPrice != null && Number.isFinite(Number(rawPrice))
+        ? Math.round(Number(rawPrice))
         : null;
 
       // REG-2 FIX: Reject escrow creation if task has no price set.
@@ -201,15 +206,24 @@ export const escrowRouter = router({
         escrowId,
         amount,
       });
-      
+
       if (!result.success) {
         throw new TRPCError({
           code: 'INTERNAL_SERVER_ERROR',
           message: result.error.message,
         });
       }
-      
-      return result.data;
+
+      // iOS PaymentIntentResponse contract (EscrowService.swift):
+      //   { escrowId, paymentIntentId, clientSecret, amountCents }
+      // StripeService returns { paymentIntentId, clientSecret, amount }, so we
+      // attach the escrowId and expose the amount as amountCents for the client.
+      return {
+        escrowId,
+        paymentIntentId: result.data.paymentIntentId,
+        clientSecret: result.data.clientSecret,
+        amountCents: result.data.amount,
+      };
     }),
   
   /**
@@ -391,9 +405,12 @@ export const escrowRouter = router({
           message: 'Task price is invalid — cannot compute release floor',
         });
       }
-      // F-30 FIX: tasks.price is DECIMAL(10,2) dollars — convert to cents before
-      // computing the floor so the comparison to transfer.amount (always in cents) is valid.
-      const taskPriceCentsForFloor = Math.round(Number(taskPrice) * 100);
+      // CENTS FIX (2026-06-12): tasks.price is INTEGER USD cents — NOT dollars.
+      // The previous F-30 ×100 conversion treated it as dollars and inflated the
+      // floor 100× (a $50 task → a 400,000-cent floor), which rejected every
+      // legitimate release. node-postgres may return the value as a string, so
+      // coerce via Number() but do NOT multiply.
+      const taskPriceCentsForFloor = Math.round(Number(taskPrice));
       const minimumTransferFloor = Math.floor(taskPriceCentsForFloor * 0.80);
       if (transfer.amount < minimumTransferFloor) {
         throw new TRPCError({

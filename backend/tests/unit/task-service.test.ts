@@ -11,15 +11,25 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Module mocks — must be declared before any imports that pull those modules
 // ---------------------------------------------------------------------------
 
-vi.mock('../../src/db', () => ({
-  db: {
-    query: vi.fn(),
-    transaction: vi.fn(),
-  },
-  isInvariantViolation: vi.fn(() => false),
-  isUniqueViolation: vi.fn(() => false),
-  getErrorMessage: vi.fn((code: string) => `Error: ${code}`),
-}));
+vi.mock('../../src/db', () => {
+  // Shared query mock. `transaction` is given a FACTORY-level passthrough impl
+  // (calls its callback with the query mock). This must live in the factory —
+  // not only in beforeEach — because several nested describe blocks call
+  // vi.clearAllMocks() in their own beforeEach, which clears the beforeEach
+  // mockImplementation but NOT the factory one. Without it those transaction-
+  // based methods (submitProof/complete/cancel/expire/workerAbandon) get an
+  // undefined-returning transaction and fail.
+  const query = vi.fn();
+  return {
+    db: {
+      query,
+      transaction: vi.fn(async (fn: (q: typeof query) => Promise<unknown>) => fn(query)),
+    },
+    isInvariantViolation: vi.fn(() => false),
+    isUniqueViolation: vi.fn(() => false),
+    getErrorMessage: vi.fn((code: string) => `Error: ${code}`),
+  };
+});
 
 vi.mock('../../src/logger', () => {
   const child = (): object => ({
@@ -160,6 +170,12 @@ function makeTask(overrides: Record<string, unknown> = {}) {
 // ---------------------------------------------------------------------------
 beforeEach(() => {
   vi.clearAllMocks();
+
+  // Test isolation: vi.clearAllMocks() resets .mock.calls but NOT the
+  // mockResolvedValueOnce queue. mockReset() drains any leftover queued results
+  // so an over/under-queued test can never cascade into the next one. (Each
+  // test sets its own once-values; db.query has no persistent implementation.)
+  vi.mocked(db.query).mockReset();
 
   // Default: db.transaction delegates to the callback with db.query as the query fn
   vi.mocked(db.transaction).mockImplementation(async (fn: (q: typeof db.query) => Promise<unknown>) =>
@@ -353,6 +369,23 @@ describe('TaskService.listOpen', () => {
     const callArgs = mockQuery.mock.calls[0];
     expect(callArgs[1]).toContain('CLEANING');
   });
+
+  it('only selects columns that exist in the live tasks schema (schema-drift guard)', async () => {
+    // REGRESSION GUARD: listOpen previously selected expires_at,
+    // estimated_duration_minutes, is_remote and trust_tier_required — none of
+    // which exist on the tasks table — so the query threw on every call and
+    // hustlers always got "A database error occurred".
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+
+    await TaskService.listOpen();
+
+    const sql = String(mockQuery.mock.calls[0][0]);
+    expect(sql).not.toMatch(/expires_at/);
+    expect(sql).not.toMatch(/estimated_duration_minutes/);
+    expect(sql).not.toMatch(/is_remote/);
+    // estimated_duration (TEXT) is the real column
+    expect(sql).toMatch(/estimated_duration/);
+  });
 });
 
 // ===========================================================================
@@ -368,7 +401,8 @@ describe('TaskService.create', () => {
 
   it('creates a standard task successfully', async () => {
     const created = makeTask();
-    mockQuery.mockResolvedValueOnce({ rows: [created], rowCount: 1 } as never);
+    mockQuery.mockResolvedValueOnce({ rows: [created], rowCount: 1 } as never); // task INSERT
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'esc-1', state: 'PENDING' }], rowCount: 1 } as never); // escrow INSERT
 
     const result = await TaskService.create(baseParams);
 
@@ -402,7 +436,8 @@ describe('TaskService.create', () => {
     // ScoperAI mocked to fail (default mock returns success: false)
     // Zero price triggers ScoperAI path; fallback is 500 for STANDARD — which passes.
     // We test zero price with STANDARD where fallback is 500 → success.
-    mockQuery.mockResolvedValueOnce({ rows: [makeTask({ price: 500 })], rowCount: 1 } as never);
+    mockQuery.mockResolvedValueOnce({ rows: [makeTask({ price: 500 })], rowCount: 1 } as never); // task INSERT
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'esc-z', state: 'PENDING' }], rowCount: 1 } as never); // escrow INSERT
 
     const result = await TaskService.create({ ...baseParams, price: 0 });
 
@@ -425,7 +460,8 @@ describe('TaskService.create', () => {
     } as never);
 
     const created = makeTask({ price: 3000 });
-    mockQuery.mockResolvedValueOnce({ rows: [created], rowCount: 1 } as never);
+    mockQuery.mockResolvedValueOnce({ rows: [created], rowCount: 1 } as never); // task INSERT
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'esc-ai', state: 'PENDING' }], rowCount: 1 } as never); // escrow INSERT
 
     const result = await TaskService.create({ ...baseParams, price: 0 });
 
@@ -456,7 +492,8 @@ describe('TaskService.create', () => {
 
     // Task is created as OPEN (not MATCHING) — we just need the INSERT to succeed
     const created = makeTask({ state: 'OPEN', instant_mode: false });
-    mockQuery.mockResolvedValueOnce({ rows: [created], rowCount: 1 } as never);
+    mockQuery.mockResolvedValueOnce({ rows: [created], rowCount: 1 } as never); // task INSERT
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'esc-ks', state: 'PENDING' }], rowCount: 1 } as never); // escrow INSERT
 
     const result = await TaskService.create({ ...baseParams, instantMode: true });
 
@@ -493,9 +530,10 @@ describe('TaskService.create', () => {
 
   it('creates instant mode task in MATCHING state', async () => {
     const matchingTask = makeTask({ state: 'MATCHING', instant_mode: true });
-    // INSERT → UPDATE matched_at → SELECT reload
+    // INSERT task → INSERT escrow (beta contract) → UPDATE matched_at → SELECT reload
     mockQuery
-      .mockResolvedValueOnce({ rows: [matchingTask], rowCount: 1 } as never) // INSERT
+      .mockResolvedValueOnce({ rows: [matchingTask], rowCount: 1 } as never) // INSERT task
+      .mockResolvedValueOnce({ rows: [{ id: 'esc-instant', state: 'PENDING' }], rowCount: 1 } as never) // INSERT escrow
       .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)             // UPDATE matched_at
       .mockResolvedValueOnce({ rows: [matchingTask], rowCount: 1 } as never); // SELECT reload
 
@@ -503,6 +541,58 @@ describe('TaskService.create', () => {
 
     expect(result.success).toBe(true);
     expect(result.data?.state).toBe('MATCHING');
+  });
+});
+
+// ===========================================================================
+// 7b. create — escrow-at-create (BETA CONTRACT FIX)
+// ===========================================================================
+// Root cause of the dead money loop: no production path ever created an
+// escrows row, so escrow.createPaymentIntent ("requires PENDING escrow")
+// always failed and posters could never fund a task. task creation must now
+// atomically create the task AND its PENDING escrow in one transaction.
+// INV-3: escrows.task_id UNIQUE makes duplicates impossible at the DB level.
+// INV-5/INV-1: amount is the validated positive-integer cents price.
+// INV-6: both inserts commit or neither does.
+describe('TaskService.create — escrow-at-create (beta contract)', () => {
+  const baseParams = {
+    posterId: 'poster-1',
+    title: 'Mow lawn',
+    description: 'Mow the front lawn',
+    price: 2500,
+  };
+
+  it('creates a PENDING escrow atomically with the task', async () => {
+    const created = makeTask({ id: 'task-esc-1', price: 2500 });
+    mockQuery.mockResolvedValueOnce({ rows: [created], rowCount: 1 } as never); // task INSERT
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ id: 'esc-1', task_id: 'task-esc-1', amount: 2500, state: 'PENDING' }],
+      rowCount: 1,
+    } as never); // escrow INSERT
+
+    const result = await TaskService.create(baseParams);
+
+    expect(result.success).toBe(true);
+    // Atomicity: the create must run inside a transaction (INV-6)
+    expect(db.transaction).toHaveBeenCalled();
+    // The escrow INSERT must target the created task with the cents price
+    const escrowCall = mockQuery.mock.calls.find((c) =>
+      String(c[0]).includes('INSERT INTO escrows')
+    );
+    expect(escrowCall).toBeDefined();
+    expect(String(escrowCall![0])).toContain("'PENDING'");
+    expect(escrowCall![1]).toEqual(['task-esc-1', 2500]);
+  });
+
+  it('fails the whole create when the escrow insert fails (no task without escrow)', async () => {
+    const created = makeTask({ id: 'task-esc-2' });
+    mockQuery.mockResolvedValueOnce({ rows: [created], rowCount: 1 } as never); // task INSERT ok
+    mockQuery.mockRejectedValueOnce(new Error('escrow insert failed'));         // escrow INSERT fails
+
+    const result = await TaskService.create(baseParams);
+
+    // Transaction throws → rollback → structured failure, never a half-created task
+    expect(result.success).toBe(false);
   });
 });
 
@@ -536,6 +626,7 @@ describe('TaskService.accept', () => {
     // advanceProgress also calls db.transaction internally, but that's mocked too.
     mockQuery
       .mockResolvedValueOnce({ rows: [taskRow], rowCount: 1 } as never)      // FOR UPDATE select
+      .mockResolvedValueOnce({ rows: [{ state: 'FUNDED' }], rowCount: 1 } as never) // escrow funding gate
       .mockResolvedValueOnce({ rows: [acceptedTask], rowCount: 1 } as never); // UPDATE accept
 
     // advanceProgress uses db.transaction — it will be a nested call
@@ -623,6 +714,7 @@ describe('TaskService.accept', () => {
 
     mockQuery
       .mockResolvedValueOnce({ rows: [taskRow], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [{ state: 'FUNDED' }], rowCount: 1 } as never) // escrow funding gate
       .mockResolvedValueOnce({ rows: [acceptedTask], rowCount: 1 } as never)
       // advanceProgress calls
       .mockResolvedValueOnce({ rows: [{ id: 'task-1', poster_id: 'poster-1', worker_id: 'worker-1', progress_state: 'POSTED', state: 'ACCEPTED' }], rowCount: 1 } as never)
@@ -656,6 +748,7 @@ describe('TaskService.accept', () => {
 
     mockQuery
       .mockResolvedValueOnce({ rows: [highValueRow], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [{ state: 'FUNDED' }], rowCount: 1 } as never) // escrow funding gate
       .mockResolvedValueOnce({ rows: [acceptedTask], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [{ id: 'task-1', poster_id: 'poster-1', worker_id: 'worker-1', progress_state: 'POSTED', state: 'ACCEPTED' }], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
@@ -755,6 +848,52 @@ describe('TaskService.accept', () => {
       expect(result.success).toBe(false);
       expect(result.error?.code).toBe('INSTANT_TASK_TRUST_INSUFFICIENT');
     });
+  });
+});
+
+// ===========================================================================
+// 8b. accept — escrow funding gate (BETA DISPATCH RULE)
+// ===========================================================================
+// Honest dispatch: a worker may only be committed to a task whose escrow is
+// FUNDED. Unfunded tasks stay visible/applicable, but acceptance is blocked
+// so nobody starts work that cannot be paid out.
+describe('TaskService.accept — escrow funding gate', () => {
+  const acceptParams = { taskId: 'task-1', workerId: 'worker-1' };
+
+  function makeMatchingRow(overrides: Record<string, unknown> = {}) {
+    return {
+      risk_level: 'LOW',
+      instant_mode: false,
+      sensitive: false,
+      price: 2500,
+      state: 'MATCHING',
+      worker_id: null,
+      trust_tier_required: null,
+      poster_id: 'poster-1',
+      ...overrides,
+    };
+  }
+
+  it('rejects acceptance when no escrow row exists for the task', async () => {
+    mockQuery
+      .mockResolvedValueOnce({ rows: [makeMatchingRow()], rowCount: 1 } as never) // FOR UPDATE select
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);                  // escrow gate: none
+
+    const result = await TaskService.accept(acceptParams);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.message).toMatch(/not funded/i);
+  });
+
+  it('rejects acceptance when the escrow is still PENDING (unpaid)', async () => {
+    mockQuery
+      .mockResolvedValueOnce({ rows: [makeMatchingRow()], rowCount: 1 } as never)       // FOR UPDATE select
+      .mockResolvedValueOnce({ rows: [{ state: 'PENDING' }], rowCount: 1 } as never);   // escrow gate: unpaid
+
+    const result = await TaskService.accept(acceptParams);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.message).toMatch(/not funded/i);
   });
 });
 

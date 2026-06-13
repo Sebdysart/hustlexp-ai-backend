@@ -1181,7 +1181,7 @@ export const taskRouter = router({
            COALESCE(u.full_name, 'Unknown') AS name,
            COALESCE(r.rating, 5.0) AS rating,
            COALESCE(ct.completed_tasks, 0) AS completed_tasks,
-           COALESCE(u.trust_tier, 'rookie') AS tier,
+           COALESCE(u.trust_tier, 1) AS tier,
            ta.created_at AS applied_at,
            ta.message
          FROM task_applications ta
@@ -1344,6 +1344,23 @@ export const taskRouter = router({
         }
 
         const acceptedAppId = appResult.rows[0].id;
+
+        // BETA DISPATCH RULE (honest dispatch): a worker may only be assigned to a
+        // task whose escrow is FUNDED. The escrow is created PENDING at task
+        // creation and becomes FUNDED only after the poster pays and
+        // escrow.confirmFunding verifies the Stripe PaymentIntent. Checked inside
+        // the same FOR UPDATE transaction so it is consistent with the assignment.
+        // Unfunded tasks stay visible and applicable — only the commit is gated.
+        const fundingGate = await txn<{ state: string }>(
+          `SELECT state FROM escrows WHERE task_id = $1 ORDER BY created_at DESC LIMIT 1`,
+          [input.taskId]
+        );
+        if (fundingGate.rows.length === 0 || fundingGate.rows[0].state !== 'FUNDED') {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message: 'This task is not funded yet. Complete payment before assigning a worker.',
+          });
+        }
 
         // Step 3: Accept the chosen application.
         await txn(

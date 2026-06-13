@@ -1611,6 +1611,20 @@ describe('task.listApplicants', () => {
     expect(result[0].name).toBe('Hustler Jane');
   });
 
+  it('tier fallback uses INTEGER 1, not a string (live schema: users.trust_tier is INTEGER)', async () => {
+    // REGRESSION GUARD: COALESCE(u.trust_tier, 'rookie') threw
+    // `invalid input syntax for type integer: "rookie"` in production —
+    // posters could never see applicants. The fallback must be the integer 1.
+    mockDb.query.mockResolvedValueOnce({ rows: [{ poster_id: USER_ID }], rowCount: 1 } as any);
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+
+    await makeCallerAsPoster().listApplicants({ taskId: TASK_ID });
+
+    const applicantsSql = String(mockDb.query.mock.calls[1][0]);
+    expect(applicantsSql).not.toContain("'rookie'");
+    expect(applicantsSql).toMatch(/COALESCE\(u\.trust_tier,\s*1\)/);
+  });
+
   it('throws NOT_FOUND when task does not exist', async () => {
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
 
@@ -1682,6 +1696,8 @@ describe('task.assignWorker', () => {
     mockDb.query.mockResolvedValueOnce({ rows: [{ id: TASK_ID, state: 'OPEN', poster_id: USER_ID, template_slug: 'standard_physical' }], rowCount: 1 } as any);
     // [2] Application check
     mockDb.query.mockResolvedValueOnce({ rows: [{ id: APP_ID }], rowCount: 1 } as any);
+    // [2b] Escrow funding gate — escrow is FUNDED (beta dispatch rule)
+    mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'FUNDED' }], rowCount: 1 } as any);
     // [3] Accept application update
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
     // [4] Reject other applications
@@ -1697,6 +1713,33 @@ describe('task.assignWorker', () => {
     expect(result).toEqual(acceptedTask);
     // TaskService.accept is no longer called — the state change happens directly inside the tx
     expect(mockTaskService.accept).not.toHaveBeenCalled();
+  });
+
+  // BETA DISPATCH RULE: a worker may only be committed to a FUNDED task.
+  it('throws PRECONDITION_FAILED when the task escrow is not FUNDED (unpaid task)', async () => {
+    // [1] In-tx FOR UPDATE
+    mockDb.query.mockResolvedValueOnce({ rows: [{ id: TASK_ID, state: 'OPEN', poster_id: USER_ID, template_slug: 'standard_physical' }], rowCount: 1 } as any);
+    // [2] Application check
+    mockDb.query.mockResolvedValueOnce({ rows: [{ id: APP_ID }], rowCount: 1 } as any);
+    // [2b] Escrow funding gate — escrow exists but is still PENDING (poster never paid)
+    mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'PENDING' }], rowCount: 1 } as any);
+
+    await expect(
+      makeCallerAsPoster().assignWorker({ taskId: TASK_ID, workerId: OTHER_USER_ID })
+    ).rejects.toThrow(/not funded/i);
+  });
+
+  it('throws PRECONDITION_FAILED when the task has no escrow row at all', async () => {
+    // [1] In-tx FOR UPDATE
+    mockDb.query.mockResolvedValueOnce({ rows: [{ id: TASK_ID, state: 'OPEN', poster_id: USER_ID, template_slug: 'standard_physical' }], rowCount: 1 } as any);
+    // [2] Application check
+    mockDb.query.mockResolvedValueOnce({ rows: [{ id: APP_ID }], rowCount: 1 } as any);
+    // [2b] Escrow funding gate — no escrow row
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+
+    await expect(
+      makeCallerAsPoster().assignWorker({ taskId: TASK_ID, workerId: OTHER_USER_ID })
+    ).rejects.toThrow(/not funded/i);
   });
 
   it('throws FORBIDDEN when task does not exist (UUID enumeration prevention)', async () => {
@@ -1750,6 +1793,8 @@ describe('task.assignWorker', () => {
     mockDb.query.mockResolvedValueOnce({ rows: [{ id: TASK_ID, state: 'OPEN', poster_id: USER_ID, template_slug: 'standard_physical' }], rowCount: 1 } as any);
     // [2] Application check
     mockDb.query.mockResolvedValueOnce({ rows: [{ id: APP_ID }], rowCount: 1 } as any);
+    // [2b] Escrow funding gate — FUNDED
+    mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'FUNDED' }], rowCount: 1 } as any);
     // [3] Accept application update
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
     // [4] Reject other applications
@@ -1801,6 +1846,8 @@ describe('task.assignWorker', () => {
     mockDb.query.mockResolvedValueOnce({ rows: [{ trust_tier: 2 }], rowCount: 1 } as any);
     // [2] Application check
     mockDb.query.mockResolvedValueOnce({ rows: [{ id: APP_ID }], rowCount: 1 } as any);
+    // [2b] Escrow funding gate — FUNDED
+    mockDb.query.mockResolvedValueOnce({ rows: [{ state: 'FUNDED' }], rowCount: 1 } as any);
     // [3] Accept application update
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
     // [4] Reject other applications
