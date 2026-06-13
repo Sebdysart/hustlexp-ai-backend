@@ -212,6 +212,7 @@ describe('assignWorker — transaction locking (FIX 1)', () => {
     mockQuery
       .mockResolvedValueOnce({ rows: [makeTaskRow()], rowCount: 1 } as never)     // tx: FOR UPDATE (includes template_slug)
       .mockResolvedValueOnce({ rows: [{ id: 'app-1' }], rowCount: 1 } as never)   // tx: SELECT application
+      .mockResolvedValueOnce({ rows: [{ state: 'FUNDED' }], rowCount: 1 } as never) // tx: escrow funding gate (beta dispatch rule)
       .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)                   // tx: UPDATE accepted
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)                   // tx: UPDATE rejected
       .mockResolvedValueOnce({
@@ -237,6 +238,7 @@ describe('assignWorker — transaction locking (FIX 1)', () => {
     mockQuery
       .mockResolvedValueOnce({ rows: [makeTaskRow()], rowCount: 1 } as never)  // tx: FOR UPDATE
       .mockResolvedValueOnce({ rows: [{ id: 'app-1' }], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [{ state: 'FUNDED' }], rowCount: 1 } as never) // tx: escrow funding gate (beta dispatch rule)
       .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
       .mockResolvedValueOnce({
@@ -284,6 +286,7 @@ describe('assignWorker — transaction locking (FIX 1)', () => {
     mockQuery
       .mockResolvedValueOnce({ rows: [makeTaskRow()], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [acceptedApp], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [{ state: 'FUNDED' }], rowCount: 1 } as never) // tx: escrow funding gate (beta dispatch rule)
       .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
       .mockResolvedValueOnce({
@@ -349,6 +352,7 @@ describe('assignWorker — transaction locking (FIX 1)', () => {
     mockQuery
       .mockResolvedValueOnce({ rows: [makeTaskRow()], rowCount: 1 } as never)    // FOR UPDATE
       .mockResolvedValueOnce({ rows: [{ id: 'app-1' }], rowCount: 1 } as never) // SELECT app
+      .mockResolvedValueOnce({ rows: [{ state: 'FUNDED' }], rowCount: 1 } as never) // tx: escrow funding gate (beta dispatch rule)
       .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)                 // UPDATE accepted
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)                 // UPDATE rejected
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);                // UPDATE tasks → 0 rows
