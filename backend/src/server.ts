@@ -280,15 +280,6 @@ app.get('/health/liveness', (c) => {
   return c.json({ alive: true, uptime: process.uptime() });
 });
 
-// Temporary debug — remove after CORS is confirmed working
-app.get('/debug/cors-config', (c) => {
-  return c.json({
-    nodeEnv: process.env.NODE_ENV,
-    isDevelopment: config.app.isDevelopment,
-    allowedOriginsEnv: process.env.ALLOWED_ORIGINS ?? null,
-    allowedOriginsParsed: config.app.allowedOrigins,
-  });
-});
 
 // ── Public action-link endpoints (used by /go/:token on the website) ──────────
 // Fully unauthenticated — no Firebase JWT required. Token is opaque + hashed.
