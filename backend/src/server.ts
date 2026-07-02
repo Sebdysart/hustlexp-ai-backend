@@ -127,10 +127,14 @@ app.use('*', async (c, next) => {
 
 // CORS — explicit origins only (no wildcard with credentials)
 const allowedOrigins = config.app.isDevelopment
-  ? ['http://localhost:3000', 'http://localhost:5173', 'http://localhost:8081']
+  ? ['http://localhost:3000', 'http://localhost:5173', 'http://localhost:5174', 'http://localhost:8081']
   : (config.app.allowedOrigins.length > 0
       ? config.app.allowedOrigins
-      : ['https://app.hustlexp.com', 'https://www.hustlexp.com']);
+      : [
+          'https://hustlexp.app',
+          'https://www.hustlexp.app',
+          'https://hustlexp-site-production.up.railway.app',
+        ]);
 
 app.use('*', cors({
   origin: (requestOrigin) => {
@@ -275,6 +279,25 @@ app.get('/health/readiness', async (c) => {
 // Liveness probe — lightweight "am I alive?" check (no DB)
 app.get('/health/liveness', (c) => {
   return c.json({ alive: true, uptime: process.uptime() });
+});
+
+// ── Public action-link endpoints (used by /go/:token on the website) ──────────
+// Fully unauthenticated — no Firebase JWT required. Token is opaque + hashed.
+app.get('/api/action-link', async (c) => {
+  const { handleActionLinkGet } = await import('./routers/web/actionLinks.js');
+  const token = c.req.query('token') ?? '';
+  const result = await handleActionLinkGet(token);
+  if (!result.ok && result.code === 'expired') return c.json(result, 410);
+  if (!result.ok && result.code === 'not_found') return c.json(result, 404);
+  return c.json(result, result.ok ? 200 : 400);
+});
+
+app.post('/api/action-link', async (c) => {
+  const { handleActionLinkPost } = await import('./routers/web/actionLinks.js');
+  const body = await c.req.json().catch(() => ({})) as { token?: string; action?: string };
+  const result = await handleActionLinkPost(body.token ?? '', body.action ?? '');
+  if (!result.ok && result.code === 'expired') return c.json(result, 410);
+  return c.json(result, result.ok ? 200 : 400);
 });
 
 // Detailed health for monitoring — internal only, requires INTERNAL_API_KEY
