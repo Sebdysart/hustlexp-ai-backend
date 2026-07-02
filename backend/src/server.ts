@@ -133,7 +133,6 @@ const allowedOrigins = config.app.isDevelopment
       : [
           'https://hustlexp.app',
           'https://www.hustlexp.app',
-          'https://hustlexp-site-production.up.railway.app',
         ]);
 
 app.use('*', cors({
