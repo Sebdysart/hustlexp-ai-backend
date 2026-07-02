@@ -147,6 +147,12 @@ export const appRouter = router({
   fraud: fraudRouter,
   flags: flagsRouter,
   alphaTelemetry: alphaTelemetryRouter,
+
+  // ── Web Platform Domain ─────────────────────────────────────────────────
+  // Replaces Supabase edge functions for the website and ops cockpit.
+  webLeads: (await import('./web/leads.js')).webLeadsRouter,
+  webActionLinks: (await import('./web/actionLinks.js')).webActionLinksRouter,
+  webOps: (await import('./web/ops.js')).webOpsRouter,
 });
 
 export type AppRouter = typeof appRouter;
