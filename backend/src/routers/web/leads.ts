@@ -113,8 +113,8 @@ export const webLeadsRouter = router({
       const result = await db.query<{ id: string; status: string }>(
         `INSERT INTO leads (
           submission_id, lead_type, email, name, phone, region, zip,
-          answers, utm, consent_version, ip_hash, turnstile_action, correlation_id
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb,$10,$11,$12,$13)
+          answers, utm, consent_version, ip_hash, correlation_id
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb,$10,$11,$12)
         ON CONFLICT (submission_id) DO UPDATE SET updated_at = now()
         RETURNING id, status`,
         [
@@ -128,7 +128,6 @@ export const webLeadsRouter = router({
           JSON.stringify(input.utm ?? {}),
           input.consent_version,
           ipHash,
-          'lead',
           correlationId,
         ]
       );
@@ -171,8 +170,8 @@ export const webLeadsRouter = router({
         `INSERT INTO surveys (
           submission_id, role, email, name, phone, region, country,
           zip_code, intent_tags, raw_payload, utm, consent_version,
-          ip_hash, turnstile_action, correlation_id
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::text[],$10::jsonb,$11::jsonb,$12,$13,$14,$15)
+          ip_hash, correlation_id
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::text[],$10::jsonb,$11::jsonb,$12,$13,$14)
         ON CONFLICT (submission_id) DO UPDATE SET updated_at = now()`,
         [
           input.submission_id, input.role,
@@ -187,7 +186,6 @@ export const webLeadsRouter = router({
           JSON.stringify(input.utm),
           input.consent_version,
           ipHash,
-          'survey',
           correlationId,
         ]
       );
