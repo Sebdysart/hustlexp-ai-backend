@@ -128,7 +128,7 @@ vi.mock('../../src/services/InstantTrustConfig', () => ({
 // ---------------------------------------------------------------------------
 // Actual imports (after mocks)
 // ---------------------------------------------------------------------------
-import { TaskService } from '../../src/services/TaskService';
+import { TaskService, buildTaskCreateRequestHash } from '../../src/services/TaskService';
 import { db } from '../../src/db';
 import { PlanService } from '../../src/services/PlanService';
 import { InstantModeKillSwitch } from '../../src/services/InstantModeKillSwitch';
@@ -597,6 +597,133 @@ describe('TaskService.create — escrow-at-create (beta contract)', () => {
 });
 
 // ===========================================================================
+// 7c. create — client idempotency + private location vault
+// ===========================================================================
+describe('TaskService.create — idempotency and location privacy', () => {
+  const baseParams = {
+    posterId: 'poster-1',
+    title: 'Mow lawn',
+    description: 'Mow the front lawn',
+    price: 2500,
+    clientIdempotencyKey: 'web-quote-accept-0001',
+  };
+
+  it('preflights a completed replay without creating or rate-limiting a task', async () => {
+    const requestHash = buildTaskCreateRequestHash(baseParams);
+    mockQuery.mockResolvedValueOnce({
+      rows: [makeTask({ id: 'task-idem-preflight', request_hash: requestHash })],
+      rowCount: 1,
+    } as never);
+
+    const result = await TaskService.lookupCreateRequest(baseParams);
+
+    expect(result.success).toBe(true);
+    expect(result.data).toMatchObject({
+      status: 'replay',
+      task: { id: 'task-idem-preflight' },
+    });
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+
+  it('replays the original task for the same key and same request', async () => {
+    const requestHash = buildTaskCreateRequestHash(baseParams);
+    const original = makeTask({
+      id: 'task-idem-1',
+      client_idempotency_key: baseParams.clientIdempotencyKey,
+      request_hash: requestHash,
+    });
+
+    mockQuery
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // advisory lock
+      .mockResolvedValueOnce({ rows: [original], rowCount: 1 } as never); // replay lookup
+
+    const result = await TaskService.create(baseParams);
+
+    expect(result.success).toBe(true);
+    expect(result.data).toMatchObject({ id: 'task-idem-1', idempotency_replayed: true });
+    expect(mockQuery.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO tasks'))).toBe(false);
+    expect(mockQuery.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO escrows'))).toBe(false);
+  });
+
+  it('returns an explicit conflict when a key is reused with different input', async () => {
+    const original = makeTask({
+      id: 'task-idem-1',
+      client_idempotency_key: baseParams.clientIdempotencyKey,
+      client_request_hash: 'different-request-hash',
+    });
+
+    mockQuery
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // advisory lock
+      .mockResolvedValueOnce({ rows: [original], rowCount: 1 } as never); // conflict lookup
+
+    const result = await TaskService.create(baseParams);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatchObject({
+      code: 'IDEMPOTENCY_CONFLICT',
+      details: { existingTaskId: 'task-idem-1' },
+    });
+    expect(mockQuery.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO tasks'))).toBe(false);
+  });
+
+  it('stores only a rough area on tasks and puts the exact address in the vault', async () => {
+    const created = makeTask({
+      id: 'task-private-location',
+      location: 'Bellevue, WA area',
+      rough_location: 'Bellevue, WA area',
+    });
+
+    mockQuery
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // advisory lock
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // existing idempotency lookup
+      .mockResolvedValueOnce({ rows: [created], rowCount: 1 } as never) // task INSERT
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // location vault INSERT
+      .mockResolvedValueOnce({ rows: [{ id: 'esc-private' }], rowCount: 1 } as never); // escrow INSERT
+
+    const result = await TaskService.create({
+      ...baseParams,
+      location: '123 Main St, Bellevue, WA 98004',
+      roughArea: 'Bellevue, WA',
+    });
+
+    expect(result.success).toBe(true);
+
+    const taskInsert = mockQuery.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO tasks'));
+    const vaultInsert = mockQuery.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO task_location_vault'));
+
+    expect(taskInsert).toBeDefined();
+    expect(taskInsert![1]).toContain('Bellevue, WA area');
+    expect(taskInsert![1]).not.toContain('123 Main St, Bellevue, WA 98004');
+    expect(vaultInsert?.[1]).toEqual(['task-private-location', '123 Main St, Bellevue, WA 98004']);
+  });
+
+  it('redacts exact addresses repeated in publicly visible task text', async () => {
+    const created = makeTask({ id: 'task-redacted' });
+    mockQuery
+      .mockResolvedValueOnce({ rows: [created], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [{ id: 'esc-redacted' }], rowCount: 1 } as never);
+
+    const result = await TaskService.create({
+      posterId: 'poster-1',
+      title: 'Cleanup at 123 Main Street',
+      description: 'Please clean the yard at 123 Main Street before noon.',
+      requirements: 'Park at 123 Main Street.',
+      price: 2500,
+      location: '123 Main Street, Bellevue, WA 98004',
+      roughArea: 'Bellevue, WA',
+    });
+
+    expect(result.success).toBe(true);
+    const taskInsert = mockQuery.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO tasks'));
+    expect(taskInsert?.[1]).toContain('Cleanup at [location protected]');
+    expect(taskInsert?.[1]).toContain('Please clean the yard at [location protected] before noon.');
+    expect(taskInsert?.[1]).toContain('Park at [location protected].');
+    expect(taskInsert?.[1]).not.toContain('123 Main Street');
+  });
+});
+
+// ===========================================================================
 // 8. accept
 // ===========================================================================
 describe('TaskService.accept', () => {
@@ -898,13 +1025,45 @@ describe('TaskService.accept — escrow funding gate', () => {
 });
 
 // ===========================================================================
-// 9. submitProof
+// 9. startWork / submitProof
 // ===========================================================================
+describe('TaskService.startWork', () => {
+  it('moves an engine-reserved task to IN_PROGRESS idempotently', async () => {
+    const working = makeTask({ state: 'ACCEPTED', worker_id: 'worker-1', progress_state: 'WORKING', started_at: new Date() });
+    mockQuery
+      .mockResolvedValueOnce({ rows: [{
+        state: 'ACCEPTED',
+        worker_id: 'worker-1',
+        progress_state: 'ACCEPTED',
+        started_at: null,
+        active_reservation: true,
+      }], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [working], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+    const result = await TaskService.startWork('task-1', 'worker-1');
+    expect(result).toMatchObject({ success: true, data: { progress_state: 'WORKING' } });
+    expect(String(mockQuery.mock.calls[1]?.[0])).toContain("progress_state = 'WORKING'");
+  });
+
+  it('blocks start without active engine reservation evidence', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{
+      state: 'ACCEPTED',
+      worker_id: 'worker-1',
+      progress_state: 'ACCEPTED',
+      started_at: null,
+      active_reservation: false,
+    }], rowCount: 1 } as never);
+    const result = await TaskService.startWork('task-1', 'worker-1');
+    expect(result).toMatchObject({ success: false, error: { code: 'INVALID_STATE' } });
+  });
+});
+
 describe('TaskService.submitProof', () => {
   it('transitions ACCEPTED → PROOF_SUBMITTED successfully', async () => {
     const submitted = makeTask({ state: 'PROOF_SUBMITTED' });
     mockQuery
-      .mockResolvedValueOnce({ rows: [makeTask({ state: 'ACCEPTED' })], rowCount: 1 } as never) // SELECT FOR UPDATE
+      .mockResolvedValueOnce({ rows: [makeTask({ state: 'ACCEPTED', started_at: new Date(), progress_state: 'WORKING' })], rowCount: 1 } as never) // SELECT FOR UPDATE
       .mockResolvedValueOnce({ rows: [submitted], rowCount: 1 } as never); // UPDATE
 
     const result = await TaskService.submitProof('task-1');
@@ -924,6 +1083,16 @@ describe('TaskService.submitProof', () => {
     expect(result.error?.message).toContain('ACCEPTED');
   });
 
+  it('rejects proof before work starts', async () => {
+    mockQuery.mockResolvedValueOnce({
+      rows: [makeTask({ state: 'ACCEPTED', started_at: undefined, progress_state: 'ACCEPTED' })],
+      rowCount: 1,
+    } as never);
+    const result = await TaskService.submitProof('task-1');
+    expect(result).toMatchObject({ success: false, error: { code: 'INVALID_STATE' } });
+    expect(result.success === false && result.error.message).toContain('in progress');
+  });
+
   it('returns NOT_FOUND when task row is missing', async () => {
     // SELECT FOR UPDATE returns empty rows → NOT_FOUND immediately
     mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
@@ -941,25 +1110,19 @@ describe('TaskService.submitProof', () => {
 // UU-02 FIX: complete() now accepts an optional posterId and verifies
 // ownership inside the FOR UPDATE transaction to prevent TOCTOU.
 describe('TaskService.complete', () => {
-  it('transitions PROOF_SUBMITTED → COMPLETED successfully (no posterId check)', async () => {
-    const completed = makeTask({ state: 'COMPLETED' });
-    mockQuery
-      .mockResolvedValueOnce({ rows: [makeTask({ state: 'PROOF_SUBMITTED', poster_id: 'poster-1' })], rowCount: 1 } as never) // SELECT FOR UPDATE
-      .mockResolvedValueOnce({ rows: [completed], rowCount: 1 } as never) // UPDATE
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // escrow lookup (completion-release orchestration) — none
-
+  it('does not treat a caller with no poster identity as poster confirmation', async () => {
     const result = await TaskService.complete('task-1');
-
-    expect(result.success).toBe(true);
-    expect(result.data?.state).toBe('COMPLETED');
+    expect(result).toMatchObject({ success: false, error: { code: 'IDEMPOTENCY_KEY_REQUIRED' } });
   });
 
   it('transitions PROOF_SUBMITTED → COMPLETED successfully when posterId matches', async () => {
-    const completed = makeTask({ state: 'COMPLETED' });
+    const completed = makeTask({ state: 'COMPLETED', payout_ready_at: new Date() });
     mockQuery
       .mockResolvedValueOnce({ rows: [makeTask({ state: 'PROOF_SUBMITTED', poster_id: 'poster-1' })], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [{ state: 'ACCEPTED' }], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [{ state: 'FUNDED' }], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [completed], rowCount: 1 } as never)
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // escrow lookup (completion-release orchestration) — none
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
 
     const result = await TaskService.complete('task-1', 'poster-1');
 
@@ -985,7 +1148,7 @@ describe('TaskService.complete', () => {
     // SELECT FOR UPDATE returns wrong state → early return INVALID_STATE
     mockQuery.mockResolvedValueOnce({ rows: [makeTask({ state: 'OPEN', poster_id: 'poster-1' })], rowCount: 1 } as never);
 
-    const result = await TaskService.complete('task-1');
+    const result = await TaskService.complete('task-1', 'poster-1');
 
     expect(result.success).toBe(false);
     expect(result.error?.code).toBe('INVALID_STATE');
@@ -995,7 +1158,7 @@ describe('TaskService.complete', () => {
     // SELECT FOR UPDATE returns terminal state → early return TASK_TERMINAL
     mockQuery.mockResolvedValueOnce({ rows: [makeTask({ state: 'CANCELLED', poster_id: 'poster-1' })], rowCount: 1 } as never);
 
-    const result = await TaskService.complete('task-1');
+    const result = await TaskService.complete('task-1', 'poster-1');
 
     expect(result.success).toBe(false);
     expect(result.error?.code).toBe('HX001'); // ErrorCodes.TASK_TERMINAL

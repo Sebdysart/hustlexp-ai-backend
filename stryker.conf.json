@@ -1,0 +1,22 @@
+{
+  "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "testRunner": "vitest",
+  "testRunnerNodeArgs": ["--max-old-space-size=2048"],
+  "mutate": [
+    "backend/src/services/TaskReservationService.ts:53-59"
+  ],
+  "ignoreStatic": true,
+  "vitest": {
+    "configFile": "vitest.mutation.config.ts",
+    "related": false
+  },
+  "concurrency": 4,
+  "timeoutMS": 120000,
+  "timeoutFactor": 1.5,
+  "thresholds": {
+    "high": 100,
+    "low": 100,
+    "break": 100
+  },
+  "reporters": ["clear-text", "progress"]
+}

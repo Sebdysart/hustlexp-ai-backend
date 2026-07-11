@@ -3,10 +3,10 @@
 # DO NOT use tsx in production - always use compiled JavaScript
 
 # Web server - compiled binary
-web: node dist/backend/src/server.js
+web: npm start
 
 # Background job workers - separate process
-worker: node dist/backend/src/jobs/workers.js
+worker: npm run start:workers
 
 # Release phase - READ-ONLY schema validation before deploying new code.
 # MUST NOT run anything destructive here. `db:migrate` was removed because it

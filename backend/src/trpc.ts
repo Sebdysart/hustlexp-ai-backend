@@ -11,22 +11,13 @@
 
 import { initTRPC, TRPCError } from '@trpc/server';
 import { z } from 'zod';
-import { firebaseAuth } from './auth/firebase.js';
 import { db } from './db.js';
-import type { User } from './types.js';
-import { logger } from './logger.js';
-import { authCache, authCacheKey, authCacheGet, authCacheSet } from './auth-cache.js';
-import { ensureUserRowForFirebaseUid } from './auth/ensure-user.js';
-import { redis } from './cache/redis.js';
-
-// Matches the revocation marker key written by invalidateAuthCacheForUser
-// (auth-cache.ts) and revokeUserSessions (auth/middleware.ts).
-const REDIS_REVOKED_KEY = (uid: string) => `auth:revoked:${uid}`;
+import { type AuthedContext, type Context } from './trpc-context.js';
 
 // Re-export so existing callers (admin.ts etc.) don't need to change their import.
 export { invalidateAuthCacheForUser } from './auth-cache.js';
-
-const log = logger.child({ module: 'trpc' });
+export { createContext } from './trpc-context.js';
+export type { AuthedContext, Context } from './trpc-context.js';
 
 // ============================================================================
 // FIREBASE TOKEN VERIFICATION CACHE
@@ -35,149 +26,6 @@ const log = logger.child({ module: 'trpc' });
 // can call invalidateAuthCacheForUser without importing Firebase/db side-effects).
 // See auth-cache.ts for security properties and eviction policy.
 // ============================================================================
-
-// ============================================================================
-// CONTEXT
-// ============================================================================
-
-export interface Context extends Record<string, unknown> {
-  user: User | null;
-  firebaseUid: string | null;
-  /** Server-derived client IP — extracted from x-forwarded-for / x-real-ip headers. Never caller-supplied. */
-  ip: string | null;
-}
-
-/**
- * Context after `isAuthenticated` has run: `user` is guaranteed non-null.
- * Used to force tRPC's middleware context-override inference — without an explicit
- * type here, the `Record<string, unknown>` index signature on `Context` (required by
- * the @hono/trpc-server adapter, which expects a `Record<string, unknown>` factory)
- * swallows the narrowed `user: User` in the `next({ ctx })` override, so every
- * protected-family procedure would otherwise see `ctx.user` as `User | null`.
- */
-export interface AuthedContext extends Context {
-  user: User;
-}
-
-function extractIp(req: Request): string | null {
-  // cf-connecting-ip: set by Cloudflare directly from the TCP connection;
-  // cannot be forged by the client regardless of what they put in XFF.
-  const cfIp = req.headers.get('cf-connecting-ip');
-  if (cfIp) return cfIp.trim() || null;
-
-  // X-Forwarded-For: use the RIGHTMOST entry, which is appended by our
-  // trusted reverse proxy and cannot be forged by the client.
-  // A-22: NEVER use the leftmost entry — it is client-controlled and allows
-  // an attacker to spoof arbitrary IPs to bypass rate limiting.
-  const xff = req.headers.get('x-forwarded-for');
-  if (xff) {
-    const parts = xff.split(',').map((p) => p.trim()).filter(Boolean);
-    return parts[parts.length - 1] ?? null;
-  }
-
-  // x-real-ip: set by nginx/proxies from the connection address.
-  return req.headers.get('x-real-ip') || null;
-}
-
-export async function createContext(opts: {
-  req: Request;
-  resHeaders: Headers;
-}): Promise<Context> {
-  // @hono/trpc-server passes a Web API Request object, NOT a plain object.
-  // Request.headers is a Headers instance — use .get(), not property access.
-  const authHeader = opts.req.headers.get('authorization');
-
-  if (!authHeader?.startsWith('Bearer ')) {
-    return { user: null, firebaseUid: null, ip: extractIp(opts.req) };
-  }
-
-  const token = authHeader.slice(7);
-
-  // ── Cache-first: skip Firebase SDK + DB on warm requests (~93-97% hit rate) ──
-  const cached = authCacheGet(token);
-  if (cached) {
-    // Cross-invalidation check: if a Redis revocation marker exists (written by
-    // invalidateAuthCacheForUser or revokeUserSessions) the in-process cache
-    // entry is stale — evict it and fall through to Firebase re-verification.
-    // A-05 FIX: Wrap redis.get in try/catch so a Redis outage does not cause
-    // createContext to throw a 500 on every authenticated request. On failure,
-    // fall through to Firebase re-verification as a safe degraded path.
-    try {
-      const revokedAt = await redis.get<string>(REDIS_REVOKED_KEY(cached.firebaseUid));
-      if (revokedAt) {
-        log.info({ uid: cached.firebaseUid }, 'tRPC cache hit invalidated by Redis revocation marker');
-        // Evict the stale in-process cache entry immediately so it cannot be
-        // served again on this replica before the 5-minute TTL expires.
-        authCache.delete(authCacheKey(token));
-        // Fall through to Firebase re-verification below.
-      } else {
-        return { user: cached.user, firebaseUid: cached.firebaseUid, ip: extractIp(opts.req) };
-      }
-    } catch (redisErr) {
-      log.warn({ err: redisErr }, 'Redis unavailable for revocation check — falling through to Firebase verify');
-      // Fall through to Firebase re-verification below.
-    }
-  }
-
-  try {
-    const decoded = await firebaseAuth.verifyIdToken(token, true); // checkRevoked = true (explicit, not relying on default)
-
-    // Get user from database
-    const result = await db.query<User>(
-      'SELECT * FROM users WHERE firebase_uid = $1',
-      [decoded.uid]
-    );
-
-    let user: User | null = result.rows[0] ?? null;
-
-    // Firebase user exists but no `users` row yet — common after email/password sign-in
-    // when the account was created outside the normal register flow. Lazy-provision
-    // so `user.me` and other protected routes succeed (same idea as user.register).
-    if (!user) {
-      user = await ensureUserRowForFirebaseUid(decoded.uid);
-    }
-
-    if (user) {
-      // Populate is_admin from admin_roles table so escrow and other routers can use ctx.user.is_admin.
-      // A46-2 FIX: Use the same role allowlist as isAdminCheck's fallback path. The previous
-      // `SELECT 1` accepted any admin_roles row regardless of role value, creating an
-      // inconsistency: the fast-path (warm requests) would grant admin to any role, while
-      // the fallback path (undefined is_admin) correctly filtered by VALID_ADMIN_ROLES.
-      // Now both paths use identical role allowlist logic.
-      const VALID_ADMIN_ROLES = ['admin', 'support', 'finance', 'moderator', 'founder'];
-      const adminResult = await db.query(
-        'SELECT 1 FROM admin_roles WHERE user_id = $1 AND role = ANY($2::text[]) LIMIT 1',
-        [user.id, VALID_ADMIN_ROLES]
-      );
-      user.is_admin = adminResult.rows.length > 0;
-
-      // Do NOT cache banned/suspended/deleted users. If we cache them, every subsequent
-      // request hits the in-process cache instead of falling through to the revocation
-      // check, which means the isAuthenticated middleware's ban guard is the only
-      // protection — and the Redis revocation marker keeps triggering a full Firebase
-      // round-trip on cache miss, draining Firebase quota. Skipping the cache ensures
-      // the revocation marker stays effective and subsequent requests stay cheap.
-      const isInactive =
-        user.is_banned ||
-        user.account_status === 'SUSPENDED' ||
-        user.account_status === 'DELETED';
-
-      if (!isInactive) {
-        authCacheSet(token, { user, firebaseUid: decoded.uid }, decoded.exp);
-      }
-    }
-
-    return { user, firebaseUid: decoded.uid, ip: extractIp(opts.req) };
-  } catch (error) {
-    // SECURITY FIX (v2.9.4): Firebase Admin SDK error messages sometimes embed
-    // the raw JWT in their text. Strip any JWT-shaped segments before logging to
-    // prevent token leakage into log streams.
-    const rawMsg = (error as Error).message ?? '';
-    const safeMsg = rawMsg.replace(/eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]*/g, '[REDACTED_TOKEN]');
-    log.error({ err: safeMsg }, 'Firebase token verification failed');
-    return { user: null, firebaseUid: null, ip: extractIp(opts.req) };
-  }
-}
 
 // ============================================================================
 // TRPC INITIALIZATION
@@ -296,9 +144,14 @@ export const Schemas = {
     description: z.string().trim().min(10).max(5000),
     price: z.number().int().positive().max(99999900), // USD cents, max $999,999
     requirements: z.string().trim().max(2000).optional(),
+    /** Exact address. Stored in the location vault and never returned in public task feeds. */
     location: z.string().max(500).optional(),
+    /** City/region label safe to expose before a reservation exists. */
+    roughArea: z.string().trim().min(2).max(120).optional(),
+    clientIdempotencyKey: z.string().trim().min(8).max(128).regex(/^[A-Za-z0-9:_-]+$/).optional(),
     category: z.string().trim().max(100).optional(),
     deadline: z.string().datetime().optional(),
+    dispatchExpiresAt: z.string().datetime().optional(),
     requiresProof: z.boolean().default(true),
     // Live Mode (PRODUCT_SPEC §3.5)
     mode: z.enum(['STANDARD', 'LIVE']).default('STANDARD'),

@@ -21,6 +21,10 @@ interface RecoveryStuckStripeEventsPayload {
   timeoutMinutes?: number; // Default: 10 minutes
 }
 
+interface DispatchExpiryPayload {
+  limit?: number;
+}
+
 // ============================================================================
 // MAINTENANCE WORKERS
 // ============================================================================
@@ -143,6 +147,19 @@ export async function processMaintenanceJob(job: Job): Promise<void> {
     case 'cleanup_expired_notifications':
       await cleanupExpiredNotifications();
       break;
+
+    case 'dispatch.expire_unfilled': {
+      const { AutomationLifecycleService } = await import('../services/AutomationLifecycleService.js');
+      const rawLimit = Number((job.data as DispatchExpiryPayload | undefined)?.limit) || 50;
+      const result = await AutomationLifecycleService.expireDue({
+        limit: Math.max(1, Math.min(rawLimit, 100)),
+      });
+      if (!result.success) {
+        throw new Error(`Dispatch expiry batch failed: ${result.error.code}`);
+      }
+      log.info(result.data, 'Dispatch expiry batch completed');
+      break;
+    }
 
     case 'tax.annual_filing_requested': {
       const { processTaxReportingJob } = await import('./tax-reporting-worker.js');

@@ -46,7 +46,6 @@ export default defineConfig({
         'backend/src/**/*.d.ts',
         'backend/src/**/index.ts',
         'backend/src/types.ts',
-        'backend/src/jobs/**',
         'backend/src/test/**',       // Test helpers/factories — not source code
         'backend/src/server.ts',     // HTTP server entry point — integration-only
       ],

@@ -204,8 +204,8 @@ describe('REG-2 — FIXED: Null task price is rejected (not silently coerced to 
 
   it('FIXED — Stripe is called normally when price is set (non-regression)', async () => {
     mockStripeService.isConfigured.mockReturnValue(true);
-    // 1. Task price lookup — F-30: tasks.price is DECIMAL dollars (50.00 = $50 = 5000 cents)
-    mockDb.query.mockResolvedValueOnce({ rows: [{ price: 50.00 }], rowCount: 1 } as any);
+    // 1. Task price lookup — tasks.price is canonical integer USD cents.
+    mockDb.query.mockResolvedValueOnce({ rows: [{ price: 5000 }], rowCount: 1 } as any);
     // 2. Escrow lookup (added in R17 fix: scopes PI idempotency key to escrowId)
     mockDb.query.mockResolvedValueOnce({ rows: [{ id: ESCROW_ID }], rowCount: 1 } as any);
     mockStripeService.createPaymentIntent.mockResolvedValueOnce({
