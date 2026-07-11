@@ -4,6 +4,7 @@ import {
   ENGINE_AUTOMATION_MIGRATION,
   EXPERTISE_SUPPLY_MIGRATION,
   PROOF_ALIGNMENT_MIGRATION,
+  TASK_OUTCOME_CLASSIFICATION_MIGRATION,
   applyEngineAutomationMigration,
   loadMigrationSql,
   productionMigrationRuntime,
@@ -56,6 +57,7 @@ describe('required engine automation migration', () => {
       ENGINE_AUTOMATION_MIGRATION,
       PROOF_ALIGNMENT_MIGRATION,
       EXPERTISE_SUPPLY_MIGRATION,
+      TASK_OUTCOME_CLASSIFICATION_MIGRATION,
     ]);
     expect(actual.migrationSpecs[0].candidatePaths).toContain('/app/backend/database/migrations/20260710_engine_automation_contracts.sql');
     await expect(actual.readText(actual.migrationSpecs[0].candidatePaths[0]!)).resolves.toContain('CREATE TABLE IF NOT EXISTS task_reservations');

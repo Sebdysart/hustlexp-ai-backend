@@ -6,11 +6,13 @@ import { workerLogger } from '../logger.js';
 export const ENGINE_AUTOMATION_MIGRATION = '20260710_engine_automation_contracts';
 export const PROOF_ALIGNMENT_MIGRATION = '20260711_required_proof_alignment';
 export const EXPERTISE_SUPPLY_MIGRATION = '20260711_required_expertise_supply';
+export const TASK_OUTCOME_CLASSIFICATION_MIGRATION = '20260711_task_outcome_classification';
 
 const REQUIRED_MIGRATION_FILES = [
   { name: ENGINE_AUTOMATION_MIGRATION, fileName: '20260710_engine_automation_contracts.sql' },
   { name: PROOF_ALIGNMENT_MIGRATION, fileName: '011-proof-alignment.sql' },
   { name: EXPERTISE_SUPPLY_MIGRATION, fileName: 'expertise_supply_control.sql' },
+  { name: TASK_OUTCOME_CLASSIFICATION_MIGRATION, fileName: '20260711_task_outcome_classification.sql' },
 ] as const;
 
 type QueryResult<Row extends Record<string, unknown> = Record<string, unknown>> = {
