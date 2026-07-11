@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Client } from 'pg';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import {
   ENGINE_AUTOMATION_MIGRATION,
   EXPERTISE_SUPPLY_MIGRATION,
@@ -62,6 +64,14 @@ describe('required engine automation migration', () => {
     expect(actual.migrationSpecs[0].candidatePaths).toContain('/app/backend/database/migrations/20260710_engine_automation_contracts.sql');
     await expect(actual.readText(actual.migrationSpecs[0].candidatePaths[0]!)).resolves.toContain('CREATE TABLE IF NOT EXISTS task_reservations');
     expect(actual.createClient('postgres://runtime')).toBeInstanceOf(Client);
+  });
+
+  it('packages every required migration in the production image', () => {
+    const dockerfile = readFileSync(resolve(process.cwd(), 'Dockerfile'), 'utf8');
+    for (const spec of productionMigrationRuntime().migrationSpecs) {
+      const fileName = spec.candidatePaths[0]!.split('/').at(-1)!;
+      expect(dockerfile).toContain(`/app/backend/database/migrations/${fileName}`);
+    }
   });
 
   it('loads the first non-empty migration and records failed candidates', async () => {
