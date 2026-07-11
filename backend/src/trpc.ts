@@ -102,6 +102,32 @@ const isAdminCheck = t.middleware(async ({ ctx, next }) => {
 
 export const adminProcedure = protectedProcedure.use(isAdminCheck);
 
+const isAdminOrEngineBridge = t.middleware(async ({ ctx, next }) => {
+  if (ctx.engineBridgeAuthorized === true && ctx.engineBridgeActorId) {
+    return next({ ctx });
+  }
+  if (!ctx.user) {
+    throw new TRPCError({ code: 'UNAUTHORIZED', message: 'Authentication required' });
+  }
+  if (ctx.user.is_banned || ['SUSPENDED', 'DELETED'].includes(ctx.user.account_status)) {
+    throw new TRPCError({ code: 'UNAUTHORIZED', message: 'Account suspended.' });
+  }
+  let isAdmin = ctx.user.is_admin;
+  if (isAdmin === undefined) {
+    const result = await db.query(
+      'SELECT role FROM admin_roles WHERE user_id = $1 AND role = ANY($2::text[])',
+      [ctx.user.id, ['admin', 'support', 'finance', 'moderator', 'founder']],
+    );
+    isAdmin = result.rows.length > 0;
+  }
+  if (!isAdmin) {
+    throw new TRPCError({ code: 'FORBIDDEN', message: 'Admin or engine bridge access required' });
+  }
+  return next({ ctx: { ...ctx, user: ctx.user } as AuthedContext });
+});
+
+export const adminOrEngineBridgeProcedure = t.procedure.use(isAdminOrEngineBridge);
+
 // Middleware: require Hustler role (default_mode = 'worker') — composed on top of isAuthenticated.
 // Ban/suspension/auth checks are already handled by isAuthenticated; this only does the role check.
 const isHustlerCheck = t.middleware(async ({ ctx, next }) => {

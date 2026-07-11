@@ -1,6 +1,6 @@
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
-import { adminProcedure, router, Schemas } from '../trpc.js';
+import { adminOrEngineBridgeProcedure, router, Schemas } from '../trpc.js';
 import { TaskReservationService } from '../services/TaskReservationService.js';
 
 const idempotencyKey = z
@@ -12,16 +12,20 @@ const idempotencyKey = z
 
 /** Engine-owned assignment contract for automation and /ops. */
 export const assignmentRouter = router({
-  reserve: adminProcedure
+  reserve: adminOrEngineBridgeProcedure
     .input(z.object({
       engineTaskId: Schemas.uuid,
       hustlerRef: Schemas.uuid,
       idempotencyKey,
     }))
     .mutation(async ({ ctx, input }) => {
+      const actorId = ctx.user?.id ?? ctx.engineBridgeActorId;
+      if (!actorId) {
+        throw new TRPCError({ code: 'UNAUTHORIZED', message: 'Reservation actor missing' });
+      }
       const result = await TaskReservationService.reserve({
         ...input,
-        actorId: ctx.user.id,
+        actorId,
       });
       if (!result.success) {
         const conflictCodes = ['IDEMPOTENCY_CONFLICT', 'RESERVATION_CONFLICT'];

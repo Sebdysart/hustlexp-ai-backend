@@ -1,3 +1,4 @@
+import { timingSafeEqual } from 'node:crypto';
 import { firebaseAuth } from './auth/firebase.js';
 import { ensureUserRowForFirebaseUid } from './auth/ensure-user.js';
 import { authCache, authCacheKey, authCacheGet, authCacheSet } from './auth-cache.js';
@@ -14,6 +15,8 @@ export interface Context extends Record<string, unknown> {
   user: User | null;
   firebaseUid: string | null;
   ip: string | null;
+  engineBridgeAuthorized?: boolean;
+  engineBridgeActorId?: string | null;
 }
 
 export interface AuthedContext extends Context {
@@ -31,8 +34,24 @@ function extractIp(req: Request): string | null {
   return req.headers.get('x-real-ip') || null;
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function bridgeIdentity(req: Request): Pick<Context, 'engineBridgeAuthorized' | 'engineBridgeActorId'> {
+  const expected = (process.env.ENGINE_BRIDGE_WRITE_KEY ?? '').trim();
+  const provided = (req.headers.get('x-engine-bridge-key') ?? '').trim();
+  const actorId = (process.env.ENGINE_BRIDGE_ACTOR_ID ?? '').trim();
+  const comparable = expected.length >= 32 && provided.length === expected.length && UUID_RE.test(actorId);
+  const authorized = comparable
+    && timingSafeEqual(Buffer.from(provided, 'utf8'), Buffer.from(expected, 'utf8'));
+  return { engineBridgeAuthorized: authorized, engineBridgeActorId: authorized ? actorId : null };
+}
+
+function requestIdentity(req: Request): Pick<Context, 'ip' | 'engineBridgeAuthorized' | 'engineBridgeActorId'> {
+  return { ip: extractIp(req), ...bridgeIdentity(req) };
+}
+
 function anonymousContext(req: Request): Context {
-  return { user: null, firebaseUid: null, ip: extractIp(req) };
+  return { user: null, firebaseUid: null, ...requestIdentity(req) };
 }
 
 function isInactive(user: User): boolean {
@@ -64,7 +83,7 @@ async function cachedContext(token: string, req: Request): Promise<Context | nul
   try {
     const revokedAt = await redis.get<string>(revokedKey(cached.firebaseUid));
     if (!revokedAt) {
-      return { user: cached.user, firebaseUid: cached.firebaseUid, ip: extractIp(req) };
+      return { user: cached.user, firebaseUid: cached.firebaseUid, ...requestIdentity(req) };
     }
     authCache.delete(authCacheKey(token));
     log.info({ uid: cached.firebaseUid }, 'tRPC cache entry invalidated by revocation marker');
@@ -85,7 +104,7 @@ async function verifiedContext(token: string, req: Request): Promise<Context> {
   if (user && !isInactive(user)) {
     authCacheSet(token, { user, firebaseUid: decoded.uid }, decoded.exp);
   }
-  return { user, firebaseUid: decoded.uid, ip: extractIp(req) };
+  return { user, firebaseUid: decoded.uid, ...requestIdentity(req) };
 }
 
 export async function createContext(opts: { req: Request; resHeaders: Headers }): Promise<Context> {
