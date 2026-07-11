@@ -10,7 +10,7 @@
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
     "compile": "tsc",
-    "start": "node -e \"import('./dist/backend/src/jobs/engine-automation-migration.js').then((m) => m.runEngineAutomationMigration())\" && node dist/backend/src/server.js",
+    "start": "node -e \"import('./dist/backend/src/jobs/engine-automation-migration.js').then((m) => m.runEngineAutomationMigration())\" && if [ \"$SERVICE_ROLE\" = \"worker\" ]; then node dist/backend/src/jobs/workers.js; else node dist/backend/src/server.js; fi",
     "start:dev": "tsx backend/src/server.ts",
     "start:workers": "node -e \"import('./dist/backend/src/jobs/engine-automation-migration.js').then((m) => m.runEngineAutomationMigration())\" && node dist/backend/src/jobs/workers.js",
     "test": "vitest run",

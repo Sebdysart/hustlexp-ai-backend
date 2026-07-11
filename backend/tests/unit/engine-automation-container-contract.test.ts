@@ -16,12 +16,24 @@ describe('engine automation production container contract', () => {
 
   it('applies the migration before both web and worker runtimes', () => {
     const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string> };
-    expect(pkg.scripts.start).toMatch(/engine-automation-migration.+&& node dist\/backend\/src\/server\.js/);
+    expect(pkg.scripts.start).toMatch(/engine-automation-migration/);
+    expect(pkg.scripts.start).toContain('SERVICE_ROLE');
+    expect(pkg.scripts.start).toContain('node dist/backend/src/jobs/workers.js');
+    expect(pkg.scripts.start).toContain('node dist/backend/src/server.js');
     expect(pkg.scripts['start:workers']).toMatch(/engine-automation-migration.+&& node dist\/backend\/src\/jobs\/workers\.js/);
 
     const procfile = read('Procfile');
     expect(procfile).toContain('web: npm start');
     expect(procfile).toContain('worker: npm run start:workers');
+  });
+
+  it('keeps the API as the default role and makes worker health role-aware', () => {
+    const dockerfile = read('Dockerfile');
+    expect(dockerfile).toContain("process.env.SERVICE_ROLE==='worker'");
+    expect(dockerfile).toContain("require('http').get('http://localhost:3000/health'");
+
+    const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string> };
+    expect(pkg.scripts.start).toContain('else node dist/backend/src/server.js');
   });
 
   it('pins every canonical E2-E5 persistence witness in the packaged SQL', () => {
