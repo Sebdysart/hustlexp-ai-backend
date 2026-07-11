@@ -45,6 +45,91 @@ interface ProofLocation {
   gps_timestamp: string;
 }
 
+interface ProofLocationRow {
+  proof_id: string;
+  user_id: string;
+  gps_latitude: number;
+  gps_longitude: number;
+  gps_timestamp: string;
+}
+
+async function loadRecentProofLocations(): Promise<ProofLocationRow[]> {
+  const result = await db.query<ProofLocationRow>(
+    `SELECT id as proof_id, user_id,
+            (gps_coordinates->>'latitude')::double precision as gps_latitude,
+            (gps_coordinates->>'longitude')::double precision as gps_longitude,
+            created_at as gps_timestamp
+     FROM proof_submissions
+     WHERE created_at > NOW() - INTERVAL '5 minutes'
+       AND gps_coordinates IS NOT NULL
+       AND gps_coordinates ? 'latitude'
+       AND gps_coordinates ? 'longitude'
+     ORDER BY user_id, created_at ASC`
+  );
+  return result.rows;
+}
+
+function groupProofsByUser(rows: ProofLocationRow[]): Map<string, ProofLocation[]> {
+  const grouped = new Map<string, ProofLocation[]>();
+  for (const row of rows) {
+    const proofs = grouped.get(row.user_id) ?? [];
+    proofs.push({
+      proof_id: row.proof_id,
+      user_id: row.user_id,
+      gps_coordinates: { latitude: row.gps_latitude, longitude: row.gps_longitude },
+      gps_timestamp: row.gps_timestamp,
+    });
+    grouped.set(row.user_id, proofs);
+  }
+  return grouped;
+}
+
+async function scanProofPair(
+  userId: string,
+  previous: ProofLocation,
+  current: ProofLocation,
+): Promise<number> {
+  try {
+    const result = await withTimeout(
+      LogisticsAIService.detectImpossibleTravel(
+        userId,
+        { ...current.gps_coordinates, timestamp: current.gps_timestamp },
+        { ...previous.gps_coordinates, timestamp: previous.gps_timestamp },
+      ),
+      10_000,
+    );
+    if (!result.success || !result.data?.flagged) return 0;
+    log.warn({ userId, speedKmh: result.data.speed_kmh }, 'IMPOSSIBLE TRAVEL detected');
+    return 1;
+  } catch (error) {
+    const isTimeout = error instanceof Error && error.message.startsWith('Timeout after');
+    log.warn(
+      { userId, err: error, isTimeout },
+      isTimeout
+        ? 'detectImpossibleTravel timed out — treating as non-fraud, continuing'
+        : 'detectImpossibleTravel threw unexpectedly — treating as non-fraud, continuing',
+    );
+    return 0;
+  }
+}
+
+async function scanUserProofs(userId: string, proofs: ProofLocation[]): Promise<number> {
+  if (proofs.length < 2) return 0;
+  let flagged = 0;
+  for (let index = 1; index < proofs.length; index += 1) {
+    flagged += await scanProofPair(userId, proofs[index - 1], proofs[index]);
+  }
+  return flagged;
+}
+
+async function scanGroupedProofs(grouped: Map<string, ProofLocation[]>): Promise<number> {
+  let flagged = 0;
+  for (const [userId, proofs] of grouped.entries()) {
+    flagged += await scanUserProofs(userId, proofs);
+  }
+  return flagged;
+}
+
 // ============================================================================
 // JOB PROCESSOR
 // ============================================================================
@@ -55,91 +140,13 @@ interface ProofLocation {
 export const processFraudDetectionJob = async (_job: Job): Promise<void> => {
   try {
     log.info('Starting fraud scan');
-
-    // Get recent proof submissions with GPS data (last 5 minutes — matches cron interval)
-    const result = await db.query<{
-      proof_id: string;
-      user_id: string;
-      gps_latitude: number;
-      gps_longitude: number;
-      gps_timestamp: string;
-    }>(
-      `SELECT id as proof_id, user_id,
-              ST_Y(gps_coordinates::geometry) as gps_latitude,
-              ST_X(gps_coordinates::geometry) as gps_longitude,
-              gps_timestamp
-       FROM proof_submissions
-       WHERE gps_timestamp > NOW() - INTERVAL '5 minutes'
-         AND gps_coordinates IS NOT NULL
-       ORDER BY user_id, gps_timestamp ASC`
-    );
-
-    if (result.rows.length === 0) {
+    const rows = await loadRecentProofLocations();
+    if (rows.length === 0) {
       log.info('No recent proofs to scan');
       return;
     }
-
-    // Group by user
-    const userProofs = new Map<string, ProofLocation[]>();
-    for (const row of result.rows) {
-      const userId = row.user_id;
-      if (!userProofs.has(userId)) {
-        userProofs.set(userId, []);
-      }
-      userProofs.get(userId)!.push({
-        proof_id: row.proof_id,
-        user_id: row.user_id,
-        gps_coordinates: {
-          latitude: row.gps_latitude,
-          longitude: row.gps_longitude
-        },
-        gps_timestamp: row.gps_timestamp
-      });
-    }
-
-    let flaggedCount = 0;
-
-    // Check each user for impossible travel
-    for (const [userId, proofs] of userProofs.entries()) {
-      if (proofs.length < 2) continue; // Need at least 2 proofs to detect travel
-
-      // Check consecutive proof pairs
-      for (let i = 1; i < proofs.length; i++) {
-        const lastProof = proofs[i - 1];
-        const currentProof = proofs[i];
-
-        let travelResult: Awaited<ReturnType<typeof LogisticsAIService.detectImpossibleTravel>>;
-        try {
-          travelResult = await withTimeout(
-            LogisticsAIService.detectImpossibleTravel(
-              userId,
-              { ...currentProof.gps_coordinates, timestamp: currentProof.gps_timestamp },
-              { ...lastProof.gps_coordinates, timestamp: lastProof.gps_timestamp }
-            ),
-            10_000
-          );
-        } catch (aiErr) {
-          const isTimeout = aiErr instanceof Error && aiErr.message.startsWith('Timeout after');
-          log.warn(
-            { userId, err: aiErr, isTimeout },
-            isTimeout
-              ? 'detectImpossibleTravel timed out — treating as non-fraud, continuing'
-              : 'detectImpossibleTravel threw unexpectedly — treating as non-fraud, continuing'
-          );
-          continue;
-        }
-
-        if (travelResult.success && travelResult.data!.flagged) {
-          flaggedCount++;
-          log.warn({ userId, speedKmh: travelResult.data!.speed_kmh }, 'IMPOSSIBLE TRAVEL detected');
-
-          // Event already created by LogisticsAIService.detectImpossibleTravel()
-          // Optionally send admin notification here
-        }
-      }
-    }
-
-    log.info({ scannedCount: result.rows.length, flaggedCount }, 'Fraud scan complete');
+    const flaggedCount = await scanGroupedProofs(groupProofsByUser(rows));
+    log.info({ scannedCount: rows.length, flaggedCount }, 'Fraud scan complete');
   } catch (error) {
     log.error({ err: error }, 'Fraud scan failed');
     throw error; // BullMQ will retry

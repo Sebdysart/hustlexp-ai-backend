@@ -11,6 +11,12 @@ describe('engine automation production container contract', () => {
     expect(dockerfile).toContain(
       'COPY --from=builder /app/backend/database/migrations/20260710_engine_automation_contracts.sql ./backend/database/migrations/20260710_engine_automation_contracts.sql',
     );
+    expect(dockerfile).toContain(
+      'COPY --from=builder /app/backend/database/migrations/011-proof-alignment.sql ./backend/database/migrations/011-proof-alignment.sql',
+    );
+    expect(dockerfile).toContain(
+      'COPY --from=builder /app/backend/database/migrations/expertise_supply_control.sql ./backend/database/migrations/expertise_supply_control.sql',
+    );
     expect(dockerfile).toContain('CMD ["npm", "start"]');
   });
 

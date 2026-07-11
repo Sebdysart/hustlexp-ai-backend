@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Client } from 'pg';
 import {
   ENGINE_AUTOMATION_MIGRATION,
+  EXPERTISE_SUPPLY_MIGRATION,
+  PROOF_ALIGNMENT_MIGRATION,
   applyEngineAutomationMigration,
   loadMigrationSql,
   productionMigrationRuntime,
@@ -26,7 +28,10 @@ function clientWithQueries(existing = false): MigrationClient & { queries: strin
 function runtime(overrides: Partial<MigrationRuntime> = {}): MigrationRuntime {
   return {
     databaseUrl: 'postgres://automation-test',
-    candidatePaths: ['/missing.sql', '/migration.sql'],
+    migrationSpecs: [{
+      name: ENGINE_AUTOMATION_MIGRATION,
+      candidatePaths: ['/missing.sql', '/migration.sql'],
+    }],
     readText: vi.fn(async (filePath: string) => {
       if (filePath === '/migration.sql') return 'SELECT 1;';
       throw new Error('not found');
@@ -47,8 +52,13 @@ describe('required engine automation migration', () => {
     process.env.DATABASE_URL = 'postgres://runtime';
     const actual = productionMigrationRuntime();
     expect(actual.databaseUrl).toBe('postgres://runtime');
-    expect(actual.candidatePaths).toContain('/app/backend/database/migrations/20260710_engine_automation_contracts.sql');
-    await expect(actual.readText(actual.candidatePaths[0]!)).resolves.toContain('CREATE TABLE IF NOT EXISTS task_reservations');
+    expect(actual.migrationSpecs.map((spec) => spec.name)).toEqual([
+      ENGINE_AUTOMATION_MIGRATION,
+      PROOF_ALIGNMENT_MIGRATION,
+      EXPERTISE_SUPPLY_MIGRATION,
+    ]);
+    expect(actual.migrationSpecs[0].candidatePaths).toContain('/app/backend/database/migrations/20260710_engine_automation_contracts.sql');
+    await expect(actual.readText(actual.migrationSpecs[0].candidatePaths[0]!)).resolves.toContain('CREATE TABLE IF NOT EXISTS task_reservations');
     expect(actual.createClient('postgres://runtime')).toBeInstanceOf(Client);
   });
 
@@ -59,7 +69,10 @@ describe('required engine automation migration', () => {
       throw new Error('missing');
     });
     await expect(loadMigrationSql(runtime({
-      candidatePaths: ['/missing.sql', '/empty.sql', '/good.sql'],
+      migrationSpecs: [{
+        name: ENGINE_AUTOMATION_MIGRATION,
+        candidatePaths: ['/missing.sql', '/empty.sql', '/good.sql'],
+      }],
       readText,
     }))).resolves.toEqual({ sql: 'SELECT 1;', sourcePath: '/good.sql' });
     expect(readText).toHaveBeenCalledTimes(3);
@@ -67,9 +80,12 @@ describe('required engine automation migration', () => {
 
   it('fails closed when every migration candidate is unusable', async () => {
     await expect(loadMigrationSql(runtime({
-      candidatePaths: ['/missing.sql', '/empty.sql'],
+      migrationSpecs: [{
+        name: ENGINE_AUTOMATION_MIGRATION,
+        candidatePaths: ['/missing.sql', '/empty.sql'],
+      }],
       readText: vi.fn(async (filePath: string) => filePath === '/empty.sql' ? '' : Promise.reject('missing')),
-    }))).rejects.toThrow('Required engine automation migration is unavailable');
+    }))).rejects.toThrow(`Required migration ${ENGINE_AUTOMATION_MIGRATION} is unavailable`);
   });
 
   it('applies and records the migration atomically', async () => {
@@ -104,9 +120,25 @@ describe('required engine automation migration', () => {
   it('connects, applies, logs, and always closes the runtime client', async () => {
     const client = clientWithQueries();
     await expect(runEngineAutomationMigration(runtime({ createClient: () => client })))
-      .resolves.toMatchObject({ status: 'applied' });
+      .resolves.toEqual([expect.objectContaining({ status: 'applied' })]);
     expect(client.connect).toHaveBeenCalledOnce();
     expect(client.end).toHaveBeenCalledOnce();
+  });
+
+  it('applies every required migration in declared order', async () => {
+    const client = clientWithQueries();
+    const migrationSpecs = [
+      { name: 'first', candidatePaths: ['/first.sql'] },
+      { name: 'second', candidatePaths: ['/second.sql'] },
+    ];
+    const actual = await runEngineAutomationMigration(runtime({
+      migrationSpecs,
+      readText: vi.fn(async (filePath: string) => `SELECT '${filePath}';`),
+      createClient: () => client,
+    }));
+    expect(actual.map((outcome) => outcome.migration)).toEqual(['first', 'second']);
+    expect(client.queries).toContain("SELECT '/first.sql';");
+    expect(client.queries).toContain("SELECT '/second.sql';");
   });
 
   it('closes the client after an application failure', async () => {
