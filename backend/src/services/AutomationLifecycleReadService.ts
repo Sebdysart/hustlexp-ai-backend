@@ -33,6 +33,7 @@ export interface RawLifecycleRow {
   reservation_state: string | null;
   reserved_hustler_ref: string | null;
   proof_state: string | null;
+  automation_classification?: string | null;
 }
 
 export interface EngineLifecycleItem {
@@ -54,6 +55,7 @@ export interface EngineLifecycleItem {
   nextAutomaticAction: string | null;
   createdAt: string;
   updatedAt: string;
+  automationClassification: string;
 }
 
 export interface ListLifecycleResult {
@@ -178,6 +180,7 @@ export function mapLifecycleRow(row: RawLifecycleRow, now = new Date()): EngineL
     nextAutomaticAction: nextActionFor(lifecycleState, refundState, blockerCode),
     createdAt: iso(row.created_at)!,
     updatedAt: iso(row.updated_at)!,
+    automationClassification: row.automation_classification ?? 'UNCLASSIFIED',
   };
 }
 
@@ -185,7 +188,7 @@ const LIFECYCLE_QUERY = `SELECT t.id,
         t.state AS task_state, t.progress_state, t.worker_id, t.created_at, t.updated_at,
         t.dispatch_expires_at, t.expiration_reason, t.refund_state, t.refund_blocker,
         t.started_at, t.completion_message_delivered_at, t.completion_confirmed_at,
-        t.payout_ready_at, t.payout_ready_reason,
+        t.payout_ready_at, t.payout_ready_reason, t.automation_classification,
         e.state AS escrow_state, e.stripe_payment_intent_id, e.stripe_refund_id,
         r.status AS reservation_state, r.hustler_id AS reserved_hustler_ref,
         p.state AS proof_state

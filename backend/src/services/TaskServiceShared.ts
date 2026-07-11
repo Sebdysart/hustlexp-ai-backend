@@ -23,6 +23,7 @@ export interface CreateTaskParams {
   templateSlug?: string;
   clientIdempotencyKey?: string;
   roughArea?: string;
+  automationClassification?: 'PRODUCTION' | 'CONTROLLED_TEST';
 }
 
 export interface AcceptTaskParams {
@@ -86,5 +87,6 @@ export function buildTaskCreateRequestHash(params: CreateTaskParams): string {
     instantMode: defaultValue(params.instantMode, false),
     sensitive: defaultValue(params.sensitive, false),
     templateSlug: optionalValue(params.templateSlug),
+    automationClassification: defaultValue(params.automationClassification, 'PRODUCTION'),
   })).digest('hex');
 }

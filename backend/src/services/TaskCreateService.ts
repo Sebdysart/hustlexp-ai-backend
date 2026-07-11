@@ -160,6 +160,7 @@ function publicTaskValues(params: CreateTaskParams, price: number, xp: number, i
     params.templateSlug || null,
     location,
     params.dispatchExpiresAt,
+    params.automationClassification ?? 'PRODUCTION',
   ];
 }
 
@@ -173,8 +174,9 @@ async function insertTask(
     `INSERT INTO tasks (
       poster_id, title, description, price, xp_reward, requirements, location, category,
       deadline, requires_proof, risk_level, mode, live_broadcast_radius_miles, instant_mode,
-      sensitive, state, template_slug, rough_location, dispatch_expires_at
-    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+      sensitive, state, template_slug, rough_location, dispatch_expires_at,
+      automation_classification
+    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
     RETURNING *`,
     publicTaskValues(params, money.price, money.xp, instantMode)
   );

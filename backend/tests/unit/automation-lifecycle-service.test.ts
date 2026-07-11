@@ -48,6 +48,7 @@ function row(overrides: Partial<RawLifecycleRow> = {}): RawLifecycleRow {
     reservation_state: null,
     reserved_hustler_ref: null,
     proof_state: null,
+    automation_classification: 'PRODUCTION',
     ...overrides,
   };
 }
@@ -66,6 +67,7 @@ describe('AutomationLifecycleService E1 lifecycle read', () => {
       engineTaskId: TASK_ID,
       lifecycleState: 'DISPATCH_READY',
       paymentState: 'FUNDED',
+      automationClassification: 'PRODUCTION',
       nextAutomaticAction: 'START_HARD_DISPATCH',
     });
     expect(result.data.tasks[0]).not.toHaveProperty('location');

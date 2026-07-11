@@ -175,6 +175,7 @@ export const Schemas = {
     /** City/region label safe to expose before a reservation exists. */
     roughArea: z.string().trim().min(2).max(120).optional(),
     clientIdempotencyKey: z.string().trim().min(8).max(128).regex(/^[A-Za-z0-9:_-]+$/).optional(),
+    isTest: z.boolean().optional(),
     category: z.string().trim().max(100).optional(),
     deadline: z.string().datetime().optional(),
     dispatchExpiresAt: z.string().datetime().optional(),

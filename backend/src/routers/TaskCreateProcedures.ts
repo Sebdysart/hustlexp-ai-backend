@@ -10,6 +10,7 @@ import { TaskService } from '../services/TaskService.js';
 import type { CreateTaskParams } from '../services/TaskServiceShared.js';
 import { getTemplate, isCareContent, isContentReleaseRequired } from '../services/TaskTemplateRegistry.js';
 import { hustlerProcedure, posterProcedure, Schemas } from '../trpc.js';
+import type { AuthedContext } from '../trpc-context.js';
 import type { Task, User } from '../types.js';
 import { checkDraftEvalRateLimit, checkTaskCreateRateLimit } from './task-router-common.js';
 
@@ -24,9 +25,12 @@ function assertImplementedFields(input: CreateInput): void {
   }
 }
 
-function createParams(input: CreateInput, posterId: string, templateSlug: string): CreateTaskParams {
+function createParams(input: CreateInput, ctx: AuthedContext, templateSlug: string): CreateTaskParams {
+  if (input.isTest === true && ctx.engineBridgeAuthorized !== true) {
+    throw new TRPCError({ code: 'FORBIDDEN', message: 'Controlled-test provenance requires engine bridge authority.' });
+  }
   return {
-    posterId,
+    posterId: ctx.user.id,
     title: input.title,
     description: input.description,
     price: input.price,
@@ -42,6 +46,7 @@ function createParams(input: CreateInput, posterId: string, templateSlug: string
     templateSlug,
     clientIdempotencyKey: input.clientIdempotencyKey,
     roughArea: input.roughArea,
+    automationClassification: input.isTest === true ? 'CONTROLLED_TEST' : 'PRODUCTION',
   };
 }
 
@@ -126,10 +131,10 @@ async function persistTemplatePolicy(
   );
 }
 
-async function handleCreateTask({ ctx, input }: { ctx: { user: User }; input: CreateInput }): Promise<Task> {
+async function handleCreateTask({ ctx, input }: { ctx: AuthedContext; input: CreateInput }): Promise<Task> {
   assertImplementedFields(input);
   const templateSlug = input.templateSlug ?? 'standard_physical';
-  const params = createParams(input, ctx.user.id, templateSlug);
+  const params = createParams(input, ctx, templateSlug);
   const replay = await preflightReplay(params);
   if (replay) return replay;
   await checkTaskCreateRateLimit(ctx.user.id);

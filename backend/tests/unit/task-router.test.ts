@@ -278,6 +278,18 @@ function makeCaller(userId = USER_ID, defaultMode: 'worker' | 'poster' = 'worker
   });
 }
 
+function makeBridgeCallerAsPoster() {
+  return taskRouter.createCaller({
+    user: {
+      id: USER_ID, email: 'probe@hustlexp.app', full_name: 'Probe',
+      role: 'poster', default_mode: 'poster', firebase_uid: 'fb-probe',
+    } as any,
+    firebaseUid: 'fb-probe',
+    engineBridgeAuthorized: true,
+    engineBridgeActorId: OTHER_USER_ID,
+  });
+}
+
 // Convenience helpers matching the tRPC middleware checks:
 //   hustlerProcedure → default_mode === 'worker'
 //   posterProcedure  → default_mode === 'poster'
@@ -663,6 +675,20 @@ describe('task.create', () => {
     expect(mockTaskService.create).toHaveBeenCalledWith(
       expect.objectContaining({ posterId: USER_ID })
     );
+  });
+
+  it('rejects controlled-test provenance without engine bridge authority', async () => {
+    await expect(makeCallerAsPoster().create({ ...validInput, isTest: true }))
+      .rejects.toMatchObject({ code: 'FORBIDDEN' });
+    expect(mockTaskService.create).not.toHaveBeenCalled();
+  });
+
+  it('persists controlled-test provenance only for an authenticated bridge caller', async () => {
+    mockTaskService.create.mockResolvedValueOnce({ success: true, data: makeTaskRow() as any });
+    await makeBridgeCallerAsPoster().create({ ...validInput, isTest: true });
+    expect(mockTaskService.create).toHaveBeenCalledWith(expect.objectContaining({
+      automationClassification: 'CONTROLLED_TEST',
+    }));
   });
 
   it('passes all optional fields', async () => {
