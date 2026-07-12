@@ -73,7 +73,7 @@ export const automationRouter = router({
       return result.data;
     }),
 
-  recordCompletionDelivery: adminProcedure
+  recordCompletionDelivery: adminOrEngineBridgeProcedure
     .input(z.object({
       engineTaskId: Schemas.uuid,
       providerDeliveryId: z.string().trim().min(4).max(255),
@@ -86,13 +86,13 @@ export const automationRouter = router({
         providerDeliveryId: input.providerDeliveryId,
         channel: input.channel,
         deliveredAt: new Date(input.deliveredAt),
-        actorId: ctx.user.id,
+        actorId: ctx.user?.id ?? ctx.engineBridgeActorId!,
       });
       if (!result.success) throwServiceError(result.error);
       return result.data;
     }),
 
-  completeUnattended: adminProcedure
+  completeUnattended: adminOrEngineBridgeProcedure
     .input(z.object({
       engineTaskId: Schemas.uuid,
       idempotencyKey,
@@ -101,7 +101,7 @@ export const automationRouter = router({
       const result = await TaskService.complete(input.engineTaskId, undefined, {
         mode: 'UNATTENDED',
         idempotencyKey: input.idempotencyKey,
-        actorId: ctx.user.id,
+        actorId: ctx.user?.id ?? ctx.engineBridgeActorId!,
       });
       if (!result.success) throwServiceError(result.error);
       return {

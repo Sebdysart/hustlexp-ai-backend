@@ -59,6 +59,16 @@ function caller(isAdmin = true) {
   });
 }
 
+function bridgeCaller() {
+  return automationRouter.createCaller({
+    user: null,
+    firebaseUid: null,
+    engineBridgeAuthorized: true,
+    engineBridgeActorId: ADMIN_ID,
+    ip: null,
+  });
+}
+
 beforeEach(() => vi.clearAllMocks());
 
 describe('automation E1/E2/E4 contracts', () => {
@@ -136,6 +146,23 @@ describe('automation E1/E2/E4 contracts', () => {
     }));
   });
 
+  it('lets the authenticated engine bridge record delivery evidence', async () => {
+    tasks.recordCompletionDelivery.mockResolvedValueOnce({
+      success: true,
+      data: { taskId: TASK_ID, providerDeliveryId: 'SM-delivered-bridge', idempotencyReplayed: false },
+    });
+    await bridgeCaller().recordCompletionDelivery({
+      engineTaskId: TASK_ID,
+      providerDeliveryId: 'SM-delivered-bridge',
+      channel: 'SMS',
+      deliveredAt: '2026-07-10T12:00:00.000Z',
+    });
+    expect(tasks.recordCompletionDelivery).toHaveBeenCalledWith(expect.objectContaining({
+      taskId: TASK_ID,
+      actorId: ADMIN_ID,
+    }));
+  });
+
   it('returns PAYOUT_READY but never claims payout released', async () => {
     tasks.complete.mockResolvedValueOnce({
       success: true,
@@ -154,6 +181,27 @@ describe('automation E1/E2/E4 contracts', () => {
     expect(tasks.complete).toHaveBeenCalledWith(TASK_ID, undefined, {
       mode: 'UNATTENDED',
       idempotencyKey: 'unattended-complete-0001',
+      actorId: ADMIN_ID,
+    });
+  });
+
+  it('lets the authenticated engine bridge invoke policy-bounded unattended completion', async () => {
+    tasks.complete.mockResolvedValueOnce({
+      success: true,
+      data: { id: TASK_ID, completion_idempotency_replayed: true } as any,
+    });
+    await expect(bridgeCaller().completeUnattended({
+      engineTaskId: TASK_ID,
+      idempotencyKey: 'unattended-complete-bridge-0001',
+    })).resolves.toEqual({
+      engineTaskId: TASK_ID,
+      lifecycleState: 'PAYOUT_READY',
+      payoutState: 'READY',
+      idempotencyReplayed: true,
+    });
+    expect(tasks.complete).toHaveBeenCalledWith(TASK_ID, undefined, {
+      mode: 'UNATTENDED',
+      idempotencyKey: 'unattended-complete-bridge-0001',
       actorId: ADMIN_ID,
     });
   });
