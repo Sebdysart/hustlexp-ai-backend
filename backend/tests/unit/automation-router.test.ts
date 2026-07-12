@@ -18,6 +18,9 @@ vi.mock('../../src/services/TaskService', () => ({
 vi.mock('../../src/services/VerifiedPosterCompletionService', () => ({
   VerifiedPosterCompletionService: { confirm: vi.fn() },
 }));
+vi.mock('../../src/services/VerifiedPosterRatingService', () => ({
+  VerifiedPosterRatingService: { record: vi.fn() },
+}));
 vi.mock('../../src/db', () => ({ db: { query: vi.fn() } }));
 vi.mock('../../src/auth/firebase', () => ({ firebaseAuth: { verifyIdToken: vi.fn() } }));
 vi.mock('../../src/logger', () => ({
@@ -28,12 +31,14 @@ import { automationRouter } from '../../src/routers/automation';
 import { AutomationLifecycleService } from '../../src/services/AutomationLifecycleService';
 import { TaskService } from '../../src/services/TaskService';
 import { VerifiedPosterCompletionService } from '../../src/services/VerifiedPosterCompletionService';
+import { VerifiedPosterRatingService } from '../../src/services/VerifiedPosterRatingService';
 
 const TASK_ID = '550e8400-e29b-41d4-a716-446655440000';
 const ADMIN_ID = '550e8400-e29b-41d4-a716-446655440002';
 const lifecycle = vi.mocked(AutomationLifecycleService);
 const tasks = vi.mocked(TaskService);
 const completion = vi.mocked(VerifiedPosterCompletionService);
+const rating = vi.mocked(VerifiedPosterRatingService);
 
 function caller(isAdmin = true) {
   return automationRouter.createCaller({
@@ -161,6 +166,35 @@ describe('automation E1/E2/E4 contracts', () => {
       engineTaskId: TASK_ID,
       providerConfirmationId: 'SM-confirmed-1234',
       score: 5,
+    })).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+  });
+
+  it('records a verified poster review in the canonical rating system', async () => {
+    rating.record.mockResolvedValueOnce({
+      success: true,
+      data: {
+        taskId: TASK_ID, ratingId: 'rating-1', score: 5, idempotencyReplayed: false,
+      },
+    });
+    await expect(caller().submitPosterRating({
+      engineTaskId: TASK_ID, providerReviewId: 'SM-review-1234', score: 5,
+    })).resolves.toEqual({
+      engineTaskId: TASK_ID, ratingId: 'rating-1', score: 5, idempotencyReplayed: false,
+    });
+    expect(rating.record).toHaveBeenCalledWith({
+      taskId: TASK_ID, providerReviewId: 'SM-review-1234', score: 5, actorId: ADMIN_ID,
+    });
+  });
+
+  it('validates and fails closed on poster review submissions', async () => {
+    await expect(caller().submitPosterRating({
+      engineTaskId: TASK_ID, providerReviewId: 'short', score: 5,
+    })).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+    rating.record.mockResolvedValueOnce({
+      success: false, error: { code: 'INVALID_STATE', message: 'not completed' },
+    });
+    await expect(caller().submitPosterRating({
+      engineTaskId: TASK_ID, providerReviewId: 'SM-review-1234', score: 3,
     })).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
   });
 

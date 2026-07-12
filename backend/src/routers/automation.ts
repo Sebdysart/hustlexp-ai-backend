@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { adminOrEngineBridgeProcedure, adminProcedure, router, Schemas } from '../trpc.js';
 import { AutomationLifecycleService } from '../services/AutomationLifecycleService.js';
 import { VerifiedPosterCompletionService } from '../services/VerifiedPosterCompletionService.js';
+import { VerifiedPosterRatingService } from '../services/VerifiedPosterRatingService.js';
 import { TaskService } from '../services/TaskService.js';
 
 const idempotencyKey = z
@@ -138,6 +139,29 @@ export const automationRouter = router({
       return {
         engineTaskId: result.data.id,
         progressState: 'TRAVELING' as const,
+      };
+    }),
+
+  submitPosterRating: adminOrEngineBridgeProcedure
+    .input(z.object({
+      engineTaskId: Schemas.uuid,
+      providerReviewId: z.string().trim().min(8).max(255).regex(/^[A-Za-z0-9:_-]+$/),
+      score: z.number().int().min(1).max(5),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const actorId = ctx.user?.id ?? ctx.engineBridgeActorId!;
+      const result = await VerifiedPosterRatingService.record({
+        taskId: input.engineTaskId,
+        providerReviewId: input.providerReviewId,
+        score: input.score as 1 | 2 | 3 | 4 | 5,
+        actorId,
+      });
+      if (!result.success) throwServiceError(result.error);
+      return {
+        engineTaskId: result.data.taskId,
+        ratingId: result.data.ratingId,
+        score: result.data.score,
+        idempotencyReplayed: result.data.idempotencyReplayed,
       };
     }),
 });

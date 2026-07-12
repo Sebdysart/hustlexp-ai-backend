@@ -65,6 +65,7 @@ requirePattern('E2 idempotency witness schema', migration, /task_dispatch_expiry
 requirePattern('E4 completion delivery evidence', automation, /recordCompletionDelivery\s*:/);
 requirePattern('E4 verified poster completion', automation, /confirmPosterCompletion\s*:/);
 requirePattern('canonical traveling progress', automation, /markWorkerTraveling\s*:/);
+requirePattern('retention canonical poster rating', automation, /submitPosterRating\s*:/);
 requirePattern('E4 unattended completion', automation, /completeUnattended\s*:/);
 requirePattern('E4 payout-ready evidence', migration, /payout_ready_at/);
 requirePattern('exact payment amount policy', paymentPolicy, /callerAmountCents === taskPriceCents/);

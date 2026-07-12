@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => {
     rate: vi.fn().mockResolvedValue({ allowed: true }),
     race: vi.fn(),
     proofReview: vi.fn(),
+    ratingSubmit: vi.fn(),
   };
 });
 
@@ -68,10 +69,14 @@ vi.mock('../../src/services/InstantTrustConfig', () => ({
 vi.mock('../../src/services/ProofService', () => ({
   ProofService: { review: mocks.proofReview },
 }));
+vi.mock('../../src/services/RatingService', () => ({
+  RatingService: { submitRating: mocks.ratingSubmit },
+}));
 
 import { DispatchExpiryService, buildDispatchExpiryRequestHash } from '../../src/services/DispatchExpiryService';
 import { TaskCompletionService } from '../../src/services/TaskCompletionService';
 import { VerifiedPosterCompletionService } from '../../src/services/VerifiedPosterCompletionService';
+import { VerifiedPosterRatingService } from '../../src/services/VerifiedPosterRatingService';
 import { TaskExecutionService } from '../../src/services/TaskExecutionService';
 import { TaskAcceptService } from '../../src/services/TaskAcceptService';
 import { TaskAbandonService } from '../../src/services/TaskAbandonService';
@@ -142,6 +147,10 @@ beforeEach(() => {
   mocks.flags.mockReturnValue({ instantModeEnabled: true });
   mocks.rate.mockResolvedValue({ allowed: true });
   mocks.proofReview.mockResolvedValue({ success: true, data: { state: 'ACCEPTED' } });
+  mocks.ratingSubmit.mockResolvedValue({
+    success: true,
+    data: { id: 'rating-1', task_id: TASK_ID, stars: 5 },
+  });
 });
 
 describe('DispatchExpiryService defensive contracts', () => {
@@ -504,6 +513,79 @@ describe('TaskCompletionService defensive contracts', () => {
     await expect(VerifiedPosterCompletionService.confirm({
       taskId: TASK_ID, providerConfirmationId: 'SM-confirm-0012', score: 5, actorId: 'bridge',
     })).resolves.toMatchObject({ success: false, error: { code: 'DB_ERROR' } });
+  });
+});
+
+describe('VerifiedPosterRatingService defensive contracts', () => {
+  const params = {
+    taskId: TASK_ID, providerReviewId: 'SM-review-0001', score: 5 as const, actorId: 'bridge',
+  };
+
+  it('records a verified poster rating in the canonical rating system', async () => {
+    query.mockResolvedValueOnce(rows())
+      .mockResolvedValueOnce(rows([{ state: 'COMPLETED', poster_id: POSTER_ID, worker_id: WORKER_ID }]))
+      .mockResolvedValueOnce(rows())
+      .mockResolvedValueOnce(rows());
+    await expect(VerifiedPosterRatingService.record(params)).resolves.toMatchObject({
+      success: true,
+      data: { ratingId: 'rating-1', taskId: TASK_ID, score: 5, idempotencyReplayed: false },
+    });
+    expect(mocks.ratingSubmit).toHaveBeenCalledWith({
+      taskId: TASK_ID, raterId: POSTER_ID, stars: 5, tags: ['verified_messaging'],
+    });
+  });
+
+  it('replays an existing task rating without creating a duplicate', async () => {
+    query.mockResolvedValueOnce(rows([{ task_id: TASK_ID }]))
+      .mockResolvedValueOnce(rows([{ state: 'COMPLETED', poster_id: POSTER_ID, worker_id: WORKER_ID }]))
+      .mockResolvedValueOnce(rows([{ id: 'rating-existing', task_id: TASK_ID, stars: 4 }]));
+    await expect(VerifiedPosterRatingService.record({ ...params, score: 4 })).resolves.toMatchObject({
+      success: true, data: { ratingId: 'rating-existing', score: 4, idempotencyReplayed: true },
+    });
+    expect(mocks.ratingSubmit).not.toHaveBeenCalled();
+  });
+
+  it('fails closed for reused provider IDs and premature tasks', async () => {
+    query.mockResolvedValueOnce(rows([{ task_id: 'different-task' }]));
+    await expect(VerifiedPosterRatingService.record(params)).resolves.toMatchObject({
+      success: false, error: { code: 'IDEMPOTENCY_CONFLICT' },
+    });
+    query.mockResolvedValueOnce(rows())
+      .mockResolvedValueOnce(rows([{ state: 'PROOF_SUBMITTED', poster_id: POSTER_ID, worker_id: WORKER_ID }]));
+    await expect(VerifiedPosterRatingService.record(params)).resolves.toMatchObject({
+      success: false, error: { code: 'INVALID_STATE' },
+    });
+  });
+
+  it('fails closed when a provider retries the same review ID with a different score', async () => {
+    query.mockResolvedValueOnce(rows([{ task_id: TASK_ID, score: '4' }]));
+    await expect(VerifiedPosterRatingService.record(params)).resolves.toMatchObject({
+      success: false, error: { code: 'IDEMPOTENCY_CONFLICT' },
+    });
+    expect(mocks.ratingSubmit).not.toHaveBeenCalled();
+  });
+
+  it('preserves rating service failures and maps database exceptions', async () => {
+    mocks.ratingSubmit.mockResolvedValueOnce({
+      success: false, error: { code: 'RATING_BLOCKED', message: 'blocked' },
+    });
+    query.mockResolvedValueOnce(rows())
+      .mockResolvedValueOnce(rows([{ state: 'COMPLETED', poster_id: POSTER_ID, worker_id: WORKER_ID }]))
+      .mockResolvedValueOnce(rows());
+    await expect(VerifiedPosterRatingService.record(params)).resolves.toMatchObject({
+      success: false, error: { code: 'RATING_BLOCKED' },
+    });
+    query.mockRejectedValueOnce(new Error('offline'));
+    await expect(VerifiedPosterRatingService.record(params)).resolves.toMatchObject({
+      success: false, error: { code: 'DB_ERROR' },
+    });
+  });
+
+  it('returns NOT_FOUND when the canonical task is missing', async () => {
+    query.mockResolvedValueOnce(rows()).mockResolvedValueOnce(rows());
+    await expect(VerifiedPosterRatingService.record(params)).resolves.toMatchObject({
+      success: false, error: { code: 'NOT_FOUND' },
+    });
   });
 });
 
