@@ -107,6 +107,7 @@ vi.mock('../../src/lib/task-lifecycle-notifications', () => ({
 
 vi.mock('../../src/services/TaskLocationService', () => ({
   TaskLocationService: {
+    setByPoster: vi.fn(),
     releaseToReservedWorker: vi.fn(),
   },
 }));
@@ -371,8 +372,17 @@ describe('task.getById', () => {
 
     const result = await makeCaller().getById({ taskId: TASK_ID });
 
-    expect(result).toEqual(task);
+    expect(result).toEqual({ ...task, viewer_role: 'poster' });
     expect(mockTaskService.getById).toHaveBeenCalledWith(TASK_ID);
+  });
+
+  it('returns the authenticated engine viewer role instead of requiring Firebase UID comparison', async () => {
+    const task = makeTaskRow({ poster_id: OTHER_USER_ID, worker_id: USER_ID });
+    mockTaskService.getById.mockResolvedValueOnce({ success: true, data: task as any });
+
+    const result = await makeCaller().getById({ taskId: TASK_ID });
+
+    expect(result).toMatchObject({ id: TASK_ID, viewer_role: 'hustler' });
   });
 
   it('throws NOT_FOUND when task does not exist', async () => {
@@ -820,6 +830,47 @@ describe('task.releaseExactLocation', () => {
     await expect(
       makeCallerAsHustler(OTHER_USER_ID).releaseExactLocation({ taskId: TASK_ID })
     ).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+  });
+});
+
+describe('task.setExactLocation', () => {
+  it('stores the poster-provided service location in the private vault', async () => {
+    mockTaskLocationService.setByPoster.mockResolvedValueOnce({
+      success: true,
+      data: { stored: true, idempotencyReplayed: false },
+    });
+
+    const result = await makeCallerAsPoster().setExactLocation({
+      taskId: TASK_ID,
+      exactLocation: '123 Main St, Bellevue, WA 98004',
+    });
+
+    expect(result).toEqual({ stored: true, idempotencyReplayed: false });
+    expect(mockTaskLocationService.setByPoster).toHaveBeenCalledWith({
+      taskId: TASK_ID,
+      posterId: USER_ID,
+      exactLocation: '123 Main St, Bellevue, WA 98004',
+    });
+  });
+
+  it('rejects control characters before the location service is called', async () => {
+    await expect(makeCallerAsPoster().setExactLocation({
+      taskId: TASK_ID,
+      exactLocation: '123 Main St\nInjected',
+    })).rejects.toThrow();
+    expect(mockTaskLocationService.setByPoster).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when reservation already locked the location', async () => {
+    mockTaskLocationService.setByPoster.mockResolvedValueOnce({
+      success: false,
+      error: { code: 'LOCATION_LOCKED', message: 'already reserved' },
+    });
+
+    await expect(makeCallerAsPoster().setExactLocation({
+      taskId: TASK_ID,
+      exactLocation: '123 Main St, Bellevue, WA 98004',
+    })).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
   });
 });
 

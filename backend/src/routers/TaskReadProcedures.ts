@@ -21,7 +21,12 @@ getById: protectedProcedure
         { tags: [CACHE_TAGS.TASK(input.taskId)], ttl: CACHE_TTL.taskDetails }
       );
 
-      const isParticipant = task.poster_id === ctx.user.id || task.worker_id === ctx.user.id;
+      const viewerRole = task.poster_id === ctx.user.id
+        ? 'poster'
+        : task.worker_id === ctx.user.id
+          ? 'hustler'
+          : null;
+      const isParticipant = viewerRole !== null;
       // Tasks in OPEN/MATCHING state are discoverable (hustler feed)
       const isDiscoverable = ['OPEN', 'MATCHING'].includes(task.state);
 
@@ -39,15 +44,20 @@ getById: protectedProcedure
           throw new TRPCError({ code: 'FORBIDDEN', message: 'Access denied' });
         }
         // Admin: full access
-        return task;
+        return { ...task, viewer_role: 'admin' as const };
       }
 
       // Strip sensitive identity fields for non-participants browsing the feed
       if (!isParticipant && isDiscoverable) {
-        return { ...task, poster_id: undefined, worker_id: undefined };
+        return {
+          ...task,
+          poster_id: undefined,
+          worker_id: undefined,
+          viewer_role: 'observer' as const,
+        };
       }
 
-      return task;
+      return { ...task, viewer_role: viewerRole };
     }),
 getState: protectedProcedure
     .input(z.object({ taskId: Schemas.uuid }))

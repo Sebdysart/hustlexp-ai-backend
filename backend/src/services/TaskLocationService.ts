@@ -60,6 +60,12 @@ interface ReleaseLocationParams {
   workerId: string;
 }
 
+interface SetLocationParams {
+  taskId: string;
+  posterId: string;
+  exactLocation: string;
+}
+
 interface LocationReleaseRow {
   worker_id: string | null;
   task_state: string;
@@ -121,6 +127,57 @@ function evaluateLocationRelease(
 }
 
 export const TaskLocationService = {
+  setByPoster: async (
+    params: SetLocationParams
+  ): Promise<ServiceResult<{ stored: true; idempotencyReplayed: boolean }>> => {
+    try {
+      const result = await db.transaction(async (query) => {
+        const task = await query<{ poster_id: string; worker_id: string | null; state: string }>(
+          `SELECT poster_id, worker_id, state FROM tasks WHERE id = $1 FOR UPDATE`,
+          [params.taskId]
+        );
+        const row = task.rows[0];
+        if (!row) return { kind: 'error' as const, code: 'NOT_FOUND', message: 'Task not found' };
+        if (row.poster_id !== params.posterId) {
+          return { kind: 'error' as const, code: 'FORBIDDEN', message: 'Only the task owner can set the service location.' };
+        }
+        if (row.worker_id || !['OPEN', 'MATCHING'].includes(row.state)) {
+          return {
+            kind: 'error' as const,
+            code: 'LOCATION_LOCKED',
+            message: 'The service location cannot change after reservation.',
+          };
+        }
+        const existing = await query<{ exact_location: string }>(
+          `SELECT exact_location FROM task_location_vault WHERE task_id = $1`,
+          [params.taskId]
+        );
+        if (existing.rows[0]?.exact_location === params.exactLocation) {
+          return { kind: 'success' as const, replayed: true };
+        }
+        await query(
+          `INSERT INTO task_location_vault (task_id, exact_location)
+           VALUES ($1, $2)
+           ON CONFLICT (task_id) DO UPDATE
+           SET exact_location = EXCLUDED.exact_location,
+               released_at = NULL,
+               released_to = NULL`,
+          [params.taskId, params.exactLocation]
+        );
+        return { kind: 'success' as const, replayed: false };
+      });
+      if (result.kind === 'error') {
+        return { success: false, error: { code: result.code, message: result.message } };
+      }
+      return { success: true, data: { stored: true, idempotencyReplayed: result.replayed } };
+    } catch (error) {
+      log.error(
+        { taskId: params.taskId, posterId: params.posterId, err: error instanceof Error ? error.message : String(error) },
+        'Exact task location storage failed'
+      );
+      return { success: false, error: { code: 'DB_ERROR', message: 'A database error occurred. Please try again.' } };
+    }
+  },
   releaseToReservedWorker: async (
     params: ReleaseLocationParams
   ): Promise<ServiceResult<{ exactLocation: string }>> => {

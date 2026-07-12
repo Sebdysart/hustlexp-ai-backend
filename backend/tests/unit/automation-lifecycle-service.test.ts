@@ -208,7 +208,6 @@ describe('AutomationLifecycleService E2 expiry/refund', () => {
 
     const key = `dispatch-expiry:${TASK_ID}`;
     const { buildDispatchExpiryRequestHash } = await import('../../src/services/AutomationLifecycleService');
-    query.mock.results.length;
     query.mockReset();
     query
       .mockResolvedValueOnce({ rows: [], rowCount: 1 })

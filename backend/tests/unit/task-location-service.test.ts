@@ -51,6 +51,63 @@ describe('redactPrivateLocation', () => {
   });
 });
 
+describe('TaskLocationService.setByPoster', () => {
+  it('stores a private location only while the poster-owned task is unreserved', async () => {
+    query
+      .mockResolvedValueOnce({
+        rows: [{ poster_id: 'poster-1', worker_id: null, state: 'OPEN' }], rowCount: 1,
+      } as never)
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+    const result = await TaskLocationService.setByPoster({
+      taskId: '550e8400-e29b-41d4-a716-446655440000',
+      posterId: 'poster-1',
+      exactLocation: '123 Main St, Bellevue, WA 98004',
+    });
+
+    expect(result).toEqual({ success: true, data: { stored: true, idempotencyReplayed: false } });
+    expect(String(query.mock.calls[2][0])).toContain('task_location_vault');
+    expect(query.mock.calls[2][1]).toEqual([
+      '550e8400-e29b-41d4-a716-446655440000',
+      '123 Main St, Bellevue, WA 98004',
+    ]);
+  });
+
+  it('replays the same address without another write', async () => {
+    query
+      .mockResolvedValueOnce({
+        rows: [{ poster_id: 'poster-1', worker_id: null, state: 'MATCHING' }], rowCount: 1,
+      } as never)
+      .mockResolvedValueOnce({
+        rows: [{ exact_location: '123 Main St, Bellevue, WA 98004' }], rowCount: 1,
+      } as never);
+
+    await expect(TaskLocationService.setByPoster({
+      taskId: '550e8400-e29b-41d4-a716-446655440000',
+      posterId: 'poster-1',
+      exactLocation: '123 Main St, Bellevue, WA 98004',
+    })).resolves.toEqual({ success: true, data: { stored: true, idempotencyReplayed: true } });
+    expect(query).toHaveBeenCalledTimes(2);
+  });
+
+  it('locks location changes after reservation', async () => {
+    query.mockResolvedValueOnce({
+      rows: [{ poster_id: 'poster-1', worker_id: 'worker-1', state: 'ACCEPTED' }], rowCount: 1,
+    } as never);
+
+    const result = await TaskLocationService.setByPoster({
+      taskId: '550e8400-e29b-41d4-a716-446655440000',
+      posterId: 'poster-1',
+      exactLocation: '123 Main St, Bellevue, WA 98004',
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error.code).toBe('LOCATION_LOCKED');
+    expect(query).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('TaskLocationService.releaseToReservedWorker', () => {
   it('rejects exact-location access before engine reservation', async () => {
     query.mockResolvedValueOnce({

@@ -16,6 +16,13 @@ import { checkDraftEvalRateLimit, checkTaskCreateRateLimit } from './task-router
 
 type CreateInput = z.infer<typeof Schemas.createTask>;
 
+function hasUnsupportedLocationCharacter(value: string): boolean {
+  return [...value].some((character) => {
+    const code = character.charCodeAt(0);
+    return code <= 31 || code === 127;
+  });
+}
+
 function assertImplementedFields(input: CreateInput): void {
   if (input.prorate_on_abort || (input.proof_steps?.length ?? 0) > 0) {
     throw new TRPCError({
@@ -151,6 +158,32 @@ export const TaskCreateProcedures = {
 create: posterProcedure
     .input(Schemas.createTask)
     .mutation(handleCreateTask),
+setExactLocation: posterProcedure
+    .input(z.object({
+      taskId: Schemas.uuid,
+      exactLocation: z.string().trim().min(5).max(500).refine(
+        (value) => !hasUnsupportedLocationCharacter(value),
+        'Service location contains unsupported characters.',
+      ),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const result = await TaskLocationService.setByPoster({
+        taskId: input.taskId,
+        posterId: ctx.user.id,
+        exactLocation: input.exactLocation,
+      });
+      if (!result.success) {
+        const code = result.error.code === 'NOT_FOUND'
+          ? 'NOT_FOUND'
+          : result.error.code === 'FORBIDDEN'
+            ? 'FORBIDDEN'
+            : result.error.code === 'DB_ERROR'
+              ? 'INTERNAL_SERVER_ERROR'
+              : 'PRECONDITION_FAILED';
+        throw new TRPCError({ code, message: result.error.message });
+      }
+      return result.data;
+    }),
 releaseExactLocation: hustlerProcedure
     .input(z.object({ taskId: Schemas.uuid }))
     .mutation(async ({ ctx, input }) => {
