@@ -5,6 +5,7 @@ import { AutomationLifecycleService } from '../services/AutomationLifecycleServi
 import { VerifiedPosterCompletionService } from '../services/VerifiedPosterCompletionService.js';
 import { VerifiedPosterRatingService } from '../services/VerifiedPosterRatingService.js';
 import { TaskService } from '../services/TaskService.js';
+import { HustlerIdentityLinkService } from '../services/HustlerIdentityLinkService.js';
 
 const idempotencyKey = z
   .string()
@@ -28,6 +29,18 @@ function throwServiceError(error: { code: string; message: string }): never {
 
 /** Admin-gated engine lifecycle and automation scheduler contracts. */
 export const automationRouter = router({
+  linkHustlerIdentity: adminOrEngineBridgeProcedure
+    .input(z.object({
+      engineHustlerRef: Schemas.uuid,
+      phoneE164: z.string().regex(/^\+1[2-9][0-9]{9}$/),
+      providerClaimId: Schemas.uuid,
+    }))
+    .mutation(async ({ input }) => {
+      const result = await HustlerIdentityLinkService.link(input);
+      if (!result.success) throwServiceError(result.error);
+      return result.data;
+    }),
+
   listTasks: adminProcedure
     .input(z.object({
       limit: z.number().int().min(1).max(100).default(20),

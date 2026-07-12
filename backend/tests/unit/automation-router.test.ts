@@ -21,6 +21,9 @@ vi.mock('../../src/services/VerifiedPosterCompletionService', () => ({
 vi.mock('../../src/services/VerifiedPosterRatingService', () => ({
   VerifiedPosterRatingService: { record: vi.fn() },
 }));
+vi.mock('../../src/services/HustlerIdentityLinkService', () => ({
+  HustlerIdentityLinkService: { link: vi.fn() },
+}));
 vi.mock('../../src/db', () => ({ db: { query: vi.fn() } }));
 vi.mock('../../src/auth/firebase', () => ({ firebaseAuth: { verifyIdToken: vi.fn() } }));
 vi.mock('../../src/logger', () => ({
@@ -32,6 +35,7 @@ import { AutomationLifecycleService } from '../../src/services/AutomationLifecyc
 import { TaskService } from '../../src/services/TaskService';
 import { VerifiedPosterCompletionService } from '../../src/services/VerifiedPosterCompletionService';
 import { VerifiedPosterRatingService } from '../../src/services/VerifiedPosterRatingService';
+import { HustlerIdentityLinkService } from '../../src/services/HustlerIdentityLinkService';
 
 const TASK_ID = '550e8400-e29b-41d4-a716-446655440000';
 const ADMIN_ID = '550e8400-e29b-41d4-a716-446655440002';
@@ -39,6 +43,7 @@ const lifecycle = vi.mocked(AutomationLifecycleService);
 const tasks = vi.mocked(TaskService);
 const completion = vi.mocked(VerifiedPosterCompletionService);
 const rating = vi.mocked(VerifiedPosterRatingService);
+const identityLink = vi.mocked(HustlerIdentityLinkService);
 
 function caller(isAdmin = true) {
   return automationRouter.createCaller({
@@ -57,6 +62,33 @@ function caller(isAdmin = true) {
 beforeEach(() => vi.clearAllMocks());
 
 describe('automation E1/E2/E4 contracts', () => {
+  it('links a capability-proven existing roster identity through the canonical engine', async () => {
+    identityLink.link.mockResolvedValueOnce({
+      success: true,
+      data: { engineHustlerRef: TASK_ID, trustTier: 1, idempotencyReplayed: false },
+    });
+    const input = {
+      engineHustlerRef: TASK_ID,
+      phoneE164: '+14255550123',
+      providerClaimId: '550e8400-e29b-41d4-a716-446655440004',
+    };
+    await expect(caller().linkHustlerIdentity(input)).resolves.toEqual({
+      engineHustlerRef: TASK_ID, trustTier: 1, idempotencyReplayed: false,
+    });
+    expect(identityLink.link).toHaveBeenCalledWith(input);
+  });
+
+  it('fails closed when canonical identity evidence conflicts', async () => {
+    identityLink.link.mockResolvedValueOnce({
+      success: false, error: { code: 'IDENTITY_CONFLICT', message: 'conflict' },
+    });
+    await expect(caller().linkHustlerIdentity({
+      engineHustlerRef: TASK_ID,
+      phoneE164: '+14255550123',
+      providerClaimId: '550e8400-e29b-41d4-a716-446655440004',
+    })).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+  });
+
   it('admin reads a bounded lifecycle page', async () => {
     lifecycle.listTasks.mockResolvedValueOnce({ success: true, data: { tasks: [], nextCursor: null } });
     await expect(caller().listTasks({ limit: 50 })).resolves.toEqual({ tasks: [], nextCursor: null });
