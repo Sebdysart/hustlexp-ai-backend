@@ -66,4 +66,14 @@ describe('engine automation production container contract', () => {
     expect(migration).toContain("'financial_action', 'cancel_pending_payment_intent'");
     expect(migration).toContain("'dispatch-expiry-cancel:' || t.id::text");
   });
+
+  it('packages the no-provider-payment expiry reconciliation', () => {
+    const dockerfile = read('Dockerfile');
+    const migration = read('backend/database/migrations/20260712_dispatch_expiry_no_payment_reconcile.sql');
+    expect(dockerfile).toContain('20260712_dispatch_expiry_no_payment_reconcile.sql');
+    expect(migration).toContain("refund_state = 'NOT_REQUIRED'");
+    expect(migration).toContain("refund_blocker = 'BLOCKED_PENDING_ESCROW_CANCELLATION'");
+    expect(migration).toContain('stripe_payment_intent_id IS NULL');
+    expect(migration).toContain('stripe_refund_id IS NULL');
+  });
 });

@@ -39,6 +39,9 @@ const pendingPaymentCancellation = source('backend/src/services/PendingPaymentCa
 const pendingPaymentCancellationMigration = source(
   'backend/database/migrations/20260712_dispatch_expiry_pending_payment_cancel.sql',
 );
+const noPaymentReconcileMigration = source(
+  'backend/database/migrations/20260712_dispatch_expiry_no_payment_reconcile.sql',
+);
 const webOps = source('backend/src/routers/web/ops.ts');
 const workers = [
   'backend/src/jobs/workers.ts', 'backend/src/jobs/worker-registration.ts',
@@ -69,6 +72,8 @@ requirePattern('E2 idempotency witness schema', migration, /task_dispatch_expiry
 requirePattern('E2 pending PaymentIntent cancel service', pendingPaymentCancellation, /StripePaymentIntentCancellationService\.cancel/);
 requirePattern('E2 pending PaymentIntent provider evidence', pendingPaymentCancellationMigration, /payment_intent_canceled_at/);
 requirePattern('E2 pending PaymentIntent cancellation outbox', pendingPaymentCancellationMigration, /cancel_pending_payment_intent/);
+requirePattern('E2 no-payment expiry reconciliation', noPaymentReconcileMigration, /refund_state = 'NOT_REQUIRED'/);
+requirePattern('E2 no-payment reconciliation requires absent provider intent', noPaymentReconcileMigration, /stripe_payment_intent_id IS NULL/);
 requirePattern('E4 completion delivery evidence', automation, /recordCompletionDelivery\s*:/);
 requirePattern('E4 verified poster completion', automation, /confirmPosterCompletion\s*:/);
 requirePattern('canonical traveling progress', automation, /markWorkerTraveling\s*:/);

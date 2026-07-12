@@ -9,6 +9,7 @@ export const EXPERTISE_SUPPLY_MIGRATION = '20260711_required_expertise_supply';
 export const TASK_OUTCOME_CLASSIFICATION_MIGRATION = '20260711_task_outcome_classification';
 export const HUSTLER_IDENTITY_LINK_MIGRATION = '20260712_hustler_identity_link';
 export const DISPATCH_EXPIRY_PAYMENT_CANCEL_MIGRATION = '20260712_dispatch_expiry_pending_payment_cancel';
+export const DISPATCH_EXPIRY_NO_PAYMENT_RECONCILE_MIGRATION = '20260712_dispatch_expiry_no_payment_reconcile';
 
 const REQUIRED_MIGRATION_FILES = [
   { name: ENGINE_AUTOMATION_MIGRATION, fileName: '20260710_engine_automation_contracts.sql' },
@@ -19,6 +20,10 @@ const REQUIRED_MIGRATION_FILES = [
   {
     name: DISPATCH_EXPIRY_PAYMENT_CANCEL_MIGRATION,
     fileName: '20260712_dispatch_expiry_pending_payment_cancel.sql',
+  },
+  {
+    name: DISPATCH_EXPIRY_NO_PAYMENT_RECONCILE_MIGRATION,
+    fileName: '20260712_dispatch_expiry_no_payment_reconcile.sql',
   },
 ] as const;
 
