@@ -225,7 +225,11 @@ describe('AutomationLifecycleService E2 expiry/refund', () => {
     expect(writeToOutbox).not.toHaveBeenCalled();
   });
 
-  it('records a machine-readable blocker for a pending PaymentIntent without claiming refund', async () => {
+  it('queues idempotent cancellation for a pending PaymentIntent without claiming refund', async () => {
+    writeToOutbox.mockResolvedValueOnce({
+      id: 'outbox-cancel-1',
+      idempotencyKey: `dispatch-expiry-cancel:${TASK_ID}`,
+    });
     query
       .mockResolvedValueOnce({ rows: [], rowCount: 1 })
       .mockResolvedValueOnce({ rows: [], rowCount: 0 })
@@ -252,10 +256,116 @@ describe('AutomationLifecycleService E2 expiry/refund', () => {
     expect(result).toMatchObject({
       success: true,
       data: {
-        refundState: 'BLOCKED',
-        blockerCode: 'BLOCKED_PENDING_PAYMENT_INTENT_CANCELLATION',
+        refundState: 'PENDING',
+        blockerCode: null,
       },
     });
+    expect(writeToOutbox).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: 'escrow.refund_requested',
+        aggregateId: 'esc-1',
+        idempotencyKey: `dispatch-expiry-cancel:${TASK_ID}`,
+        payload: expect.objectContaining({
+          task_id: TASK_ID,
+          financial_action: 'cancel_pending_payment_intent',
+        }),
+      }),
+      query,
+    );
+  });
+
+  it('reconciles provider-canceled payment evidence without queuing another financial action', async () => {
+    query
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+      .mockResolvedValueOnce({ rows: [{
+        id: TASK_ID,
+        state: 'OPEN',
+        worker_id: null,
+        dispatch_expires_at: '2026-07-10T10:00:00.000Z',
+        expiration_reason: null,
+        refund_state: 'PENDING',
+        refund_blocker: null,
+        active_reservation: false,
+      }], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [{
+        id: 'esc-1',
+        state: 'PENDING',
+        stripe_payment_intent_id: 'pi-1',
+        stripe_refund_id: null,
+        payment_intent_canceled_at: '2026-07-12T13:00:00.000Z',
+      }], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [{ id: TASK_ID }], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 });
+
+    const result = await AutomationLifecycleService.expireUnfilled({
+      engineTaskId: TASK_ID,
+      idempotencyKey: `dispatch-expiry:${TASK_ID}`,
+    });
+
+    expect(result).toMatchObject({
+      success: true,
+      data: { refundState: 'NOT_REQUIRED', blockerCode: null },
+    });
+    expect(writeToOutbox).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      name: 'no escrow',
+      escrowRows: [],
+      expected: { refundState: 'NOT_REQUIRED', blockerCode: null },
+    },
+    {
+      name: 'pending escrow without a provider intent',
+      escrowRows: [{
+        id: 'esc-1', state: 'PENDING', stripe_payment_intent_id: null,
+        stripe_refund_id: null, payment_intent_canceled_at: null,
+      }],
+      expected: { refundState: 'NOT_REQUIRED', blockerCode: null },
+    },
+    {
+      name: 'escrow in provider-refunded state without a stored refund id',
+      escrowRows: [{
+        id: 'esc-1', state: 'REFUNDED', stripe_payment_intent_id: 'pi-1',
+        stripe_refund_id: null, payment_intent_canceled_at: null,
+      }],
+      expected: { refundState: 'REFUNDED', blockerCode: null },
+    },
+    {
+      name: 'stored provider refund evidence before local state reconciliation',
+      escrowRows: [{
+        id: 'esc-1', state: 'PENDING', stripe_payment_intent_id: 'pi-1',
+        stripe_refund_id: 're-1', payment_intent_canceled_at: null,
+      }],
+      expected: { refundState: 'REFUNDED', blockerCode: null },
+    },
+  ])('reconciles $name without another financial action', async ({ escrowRows, expected }) => {
+    query
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+      .mockResolvedValueOnce({ rows: [{
+        id: TASK_ID,
+        state: 'OPEN',
+        worker_id: null,
+        dispatch_expires_at: '2026-07-10T10:00:00.000Z',
+        expiration_reason: null,
+        refund_state: 'NOT_REQUIRED',
+        refund_blocker: null,
+        active_reservation: false,
+      }], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: escrowRows, rowCount: escrowRows.length })
+      .mockResolvedValueOnce({ rows: [{ id: TASK_ID }], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 });
+
+    const result = await AutomationLifecycleService.expireUnfilled({
+      engineTaskId: TASK_ID,
+      idempotencyKey: `dispatch-expiry:${TASK_ID}`,
+    });
+
+    expect(result).toMatchObject({ success: true, data: expected });
     expect(writeToOutbox).not.toHaveBeenCalled();
   });
 

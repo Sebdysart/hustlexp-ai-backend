@@ -35,6 +35,10 @@ const lifecycle = source('backend/src/services/AutomationLifecycleService.ts');
 const lifecycleRead = source('backend/src/services/AutomationLifecycleReadService.ts');
 const paymentPolicy = source('backend/src/services/EscrowPaymentPolicy.ts');
 const migration = source('backend/database/migrations/20260710_engine_automation_contracts.sql');
+const pendingPaymentCancellation = source('backend/src/services/PendingPaymentCancellationService.ts');
+const pendingPaymentCancellationMigration = source(
+  'backend/database/migrations/20260712_dispatch_expiry_pending_payment_cancel.sql',
+);
 const webOps = source('backend/src/routers/web/ops.ts');
 const workers = [
   'backend/src/jobs/workers.ts', 'backend/src/jobs/worker-registration.ts',
@@ -62,6 +66,9 @@ requirePattern('E2 unfilled expiry command', automation, /expireUnfilled\s*:/);
 requirePattern('E2 bounded expiry scheduler', automation, /expireDue\s*:/);
 requirePattern('E2 repeatable expiry scheduler registration', workers, /dispatch\.expire_unfilled/);
 requirePattern('E2 idempotency witness schema', migration, /task_dispatch_expiry_requests/);
+requirePattern('E2 pending PaymentIntent cancel service', pendingPaymentCancellation, /StripePaymentIntentCancellationService\.cancel/);
+requirePattern('E2 pending PaymentIntent provider evidence', pendingPaymentCancellationMigration, /payment_intent_canceled_at/);
+requirePattern('E2 pending PaymentIntent cancellation outbox', pendingPaymentCancellationMigration, /cancel_pending_payment_intent/);
 requirePattern('E4 completion delivery evidence', automation, /recordCompletionDelivery\s*:/);
 requirePattern('E4 verified poster completion', automation, /confirmPosterCompletion\s*:/);
 requirePattern('canonical traveling progress', automation, /markWorkerTraveling\s*:/);

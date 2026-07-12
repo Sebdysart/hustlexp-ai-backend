@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   instantNotification: vi.fn(),
   realtime: vi.fn(),
   escrowAction: vi.fn(),
+  pendingPaymentCancel: vi.fn(),
   completionRelease: vi.fn(),
   stripeEvent: vi.fn(),
   instantMatching: vi.fn(),
@@ -40,6 +41,9 @@ vi.mock('../../src/jobs/sms-worker', () => ({ processSMSJob: mocks.smsJob }));
 vi.mock('../../src/jobs/instant-notification-worker', () => ({ processInstantNotificationJob: mocks.instantNotification }));
 vi.mock('../../src/jobs/realtime-worker', () => ({ processRealtimeJob: mocks.realtime }));
 vi.mock('../../src/jobs/escrow-action-worker', () => ({ processEscrowActionJob: mocks.escrowAction }));
+vi.mock('../../src/jobs/dispatch-expiry-payment-cancel-worker', () => ({
+  processDispatchExpiryPaymentCancelJob: mocks.pendingPaymentCancel,
+}));
 vi.mock('../../src/jobs/completion-release-worker', () => ({ processCompletionReleaseJob: mocks.completionRelease }));
 vi.mock('../../src/jobs/stripe-event-worker', () => ({ processStripeEventJob: mocks.stripeEvent }));
 vi.mock('../../src/jobs/instant-matching-worker', () => ({ processInstantMatchingJob: mocks.instantMatching }));
@@ -121,6 +125,9 @@ describe('worker registration executable routing', () => {
       'escrow.refund_requested',
       'escrow.partial_refund_requested',
     ]) await handler(job(name));
+    await handler(job('escrow.refund_requested', {
+      financial_action: 'cancel_pending_payment_intent',
+    }));
     await handler(job('escrow.completion_release_requested'));
     await handler(job('stripe.event_received'));
     await handler(job('task.instant_matching_started'));
@@ -128,6 +135,7 @@ describe('worker registration executable routing', () => {
     await handler(job('payment.capture_requested'));
 
     expect(mocks.escrowAction).toHaveBeenCalledTimes(3);
+    expect(mocks.pendingPaymentCancel).toHaveBeenCalledOnce();
     expect(mocks.completionRelease).toHaveBeenCalledOnce();
     expect(mocks.stripeEvent).toHaveBeenCalledOnce();
     expect(mocks.instantMatching).toHaveBeenCalledOnce();

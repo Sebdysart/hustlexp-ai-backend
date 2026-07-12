@@ -75,7 +75,15 @@ async function processNotificationJob(job: Job): Promise<void> {
 
 const paymentHandlers: Record<string, JobHandler> = {
   'escrow.release_requested': async (job) => (await import('./escrow-action-worker.js')).processEscrowActionJob(job),
-  'escrow.refund_requested': async (job) => (await import('./escrow-action-worker.js')).processEscrowActionJob(job),
+  'escrow.refund_requested': async (job) => {
+    const action = (job.data.payload as { financial_action?: unknown } | undefined)?.financial_action;
+    if (action === 'cancel_pending_payment_intent') {
+      await (await import('./dispatch-expiry-payment-cancel-worker.js'))
+        .processDispatchExpiryPaymentCancelJob(job as never);
+      return;
+    }
+    await (await import('./escrow-action-worker.js')).processEscrowActionJob(job);
+  },
   'escrow.partial_refund_requested': async (job) => (await import('./escrow-action-worker.js')).processEscrowActionJob(job),
   'escrow.completion_release_requested': async (job) => (await import('./completion-release-worker.js')).processCompletionReleaseJob(job),
   'stripe.event_received': async (job) => (await import('./stripe-event-worker.js')).processStripeEventJob(job),

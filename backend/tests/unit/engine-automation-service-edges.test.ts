@@ -105,6 +105,7 @@ function expiryTask(overrides: Record<string, unknown> = {}) {
     active_reservation: false,
     escrow_state: null,
     stripe_refund_id: null,
+    payment_intent_canceled_at: null,
     ...overrides,
   };
 }
@@ -190,6 +191,7 @@ describe('DispatchExpiryService defensive contracts', () => {
   it.each([
     [undefined, 'NOT_REQUIRED', null],
     [{ id: 'esc-1', state: 'REFUNDED', stripe_payment_intent_id: 'pi_1', stripe_refund_id: null }, 'REFUNDED', null],
+    [{ id: 'esc-1', state: 'PENDING', stripe_payment_intent_id: null, stripe_refund_id: null }, 'NOT_REQUIRED', null],
     [{ id: 'esc-1', state: 'RELEASED', stripe_payment_intent_id: 'pi_1', stripe_refund_id: null }, 'BLOCKED', 'BLOCKED_ESCROW_STATE_RELEASED'],
   ])('persists the safe refund plan for escrow=%s', async (escrow, refundState, blockerCode) => {
     query.mockResolvedValueOnce(rows()).mockResolvedValueOnce(rows())
@@ -199,6 +201,41 @@ describe('DispatchExpiryService defensive contracts', () => {
       .mockResolvedValueOnce(rows()).mockResolvedValueOnce(rows());
     await expect(DispatchExpiryService.expireUnfilled(params)).resolves.toMatchObject({
       success: true, data: { refundState, blockerCode },
+    });
+  });
+
+  it('queues cancellation instead of blocking an unconfirmed PaymentIntent', async () => {
+    query.mockResolvedValueOnce(rows()).mockResolvedValueOnce(rows())
+      .mockResolvedValueOnce(rows([expiryTask()]))
+      .mockResolvedValueOnce(rows([{
+        id: 'esc-1', state: 'PENDING', stripe_payment_intent_id: 'pi_1',
+        stripe_refund_id: null, payment_intent_canceled_at: null,
+      }]))
+      .mockResolvedValueOnce(rows([{ id: TASK_ID }]))
+      .mockResolvedValueOnce(rows()).mockResolvedValueOnce(rows());
+    await expect(DispatchExpiryService.expireUnfilled(params)).resolves.toMatchObject({
+      success: true, data: { refundState: 'PENDING', blockerCode: null },
+    });
+    expect(mocks.writeToOutbox).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: 'escrow.refund_requested',
+        idempotencyKey: `dispatch-expiry-cancel:${TASK_ID}`,
+        payload: expect.objectContaining({ financial_action: 'cancel_pending_payment_intent' }),
+      }),
+      query,
+    );
+  });
+
+  it('reconciles a provider-canceled PaymentIntent as no refund required', async () => {
+    query.mockResolvedValueOnce(rows()).mockResolvedValueOnce(rows())
+      .mockResolvedValueOnce(rows([expiryTask({
+        state: 'EXPIRED', expiration_reason: 'UNFILLED', refund_state: 'PENDING',
+        escrow_state: 'PENDING', payment_intent_canceled_at: '2026-07-12T00:00:00.000Z',
+      })]))
+      .mockResolvedValueOnce(rows());
+    await expect(DispatchExpiryService.expireUnfilled(params)).resolves.toMatchObject({
+      success: true,
+      data: { refundState: 'NOT_REQUIRED', blockerCode: null, idempotencyReplayed: true },
     });
   });
 

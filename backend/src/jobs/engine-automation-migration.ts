@@ -8,6 +8,7 @@ export const PROOF_ALIGNMENT_MIGRATION = '20260711_required_proof_alignment';
 export const EXPERTISE_SUPPLY_MIGRATION = '20260711_required_expertise_supply';
 export const TASK_OUTCOME_CLASSIFICATION_MIGRATION = '20260711_task_outcome_classification';
 export const HUSTLER_IDENTITY_LINK_MIGRATION = '20260712_hustler_identity_link';
+export const DISPATCH_EXPIRY_PAYMENT_CANCEL_MIGRATION = '20260712_dispatch_expiry_pending_payment_cancel';
 
 const REQUIRED_MIGRATION_FILES = [
   { name: ENGINE_AUTOMATION_MIGRATION, fileName: '20260710_engine_automation_contracts.sql' },
@@ -15,6 +16,10 @@ const REQUIRED_MIGRATION_FILES = [
   { name: EXPERTISE_SUPPLY_MIGRATION, fileName: 'expertise_supply_control.sql' },
   { name: TASK_OUTCOME_CLASSIFICATION_MIGRATION, fileName: '20260711_task_outcome_classification.sql' },
   { name: HUSTLER_IDENTITY_LINK_MIGRATION, fileName: '20260712_hustler_identity_link.sql' },
+  {
+    name: DISPATCH_EXPIRY_PAYMENT_CANCEL_MIGRATION,
+    fileName: '20260712_dispatch_expiry_pending_payment_cancel.sql',
+  },
 ] as const;
 
 type QueryResult<Row extends Record<string, unknown> = Record<string, unknown>> = {

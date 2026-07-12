@@ -39,6 +39,7 @@ interface ExpiryTaskRow {
   active_reservation: boolean;
   escrow_state: string | null;
   stripe_refund_id: string | null;
+  payment_intent_canceled_at: Date | string | null;
 }
 
 interface RefundPlan {
@@ -60,12 +61,15 @@ async function findPrior(query: QueryFn, idempotencyKey: string): Promise<PriorR
   const result = await query<PriorRequestRow>(
     `SELECT r.request_hash, r.task_id, r.result_code,
             CASE WHEN e.state = 'REFUNDED' OR e.stripe_refund_id IS NOT NULL
-                 THEN 'REFUNDED' ELSE r.refund_state END AS refund_state,
+                 THEN 'REFUNDED'
+                 WHEN e.payment_intent_canceled_at IS NOT NULL THEN 'NOT_REQUIRED'
+                 ELSE r.refund_state END AS refund_state,
             CASE WHEN e.state = 'REFUNDED' OR e.stripe_refund_id IS NOT NULL
+                       OR e.payment_intent_canceled_at IS NOT NULL
                  THEN NULL ELSE r.blocker_code END AS blocker_code
      FROM task_dispatch_expiry_requests r
      LEFT JOIN LATERAL (
-       SELECT state, stripe_refund_id FROM escrows
+       SELECT state, stripe_refund_id, payment_intent_canceled_at FROM escrows
        WHERE task_id = r.task_id ORDER BY created_at DESC LIMIT 1
      ) e ON TRUE
      WHERE r.idempotency_key = $1`,
@@ -99,7 +103,8 @@ async function lockTask(query: QueryFn, taskId: string): Promise<ExpiryTaskRow |
               WHERE r.task_id = t.id AND r.status = 'ACTIVE'
             ) AS active_reservation,
             (SELECT e.state FROM escrows e WHERE e.task_id = t.id ORDER BY e.created_at DESC LIMIT 1) AS escrow_state,
-            (SELECT e.stripe_refund_id FROM escrows e WHERE e.task_id = t.id ORDER BY e.created_at DESC LIMIT 1) AS stripe_refund_id
+            (SELECT e.stripe_refund_id FROM escrows e WHERE e.task_id = t.id ORDER BY e.created_at DESC LIMIT 1) AS stripe_refund_id,
+            (SELECT e.payment_intent_canceled_at FROM escrows e WHERE e.task_id = t.id ORDER BY e.created_at DESC LIMIT 1) AS payment_intent_canceled_at
      FROM tasks t WHERE t.id = $1 FOR UPDATE OF t`,
     [taskId]
   );
@@ -119,9 +124,10 @@ function validateExpirable(task: ExpiryTaskRow): ServiceResult<true> {
 
 function reconciledRefund(task: ExpiryTaskRow): RefundPlan {
   const refunded = task.escrow_state === 'REFUNDED' || task.stripe_refund_id;
+  const canceled = Boolean(task.payment_intent_canceled_at);
   return {
-    refundState: refunded ? 'REFUNDED' : task.refund_state,
-    blockerCode: refunded ? null : task.refund_blocker,
+    refundState: refunded ? 'REFUNDED' : canceled ? 'NOT_REQUIRED' : task.refund_state,
+    blockerCode: refunded || canceled ? null : task.refund_blocker,
   };
 }
 
@@ -145,8 +151,9 @@ async function planRefund(query: QueryFn, taskId: string): Promise<ServiceResult
     state: string;
     stripe_payment_intent_id: string | null;
     stripe_refund_id: string | null;
+    payment_intent_canceled_at: Date | string | null;
   }>(
-    `SELECT id, state, stripe_payment_intent_id, stripe_refund_id
+    `SELECT id, state, stripe_payment_intent_id, stripe_refund_id, payment_intent_canceled_at
      FROM escrows WHERE task_id = $1 ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,
     [taskId]
   );
@@ -155,11 +162,27 @@ async function planRefund(query: QueryFn, taskId: string): Promise<ServiceResult
   if (escrow.state === 'REFUNDED' || escrow.stripe_refund_id) {
     return { success: true, data: { refundState: 'REFUNDED', blockerCode: null } };
   }
+  if (escrow.payment_intent_canceled_at) {
+    return { success: true, data: { refundState: 'NOT_REQUIRED', blockerCode: null } };
+  }
   if (escrow.state === 'PENDING') {
-    const blockerCode = escrow.stripe_payment_intent_id
-      ? 'BLOCKED_PENDING_PAYMENT_INTENT_CANCELLATION'
-      : 'BLOCKED_PENDING_ESCROW_CANCELLATION';
-    return { success: true, data: { refundState: 'BLOCKED', blockerCode } };
+    if (!escrow.stripe_payment_intent_id) {
+      return { success: true, data: { refundState: 'NOT_REQUIRED', blockerCode: null } };
+    }
+    await writeToOutbox({
+      eventType: 'escrow.refund_requested',
+      aggregateType: 'escrow',
+      aggregateId: escrow.id,
+      payload: {
+        escrow_id: escrow.id,
+        task_id: taskId,
+        reason: 'dispatch_expired_unfilled',
+        financial_action: 'cancel_pending_payment_intent',
+      },
+      queueName: 'critical_payments',
+      idempotencyKey: `dispatch-expiry-cancel:${taskId}`,
+    }, query);
+    return { success: true, data: { refundState: 'PENDING', blockerCode: null } };
   }
   if (escrow.state !== 'FUNDED') {
     return { success: true, data: { refundState: 'BLOCKED', blockerCode: `BLOCKED_ESCROW_STATE_${escrow.state}` } };

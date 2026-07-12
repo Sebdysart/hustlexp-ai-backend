@@ -40,6 +40,7 @@ COPY --from=builder /app/backend/database/migrations/011-proof-alignment.sql ./b
 COPY --from=builder /app/backend/database/migrations/expertise_supply_control.sql ./backend/database/migrations/expertise_supply_control.sql
 COPY --from=builder /app/backend/database/migrations/20260711_task_outcome_classification.sql ./backend/database/migrations/20260711_task_outcome_classification.sql
 COPY --from=builder /app/backend/database/migrations/20260712_hustler_identity_link.sql ./backend/database/migrations/20260712_hustler_identity_link.sql
+COPY --from=builder /app/backend/database/migrations/20260712_dispatch_expiry_pending_payment_cancel.sql ./backend/database/migrations/20260712_dispatch_expiry_pending_payment_cancel.sql
 
 # Change ownership
 RUN chown -R hustlexp:nodejs /app

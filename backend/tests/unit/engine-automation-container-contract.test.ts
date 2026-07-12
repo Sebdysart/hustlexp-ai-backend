@@ -57,4 +57,13 @@ describe('engine automation production container contract', () => {
       expect(sql).toContain(`CREATE TABLE IF NOT EXISTS ${table}`);
     }
   });
+
+  it('packages the pending PaymentIntent cancellation repair', () => {
+    const dockerfile = read('Dockerfile');
+    const migration = read('backend/database/migrations/20260712_dispatch_expiry_pending_payment_cancel.sql');
+    expect(dockerfile).toContain('20260712_dispatch_expiry_pending_payment_cancel.sql');
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS payment_intent_canceled_at');
+    expect(migration).toContain("'financial_action', 'cancel_pending_payment_intent'");
+    expect(migration).toContain("'dispatch-expiry-cancel:' || t.id::text");
+  });
 });
