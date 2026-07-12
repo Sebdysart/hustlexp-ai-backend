@@ -59,6 +59,8 @@ function eligibleWorker(overrides: Record<string, unknown> = {}) {
     is_banned: false,
     account_status: 'ACTIVE',
     plan: 'free',
+    stripe_connect_id: 'acct_ready_for_payouts',
+    payouts_enabled: true,
     ...overrides,
   };
 }
@@ -151,6 +153,20 @@ describe('TaskReservationService.reserve', () => {
 
     expect(result.success).toBe(false);
     expect(result.error.code).toBe('TRUST_TIER_INSUFFICIENT');
+  });
+
+  it('rejects a hustler who cannot receive an automatic payout', async () => {
+    query
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      .mockResolvedValueOnce({ rows: [eligibleTask()], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [eligibleWorker({ stripe_connect_id: null, payouts_enabled: false })], rowCount: 1 } as never);
+
+    const result = await TaskReservationService.reserve(params);
+
+    expect(result.success).toBe(false);
+    expect(result.error.code).toBe('PAYOUT_ACCOUNT_REQUIRED');
+    expect(query.mock.calls.some(([sql]) => String(sql).includes('UPDATE tasks'))).toBe(false);
   });
 
   it('rejects a second active task for the same hustler', async () => {

@@ -40,6 +40,8 @@ interface WorkerReservationRow {
   is_banned: boolean | null;
   account_status: string;
   plan: string;
+  stripe_connect_id: string | null;
+  payouts_enabled: boolean;
 }
 
 interface ExistingRequestRow {
@@ -137,7 +139,8 @@ async function loadWorkerForReservation(
   hustlerRef: string,
 ): Promise<LoadedWorker | ReservationError> {
   const result = await query<WorkerReservationRow>(
-    `SELECT id, default_mode, trust_tier, trust_hold, is_banned, account_status, plan
+    `SELECT id, default_mode, trust_tier, trust_hold, is_banned, account_status, plan,
+            stripe_connect_id, payouts_enabled
      FROM users
      WHERE id = $1
      FOR UPDATE`,
@@ -149,6 +152,12 @@ async function loadWorkerForReservation(
   }
   if (worker.is_banned || worker.trust_hold || worker.account_status !== 'ACTIVE') {
     return error('HUSTLER_INELIGIBLE', 'Hustler account is not eligible for reservation.');
+  }
+  if (!worker.stripe_connect_id || !worker.payouts_enabled) {
+    return error(
+      'PAYOUT_ACCOUNT_REQUIRED',
+      'Hustler must complete payout onboarding before reservation.'
+    );
   }
   return { kind: 'worker', worker };
 }

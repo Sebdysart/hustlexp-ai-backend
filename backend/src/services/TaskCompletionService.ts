@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { db, getErrorMessage, isInvariantViolation, type QueryFn } from '../db.js';
+import { writeToOutbox } from '../lib/outbox-helpers.js';
 import { taskLogger } from '../logger.js';
 import type { ServiceResult, Task } from '../types.js';
 import { ErrorCodes, TERMINAL_TASK_STATES } from '../types.js';
@@ -33,6 +34,14 @@ interface CompletionTransactionParams {
   posterId?: string;
   options: CompleteTaskOptions;
   mode: 'POSTER_CONFIRMED' | 'UNATTENDED';
+  requestHash: string;
+}
+
+interface CompletionEvidenceParams {
+  taskId: string;
+  escrowId: string;
+  mode: 'POSTER_CONFIRMED' | 'UNATTENDED';
+  options: CompleteTaskOptions;
   requestHash: string;
 }
 
@@ -94,7 +103,10 @@ function validateContext(
   return { success: true, data: 'READY' };
 }
 
-async function validateProofAndFunding(query: QueryFn, taskId: string): Promise<ServiceResult<true>> {
+async function validateProofAndFunding(
+  query: QueryFn,
+  taskId: string
+): Promise<ServiceResult<{ escrowId: string }>> {
   const proof = await query<{ state: string }>(
     `SELECT state FROM proofs WHERE task_id = $1 ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,
     [taskId]
@@ -102,14 +114,14 @@ async function validateProofAndFunding(query: QueryFn, taskId: string): Promise<
   if (proof.rows[0]?.state !== 'ACCEPTED') {
     return failure(ErrorCodes.INV_3_VIOLATION, 'Cannot complete task until the latest proof is accepted');
   }
-  const escrow = await query<{ state: string }>(
-    `SELECT state FROM escrows WHERE task_id = $1 ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,
+  const escrow = await query<{ id: string; state: string }>(
+    `SELECT id, state FROM escrows WHERE task_id = $1 ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,
     [taskId]
   );
   if (escrow.rows[0]?.state !== 'FUNDED') {
     return failure('PAYOUT_NOT_FUNDED', 'Cannot mark payout ready without a funded escrow');
   }
-  return { success: true, data: true };
+  return { success: true, data: { escrowId: escrow.rows[0].id } };
 }
 
 function validateUnattended(context: CompletionContext): ServiceResult<true> {
@@ -168,17 +180,27 @@ async function persistCompletion(query: QueryFn, taskId: string, mode: string): 
 
 async function writeCompletionEvidence(
   query: QueryFn,
-  taskId: string,
-  mode: string,
-  options: CompleteTaskOptions,
-  requestHash: string
+  params: CompletionEvidenceParams
 ): Promise<void> {
+  const { taskId, escrowId, mode, options, requestHash } = params;
   await query(
     `INSERT INTO engine_automation_events (task_id, event_type, idempotency_key, payload)
      VALUES ($1, 'PAYOUT_READY', $2, $3::jsonb)
      ON CONFLICT (idempotency_key) DO NOTHING`,
     [taskId, `payout-ready:${taskId}`, JSON.stringify({ mode })]
   );
+  await writeToOutbox({
+    eventType: 'escrow.completion_release_requested',
+    aggregateType: 'escrow',
+    aggregateId: escrowId,
+    payload: {
+      escrow_id: escrowId,
+      task_id: taskId,
+      reason: mode === 'POSTER_CONFIRMED' ? 'poster_confirmed_completion' : 'unattended_policy_completion',
+    },
+    queueName: 'critical_payments',
+    idempotencyKey: `completion-release:${taskId}`,
+  }, query);
   if (mode !== 'UNATTENDED' || !options.idempotencyKey) return;
   await query(
     `INSERT INTO task_unattended_completion_requests
@@ -210,7 +232,13 @@ async function completeTransaction(
   if (!policy.success) return policy;
   const completed = await persistCompletion(query, taskId, mode);
   if (!completed.success) return completed;
-  await writeCompletionEvidence(query, taskId, mode, options, requestHash);
+  await writeCompletionEvidence(query, {
+    taskId,
+    escrowId: prerequisites.data.escrowId,
+    mode,
+    options,
+    requestHash,
+  });
   return completed;
 }
 

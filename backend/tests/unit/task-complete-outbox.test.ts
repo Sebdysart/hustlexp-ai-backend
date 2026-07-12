@@ -129,8 +129,9 @@ import { writeToOutbox } from '../../src/lib/outbox-helpers';
 /**
  * Completion financial-boundary tests.
  *
- * COMPLETED now persists PAYOUT_READY evidence only. Payout release is a
- * separate engine action and must never be emitted by the completion call.
+ * COMPLETED persists PAYOUT_READY evidence and transactionally emits the
+ * canonical completion-release event. The worker remains the only component
+ * allowed to move money.
  */
 const dbQuery = db.query as unknown as ReturnType<typeof vi.fn>;
 const dbTransaction = db.transaction as unknown as ReturnType<typeof vi.fn>;
@@ -157,7 +158,7 @@ beforeEach(() => {
 });
 
 describe('TaskService.complete — payout-ready safety boundary', () => {
-  it('accepted proof + FUNDED escrow → persists PAYOUT_READY without releasing money', async () => {
+  it('accepted proof + FUNDED escrow → persists PAYOUT_READY and atomically queues canonical release', async () => {
     txQueryFn
       .mockResolvedValueOnce({ rows: [{ state: 'PROOF_SUBMITTED', poster_id: POSTER_ID }] }) // FOR UPDATE lock
       .mockResolvedValueOnce({ rows: [{ state: 'ACCEPTED' }] })                              // proof gate
@@ -168,7 +169,18 @@ describe('TaskService.complete — payout-ready safety boundary', () => {
     const result = await TaskService.complete(TASK_ID, POSTER_ID);
 
     expect(result.success).toBe(true);
-    expect(outboxSpy).not.toHaveBeenCalled();
+    expect(outboxSpy).toHaveBeenCalledWith({
+      eventType: 'escrow.completion_release_requested',
+      aggregateType: 'escrow',
+      aggregateId: ESCROW_ID,
+      payload: {
+        escrow_id: ESCROW_ID,
+        task_id: TASK_ID,
+        reason: 'poster_confirmed_completion',
+      },
+      queueName: 'critical_payments',
+      idempotencyKey: `completion-release:${TASK_ID}`,
+    }, txQueryFn);
     const updateSql = String(txQueryFn.mock.calls[3]?.[0]);
     expect(updateSql).toContain('payout_ready_at = NOW()');
     expect(updateSql).toContain("payout_ready_reason");
@@ -212,7 +224,7 @@ describe('TaskService.complete — payout-ready safety boundary', () => {
     expect(outboxSpy).not.toHaveBeenCalled();
   });
 
-  it('unattended completion after delivered evidence and wait reaches PAYOUT_READY only', async () => {
+  it('unattended completion after delivered evidence and wait atomically queues canonical release', async () => {
     txQueryFn
       .mockResolvedValueOnce({ rows: [] }) // advisory lock
       .mockResolvedValueOnce({ rows: [] }) // prior witness
@@ -234,7 +246,14 @@ describe('TaskService.complete — payout-ready safety boundary', () => {
       idempotencyKey: 'unattended-complete-0001',
     });
     expect(result.success).toBe(true);
-    expect(outboxSpy).not.toHaveBeenCalled();
+    expect(outboxSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: 'escrow.completion_release_requested',
+        aggregateId: ESCROW_ID,
+        payload: expect.objectContaining({ reason: 'unattended_policy_completion' }),
+      }),
+      txQueryFn,
+    );
     expect(String(txQueryFn.mock.calls[5]?.[0])).toContain('payout_ready_at = NOW()');
   });
 
