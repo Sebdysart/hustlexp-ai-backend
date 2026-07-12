@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => {
     flags: vi.fn().mockReturnValue({ instantModeEnabled: true }),
     rate: vi.fn().mockResolvedValue({ allowed: true }),
     race: vi.fn(),
+    proofReview: vi.fn(),
   };
 });
 
@@ -64,9 +65,13 @@ vi.mock('../../src/services/InstantTrustConfig', () => ({
   MIN_INSTANT_TIER: 2,
   MIN_SENSITIVE_INSTANT_TIER: 3,
 }));
+vi.mock('../../src/services/ProofService', () => ({
+  ProofService: { review: mocks.proofReview },
+}));
 
 import { DispatchExpiryService, buildDispatchExpiryRequestHash } from '../../src/services/DispatchExpiryService';
 import { TaskCompletionService } from '../../src/services/TaskCompletionService';
+import { VerifiedPosterCompletionService } from '../../src/services/VerifiedPosterCompletionService';
 import { TaskExecutionService } from '../../src/services/TaskExecutionService';
 import { TaskAcceptService } from '../../src/services/TaskAcceptService';
 import { TaskAbandonService } from '../../src/services/TaskAbandonService';
@@ -136,6 +141,7 @@ beforeEach(() => {
   mocks.fraud.mockResolvedValue({ success: true, data: { riskScore: 0.1 } });
   mocks.flags.mockReturnValue({ instantModeEnabled: true });
   mocks.rate.mockResolvedValue({ allowed: true });
+  mocks.proofReview.mockResolvedValue({ success: true, data: { state: 'ACCEPTED' } });
 });
 
 describe('DispatchExpiryService defensive contracts', () => {
@@ -357,6 +363,146 @@ describe('TaskCompletionService defensive contracts', () => {
     await expect(TaskCompletionService.recordDelivery({
       taskId: TASK_ID, providerDeliveryId: 'provider-1', channel: 'EMAIL',
       deliveredAt: new Date(), actorId: 'system',
+    })).resolves.toMatchObject({ success: false, error: { code: 'DB_ERROR' } });
+  });
+
+  it('accepts submitted proof before canonical poster-confirmed completion', async () => {
+    const complete = vi.spyOn(TaskCompletionService, 'complete').mockResolvedValueOnce({
+      success: true, data: { id: TASK_ID, state: 'COMPLETED' } as any,
+    });
+    query.mockResolvedValueOnce(rows([{
+      state: 'PROOF_SUBMITTED', poster_id: POSTER_ID, payout_ready_at: null,
+    }])).mockResolvedValueOnce(rows([{ id: 'proof-1', state: 'SUBMITTED' }]))
+      .mockResolvedValueOnce(rows()).mockResolvedValueOnce(rows([], 0));
+    await expect(VerifiedPosterCompletionService.confirm({
+      taskId: TASK_ID, providerConfirmationId: 'SM-confirm-0001', score: 5, actorId: 'bridge',
+    })).resolves.toMatchObject({ success: true, data: { state: 'COMPLETED' } });
+    expect(mocks.proofReview).toHaveBeenCalledWith(expect.objectContaining({
+      proofId: 'proof-1', reviewerId: POSTER_ID, decision: 'ACCEPTED',
+    }));
+    expect(complete).toHaveBeenCalledWith(TASK_ID, POSTER_ID, expect.objectContaining({
+      mode: 'POSTER_CONFIRMED', actorId: 'bridge',
+    }));
+    complete.mockRestore();
+  });
+
+  it('fails closed when verified poster confirmation has no submitted proof', async () => {
+    query.mockResolvedValueOnce(rows([{
+      state: 'PROOF_SUBMITTED', poster_id: POSTER_ID, payout_ready_at: null,
+    }])).mockResolvedValueOnce(rows([{ id: 'proof-1', state: 'REJECTED' }]));
+    await expect(VerifiedPosterCompletionService.confirm({
+      taskId: TASK_ID, providerConfirmationId: 'SM-confirm-0002', score: 4, actorId: 'bridge',
+    })).resolves.toMatchObject({ success: false, error: { code: 'INVALID_STATE' } });
+    expect(mocks.proofReview).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when verified poster confirmation has no proof row', async () => {
+    query.mockResolvedValueOnce(rows([{
+      state: 'PROOF_SUBMITTED', poster_id: POSTER_ID, payout_ready_at: null,
+    }])).mockResolvedValueOnce(rows());
+    await expect(VerifiedPosterCompletionService.confirm({
+      taskId: TASK_ID, providerConfirmationId: 'SM-confirm-0004', score: 4, actorId: 'bridge',
+    })).resolves.toMatchObject({ success: false, error: { code: 'NOT_FOUND' } });
+  });
+
+  it('continues from accepted proof and preserves completion failure', async () => {
+    const complete = vi.spyOn(TaskCompletionService, 'complete').mockResolvedValueOnce({
+      success: false, error: { code: 'PAYOUT_NOT_FUNDED', message: 'not funded' },
+    });
+    query.mockResolvedValueOnce(rows([{
+      state: 'PROOF_SUBMITTED', poster_id: POSTER_ID, payout_ready_at: null,
+    }])).mockResolvedValueOnce(rows([{ id: 'proof-1', state: 'ACCEPTED' }]));
+    await expect(VerifiedPosterCompletionService.confirm({
+      taskId: TASK_ID, providerConfirmationId: 'SM-confirm-0005', score: 5, actorId: 'bridge',
+    })).resolves.toMatchObject({ success: false, error: { code: 'PAYOUT_NOT_FUNDED' } });
+    complete.mockRestore();
+  });
+
+  it('preserves proof rejection and recovers an accepted review race', async () => {
+    mocks.proofReview.mockResolvedValueOnce({
+      success: false, error: { code: 'JUDGE_REJECTED', message: 'proof rejected' },
+    });
+    query.mockResolvedValueOnce(rows([{
+      state: 'PROOF_SUBMITTED', poster_id: POSTER_ID, payout_ready_at: null,
+    }])).mockResolvedValueOnce(rows([{ id: 'proof-1', state: 'SUBMITTED' }]));
+    await expect(VerifiedPosterCompletionService.confirm({
+      taskId: TASK_ID, providerConfirmationId: 'SM-confirm-0006', score: 4, actorId: 'bridge',
+    })).resolves.toMatchObject({ success: false, error: { code: 'JUDGE_REJECTED' } });
+
+    const complete = vi.spyOn(TaskCompletionService, 'complete').mockResolvedValueOnce({
+      success: true, data: { id: TASK_ID, state: 'COMPLETED' } as any,
+    });
+    const { TRPCError } = await import('@trpc/server');
+    mocks.proofReview.mockRejectedValueOnce(new TRPCError({ code: 'CONFLICT', message: 'raced' }));
+    query.mockResolvedValueOnce(rows([{
+      state: 'PROOF_SUBMITTED', poster_id: POSTER_ID, payout_ready_at: null,
+    }])).mockResolvedValueOnce(rows([{ id: 'proof-1', state: 'SUBMITTED' }]))
+      .mockResolvedValueOnce(rows([{ state: 'ACCEPTED' }]))
+      .mockResolvedValueOnce(rows()).mockResolvedValueOnce(rows([], 0));
+    await expect(VerifiedPosterCompletionService.confirm({
+      taskId: TASK_ID, providerConfirmationId: 'SM-confirm-0007', score: 5, actorId: 'bridge',
+    })).resolves.toMatchObject({ success: true });
+    complete.mockRestore();
+  });
+
+  it('rejects an unresolved proof-review race', async () => {
+    const { TRPCError } = await import('@trpc/server');
+    mocks.proofReview.mockRejectedValueOnce(new TRPCError({ code: 'CONFLICT', message: 'raced' }));
+    query.mockResolvedValueOnce(rows([{
+      state: 'PROOF_SUBMITTED', poster_id: POSTER_ID, payout_ready_at: null,
+    }])).mockResolvedValueOnce(rows([{ id: 'proof-1', state: 'SUBMITTED' }]))
+      .mockResolvedValueOnce(rows([{ state: 'REJECTED' }]));
+    await expect(VerifiedPosterCompletionService.confirm({
+      taskId: TASK_ID, providerConfirmationId: 'SM-confirm-0008', score: 5, actorId: 'bridge',
+    })).resolves.toMatchObject({ success: false, error: { code: 'INVALID_STATE' } });
+  });
+
+  it('maps an unexpected proof-review provider failure to DB_ERROR', async () => {
+    mocks.proofReview.mockRejectedValueOnce(new Error('judge offline'));
+    query.mockResolvedValueOnce(rows([{
+      state: 'PROOF_SUBMITTED', poster_id: POSTER_ID, payout_ready_at: null,
+    }])).mockResolvedValueOnce(rows([{ id: 'proof-1', state: 'SUBMITTED' }]));
+    await expect(VerifiedPosterCompletionService.confirm({
+      taskId: TASK_ID, providerConfirmationId: 'SM-confirm-0013', score: 5, actorId: 'bridge',
+    })).resolves.toMatchObject({ success: false, error: { code: 'DB_ERROR' } });
+  });
+
+  it('replays an already-completed verified poster confirmation', async () => {
+    query.mockResolvedValueOnce(rows([{
+      state: 'COMPLETED', poster_id: POSTER_ID, payout_ready_at: new Date(),
+    }])).mockResolvedValueOnce(rows([{ id: TASK_ID, state: 'COMPLETED' }]))
+      .mockResolvedValueOnce(rows([{ task_id: TASK_ID }]));
+    await expect(VerifiedPosterCompletionService.confirm({
+      taskId: TASK_ID, providerConfirmationId: 'SM-confirm-0003', score: 5, actorId: 'bridge',
+    })).resolves.toMatchObject({
+      success: true, data: { state: 'COMPLETED', completion_idempotency_replayed: true },
+    });
+  });
+
+  it('rejects missing and premature completion tasks', async () => {
+    query.mockResolvedValueOnce(rows());
+    await expect(VerifiedPosterCompletionService.confirm({
+      taskId: TASK_ID, providerConfirmationId: 'SM-confirm-0009', score: 5, actorId: 'bridge',
+    })).resolves.toMatchObject({ success: false, error: { code: 'NOT_FOUND' } });
+    query.mockResolvedValueOnce(rows([{
+      state: 'ACCEPTED', poster_id: POSTER_ID, payout_ready_at: null,
+    }]));
+    await expect(VerifiedPosterCompletionService.confirm({
+      taskId: TASK_ID, providerConfirmationId: 'SM-confirm-0010', score: 5, actorId: 'bridge',
+    })).resolves.toMatchObject({ success: false, error: { code: 'INVALID_STATE' } });
+  });
+
+  it('maps evidence reuse conflicts and database errors', async () => {
+    query.mockResolvedValueOnce(rows([{
+      state: 'COMPLETED', poster_id: POSTER_ID, payout_ready_at: new Date(),
+    }])).mockResolvedValueOnce(rows([{ id: TASK_ID, state: 'COMPLETED' }]))
+      .mockResolvedValueOnce(rows([{ task_id: 'another-task' }]));
+    await expect(VerifiedPosterCompletionService.confirm({
+      taskId: TASK_ID, providerConfirmationId: 'SM-confirm-0011', score: 5, actorId: 'bridge',
+    })).resolves.toMatchObject({ success: false, error: { code: 'IDEMPOTENCY_CONFLICT' } });
+    query.mockRejectedValueOnce(new Error('offline'));
+    await expect(VerifiedPosterCompletionService.confirm({
+      taskId: TASK_ID, providerConfirmationId: 'SM-confirm-0012', score: 5, actorId: 'bridge',
     })).resolves.toMatchObject({ success: false, error: { code: 'DB_ERROR' } });
   });
 });

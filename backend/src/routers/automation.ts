@@ -1,7 +1,8 @@
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
-import { adminProcedure, router, Schemas } from '../trpc.js';
+import { adminOrEngineBridgeProcedure, adminProcedure, router, Schemas } from '../trpc.js';
 import { AutomationLifecycleService } from '../services/AutomationLifecycleService.js';
+import { VerifiedPosterCompletionService } from '../services/VerifiedPosterCompletionService.js';
 import { TaskService } from '../services/TaskService.js';
 
 const idempotencyKey = z
@@ -94,6 +95,49 @@ export const automationRouter = router({
         lifecycleState: 'PAYOUT_READY' as const,
         payoutState: 'READY' as const,
         idempotencyReplayed: result.data.completion_idempotency_replayed === true,
+      };
+    }),
+
+  confirmPosterCompletion: adminOrEngineBridgeProcedure
+    .input(z.object({
+      engineTaskId: Schemas.uuid,
+      providerConfirmationId: z.string().trim().min(8).max(255).regex(/^[A-Za-z0-9:_-]+$/),
+      score: z.union([z.literal(4), z.literal(5)]),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const actorId = ctx.user?.id ?? ctx.engineBridgeActorId!;
+      const result = await VerifiedPosterCompletionService.confirm({
+        taskId: input.engineTaskId,
+        providerConfirmationId: input.providerConfirmationId,
+        score: input.score,
+        actorId,
+      });
+      if (!result.success) throwServiceError(result.error);
+      return {
+        engineTaskId: result.data.id,
+        lifecycleState: 'PAYOUT_READY' as const,
+        payoutState: 'READY' as const,
+        idempotencyReplayed: result.data.completion_idempotency_replayed === true,
+      };
+    }),
+
+  markWorkerTraveling: adminOrEngineBridgeProcedure
+    .input(z.object({ engineTaskId: Schemas.uuid }))
+    .mutation(async ({ input }) => {
+      const task = await TaskService.getById(input.engineTaskId);
+      if (!task.success) throwServiceError(task.error);
+      if (!task.data.worker_id) {
+        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Task has no engine-reserved hustler' });
+      }
+      const result = await TaskService.advanceProgress({
+        taskId: input.engineTaskId,
+        to: 'TRAVELING',
+        actor: { type: 'worker', userId: task.data.worker_id },
+      });
+      if (!result.success) throwServiceError(result.error);
+      return {
+        engineTaskId: result.data.id,
+        progressState: 'TRAVELING' as const,
       };
     }),
 });

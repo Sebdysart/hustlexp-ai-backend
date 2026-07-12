@@ -11,7 +11,12 @@ vi.mock('../../src/services/TaskService', () => ({
   TaskService: {
     recordCompletionDelivery: vi.fn(),
     complete: vi.fn(),
+    getById: vi.fn(),
+    advanceProgress: vi.fn(),
   },
+}));
+vi.mock('../../src/services/VerifiedPosterCompletionService', () => ({
+  VerifiedPosterCompletionService: { confirm: vi.fn() },
 }));
 vi.mock('../../src/db', () => ({ db: { query: vi.fn() } }));
 vi.mock('../../src/auth/firebase', () => ({ firebaseAuth: { verifyIdToken: vi.fn() } }));
@@ -22,11 +27,13 @@ vi.mock('../../src/logger', () => ({
 import { automationRouter } from '../../src/routers/automation';
 import { AutomationLifecycleService } from '../../src/services/AutomationLifecycleService';
 import { TaskService } from '../../src/services/TaskService';
+import { VerifiedPosterCompletionService } from '../../src/services/VerifiedPosterCompletionService';
 
 const TASK_ID = '550e8400-e29b-41d4-a716-446655440000';
 const ADMIN_ID = '550e8400-e29b-41d4-a716-446655440002';
 const lifecycle = vi.mocked(AutomationLifecycleService);
 const tasks = vi.mocked(TaskService);
+const completion = vi.mocked(VerifiedPosterCompletionService);
 
 function caller(isAdmin = true) {
   return automationRouter.createCaller({
@@ -112,6 +119,90 @@ describe('automation E1/E2/E4 contracts', () => {
       idempotencyKey: 'unattended-complete-0001',
       actorId: ADMIN_ID,
     });
+  });
+
+  it('turns a verified poster confirmation into canonical payout-ready state', async () => {
+    completion.confirm.mockResolvedValueOnce({
+      success: true,
+      data: { id: TASK_ID, completion_idempotency_replayed: false } as any,
+    });
+    await expect(caller().confirmPosterCompletion({
+      engineTaskId: TASK_ID,
+      providerConfirmationId: 'SM-confirmed-1234',
+      score: 5,
+    })).resolves.toEqual({
+      engineTaskId: TASK_ID,
+      lifecycleState: 'PAYOUT_READY',
+      payoutState: 'READY',
+      idempotencyReplayed: false,
+    });
+    expect(completion.confirm).toHaveBeenCalledWith({
+      taskId: TASK_ID,
+      providerConfirmationId: 'SM-confirmed-1234',
+      score: 5,
+      actorId: ADMIN_ID,
+    });
+  });
+
+  it('rejects ambiguous scores at the canonical completion boundary', async () => {
+    await expect(caller().confirmPosterCompletion({
+      engineTaskId: TASK_ID,
+      providerConfirmationId: 'SM-confirmed-1234',
+      score: 3 as 5,
+    })).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+    expect(completion.confirm).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when canonical completion service rejects the transition', async () => {
+    completion.confirm.mockResolvedValueOnce({
+      success: false, error: { code: 'INVALID_STATE', message: 'proof missing' },
+    });
+    await expect(caller().confirmPosterCompletion({
+      engineTaskId: TASK_ID,
+      providerConfirmationId: 'SM-confirmed-1234',
+      score: 5,
+    })).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+  });
+
+  it('records ON MY WAY in the canonical engine progress state', async () => {
+    tasks.getById.mockResolvedValueOnce({
+      success: true, data: { id: TASK_ID, worker_id: 'worker-1' } as any,
+    });
+    tasks.advanceProgress.mockResolvedValueOnce({
+      success: true, data: { id: TASK_ID, progress_state: 'TRAVELING' } as any,
+    });
+    await expect(caller().markWorkerTraveling({ engineTaskId: TASK_ID })).resolves.toEqual({
+      engineTaskId: TASK_ID, progressState: 'TRAVELING',
+    });
+    expect(tasks.advanceProgress).toHaveBeenCalledWith({
+      taskId: TASK_ID,
+      to: 'TRAVELING',
+      actor: { type: 'worker', userId: 'worker-1' },
+    });
+  });
+
+  it('rejects traveling progress without a canonical task or reserved hustler', async () => {
+    tasks.getById.mockResolvedValueOnce({
+      success: false, error: { code: 'NOT_FOUND', message: 'missing' },
+    });
+    await expect(caller().markWorkerTraveling({ engineTaskId: TASK_ID }))
+      .rejects.toMatchObject({ code: 'NOT_FOUND' });
+    tasks.getById.mockResolvedValueOnce({
+      success: true, data: { id: TASK_ID, worker_id: null } as any,
+    });
+    await expect(caller().markWorkerTraveling({ engineTaskId: TASK_ID }))
+      .rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+  });
+
+  it('maps canonical traveling transition failures', async () => {
+    tasks.getById.mockResolvedValueOnce({
+      success: true, data: { id: TASK_ID, worker_id: 'worker-1' } as any,
+    });
+    tasks.advanceProgress.mockResolvedValueOnce({
+      success: false, error: { code: 'INVALID_STATE', message: 'not accepted' },
+    });
+    await expect(caller().markWorkerTraveling({ engineTaskId: TASK_ID }))
+      .rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
   });
 
   it('maps lifecycle read errors without leaking service internals', async () => {
