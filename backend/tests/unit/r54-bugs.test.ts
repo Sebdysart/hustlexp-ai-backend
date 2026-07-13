@@ -31,6 +31,10 @@ vi.mock('../../src/logger', () => ({
     child: () => ({ warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() }),
     warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn(),
   },
+  taskLogger: {
+    child: () => ({ warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() }),
+    warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn(),
+  },
 }));
 
 vi.mock('../../src/services/MatchmakerAIService', () => ({

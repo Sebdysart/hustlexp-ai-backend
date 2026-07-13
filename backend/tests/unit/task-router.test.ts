@@ -96,6 +96,10 @@ vi.mock('../../src/services/TaskService', () => ({
   },
 }));
 
+vi.mock('../../src/services/VerifiedPosterCompletionService', () => ({
+  VerifiedPosterCompletionService: { confirm: vi.fn() },
+}));
+
 vi.mock('../../src/lib/task-lifecycle-notifications', () => ({
   notifyApplicationReceived: vi.fn(),
   notifyWorkerAssigned: vi.fn(),
@@ -191,6 +195,7 @@ vi.mock('../../src/cache/redis', () => ({
 
 import { db } from '../../src/db';
 import { TaskService } from '../../src/services/TaskService';
+import { VerifiedPosterCompletionService } from '../../src/services/VerifiedPosterCompletionService';
 import { TaskLocationService } from '../../src/services/TaskLocationService';
 import { ProofService } from '../../src/services/ProofService';
 import { ComplianceGuardianService } from '../../src/services/ComplianceGuardianService';
@@ -204,6 +209,7 @@ const mockCheckRateLimit = vi.mocked(checkRateLimit);
 
 const mockDb = vi.mocked(db);
 const mockTaskService = vi.mocked(TaskService);
+const mockVerifiedPosterCompletion = vi.mocked(VerifiedPosterCompletionService);
 const mockTaskLocationService = vi.mocked(TaskLocationService);
 const mockProofService = vi.mocked(ProofService);
 const mockCompliance = vi.mocked(ComplianceGuardianService);
@@ -1410,10 +1416,9 @@ describe('task.reviewProof', () => {
 // task.complete
 // ===========================================================================
 
-// UU-02 FIX: poster ownership check moved inside TaskService.complete() under
-// the FOR UPDATE lock.  The router no longer calls getById for auth — it passes
-// ctx.user.id directly to complete() and the service returns NOT_FOUND /
-// FORBIDDEN as ServiceResult error codes when appropriate.
+// Authenticated web confirmation uses the same canonical proof-acceptance and
+// payout-ready service as verified messaging. The service performs the poster
+// ownership check against its locked task context.
 describe('task.complete', () => {
   beforeEach(() => {
     // reset handled by global beforeEach
@@ -1422,18 +1427,22 @@ describe('task.complete', () => {
   it('returns completed task when poster calls', async () => {
     const completed = makeTaskRow({ state: 'COMPLETED' });
 
-    // No getById call — complete() handles auth + state check atomically.
-    mockTaskService.complete.mockResolvedValueOnce({ success: true, data: completed as any });
+    mockVerifiedPosterCompletion.confirm.mockResolvedValueOnce({ success: true, data: completed as any });
 
     const result = await makeCallerAsPoster().complete({ taskId: TASK_ID });
 
     expect(result).toEqual(completed);
-    // Verify posterId was forwarded into the service call.
-    expect(mockTaskService.complete).toHaveBeenCalledWith(TASK_ID, USER_ID);
+    expect(mockVerifiedPosterCompletion.confirm).toHaveBeenCalledWith({
+      taskId: TASK_ID,
+      providerConfirmationId: `web:${TASK_ID}`,
+      actorId: USER_ID,
+      channel: 'WEB',
+      expectedPosterId: USER_ID,
+    });
   });
 
   it('throws NOT_FOUND when service returns NOT_FOUND', async () => {
-    mockTaskService.complete.mockResolvedValueOnce({
+    mockVerifiedPosterCompletion.confirm.mockResolvedValueOnce({
       success: false,
       error: { code: 'NOT_FOUND', message: 'Task not found' },
     });
@@ -1442,7 +1451,7 @@ describe('task.complete', () => {
   });
 
   it('throws FORBIDDEN when service returns FORBIDDEN (user is not poster)', async () => {
-    mockTaskService.complete.mockResolvedValueOnce({
+    mockVerifiedPosterCompletion.confirm.mockResolvedValueOnce({
       success: false,
       error: { code: 'FORBIDDEN', message: 'Only the task poster can mark it complete' },
     });
@@ -1453,7 +1462,7 @@ describe('task.complete', () => {
   });
 
   it('throws PRECONDITION_FAILED for HX301 errors (INV-3)', async () => {
-    mockTaskService.complete.mockResolvedValueOnce({
+    mockVerifiedPosterCompletion.confirm.mockResolvedValueOnce({
       success: false,
       error: { code: 'HX301', message: 'Proof must be accepted' },
     });
@@ -1464,7 +1473,7 @@ describe('task.complete', () => {
   });
 
   it('throws BAD_REQUEST for other errors', async () => {
-    mockTaskService.complete.mockResolvedValueOnce({
+    mockVerifiedPosterCompletion.confirm.mockResolvedValueOnce({
       success: false,
       error: { code: 'OTHER', message: 'Something else' },
     });
@@ -2989,7 +2998,7 @@ describe('task router changed-line adversarial edges', () => {
   });
 
   it('completes and emits the post-commit worker notification path', async () => {
-    mockTaskService.complete.mockResolvedValueOnce({
+    mockVerifiedPosterCompletion.confirm.mockResolvedValueOnce({
       success: true, data: makeTaskRow({ state: 'COMPLETED', worker_id: OTHER_USER_ID }),
     } as any);
     await expect(makeCallerAsPoster().complete({ taskId: TASK_ID }))

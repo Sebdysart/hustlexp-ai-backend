@@ -432,6 +432,51 @@ describe('TaskCompletionService defensive contracts', () => {
     complete.mockRestore();
   });
 
+  it('accepts authenticated web completion without inventing a rating', async () => {
+    const complete = vi.spyOn(TaskCompletionService, 'complete').mockResolvedValueOnce({
+      success: true, data: { id: TASK_ID, state: 'COMPLETED' } as any,
+    });
+    query.mockResolvedValueOnce(rows([{
+      state: 'PROOF_SUBMITTED', poster_id: POSTER_ID, payout_ready_at: null,
+    }])).mockResolvedValueOnce(rows([{ id: 'proof-web', state: 'SUBMITTED' }]))
+      .mockResolvedValueOnce(rows()).mockResolvedValueOnce(rows([], 0));
+
+    await expect(VerifiedPosterCompletionService.confirm({
+      taskId: TASK_ID,
+      providerConfirmationId: `web:${TASK_ID}`,
+      actorId: POSTER_ID,
+      channel: 'WEB',
+      expectedPosterId: POSTER_ID,
+    })).resolves.toMatchObject({ success: true, data: { state: 'COMPLETED' } });
+
+    expect(mocks.proofReview).toHaveBeenCalledWith(expect.objectContaining({
+      proofId: 'proof-web',
+      reviewerId: POSTER_ID,
+      decision: 'ACCEPTED',
+      reason: 'Poster confirmed completion through authenticated self-service',
+    }));
+    expect(complete).toHaveBeenCalledWith(TASK_ID, POSTER_ID, expect.objectContaining({
+      mode: 'POSTER_CONFIRMED', actorId: POSTER_ID,
+    }));
+    complete.mockRestore();
+  });
+
+  it('rejects authenticated web completion from a non-poster identity', async () => {
+    query.mockResolvedValueOnce(rows([{
+      state: 'PROOF_SUBMITTED', poster_id: POSTER_ID, payout_ready_at: null,
+    }]));
+
+    await expect(VerifiedPosterCompletionService.confirm({
+      taskId: TASK_ID,
+      providerConfirmationId: `web:${TASK_ID}`,
+      actorId: WORKER_ID,
+      channel: 'WEB',
+      expectedPosterId: WORKER_ID,
+    })).resolves.toMatchObject({ success: false, error: { code: 'FORBIDDEN' } });
+
+    expect(mocks.proofReview).not.toHaveBeenCalled();
+  });
+
   it('fails closed when verified poster confirmation has no submitted proof', async () => {
     query.mockResolvedValueOnce(rows([{
       state: 'PROOF_SUBMITTED', poster_id: POSTER_ID, payout_ready_at: null,

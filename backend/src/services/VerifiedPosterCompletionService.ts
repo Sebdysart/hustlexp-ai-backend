@@ -11,8 +11,10 @@ const log = taskLogger.child({ service: 'VerifiedPosterCompletionService' });
 export interface VerifiedPosterCompletionParams {
   taskId: string;
   providerConfirmationId: string;
-  score: 4 | 5;
+  score?: 4 | 5;
   actorId: string;
+  channel?: 'SMS' | 'WEB';
+  expectedPosterId?: string;
 }
 
 interface CompletionContext {
@@ -35,7 +37,11 @@ async function context(taskId: string): Promise<ServiceResult<CompletionContext>
     : failure(ErrorCodes.NOT_FOUND, `Task ${taskId} not found`);
 }
 
-async function acceptLatestProof(taskId: string, posterId: string): Promise<ServiceResult<true>> {
+async function acceptLatestProof(
+  taskId: string,
+  posterId: string,
+  channel: 'SMS' | 'WEB' = 'SMS',
+): Promise<ServiceResult<true>> {
   const proof = await db.query<{ id: string; state: string }>(
     'SELECT id, state FROM proofs WHERE task_id = $1 ORDER BY created_at DESC LIMIT 1',
     [taskId],
@@ -51,7 +57,9 @@ async function acceptLatestProof(taskId: string, posterId: string): Promise<Serv
       proofId: latest.id,
       reviewerId: posterId,
       decision: 'ACCEPTED',
-      reason: 'Poster confirmed completion through a verified messaging channel',
+      reason: channel === 'WEB'
+        ? 'Poster confirmed completion through authenticated self-service'
+        : 'Poster confirmed completion through a verified messaging channel',
     });
     return reviewed.success ? { success: true, data: true } : reviewed;
   } catch (error) {
@@ -80,6 +88,7 @@ async function writeEvidence(params: VerifiedPosterCompletionParams): Promise<bo
     [params.taskId, key, JSON.stringify({
       providerConfirmationId: params.providerConfirmationId,
       score: params.score,
+      channel: params.channel ?? 'SMS',
       actorId: params.actorId,
     })],
   );
@@ -96,7 +105,7 @@ async function completeConfirmed(
   params: VerifiedPosterCompletionParams,
   posterId: string,
 ): Promise<ServiceResult<Task>> {
-  const accepted = await acceptLatestProof(params.taskId, posterId);
+  const accepted = await acceptLatestProof(params.taskId, posterId, params.channel);
   if (!accepted.success) return accepted;
   const completed = await TaskCompletionService.complete(params.taskId, posterId, {
     mode: 'POSTER_CONFIRMED', actorId: params.actorId,
@@ -113,17 +122,27 @@ async function completeConfirmed(
   };
 }
 
+async function confirmLoaded(
+  params: VerifiedPosterCompletionParams,
+  loaded: CompletionContext,
+): Promise<ServiceResult<Task>> {
+  if (params.expectedPosterId && loaded.poster_id !== params.expectedPosterId) {
+    return failure(ErrorCodes.FORBIDDEN, 'Only the task poster can confirm completion');
+  }
+  if (loaded.state === 'COMPLETED' && loaded.payout_ready_at) {
+    return await replayCompleted(params);
+  }
+  if (loaded.state !== 'PROOF_SUBMITTED') {
+    return failure(ErrorCodes.INVALID_STATE, `Cannot confirm completion from ${loaded.state}`);
+  }
+  return await completeConfirmed(params, loaded.poster_id);
+}
+
 async function confirm(params: VerifiedPosterCompletionParams): Promise<ServiceResult<Task>> {
   try {
     const loaded = await context(params.taskId);
     if (!loaded.success) return loaded;
-    if (loaded.data.state === 'COMPLETED' && loaded.data.payout_ready_at) {
-      return await replayCompleted(params);
-    }
-    if (loaded.data.state !== 'PROOF_SUBMITTED') {
-      return failure(ErrorCodes.INVALID_STATE, `Cannot confirm completion from ${loaded.data.state}`);
-    }
-    return await completeConfirmed(params, loaded.data.poster_id);
+    return await confirmLoaded(params, loaded.data);
   } catch (error) {
     if (error instanceof TRPCError && error.code === 'CONFLICT') {
       return failure('IDEMPOTENCY_CONFLICT', error.message);

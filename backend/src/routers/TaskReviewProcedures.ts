@@ -5,6 +5,7 @@ import { db } from '../db.js';
 import { notifyProofRejected, notifyTaskCompleted } from '../lib/task-lifecycle-notifications.js';
 import { ProofService } from '../services/ProofService.js';
 import { TaskService } from '../services/TaskService.js';
+import { VerifiedPosterCompletionService } from '../services/VerifiedPosterCompletionService.js';
 import { posterProcedure, Schemas, type AuthedContext } from '../trpc.js';
 import { ErrorCodes } from '../types.js';
 
@@ -128,7 +129,13 @@ function completeErrorCode(code: string): 'NOT_FOUND' | 'FORBIDDEN' | 'PRECONDIT
 }
 
 async function completeTask(ctx: AuthedContext, taskId: string) {
-  const result = await TaskService.complete(taskId, ctx.user.id);
+  const result = await VerifiedPosterCompletionService.confirm({
+    taskId,
+    providerConfirmationId: `web:${taskId}`,
+    actorId: ctx.user.id,
+    channel: 'WEB',
+    expectedPosterId: ctx.user.id,
+  });
   if (!result.success) {
     throw new TRPCError({ code: completeErrorCode(result.error.code), message: result.error.message });
   }
