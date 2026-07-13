@@ -83,5 +83,7 @@ describe('engine automation production container contract', () => {
     expect(dockerfile).toContain('20260713_performance_indexes_alignment.sql');
     expect(migration).toContain('ON xp_ledger(user_id, awarded_at DESC)');
     expect(migration).not.toContain('ON xp_ledger(user_id, created_at DESC)');
+    expect(migration).toContain('ON notifications(user_id, read_at) WHERE read_at IS NULL');
+    expect(migration).not.toContain('is_read');
   });
 });

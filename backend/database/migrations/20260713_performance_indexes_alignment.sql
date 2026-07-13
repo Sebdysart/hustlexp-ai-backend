@@ -20,7 +20,7 @@ CREATE INDEX IF NOT EXISTS idx_task_ratings_ratee
 CREATE INDEX IF NOT EXISTS idx_notifications_user_created
   ON notifications(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_notifications_user_unread
-  ON notifications(user_id, is_read) WHERE is_read = false;
+  ON notifications(user_id, read_at) WHERE read_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_outbox_events_unprocessed
   ON outbox_events(processed_at, created_at ASC) WHERE processed_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_proofs_task_state
