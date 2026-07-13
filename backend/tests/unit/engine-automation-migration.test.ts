@@ -10,6 +10,7 @@ import {
   HUSTLER_IDENTITY_LINK_MIGRATION,
   DISPATCH_EXPIRY_PAYMENT_CANCEL_MIGRATION,
   DISPATCH_EXPIRY_NO_PAYMENT_RECONCILE_MIGRATION,
+  PERFORMANCE_INDEX_ALIGNMENT_MIGRATION,
   applyEngineAutomationMigration,
   loadMigrationSql,
   productionMigrationRuntime,
@@ -66,10 +67,11 @@ describe('required engine automation migration', () => {
       HUSTLER_IDENTITY_LINK_MIGRATION,
       DISPATCH_EXPIRY_PAYMENT_CANCEL_MIGRATION,
       DISPATCH_EXPIRY_NO_PAYMENT_RECONCILE_MIGRATION,
+      PERFORMANCE_INDEX_ALIGNMENT_MIGRATION,
     ]);
     expect(actual.migrationSpecs[0].candidatePaths).toContain('/app/backend/database/migrations/20260710_engine_automation_contracts.sql');
     expect(actual.migrationSpecs.at(-1)?.candidatePaths).toContain(
-      '/app/backend/database/migrations/20260712_dispatch_expiry_no_payment_reconcile.sql',
+      '/app/backend/database/migrations/20260713_performance_indexes_alignment.sql',
     );
     await expect(actual.readText(actual.migrationSpecs[0].candidatePaths[0]!)).resolves.toContain('CREATE TABLE IF NOT EXISTS task_reservations');
     expect(actual.createClient('postgres://runtime')).toBeInstanceOf(Client);

@@ -76,4 +76,12 @@ describe('engine automation production container contract', () => {
     expect(migration).toContain('stripe_payment_intent_id IS NULL');
     expect(migration).toContain('stripe_refund_id IS NULL');
   });
+
+  it('packages the canonical performance-index alignment', () => {
+    const dockerfile = read('Dockerfile');
+    const migration = read('backend/database/migrations/20260713_performance_indexes_alignment.sql');
+    expect(dockerfile).toContain('20260713_performance_indexes_alignment.sql');
+    expect(migration).toContain('ON xp_ledger(user_id, awarded_at DESC)');
+    expect(migration).not.toContain('ON xp_ledger(user_id, created_at DESC)');
+  });
 });
