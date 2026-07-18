@@ -32,6 +32,23 @@ function validateDispatchExpiry(params: CreateTaskParams): void {
   }
 }
 
+function validateQuoteEconomics(params: CreateTaskParams): void {
+  const hasPayout = params.hustlerPayoutCents !== undefined;
+  const hasMargin = params.platformMarginCents !== undefined;
+  if (hasPayout !== hasMargin) {
+    fail(ErrorCodes.INVALID_STATE, 'Quoted payout and margin must be provided together');
+  }
+  if (!hasPayout) return;
+  const payout = params.hustlerPayoutCents!;
+  const margin = params.platformMarginCents!;
+  if (!Number.isInteger(payout) || payout <= 0 || !Number.isInteger(margin) || margin < 0) {
+    fail(ErrorCodes.INVALID_STATE, 'Quoted payout and margin must be valid integer cents');
+  }
+  if (payout + margin !== params.price) {
+    fail(ErrorCodes.INVALID_STATE, 'Quoted payout and margin must reconcile to the task price');
+  }
+}
+
 async function resolvePrice(params: CreateTaskParams): Promise<{ price: number; xp: number }> {
   let price = params.price;
   let xp: number | undefined;
@@ -140,6 +157,7 @@ async function existingOutcome(
 
 function publicTaskValues(params: CreateTaskParams, price: number, xp: number, instantMode: boolean): unknown[] {
   const location = deriveRoughArea(params.location, params.roughArea);
+  const quoteEconomics = canonicalQuoteEconomicsValues(params);
   return [
     params.posterId,
     redactPrivateLocation(params.title) ?? params.title,
@@ -161,7 +179,12 @@ function publicTaskValues(params: CreateTaskParams, price: number, xp: number, i
     location,
     params.dispatchExpiresAt,
     params.automationClassification ?? 'PRODUCTION',
+    ...quoteEconomics,
   ];
+}
+
+function canonicalQuoteEconomicsValues(params: CreateTaskParams): [number | null, number | null] {
+  return [params.hustlerPayoutCents ?? null, params.platformMarginCents ?? null];
 }
 
 async function insertTask(
@@ -175,8 +198,8 @@ async function insertTask(
       poster_id, title, description, price, xp_reward, requirements, location, category,
       deadline, requires_proof, risk_level, mode, live_broadcast_radius_miles, instant_mode,
       sensitive, state, template_slug, rough_location, dispatch_expires_at,
-      automation_classification
-    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+      automation_classification, hustler_payout_cents, platform_margin_cents
+    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
     RETURNING *`,
     publicTaskValues(params, money.price, money.xp, instantMode)
   );
@@ -207,7 +230,10 @@ async function insertTaskDependents(
   if (params.location) {
     await query('INSERT INTO task_location_vault (task_id, exact_location) VALUES ($1, $2)', [task.id, params.location]);
   }
-  await query(`INSERT INTO escrows (task_id, amount, state) VALUES ($1, $2, 'PENDING')`, [task.id, price]);
+  await query(
+    `INSERT INTO escrows (task_id, amount, state, platform_fee_cents) VALUES ($1, $2, 'PENDING', $3)`,
+    [task.id, price, params.platformMarginCents ?? null],
+  );
   await insertCreateWitness(query, params, requestHash, task.id);
 }
 
@@ -279,6 +305,7 @@ function errorResult(error: unknown): ServiceResult<Task> {
 async function create(params: CreateTaskParams): Promise<ServiceResult<Task>> {
   try {
     validateDispatchExpiry(params);
+    validateQuoteEconomics(params);
     const money = await resolvePrice(params);
     await assertPlan(params);
     const instantMode = await instantModeAllowed(params);

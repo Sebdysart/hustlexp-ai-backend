@@ -169,6 +169,8 @@ export const Schemas = {
     title: z.string().trim().min(1).max(255),
     description: z.string().trim().min(10).max(5000),
     price: z.number().int().positive().max(99999900), // USD cents, max $999,999
+    hustlerPayoutCents: z.number().int().positive().max(99999900).optional(),
+    platformMarginCents: z.number().int().nonnegative().max(99999900).optional(),
     requirements: z.string().trim().max(2000).optional(),
     /** Exact address. Stored in the location vault and never returned in public task feeds. */
     location: z.string().max(500).optional(),

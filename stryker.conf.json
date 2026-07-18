@@ -7,7 +7,16 @@
     "backend/src/services/DispatchExpiryService.ts:160-184",
     "backend/src/services/PendingPaymentCancellationService.ts:136-162",
     "backend/src/services/StripePaymentIntentCancellationService.ts:15-20",
-    "backend/src/jobs/dispatch-expiry-payment-cancel-worker.ts:22-36"
+    "backend/src/jobs/dispatch-expiry-payment-cancel-worker.ts:22-36",
+    "backend/src/lib/money.ts:71-93",
+    "backend/src/services/TaskCreateService.ts:35-49",
+    "backend/src/services/StripeService.ts:351-398",
+    "backend/src/routers/TaskCreateProcedures.ts:35-48",
+    "backend/src/jobs/completion-release-worker.ts:110-170",
+    "backend/src/jobs/payment-worker.ts:481-529",
+    "backend/src/services/EscrowService.ts:1441-1441",
+    "backend/src/services/EscrowService.ts:1446-1454",
+    "backend/src/jobs/escrow-action-worker.ts:688-699"
   ],
   "mutator": {
     "excludedMutations": ["ArrayDeclaration", "BlockStatement", "ObjectLiteral", "StringLiteral"]

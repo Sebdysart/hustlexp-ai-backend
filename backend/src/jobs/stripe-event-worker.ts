@@ -471,7 +471,7 @@ async function handleInvoicePaid(event: StripeEventEnvelope): Promise<void> {
   //
   // The fix: bypass RevenueService.logEvent and write directly to revenue_ledger
   // with ON CONFLICT (stripe_event_id) DO NOTHING. The revenue_ledger.stripe_event_id
-  // column has a UNIQUE constraint (migration 005-mega-schema-alignment.sql §1181),
+  // column has a UNIQUE constraint (migration 20260718_revenue_audit_rail),
   // so the first INSERT wins and subsequent ones are silent no-ops — atomically,
   // without a lock or a separate SELECT.
   //
@@ -486,8 +486,10 @@ async function handleInvoicePaid(event: StripeEventEnvelope): Promise<void> {
   //       UNIQUE (stripe_event_id, event_type);
   const insertResult = await db.query<{ id: string }>(
     `INSERT INTO revenue_ledger
-       (event_type, user_id, amount_cents, currency, stripe_event_id, metadata)
-     VALUES ('subscription', $1, $2, 'usd', $3, $4::jsonb)
+       (event_type, user_id, amount_cents, currency,
+        gross_amount_cents, platform_fee_cents, net_amount_cents, fee_basis_points,
+        stripe_event_id, metadata)
+     VALUES ('subscription', $1, $2, 'usd', $2, 0, $2, 0, $3, $4::jsonb)
      ON CONFLICT (stripe_event_id) DO NOTHING
      RETURNING id`,
     [

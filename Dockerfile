@@ -43,6 +43,8 @@ COPY --from=builder /app/backend/database/migrations/20260712_hustler_identity_l
 COPY --from=builder /app/backend/database/migrations/20260712_dispatch_expiry_pending_payment_cancel.sql ./backend/database/migrations/20260712_dispatch_expiry_pending_payment_cancel.sql
 COPY --from=builder /app/backend/database/migrations/20260712_dispatch_expiry_no_payment_reconcile.sql ./backend/database/migrations/20260712_dispatch_expiry_no_payment_reconcile.sql
 COPY --from=builder /app/backend/database/migrations/20260713_performance_indexes_alignment.sql ./backend/database/migrations/20260713_performance_indexes_alignment.sql
+COPY --from=builder /app/backend/database/migrations/20260718_revenue_audit_rail.sql ./backend/database/migrations/20260718_revenue_audit_rail.sql
+COPY --from=builder /app/backend/database/migrations/20260718_quote_economics_contract.sql ./backend/database/migrations/20260718_quote_economics_contract.sql
 
 # Change ownership
 RUN chown -R hustlexp:nodejs /app

@@ -16,6 +16,8 @@ import {
   xpForPriceCents,
   clampFeePercent,
   INSURANCE_RATE,
+  feeBasisPoints,
+  resolvePlatformFeeCents,
 } from '../../src/lib/money';
 
 describe('money — unified financial math (audit H3/M10/M11)', () => {
@@ -79,6 +81,42 @@ describe('money — unified financial math (audit H3/M10/M11)', () => {
       expect(b.platformFeeCents).toBe(Math.round(gross * 0.15)); // 1852
       expect(b.insuranceContributionCents).toBe(Math.round(gross * 0.02)); // 247
       expect(b.netPayoutCents).toBe(gross - 1852 - 247); // 10246
+    });
+
+    it('honors the immutable Price Book fee instead of the global fallback', () => {
+      const b = computeFeeBreakdown(18000, 15, 4500);
+      expect(b.platformFeeCents).toBe(4500);
+      expect(b.netBeforeInsuranceCents).toBe(13500);
+      expect(b.insuranceContributionCents).toBe(360);
+      expect(b.netPayoutCents).toBe(13140);
+      expect(feeBasisPoints(18000, 4500)).toBe(2500);
+    });
+
+    it('fails closed on invalid canonical fee evidence', () => {
+      expect(() => computeFeeBreakdown(18000, 15, -1)).toThrow(RangeError);
+      expect(() => computeFeeBreakdown(18000, 15, 18000)).toThrow(RangeError);
+      expect(() => computeFeeBreakdown(18000, 15, 1.5)).toThrow(TypeError);
+    });
+
+    it('treats a canonical zero-cent margin as valid evidence, not as a missing fallback', () => {
+      expect(resolvePlatformFeeCents(18000, 15, 0)).toBe(0);
+      expect(computeFeeBreakdown(18000, 15, 0).platformFeeCents).toBe(0);
+    });
+
+    it('rejects negative and full-gross canonical margins with the exact boundary contract', () => {
+      expect(() => resolvePlatformFeeCents(18000, 15, -1))
+        .toThrow('canonicalPlatformFeeCents must be >= 0 cents');
+      expect(() => resolvePlatformFeeCents(18000, 15, 18000))
+        .toThrow('canonicalPlatformFeeCents must be non-negative and less than grossCents');
+    });
+
+    it('computes fee basis at the zero boundary and rejects every invalid boundary independently', () => {
+      expect(feeBasisPoints(18000, 0)).toBe(0);
+      expect(feeBasisPoints(18000, 4500)).toBe(2500);
+      expect(() => feeBasisPoints(0, 0)).toThrow('Fee basis requires positive gross and a fee below gross');
+      expect(() => feeBasisPoints(-1, 0)).toThrow(RangeError);
+      expect(() => feeBasisPoints(18000, -1)).toThrow('platformFeeCents must be >= 0 cents');
+      expect(() => feeBasisPoints(18000, 18000)).toThrow('Fee basis requires positive gross and a fee below gross');
     });
   });
 

@@ -73,6 +73,7 @@ interface EscrowSnapshot {
   state: string;
   version: number;
   amount: number;
+  platform_fee_cents: number | null;
   stripe_transfer_id: string | null;
 }
 
@@ -109,7 +110,7 @@ export async function processCompletionReleaseJob(job: Job<{ payload: object }>)
   // --- Step 3: critical section — lock escrow, branch on state, read task ---
   const critical = await db.transaction<CriticalSectionResult>(async (trx: QueryFn) => {
     const escrowResult = await trx<EscrowSnapshot>(
-      `SELECT id, task_id, state, version, amount, stripe_transfer_id
+      `SELECT id, task_id, state, version, amount, platform_fee_cents, stripe_transfer_id
        FROM escrows
        WHERE id = $1
        FOR UPDATE`,
@@ -215,7 +216,7 @@ export async function processCompletionReleaseJob(job: Job<{ payload: object }>)
 
     // Unified fee + self-insurance math (single source of truth — INV-5).
     const { platformFeeCents, insuranceContributionCents, netPayoutCents } =
-      computeFeeBreakdown(escrow.amount, config.stripe.platformFeePercent);
+      computeFeeBreakdown(escrow.amount, config.stripe.platformFeePercent, escrow.platform_fee_cents);
 
     log.info(
       { escrowId, taskId, gross: escrow.amount, platformFeeCents, insuranceContributionCents, netPayoutCents },
@@ -316,6 +317,10 @@ export async function processCompletionReleaseJob(job: Job<{ payload: object }>)
 
   // Lifecycle notification (post-release, fire-and-forget): tell the worker.
   // Recomputed from the same unified module — identical to the transferred amount.
-  const { netPayoutCents: notifiedNet } = computeFeeBreakdown(escrow.amount, config.stripe.platformFeePercent);
+  const { netPayoutCents: notifiedNet } = computeFeeBreakdown(
+    escrow.amount,
+    config.stripe.platformFeePercent,
+    escrow.platform_fee_cents,
+  );
   await notifyPaymentReleased(task.worker_id, taskId, notifiedNet);
 }

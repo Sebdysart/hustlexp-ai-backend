@@ -90,6 +90,8 @@ export interface Task {
   completion_idempotency_replayed?: boolean;
   category?: string;
   price: number;
+  hustler_payout_cents?: number;
+  platform_margin_cents?: number;
   risk_level: RiskLevel;
   scope_hash?: string;
   state: TaskState;
@@ -130,6 +132,7 @@ export interface Escrow {
   id: string;
   task_id: string;
   amount: number;
+  platform_fee_cents?: number;
   state: EscrowState;
   refund_amount?: number;
   release_amount?: number;

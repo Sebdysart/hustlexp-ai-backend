@@ -9,6 +9,8 @@ export interface CreateTaskParams {
   title: string;
   description: string;
   price: number;
+  hustlerPayoutCents?: number;
+  platformMarginCents?: number;
   requirements?: string;
   location?: string;
   category?: string;
@@ -88,5 +90,11 @@ export function buildTaskCreateRequestHash(params: CreateTaskParams): string {
     sensitive: defaultValue(params.sensitive, false),
     templateSlug: optionalValue(params.templateSlug),
     automationClassification: defaultValue(params.automationClassification, 'PRODUCTION'),
+    ...(params.hustlerPayoutCents !== undefined || params.platformMarginCents !== undefined
+      ? {
+          hustlerPayoutCents: optionalValue(params.hustlerPayoutCents),
+          platformMarginCents: optionalValue(params.platformMarginCents),
+        }
+      : {}),
   })).digest('hex');
 }

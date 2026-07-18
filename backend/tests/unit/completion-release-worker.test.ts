@@ -87,7 +87,7 @@ function basePayload(): Record<string, unknown> {
 function escrowRow(over: Partial<Record<string, unknown>> = {}) {
   return {
     id: ESCROW_ID, task_id: TASK_ID, state: 'FUNDED', version: VERSION,
-    amount: AMOUNT, stripe_transfer_id: null, ...over,
+    amount: AMOUNT, platform_fee_cents: null, stripe_transfer_id: null, ...over,
   };
 }
 function taskRow(over: Partial<Record<string, unknown>> = {}) {
@@ -142,14 +142,40 @@ describe('processCompletionReleaseJob — happy path', () => {
       expect.objectContaining({ escrowId: ESCROW_ID, stripeTransferId: 'tr_prior' })
     );
   });
+
+  it('uses the canonical Price Book margin for a website quote', async () => {
+    dbQuery
+      .mockResolvedValueOnce({ rows: [escrowRow({ platform_fee_cents: 2500 })] })
+      .mockResolvedValueOnce({ rows: [taskRow()] })
+      .mockResolvedValueOnce({ rows: [{ stripe_connect_id: CONNECT_ID }] })
+      .mockResolvedValueOnce({ rows: [escrowRow({ platform_fee_cents: 2500 })] })
+      .mockResolvedValueOnce({ rows: [{ id: ESCROW_ID }], rowCount: 1 });
+    createTransfer.mockResolvedValue({ success: true, data: { transferId: 'tr_quote_economics' } });
+
+    await processCompletionReleaseJob(makeJob(signed(basePayload())));
+
+    expect(createTransfer).toHaveBeenCalledWith(expect.objectContaining({ amount: 7300 }));
+    expect(notifyPaymentReleased).toHaveBeenCalledWith(WORKER_ID, TASK_ID, 7300);
+  });
 });
 
 describe('processCompletionReleaseJob — state guards (never release what is not FUNDED)', () => {
-  it('escrow already RELEASED → idempotent no-op (no Stripe, no release)', async () => {
-    dbQuery.mockResolvedValueOnce({ rows: [escrowRow({ state: 'RELEASED', stripe_transfer_id: 'tr_done' })] });
+  it('missing escrow fails with the canonical corruption error before any money movement', async () => {
+    dbQuery.mockResolvedValueOnce({ rows: [] });
+    await expect(processCompletionReleaseJob(makeJob(signed(basePayload()))))
+      .rejects.toThrow(`Escrow ${ESCROW_ID} not found for completion release`);
+    expect(createTransfer).not.toHaveBeenCalled();
+    expect(escrowRelease).not.toHaveBeenCalled();
+  });
+
+  it.each(['RELEASED', 'REFUNDED', 'REFUND_PARTIAL'] as const)(
+    'escrow already %s → idempotent no-op (no Stripe, no release)',
+    async (state) => {
+    dbQuery.mockResolvedValueOnce({ rows: [escrowRow({ state, stripe_transfer_id: 'tr_done' })] });
     await processCompletionReleaseJob(makeJob(signed(basePayload())));
     expect(createTransfer).not.toHaveBeenCalled();
     expect(escrowRelease).not.toHaveBeenCalled();
+    expect(notifyAdmins).not.toHaveBeenCalled();
   });
 
   it('escrow LOCKED_DISPUTE → no-op; dispute machinery owns the money', async () => {
@@ -157,6 +183,7 @@ describe('processCompletionReleaseJob — state guards (never release what is no
     await processCompletionReleaseJob(makeJob(signed(basePayload())));
     expect(createTransfer).not.toHaveBeenCalled();
     expect(escrowRelease).not.toHaveBeenCalled();
+    expect(notifyAdmins).not.toHaveBeenCalled();
   });
 
   it('escrow PENDING (never funded) → no-op + admin alert, no throw (not retryable)', async () => {
@@ -172,6 +199,16 @@ describe('processCompletionReleaseJob — state guards (never release what is no
       .mockResolvedValueOnce({ rows: [escrowRow()] })
       .mockResolvedValueOnce({ rows: [taskRow({ state: 'DISPUTED' })] });
     await expect(processCompletionReleaseJob(makeJob(signed(basePayload())))).rejects.toThrow(/COMPLETED/);
+    expect(createTransfer).not.toHaveBeenCalled();
+    expect(escrowRelease).not.toHaveBeenCalled();
+  });
+
+  it('missing task fails with the canonical corruption error before any Stripe call', async () => {
+    dbQuery
+      .mockResolvedValueOnce({ rows: [escrowRow()] })
+      .mockResolvedValueOnce({ rows: [] });
+    await expect(processCompletionReleaseJob(makeJob(signed(basePayload()))))
+      .rejects.toThrow(`Task ${TASK_ID} not found for completion release`);
     expect(createTransfer).not.toHaveBeenCalled();
     expect(escrowRelease).not.toHaveBeenCalled();
   });

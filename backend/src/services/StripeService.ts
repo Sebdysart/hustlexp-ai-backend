@@ -56,6 +56,35 @@ interface CreatePaymentIntentResult {
   amount: number;
 }
 
+interface PaymentIntentProcessingFeeResult {
+  paymentIntentId: string;
+  chargeId: string;
+  balanceTransactionId: string;
+  feeCents: number;
+  currency: string;
+}
+
+function feeUnavailable(message: string): ServiceResult<PaymentIntentProcessingFeeResult> {
+  return { success: false, error: { code: 'STRIPE_FEE_UNAVAILABLE', message } };
+}
+
+async function resolvePaymentIntentCharge(paymentIntent: Stripe.PaymentIntent): Promise<Stripe.Charge | null> {
+  if (typeof paymentIntent.latest_charge === 'string') {
+    return stripeBreaker.execute(() => stripe!.charges.retrieve(
+      paymentIntent.latest_charge as string,
+      { expand: ['balance_transaction'] },
+    ));
+  }
+  return paymentIntent.latest_charge || null;
+}
+
+async function resolveChargeBalanceTransaction(charge: Stripe.Charge): Promise<Stripe.BalanceTransaction | null> {
+  if (typeof charge.balance_transaction === 'string') {
+    return stripeBreaker.execute(() => stripe!.balanceTransactions.retrieve(charge.balance_transaction as string));
+  }
+  return charge.balance_transaction || null;
+}
+
 interface CreateTransferParams {
   escrowId: string; // P0: Required for metadata correlation
   taskId: string; // P0: Required for metadata correlation
@@ -299,6 +328,62 @@ export const StripeService = {
           status: pi.status,
           amountCents: pi.amount,
           metadata: (pi.metadata || {}) as Record<string, string>,
+        },
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: {
+          code: 'STRIPE_ERROR',
+          message: error instanceof Error ? error.message : 'Unknown Stripe error',
+        },
+      };
+    }
+  },
+
+  /**
+   * Read Stripe's actual processing fee for a successful PaymentIntent.
+   *
+   * This is provider-read-only. It is used when the worker transfer is created
+   * so the platform-fee ledger row can prove actual contribution instead of
+   * treating an estimated margin as profit.
+   */
+  getPaymentIntentProcessingFee: async (
+    paymentIntentId: string,
+  ): Promise<ServiceResult<PaymentIntentProcessingFeeResult>> => {
+    if (!stripe) {
+      return {
+        success: false,
+        error: { code: 'STRIPE_NOT_CONFIGURED', message: 'Stripe is not configured' },
+      };
+    }
+
+    try {
+      const paymentIntent = await stripeBreaker.execute(() => stripe!.paymentIntents.retrieve(
+        paymentIntentId,
+        { expand: ['latest_charge.balance_transaction'] },
+      ));
+
+      const charge = await resolvePaymentIntentCharge(paymentIntent);
+
+      if (!charge) {
+        return feeUnavailable(`PaymentIntent ${paymentIntentId} has no charge`);
+      }
+
+      const balanceTransaction = await resolveChargeBalanceTransaction(charge);
+
+      if (!balanceTransaction || !Number.isInteger(balanceTransaction.fee) || balanceTransaction.fee < 0) {
+        return feeUnavailable(`PaymentIntent ${paymentIntentId} has no settled processing fee`);
+      }
+
+      return {
+        success: true,
+        data: {
+          paymentIntentId,
+          chargeId: charge.id,
+          balanceTransactionId: balanceTransaction.id,
+          feeCents: balanceTransaction.fee,
+          currency: balanceTransaction.currency,
         },
       };
     } catch (error) {

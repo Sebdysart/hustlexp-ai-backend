@@ -581,7 +581,7 @@ describe('TaskService.create — escrow-at-create (beta contract)', () => {
     );
     expect(escrowCall).toBeDefined();
     expect(String(escrowCall![0])).toContain("'PENDING'");
-    expect(escrowCall![1]).toEqual(['task-esc-1', 2500]);
+    expect(escrowCall![1]).toEqual(['task-esc-1', 2500, null]);
   });
 
   it('fails the whole create when the escrow insert fails (no task without escrow)', async () => {
@@ -593,6 +593,90 @@ describe('TaskService.create — escrow-at-create (beta contract)', () => {
 
     // Transaction throws → rollback → structured failure, never a half-created task
     expect(result.success).toBe(false);
+  });
+
+  it('persists canonical quote economics on both task and escrow', async () => {
+    const created = makeTask({ id: 'task-economics-1', price: 2500 });
+    mockQuery.mockResolvedValueOnce({ rows: [created], rowCount: 1 } as never);
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'esc-economics-1' }], rowCount: 1 } as never);
+
+    const result = await TaskService.create({
+      ...baseParams,
+      hustlerPayoutCents: 1875,
+      platformMarginCents: 625,
+    });
+
+    expect(result.success).toBe(true);
+    const taskCall = mockQuery.mock.calls.find((c) => String(c[0]).includes('INSERT INTO tasks'));
+    const escrowCall = mockQuery.mock.calls.find((c) => String(c[0]).includes('INSERT INTO escrows'));
+    expect(String(taskCall?.[0])).toContain('hustler_payout_cents, platform_margin_cents');
+    expect(taskCall?.[1]).toEqual(expect.arrayContaining([1875, 625]));
+    expect(escrowCall?.[1]).toEqual(['task-economics-1', 2500, 625]);
+  });
+
+  it('rejects quote economics that do not reconcile before any database write', async () => {
+    const result = await TaskService.create({
+      ...baseParams,
+      hustlerPayoutCents: 1800,
+      platformMarginCents: 625,
+    });
+    expect(result).toMatchObject({ success: false, error: { code: 'INVALID_STATE' } });
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects a one-sided quote split before any database write', async () => {
+    const result = await TaskService.create({
+      ...baseParams,
+      hustlerPayoutCents: 1875,
+    });
+    expect(result).toMatchObject({ success: false, error: { code: 'INVALID_STATE' } });
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects a margin-only quote split before any database write', async () => {
+    const result = await TaskService.create({
+      ...baseParams,
+      platformMarginCents: 625,
+    });
+    expect(result).toMatchObject({ success: false, error: { code: 'INVALID_STATE' } });
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects invalid integer-cent quote economics before any database write', async () => {
+    const result = await TaskService.create({
+      ...baseParams,
+      hustlerPayoutCents: 1875.5,
+      platformMarginCents: 624.5,
+    });
+    expect(result).toMatchObject({ success: false, error: { code: 'INVALID_STATE' } });
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { hustlerPayoutCents: 0, platformMarginCents: 2500 },
+    { hustlerPayoutCents: -1, platformMarginCents: 2501 },
+    { hustlerPayoutCents: 2501, platformMarginCents: -1 },
+    { hustlerPayoutCents: 1875, platformMarginCents: 625.5 },
+  ])('rejects invalid quote-cent boundary %# before any database write', async (economics) => {
+    const result = await TaskService.create({ ...baseParams, ...economics });
+    expect(result).toMatchObject({ success: false, error: { code: 'INVALID_STATE' } });
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+
+  it('accepts a zero-margin exact split and persists zero as canonical evidence', async () => {
+    const created = makeTask({ id: 'task-economics-zero', price: 2500 });
+    mockQuery.mockResolvedValueOnce({ rows: [created], rowCount: 1 } as never);
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'esc-economics-zero' }], rowCount: 1 } as never);
+
+    const result = await TaskService.create({
+      ...baseParams,
+      hustlerPayoutCents: 2500,
+      platformMarginCents: 0,
+    });
+
+    expect(result.success).toBe(true);
+    const escrowCall = mockQuery.mock.calls.find((c) => String(c[0]).includes('INSERT INTO escrows'));
+    expect(escrowCall?.[1]).toEqual(['task-economics-zero', 2500, 0]);
   });
 });
 
@@ -607,6 +691,12 @@ describe('TaskService.create — idempotency and location privacy', () => {
     price: 2500,
     clientIdempotencyKey: 'web-quote-accept-0001',
   };
+
+  it('preserves the pre-economics request hash for legacy replay compatibility', () => {
+    expect(buildTaskCreateRequestHash(baseParams)).toBe(
+      'e0d44905be30580d731aab58a935d552175d2f6d93832cdd877a9f082358867f',
+    );
+  });
 
   it('preflights a completed replay without creating or rate-limiting a task', async () => {
     const requestHash = buildTaskCreateRequestHash(baseParams);

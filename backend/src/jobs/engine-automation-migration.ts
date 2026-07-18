@@ -11,6 +11,8 @@ export const HUSTLER_IDENTITY_LINK_MIGRATION = '20260712_hustler_identity_link';
 export const DISPATCH_EXPIRY_PAYMENT_CANCEL_MIGRATION = '20260712_dispatch_expiry_pending_payment_cancel';
 export const DISPATCH_EXPIRY_NO_PAYMENT_RECONCILE_MIGRATION = '20260712_dispatch_expiry_no_payment_reconcile';
 export const PERFORMANCE_INDEX_ALIGNMENT_MIGRATION = 'performance_indexes_v1';
+export const REVENUE_AUDIT_RAIL_MIGRATION = '20260718_revenue_audit_rail';
+export const QUOTE_ECONOMICS_CONTRACT_MIGRATION = '20260718_quote_economics_contract';
 
 const REQUIRED_MIGRATION_FILES = [
   { name: ENGINE_AUTOMATION_MIGRATION, fileName: '20260710_engine_automation_contracts.sql' },
@@ -29,6 +31,14 @@ const REQUIRED_MIGRATION_FILES = [
   {
     name: PERFORMANCE_INDEX_ALIGNMENT_MIGRATION,
     fileName: '20260713_performance_indexes_alignment.sql',
+  },
+  {
+    name: REVENUE_AUDIT_RAIL_MIGRATION,
+    fileName: '20260718_revenue_audit_rail.sql',
+  },
+  {
+    name: QUOTE_ECONOMICS_CONTRACT_MIGRATION,
+    fileName: '20260718_quote_economics_contract.sql',
   },
 ] as const;
 

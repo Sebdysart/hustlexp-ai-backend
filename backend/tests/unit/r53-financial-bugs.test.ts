@@ -222,12 +222,14 @@ function makeEscrowRow(overrides: Partial<{
   stripe_refund_id: string | null;
   amount: number;
   state: string;
+  platform_fee_cents: number | null;
 }> = {}) {
   return {
     id: ESCROW_ID,
     state: overrides.state ?? 'LOCKED_DISPUTE',
     version: ESCROW_VERSION,
     amount: overrides.amount ?? 10_000,
+    platform_fee_cents: overrides.platform_fee_cents ?? null,
     stripe_payment_intent_id: 'pi_test',
     stripe_transfer_id: overrides.stripe_transfer_id ?? null,
     stripe_refund_id: overrides.stripe_refund_id ?? null,
@@ -242,6 +244,30 @@ describe('F53-7: handlePartialRefundRequest — self-insurance pool funding path
     mockStripeService.createRefund.mockResolvedValue({ success: true, data: { refundId: 'ref_test' } } as any);
     mockStripeService.createTransfer.mockResolvedValue({ success: true, data: { transferId: 'tr_test' } } as any);
     mockDb.transaction.mockImplementation(async (fn: any) => fn(mockDb.query));
+  });
+
+  it('fails closed before Stripe for a canonical quote split', async () => {
+    vi.mocked(db.transaction).mockImplementationOnce(async (fn: any) => {
+      const trxQuery = vi.fn().mockResolvedValueOnce({
+        rows: [makeEscrowRow({ platform_fee_cents: 2500 })],
+        rowCount: 1,
+      });
+      return fn(trxQuery);
+    });
+
+    const payload = makeSignedPayload({
+      escrow_id: ESCROW_ID,
+      task_id: TASK_ID,
+      dispute_id: '20000000-0000-0000-0000-000000000099',
+      reason: 'controlled canonical split dispute',
+      refund_amount: 4000,
+      release_amount: 6000,
+    });
+
+    await expect(processEscrowActionJob(makeJob('escrow.partial_refund_requested', payload)))
+      .rejects.toThrow('CANONICAL_QUOTE_SPLIT_REQUIRES_RECONCILIATION');
+    expect(mockStripeService.createRefund).not.toHaveBeenCalled();
+    expect(mockStripeService.createTransfer).not.toHaveBeenCalled();
   });
 
   it('calls SelfInsurancePoolService.recordContribution when releaseAmount > 0 (F53-7)', async () => {

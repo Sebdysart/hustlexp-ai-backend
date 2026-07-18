@@ -32,6 +32,21 @@ function assertImplementedFields(input: CreateInput): void {
   }
 }
 
+function assertQuoteEconomics(input: CreateInput, ctx: AuthedContext): void {
+  const hasPayout = input.hustlerPayoutCents !== undefined;
+  const hasMargin = input.platformMarginCents !== undefined;
+  if (hasPayout !== hasMargin) {
+    throw new TRPCError({ code: 'BAD_REQUEST', message: 'Quoted payout and margin must be provided together.' });
+  }
+  if (!hasPayout) return;
+  if (ctx.engineBridgeAuthorized !== true) {
+    throw new TRPCError({ code: 'FORBIDDEN', message: 'Canonical quote economics require engine bridge authority.' });
+  }
+  if (input.hustlerPayoutCents! + input.platformMarginCents! !== input.price) {
+    throw new TRPCError({ code: 'BAD_REQUEST', message: 'Quoted payout and margin must reconcile to the task price.' });
+  }
+}
+
 function createParams(input: CreateInput, ctx: AuthedContext, templateSlug: string): CreateTaskParams {
   if (input.isTest === true && ctx.engineBridgeAuthorized !== true) {
     throw new TRPCError({ code: 'FORBIDDEN', message: 'Controlled-test provenance requires engine bridge authority.' });
@@ -41,6 +56,8 @@ function createParams(input: CreateInput, ctx: AuthedContext, templateSlug: stri
     title: input.title,
     description: input.description,
     price: input.price,
+    hustlerPayoutCents: input.hustlerPayoutCents,
+    platformMarginCents: input.platformMarginCents,
     requirements: input.requirements,
     location: input.location,
     category: input.category,
@@ -140,6 +157,7 @@ async function persistTemplatePolicy(
 
 async function handleCreateTask({ ctx, input }: { ctx: AuthedContext; input: CreateInput }): Promise<Task> {
   assertImplementedFields(input);
+  assertQuoteEconomics(input, ctx);
   const templateSlug = input.templateSlug ?? 'standard_physical';
   const params = createParams(input, ctx, templateSlug);
   const replay = await preflightReplay(params);

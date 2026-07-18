@@ -86,4 +86,25 @@ describe('engine automation production container contract', () => {
     expect(migration).toContain('ON notifications(user_id, read_at) WHERE read_at IS NULL');
     expect(migration).not.toContain('is_read');
   });
+
+  it('packages the append-only fail-closed revenue audit rail', () => {
+    const dockerfile = read('Dockerfile');
+    const migration = read('backend/database/migrations/20260718_revenue_audit_rail.sql');
+    expect(dockerfile).toContain('20260718_revenue_audit_rail.sql');
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS revenue_ledger');
+    expect(migration).toContain('stripe_event_id TEXT UNIQUE');
+    expect(migration).toContain('CREATE TRIGGER revenue_ledger_no_update');
+    expect(migration).toContain('CREATE OR REPLACE VIEW revenue_task_contribution');
+    expect(migration).toContain('ELSE NULL');
+  });
+
+  it('packages the canonical quote-economics contract', () => {
+    const dockerfile = read('Dockerfile');
+    const migration = read('backend/database/migrations/20260718_quote_economics_contract.sql');
+    expect(dockerfile).toContain('20260718_quote_economics_contract.sql');
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS hustler_payout_cents INTEGER');
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS platform_margin_cents INTEGER');
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS platform_fee_cents INTEGER');
+    expect(migration).toContain('hustler_payout_cents + platform_margin_cents = price');
+  });
 });

@@ -707,6 +707,49 @@ describe('task.create', () => {
     }));
   });
 
+  it('rejects poster-controlled payout economics', async () => {
+    await expect(makeCallerAsPoster().create({
+      ...validInput,
+      hustlerPayoutCents: 3750,
+      platformMarginCents: 1250,
+    })).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    expect(mockTaskService.create).not.toHaveBeenCalled();
+  });
+
+  it('accepts reconciled quote economics only from the engine bridge', async () => {
+    mockTaskService.create.mockResolvedValueOnce({ success: true, data: makeTaskRow() as any });
+    await makeBridgeCallerAsPoster().create({
+      ...validInput,
+      hustlerPayoutCents: 3750,
+      platformMarginCents: 1250,
+    });
+    expect(mockTaskService.create).toHaveBeenCalledWith(expect.objectContaining({
+      hustlerPayoutCents: 3750,
+      platformMarginCents: 1250,
+    }));
+  });
+
+  it('rejects incomplete or non-reconciling bridge economics', async () => {
+    await expect(makeBridgeCallerAsPoster().create({
+      ...validInput,
+      hustlerPayoutCents: 3750,
+    })).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+    await expect(makeBridgeCallerAsPoster().create({
+      ...validInput,
+      hustlerPayoutCents: 3700,
+      platformMarginCents: 1250,
+    })).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+    expect(mockTaskService.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects margin-only bridge economics', async () => {
+    await expect(makeBridgeCallerAsPoster().create({
+      ...validInput,
+      platformMarginCents: 1250,
+    })).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+    expect(mockTaskService.create).not.toHaveBeenCalled();
+  });
+
   it('passes all optional fields', async () => {
     mockTaskService.create.mockResolvedValueOnce({
       success: true,
