@@ -20,6 +20,7 @@ interface UserRow {
   phone: string | null;
   trust_tier: number;
   is_banned: boolean;
+  is_minor: boolean;
   account_status: string;
 }
 
@@ -32,13 +33,13 @@ export const HustlerIdentityLinkService = {
     try {
       return await db.serializableTransaction(async (query) => {
         const userResult = await query<UserRow>(
-          `SELECT id, default_mode, phone, trust_tier, is_banned, account_status
+          `SELECT id, default_mode, phone, trust_tier, is_banned, is_minor, account_status
              FROM users WHERE id = $1 FOR UPDATE`,
           [input.engineHustlerRef],
         );
         const user = userResult.rows[0];
         if (!user) return { success: false, error: { code: 'NOT_FOUND', message: 'Hustler identity not found' } };
-        if (user.default_mode !== 'worker' || user.is_banned || user.account_status !== 'ACTIVE') {
+        if (user.default_mode !== 'worker' || user.is_banned || user.is_minor || user.account_status !== 'ACTIVE') {
           return { success: false, error: { code: 'PRECONDITION_FAILED', message: 'Hustler identity is not eligible for linking' } };
         }
 

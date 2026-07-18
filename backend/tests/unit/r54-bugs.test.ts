@@ -200,6 +200,7 @@ describe('A63-2: matchmaker rankCandidates candidate query uses correct case', (
     expect(sql).toContain("'worker'");
     expect(sql).toContain("'poster'");
     expect(sql).toContain("'ACTIVE'");
+    expect(sql).toMatch(/is_minor\s*=\s*false/);
 
     // Must NOT include the wrong values
     expect(sql).not.toContain("'hustler'");

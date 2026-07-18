@@ -26,6 +26,8 @@ export interface User {
   bio?: string;
   avatar_url?: string;
   default_mode: UserMode;
+  date_of_birth?: Date | string;
+  is_minor?: boolean;
   onboarding_version?: string;
   onboarding_completed_at?: Date;
   role_confidence_worker?: number;

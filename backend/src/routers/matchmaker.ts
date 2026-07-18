@@ -69,6 +69,7 @@ export const matchmakerRouter = router({
          FROM users u
          WHERE u.default_mode IN ('worker', 'poster')
          AND u.account_status = 'ACTIVE'
+         AND u.is_minor = false
          LIMIT 50`);
 
       const candidates = candidateResult.rows.map((c) => ({

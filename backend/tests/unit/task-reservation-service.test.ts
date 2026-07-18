@@ -57,6 +57,7 @@ function eligibleWorker(overrides: Record<string, unknown> = {}) {
     trust_tier: 2,
     trust_hold: false,
     is_banned: false,
+    is_minor: false,
     account_status: 'ACTIVE',
     plan: 'free',
     stripe_connect_id: 'acct_ready_for_payouts',
@@ -166,6 +167,20 @@ describe('TaskReservationService.reserve', () => {
 
     expect(result.success).toBe(false);
     expect(result.error.code).toBe('PAYOUT_ACCOUNT_REQUIRED');
+    expect(query.mock.calls.some(([sql]) => String(sql).includes('UPDATE tasks'))).toBe(false);
+  });
+
+  it('rejects a minor from canonical engine reservation', async () => {
+    query
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      .mockResolvedValueOnce({ rows: [eligibleTask()], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [eligibleWorker({ is_minor: true })], rowCount: 1 } as never);
+
+    const result = await TaskReservationService.reserve(params);
+
+    expect(result.success).toBe(false);
+    expect(result.error.code).toBe('ADULT_AGE_REQUIRED');
     expect(query.mock.calls.some(([sql]) => String(sql).includes('UPDATE tasks'))).toBe(false);
   });
 

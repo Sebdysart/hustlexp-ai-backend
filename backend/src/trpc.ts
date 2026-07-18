@@ -137,6 +137,12 @@ const isHustlerCheck = t.middleware(async ({ ctx, next }) => {
       message: 'Hustler access required',
     });
   }
+  if (ctx.user!.is_minor === true) {
+    throw new TRPCError({
+      code: 'FORBIDDEN',
+      message: 'Hustlers must be at least 18 years old.',
+    });
+  }
   return next({ ctx: { ...ctx, user: ctx.user } as AuthedContext });
 });
 

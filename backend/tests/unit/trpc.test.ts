@@ -530,6 +530,16 @@ describe('hustlerProcedure', () => {
     );
   });
 
+  it('rejects a minor worker from all hustler procedures', async () => {
+    const caller = testRouter.createCaller({
+      user: { ...mockUser, default_mode: 'worker', is_minor: true } as any,
+      firebaseUid: 'uid-1',
+    });
+    await expect(caller.hustlerOnly()).rejects.toThrow(
+      expect.objectContaining({ code: 'FORBIDDEN', message: 'Hustlers must be at least 18 years old.' })
+    );
+  });
+
   it('rejects null user with UNAUTHORIZED', async () => {
     const caller = testRouter.createCaller({
       user: null,

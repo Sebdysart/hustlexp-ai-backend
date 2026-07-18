@@ -2003,6 +2003,22 @@ describe('task.assignWorker', () => {
     ).rejects.toThrow('No pending application found for this worker');
   });
 
+  it('throws FORBIDDEN when a legacy pending applicant is marked as a minor', async () => {
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ id: TASK_ID, state: 'OPEN', poster_id: USER_ID, template_slug: 'standard_physical' }],
+      rowCount: 1,
+    } as any);
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ id: APP_ID, is_minor: true }],
+      rowCount: 1,
+    } as any);
+
+    await expect(
+      makeCallerAsPoster().assignWorker({ taskId: TASK_ID, workerId: OTHER_USER_ID })
+    ).rejects.toThrow('Hustlers must be at least 18 years old');
+    expect(mockDb.query).toHaveBeenCalledTimes(2);
+  });
+
   it('throws PRECONDITION_FAILED when UPDATE tasks affects 0 rows (concurrent assignment detected)', async () => {
     // [1] In-tx FOR UPDATE
     mockDb.query.mockResolvedValueOnce({ rows: [{ id: TASK_ID, state: 'OPEN', poster_id: USER_ID, template_slug: 'standard_physical' }], rowCount: 1 } as any);

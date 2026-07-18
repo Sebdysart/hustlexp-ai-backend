@@ -11,7 +11,7 @@ import { getFirebaseUserRecord } from './firebase.js';
 
 const log = logger.child({ module: 'ensureUserFromFirebase' });
 
-/** Placeholder DOB for COPPA column when we only have Firebase identity (user should complete onboarding). */
+/** Placeholder DOB for the legacy non-null column; is_minor=true keeps the account fail-closed until onboarding. */
 const LAZY_PROVISION_DOB = '1990-01-01';
 
 /**
@@ -33,7 +33,7 @@ export async function ensureUserRowForFirebaseUid(firebaseUid: string): Promise<
 
     const result = await db.query<User>(
       `INSERT INTO users (firebase_uid, email, full_name, default_mode, date_of_birth, is_minor, trust_tier)
-       VALUES ($1, $2, $3, 'worker', $4::date, false, $5)
+       VALUES ($1, $2, $3, 'worker', $4::date, true, $5)
        ON CONFLICT (firebase_uid) DO UPDATE SET email = EXCLUDED.email, updated_at = NOW()
        RETURNING *`,
       [firebaseUid, email, displayName, LAZY_PROVISION_DOB, initialTrustTier]

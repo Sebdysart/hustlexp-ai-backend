@@ -314,9 +314,10 @@ export const userRouter = router({
       }
 
       // --------------------------------------------------------------------------
-      // COPPA AGE VERIFICATION (AUDIT FIX)
-      // Users under 13 are blocked per Children's Online Privacy Protection Act.
-      // Users 13-17 are allowed but flagged as minors for consent tracking.
+      // ADULT MARKETPLACE AGE VERIFICATION
+      // HustleXP's public terms and physical-work marketplace are 18+.
+      // The backend must enforce the same boundary as the website; a client-side
+      // date picker is not an authorization control.
       // --------------------------------------------------------------------------
       const dob = new Date(input.dateOfBirth);
       if (isNaN(dob.getTime()) || dob.toISOString().slice(0, 10) !== input.dateOfBirth) {
@@ -342,6 +343,13 @@ export const userRouter = router({
         throw new TRPCError({
           code: 'FORBIDDEN',
           message: 'COPPA_AGE_RESTRICTION: Users must be at least 13 years old to create an account. This is required by the Children\'s Online Privacy Protection Act (COPPA).',
+        });
+      }
+
+      if (age < 18) {
+        throw new TRPCError({
+          code: 'FORBIDDEN',
+          message: 'ADULT_AGE_RESTRICTION: HustleXP accounts are available only to adults age 18 or older.',
         });
       }
 
@@ -431,6 +439,19 @@ export const userRouter = router({
         }
 
         if (existingUser) {
+          // Lazy Firebase provisioning deliberately marks age as unverified/minor.
+          // Once the same token-owned Firebase identity supplies an adult DOB,
+          // replace that fail-closed state before returning the account.
+          if (existingUser.is_minor === true && existingUser.firebase_uid === input.firebaseUid) {
+            const verified = await db.query<User>(
+              `UPDATE users
+                  SET date_of_birth = $2, is_minor = false, updated_at = NOW()
+                WHERE id = $1 AND firebase_uid = $3
+                RETURNING *`,
+              [existingUser.id, input.dateOfBirth, input.firebaseUid],
+            );
+            existingUser = verified.rows[0] ?? existingUser;
+          }
           // Return existing user instead of error (handles re-registration from social auth)
           return await toMobileUser(existingUser);
         }

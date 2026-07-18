@@ -38,6 +38,7 @@ interface WorkerReservationRow {
   trust_tier: number;
   trust_hold: boolean;
   is_banned: boolean | null;
+  is_minor: boolean;
   account_status: string;
   plan: string;
   stripe_connect_id: string | null;
@@ -139,7 +140,7 @@ async function loadWorkerForReservation(
   hustlerRef: string,
 ): Promise<LoadedWorker | ReservationError> {
   const result = await query<WorkerReservationRow>(
-    `SELECT id, default_mode, trust_tier, trust_hold, is_banned, account_status, plan,
+    `SELECT id, default_mode, trust_tier, trust_hold, is_banned, is_minor, account_status, plan,
             stripe_connect_id, payouts_enabled
      FROM users
      WHERE id = $1
@@ -152,6 +153,9 @@ async function loadWorkerForReservation(
   }
   if (worker.is_banned || worker.trust_hold || worker.account_status !== 'ACTIVE') {
     return error('HUSTLER_INELIGIBLE', 'Hustler account is not eligible for reservation.');
+  }
+  if (worker.is_minor) {
+    return error('ADULT_AGE_REQUIRED', 'Hustler must be at least 18 years old for reservation.');
   }
   if (!worker.stripe_connect_id || !worker.payouts_enabled) {
     return error(
