@@ -20,7 +20,7 @@ const input = {
 
 const user = {
   id: input.engineHustlerRef, default_mode: 'worker', phone: null,
-  trust_tier: 0, is_banned: false, account_status: 'ACTIVE',
+  trust_tier: 0, is_banned: false, is_minor: false, account_status: 'ACTIVE',
 };
 
 beforeEach(() => {
@@ -74,6 +74,7 @@ describe('HustlerIdentityLinkService', () => {
   it.each([
     [{ ...user, default_mode: 'poster' }, 'PRECONDITION_FAILED'],
     [{ ...user, is_banned: true }, 'PRECONDITION_FAILED'],
+    [{ ...user, is_minor: true }, 'PRECONDITION_FAILED'],
     [{ ...user, account_status: 'SUSPENDED' }, 'PRECONDITION_FAILED'],
   ])('fails closed for an ineligible engine identity %#', async (row, code) => {
     query.mockResolvedValueOnce({ rows: [row] });

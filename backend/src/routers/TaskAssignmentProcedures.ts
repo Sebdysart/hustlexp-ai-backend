@@ -61,12 +61,18 @@ async function verifyWorkerTrust(txn: QueryFn, workerId: string, required: numbe
 }
 
 async function pendingApplicationId(txn: QueryFn, input: AssignmentInput): Promise<string> {
-  const result = await txn<{ id: string }>(
-    "SELECT id FROM task_applications WHERE task_id = $1 AND hustler_id = $2 AND status = 'pending'",
+  const result = await txn<{ id: string; is_minor: boolean }>(
+    `SELECT ta.id, u.is_minor
+       FROM task_applications ta
+       JOIN users u ON u.id = ta.hustler_id
+      WHERE ta.task_id = $1 AND ta.hustler_id = $2 AND ta.status = 'pending'`,
     [input.taskId, input.workerId],
   );
   if (!result.rows[0]) {
     throw new TRPCError({ code: 'NOT_FOUND', message: 'No pending application found for this worker' });
+  }
+  if (result.rows[0].is_minor) {
+    throw new TRPCError({ code: 'FORBIDDEN', message: 'Hustlers must be at least 18 years old' });
   }
   return result.rows[0].id;
 }
