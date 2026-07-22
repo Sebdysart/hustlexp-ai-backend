@@ -53,7 +53,9 @@
     "verify:schema": "node scripts/verify-automation-contracts.mjs",
     "verify:build-identity": "node --test scripts/write-build-identity.test.mjs",
     "verify:production-role-readiness:contract": "node --test scripts/verify-production-role-readiness.test.mjs",
-    "verify:production-role-readiness": "npm run verify:production-role-readiness:contract && node scripts/verify-production-role-readiness.mjs"
+    "verify:production-role-readiness": "npm run verify:production-role-readiness:contract && node scripts/verify-production-role-readiness.mjs",
+    "verify:production-legal-approval:contract": "node --test scripts/verify-production-legal-approval.test.mjs",
+    "verify:production-legal-approval": "npm run verify:production-legal-approval:contract && node scripts/verify-production-legal-approval.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-rekognition": "3.994.0",

@@ -144,6 +144,8 @@ export const CONTROLLED_TEST_RETAKE_GUARD_CONVERGENCE_MIGRATION =
   '20260721_controlled_test_retake_guard_convergence';
 export const SAME_WORKER_RETAKE_ASSIGNMENT_GUARD_REPAIR_MIGRATION =
   '20260721_same_worker_retake_assignment_guard_repair';
+export const REGION_POLICY_LEGAL_APPROVAL_ACTIVATION_MIGRATION =
+  '20260722_region_policy_legal_approval_activation';
 
 const REQUIRED_MIGRATION_FILES = [
   { name: ADD_MISSING_TABLES_V2_MIGRATION, fileName: 'add_missing_tables_v2.sql' },
@@ -506,6 +508,10 @@ const REQUIRED_MIGRATION_FILES = [
   {
     name: SAME_WORKER_RETAKE_ASSIGNMENT_GUARD_REPAIR_MIGRATION,
     fileName: '20260721_same_worker_retake_assignment_guard_repair.sql',
+  },
+  {
+    name: REGION_POLICY_LEGAL_APPROVAL_ACTIVATION_MIGRATION,
+    fileName: '20260722_region_policy_legal_approval_activation.sql',
   },
 ] as const;
 

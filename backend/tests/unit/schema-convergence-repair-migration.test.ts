@@ -58,7 +58,7 @@ describe('HX/OS clean and upgraded schema convergence repair', () => {
   });
 
   it('requires the exact current migration chain and preserves legacy reconciliation classification', () => {
-    expect(UPGRADE_ASSERT).toContain('count(*)=94 AND count(DISTINCT name)=94');
+    expect(UPGRADE_ASSERT).toContain('count(*)=95 AND count(DISTINCT name)=95');
     expect(UPGRADE_ASSERT).toContain('reconciliation_contract_version=0');
     expect(UPGRADE_ASSERT).toContain('offline_payload_hash IS NULL');
   });
