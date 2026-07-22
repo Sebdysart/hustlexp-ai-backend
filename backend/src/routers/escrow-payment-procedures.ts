@@ -10,6 +10,7 @@ import {
   localCertificationPaymentEnabled,
   LocalCertificationPaymentProvider,
 } from '../services/LocalCertificationPaymentProvider.js';
+import { paymentCreationErrorCause } from '../services/NewPaymentCreationGuard.js';
 import { StripeService } from '../services/StripeService.js';
 import { posterProcedure, Schemas } from '../trpc.js';
 import { getStripe } from './escrow-common.js';
@@ -91,7 +92,14 @@ export const escrowPaymentProcedures = {
         : await StripeService.createPaymentIntent({
             taskId: input.taskId, posterId: ctx.user.id, escrowId, amount, platformFeeCents,
           });
-      if (!result.success) throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: result.error.message });
+      if (!result.success) {
+        const cause = paymentCreationErrorCause(result.error.code);
+        throw new TRPCError({
+          code: cause ? 'PRECONDITION_FAILED' : 'INTERNAL_SERVER_ERROR',
+          message: result.error.message,
+          ...(cause ? { cause } : {}),
+        });
+      }
       return {
         escrowId,
         paymentIntentId: result.data.paymentIntentId,

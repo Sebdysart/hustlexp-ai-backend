@@ -8,6 +8,14 @@ export const PAYMENT_CREATION_FROZEN_CODE = 'PAYMENT_CREATION_FROZEN';
 export const PAYMENT_CREATION_FROZEN_MESSAGE =
   'New payments are temporarily paused while existing payment records are reconciled. No new charge was created. Try again after Operations clears the payment incident.';
 
+export function paymentCreationErrorCause(
+  code: string,
+): { applicationCode: typeof PAYMENT_CREATION_FROZEN_CODE } | undefined {
+  return code === PAYMENT_CREATION_FROZEN_CODE
+    ? { applicationCode: PAYMENT_CREATION_FROZEN_CODE }
+    : undefined;
+}
+
 /**
  * New-customer-money writes fail closed in production. Existing cancellation,
  * refund, dispute, transfer-reversal, and payout-recovery paths remain available.

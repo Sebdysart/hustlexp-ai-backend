@@ -168,6 +168,7 @@ describe('subscription.subscribe (Stripe bypass)', () => {
     ).rejects.toMatchObject({
       code: 'PRECONDITION_FAILED',
       message: expect.stringContaining('No new charge was created'),
+      cause: { applicationCode: 'PAYMENT_CREATION_FROZEN' },
     });
     expect(mockDb.query).not.toHaveBeenCalled();
   });

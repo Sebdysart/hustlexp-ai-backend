@@ -628,6 +628,27 @@ describe('escrow.createPaymentIntent', () => {
       await expect(caller.createPaymentIntent({ taskId: TASK_ID, amount: 5000 }))
         .rejects.toMatchObject({ code: 'INTERNAL_SERVER_ERROR' });
     });
+
+    it('preserves the frozen-payment application code without calling a provider again', async () => {
+      mockStripeService.isConfigured.mockReturnValue(true);
+      mockDb.query.mockResolvedValueOnce({ rows: [{ price: 5000 }], rowCount: 1 } as any);
+      mockDb.query.mockResolvedValueOnce({ rows: [{ id: ESCROW_ID }], rowCount: 1 } as any);
+      mockStripeService.createPaymentIntent.mockResolvedValueOnce({
+        success: false,
+        error: {
+          code: 'PAYMENT_CREATION_FROZEN',
+          message: 'New payments are temporarily paused. No new charge was created.',
+        },
+      });
+
+      await expect(makeCaller(POSTER_ID).createPaymentIntent({ taskId: TASK_ID, amount: 5000 }))
+        .rejects.toMatchObject({
+          code: 'PRECONDITION_FAILED',
+          message: expect.stringContaining('No new charge was created'),
+          cause: { applicationCode: 'PAYMENT_CREATION_FROZEN' },
+        });
+      expect(mockStripeService.createPaymentIntent).toHaveBeenCalledOnce();
+    });
   });
 
   describe('service delegation', () => {
