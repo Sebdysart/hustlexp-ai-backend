@@ -2,9 +2,9 @@ name: CI — Lint, Typecheck, Test
 
 on:
   push:
-    branches: [main, "feat/*"]
+    branches: [main, "feat/*", codex/adult-hustler-gate]
   pull_request:
-    branches: [main, "feat/*"]
+    branches: [main, "feat/*", codex/adult-hustler-gate]
   workflow_call:
     outputs:
       typecheck_result:
