@@ -65,6 +65,8 @@ export interface RegionPolicyRow {
   production_enabled: boolean;
   effective_from: string | Date;
   effective_until: string | Date | null;
+  legal_approval_effective_at?: string | Date | null;
+  legal_approval_review_at?: string | Date | null;
   policy_document: RegionPolicyDocument;
 }
 
@@ -145,10 +147,23 @@ function taskPolicyReasons(
   document: RegionPolicyDocument,
   task: RegionPolicyTaskInput,
   state: string | null,
+  now: Date,
 ): string[] {
   const reasons: string[] = [];
   if (task.automationClassification === 'PRODUCTION' && !row.production_enabled) {
     reasons.push('production_policy_not_approved');
+  }
+  if (task.automationClassification === 'PRODUCTION' && row.production_enabled) {
+    const effectiveAt = new Date(row.legal_approval_effective_at ?? Number.NaN);
+    const reviewAt = new Date(row.legal_approval_review_at ?? Number.NaN);
+    if (
+      Number.isNaN(effectiveAt.valueOf()) ||
+      Number.isNaN(reviewAt.valueOf()) ||
+      effectiveAt > now ||
+      reviewAt <= now
+    ) {
+      reasons.push('production_legal_approval_unavailable');
+    }
   }
   if (task.regionCode !== row.region_code) reasons.push('region_policy_mismatch');
   if (!state) reasons.push('region_policy_invalid');
@@ -200,6 +215,7 @@ function taskPolicySnapshot(
 export function evaluateTaskAgainstRegionPolicy(
   row: RegionPolicyRow,
   task: RegionPolicyTaskInput,
+  now: Date = new Date(),
 ): RegionPolicyEvaluation {
   const identity = PolicyIdentitySchema.safeParse({
     id: row.id,
@@ -213,7 +229,7 @@ export function evaluateTaskAgainstRegionPolicy(
     return { allowed: false, reasons: ['region_policy_invalid'], snapshot: null };
   }
   const state = locationState(row.region_code);
-  const reasons = taskPolicyReasons(row, document.data, task, state);
+  const reasons = taskPolicyReasons(row, document.data, task, state, now);
   if (reasons.length > 0 || !state) {
     return { allowed: false, reasons: [...new Set(reasons)], snapshot: null };
   }
@@ -226,14 +242,21 @@ export function evaluateTaskAgainstRegionPolicy(
 
 export async function resolveRegionPolicy(regionCode: string): Promise<RegionPolicyRow | null> {
   const result = await db.query<RegionPolicyRow>(
-    `SELECT id, region_code, version, policy_hash, production_enabled,
-            effective_from, effective_until, policy_document
-     FROM region_policies
-     WHERE region_code = $1
-       AND policy_state = 'ACTIVE'
-       AND effective_from <= clock_timestamp()
-       AND (effective_until IS NULL OR effective_until > clock_timestamp())
-     ORDER BY effective_from DESC, created_at DESC
+    `SELECT policy.id, policy.region_code, policy.version, policy.policy_hash,
+            policy.production_enabled, policy.effective_from, policy.effective_until,
+            policy.policy_document,
+            approval.effective_at AS legal_approval_effective_at,
+            approval.review_at AS legal_approval_review_at
+     FROM region_policies policy
+     LEFT JOIN region_policy_legal_approvals approval
+       ON approval.region_policy_id = policy.id
+      AND approval.policy_hash = policy.policy_hash
+      AND policy.approval_reference = 'region-policy-legal-approval:' || approval.id::TEXT
+     WHERE policy.region_code = $1
+       AND policy.policy_state = 'ACTIVE'
+       AND policy.effective_from <= clock_timestamp()
+       AND (policy.effective_until IS NULL OR policy.effective_until > clock_timestamp())
+     ORDER BY policy.effective_from DESC, policy.created_at DESC
      LIMIT 1`,
     [regionCode.trim().toUpperCase()],
   );

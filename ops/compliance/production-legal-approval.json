@@ -1,0 +1,205 @@
+{
+  "schema_version": 1,
+  "gate_id": "EXT-LEGAL-001",
+  "generated_at": "2026-07-22T16:30:00.000Z",
+  "decision": "PENDING_COUNSEL",
+  "evidence_boundary": "This packet is an engineering control and counsel handoff. It is not legal advice or legal approval. Production activation remains forbidden until the verifier passes against the exact deployed revisions.",
+  "scope": {
+    "jurisdiction_code": "US-WA",
+    "local_jurisdictions": [],
+    "policy_version": "us-wa-price-book-2026-07-20-v2",
+    "policy_hash": null,
+    "permitted_categories": ["cleaning", "furniture_assembly", "moving", "yard"],
+    "prohibited_scope": [
+      "illegal goods or services",
+      "medical treatment or emergency response",
+      "weapons-related services",
+      "hazardous-material handling without separately verified authority and credentials",
+      "electrical, plumbing, structural, HVAC, regulated construction, or other licensed work without separately verified authority and credentials",
+      "dangerous demolition",
+      "work intended to harm or discriminate against another person"
+    ]
+  },
+  "controlled_policy_summary": {
+    "moving": {
+      "allowed_risk_levels": ["LOW", "MEDIUM"],
+      "background_check_required": true,
+      "license_required": false,
+      "insurance_required": false,
+      "proof_photos": { "minimum": 2, "maximum": 5 },
+      "gps_proof_required": false
+    },
+    "yard": {
+      "allowed_risk_levels": ["LOW"],
+      "background_check_required": false,
+      "license_required": false,
+      "insurance_required": false,
+      "proof_photos": { "minimum": 1, "maximum": 5 },
+      "gps_proof_required": false
+    },
+    "cleaning": {
+      "allowed_risk_levels": ["LOW", "MEDIUM", "IN_HOME"],
+      "background_check_required": true,
+      "license_required": false,
+      "insurance_required": false,
+      "proof_photos": { "minimum": 2, "maximum": 5 },
+      "gps_proof_required": false
+    },
+    "furniture_assembly": {
+      "allowed_risk_levels": ["LOW", "MEDIUM", "IN_HOME"],
+      "background_check_required": true,
+      "license_required": false,
+      "insurance_required": false,
+      "proof_photos": { "minimum": 2, "maximum": 5 },
+      "gps_proof_required": false
+    },
+    "recording": {
+      "allowed": false,
+      "standalone_consent_required": true
+    },
+    "worker_rights": {
+      "standalone_screening_consent_required": true,
+      "report_access_required": true,
+      "dispute_and_appeal_required": true,
+      "adverse_action_notice_required": true
+    },
+    "financial_floors_cents": {
+      "currency": "usd",
+      "customer_total": 5000,
+      "worker_payout": 4000,
+      "platform_margin": 500
+    },
+    "safety": {
+      "incident_intake_required": true,
+      "timed_checkin_risk_levels": ["MEDIUM", "HIGH", "IN_HOME"],
+      "checkin_intervals_minutes": [15, 30, 60],
+      "location_retention_days": 30,
+      "alternate_emergency_action_required": true
+    }
+  },
+  "controlled_artifacts": [
+    {
+      "id": "region-policy-contract",
+      "repository": "Sebdysart/hustlexp-ai-backend",
+      "revision": "d861f25984d0bebcbdfe7176bdee9f869222a5d1",
+      "path": "backend/database/migrations/20260718_region_policy_contract.sql",
+      "sha256": "01c65eb106aa9ad3a9909e08b882f6ba908bf626e0c23a68136c64fe39ec9311",
+      "local": true
+    },
+    {
+      "id": "region-policy-price-book",
+      "repository": "Sebdysart/hustlexp-ai-backend",
+      "revision": "d861f25984d0bebcbdfe7176bdee9f869222a5d1",
+      "path": "backend/database/migrations/20260720_region_policy_price_book_alignment.sql",
+      "sha256": "614ac15399457b310f60e4bf637ee1d394a0da97e9cbcd9d6a8367a219af68e0",
+      "local": true
+    },
+    {
+      "id": "region-policy-runtime",
+      "repository": "Sebdysart/hustlexp-ai-backend",
+      "revision": "d861f25984d0bebcbdfe7176bdee9f869222a5d1",
+      "path": "backend/src/services/RegionPolicyService.ts",
+      "sha256": "7205f1fa25bd62c31138aa8c7af89d39f3ab292c58d8ca312dc865e58242c00e",
+      "local": true
+    },
+    {
+      "id": "public-terms",
+      "repository": "Sebdysart/hustlexp-site",
+      "revision": "b55ae5a1815feda78054eb284e5d5ccf6883ac2d",
+      "path": "src/pages/Terms.tsx",
+      "sha256": "b50ca32fd6f9ddaf9652bd0685acf1a9aa0f30ddb912338121b7dad9c70a638a",
+      "local": false
+    },
+    {
+      "id": "public-privacy",
+      "repository": "Sebdysart/hustlexp-site",
+      "revision": "b55ae5a1815feda78054eb284e5d5ccf6883ac2d",
+      "path": "src/pages/Privacy.tsx",
+      "sha256": "11d577d575bbf4e0543ee5263ba32a41f5fc3511f9c045008a21bd4c2312a983",
+      "local": false
+    },
+    {
+      "id": "worker-screening-rights-grounding",
+      "repository": "Sebdysart/hustlexp-site",
+      "revision": "b55ae5a1815feda78054eb284e5d5ccf6883ac2d",
+      "path": "docs/WORKER_SCREENING_RIGHTS_GROUNDING_2026-07-18.md",
+      "sha256": "88822dc25c43a9f5d89010ebb4df3375aa7d969f23e5af1b78a2ca4266b31bc8",
+      "local": false
+    }
+  ],
+  "release_bindings": {
+    "engine": {
+      "repository": "Sebdysart/hustlexp-ai-backend",
+      "policy_source_revision": "d861f25984d0bebcbdfe7176bdee9f869222a5d1",
+      "approved_revision": null,
+      "deployed_revision": "790333909da8c71de5049fcf7f4a2aaeaf726996",
+      "deployment_id": "3a0e8520-3943-4484-90c9-c8aedb07e4c3"
+    },
+    "site": {
+      "repository": "Sebdysart/hustlexp-site",
+      "approved_revision": null,
+      "deployed_revision": "b55ae5a1815feda78054eb284e5d5ccf6883ac2d",
+      "deployment_id": "91bb3c71-e5a5-40a0-a087-008fca975134"
+    }
+  },
+  "approval": null,
+  "required_determinations": [
+    {
+      "id": "worker_classification",
+      "question": "Does the operating model and product control profile support the public independent-contractor statements for every approved provider type and locality?"
+    },
+    {
+      "id": "category_licensing",
+      "question": "Are the exact category, risk, licensing, bonding, insurance, hauling, home-entry, and credential boundaries lawful in every named launch jurisdiction?"
+    },
+    {
+      "id": "screening_and_adverse_action",
+      "question": "Are screening purpose, timing, consent, individualized assessment, notices, waiting periods, report access, disputes, appeals, delivery, retention, and operations approved?"
+    },
+    {
+      "id": "privacy_and_retention",
+      "question": "Are address access, proof media, precise location, identity data, subprocessors, analytics, deletion, and every stated retention period accurate and approved?"
+    },
+    {
+      "id": "payments_payouts_and_tax",
+      "question": "Are protected-funds language, payout timing, fees, cancellations, refunds, tax reporting, worker economics, and provider-contract terms accurate and approved?"
+    },
+    {
+      "id": "disputes_arbitration_and_liability",
+      "question": "Are the dispute remedies, arbitration, class waiver, liability limitation, governing law, notices, and user-acceptance mechanism enforceable for the approved launch scope?"
+    },
+    {
+      "id": "safety_location_and_recording",
+      "question": "Are incident response, emergency boundaries, check-ins, location retention, proof capture, home-entry controls, and the recording prohibition approved?"
+    }
+  ],
+  "approval_record_requirements": {
+    "counsel": ["name", "organization", "WA qualification"],
+    "owners": ["policy owner", "production activation owner"],
+    "dates": ["approved_at", "effective_at", "review_at"],
+    "scope": [
+      "US-WA",
+      "named local jurisdictions",
+      "exact categories",
+      "prohibited scope",
+      "exceptions"
+    ],
+    "bindings": [
+      "policy version",
+      "runtime policy SHA-256",
+      "engine approved/deployed revision",
+      "site approved/deployed revision",
+      "deployment identities"
+    ],
+    "evidence": ["HTTPS evidence URI", "SHA-256", "signature method"],
+    "determinations": [
+      "worker_classification",
+      "category_licensing",
+      "screening_and_adverse_action",
+      "privacy_and_retention",
+      "payments_payouts_and_tax",
+      "disputes_arbitration_and_liability",
+      "safety_location_and_recording"
+    ]
+  }
+}

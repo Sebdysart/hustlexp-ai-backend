@@ -115,6 +115,37 @@ describe('RegionPolicyService', () => {
     expect(result.reasons).toContain(expectedReason);
   });
 
+  it('requires a current legal approval window for production evaluation', () => {
+    const approved: RegionPolicyRow = {
+      ...POLICY,
+      production_enabled: true,
+      legal_approval_effective_at: '2026-07-21T00:00:00.000Z',
+      legal_approval_review_at: '2026-10-21T00:00:00.000Z',
+    };
+    const productionTask = { ...TASK, automationClassification: 'PRODUCTION' as const };
+    expect(
+      evaluateTaskAgainstRegionPolicy(
+        approved,
+        productionTask,
+        new Date('2026-07-22T12:00:00.000Z')
+      ).allowed
+    ).toBe(true);
+    const expired = evaluateTaskAgainstRegionPolicy(
+      { ...approved, legal_approval_review_at: '2026-07-22T11:59:59.000Z' },
+      productionTask,
+      new Date('2026-07-22T12:00:00.000Z')
+    );
+    expect(expired.allowed).toBe(false);
+    expect(expired.reasons).toContain('production_legal_approval_unavailable');
+    const missing = evaluateTaskAgainstRegionPolicy(
+      { ...approved, legal_approval_effective_at: null, legal_approval_review_at: null },
+      productionTask,
+      new Date('2026-07-22T12:00:00.000Z')
+    );
+    expect(missing.allowed).toBe(false);
+    expect(missing.reasons).toContain('production_legal_approval_unavailable');
+  });
+
   it('rejects malformed policy documents instead of inventing defaults', () => {
     const malformed = { ...POLICY, policy_document: { ...POLICY.policy_document, safety: null } as never };
     expect(evaluateTaskAgainstRegionPolicy(malformed, TASK)).toEqual({
@@ -130,6 +161,9 @@ describe('RegionPolicyService', () => {
     const [sql, values] = vi.mocked(db.query).mock.calls[0];
     expect(sql).toContain("policy_state = 'ACTIVE'");
     expect(sql).toContain('clock_timestamp()');
+    expect(sql).toContain('region_policy_legal_approvals');
+    expect(sql).toContain('legal_approval_effective_at');
+    expect(sql).toContain('legal_approval_review_at');
     expect(values).toEqual(['US-WA']);
   });
 

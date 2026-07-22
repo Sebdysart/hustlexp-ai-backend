@@ -55,7 +55,9 @@ describe('controlled TEST retake acceptance repair', () => {
   });
 
   it('registers and packages the forward migration', () => {
-    const spec = productionMigrationRuntime().migrationSpecs.at(-1);
+    const spec = productionMigrationRuntime().migrationSpecs.find(
+      (candidate) => candidate.name === SAME_WORKER_RETAKE_ASSIGNMENT_GUARD_REPAIR_MIGRATION
+    );
     const dockerfile = readFileSync(resolve(process.cwd(), 'Dockerfile'), 'utf8');
 
     expect(CONTROLLED_TEST_RETAKE_ACCEPTANCE_REPAIR_MIGRATION).toBe('20260721_controlled_test_retake_acceptance_repair');
