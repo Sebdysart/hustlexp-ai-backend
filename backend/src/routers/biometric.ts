@@ -16,16 +16,32 @@ import { db } from '../db.js';
 import { BiometricVerificationService } from '../services/BiometricVerificationService.js';
 import { LogisticsAIService } from '../services/LogisticsAIService.js';
 import { GDPRService } from '../services/GDPRService.js';
-import { validateSafeUrl } from '../lib/url-safety.js';
 import { z } from 'zod';
+import { issueSingleParticipantMediaAccess } from '../services/PrivateMediaDeliveryService.js';
 
-/**
- * Zod refinement: reject URLs pointing to internal/private networks (SSRF protection)
- */
-const safeUrlSchema = z.string().url().refine(
-  (url) => validateSafeUrl(url).safe,
-  { message: 'URL points to disallowed destination' }
-);
+interface BiometricProofContext {
+  worker_id: string | null;
+  submitter_id: string;
+  biometric_signal_status: string;
+  photo_url: string | null;
+  lidar_depth_map_url: string | null;
+  gps_coordinates: { latitude: number; longitude: number } | string | null;
+  gps_accuracy_meters: number | string | null;
+  location_lat: number | string | null;
+  location_lng: number | string | null;
+}
+
+function storedCoordinates(
+  value: BiometricProofContext['gps_coordinates'],
+): { latitude: number; longitude: number } | null {
+  if (value == null) return null;
+  const parsed = typeof value === 'string' ? JSON.parse(value) as Record<string, unknown> : value;
+  const latitude = Number(parsed.latitude);
+  const longitude = Number(parsed.longitude);
+  if (!Number.isFinite(latitude) || latitude < -90 || latitude > 90
+      || !Number.isFinite(longitude) || longitude < -180 || longitude > 180) return null;
+  return { latitude, longitude };
+}
 
 export const biometricRouter = router({
   // --------------------------------------------------------------------------
@@ -41,7 +57,9 @@ export const biometricRouter = router({
       z.object({
         proof_id: Schemas.uuid,
         task_id: Schemas.uuid,
-        photo_url: safeUrlSchema,
+        // Rolling-upgrade compatibility claims only. The mutation ignores
+        // these URLs and consumes receipt-backed stored proof media below.
+        photo_url: z.string().url().optional(),
         gps_coordinates: z.object({
           latitude: z.number().min(-90).max(90),
           longitude: z.number().min(-180).max(180)
@@ -52,30 +70,71 @@ export const biometricRouter = router({
           latitude: z.number().min(-90).max(90),
           longitude: z.number().min(-180).max(180)
         }),
-        lidar_depth_map_url: safeUrlSchema.optional(),
+        lidar_depth_map_url: z.string().url().optional(),
         time_lock_hash: z.string().min(1),
         submission_timestamp: z.string().datetime()
       })
     )
     .mutation(async ({ ctx, input }) => {
       try {
-        // Ownership check: verify the requesting user is the assigned worker for the task
-        const task = await db.query(
-          'SELECT worker_id FROM tasks WHERE id = $1',
-          [input.task_id]
+        // Bind every claimed identifier to one canonical, durable proof record.
+        // Client media, GPS, and task coordinates are compatibility fields only;
+        // verification consumes stored evidence and server task coordinates.
+        const contextResult = await db.query<BiometricProofContext>(
+          `SELECT t.worker_id,p.submitter_id,
+                  ps.biometric_signal_status,
+                  pp.storage_key AS photo_url,
+                  NULL::TEXT AS lidar_depth_map_url,
+                  ps.gps_coordinates,ps.gps_accuracy_meters,
+                  t.location_lat,t.location_lng
+           FROM tasks t
+           JOIN proofs p ON p.task_id=t.id AND p.id=$1
+           JOIN LATERAL (
+             SELECT id,gps_coordinates,gps_accuracy_meters,
+                    biometric_signal_status
+             FROM proof_submissions
+             WHERE proof_id=p.id
+             ORDER BY created_at DESC,id DESC
+             LIMIT 1
+           ) ps ON TRUE
+           LEFT JOIN LATERAL (
+             SELECT storage_key
+             FROM proof_photos
+             WHERE proof_id=p.id
+             ORDER BY sequence_number ASC,created_at ASC,id ASC
+             LIMIT 1
+           ) pp ON TRUE
+           WHERE t.id=$2`,
+          [input.proof_id, input.task_id]
         );
-        if (!task.rows[0]) throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
-        if (task.rows[0].worker_id !== ctx.user.id) {
+        const proofContext = contextResult.rows[0];
+        if (!proofContext) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: 'Proof verification record not found' });
+        }
+        if (proofContext.worker_id !== ctx.user.id || proofContext.submitter_id !== ctx.user.id) {
           throw new TRPCError({ code: 'FORBIDDEN', message: 'Not the assigned worker for this task' });
         }
-
-        // Duplicate check: verify no existing biometric proof for this task+user
-        const existing = await db.query(
-          'SELECT id FROM biometric_proofs WHERE task_id = $1 AND user_id = $2',
-          [input.task_id, ctx.user.id]
-        );
-        if (existing.rows[0]) {
+        if (['PENDING', 'AVAILABLE'].includes(proofContext.biometric_signal_status)) {
           throw new TRPCError({ code: 'CONFLICT', message: 'Biometric proof already submitted for this task' });
+        }
+        if (!proofContext.photo_url) {
+          throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Durable proof photo evidence is required' });
+        }
+        if (/^https?:\/\//i.test(proofContext.photo_url)) {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message: 'Legacy public proof media cannot be used for biometric verification.',
+          });
+        }
+        const proofCoordinates = storedCoordinates(proofContext.gps_coordinates);
+        const accuracyMeters = Number(proofContext.gps_accuracy_meters);
+        if (!proofCoordinates || !Number.isFinite(accuracyMeters) || accuracyMeters < 0) {
+          throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Durable proof GPS evidence is required' });
+        }
+        const taskLatitude = Number(proofContext.location_lat);
+        const taskLongitude = Number(proofContext.location_lng);
+        if (!Number.isFinite(taskLatitude) || !Number.isFinite(taskLongitude)) {
+          throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Canonical task coordinates are unavailable' });
         }
 
         // BIPA compliance: verify biometric data consent before collection
@@ -88,10 +147,24 @@ export const biometricRouter = router({
         }
 
         // Run biometric verification
+        const privatePhoto = await issueSingleParticipantMediaAccess({
+          taskId: input.task_id,
+          viewerId: ctx.user.id,
+          purpose: 'PROOF',
+          accessReason: 'BIOMETRIC_ANALYSIS',
+          consumerId: input.proof_id,
+          storageKey: proofContext.photo_url,
+        });
+        if (!privatePhoto) {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message: 'Private proof media is unavailable. Biometric verification was not run.',
+          });
+        }
         const biometricResult = await BiometricVerificationService.analyzeProofSubmission(
           input.proof_id,
-          input.photo_url,
-          input.lidar_depth_map_url
+          privatePhoto.downloadUrl,
+          undefined,
         );
 
         if (!biometricResult.success) {
@@ -103,9 +176,9 @@ export const biometricRouter = router({
 
         // Run GPS validation
         const gpsResult = await LogisticsAIService.validateGPSProof(
-          input.gps_coordinates,
-          input.task_location,
-          input.gps_accuracy_meters
+          proofCoordinates,
+          { latitude: taskLatitude, longitude: taskLongitude },
+          accuracyMeters
         );
 
         if (!gpsResult.success) {
@@ -224,29 +297,14 @@ export const biometricRouter = router({
   analyzeFacePhoto: hustlerProcedure
     .input(
       z.object({
-        photo_url: safeUrlSchema
+        photo_url: z.string()
       })
     )
-    .mutation(async ({ ctx, input }) => {
-      // BIPA compliance: verify biometric data consent before collection
-      const hasConsent = await GDPRService.hasBiometricConsent(ctx.user.id);
-      if (!hasConsent) {
-        throw new TRPCError({
-          code: 'FORBIDDEN',
-          message: 'BIPA_CONSENT_REQUIRED: Biometric data consent required before collection (740 ILCS 14)',
-        });
-      }
-
-      const result = await BiometricVerificationService.analyzeFacePhoto(input.photo_url);
-
-      if (!result.success) {
-        throw new TRPCError({
-          code: 'BAD_REQUEST',
-          message: result.error?.message || 'Face analysis failed'
-        });
-      }
-
-      return result.data;
+    .mutation(async () => {
+      throw new TRPCError({
+        code: 'PRECONDITION_FAILED',
+        message: 'Direct face-photo analysis is disabled. Identity verification must use a private provider-attested flow.',
+      });
     }),
 
   // --------------------------------------------------------------------------

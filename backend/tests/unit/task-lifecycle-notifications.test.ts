@@ -78,14 +78,16 @@ describe('recipient + category routing', () => {
     await notifyTaskCompleted('worker-1', TASK, 'Move boxes');
     expect(create).toHaveBeenCalledWith(expect.objectContaining({
       userId: 'worker-1', category: 'task_completed',
+      body: '"Move boxes" is complete. Your payout is ready for processing.',
     }));
   });
 
-  it('payment released → worker, payment_released, CRITICAL, formatted dollars', async () => {
+  it('payment released → worker, payment_released, CRITICAL, without claiming settlement', async () => {
     await notifyPaymentReleased('worker-1', TASK, 8300);
     expect(create).toHaveBeenCalledWith(expect.objectContaining({
       userId: 'worker-1', category: 'payment_released', priority: 'CRITICAL',
-      body: expect.stringContaining('$83.00'),
+      title: 'Payout released',
+      body: '$83.00 was released to your payout account. Check earnings for settlement status.',
     }));
   });
 });

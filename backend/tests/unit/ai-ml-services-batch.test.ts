@@ -310,16 +310,16 @@ describe('JudgeAIService', () => {
       }
     });
 
-    it('uses AI verdict when AIClient is configured and returns valid response', async () => {
+    it('records but does not authorize a contradictory AI verdict', async () => {
       mockAIClient.isConfigured.mockReturnValue(true);
       const aiVerdict = {
-        verdict: 'APPROVE',
+        verdict: 'REJECT',
         confidence: 0.92,
-        reasoning: 'All signals passed with high confidence scores.',
-        risk_score: 0.08,
-        component_scores: { biometric: 0.05, logistics: 0.10, photo_verification: 0.09 },
-        fraud_flags: [],
-        recommended_action: 'Auto-approve proof and release escrow.',
+        reasoning: 'The model contradicts clean deterministic signals for this regression witness.',
+        risk_score: 0.98,
+        component_scores: { biometric: 0.98, logistics: 0.98, photo_verification: 0.98 },
+        fraud_flags: ['model_only_claim'],
+        recommended_action: 'Reject proof.',
       };
       mockAIClient.callJSON.mockResolvedValue({ data: aiVerdict, provider: 'deepseek' });
 
@@ -335,7 +335,29 @@ describe('JudgeAIService', () => {
       expect(result.success).toBe(true);
       if (result.success) {
         expect(result.data.verdict).toBe('APPROVE');
-        expect(result.data.confidence).toBe(0.92);
+        expect(result.data.risk_score).toBeLessThan(0.3);
+      }
+      expect(mockAIClient.callJSON).toHaveBeenCalledOnce();
+    });
+
+    it('does not let an adverse AI photo score override clean typed signals', async () => {
+      const svc = await getService();
+      const result = await svc.synthesizeVerdict({
+        proof_id: 'proof-photo-advisory',
+        task_id: 'task-1',
+        biometric: goodBiometric,
+        logistics: goodLogistics,
+        photo_verification: {
+          similarity_score: 0,
+          completion_score: 0,
+          change_detected: false,
+        },
+      });
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.verdict).toBe('APPROVE');
+        expect(result.data.fraud_flags).toContain('photo_ai_advisory_only');
       }
     });
 
@@ -1353,6 +1375,27 @@ describe('ScoperAIService', () => {
       }
     });
 
+    it('uses deterministic economics in executable context even when AI is configured', async () => {
+      mockAIClient.isConfigured.mockReturnValue(true);
+      mockAIClient.callJSON.mockResolvedValue({
+        data: makeScoperProposal({ suggested_price_cents: 49_999, suggested_xp: 5_000 }),
+        provider: 'openai',
+      });
+      const svc = await getService();
+      const input = {
+        description: 'Move one couch from the living room to the curb using two people',
+        category: 'moving',
+        authorityContext: 'EXECUTABLE' as const,
+      };
+
+      const expected = svc._generateProposal(input);
+      const result = await svc.analyzeTaskScope(input);
+
+      expect(result.success).toBe(true);
+      expect(result.data?.suggested_price_cents).toBe(expected.suggested_price_cents);
+      expect(mockAIClient.callJSON).not.toHaveBeenCalled();
+    });
+
     it('falls back to heuristic when AI call fails', async () => {
       mockAIClient.isConfigured.mockReturnValue(true);
       mockAIClient.callJSON.mockRejectedValue(new Error('LLM timeout'));
@@ -1650,7 +1693,8 @@ describe('DisputeService', () => {
         expect(result.data.state).toBe('OPEN');
       }
       expect(writeToOutbox).toHaveBeenCalledWith(
-        expect.objectContaining({ eventType: 'dispute.created' })
+        expect.objectContaining({ eventType: 'dispute.created' }),
+        expect.any(Function),
       );
     });
 

@@ -57,6 +57,7 @@ function bridgeCaller() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  query.mockResolvedValue({ rows: [{ role: 'admin' }], rowCount: 1 } as any);
 });
 
 describe('assignment.reserve', () => {
@@ -173,8 +174,18 @@ describe('assignment.reserve', () => {
     })).resolves.toMatchObject({ state: 'ENGINE_RESERVED' });
     expect(query).toHaveBeenCalledWith(
       expect.stringContaining('SELECT role FROM admin_roles'),
-      [ADMIN_ID, ['admin', 'support', 'finance', 'moderator', 'founder']],
+      [ADMIN_ID, ['admin', 'founder']],
     );
+  });
+
+  it('denies a cached support identity from engine-equivalent reservation authority', async () => {
+    query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+    await expect(caller(true).reserve({
+      engineTaskId: TASK_ID,
+      hustlerRef: WORKER_ID,
+      idempotencyKey: 'dispatch-wave-support-denied-01',
+    })).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    expect(reserve).not.toHaveBeenCalled();
   });
 
   it('fails closed if an accepted admin context has no reservation actor id', async () => {

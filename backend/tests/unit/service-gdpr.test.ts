@@ -596,7 +596,7 @@ describe('GDPRService.executeDeletion', () => {
     expect(mockEscrowService.refund).toHaveBeenCalledWith({ escrowId: 'escrow-pending-2' });
   });
 
-  it('continues when Stripe PI cancellation throws for PENDING escrow', async () => {
+  it('fails closed when Stripe PI cancellation throws for PENDING escrow', async () => {
     const pastDeadline = new Date(Date.now() - 86400000);
 
     mockDb.query.mockResolvedValueOnce({
@@ -611,23 +611,91 @@ describe('GDPRService.executeDeletion', () => {
       rows: [{ id: 'escrow-pending-3', state: 'PENDING', stripe_payment_intent_id: 'pi_already_cancelled' }],
       rowCount: 1,
     } as never); // escrows
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // worker escrows
-    mockDb.query.mockResolvedValueOnce({ rows: [{ stripe_customer_id: null }], rowCount: 1 } as never); // D58-8
-    mockDb.serializableTransaction.mockImplementation(async (fn) => {
-      const q = vi.fn().mockResolvedValue({ rows: [], rowCount: 0 } as never);
-      return fn(q) as Promise<unknown>;
-    });
-    mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'req-1', status: 'completed' }] } as never);
-    mockNotification.createNotification.mockResolvedValue({ success: true } as never);
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // mark request rejected
 
     // Stripe throws (PI already cancelled on Stripe side)
     mockPaymentIntentsCancel.mockRejectedValueOnce(new Error('PaymentIntent cannot be canceled'));
 
     const result = await GDPRService.executeDeletion('req-1');
 
-    // Deletion should still succeed — PI failure is warn-and-continue
-    expect(result.success).toBe(true);
-    expect(mockEscrowService.refund).toHaveBeenCalledWith({ escrowId: 'escrow-pending-3' });
+    expect(result).toMatchObject({ success: false, error: { code: 'ACTIVE_ESCROW_RESOLUTION_FAILED' } });
+    expect(mockEscrowService.refund).not.toHaveBeenCalled();
+    expect(mockDb.serializableTransaction).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when a poster task cannot be cancelled', async () => {
+    const pastDeadline = new Date(Date.now() - 86400000);
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ id: 'req-1', user_id: 'user-1', status: 'pending', request_type: 'deletion', deadline: pastDeadline }],
+      rowCount: 1,
+    } as never);
+    mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'req-1' }], rowCount: 1 } as never);
+    mockDb.query.mockResolvedValueOnce({ rows: [{ firebase_uid: 'firebase-uid-1' }], rowCount: 1 } as never);
+    mockDb.query.mockResolvedValueOnce({ rows: [{ email: 'test@example.com' }], rowCount: 1 } as never);
+    mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'task-active-1' }], rowCount: 1 } as never);
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // mark rejected
+    mockTaskService.cancel.mockResolvedValueOnce({
+      success: false,
+      error: { code: 'DB_ERROR', message: 'task cancellation unavailable' },
+    } as never);
+
+    const result = await GDPRService.executeDeletion('req-1');
+
+    expect(result).toMatchObject({ success: false, error: { code: 'ACTIVE_TASK_RESOLUTION_FAILED' } });
+    expect(mockEscrowService.refund).not.toHaveBeenCalled();
+    expect(mockDb.serializableTransaction).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when an active poster escrow cannot be refunded', async () => {
+    const pastDeadline = new Date(Date.now() - 86400000);
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ id: 'req-1', user_id: 'user-1', status: 'pending', request_type: 'deletion', deadline: pastDeadline }],
+      rowCount: 1,
+    } as never);
+    mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'req-1' }], rowCount: 1 } as never);
+    mockDb.query.mockResolvedValueOnce({ rows: [{ firebase_uid: 'firebase-uid-1' }], rowCount: 1 } as never);
+    mockDb.query.mockResolvedValueOnce({ rows: [{ email: 'test@example.com' }], rowCount: 1 } as never);
+    mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'task-active-1' }], rowCount: 1 } as never);
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ id: 'escrow-active-1', state: 'FUNDED', stripe_payment_intent_id: 'pi_funded' }],
+      rowCount: 1,
+    } as never);
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // mark rejected
+    mockEscrowService.refund.mockResolvedValueOnce({
+      success: false,
+      error: { code: 'REFUND_FAILED', message: 'refund unavailable' },
+    } as never);
+
+    const result = await GDPRService.executeDeletion('req-1');
+
+    expect(result).toMatchObject({ success: false, error: { code: 'ACTIVE_ESCROW_RESOLUTION_FAILED' } });
+    expect(mockDb.serializableTransaction).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when an active worker dispute cannot be settled', async () => {
+    const pastDeadline = new Date(Date.now() - 86400000);
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ id: 'req-1', user_id: 'user-1', status: 'pending', request_type: 'deletion', deadline: pastDeadline }],
+      rowCount: 1,
+    } as never);
+    mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'req-1' }], rowCount: 1 } as never);
+    mockDb.query.mockResolvedValueOnce({ rows: [{ firebase_uid: 'firebase-uid-1' }], rowCount: 1 } as never);
+    mockDb.query.mockResolvedValueOnce({ rows: [{ email: 'test@example.com' }], rowCount: 1 } as never);
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // no poster tasks
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ id: 'escrow-dispute-1', state: 'LOCKED_DISPUTE' }],
+      rowCount: 1,
+    } as never);
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // mark rejected
+    mockEscrowService.partialRefund.mockResolvedValueOnce({
+      success: false,
+      error: { code: 'SETTLEMENT_FAILED', message: 'dispute settlement unavailable' },
+    } as never);
+
+    const result = await GDPRService.executeDeletion('req-1');
+
+    expect(result).toMatchObject({ success: false, error: { code: 'ACTIVE_ESCROW_RESOLUTION_FAILED' } });
+    expect(mockDb.serializableTransaction).not.toHaveBeenCalled();
   });
 
   // TT-04: LOCKED_DISPUTE where poster is the deleted user
@@ -1384,6 +1452,12 @@ describe('D58-7: deleteAndAnonymizeUserData — proof_submissions photo_url null
     const proofSubmissionsUpdate = calls.find(([sql]) => /UPDATE proof_submissions/i.test(sql));
     expect(proofSubmissionsUpdate, 'Expected UPDATE proof_submissions to be called').toBeDefined();
     expect(proofSubmissionsUpdate![0]).toMatch(/photo_url\s*=\s*NULL/i);
+    for (const field of [
+      'deepfake_score', 'biometric_analyzed_at', 'biometric_signal_status',
+      'biometric_provider', 'biometric_failure_reason_code', 'metadata',
+      'exif_timestamp', 'exif_gps_lat', 'exif_gps_lng', 'exif_device_model',
+      'capture_validation_failures',
+    ]) expect(proofSubmissionsUpdate![0]).toContain(field);
   });
 });
 

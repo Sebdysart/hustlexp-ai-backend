@@ -27,6 +27,9 @@ vi.mock('../../src/jobs/queues', () => {
   const queues: Record<string, ReturnType<typeof mockQueue>> = {};
   return {
     getQueue: vi.fn((name: string) => (queues[name] ??= mockQueue(name))),
+    enqueueRepeatableJob: vi.fn(async (queueName: string, jobName: string) => ({
+      id: `mock-${queueName}-${jobName}`,
+    })),
     createWorker: vi.fn(() => ({ name: 'mock-worker', close: vi.fn() })),
     Queue: class {},
     Worker: class {},
@@ -41,6 +44,14 @@ vi.mock('../../src/jobs/expertise-recalc-worker', () => ({ processExpertiseRecal
 vi.mock('../../src/jobs/xp-tax-reminder-worker', () => ({ processXPTaxReminderJob: vi.fn() }));
 
 vi.mock('../../src/logger', () => ({
+  logger: {
+    child: () => ({
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      debug: vi.fn(),
+    }),
+  },
   workerLogger: {
     info: vi.fn(),
     warn: vi.fn(),

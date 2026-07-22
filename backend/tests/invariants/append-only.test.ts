@@ -171,7 +171,7 @@ describe.skipIf(!hasDb)('Append-Only: Badges (HX401)', () => {
     
     // Create a badge entry
     const insertResult = await pool.query(
-      `INSERT INTO badges (user_id, badge_type, badge_tier, awarded_at, reason)
+      `INSERT INTO badges (user_id, badge_type, badge_tier, awarded_at, awarded_for)
        VALUES ($1, 'first_task', 1, NOW(), 'test')
        RETURNING id`,
       [userId]
@@ -192,7 +192,7 @@ describe.skipIf(!hasDb)('Append-Only: Badges (HX401)', () => {
     
     // Create a badge entry
     await pool.query(
-      `INSERT INTO badges (user_id, badge_type, badge_tier, awarded_at, reason)
+      `INSERT INTO badges (user_id, badge_type, badge_tier, awarded_at, awarded_for)
        VALUES ($1, 'first_task', 1, NOW(), 'test')`,
       [userId]
     );
@@ -219,7 +219,7 @@ describe.skipIf(!hasDb)('Append-Only: Badges (HX401)', () => {
     
     // INSERT should succeed (append-only means you can add, just not delete)
     const result = await pool.query(
-      `INSERT INTO badges (user_id, badge_type, badge_tier, awarded_at, reason)
+      `INSERT INTO badges (user_id, badge_type, badge_tier, awarded_at, awarded_for)
        VALUES ($1, 'first_task', 1, NOW(), 'test')
        RETURNING id`,
       [userId]
@@ -234,7 +234,7 @@ describe.skipIf(!hasDb)('Append-Only: Badges (HX401)', () => {
     
     // Create a badge entry
     await pool.query(
-      `INSERT INTO badges (user_id, badge_type, badge_tier, awarded_at, reason)
+      `INSERT INTO badges (user_id, badge_type, badge_tier, awarded_at, awarded_for)
        VALUES ($1, 'first_task', 1, NOW(), 'test')`,
       [userId]
     );
@@ -248,12 +248,12 @@ describe.skipIf(!hasDb)('Append-Only: Badges (HX401)', () => {
     expect(result.rows.length).toBeGreaterThan(0);
   });
 
-  it('MUST REJECT: UPDATE badge (badges are append-only, no modifications allowed)', async () => {
+  it('MUST ALLOW: marking badge animation shown does not revoke the badge', async () => {
     const userId = await createTestUser(pool, `test-user-badge-5-${Date.now()}@hustlexp.test`);
     
     // Create a badge entry
     const insertResult = await pool.query(
-      `INSERT INTO badges (user_id, badge_type, badge_tier, awarded_at, reason)
+      `INSERT INTO badges (user_id, badge_type, badge_tier, awarded_at, awarded_for)
        VALUES ($1, 'first_task', 1, NOW(), 'test')
        RETURNING id`,
       [userId]
@@ -261,13 +261,12 @@ describe.skipIf(!hasDb)('Append-Only: Badges (HX401)', () => {
     
     const badgeId = insertResult.rows[0].id;
     
-    // Attempt to UPDATE the badge (should fail - append-only means immutable)
-    // Note: This may not have a specific trigger, but should be prevented by design
-    // If UPDATE is allowed by schema, this test may need to be adjusted
-    // For now, we'll test that DELETE fails, which is the critical constraint
-    await expect(
-      pool.query('UPDATE badges SET reason = $1 WHERE id = $2', ['modified', badgeId])
-    ).rejects.toThrow(); // Either HX401 or a schema constraint
+    const result = await pool.query(
+      'UPDATE badges SET animation_shown_at = NOW() WHERE id = $1 RETURNING id, animation_shown_at',
+      [badgeId],
+    );
+    expect(result.rows[0]).toMatchObject({ id: badgeId });
+    expect(result.rows[0].animation_shown_at).toBeTruthy();
   });
 });
 
@@ -282,10 +281,13 @@ describe.skipIf(!hasDb)('Append-Only: Trust Ledger (if applicable)', () => {
     
     // INSERT should succeed
     const result = await pool.query(
-      `INSERT INTO trust_ledger (user_id, old_tier, new_tier, changed_at, changed_by, reason)
-       VALUES ($1, 1, 2, NOW(), 'system', 'test')
+      `INSERT INTO trust_ledger (
+         user_id, old_tier, new_tier, changed_at, changed_by, reason,
+         idempotency_key, event_source
+       )
+       VALUES ($1, 1, 2, NOW(), 'system', 'test', $2, 'append_only_test')
        RETURNING id`,
-      [userId]
+      [userId, `append-only-${crypto.randomUUID()}`]
     );
     
     expect(result.rows.length).toBe(1);

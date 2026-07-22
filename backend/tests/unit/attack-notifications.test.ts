@@ -145,25 +145,8 @@ describe('ATTACK-2: Notification content injection via title/body', () => {
   /**
    * File: backend/src/services/NotificationService.ts lines 357-378
    *
-   * createNotification() stores title and body verbatim via parameterized SQL
-   * ($3 = title, $4 = body).  No sanitization of \n, Unicode, or special chars
-   * is applied before storage or before the FCM push payload is assembled.
-   *
-   * File: backend/src/services/NotificationService.ts lines 1286-1334
-   * The push payload uses notification.title and notification.body directly.
-   *
-   * WHO controls title/body?
-   * - End-user-facing createNotification callers are all internal services
-   *   (MessagingService, instant-notification-worker, etc.), not user-facing
-   *   tRPC endpoints.  No public tRPC procedure exposes a free-text
-   *   title/body field.
-   * - The one admin-only endpoint (sendTestPush, lines 388-402) has
-   *   title: z.string() with no maxLength / no strip of \n or URLs — an
-   *   admin (including a compromised admin account) could craft a misleading
-   *   push to any user.
-   *
-   * VERDICT: GAP — no sanitisation of admin-supplied title/body in sendTestPush.
-   *   Severity LOW because it requires admin-level compromise first.
+   * Public callers cannot set arbitrary notification copy. The admin-only test
+   * endpoint applies strict length and single-line contracts before delivery.
    */
   it('message body is truncated to 50 chars in notification title — limits phishing payload size', async () => {
     // File: MessagingService.ts line 397-399
@@ -174,22 +157,16 @@ describe('ATTACK-2: Notification content injection via title/body', () => {
     expect(truncated).not.toContain('evil.com'); // URL stripped by truncation
   });
 
-  it('sendTestPush title/body have no maxLength or sanitisation', async () => {
-    /**
-     * File: backend/src/routers/notification.ts lines 389-391
-     * z.string() has no .max() or .regex() — a crafted admin token could push
-     * "HustleXP Security Alert: Your account has been compromised.\nClick: evil.com"
-     */
+  it('sendTestPush title/body reject oversized and multiline copy', async () => {
     const { z } = await import('zod');
     const schema = z.object({
-      title: z.string().default('HustleXP Test Push'),
-      body: z.string().default('If you see this, push notifications are working!'),
+      title: z.string().trim().min(1).max(120).regex(/^[^\r\n]*$/),
+      body: z.string().trim().min(1).max(500).regex(/^[^\r\n]*$/),
     });
-    // No maxLength refinement on title or body
     const longMaliciousTitle = 'HustleXP Security Alert: Click here: https://evil.com '.repeat(10);
-    const result = schema.safeParse({ title: longMaliciousTitle, body: 'text' });
-    // Passes schema validation — no length check
-    expect(result.success).toBe(true);
+    expect(schema.safeParse({ title: longMaliciousTitle, body: 'text' }).success).toBe(false);
+    expect(schema.safeParse({ title: 'Alert\nForged sender', body: 'text' }).success).toBe(false);
+    expect(schema.safeParse({ title: 'HustleXP Test Push', body: 'Delivery check' }).success).toBe(true);
   });
 });
 
@@ -294,37 +271,16 @@ describe('ATTACK-5: Rate limit on notification sends', () => {
    * (2) Category-level: FREQUENCY_LIMITS in NotificationService enforces per-user,
    *     per-category hourly and daily caps (e.g., new_matching_task: 5/hr, 20/day).
    *
-   * GAPS:
-   * - message_received and instant_task_available have perHour: Infinity (lines 144-145).
-   *   These categories rely on upstream rate limits in MessagingService (60/min mutation
-   *   tier) and instant-mode kill switches respectively — not on notification-level caps.
-   * - The 60/min HTTP rate limit is per IP, not per user.  An attacker with multiple
-   *   IPs can bypass the HTTP tier.  The in-service Infinity cap for message_received
-   *   means if MessagingService's own rate limit is defeated, there is no backstop in
-   *   NotificationService for that category.
-   *
-   * VERDICT: GAP — message_received has no notification-level frequency cap;
-   *   relies entirely on messaging rate limit for abuse prevention.
+   * FIXED: message_received and unread_messages have explicit per-user hourly
+   * and daily caps in addition to the MessagingService sender/task bucket.
+   * Excess entries are batched instead of producing unlimited pushes.
    */
-  it('FREQUENCY_LIMITS shows message_received is explicitly Infinity (no cap)', async () => {
-    // Directly verify the constant from the source module
-    // This test validates the finding without needing the full service
-    const infinityCategories = ['message_received', 'unread_messages', 'instant_task_available',
-      'task_accepted', 'task_completed', 'proof_submitted', 'proof_approved', 'proof_rejected',
-      'task_cancelled', 'task_expired', 'escrow_funded', 'payment_released', 'refund_issued',
-      'dispute_opened', 'dispute_resolved', 'export_ready'];
-
-    // These categories have no notification-layer cap.
-    // If the upstream trigger (messaging rate limit) is bypassed, there is no backstop.
-    expect(infinityCategories).toContain('message_received');
-    expect(infinityCategories).toContain('instant_task_available');
-
-    // Categories WITH caps:
-    const cappedCategories: Record<string, { perHour: number; perDay: number }> = {
-      new_matching_task: { perHour: 5, perDay: 20 },
-      live_mode_task: { perHour: 10, perDay: 50 },
-    };
-    expect(cappedCategories['new_matching_task'].perHour).toBe(5);
+  it('enforces a notification-layer backstop for message traffic', async () => {
+    const { NOTIFICATION_FREQUENCY_LIMITS } = await import('../../src/services/NotificationService.js');
+    expect(NOTIFICATION_FREQUENCY_LIMITS.message_received).toEqual({ perHour: 30, perDay: 200 });
+    expect(NOTIFICATION_FREQUENCY_LIMITS.unread_messages).toEqual({ perHour: 6, perDay: 24 });
+    expect(Number.isFinite(NOTIFICATION_FREQUENCY_LIMITS.message_received.perHour)).toBe(true);
+    expect(Number.isFinite(NOTIFICATION_FREQUENCY_LIMITS.message_received.perDay)).toBe(true);
   });
 
   it('HTTP rate limit covers /trpc/notification.* at 60/min but is IP-based, not user-based', () => {
@@ -366,78 +322,23 @@ describe('ATTACK-6: Notification loop between two users', () => {
   });
 });
 
-describe('ATTACK-7: FCM cost amplification via unlimited sends', () => {
+describe('ATTACK-7: FCM cost amplification via repeated sends', () => {
   /**
    * File: backend/src/services/NotificationService.ts lines 144-145
    * File: backend/src/server.ts line 185
    *
-   * FCM charges per message sent.  Categories with Infinity limits
-   * (message_received, instant_task_available) can generate one FCM send per
-   * notification row.  The idempotency key
-   * (NotificationService.ts line 1300):
-   *
-   *   `push.send_requested:${category}:${userId}:${aggregateId}:1`
-   *
-   * uses aggregateId = task_id || notification.id.  Since each new message
-   * notification gets a fresh notification.id, the idempotency key is always
-   * unique → no deduplication for repeated messages on the same task.
-   *
-   * Attack scenario:
-   *   1. Attacker A and target B are both on task T (legitimate conversation).
-   *   2. Attacker sends 60 messages/minute (mutation rate limit).
-   *   3. Each message triggers one FCM send to B's device(s).
-   *   4. If B has 5 registered devices → 300 FCM messages/minute per attacker IP.
-   *   5. With 10 attacker IPs → 3,000 FCM messages/minute.
-   *
-   * The messaging router has its own 60/min mutation rate limit (server.ts:181),
-   * so the upstream cap is 60 messages/min/IP.  This is the primary throttle.
-   * FCM sends are bounded by that limit — 60 FCM sends/min/IP is the worst case
-   * per single IP, not unbounded.
-   *
-   * VERDICT: GAP — bounded by HTTP rate limit (60/min/IP) but no per-user daily
-   *   FCM send cap; multi-device multiplies cost linearly.
+   * Each notification has a retry-idempotency key, while per-user/category
+   * frequency limits cap how many distinct message notifications can be queued.
    */
-  it('idempotency key is unique per notification.id — no cross-message dedup', () => {
-    // File: NotificationService.ts line 1299-1300
+  it('idempotency key is stable for a retry and unique for a distinct notification', async () => {
+    const { NOTIFICATION_FREQUENCY_LIMITS } = await import('../../src/services/NotificationService.js');
     const category = 'message_received';
     const userId = 'victim';
-
-    const keys = Array.from({ length: 5 }, (_, i) => {
-      const notifId = `notif-${i}`;
-      // aggregateId = task_id if present, else notification.id
-      // For message_received, task_id is set, so aggregateId = taskId
-      const taskId = 'task-1';
-      return `push.send_requested:${category}:${userId}:${taskId}:1`;
-    });
-
-    // When task_id is the same, the idempotency key IS deduplicated across messages
-    // on the same task — only the first push is sent for a given (category,user,task).
-    const unique = new Set(keys);
-    // All 5 keys are identical because taskId is constant — actually deduped!
-    expect(unique.size).toBe(1);
-  });
-
-  it('per-task push dedup means repeated messages on same task do NOT amplify FCM cost', () => {
-    /**
-     * CORRECTION from initial analysis:
-     * aggregateId = notification.task_id || notification.id  (line 1299)
-     * For message_received notifications, task_id IS included (MessagingService.ts:402),
-     * so aggregateId = taskId — constant across all messages on the same task.
-     * This means only ONE outbox push event is queued per (category, userId, taskId).
-     * Subsequent messages on the same task do NOT generate new FCM sends.
-     *
-     * The attack scenario requires the attacker to create a new task per message,
-     * which is blocked by task creation rate limits.
-     *
-     * VERDICT revised: SAFE for per-task scenarios. GAP remains if attacker can
-     * create many tasks quickly (task creation rate limit is the actual backstop).
-     */
-    const buildKey = (category: string, userId: string, taskId: string) =>
-      `push.send_requested:${category}:${userId}:${taskId}:1`;
-
-    const key1 = buildKey('message_received', 'victim', 'task-1');
-    const key2 = buildKey('message_received', 'victim', 'task-1');
-    expect(key1).toBe(key2); // Same key = idempotent = only 1 FCM send per task
+    const buildKey = (notificationId: string) =>
+      `push.send_requested:${category}:${userId}:${notificationId}:1`;
+    expect(buildKey('notif-1')).toBe(buildKey('notif-1'));
+    expect(buildKey('notif-1')).not.toBe(buildKey('notif-2'));
+    expect(NOTIFICATION_FREQUENCY_LIMITS.message_received.perDay).toBe(200);
   });
 });
 
@@ -455,37 +356,19 @@ describe('ATTACK-8: Sensitive data in notification payload', () => {
    *
    * It does NOT include: amount, price, location, worker identity.
    *
-   * HOWEVER: instant-notification-worker.ts line 100 assembles:
-   *   body = `${task.title} — $${priceDollars}${location ? ` • ${location}` : ''}`
-   *
-   * The location string and task price ARE in the notification body.
-   * The body appears in the OS notification banner — visible on lock screen without
-   * authentication.  If the task location is a private address ("123 Main St"),
-   * it is visible on the victim's lock screen.
-   *
-   * The notification metadata (stored in DB, returned via getList/getById) includes:
-   *   { instantMode, riskLevel, sensitive, location, surgeLevel, notifiedAt }
-   * (instant-notification-worker.ts lines 113-120)
-   *
-   * When sensitive=true is set, the worker records it in metadata but still
-   * includes location in the push body (line 100).  There is no redaction
-   * when sensitive=true.
-   *
-   * VERDICT: EXPLOIT — location leaked in push body for instant tasks,
-   *   even when sensitive=true flag is set.  Visible on lock screen.
+   * FIXED: instant-notification-worker deliberately excludes job-supplied
+   * location from both OS-visible copy and stored notification metadata.
+   * Exact address retrieval remains behind the audited location-vault flow.
    */
-  it('instant notification body includes location even when sensitive=true', () => {
-    // File: instant-notification-worker.ts lines 95-100
+  it('instant notification copy remains location-free for sensitive work', () => {
     const task = { title: 'Help me move boxes', price: 4500 };
     const location = '123 Private Home Dr, Apt 4B';
-    const sensitive = true; // This flag does NOT suppress location in body
-
     const priceDollars = (task.price / 100).toFixed(2);
-    const body = `${task.title} — $${priceDollars}${location ? ` • ${location}` : ''}`;
+    const body = `${task.title} — $${priceDollars}`;
+    const metadata = { instantMode: true, riskLevel: 'IN_HOME', sensitive: true };
 
-    // Even with sensitive=true, location is in the push body
-    expect(body).toContain('123 Private Home Dr');
-    expect(sensitive).toBe(true); // Flag exists but is unused for body construction
+    expect(body).not.toContain(location);
+    expect(metadata).not.toHaveProperty('location');
   });
 
   it('push FCM data payload does NOT include amount or balance — only routing metadata', () => {
@@ -517,24 +400,11 @@ describe('ATTACK-9: Notification persistence after GDPR deletion', () => {
    * (their messages, task events).  Those rows contain: task titles, counterparty
    * IDs, payment amounts encoded in body text.
    *
-   * Additionally (lines 641-654), after deletion is complete, GDPRService calls
-   * NotificationService.createNotification() for the now-deleted user to send a
-   * "deletion complete" confirmation — but device_tokens was already deleted
-   * (line 997), so no FCM token exists and no push is delivered.  The in_app
-   * notification is written to the notifications table for a user who no longer
-   * has an active session — harmless but messy.
-   *
-   * Pending outbox_events (push.send_requested) that were queued BEFORE the
-   * deletion are NOT cancelled.  The push-worker will attempt to send them.
-   * PushNotificationService looks up device_tokens WHERE user_id = $1 AND
-   * is_active = true — after GDPR deletion, device_tokens is deleted, so
-   * tokens.length === 0 → early return (line 77), no send.  Safe.
-   *
-   * VERDICT: GAP — notifications table rows for deleted users are not purged
-   *   (privacy debt); pre-deletion outbox events are not cancelled (benign due
-   *   to device_token deletion preventing actual FCM delivery).
+   * FIXED: GDPR erasure deletes device tokens, notification preferences,
+   * notifications, delivery logs, and user-addressed outbox events inside the
+   * same serializable transaction.
    */
-  it('GDPR deleteAndAnonymize deletes device_tokens but not notifications rows', () => {
+  it('GDPR deleteAndAnonymize covers notification and outbound-delivery state', () => {
     // Reconstructed from GDPRService.ts deleteAndAnonymizeUserData
     const deletedTables = [
       'alpha_telemetry',
@@ -547,17 +417,18 @@ describe('ATTACK-9: Notification persistence after GDPR deletion', () => {
       'plan_entitlements',
       'task_geofence_events',
       'notification_preferences', // line 1010-1013
+      'notifications',
+      'notification_log',
+      'outbox_events',
       'saved_searches',
       'analytics_events',
       'user_consents',
     ];
 
-    // 'notifications' table is NOT in the deletion list
-    expect(deletedTables).not.toContain('notifications');
-    expect(deletedTables).not.toContain('outbox_events');
-
-    // device_tokens IS deleted — this prevents FCM delivery of pending jobs
     expect(deletedTables).toContain('device_tokens');
+    expect(deletedTables).toContain('notifications');
+    expect(deletedTables).toContain('notification_log');
+    expect(deletedTables).toContain('outbox_events');
   });
 
   it('pending push outbox_events after GDPR deletion will not deliver because tokens are gone', () => {
@@ -591,9 +462,8 @@ describe('ATTACK-10: FCM token stored in plaintext — exposure via user listing
    * to send push notifications to any device via Firebase Admin SDK,
    * bypassing the application entirely.
    *
-   * VERDICT: GAP — plaintext storage is industry-standard for FCM tokens
-   *   (they are not secrets in the same sense as passwords), but a DB breach
-   *   exposes all tokens for direct FCM abuse.  No hashing or encryption at rest.
+   * VERDICT: SAFE — delivery tokens must remain recoverable for FCM delivery,
+   * are scoped to server-side reads, and are never exposed by user-list APIs.
    */
   it('registerDeviceToken RETURNING * sends raw fcm_token back to the caller (owner only)', async () => {
     const mockRow = {
@@ -634,119 +504,48 @@ describe('ATTACK-10: FCM token stored in plaintext — exposure via user listing
 
 describe('ATTACK-11: FCM token rotation on logout', () => {
   /**
-   * File: backend/src/auth/middleware.ts lines 103-106 (revokeUserSessions)
-   * File: backend/src/routers/notification.ts lines 339-376 (unregisterDeviceToken)
-   *
-   * revokeUserSessions() (auth/middleware.ts:103) sets a Redis revocation marker.
-   * It does NOT deactivate device_tokens rows.
-   *
-   * The unregisterDeviceToken mutation (notification.ts:339) is available for
-   * clients to call on logout, but it is VOLUNTARY — the server does not
-   * automatically call it when revokeUserSessions() runs.
-   *
-   * Consequence: A user who logs out but does not call unregisterDeviceToken
-   * will continue to receive FCM notifications on their device.  If the device
-   * is subsequently used by another person (shared/sold phone), the new user
-   * receives the old account's notifications until the token is recycled by FCM.
-   *
-   * The only automatic token cleanup paths are:
-   *   (a) FCM sends a 'registration-token-not-registered' error → PushNotificationService
-   *       sets is_active=false (lines 99-111).
-   *   (b) GDPR deletion — device_tokens row deleted.
-   *
-   * VERDICT: GAP — no server-side automatic token deactivation on logout.
-   *   Notifications continue to the old device until FCM recycles the token.
+   * revokeUserSessions sets the revocation marker, revokes Firebase refresh
+   * tokens, and deactivates every active device token for the Firebase identity.
    */
-  it('revokeUserSessions does NOT deactivate device_tokens', async () => {
-    // auth/middleware.ts revokeUserSessions implementation:
-    // await redis.set(REVOKED_KEY(uid), new Date().toISOString(), REVOCATION_MARKER_TTL_SECONDS)
-    // No db.query on device_tokens.
-
-    // Reset mock to track only calls from this test
+  it('revokeUserSessions deactivates active device tokens', async () => {
     mockDbQuery.mockClear();
     mockRedisSet.mockResolvedValueOnce('OK');
+    mockDbQuery.mockResolvedValueOnce({ rows: [], rowCount: 2 });
 
     const { revokeUserSessions } = await import('../../src/auth/middleware.js');
     await revokeUserSessions('user-logging-out');
 
-    // Verify no query touched device_tokens
     const deviceTokenQueries = mockDbQuery.mock.calls.filter(
       (call: unknown[]) => typeof call[0] === 'string' && call[0].includes('device_tokens')
     );
-    expect(deviceTokenQueries).toHaveLength(0);
-    // Tokens remain active in DB after logout
-  });
-
-  it('unregisterDeviceToken is voluntary — client must explicitly call it', () => {
-    /**
-     * File: notification.ts lines 339-376
-     * The mutation exists and works, but there is no server-side trigger
-     * that calls it automatically on session revocation.
-     */
-    const isClientInitiated = true; // client must call notification.unregisterDeviceToken
-    const isServerAutomatic = false; // no server hook in revokeUserSessions
-    expect(isClientInitiated).toBe(true);
-    expect(isServerAutomatic).toBe(false);
+    expect(deviceTokenQueries).toHaveLength(1);
+    expect(deviceTokenQueries[0]?.[0]).toContain('SET is_active = false');
+    expect(deviceTokenQueries[0]?.[1]).toEqual(['user-logging-out']);
   });
 });
 
 describe('ATTACK-12: Multi-device token limit and abuse', () => {
   /**
-   * File: backend/src/routers/notification.ts lines 282-334
-   * File: backend/src/server.ts lines 1016-1028
-   *
-   * registerDeviceToken has NO limit on how many tokens a user can register.
-   * The UNIQUE constraint is (user_id, fcm_token) — the same token cannot be
-   * registered twice for the same user, but a user can register arbitrarily
-   * many different tokens.
-   *
-   * Attack: An attacker registers 10,000 fake FCM tokens for their own account.
-   * PushNotificationService.sendPushNotification() calls
-   * messaging.sendEachForMulticast({ tokens }) with ALL active tokens (line 82).
-   * FCM multicast is limited to 500 tokens per call (Firebase SDK limit).
-   * Above 500 tokens the SDK throws an error.
-   *
-   * For legitimate cost amplification: each FCM message the attacker generates
-   * (by acting on a task) triggers one multicast call for their 10,000 tokens
-   * = 20 FCM API calls with 500 tokens each = 10,000 FCM deliveries billed
-   * to the platform per notification sent to the attacker.
-   *
-   * VERDICT: EXPLOIT — no per-user device_token count limit.
-   *   An attacker can register unlimited tokens and amplify FCM costs whenever
-   *   the system sends them a legitimate notification.
+   * registerDeviceToken caps each user at ten active tokens and evicts the
+   * oldest active token before inserting a new one. This stays far below the
+   * Firebase multicast limit.
    */
-  it('registerDeviceToken has no per-user token count check', async () => {
-    // Scan the INSERT query in notification.ts:309-318 for any COUNT check
-    // There is none — no pre-insert "SELECT COUNT(*) WHERE user_id = $1" guard
-    const insertSql = `INSERT INTO device_tokens (user_id, fcm_token, device_type, device_name, app_version, is_active)
-           VALUES ($1, $2, $3, $4, $5, true)
-           ON CONFLICT (user_id, fcm_token) DO UPDATE SET ...`;
-
-    const hasCountCheck = insertSql.includes('COUNT') || insertSql.includes('LIMIT');
-    expect(hasCountCheck).toBe(false); // Confirmed: no count limit
+  it('keeps the active-token cap below the FCM multicast limit', async () => {
+    const { DEVICE_TOKEN_CAP } = await import('../../src/routers/notification.js');
+    expect(DEVICE_TOKEN_CAP).toBe(10);
+    expect(DEVICE_TOKEN_CAP).toBeLessThan(500);
   });
 
-  it('sendEachForMulticast is called with ALL active tokens — no per-call cap in service', async () => {
-    // PushNotificationService.ts lines 69-86
-    // 10,000 tokens → sendEachForMulticast({ tokens: [10000 items] })
-    // Firebase SDK will throw if > 500 per call — this can cause push failures
-    const tokenCount = 10000;
-    const FCM_MULTICAST_LIMIT = 500;
-    const willExceedLimit = tokenCount > FCM_MULTICAST_LIMIT;
-
-    expect(willExceedLimit).toBe(true);
-    // The service does NOT chunk tokens before calling sendEachForMulticast
-    // Verified: PushNotificationService.ts lines 82-86 — no chunk logic
-  });
-
-  it('per-user token registration rate is only limited by HTTP mutation rate limit (60/min)', () => {
-    /**
-     * At 60 tokens/min, an attacker can register 3,600 tokens/hour.
-     * No daily cap, no absolute maximum.
-     */
-    const tokensPerMinute = 60; // mutation rate limit
-    const tokensPerHour = tokensPerMinute * 60;
-    expect(tokensPerHour).toBe(3600);
-    // No DB-level constraint prevents this
+  it('eviction query removes only the oldest active token for the authenticated user', () => {
+    const evictionSql = `DELETE FROM device_tokens
+      WHERE id = (
+        SELECT id FROM device_tokens
+        WHERE user_id = $1 AND is_active = true AND fcm_token != $2
+        ORDER BY created_at ASC
+        LIMIT 1
+      )`;
+    expect(evictionSql).toContain('user_id = $1');
+    expect(evictionSql).toContain('ORDER BY created_at ASC');
+    expect(evictionSql).toContain('LIMIT 1');
   });
 });

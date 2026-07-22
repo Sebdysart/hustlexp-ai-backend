@@ -61,6 +61,7 @@ import { notifyPaymentReleased } from '../../src/lib/task-lifecycle-notification
 import { signJobPayload } from '../../src/jobs/queues.js';
 import { computeFeeBreakdown } from '../../src/lib/money.js';
 import { processCompletionReleaseJob } from '../../src/jobs/completion-release-worker.js';
+import { ErrorCodes } from '../../src/types.js';
 
 const dbQuery = db.query as unknown as ReturnType<typeof vi.fn>;
 const dbTransaction = db.transaction as unknown as ReturnType<typeof vi.fn>;
@@ -277,7 +278,7 @@ describe('processCompletionReleaseJob — concurrency + failure semantics', () =
     dbQuery
       .mockResolvedValueOnce({ rows: [escrowRow({ stripe_transfer_id: 'tr_prior' })] })
       .mockResolvedValueOnce({ rows: [taskRow()] });
-    escrowRelease.mockResolvedValue({ success: false, error: { code: 'ESCROW_TERMINAL', message: 'already RELEASED' } });
+    escrowRelease.mockResolvedValue({ success: false, error: { code: ErrorCodes.ESCROW_TERMINAL, message: 'already RELEASED' } });
     await expect(processCompletionReleaseJob(makeJob(signed(basePayload())))).resolves.toBeUndefined();
   });
 });

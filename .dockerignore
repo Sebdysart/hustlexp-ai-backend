@@ -37,8 +37,9 @@ vitest.config.ts
 !README.md
 LICENSE
 
-# Scripts (dev only)
-scripts
+# Scripts (dev only); retain the production provenance generator.
+scripts/*
+!scripts/write-build-identity.mjs
 
 # Migrations (run separately, not in container)
 migrations

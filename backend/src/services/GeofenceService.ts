@@ -10,6 +10,7 @@
  * @see PostGIS documentation for spatial queries
  */
 
+import { createHash } from 'node:crypto';
 import { db } from '../db.js';
 import type { ServiceResult } from '../types.js';
 
@@ -33,6 +34,16 @@ interface GeofenceEvent {
   created_at: Date;
 }
 
+export interface GeofenceClientEvidence {
+  clientEventId: string;
+  clientSequence: number;
+  priorTaskVersion: number;
+  localOccurredAt: string;
+  deviceVersion: string;
+  appVersion: string;
+  payloadHash?: string;
+}
+
 // ============================================================================
 // CONSTANTS
 // ============================================================================
@@ -54,7 +65,8 @@ export const GeofenceService = {
     taskId: string,
     userId: string,
     workerLat: number,
-    workerLng: number
+    workerLng: number,
+    evidence: GeofenceClientEvidence,
   ): Promise<ServiceResult<GeofenceCheckResult>> => {
     try {
       // Get task location
@@ -64,8 +76,9 @@ export const GeofenceService = {
         state: string;
         worker_id: string;
         progress_state: string;
+        version: number;
       }>(
-        `SELECT location_lat, location_lng, state, worker_id, progress_state
+        `SELECT location_lat, location_lng, state, worker_id, progress_state, version
          FROM tasks WHERE id = $1`,
         [taskId]
       );
@@ -76,7 +89,7 @@ export const GeofenceService = {
 
       const task = taskResult.rows[0];
 
-      if (!task.location_lat || !task.location_lng) {
+      if (task.location_lat == null || task.location_lng == null) {
         return { success: false, error: { code: 'NO_LOCATION', message: 'Task has no location data' } };
       }
 
@@ -97,6 +110,16 @@ export const GeofenceService = {
         };
       }
 
+      if (evidence.priorTaskVersion !== task.version) {
+        return {
+          success: false,
+          error: {
+            code: 'SYNC_CONFLICT',
+            message: 'The task changed on the server. Refresh the task before recording presence.',
+          },
+        };
+      }
+
       // Calculate distance using PostGIS
       const distResult = await db.query<{ distance_meters: number }>(
         `SELECT ST_Distance(
@@ -110,15 +133,64 @@ export const GeofenceService = {
       const withinGeofence = distance <= GEOFENCE_RADIUS_METERS;
       let autoCheckinTriggered = false;
 
+      const replayResult = await db.query<{ event_type: 'enter' | 'exit' | 'checkin'; request_hash: string }>(
+        `SELECT event_type,request_hash FROM task_geofence_events
+         WHERE user_id=$1 AND client_event_id=$2`,
+        [userId,evidence.clientEventId],
+      );
+      const replay = replayResult.rows[0];
+      if (replay) {
+        const replayHash = createHash('sha256').update(JSON.stringify({
+          taskId,
+          userId,
+          eventType: replay.event_type,
+          distanceMeters: Math.round(distance),
+          ...evidence,
+        })).digest('hex');
+        if (replay.request_hash !== replayHash) {
+          return {
+            success: false,
+            error: {
+              code: 'IDEMPOTENCY_CONFLICT',
+              message: 'That device event was already used for different presence evidence.',
+            },
+          };
+        }
+        return {
+          success: true,
+          data: {
+            within_geofence: withinGeofence,
+            distance_meters: Math.round(distance),
+            event_logged: true,
+            auto_checkin_triggered: replay.event_type === 'checkin',
+          },
+        };
+      }
+
       // Get last geofence event for this task/user
-      const lastEventResult = await db.query<{ event_type: string }>(
-        `SELECT event_type FROM task_geofence_events
+      const lastEventResult = await db.query<{
+        event_type: string;
+        client_event_id: string;
+        client_sequence: number;
+      }>(
+        `SELECT event_type,client_event_id,client_sequence FROM task_geofence_events
          WHERE task_id = $1 AND user_id = $2
          ORDER BY created_at DESC LIMIT 1`,
         [taskId, userId]
       );
 
       const lastEventType = lastEventResult.rows[0]?.event_type;
+      const lastClientSequence = Number(lastEventResult.rows[0]?.client_sequence ?? 0);
+      if (lastEventResult.rows[0]?.client_event_id !== evidence.clientEventId
+          && evidence.clientSequence <= lastClientSequence) {
+        return {
+          success: false,
+          error: {
+            code: 'SYNC_CONFLICT',
+            message: 'This presence update is older than the latest accepted device event.',
+          },
+        };
+      }
 
       // Determine what event to log
       let eventType: 'enter' | 'exit' | 'checkin' | null = null;
@@ -138,11 +210,52 @@ export const GeofenceService = {
       // Log event
       let eventLogged = false;
       if (eventType) {
-        await db.query(
-          `INSERT INTO task_geofence_events (task_id, user_id, event_type, location_lat, location_lng, distance_meters)
-           VALUES ($1, $2, $3, $4, $5, $6)`,
-          [taskId, userId, eventType, workerLat, workerLng, distance]
+        const idempotencyKey = `geofence:${userId}:${evidence.clientEventId}`;
+        const requestHash = createHash('sha256').update(JSON.stringify({
+          taskId,
+          userId,
+          eventType,
+          distanceMeters: Math.round(distance),
+          ...evidence,
+        })).digest('hex');
+        const eventResult = await db.query<{
+          id: string;
+          request_hash: string;
+          inserted: boolean;
+        }>(
+          `WITH inserted AS (
+             INSERT INTO task_geofence_events(
+               task_id,user_id,event_type,distance_meters,client_event_id,
+               client_sequence,idempotency_key,request_hash,prior_task_version,
+               local_occurred_at,device_version,app_version,
+               reconciliation_contract_version,offline_payload_hash
+             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+             ON CONFLICT (user_id,idempotency_key) DO NOTHING
+             RETURNING id,request_hash,TRUE AS inserted
+           )
+           SELECT id,request_hash,inserted FROM inserted
+           UNION ALL
+           SELECT id,request_hash,FALSE AS inserted FROM task_geofence_events
+           WHERE user_id=$2 AND idempotency_key=$7
+           LIMIT 1`,
+          [
+            taskId,userId,eventType,distance,evidence.clientEventId,evidence.clientSequence,
+            idempotencyKey,requestHash,evidence.priorTaskVersion,evidence.localOccurredAt,
+            evidence.deviceVersion,evidence.appVersion,
+            evidence.payloadHash ? 1 : 0,evidence.payloadHash ?? null,
+          ],
         );
+        const storedEvent = eventResult.rows[0];
+        if (!storedEvent) throw new Error('GEOFENCE_EVENT_INSERT_FAILED');
+        if (!storedEvent.inserted && storedEvent.request_hash !== requestHash) {
+          return {
+            success: false,
+            error: {
+              code: 'IDEMPOTENCY_CONFLICT',
+              message: 'That device event was already used for different presence evidence.',
+            },
+          };
+        }
         eventLogged = true;
       }
 

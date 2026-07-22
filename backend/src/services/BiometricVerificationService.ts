@@ -66,10 +66,13 @@ async function getRekognitionClient(): Promise<import('@aws-sdk/client-rekogniti
 // TYPES
 // ============================================================================
 
+type BiometricProvider = 'AWS_REKOGNITION' | 'GCP_VISION_HEURISTIC';
+
 interface BiometricScores {
   liveness_score: number; // 0.0-1.0 (0=pre-recorded, 1=live)
   deepfake_score: number; // 0.0-1.0 (0=real, 1=fake)
   risk_level: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+  provider: BiometricProvider;
 }
 
 interface BiometricAnalysisResult {
@@ -209,123 +212,103 @@ export const BiometricVerificationService = {
    */
   analyzeFacePhoto: async (photoUrl: string): Promise<ServiceResult<BiometricScores>> => {
     try {
-      let livenessScore = 0.85; // Default: moderate confidence
-      let deepfakeScore = 0.15; // Default: low deepfake risk
+      const urlCheck = validateSafeUrl(photoUrl);
+      if (!urlCheck.safe) {
+        log.warn({ reason: urlCheck.reason }, 'SSRF: blocked unsafe proof media URL');
+        return {
+          success: false,
+          error: { code: 'UNSAFE_PROOF_MEDIA_URL', message: 'Proof media URL is not allowed.' },
+        };
+      }
 
+      let livenessScore: number | null = null;
+      let deepfakeScore: number | null = null;
+      let provider: BiometricProvider | null = null;
       const client = await getRekognitionClient();
 
       if (client) {
-        // Use AWS Rekognition DetectFaces for face quality signals
         try {
           const { DetectFacesCommand } = await import('@aws-sdk/client-rekognition');
-
-          // SSRF protection: validate URL before fetching
-          const urlCheck = validateSafeUrl(photoUrl);
-          if (!urlCheck.safe) {
-            log.warn({ photoUrl, reason: urlCheck.reason }, 'SSRF: blocked unsafe photo URL');
-            throw new Error(`Unsafe URL blocked: ${urlCheck.reason}`);
-          }
-
-          // Fetch image bytes from URL
           const imageResponse = await fetch(photoUrl);
-          if (imageResponse.ok) {
-            const imageBuffer = await imageResponse.arrayBuffer();
-
-            const command = new DetectFacesCommand({
-              Image: { Bytes: new Uint8Array(imageBuffer) },
-              Attributes: ['ALL'],
-            });
-
-            const response = await awsRekognitionBreaker.execute(() => client.send(command));
-            const faces = response.FaceDetails || [];
-
-            if (faces.length > 0) {
-              const face = faces[0];
-
-              // Liveness signals from face quality
-              const confidence = (face.Confidence ?? 50) / 100; // 0-1
-              const sharpness = (face.Quality?.Sharpness ?? 50) / 100;
-              const brightness = (face.Quality?.Brightness ?? 50) / 100;
-
-              // High confidence + sharp + well-lit = likely live
-              livenessScore = (confidence * 0.5) + (sharpness * 0.3) + (brightness * 0.2);
-
-              // Deepfake signals
-              // Low sharpness + low confidence = suspicious
-              deepfakeScore = 1.0 - ((sharpness * 0.6) + (confidence * 0.4));
-
-              // Check for multiple faces (potential spoofing with photo-in-photo)
-              if (faces.length > 1) {
-                deepfakeScore = Math.max(deepfakeScore, 0.6);
-              }
-
-              // Sunglasses/pose anomalies
-              if (face.Sunglasses?.Value) {
-                deepfakeScore += 0.15;
-              }
-            } else {
-              // No face detected
-              livenessScore = 0.2;
-              deepfakeScore = 0.7;
-            }
+          if (!imageResponse.ok) throw new Error('PROOF_MEDIA_FETCH_FAILED');
+          const imageBuffer = await imageResponse.arrayBuffer();
+          const command = new DetectFacesCommand({
+            Image: { Bytes: new Uint8Array(imageBuffer) },
+            Attributes: ['ALL'],
+          });
+          const response = await awsRekognitionBreaker.execute(() => client.send(command));
+          const faces = response.FaceDetails || [];
+          provider = 'AWS_REKOGNITION';
+          if (faces.length > 0) {
+            const face = faces[0];
+            const confidence = (face.Confidence ?? 50) / 100;
+            const sharpness = (face.Quality?.Sharpness ?? 50) / 100;
+            const brightness = (face.Quality?.Brightness ?? 50) / 100;
+            livenessScore = (confidence * 0.5) + (sharpness * 0.3) + (brightness * 0.2);
+            deepfakeScore = 1.0 - ((sharpness * 0.6) + (confidence * 0.4));
+            if (faces.length > 1) deepfakeScore = Math.max(deepfakeScore, 0.6);
+            if (face.Sunglasses?.Value) deepfakeScore += 0.15;
+          } else {
+            livenessScore = 0.2;
+            deepfakeScore = 0.7;
           }
         } catch (apiError) {
           log.error({ err: apiError instanceof Error ? apiError.message : String(apiError) }, 'AWS Rekognition DetectFaces error');
-          // Fall through to GCP fallback or defaults
         }
       }
 
-      // GCP Vision fallback (if no AWS or AWS failed)
-      if (!client) {
-        const gcpApiKey = process.env.GOOGLE_CLOUD_VISION_API_KEY ?? '';
-        if (gcpApiKey) {
-          try {
-            const visionResponse = await gcpVisionBreaker.execute(() => fetch(
-              `https://vision.googleapis.com/v1/images:annotate?key=${gcpApiKey}`,
-              {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  requests: [{
-                    image: { source: { imageUri: photoUrl } },
-                    features: [
-                      { type: 'FACE_DETECTION', maxResults: 5 },
-                      { type: 'SAFE_SEARCH_DETECTION' },
-                    ],
-                  }],
-                }),
-              },
-            ));
-            if (visionResponse.ok) {
-              const visionData = (await visionResponse.json()) as { responses?: Array<{ faceAnnotations?: Array<GcpFaceAnnotation> }> };
-              const faces = visionData.responses?.[0]?.faceAnnotations || [];
-              if (faces.length > 0) {
-                const face = faces[0];
-                livenessScore = face.detectionConfidence || 0.5;
-                const hasExpression =
-                  ['LIKELY', 'VERY_LIKELY'].includes(face.joyLikelihood) ||
-                  ['LIKELY', 'VERY_LIKELY'].includes(face.sorrowLikelihood);
-                deepfakeScore = hasExpression ? 0.1 : 0.4;
-                if (['LIKELY', 'VERY_LIKELY'].includes(face.blurredLikelihood)) {
-                  deepfakeScore += 0.3;
-                }
-              } else {
-                livenessScore = 0.5;
-                deepfakeScore = 0.3;
-              }
-            }
-          } catch (apiError) {
-            log.error({ err: apiError instanceof Error ? apiError.message : String(apiError) }, 'GCP Vision API error');
-            livenessScore = 0.6;
+      const gcpApiKey = process.env.GOOGLE_CLOUD_VISION_API_KEY ?? '';
+      if (livenessScore == null && gcpApiKey) {
+        try {
+          const visionResponse = await gcpVisionBreaker.execute(() => fetch(
+            `https://vision.googleapis.com/v1/images:annotate?key=${gcpApiKey}`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                requests: [{
+                  image: { source: { imageUri: photoUrl } },
+                  features: [
+                    { type: 'FACE_DETECTION', maxResults: 5 },
+                    { type: 'SAFE_SEARCH_DETECTION' },
+                  ],
+                }],
+              }),
+            },
+          ));
+          if (!visionResponse.ok) throw new Error('GCP_VISION_REQUEST_FAILED');
+          const visionData = (await visionResponse.json()) as { responses?: Array<{ faceAnnotations?: Array<GcpFaceAnnotation> }> };
+          const faces = visionData.responses?.[0]?.faceAnnotations || [];
+          provider = 'GCP_VISION_HEURISTIC';
+          if (faces.length > 0) {
+            const face = faces[0];
+            livenessScore = face.detectionConfidence || 0.5;
+            const hasExpression =
+              ['LIKELY', 'VERY_LIKELY'].includes(face.joyLikelihood)
+              || ['LIKELY', 'VERY_LIKELY'].includes(face.sorrowLikelihood);
+            deepfakeScore = hasExpression ? 0.1 : 0.4;
+            if (['LIKELY', 'VERY_LIKELY'].includes(face.blurredLikelihood)) deepfakeScore += 0.3;
+          } else {
+            livenessScore = 0.5;
             deepfakeScore = 0.3;
           }
+        } catch (apiError) {
+          log.error({ err: apiError instanceof Error ? apiError.message : String(apiError) }, 'GCP Vision API error');
         }
       }
 
-      // Clamp scores to 0-1 range
+      if (livenessScore == null || deepfakeScore == null || provider == null) {
+        return {
+          success: false,
+          error: {
+            code: 'BIOMETRIC_PROVIDER_UNAVAILABLE',
+            message: 'Biometric analysis is unavailable; human review is required.',
+          },
+        };
+      }
+
       livenessScore = Math.max(0, Math.min(1, livenessScore));
       deepfakeScore = Math.max(0, Math.min(1, deepfakeScore));
-
       const riskLevel = BiometricVerificationService._calculateRiskLevel(livenessScore, deepfakeScore);
 
       return {
@@ -334,6 +317,7 @@ export const BiometricVerificationService = {
           liveness_score: livenessScore,
           deepfake_score: deepfakeScore,
           risk_level: riskLevel,
+          provider,
         },
       };
     } catch (error) {
@@ -355,59 +339,75 @@ export const BiometricVerificationService = {
    * Uses DetectFaces quality signals + face anomaly detection.
    * Note: Full deepfake detection is part of the Face Liveness session flow,
    * which catches digital injection, printed photos, and 3D masks.
-   */
+  */
   detectDeepfake: async (photoUrl: string): Promise<ServiceResult<number>> => {
     try {
-      const client = await getRekognitionClient();
-
-      if (client) {
-        try {
-          const { DetectFacesCommand } = await import('@aws-sdk/client-rekognition');
-
-          // SSRF protection: validate URL before fetching
-          const deepfakeUrlCheck = validateSafeUrl(photoUrl);
-          if (!deepfakeUrlCheck.safe) {
-            log.warn({ photoUrl, reason: deepfakeUrlCheck.reason }, 'SSRF: blocked unsafe photo URL in deepfake check');
-            throw new Error(`Unsafe URL blocked: ${deepfakeUrlCheck.reason}`);
-          }
-
-          const imageResponse = await fetch(photoUrl);
-
-          if (imageResponse.ok) {
-            const imageBuffer = await imageResponse.arrayBuffer();
-            const command = new DetectFacesCommand({
-              Image: { Bytes: new Uint8Array(imageBuffer) },
-              Attributes: ['ALL'],
-            });
-
-            const response = await awsRekognitionBreaker.execute(() => client.send(command));
-            const faces = response.FaceDetails || [];
-
-            if (faces.length === 0) {
-              return { success: true, data: 0.8 }; // No face = high suspicion
-            }
-
-            const face = faces[0];
-            const sharpness = (face.Quality?.Sharpness ?? 50) / 100;
-            const confidence = (face.Confidence ?? 50) / 100;
-
-            // Low quality signals indicate potential manipulation
-            let deepfakeScore = 1.0 - ((sharpness * 0.6) + (confidence * 0.4));
-
-            // Multiple faces could indicate photo-of-photo attack
-            if (faces.length > 1) {
-              deepfakeScore = Math.max(deepfakeScore, 0.6);
-            }
-
-            return { success: true, data: Math.max(0, Math.min(1, deepfakeScore)) };
-          }
-        } catch (apiError) {
-          log.error({ err: apiError instanceof Error ? apiError.message : String(apiError) }, 'Rekognition deepfake check error');
-        }
+      const deepfakeUrlCheck = validateSafeUrl(photoUrl);
+      if (!deepfakeUrlCheck.safe) {
+        log.warn({ photoUrl, reason: deepfakeUrlCheck.reason }, 'SSRF: blocked unsafe photo URL in deepfake check');
+        return {
+          success: false,
+          error: {
+            code: 'UNSAFE_PROOF_MEDIA_URL',
+            message: `Unsafe URL blocked: ${deepfakeUrlCheck.reason}`,
+          },
+        };
       }
 
-      // Fallback: conservative low-risk score
-      return { success: true, data: 0.08 };
+      const client = await getRekognitionClient();
+      if (!client) {
+        return {
+          success: false,
+          error: {
+            code: 'BIOMETRIC_PROVIDER_UNAVAILABLE',
+            message: 'AWS Rekognition is not configured for deepfake signal analysis',
+          },
+        };
+      }
+
+      try {
+        const { DetectFacesCommand } = await import('@aws-sdk/client-rekognition');
+        const imageResponse = await fetch(photoUrl);
+        if (!imageResponse.ok) {
+          throw new Error(`Photo fetch failed with HTTP ${imageResponse.status}`);
+        }
+
+        const imageBuffer = await imageResponse.arrayBuffer();
+        const command = new DetectFacesCommand({
+          Image: { Bytes: new Uint8Array(imageBuffer) },
+          Attributes: ['ALL'],
+        });
+
+        const response = await awsRekognitionBreaker.execute(() => client.send(command));
+        const faces = response.FaceDetails || [];
+
+        if (faces.length === 0) {
+          return { success: true, data: 0.8 }; // No face = high suspicion
+        }
+
+        const face = faces[0];
+        const sharpness = (face.Quality?.Sharpness ?? 50) / 100;
+        const confidence = (face.Confidence ?? 50) / 100;
+
+        // Low quality signals indicate potential manipulation
+        let deepfakeScore = 1.0 - ((sharpness * 0.6) + (confidence * 0.4));
+
+        // Multiple faces could indicate photo-of-photo attack
+        if (faces.length > 1) {
+          deepfakeScore = Math.max(deepfakeScore, 0.6);
+        }
+
+        return { success: true, data: Math.max(0, Math.min(1, deepfakeScore)) };
+      } catch (apiError) {
+        log.error({ err: apiError instanceof Error ? apiError.message : String(apiError) }, 'Rekognition deepfake check error');
+        return {
+          success: false,
+          error: {
+            code: 'BIOMETRIC_PROVIDER_UNAVAILABLE',
+            message: 'AWS Rekognition could not produce a deepfake signal',
+          },
+        };
+      }
     } catch (error) {
       log.error({ err: error instanceof Error ? error.message : String(error) }, 'detectDeepfake error');
       return {
@@ -584,7 +584,68 @@ export const BiometricVerificationService = {
       // Run biometric checks
       const scoresResult = await BiometricVerificationService.analyzeFacePhoto(photoUrl);
       if (!scoresResult.success) {
-        throw new Error(scoresResult.error?.message || 'Biometric analysis failed');
+        const unavailable = scoresResult.error.code === 'BIOMETRIC_PROVIDER_UNAVAILABLE';
+        const persisted = unavailable
+          ? await db.query(
+            `WITH target AS (
+               SELECT id FROM proof_submissions
+               WHERE proof_id = $1
+               ORDER BY created_at DESC, id DESC
+               LIMIT 1
+             )
+             UPDATE proof_submissions ps
+             SET liveness_score = NULL,
+                 deepfake_score = NULL,
+                 biometric_analyzed_at = NOW(),
+                 biometric_signal_status = 'UNAVAILABLE',
+                 biometric_provider = NULL,
+                 biometric_failure_reason_code = 'BIOMETRIC_PROVIDER_UNAVAILABLE',
+                 biometric_policy_version = 'hxos-proof-consistency-v1',
+                 biometric_verified = FALSE
+             FROM target
+             WHERE ps.id = target.id
+             RETURNING ps.id`,
+            [proofId],
+          )
+          : await db.query(
+            `WITH target AS (
+               SELECT id FROM proof_submissions
+               WHERE proof_id = $1
+               ORDER BY created_at DESC, id DESC
+               LIMIT 1
+             )
+             UPDATE proof_submissions ps
+             SET liveness_score = NULL,
+                 deepfake_score = NULL,
+                 biometric_analyzed_at = NOW(),
+                 biometric_signal_status = 'FAILED',
+                 biometric_provider = NULL,
+                 biometric_failure_reason_code = 'BIOMETRIC_ANALYSIS_FAILED',
+                 biometric_policy_version = 'hxos-proof-consistency-v1',
+                 biometric_verified = FALSE
+             FROM target
+             WHERE ps.id = target.id
+             RETURNING ps.id`,
+            [proofId],
+          );
+        if ((persisted.rowCount ?? 0) === 0) {
+          return {
+            success: false,
+            error: {
+              code: 'PROOF_SIGNAL_TARGET_NOT_FOUND',
+              message: 'The canonical proof verification record was not found.',
+            },
+          };
+        }
+        return {
+          success: false,
+          error: {
+            code: unavailable ? 'BIOMETRIC_PROVIDER_UNAVAILABLE' : 'PROOF_ANALYSIS_FAILED',
+            message: unavailable
+              ? 'Biometric analysis is unavailable; human review is required.'
+              : 'Biometric proof analysis failed; human review is required.',
+          },
+        };
       }
 
       const scores = scoresResult.data!;
@@ -629,15 +690,38 @@ export const BiometricVerificationService = {
         reasoning = `Biometric checks failed: ${flags.join(', ')}. High fraud risk.`;
       }
 
-      // Store scores in database
-      await db.query(
-        `UPDATE proof_submissions
+      // Store advisory scores against the canonical proof, never a caller-supplied
+      // proof_submissions row identifier. Legacy duplicates resolve newest-first.
+      const persisted = await db.query(
+        `WITH target AS (
+           SELECT id FROM proof_submissions
+           WHERE proof_id = $3
+           ORDER BY created_at DESC, id DESC
+           LIMIT 1
+         )
+         UPDATE proof_submissions ps
          SET liveness_score = $1,
              deepfake_score = $2,
-             biometric_verified_at = NOW()
-         WHERE id = $3`,
-        [scores.liveness_score, scores.deepfake_score, proofId],
+             biometric_analyzed_at = NOW(),
+             biometric_signal_status = 'AVAILABLE',
+             biometric_provider = $4,
+             biometric_failure_reason_code = NULL,
+             biometric_policy_version = 'hxos-proof-consistency-v1',
+             biometric_verified = FALSE
+         FROM target
+         WHERE ps.id = target.id
+         RETURNING ps.id`,
+        [scores.liveness_score, scores.deepfake_score, proofId, scores.provider],
       );
+      if ((persisted.rowCount ?? 0) === 0) {
+        return {
+          success: false,
+          error: {
+            code: 'PROOF_SIGNAL_TARGET_NOT_FOUND',
+            message: 'The canonical proof verification record was not found.',
+          },
+        };
+      }
 
       return {
         success: true,

@@ -98,21 +98,21 @@ export async function notifyTaskCompleted(workerId: string, taskId: string, task
     userId: workerId,
     category: 'task_completed',
     title: 'Task approved 🎉',
-    body: `"${taskTitle}" is complete. Your payout is on the way.`,
+    body: `"${taskTitle}" is complete. Your payout is ready for processing.`,
     deepLink: `/tasks/${taskId}`,
     taskId,
     priority: 'HIGH',
   });
 }
 
-/** Escrow released → tell the worker they got paid. */
+/** Escrow released → report the release without claiming external settlement. */
 export async function notifyPaymentReleased(workerId: string, taskId: string, netPayoutCents: number): Promise<void> {
   const dollars = (netPayoutCents / 100).toFixed(2);
   await safeNotify({
     userId: workerId,
     category: 'payment_released',
-    title: 'You got paid 💸',
-    body: `$${dollars} is on its way to your account.`,
+    title: 'Payout released',
+    body: `$${dollars} was released to your payout account. Check earnings for settlement status.`,
     deepLink: `/earnings`,
     taskId,
     priority: 'CRITICAL',

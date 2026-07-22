@@ -31,15 +31,21 @@ export type { AuthedContext, Context } from './trpc-context.js';
 // TRPC INITIALIZATION
 // ============================================================================
 
-const t = initTRPC.context<Context>().create({
-  errorFormatter: ({ shape }) => ({
+export function publicTRPCErrorShape<T extends { message: string; data: { code?: string; stack?: string } }>(shape: T): T {
+  return {
     ...shape,
+    message: shape.data.code === 'INTERNAL_SERVER_ERROR' ? 'Internal server error' : shape.message,
     data: {
       ...shape.data,
-      // Strip stack traces in production to prevent information leakage
       stack: undefined,
     },
-  }),
+  };
+}
+
+const t = initTRPC.context<Context>().create({
+  // Never expose raw database/provider exception messages or stack traces on
+  // INTERNAL_SERVER_ERROR responses. Safe 4xx messages remain actionable.
+  errorFormatter: ({ shape }) => publicTRPCErrorShape(shape),
 });
 
 export const router = t.router;
@@ -100,7 +106,72 @@ const isAdminCheck = t.middleware(async ({ ctx, next }) => {
   return next({ ctx: { ...ctx, user: ctx.user } as AuthedContext });
 });
 
+/** @deprecated Use a consequence-specific capability procedure below. */
 export const adminProcedure = protectedProcedure.use(isAdminCheck);
+
+type AdminCapability =
+  | 'can_access_financials'
+  | 'can_ban_users'
+  | 'can_manage_incidents'
+  | 'can_manage_operations'
+  | 'can_modify_trust'
+  | 'can_override_escrow'
+  | 'can_resolve_disputes';
+
+const PRIVILEGED_ADMIN_ROLES = ['admin', 'founder'] as const;
+const VALID_ADMIN_ROLES = ['admin', 'support', 'finance', 'moderator', 'founder'] as const;
+
+/**
+ * Require a current administrator role plus an explicit capability for
+ * high-impact Operations actions. Admin and founder retain break-glass access;
+ * support, finance, and moderator identities receive only the capabilities
+ * persisted on their admin_roles row. The capability identifier is selected
+ * exclusively from the closed union above, so it is safe to interpolate as a
+ * SQL column name.
+ */
+function capabilityAdminMiddleware(capability: AdminCapability | null) {
+  return t.middleware(async ({ ctx, next }) => {
+    // createContext sets this to false after a role-table lookup. Fail before
+    // any secondary query so ordinary authenticated users cannot exercise or
+    // time capability-specific database paths.
+    if (ctx.user!.is_admin === false) {
+      throw new TRPCError({ code: 'FORBIDDEN', message: 'Administrator access required' });
+    }
+    const capabilitySelection = capability
+      ? `, COALESCE(${capability}, false) AS capability_granted`
+      : '';
+    const result = await db.query<{ role: string; capability_granted?: boolean }>(
+      `SELECT role${capabilitySelection}
+       FROM admin_roles
+       WHERE user_id = $1 AND role = ANY($2::text[])
+       LIMIT 1`,
+      [ctx.user!.id, [...VALID_ADMIN_ROLES]],
+    );
+    const row = result.rows[0];
+    const privileged = Boolean(row && PRIVILEGED_ADMIN_ROLES.includes(
+      row.role as (typeof PRIVILEGED_ADMIN_ROLES)[number],
+    ));
+    if (!row || (!privileged && capability !== null && row.capability_granted !== true)) {
+      throw new TRPCError({
+        code: 'FORBIDDEN',
+        message: capability ? 'Required administrator capability missing' : 'Platform administrator access required',
+      });
+    }
+    if (capability === null && !privileged) {
+      throw new TRPCError({ code: 'FORBIDDEN', message: 'Platform administrator access required' });
+    }
+    return next({ ctx: { ...ctx, user: ctx.user } as AuthedContext });
+  });
+}
+
+export const platformAdminProcedure = protectedProcedure.use(capabilityAdminMiddleware(null));
+export const financialAdminProcedure = protectedProcedure.use(capabilityAdminMiddleware('can_access_financials'));
+export const escrowAdminProcedure = protectedProcedure.use(capabilityAdminMiddleware('can_override_escrow'));
+export const userManagementAdminProcedure = protectedProcedure.use(capabilityAdminMiddleware('can_ban_users'));
+export const disputeAdminProcedure = protectedProcedure.use(capabilityAdminMiddleware('can_resolve_disputes'));
+export const trustAdminProcedure = protectedProcedure.use(capabilityAdminMiddleware('can_modify_trust'));
+export const safetyAdminProcedure = protectedProcedure.use(capabilityAdminMiddleware('can_manage_incidents'));
+export const operationsAdminProcedure = protectedProcedure.use(capabilityAdminMiddleware('can_manage_operations'));
 
 const isAdminOrEngineBridge = t.middleware(async ({ ctx, next }) => {
   if (ctx.engineBridgeAuthorized === true && ctx.engineBridgeActorId) {
@@ -112,16 +183,18 @@ const isAdminOrEngineBridge = t.middleware(async ({ ctx, next }) => {
   if (ctx.user.is_banned || ['SUSPENDED', 'DELETED'].includes(ctx.user.account_status)) {
     throw new TRPCError({ code: 'UNAUTHORIZED', message: 'Account suspended.' });
   }
-  let isAdmin = ctx.user.is_admin;
-  if (isAdmin === undefined) {
-    const result = await db.query(
-      'SELECT role FROM admin_roles WHERE user_id = $1 AND role = ANY($2::text[])',
-      [ctx.user.id, ['admin', 'support', 'finance', 'moderator', 'founder']],
-    );
-    isAdmin = result.rows.length > 0;
+  if (ctx.user.is_admin === false) {
+    throw new TRPCError({ code: 'FORBIDDEN', message: 'Platform administrator or engine bridge access required' });
   }
-  if (!isAdmin) {
-    throw new TRPCError({ code: 'FORBIDDEN', message: 'Admin or engine bridge access required' });
+  // Human callers on engine-equivalent procedures require a fresh platform
+  // role check. A cached generic staff flag must never grant assignment,
+  // recurring-recovery, or unattended-completion authority.
+  const result = await db.query(
+    'SELECT role FROM admin_roles WHERE user_id = $1 AND role = ANY($2::text[]) LIMIT 1',
+    [ctx.user.id, [...PRIVILEGED_ADMIN_ROLES]],
+  );
+  if (result.rows.length === 0) {
+    throw new TRPCError({ code: 'FORBIDDEN', message: 'Platform administrator or engine bridge access required' });
   }
   return next({ ctx: { ...ctx, user: ctx.user } as AuthedContext });
 });
@@ -182,9 +255,11 @@ export const Schemas = {
     location: z.string().max(500).optional(),
     /** City/region label safe to expose before a reservation exists. */
     roughArea: z.string().trim().min(2).max(120).optional(),
+    /** ISO country-subdivision policy key. The engine resolves the version; clients cannot choose it. */
+    regionCode: z.string().trim().regex(/^US-[A-Z]{2}$/),
     clientIdempotencyKey: z.string().trim().min(8).max(128).regex(/^[A-Za-z0-9:_-]+$/).optional(),
     isTest: z.boolean().optional(),
-    category: z.string().trim().max(100).optional(),
+    category: z.string().trim().min(1).max(100),
     deadline: z.string().datetime().optional(),
     dispatchExpiresAt: z.string().datetime().optional(),
     requiresProof: z.boolean().default(true),
@@ -199,10 +274,13 @@ export const Schemas = {
     insideHome: z.boolean().optional(),
     peoplePresent: z.boolean().optional(),
     petsPresent: z.boolean().optional(),
-    // FIX 7: Accept these fields in the schema so callers can provide them,
-    // but the router will immediately reject them (features not yet implemented).
+    // Partial payout is still rejected by the router. Checklist steps are
+    // canonical scope inputs and are persisted in immutable scope version 1.
     prorate_on_abort: z.boolean().optional(),
-    proof_steps: z.array(z.object({ step: z.string().max(500) }).strict()).max(50).optional(),
+    proof_steps: z.array(z.object({ step: z.string().trim().min(1).max(200) }).strict()).min(1).max(12).optional(),
+    estimatedDurationMinutes: z.number().int().min(15).max(1440).optional(),
+    requiredTools: z.array(z.string().trim().min(1).max(100)).max(20).optional(),
+    aiScopeObservationId: z.string().uuid().optional(),
   }),
 
   evaluateDraft: z.object({

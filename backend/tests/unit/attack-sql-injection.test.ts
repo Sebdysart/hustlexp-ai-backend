@@ -10,14 +10,23 @@
  * SAFE — All sort fields resolved via switch/enum allowlist, never interpolated.
  * SAFE — limit/offset are validated as integers with min/max by Zod.
  * SAFE — Full-text search uses plainto_tsquery($1) — parameterized.
- * GAP  — betaDashboard.listUsers: sortBy accepted but IGNORED in query (ORDER BY u.created_at DESC hardcoded).
- * GAP  — admin.revenueBreakdown/aiCostSummary: ($1 || ' days')::INTERVAL — unusual but $1 is z.number().int()
- * EXPLOIT — WorkerSkillService.getEligibleTaskFilter:426 — userId string-interpolated into SQL fragment.
- *            trustTier also interpolated. BUT: this function is dead code — never called from any router.
+ * FIXED — every router offset is capped at 500.
+ * FIXED — admin LIKE metacharacters are escaped and indexed with pg_trgm.
+ * FIXED — public browse redacts poster and exact-location fields.
+ * FIXED — WorkerSkillService binds userId as $1.
+ * FIXED — the tRPC formatter redacts every INTERNAL_SERVER_ERROR message.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { z } from 'zod';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+
+const ADMIN_SOURCE = readFileSync(path.join(process.cwd(), 'backend/src/routers/admin.ts'), 'utf8');
+const FEED_ROUTES_SOURCE = readFileSync(path.join(process.cwd(), 'backend/src/routers/taskDiscoveryFeedRoutes.ts'), 'utf8');
+const WORKER_SKILL_SOURCE = readFileSync(path.join(process.cwd(), 'backend/src/services/WorkerSkillService.ts'), 'utf8');
+const TRPC_SOURCE = readFileSync(path.join(process.cwd(), 'backend/src/trpc.ts'), 'utf8');
+const SEARCH_INDEX_MIGRATION = readFileSync(path.join(process.cwd(), 'backend/database/migrations/20260719_admin_user_search_trigram_contract.sql'), 'utf8');
 
 // ============================================================================
 // MOCK SETUP
@@ -32,7 +41,7 @@ import { z } from 'zod';
 
 const browseTasksInputSchema = z.object({
   limit: z.number().int().min(1).max(100).default(20),
-  offset: z.number().int().min(0).default(0),
+  offset: z.number().int().min(0).max(500).default(0),
   category: z.string().optional(),
   min_price: z.number().int().nonnegative().optional(),
   max_price: z.number().int().positive().optional(),
@@ -41,7 +50,7 @@ const browseTasksInputSchema = z.object({
 
 const getFeedInputSchema = z.object({
   limit: z.number().int().min(1).max(100).default(20),
-  offset: z.number().int().min(0).default(0),
+  offset: z.number().int().min(0).max(500).default(0),
   filters: z.object({
     category: z.string().optional(),
     min_price: z.number().int().nonnegative().optional(),
@@ -59,7 +68,7 @@ const getFeedInputSchema = z.object({
 const searchInputSchema = z.object({
   query: z.string().min(1).max(200).optional(),
   limit: z.number().int().min(1).max(100).default(20),
-  offset: z.number().int().min(0).default(0),
+  offset: z.number().int().min(0).max(500).default(0),
   filters: z.object({
     category: z.string().optional(),
     min_price: z.number().int().nonnegative().optional(),
@@ -77,7 +86,7 @@ const searchInputSchema = z.object({
 
 const adminListUsersSchema = z.object({
   limit: z.number().int().min(1).max(100).default(20),
-  offset: z.number().int().min(0).default(0),
+  offset: z.number().int().min(0).max(500).default(0),
   search: z.string().max(255).optional(),
   trustTier: z.string().max(20).optional(),
   isBanned: z.boolean().optional(),
@@ -85,13 +94,13 @@ const adminListUsersSchema = z.object({
 
 const adminListTasksSchema = z.object({
   limit: z.number().int().min(1).max(100).default(20),
-  offset: z.number().int().min(0).default(0),
+  offset: z.number().int().min(0).max(500).default(0),
   state: z.string().max(30).optional(),
 });
 
 const adminListDisputesSchema = z.object({
   limit: z.number().int().min(1).max(100).default(20),
-  offset: z.number().int().min(0).default(0),
+  offset: z.number().int().min(0).max(500).default(0),
   status: z.string().max(30).optional(),
 });
 
@@ -240,29 +249,24 @@ describe('Attack 3 — Filter field injection', () => {
 // File: backend/src/routers/admin.ts:50-52 (search field)
 // SQL: WHERE (u.full_name ILIKE $1 OR u.email ILIKE $1) with $1='%input%'
 // Attack: Does the handler escape % and _ in user search input?
-// VERDICT: GAP — wildcards not escaped, but this is a low-severity info leak,
-//          not an injection exploit. The value is parameterized.
+// VERDICT: FIXED — wildcards are escaped before the parameterized query.
 // ============================================================================
 describe('Attack 4 — LIKE wildcard injection', () => {
-  it('admin search param allows wildcard characters (no escaping)', () => {
-    // admin.ts:50: params.push(`%${input.search}%`)
-    // If search = "%", query becomes ILIKE '%%%' — matches everything.
-    // If search = "_", query becomes ILIKE '%_%' — matches any single char row.
-    // This leaks all users but is NOT SQL injection (parameterized).
+  it('admin search accepts literal wildcard characters and escapes them before binding', () => {
     const result = adminListUsersSchema.safeParse({
       search: "%",
     });
     expect(result.success).toBe(true);
-    // VERDICT: GAP — admin only, wildcard not escaped, no SQL injection but
-    // an admin could accidentally return all rows with search="%".
+    expect(ADMIN_SOURCE).toContain("input.search.replace(/%/g, '\\\\%').replace(/_/g, '\\\\_')");
+    expect(ADMIN_SOURCE).toContain('params.push(`%${safeLike}%`)');
   });
 
-  it('admin search wildcard bypass with underscore', () => {
+  it('admin underscore wildcard is treated as a literal search character', () => {
     const result = adminListUsersSchema.safeParse({
       search: "_",
     });
     expect(result.success).toBe(true);
-    // VERDICT: GAP — same as above, admin-only endpoint.
+    expect(ADMIN_SOURCE).toContain("replace(/_/g, '\\\\_')");
   });
 
   it('full-text search query uses plainto_tsquery — immune to LIKE injection', () => {
@@ -346,22 +350,18 @@ describe('Attack 6 — Offset injection', () => {
     expect(result.success).toBe(false);
   });
 
-  it('accepts large but valid offset (deep pagination allowed)', () => {
-    // offset: 1000000 passes Zod validation. There is no max set.
-    // This is a PERFORMANCE GAP (not injection) — deep paginate causes full table scan.
+  it('rejects deep pagination beyond the global 500-row window', () => {
     const result = browseTasksInputSchema.safeParse({ offset: 1000000 });
-    expect(result.success).toBe(true);
-    // VERDICT: GAP — No max offset enforced; deep pagination is expensive.
-    // Not an injection exploit, but a DoS vector for unauthenticated browseTasks.
+    expect(result.success).toBe(false);
   });
 
-  it('accepts safe overflow value (JS MAX_SAFE_INTEGER)', () => {
-    // PostgreSQL would receive this as a parameter — would cause a "value out of range"
-    // error at the DB level rather than injection. Still safe from injection perspective.
+  it('rejects JS MAX_SAFE_INTEGER before the database boundary', () => {
     const result = browseTasksInputSchema.safeParse({ offset: Number.MAX_SAFE_INTEGER });
-    expect(result.success).toBe(true);
-    // VERDICT: GAP — No overflow protection in schema; DB error would be caught
-    // by the try/catch in the service, returning INTERNAL_SERVER_ERROR.
+    expect(result.success).toBe(false);
+  });
+
+  it('accepts offset exactly at the bounded maximum', () => {
+    expect(browseTasksInputSchema.safeParse({ offset: 500 }).success).toBe(true);
   });
 });
 
@@ -463,7 +463,7 @@ describe('Attack 9 — Unbounded admin list queries', () => {
   it('betaDashboard.listUsers sortBy accepted but query hardcodes ORDER BY created_at DESC', () => {
     // betaDashboard.ts:344: sortBy z.enum(['created_at','xp_total','tasks_posted','tasks_completed'])
     // betaDashboard.ts:376: ORDER BY u.created_at DESC LIMIT $1  ← sortBy value is NEVER used in query!
-    // VERDICT: GAP — sortBy input is validated but silently ignored. Not an injection,
+    // VERDICT: ACCEPTED RESIDUAL P2 — sortBy is validated but silently ignored. Not an injection,
     // but the feature is broken (clients cannot sort by xp_total etc.).
     const result = betaDashboardListUsersSchema.safeParse({ sortBy: 'xp_total' });
     expect(result.success).toBe(true);
@@ -475,12 +475,10 @@ describe('Attack 9 — Unbounded admin list queries', () => {
 // ATTACK 10 — browseTasks without location filter
 // ============================================================================
 // File: backend/src/routers/taskDiscovery.ts:68 (publicProcedure — no auth required)
-// VERDICT: GAP — Any unauthenticated request can call browseTasks with no location
-//          and receive ALL open tasks globally (up to limit=100 per page with no
-//          max offset). Leaks task titles, prices, and category data globally.
-//          poster_id is included in the result set from the service query.
+// VERDICT: SAFE — The public surface intentionally supports global rough discovery,
+// caps pagination, and strips poster identity plus stored exact location before return.
 // ============================================================================
-describe('Attack 10 — browseTasks location leak', () => {
+describe('Attack 10 — public browse redaction', () => {
   it('browseTasks has no required location parameter', () => {
     const result = browseTasksInputSchema.safeParse({});
     expect(result.success).toBe(true);
@@ -488,15 +486,9 @@ describe('Attack 10 — browseTasks location leak', () => {
     // No location filter required — returns global task list.
   });
 
-  it('browseTasks is a publicProcedure — no authentication required', () => {
-    // Documented in taskDiscovery.ts:68: browseTasks: publicProcedure
-    // Any unauthenticated client can enumerate all open tasks globally.
-    // VERDICT: GAP — intentional by design (cold-start marketplace) but the
-    // poster_id field is returned in service results and is not stripped in
-    // the public feed path (unlike task.ts:88 which strips it).
-    // ACTUAL NOTE: TaskDiscoveryService.browsePublicFeed does return poster_id.
-    // The router does not strip it. This leaks poster UUIDs to unauthenticated users.
-    expect(true).toBe(true); // documentation test
+  it('strips poster identity and stored location before returning public tasks', () => {
+    expect(FEED_ROUTES_SOURCE).toContain('const { poster_id: _posterId, location: _storedLocation, ...publicTask }');
+    expect(FEED_ROUTES_SOURCE).toContain('location: source.rough_location ?? null');
   });
 });
 
@@ -504,35 +496,31 @@ describe('Attack 10 — browseTasks location leak', () => {
 // ATTACK 11 — Deep pagination DoS
 // ============================================================================
 // File: backend/src/routers/taskDiscovery.ts:71, admin.ts:39
-// VERDICT: GAP — No max offset enforced. Deep pagination causes full table scan.
+// VERDICT: FIXED — All public and administrative offsets are capped at 500.
 // ============================================================================
 describe('Attack 11 — Deep pagination (offset-based)', () => {
-  it('no maximum offset on browseTasks', () => {
+  it('caps browseTasks offset', () => {
     const result = browseTasksInputSchema.safeParse({
       offset: 1_000_000,
       limit: 100,
     });
-    expect(result.success).toBe(true);
-    // VERDICT: GAP — DB executes: OFFSET 1000000 LIMIT 100 — full table scan.
-    // browseTasks is publicProcedure and unauthenticated; an attacker can
-    // repeatedly call this with escalating offsets causing DB load.
+    expect(result.success).toBe(false);
   });
 
-  it('no maximum offset on admin list endpoints', () => {
+  it('caps admin list offsets', () => {
     const result = adminListUsersSchema.safeParse({
       offset: 1_000_000,
       limit: 100,
     });
-    expect(result.success).toBe(true);
-    // At least admin endpoints require adminProcedure auth.
+    expect(result.success).toBe(false);
   });
 
-  it('getFeed also has no max offset', () => {
+  it('caps authenticated getFeed offsets', () => {
     const result = getFeedInputSchema.safeParse({
       offset: 5_000_000,
       limit: 100,
     });
-    expect(result.success).toBe(true);
+    expect(result.success).toBe(false);
   });
 });
 
@@ -541,29 +529,13 @@ describe('Attack 11 — Deep pagination (offset-based)', () => {
 // ============================================================================
 // File: backend/src/services/TaskDiscoveryService.ts:330-337
 // The catch block returns: error.message — which may contain PostgreSQL error text.
-// VERDICT: GAP — Internal DB errors (table names, column names, constraint names)
+// VERDICT: FIXED — Shared formatting removes internal database details and stacks.
 //          are proxied through to the tRPC error message.
 // ============================================================================
 describe('Attack 12 — Error message information disclosure', () => {
-  it('documents service error propagation pattern', () => {
-    // TaskDiscoveryService.ts:330-334 (browsePublicFeed catch):
-    //   return { success: false, error: { code: 'DB_ERROR',
-    //     message: error instanceof Error ? error.message : 'Unknown error' } }
-    // Then in the router:
-    //   throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: result.error.message })
-    // PostgreSQL error messages include table names, column names, constraint names.
-    // Example: 'column "nonexistent_col" does not exist'
-    // VERDICT: GAP — raw DB error messages reach the API response.
-    //          An attacker sending malformed input that triggers a DB error gets
-    //          schema information in the response body.
-    expect(true).toBe(true);
-  });
-
-  it('documents the same pattern in admin router', () => {
-    // admin.ts does NOT have try/catch around db.query calls — errors propagate
-    // as unhandled exceptions to the tRPC error handler, which returns them as
-    // INTERNAL_SERVER_ERROR with the raw error message.
-    expect(true).toBe(true);
+  it('redacts all internal messages and stack traces in the shared formatter', () => {
+    expect(TRPC_SOURCE).toContain("shape.data.code === 'INTERNAL_SERVER_ERROR' ? 'Internal server error' : shape.message");
+    expect(TRPC_SOURCE).toContain('stack: undefined');
   });
 });
 
@@ -571,18 +543,15 @@ describe('Attack 12 — Error message information disclosure', () => {
 // ATTACK 13 — Timing oracle via LIKE on unindexed columns
 // ============================================================================
 // File: backend/src/routers/admin.ts:50-52
-// VERDICT: GAP (admin-only, low practical impact)
+// VERDICT: FIXED — contains-search columns have trigram indexes.
 // ============================================================================
 describe('Attack 13 — Timing oracle via LIKE', () => {
-  it('admin search ILIKE on full_name/email — potential sequential scan timing', () => {
-    // admin.ts:50: WHERE (u.full_name ILIKE $1 OR u.email ILIKE $1) with $1='%value%'
-    // If users.full_name or users.email lack trigram indexes (pg_trgm),
-    // every %value% query does a sequential scan of the users table.
-    // An attacker with admin credentials could use this as a timing oracle
-    // to infer data. HOWEVER: requires admin role — exploitability is minimal.
+  it('indexes both contains-search columns with pg_trgm', () => {
     const result = adminListUsersSchema.safeParse({ search: "a" });
     expect(result.success).toBe(true);
-    // VERDICT: GAP (low impact, admin-only)
+    expect(SEARCH_INDEX_MIGRATION).toContain('idx_users_full_name_trgm');
+    expect(SEARCH_INDEX_MIGRATION).toContain('idx_users_email_trgm');
+    expect(SEARCH_INDEX_MIGRATION.match(/gin_trgm_ops/g)).toHaveLength(2);
   });
 });
 
@@ -591,7 +560,7 @@ describe('Attack 13 — Timing oracle via LIKE', () => {
 // ============================================================================
 // File: backend/src/services/WorkerSkillService.ts:426, 435-440
 //
-// THE VULNERABLE CODE:
+// THE FORMERLY VULNERABLE CODE:
 //   WHERE ws3.user_id = '${userId}'     ← userId string-interpolated!
 //   WHEN 'LOW' THEN ${trustTier} >= 1   ← trustTier number-interpolated
 //
@@ -607,23 +576,10 @@ describe('Attack 13 — Timing oracle via LIKE', () => {
 //          containing SQL metacharacters (e.g., "'; DROP TABLE tasks--") could
 //          inject SQL. The function must be fixed or removed before any future use.
 // ============================================================================
-describe('CRITICAL: WorkerSkillService.getEligibleTaskFilter — SQL Injection in Dead Code', () => {
-  it('documents the string interpolation vulnerability', () => {
-    // WorkerSkillService.ts:426:
-    //   WHERE ws3.user_id = '${userId}'
-    // If userId = "'; DROP TABLE tasks--", the SQL becomes:
-    //   WHERE ws3.user_id = ''; DROP TABLE tasks--'
-    // This would execute as two statements.
-    //
-    // The function is currently dead code (no callers), so this is not
-    // exploitable at runtime. But the code is a time bomb.
-
-    // Demonstrate what the injectable SQL fragment would look like:
-    const maliciousUserId = "'; DROP TABLE tasks--";
-    const generatedFragment = `WHERE ws3.user_id = '${maliciousUserId}'`;
-    // This produces: WHERE ws3.user_id = ''; DROP TABLE tasks--'
-    expect(generatedFragment).toContain("DROP TABLE");
-    expect(generatedFragment).not.toContain("$1"); // confirms no parameterization
+describe('WorkerSkillService.getEligibleTaskFilter binding', () => {
+  it('binds userId through a positional placeholder', () => {
+    expect(WORKER_SKILL_SOURCE).toContain('WHERE ws3.user_id = $1');
+    expect(WORKER_SKILL_SOURCE).not.toContain("WHERE ws3.user_id = '${userId}'");
   });
 
   it('documents that trustTier interpolation is safe (number from DB, not user input)', () => {
@@ -700,17 +656,17 @@ describe('Summary: SQL injection attack surface assessment', () => {
       { attack: '1 — sortBy injection (browseTasks)',     file: 'taskDiscovery.ts:75 + TaskDiscoveryService.ts:302', verdict: 'SAFE',    reason: 'z.enum + switch() maps to hardcoded SQL fragment' },
       { attack: '2 — sortDirection injection (getFeed)',  file: 'taskDiscovery.ts:134',                              verdict: 'SAFE',    reason: 'No sortDirection field; switch() on enum only' },
       { attack: '3 — filter field injection',            file: 'admin.ts:56, TaskDiscoveryService.ts:288',           verdict: 'SAFE',    reason: 'All filter values use $N parameterized queries' },
-      { attack: '4 — LIKE wildcard injection',           file: 'admin.ts:50',                                        verdict: 'GAP',     reason: '% and _ not escaped in search param; admin-only; no SQL injection but returns all rows' },
+      { attack: '4 — LIKE wildcard injection',           file: 'admin.ts:50',                                        verdict: 'FIXED',   reason: '% and _ escaped before parameter binding' },
       { attack: '5 — limit injection',                   file: 'taskDiscovery.ts:70, admin.ts:38',                   verdict: 'SAFE',    reason: 'z.number().int().max(100) rejects strings and large values' },
-      { attack: '6 — offset injection / overflow',       file: 'taskDiscovery.ts:71, admin.ts:39',                   verdict: 'GAP',     reason: 'No max offset; deep pagination is a DoS vector on browseTasks (publicProcedure)' },
+      { attack: '6 — offset injection / overflow',       file: 'taskDiscoveryFeedRoutes.ts, admin.ts',               verdict: 'FIXED',   reason: 'all router offsets capped at 500' },
       { attack: '7 — array parameter injection',         file: 'taskDiscovery.ts:140',                               verdict: 'SAFE',    reason: 'skills array passed as JS value; not used in dynamic SQL construction' },
       { attack: '8 — JSONB path injection',              file: 'TaskDiscoveryService.ts:918',                        verdict: 'SAFE',    reason: 'No user-supplied JSONB path operators found; filters stored as parameterized JSONB' },
       { attack: '9 — unbounded admin list',              file: 'admin.ts:38, betaDashboard.ts:343',                  verdict: 'SAFE',    reason: 'max(100) enforced; sortBy in betaDashboard silently ignored (dead feature, not injection)' },
-      { attack: '10 — browseTasks location leak',        file: 'taskDiscovery.ts:68, TaskDiscoveryService.ts:280',   verdict: 'GAP',     reason: 'publicProcedure; no auth required; poster_id not stripped from service results' },
-      { attack: '11 — deep pagination DoS',              file: 'taskDiscovery.ts:71',                                verdict: 'GAP',     reason: 'No max offset on public endpoint; full table scan per deep page request' },
-      { attack: '12 — error message disclosure',        file: 'TaskDiscoveryService.ts:330, admin.ts',               verdict: 'GAP',     reason: 'Raw PostgreSQL error messages (incl. schema info) propagated to API response' },
-      { attack: '13 — timing oracle via LIKE',           file: 'admin.ts:50',                                        verdict: 'GAP',     reason: 'Admin-only; sequential scan if no trigram index; low practical impact' },
-      { attack: 'CRITICAL — WorkerSkillService userId interpolation', file: 'WorkerSkillService.ts:426',             verdict: 'EXPLOIT (DEAD CODE)', reason: "userId string-interpolated: WHERE ws3.user_id = '${userId}'. Not callable from any router — dead code." },
+      { attack: '10 — browseTasks location leak',        file: 'taskDiscoveryFeedRoutes.ts',                          verdict: 'FIXED',   reason: 'poster_id and stored location stripped; rough_location only' },
+      { attack: '11 — deep pagination DoS',              file: 'all routers',                                         verdict: 'FIXED',   reason: 'global maximum offset of 500' },
+      { attack: '12 — error message disclosure',         file: 'trpc.ts',                                             verdict: 'FIXED',   reason: 'shared formatter replaces internal messages and strips stacks' },
+      { attack: '13 — timing oracle via LIKE',           file: 'admin.ts + migration',                               verdict: 'FIXED',   reason: 'escaped contains search backed by two pg_trgm indexes' },
+      { attack: 'WorkerSkillService userId binding',     file: 'WorkerSkillService.ts',                              verdict: 'FIXED',   reason: 'userId is a $1 bind placeholder' },
       { attack: 'Interval injection (admin revenue)',    file: 'admin.ts:255,288,303',                               verdict: 'SAFE',    reason: 'z.number().int().min(1).max(365) + PostgreSQL INTERVAL rejects non-integer' },
     ];
 
@@ -718,8 +674,8 @@ describe('Summary: SQL injection attack surface assessment', () => {
     const gaps = findings.filter(f => f.verdict === 'GAP');
     const safe = findings.filter(f => f.verdict === 'SAFE');
 
-    expect(exploits.length).toBe(1);  // WorkerSkillService dead code
-    expect(gaps.length).toBe(6);
+    expect(exploits.length).toBe(0);
+    expect(gaps.length).toBe(0);
     expect(safe.length).toBe(8);
 
     // Log for CI visibility

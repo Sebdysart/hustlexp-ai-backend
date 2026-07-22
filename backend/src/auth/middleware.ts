@@ -195,6 +195,23 @@ export async function revokeUserSessions(uid: string): Promise<void> {
   }
   authLogger.info({ uid }, "User sessions revoked");
 
+  // Session revocation is also a notification-privacy boundary. Deactivate all
+  // device tokens tied to the Firebase identity so a signed-out, sold, or shared
+  // device cannot continue receiving the previous account's task notifications.
+  try {
+    await db.query(
+      `UPDATE device_tokens dt
+       SET is_active = false, updated_at = NOW()
+       FROM users u
+       WHERE dt.user_id = u.id
+         AND u.firebase_uid = $1
+         AND dt.is_active = true`,
+      [uid],
+    );
+  } catch (tokenErr) {
+    authLogger.error({ uid, err: tokenErr }, 'Failed to deactivate device tokens during session revocation');
+  }
+
   // Also revoke Firebase refresh tokens so checkRevoked=true works after Redis TTL expires
   try {
     await revokeFirebaseRefreshTokens(uid);

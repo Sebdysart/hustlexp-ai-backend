@@ -38,6 +38,7 @@ vi.mock('../../src/services/AIClient', () => ({
   },
 }));
 
+import { AIClient } from '../../src/services/AIClient';
 import { checkInstantEligibility, InstantTaskGate } from '../../src/services/InstantTaskGate';
 
 // ============================================================================
@@ -425,6 +426,11 @@ describe('checkInstantEligibility — result structure', () => {
 // ============================================================================
 
 describe('InstantTaskGate.check', () => {
+  beforeEach(() => {
+    vi.mocked(AIClient.isConfigured).mockReturnValue(false);
+    vi.mocked(AIClient.callJSON).mockReset();
+  });
+
   it('is a function', () => {
     expect(typeof InstantTaskGate.check).toBe('function');
   });
@@ -440,5 +446,21 @@ describe('InstantTaskGate.check', () => {
     expect(typeof result.instantEligible).toBe('boolean');
     // With AIClient.isConfigured() mocked to false, falls back to heuristic
     expect(result.instantEligible).toBe(true);
+  });
+
+  it('does not let a contradictory AI advisory deny deterministic eligibility', async () => {
+    vi.mocked(AIClient.isConfigured).mockReturnValue(true);
+    vi.mocked(AIClient.callJSON).mockResolvedValueOnce({
+      data: {
+        instantEligible: false,
+        blockReason: 'semantic_ambiguity',
+        questions: ['Model-generated veto'],
+      },
+    } as never);
+
+    const result = await InstantTaskGate.check(makeTask() as any);
+
+    expect(AIClient.callJSON).toHaveBeenCalledOnce();
+    expect(result).toEqual({ instantEligible: true, questions: [] });
   });
 });

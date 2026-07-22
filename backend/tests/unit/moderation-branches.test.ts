@@ -72,6 +72,10 @@ vi.mock('../../src/services/ContentModerationService', () => ({
   },
 }));
 
+vi.mock('../../src/services/PrivateMediaDeliveryService', () => ({
+  projectModerationMediaForAdmin: vi.fn(async (_adminId: string, items: unknown[]) => items),
+}));
+
 // ---------------------------------------------------------------------------
 // Imports
 // ---------------------------------------------------------------------------

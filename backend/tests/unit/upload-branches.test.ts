@@ -7,8 +7,7 @@
  *   - calls getSignedUrl, returns real presigned URL (not mock)
  *   - fileSize present → PutObjectCommand has ContentLength
  *   - fileSize absent → PutObjectCommand omits ContentLength
- *   - publicUrl uses bucketName when R2_PUBLIC_URL not set
- *   - publicUrl uses R2_PUBLIC_URL env var when set
+ *   - no canonical/public URL is issued before server finalization
  *   - Metadata includes uploaded-by and task-id
  *   - purpose=message uses messages/ prefix
  *   - purpose=proof uses proofs/ prefix
@@ -66,9 +65,11 @@ vi.mock('../../src/config', () => ({
     cloudflare: {
       r2: {
         accountId:       'account-id-123',
+        endpoint:        'https://account-id-123.r2.cloudflarestorage.com',
         accessKeyId:     'access-key-abc',
         secretAccessKey: 'secret-key-xyz',
         bucketName:      'hustlexp-bucket',
+        region:          'auto',
       },
     },
   },
@@ -114,7 +115,7 @@ describe('upload.getPresignedUrl — R2 configured (presigned URL path)', () => 
     vi.clearAllMocks();
     // Default: participant check passes — caller ('test-uid') is the poster of the task
     mockDb.query.mockResolvedValue({
-      rows: [{ poster_id: 'test-uid', worker_id: 'other-worker' }],
+      rows: [{ poster_id: 'other-poster', worker_id: 'test-uid' }],
       rowCount: 1,
     } as any);
   });
@@ -163,51 +164,22 @@ describe('upload.getPresignedUrl — R2 configured (presigned URL path)', () => 
     expect(ctorArgs.ContentLength).toBe(512);
   });
 
-  it('publicUrl contains the bucket name when R2_PUBLIC_URL is not set', async () => {
-    const orig = process.env.R2_PUBLIC_URL;
-    delete process.env.R2_PUBLIC_URL;
-
-    try {
-      mocks.mockGetSignedUrl.mockResolvedValue('https://presigned.example.com?sig=pub');
-
-      const result = await makeCaller().getPresignedUrl({
-        taskId: T_UUID,
-        filename: 'pub.jpg',
-        contentType: 'image/jpeg',
-        fileSize: 1024,
-      });
-
-      expect(result.publicUrl).toContain('hustlexp-bucket');
-    } finally {
-      if (orig !== undefined) process.env.R2_PUBLIC_URL = orig;
-    }
-  });
-
-  it('publicUrl uses R2_PUBLIC_URL env var when set', async () => {
-    const orig = process.env.R2_PUBLIC_URL;
-    process.env.R2_PUBLIC_URL = 'https://cdn.hustlexp.com';
-
-    try {
-      mocks.mockGetSignedUrl.mockResolvedValue('https://presigned.example.com?sig=cdn');
-
-      const result = await makeCaller().getPresignedUrl({
-        taskId: T_UUID,
-        filename: 'cdn.jpg',
-        contentType: 'image/jpeg',
-        fileSize: 1024,
-      });
-
-      expect(result.publicUrl).toContain('https://cdn.hustlexp.com');
-    } finally {
-      if (orig === undefined) delete process.env.R2_PUBLIC_URL;
-      else process.env.R2_PUBLIC_URL = orig;
-    }
+  it('does not expose a canonical or public URL before finalization', async () => {
+    mocks.mockGetSignedUrl.mockResolvedValue('https://presigned.example.com?sig=pub');
+    const result = await makeCaller().getPresignedUrl({
+      taskId: T_UUID,
+      filename: 'pub.jpg',
+      contentType: 'image/jpeg',
+      fileSize: 1024,
+    });
+    expect(result).not.toHaveProperty('publicUrl');
+    expect(result).toHaveProperty('receiptId');
   });
 
   it('includes uploaded-by and task-id in PutObjectCommand Metadata', async () => {
-    // Override participant check: caller is 'user-abc' as the poster
+    // Override participant check: caller is the assigned worker.
     mockDb.query.mockResolvedValueOnce({
-      rows: [{ poster_id: 'user-abc', worker_id: 'other-worker' }],
+      rows: [{ poster_id: 'other-poster', worker_id: 'user-abc' }],
       rowCount: 1,
     } as any);
     mocks.mockGetSignedUrl.mockResolvedValue('https://presigned.example.com?sig=meta');
@@ -222,9 +194,12 @@ describe('upload.getPresignedUrl — R2 configured (presigned URL path)', () => 
     const ctorArgs = mocks.mockPutObjectCommandCtor.mock.calls[0][0];
     expect(ctorArgs.Metadata['uploaded-by']).toBe('user-abc');
     expect(ctorArgs.Metadata['task-id']).toBe(T_UUID);
+    expect(ctorArgs.Metadata['receipt-id']).toMatch(/^[a-f0-9-]{36}$/);
+    expect(ctorArgs.Metadata.purpose).toBe('proof');
+    expect(ctorArgs.Metadata).not.toHaveProperty('original-filename');
   });
 
-  it('key uses messages/ prefix for purpose=message', async () => {
+  it('key uses the message quarantine namespace for purpose=message', async () => {
     mocks.mockGetSignedUrl.mockResolvedValue('https://presigned.example.com?sig=msg');
 
     const result = await makeCaller().getPresignedUrl({
@@ -235,13 +210,12 @@ describe('upload.getPresignedUrl — R2 configured (presigned URL path)', () => 
       fileSize: 2048,
     });
 
-    expect(result.key).toContain('messages/');
-    expect(result.key).not.toContain('proofs/');
     const ctorArgs = mocks.mockPutObjectCommandCtor.mock.calls[0][0];
-    expect(ctorArgs.Key).toContain('messages/');
+    expect(ctorArgs.Key).toContain('quarantine/message/');
+    expect(result).not.toHaveProperty('key');
   });
 
-  it('key uses proofs/ prefix for explicit purpose=proof', async () => {
+  it('key uses the proof quarantine namespace for explicit purpose=proof', async () => {
     mocks.mockGetSignedUrl.mockResolvedValue('https://presigned.example.com?sig=proof');
 
     const result = await makeCaller().getPresignedUrl({
@@ -252,22 +226,20 @@ describe('upload.getPresignedUrl — R2 configured (presigned URL path)', () => 
       fileSize: 1024,
     });
 
-    expect(result.key).toContain('proofs/');
-    expect(result.key).not.toContain('messages/');
+    const ctorArgs = mocks.mockPutObjectCommandCtor.mock.calls[0][0];
+    expect(ctorArgs.Key).toContain('quarantine/proof/');
+    expect(ctorArgs.Key).not.toContain('quarantine/message/');
+    expect(result).not.toHaveProperty('key');
   });
 
-  it('accepts image/heic content type and preserves extension in key', async () => {
-    mocks.mockGetSignedUrl.mockResolvedValue('https://presigned.example.com?sig=heic');
-
-    const result = await makeCaller().getPresignedUrl({
+  it('rejects HEIC because the server cannot guarantee pixel re-encoding', async () => {
+    await expect(makeCaller().getPresignedUrl({
       taskId: T_UUID,
       filename: 'photo.heic',
-      contentType: 'image/heic',
+      contentType: 'image/heic' as never,
       fileSize: 3000000,
-    });
-
-    expect(result.key).toMatch(/\.heic$/);
-    expect(mocks.mockGetSignedUrl).toHaveBeenCalledTimes(1);
+    })).rejects.toThrow();
+    expect(mocks.mockGetSignedUrl).not.toHaveBeenCalled();
   });
 
   it('returns expiresAt in the future', async () => {

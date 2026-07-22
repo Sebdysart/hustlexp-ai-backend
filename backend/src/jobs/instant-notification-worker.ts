@@ -65,7 +65,7 @@ export async function processInstantNotificationJob(
     throw new Error('JOB_SIGNATURE_INVALID: Payload signature verification failed');
   }
 
-  const { taskId, hustlerId, location, riskLevel, sensitive, urgencyCopy, surgeLevel } = (job.data as unknown as Record<string, unknown>).payload as InstantNotificationJobData;
+  const { taskId, hustlerId, riskLevel, sensitive, urgencyCopy, surgeLevel } = (job.data as unknown as Record<string, unknown>).payload as InstantNotificationJobData;
   const startTime = Date.now();
 
   try {
@@ -143,7 +143,10 @@ export async function processInstantNotificationJob(
   // Use surge urgency copy if provided, otherwise default
   const defaultTitle = 'Instant task nearby — first to accept gets it';
   const title = urgencyCopy || defaultTitle;
-  const body = `${task.title} — $${priceDollars}${location ? ` • ${location}` : ''}`;
+  // Exact or job-supplied location must never be copied into an OS-visible push
+  // or notification metadata. Address access is granted only through the
+  // canonical, audited location-vault flow after a funded reservation.
+  const body = `${task.title} — $${priceDollars}`;
 
   // Short TTL: 5 minutes (instant tasks expire quickly)
   const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
@@ -159,7 +162,6 @@ export async function processInstantNotificationJob(
       instantMode: true,
       riskLevel,
       sensitive: sensitive || false,
-      location,
       surgeLevel: surgeLevel || 0,
       // Track when notification was created for latency metrics
       notifiedAt: new Date().toISOString(),

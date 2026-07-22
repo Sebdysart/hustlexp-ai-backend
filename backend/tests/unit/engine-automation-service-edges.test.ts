@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => {
     invariant: vi.fn(() => false),
     writeToOutbox: vi.fn(),
     eligibility: vi.fn().mockResolvedValue({ allowed: true }),
+    mutationEligibility: vi.fn().mockResolvedValue(undefined),
     plan: vi.fn().mockResolvedValue({ allowed: true }),
     progress: vi.fn().mockResolvedValue({ success: true, data: {} }),
     readTask: vi.fn(),
@@ -35,6 +36,10 @@ vi.mock('../../src/lib/outbox-helpers', () => ({ writeToOutbox: mocks.writeToOut
 vi.mock('../../src/services/EligibilityGuard', () => ({
   EligibilityGuard: { assertEligibility: mocks.eligibility },
 }));
+vi.mock('../../src/services/TaskEligibilityPolicy', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/services/TaskEligibilityPolicy')>();
+  return { ...actual, assertTaskMutationEligibility: mocks.mutationEligibility };
+});
 vi.mock('../../src/services/PlanService', () => ({
   PlanService: { canAcceptTaskWithRisk: mocks.plan, canCreateTaskWithRisk: mocks.plan },
 }));
@@ -141,6 +146,7 @@ beforeEach(() => {
   mocks.transaction.mockImplementation((fn: (q: typeof query) => Promise<unknown>) => fn(query));
   mocks.invariant.mockReturnValue(false);
   mocks.eligibility.mockResolvedValue({ allowed: true });
+  mocks.mutationEligibility.mockResolvedValue(undefined);
   mocks.plan.mockResolvedValue({ allowed: true });
   mocks.progress.mockResolvedValue({ success: true, data: {} });
   mocks.backgroundCheck.mockResolvedValue(true);
@@ -689,6 +695,37 @@ describe('TaskExecutionService defensive contracts', () => {
     await expect(TaskExecutionService.startWork(TASK_ID, WORKER_ID)).resolves.toMatchObject({
       success: true, data: { progress_state: 'WORKING' },
     });
+    expect(mocks.writeToOutbox).not.toHaveBeenCalled();
+  });
+
+  it('emits one transactional user-facing progress event on first start', async () => {
+    query.mockResolvedValueOnce(rows([{
+      worker_id: WORKER_ID,
+      state: 'ACCEPTED',
+      started_at: null,
+      progress_state: 'TRAVELING',
+      active_reservation: true,
+      scope_change_pending: false,
+    }])).mockResolvedValueOnce(rows([{
+      id: TASK_ID,
+      progress_state: 'WORKING',
+      progress_updated_at: new Date('2026-07-20T21:55:00.000Z'),
+    }])).mockResolvedValueOnce(rows([], 1));
+
+    await expect(TaskExecutionService.startWork(TASK_ID, WORKER_ID)).resolves.toMatchObject({
+      success: true, data: { progress_state: 'WORKING' },
+    });
+    expect(mocks.writeToOutbox).toHaveBeenCalledOnce();
+    expect(mocks.writeToOutbox).toHaveBeenCalledWith(expect.objectContaining({
+      eventType: 'task.progress_updated',
+      aggregateId: TASK_ID,
+      idempotencyKey: `task.progress_updated:${TASK_ID}:TRAVELING:WORKING`,
+      payload: expect.objectContaining({
+        from: 'TRAVELING',
+        to: 'WORKING',
+        actor: { type: 'worker', userId: WORKER_ID },
+      }),
+    }), query);
   });
 
   it('fails closed when task start loses a race and on DB errors', async () => {

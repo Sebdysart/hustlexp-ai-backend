@@ -1,8 +1,8 @@
 /**
  * Trust Tier Service — v1 (LOCKED)
- * 
+ *
  * Pre-Alpha Prerequisite: Authoritative trust tier state machine.
- * 
+ *
  * Rules:
  * - Tier is stored on users.trust_tier
  * - Tier only changes via server-side transitions
@@ -19,6 +19,8 @@ import { invalidateAuthCacheForUser } from '../auth-cache.js';
 import { revokeUserSessions } from '../auth/middleware.js';
 import { forceDisconnectUser } from '../realtime/connection-registry.js';
 import { writeToOutbox } from '../lib/outbox-helpers.js';
+import { randomUUID } from 'node:crypto';
+import { issueDeactivationAppealRight } from './WorkerStandingDecisionService.js';
 
 const log = logger.child({ service: 'TrustTierService' });
 
@@ -27,22 +29,33 @@ const log = logger.child({ service: 'TrustTierService' });
 // ============================================================================
 
 /**
- * Trust Tier Enum (PRODUCT_SPEC §8.2)
+ * Canonical provider trust tiers from the Local Work Network blueprint.
  *
- * SPEC ALIGNMENT:
- * | Tier | Name     | Requirements                           |
- * |------|----------|----------------------------------------|
- * | 1    | ROOKIE   | New user                               |
- * | 2    | VERIFIED | 5 completed tasks, ID verified         |
- * | 3    | TRUSTED  | 20 tasks, 95%+ approval, priority      |
- * | 4    | ELITE    | 100+ tasks, <1% dispute, 4.8+ rating   |
+ * Tier 5 (Enterprise Crew) is intentionally absent. It belongs to the later
+ * business-provider phase and must not be approximated by an individual
+ * worker tier.
  */
 export enum TrustTier {
-  ROOKIE   = 1, // New user, low risk only
-  VERIFIED = 2, // 5 tasks + ID verified, low/medium risk
-  TRUSTED  = 3, // 20 tasks + 95% approval, low/medium risk
-  ELITE    = 4, // 100+ tasks + <1% dispute, all risk levels
-  BANNED   = 9  // terminal, no task access
+  EXPLORER = 0,
+  VERIFIED = 1,
+  HOME_READY = 2,
+  PRO = 3,
+  LICENSED_SPECIALIST = 4,
+  BANNED = 9,
+}
+
+export const TRUST_TIER_POLICY_VERSION = 'hustler-trust-progression-v1';
+
+export function trustTierName(tier: TrustTier | number): string {
+  switch (tier) {
+    case TrustTier.EXPLORER: return 'Explorer';
+    case TrustTier.VERIFIED: return 'Verified';
+    case TrustTier.HOME_READY: return 'Home Ready';
+    case TrustTier.PRO: return 'Pro';
+    case TrustTier.LICENSED_SPECIALIST: return 'Licensed Specialist';
+    case TrustTier.BANNED: return 'Deactivated';
+    default: return 'Unknown';
+  }
 }
 
 // ============================================================================
@@ -55,6 +68,16 @@ export type PromotionEligibility = {
   reasons: string[]; // empty if eligible
 };
 
+function trustTierFromRow(tier: number, isBanned: boolean): TrustTier {
+  if (isBanned || tier === TrustTier.BANNED) return TrustTier.BANNED;
+  if (tier === TrustTier.LICENSED_SPECIALIST) return TrustTier.LICENSED_SPECIALIST;
+  if (tier === TrustTier.PRO) return TrustTier.PRO;
+  if (tier === TrustTier.HOME_READY) return TrustTier.HOME_READY;
+  if (tier === TrustTier.VERIFIED) return TrustTier.VERIFIED;
+  if (tier === TrustTier.EXPLORER) return TrustTier.EXPLORER;
+  throw new Error(`Invalid persisted trust tier ${tier}`);
+}
+
 // ============================================================================
 // TRUST TIER SERVICE
 // ============================================================================
@@ -64,8 +87,8 @@ export const TrustTierService = {
    * Get user's current trust tier
    */
   getTrustTier: async (userId: string): Promise<TrustTier> => {
-    const result = await db.query<{ trust_tier: number }>(
-      `SELECT trust_tier FROM users WHERE id = $1`,
+    const result = await db.query<{ trust_tier: number; is_banned: boolean }>(
+      `SELECT trust_tier, is_banned FROM users WHERE id = $1`,
       [userId]
     );
 
@@ -73,14 +96,8 @@ export const TrustTierService = {
       throw new Error(`User ${userId} not found`);
     }
 
-    const tier = result.rows[0].trust_tier;
-
-    // SPEC ALIGNMENT: Trust tiers are 1-4 per PRODUCT_SPEC §8.2
-    if (tier === 9) return TrustTier.BANNED;
-    if (tier >= 4) return TrustTier.ELITE;
-    if (tier >= 3) return TrustTier.TRUSTED;
-    if (tier >= 2) return TrustTier.VERIFIED;
-    return TrustTier.ROOKIE; // Default for new users (tier 1)
+    const row = result.rows[0];
+    return trustTierFromRow(row.trust_tier, row.is_banned);
   },
 
   /**
@@ -98,17 +115,13 @@ export const TrustTierService = {
   ): Promise<PromotionEligibility> => {
     const query: QueryFn = queryFn ?? ((sql: string, params?: unknown[]) => db.query(sql, params));
     const currentTier = await (async () => {
-      const result = await query<{ trust_tier: number }>(
-        `SELECT trust_tier FROM users WHERE id = $1`,
+      const result = await query<{ trust_tier: number; is_banned: boolean }>(
+        `SELECT trust_tier, is_banned FROM users WHERE id = $1`,
         [userId]
       );
       if (result.rowCount === 0) throw new Error(`User ${userId} not found`);
-      const tier = result.rows[0].trust_tier;
-      if (tier === 9) return TrustTier.BANNED;
-      if (tier >= 4) return TrustTier.ELITE;
-      if (tier >= 3) return TrustTier.TRUSTED;
-      if (tier >= 2) return TrustTier.VERIFIED;
-      return TrustTier.ROOKIE;
+      const row = result.rows[0];
+      return trustTierFromRow(row.trust_tier, row.is_banned);
     })();
 
     // Cannot promote if banned
@@ -119,8 +132,9 @@ export const TrustTierService = {
       };
     }
 
-    // Already at max tier (ELITE = 4)
-    if (currentTier >= TrustTier.ELITE) {
+    // Enterprise Crew is not an individual-worker tier. Licensed Specialist
+    // is the maximum tier represented in this release.
+    if (currentTier >= TrustTier.LICENSED_SPECIALIST) {
       return {
         eligible: false,
         reasons: ['Already at maximum tier'],
@@ -130,16 +144,23 @@ export const TrustTierService = {
     const reasons: string[] = [];
     let targetTier: TrustTier | undefined;
 
-    // Evaluate VERIFIED (ROOKIE → VERIFIED) - PRODUCT_SPEC §8.2: 5 tasks + ID verified
-    if (currentTier === TrustTier.ROOKIE) {
-      // Check verification requirements
+    // Explorer → Verified: identity, phone, and payout onboarding are all
+    // required. A phone claim by itself never raises trust.
+    if (currentTier === TrustTier.EXPLORER) {
       const userResult = await query<{
         is_verified: boolean;
         verified_at: Date | null;
+        identity_verification_status: string | null;
+        identity_verification_environment: string | null;
+        identity_verification_expires_at: Date | null;
         phone: string | null;
-        stripe_customer_id: string | null;
+        stripe_connect_id: string | null;
+        payouts_enabled: boolean;
       }>(
-        `SELECT is_verified, verified_at, phone, stripe_customer_id
+        `SELECT is_verified, verified_at,
+                identity_verification_status,identity_verification_environment,
+                identity_verification_expires_at,
+                phone, stripe_connect_id, payouts_enabled
          FROM users
          WHERE id = $1`,
         [userId]
@@ -153,15 +174,19 @@ export const TrustTierService = {
       }
 
       const user = userResult.rows[0];
-      
-      if (!user.is_verified || !user.verified_at) {
+
+      if (!user.is_verified || !user.verified_at
+        || user.identity_verification_status !== 'VERIFIED'
+        || user.identity_verification_environment !== 'PRODUCTION'
+        || !user.identity_verification_expires_at
+        || new Date(user.identity_verification_expires_at).getTime() <= Date.now()) {
         reasons.push('ID verification required');
       }
       if (!user.phone) {
         reasons.push('Phone verification required');
       }
-      if (!user.stripe_customer_id) {
-        reasons.push('Payment method required');
+      if (!user.stripe_connect_id || !user.payouts_enabled) {
+        reasons.push('Payout onboarding required');
       }
 
       if (reasons.length === 0) {
@@ -169,183 +194,78 @@ export const TrustTierService = {
       }
     }
 
-    // Evaluate TRUSTED (VERIFIED → TRUSTED) - PRODUCT_SPEC §8.2: 20 tasks, 95%+ approval
+    // Verified → Home Ready: a current, non-test production screening and
+    // actual production completion history are mandatory. A filed dispute is
+    // not treated as guilt; only an active unresolved dispute pauses access.
     else if (currentTier === TrustTier.VERIFIED) {
-      // Get user account age
-      const userAgeResult = await query<{ account_age_days: number }>(
-        `SELECT EXTRACT(EPOCH FROM (NOW() - created_at)) / 86400 as account_age_days
-         FROM users
-         WHERE id = $1`,
+      const screeningResult = await query<{ current_screening: boolean }>(
+        `SELECT EXISTS (
+           SELECT 1
+           FROM background_checks screening
+           WHERE screening.user_id = $1
+             AND upper(screening.status) = 'CLEAR'
+             AND screening.provider_environment = 'PRODUCTION'
+             AND screening.is_test = FALSE
+             AND (screening.expires_at IS NULL OR screening.expires_at > NOW())
+         ) AS current_screening`,
         [userId]
       );
-      const accountAgeDays = Math.floor(userAgeResult.rows[0]?.account_age_days || 0);
-
-      // Get task completion stats
       const statsResult = await query<{
         completed_count: string;
-        dispute_count: string;
-        on_time_count: string;
-        total_count: string;
+        active_dispute_count: string;
       }>(
-        `SELECT 
-           COUNT(*) FILTER (WHERE t.state = 'COMPLETED' AND t.worker_id = $1) as completed_count,
-           COUNT(*) FILTER (WHERE EXISTS (
-             SELECT 1 FROM disputes d WHERE d.task_id = t.id
-           ) AND t.worker_id = $1) as dispute_count,
-           COUNT(*) FILTER (WHERE t.state = 'COMPLETED' 
-             AND (t.deadline IS NULL OR t.completed_at <= t.deadline)
-             AND t.worker_id = $1) as on_time_count,
-           COUNT(*) FILTER (WHERE t.worker_id = $1) as total_count
-         FROM tasks t
-         WHERE t.worker_id = $1`,
+        `SELECT
+           COUNT(*) FILTER (
+             WHERE task.state = 'COMPLETED'
+               AND task.automation_classification = 'PRODUCTION'
+           )::text AS completed_count,
+           (
+             SELECT COUNT(*)::text FROM disputes dispute
+             WHERE dispute.worker_id = $1
+               AND dispute.state IN ('OPEN','EVIDENCE_REQUESTED','ESCALATED')
+           ) AS active_dispute_count
+         FROM tasks task
+         WHERE task.worker_id = $1`,
         [userId]
       );
 
       const stats = statsResult.rows[0];
       const completedCount = parseInt(stats?.completed_count || '0', 10);
-      const disputeCount = parseInt(stats?.dispute_count || '0', 10);
-      const onTimeCount = parseInt(stats?.on_time_count || '0', 10);
-      const totalCount = parseInt(stats?.total_count || '0', 10);
+      const activeDisputeCount = parseInt(stats?.active_dispute_count || '0', 10);
 
-      // Check risk tier constraint: only Tier 0-1 tasks
-      const riskCheckResult = await query<{ count: string }>(
-        `SELECT COUNT(*) as count
-         FROM tasks t
-         WHERE t.worker_id = $1
-           AND t.state = 'COMPLETED'
-           AND t.risk_level NOT IN ('LOW', 'MEDIUM')`,
-        [userId]
-      );
-      const highRiskCount = parseInt(riskCheckResult.rows[0]?.count || '0', 10);
-
-      // SPEC ALIGNMENT: TRUSTED requires 20 tasks per PRODUCT_SPEC §8.2
-      if (completedCount < 20) {
-        reasons.push(`Need ${20 - completedCount} more completed tasks (have ${completedCount}, need 20)`);
+      if (!screeningResult.rows[0]?.current_screening) {
+        reasons.push('Current production enhanced screening required');
       }
-      if (disputeCount > 0) {
-        reasons.push(`Cannot have disputes (have ${disputeCount})`);
+      if (completedCount < 5) {
+        reasons.push(`Need ${5 - completedCount} more verified production completions (have ${completedCount}, need 5)`);
       }
-      if (totalCount > 0) {
-        const onTimeRate = onTimeCount / totalCount;
-        if (onTimeRate < 0.95) {
-          reasons.push(`On-time completion rate must be ≥95% (have ${(onTimeRate * 100).toFixed(1)}%)`);
-        }
-      }
-      if (accountAgeDays < 7) {
-        reasons.push(`Account age must be ≥7 days (have ${accountAgeDays} days)`);
-      }
-      if (highRiskCount > 0) {
-        reasons.push(`Cannot have completed Tier 2+ tasks (have ${highRiskCount})`);
+      if (activeDisputeCount > 0) {
+        reasons.push('Active dispute review must be resolved before Home Ready progression');
       }
 
       if (reasons.length === 0) {
-        targetTier = TrustTier.TRUSTED;
+        targetTier = TrustTier.HOME_READY;
       }
     }
 
-    // Evaluate ELITE (TRUSTED → ELITE) - PRODUCT_SPEC §8.2: 100+ tasks, <1% dispute, 4.8+ rating
-    else if (currentTier === TrustTier.TRUSTED) {
-      // Get user account age
-      const userAgeResult = await query<{ account_age_days: number }>(
-        `SELECT EXTRACT(EPOCH FROM (NOW() - created_at)) / 86400 as account_age_days
-         FROM users
-         WHERE id = $1`,
-        [userId]
+    // Business-provider onboarding is Phase 2. Do not infer business identity,
+    // insurance, or commercial credentials from task counts or XP.
+    else if (currentTier === TrustTier.HOME_READY) {
+      reasons.push(
+        'Pro progression is not enabled in the Build-Now release; production business verification, insurance, and applicable credentials are required',
       );
-      const accountAgeDays = Math.floor(userAgeResult.rows[0]?.account_age_days || 0);
+    }
 
-      // Get task completion stats
-      const statsResult = await query<{
-        completed_count: string;
-      }>(
-        `SELECT COUNT(*) FILTER (WHERE t.state = 'COMPLETED' AND t.worker_id = $1) as completed_count
-         FROM public.tasks t
-         WHERE t.worker_id = $1`,
-        [userId]
+    // Regulated categories are outside the launch-cell green lanes. Numeric
+    // tier alone never substitutes for jurisdiction-specific license evidence.
+    else if (currentTier === TrustTier.PRO) {
+      reasons.push(
+        'Licensed Specialist progression is not enabled in the Build-Now release; current jurisdiction-specific license verification is required',
       );
-
-      const stats = statsResult.rows[0];
-      const completedCount = parseInt(stats?.completed_count || '0', 10);
-
-      // Get distinct poster reviews (5-star only)
-      // Note: Assuming reviews are stored in a reviews table or derived from task completion
-      // For alpha, we'll check for 5 distinct posters with completed tasks
-      const _reviewsResult = await query<{ distinct_posters: string }>(
-        `SELECT COUNT(DISTINCT t.poster_id)::text as distinct_posters
-         FROM public.tasks t
-         WHERE t.worker_id = $1
-           AND t.state = 'COMPLETED'`,
-        [userId]
-      );
-      // distinctPosters available in _reviewsResult.rows[0]?.distinct_posters if needed
-
-      // Check security deposit (escrow)
-      // For alpha, we'll check if user has a security deposit locked
-      // Escrows table references tasks, so we join through tasks to get worker_id
-      const _depositResult = await query<{ has_deposit: boolean }>(
-        `SELECT EXISTS(
-           SELECT 1 FROM escrows e
-           JOIN tasks t ON e.task_id = t.id
-           WHERE t.worker_id = $1
-             AND e.state = 'LOCKED'
-             AND e.amount > 0
-         ) as has_deposit`,
-        [userId]
-      );
-      // hasDeposit available in _depositResult.rows[0]?.has_deposit if needed
-
-      // SPEC ALIGNMENT: ELITE requires 100+ tasks per PRODUCT_SPEC §8.2
-      if (completedCount < 100) {
-        reasons.push(`Need ${100 - completedCount} more completed tasks (have ${completedCount}, need 100)`);
-      }
-
-      // Get dispute rate for ELITE (must be <1%)
-      const disputeStatsResult = await query<{
-        total_tasks: string;
-        dispute_count: string;
-      }>(
-        `SELECT
-           COUNT(*) as total_tasks,
-           COUNT(*) FILTER (WHERE EXISTS (
-             SELECT 1 FROM disputes d WHERE d.task_id = t.id
-           )) as dispute_count
-         FROM tasks t
-         WHERE t.worker_id = $1 AND t.state = 'COMPLETED'`,
-        [userId]
-      );
-      const totalTasks = parseInt(disputeStatsResult.rows[0]?.total_tasks || '0', 10);
-      const disputeCount = parseInt(disputeStatsResult.rows[0]?.dispute_count || '0', 10);
-      const disputeRate = totalTasks > 0 ? disputeCount / totalTasks : 0;
-
-      if (disputeRate >= 0.01) {
-        reasons.push(`Dispute rate must be <1% (have ${(disputeRate * 100).toFixed(2)}%)`);
-      }
-
-      // Get average rating for ELITE (must be 4.8+)
-      const ratingResult = await query<{ avg_rating: string }>(
-        `SELECT AVG(r.score)::text as avg_rating
-         FROM ratings r
-         JOIN tasks t ON r.task_id = t.id
-         WHERE t.worker_id = $1`,
-        [userId]
-      );
-      const avgRating = parseFloat(ratingResult.rows[0]?.avg_rating || '0');
-
-      if (avgRating < 4.8) {
-        reasons.push(`Average rating must be ≥4.8 (have ${avgRating.toFixed(2)})`);
-      }
-
-      if (accountAgeDays < 30) {
-        reasons.push(`Account age must be ≥30 days (have ${accountAgeDays} days)`);
-      }
-
-      if (reasons.length === 0) {
-        targetTier = TrustTier.ELITE;
-      }
     }
 
     return {
-      eligible: reasons.length === 0,
+      eligible: reasons.length === 0 && targetTier !== undefined,
       targetTier,
       reasons,
     };
@@ -359,6 +279,10 @@ export const TrustTierService = {
     targetTier: TrustTier,
     source: 'system' | 'admin'
   ): Promise<{ success: true; alreadyApplied?: boolean }> => {
+    if (targetTier < TrustTier.VERIFIED || targetTier > TrustTier.LICENSED_SPECIALIST) {
+      throw new Error(`Unsupported promotion target ${targetTier}`);
+    }
+
     // Quick pre-flight guards outside the transaction (cheap, non-blocking)
     const preLockTier = await TrustTierService.getTrustTier(userId);
 
@@ -375,11 +299,12 @@ export const TrustTierService = {
     // between evaluation and the write.
     let updateRowCount = 0;
     let currentTier: TrustTier = preLockTier;
+    const transitionId = randomUUID();
 
     await db.serializableTransaction(async (txQuery) => {
       // Lock the user row for the duration of this transaction
-      const lockResult = await txQuery<{ trust_tier: number }>(
-        `SELECT trust_tier FROM users WHERE id = $1 FOR UPDATE`,
+      const lockResult = await txQuery<{ trust_tier: number; is_banned: boolean }>(
+        `SELECT trust_tier, is_banned FROM users WHERE id = $1 FOR UPDATE`,
         [userId]
       );
 
@@ -387,12 +312,8 @@ export const TrustTierService = {
         throw new Error(`User ${userId} not found`);
       }
 
-      const rawTier = lockResult.rows[0].trust_tier;
-      currentTier = rawTier === 9 ? TrustTier.BANNED
-        : rawTier >= 4 ? TrustTier.ELITE
-        : rawTier >= 3 ? TrustTier.TRUSTED
-        : rawTier >= 2 ? TrustTier.VERIFIED
-        : TrustTier.ROOKIE;
+      const lockedUser = lockResult.rows[0];
+      currentTier = trustTierFromRow(lockedUser.trust_tier, lockedUser.is_banned);
 
       // If the tier changed since the pre-flight check, abort
       if (currentTier !== preLockTier) {
@@ -409,6 +330,11 @@ export const TrustTierService = {
         throw new Error(`Promotion preconditions not met: ${eligibility.reasons.join(', ')}`);
       }
 
+      await txQuery(
+        `SELECT set_config('hustlexp.trust_promotion_authority', $1, TRUE)`,
+        [`${TRUST_TIER_POLICY_VERSION}:${transitionId}`],
+      );
+
       // CAS UPDATE — tier must still match what we read under the lock
       const updateResult = await txQuery(
         `UPDATE users
@@ -419,6 +345,42 @@ export const TrustTierService = {
       );
 
       updateRowCount = updateResult.rowCount;
+      if (updateRowCount === 0) return;
+
+      // Keep the derived dispatch profile synchronized in the same transaction.
+      // Missing profiles remain safely ineligible until onboarding creates one.
+      await txQuery(
+        `UPDATE capability_profiles
+         SET trust_tier = $1,
+             risk_clearance = CASE $1::integer
+               WHEN 0 THEN ARRAY['low']::text[]
+               WHEN 1 THEN ARRAY['low']::text[]
+               WHEN 2 THEN ARRAY['low','medium']::text[]
+               ELSE ARRAY['low','medium','high']::text[]
+             END,
+             updated_at = NOW()
+         WHERE user_id = $2`,
+        [targetTier, userId],
+      );
+
+      // The Tier 0 → 1 transition is material trust evidence and must not be
+      // omitted from the append-only ledger.
+      await txQuery(
+        `INSERT INTO trust_ledger (
+           user_id,old_tier,new_tier,reason,reason_details,changed_by,
+           idempotency_key,event_source,source_event_id
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,'system',$8)`,
+        [
+          userId,
+          currentTier,
+          targetTier,
+          `Promoted to ${trustTierName(targetTier)} via ${source}`,
+          JSON.stringify({ policyVersion: TRUST_TIER_POLICY_VERSION, source }),
+          source,
+          `trust_promotion:${transitionId}`,
+          transitionId,
+        ],
+      );
     });
 
     if (updateRowCount === 0) {
@@ -439,33 +401,15 @@ export const TrustTierService = {
     const firebaseUid = firebaseUidResult.rows[0]?.firebase_uid;
     await invalidateAuthCacheForUser(userId, firebaseUid);
 
-    // Log transition (if trust_ledger exists)
-    try {
-      // trust_ledger requires old_tier >= 1, but we might have UNVERIFIED (0) or BANNED (9)
-      // Only log if both tiers are in valid range (1-4)
-      if (currentTier >= 1 && currentTier <= 4 && targetTier >= 1 && targetTier <= 4) {
-        const idempotencyKey = `trust_promotion:${userId}:${targetTier}`;
-        await db.query(
-          `INSERT INTO trust_ledger (user_id, old_tier, new_tier, reason, changed_by, idempotency_key, event_source)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)
-           ON CONFLICT (idempotency_key) DO NOTHING`,
-          [
-            userId,
-            currentTier,
-            targetTier,
-            `Promoted to ${TrustTier[targetTier]} via ${source}`,
-            source,
-            idempotencyKey,
-            'system',
-          ]
-        );
-      }
-    } catch (error) {
-      // trust_ledger may not exist in alpha - log but don't fail
-      log.warn({ err: error instanceof Error ? error.message : String(error), userId, currentTier, targetTier }, 'Failed to log trust tier transition');
-    }
-
-    log.info({ userId, oldTier: currentTier, newTier: targetTier, oldTierName: TrustTier[currentTier], newTierName: TrustTier[targetTier], source }, 'Trust tier promotion applied');
+    log.info({
+      userId,
+      oldTier: currentTier,
+      newTier: targetTier,
+      oldTierName: trustTierName(currentTier),
+      newTierName: trustTierName(targetTier),
+      policyVersion: TRUST_TIER_POLICY_VERSION,
+      source,
+    }, 'Trust tier promotion applied');
 
     // Alpha Instrumentation: Emit trust delta applied
     try {
@@ -481,7 +425,7 @@ export const TrustTierService = {
         role,
         delta_type: 'tier',
         delta_amount: targetTier - currentTier,
-        reason_code: `promotion_${TrustTier[targetTier]}_via_${source}`,
+        reason_code: `promotion_${trustTierName(targetTier).toLowerCase().replace(/\s+/g, '_')}_via_${source}`,
         task_id: undefined, // Promotions are not task-specific
         timestamp: new Date(),
       });
@@ -506,12 +450,14 @@ export const TrustTierService = {
     // transaction with a FOR UPDATE row lock.  Without the lock there is a TOCTOU
     // window: a concurrent promotion can commit between getTrustTier() and the
     // UPDATE, making `currentTier` stale for the instrumentation delta.
-    let currentTier: TrustTier = TrustTier.ROOKIE; // placeholder; set inside txn
+    let currentTier: TrustTier = TrustTier.EXPLORER; // placeholder; set inside txn
     let banRowCount = 0;
+    let alreadyBanned = false;
+    const standingDecisionKey = `trust-ban:${randomUUID()}`;
 
     await db.transaction(async (txQuery) => {
-      const lockResult = await txQuery<{ trust_tier: number }>(
-        `SELECT trust_tier FROM users WHERE id = $1 FOR UPDATE`,
+      const lockResult = await txQuery<{ trust_tier: number; is_banned: boolean; default_mode: string }>(
+        `SELECT trust_tier, is_banned, default_mode FROM users WHERE id = $1 FOR UPDATE`,
         [userId]
       );
 
@@ -519,28 +465,36 @@ export const TrustTierService = {
         return; // User not found — treat as no-op
       }
 
-      const rawTier = lockResult.rows[0].trust_tier;
-      currentTier = rawTier === 9 ? TrustTier.BANNED
-        : rawTier >= 4 ? TrustTier.ELITE
-        : rawTier >= 3 ? TrustTier.TRUSTED
-        : rawTier >= 2 ? TrustTier.VERIFIED
-        : TrustTier.ROOKIE;
+      const lockedUser = lockResult.rows[0];
+      currentTier = trustTierFromRow(lockedUser.trust_tier, false);
 
-      if (currentTier === TrustTier.BANNED) {
+      if (lockedUser.is_banned) {
+        alreadyBanned = true;
         return; // Already banned — early exit inside txn
       }
 
       const banResult = await txQuery(
         `UPDATE users
-         SET trust_tier = $1, is_banned = TRUE, updated_at = NOW()
-         WHERE id = $2 AND trust_tier != $1`,
-        [TrustTier.BANNED, userId]
+         SET is_banned = TRUE, updated_at = NOW()
+         WHERE id = $1 AND is_banned = FALSE`,
+        [userId]
       );
 
       banRowCount = banResult.rowCount;
+      if (banRowCount > 0 && lockedUser.default_mode === 'worker') {
+        await issueDeactivationAppealRight({
+          query: txQuery,
+          workerId: userId,
+          currentTier,
+          decidedBy: null,
+          decisionSource: 'SYSTEM',
+          reason,
+          sourceIdempotencyKey: standingDecisionKey,
+        });
+      }
     });
 
-    if ((currentTier as TrustTier) === TrustTier.BANNED) {
+    if (alreadyBanned) {
       return; // Already banned
     }
 
@@ -738,7 +692,7 @@ export const TrustTierService = {
         user_id: userId,
         role,
         delta_type: 'tier',
-        delta_amount: TrustTier.BANNED - currentTier, // Negative value indicates ban
+        delta_amount: 0,
         reason_code: `ban_${reason.replace(/\s+/g, '_').toLowerCase()}`,
         task_id: undefined, // Bans are not task-specific
         timestamp: new Date(),

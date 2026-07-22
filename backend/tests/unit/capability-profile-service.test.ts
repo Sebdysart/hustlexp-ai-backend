@@ -49,7 +49,7 @@ beforeEach(() => {
 
 const profileRow = {
   user_id: 'user-1',
-  trust_tier: 'B',
+  trust_tier: 3,
   risk_clearance: ['low', 'medium', 'high'],
   location_state: 'WA',
   location_city: 'Seattle',
@@ -75,7 +75,7 @@ describe('getCapabilityProfile', () => {
 
     const profile = await getCapabilityProfile('user-1');
     expect(profile.userId).toBe('user-1');
-    expect(profile.trustTier).toBe('B');
+    expect(profile.trustTier).toBe(3);
     expect(profile.verifiedTrades).toHaveLength(1);
     expect(profile.insuranceValid).toBe(true);
   });

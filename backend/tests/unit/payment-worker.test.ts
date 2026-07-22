@@ -54,14 +54,26 @@ vi.mock('../../src/services/TaskService.js', () => ({
   },
 }));
 
+vi.mock('../../src/services/EscrowService.js', () => ({
+  EscrowService: {
+    release: vi.fn().mockResolvedValue({
+      success: true,
+      data: { id: 'escrow-release', state: 'RELEASED', version: 4 },
+    }),
+    getById: vi.fn(),
+  },
+}));
+
 vi.mock('../../src/services/RevenueService.js', () => ({
   RevenueService: {
     logEvent: vi.fn().mockResolvedValue({ success: true, data: { id: 'rev-1' } }),
   },
 }));
 
-vi.mock('../../src/services/PushNotificationService.js', () => ({
-  sendPushNotification: vi.fn().mockResolvedValue(undefined),
+vi.mock('../../src/services/NotificationService.js', () => ({
+  NotificationService: {
+    createNotification: vi.fn().mockResolvedValue({ success: true }),
+  },
 }));
 
 vi.mock('../../src/jobs/queues.js', () => ({
@@ -96,6 +108,8 @@ import { db } from '../../src/db';
 import { processPaymentJob } from '../../src/jobs/payment-worker';
 import { RevenueService } from '../../src/services/RevenueService.js';
 import { StripeService } from '../../src/services/StripeService.js';
+import { EscrowService } from '../../src/services/EscrowService.js';
+import { verifyJobSignature } from '../../src/jobs/queues.js';
 import type { Job } from 'bullmq';
 
 const mockDb = { query: mockQuery, transaction: vi.mocked(db.transaction) };
@@ -108,7 +122,7 @@ function makeJob(eventType: string, stripeEventId = 'evt_pay_123'): Job {
   return {
     id: 'job-1',
     data: {
-      payload: { stripeEventId, eventType, eventCreated: new Date().toISOString() },
+      payload: { stripeEventId, eventType, eventCreated: new Date().toISOString(), _sig: 'test-sig' },
     },
   } as unknown as Job;
 }
@@ -140,7 +154,7 @@ function setupClaim(eventType: string, dataObject: Record<string, unknown>, stri
  *   5. UPDATE stripe_events SET processed_at=NOW(), result='success' (db.query)
  */
 function setupSuccessfulPaymentIntentSucceeded(stripeEventId = 'evt_pay_123') {
-  const paymentIntent = { id: 'pi_abc', amount: 5000 };
+  const paymentIntent = { id: 'pi_abc', amount: 5000, amount_received: 5000 };
 
   // 1. Claim
   setupClaim('payment_intent.succeeded', paymentIntent, stripeEventId);
@@ -189,6 +203,42 @@ beforeEach(() => {
 // ===========================================================================
 
 describe('processPaymentJob', () => {
+  describe('financial job authenticity', () => {
+    it('rejects an unsigned payment job before touching the database', async () => {
+      const job = makeJob('payment_intent.payment_failed');
+      delete (job.data.payload as Record<string, unknown>)._sig;
+
+      await expect(processPaymentJob(job as never)).rejects.toThrow('JOB_SIGNATURE_REQUIRED');
+      expect(mockQuery).not.toHaveBeenCalled();
+    });
+
+    it('rejects an invalid signature before touching the database', async () => {
+      vi.mocked(verifyJobSignature).mockReturnValueOnce(false);
+
+      await expect(processPaymentJob(makeJob('transfer.failed') as never))
+        .rejects.toThrow('JOB_SIGNATURE_INVALID');
+      expect(mockQuery).not.toHaveBeenCalled();
+    });
+
+    it('accepts the canonical signed type field without rewriting the envelope', async () => {
+      const job = makeJob('unused');
+      job.data.payload = {
+        stripeEventId: 'evt_canonical',
+        type: 'transfer.failed',
+        _sig: 'test-sig',
+      } as never;
+      mockQuery
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+        .mockResolvedValueOnce({ rows: [{ result: 'success', claimed_at: new Date(), processed_at: new Date() }], rowCount: 1 } as never);
+
+      await expect(processPaymentJob(job as never)).resolves.toBeUndefined();
+      expect(verifyJobSignature).toHaveBeenCalledWith(
+        { stripeEventId: 'evt_canonical', type: 'transfer.failed' },
+        'test-sig',
+      );
+    });
+  });
+
   // -------------------------------------------------------------------------
   // Retry-safety: error path must NOT tombstone with processed_at
   // -------------------------------------------------------------------------
@@ -361,8 +411,7 @@ describe('processPaymentJob', () => {
       expect(errorUpdateSql).not.toContain('processed_at');
     });
 
-    it('when amount mismatch: releases claim, does NOT tombstone with processed_at', async () => {
-      // BUG 1 FIX: amount_received is now the coverage check (must be >= escrow.amount).
+    it('when underpaid: releases claim, does NOT tombstone with processed_at', async () => {
       // Simulate an underpayment: PI collected less than the escrow amount.
       setupClaim('payment_intent.succeeded', { id: 'pi_mismatch', amount: 3000, amount_received: 2999 });
       // Escrow with amount that exceeds what was received (inside transaction)
@@ -375,12 +424,30 @@ describe('processPaymentJob', () => {
 
       await expect(
         processPaymentJob(makeJob('payment_intent.succeeded'))
-      ).rejects.toThrow(/insufficient payment|less than escrow/i);
+      ).rejects.toThrow(/does not exactly match escrow/i);
 
       const calls = mockQuery.mock.calls;
       const errorUpdateSql: string = calls[calls.length - 1][0] as string;
       expect(errorUpdateSql).toContain('claimed_at = NULL');
       expect(errorUpdateSql).not.toContain('processed_at');
+    });
+
+    it('when overpaid: releases claim and leaves the immutable escrow unfunded', async () => {
+      setupClaim('payment_intent.succeeded', { id: 'pi_overpaid', amount: 5001, amount_received: 5001 });
+      mockQuery.mockResolvedValueOnce({
+        rows: [{ id: 'escrow-overpaid', state: 'PENDING', version: 1, amount: 5000 }],
+        rowCount: 1,
+      } as never);
+      mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+      await expect(processPaymentJob(makeJob('payment_intent.succeeded')))
+        .rejects.toThrow(/does not exactly match escrow/i);
+
+      const calls = mockQuery.mock.calls;
+      const errorUpdateSql: string = calls[calls.length - 1][0] as string;
+      expect(errorUpdateSql).toContain('claimed_at = NULL');
+      expect(errorUpdateSql).not.toContain('processed_at');
+      expect(calls.some(([sql]) => String(sql).includes("SET state = 'FUNDED'"))).toBe(false);
     });
   });
 
@@ -393,14 +460,14 @@ describe('processPaymentJob', () => {
      * Sequence (all through shared mockQuery):
      *   1. Claim UPDATE (db.query) → row
      *   2. Inside db.transaction: SELECT escrows ... FOR UPDATE → LOCKED_DISPUTE escrow
-     *   3. Inside db.transaction: UPDATE escrows SET state='RELEASED' → updated row
-     *   4. TaskService.advanceProgress (already mocked)
-     *   5. writeToOutbox (already mocked)
-     *   6. UPDATE stripe_events SET processed_at=NOW(), result='success' (db.query)
+     *   3. EscrowService.release() performs the canonical transition
+     *   4. Revenue idempotency guard finds an existing row
+     *   5. UPDATE stripe_events SET processed_at=NOW(), result='success' (db.query)
      */
     function setupTransferCreatedFromLockedDispute(escrowId = 'escrow-dispute-111') {
       const transfer = {
         id: 'tr_dispute_abc',
+        amount: 4150,
         metadata: { escrow_id: escrowId },
       };
 
@@ -409,19 +476,26 @@ describe('processPaymentJob', () => {
 
       // 2. Escrow SELECT inside transaction — in LOCKED_DISPUTE state
       mockQuery.mockResolvedValueOnce({
-        rows: [{ id: escrowId, task_id: 'task-999', state: 'LOCKED_DISPUTE', version: 3, stripe_transfer_id: null }],
+        rows: [{
+          id: escrowId,
+          task_id: 'task-999',
+          state: 'LOCKED_DISPUTE',
+          version: 3,
+          amount: 5000,
+          platform_fee_cents: 750,
+          stripe_transfer_id: null,
+          stripe_payment_intent_id: 'pi_dispute',
+        }],
         rowCount: 1,
       } as never);
 
-      // 3. Escrow UPDATE → RELEASED (inside transaction)
+      // 3. Revenue guard → existing row, so attribution/ledger writes are skipped
       mockQuery.mockResolvedValueOnce({
-        rows: [{ id: escrowId, state: 'RELEASED', version: 4 }],
+        rows: [{ id: 'rev-existing' }],
         rowCount: 1,
       } as never);
 
-      // 4. TaskService.advanceProgress + writeToOutbox are globally mocked
-
-      // 5. Final success UPDATE for stripe_events (db.query)
+      // 4. Final success UPDATE for stripe_events (db.query)
       mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
 
       return transfer;
@@ -441,16 +515,17 @@ describe('processPaymentJob', () => {
       expect(sql).toContain("result = 'success'");
     });
 
-    it('the escrow UPDATE WHERE clause accepts both FUNDED and LOCKED_DISPUTE states', async () => {
+    it('delegates LOCKED_DISPUTE release to the canonical EscrowService path', async () => {
       setupTransferCreatedFromLockedDispute('escrow-dispute-222');
 
       await processPaymentJob(makeJob('transfer.created', 'evt_transfer_dispute'));
 
-      // Find the UPDATE escrows call — it's call index 2 (0=claim, 1=select, 2=update)
-      const escrowUpdateCall = mockQuery.mock.calls[2];
-      const sql: string = escrowUpdateCall[0] as string;
-      // The WHERE clause must accept both FUNDED and LOCKED_DISPUTE
-      expect(sql).toMatch(/state IN \('FUNDED', 'LOCKED_DISPUTE'\)/);
+      expect(vi.mocked(EscrowService.release)).toHaveBeenCalledWith({
+        escrowId: 'escrow-dispute-222',
+        stripeTransferId: 'tr_dispute_abc',
+      });
+      const sqls = mockQuery.mock.calls.map((call) => String(call[0]));
+      expect(sqls.some((sql) => sql.includes("SET state = 'RELEASED'"))).toBe(false);
     });
 
     it('throws and releases claim for an unexpected state (e.g. PENDING)', async () => {
@@ -472,23 +547,77 @@ describe('processPaymentJob', () => {
       expect(errorUpdateSql).toContain('claimed_at = NULL');
     });
 
-    it('skips (terminal) when escrow is already RELEASED on transfer.created', async () => {
-      setupClaim('transfer.created', { id: 'tr_skip', metadata: { escrow_id: 'escrow-released' } }, 'evt_tr_skip');
-      // Already RELEASED → terminal skip path (inside transaction)
+    it.each([
+      { label: 'underpayment', amount: 4149 },
+      { label: 'overpayment', amount: 4151 },
+    ])('rejects a one-cent $label before mutating escrow', async ({ amount }) => {
+      setupClaim('transfer.created', {
+        id: 'tr_amount_mismatch',
+        amount,
+        metadata: { escrow_id: 'escrow-amount-mismatch' },
+      }, 'evt_tr_amount_mismatch');
       mockQuery.mockResolvedValueOnce({
-        rows: [{ id: 'escrow-released', task_id: 'task-y', state: 'RELEASED', version: 5, stripe_transfer_id: 'tr_skip' }],
+        rows: [{
+          id: 'escrow-amount-mismatch',
+          task_id: 'task-amount-mismatch',
+          state: 'FUNDED',
+          version: 2,
+          amount: 5000,
+          platform_fee_cents: 750,
+          stripe_transfer_id: null,
+          stripe_payment_intent_id: 'pi_amount_mismatch',
+        }],
         rowCount: 1,
       } as never);
-      // Inside transaction: UPDATE stripe_events SET result='skipped'
       mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
-      // No final success UPDATE (early return after skip)
+
+      await expect(
+        processPaymentJob(makeJob('transfer.created', 'evt_tr_amount_mismatch')),
+      ).rejects.toThrow(/does not match expected net payout \(4150\)/);
+
+      const sqls = mockQuery.mock.calls.map((call) => String(call[0]));
+      expect(sqls.some((sql) => sql.includes("SET state = 'RELEASED'"))).toBe(false);
+      expect(vi.mocked(EscrowService.release)).not.toHaveBeenCalled();
+      expect(sqls.at(-1)).toContain('claimed_at = NULL');
+    });
+
+    it('accepts an exact same-transfer replay when escrow is already RELEASED', async () => {
+      setupClaim('transfer.created', { id: 'tr_skip', amount: 4150, metadata: { escrow_id: 'escrow-released' } }, 'evt_tr_skip');
+      mockQuery.mockResolvedValueOnce({
+        rows: [{
+          id: 'escrow-released', task_id: 'task-y', state: 'RELEASED', version: 5,
+          amount: 5000, platform_fee_cents: 750, stripe_transfer_id: 'tr_skip',
+          stripe_payment_intent_id: 'pi_released',
+        }],
+        rowCount: 1,
+      } as never);
+      mockQuery.mockResolvedValueOnce({ rows: [{ id: 'rev-existing' }], rowCount: 1 } as never);
+      mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
 
       await processPaymentJob(makeJob('transfer.created', 'evt_tr_skip'));
 
-      // Verify the skipped update was issued inside the transaction
       const allSqls = mockQuery.mock.calls.map(c => c[0] as string);
-      const skipSql = allSqls.find(s => s.includes("result = 'skipped'"));
-      expect(skipSql).toBeDefined();
+      expect(allSqls.at(-1)).toContain("result = 'success'");
+      expect(vi.mocked(EscrowService.release)).not.toHaveBeenCalled();
+    });
+
+    it('rejects a different transfer for an already RELEASED escrow', async () => {
+      setupClaim('transfer.created', {
+        id: 'tr_conflict', amount: 4150, metadata: { escrow_id: 'escrow-released' },
+      }, 'evt_tr_conflict');
+      mockQuery.mockResolvedValueOnce({
+        rows: [{
+          id: 'escrow-released', task_id: 'task-y', state: 'RELEASED', version: 5,
+          amount: 5000, platform_fee_cents: 750, stripe_transfer_id: 'tr_original',
+          stripe_payment_intent_id: 'pi_released',
+        }],
+        rowCount: 1,
+      } as never);
+      mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+      await expect(processPaymentJob(makeJob('transfer.created', 'evt_tr_conflict')))
+        .rejects.toThrow(/Transfer conflict/);
+      expect(vi.mocked(EscrowService.release)).not.toHaveBeenCalled();
     });
   });
 
@@ -650,8 +779,8 @@ describe('processPaymentJob', () => {
 
       const logEventCall = vi.mocked(RevenueService.logEvent).mock.calls[0][0];
       expect(logEventCall.eventType).toBe('platform_fee_reversal');
-      // Platform fee = 15% of 10000 = 1500, reversed = -1500
-      expect(logEventCall.amountCents).toBe(-1500);
+      // Legacy fallback margin = 20% of 10000 = 2000, reversed = -2000
+      expect(logEventCall.amountCents).toBe(-2000);
       expect(logEventCall.escrowId).toBe('escrow-refund-2');
     });
 
@@ -762,7 +891,7 @@ describe('processPaymentJob — transfer.created platform_fee double-log guard (
   const STRIPE_EVENT_ID = 'evt_transfer_dup_fee';
   const ESCROW_ID = 'escrow-dup-fee';
 
-  /** Mocks the release transaction (claim → SELECT escrow → UPDATE → RELEASED) up to the fee guard. */
+  /** Mocks claim + provider-fact preflight up to the fee guard. */
   function setupReleaseUpToFeeGuard(options: {
     amount?: number;
     platformFeeCents?: number | null;
@@ -771,8 +900,15 @@ describe('processPaymentJob — transfer.created platform_fee double-log guard (
     const amount = options.amount ?? 10_000;
     const platformFeeCents = options.platformFeeCents === undefined ? 2500 : options.platformFeeCents;
     const paymentIntentId = options.paymentIntentId === undefined ? 'pi_transfer_fee' : options.paymentIntentId;
+    const expectedTransferAmount = amount
+      - (platformFeeCents ?? Math.round(amount * 0.15))
+      - Math.round(amount * 0.02);
     // 1. atomic claim
-    setupClaim('transfer.created', { id: 'tr_dup', metadata: { escrow_id: ESCROW_ID } }, STRIPE_EVENT_ID);
+    setupClaim('transfer.created', {
+      id: 'tr_dup',
+      amount: expectedTransferAmount,
+      metadata: { escrow_id: ESCROW_ID },
+    }, STRIPE_EVENT_ID);
     // 2. SELECT escrow FOR UPDATE → LOCKED_DISPUTE (releasable, not terminal)
     mockQuery.mockResolvedValueOnce({
       rows: [{
@@ -785,11 +921,6 @@ describe('processPaymentJob — transfer.created platform_fee double-log guard (
         stripe_transfer_id: null,
         stripe_payment_intent_id: paymentIntentId,
       }],
-      rowCount: 1,
-    } as never);
-    // 3. UPDATE escrows → RELEASED
-    mockQuery.mockResolvedValueOnce({
-      rows: [{ id: ESCROW_ID, state: 'RELEASED', version: 4 }],
       rowCount: 1,
     } as never);
   }
@@ -882,7 +1013,6 @@ describe('processPaymentJob — transfer.created platform_fee double-log guard (
 
   it.each([
     { label: 'missing worker', amount: 10_000, workerId: null },
-    { label: 'zero gross', amount: 0, workerId: 'worker-dup' },
   ])('does not fabricate fee revenue for $label', async ({ amount, workerId }) => {
     setupReleaseUpToFeeGuard({ amount });
     mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);

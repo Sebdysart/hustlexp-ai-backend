@@ -21,9 +21,24 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import pg from 'pg';
 import { db, hasDb } from '../../src/db';
 import { PlanService } from '../../src/services/PlanService';
-import type { User, Task } from '../../src/types';
+import { processEntitlementPurchase } from '../../src/services/StripeEntitlementProcessor';
+import { processSubscriptionEvent } from '../../src/services/StripeSubscriptionProcessor';
+import type { User } from '../../src/types';
+import { createTestPool, createTestTask } from '../setup';
+
+let testPool: pg.Pool;
+
+beforeAll(() => {
+  if (!hasDb) return;
+  testPool = createTestPool();
+});
+
+afterAll(async () => {
+  if (testPool) await testPool.end();
+});
 
 // ============================================================================
 // TEST HELPERS
@@ -89,21 +104,6 @@ async function getUserPlan(userId: string): Promise<'free' | 'premium' | 'pro'> 
   return result.rows[0]?.plan || 'free';
 }
 
-async function updateUserPlan(
-  userId: string,
-  plan: 'free' | 'premium' | 'pro',
-  sourceEventId: string
-): Promise<void> {
-  await db.query(
-    `UPDATE users 
-     SET plan = $1::VARCHAR(20), 
-         plan_subscribed_at = CASE WHEN $1::VARCHAR(20) != 'free' THEN NOW() ELSE plan_subscribed_at END,
-         plan_expires_at = CASE WHEN $1::VARCHAR(20) != 'free' THEN NOW() + INTERVAL '30 days' ELSE NULL END
-     WHERE id = $2`,
-    [plan, userId]
-  );
-}
-
 // ============================================================================
 // INVARIANT S-1: Stripe Event Idempotency
 // ============================================================================
@@ -165,43 +165,54 @@ describe.skipIf(!hasDb)('Invariant S-2: Subscription Plan Changes Are Monotonic'
     const initialPlan = await getUserPlan(userId);
     expect(initialPlan).toBe('free');
 
+    await insertStripeEvent(eventId, 'customer.subscription.updated');
+    const periodEnd = Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60;
+    const payload = {
+      id: 'sub_test',
+      customer: 'cus_test',
+      metadata: { user_id: userId },
+      items: { data: [{ price: { metadata: { plan: 'premium' as const } } }] },
+      current_period_end: periodEnd,
+      status: 'active',
+    };
+
     // First plan change
-    await updateUserPlan(userId, 'premium', eventId);
+    await processSubscriptionEvent(payload, eventId);
     const afterFirst = await getUserPlan(userId);
     expect(afterFirst).toBe('premium');
+    const firstTimestamps = await db.query<{ plan_subscribed_at: Date; plan_expires_at: Date }>(
+      `SELECT plan_subscribed_at, plan_expires_at FROM users WHERE id = $1`,
+      [userId]
+    );
 
-    // Attempt to process same event again (replay)
-    // In real implementation, this would check stripe_events.processed_at
-    // For now, we verify the plan doesn't change on "replay"
-    await updateUserPlan(userId, 'premium', eventId);
+    // Replay the exact validated event.
+    await processSubscriptionEvent(payload, eventId);
     const afterReplay = await getUserPlan(userId);
     expect(afterReplay).toBe('premium');
 
-    // Verify plan_subscribed_at wasn't updated twice
-    const user = await db.query<{ plan_subscribed_at: Date }>(
-      `SELECT plan_subscribed_at FROM users WHERE id = $1`,
+    const replayTimestamps = await db.query<{ plan_subscribed_at: Date; plan_expires_at: Date }>(
+      `SELECT plan_subscribed_at, plan_expires_at FROM users WHERE id = $1`,
       [userId]
     );
-    expect(user.rows[0].plan_subscribed_at).toBeDefined();
+    expect(replayTimestamps.rows[0]).toEqual(firstTimestamps.rows[0]);
   });
 
   it('S-2: plan cannot downgrade before expiry', async () => {
-    // Set user to premium with future expiry
-    // TIME AUTHORITY: Uses DB NOW() as authoritative time source (not application clock)
-    await db.query(
-      `UPDATE users 
-       SET plan = 'premium', 
-           plan_expires_at = NOW() + INTERVAL '20 days'
-       WHERE id = $1`,
-      [userId]
-    );
+    const eventId = `evt_sub_cancel_${Date.now()}`;
+    await insertStripeEvent(eventId, 'customer.subscription.deleted');
+    const futurePeriodEnd = Math.floor(Date.now() / 1000) + 20 * 24 * 60 * 60;
+    await processSubscriptionEvent({
+      id: 'sub_test',
+      customer: 'cus_test',
+      metadata: { user_id: userId },
+      items: { data: [{ price: { metadata: { plan: 'premium' as const } } }] },
+      current_period_end: futurePeriodEnd,
+      status: 'canceled',
+    }, eventId);
 
     const plan = await getUserPlan(userId);
     expect(plan).toBe('premium');
 
-    // Attempt early downgrade should be prevented
-    // In real implementation, this would check plan_expires_at > NOW()
-    // TIME AUTHORITY: Downgrade logic must use DB NOW(), not application Date.now()
     const user = await db.query<{ plan: string; plan_expires_at: Date }>(
       `SELECT plan, plan_expires_at FROM users WHERE id = $1`,
       [userId]
@@ -209,11 +220,9 @@ describe.skipIf(!hasDb)('Invariant S-2: Subscription Plan Changes Are Monotonic'
     const expiresAt = new Date(user.rows[0].plan_expires_at);
     const now = new Date();
 
-    // If expiry is in future, downgrade should not happen
-    // Note: This test uses JS Date for comparison, but production code must use DB NOW()
-    if (expiresAt > now) {
-      expect(user.rows[0].plan).toBe('premium');
-    }
+    expect(expiresAt).toBeInstanceOf(Date);
+    expect(expiresAt.getTime()).toBeGreaterThan(now.getTime());
+    expect(user.rows[0].plan).toBe('premium');
   });
 });
 
@@ -229,14 +238,8 @@ describe.skipIf(!hasDb)('Invariant S-3: Per-Task Entitlements Are Idempotent', (
     const user = await createTestUser('free');
     userId = user.id;
 
-    // Create a test task (canonical schema doesn't have risk_level or progress_state columns)
-    const taskResult = await db.query<Task>(
-      `INSERT INTO tasks (poster_id, title, description, price, state)
-       VALUES ($1, 'Test Task', 'Test', 1000, 'OPEN')
-       RETURNING *`,
-      [userId]
-    );
-    taskId = taskResult.rows[0].id;
+    const task = await createTestTask(testPool, { posterId: userId });
+    taskId = task.id;
   });
 
   afterAll(async () => {
@@ -318,13 +321,8 @@ describe.skipIf(!hasDb)('Invariant S-4: Entitlements Never Outlive Validity', ()
     const user = await createTestUser('free');
     userId = user.id;
 
-    const taskResult = await db.query<Task>(
-      `INSERT INTO tasks (poster_id, title, description, price, state)
-       VALUES ($1, 'Test Task', 'Test', 1000, 'OPEN')
-       RETURNING *`,
-      [userId]
-    );
-    taskId = taskResult.rows[0].id;
+    const task = await createTestTask(testPool, { posterId: userId });
+    taskId = task.id;
   });
 
   afterAll(async () => {
@@ -361,9 +359,9 @@ describe.skipIf(!hasDb)('Invariant S-4: Entitlements Never Outlive Validity', ()
       expiresAt,
     });
 
-    // Note: PlanService.canCreateTaskWithRisk doesn't check entitlements yet
-    // This test documents the expected behavior once entitlement checks are added
-    // For now, we verify the entitlement exists and is not expired
+    const check = await PlanService.canCreateTaskWithRisk(userId, 'HIGH');
+    expect(check.allowed).toBe(true);
+
     const entitlements = await db.query(
       `SELECT * FROM plan_entitlements 
        WHERE user_id = $1 
@@ -423,13 +421,8 @@ describe.skipIf(!hasDb)('Invariant S-5: Entitlements Must Reference a Valid Stri
     const user = await createTestUser('free');
     userId = user.id;
 
-    const taskResult = await db.query<Task>(
-      `INSERT INTO tasks (poster_id, title, description, price, state)
-       VALUES ($1, 'Test Task', 'Test', 1000, 'OPEN')
-       RETURNING *`,
-      [userId]
-    );
-    taskId = taskResult.rows[0].id;
+    const task = await createTestTask(testPool, { posterId: userId });
+    taskId = task.id;
   });
 
   afterAll(async () => {
@@ -440,8 +433,6 @@ describe.skipIf(!hasDb)('Invariant S-5: Entitlements Must Reference a Valid Stri
 
   it('S-5: entitlement creation requires valid Stripe event', async () => {
     const eventId = `evt_valid_${Date.now()}`;
-    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
-
     // First, insert the Stripe event (causal requirement)
     await insertStripeEvent(eventId, 'payment_intent.succeeded', {
       data: { object: { id: `pi_${Date.now()}` } },
@@ -454,14 +445,10 @@ describe.skipIf(!hasDb)('Invariant S-5: Entitlements Must Reference a Valid Stri
     );
     expect(Number(eventExists.rows[0].count)).toBe(1);
 
-    // Now create entitlement referencing the event (this should succeed)
-    await insertEntitlement({
-      userId,
-      taskId,
-      riskLevel: 'HIGH',
-      sourceEventId: eventId,
-      expiresAt,
-    });
+    await processEntitlementPurchase({
+      id: `pi_${Date.now()}`,
+      metadata: { user_id: userId, task_id: taskId, risk_level: 'HIGH' },
+    }, eventId);
 
     // Verify entitlement exists
     const entitlementExists = await db.query(
@@ -473,49 +460,28 @@ describe.skipIf(!hasDb)('Invariant S-5: Entitlements Must Reference a Valid Stri
 
   it('S-5: entitlement with non-existent Stripe event should be rejected by service layer', async () => {
     const fakeEventId = `evt_nonexistent_${Date.now()}`;
-    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
 
-    // Attempt to create entitlement without corresponding Stripe event
-    // Note: Database constraint doesn't enforce FK (by design - allows for async processing)
-    // But service layer MUST validate event exists before creating entitlement
-    // This test documents the expected behavior once service layer validation is added
-
-    // For now, we verify the event doesn't exist
     const eventExists = await db.query(
       `SELECT COUNT(*) as count FROM stripe_events WHERE stripe_event_id = $1`,
       [fakeEventId]
     );
     expect(Number(eventExists.rows[0].count)).toBe(0);
 
-    // PLANNED: Once service layer validation is added, this should fail:
-    // await expect(
-    //   PlanService.createEntitlement({
-    //     userId,
-    //     taskId,
-    //     riskLevel: 'HIGH',
-    //     sourceEventId: fakeEventId,
-    //     expiresAt,
-    //   })
-    // ).rejects.toThrow('Stripe event not found');
+    await expect(processEntitlementPurchase({
+      id: `pi_${Date.now()}`,
+      metadata: { user_id: userId, task_id: taskId, risk_level: 'HIGH' },
+    }, fakeEventId)).rejects.toThrow('not found');
   });
 
   it('S-5: service layer must verify Stripe event exists before creating entitlement', async () => {
-    // This test documents the causal requirement:
-    // Entitlements MUST be derived from validated Stripe events
-    // No rogue internal calls can mint entitlements
-    // No bugs can bypass Stripe entirely
-
     const eventId = `evt_audit_${Date.now()}`;
 
     // Valid flow: Event exists → Entitlement created
     await insertStripeEvent(eventId);
-    await insertEntitlement({
-      userId,
-      taskId,
-      riskLevel: 'HIGH',
-      sourceEventId: eventId,
-      expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
-    });
+    await processEntitlementPurchase({
+      id: `pi_${Date.now()}`,
+      metadata: { user_id: userId, task_id: taskId, risk_level: 'HIGH' },
+    }, eventId);
 
     // Verify causal linkage: entitlement references existing event
     const linkage = await db.query(

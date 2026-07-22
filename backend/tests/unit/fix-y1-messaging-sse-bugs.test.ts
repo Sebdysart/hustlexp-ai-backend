@@ -74,13 +74,15 @@ describe('Bug 1 – markAllAsRead uses rowCount (not RETURNING COUNT(*))', () =>
   it('returns the rowCount from the UPDATE query when 3 rows are marked read', async () => {
     (db.query as any)
       // Task participant lookup
-      .mockResolvedValueOnce({ rows: [{ poster_id: 'poster-1', worker_id: 'worker-1' }] })
+      .mockResolvedValueOnce({ rows: [{
+        poster_id: 'poster-1', worker_id: 'worker-1', state: 'ACCEPTED', quote_worker_id: null,
+      }] })
       // UPDATE query — rowCount reflects actual affected rows; rows array is empty
       .mockResolvedValueOnce({ rows: [], rowCount: 3 });
 
     const result = await MessagingService.markAllAsRead('task-1', 'poster-1');
 
-    expect(result.success).toBe(true);
+    expect(result.success, result.success ? undefined : JSON.stringify(result.error)).toBe(true);
     if (result.success) {
       expect(result.data.marked).toBe(3);
     }
@@ -88,12 +90,14 @@ describe('Bug 1 – markAllAsRead uses rowCount (not RETURNING COUNT(*))', () =>
 
   it('returns 0 when no unread messages exist (rowCount = 0)', async () => {
     (db.query as any)
-      .mockResolvedValueOnce({ rows: [{ poster_id: 'poster-1', worker_id: 'worker-1' }] })
+      .mockResolvedValueOnce({ rows: [{
+        poster_id: 'poster-1', worker_id: 'worker-1', state: 'ACCEPTED', quote_worker_id: null,
+      }] })
       .mockResolvedValueOnce({ rows: [], rowCount: 0 });
 
     const result = await MessagingService.markAllAsRead('task-1', 'poster-1');
 
-    expect(result.success).toBe(true);
+    expect(result.success, result.success ? undefined : JSON.stringify(result.error)).toBe(true);
     if (result.success) {
       expect(result.data.marked).toBe(0);
     }
@@ -101,12 +105,14 @@ describe('Bug 1 – markAllAsRead uses rowCount (not RETURNING COUNT(*))', () =>
 
   it('handles null rowCount (driver quirk) as 0', async () => {
     (db.query as any)
-      .mockResolvedValueOnce({ rows: [{ poster_id: 'poster-1', worker_id: 'worker-1' }] })
+      .mockResolvedValueOnce({ rows: [{
+        poster_id: 'poster-1', worker_id: 'worker-1', state: 'ACCEPTED', quote_worker_id: null,
+      }] })
       .mockResolvedValueOnce({ rows: [], rowCount: null });
 
     const result = await MessagingService.markAllAsRead('task-1', 'poster-1');
 
-    expect(result.success).toBe(true);
+    expect(result.success, result.success ? undefined : JSON.stringify(result.error)).toBe(true);
     if (result.success) {
       expect(result.data.marked).toBe(0);
     }
@@ -143,7 +149,7 @@ describe('Bug 2 – sendMessage AUTO type uses server template, ignores client c
       content: 'ARBITRARY ATTACKER CONTENT — bypassing moderation',
     });
 
-    expect(result.success).toBe(true);
+    expect(result.success, result.success ? undefined : JSON.stringify(result.error)).toBe(true);
 
     // The INSERT call must use the server template text, NOT the attacker content
     const insertCall = (db.query as any).mock.calls.find((call: any[]) =>
@@ -169,7 +175,7 @@ describe('Bug 2 – sendMessage AUTO type uses server template, ignores client c
       autoMessageTemplate: 'running_late',
     });
 
-    expect(result.success).toBe(true);
+    expect(result.success, result.success ? undefined : JSON.stringify(result.error)).toBe(true);
 
     const insertCall = (db.query as any).mock.calls.find((call: any[]) =>
       typeof call[0] === 'string' && call[0].includes('INSERT INTO task_messages')

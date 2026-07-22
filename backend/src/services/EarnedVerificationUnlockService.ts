@@ -69,46 +69,76 @@ export const EarnedVerificationUnlockService = {
     netPayoutCents: number
   ): Promise<ServiceResult<void>> => {
     try {
-      // Get current cumulative earnings
-      const trackingResult = await db.query<Pick<VerificationEarningsTracking, 'total_net_earnings_cents'>>(
-        'SELECT total_net_earnings_cents FROM verification_earnings_tracking WHERE user_id = $1',
-        [userId]
-      );
-
-      const cumulativeBefore = trackingResult.rows[0]?.total_net_earnings_cents || 0;
-      const cumulativeAfter = cumulativeBefore + netPayoutCents;
-
-      // Insert into ledger (idempotent via UNIQUE constraint on escrow_id)
-      await db.query(
-        `INSERT INTO verification_earnings_ledger (
-          user_id, task_id, escrow_id, net_payout_cents,
-          cumulative_earnings_before_cents, cumulative_earnings_after_cents
-        ) VALUES ($1, $2, $3, $4, $5, $6)
-        ON CONFLICT (escrow_id) DO NOTHING`,
-        [userId, taskId, escrowId, netPayoutCents, cumulativeBefore, cumulativeAfter]
-      );
-
-      // Trigger handles updating verification_earnings_tracking
-      // Gap 12: Check if threshold just crossed → send $1 upgrade push notification
-      // Use a conditional UPDATE so only the first concurrent caller fires the notification
-      if (cumulativeBefore < 4000 && cumulativeAfter >= 4000) {
-        const claimResult = await db.query(
-          `UPDATE verification_earnings_tracking
-           SET earned_unlock_achieved = true, unlock_notified_at = NOW()
-           WHERE user_id = $1 AND earned_unlock_achieved = false`,
-          [userId]
+      const outcome = await db.transaction(async (query) => {
+        await query(
+          `INSERT INTO verification_earnings_tracking (user_id)
+           VALUES ($1)
+           ON CONFLICT (user_id) DO NOTHING`,
+          [userId],
         );
-        if ((claimResult.rowCount ?? 0) > 0) {
-          log.info({ userId, cumulativeBefore, cumulativeAfter }, 'User crossed $40 threshold, triggering $1 verification offer');
-          // Fire-and-forget notification (don't block earnings recording)
-          db.query(
-            `INSERT INTO notifications (user_id, type, title, body, data, created_at)
-             VALUES ($1, 'EARNED_VERIFICATION_UNLOCKED',
-                     '🎉 Free Verification Unlocked!',
-                     'You''ve earned enough to unlock identity verification for just $1. Tap to upgrade and access premium tasks!',
-                     $2, NOW())`,
-            [userId, JSON.stringify({ action: 'OPEN_VERIFICATION', fee_cents: 100 })]
-          ).catch(err => log.error({ err: err instanceof Error ? err.message : String(err), userId }, 'Notification insert failed'));
+        const trackingResult = await query<Pick<VerificationEarningsTracking,
+          'total_net_earnings_cents' | 'earned_unlock_threshold_cents'>>(
+          `SELECT total_net_earnings_cents, earned_unlock_threshold_cents
+           FROM verification_earnings_tracking
+           WHERE user_id = $1
+           FOR UPDATE`,
+          [userId],
+        );
+        const tracking = trackingResult.rows[0];
+        if (!tracking) throw new Error('VERIFICATION_EARNINGS_TRACKING_MISSING');
+        const cumulativeBefore = tracking.total_net_earnings_cents;
+        const cumulativeAfter = cumulativeBefore + netPayoutCents;
+        const inserted = await query<{ id: string }>(
+          `INSERT INTO verification_earnings_ledger (
+             user_id, task_id, escrow_id, net_payout_cents,
+             cumulative_earnings_before_cents, cumulative_earnings_after_cents
+           ) VALUES ($1, $2, $3, $4, $5, $6)
+           ON CONFLICT (escrow_id) DO NOTHING
+           RETURNING id`,
+          [userId, taskId, escrowId, netPayoutCents, cumulativeBefore, cumulativeAfter],
+        );
+        if (inserted.rowCount === 0) {
+          return { notify: false, cumulativeBefore, cumulativeAfter: cumulativeBefore };
+        }
+        const crossedThreshold = cumulativeBefore < tracking.earned_unlock_threshold_cents
+          && cumulativeAfter >= tracking.earned_unlock_threshold_cents;
+        if (!crossedThreshold) {
+          return { notify: false, cumulativeBefore, cumulativeAfter };
+        }
+        const claimed = await query(
+          `UPDATE verification_earnings_tracking
+           SET unlock_notified_at = NOW()
+           WHERE user_id = $1 AND unlock_notified_at IS NULL`,
+          [userId],
+        );
+        return {
+          notify: (claimed.rowCount ?? 0) > 0,
+          cumulativeBefore,
+          cumulativeAfter,
+        };
+      });
+
+      if (outcome.notify) {
+        log.info(
+          { userId, cumulativeBefore: outcome.cumulativeBefore, cumulativeAfter: outcome.cumulativeAfter },
+          'User crossed $40 threshold, triggering $1 verification offer',
+        );
+        try {
+          await db.query(
+            `INSERT INTO notifications (
+               user_id, category, title, body, deep_link, metadata, channels, priority, created_at
+             ) VALUES (
+               $1, 'EARNED_VERIFICATION_UNLOCKED', 'Free Verification Unlocked',
+               'You have earned enough to unlock identity verification for $1. Tap to upgrade and access premium tasks.',
+               '/verification', $2::jsonb, ARRAY['in_app','push']::text[], 'HIGH', NOW()
+             )`,
+            [userId, JSON.stringify({ action: 'OPEN_VERIFICATION', fee_cents: 100 })],
+          );
+        } catch (error) {
+          log.error(
+            { err: error instanceof Error ? error.message : String(error), userId },
+            'Notification insert failed',
+          );
         }
       }
 

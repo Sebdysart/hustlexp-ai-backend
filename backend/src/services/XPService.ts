@@ -34,6 +34,20 @@ function getXPRedis(): Redis | null {
 
 const DAILY_XP_CAP = 10000;
 
+function isValidAwardAmount(baseXP: number): boolean {
+  return Number.isSafeInteger(baseXP) && baseXP > 0;
+}
+
+function invalidAwardAmount(): ServiceResult<never> {
+  return {
+    success: false,
+    error: {
+      code: 'INVALID_XP_AMOUNT',
+      message: 'XP award amount must be a positive integer.',
+    },
+  };
+}
+
 // ============================================================================
 // TYPES
 // ============================================================================
@@ -110,18 +124,20 @@ function getStreakMultiplier(streak: number): number {
  * SPEC ALIGNMENT:
  * | Trust Tier | Multiplier |
  * |------------|------------|
- * | ROOKIE (1) | 1.0×       |
- * | VERIFIED (2) | 1.5×     |
- * | TRUSTED (3) | 2.0×      |
- * | ELITE (4) | 2.0×        |
+ * | EXPLORER (0) | 1.0×     |
+ * | VERIFIED (1) | 1.0×     |
+ * | HOME READY (2) | 1.5×   |
+ * | PRO (3) | 2.0×          |
+ * | LICENSED SPECIALIST (4) | 2.0× |
  */
 function getTrustMultiplier(trustTier: number): number {
   switch (trustTier) {
-    case 1: return 1.0;  // ROOKIE
-    case 2: return 1.5;  // VERIFIED
-    case 3: return 2.0;  // TRUSTED
-    case 4: return 2.0;  // ELITE (same as TRUSTED)
-    default: return 1.0; // Default to ROOKIE multiplier
+    case 0: return 1.0;  // EXPLORER
+    case 1: return 1.0;  // VERIFIED
+    case 2: return 1.5;  // HOME READY
+    case 3: return 2.0;  // PRO
+    case 4: return 2.0;  // LICENSED SPECIALIST (same as PRO)
+    default: return 1.0; // Fail closed to the baseline multiplier
   }
 }
 
@@ -199,6 +215,7 @@ export const XPService = {
     baseXP: number,
     taskId?: string
   ): Promise<ServiceResult<XPCalculation>> => {
+    if (!isValidAwardAmount(baseXP)) return invalidAwardAmount();
     try {
       // Get user's current streak and trust tier
       const userResult = await db.query<{
@@ -274,6 +291,8 @@ export const XPService = {
   awardXP: async (params: AwardXPParams): Promise<ServiceResult<XPLedgerEntry>> => {
     const { userId, taskId, escrowId, baseXP } = params;
 
+    if (!isValidAwardAmount(baseXP)) return invalidAwardAmount();
+
     // Anti-farming: Check velocity (cap check moved inside transaction — see below)
     // FIX 2: Hard-block large awards when velocity is suspicious
     // REG-9 FIX: Raised from 1000 to 3000 — a $150 task (1500 XP) must not be blocked.
@@ -303,8 +322,9 @@ export const XPService = {
           current_level: number;
           current_streak: number;
           trust_tier: number;
+          account_status: string;
         }>(
-          'SELECT xp_total, current_level, current_streak, trust_tier FROM users WHERE id = $1 FOR UPDATE',
+          'SELECT xp_total, current_level, current_streak, trust_tier, account_status FROM users WHERE id = $1 FOR UPDATE',
           [userId]
         );
 
@@ -319,6 +339,15 @@ export const XPService = {
         }
 
         const user = userResult.rows[0];
+        if (user.account_status === 'SUSPENDED' || user.account_status === 'DELETED') {
+          return {
+            success: false as const,
+            error: {
+              code: 'XP_ACCOUNT_INELIGIBLE',
+              message: `XP cannot be awarded to an account in ${user.account_status} state.`,
+            },
+          };
+        }
 
         // Check if task is Live Mode (for 1.25× multiplier) and surge_level (for surge bonus)
         const taskResult = await query<{ mode: string; surge_level: number }>(

@@ -12,7 +12,7 @@
 
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
-import { router, adminProcedure } from '../trpc.js';
+import { router, disputeAdminProcedure } from '../trpc.js';
 import { DisputeAIService } from '../services/DisputeAIService.js';
 
 export const disputeAIRouter = router({
@@ -25,7 +25,7 @@ export const disputeAIRouter = router({
    *
    * Generates analysis proposal for admin review.
    */
-  analyzeDispute: adminProcedure
+  analyzeDispute: disputeAdminProcedure
     .input(z.object({
       disputeId: z.string().uuid(),
     }))
@@ -51,7 +51,7 @@ export const disputeAIRouter = router({
    *
    * AI proposes what evidence to request; admin decides.
    */
-  generateEvidenceRequest: adminProcedure
+  generateEvidenceRequest: disputeAdminProcedure
     .input(z.object({
       disputeId: z.string().uuid(),
     }))
@@ -77,7 +77,7 @@ export const disputeAIRouter = router({
    *
    * Returns escalation recommendation for admin review.
    */
-  assessEscalation: adminProcedure
+  assessEscalation: disputeAdminProcedure
     .input(z.object({
       disputeId: z.string().uuid(),
     }))

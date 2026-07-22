@@ -946,13 +946,14 @@ describe('AdminNotificationHelper', () => {
 
 describe('PushNotificationService', () => {
   describe('sendPushNotification', () => {
-    it('returns success gracefully when Firebase messaging is null', async () => {
+    it('reports provider unavailability when Firebase messaging is null', async () => {
       // firebase mock already returns messaging: null
       const result = await sendPushNotification('user-1', 'Title', 'Body');
 
-      expect(result.success).toBe(true);
+      expect(result.success).toBe(false);
       expect(result.sent).toBe(0);
       expect(result.failed).toBe(0);
+      expect(result.reason).toBe('provider_unconfigured');
     });
 
     it('returns success with zero counts when no device tokens found', async () => {

@@ -72,7 +72,7 @@ describe('User Router', () => {
         firebase_uid: 'fb-new',
         email: 'new@hustlexp.com',
         full_name: 'New User',
-        trust_tier: 0,  // ROOKIE
+        trust_tier: 0,  // Explorer
         xp_total: 0,
         is_verified: false,
         default_mode: 'worker',

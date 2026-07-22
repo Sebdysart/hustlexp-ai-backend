@@ -164,7 +164,9 @@ describe('TaskService.complete — payout-ready safety boundary', () => {
       .mockResolvedValueOnce({ rows: [{ state: 'ACCEPTED' }] })                              // proof gate
       .mockResolvedValueOnce({ rows: [{ id: ESCROW_ID, state: 'FUNDED' }] })                 // escrow gate
       .mockResolvedValueOnce({ rows: [completedTaskRow({ payout_ready_at: new Date() })], rowCount: 1 }) // update
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 });                                    // evidence event
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 })                                     // evidence event
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 })                                     // recommendation outcome
+      .mockResolvedValueOnce({ rows: [{ conflict_count: '0' }], rowCount: 1 });              // outcome replay guard
 
     const result = await TaskService.complete(TASK_ID, POSTER_ID);
 
@@ -184,6 +186,15 @@ describe('TaskService.complete — payout-ready safety boundary', () => {
     const updateSql = String(txQueryFn.mock.calls[3]?.[0]);
     expect(updateSql).toContain('payout_ready_at = NOW()');
     expect(updateSql).toContain("payout_ready_reason");
+    const recommendationOutcomeCall = txQueryFn.mock.calls.find(([sql]) =>
+      String(sql).includes('INSERT INTO recommendation_outcomes')
+    );
+    expect(recommendationOutcomeCall?.[1]).toEqual([
+      TASK_ID,
+      'TASK_COMPLETED',
+      JSON.stringify({ taskState: 'COMPLETED', payoutReady: true }),
+      expect.any(String),
+    ]);
     expect(dbQuery).not.toHaveBeenCalled();
   });
 
@@ -239,7 +250,9 @@ describe('TaskService.complete — payout-ready safety boundary', () => {
       .mockResolvedValueOnce({ rows: [{ id: ESCROW_ID, state: 'FUNDED' }] })
       .mockResolvedValueOnce({ rows: [completedTaskRow({ payout_ready_at: new Date() })], rowCount: 1 })
       .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // automation event
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 }); // request witness
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // request witness
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // recommendation outcome
+      .mockResolvedValueOnce({ rows: [{ conflict_count: '0' }], rowCount: 1 }); // outcome replay guard
 
     const result = await TaskService.complete(TASK_ID, undefined, {
       mode: 'UNATTENDED',

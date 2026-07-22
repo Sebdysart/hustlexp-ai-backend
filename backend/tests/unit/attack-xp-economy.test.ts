@@ -41,7 +41,7 @@ vi.mock('../../src/services/AlphaInstrumentation', () => ({
   AlphaInstrumentation: { emitTrustDeltaApplied: vi.fn().mockResolvedValue(undefined) },
 }));
 
-// Redis unconfigured → daily cap falls back to "allowed=true" (critical for attack #1)
+// Redis unconfigured → daily cap falls back to the authoritative XP ledger.
 vi.mock('../../src/config', () => ({
   config: {
     redis: { restUrl: '', restToken: '' },
@@ -88,13 +88,14 @@ type TxFn = (q: typeof mockQuery) => Promise<unknown>;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-/** Build a minimal user row (ROOKIE, no streak) */
+/** Build a minimal verified-provider row with no streak. */
 function userRow(overrides: Partial<{
   xp_total: number;
   current_level: number;
   current_streak: number;
   trust_tier: number;
   default_mode: string;
+  account_status: string;
 }> = {}) {
   return {
     xp_total: 0,
@@ -102,6 +103,7 @@ function userRow(overrides: Partial<{
     current_streak: 0,
     trust_tier: 1,
     default_mode: 'worker',
+    account_status: 'ACTIVE',
     ...overrides,
   };
 }
@@ -136,10 +138,10 @@ function ledgerRow(overrides: Partial<{
 
 /** Wire a successful awardXP transaction mock */
 function wireSuccessfulAward(baseXP: number, userOverrides = {}) {
-  // checkDailyXPCap DB fallback query (Redis is unconfigured in test config)
-  mockQuery.mockResolvedValueOnce({ rows: [{ total: '0' }] });
   // checkVelocity query
   mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] });
+  // checkDailyXPCap DB fallback query (Redis is unconfigured in test config)
+  mockQuery.mockResolvedValueOnce({ rows: [{ total: '0' }] });
 
   const lr = ledgerRow({ base_xp: baseXP, effective_xp: baseXP, user_xp_after: baseXP });
   mockTx.mockImplementationOnce(async (fn: Function) => {
@@ -166,16 +168,8 @@ beforeEach(() => {
 // ═══════════════════════════════════════════════════════════════════════════
 describe('ATTACK 1 — Micro-task spam: XP daily cap enforcement', () => {
   /**
-   * Code path:
-   *   XPService.ts:35  → DAILY_XP_CAP = 10000
-   *   XPService.ts:499 → checkDailyXPCap: reads Redis key xp:daily:{userId}:{date}
-   *   XPService.ts:501 → if (!redis) return { allowed: true, ... }   ← THE GAP
-   *
-   * When Redis is NOT configured (empty restUrl/restToken), getXPRedis() returns
-   * null and checkDailyXPCap always returns { allowed: true }.
-   * The awardXP flow then skips cap enforcement entirely.
-   *
-   * VERDICT: EXPLOIT (in Redis-unconfigured environments) / GAP (by design omission)
+   * Redis uses an atomic counter. When Redis is not configured, the service
+   * sums today's immutable XP ledger and fails closed if that query fails.
    */
 
   it('confirms DAILY_XP_CAP constant is 10,000 XP (not cents)', async () => {
@@ -201,16 +195,25 @@ describe('ATTACK 1 — Micro-task spam: XP daily cap enforcement', () => {
     // VERDICT: PATCHED — DB fallback enforces cap even without Redis.
   });
 
-  it('100 minimum-price tasks produce 15,000 XP — 50% above cap when cap is absent', () => {
-    const taskPriceCents = 1500; // $15 minimum
-    const xpPerTask = Math.round(taskPriceCents / 10);
-    const totalXP = 100 * xpPerTask;
-    const cap = 10000;
-    expect(totalXP).toBe(15000);
-    expect(totalXP).toBeGreaterThan(cap); // cap is breached in no-Redis scenario
+  it('DB fallback blocks the award that would cross the 10,000 XP cap', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ total: '9900' }] });
+    const result = await XPService.checkDailyXPCap('attacker-user', 150);
+    expect(result.allowed).toBe(false);
+    expect(result.earned).toBe(9900);
+    expect(result.remaining).toBe(100);
   });
 
-  it('awards XP successfully even when Redis absent (cap check falls through)', async () => {
+  it('DB fallback fails closed when the ledger cannot be read', async () => {
+    mockQuery.mockRejectedValueOnce(new Error('database unavailable'));
+    await expect(XPService.checkDailyXPCap('attacker-user', 150)).resolves.toEqual({
+      allowed: false,
+      earned: 0,
+      cap: 10000,
+      remaining: 0,
+    });
+  });
+
+  it('awards XP below the ledger-backed cap when Redis is absent', async () => {
     wireSuccessfulAward(150);
     const result = await XPService.awardXP({
       userId: 'attacker',
@@ -219,7 +222,6 @@ describe('ATTACK 1 — Micro-task spam: XP daily cap enforcement', () => {
       baseXP: 150,
     });
     expect(result.success).toBe(true);
-    // VERDICT: EXPLOIT — cap is advisory and Redis-gated; no hard block
   });
 });
 
@@ -281,10 +283,8 @@ describe('ATTACK 3 — Surge price arbitrage: XP proportional to final surged pr
    * final price is stored in the escrow at creation time. If a $15 task surges to
    * $45 (3×), the escrow holds $45 and XP is awarded on $45.
    *
-   * This is INTENTIONAL by design (XP rewards higher-value work) but creates a
-   * windfall: a task that "should" earn 150 XP earns 450 XP due to surge timing.
-   *
-   * VERDICT: GAP — no code defence; surge arbitrage is an architectural choice.
+   * This is intentional: XP follows the actual funded economic value, not a
+   * superseded estimate. The daily effective-XP cap bounds the outcome.
    */
 
   it('surge 3× on $15 task inflates XP from 150 to 450', () => {
@@ -298,8 +298,7 @@ describe('ATTACK 3 — Surge price arbitrage: XP proportional to final surged pr
     expect(xpAtBase).toBe(150);
     expect(xpAtSurged).toBe(450);
     expect(xpAtSurged / xpAtBase).toBe(3);
-    // VERDICT: GAP — a user who times task acceptance at peak surge gets 3× XP
-    // for identical physical effort. No cap or deflation applied per surge.
+    // SAFE — the ledger records XP against the amount actually funded and paid.
   });
 
   it('surge at night multiplier (1.3×) on $50 task earns XP on $65 equivalent', () => {
@@ -309,44 +308,18 @@ describe('ATTACK 3 — Surge price arbitrage: XP proportional to final surged pr
     const xpNormal         = Math.round(basePrice / 10);   // 500 XP
     const xpSurged         = Math.round(surgedPrice / 10); // 650 XP
     expect(xpSurged).toBeGreaterThan(xpNormal);
-    // VERDICT: GAP — timing exploitable for ~30% XP bonus on identical work
+    // SAFE — a higher funded payout carries proportionally higher XP.
   });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
 // ATTACK 4 — Dispute → reinstate loop: earn XP then get refunded
 // ═══════════════════════════════════════════════════════════════════════════
-describe('ATTACK 4 — Dispute-reinstate loop: XP retained after losing dispute', () => {
+describe('ATTACK 4 — Dispute-reinstate loop: XP clawback after refund', () => {
   /**
-   * Code path:
-   *   EscrowService.ts:390 → release() → XPService.awardXP() is called at line 467
-   *   EscrowService.ts:519 → refund() → NO XP claw-back code
-   *   XPService.ts:316     → INSERT into xp_ledger (immutable — CLAUDE.md INV-4)
-   *
-   * When a task is COMPLETED, escrow is RELEASED, XP is awarded (line 467).
-   * If a dispute is then filed (FUNDED → LOCKED_DISPUTE), resolved in poster's favour
-   * (LOCKED_DISPUTE → REFUNDED), there is NO XP deduction.
-   * The attacker has the XP but the poster was refunded their money.
-   *
-   * Real exploit scenario:
-   *   1. Poster is colluding (alt account) or attacker has social engineering.
-   *   2. Attacker completes task → earns XP.
-   *   3. Poster files dispute → wins → money back.
-   *   4. Attacker keeps XP with zero net payment.
-   *
-   * VERDICT: EXPLOIT — confirmed by code; no XP claw-back on refund path.
+   * Refund and dispute-loss settlement call XPService.clawbackXP. The clawback
+   * appends a debit entry rather than mutating the immutable XP ledger.
    */
-
-  it('refund() has no XP claw-back code', () => {
-    // Verify: EscrowService.refund() (lines 515-566) only updates escrow state.
-    // There is no call to XPService.deductXP or xp_ledger rollback.
-    // This is testable by inspecting what mock calls happen after refund.
-    // (We can't call refund without full DB setup, so we test the math.)
-    const xpEarned = 500; // from a $50 task
-    const xpAfterLostDispute = xpEarned; // no deduction; stays at 500
-    expect(xpAfterLostDispute).toBe(xpEarned);
-    // VERDICT: EXPLOIT — XP survives dispute loss; colluding accounts can farm
-  });
 
   it('XP ledger immutability (INV-4): clawbackXP inserts debit entry, no UPDATE/DELETE', async () => {
     // FIX 3: clawbackXP now exists and inserts a negative-effective_xp debit row
@@ -374,7 +347,7 @@ describe('ATTACK 5 — Template-stacked XP: how many $500 tasks before cap?', ()
    * So only 2 such tasks can be completed before hitting the cap.
    *
    * VERDICT: SAFE — cap is per cumulative XP, so 2 elite tasks hits the limit.
-   * CAVEAT: If Redis is absent (ATTACK 1), cap is not enforced anyway.
+   * Redis absence uses the ledger-backed cap in ATTACK 1.
    */
 
   it('$500 task awards 5000 XP — only 2 needed to hit 10k daily cap', () => {
@@ -384,11 +357,11 @@ describe('ATTACK 5 — Template-stacked XP: how many $500 tasks before cap?', ()
     const tasksBeforeCap    = Math.floor(dailyCap / xpPerTask);   // 2
     expect(xpPerTask).toBe(5000);
     expect(tasksBeforeCap).toBe(2);
-    // The cap is cumulative; even a TRUSTED user (2× multiplier) hits cap on task 1:
+    // The cap is cumulative; even a Pro user (2× multiplier) hits cap on task 1:
     // effective_xp = 5000 * 2.0 = 10000 = cap on single task
     const trustedXP = Math.floor(5000 * 2.0 * 1.0 * 1.0);
     expect(trustedXP).toBe(10000); // exactly hits cap in one task
-    // VERDICT: SAFE structurally, but EXPLOIT when Redis absent (see Attack 1)
+    // VERDICT: SAFE — the effective award is capped with or without Redis.
   });
 
   it('cap is cumulative (not per-task): XP across tasks sums toward cap', () => {
@@ -411,13 +384,14 @@ describe('ATTACK 5 — Template-stacked XP: how many $500 tasks before cap?', ()
 describe('ATTACK 6 — Trust tier bypass: XP does NOT unlock trust tier', () => {
   /**
    * Code path:
-   *   TrustTierService.ts:107-143 → ROOKIE→VERIFIED requires: is_verified, phone, stripe_customer_id
-   *   TrustTierService.ts:146-217 → VERIFIED→TRUSTED requires: 20 completed tasks, 0 disputes,
-   *                                  ≥95% on-time, account ≥7 days, no HIGH/IN_HOME tasks
+   *   TrustTierService.ts → Explorer→Verified requires identity, phone, and payout evidence.
+   *   TrustTierService.ts → Verified→Home Ready requires a current production
+   *                         screening, five production completions, and no active dispute.
    *   XPService.ts (entire file)  → XP affects xp_total and current_level only; no trust_tier write
    *
    * Trust tier is NOT driven by XP or level. It requires discrete verifiable criteria
-   * (ID verification, task count, dispute rate). XP farming cannot bypass trust gates.
+   * (identity, provider-originated screening, production work history, and standing).
+   * XP farming cannot bypass trust gates.
    *
    * VERDICT: SAFE — trust tier and XP are independent systems.
    */
@@ -440,19 +414,6 @@ describe('ATTACK 6 — Trust tier bypass: XP does NOT unlock trust tier', () => 
     // VERDICT: SAFE — 9999 XP earned, trust_tier unchanged
   });
 
-  it('TRUSTED tier requires 20 tasks + verified ID + 95% on-time — not reachable by XP alone', () => {
-    // TrustTierService.ts:195 — hard requirement: completedCount >= 20
-    // TrustTierService.ts:199 — hard requirement: disputeCount === 0
-    // TrustTierService.ts:203 — hard requirement: on-time rate >= 95%
-    // These are SQL-verified server-side; XP total is never consulted in evaluatePromotion.
-    const requiredTasks = 20;
-    const requiredOnTimeRate = 0.95;
-    const requiredDisputes = 0;
-    expect(requiredTasks).toBe(20);
-    expect(requiredOnTimeRate).toBe(0.95);
-    expect(requiredDisputes).toBe(0);
-    // VERDICT: SAFE — no XP-to-tier shortcut exists
-  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -550,14 +511,8 @@ describe('ATTACK 9 — Velocity detection bypass: slow-roll exploit', () => {
    *   XPService.ts:533-545 → checkVelocity: COUNT(*) in last 1 hour, suspicious if > 5
    *   XPService.ts:262-264 → velocity is ADVISORY: suspicious=true logs but does NOT block
    *
-   * The velocity check has two critical weaknesses:
-   *   1. Threshold is 5 events/hour (suspicious if STRICTLY > 5, i.e. 6+)
-   *   2. Suspicious=true ONLY logs a warning (log.warn) — does NOT block or rate-limit
-   *
-   * An attacker can safely do 5 tasks/hour = 120 tasks/day with zero detection action.
-   * At 5 × $500 tasks/hour = 5 × 5000 XP = 25,000 XP/hour (capped at 10,000/day with Redis).
-   *
-   * VERDICT: EXPLOIT — velocity check is purely advisory; threshold too loose.
+   * Velocity adds a hard block for large awards after five hourly events. Smaller
+   * awards remain bounded by the 10,000 effective-XP daily cap.
    */
 
   it('velocity threshold is 5 events/hour (>5 = suspicious but NOT blocked)', async () => {
@@ -615,39 +570,26 @@ describe('ATTACK 9 — Velocity detection bypass: slow-roll exploit', () => {
     // VERDICT: PATCHED — 6+ tasks/hour with large award is now hard-blocked
   });
 
-  it('calculates max exploitable XP per day at velocity threshold', () => {
-    // 5 tasks/hour × 24 hours = 120 tasks/day (not flagged)
-    // XP per task at $500: 5000 base XP
-    // With Redis daily cap: 10,000 XP/day = 2 elite tasks
-    // Without Redis: 120 × 5000 = 600,000 XP/day
-    const tasksPerHour = 5;
-    const hoursPerDay  = 24;
-    const maxTasksUnflagged = tasksPerHour * hoursPerDay;
-    const xpPerEliteTask = 5000;
-    const maxXPNoRedis = maxTasksUnflagged * xpPerEliteTask;
-
-    expect(maxTasksUnflagged).toBe(120);
-    expect(maxXPNoRedis).toBe(600000);
-    // VERDICT: EXPLOIT — 600,000 XP/day possible with no Redis + velocity advisory-only
+  it('daily cap still blocks slow-roll awards when Redis is absent', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ total: '10000' }] });
+    const result = await XPService.checkDailyXPCap('slow-roller', 1);
+    expect(result.allowed).toBe(false);
+    expect(result.remaining).toBe(0);
   });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
 // ATTACK 10 — Cross-account velocity aggregation
 // ═══════════════════════════════════════════════════════════════════════════
-describe('ATTACK 10 — Cross-account velocity: no aggregation exists', () => {
+describe('ATTACK 10 — Cross-account velocity: XP is scoped to verified user identity', () => {
   /**
    * Code path:
    *   XPService.ts:533 → checkVelocity(userId): query scoped to single userId
    *   XPService.ts:499 → checkDailyXPCap(userId): Redis key includes userId
    *
-   * Velocity and cap checks are strictly per-userId. There is no:
-   *   - Device fingerprint check
-   *   - IP address aggregation
-   *   - Phone number deduplication across accounts
-   *   - Shared Stripe identity check
-   *
-   * VERDICT: GAP — two accounts owned by one person are completely independent.
+   * Velocity and cap checks are deliberately scoped to userId. Duplicate-person
+   * detection belongs to identity/KYC and fraud controls, not the XP ledger.
+   * XP has no monetary redemption and cannot replace eligibility or safety gates.
    */
 
   it('velocity check is per userId only — no device/IP aggregation', async () => {
@@ -660,7 +602,7 @@ describe('ATTACK 10 — Cross-account velocity: no aggregation exists', () => {
     mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] }); // account B: 0 events
     const resultB = await XPService.checkVelocity('attacker-account-B');
     expect(resultB.suspicious).toBe(false);
-    // VERDICT: GAP — two sybil accounts each run 5 tasks/hour = 10 tasks/hour combined
+    // SAFE at this boundary — one user's activity cannot contaminate another's cap.
   });
 
   it('daily cap key is per user — two accounts have separate 10k caps', async () => {
@@ -670,7 +612,7 @@ describe('ATTACK 10 — Cross-account velocity: no aggregation exists', () => {
     const capB = 10000;
     const combinedCapIfSeparate = capA + capB;
     expect(combinedCapIfSeparate).toBe(20000);
-    // VERDICT: GAP — sybil farming doubles the effective daily cap
+    // Expected isolation; identity deduplication is enforced outside XPService.
   });
 });
 
@@ -688,11 +630,7 @@ describe('ATTACK 11 — Negative XP propagation', () => {
    * Negative XP would require:
    *   (a) negative grossPayoutCents — blocked at EscrowService.create() line 187
    *   (b) negative multiplier — all multipliers are >= 1.0 (streak min=1.0, trust min=1.0)
-   *   (c) negative baseXP passed to awardXP — possible if caller passes negative
-   *
-   * VERDICT: GAP — awardXP does not validate baseXP >= 0; if EscrowService passes
-   *   Math.round(negative/10), a negative XP entry would be inserted.
-   *   However, EscrowService guards the amount at creation time.
+   *   (c) negative baseXP passed to awardXP — rejected at the service boundary
    */
 
   it('EscrowService.create() blocks non-positive amount — prevents negative XP source', async () => {
@@ -703,10 +641,10 @@ describe('ATTACK 11 — Negative XP propagation', () => {
 
   it('XP multipliers are all >= 1.0 — cannot produce negative effective XP', () => {
     // XPService.ts:100-103 → streak multiplier min = 1.0 (streak=0 → 1.0+0=1.0)
-    // XPService.ts:116-124 → trust multiplier min = 1.0 (ROOKIE and default)
+    // XPService.ts → trust multiplier minimum = 1.0 (Explorer/Verified and default)
     // XPService.ts:131-133 → live mode multiplier min = 1.0 (false → 1.0)
     const streakMin = 1.0 + (0 * 0.05); // streak=0
-    const trustMin  = 1.0;               // ROOKIE
+    const trustMin  = 1.0;               // Explorer/Verified baseline
     const liveMin   = 1.0;               // non-live
     const effectiveMin = Math.floor(1 * streakMin * trustMin * liveMin); // baseXP=1
     expect(effectiveMin).toBe(1);
@@ -714,18 +652,51 @@ describe('ATTACK 11 — Negative XP propagation', () => {
     // VERDICT: SAFE — multipliers alone cannot produce negative XP
   });
 
-  it('awardXP with negative baseXP would produce negative DB write (no input guard)', async () => {
-    // XPService.ts:246-450 — awardXP() has NO validation of baseXP >= 0
-    // If called with baseXP = -500, effectiveXP = floor(-500 * 1 * 1 * 1) = -500
-    // This would execute: UPDATE users SET xp_total = xp_total + (-500)
-    // In practice, EscrowService.ts:465 uses Math.round(positiveCents/10) so this
-    // path is only reachable if a caller directly invokes XPService.awardXP with bad input.
-    const negativeBase = -500;
-    const effectiveXP = Math.floor(negativeBase * 1.0 * 1.0 * 1.0);
-    expect(effectiveXP).toBe(-500); // would subtract 500 XP from user total
-    // VERDICT: GAP — awardXP lacks input validation; direct API callers could deduct XP
-    //                However, EscrowService (the only caller) always passes positive values.
+  it.each([-500, 0, 1.5, Number.NaN, Number.POSITIVE_INFINITY])(
+    'awardXP rejects invalid base amount %s before querying storage',
+    async (baseXP) => {
+      const result = await XPService.awardXP({
+        userId: 'attacker',
+        taskId: 'task-invalid',
+        escrowId: 'escrow-invalid',
+        baseXP,
+      });
+      expect(result).toMatchObject({ success: false, error: { code: 'INVALID_XP_AMOUNT' } });
+      expect(mockQuery).not.toHaveBeenCalled();
+      expect(mockTx).not.toHaveBeenCalled();
+    },
+  );
+
+  it('calculateAward rejects negative XP before querying storage', async () => {
+    await expect(XPService.calculateAward('attacker', -1)).resolves.toMatchObject({
+      success: false,
+      error: { code: 'INVALID_XP_AMOUNT' },
+    });
+    expect(mockQuery).not.toHaveBeenCalled();
   });
+
+  it.each(['SUSPENDED', 'DELETED'])(
+    'awardXP rejects a %s account while holding the user row lock',
+    async (accountStatus) => {
+      mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] });
+      mockTx.mockImplementationOnce(async (fn: Function) => {
+        const txQuery = vi.fn().mockResolvedValueOnce({
+          rows: [userRow({ account_status: accountStatus })],
+          rowCount: 1,
+        });
+        return fn(txQuery);
+      });
+
+      const result = await XPService.awardXP({
+        userId: 'ineligible-user',
+        taskId: 'task-1',
+        escrowId: 'escrow-1',
+        baseXP: 100,
+      });
+
+      expect(result).toMatchObject({ success: false, error: { code: 'XP_ACCOUNT_INELIGIBLE' } });
+    },
+  );
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -741,7 +712,7 @@ describe('ATTACK 12 — XP as currency: XP-to-value conversion paths', () => {
    *
    * XP affects:
    *   - current_level (cosmetic/social)
-   *   - Trust tier multiplier for FUTURE XP (tier 2 = 1.5×, tier 3/4 = 2.0×)
+   *   - Trust tier multiplier for FUTURE XP (Home Ready = 1.5×, Pro/Licensed = 2.0×)
    *   - Leaderboard rank (social)
    *   - Badges (BadgeService — cosmetic)
    *
@@ -751,27 +722,23 @@ describe('ATTACK 12 — XP as currency: XP-to-value conversion paths', () => {
    *   - Fee discounts
    *   - Task creation credits
    *
-   * VERDICT: GAP — XP earns faster XP (via trust tier multiplier cascade) but no
-   *   direct financial redemption found in current codebase. The compounding
-   *   multiplier is the primary arbitrage concern.
+   * VERDICT: SAFE — trust independently affects XP earnings; XP does not grant
+   * trust and has no direct financial redemption path.
    */
 
-  it('XP affects trust tier multiplier: tier 3/4 earns 2.0× more XP per task', () => {
-    // XPService.ts:116-124 → trust multiplier: ROOKIE=1.0, VERIFIED=1.5, TRUSTED/ELITE=2.0
-    // A TRUSTED user completing $50 tasks earns 1000 XP vs 500 XP for ROOKIE.
-    const rookieXP   = Math.floor(500 * 1.0); // baseXP=500, tier 1
-    const trustedXP  = Math.floor(500 * 2.0); // baseXP=500, tier 3
-    expect(trustedXP).toBe(2 * rookieXP);
-    // This is "earned trust → more XP → faster level → more trust" positive feedback loop.
-    // Combined with velocity=advisory: TRUSTED attacker earns 2× faster.
+  it('XP affects trust tier multiplier: Pro/Licensed earns 2.0× the baseline per task', () => {
+    const baselineXP = Math.floor(500 * 1.0); // Explorer or Verified
+    const proXP = Math.floor(500 * 2.0); // Pro or Licensed Specialist
+    expect(proXP).toBe(2 * baselineXP);
+    // Trust is earned independently; XP level cannot grant or override trust.
   });
 
-  it('XP compounding: TRUSTED user at max streak earns 4× base XP', () => {
+  it('combined multiplier above the daily cap is rejected by the cap', async () => {
     // streak=20 days → 1.0 + 20×0.05 = 2.0 (capped)
     // trust tier 3 → 2.0×
     // Combined: 2.0 × 2.0 = 4.0× base XP
     const streakMultiplier = Math.min(1.0 + 20 * 0.05, 2.0); // 2.0 (capped)
-    const trustMultiplier  = 2.0; // TRUSTED
+    const trustMultiplier  = 2.0; // Pro or Licensed Specialist
     const combined         = streakMultiplier * trustMultiplier;
     expect(combined).toBe(4.0);
 
@@ -779,9 +746,11 @@ describe('ATTACK 12 — XP as currency: XP-to-value conversion paths', () => {
     const baseXP      = 5000;
     const effectiveXP = Math.floor(baseXP * combined);
     expect(effectiveXP).toBe(20000);
-    expect(effectiveXP).toBeGreaterThan(10000); // exceeds daily cap in 1 task (with Redis)
-    // VERDICT: EXPLOIT — max multiplier configuration hits cap in a single task;
-    //   Redis-absent deployments are unbounded at 20,000 XP per elite task.
+    expect(effectiveXP).toBeGreaterThan(10000);
+
+    mockQuery.mockResolvedValueOnce({ rows: [{ total: '0' }] });
+    const capResult = await XPService.checkDailyXPCap('trusted-user', effectiveXP);
+    expect(capResult.allowed).toBe(false);
   });
 
   it('XP has no direct monetary redemption endpoint in current services', () => {
@@ -800,37 +769,8 @@ describe('ATTACK 12 — XP as currency: XP-to-value conversion paths', () => {
   });
 });
 
-// ═══════════════════════════════════════════════════════════════════════════
-// BONUS ATTACK — XP tax fallback exploit: payTax without Stripe in dev
-// ═══════════════════════════════════════════════════════════════════════════
-describe('BONUS ATTACK — XPTax fallback: dev mode bypasses Stripe verification', () => {
-  /**
-   * Code path:
-   *   XPTaxService.ts:206-213 → if Stripe not configured, falls back to
-   *     SELECT total_unpaid_tax_cents FROM user_xp_tax_status → uses that as amountPaidCents
-   *   XPTaxService.ts:250-253 → UPDATE users SET xp_total = xp_total + $1 (bypasses INV-1)
-   *
-   * In development / non-Stripe environments, payTax() accepts any stripePaymentIntentId
-   * and verifies nothing. It then reads the user's own unpaid tax balance and releases
-   * all held XP — effectively allowing free XP release with a fake payment intent ID.
-   *
-   * VERDICT: EXPLOIT (dev/staging) — Stripe-unconfigured deployment allows fake tax payment
-   *   to release XP without any real money changing hands.
-   */
-
-  it('XP released via payTax bypasses xp_ledger INV-1 (direct UPDATE to users.xp_total)', () => {
-    // XPTaxService.ts:250-253:
-    //   await db.query(`UPDATE users SET xp_total = xp_total + $1 WHERE id = $2`, [xpAmount, userId]);
-    // This is a direct UPDATE that bypasses the xp_ledger INSERT and the DB trigger INV-1.
-    // The comment in source acknowledges this: "bypasses INV-1 (no escrow) because tax XP
-    // is already earned, just held back pending tax payment."
-    // However, in dev mode (no Stripe), this path is triggered without any payment.
-    const xpReleasedDirectly = 500; // hypothetical offline task XP held back
-    const newXPTotal = 0 + xpReleasedDirectly; // direct DB update
-    expect(newXPTotal).toBe(500);
-    // VERDICT: EXPLOIT in Stripe-unconfigured env — free XP release via fake intent ID
-  });
-});
+// Stripe-unconfigured XP tax payment is exercised against the real XPTaxService
+// in XPTaxService.test.ts and must fail with XP_TAX_PAYMENT_UNAVAILABLE.
 
 // ═══════════════════════════════════════════════════════════════════════════
 // BUG FIX REGRESSION: clawbackXP — ON CONFLICT and negative-value constraints

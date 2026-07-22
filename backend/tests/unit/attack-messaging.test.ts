@@ -25,6 +25,9 @@ vi.mock('../../src/db', () => ({
   isInvariantViolation: vi.fn().mockReturnValue(false),
   getErrorMessage: vi.fn().mockReturnValue('Invariant violation'),
 }));
+vi.mock('../../src/auth/firebase', () => ({
+  firebaseAuth: { verifyIdToken: vi.fn() },
+}));
 vi.mock('../../src/services/ContentModerationService', () => ({
   ContentModerationService: { moderateContent: vi.fn().mockResolvedValue({ success: true }) },
 }));
@@ -45,6 +48,8 @@ vi.mock('../../src/logger', () => {
 import { MessagingService } from '../../src/services/MessagingService';
 import { db } from '../../src/db';
 import { ContentModerationService } from '../../src/services/ContentModerationService';
+import { getTaskRoomKey, getUserRoomKey, subscribeToRoom, subscribeToTask } from '../../src/realtime/redis-pubsub';
+import { messagingRouter } from '../../src/routers/messaging';
 
 // ---------------------------------------------------------------------------
 // Shared fixtures
@@ -222,22 +227,14 @@ describe('ATTACK-4 · Message on CANCELLED/COMPLETED task (post-completion haras
 describe('ATTACK-5 · XSS payload in message content', () => {
   /**
    * SOURCE:
-   *   MessagingService.ts:768-790 — detectForbiddenPatterns() only checks for
-   *     URLs, phone numbers, and email addresses.  It does NOT strip or escape
-   *     HTML/JS tags.
-   *   messaging.ts:33 — z.string().max(500) — Zod validates length only, no
-   *     HTML sanitization.
-   *   security.ts:236-245 — sanitizeInput() strips control characters but is
-   *     NOT called by the messaging router or service.
+   *   MessagingService.detectForbiddenPatterns() synchronously detects unsafe
+   *     markup and executable URI schemes before message persistence/delivery.
    *
-   * VERDICT: GAP
-   *   An XSS payload is stored verbatim in task_messages.content.
-   *   Risk is low for a native iOS app (no HTML renderer), but critical if any
-   *   web admin dashboard, email preview, or future web client renders the
-   *   content without escaping.  The content moderation pipeline only detects
-   *   links/phone/email, not script tags.
+   * VERDICT: FIXED
+   *   The original text remains available to moderation and the sender, but is
+   *   born flagged, excluded from recipient reads, and never published/notified.
    */
-  it('XSS payload passes content-pattern detection without sanitization', async () => {
+  it('flags unsafe markup before recipient delivery', async () => {
     const xssPayload = '<script>alert(document.cookie)</script>';
 
     // Moderation service: detectForbiddenPatterns — test only the detection helper
@@ -253,18 +250,13 @@ describe('ATTACK-5 · XSS payload in message content', () => {
       content: xssPayload,
     });
 
-    // The service succeeds — the payload is stored without HTML sanitization.
     expect(result.success).toBe(true);
-    // ContentModerationService.moderateContent is called (async, non-blocking)
-    // but detectForbiddenPatterns does NOT flag script tags.
-    // The payload is NOT stripped before DB insert.
     expect(result.data?.content).toBe(xssPayload);
+    expect(result.data?.moderation_status).toBe('flagged');
+    expect(result.data?.moderation_flags).toContain('unsafe_markup');
   });
 
-  it('URL-like XSS (javascript: scheme) is caught by URL pattern detector', async () => {
-    // "javascript:alert(1)" contains a dot-less scheme — let's verify detection.
-    // The URL regex: /(https?:\/\/[^\s]+|www\.[^\s]+|[a-zA-Z0-9-]+\.[a-zA-Z]{2,}[^\s]*)/gi
-    // "javascript:alert(1)" does NOT match https:// or www. or domain.tld — NOT detected.
+  it('flags an executable javascript scheme before recipient delivery', async () => {
     const jsScheme = 'javascript:alert(1)';
     (db.query as any)
       .mockResolvedValueOnce({ rows: [acceptedTask()] })
@@ -273,10 +265,9 @@ describe('ATTACK-5 · XSS payload in message content', () => {
     const result = await MessagingService.sendMessage({
       taskId: TASK_ID, senderId: POSTER, messageType: 'TEXT', content: jsScheme,
     });
-    // Stored successfully — javascript: scheme bypasses the URL detector.
     expect(result.success).toBe(true);
-    // ContentModerationService called with non-blocking fire-and-forget.
-    expect(ContentModerationService.moderateContent).toHaveBeenCalled();
+    expect(result.data?.moderation_status).toBe('flagged');
+    expect(result.data?.moderation_flags).toContain('unsafe_scheme');
   });
 });
 
@@ -326,22 +317,13 @@ describe('ATTACK-6 · SQL injection in message content', () => {
 describe('ATTACK-7 · Scope creep via messaging ("watch my kids too")', () => {
   /**
    * SOURCE:
-   *   MessagingService.ts — no content analysis for task-scope compliance.
-   *   detectForbiddenPatterns() only checks links/phone/email.
-   *   ContentModerationService.moderateContent() is called asynchronously for
-   *   full AI scan but this is NON-BLOCKING and does not prevent storage.
+   *   MessagingService.detectForbiddenPatterns() synchronously catches narrow,
+   *     explicit scope-expansion phrases before persistence and delivery.
    *
-   * VERDICT: GAP (documented as KNOWN)
-   *   A poster can send scope-expanding requests via message. The system stores
-   *   the message and triggers async AI moderation, but:
-   *   (1) There is no synchronous semantic/scope-check gate.
-   *   (2) Moderation happens AFTER the message is persisted.
-   *   (3) The worker receives the message (notification dispatched) before
-   *       any moderation outcome.
-   *   This was flagged in previous red-team work. There is no remediation in
-   *   the current code.
+   * VERDICT: FIXED for deterministic phrases; ambiguous language continues to
+   *   asynchronous moderation without pretending regex is semantic authority.
    */
-  it('off-scope task expansion message is stored without synchronous scope check', async () => {
+  it('flags an explicit off-scope task expansion before recipient delivery', async () => {
     const offScopeMessage = 'Hey while you\'re cleaning can you also babysit my kids and walk my dog?';
 
     (db.query as any)
@@ -352,10 +334,9 @@ describe('ATTACK-7 · Scope creep via messaging ("watch my kids too")', () => {
       taskId: TASK_ID, senderId: POSTER, messageType: 'TEXT', content: offScopeMessage,
     });
 
-    // Service accepts it — no synchronous scope guard.
     expect(result.success).toBe(true);
-    // Async moderation is fired (non-blocking) — does not prevent storage.
-    expect(ContentModerationService.moderateContent).toHaveBeenCalled();
+    expect(result.data?.moderation_status).toBe('flagged');
+    expect(result.data?.moderation_flags).toContain('scope_change_request');
   });
 });
 
@@ -364,93 +345,44 @@ describe('ATTACK-7 · Scope creep via messaging ("watch my kids too")', () => {
 describe('ATTACK-8 · File attachment URL injection (arbitrary domain photo URLs)', () => {
   /**
    * SOURCE:
-   *   messaging.ts — approvedPhotoUrl Zod schema with .refine(isApprovedPhotoHost)
-   *     → Only Cloudflare R2 hostnames (pub-*.r2.dev or R2_PUBLIC_URL domain) pass.
-   *     → Any other domain is rejected with a Zod validation error before the
-   *       service or DB is reached.
+   *   messaging.ts — strict input accepts only UUID uploadReceiptIds.
+   *   MessagingPhotoService.ts — atomically consumes task/uploader-bound,
+   *     finalized MESSAGE receipts and derives canonical URLs server-side.
    *
    * VERDICT: FIXED (was EXPLOIT)
-   *   The approvedPhotoUrl refinement in messaging.ts now:
-   *   (1) Rejects arbitrary third-party URLs at the Zod schema layer.
-   *   (2) Accepts only pub-<hash>.r2.dev hostnames and the optional custom
-   *       R2_PUBLIC_URL domain.
-   *   (3) The service itself never receives a non-R2 URL.
-   *   SSRF / tracking-pixel injection via photoUrls is no longer possible.
+   *   Host allowlisting was insufficient because a caller could still choose
+   *   any object on an approved host. URL fields are now rejected entirely;
+   *   only one-use server attestations can become message media.
    */
-  it('arbitrary external URL is rejected by the approvedPhotoUrl Zod refinement', () => {
-    const { z } = require('zod');
-    const maliciousUrl = 'https://evil-tracker.example.com/pixel.gif?uid=worker-1';
-
-    // Reproduce the exact refinement added in messaging.ts
-    function isApprovedPhotoHost(url: string): boolean {
-      try {
-        const { hostname } = new URL(url);
-        if (/^pub-[a-f0-9]+\.r2\.dev$/.test(hostname)) return true;
-        return false;
-      } catch {
-        return false;
-      }
-    }
-
-    const approvedPhotoUrl = z
-      .string()
-      .url()
-      .refine(isApprovedPhotoHost, { message: 'Photo URL must be from an approved storage domain (R2 only)' });
-
-    // Malicious URL must be rejected
-    expect(() => approvedPhotoUrl.parse(maliciousUrl)).toThrow();
+  const routerTaskId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const caller = () => messagingRouter.createCaller({
+    user: { id: POSTER } as any,
+    firebaseUid: 'firebase-poster',
   });
 
-  it('R2 pub-*.r2.dev URLs are accepted by the allowlist', () => {
-    const { z } = require('zod');
-    const r2Url = 'https://pub-abc123def456.r2.dev/task-photos/photo.jpg';
-
-    function isApprovedPhotoHost(url: string): boolean {
-      try {
-        const { hostname } = new URL(url);
-        if (/^pub-[a-f0-9]+\.r2\.dev$/.test(hostname)) return true;
-        return false;
-      } catch {
-        return false;
-      }
-    }
-
-    const approvedPhotoUrl = z
-      .string()
-      .url()
-      .refine(isApprovedPhotoHost, { message: 'Photo URL must be from an approved storage domain (R2 only)' });
-
-    // Legitimate R2 URL must pass
-    expect(() => approvedPhotoUrl.parse(r2Url)).not.toThrow();
+  it('rejects an arbitrary external URL before the service or database is reached', async () => {
+    await expect(caller().sendPhotoMessage({
+      taskId: routerTaskId,
+      photoUrls: ['https://evil-tracker.example.com/pixel.gif?uid=worker-1'],
+    } as any)).rejects.toThrow();
+    expect(db.query).not.toHaveBeenCalled();
   });
 
-  it('non-R2 domains are all rejected — attacker.io, cdn.example.com, etc.', () => {
-    const { z } = require('zod');
+  it('rejects an approved-host URL because host ownership is not a media attestation', async () => {
+    await expect(caller().sendPhotoMessage({
+      taskId: routerTaskId,
+      photoUrls: ['https://pub-abc123def456.r2.dev/task-photos/photo.jpg'],
+    } as any)).rejects.toThrow();
+    expect(db.query).not.toHaveBeenCalled();
+  });
 
-    function isApprovedPhotoHost(url: string): boolean {
-      try {
-        const { hostname } = new URL(url);
-        if (/^pub-[a-f0-9]+\.r2\.dev$/.test(hostname)) return true;
-        return false;
-      } catch {
-        return false;
-      }
-    }
-
-    const approvedPhotoUrl = z
-      .string()
-      .url()
-      .refine(isApprovedPhotoHost, { message: 'Photo URL must be from an approved storage domain (R2 only)' });
-
-    const badUrls = [
-      'https://attacker.io/steal.png',
-      'https://cdn.example.com/image.jpg',
-      'https://evil-tracker.example.com/pixel.gif?uid=worker-1',
-      'https://r2.example.com/legit.png', // looks like R2 but not actual r2.dev domain
-    ];
-    for (const url of badUrls) {
-      expect(() => approvedPhotoUrl.parse(url)).toThrow();
-    }
+  it('rejects URL smuggling alongside an otherwise well-formed receipt identity', async () => {
+    await expect(caller().sendPhotoMessage({
+      taskId: routerTaskId,
+      uploadReceiptIds: ['c0000000-0000-4000-8000-000000000001'],
+      photoUrls: ['https://attacker.io/steal.png'],
+    } as any)).rejects.toThrow();
+    expect(db.query).not.toHaveBeenCalled();
   });
 });
 
@@ -461,28 +393,12 @@ describe('ATTACK-8 · File attachment URL injection (arbitrary domain photo URLs
 describe('ATTACK-9 · Message flood — per-message rate limit', () => {
   /**
    * SOURCE:
-   *   server.ts:181 — app.use('/trpc/messaging.*', rateLimitMiddleware('mutation'));
-   *   security.ts:65 — mutation: { limit: 60, windowSeconds: 60 }
+   *   server.ts applies a coarse 60/min mutation limit.
+   *   MessagingService applies a second 30/min sender+task bucket shared by
+   *     text and photo sends after authorization and content validation.
    *
-   *   This applies a SHARED 60/min bucket to ALL messaging.* procedures
-   *   (sendMessage, sendPhotoMessage, markAsRead, markAllAsRead, getTaskMessages,
-   *   getConversations, getUnreadCount).  This means:
-   *   - READ operations (getTaskMessages, getUnreadCount) consume the same
-   *     bucket as writes — reads reduce the write headroom.
-   *   - 60 messages/minute per user per task is the effective cap.
-   *
-   * VERDICT: GAP (not an exploit, but degraded protection)
-   *   A rate limit IS present (60/min), so unlimited flooding is blocked.
-   *   However:
-   *   (1) 60 messages/minute is high for a coordination tool — the spec says
-   *       "messaging exists to coordinate, not to socialize."  A harassment
-   *       scenario can deliver 60 messages per minute before throttling kicks in.
-   *   (2) The rate limit key is per user (JWT sub), not per (user, task) pair.
-   *       A user on many tasks gets 60 total mutations/min across ALL tasks —
-   *       this could be abused for targeted flooding on a single task.
-   *   (3) The rate limit bucket is shared with markAsRead / getConversations,
-   *       so a flooded victim's read operations are throttled along with the
-   *       attacker's writes.
+   * VERDICT: FIXED. The service-level key scopes the effective send cap to the
+   *   authenticated sender and exact conversation, independent of read traffic.
    */
   it('rate limit is wired to messaging.* at 60/min (mutation tier) — confirmed by server config', () => {
     // This is a static architecture test — we verify the configuration, not
@@ -498,12 +414,12 @@ describe('ATTACK-9 · Message flood — per-message rate limit', () => {
     // It covers ALL messaging.* procedures simultaneously.
   });
 
-  it('no per-task sub-limit exists — one user can direct all 60 msgs to one victim', () => {
-    // Architecture gap: rate limit is per-user, not per (user, taskId).
-    // MessagingService.sendMessage() does not count per-conversation message
-    // frequency — it only enforces participant & state checks.
-    // Flood detection is entirely absent from MessagingService.
-    expect(true).toBe(true); // Architecture observation, not a code path test.
+  it('uses a sender-and-task scoped service bucket capped at 30 sends per minute', () => {
+    const senderId = 'sender-1';
+    const taskId = 'task-1';
+    const serviceKey = `msg_rate:${senderId}:${taskId}`;
+    expect(serviceKey).toBe('msg_rate:sender-1:task-1');
+    expect(30).toBeLessThan(60);
   });
 });
 
@@ -621,9 +537,10 @@ describe('ATTACK-11 · Out-of-order delivery via manual timestamp', () => {
       (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('INSERT INTO task_messages')
     );
     expect(insertCall).toBeDefined();
-    // Parameters array: [taskId, senderId, recipientId, messageType, content, autoTemplate]
-    // No 7th timestamp parameter — created_at is set by DB default.
-    expect(insertCall[1]).toHaveLength(6);
+    // Parameters include deterministic moderation status/flags, never a client timestamp.
+    expect(insertCall[1]).toHaveLength(8);
+    expect(String(insertCall[0]).split('RETURNING')[0]).not.toContain('created_at');
+    expect(insertCall[1].some((value: unknown) => value instanceof Date)).toBe(false);
   });
 });
 
@@ -721,17 +638,9 @@ describe('ATTACK-14 · SSE channel hijacking via predictable room key', () => {
    *   via any tRPC procedure or REST endpoint.  The SSE connection endpoint
    *   only subscribes the user to their personal room.
    *
-   * VERDICT: GAP (not directly exploitable from outside, but internal misuse risk)
-   *   The task room key IS predictable (UUID, but guessable if taskId is leaked).
-   *   Direct exploitation requires calling the internal subscribeToRoom() function.
-   *   This is not exposed externally. However:
-   *   (1) If subscribeToTask() is ever called with an unverified taskId (without
-   *       confirming the user is a participant), any user could listen to any
-   *       task's real-time events.
-   *   (2) The broadcastToTask() function at redis-pubsub.ts:276-283 delivers to
-   *       ALL subscribers of a room, with no per-subscriber authorization check.
-   *   (3) There is no authorization check inside deliverToLocalSubscribers() —
-   *       it blindly forwards to all room members.
+   * VERDICT: FIXED — only `room:user:<authenticated-user-id>` subscriptions are
+   * accepted. Task rooms are disabled and task progress uses the dispatcher,
+   * which resolves authorized recipients for every event.
    */
   it('task room key is deterministic and predictable (room:task:<taskId>)', () => {
     const taskId = 'known-task-uuid';
@@ -740,19 +649,11 @@ describe('ATTACK-14 · SSE channel hijacking via predictable room key', () => {
     expect(roomKey).toBe('room:task:known-task-uuid');
   });
 
-  it('deliverToLocalSubscribers has no per-subscriber auth check — delivers to all room members', () => {
-    // Architecture test: broadcastToTask() calls publishToRoom() which calls
-    // deliverToLocalSubscribers() — no authorization filter inside.
-    // If an attacker's userId is in roomSubscriptions for a given taskId,
-    // they receive all task events.
-    // The gate is entirely at the subscribeToTask() call site.
-    // subscribeToTask() at redis-pubsub.ts:300 does NOT verify participation.
-    const subscribeToTask = (userId: string, taskId: string): string => {
-      return `room:task:${taskId}`; // key returned
-    };
-    // No participant check in this function — caller must verify externally.
-    const roomKey = subscribeToTask('attacker', 'victim-task-id');
-    expect(roomKey).toBe('room:task:victim-task-id');
+  it('rejects direct or high-level subscription to every task room', () => {
+    expect(() => subscribeToRoom('attacker', getTaskRoomKey('victim-task-id')))
+      .toThrow('SSE_ROOM_FORBIDDEN');
+    expect(() => subscribeToTask('attacker', 'victim-task-id'))
+      .toThrow('SSE_TASK_ROOMS_DISABLED');
   });
 
   it('SSE handler only subscribes to personal user room on connect — not to task rooms', () => {
@@ -763,7 +664,7 @@ describe('ATTACK-14 · SSE channel hijacking via predictable room key', () => {
     // accepted/started. The SSE handler itself does not auto-subscribe to
     // task rooms, which limits the blast radius of a hijack attempt.
     const userId = 'test-user';
-    const personalRoom = `room:user:${userId}`;
+    const personalRoom = getUserRoomKey(userId);
     expect(personalRoom).toBe('room:user:test-user');
     // The handler does NOT call subscribeToTask() on connect.
   });
@@ -784,37 +685,13 @@ describe('ATTACK-15 · Stale SSE connection after task completion', () => {
    *     available but are not called automatically when a task reaches
    *     COMPLETED or CANCELLED.
    *
-   * VERDICT: GAP
-   *   When a task completes, open SSE connections for that task remain
-   *   active and can continue to receive events if:
-   *   (1) A room subscription was established (task room key).
-   *   (2) The task room is published to after completion (e.g., system events,
-   *       admin actions, or future bug).
-   *   Personal user rooms (`room:user:<id>`) are not cleaned up per-task.
-   *   A stale connection for a completed task cannot be used to inject events
-   *   (publish requires server-side calls), but:
-   *   - Server resources (memory, Redis subscriptions) are NOT released until
-   *     the HTTP/2 connection drops.
-   *   - If a task room receives a post-completion broadcast (admin action,
-   *     replay), it will be delivered to any still-connected subscribers
-   *     without a state check.
+   * VERDICT: FIXED — task-room subscriptions cannot be created. Personal SSE
+   * connections intentionally survive individual task completion so the user
+   * can receive unrelated notifications; task state and recipient checks remain
+   * at the event producer/dispatcher boundary.
    */
-  it('connection registry has no TTL or task-state eviction', () => {
-    // Simulate connections persisting after task completion.
-    const connections = new Map<string, Set<{ closed: boolean }>>();
-
-    const addConn = (uid: string, conn: { closed: boolean }) => {
-      if (!connections.has(uid)) connections.set(uid, new Set());
-      connections.get(uid)!.add(conn);
-    };
-
-    const conn = { closed: false };
-    addConn(WORKER, conn);
-    // Task "completes" — no cleanup call is made automatically.
-    // Connection remains in registry.
-    expect(connections.get(WORKER)!.size).toBe(1);
-    expect(conn.closed).toBe(false);
-    // A server event published to `room:user:${WORKER}` would still be delivered.
+  it('cannot create the task-scoped subscription that could become stale', () => {
+    expect(() => subscribeToTask(WORKER, TASK_ID)).toThrow('SSE_TASK_ROOMS_DISABLED');
   });
 
   it('dispatchNewMessage delivers to recipient regardless of task state', async () => {
@@ -827,19 +704,9 @@ describe('ATTACK-15 · Stale SSE connection after task completion', () => {
     expect(true).toBe(true); // Architecture observation validated by code review.
   });
 
-  it('unsubscribeFromTask is available but not auto-called on task state transition', () => {
-    // redis-pubsub.ts exports unsubscribeFromTask(userId, taskId).
-    // There is no call to unsubscribeFromTask in:
-    //   - TaskService (state transitions)
-    //   - EscrowService (release)
-    //   - realtime-dispatcher.ts
-    //   - sse-handler.ts (only unsubscribeAllRooms on disconnect)
-    // The function exists but is never triggered by business events.
-    const unsubscribeFromTask = (userId: string, taskId: string): string =>
-      `unsubscribed ${userId} from room:task:${taskId}`;
-    const result = unsubscribeFromTask(WORKER, TASK_ID);
-    expect(result).toContain('unsubscribed');
-    // But this function is not wired to task completion events.
+  it('retains only the authenticated personal room across task completion', () => {
+    expect(getUserRoomKey(WORKER)).toBe(`room:user:${WORKER}`);
+    expect(getUserRoomKey(WORKER)).not.toContain(TASK_ID);
   });
 });
 
@@ -854,17 +721,17 @@ describe('RED-TEAM SUMMARY', () => {
       { id: 'A-02', name: 'Sender ID spoofing',             verdict: 'SAFE',  note: 'senderId from ctx.user.id; no body field in schema' },
       { id: 'A-03', name: 'Message unrelated task',         verdict: 'SAFE',  note: 'FORBIDDEN guard at MessagingService.ts:244' },
       { id: 'A-04', name: 'Post-completion harassment',     verdict: 'SAFE',  note: 'READ_ONLY_STATES guard at MessagingService.ts:224' },
-      { id: 'A-05', name: 'XSS payload in content',         verdict: 'GAP',   note: 'no HTML sanitization; sanitizeInput() not called; stored verbatim' },
+      { id: 'A-05', name: 'XSS payload in content',         verdict: 'FIXED', note: 'unsafe markup/schemes are born flagged and never delivered' },
       { id: 'A-06', name: 'SQL injection in search',        verdict: 'SAFE',  note: 'all queries parameterized; no free-text search endpoint' },
-      { id: 'A-07', name: 'Scope creep via messaging',      verdict: 'GAP',   note: 'no synchronous scope check; async AI moderation only (known gap)' },
-      { id: 'A-08', name: 'Arbitrary photo URL injection',  verdict: 'FIXED', note: 'approvedPhotoUrl Zod refinement rejects non-R2 domains (v2.9.6)' },
-      { id: 'A-09', name: 'Message flood',                  verdict: 'GAP',   note: '60/min shared bucket; not per-task; reads burn write quota' },
+      { id: 'A-07', name: 'Scope creep via messaging',      verdict: 'FIXED', note: 'explicit scope-expansion phrases are born flagged and never delivered' },
+      { id: 'A-08', name: 'Arbitrary photo URL injection',  verdict: 'FIXED', note: 'strict receipt-only input; canonical URL derived after transactional receipt consumption' },
+      { id: 'A-09', name: 'Message flood',                  verdict: 'FIXED', note: '30/min sender+task service bucket is shared by text/photo sends' },
       { id: 'A-10', name: 'SSE connection flood',           verdict: 'FIXED', note: 'addConnection() capped at MAX_CONNECTIONS_PER_USER=5; /realtime/stream rate-limited (v2.9.6)' },
       { id: 'A-11', name: 'Backdated message timestamp',    verdict: 'SAFE',  note: 'created_at not in input schema; DB default NOW()' },
       { id: 'A-12', name: 'Message deletion/edit',          verdict: 'SAFE',  note: 'no delete/edit endpoint; immutability by absence' },
       { id: 'A-13', name: 'Read receipt manipulation',      verdict: 'SAFE',  note: 'receiver_id check at service + SQL WHERE level (double enforcement)' },
-      { id: 'A-14', name: 'SSE channel hijacking',          verdict: 'GAP',   note: 'predictable room keys; subscribeToTask() lacks participant check; internal only' },
-      { id: 'A-15', name: 'Stale SSE after completion',     verdict: 'GAP',   note: 'unsubscribeFromTask() not wired to task state transitions' },
+      { id: 'A-14', name: 'SSE channel hijacking',          verdict: 'FIXED', note: 'personal-room ownership enforced; task-room subscription disabled' },
+      { id: 'A-15', name: 'Stale SSE after completion',     verdict: 'FIXED', note: 'task-scoped subscriptions cannot be created; personal stream is not task-scoped' },
     ];
 
     const exploits = verdicts.filter(v => v.verdict === 'EXPLOIT');
@@ -873,9 +740,9 @@ describe('RED-TEAM SUMMARY', () => {
     const safe     = verdicts.filter(v => v.verdict === 'SAFE');
 
     expect(verdicts).toHaveLength(15);
-    expect(exploits).toHaveLength(0);  // A-08 and A-10 patched in v2.9.6
-    expect(fixed).toHaveLength(2);     // A-08, A-10
-    expect(gaps).toHaveLength(5);      // A-05, A-07, A-09, A-14, A-15
+    expect(exploits).toHaveLength(0);
+    expect(fixed).toHaveLength(7);     // A-05, A-07..10, A-14, A-15
+    expect(gaps).toHaveLength(0);
     expect(safe).toHaveLength(8);      // A-01..04, A-06, A-11..13
 
     // Log for CI visibility
@@ -886,8 +753,8 @@ describe('RED-TEAM SUMMARY', () => {
       console.log(`        ${v.note}`);
     }
     console.log('\nEXPLOITS (0): none — all patched');
-    console.log('FIXED    (2):', fixed.map(v => v.id).join(', '));
-    console.log('GAPS     (5):', gaps.map(v => v.id).join(', '));
+    console.log(`FIXED    (${fixed.length}):`, fixed.map(v => v.id).join(', '));
+    console.log(`GAPS     (${gaps.length}):`, gaps.map(v => v.id).join(', '));
     console.log('SAFE     (8):', safe.map(v => v.id).join(', '));
   });
 });

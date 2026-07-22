@@ -32,7 +32,7 @@ export interface TaskRequirements {
   riskLevel: 'low' | 'medium' | 'high' | 'critical';
   insuranceRequired: boolean;
   backgroundCheckRequired: boolean;
-  minTrustTier?: string;
+  minTrustTier?: number;
 }
 
 export interface EligibilityContext {
@@ -189,11 +189,7 @@ export function isEligible(
 
   // 7. Check minimum trust tier (if specified)
   if (task.minTrustTier) {
-    const tierOrder = ['D', 'C', 'B', 'A'];
-    const userTierIndex = tierOrder.indexOf(profile.trustTier);
-    const minTierIndex = tierOrder.indexOf(task.minTrustTier);
-    
-    if (userTierIndex < minTierIndex) {
+    if (profile.trustTier < task.minTrustTier) {
       reasons.push(`Task requires trust tier ${task.minTrustTier} or higher`);
       result.code = 'HX408';
       result.reasons = reasons;

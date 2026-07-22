@@ -6,6 +6,11 @@ import { TaskCreateProcedures } from './TaskCreateProcedures.js';
 import { TaskExecutionProcedures } from './TaskExecutionProcedures.js';
 import { TaskReadProcedures } from './TaskReadProcedures.js';
 import { TaskReviewProcedures } from './TaskReviewProcedures.js';
+import { TaskRetentionProcedures } from './TaskRetentionProcedures.js';
+import { TaskClarificationProcedures } from './TaskClarificationProcedures.js';
+import { TaskCounterOfferProcedures } from './TaskCounterOfferProcedures.js';
+import { TaskScopeProcedures } from './TaskScopeProcedures.js';
+import { TaskOfflineSyncProcedures } from './TaskOfflineSyncProcedures.js';
 export { checkDraftEvalRateLimit, checkTaskCreateRateLimit } from './task-router-common.js';
 
 // Security invariant: TaskReadProcedures authorizes non-participants through
@@ -17,8 +22,13 @@ export const taskRouter = router({
   ...TaskAcceptProcedures,
   ...TaskExecutionProcedures,
   ...TaskReviewProcedures,
+  ...TaskRetentionProcedures,
+  ...TaskClarificationProcedures,
+  ...TaskCounterOfferProcedures,
   ...TaskApplicationProcedures,
   ...TaskAssignmentProcedures,
+  ...TaskScopeProcedures,
+  ...TaskOfflineSyncProcedures,
 });
 
 export type TaskRouter = typeof taskRouter;

@@ -8,7 +8,6 @@ const taskDescription = z.string().min(20).max(5000);
 const message = z.string().min(1).max(2000);
 const reviewText = z.string().max(1000);
 const email = z.string().email().max(254);
-const url = z.string().url().max(2048);
 
 export const paginationSchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
@@ -33,7 +32,7 @@ export const userProfileSchema = z.object({
   username,
   displayName: displayName.optional(),
   bio: bio.optional(),
-  avatarUrl: url.optional(),
+  avatarUrl: z.string().max(0, 'Direct avatar media is disabled; a finalized upload receipt is required.').optional(),
 });
 
 export const taskCreateSchema = z.object({

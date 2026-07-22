@@ -318,7 +318,7 @@ describe('ATTACK-3 — Deception override edge cases', () => {
     expect(result.data.suggested_price_cents).toBe(7500);
   });
 
-  it('ATTACK-3b: ai_signals_computed=false + deception_detected=true → multipliers NOT stripped', async () => {
+  it('ATTACK-3b: ai_signals_computed=false → unproven wildcard premiums fail closed to base', async () => {
     const compliance = bizarreClean({
       deception_detected: true,
       ai_signals_computed: false,
@@ -333,9 +333,8 @@ describe('ATTACK-3 — Deception override edge cases', () => {
     expect(result.success).toBe(true);
     if (!result.success) return;
 
-    // Without AI confirmation, deception override must NOT fire.
-    // 7500 * 1.30 = 9750; ai_signals_computed=false also means bizarre cap doesn't fire.
-    expect(result.data.suggested_price_cents).toBe(9750);
+    // Caller-supplied flags cannot earn a premium without computed AI signals.
+    expect(result.data.suggested_price_cents).toBe(7500);
   });
 
   it('ATTACK-3c: deception with base $50, constitutional cap is $500 — after strip, price is exactly $50 base', async () => {
@@ -361,7 +360,7 @@ describe('ATTACK-3 — Deception override edge cases', () => {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe('ATTACK-4 — Genuine bizarre cap edge cases', () => {
-  it('ATTACK-4a: not bizarre + all 6 flags → cap at 1.1x; $60 base → cap $66, multiplied $90 reduced to $66', async () => {
+  it('ATTACK-4a: not bizarre + all 6 flags → unproven premiums fail closed to $60 base', async () => {
     const compliance = bizarreClean({ is_genuinely_bizarre: false });
 
     const result = await runWithAIPrice(6000, {
@@ -379,13 +378,12 @@ describe('ATTACK-4 — Genuine bizarre cap edge cases', () => {
     expect(result.success).toBe(true);
     if (!result.success) return;
 
-    const cap = Math.round(6000 * 1.1); // 6600
-    expect(result.data.suggested_price_cents).toBe(cap);
+    expect(result.data.suggested_price_cents).toBe(6000);
     // Must be LESS than the uncapped multiplied value (9000)
     expect(result.data.suggested_price_cents).toBeLessThan(9000);
   });
 
-  it('ATTACK-4b: ai_signals_computed=false + is_genuinely_bizarre=false → bizarre cap does NOT apply (full multipliers pass through)', async () => {
+  it('ATTACK-4b: ai_signals_computed=false + is_genuinely_bizarre=false → unproven premiums fail closed', async () => {
     const compliance = bizarreClean({
       ai_signals_computed: false,
       is_genuinely_bizarre: false,
@@ -400,12 +398,11 @@ describe('ATTACK-4 — Genuine bizarre cap edge cases', () => {
     expect(result.success).toBe(true);
     if (!result.success) return;
 
-    // cap would be 6600, but ai_signals_computed=false → no cap → 8400
-    expect(result.data.suggested_price_cents).toBe(8400);
-    expect(result.data.suggested_price_cents).toBeGreaterThan(6600);
+    expect(result.data.suggested_price_cents).toBe(6000);
+    expect(result.data.suggested_price_cents).toBeLessThan(6600);
   });
 
-  it('ATTACK-4c: not bizarre + $50 base → 1.1x cap = $55, constitutional cap ($500) is irrelevant here', async () => {
+  it('ATTACK-4c: not bizarre + $50 base → unproven premiums fail closed to base', async () => {
     const compliance = bizarreClean({ is_genuinely_bizarre: false });
 
     const result = await runWithAIPrice(5000, {
@@ -416,8 +413,7 @@ describe('ATTACK-4 — Genuine bizarre cap edge cases', () => {
     expect(result.success).toBe(true);
     if (!result.success) return;
 
-    const cap = Math.round(5000 * 1.1); // 5500
-    expect(result.data.suggested_price_cents).toBe(cap);
+    expect(result.data.suggested_price_cents).toBe(5000);
     expect(result.data.suggested_price_cents).not.toBe(50000);
   });
 

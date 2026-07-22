@@ -21,6 +21,14 @@ import { GeofenceService } from '../../src/services/GeofenceService';
 import { db } from '../../src/db';
 
 const mockQuery = db.query as ReturnType<typeof vi.fn>;
+const clientEvidence = {
+  clientEventId: '11111111-1111-4111-8111-111111111111',
+  clientSequence: 1,
+  priorTaskVersion: 0,
+  localOccurredAt: '2026-07-20T00:00:00.000Z',
+  deviceVersion: 'test-device',
+  appVersion: 'test-app',
+};
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -30,30 +38,64 @@ beforeEach(() => {
 // checkProximity
 // ═══════════════════════════════════════════════════════════════════════════
 describe('GeofenceService.checkProximity', () => {
+  it('rejects a stale task version before calculating or storing location evidence', async () => {
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ location_lat: 47.6, location_lng: -122.3, state: 'ACCEPTED', worker_id: 'user-1', progress_state: 'TRAVELING', version: 2 }],
+    });
+    const result = await GeofenceService.checkProximity(
+      'task-1', 'user-1', 47.6, -122.3, { ...clientEvidence, priorTaskVersion: 1 },
+    );
+    expect(result).toMatchObject({ success: false, error: { code: 'SYNC_CONFLICT' } });
+    expect(mockQuery).toHaveBeenCalledOnce();
+  });
+
+  it('rejects a conflicting replay of a device event identity', async () => {
+    mockQuery
+      .mockResolvedValueOnce({
+        rows: [{ location_lat: 47.6, location_lng: -122.3, state: 'ACCEPTED', worker_id: 'user-1', progress_state: 'TRAVELING', version: 0 }],
+      })
+      .mockResolvedValueOnce({ rows: [{ distance_meters: 25 }] })
+      .mockResolvedValueOnce({ rows: [{ event_type: 'checkin', request_hash: 'f'.repeat(64) }] });
+    const result = await GeofenceService.checkProximity('task-1', 'user-1', 47.6, -122.3, clientEvidence);
+    expect(result).toMatchObject({ success: false, error: { code: 'IDEMPOTENCY_CONFLICT' } });
+  });
+
+  it('rejects a non-replayed device sequence older than the accepted event', async () => {
+    mockQuery
+      .mockResolvedValueOnce({
+        rows: [{ location_lat: 47.6, location_lng: -122.3, state: 'ACCEPTED', worker_id: 'user-1', progress_state: 'TRAVELING', version: 0 }],
+      })
+      .mockResolvedValueOnce({ rows: [{ distance_meters: 100 }] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ event_type: 'exit', client_event_id: 'older', client_sequence: 2 }] });
+    const result = await GeofenceService.checkProximity('task-1', 'user-1', 47.6, -122.3, clientEvidence);
+    expect(result).toMatchObject({ success: false, error: { code: 'SYNC_CONFLICT' } });
+  });
+
   it('returns NOT_FOUND when task does not exist', async () => {
     mockQuery.mockResolvedValueOnce({ rows: [] });
 
-    const result = await GeofenceService.checkProximity('task-1', 'user-1', 47.6, -122.3);
+    const result = await GeofenceService.checkProximity('task-1', 'user-1', 47.6, -122.3, clientEvidence);
     expect(result.success).toBe(false);
     if (!result.success) expect(result.error.code).toBe('NOT_FOUND');
   });
 
   it('returns NO_LOCATION when task has no coordinates', async () => {
     mockQuery.mockResolvedValueOnce({
-      rows: [{ location_lat: null, location_lng: null, state: 'ACCEPTED', worker_id: 'user-1', progress_state: 'TRAVELING' }],
+      rows: [{ location_lat: null, location_lng: null, state: 'ACCEPTED', worker_id: 'user-1', progress_state: 'TRAVELING', version: 0 }],
     });
 
-    const result = await GeofenceService.checkProximity('task-1', 'user-1', 47.6, -122.3);
+    const result = await GeofenceService.checkProximity('task-1', 'user-1', 47.6, -122.3, clientEvidence);
     expect(result.success).toBe(false);
     if (!result.success) expect(result.error.code).toBe('NO_LOCATION');
   });
 
   it('returns NOT_ASSIGNED when user is not the worker', async () => {
     mockQuery.mockResolvedValueOnce({
-      rows: [{ location_lat: 47.6, location_lng: -122.3, state: 'ACCEPTED', worker_id: 'other-user', progress_state: 'TRAVELING' }],
+      rows: [{ location_lat: 47.6, location_lng: -122.3, state: 'ACCEPTED', worker_id: 'other-user', progress_state: 'TRAVELING', version: 0 }],
     });
 
-    const result = await GeofenceService.checkProximity('task-1', 'user-1', 47.6, -122.3);
+    const result = await GeofenceService.checkProximity('task-1', 'user-1', 47.6, -122.3, clientEvidence);
     expect(result.success).toBe(false);
     if (!result.success) expect(result.error.code).toBe('NOT_ASSIGNED');
   });
@@ -61,13 +103,14 @@ describe('GeofenceService.checkProximity', () => {
   it('detects worker within geofence and logs enter event', async () => {
     mockQuery
       .mockResolvedValueOnce({
-        rows: [{ location_lat: 47.6, location_lng: -122.3, state: 'ACCEPTED', worker_id: 'user-1', progress_state: 'TRAVELING' }],
+        rows: [{ location_lat: 47.6, location_lng: -122.3, state: 'ACCEPTED', worker_id: 'user-1', progress_state: 'TRAVELING', version: 0 }],
       })
       .mockResolvedValueOnce({ rows: [{ distance_meters: 100 }] }) // distance
+      .mockResolvedValueOnce({ rows: [] }) // no replay
       .mockResolvedValueOnce({ rows: [] }) // no previous event
-      .mockResolvedValueOnce({ rowCount: 1 }); // insert event
+      .mockResolvedValueOnce({ rows: [{ id: 'event-1', request_hash: '', inserted: true }], rowCount: 1 }); // insert event
 
-    const result = await GeofenceService.checkProximity('task-1', 'user-1', 47.6001, -122.3001);
+    const result = await GeofenceService.checkProximity('task-1', 'user-1', 47.6001, -122.3001, clientEvidence);
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.data.within_geofence).toBe(true);
@@ -78,13 +121,14 @@ describe('GeofenceService.checkProximity', () => {
   it('triggers auto check-in when within 50m and task ACCEPTED', async () => {
     mockQuery
       .mockResolvedValueOnce({
-        rows: [{ location_lat: 47.6, location_lng: -122.3, state: 'ACCEPTED', worker_id: 'user-1', progress_state: 'TRAVELING' }],
+        rows: [{ location_lat: 47.6, location_lng: -122.3, state: 'ACCEPTED', worker_id: 'user-1', progress_state: 'TRAVELING', version: 0 }],
       })
       .mockResolvedValueOnce({ rows: [{ distance_meters: 30 }] }) // within 50m
+      .mockResolvedValueOnce({ rows: [] }) // no replay
       .mockResolvedValueOnce({ rows: [] }) // no previous event
-      .mockResolvedValueOnce({ rowCount: 1 }); // insert
+      .mockResolvedValueOnce({ rows: [{ id: 'event-2', request_hash: '', inserted: true }], rowCount: 1 }); // insert
 
-    const result = await GeofenceService.checkProximity('task-1', 'user-1', 47.6, -122.3);
+    const result = await GeofenceService.checkProximity('task-1', 'user-1', 47.6, -122.3, clientEvidence);
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.data.auto_checkin_triggered).toBe(true);
@@ -94,13 +138,14 @@ describe('GeofenceService.checkProximity', () => {
   it('logs exit event when worker moves beyond 300m', async () => {
     mockQuery
       .mockResolvedValueOnce({
-        rows: [{ location_lat: 47.6, location_lng: -122.3, state: 'ACCEPTED', worker_id: 'user-1', progress_state: 'WORKING' }],
+        rows: [{ location_lat: 47.6, location_lng: -122.3, state: 'ACCEPTED', worker_id: 'user-1', progress_state: 'WORKING', version: 0 }],
       })
       .mockResolvedValueOnce({ rows: [{ distance_meters: 400 }] }) // beyond exit radius
-      .mockResolvedValueOnce({ rows: [{ event_type: 'enter' }] }) // last event was enter
-      .mockResolvedValueOnce({ rowCount: 1 }); // insert exit event
+      .mockResolvedValueOnce({ rows: [] }) // no replay
+      .mockResolvedValueOnce({ rows: [{ event_type: 'enter', client_event_id: 'previous', client_sequence: 0 }] }) // last event was enter
+      .mockResolvedValueOnce({ rows: [{ id: 'event-3', request_hash: '', inserted: true }], rowCount: 1 }); // insert exit event
 
-    const result = await GeofenceService.checkProximity('task-1', 'user-1', 47.65, -122.35);
+    const result = await GeofenceService.checkProximity('task-1', 'user-1', 47.65, -122.35, clientEvidence);
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.data.within_geofence).toBe(false);
@@ -111,12 +156,13 @@ describe('GeofenceService.checkProximity', () => {
   it('does not log event when no state change', async () => {
     mockQuery
       .mockResolvedValueOnce({
-        rows: [{ location_lat: 47.6, location_lng: -122.3, state: 'ACCEPTED', worker_id: 'user-1', progress_state: 'WORKING' }],
+        rows: [{ location_lat: 47.6, location_lng: -122.3, state: 'ACCEPTED', worker_id: 'user-1', progress_state: 'WORKING', version: 0 }],
       })
       .mockResolvedValueOnce({ rows: [{ distance_meters: 100 }] }) // within geofence
-      .mockResolvedValueOnce({ rows: [{ event_type: 'enter' }] }); // already entered
+      .mockResolvedValueOnce({ rows: [] }) // no replay
+      .mockResolvedValueOnce({ rows: [{ event_type: 'enter', client_event_id: 'previous', client_sequence: 0 }] }); // already entered
 
-    const result = await GeofenceService.checkProximity('task-1', 'user-1', 47.6001, -122.3001);
+    const result = await GeofenceService.checkProximity('task-1', 'user-1', 47.6001, -122.3001, clientEvidence);
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.data.event_logged).toBe(false);

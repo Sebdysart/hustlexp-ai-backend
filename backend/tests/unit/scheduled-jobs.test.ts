@@ -13,20 +13,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const queueAddCalls: Array<{ queueName: string; jobName: string; data: unknown; opts: unknown }> = [];
 
 vi.mock('../../src/jobs/queues', () => {
-  const mockQueue = (name: string) => ({
-    name,
-    add: vi.fn(async (jobName: string, data: unknown, opts?: unknown) => {
-      queueAddCalls.push({ queueName: name, jobName, data, opts });
-      return { id: `mock-job-${name}-${jobName}` };
-    }),
-  });
-
-  const queues: Record<string, ReturnType<typeof mockQueue>> = {};
-
   return {
-    getQueue: vi.fn((name: string) => {
-      if (!queues[name]) queues[name] = mockQueue(name);
-      return queues[name];
+    enqueueRepeatableJob: vi.fn(async (queueName: string, jobName: string, data: unknown, pattern: string) => {
+      queueAddCalls.push({ queueName, jobName, data, opts: { repeat: { pattern } } });
+      return { id: `mock-job-${queueName}-${jobName}` };
     }),
     createWorker: vi.fn(() => ({
       name: 'mock-worker',
@@ -95,6 +85,9 @@ vi.mock('../../src/config', () => ({
 vi.mock('../../src/services/PushNotificationService', () => ({
   sendPushNotification: vi.fn().mockResolvedValue({ success: true }),
 }));
+vi.mock('../../src/services/NotificationService', () => ({
+  NotificationService: { createNotification: vi.fn().mockResolvedValue({ success: true }) },
+}));
 
 describe('Scheduled Jobs Registration', () => {
   beforeEach(() => {
@@ -135,6 +128,66 @@ describe('Scheduled Jobs Registration', () => {
     expect((expiryJob!.data as Record<string, unknown>).limit).toBe(100);
   });
 
+  it('registers abandoned media receipt cleanup every minute', async () => {
+    const { startWorkers } = await import('../../src/jobs/workers');
+    await startWorkers();
+
+    const expiryJob = queueAddCalls.find(
+      c => c.queueName === 'maintenance' && c.jobName === 'media.expire_uploads'
+    );
+    expect(expiryJob).toBeDefined();
+    expect(((expiryJob!.opts as Record<string, Record<string, string>>).repeat).pattern).toBe('* * * * *');
+    expect((expiryJob!.data as Record<string, unknown>).limit).toBe(100);
+  });
+
+  it('registers overdue safety check-in escalation every minute', async () => {
+    const { startWorkers } = await import('../../src/jobs/workers');
+    await startWorkers();
+
+    const escalationJob = queueAddCalls.find(
+      c => c.queueName === 'maintenance' && c.jobName === 'safety.escalate_overdue_checkins'
+    );
+    expect(escalationJob).toBeDefined();
+    expect(((escalationJob!.opts as Record<string, Record<string, string>>).repeat).pattern).toBe('* * * * *');
+    expect((escalationJob!.data as Record<string, unknown>).limit).toBe(100);
+  });
+
+  it('registers controlled recurring generation and reservation waves every minute', async () => {
+    const { startWorkers } = await import('../../src/jobs/workers');
+    await startWorkers();
+
+    for (const jobName of ['recurring.generate_due', 'recurring.advance_reservations']) {
+      const job = queueAddCalls.find(c => c.queueName === 'maintenance' && c.jobName === jobName);
+      expect(job).toBeDefined();
+      expect(((job!.opts as Record<string, Record<string, string>>).repeat).pattern).toBe('* * * * *');
+      expect((job!.data as Record<string, unknown>).limit).toBe(100);
+    }
+  });
+
+  it('registers the unattended-completion database sweep every minute', async () => {
+    const { startWorkers } = await import('../../src/jobs/workers');
+    await startWorkers();
+
+    const job = queueAddCalls.find(
+      call => call.queueName === 'maintenance' && call.jobName === 'completion.complete_due'
+    );
+    expect(job).toBeDefined();
+    expect(((job!.opts as Record<string, Record<string, string>>).repeat).pattern).toBe('* * * * *');
+    expect((job!.data as Record<string, unknown>).limit).toBe(100);
+  });
+
+  it('registers safety location evidence expiry every hour', async () => {
+    const { startWorkers } = await import('../../src/jobs/workers');
+    await startWorkers();
+
+    const expiryJob = queueAddCalls.find(
+      c => c.queueName === 'maintenance' && c.jobName === 'safety.expire_location_evidence'
+    );
+    expect(expiryJob).toBeDefined();
+    expect(((expiryJob!.opts as Record<string, Record<string, string>>).repeat).pattern).toBe('15 * * * *');
+    expect((expiryJob!.data as Record<string, unknown>).limit).toBe(100);
+  });
+
   it('registers cleanup_expired_exports on maintenance queue', async () => {
     const { startWorkers } = await import('../../src/jobs/workers');
     await startWorkers();
@@ -155,6 +208,42 @@ describe('Scheduled Jobs Registration', () => {
     );
     expect(notifJob).toBeDefined();
     expect(((notifJob!.opts as Record<string, Record<string, string>>).repeat).pattern).toBe('30 */6 * * *');
+  });
+
+  it('registers notification delivery recovery every minute', async () => {
+    const { startWorkers } = await import('../../src/jobs/workers');
+    await startWorkers();
+
+    const recoveryJob = queueAddCalls.find(
+      c => c.queueName === 'maintenance' && c.jobName === 'notification.recover_due'
+    );
+    expect(recoveryJob).toBeDefined();
+    expect(((recoveryJob!.opts as Record<string, Record<string, string>>).repeat).pattern).toBe('* * * * *');
+    expect((recoveryJob!.data as Record<string, unknown>).limit).toBe(100);
+  });
+
+  it('registers Focus-deferred notification release every minute', async () => {
+    const { startWorkers } = await import('../../src/jobs/workers');
+    await startWorkers();
+
+    const releaseJob = queueAddCalls.find(
+      c => c.queueName === 'maintenance' && c.jobName === 'notification.release_focus_deferred'
+    );
+    expect(releaseJob).toBeDefined();
+    expect(((releaseJob!.opts as Record<string, Record<string, string>>).repeat).pattern).toBe('* * * * *');
+    expect((releaseJob!.data as Record<string, unknown>).limit).toBe(100);
+  });
+
+  it('registers the closed-week Business operational digest every Monday', async () => {
+    const { startWorkers } = await import('../../src/jobs/workers');
+    await startWorkers();
+
+    const digestJob = queueAddCalls.find(
+      c => c.queueName === 'maintenance' && c.jobName === 'notification.business_weekly_digest'
+    );
+    expect(digestJob).toBeDefined();
+    expect(((digestJob!.opts as Record<string, Record<string, string>>).repeat).pattern).toBe('0 15 * * 1');
+    expect((digestJob!.data as Record<string, unknown>).limit).toBe(100);
   });
 
   it('registers fraud detection on critical_trust queue', async () => {
@@ -186,6 +275,18 @@ describe('Scheduled Jobs Registration', () => {
 });
 
 describe('Worker Routing', () => {
+  it('maintenance worker routes both controlled recurring loops', async () => {
+    const fs = await import('fs');
+    const path = await import('path');
+    const source = fs.readFileSync(path.resolve(__dirname, '../../src/jobs/maintenance-worker.ts'), 'utf-8');
+    expect(source).toContain("'recurring.generate_due': generateRecurringDue");
+    expect(source).toContain('generateDueControlledRecurringOccurrences');
+    expect(source).toContain("'recurring.advance_reservations': advanceRecurringReservations");
+    expect(source).toContain('advanceControlledReservationWaves');
+    expect(source).toContain("'completion.complete_due': completeUnattendedDue");
+    expect(source).toContain('UnattendedCompletionSweepService.completeDue');
+  });
+
   it('worker registration routes fraud.scan_requested to fraud-detection-worker', async () => {
     const fs = await import('fs');
     const path = await import('path');

@@ -7,7 +7,7 @@
  */
 
 import { z } from 'zod';
-import { router, protectedProcedure, adminProcedure } from '../trpc.js';
+import { router, protectedProcedure, platformAdminProcedure } from '../trpc.js';
 import { FlagsService } from '../services/FlagsService.js';
 
 export const flagsRouter = router({
@@ -24,7 +24,7 @@ export const flagsRouter = router({
   /**
    * Set (create or update) a feature flag (admin only)
    */
-  setFlag: adminProcedure
+  setFlag: platformAdminProcedure
     .input(z.object({
       name: z.string().min(1).max(100),
       enabled: z.boolean(),

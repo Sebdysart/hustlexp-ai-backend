@@ -21,6 +21,7 @@ import { ErrorCodes } from '../types.js';
 import { NotificationService } from './NotificationService.js';
 import { notifyAdmins } from './AdminNotificationHelper.js';
 import { AIClient } from './AIClient.js';
+import { aiObservation } from './AIObservabilityPolicy.js';
 import { logger } from '../logger.js';
 
 const log = logger.child({ service: 'ContentModerationService' });
@@ -128,8 +129,8 @@ const SLA_DEADLINES: Record<ModerationSeverity, number> = {
   LOW: 48, // 48 hours
 };
 
-// Auto-action thresholds (CONTENT_MODERATION_SPEC.md §2.2)
-const AUTO_BLOCK_THRESHOLD = 0.9; // AI confidence ≥ 0.9 → auto-block
+// AI confidence may prioritize a human queue, but never authorizes an action.
+const AUTO_BLOCK_THRESHOLD = 0.9;
 const FLAG_THRESHOLD = 0.7; // AI confidence 0.7-0.9 → flag for review
 
 // ============================================================================
@@ -188,6 +189,11 @@ export const ContentModerationService = {
             confidence: number;
             recommendation: 'approve' | 'flag' | 'block';
           }>({
+            observability: aiObservation('AI-CONTENT-MODERATION-ROUTING', {
+              actorUserId: userId,
+              affectedObjectType: contentType.toUpperCase(),
+              affectedObjectId: contentId,
+            }),
             route: 'fast',
             temperature: 0,
             timeoutMs: 5000,
@@ -213,9 +219,6 @@ Return JSON with:
               else if (aiConfidence >= 0.5) severity = 'MEDIUM';
               else severity = 'LOW';
             }
-          } else if (aiMod.data.recommendation === 'approve' && aiMod.data.confidence > 0.8) {
-            // AI says content is safe with high confidence — approve directly
-            return { success: true, data: { approved: true } };
           }
         } catch (aiError) {
           log.warn({ err: aiError instanceof Error ? aiError.message : String(aiError) }, 'AI classification failed, falling back to regex');
@@ -250,70 +253,8 @@ Return JSON with:
         }
       }
       
-      // If AI confidence < 0.5, approve without queueing
-      if (aiConfidence !== undefined && aiConfidence < 0.5 && aiRecommendation === 'approve') {
-        return {
-          success: true,
-          data: { approved: true },
-        };
-      }
-      
-      // If AI confidence ≥ 0.9 and recommendation is 'block', auto-reject
-      if (aiConfidence !== undefined && aiConfidence >= AUTO_BLOCK_THRESHOLD && aiRecommendation === 'block') {
-        // Auto-reject: Create queue item with status 'rejected' (no human review needed)
-        const result = await db.query<ContentModerationQueueItem>(
-          `INSERT INTO content_moderation_queue (
-            content_type, content_id, user_id, content_text, content_url,
-            moderation_category, severity, ai_confidence, ai_recommendation,
-            flagged_by, reporter_user_id, status, flagged_at, sla_deadline
-          )
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'rejected', NOW(), NOW())
-          RETURNING *`,
-          [
-            contentType,
-            contentId,
-            userId,
-            contentText || null,
-            contentUrl || null,
-            moderationCategory,
-            severity,
-            aiConfidence || null,
-            aiRecommendation || null,
-            flaggedBy,
-            reporterUserId || null,
-          ]
-        );
-        
-        // Auto-action: Hide/quarantine content immediately (high confidence auto-block)
-        await applyModerationAction({
-          contentType,
-          contentId,
-          action: 'quarantine', // Hide content from users
-        });
-        
-        // Notify user that their content was automatically flagged
-        await NotificationService.createNotification({
-          userId,
-          category: 'security_alert',
-          title: 'Content Flagged',
-          body: 'Your content has been automatically flagged for review due to detected patterns. It will be reviewed by our moderation team.',
-          deepLink: `app://content/${contentId}`,
-          taskId: contentType === 'task' ? contentId : undefined,
-          metadata: { contentType, contentId, moderationCategory, severity },
-          channels: ['in_app', 'push'],
-          priority: severity === 'CRITICAL' ? 'HIGH' : 'MEDIUM',
-        }).catch((error: unknown) => {
-          // Log error but don't fail moderation process
-          log.error({ err: error instanceof Error ? error.message : String(error), userId, contentId }, 'Failed to send moderation notification');
-        });
-        
-        return {
-          success: true,
-          data: { approved: false, queueItemId: result.rows[0].id },
-        };
-      }
-      
-      // Flag for review: Create queue item with status 'pending'
+      // Every AI result remains a proposal. Only an attributable human review
+      // may publish, reject, quarantine, or restore content.
       const slaDeadline = new Date(Date.now() + SLA_DEADLINES[severity] * 60 * 60 * 1000);
       
       const result = await db.query<ContentModerationQueueItem>(
@@ -971,11 +912,18 @@ async function applyModerationAction(params: {
           [contentId]
         );
       } else if (contentType === 'photo') {
-        // Photo moderation: Update evidence table if photo is evidence, or message table
+        // A photo message stays quarantined until every attachment queue item
+        // for the message has an attributable approval.
         await db.query(
-          `UPDATE evidence 
-           SET moderation_status = 'approved'
-           WHERE id = $1`,
+          `UPDATE task_messages message
+              SET moderation_status='approved',updated_at=NOW()
+            WHERE message.id=$1 AND message.message_type='PHOTO'
+              AND NOT EXISTS (
+                SELECT 1 FROM content_moderation_queue queue
+                 WHERE queue.content_type IN ('photo','message')
+                   AND queue.content_id=message.id
+                   AND queue.status<>'approved'
+              )`,
           [contentId]
         );
       }
@@ -998,11 +946,10 @@ async function applyModerationAction(params: {
           [contentId]
         );
       } else if (contentType === 'photo') {
-        // Photo moderation: Quarantine evidence
         await db.query(
-          `UPDATE evidence 
-           SET moderation_status = 'quarantined'
-           WHERE id = $1`,
+          `UPDATE task_messages
+              SET moderation_status='quarantined',updated_at=NOW()
+            WHERE id=$1 AND message_type='PHOTO'`,
           [contentId]
         );
       }
@@ -1019,11 +966,10 @@ async function applyModerationAction(params: {
           [contentId]
         );
       } else if (contentType === 'photo') {
-        // Evidence can be soft-deleted
         await db.query(
-          `UPDATE evidence 
-           SET deleted_at = NOW()
-           WHERE id = $1 AND deleted_at IS NULL`,
+          `UPDATE task_messages
+              SET moderation_status='quarantined',updated_at=NOW()
+            WHERE id=$1 AND message_type='PHOTO'`,
           [contentId]
         );
       }

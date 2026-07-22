@@ -18,12 +18,18 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // ALL vi.mock CALLS MUST BE AT THE TOP
 // ============================================================================
 
-vi.mock('../../src/db', () => ({
-  db: { query: vi.fn() },
-  isInvariantViolation: vi.fn(() => false),
-  isUniqueViolation: vi.fn(() => false),
-  getErrorMessage: vi.fn((code: string) => `Error ${code}`),
-}));
+vi.mock('../../src/db', () => {
+  const query = vi.fn();
+  return {
+    db: {
+      query,
+      transaction: vi.fn(async (callback: (txQuery: typeof query) => Promise<unknown>) => callback(query)),
+    },
+    isInvariantViolation: vi.fn(() => false),
+    isUniqueViolation: vi.fn(() => false),
+    getErrorMessage: vi.fn((code: string) => `Error ${code}`),
+  };
+});
 
 vi.mock('../../src/logger', () => {
   const child = () => ({ warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() });
@@ -69,10 +75,11 @@ vi.mock('../../src/services/TrustTierService', () => ({
     getTrustTier: vi.fn(),
   },
   TrustTier: {
-    ROOKIE: 1,
-    VERIFIED: 2,
-    TRUSTED: 3,
-    ELITE: 4,
+    EXPLORER: 0,
+    VERIFIED: 1,
+    HOME_READY: 2,
+    PRO: 3,
+    LICENSED_SPECIALIST: 4,
     BANNED: 9,
   },
 }));
@@ -103,6 +110,7 @@ const mockRedis = vi.mocked(redis);
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockQuery.mockReset();
   // Default: URLs are safe
   mockValidateSafeUrl.mockReturnValue({ safe: true, reason: null });
   // Default: cache miss
@@ -211,41 +219,37 @@ describe('BiometricVerificationService.getLivenessSessionResult', () => {
 });
 
 describe('BiometricVerificationService.analyzeFacePhoto', () => {
-  it('returns default scores when Rekognition is not configured and no GCP key', async () => {
+  it('returns unavailable when Rekognition is not configured and no GCP key', async () => {
     delete process.env.AWS_REGION;
     delete process.env.AWS_DEFAULT_REGION;
     delete process.env.GOOGLE_CLOUD_VISION_API_KEY;
 
     const result = await BiometricVerificationService.analyzeFacePhoto('https://example.com/photo.jpg');
-    expect(result.success).toBe(true);
-    expect(result.data?.liveness_score).toBeCloseTo(0.85);
-    expect(result.data?.deepfake_score).toBeCloseTo(0.15);
-    expect(result.data?.risk_level).toBe('LOW');
+    expect(result).toMatchObject({
+      success: false,
+      error: { code: 'BIOMETRIC_PROVIDER_UNAVAILABLE' },
+    });
   });
 
   it('blocks unsafe URLs and returns error', async () => {
     delete process.env.AWS_REGION;
     delete process.env.AWS_DEFAULT_REGION;
-    // analyzeFacePhoto with no Rekognition uses default scores, not the URL check path
-    // To hit the SSRF block we need a configured client, so just test validateSafeUrl is called
-    // when a client would be available — test the GCP path instead by stubbing env
     mockValidateSafeUrl.mockReturnValue({ safe: false, reason: 'private IP' });
-
-    // With no client at all the URL check path inside the AWS branch is skipped
-    // This test validates the default path still returns success
     const result = await BiometricVerificationService.analyzeFacePhoto('http://192.168.1.1/photo.jpg');
-    expect(result.success).toBe(true);
+    expect(result).toMatchObject({ success: false, error: { code: 'UNSAFE_PROOF_MEDIA_URL' } });
   });
 });
 
 describe('BiometricVerificationService.detectDeepfake', () => {
-  it('returns conservative low-risk score when Rekognition not available', async () => {
+  it('reports provider unavailability instead of fabricating a score when Rekognition is absent', async () => {
     delete process.env.AWS_REGION;
     delete process.env.AWS_DEFAULT_REGION;
 
     const result = await BiometricVerificationService.detectDeepfake('https://example.com/photo.jpg');
-    expect(result.success).toBe(true);
-    expect(result.data).toBe(0.08);
+    expect(result).toMatchObject({
+      success: false,
+      error: { code: 'BIOMETRIC_PROVIDER_UNAVAILABLE' },
+    });
   });
 });
 
@@ -299,20 +303,20 @@ describe('BiometricVerificationService.validateLiDARDepthMap', () => {
 });
 
 describe('BiometricVerificationService.analyzeProofSubmission', () => {
-  it('stores scores and returns approve recommendation for clean scores', async () => {
+  it('stores unavailable state instead of synthetic clean scores', async () => {
     delete process.env.AWS_REGION;
     delete process.env.AWS_DEFAULT_REGION;
     delete process.env.GOOGLE_CLOUD_VISION_API_KEY;
-    // analyzeFacePhoto returns default: liveness=0.85, deepfake=0.15
-    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 }); // UPDATE proof_submissions
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'signal-1' }], rowCount: 1 });
 
     const result = await BiometricVerificationService.analyzeProofSubmission(
       'proof-1',
       'https://example.com/photo.jpg'
     );
-    expect(result.success).toBe(true);
-    expect(result.data?.recommendation).toBe('approve');
-    expect(result.data?.flags).toHaveLength(0);
+    expect(result).toMatchObject({
+      success: false,
+      error: { code: 'BIOMETRIC_PROVIDER_UNAVAILABLE' },
+    });
     expect(mockQuery).toHaveBeenCalledWith(
       expect.stringContaining('UPDATE proof_submissions'),
       expect.arrayContaining(['proof-1'])
@@ -323,18 +327,17 @@ describe('BiometricVerificationService.analyzeProofSubmission', () => {
     delete process.env.AWS_REGION;
     delete process.env.AWS_DEFAULT_REGION;
 
-    // Force analyzeFacePhoto to throw by making fetch throw in the outer try
-    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network error')));
+    delete process.env.GOOGLE_CLOUD_VISION_API_KEY;
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'signal-2' }], rowCount: 1 });
 
     const result = await BiometricVerificationService.analyzeProofSubmission(
       'proof-2',
       'https://example.com/photo.jpg'
     );
-    // analyzeProofSubmission returns success with defaults even on inner errors
-    // because analyzeFacePhoto catches its own errors and falls back to defaults
-    expect(result.success).toBe(true);
-
-    vi.unstubAllGlobals();
+    expect(result).toMatchObject({
+      success: false,
+      error: { code: 'BIOMETRIC_PROVIDER_UNAVAILABLE' },
+    });
   });
 });
 
@@ -478,21 +481,11 @@ describe('WorkerSkillService.removeSkill', () => {
 });
 
 describe('WorkerSkillService.submitLicense', () => {
-  it('returns NOT_FOUND when worker skill does not exist', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+  it('rejects direct license URLs without touching the database', async () => {
     const result = await WorkerSkillService.submitLicense('user-1', 'skill-2', 'https://r2.example.com/lic.pdf');
     expect(result.success).toBe(false);
-    expect(result.error?.code).toBe('NOT_FOUND');
-  });
-
-  it('updates license_url successfully', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 });
-    const result = await WorkerSkillService.submitLicense('user-1', 'skill-2', 'https://r2.example.com/lic.pdf', new Date('2027-01-01'));
-    expect(result.success).toBe(true);
-    expect(mockQuery).toHaveBeenCalledWith(
-      expect.stringContaining('license_url'),
-      expect.arrayContaining(['user-1', 'skill-2'])
-    );
+    expect(result.error?.code).toBe('MEDIA_RECEIPT_REQUIRED');
+    expect(mockQuery).not.toHaveBeenCalled();
   });
 });
 
@@ -986,53 +979,16 @@ describe('TutorialQuestService.submitAnswers', () => {
 });
 
 describe('TutorialQuestService.scanEquipment', () => {
-  it('returns empty result when OPENAI_API_KEY is not set', async () => {
-    delete process.env.OPENAI_API_KEY;
-
-    const result = await TutorialQuestService.scanEquipment('https://example.com/tools.jpg');
-    expect(result.success).toBe(true);
-    expect(result.data?.detected_items).toHaveLength(0);
-    expect(result.data?.confidence).toBe(0);
-  });
-
-  it('parses OpenAI response and returns detected items', async () => {
-    process.env.OPENAI_API_KEY = 'sk-test';
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      json: vi.fn().mockResolvedValue({
-        choices: [{
-          message: {
-            content: '{"items": ["lawn mower", "rake"], "skills": ["lawn_mowing"], "confidence": 0.9}',
-          },
-        }],
-      }),
-    }));
-
-    const result = await TutorialQuestService.scanEquipment('https://example.com/tools.jpg');
-    expect(result.success).toBe(true);
-    expect(result.data?.detected_items).toContain('lawn mower');
-    expect(result.data?.suggested_skills).toContain('lawn_mowing');
-    expect(result.data?.confidence).toBe(0.9);
-
-    delete process.env.OPENAI_API_KEY;
-    vi.unstubAllGlobals();
-  });
-
-  it('surfaces fetch failure as an error (AUDIT FIX M6 — no more fake-success)', async () => {
-    // Pre-fix behavior returned success:true with an empty scan on ANY error,
-    // so OpenAI outages masqueraded as "no tools detected" and were invisible
-    // to callers and monitoring. Failures must now be honest.
-    process.env.OPENAI_API_KEY = 'sk-test';
-    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network error')));
-
+  it('rejects direct equipment-photo URLs without network or database I/O', async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
     const result = await TutorialQuestService.scanEquipment('https://example.com/tools.jpg');
     expect(result.success).toBe(false);
     if (!result.success) {
-      expect(result.error.code).toBe('EQUIPMENT_SCAN_FAILED');
-      expect(result.error.message).toContain('network error');
+      expect(result.error.code).toBe('MEDIA_RECEIPT_REQUIRED');
     }
-
-    delete process.env.OPENAI_API_KEY;
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(mockQuery).not.toHaveBeenCalled();
     vi.unstubAllGlobals();
   });
 });
@@ -1051,7 +1007,7 @@ describe('recomputeCapabilityProfile', () => {
 
   it('upserts capability profile with no verifications', async () => {
     // user query
-    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'u1', trust_tier: '2', location_state: null, city: 'Chicago' }], rowCount: 1 });
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'u1', trust_tier: 2, location_state: 'IL', location_city: 'Chicago' }], rowCount: 1 });
     // licenses
     mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
     // insurance
@@ -1068,7 +1024,7 @@ describe('recomputeCapabilityProfile', () => {
   });
 
   it('inserts verified trades when licenses exist', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'u1', trust_tier: 'A', location_state: null, city: 'Austin' }], rowCount: 1 });
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'u1', trust_tier: 4, location_state: 'TX', location_city: 'Austin' }], rowCount: 1 });
     mockQuery.mockResolvedValueOnce({
       rows: [{ id: 'lic-1', trade_type: 'electrician', issuing_state: 'TX', expiration_date: '2027-01-01' }],
       rowCount: 1,
@@ -1085,7 +1041,7 @@ describe('recomputeCapabilityProfile', () => {
   });
 
   it('sets background_check_valid=true when approved bg check exists', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'u1', trust_tier: 'A', location_state: null, city: null }], rowCount: 1 });
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'u1', trust_tier: 4, location_state: null, location_city: null }], rowCount: 1 });
     mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // licenses
     mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // insurance
     mockQuery.mockResolvedValueOnce({ rows: [{ id: 'bg-1', expires_at: null }], rowCount: 1 }); // bg check
@@ -1281,7 +1237,7 @@ describe('EligibilityGuard.assertEligibility', () => {
   });
 
   it('blocks IN_HOME tasks (Tier 3) for all users in alpha', async () => {
-    mockTrustTierService.getTrustTier.mockResolvedValueOnce(TrustTier.ELITE);
+    mockTrustTierService.getTrustTier.mockResolvedValueOnce(TrustTier.LICENSED_SPECIALIST);
     mockQuery.mockResolvedValueOnce({
       rows: [{ risk_level: 'IN_HOME', instant_mode: false, sensitive: false }],
       rowCount: 1,
@@ -1299,7 +1255,7 @@ describe('EligibilityGuard.assertEligibility', () => {
   });
 
   it('denies access when trust tier is insufficient for HIGH risk task', async () => {
-    mockTrustTierService.getTrustTier.mockResolvedValueOnce(TrustTier.VERIFIED); // tier 2
+    mockTrustTierService.getTrustTier.mockResolvedValueOnce(TrustTier.VERIFIED); // tier 1
     mockQuery.mockResolvedValueOnce({
       rows: [{ risk_level: 'HIGH', instant_mode: false, sensitive: false }],
       rowCount: 1,
@@ -1316,61 +1272,60 @@ describe('EligibilityGuard.assertEligibility', () => {
     }
   });
 
-  it.skip('grants access for ROOKIE on LOW risk task', async () => {
-    mockTrustTierService.getTrustTier.mockResolvedValueOnce(TrustTier.ROOKIE);
+  it('grants access for Verified on LOW risk task', async () => {
+    mockTrustTierService.getTrustTier.mockResolvedValueOnce(TrustTier.VERIFIED);
     mockQuery.mockResolvedValueOnce({
       rows: [{ risk_level: 'LOW', instant_mode: false, sensitive: false }],
       rowCount: 1,
     });
 
     const result = await EligibilityGuard.assertEligibility({
-      userId: 'user-rookie',
+      userId: 'user-verified',
       taskId: 'task-low',
       isInstant: false,
     });
     expect(result.allowed).toBe(true);
   });
 
-  it('grants access for TRUSTED user on MEDIUM risk task', async () => {
-    mockTrustTierService.getTrustTier.mockResolvedValueOnce(TrustTier.TRUSTED);
+  it('grants access for Home Ready user on MEDIUM risk task', async () => {
+    mockTrustTierService.getTrustTier.mockResolvedValueOnce(TrustTier.HOME_READY);
     mockQuery.mockResolvedValueOnce({
       rows: [{ risk_level: 'MEDIUM', instant_mode: false, sensitive: false }],
       rowCount: 1,
     });
 
     const result = await EligibilityGuard.assertEligibility({
-      userId: 'user-trusted',
+      userId: 'user-home-ready',
       taskId: 'task-med',
       isInstant: true,
     });
     expect(result.allowed).toBe(true);
   });
 
-  it('grants access for ELITE user on HIGH risk task', async () => {
-    mockTrustTierService.getTrustTier.mockResolvedValueOnce(TrustTier.ELITE);
+  it('grants access for Pro user on HIGH risk task', async () => {
+    mockTrustTierService.getTrustTier.mockResolvedValueOnce(TrustTier.PRO);
     mockQuery.mockResolvedValueOnce({
       rows: [{ risk_level: 'HIGH', instant_mode: false, sensitive: false }],
       rowCount: 1,
     });
 
     const result = await EligibilityGuard.assertEligibility({
-      userId: 'user-elite',
+      userId: 'user-pro',
       taskId: 'task-high',
       isInstant: false,
     });
     expect(result.allowed).toBe(true);
   });
 
-  it('maps unknown risk_level to TIER_0 (VERIFIED required) — ROOKIE is denied', async () => {
-    // TIER_0 requires TrustTier.VERIFIED (2). ROOKIE (1) < VERIFIED (2) → denied.
-    mockTrustTierService.getTrustTier.mockResolvedValueOnce(TrustTier.ROOKIE);
+  it('maps unknown risk_level to TIER_0 (Verified required) — Explorer is denied', async () => {
+    mockTrustTierService.getTrustTier.mockResolvedValueOnce(TrustTier.EXPLORER);
     mockQuery.mockResolvedValueOnce({
       rows: [{ risk_level: 'UNKNOWN_LEVEL', instant_mode: false, sensitive: null }],
       rowCount: 1,
     });
 
     const result = await EligibilityGuard.assertEligibility({
-      userId: 'user-rookie',
+      userId: 'user-explorer',
       taskId: 'task-unknown-risk',
       isInstant: false,
     });
@@ -1381,7 +1336,7 @@ describe('EligibilityGuard.assertEligibility', () => {
   });
 
   it('grants access for VERIFIED user on task with unknown risk (maps to TIER_0)', async () => {
-    // TIER_0 requires TrustTier.VERIFIED (2). VERIFIED (2) >= VERIFIED (2) → allowed.
+    // TIER_0 requires TrustTier.VERIFIED (1).
     mockTrustTierService.getTrustTier.mockResolvedValueOnce(TrustTier.VERIFIED);
     mockQuery.mockResolvedValueOnce({
       rows: [{ risk_level: 'UNKNOWN_LEVEL', instant_mode: false, sensitive: null }],

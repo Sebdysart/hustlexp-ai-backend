@@ -230,7 +230,7 @@ export const disputeRouter = router({
   getMine: protectedProcedure
     .input(z.object({
       limit: z.number().int().min(1).max(100).default(50),
-      offset: z.number().int().min(0).default(0),
+      offset: z.number().int().min(0).max(500).default(0),
     }).optional())
     .query(async ({ ctx, input }) => {
       const limit = input?.limit ?? 50;

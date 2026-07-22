@@ -18,6 +18,16 @@ import { ErrorCodes } from '../types.js';
 import { logger } from '../logger.js';
 import { Redis } from '@upstash/redis';
 import { config } from '../config.js';
+import {
+  applyNotificationPresentation,
+  NOTIFICATION_POLICY,
+  nextQuietHoursEnd,
+  resolveNotificationChannels,
+  validateNotificationDeepLink,
+  type NotificationCategory,
+  type NotificationChannel,
+  type NotificationClass,
+} from './NotificationPolicy.js';
 
 const log = logger.child({ service: 'NotificationService' });
 
@@ -83,19 +93,10 @@ async function incrementFrequency(userId: string, category: string): Promise<voi
 // TYPES
 // ============================================================================
 
-export type NotificationCategory =
-  | 'task_accepted' | 'task_completed' | 'task_cancelled' | 'task_expired'
-  | 'proof_submitted' | 'proof_approved' | 'proof_rejected'
-  | 'escrow_funded' | 'payment_released' | 'payment_due' | 'refund_issued'
-  | 'dispute_opened' | 'dispute_resolved'
-  | 'trust_tier_upgraded' | 'badge_earned'
-  | 'message_received' | 'unread_messages'
-  | 'new_matching_task' | 'live_mode_task' | 'instant_task_available'
-  | 'account_suspended' | 'security_alert' | 'password_changed'
-  | 'welcome' | 'weekly_recap' | 'export_ready';
+export type { NotificationCategory } from './NotificationPolicy.js';
+export type { NotificationChannel } from './NotificationPolicy.js';
 
 export type NotificationPriority = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
-export type NotificationChannel = 'push' | 'email' | 'sms' | 'in_app';
 
 export interface Notification {
   id: string;
@@ -106,7 +107,7 @@ export interface Notification {
   deep_link: string; // TEXT (required)
   task_id?: string | null;
   metadata?: Record<string, unknown>; // JSONB (default '{}')
-  channels: NotificationChannel[]; // TEXT[] - array of channels (default ['push'])
+  channels: NotificationChannel[]; // TEXT[] - class-owned defaults when omitted
   priority: NotificationPriority;
   sent_at?: Date | null; // NULL = pending
   delivered_at?: Date | null; // NULL = not delivered
@@ -115,6 +116,21 @@ export interface Notification {
   group_id?: string | null; // UUID - for grouping (NULL = not grouped)
   group_position?: number | null; // INTEGER - position in group (1, 2, 3, ...)
   expires_at?: Date | null; // Optional expiration
+  notification_class?: NotificationClass;
+  object_type?: string;
+  object_id?: string;
+  dedupe_key?: string;
+  supersession_key?: string;
+  superseded_at?: Date | null;
+  superseded_by_notification_id?: string | null;
+  available_at?: Date;
+  delivery_state?: string;
+  delivery_attempts?: number;
+  terminal_failure_at?: Date | null;
+  terminal_failure_reason?: string | null;
+  focus_task_id?: string | null;
+  focus_deferred_at?: Date | null;
+  focus_released_at?: Date | null;
   created_at: Date;
 }
 
@@ -124,6 +140,7 @@ export interface NotificationPreferences {
   quiet_hours_enabled: boolean; // Default: true
   quiet_hours_start: string; // TIME - default '22:00:00'
   quiet_hours_end: string; // TIME - default '07:00:00'
+  quiet_hours_timezone: string; // IANA timezone - default America/Los_Angeles
   push_enabled: boolean; // Default: true
   email_enabled: boolean; // Default: false
   sms_enabled: boolean; // Default: false
@@ -131,7 +148,7 @@ export interface NotificationPreferences {
     enabled?: boolean;
     sound?: boolean;
     badge?: boolean;
-    quiet_hours_override?: boolean; // Override quiet hours for this category
+    quiet_hours_override?: boolean; // Legacy preference; binding class policy controls bypass
   }>; // JSONB
   created_at: Date;
   updated_at: Date;
@@ -145,9 +162,11 @@ export interface CreateNotificationParams {
   deepLink: string; // Required - deep link to relevant content
   taskId?: string;
   metadata?: Record<string, unknown>;
-  channels?: NotificationChannel[]; // Default: ['push']
+  channels?: NotificationChannel[]; // Binding class defaults apply when omitted
   priority?: NotificationPriority; // Default: 'MEDIUM'
   expiresAt?: Date;
+  objectRef?: { type: string; id: string };
+  dedupeKey?: string;
 }
 
 export interface UpdatePreferencesParams {
@@ -155,15 +174,12 @@ export interface UpdatePreferencesParams {
   quietHoursEnabled?: boolean;
   quietHoursStart?: string; // TIME format: 'HH:MM:SS'
   quietHoursEnd?: string; // TIME format: 'HH:MM:SS'
+  quietHoursTimezone?: string; // IANA timezone
   pushEnabled?: boolean;
   emailEnabled?: boolean;
   smsEnabled?: boolean;
   categoryPreferences?: Record<string, unknown>;
 }
-
-// Priority tiers that bypass quiet hours (NOTIFICATION_SPEC.md §2.1)
-const DND_BYPASS_PRIORITIES: NotificationPriority[] = ['HIGH', 'CRITICAL'];
-const DND_BYPASS_CATEGORIES: NotificationCategory[] = ['task_accepted', 'payment_released', 'security_alert', 'instant_task_available'];
 
 // BUG 5 FIX: Categories that bypass the frequency cap entirely.
 // security_alert: an attacker can exhaust the 20/day limit, silencing real alerts.
@@ -172,23 +188,32 @@ const DND_BYPASS_CATEGORIES: NotificationCategory[] = ['task_accepted', 'payment
 const FREQUENCY_BYPASS_CATEGORIES = new Set<NotificationCategory>(['security_alert', 'payment_released']);
 
 // Frequency limits per category (NOTIFICATION_SPEC.md §2.2)
-const FREQUENCY_LIMITS: Record<NotificationCategory, { perHour: number; perDay: number }> = {
+export const NOTIFICATION_FREQUENCY_LIMITS: Record<NotificationCategory, { perHour: number; perDay: number }> = {
   new_matching_task: { perHour: 5, perDay: 20 },
   live_mode_task: { perHour: 10, perDay: 50 },
   instant_task_available: { perHour: Infinity, perDay: Infinity }, // One-interrupt-at-a-time enforced separately
-  message_received: { perHour: Infinity, perDay: Infinity }, // Unlimited (rate-limited by messaging)
-  unread_messages: { perHour: Infinity, perDay: Infinity },
+  // Keep a notification-layer backstop even when MessagingService's own
+  // sender/task bucket is bypassed or misconfigured. Excess notifications are
+  // batched by createNotification instead of producing unlimited push traffic.
+  message_received: { perHour: 30, perDay: 200 },
+  unread_messages: { perHour: 6, perDay: 24 },
   task_accepted: { perHour: Infinity, perDay: Infinity },
   task_completed: { perHour: Infinity, perDay: Infinity },
+  provider_arrived: { perHour: Infinity, perDay: Infinity },
   proof_submitted: { perHour: Infinity, perDay: Infinity },
   proof_approved: { perHour: Infinity, perDay: Infinity },
   proof_rejected: { perHour: Infinity, perDay: Infinity },
+  clarification_required: { perHour: Infinity, perDay: Infinity },
+  scope_change_required: { perHour: Infinity, perDay: Infinity },
+  recurring_budget_exception: { perHour: 2, perDay: 4 },
   task_cancelled: { perHour: Infinity, perDay: Infinity },
   task_expired: { perHour: Infinity, perDay: Infinity },
   escrow_funded: { perHour: Infinity, perDay: Infinity },
+  payment_failed: { perHour: Infinity, perDay: Infinity },
   payment_released: { perHour: Infinity, perDay: Infinity },
   payment_due: { perHour: 1, perDay: 1 }, // Max 1 tax reminder per day
   refund_issued: { perHour: Infinity, perDay: Infinity },
+  payout_failed: { perHour: Infinity, perDay: Infinity },
   dispute_opened: { perHour: Infinity, perDay: Infinity },
   dispute_resolved: { perHour: Infinity, perDay: Infinity },
   trust_tier_upgraded: { perHour: 3, perDay: 10 },
@@ -198,8 +223,100 @@ const FREQUENCY_LIMITS: Record<NotificationCategory, { perHour: number; perDay: 
   password_changed: { perHour: 5, perDay: 20 },
   welcome: { perHour: 1, perDay: 1 },
   weekly_recap: { perHour: 1, perDay: 1 },
+  business_operational_digest: { perHour: 1, perDay: 1 },
   export_ready: { perHour: Infinity, perDay: Infinity },
+  growth_rebook: { perHour: 1, perDay: 2 },
+  maintenance_suggestion: { perHour: 1, perDay: 2 },
+  provider_reactivation: { perHour: 1, perDay: 1 },
 };
+
+type NotificationObjectReference = { type: string; id: string };
+
+const OBJECT_ID_METADATA_KEYS = [
+  'eventId', 'messageId', 'queueItemId', 'appealId', 'requestId', 'waitlistId',
+  'patternId', 'exportId', 'escrowId', 'payoutId', 'accountId', 'invoiceId',
+] as const;
+
+const FOCUS_DEFERRED_UNTIL = new Date('9999-12-31T23:59:59.999Z');
+
+function validObjectReference(ref: NotificationObjectReference): boolean {
+  return /^[a-z][a-z0-9_]{0,63}$/i.test(ref.type)
+    && ref.id.trim().length > 0
+    && ref.id.trim().length <= 255
+    && !/[\r\n]/.test(ref.id);
+}
+
+function deepLinkObjectReference(deepLink: string): NotificationObjectReference | null {
+  const value = deepLink.trim();
+  const parts = value.startsWith('/')
+    ? value.split('/').filter(Boolean)
+    : (() => {
+      try {
+        const parsed = new URL(value);
+        return [parsed.hostname, ...parsed.pathname.split('/').filter(Boolean)];
+      } catch {
+        return [];
+      }
+    })();
+  if (parts.length < 2) return null;
+  return { type: parts[0].replace(/s$/, '') || 'object', id: parts[1] };
+}
+
+function resolveObjectReference(params: CreateNotificationParams): NotificationObjectReference | null {
+  if (params.objectRef && validObjectReference(params.objectRef)) {
+    return { type: params.objectRef.type.trim().toLowerCase(), id: params.objectRef.id.trim() };
+  }
+  if (params.taskId?.trim()) return { type: 'task', id: params.taskId.trim() };
+
+  for (const key of OBJECT_ID_METADATA_KEYS) {
+    const value = params.metadata?.[key];
+    if (typeof value === 'string' && value.trim()) {
+      return { type: key.replace(/Id$/, '').replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`), id: value.trim() };
+    }
+  }
+
+  const linked = deepLinkObjectReference(params.deepLink);
+  if (linked && validObjectReference(linked)) return linked;
+
+  // Account/security/settings notifications are still object-specific: their
+  // referenced object is the recipient account, never an unscoped broadcast.
+  if (/^(?:app|hustlexp):\/\/(?:settings|support|profile)(?:\/|$)/.test(params.deepLink)) {
+    return { type: 'user', id: params.userId };
+  }
+  return null;
+}
+
+function resolveDedupeKey(
+  params: CreateNotificationParams,
+  objectRef: NotificationObjectReference,
+): string | null {
+  if (params.dedupeKey !== undefined) {
+    const explicit = params.dedupeKey.trim();
+    return explicit && explicit.length <= 255 && !/[\r\n]/.test(explicit) ? explicit : null;
+  }
+  const version = params.metadata?.eventVersion;
+  const source = typeof version === 'string' || typeof version === 'number' ? String(version) : '1';
+  const derived = `notification:${params.category}:${params.userId}:${objectRef.type}:${objectRef.id}:v${source}`;
+  return derived.length <= 255 ? derived : null;
+}
+
+async function findMatchingReplay(
+  dedupeKey: string,
+  userId: string,
+  category: NotificationCategory,
+  objectRef: NotificationObjectReference,
+): Promise<Notification | null> {
+  const replay = await db.query<Notification>(
+    `SELECT * FROM notifications
+     WHERE dedupe_key = $1
+       AND user_id = $2
+       AND category = $3
+       AND object_type = $4
+       AND object_id = $5`,
+    [dedupeKey, userId, category, objectRef.type, objectRef.id],
+  );
+  return replay.rows[0] ?? null;
+}
 
 // ============================================================================
 // SERVICE
@@ -226,10 +343,57 @@ export const NotificationService = {
       deepLink,
       taskId,
       metadata,
-      channels = ['push'],
+      channels: requestedChannels,
       priority = 'MEDIUM',
       expiresAt,
     } = params;
+
+    const policy = NOTIFICATION_POLICY[category];
+    const channelResolution = resolveNotificationChannels(policy, requestedChannels);
+    if (!channelResolution.valid) {
+      return {
+        success: false,
+        error: {
+          code: ErrorCodes.INVALID_INPUT,
+          message: `Invalid notification channels: ${channelResolution.reason}`,
+        },
+      };
+    }
+    const channels = channelResolution.channels;
+    const presentation = applyNotificationPresentation(policy, title, metadata);
+    const notificationTitle = presentation.title;
+    const notificationMetadata = presentation.metadata;
+    const deepLinkValidation = validateNotificationDeepLink(deepLink);
+    if (!deepLinkValidation.valid) {
+      return {
+        success: false,
+        error: {
+          code: ErrorCodes.INVALID_INPUT,
+          message: `Invalid notification deep link: ${deepLinkValidation.reason}`,
+        },
+      };
+    }
+    const objectRef = resolveObjectReference(params);
+    if (!objectRef) {
+      return {
+        success: false,
+        error: {
+          code: ErrorCodes.INVALID_INPUT,
+          message: 'Notification requires a specific object reference',
+        },
+      };
+    }
+    const dedupeKey = resolveDedupeKey(params, objectRef);
+    if (!dedupeKey) {
+      return {
+        success: false,
+        error: {
+          code: ErrorCodes.INVALID_INPUT,
+          message: 'Notification requires a valid deduplication key',
+        },
+      };
+    }
+    const supersessionKey = `${userId}:${objectRef.type}:${objectRef.id}`;
     
     try {
       // NOTIF-1: Verify user exists and has access to task (if task_id provided)
@@ -265,29 +429,45 @@ export const NotificationService = {
           };
         }
       }
+
+      // Explicit keys identify a concrete producer event. Resolve an already
+      // accepted event before mutable preference or frequency state can turn a
+      // successful replay into a different outcome. Task authorization above
+      // remains mandatory, and the lookup binds the complete notification
+      // identity so a global-key collision cannot disclose another user's row.
+      if (params.dedupeKey !== undefined) {
+        const replay = await findMatchingReplay(dedupeKey, userId, category, objectRef);
+        if (replay) return { success: true, data: replay };
+      }
       
       // Get user preferences
       const preferencesResult = await NotificationService.getPreferences(userId);
-      const preferences = preferencesResult.success ? preferencesResult.data : null;
+      if (!preferencesResult.success) return preferencesResult;
+      const preferences = preferencesResult.data;
       
       // Check quiet hours (NOTIFICATION_SPEC.md §2.1)
-      const isQuietHours = preferences 
-        ? isInQuietHours(preferences.quiet_hours_enabled, preferences.quiet_hours_start, preferences.quiet_hours_end)
-        : false;
-      
-      const shouldBypassDND = DND_BYPASS_PRIORITIES.includes(priority) || 
-                              DND_BYPASS_CATEGORIES.includes(category);
-      
-      if (isQuietHours && !shouldBypassDND) {
-        // Don't send notification during quiet hours (unless bypass)
-        // Still create notification record, but mark as pending
-      }
+      const categoryPrefs = preferences.category_preferences[category];
+      const policyBypass = policy.quietHours === 'security_override'
+        || (policy.quietHours === 'active_task_override' && objectRef.type === 'task');
+      // A mutable category preference cannot promote growth or digest traffic
+      // above the class-owned quiet-hour contract. Users may suppress more;
+      // only the binding active-task/security policy may suppress less.
+      const shouldBypassDND = policyBypass;
+      const quietHoursEnd = preferences.quiet_hours_enabled && !shouldBypassDND
+        ? nextQuietHoursEnd(
+          new Date(),
+          preferences.quiet_hours_start,
+          preferences.quiet_hours_end,
+          preferences.quiet_hours_timezone || 'America/Los_Angeles',
+        )
+        : null;
+      const availableAt = quietHoursEnd ?? new Date();
       
       // Check frequency limits (NOTIFICATION_SPEC.md §2.2) - Redis-based
       // BUG 8 FIX: Use read-only checkFrequency here (before the INSERT) so that a
       // failed DB write does not permanently consume a quota slot. incrementFrequency
       // is called AFTER the INSERT succeeds below.
-      const categoryLimits = FREQUENCY_LIMITS[category];
+      const categoryLimits = NOTIFICATION_FREQUENCY_LIMITS[category];
       const limits = categoryLimits || { perHour: Infinity, perDay: Infinity };
       // BUG 5 FIX: security_alert and payment_released bypass frequency caps entirely
       // so they can never be DoS-suppressed by an attacker exhausting the daily limit.
@@ -309,11 +489,11 @@ export const NotificationService = {
         if (hourlyCount >= limits.perHour) {
           // Exceeded hourly limit - batch with existing notifications
           const batchResult = await batchNotification(userId, category, {
-            title,
+            title: notificationTitle,
             body,
             deepLink,
             taskId,
-            metadata,
+            metadata: notificationMetadata,
             priority,
           });
 
@@ -333,14 +513,23 @@ export const NotificationService = {
       
       // Filter channels based on user preferences
       let enabledChannels: NotificationChannel[] = channels;
-      if (preferences) {
-        const categoryPrefs = preferences.category_preferences[category];
+      {
         if (categoryPrefs?.enabled === false) {
           return {
             success: false,
             error: {
               code: ErrorCodes.PREFERENCE_DISABLED,
               message: `Notifications for category ${category} are disabled by user`,
+            },
+          };
+        }
+
+        if (policy.consent === 'explicit_opt_in' && categoryPrefs?.enabled !== true) {
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.PREFERENCE_DISABLED,
+              message: `Growth notification ${category} requires explicit opt-in`,
             },
           };
         }
@@ -371,9 +560,6 @@ export const NotificationService = {
         }
       }
       
-      // NOTIF-5: Deep links must be valid (task exists, user has access)
-      // Already verified above if taskId provided
-      
       // Implement notification grouping (NOTIFICATION_SPEC.md §2.3)
       // Group similar notifications within 5 minutes, max 5 per group
       const groupingResult = await findGroupableNotification(userId, category, taskId);
@@ -396,32 +582,85 @@ export const NotificationService = {
       
       // Create notification (schema has group_id and group_position for grouping)
       const result = await db.query<Notification>(
-        `INSERT INTO notifications (
-          user_id, category, title, body, deep_link, task_id, metadata,
-          channels, priority, expires_at, group_id, group_position, created_at
+        `WITH active_focus AS (
+          SELECT task.id
+          FROM tasks task
+          WHERE $20::BOOLEAN
+            AND task.worker_id = $1
+            AND task.state = 'ACCEPTED'
+            AND task.progress_state IN ('ACCEPTED','TRAVELING','WORKING')
+          ORDER BY COALESCE(task.accepted_at, task.updated_at) DESC, task.id
+          LIMIT 1
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7::JSONB, $8::TEXT[], $9, $10, $11, $12, NOW())
+        INSERT INTO notifications (
+          user_id, category, title, body, deep_link, task_id, metadata,
+          channels, priority, expires_at, group_id, group_position,
+          notification_class, object_type, object_id, dedupe_key, supersession_key,
+          available_at, delivery_state, focus_task_id, focus_deferred_at, created_at
+        )
+        SELECT
+          $1, $2, $3, $4, $5, $6, $7::JSONB, $8::TEXT[], $9, $10, $11, $12,
+          $13, $14, $15, $16, $17,
+          CASE WHEN focus.id IS NULL THEN $18::TIMESTAMPTZ ELSE $21::TIMESTAMPTZ END,
+          CASE WHEN focus.id IS NULL THEN $19 ELSE 'deferred_focus' END,
+          focus.id,
+          CASE WHEN focus.id IS NULL THEN NULL ELSE NOW() END,
+          NOW()
+        FROM (SELECT 1) seed
+        LEFT JOIN active_focus focus ON TRUE
+        ON CONFLICT (dedupe_key) DO NOTHING
         RETURNING *`,
         [
           userId,
           category,
-          title,
+          notificationTitle,
           body,
           deepLink,
           taskId || null,
-          JSON.stringify(metadata || {}),
+          JSON.stringify(notificationMetadata),
           enabledChannels,
           priority,
           expiresAt || null,
           groupId,
           groupPosition,
+          policy.notificationClass,
+          objectRef.type,
+          objectRef.id,
+          dedupeKey,
+          supersessionKey,
+          availableAt,
+          quietHoursEnd ? 'deferred_quiet_hours' : 'pending',
+          policy.focusSuppression === 'defer_during_active_execution',
+          FOCUS_DEFERRED_UNTIL,
         ]
       );
+
+      if (result.rows.length === 0) {
+        const replay = await findMatchingReplay(dedupeKey, userId, category, objectRef);
+        if (!replay) {
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.INVALID_INPUT,
+              message: 'Notification deduplication key conflicts with a different event identity',
+            },
+          };
+        }
+        return { success: true, data: replay };
+      }
       
       // Send notification via channels (push, email, SMS, in-app)
       // In-app: Already in notifications table (can be retrieved via API)
       // External channels: Queue for delivery via outbox pattern (NO INLINE SENDS)
       const notification = result.rows[0];
+
+      if (policy.supersedes.length > 0) {
+        await supersedePriorNotifications(
+          notification.id,
+          supersessionKey,
+          policy.supersedes,
+        );
+      }
 
       // BUG 8 FIX: Increment frequency counter AFTER the INSERT succeeds.
       // Moving the increment here ensures a failed DB write cannot consume a quota slot.
@@ -429,14 +668,18 @@ export const NotificationService = {
         await incrementFrequency(userId, category);
       }
       
-      // Queue notifications via enabled channels (non-blocking, async via outbox)
-      // Use filtered channels if preferences exist, otherwise use requested channels
-      // During quiet hours: restrict to in_app only, skip push/email/SMS
-      let channelsToUse = enabledChannels;
-      if (isQuietHours && !shouldBypassDND) {
-        channelsToUse = channelsToUse.filter(ch => ch === 'in_app');
-      }
-      await queueNotificationChannels(notification, channelsToUse);
+      // Persist all requested channels even in quiet hours. The outbox remains
+      // invisible until available_at, so deferred never means silently dropped.
+      const persistedAvailableAt = notification.available_at
+        ? new Date(notification.available_at)
+        : availableAt;
+      await queueNotificationChannels(
+        notification,
+        enabledChannels,
+        persistedAvailableAt,
+        Boolean(quietHoursEnd),
+        notification.delivery_state === 'deferred_focus',
+      );
       
       return {
         success: true,
@@ -458,6 +701,75 @@ export const NotificationService = {
         error: {
           code: 'DB_ERROR',
           message: error instanceof Error ? error.message : 'Unknown error',
+        },
+      };
+    }
+  },
+
+  /**
+   * Recreate one missing external-channel work item after an initial outbox write
+   * failed. Eligibility is rechecked from authoritative delivery state; provider
+   * retries that already have channel work are handled by their normal workers.
+   */
+  retryDelivery: async (
+    notificationId: string,
+    channel: Exclude<NotificationChannel, 'in_app'>,
+  ): Promise<ServiceResult<{ queued: boolean }>> => {
+    try {
+      const eligible = await db.query<Notification & { delivery_available_at: Date | string }>(
+        `SELECT notification.*, delivery.available_at AS delivery_available_at
+         FROM notifications notification
+         JOIN notification_deliveries delivery
+           ON delivery.notification_id = notification.id
+          AND delivery.channel = $2
+         WHERE notification.id = $1
+           AND notification.superseded_at IS NULL
+           AND delivery.state = 'retry_pending'
+           AND GREATEST(
+             delivery.available_at,
+             COALESCE(delivery.next_retry_at, delivery.available_at)
+           ) <= NOW()`,
+        [notificationId, channel],
+      );
+      const notification = eligible.rows[0];
+      if (!notification) return { success: true, data: { queued: false } };
+
+      const availableAt = new Date(notification.delivery_available_at);
+      if (!Number.isFinite(availableAt.getTime())) throw new Error('Invalid delivery availability');
+      if (channel === 'email') await queueEmailNotification(notification, availableAt);
+      else if (channel === 'push') await queuePushNotification(notification, availableAt);
+      else await queueSMSNotification(notification, availableAt);
+
+      const deferred = availableAt.getTime() > Date.now();
+      const state = deferred ? 'deferred_quiet_hours' : 'queued';
+      await db.query(
+        `WITH recovered AS (
+           UPDATE notification_deliveries
+           SET state = $3,
+               next_retry_at = NULL,
+               last_error = NULL,
+               updated_at = NOW()
+           WHERE notification_id = $1 AND channel = $2
+             AND state = 'retry_pending'
+           RETURNING notification_id
+         )
+         UPDATE notifications
+         SET delivery_state = CASE
+               WHEN delivery_state IN ('failed_terminal','delivered') THEN delivery_state
+               ELSE $3
+             END,
+             sent_at = COALESCE(sent_at, NOW()),
+             updated_at = NOW()
+         WHERE id IN (SELECT notification_id FROM recovered)`,
+        [notificationId, channel, state],
+      );
+      return { success: true, data: { queued: true } };
+    } catch (error) {
+      return {
+        success: false,
+        error: {
+          code: 'DB_ERROR',
+          message: error instanceof Error ? error.message : 'Notification delivery recovery failed',
         },
       };
     }
@@ -717,6 +1029,7 @@ export const NotificationService = {
             quiet_hours_enabled: true,
             quiet_hours_start: '22:00:00',
             quiet_hours_end: '07:00:00',
+            quiet_hours_timezone: 'America/Los_Angeles',
             push_enabled: true,
             email_enabled: false,
             sms_enabled: false,
@@ -758,16 +1071,17 @@ export const NotificationService = {
         // Create new preferences
         const createResult = await db.query<NotificationPreferences>(
           `INSERT INTO notification_preferences (
-            user_id, quiet_hours_enabled, quiet_hours_start, quiet_hours_end,
+            user_id, quiet_hours_enabled, quiet_hours_start, quiet_hours_end, quiet_hours_timezone,
             push_enabled, email_enabled, sms_enabled, category_preferences
           )
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8::JSONB)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::JSONB)
           RETURNING *`,
           [
             userId,
             updates.quietHoursEnabled ?? true,
             updates.quietHoursStart || '22:00:00',
             updates.quietHoursEnd || '07:00:00',
+            updates.quietHoursTimezone || 'America/Los_Angeles',
             updates.pushEnabled ?? true,
             updates.emailEnabled ?? false,
             updates.smsEnabled ?? false,
@@ -797,6 +1111,12 @@ export const NotificationService = {
       if (updates.quietHoursEnd !== undefined) {
         updateFields.push(`quiet_hours_end = $${paramIndex++}`);
         updateValues.push(updates.quietHoursEnd);
+      }
+      if (updates.quietHoursTimezone !== undefined) {
+        // Intl performs the authoritative IANA validation before persistence.
+        new Intl.DateTimeFormat('en-US', { timeZone: updates.quietHoursTimezone }).format();
+        updateFields.push(`quiet_hours_timezone = $${paramIndex++}`);
+        updateValues.push(updates.quietHoursTimezone);
       }
       if (updates.pushEnabled !== undefined) {
         updateFields.push(`push_enabled = $${paramIndex++}`);
@@ -912,6 +1232,53 @@ export const NotificationService = {
 // ============================================================================
 // HELPER FUNCTIONS - NOTIFICATION BATCHING & GROUPING
 // ============================================================================
+
+async function supersedePriorNotifications(
+  notificationId: string,
+  supersessionKey: string,
+  categories: readonly NotificationCategory[],
+): Promise<void> {
+  await db.query(
+    `WITH superseded AS (
+       UPDATE notifications
+       SET superseded_at = NOW(),
+           superseded_by_notification_id = $1,
+           delivery_state = 'cancelled_superseded',
+           updated_at = NOW()
+       WHERE supersession_key = $2
+         AND id <> $1
+         AND category = ANY($3::TEXT[])
+         AND superseded_at IS NULL
+       RETURNING id
+     ), cancelled_deliveries AS (
+       UPDATE notification_deliveries
+       SET state = 'cancelled_superseded', updated_at = NOW()
+       WHERE notification_id IN (SELECT id FROM superseded)
+         AND state IN ('pending','deferred_quiet_hours','queued','retry_pending')
+       RETURNING notification_id
+     ), cancelled_email AS (
+       UPDATE email_outbox
+       SET status = 'suppressed', suppressed_reason = 'superseded', suppressed_at = NOW()
+       WHERE notification_id IN (SELECT id FROM superseded)
+         AND status IN ('pending','failed')
+       RETURNING notification_id
+     ), cancelled_sms AS (
+       UPDATE sms_outbox
+       SET status = 'suppressed', error_message = 'superseded', updated_at = NOW()
+       WHERE notification_id IN (SELECT id FROM superseded)
+         AND status IN ('pending','failed')
+       RETURNING notification_id
+     ), cancelled_outbox AS (
+       UPDATE outbox_events
+       SET status = 'processed', processed_at = NOW(), error_message = 'superseded'
+       WHERE aggregate_id IN (SELECT id FROM superseded)
+         AND status = 'pending'
+       RETURNING aggregate_id
+     )
+     SELECT COUNT(*)::TEXT AS superseded_count FROM superseded`,
+    [notificationId, supersessionKey, [...categories]],
+  );
+}
 
 /**
  * Batch notification with existing notification when frequency limit exceeded
@@ -1100,43 +1467,6 @@ async function findGroupableNotification(
 }
 
 // ============================================================================
-// HELPER FUNCTIONS
-// ============================================================================
-
-/**
- * Check if current time is within quiet hours
- */
-function isInQuietHours(
-  enabled: boolean,
-  startTime: string, // 'HH:MM:SS'
-  endTime: string // 'HH:MM:SS'
-): boolean {
-  if (!enabled) {
-    return false;
-  }
-  
-  const now = new Date();
-  const currentHour = now.getHours();
-  const currentMinute = now.getMinutes();
-  const currentTimeMinutes = currentHour * 60 + currentMinute;
-  
-  const [startHour, startMin, _startSec] = startTime.split(':').map(Number);
-  const [endHour, endMin, _endSec] = endTime.split(':').map(Number);
-  
-  const startMinutes = startHour * 60 + startMin;
-  const endMinutes = endHour * 60 + endMin;
-  
-  // Handle overnight quiet hours (e.g., 22:00 - 07:00)
-  if (startMinutes > endMinutes) {
-    // Overnight: quiet hours span midnight
-    return currentTimeMinutes >= startMinutes || currentTimeMinutes < endMinutes;
-  } else {
-    // Same day: quiet hours within same day
-    return currentTimeMinutes >= startMinutes && currentTimeMinutes < endMinutes;
-  }
-}
-
-// ============================================================================
 // HELPER FUNCTIONS - NOTIFICATION QUEUING (PHASE C: WRITE-ONLY)
 // ============================================================================
 
@@ -1151,64 +1481,86 @@ function isInQuietHours(
  */
 async function queueNotificationChannels(
   notification: Notification,
-  channels: NotificationChannel[]
+  channels: NotificationChannel[],
+  availableAt: Date,
+  deferredForQuietHours: boolean,
+  deferredForFocus: boolean,
 ): Promise<void> {
-  try {
-    // In-app: Already stored in notifications table, no additional action needed
-    // External channels: Queue for delivery via outbox pattern (NO INLINE SENDS)
-    
-    const queuePromises: Promise<void>[] = [];
-    
-    for (const channel of channels) {
-      if (channel === 'in_app') {
-        // In-app notifications are already in the database
-        // No action needed - frontend can poll or use websockets
-        continue;
-      } else if (channel === 'email') {
-        // Email notification: Queue via email_outbox + outbox pattern
-        // CRITICAL: No inline send - email worker handles delivery
-        queuePromises.push(
-          queueEmailNotification(notification).catch(error => {
-            log.error({ err: error instanceof Error ? error.message : String(error), notificationId: notification.id, channel: 'email' }, 'Failed to queue email notification');
-          })
-        );
-      } else if (channel === 'push') {
-        // Push notification: Queue via outbox pattern (push-worker handles delivery)
-        queuePromises.push(
-          queuePushNotification(notification).catch(error => {
-            log.error({ err: error instanceof Error ? error.message : String(error), notificationId: notification.id, channel: 'push' }, 'Failed to queue push notification');
-          })
-        );
-      } else if (channel === 'sms') {
-        // SMS notification: Queue via sms_outbox + outbox pattern
-        // CRITICAL: No inline send - SMS worker handles delivery
-        queuePromises.push(
-          queueSMSNotification(notification).catch(error => {
-            log.error({ err: error instanceof Error ? error.message : String(error), notificationId: notification.id, channel: 'sms' }, 'Failed to queue SMS notification');
-          })
-        );
-      }
-    }
-    
-    // Wait for all queuing operations to complete (or fail gracefully)
-    const results = await Promise.allSettled(queuePromises);
-    const successCount = results.filter(r => r.status === 'fulfilled').length;
+  const initialExternalState = deferredForFocus
+    ? 'deferred_focus'
+    : deferredForQuietHours
+      ? 'deferred_quiet_hours'
+      : 'pending';
+  await db.query(
+    `INSERT INTO notification_deliveries (
+       notification_id, channel, state, max_attempts, available_at,
+       provider_accepted_at, delivered_at
+     )
+     SELECT $1, channel,
+            CASE WHEN channel = 'in_app' THEN 'delivered' ELSE $3 END,
+            3, CASE WHEN channel = 'in_app' THEN NOW() ELSE $4 END,
+            CASE WHEN channel = 'in_app' THEN NOW() ELSE NULL END,
+            CASE WHEN channel = 'in_app' THEN NOW() ELSE NULL END
+     FROM unnest($2::TEXT[]) AS channel
+     ON CONFLICT (notification_id, channel) DO NOTHING`,
+    [notification.id, channels, initialExternalState, availableAt],
+  );
 
-    // Only stamp sent_at when at least one channel was successfully queued.
-    // If every write failed the notification is silently lost; do NOT mark it
-    // as delivered — the caller can detect the gap via missing sent_at.
-    if (successCount > 0) {
-      await db.query(
-        `UPDATE notifications
-         SET sent_at = NOW()  -- Mark as "sent to queue" (not "delivered")
-         WHERE id = $1`,
-        [notification.id]
-      );
+  const externalChannels = channels.filter((channel) => channel !== 'in_app');
+  const queuePromises = externalChannels.map((channel) => {
+    if (channel === 'email') return queueEmailNotification(notification, availableAt);
+    if (channel === 'push') return queuePushNotification(notification, availableAt);
+    return queueSMSNotification(notification, availableAt);
+  });
+  const results = await Promise.allSettled(queuePromises);
+  const failedChannels: NotificationChannel[] = [];
+  results.forEach((result, index) => {
+    if (result.status === 'rejected') {
+      const channel = externalChannels[index];
+      failedChannels.push(channel);
+      log.error({
+        err: result.reason instanceof Error ? result.reason.message : String(result.reason),
+        notificationId: notification.id,
+        channel,
+      }, 'Failed to queue notification channel; persisted for bounded recovery');
     }
-  } catch (error) {
-    // Log error but don't fail notification creation
-    log.error({ err: error instanceof Error ? error.message : String(error), notificationId: notification.id }, 'Failed to queue notification via channels');
+  });
+
+  for (const channel of failedChannels) {
+    await db.query(
+      `UPDATE notification_deliveries
+       SET state = 'retry_pending',
+           attempt_count = LEAST(attempt_count + 1, max_attempts),
+           next_retry_at = NOW() + INTERVAL '1 minute',
+           last_error = 'outbox_queue_failed',
+           updated_at = NOW()
+       WHERE notification_id = $1 AND channel = $2`,
+      [notification.id, channel],
+    );
   }
+
+  const queuedCount = externalChannels.length - failedChannels.length;
+  const hasInApp = channels.includes('in_app');
+  const aggregateState = failedChannels.length > 0
+    ? (queuedCount > 0 || hasInApp ? 'partially_queued' : 'retry_pending')
+    : deferredForFocus && externalChannels.length > 0
+      ? 'deferred_focus'
+      : deferredForQuietHours && externalChannels.length > 0
+      ? 'deferred_quiet_hours'
+      : externalChannels.length > 0
+        ? 'queued'
+        : 'delivered';
+
+  await db.query(
+    `UPDATE notifications
+     SET sent_at = CASE WHEN $2::INTEGER > 0 OR $3::BOOLEAN THEN COALESCE(sent_at, NOW()) ELSE sent_at END,
+         delivered_at = CASE WHEN $3::BOOLEAN THEN COALESCE(delivered_at, NOW()) ELSE delivered_at END,
+         delivery_state = $4,
+         delivery_attempts = LEAST(delivery_attempts + $5::INTEGER, 5),
+         updated_at = NOW()
+     WHERE id = $1`,
+    [notification.id, queuedCount, hasInApp, aggregateState, failedChannels.length],
+  );
 }
 
 /**
@@ -1220,7 +1572,7 @@ async function queueNotificationChannels(
  * @param notification Notification to email
  * @returns email_id from email_outbox table
  */
-async function queueEmailNotification(notification: Notification): Promise<void> {
+async function queueEmailNotification(notification: Notification, availableAt: Date): Promise<void> {
   // Get user's email address (required for email_outbox)
   const userResult = await db.query<{ email: string }>(
     `SELECT email FROM users WHERE id = $1`,
@@ -1274,19 +1626,21 @@ async function queueEmailNotification(notification: Notification): Promise<void>
   };
   
   // Generate deterministic idempotency key
-  // Format: email.send_requested:{template}:{to_email}:{aggregate_id}:{version}
-  const aggregateId = notification.task_id || notification.id; // Use task_id if available, otherwise notification_id
-  const idempotencyKey = `email.send_requested:${template}:${userEmail}:${aggregateId}:1`;
+  // Channel idempotency is notification-scoped. Event-level deduplication happens
+  // before this writer; using task_id here would collapse distinct lifecycle events
+  // that share the same email template.
+  const idempotencyKey = `email.send_requested:${template}:${userEmail}:${notification.id}:1`;
   
   // Create email_outbox row + outbox_event in same transaction
   await db.transaction(async (query) => {
     // Create email_outbox row (status='pending')
     const emailResult = await query<{ id: string }>(
       `INSERT INTO email_outbox (
-        user_id, to_email, template, params_json, priority, status, idempotency_key
-      ) VALUES ($1, $2, $3, $4::JSONB, $5, 'pending', $6)
+        user_id, to_email, template, params_json, priority, status, idempotency_key,
+        notification_id, available_at
+      ) VALUES ($1, $2, $3, $4::JSONB, $5, 'pending', $6, $7, $8)
       ON CONFLICT (idempotency_key) DO UPDATE SET
-        updated_at = NOW()
+        updated_at = NOW(), available_at = LEAST(email_outbox.available_at, EXCLUDED.available_at)
       RETURNING id`,
       [
         notification.user_id,
@@ -1295,6 +1649,8 @@ async function queueEmailNotification(notification: Notification): Promise<void>
         JSON.stringify(params),
         notification.priority,
         idempotencyKey,
+        notification.id,
+        availableAt,
       ]
     );
     
@@ -1311,8 +1667,8 @@ async function queueEmailNotification(notification: Notification): Promise<void>
       await query(
         `INSERT INTO outbox_events (
           event_type, aggregate_type, aggregate_id, event_version,
-          idempotency_key, payload, queue_name, status
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending')`,
+          idempotency_key, payload, queue_name, status, available_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', $8)`,
         [
           'email.send_requested',
           'email',
@@ -1327,6 +1683,7 @@ async function queueEmailNotification(notification: Notification): Promise<void>
             params,
           }),
           'user_notifications',
+          availableAt,
         ]
       );
     }
@@ -1346,7 +1703,7 @@ async function queueEmailNotification(notification: Notification): Promise<void>
  *
  * @param notification Notification to push
  */
-async function queuePushNotification(notification: Notification): Promise<void> {
+async function queuePushNotification(notification: Notification, availableAt: Date): Promise<void> {
   // Build data payload from notification metadata
   const data: Record<string, string> = {
     notificationId: notification.id,
@@ -1374,8 +1731,8 @@ async function queuePushNotification(notification: Notification): Promise<void> 
   const insertResult = await db.query(
     `INSERT INTO outbox_events (
       event_type, aggregate_type, aggregate_id, event_version,
-      idempotency_key, payload, queue_name, status
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending')
+      idempotency_key, payload, queue_name, status, available_at
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', $8)
     ON CONFLICT (idempotency_key) DO NOTHING`,
     [
       'push.send_requested',
@@ -1391,6 +1748,7 @@ async function queuePushNotification(notification: Notification): Promise<void> 
         data,
       }),
       'user_notifications',
+      availableAt,
     ]
   );
 
@@ -1411,7 +1769,7 @@ async function queuePushNotification(notification: Notification): Promise<void> 
  *
  * @param notification Notification to SMS
  */
-async function queueSMSNotification(notification: Notification): Promise<void> {
+async function queueSMSNotification(notification: Notification, availableAt: Date): Promise<void> {
   // Get user's phone number (required for sms_outbox)
   const userResult = await db.query<{ phone: string }>(
     `SELECT phone FROM users WHERE id = $1`,
@@ -1425,27 +1783,27 @@ async function queueSMSNotification(notification: Notification): Promise<void> {
   const userPhone = userResult.rows[0].phone;
 
   if (!userPhone) {
-    log.warn({ userId: notification.user_id, notificationId: notification.id, channel: 'sms' }, 'User has no phone number - skipping SMS notification');
-    return;
+    throw new Error(`User ${notification.user_id} has no SMS destination`);
   }
 
   // Build SMS body from notification
   const smsBody = `${notification.title}: ${notification.body}`;
 
   // Generate deterministic idempotency key
-  // Format: sms.send_requested:{category}:{to_phone}:{aggregate_id}:{version}
-  const aggregateId = notification.task_id || notification.id; // Use task_id if available, otherwise notification_id
-  const idempotencyKey = `sms.send_requested:${notification.category}:${userPhone}:${aggregateId}:1`;
+  // Notification identity preserves distinct lifecycle events for the same task;
+  // retries of this notification still converge on the same key.
+  const idempotencyKey = `sms.send_requested:${notification.category}:${userPhone}:${notification.id}:1`;
 
   // Create sms_outbox row + outbox_event in same transaction
   await db.transaction(async (query) => {
     // Create sms_outbox row (status='pending')
     const smsResult = await query<{ id: string }>(
       `INSERT INTO sms_outbox (
-        user_id, to_phone, body, priority, status, idempotency_key
-      ) VALUES ($1, $2, $3, $4, 'pending', $5)
+        user_id, to_phone, body, priority, status, idempotency_key,
+        notification_id, available_at
+      ) VALUES ($1, $2, $3, $4, 'pending', $5, $6, $7)
       ON CONFLICT (idempotency_key) DO UPDATE SET
-        updated_at = NOW()
+        updated_at = NOW(), available_at = LEAST(sms_outbox.available_at, EXCLUDED.available_at)
       RETURNING id`,
       [
         notification.user_id,
@@ -1453,6 +1811,8 @@ async function queueSMSNotification(notification: Notification): Promise<void> {
         smsBody,
         notification.priority,
         idempotencyKey,
+        notification.id,
+        availableAt,
       ]
     );
 
@@ -1469,8 +1829,8 @@ async function queueSMSNotification(notification: Notification): Promise<void> {
       await query(
         `INSERT INTO outbox_events (
           event_type, aggregate_type, aggregate_id, event_version,
-          idempotency_key, payload, queue_name, status
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending')`,
+          idempotency_key, payload, queue_name, status, available_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', $8)`,
         [
           'sms.send_requested',
           'sms',
@@ -1479,11 +1839,13 @@ async function queueSMSNotification(notification: Notification): Promise<void> {
           idempotencyKey,
           JSON.stringify({
             smsId,
+            notificationId: notification.id,
             userId: notification.user_id,
             toPhone: userPhone,
             body: smsBody,
           }),
           'user_notifications',
+          availableAt,
         ]
       );
     }

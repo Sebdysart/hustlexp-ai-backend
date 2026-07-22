@@ -187,6 +187,19 @@ describe('RatingService.submitRating', () => {
     expect(result.error?.code).toBe('INVALID_INPUT');
   });
 
+  it('rejects an incomplete structured outcome review', async () => {
+    const result = await RatingService.submitRating({
+      taskId: 't1', raterId: 'u1', stars: 5,
+      structuredFeedback: {
+        communication: 5, scopeAccuracy: 5, punctuality: 5,
+        care: 5, resultQuality: 5, value: 0,
+      },
+    });
+    expect(result.success).toBe(false);
+    expect(result.error?.code).toBe('INVALID_INPUT');
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
   // R-15 FIX: task SELECT is now inside db.transaction() AFTER advisory lock.
   // New query order: (1) advisory lock, (2) task SELECT FOR UPDATE, (3) duplicate check, ...
   it('rejects rating for non-COMPLETED task', async () => {
@@ -272,6 +285,31 @@ describe('RatingService.submitRating', () => {
     });
     expect(result.success).toBe(true);
     expect(result.data?.stars).toBe(5);
+  });
+
+  it('persists all six transaction-linked outcome dimensions', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{}], rowCount: 1 });
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ id: 't1', poster_id: 'u1', worker_id: 'u2', state: 'COMPLETED', completed_at: completedAt }],
+    });
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] });
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ id: 'r1', task_id: 't1', rater_id: 'u1', ratee_id: 'u2', stars: 5 }],
+    });
+    const structuredFeedback = {
+      communication: 5, scopeAccuracy: 4, punctuality: 3,
+      care: 5, resultQuality: 4, value: 5,
+    };
+
+    const result = await RatingService.submitRating({
+      taskId: 't1', raterId: 'u1', stars: 5, structuredFeedback,
+    });
+
+    expect(result.success).toBe(true);
+    const insert = mockQuery.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO task_ratings'));
+    expect(insert?.[0]).toContain('structured_feedback');
+    expect(insert?.[1]).toContain(JSON.stringify(structuredFeedback));
   });
 
   it('makes all ratings public when both parties rate', async () => {

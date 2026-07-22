@@ -13,12 +13,19 @@
 import { db } from '../db.js';
 import type { ServiceResult } from '../types.js';
 import { AIClient } from './AIClient.js';
+import { aiObservation } from './AIObservabilityPolicy.js';
+import {
+  AIObservabilityService,
+  type AIObservationReceipt,
+} from './AIObservabilityService.js';
+import { PromptInjectionGuard } from '../ai/PromptInjectionGuard.js';
 import { ScoperProposalSchema } from '../lib/ai-response-schemas.js';
 import { aiLogger } from '../logger.js';
 import { scrubPII } from '../lib/pii-scrubber.js';
 import { xpForPriceCents } from '../lib/money.js';
 import { getTemplate, applyWildcardMultipliers, TEMPLATE_SLUGS } from './TaskTemplateRegistry.js';
 import type { ComplianceResult } from './ComplianceGuardianService.js';
+import { deriveTaskTemplatePolicy } from './TaskTemplatePolicy.js';
 
 const log = aiLogger.child({ service: 'ScoperAIService' });
 
@@ -29,6 +36,7 @@ const log = aiLogger.child({ service: 'ScoperAIService' });
 type Difficulty = 'easy' | 'medium' | 'hard';
 
 interface ScoperInput {
+  userId?: string;
   description: string;
   category?: string;
   budget_hint_cents?: number;
@@ -40,6 +48,7 @@ interface ScoperInput {
   templateSlug?: string;       // NEW: template context injection
   wildcardFlags?: string[];    // NEW: deterministic multipliers (wildcard_bizarre only)
   complianceResult?: ComplianceResult;  // NEW: Guardian outputs for multiplier decisions
+  authorityContext?: 'ADVISORY' | 'EXECUTABLE';
 }
 
 interface ScoperProposal {
@@ -53,6 +62,8 @@ interface ScoperProposal {
   flags: string[];
   estimated_duration_minutes?: number;
   required_capabilities?: string[];
+  proposal_source?: 'AI' | 'DETERMINISTIC';
+  ai_observability?: AIObservationReceipt;
 }
 
 interface ValidationResult {
@@ -95,15 +106,29 @@ export const ScoperAIService = {
   analyzeTaskScope: async (input: ScoperInput): Promise<ServiceResult<ScoperProposal>> => {
     try {
       let proposal: ScoperProposal;
+      let proposalSource: 'AI' | 'DETERMINISTIC' = 'DETERMINISTIC';
+      let aiObservability: AIObservationReceipt | undefined;
 
       // Extract template context for injection
       const template = input.templateSlug ? getTemplate(input.templateSlug) : null;
       const templateContext = template ? `\n\n${template.scoperContext}` : '';
 
-      // Try AI-based analysis first, fall back to heuristics
-      if (AIClient.isConfigured()) {
+      // Prompt text can request a price but cannot issue instructions to the
+      // model or control proposal fields. High-confidence injection attempts
+      // bypass AI entirely and fall back to deterministic scoping.
+      const injectionDecision = PromptInjectionGuard.analyze(input.description);
+
+      // Executable task economics are always derived from typed policy. The
+      // model is permitted only on the explicitly advisory draft surface.
+      if (input.authorityContext === 'EXECUTABLE') {
+        proposal = ScoperAIService._generateProposal(input);
+      } else if (AIClient.isConfigured() && injectionDecision.decision !== 'BLOCK') {
         try {
           const aiResult = await AIClient.callJSON<ScoperProposal>({
+            observability: aiObservation('AI-SCOPER-PROPOSAL', {
+              actorUserId: input.userId,
+              affectedObjectType: 'TASK_DRAFT',
+            }),
             route: 'primary',
             schema: ScoperProposalSchema,
             temperature: 0.3,
@@ -138,12 +163,20 @@ ${input.location ? `Location: ${input.location.city}, ${input.location.state}` :
           });
 
           proposal = aiResult.data;
+          proposalSource = 'AI';
+          aiObservability = aiResult.observation ?? undefined;
           log.info({ suggestedPriceCents: proposal.suggested_price_cents, difficulty: proposal.difficulty, confidence: proposal.confidence_score, provider: aiResult.provider }, 'AI scope proposal generated');
         } catch (aiError) {
           log.warn({ err: aiError instanceof Error ? (aiError as Error).message : String(aiError) }, 'AI scope call failed, using heuristic fallback');
           proposal = ScoperAIService._generateProposal(input);
         }
       } else {
+        if (injectionDecision.decision === 'BLOCK') {
+          log.warn(
+            { matchedPatterns: injectionDecision.matchedPatterns },
+            'Prompt injection blocked from ScoperAI; using deterministic fallback',
+          );
+        }
         // No AI configured - use heuristic fallback
         proposal = ScoperAIService._generateProposal(input);
       }
@@ -152,6 +185,17 @@ ${input.location ? `Location: ${input.location.city}, ${input.location.state}` :
       // AI proposes, validator accepts/rejects — this is non-negotiable
       const validation = ScoperAIService._validateProposal(proposal);
       if (!validation.valid) {
+        if (aiObservability) {
+          await AIObservabilityService.recordOutcome({
+            observationId: aiObservability.observationId,
+            outcomeType: 'PROPOSAL_REJECTED',
+            outcomeObjectType: 'TASK_DRAFT',
+            outcomeObjectId: aiObservability.observationId,
+            realizedResult: { validator: 'SCOPER_CONSTITUTIONAL_RULES', valid: false },
+            sourceTable: 'ai_observation_events',
+            sourceEventId: `${aiObservability.observationId}:validation`,
+          });
+        }
         return {
           success: false,
           error: {
@@ -161,62 +205,64 @@ ${input.location ? `Location: ${input.location.city}, ${input.location.state}` :
         };
       }
 
-      // Apply deterministic wildcard multipliers AFTER validation (spec: multiply then clamp)
+      const effectivePolicy = deriveTaskTemplatePolicy({
+        description: input.description,
+        templateSlug: input.templateSlug,
+        wildcardFlags: input.wildcardFlags,
+        complianceResult: input.complianceResult,
+      });
+      proposal.suggested_price_cents = Math.max(
+        proposal.suggested_price_cents,
+        effectivePolicy.minimumPriceCents,
+      );
+
+      // Apply deterministic wildcard multipliers only after content or an AI
+      // signal proves the task is genuinely unusual. Caller-supplied flags are
+      // never sufficient authority on their own.
       if (
         input.templateSlug === TEMPLATE_SLUGS.WILDCARD_BIZARRE &&
-        input.wildcardFlags?.length
+        effectivePolicy.allowedWildcardFlags.length > 0
       ) {
-        // Capture base price before multipliers (needed for deception override below)
-        const basePriceBeforeMultipliers = proposal.suggested_price_cents;
-
         proposal.suggested_price_cents = applyWildcardMultipliers(
           proposal.suggested_price_cents,
-          input.wildcardFlags
+          effectivePolicy.allowedWildcardFlags,
         );
+      }
 
-        // DECEPTION OVERRIDE: If Guardian flagged deception AND AI actually ran,
-        // zero all wildcard bonuses. Deceptive tasks (pretend boyfriend, fake professional)
-        // get no weirdness premium. Guard on ai_signals_computed to avoid zeroing multipliers
-        // when a heuristic (non-AI) path sets deception_detected without AI confirmation.
-        if (
-          input.complianceResult?.ai_signals_computed === true &&
-          input.complianceResult.deception_detected
-        ) {
-          proposal.suggested_price_cents = basePriceBeforeMultipliers;
-          log.info('Deception detected (AI-confirmed) — wildcard multipliers zeroed');
-        }
+      // Re-sync all fields after deterministic floors or multipliers.
+      proposal.suggested_price_cents = Math.min(proposal.suggested_price_cents, MAX_PRICE_CENTS);
+      proposal.suggested_xp = xpForPriceCents(proposal.suggested_price_cents);
+      if (proposal.suggested_price_cents <= DIFFICULTY_PRICE_RANGES.easy.max) {
+        proposal.difficulty = 'easy';
+      } else if (proposal.suggested_price_cents <= DIFFICULTY_PRICE_RANGES.medium.max) {
+        proposal.difficulty = 'medium';
+      } else {
+        proposal.difficulty = 'hard';
+      }
 
-        // GENUINE BIZARRE CAP: Only applies when AI actually evaluated bizarreness AND
-        // determined the task is NOT genuinely bizarre. If AI didn't run (ai_signals_computed=false),
-        // full bonuses apply — we cannot penalize tasks we haven't evaluated.
-        if (
-          input.complianceResult?.ai_signals_computed === true &&
-          !input.complianceResult.is_genuinely_bizarre &&
-          !input.complianceResult.deception_detected
-        ) {
-          const cap = Math.round(basePriceBeforeMultipliers * 1.1);
-          if (proposal.suggested_price_cents > cap) {
-            const priceAfterMultipliers = proposal.suggested_price_cents;
-            proposal.suggested_price_cents = cap;
-            log.info({ cap, original: priceAfterMultipliers }, 'Not genuinely bizarre (AI-confirmed) — premium capped at 1.1x');
-          }
-        }
-
-        // Re-sync XP to match adjusted price (clamp to constitutional bounds)
-        proposal.suggested_xp = Math.round(
-          Math.min(proposal.suggested_price_cents, MAX_PRICE_CENTS) / 10
-        );
-        // Re-correct difficulty tier
-        if (proposal.suggested_price_cents <= DIFFICULTY_PRICE_RANGES.easy.max) {
-          proposal.difficulty = 'easy';
-        } else if (proposal.suggested_price_cents <= DIFFICULTY_PRICE_RANGES.medium.max) {
-          proposal.difficulty = 'medium';
-        } else {
-          proposal.difficulty = 'hard';
+      if (aiObservability) {
+        const outcome = await AIObservabilityService.recordOutcome({
+          observationId: aiObservability.observationId,
+          outcomeType: 'PROPOSAL_VALIDATED',
+          outcomeObjectType: 'TASK_DRAFT',
+          outcomeObjectId: aiObservability.observationId,
+          realizedResult: { validator: 'SCOPER_CONSTITUTIONAL_RULES', valid: true },
+          sourceTable: 'ai_observation_events',
+          sourceEventId: `${aiObservability.observationId}:validation`,
+        });
+        if (!outcome.success) {
+          return { success: false, error: outcome.error };
         }
       }
 
-      return { success: true, data: proposal };
+      return {
+        success: true,
+        data: {
+          ...proposal,
+          proposal_source: proposalSource,
+          ...(aiObservability ? { ai_observability: aiObservability } : {}),
+        },
+      };
     } catch (error) {
       log.error({ err: error instanceof Error ? error.message : String(error) }, 'Failed to analyze task scope');
       return {
@@ -239,6 +285,9 @@ ${input.location ? `Location: ${input.location.city}, ${input.location.state}` :
       try {
         const truncatedInput = [...rawDescription].slice(0, MAX_INPUT_CHARS).join('');
         const result = await AIClient.call({
+          observability: aiObservation('AI-SCOPER-PROPOSAL', {
+            affectedObjectType: 'TASK_DRAFT_DESCRIPTION',
+          }),
           route: 'fast',
           temperature: 0.3,
           timeoutMs: 5000,

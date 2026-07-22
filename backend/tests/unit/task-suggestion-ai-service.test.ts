@@ -20,6 +20,12 @@ vi.mock('../../src/services/AIClient.js', () => ({
   },
 }));
 
+vi.mock('../../src/services/RecommendationService.js', () => ({
+  RecommendationService: {
+    recordDisplayedBatch: vi.fn(),
+  },
+}));
+
 vi.mock('../../src/db.js', () => ({
   db: {
     query: vi.fn(),
@@ -39,16 +45,22 @@ import { TaskSuggestionAIService } from '../../src/services/TaskSuggestionAIServ
 import { TaskDiscoveryService } from '../../src/services/TaskDiscoveryService.js';
 import { WorkerSkillService } from '../../src/services/WorkerSkillService.js';
 import { AIClient } from '../../src/services/AIClient.js';
+import { RecommendationService } from '../../src/services/RecommendationService.js';
 import { db } from '../../src/db.js';
 
 const mockDiscovery = vi.mocked(TaskDiscoveryService);
 const mockSkills = vi.mocked(WorkerSkillService);
 const mockAIClient = vi.mocked(AIClient);
+const mockRecommendations = vi.mocked(RecommendationService);
 const mockDb = vi.mocked(db);
 
 const USER_ID = 'user-001';
 const TASK_ID_1 = 'task-aaa-001';
 const TASK_ID_2 = 'task-bbb-002';
+const SUGGESTION_OBSERVATION = {
+  observationId: '11111111-1111-4111-8111-111111111111',
+  surfaceId: 'AI-TASK-SUGGESTION-PROPOSAL',
+};
 
 const makeFeedItem = (taskId: string, overrides = {}) => ({
   task: { id: taskId, title: 'Fix my fence', category: 'outdoor', price: 5000 },
@@ -69,12 +81,22 @@ describe('TaskSuggestionAIService.getSuggestions', () => {
     vi.clearAllMocks();
     mockSkills.getWorkerSkills.mockResolvedValue({ success: true, data: [] } as any);
     mockDb.query.mockResolvedValue(makeUserRow() as any);
+    mockRecommendations.recordDisplayedBatch.mockImplementation(async (inputs: any[]) => ({
+      success: true,
+      data: inputs.map((input) => ({
+        recommendationId: `recommendation-${input.subjectId}`,
+        subjectId: input.subjectId,
+      })),
+    }) as any);
   });
 
   it('returns AI-ranked suggestions on success', async () => {
     const feedItems = [makeFeedItem(TASK_ID_1), makeFeedItem(TASK_ID_2)];
     mockDiscovery.getFeed.mockResolvedValueOnce({ success: true, data: feedItems } as any);
     mockAIClient.callJSON.mockResolvedValueOnce({
+      provider: 'groq',
+      model: 'llama-test',
+      observation: SUGGESTION_OBSERVATION,
       data: {
         suggestions: [
           { taskId: TASK_ID_1, reason: 'Great match for your outdoor skills', fitScore: 0.9 },
@@ -90,6 +112,20 @@ describe('TaskSuggestionAIService.getSuggestions', () => {
     expect(result.data).toHaveLength(2);
     expect(result.data[0].aiReason).toBe('Great match for your outdoor skills');
     expect(result.data[0].fitScore).toBe(0.9);
+    expect(result.data[0]).toMatchObject({
+      recommendationId: `recommendation-${TASK_ID_1}`,
+      recommendationSource: 'AI',
+      confidenceBand: 'STRONG_SIGNAL',
+      policyVersion: 'hxos-task-suggestion-v1',
+      modelVersion: 'groq:llama-test',
+      controls: { dismiss: true, snooze: true, why: true, autoExecute: false },
+    });
+    expect(mockRecommendations.recordDisplayedBatch).toHaveBeenCalledOnce();
+    expect(mockRecommendations.recordDisplayedBatch).toHaveBeenCalledWith(
+      expect.arrayContaining([expect.objectContaining({
+        sourceType: 'AI', aiObservationId: SUGGESTION_OBSERVATION.observationId,
+      })]),
+    );
   });
 
   it('returns empty array when feed is empty', async () => {
@@ -126,7 +162,25 @@ describe('TaskSuggestionAIService.getSuggestions', () => {
     expect(result.success).toBe(true);
     if (!result.success) return;
     expect(result.data[0].aiReason).toBe('Close by and good match for your skills');
+    expect(result.data[0].recommendationSource).toBe('DETERMINISTIC');
     expect(mockAIClient.callJSON).not.toHaveBeenCalled();
+  });
+
+  it('fails closed instead of displaying unaudited suggestions', async () => {
+    const feedItems = [makeFeedItem(TASK_ID_1)];
+    mockDiscovery.getFeed.mockResolvedValueOnce({ success: true, data: feedItems } as any);
+    mockAIClient.isConfigured.mockReturnValueOnce(false);
+    mockRecommendations.recordDisplayedBatch.mockResolvedValueOnce({
+      success: false,
+      error: { code: 'RECOMMENDATION_AUDIT_FAILED', message: 'Audit unavailable' },
+    } as any);
+
+    const result = await TaskSuggestionAIService.getSuggestions(USER_ID);
+
+    expect(result).toEqual({
+      success: false,
+      error: { code: 'RECOMMENDATION_AUDIT_FAILED', message: 'Audit unavailable' },
+    });
   });
 
   it('uses fallback when AI returns null suggestions', async () => {
@@ -158,6 +212,7 @@ describe('TaskSuggestionAIService.getSuggestions', () => {
     const feedItems = [makeFeedItem(TASK_ID_1)];
     mockDiscovery.getFeed.mockResolvedValueOnce({ success: true, data: feedItems } as any);
     mockAIClient.callJSON.mockResolvedValueOnce({
+      observation: SUGGESTION_OBSERVATION,
       data: {
         suggestions: [
           { taskId: TASK_ID_1, reason: 'Good match', fitScore: 0.9 },
@@ -177,6 +232,7 @@ describe('TaskSuggestionAIService.getSuggestions', () => {
     const feedItems = [makeFeedItem(TASK_ID_1)];
     mockDiscovery.getFeed.mockResolvedValueOnce({ success: true, data: feedItems } as any);
     mockAIClient.callJSON.mockResolvedValueOnce({
+      observation: SUGGESTION_OBSERVATION,
       data: {
         suggestions: [
           { taskId: 'nonexistent-id', reason: 'Phantom task', fitScore: 0.99 },
@@ -197,6 +253,7 @@ describe('TaskSuggestionAIService.getSuggestions', () => {
     const feedItems = [makeFeedItem(TASK_ID_1)];
     mockDiscovery.getFeed.mockResolvedValueOnce({ success: true, data: feedItems } as any);
     mockAIClient.callJSON.mockResolvedValueOnce({
+      observation: SUGGESTION_OBSERVATION,
       data: {
         suggestions: [{ taskId: TASK_ID_1, reason: '', fitScore: 0.8 }],
       },
@@ -213,6 +270,7 @@ describe('TaskSuggestionAIService.getSuggestions', () => {
     const feedItems = [makeFeedItem(TASK_ID_1)];
     mockDiscovery.getFeed.mockResolvedValueOnce({ success: true, data: feedItems } as any);
     mockAIClient.callJSON.mockResolvedValueOnce({
+      observation: SUGGESTION_OBSERVATION,
       data: {
         suggestions: [{ taskId: TASK_ID_1, reason: 'Good', fitScore: 2.5 }], // out of range
       },
@@ -223,6 +281,24 @@ describe('TaskSuggestionAIService.getSuggestions', () => {
     expect(result.success).toBe(true);
     if (!result.success) return;
     expect(result.data[0].fitScore).toBe(0.85); // fallback to matching_score
+  });
+
+  it('withholds otherwise valid AI suggestions when the observation receipt is missing', async () => {
+    const feedItems = [makeFeedItem(TASK_ID_1)];
+    mockDiscovery.getFeed.mockResolvedValueOnce({ success: true, data: feedItems } as any);
+    mockAIClient.callJSON.mockResolvedValueOnce({
+      provider: 'groq', model: 'llama-test',
+      data: { suggestions: [{ taskId: TASK_ID_1, reason: 'Good fit', fitScore: 0.8 }] },
+      observation: null,
+    } as any);
+
+    const result = await TaskSuggestionAIService.getSuggestions(USER_ID);
+
+    expect(result).toMatchObject({
+      success: false,
+      error: { code: 'AI_OBSERVABILITY_REQUIRED' },
+    });
+    expect(mockRecommendations.recordDisplayedBatch).not.toHaveBeenCalled();
   });
 
   it('respects limit parameter (max 20)', async () => {

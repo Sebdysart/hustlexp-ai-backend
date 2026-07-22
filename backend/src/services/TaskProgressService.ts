@@ -11,6 +11,7 @@ type LockedTask = {
   worker_id: string | null;
   progress_state: string;
   state: string;
+  scope_change_pending: boolean;
 };
 type ProgressResult = {
   task: Task;
@@ -20,8 +21,12 @@ type ProgressResult = {
 
 async function lockTask(query: Query, taskId: string): Promise<LockedTask> {
   const result = await query<LockedTask>(
-    `SELECT id, poster_id, worker_id, progress_state, state
-     FROM tasks WHERE id = $1 FOR UPDATE`,
+    `SELECT t.id, t.poster_id, t.worker_id, t.progress_state, t.state,
+            EXISTS (
+              SELECT 1 FROM task_scope_change_proposals p
+              WHERE p.task_id = t.id AND p.status = 'PENDING'
+            ) AS scope_change_pending
+     FROM tasks t WHERE t.id = $1 FOR UPDATE OF t`,
     [taskId]
   );
   if (!result.rows[0]) throw new Error(`Task ${taskId} not found`);
@@ -70,13 +75,15 @@ async function assertNoActiveDispute(query: Query, taskId: string): Promise<void
   }
 }
 
-async function assertEscrowMutable(query: Query, taskId: string): Promise<void> {
+async function assertEscrowMutable(query: Query, taskId: string, to: TaskProgressState): Promise<void> {
   const result = await query<{ state: string }>(
     'SELECT state FROM escrows WHERE task_id = $1 FOR SHARE',
     [taskId]
   );
   const state = result.rows[0]?.state;
-  if (state && ['RELEASED', 'REFUNDED', 'REFUND_PARTIAL'].includes(state)) {
+  // CLOSED is the system's convergence step after escrow terminalization. Every
+  // other progress mutation remains forbidden once money reaches a terminal state.
+  if (state && ['RELEASED', 'REFUNDED', 'REFUND_PARTIAL'].includes(state) && to !== 'CLOSED') {
     throw new Error(`Cannot advance progress: escrow is in terminal state ${state}`);
   }
 }
@@ -107,12 +114,19 @@ async function progressTransaction(query: Query, params: AdvanceProgressParams):
   assertTransition(from, params.to);
   assertWorkerActor(task, params);
   assertSystemActor(params);
+  if (params.actor.type === 'worker' && task.scope_change_pending) {
+    throw new Error(`Cannot advance progress: task ${params.taskId} has a pending scope change`);
+  }
   await assertNoActiveDispute(query, params.taskId);
-  await assertEscrowMutable(query, params.taskId);
+  await assertEscrowMutable(query, params.taskId, params.to);
   return updateProgress(query, params, from);
 }
 
 async function emitProgress(params: AdvanceProgressParams, result: ProgressResult): Promise<void> {
+  // A same-state retry returns the canonical task but is not a material state
+  // change. Do not manufacture a visible timeline/outbox event for transport
+  // retries or repeated worker actions.
+  if (result.from === params.to) return;
   await writeToOutbox({
     eventType: 'task.progress_updated',
     aggregateType: 'task',
@@ -139,7 +153,7 @@ function progressError(error: unknown): ServiceResult<Task> {
     return { success: false, error: { code: ErrorCodes.FORBIDDEN, message } };
   }
   if (message.includes('not found')) return { success: false, error: { code: ErrorCodes.NOT_FOUND, message } };
-  if (message.includes('active dispute') || message.includes('terminal state')) {
+  if (message.includes('active dispute') || message.includes('terminal state') || message.includes('pending scope change')) {
     return { success: false, error: { code: ErrorCodes.INVALID_STATE, message } };
   }
   return { success: false, error: { code: 'INTERNAL_ERROR', message } };

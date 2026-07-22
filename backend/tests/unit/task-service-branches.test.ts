@@ -98,6 +98,29 @@ vi.mock('../../src/services/PlanService', () => ({
   },
 }));
 
+vi.mock('../../src/services/RegionPolicyService', () => ({
+  resolveRegionPolicy: vi.fn().mockResolvedValue({
+    id: '11111111-1111-4111-8111-111111111111', region_code: 'US-WA',
+    version: 'us-wa-test-v1', policy_hash: 'a'.repeat(64),
+  }),
+  evaluateTaskAgainstRegionPolicy: vi.fn().mockReturnValue({
+    allowed: true,
+    reasons: [],
+    snapshot: {
+      policyId: '11111111-1111-4111-8111-111111111111', policyVersion: 'us-wa-test-v1',
+      policyHash: 'a'.repeat(64), regionCode: 'US-WA', locationState: 'WA',
+      licenseRequired: false, insuranceRequired: false, backgroundCheckRequired: false,
+      proofRequired: true, proofMinPhotos: 1, proofMaxPhotos: 5, proofGpsRequired: false,
+      recordingAllowed: false, recordingStandaloneConsentRequired: true,
+      screeningStandaloneConsentRequired: true, screeningReportAccessRequired: true,
+      screeningDisputeAndAppealRequired: true, screeningAdverseActionNoticeRequired: true,
+      safetyIncidentIntakeRequired: true, safetyTimedCheckinRequired: false,
+      safetyCheckinIntervalsMinutes: [15, 30, 60], safetyLocationRetentionDays: 30,
+      safetyAlternateEmergencyActionRequired: true, currency: 'usd',
+    },
+  }),
+}));
+
 vi.mock('../../src/services/InstantObservability', () => ({
   InstantObservability: { logAcceptRace: vi.fn() },
 }));
@@ -255,7 +278,9 @@ describe('TaskService.create — invariant violation in DB', () => {
       posterId: 'poster-1',
       title: 'Mow lawn',
       description: 'Mow the lawn',
-      price: 1000,
+      price: 1500,
+      regionCode: 'US-WA',
+      category: 'moving',
     });
 
     expect(result.success).toBe(false);
@@ -427,6 +452,31 @@ describe('TaskService.advanceProgress — dispute freeze', () => {
   });
 });
 
+describe('TaskService.advanceProgress — scope-change freeze', () => {
+  it('blocks traveling while a scope change is pending', async () => {
+    mockQuery.mockResolvedValueOnce({
+      rows: [{
+        id: 'task-1',
+        poster_id: 'poster-1',
+        worker_id: 'worker-1',
+        progress_state: 'ACCEPTED',
+        state: 'ACCEPTED',
+        scope_change_pending: true,
+      }],
+      rowCount: 1,
+    } as never);
+
+    const result = await TaskService.advanceProgress({
+      taskId: 'task-1',
+      to: 'TRAVELING',
+      actor: { type: 'worker', userId: 'worker-1' },
+    });
+
+    expect(result).toMatchObject({ success: false, error: { code: 'INVALID_STATE' } });
+    expect(mockQuery).toHaveBeenCalledOnce();
+  });
+});
+
 // ===========================================================================
 // advanceProgress — escrow terminal freeze branch
 // ===========================================================================
@@ -456,6 +506,30 @@ describe('TaskService.advanceProgress — escrow terminal freeze', () => {
     expect(result.success).toBe(false);
     expect(result.error?.code).toBe('INVALID_STATE');
     expect(result.error?.message).toContain('terminal state');
+  });
+
+  it('allows the system to converge COMPLETED → CLOSED after escrow is RELEASED', async () => {
+    const closedTask = makeTask({ progress_state: 'CLOSED', state: 'COMPLETED' });
+    mockQuery
+      .mockResolvedValueOnce({
+        rows: [{
+          id: 'task-1', poster_id: 'poster-1', worker_id: 'worker-1',
+          progress_state: 'COMPLETED', state: 'COMPLETED', scope_change_pending: false,
+        }],
+        rowCount: 1,
+      } as never)
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      .mockResolvedValueOnce({ rows: [{ count: '0' }], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [{ state: 'RELEASED' }], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [closedTask], rowCount: 1 } as never);
+
+    const result = await TaskService.advanceProgress({
+      taskId: 'task-1',
+      to: 'CLOSED',
+      actor: { type: 'system' },
+    });
+
+    expect(result).toMatchObject({ success: true, data: { progress_state: 'CLOSED' } });
   });
 });
 

@@ -85,9 +85,9 @@ const mockDb = vi.mocked(db);
 // Helpers
 // ---------------------------------------------------------------------------
 
-function makeCaller(userId = 'test-uid') {
+function makeCaller(userId = 'test-uid', isAdmin = false) {
   return capabilityRouter.createCaller({
-    user: { id: userId, default_mode: 'worker' } as any,
+    user: { id: userId, default_mode: 'worker', is_admin: isAdmin } as any,
     firebaseUid: 'fb-uid',
   });
 }
@@ -245,13 +245,17 @@ describe('capability.getNearbyTasks', () => {
   beforeEach(() => vi.clearAllMocks());
 
   it('returns nearby tasks', async () => {
+    const profile = { userId: 'test-uid' };
+    vi.mocked(CapabilityProfileService.getCapabilityProfile).mockResolvedValueOnce(profile as any);
     const tasks = [{ id: 'task-1', title: 'Fix sink' }];
     vi.mocked(FeedQueryService.getNearbyTasks).mockResolvedValueOnce(tasks as any);
 
     const result = await makeCaller().getNearbyTasks({ lat: 37.7, lng: -122.4 });
 
     expect(result).toEqual(tasks);
-    expect(FeedQueryService.getNearbyTasks).toHaveBeenCalledWith(37.7, -122.4, 25, 20);
+    expect(FeedQueryService.getNearbyTasks).toHaveBeenCalledWith(
+      'test-uid', profile, 37.7, -122.4, 25, 20,
+    );
   });
 });
 
@@ -339,9 +343,17 @@ describe('capability.initiateBackgroundCheck', () => {
   it('initiates background check', async () => {
     vi.mocked(BackgroundCheckService.initiateBackgroundCheck).mockResolvedValueOnce({ id: 'bg-1' } as any);
 
-    const result = await makeCaller().initiateBackgroundCheck({ provider: 'checkr' });
+    const result = await makeCaller().initiateBackgroundCheck({
+      provider: 'checkr',
+      consentId: '11111111-1111-4111-8111-111111111111',
+    });
 
     expect(result).toEqual({ id: 'bg-1' });
+    expect(BackgroundCheckService.initiateBackgroundCheck).toHaveBeenCalledWith({
+      userId: 'test-uid',
+      provider: 'checkr',
+      consentId: '11111111-1111-4111-8111-111111111111',
+    });
   });
 });
 
@@ -362,12 +374,18 @@ describe('capability.getBackgroundCheck', () => {
 // ---------------------------------------------------------------------------
 
 describe('capability.approveLicense', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDb.query.mockReset();
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ role: 'moderator', capability_granted: true }], rowCount: 1,
+    } as any);
+  });
 
   it('approves license verification', async () => {
     vi.mocked(LicenseVerificationService.approveLicense).mockResolvedValueOnce({ approved: true } as any);
 
-    const result = await makeCaller().approveLicense({ verificationId: 'ver-1' });
+    const result = await makeCaller('test-uid', true).approveLicense({ verificationId: 'ver-1' });
 
     expect(result).toEqual({ approved: true });
     expect(LicenseVerificationService.approveLicense).toHaveBeenCalledWith('ver-1', 'test-uid', undefined);
@@ -375,12 +393,18 @@ describe('capability.approveLicense', () => {
 });
 
 describe('capability.rejectLicense', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDb.query.mockReset();
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ role: 'moderator', capability_granted: true }], rowCount: 1,
+    } as any);
+  });
 
   it('rejects license verification', async () => {
     vi.mocked(LicenseVerificationService.rejectLicense).mockResolvedValueOnce({ rejected: true } as any);
 
-    const result = await makeCaller().rejectLicense({
+    const result = await makeCaller('test-uid', true).rejectLicense({
       verificationId: 'ver-1',
       reason: 'Expired license',
     });
@@ -390,14 +414,27 @@ describe('capability.rejectLicense', () => {
 });
 
 describe('capability.getPendingLicenses', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDb.query.mockReset();
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ role: 'moderator', capability_granted: true }], rowCount: 1,
+    } as any);
+  });
 
   it('returns pending verifications', async () => {
     const pending = [{ id: 'ver-1', trade: 'plumbing' }];
     vi.mocked(LicenseVerificationService.getPendingVerifications).mockResolvedValueOnce(pending as any);
 
-    const result = await makeCaller().getPendingLicenses({ limit: 50, offset: 0 });
+    const result = await makeCaller('test-uid', true).getPendingLicenses({ limit: 50, offset: 0 });
 
     expect(result).toEqual(pending);
+  });
+
+  it('denies an ordinary Hustler before the review service is called', async () => {
+    mockDb.query.mockReset();
+    await expect(makeCaller().getPendingLicenses({ limit: 50, offset: 0 }))
+      .rejects.toMatchObject({ code: 'FORBIDDEN' });
+    expect(LicenseVerificationService.getPendingVerifications).not.toHaveBeenCalled();
   });
 });

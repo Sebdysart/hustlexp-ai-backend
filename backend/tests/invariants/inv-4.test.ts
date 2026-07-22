@@ -63,7 +63,7 @@ describe.skipIf(!hasDb)('INV-4: Escrow amount is immutable after creation', () =
     const escrowId = await createTestEscrow(pool, taskId, 'PENDING');
     
     await expect(
-      attemptModifyEscrowAmount(escrowId, 5000) // Try to change to $50.00
+      attemptModifyEscrowAmount(escrowId, 5001)
     ).rejects.toMatchObject({
       code: 'HX004',
     });
@@ -71,7 +71,7 @@ describe.skipIf(!hasDb)('INV-4: Escrow amount is immutable after creation', () =
 
   it('MUST REJECT: modify escrow amount when state is FUNDED', async () => {
     const posterId = await createTestUser(pool, `test-poster-2-${Date.now()}@hustlexp.test`);
-    const taskId = await createTestTask(pool, posterId, 'ACCEPTED');
+    const taskId = await createTestTask(pool, posterId, 'OPEN');
     const escrowId = await createTestEscrow(pool, taskId, 'FUNDED');
     
     await expect(
@@ -175,7 +175,7 @@ describe.skipIf(!hasDb)('INV-4: Escrow amount is immutable after creation', () =
 
   it('MUST SUCCEED: verify amount remains unchanged after state change', async () => {
     const posterId = await createTestUser(pool, `test-poster-10-${Date.now()}@hustlexp.test`);
-    const taskId = await createTestTask(pool, posterId, 'ACCEPTED');
+    const taskId = await createTestTask(pool, posterId, 'OPEN');
     const escrowId = await createTestEscrow(pool, taskId, 'PENDING');
     
     // Get original amount
@@ -215,7 +215,7 @@ describe.skipIf(!hasDb)('INV-4 Edge Cases', () => {
     await expect(
       pool.query(
         `UPDATE escrows SET amount = $1, state = 'FUNDED' WHERE id = $2`,
-        [5000, escrowId]
+        [5001, escrowId]
       )
     ).rejects.toMatchObject({
       code: 'HX004',
@@ -224,7 +224,7 @@ describe.skipIf(!hasDb)('INV-4 Edge Cases', () => {
 
   it('MUST REJECT: attempt to modify amount in same UPDATE as state change', async () => {
     const posterId = await createTestUser(pool, `test-poster-edge-2-${Date.now()}@hustlexp.test`);
-    const taskId = await createTestTask(pool, posterId, 'ACCEPTED');
+    const taskId = await createTestTask(pool, posterId, 'OPEN');
     const escrowId = await createTestEscrow(pool, taskId, 'PENDING');
     
     // Attempt to change both state and amount in one UPDATE

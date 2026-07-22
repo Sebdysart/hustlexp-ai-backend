@@ -25,6 +25,13 @@ import { workerLogger } from '../logger.js';
 import type { Job } from 'bullmq';
 import { sendgridBreaker } from '../middleware/circuit-breaker.js';
 import { notifyAdmins } from '../services/AdminNotificationHelper.js';
+import {
+  authorizeNotificationDelivery,
+  markNotificationCancelled,
+  markNotificationDeliveryFailure,
+  markNotificationProviderAccepted,
+  markNotificationSuppressed,
+} from '../services/NotificationDeliveryState.js';
 
 const log = workerLogger.child({ worker: 'email' });
 
@@ -182,12 +189,31 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
   const { emailId, toEmail, template, params } = job.data.payload;
   let userId = job.data.payload.userId;
   const idempotencyKey = job.id || `email:${emailId}`;
-  
-  if (!config.identity.sendgrid.apiKey) {
-    throw new Error('SendGrid API key not configured (SENDGRID_API_KEY required)');
-  }
+  const notificationId = typeof params?.notificationId === 'string' ? params.notificationId : null;
   
   try {
+    if (notificationId) {
+      const authorization = await authorizeNotificationDelivery(notificationId, 'email');
+      if (!authorization.allowed) {
+        if (authorization.reason === 'not_due') {
+          await markOutboxEventFailed(idempotencyKey, 'notification_not_due');
+          return;
+        }
+        if (authorization.reason === 'superseded' || authorization.reason === 'cancelled_superseded') {
+          await markNotificationCancelled(notificationId, 'email', authorization.reason);
+        }
+        if (['superseded', 'cancelled_superseded', 'provider_accepted', 'delivered', 'suppressed', 'failed_terminal'].includes(authorization.reason)) {
+          await markOutboxEventProcessed(idempotencyKey);
+          return;
+        }
+        throw new Error(`Email delivery refused: ${authorization.reason}`);
+      }
+    }
+
+    if (!config.identity.sendgrid.apiKey) {
+      throw new Error('SendGrid API key not configured (SENDGRID_API_KEY required)');
+    }
+
     // Phase 1: Atomic claim inside a transaction
     // SELECT FOR UPDATE + all idempotency/crash-recovery checks + CAS UPDATE must be atomic.
     // The row lock is held for the entire transaction, preventing concurrent workers from
@@ -311,6 +337,14 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
 
     // Handle early-return cases from the transaction (already-sent, crash-recovery, claim-lost)
     if (claimResult.shouldReturn) {
+      if (notificationId && claimResult.emailRecord.provider_msg_id) {
+        await markNotificationProviderAccepted(
+          notificationId,
+          'email',
+          'sendgrid',
+          claimResult.emailRecord.provider_msg_id,
+        );
+      }
       if (claimResult.outboxKey) {
         await markOutboxEventProcessed(claimResult.outboxKey);
       }
@@ -347,6 +381,10 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
         const suppressionOutboxKey = emailRecord.idempotency_key || idempotencyKey;
         if (suppressionOutboxKey) {
           await markOutboxEventProcessed(suppressionOutboxKey);
+        }
+
+        if (notificationId) {
+          await markNotificationSuppressed(notificationId, 'email', 'user_do_not_email');
         }
 
         return; // Exit without sending
@@ -419,6 +457,15 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
     }
     
     const finalEmail = finalUpdateResult.rows[0];
+
+    if (notificationId) {
+      await markNotificationProviderAccepted(
+        notificationId,
+        'email',
+        'sendgrid',
+        finalEmail.provider_msg_id || providerMsgId || null,
+      );
+    }
     
     // Mark outbox event as processed (if processing from outbox)
     // Use idempotency_key from email_outbox record (deterministic)
@@ -491,6 +538,9 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
       // causing an infinite re-enqueue storm.
       if (outboxKey) {
         await markOutboxEventFailed(outboxKey, errorMessage);
+      }
+      if (notificationId) {
+        await markNotificationSuppressed(notificationId, 'email', errorMessage);
       }
       return;
     }
@@ -566,6 +616,9 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
       }
 
       log.info({ emailId, jobId: job.id, idempotencyKey: outboxKey, suppressedReason, userId, sgCode }, 'Email suppressed due to hard bounce/complaint');
+      if (notificationId) {
+        await markNotificationSuppressed(notificationId, 'email', suppressedReason);
+      }
     } else {
       // Update email_outbox with error (for retry)
       // Check current attempts to determine if we should mark as failed (poison message)
@@ -599,6 +652,9 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
         } catch (alertErr) {
           log.error({ alertErr }, 'Failed to send dead-letter admin alert');
         }
+      }
+      if (notificationId) {
+        await markNotificationDeliveryFailure(notificationId, 'email', errorMessage);
       }
     }
     

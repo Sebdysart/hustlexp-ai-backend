@@ -44,7 +44,7 @@ function makeUserContext(overrides = {}) {
 
 const MOCK_PROFILE = {
   userId: 'user-1',
-  trustTier: 'B',
+  trustTier: 3,
   riskClearance: ['low'],
   locationState: 'WA',
   locationCity: 'Seattle',

@@ -1,6 +1,8 @@
 // backend/tests/unit/knowledge-graph-service.test.ts
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+const mockRecordObservation = vi.hoisted(() => vi.fn());
+
 // Mock OpenAI before any imports — use a plain constructor so the singleton works
 vi.mock('openai', () => {
   return {
@@ -16,8 +18,14 @@ vi.mock('openai', () => {
 
 vi.mock('../../src/db.js', () => ({
   db: {
+    query: vi.fn(),
     readQuery: vi.fn(),
   },
+}));
+
+vi.mock('../../src/services/AIObservabilityService.js', () => ({
+  AIObservabilityService: { record: mockRecordObservation },
+  aiObservationHash: (value: unknown) => `test-hash-${String(value).length}`,
 }));
 
 import { db } from '../../src/db.js';
@@ -37,6 +45,7 @@ const makeDocRow = (overrides = {}) => ({
 describe('KnowledgeGraphService.queryDocs', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockRecordObservation.mockResolvedValue({ success: true, data: { observationId: 'observation-1' } });
   });
 
   it('returns mapped doc sections on success', async () => {
@@ -79,11 +88,23 @@ describe('KnowledgeGraphService.queryDocs', () => {
     const [, params] = (mockDb.readQuery as any).mock.calls[0];
     expect(params[1]).toBe(5);
   });
+
+  it('withholds an embedding when its observability receipt cannot be persisted', async () => {
+    mockRecordObservation.mockResolvedValueOnce({
+      success: false,
+      error: { code: 'AI_OBSERVABILITY_REQUIRED', message: 'audit unavailable' },
+    });
+    await expect(KnowledgeGraphService.queryDocs('scope contract')).rejects.toThrow(
+      'AI_OBSERVABILITY_REQUIRED',
+    );
+    expect(mockDb.readQuery).not.toHaveBeenCalled();
+  });
 });
 
 describe('KnowledgeGraphService.getRelatedInvariants', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockRecordObservation.mockResolvedValue({ success: true, data: { observationId: 'observation-1' } });
   });
 
   it('returns invariant sections', async () => {
@@ -112,6 +133,7 @@ describe('KnowledgeGraphService.getRelatedInvariants', () => {
 describe('KnowledgeGraphService.getContractForProcedure', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockRecordObservation.mockResolvedValue({ success: true, data: { observationId: 'observation-1' } });
   });
 
   it('returns contract sections for a procedure', async () => {

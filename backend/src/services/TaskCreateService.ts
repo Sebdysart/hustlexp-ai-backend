@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { db, getErrorMessage, isInvariantViolation } from '../db.js';
 import { xpForPriceCents } from '../lib/money.js';
 import { writeToOutbox } from '../lib/outbox-helpers.js';
@@ -5,12 +6,33 @@ import { taskLogger } from '../logger.js';
 import type { ServiceError, ServiceResult, Task } from '../types.js';
 import { ErrorCodes } from '../types.js';
 import { PlanService } from './PlanService.js';
+import {
+  evaluateTaskAgainstRegionPolicy,
+  resolveRegionPolicy,
+  type RegionPolicyTaskSnapshot,
+} from './RegionPolicyService.js';
 import { ScoperAIService } from './ScoperAIService.js';
 import { deriveRoughArea, redactPrivateLocation } from './TaskLocationService.js';
-import { buildTaskCreateRequestHash, type CreateTaskParams } from './TaskServiceShared.js';
+import { TaskLocationCryptoError } from './TaskLocationCrypto.js';
+import {
+  deriveTaskTemplatePolicy,
+  type EffectiveTaskTemplatePolicy,
+} from './TaskTemplatePolicy.js';
+import {
+  insertCanonicalTask,
+  insertTaskDependents,
+  type TaskInitialScope,
+} from './TaskCreatePersistence.js';
+import {
+  buildScopeChecklist,
+  buildTaskCreateRequestHash,
+  buildTaskScopeHash,
+  type CreateTaskParams,
+} from './TaskServiceShared.js';
 
 const log = taskLogger.child({ service: 'TaskCreateService' });
 type Query = Parameters<Parameters<typeof db.transaction>[0]>[0];
+export type TaskCreateQuery = Query;
 type CreateOutcome =
   | { kind: 'created'; task: Task }
   | { kind: 'replay'; task: Task }
@@ -49,35 +71,97 @@ function validateQuoteEconomics(params: CreateTaskParams): void {
   }
 }
 
-async function resolvePrice(params: CreateTaskParams): Promise<{ price: number; xp: number }> {
+function materializeTemplatePolicy(params: CreateTaskParams): {
+  params: CreateTaskParams;
+  policy: EffectiveTaskTemplatePolicy;
+} {
+  const policy = deriveTaskTemplatePolicy({
+    description: params.description,
+    templateSlug: params.templateSlug,
+    riskLevel: params.riskLevel,
+    insideHome: params.insideHome,
+    peoplePresent: params.peoplePresent,
+    petsPresent: params.petsPresent,
+    wildcardFlags: params.wildcardFlags,
+    complianceResult: {
+      ai_signals_computed: params.complianceAiSignalsComputed ?? false,
+      deception_detected: params.complianceDeceptionDetected ?? false,
+      is_genuinely_bizarre: params.complianceGenuinelyBizarre ?? false,
+    },
+  });
+  return {
+    policy,
+    params: {
+      ...params,
+      requestedRiskLevel: params.requestedRiskLevel ?? params.riskLevel,
+      riskLevel: policy.riskLevel,
+      trustTierRequired: policy.requiredWorkerTrustTier,
+      completionCriteria: { type: policy.completionCriteriaType },
+      contentRelease: policy.contentReleaseRequired,
+      mutualConsentRequired: policy.mutualConsentRequired,
+      cancellationWindowHours: policy.cancellationWindowHours,
+      lateCancelPct: policy.lateCancelPct,
+      cancellationPolicyVersion: policy.cancellationPolicyVersion,
+      licensedContentRequired: policy.licensedContent,
+    },
+  };
+}
+
+async function resolvePrice(
+  params: CreateTaskParams,
+  policy: EffectiveTaskTemplatePolicy,
+): Promise<{ price: number; xp: number }> {
   let price = params.price;
   let xp: number | undefined;
   if (!price) {
     const scoped = await ScoperAIService.analyzeTaskScope({
+      userId: params.posterId,
       description: params.description,
       category: params.category,
+      authorityContext: 'EXECUTABLE',
+      templateSlug: params.templateSlug,
+      wildcardFlags: policy.allowedWildcardFlags,
+      complianceResult: {
+        score: params.illegalRiskScore ?? 0,
+        tier: 'clean',
+        triggeredRules: [],
+        deception_detected: params.complianceDeceptionDetected ?? false,
+        is_genuinely_bizarre: params.complianceGenuinelyBizarre ?? false,
+        ai_signals_computed: params.complianceAiSignalsComputed ?? false,
+        notes: {
+          score: params.illegalRiskScore ?? 0,
+          tier: 'clean',
+          triggered_rules: [],
+          suggested_alternative: null,
+          admin_review_id: null,
+          appeal_status: 'none',
+          deception_detected: params.complianceDeceptionDetected ?? false,
+          is_genuinely_bizarre: params.complianceGenuinelyBizarre ?? false,
+          ai_signals_computed: params.complianceAiSignalsComputed ?? false,
+        },
+      },
     });
     if (scoped.success && scoped.data) {
       price = scoped.data.suggested_price_cents;
       xp = scoped.data.suggested_xp;
       log.info({ priceCents: price, xp, difficulty: scoped.data.difficulty }, 'Scoper AI proposal accepted');
     } else {
-      price = params.mode === 'LIVE' ? 1500 : 500;
+      price = policy.minimumPriceCents;
     }
   }
   if (!Number.isInteger(price) || price <= 0) {
     fail(ErrorCodes.INVALID_STATE, 'Price must be a positive integer (cents)');
   }
-  validatePriceFloor(params.mode ?? 'STANDARD', price);
+  validatePriceFloor(params.mode ?? 'STANDARD', price, policy.minimumPriceCents);
   return { price, xp: xp || xpForPriceCents(price) };
 }
 
-function validatePriceFloor(mode: 'STANDARD' | 'LIVE', price: number): void {
-  if (mode === 'STANDARD' && price < 500) {
-    fail('PRICE_TOO_LOW', 'Standard tasks require minimum price of $5.00 (500 cents)');
-  }
-  if (mode === 'LIVE' && price < 1500) {
-    fail(ErrorCodes.LIVE_2_VIOLATION, 'Live tasks require minimum price of $15.00 (1500 cents)');
+function validatePriceFloor(mode: 'STANDARD' | 'LIVE', price: number, policyMinimumCents: number): void {
+  const minimum = Math.max(1500, policyMinimumCents);
+  if (price < minimum) {
+    const code = mode === 'LIVE' ? ErrorCodes.LIVE_2_VIOLATION : 'PRICE_TOO_LOW';
+    const formatted = (minimum / 100).toFixed(2);
+    fail(code, `This task requires a minimum price of $${formatted} (${minimum} cents)`);
   }
 }
 
@@ -89,6 +173,21 @@ async function assertPlan(params: CreateTaskParams): Promise<void> {
       requiredPlan: result.requiredPlan,
       riskLevel,
     });
+  }
+}
+
+async function assertPosterTrustHold(params: CreateTaskParams, query: Query = db.query): Promise<void> {
+  if ((params.riskLevel ?? 'LOW') === 'LOW') return;
+  const result = await query<{ active_trust_hold: boolean }>(
+    `SELECT COALESCE(
+       trust_hold AND (trust_hold_until IS NULL OR trust_hold_until > NOW()),
+       FALSE
+     ) AS active_trust_hold
+     FROM users WHERE id = $1`,
+    [params.posterId]
+  );
+  if (result.rows[0]?.active_trust_hold) {
+    fail('FORBIDDEN', 'Your account is on an active trust hold and may create LOW risk tasks only.');
   }
 }
 
@@ -137,7 +236,7 @@ async function existingOutcome(
   query: Query,
   params: CreateTaskParams,
   requestHash: string | null
-): Promise<CreateOutcome | null> {
+): Promise<Exclude<CreateOutcome, { kind: 'created' }> | null> {
   if (!params.clientIdempotencyKey || !requestHash) return null;
   await query(`SELECT pg_advisory_xact_lock(hashtext('task-create'), hashtext($1))`, [
     `${params.posterId}:${params.clientIdempotencyKey}`,
@@ -155,101 +254,120 @@ async function existingOutcome(
   return { kind: 'replay', task };
 }
 
-function publicTaskValues(params: CreateTaskParams, price: number, xp: number, instantMode: boolean): unknown[] {
-  const location = deriveRoughArea(params.location, params.roughArea);
-  const quoteEconomics = canonicalQuoteEconomicsValues(params);
-  return [
-    params.posterId,
-    redactPrivateLocation(params.title) ?? params.title,
-    redactPrivateLocation(params.description) ?? params.description,
-    price,
-    xp,
-    redactPrivateLocation(params.requirements),
-    location,
-    params.category,
-    params.deadline,
-    params.requiresProof ?? true,
-    params.riskLevel || 'LOW',
-    params.mode ?? 'STANDARD',
-    params.liveBroadcastRadiusMiles,
-    instantMode,
-    params.sensitive ?? false,
-    instantMode ? 'MATCHING' : 'OPEN',
-    params.templateSlug || null,
-    location,
-    params.dispatchExpiresAt,
-    params.automationClassification ?? 'PRODUCTION',
-    ...quoteEconomics,
-  ];
-}
+type InitialScope = TaskInitialScope;
 
-function canonicalQuoteEconomicsValues(params: CreateTaskParams): [number | null, number | null] {
-  return [params.hustlerPayoutCents ?? null, params.platformMarginCents ?? null];
-}
-
-async function insertTask(
-  query: Query,
-  params: CreateTaskParams,
-  money: { price: number; xp: number },
-  instantMode: boolean
-): Promise<Task> {
-  const result = await query<Task>(
-    `INSERT INTO tasks (
-      poster_id, title, description, price, xp_reward, requirements, location, category,
-      deadline, requires_proof, risk_level, mode, live_broadcast_radius_miles, instant_mode,
-      sensitive, state, template_slug, rough_location, dispatch_expires_at,
-      automation_classification, hustler_payout_cents, platform_margin_cents
-    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
-    RETURNING *`,
-    publicTaskValues(params, money.price, money.xp, instantMode)
-  );
-  return result.rows[0];
-}
-
-async function insertCreateWitness(
-  query: Query,
-  params: CreateTaskParams,
-  requestHash: string | null,
-  taskId: string
-): Promise<void> {
-  if (!params.clientIdempotencyKey || !requestHash) return;
-  await query(
-    `INSERT INTO task_create_requests (poster_id, idempotency_key, request_hash, task_id)
-     VALUES ($1, $2, $3, $4)`,
-    [params.posterId, params.clientIdempotencyKey, requestHash, taskId]
-  );
-}
-
-async function insertTaskDependents(
-  query: Query,
-  params: CreateTaskParams,
-  requestHash: string | null,
-  task: Task,
-  price: number
-): Promise<void> {
-  if (params.location) {
-    await query('INSERT INTO task_location_vault (task_id, exact_location) VALUES ($1, $2)', [task.id, params.location]);
-  }
-  await query(
-    `INSERT INTO escrows (task_id, amount, state, platform_fee_cents) VALUES ($1, $2, 'PENDING', $3)`,
-    [task.id, price, params.platformMarginCents ?? null],
-  );
-  await insertCreateWitness(query, params, requestHash, task.id);
+function initialScope(params: CreateTaskParams, price: number): InitialScope {
+  const title = redactPrivateLocation(params.title) ?? params.title;
+  const description = redactPrivateLocation(params.description) ?? params.description;
+  const requirements = redactPrivateLocation(params.requirements);
+  const checklist = buildScopeChecklist({
+    ...params,
+    title,
+    requirements: requirements ?? undefined,
+  });
+  return {
+    id: randomUUID(),
+    checklist,
+    hash: buildTaskScopeHash({
+      title,
+      description,
+      requirements,
+      checklist,
+      customerTotalCents: price,
+      hustlerPayoutCents: params.hustlerPayoutCents,
+    }),
+  };
 }
 
 async function persistTask(
   params: CreateTaskParams,
   money: { price: number; xp: number },
-  instantMode: boolean
+  instantMode: boolean,
+  regionPolicy: RegionPolicyTaskSnapshot,
 ): Promise<CreateOutcome> {
   const requestHash = params.clientIdempotencyKey ? buildTaskCreateRequestHash(params) : null;
   return db.transaction(async (query) => {
     const prior = await existingOutcome(query, params, requestHash);
     if (prior) return prior;
-    const task = await insertTask(query, params, money, instantMode);
-    await insertTaskDependents(query, params, requestHash, task, money.price);
+    const scope = initialScope(params, money.price);
+    const task = await insertCanonicalTask(query, { params, money, instantMode, scope, regionPolicy });
+    await insertTaskDependents(query, {
+      params, requestHash, task, price: money.price, scope,
+    });
     return { kind: 'created', task };
   });
+}
+
+interface TaskRegionBinding {
+  regionCode: string;
+  category: string;
+}
+
+function taskRegionBinding(params: CreateTaskParams): TaskRegionBinding {
+  const regionCode = params.regionCode?.trim().toUpperCase();
+  const category = params.category?.trim();
+  if (!regionCode || !category) {
+    fail('REGION_POLICY_UNAVAILABLE', 'A region code and category are required to resolve task policy.', {
+      regionCode: regionCode ?? null,
+      category: category ?? null,
+    });
+  }
+  return { regionCode, category };
+}
+
+function taskRegionPolicyInput(
+  params: CreateTaskParams,
+  customerTotalCents: number,
+  binding: TaskRegionBinding,
+) {
+  return {
+    regionCode: binding.regionCode,
+    automationClassification: params.automationClassification ?? 'PRODUCTION',
+    category: binding.category,
+    riskLevel: params.riskLevel ?? 'LOW',
+    requiresProof: params.requiresProof ?? true,
+    customerTotalCents,
+    payoutCents: params.hustlerPayoutCents ?? null,
+    marginCents: params.platformMarginCents ?? null,
+  };
+}
+
+async function resolveTaskRegionPolicy(
+  params: CreateTaskParams,
+  customerTotalCents: number,
+  templatePolicy: EffectiveTaskTemplatePolicy,
+): Promise<RegionPolicyTaskSnapshot> {
+  const binding = taskRegionBinding(params);
+  const policy = await resolveRegionPolicy(binding.regionCode);
+  if (!policy) {
+    fail('REGION_POLICY_UNAVAILABLE', 'No effective region policy is available for this task.', {
+      regionCode: binding.regionCode,
+    });
+  }
+  const evaluation = evaluateTaskAgainstRegionPolicy(
+    policy,
+    taskRegionPolicyInput(params, customerTotalCents, binding),
+  );
+  if (!evaluation.allowed) {
+    fail('REGION_POLICY_DENIED', 'The task does not meet the effective region policy.', {
+      regionCode: binding.regionCode,
+      policyVersion: policy.version,
+      reasons: evaluation.reasons,
+    });
+  }
+  if (templatePolicy.licensedContent && !evaluation.snapshot.licenseRequired) {
+    fail('CATEGORY_POLICY_MISMATCH', 'Licensed work must use a region-approved licensed category.', {
+      category: binding.category,
+      regionCode: binding.regionCode,
+    });
+  }
+  if (templatePolicy.contentReleaseRequired && !evaluation.snapshot.recordingAllowed) {
+    fail('RECORDING_POLICY_DENIED', 'Recorded or creator work is not approved by the effective region policy.', {
+      category: binding.category,
+      regionCode: binding.regionCode,
+    });
+  }
+  return evaluation.snapshot;
 }
 
 function materializeOutcome(
@@ -292,6 +410,12 @@ async function startInstantMatching(task: Task, params: CreateTaskParams): Promi
 
 function errorResult(error: unknown): ServiceResult<Task> {
   if (error instanceof CreateFailure) return { success: false, error: error.serviceError };
+  if (error instanceof TaskLocationCryptoError) {
+    const message = error.code === 'INVALID_LOCATION'
+      ? error.message
+      : 'Exact-location protection is unavailable. The task was not created.';
+    return { success: false, error: { code: error.code, message } };
+  }
   if (isInvariantViolation(error)) {
     return {
       success: false,
@@ -304,18 +428,70 @@ function errorResult(error: unknown): ServiceResult<Task> {
 
 async function create(params: CreateTaskParams): Promise<ServiceResult<Task>> {
   try {
-    validateDispatchExpiry(params);
-    validateQuoteEconomics(params);
-    const money = await resolvePrice(params);
-    await assertPlan(params);
-    const instantMode = await instantModeAllowed(params);
-    const outcome = await persistTask(params, money, instantMode);
-    if (outcome.kind !== 'created') return materializeOutcome(outcome, params.posterId);
-    const task = instantMode ? await startInstantMatching(outcome.task, params) : outcome.task;
+    const prepared = materializeTemplatePolicy(params);
+    validateDispatchExpiry(prepared.params);
+    validateQuoteEconomics(prepared.params);
+    const money = await resolvePrice(prepared.params, prepared.policy);
+    await assertPosterTrustHold(prepared.params);
+    const regionPolicy = await resolveTaskRegionPolicy(prepared.params, money.price, prepared.policy);
+    await assertPlan(prepared.params);
+    const instantMode = await instantModeAllowed(prepared.params);
+    const outcome = await persistTask(prepared.params, money, instantMode, regionPolicy);
+    if (outcome.kind !== 'created') return materializeOutcome(outcome, prepared.params.posterId);
+    const task = instantMode ? await startInstantMatching(outcome.task, prepared.params) : outcome.task;
     return { success: true, data: task };
   } catch (error) {
     return errorResult(error);
   }
 }
 
-export const TaskCreateService = { create };
+async function createInTransaction(
+  query: TaskCreateQuery,
+  params: CreateTaskParams,
+): Promise<ServiceResult<Task>> {
+  let savepointOpen = false;
+  try {
+    const prepared = materializeTemplatePolicy(params);
+    validateDispatchExpiry(prepared.params);
+    validateQuoteEconomics(prepared.params);
+    if (prepared.params.instantMode) {
+      fail(ErrorCodes.INVALID_STATE, 'Transaction-bound task creation does not allow Instant Mode');
+    }
+    const money = await resolvePrice(prepared.params, prepared.policy);
+    await assertPosterTrustHold(prepared.params, query);
+    const regionPolicy = await resolveTaskRegionPolicy(prepared.params, money.price, prepared.policy);
+    await assertPlan(prepared.params);
+    await query('SAVEPOINT hustlexp_task_create');
+    savepointOpen = true;
+    const requestHash = prepared.params.clientIdempotencyKey ? buildTaskCreateRequestHash(prepared.params) : null;
+    const prior = await existingOutcome(query, prepared.params, requestHash);
+    if (prior) {
+      await query('RELEASE SAVEPOINT hustlexp_task_create');
+      savepointOpen = false;
+      return materializeOutcome(prior, prepared.params.posterId);
+    }
+    const scope = initialScope(prepared.params, money.price);
+    const task = await insertCanonicalTask(query, {
+      params: prepared.params, money, instantMode: false, scope, regionPolicy,
+    });
+    await insertTaskDependents(query, {
+      params: prepared.params, requestHash, task, price: money.price, scope,
+    });
+    await query('RELEASE SAVEPOINT hustlexp_task_create');
+    savepointOpen = false;
+    return { success: true, data: task };
+  } catch (error) {
+    if (savepointOpen) {
+      try {
+        await query('ROLLBACK TO SAVEPOINT hustlexp_task_create');
+        await query('RELEASE SAVEPOINT hustlexp_task_create');
+      } catch (rollbackError) {
+        log.error({
+          err: rollbackError instanceof Error ? rollbackError.message : String(rollbackError),
+        }, 'transaction-bound task create savepoint rollback failed');
+      }
+    }
+    return errorResult(error);
+  }
+}
+export const TaskCreateService = { create, createInTransaction };

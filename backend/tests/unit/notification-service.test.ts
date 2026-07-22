@@ -342,6 +342,58 @@ describe('NotificationService', () => {
     });
   });
 
+  describe('retryDelivery', () => {
+    it('uses notification identity so distinct task lifecycle emails cannot collapse', async () => {
+      const notification = makeNotification({
+        delivery_available_at: new Date('2024-01-01T09:00:00Z'),
+      });
+      const txQuery = vi.fn()
+        .mockResolvedValueOnce({ rows: [{ id: 'email-1' }], rowCount: 1 })
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 });
+      mockDb.query
+        .mockResolvedValueOnce({ rows: [notification], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [{ email: 'worker@example.test' }], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      mockDb.transaction.mockImplementationOnce(async (fn) => fn(txQuery as never));
+
+      const result = await NotificationService.retryDelivery(NOTIF_ID, 'email');
+
+      expect(result).toEqual({ success: true, data: { queued: true } });
+      const emailInsertParams = txQuery.mock.calls[0][1] as unknown[];
+      expect(emailInsertParams).toContain(
+        `email.send_requested:task_status_changed:worker@example.test:${NOTIF_ID}:1`,
+      );
+      expect(emailInsertParams).not.toContain(
+        `email.send_requested:task_status_changed:worker@example.test:${TASK_ID}:1`,
+      );
+    });
+
+    it('does not report SMS queued when the user has no SMS destination', async () => {
+      const notification = makeNotification({
+        delivery_available_at: new Date('2024-01-01T09:00:00Z'),
+      });
+      mockDb.query
+        .mockResolvedValueOnce({ rows: [notification], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [{ phone: null }], rowCount: 1 } as never);
+
+      const result = await NotificationService.retryDelivery(NOTIF_ID, 'sms');
+
+      expect(result.success).toBe(false);
+      if (!result.success) expect(result.error.message).toContain('no SMS destination');
+      expect(mockDb.transaction).not.toHaveBeenCalled();
+    });
+
+    it('safely skips a delivery that became ineligible before the retry', async () => {
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+
+      await expect(NotificationService.retryDelivery(NOTIF_ID, 'push')).resolves.toEqual({
+        success: true,
+        data: { queued: false },
+      });
+    });
+  });
+
   // =========================================================================
   // getUserNotifications
   // =========================================================================
@@ -928,5 +980,289 @@ describe('NotificationService', () => {
       expect(params).toContain(30);
       expect(sql).toContain("INTERVAL '1 minute'");
     });
+  });
+});
+
+describe('NotificationService — HX/OS delivery contract', () => {
+  it('rejects external or script deep links before any persistence', async () => {
+    const result = await NotificationService.createNotification({
+      userId: USER_ID,
+      category: 'security_alert',
+      title: 'Unsafe link',
+      body: 'Body',
+      deepLink: 'https://evil.example/phish',
+      objectRef: { type: 'user', id: USER_ID },
+    });
+
+    expect(result).toMatchObject({ success: false, error: { code: 'INVALID_INPUT' } });
+    expect(mockDb.query).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when consent/preferences cannot be loaded', async () => {
+    mockDb.query.mockRejectedValueOnce(new Error('preferences unavailable'));
+    const result = await NotificationService.createNotification({
+      userId: USER_ID,
+      category: 'security_alert',
+      title: 'Security',
+      body: 'Body',
+      deepLink: 'app://settings/security',
+      objectRef: { type: 'user', id: USER_ID },
+    });
+
+    expect(result).toMatchObject({ success: false, error: { code: 'DB_ERROR' } });
+    expect(mockDb.query).toHaveBeenCalledTimes(1);
+    expect(String(mockDb.query.mock.calls[0]?.[0])).toContain('notification_preferences');
+  });
+
+  it('requires explicit opt-in for growth notifications', async () => {
+    mockDb.query.mockResolvedValueOnce({ rows: [makePreferences()], rowCount: 1 } as never);
+    const result = await NotificationService.createNotification({
+      userId: USER_ID,
+      category: 'maintenance_suggestion',
+      title: 'Maintenance',
+      body: 'Body',
+      deepLink: 'app://settings/maintenance',
+      objectRef: { type: 'user', id: USER_ID },
+      channels: ['email'],
+    });
+
+    expect(result).toMatchObject({ success: false, error: { code: 'PREFERENCE_DISABLED' } });
+  });
+
+  it('rejects a channel forbidden by the notification class before persistence', async () => {
+    const result = await NotificationService.createNotification({
+      userId: USER_ID,
+      category: 'maintenance_suggestion',
+      title: 'Maintenance',
+      body: 'Body',
+      deepLink: 'app://settings/maintenance',
+      objectRef: { type: 'user', id: USER_ID },
+      channels: ['sms'],
+    });
+
+    expect(result).toMatchObject({ success: false, error: { code: 'INVALID_INPUT' } });
+    expect(mockDb.query).not.toHaveBeenCalled();
+  });
+
+  it('persists class, object, dedupe, and supersession identities', async () => {
+    const persisted = makeNotification({
+      category: 'task_completed',
+      notification_class: 'status',
+      object_type: 'task',
+      object_id: TASK_ID,
+    });
+    mockDb.query.mockImplementation((async (sql: string) => {
+      if (sql.includes('notification_preferences')) return { rows: [makePreferences()], rowCount: 1 };
+      if (sql.includes('SELECT group_id')) return { rows: [], rowCount: 0 };
+      if (sql.includes('INSERT INTO notifications')) return { rows: [persisted], rowCount: 1 };
+      return { rows: [], rowCount: 1 };
+    }) as never);
+
+    const result = await NotificationService.createNotification({
+      userId: USER_ID,
+      category: 'task_completed',
+      title: 'Complete',
+      body: 'Body',
+      deepLink: `/tasks/${TASK_ID}`,
+      objectRef: { type: 'task', id: TASK_ID },
+      dedupeKey: `task:${TASK_ID}:completed:v7`,
+      channels: ['in_app'],
+    });
+
+    expect(result.success).toBe(true);
+    const insertCall = mockDb.query.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO notifications'));
+    expect(insertCall).toBeTruthy();
+    expect(String(insertCall?.[0])).toContain('notification_class');
+    expect(insertCall?.[1]).toEqual(expect.arrayContaining([
+      'status', 'task', TASK_ID, `task:${TASK_ID}:completed:v7`, `${USER_ID}:task:${TASK_ID}`,
+    ]));
+    expect(mockDb.query.mock.calls.some(([sql]) => (
+      String(sql).includes("delivery_state = 'cancelled_superseded'")
+    ))).toBe(true);
+  });
+
+  it('persists quiet-hour delivery for later instead of dropping the external channel', async () => {
+    const prefs = makePreferences({
+      quiet_hours_enabled: true,
+      quiet_hours_start: '00:00:00',
+      quiet_hours_end: '23:59:59',
+      quiet_hours_timezone: 'UTC',
+      email_enabled: true,
+    });
+    const persisted = makeNotification({ category: 'weekly_recap', channels: ['email'] });
+    mockDb.transaction.mockImplementation((async (callback: (query: typeof mockDb.query) => unknown) => (
+      callback(mockDb.query)
+    )) as never);
+    mockDb.query.mockImplementation((async (sql: string) => {
+      if (sql.includes('notification_preferences')) return { rows: [prefs], rowCount: 1 };
+      if (sql.includes('SELECT group_id')) return { rows: [], rowCount: 0 };
+      if (sql.includes('INSERT INTO notifications')) return { rows: [persisted], rowCount: 1 };
+      if (sql.includes('SELECT email FROM users')) {
+        return { rows: [{ email: 'user@example.test' }], rowCount: 1 };
+      }
+      if (sql.includes('INSERT INTO email_outbox')) return { rows: [{ id: 'email-1' }], rowCount: 1 };
+      return { rows: [], rowCount: 1 };
+    }) as never);
+
+    const result = await NotificationService.createNotification({
+      userId: USER_ID,
+      category: 'weekly_recap',
+      title: 'Weekly operations',
+      body: 'Body',
+      deepLink: 'app://business/week-30',
+      objectRef: { type: 'business_week', id: '2026-W30' },
+      channels: ['email'],
+    });
+
+    expect(result.success).toBe(true);
+    const notificationInsert = mockDb.query.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO notifications'));
+    expect(notificationInsert?.[1]?.[18]).toBe('deferred_quiet_hours');
+    const outboxInsert = mockDb.query.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO outbox_events'));
+    expect(String(outboxInsert?.[0])).toContain('available_at');
+    expect(outboxInsert?.[1]?.[7]).toBeInstanceOf(Date);
+    expect((outboxInsert?.[1]?.[7] as Date).getTime()).toBeGreaterThan(Date.now());
+  });
+
+  it('does not let a legacy category preference bypass quiet hours for growth', async () => {
+    const prefs = makePreferences({
+      quiet_hours_enabled: true,
+      quiet_hours_start: '00:00:00',
+      quiet_hours_end: '23:59:59',
+      quiet_hours_timezone: 'UTC',
+      email_enabled: true,
+      category_preferences: {
+        maintenance_suggestion: { enabled: true, quiet_hours_override: true },
+      },
+    });
+    const persisted = makeNotification({ category: 'maintenance_suggestion', channels: ['email'] });
+    mockDb.query.mockImplementation((async (sql: string) => {
+      if (sql.includes('notification_preferences')) return { rows: [prefs], rowCount: 1 };
+      if (sql.includes('SELECT group_id')) return { rows: [], rowCount: 0 };
+      if (sql.includes('INSERT INTO notifications')) return { rows: [persisted], rowCount: 1 };
+      return { rows: [], rowCount: 1 };
+    }) as never);
+
+    const result = await NotificationService.createNotification({
+      userId: USER_ID,
+      category: 'maintenance_suggestion',
+      title: 'Maintenance',
+      body: 'Body',
+      deepLink: 'app://settings/maintenance',
+      objectRef: { type: 'user', id: USER_ID },
+      channels: ['email'],
+    });
+
+    expect(result.success).toBe(true);
+    const notificationInsert = mockDb.query.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO notifications'));
+    expect(notificationInsert?.[1]?.[18]).toBe('deferred_quiet_hours');
+  });
+
+  it('labels growth copy and defers its external channel against canonical active Focus state', async () => {
+    const focusUntil = new Date('9999-12-31T23:59:59.999Z');
+    const prefs = makePreferences({
+      push_enabled: true,
+      category_preferences: { maintenance_suggestion: { enabled: true } },
+    });
+    const persisted = makeNotification({
+      category: 'maintenance_suggestion',
+      title: 'Optional · Schedule maintenance',
+      channels: ['push'],
+      available_at: focusUntil,
+      delivery_state: 'deferred_focus',
+      focus_task_id: TASK_ID,
+      focus_deferred_at: new Date(),
+    });
+    mockDb.query.mockImplementation((async (sql: string) => {
+      if (sql.includes('notification_preferences')) return { rows: [prefs], rowCount: 1 };
+      if (sql.includes('SELECT group_id')) return { rows: [], rowCount: 0 };
+      if (sql.includes('INSERT INTO notifications')) return { rows: [persisted], rowCount: 1 };
+      return { rows: [], rowCount: 1 };
+    }) as never);
+
+    const result = await NotificationService.createNotification({
+      userId: USER_ID,
+      category: 'maintenance_suggestion',
+      title: 'Schedule maintenance',
+      body: 'A seasonal check may prevent a larger repair.',
+      deepLink: 'app://settings/maintenance',
+      objectRef: { type: 'user', id: USER_ID },
+      metadata: { notificationIntent: 'transactional' },
+      channels: ['push'],
+    });
+
+    expect(result.success).toBe(true);
+    const notificationInsert = mockDb.query.mock.calls.find(([sql]) => (
+      String(sql).includes('WITH active_focus AS')
+    ));
+    expect(String(notificationInsert?.[0])).toContain("task.state = 'ACCEPTED'");
+    expect(String(notificationInsert?.[0])).toContain("task.progress_state IN ('ACCEPTED','TRAVELING','WORKING')");
+    expect(notificationInsert?.[1]?.[2]).toBe('Optional · Schedule maintenance');
+    expect(JSON.parse(String(notificationInsert?.[1]?.[6]))).toMatchObject({
+      notificationIntent: 'optional_growth',
+    });
+    expect(notificationInsert?.[1]?.[19]).toBe(true);
+    expect(notificationInsert?.[1]?.[20]).toEqual(focusUntil);
+    const deliveryInsert = mockDb.query.mock.calls.find(([sql]) => (
+      String(sql).includes('INSERT INTO notification_deliveries')
+    ));
+    expect(deliveryInsert?.[1]?.[2]).toBe('deferred_focus');
+    expect(deliveryInsert?.[1]?.[3]).toEqual(focusUntil);
+    const pushInsert = mockDb.query.mock.calls.find(([sql]) => (
+      String(sql).includes('INSERT INTO outbox_events')
+    ));
+    expect(JSON.parse(String(pushInsert?.[1]?.[5]))).toMatchObject({
+      title: 'Optional · Schedule maintenance',
+    });
+  });
+
+  it('returns the existing notification on duplicate event without queuing again', async () => {
+    const replay = makeNotification({ dedupe_key: 'event:duplicate' });
+    mockDb.query.mockImplementation((async (sql: string) => {
+      if (sql.includes('notification_preferences')) return { rows: [makePreferences()], rowCount: 1 };
+      if (sql.includes('SELECT group_id')) return { rows: [], rowCount: 0 };
+      if (sql.includes('INSERT INTO notifications')) return { rows: [], rowCount: 0 };
+      if (sql.includes('WHERE dedupe_key = $1')) return { rows: [replay], rowCount: 1 };
+      return { rows: [], rowCount: 1 };
+    }) as never);
+
+    const result = await NotificationService.createNotification({
+      userId: USER_ID,
+      category: 'security_alert',
+      title: 'Replay',
+      body: 'Body',
+      deepLink: 'app://settings/security',
+      objectRef: { type: 'user', id: USER_ID },
+      dedupeKey: 'event:duplicate',
+    });
+
+    expect(result).toEqual({ success: true, data: replay });
+    expect(mockDb.query.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO outbox_events'))).toBe(false);
+  });
+
+  it('fails closed when a global dedupe key belongs to a different notification identity', async () => {
+    mockDb.query.mockImplementation((async (sql: string) => {
+      if (sql.includes('notification_preferences')) return { rows: [makePreferences()], rowCount: 1 };
+      if (sql.includes('SELECT group_id')) return { rows: [], rowCount: 0 };
+      if (sql.includes('INSERT INTO notifications')) return { rows: [], rowCount: 0 };
+      if (sql.includes('WHERE dedupe_key = $1')) return { rows: [], rowCount: 0 };
+      return { rows: [], rowCount: 1 };
+    }) as never);
+
+    const result = await NotificationService.createNotification({
+      userId: USER_ID,
+      category: 'security_alert',
+      title: 'Collision',
+      body: 'Body',
+      deepLink: 'app://settings/security',
+      objectRef: { type: 'user', id: USER_ID },
+      dedupeKey: 'event:owned-by-another-identity',
+    });
+
+    expect(result).toMatchObject({ success: false, error: { code: 'INVALID_INPUT' } });
+    const replayQueries = mockDb.query.mock.calls.filter(([sql]) => (
+      String(sql).includes('WHERE dedupe_key = $1')
+    ));
+    expect(replayQueries).toHaveLength(2);
+    expect(replayQueries.every(([sql]) => String(sql).includes('AND user_id = $2'))).toBe(true);
   });
 });

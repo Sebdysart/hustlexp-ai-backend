@@ -16,7 +16,7 @@
  * @see ARCHITECTURE.md §2.4 (Outbox pattern)
  */
 
-import { Queue, QueueOptions, Worker, WorkerOptions, Job } from 'bullmq';
+import { Queue, QueueOptions, Worker, WorkerOptions, Job, JobsOptions } from 'bullmq';
 import Redis from 'ioredis';
 import { createHmac } from 'crypto';
 import { config } from '../config.js';
@@ -325,7 +325,7 @@ export async function closeAllConnections(): Promise<void> {
  * Get or create a BullMQ queue
  * Singleton pattern to ensure one queue instance per name
  */
-export function getQueue(queueName: QueueName): Queue {
+function getQueue(queueName: QueueName): Queue {
   if (queueInstances.has(queueName)) {
     return queueInstances.get(queueName)!;
   }
@@ -341,6 +341,46 @@ export function getQueue(queueName: QueueName): Queue {
 
   queueInstances.set(queueName, queue);
   return queue;
+}
+
+/**
+ * Enqueue a one-off job through the only supported producer boundary.
+ *
+ * Requiring a non-empty deterministic jobId here prevents a future internal
+ * caller from silently opting out of BullMQ deduplication. Raw Queue instances
+ * deliberately remain private to this module.
+ */
+export async function enqueueJob(
+  queueName: QueueName,
+  jobName: string,
+  data: Record<string, unknown>,
+  options: JobsOptions & { jobId: string },
+): Promise<Job> {
+  if (!options?.jobId?.trim()) {
+    throw new Error('QUEUE_JOB_ID_REQUIRED: one-off jobs require a deterministic jobId');
+  }
+  return getQueue(queueName).add(jobName, data, options);
+}
+
+/**
+ * Register a repeatable job with a deterministic producer identity. BullMQ
+ * also keys repeat schedules by name and pattern; the jobId closes the direct
+ * producer surface and makes the intent explicit in audit output.
+ */
+export async function enqueueRepeatableJob(
+  queueName: QueueName,
+  jobName: string,
+  data: Record<string, unknown>,
+  pattern: string,
+): Promise<Job> {
+  if (!pattern.trim()) {
+    throw new Error('QUEUE_REPEAT_PATTERN_REQUIRED');
+  }
+  const stableName = `${queueName}-${jobName}`.replace(/[^a-zA-Z0-9_-]/g, '-');
+  return getQueue(queueName).add(jobName, data, {
+    jobId: `scheduled-${stableName}`,
+    repeat: { pattern },
+  });
 }
 
 // ============================================================================

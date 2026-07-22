@@ -33,6 +33,14 @@ const MAX_OCCURRENCES_PER_CALL = 100;
 const MAX_OCCURRENCES_LIFETIME = 500;
 
 type Pattern = 'daily' | 'weekly' | 'biweekly' | 'monthly';
+type OccurrenceDateArgs = [
+  pattern: Pattern,
+  startDate: string,
+  endDate: string | null,
+  dayOfWeek: number | null,
+  dayOfMonth: number | null,
+  maxCount?: number,
+];
 
 /** YYYY-MM-DD string from Date */
 function toDateString(d: Date): string {
@@ -44,81 +52,62 @@ function parseDate(s: string): Date {
   return new Date(s + 'T12:00:00.000Z');
 }
 
+function steppedDates(current: Date, end: number | null, maxCount: number, days: number): string[] {
+  const dates: string[] = [];
+  for (let index = 0; index < maxCount; index++) {
+    if (end !== null && current.getTime() > end) break;
+    dates.push(toDateString(current));
+    current.setUTCDate(current.getUTCDate() + days);
+  }
+  return dates;
+}
+
+function alignWeekday(current: Date, dayOfWeek: number): void {
+  const target = dayOfWeek === 7 ? 0 : dayOfWeek;
+  while (current.getUTCDay() !== target) current.setUTCDate(current.getUTCDate() + 1);
+}
+
+function alignMonthDay(current: Date, startDate: string, dayOfMonth: number): number {
+  const day = Math.min(dayOfMonth, 28);
+  if (current.getUTCDate() !== day) {
+    current.setUTCDate(day);
+    if (parseDate(startDate).getTime() > current.getTime()) {
+      current.setUTCMonth(current.getUTCMonth() + 1);
+      current.setUTCDate(day);
+    }
+  }
+  return day;
+}
+
+function monthlyDates(current: Date, end: number | null, maxCount: number, day: number): string[] {
+  const dates: string[] = [];
+  for (let index = 0; index < maxCount; index++) {
+    if (end !== null && current.getTime() > end) break;
+    dates.push(toDateString(current));
+    current.setUTCMonth(current.getUTCMonth() + 1);
+    current.setUTCDate(day);
+  }
+  return dates;
+}
+
 /**
  * Compute the next occurrence dates for a pattern from startDate.
  * Returns array of YYYY-MM-DD strings, at most maxCount, not after endDate.
  */
-export function getNextOccurrenceDates(
-  pattern: Pattern,
-  startDate: string,
-  endDate: string | null,
-  dayOfWeek: number | null,
-  dayOfMonth: number | null,
-  maxCount: number = DEFAULT_OCCURRENCES_TO_GENERATE
-): string[] {
-  const out: string[] = [];
+export function getNextOccurrenceDates(...args: OccurrenceDateArgs): string[] {
+  const [pattern, startDate, endDate, dayOfWeek, dayOfMonth, maxCount = DEFAULT_OCCURRENCES_TO_GENERATE] = args;
   const end = endDate ? parseDate(endDate).getTime() : null;
   const current = parseDate(startDate);
 
-  if (pattern === 'daily') {
-    for (let i = 0; i < maxCount; i++) {
-      const t = current.getTime();
-      if (end !== null && t > end) break;
-      out.push(toDateString(current));
-      current.setUTCDate(current.getUTCDate() + 1);
-    }
-    return out;
+  if (pattern === 'daily') return steppedDates(current, end, maxCount, 1);
+  if ((pattern === 'weekly' || pattern === 'biweekly') && dayOfWeek != null) {
+    alignWeekday(current, dayOfWeek);
+    return steppedDates(current, end, maxCount, pattern === 'weekly' ? 7 : 14);
   }
-
-  if (pattern === 'weekly' && dayOfWeek != null) {
-    // 1 = Monday .. 7 = Sunday in DB; JS getUTCDay() 0 = Sunday, 1 = Monday
-    const targetJsDay = dayOfWeek === 7 ? 0 : dayOfWeek;
-    while (current.getUTCDay() !== targetJsDay) {
-      current.setUTCDate(current.getUTCDate() + 1);
-    }
-    for (let i = 0; i < maxCount; i++) {
-      const t = current.getTime();
-      if (end !== null && t > end) break;
-      out.push(toDateString(current));
-      current.setUTCDate(current.getUTCDate() + 7);
-    }
-    return out;
-  }
-
-  if (pattern === 'biweekly' && dayOfWeek != null) {
-    const targetJsDay = dayOfWeek === 7 ? 0 : dayOfWeek;
-    while (current.getUTCDay() !== targetJsDay) {
-      current.setUTCDate(current.getUTCDate() + 1);
-    }
-    for (let i = 0; i < maxCount; i++) {
-      const t = current.getTime();
-      if (end !== null && t > end) break;
-      out.push(toDateString(current));
-      current.setUTCDate(current.getUTCDate() + 14);
-    }
-    return out;
-  }
-
   if (pattern === 'monthly' && dayOfMonth != null) {
-    const day = Math.min(dayOfMonth, 28);
-    if (current.getUTCDate() !== day) {
-      current.setUTCDate(day);
-      if (parseDate(startDate).getTime() > current.getTime()) {
-        current.setUTCMonth(current.getUTCMonth() + 1);
-        current.setUTCDate(day);
-      }
-    }
-    for (let i = 0; i < maxCount; i++) {
-      const t = current.getTime();
-      if (end !== null && t > end) break;
-      out.push(toDateString(current));
-      current.setUTCMonth(current.getUTCMonth() + 1);
-      current.setUTCDate(Math.min(day, 28));
-    }
-    return out;
+    return monthlyDates(current, end, maxCount, alignMonthDay(current, startDate, dayOfMonth));
   }
-
-  return out;
+  return [];
 }
 
 export interface SeriesRow {
@@ -153,7 +142,7 @@ export async function generateOccurrencesForSeries(
       return { success: false, error: { code: ErrorCodes.NOT_FOUND, message: 'Series not found' } };
     }
     const series = seriesResult.rows[0];
-    if (series.status !== 'active' && series.status !== 'paused') {
+    if (series.status !== 'active') {
       return { success: true, data: { generated: 0 } };
     }
 

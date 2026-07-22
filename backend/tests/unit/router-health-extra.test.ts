@@ -60,7 +60,7 @@ function makeCaller() {
   return healthRouter.createCaller({} as any);
 }
 
-function makeProtectedCaller() {
+function makeOrdinaryCaller() {
   return healthRouter.createCaller({ user: { id: 'user-123' }, firebaseUid: 'firebase-uid-123' } as any);
 }
 
@@ -126,13 +126,14 @@ describe('health.status', () => {
   beforeEach(() => vi.clearAllMocks());
 
   it('returns healthy status when DB is connected', async () => {
+    seedAdminRoleCheck();
     (mockDb.healthCheck as any).mockResolvedValueOnce({
       connected: true,
       schemaVersion: '1.1.0',
       latencyMs: 5,
     });
 
-    const result = await makeProtectedCaller().status();
+    const result = await makeAdminCaller().status();
 
     expect(result.status).toBe('healthy');
     expect(result.services.database.connected).toBe(true);
@@ -141,24 +142,26 @@ describe('health.status', () => {
   });
 
   it('returns degraded status when DB is not connected', async () => {
+    seedAdminRoleCheck();
     (mockDb.healthCheck as any).mockResolvedValueOnce({
       connected: false,
       schemaVersion: null,
       latencyMs: 0,
     });
 
-    const result = await makeProtectedCaller().status();
+    const result = await makeAdminCaller().status();
 
     expect(result.status).toBe('degraded');
     expect(result.services.database.connected).toBe(false);
   });
 
   it('includes stripe, firebase, redis in services', async () => {
+    seedAdminRoleCheck();
     (mockDb.healthCheck as any).mockResolvedValueOnce({
       connected: true, schemaVersion: '1.1.0', latencyMs: 3,
     });
 
-    const result = await makeProtectedCaller().status();
+    const result = await makeAdminCaller().status();
 
     expect(result.services.stripe).toBeDefined();
     expect(result.services.firebase).toBeDefined();
@@ -169,11 +172,12 @@ describe('health.status', () => {
   });
 
   it('includes environment field', async () => {
+    seedAdminRoleCheck();
     (mockDb.healthCheck as any).mockResolvedValueOnce({
       connected: true, schemaVersion: null, latencyMs: 2,
     });
 
-    const result = await makeProtectedCaller().status();
+    const result = await makeAdminCaller().status();
 
     expect(result.environment).toBe('test');
   });
@@ -185,6 +189,23 @@ describe('health.status', () => {
 
 describe('health.verifySchema', () => {
   beforeEach(() => vi.clearAllMocks());
+
+  it.each([
+    ['status', () => makeCaller().status()],
+    ['verifySchema', () => makeCaller().verifySchema()],
+  ])('rejects anonymous access to detailed health.%s', async (_name, invoke) => {
+    await expect(invoke()).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+    expect(mockDb.healthCheck).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['status', () => makeOrdinaryCaller().status()],
+    ['verifySchema', () => makeOrdinaryCaller().verifySchema()],
+  ])('rejects ordinary authenticated access to detailed health.%s', async (_name, invoke) => {
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+    await expect(invoke()).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    expect(mockDb.healthCheck).not.toHaveBeenCalled();
+  });
 
   it('returns valid=false and error message when DB not connected', async () => {
     seedAdminRoleCheck();

@@ -45,6 +45,29 @@ vi.mock('../../src/services/PlanService', () => ({
   },
 }));
 
+vi.mock('../../src/services/RegionPolicyService', () => ({
+  resolveRegionPolicy: vi.fn().mockResolvedValue({
+    id: '11111111-1111-4111-8111-111111111111', region_code: 'US-WA',
+    version: 'us-wa-test-v1', policy_hash: 'a'.repeat(64),
+  }),
+  evaluateTaskAgainstRegionPolicy: vi.fn().mockReturnValue({
+    allowed: true,
+    reasons: [],
+    snapshot: {
+      policyId: '11111111-1111-4111-8111-111111111111', policyVersion: 'us-wa-test-v1',
+      policyHash: 'a'.repeat(64), regionCode: 'US-WA', locationState: 'WA',
+      licenseRequired: false, insuranceRequired: false, backgroundCheckRequired: false,
+      proofRequired: true, proofMinPhotos: 1, proofMaxPhotos: 5, proofGpsRequired: false,
+      recordingAllowed: false, recordingStandaloneConsentRequired: true,
+      screeningStandaloneConsentRequired: true, screeningReportAccessRequired: true,
+      screeningDisputeAndAppealRequired: true, screeningAdverseActionNoticeRequired: true,
+      safetyIncidentIntakeRequired: true, safetyTimedCheckinRequired: false,
+      safetyCheckinIntervalsMinutes: [15, 30, 60], safetyLocationRetentionDays: 30,
+      safetyAlternateEmergencyActionRequired: true, currency: 'usd',
+    },
+  }),
+}));
+
 // Mock RevenueService — wired into EscrowService.release() by Fix 1B
 vi.mock('../../src/services/RevenueService', () => ({
   RevenueService: { logEvent: vi.fn().mockResolvedValue({ success: true, data: { id: 'rev-1' } }) },
@@ -52,81 +75,82 @@ vi.mock('../../src/services/RevenueService', () => ({
 
 const { db } = await import('../../src/db');
 
-describe('SPEC ALIGNMENT: Trust Tier (PRODUCT_SPEC §8.2)', () => {
+describe('SPEC ALIGNMENT: Provider trust progression (Local Work Network §5)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     db.query.mockReset();
   });
 
   describe('TrustTier Enum Values', () => {
-    it('should have ROOKIE = 1', () => {
-      expect(TrustTier.ROOKIE).toBe(1);
+    it('should have EXPLORER = 0', () => {
+      expect(TrustTier.EXPLORER).toBe(0);
     });
 
-    it('should have VERIFIED = 2', () => {
-      expect(TrustTier.VERIFIED).toBe(2);
+    it('should have VERIFIED = 1', () => {
+      expect(TrustTier.VERIFIED).toBe(1);
     });
 
-    it('should have TRUSTED = 3', () => {
-      expect(TrustTier.TRUSTED).toBe(3);
+    it('should have HOME_READY = 2', () => {
+      expect(TrustTier.HOME_READY).toBe(2);
     });
 
-    it('should have ELITE = 4', () => {
-      expect(TrustTier.ELITE).toBe(4);
+    it('should have PRO = 3 and LICENSED_SPECIALIST = 4', () => {
+      expect(TrustTier.PRO).toBe(3);
+      expect(TrustTier.LICENSED_SPECIALIST).toBe(4);
     });
 
     it('should have BANNED = 9 (terminal)', () => {
       expect(TrustTier.BANNED).toBe(9);
     });
 
-    it('should NOT have UNVERIFIED (removed per spec)', () => {
-      expect((TrustTier as any).UNVERIFIED).toBeUndefined();
-    });
-
-    it('should NOT have IN_HOME (renamed to ELITE per spec)', () => {
-      expect((TrustTier as any).IN_HOME).toBeUndefined();
+    it('should not represent Enterprise Crew as an individual worker tier', () => {
+      expect((TrustTier as any).ENTERPRISE_CREW).toBeUndefined();
     });
   });
 
   describe('getTrustTier Mapping', () => {
-    it('should map tier 1 to ROOKIE', async () => {
+    it('should map tier 0 to Explorer', async () => {
       db.query.mockResolvedValueOnce({
         rowCount: 1,
-        rows: [{ trust_tier: 1 }],
+        rows: [{ trust_tier: 0, is_banned: false }],
       });
 
       const result = await TrustTierService.getTrustTier('user-1');
-      expect(result).toBe(TrustTier.ROOKIE);
+      expect(result).toBe(TrustTier.EXPLORER);
     });
 
-    it('should map tier 2 to VERIFIED', async () => {
+    it('should map tier 1 to Verified', async () => {
       db.query.mockResolvedValueOnce({
         rowCount: 1,
-        rows: [{ trust_tier: 2 }],
+        rows: [{ trust_tier: 1, is_banned: false }],
       });
 
       const result = await TrustTierService.getTrustTier('user-1');
       expect(result).toBe(TrustTier.VERIFIED);
     });
 
-    it('should map tier 3 to TRUSTED', async () => {
+    it('should map tier 2 to Home Ready', async () => {
       db.query.mockResolvedValueOnce({
         rowCount: 1,
-        rows: [{ trust_tier: 3 }],
+        rows: [{ trust_tier: 2, is_banned: false }],
       });
 
       const result = await TrustTierService.getTrustTier('user-1');
-      expect(result).toBe(TrustTier.TRUSTED);
+      expect(result).toBe(TrustTier.HOME_READY);
     });
 
-    it('should map tier 4 to ELITE', async () => {
+    it('should map tiers 3 and 4 to Pro and Licensed Specialist', async () => {
       db.query.mockResolvedValueOnce({
         rowCount: 1,
-        rows: [{ trust_tier: 4 }],
+        rows: [{ trust_tier: 3, is_banned: false }],
       });
+      expect(await TrustTierService.getTrustTier('user-1')).toBe(TrustTier.PRO);
 
-      const result = await TrustTierService.getTrustTier('user-1');
-      expect(result).toBe(TrustTier.ELITE);
+      db.query.mockResolvedValueOnce({
+        rowCount: 1,
+        rows: [{ trust_tier: 4, is_banned: false }],
+      });
+      expect(await TrustTierService.getTrustTier('user-1')).toBe(TrustTier.LICENSED_SPECIALIST);
     });
 
     it('should map tier 9 to BANNED', async () => {
@@ -139,15 +163,6 @@ describe('SPEC ALIGNMENT: Trust Tier (PRODUCT_SPEC §8.2)', () => {
       expect(result).toBe(TrustTier.BANNED);
     });
 
-    it('should default new users (tier 0) to ROOKIE', async () => {
-      db.query.mockResolvedValueOnce({
-        rowCount: 1,
-        rows: [{ trust_tier: 0 }],
-      });
-
-      const result = await TrustTierService.getTrustTier('user-1');
-      expect(result).toBe(TrustTier.ROOKIE);
-    });
   });
 });
 
@@ -212,9 +227,20 @@ describe('SPEC ALIGNMENT: XP Formula (PRODUCT_SPEC §5.2)', () => {
   });
 
   describe('Trust Multiplier (PRODUCT_SPEC §5.2)', () => {
-    // SPEC: ROOKIE=1.0, VERIFIED=1.5, TRUSTED=2.0, ELITE=2.0
+    // Canonical provider tiers: Explorer/Verified=1.0, Home Ready=1.5,
+    // Pro/Licensed Specialist=2.0. XP never grants trust access.
 
-    it('should return 1.0 for ROOKIE (tier 1)', async () => {
+    it('should return 1.0 for Explorer (tier 0)', async () => {
+      db.query.mockResolvedValueOnce({
+        rows: [{ current_streak: 0, trust_tier: 0 }],
+      });
+
+      const result = await XPService.calculateAward('user-1', 100);
+      expect(result.success).toBe(true);
+      expect(result.data?.trustMultiplier).toBe(1.0);
+    });
+
+    it('should return 1.0 for Verified (tier 1)', async () => {
       db.query.mockResolvedValueOnce({
         rows: [{ current_streak: 0, trust_tier: 1 }],
       });
@@ -224,7 +250,7 @@ describe('SPEC ALIGNMENT: XP Formula (PRODUCT_SPEC §5.2)', () => {
       expect(result.data?.trustMultiplier).toBe(1.0);
     });
 
-    it('should return 1.5 for VERIFIED (tier 2)', async () => {
+    it('should return 1.5 for Home Ready (tier 2)', async () => {
       db.query.mockResolvedValueOnce({
         rows: [{ current_streak: 0, trust_tier: 2 }],
       });
@@ -234,7 +260,7 @@ describe('SPEC ALIGNMENT: XP Formula (PRODUCT_SPEC §5.2)', () => {
       expect(result.data?.trustMultiplier).toBe(1.5);
     });
 
-    it('should return 2.0 for TRUSTED (tier 3)', async () => {
+    it('should return 2.0 for Pro (tier 3)', async () => {
       db.query.mockResolvedValueOnce({
         rows: [{ current_streak: 0, trust_tier: 3 }],
       });
@@ -244,7 +270,7 @@ describe('SPEC ALIGNMENT: XP Formula (PRODUCT_SPEC §5.2)', () => {
       expect(result.data?.trustMultiplier).toBe(2.0);
     });
 
-    it('should return 2.0 for ELITE (tier 4)', async () => {
+    it('should return 2.0 for Licensed Specialist (tier 4)', async () => {
       db.query.mockResolvedValueOnce({
         rows: [{ current_streak: 0, trust_tier: 4 }],
       });
@@ -359,7 +385,13 @@ describe('SPEC ALIGNMENT: Escrow State Machine (PRODUCT_SPEC §4.2, §4.3)', () 
         }],
       });
 
-      // Mock 2: SELECT task for worker_id and price
+      // Mock 2: authoritative worker-favor dispute resolution.
+      db.query.mockResolvedValueOnce({
+        rowCount: 1,
+        rows: [{ resolved_dispute_id: 'dispute-worker-win-1' }],
+      });
+
+      // Mock 3: SELECT task for worker_id and price
       db.query.mockResolvedValueOnce({
         rowCount: 1,
         rows: [{
@@ -368,7 +400,7 @@ describe('SPEC ALIGNMENT: Escrow State Machine (PRODUCT_SPEC §4.2, §4.3)', () 
         }],
       });
 
-      // Mock 3: SELECT worker KYC info (KYC gate - added for 72-hour fixes)
+      // Mock 4: SELECT worker KYC info (KYC gate - added for 72-hour fixes)
       db.query.mockResolvedValueOnce({
         rowCount: 1,
         rows: [{
@@ -378,7 +410,7 @@ describe('SPEC ALIGNMENT: Escrow State Machine (PRODUCT_SPEC §4.2, §4.3)', () 
         }],
       });
 
-      // Mock 4: UPDATE escrow to RELEASED (the actual state transition)
+      // Mock 5: UPDATE escrow to RELEASED (the actual state transition)
       db.query.mockResolvedValueOnce({
         rowCount: 1,
         rows: [{
@@ -391,7 +423,7 @@ describe('SPEC ALIGNMENT: Escrow State Machine (PRODUCT_SPEC §4.2, §4.3)', () 
         }],
       });
 
-      // Mock 5+: Downstream service calls (earnings tracking, XP, etc.)
+      // Mock 6+: Downstream service calls (earnings tracking, XP, etc.)
       db.query.mockResolvedValue({ rowCount: 0, rows: [] });
 
       const result = await EscrowService.release({ escrowId: 'escrow-1', stripeTransferId: 'tr_test_spec_align' });
@@ -478,28 +510,28 @@ describe('SPEC ALIGNMENT: Price Minimums (PRODUCT_SPEC §3.5)', () => {
   });
 
   describe('STANDARD Mode Price Validation', () => {
-    it('should reject STANDARD task with price < $5.00 (500 cents)', async () => {
+    it('should reject STANDARD task with price < $15.00 (1500 cents)', async () => {
       const result = await TaskService.create({
         posterId: 'poster-1',
         title: 'Test Task',
         description: 'Test description',
-        price: 499, // $4.99
+        price: 1499, // $14.99
         mode: 'STANDARD',
       });
 
       expect(result.success).toBe(false);
       expect(result.error?.code).toBe('PRICE_TOO_LOW');
-      expect(result.error?.message).toContain('$5.00');
+      expect(result.error?.message).toContain('$15.00');
     });
 
-    it('should accept STANDARD task with price = $5.00 (500 cents)', async () => {
+    it('should accept STANDARD task with price = $15.00 (1500 cents)', async () => {
       // Mock all the dependencies
       db.query.mockResolvedValueOnce({ rows: [{ allowed: true }] }); // PlanService
       db.query.mockResolvedValueOnce({
         rows: [{
           id: 'task-1',
           state: 'OPEN',
-          price: 500,
+          price: 1500,
         }],
       });
 
@@ -507,7 +539,7 @@ describe('SPEC ALIGNMENT: Price Minimums (PRODUCT_SPEC §3.5)', () => {
         posterId: 'poster-1',
         title: 'Test Task',
         description: 'Test description',
-        price: 500, // $5.00
+        price: 1500, // $15.00
         mode: 'STANDARD',
       });
 
@@ -517,13 +549,13 @@ describe('SPEC ALIGNMENT: Price Minimums (PRODUCT_SPEC §3.5)', () => {
       }
     });
 
-    it('should accept STANDARD task with price > $5.00', async () => {
+    it('should accept STANDARD task with price > $15.00', async () => {
       db.query.mockResolvedValueOnce({ rows: [{ allowed: true }] });
       db.query.mockResolvedValueOnce({
         rows: [{
           id: 'task-1',
           state: 'OPEN',
-          price: 1000,
+          price: 2000,
         }],
       });
 
@@ -531,7 +563,7 @@ describe('SPEC ALIGNMENT: Price Minimums (PRODUCT_SPEC §3.5)', () => {
         posterId: 'poster-1',
         title: 'Test Task',
         description: 'Test description',
-        price: 1000, // $10.00
+        price: 2000, // $20.00
         mode: 'STANDARD',
       });
 
@@ -598,6 +630,8 @@ describe('SPEC ALIGNMENT: Price Minimums (PRODUCT_SPEC §3.5)', () => {
         title: 'Test Task',
         description: 'Test description',
         price: 0,
+        regionCode: 'US-WA',
+        category: 'moving',
       });
 
       // price=0 triggers Scoper AI fallback to $5.00 minimum, so task IS created
@@ -640,100 +674,55 @@ describe('SPEC ALIGNMENT: Price Minimums (PRODUCT_SPEC §3.5)', () => {
   });
 });
 
-describe('SPEC ALIGNMENT: Trust Tier Promotion Thresholds (PRODUCT_SPEC §8.2)', () => {
+describe('SPEC ALIGNMENT: Evidence-backed trust promotion (Local Work Network §5)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     db.query.mockReset();
   });
 
-  describe('VERIFIED Promotion (5 tasks + ID verified)', () => {
-    it('should require ID verification for ROOKIE → VERIFIED', async () => {
-      // Mock ROOKIE tier user without ID verification
+  describe('Verified promotion', () => {
+    it('requires identity, phone, and payout onboarding for Explorer → Verified', async () => {
       db.query
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ trust_tier: 1 }] }) // getTrustTier
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ trust_tier: 0, is_banned: false }] })
         .mockResolvedValueOnce({
           rowCount: 1,
           rows: [{
             is_verified: false,
             verified_at: null,
             phone: '555-1234',
-            stripe_customer_id: 'cus_123',
+            stripe_connect_id: null,
+            payouts_enabled: false,
           }],
         });
 
       const result = await TrustTierService.evaluatePromotion('user-1');
       expect(result.eligible).toBe(false);
       expect(result.reasons).toContain('ID verification required');
+      expect(result.reasons).toContain('Payout onboarding required');
     });
   });
 
-  describe('TRUSTED Promotion (20 tasks, 95%+ approval)', () => {
-    it('should require 20 completed tasks for VERIFIED → TRUSTED', async () => {
-      // Mock VERIFIED tier user with only 10 tasks
+  describe('Home Ready promotion', () => {
+    it('requires current production screening and five production completions', async () => {
       db.query
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ trust_tier: 2 }] }) // getTrustTier
-        .mockResolvedValueOnce({ rows: [{ account_age_days: 30 }] }) // account age
-        .mockResolvedValueOnce({
-          rows: [{
-            completed_count: '10',
-            dispute_count: '0',
-            on_time_count: '10',
-            total_count: '10',
-          }],
-        }) // stats
-        .mockResolvedValueOnce({ rows: [{ count: '0' }] }); // high risk check
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ trust_tier: 1, is_banned: false }] })
+        .mockResolvedValueOnce({ rows: [{ current_screening: false }] })
+        .mockResolvedValueOnce({ rows: [{ completed_count: '2', active_dispute_count: '0' }] });
 
       const result = await TrustTierService.evaluatePromotion('user-1');
       expect(result.eligible).toBe(false);
-      expect(result.reasons.some(r => r.includes('need 20'))).toBe(true);
+      expect(result.reasons).toContain('Current production enhanced screening required');
+      expect(result.reasons.some(r => r.includes('need 5'))).toBe(true);
     });
   });
 
-  describe('ELITE Promotion (100+ tasks, <1% dispute, 4.8+ rating)', () => {
-    it('should require 100 completed tasks for TRUSTED → ELITE', async () => {
-      // Mock TRUSTED tier user with only 50 tasks
-      db.query
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ trust_tier: 3 }] }) // getTrustTier
-        .mockResolvedValueOnce({ rows: [{ account_age_days: 60 }] }) // account age
-        .mockResolvedValueOnce({ rows: [{ completed_count: '50' }] }) // stats
-        .mockResolvedValueOnce({ rows: [{ distinct_posters: '10' }] }) // reviews
-        .mockResolvedValueOnce({ rows: [{ has_deposit: true }] }) // deposit
-        .mockResolvedValueOnce({ rows: [{ total_tasks: '50', dispute_count: '0' }] }) // dispute stats
-        .mockResolvedValueOnce({ rows: [{ avg_rating: '4.9' }] }); // rating
+  describe('Later-phase progression', () => {
+    it('does not infer Pro or Licensed Specialist from XP and task counts', async () => {
+      db.query.mockResolvedValueOnce({ rowCount: 1, rows: [{ trust_tier: 2, is_banned: false }] });
+      expect((await TrustTierService.evaluatePromotion('user-1')).reasons[0]).toContain('Pro progression is not enabled');
 
-      const result = await TrustTierService.evaluatePromotion('user-1');
-      expect(result.eligible).toBe(false);
-      expect(result.reasons.some(r => r.includes('need 100') || r.includes('100'))).toBe(true);
-    });
-
-    it('should require <1% dispute rate for ELITE', async () => {
-      db.query
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ trust_tier: 3 }] })
-        .mockResolvedValueOnce({ rows: [{ account_age_days: 60 }] })
-        .mockResolvedValueOnce({ rows: [{ completed_count: '100' }] })
-        .mockResolvedValueOnce({ rows: [{ distinct_posters: '10' }] })
-        .mockResolvedValueOnce({ rows: [{ has_deposit: true }] })
-        .mockResolvedValueOnce({ rows: [{ total_tasks: '100', dispute_count: '5' }] }) // 5% dispute
-        .mockResolvedValueOnce({ rows: [{ avg_rating: '4.9' }] });
-
-      const result = await TrustTierService.evaluatePromotion('user-1');
-      expect(result.eligible).toBe(false);
-      expect(result.reasons.some(r => r.includes('Dispute rate') || r.includes('<1%'))).toBe(true);
-    });
-
-    it('should require 4.8+ rating for ELITE', async () => {
-      db.query
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ trust_tier: 3 }] })
-        .mockResolvedValueOnce({ rows: [{ account_age_days: 60 }] })
-        .mockResolvedValueOnce({ rows: [{ completed_count: '100' }] })
-        .mockResolvedValueOnce({ rows: [{ distinct_posters: '10' }] })
-        .mockResolvedValueOnce({ rows: [{ has_deposit: true }] })
-        .mockResolvedValueOnce({ rows: [{ total_tasks: '100', dispute_count: '0' }] })
-        .mockResolvedValueOnce({ rows: [{ avg_rating: '4.5' }] }); // Below 4.8
-
-      const result = await TrustTierService.evaluatePromotion('user-1');
-      expect(result.eligible).toBe(false);
-      expect(result.reasons.some(r => r.includes('rating') || r.includes('4.8'))).toBe(true);
+      db.query.mockResolvedValueOnce({ rowCount: 1, rows: [{ trust_tier: 3, is_banned: false }] });
+      expect((await TrustTierService.evaluatePromotion('user-1')).reasons[0]).toContain('Licensed Specialist progression is not enabled');
     });
   });
 });
@@ -793,11 +782,12 @@ describe('Integration: Full XP Award Flow', () => {
 
 // Summary test to verify all critical fixes
 describe('CRITICAL FIXES SUMMARY', () => {
-  it('✓ Trust Tier Enum: Uses 1-4 (ROOKIE/VERIFIED/TRUSTED/ELITE)', () => {
-    expect(TrustTier.ROOKIE).toBe(1);
-    expect(TrustTier.VERIFIED).toBe(2);
-    expect(TrustTier.TRUSTED).toBe(3);
-    expect(TrustTier.ELITE).toBe(4);
+  it('✓ Trust Tier Enum: Uses canonical individual-provider tiers 0-4', () => {
+    expect(TrustTier.EXPLORER).toBe(0);
+    expect(TrustTier.VERIFIED).toBe(1);
+    expect(TrustTier.HOME_READY).toBe(2);
+    expect(TrustTier.PRO).toBe(3);
+    expect(TrustTier.LICENSED_SPECIALIST).toBe(4);
   });
 
   it('✓ XP Formula: Uses trust_multiplier instead of decay_factor', () => {
@@ -810,7 +800,7 @@ describe('CRITICAL FIXES SUMMARY', () => {
     expect(EscrowService.isValidTransition('LOCKED_DISPUTE', 'RELEASED')).toBe(true);
   });
 
-  it('✓ Price: STANDARD mode enforces $5.00 minimum', async () => {
+  it('✓ Price: STANDARD mode enforces $15.00 minimum', async () => {
     const result = await TaskService.create({
       posterId: 'p-1',
       title: 'T',

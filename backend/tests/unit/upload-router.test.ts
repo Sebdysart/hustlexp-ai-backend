@@ -6,7 +6,7 @@
  * - Content type validation
  * - Filename validation
  * - File size validation
- * - Purpose-based key prefix (proof vs message)
+ * - Purpose-bound quarantine key and receipt creation
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -82,9 +82,14 @@ function makeCaller(userId = 'test-uid') {
 // Shared helper: mock a successful participant check (caller is poster)
 function mockParticipantCheck(userId = 'test-uid') {
   mockDb.query.mockResolvedValueOnce({
-    rows: [{ poster_id: userId, worker_id: 'some-worker' }],
+    rows: [{ poster_id: 'some-poster', worker_id: userId }],
     rowCount: 1,
   } as any);
+}
+
+function insertedQuarantineKey(): string {
+  const call = mockDb.query.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO media_upload_receipts'));
+  return String(call?.[1]?.[4] ?? '');
 }
 
 describe('upload.getPresignedUrl', () => {
@@ -100,14 +105,14 @@ describe('upload.getPresignedUrl', () => {
     });
 
     expect(result).toHaveProperty('uploadUrl');
-    expect(result).toHaveProperty('publicUrl');
-    expect(result).toHaveProperty('key');
+    expect(result).toHaveProperty('receiptId');
+    expect(result).not.toHaveProperty('key');
     expect(result).toHaveProperty('expiresAt');
     expect(result.uploadUrl).toContain('mock');
-    expect(result.key).toContain('proofs/');
+    expect(insertedQuarantineKey()).toContain('quarantine/proof/');
   });
 
-  it('uses messages prefix for message purpose', async () => {
+  it('uses the message quarantine namespace for message purpose', async () => {
     mockParticipantCheck();
     const result = await makeCaller().getPresignedUrl({
       taskId: TEST_UUID,
@@ -117,10 +122,10 @@ describe('upload.getPresignedUrl', () => {
       fileSize: 2048,
     });
 
-    expect(result.key).toContain('messages/');
+    expect(insertedQuarantineKey()).toContain('quarantine/message/');
   });
 
-  it('uses proofs prefix by default', async () => {
+  it('uses the proof quarantine namespace by default', async () => {
     mockParticipantCheck();
     const result = await makeCaller().getPresignedUrl({
       taskId: TEST_UUID,
@@ -129,10 +134,10 @@ describe('upload.getPresignedUrl', () => {
       fileSize: 512,
     });
 
-    expect(result.key).toContain('proofs/');
+    expect(insertedQuarantineKey()).toContain('quarantine/proof/');
   });
 
-  it('includes user ID in key with opaque hex filename', async () => {
+  it('binds the task, user, and opaque receipt ID into the quarantine key', async () => {
     mockParticipantCheck('user-123');
     const result = await makeCaller('user-123').getPresignedUrl({
       taskId: TEST_UUID,
@@ -141,8 +146,12 @@ describe('upload.getPresignedUrl', () => {
       fileSize: 1024,
     });
 
-    expect(result.key).toContain('user-123');
-    expect(result.key).toMatch(/^proofs\/[^/]+\/[a-f0-9]{32}\./);
+    const key = insertedQuarantineKey();
+    expect(key).toContain('user-123');
+    expect(key).toMatch(
+      /^quarantine\/proof\/11111111-1111-1111-1111-111111111111\/user-123\/[a-f0-9-]{36}\.jpg$/,
+    );
+    expect(key).toContain(result.receiptId);
   });
 
   it('rejects invalid content type', async () => {
@@ -175,7 +184,7 @@ describe('upload.getPresignedUrl', () => {
       fileSize: 1024,
     });
 
-    expect(result.key).toMatch(/\.webp$/);
+    expect(insertedQuarantineKey()).toMatch(/^quarantine\/proof\/.+\.webp$/);
   });
 
   it('rejects filenames with invalid characters', async () => {
@@ -261,7 +270,7 @@ describe('upload.getPresignedUrl', () => {
         contentType: 'image/jpeg',
         fileSize: 1024,
       })
-    ).rejects.toThrow('Not authorized to upload files for this task');
+    ).rejects.toThrow('Only the assigned worker can upload completion proof');
   });
 
   it('throws NOT_FOUND when task does not exist', async () => {

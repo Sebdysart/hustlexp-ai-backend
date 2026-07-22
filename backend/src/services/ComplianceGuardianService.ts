@@ -4,6 +4,7 @@ import { AIClient } from './AIClient.js';
 import { PromptInjectionGuard } from '../ai/PromptInjectionGuard.js';
 import { logger } from '../logger.js';
 import { scrubPII } from '../lib/pii-scrubber.js';
+import { aiObservation } from './AIObservabilityPolicy.js';
 
 // FIX 1 & 2: Zod schema to validate LLM response shape and clamp score to [0, 100]
 const AiCheckResponseSchema = z.object({
@@ -29,6 +30,13 @@ export interface ComplianceResult {
   deception_detected: boolean;
   is_genuinely_bizarre: boolean;
   ai_signals_computed: boolean;
+  ai_advisory?: {
+    score: number;
+    triggeredRules: string[];
+    deception_detected: boolean;
+    is_genuinely_bizarre: boolean;
+    authority: 'A2_PROPOSAL_ONLY';
+  };
 }
 
 export interface ComplianceNotes {
@@ -51,8 +59,37 @@ interface EvaluateInput {
   deviceFingerprint?: string;
 }
 
+function deterministicPolicySignals(description: string, templateSlug?: string): {
+  deceptionDetected: boolean;
+  genuinelyBizarre: boolean;
+} {
+  const normalized = description.toLowerCase();
+  const deceptiveRole = /\b(boyfriend|girlfriend|date|friend|business\s+partner|partner|employee|colleague|coworker|hoa|official|inspector|officer|critic|journalist|reporter|professional|admirer)\b/i;
+  const deceptionAction = /\b(pretend(?:ing)?|pose|act(?:ing)?|impersonat(?:e|ing)|fake)\b/i;
+  const actionMatch = deceptionAction.exec(description);
+  const roleMatch = deceptiveRole.exec(description);
+  const actionAndRole = Boolean(actionMatch && roleMatch && Math.abs(actionMatch.index - roleMatch.index) <= 100);
+  const fakeEmployment = /\b(?:be|serve as)\b.{0,20}\bfake\b.{0,20}\b(employee|partner|representative)\b/i.test(description);
+  const anonymousIdentity = /\bpretend(?:ing)?\b.{0,80}\bfrom\b.{0,30}\banonymous\s+(admirer|friend|customer)\b/i.test(description);
+  const selfAwareCharacterRoleplay = /\bimaginary\s+friend\b/i.test(description)
+    && /\b(character\s+description|roleplay|made\s+real)\b/i.test(description);
+  const deceptionDetected = !selfAwareCharacterRoleplay
+    && (actionAndRole || fakeEmployment || anonymousIdentity);
+  const activeBizarreSignal = /\b(act|acting|roleplay|scripted|perform|performance|audience|ceremony|ritual|serenade|s[ée]ance|recite|reciting)\b/i.test(description)
+    || /\bscatter(?:ing)?\b.{0,60}\bashes\b/i.test(description)
+    || /\b(comedy\s+show|straight\s+man)\b/i.test(description);
+  const standardPhysicalLabor = /\b(deliver|delivery|move|moving|clean|cleaning|repair|assemble|assembly|yard|lawn|haul|painting|install|installation|pack|packing|boxes)\b/i.test(normalized);
+  const privatePerformance = /\b(private|home|house|apartment)\b.{0,40}\b(show|performance|serenade|ceremony)\b/i.test(description);
+  const genuinelyBizarre = templateSlug === 'wildcard_bizarre'
+    && activeBizarreSignal
+    && (!standardPhysicalLabor || privatePerformance);
+  return { deceptionDetected, genuinelyBizarre };
+}
+
 const HARD_BLOCK_PATTERNS = [
   /no\s+questions?\s+asked/i,
+  // Fragmented/synonym variants of the same anonymous-delivery signal.
+  /no\s+(questions?|queries)(?:\s+\w+){0,3}\s+(asked|deliver(?:y|ed)?)/i,
   /discreet\s+(only|delivery|service)/i,
   /with\s+benefits/i,
   /adult\s+(service|entertainment|modeling)/i,
@@ -92,6 +129,7 @@ const SOFT_FLAG_PATTERNS = [
   { pattern: /\b(escort(?!\s*(to\b|service\s+dog|vehicle|my|her|his|their|our|your|someone|a\s+person|the\s+patient|the\s+guest))|private\s+escort)\b/i, score: 45, rule: 'escort_ambiguous' },
   { pattern: /\b(controlled\s+substances?|pharmacolog\w*|score\s+some)\b/i, score: 40, rule: 'drug_reference' },
   { pattern: /\b(reconnaissance|casing|staking?\s+out|surveil).{0,20}(house|home|property|neighbor|building)\b/i, score: 45, rule: 'property_surveillance' },
+  { pattern: /\b(houses?|homes?|properties|buildings?)\b.{0,35}\b(easy|simple|possible)\s+to\s+(enter|access|break\s+into)\b/i, score: 55, rule: 'property_entry_reconnaissance' },
   { pattern: /\b(pretend|pose|act).{0,20}(you'?re|to\s+be|as).{0,20}(hoa|police|officer|inspector|official|city|government|landlord|authority|representative|agent\s+from)\b/i, score: 55, rule: 'authority_impersonation' },
   { pattern: /\b(impersonat|pretend.{0,10}official|fake.{0,10}(inspector|officer|agent|representative))\b/i, score: 55, rule: 'authority_impersonation' },
   { pattern: /\b(pose|pretend|act|go\s+as).{0,20}(a|an).{0,20}(journalist|reporter|critic|reviewer|doctor|nurse|lawyer|attorney|detective|investigator|photographer|influencer)\b/i, score: 40, rule: 'professional_role_impersonation' },
@@ -199,6 +237,18 @@ export const ComplianceGuardianService = {
     const normalizedDescription = ComplianceGuardianService._normalizeDescription(description);
     let heuristicResult = ComplianceGuardianService._heuristicCheck(normalizedDescription);
 
+    // Injection attempts are a deterministic policy signal even when the task
+    // would otherwise score clean and the AI ambiguity gate would not run.
+    // This prevents attackers from hiding response-control instructions inside
+    // benign task text to bypass the guard by keeping the heuristic score at 0.
+    const injectionResult = PromptInjectionGuard.analyze(description);
+    if (injectionResult.decision === 'BLOCK') {
+      heuristicResult = {
+        score: 100,
+        triggeredRules: [...new Set([...heuristicResult.triggeredRules, 'prompt_injection_blocked'])],
+      };
+    }
+
     let codedPhraseMatched = false;
     if (patternMatch.matched && patternMatch.matchedPhrase) {
       codedPhraseMatched = true;
@@ -229,11 +279,14 @@ export const ComplianceGuardianService = {
       };
     }
 
-    let finalResult: { score: number; triggeredRules: string[]; deception_detected: boolean; is_genuinely_bizarre: boolean } = {
-      ...heuristicResult,
-      deception_detected: false,
-      is_genuinely_bizarre: false,
-    };
+    const deterministicSignals = deterministicPolicySignals(description, input.templateSlug);
+    if (deterministicSignals.deceptionDetected) {
+      heuristicResult = {
+        score: Math.max(heuristicResult.score, 35),
+        triggeredRules: [...new Set([...heuristicResult.triggeredRules, 'deterministic_social_deception'])],
+      };
+    }
+    let aiAdvisory: ComplianceResult['ai_advisory'];
 
     const isWildcardTask = input.templateSlug === 'wildcard_bizarre';
     const scoreInAmbiguousRange = heuristicResult.score >= 15 && heuristicResult.score <= 50;
@@ -243,7 +296,14 @@ export const ComplianceGuardianService = {
 
     if (shouldRunAI) {
       try {
-        finalResult = await ComplianceGuardianService._aiCheck(description, heuristicResult, input.templateSlug, userId);
+        const proposal = await ComplianceGuardianService._aiCheck(description, heuristicResult, input.templateSlug, userId);
+        aiAdvisory = {
+          score: proposal.score,
+          triggeredRules: proposal.triggeredRules,
+          deception_detected: proposal.deception_detected,
+          is_genuinely_bizarre: proposal.is_genuinely_bizarre,
+          authority: 'A2_PROPOSAL_ONLY',
+        };
         aiSignalsComputed = true;
       } catch (err) {
         log.warn({ err }, 'AI compliance check failed, using heuristic result');
@@ -253,42 +313,43 @@ export const ComplianceGuardianService = {
     if (!AIClient.isConfigured() && isWildcardTask) {
       log.warn(
         { templateSlug: input.templateSlug },
-        'AI not configured — deception_detected and is_genuinely_bizarre unavailable for wildcard task. Bizarre cap will not apply, deception will not be detected.'
+        'AI not configured — model advisory unavailable; deterministic compliance policy remains authoritative.'
       );
     }
 
-    const tier = ComplianceGuardianService._scoreTotier(finalResult.score);
+    const tier = ComplianceGuardianService._scoreTotier(heuristicResult.score);
 
-    if (finalResult.score >= 21) {
+    if (heuristicResult.score >= 21) {
       await ComplianceGuardianService._logViolation({
         userId, ipAddress, deviceFingerprint,
-        description, score: finalResult.score,
-        triggeredRules: finalResult.triggeredRules,
+        description, score: heuristicResult.score,
+        triggeredRules: heuristicResult.triggeredRules,
       });
     }
 
-    const suggestedAlternative = finalResult.triggeredRules
+    const suggestedAlternative = heuristicResult.triggeredRules
       .map(r => SUGGESTED_ALTERNATIVES[r])
       .find(Boolean) ?? null;
 
     const notes = ComplianceGuardianService.toNotes(
-      finalResult.score,
-      finalResult.triggeredRules,
+      heuristicResult.score,
+      heuristicResult.triggeredRules,
       suggestedAlternative ?? undefined,
-      finalResult.deception_detected,
-      finalResult.is_genuinely_bizarre,
+      deterministicSignals.deceptionDetected,
+      deterministicSignals.genuinelyBizarre,
       aiSignalsComputed,
     );
 
     return {
-      score: finalResult.score,
+      score: heuristicResult.score,
       tier,
-      triggeredRules: finalResult.triggeredRules,
+      triggeredRules: heuristicResult.triggeredRules,
       suggestedAlternative: suggestedAlternative ?? undefined,
       notes,
-      deception_detected: finalResult.deception_detected ?? false,
-      is_genuinely_bizarre: finalResult.is_genuinely_bizarre ?? false,
+      deception_detected: deterministicSignals.deceptionDetected,
+      is_genuinely_bizarre: deterministicSignals.genuinelyBizarre,
       ai_signals_computed: aiSignalsComputed,
+      ...(aiAdvisory ? { ai_advisory: aiAdvisory } : {}),
     };
   },
 
@@ -331,6 +392,13 @@ export const ComplianceGuardianService = {
   },
 
   _heuristicCheck: (description: string): { score: number; triggeredRules: string[] } => {
+    // A single-person 24-hour continuous engagement is incompatible with the
+    // platform's fatigue and worker-protection rules. It must be split into
+    // shifts or routed through a staffed business workflow.
+    if (/\b(?:full\s+)?(?:24|twenty[-\s]?four)[-\s]*(?:hour|hr)s?\b/i.test(description)) {
+      return { score: 85, triggeredRules: ['excessive_continuous_duration'] };
+    }
+
     for (const pattern of HARD_BLOCK_PATTERNS) {
       if (pattern.test(description)) {
         return { score: 85, triggeredRules: ['hard_block_pattern'] };
@@ -500,6 +568,10 @@ export const ComplianceGuardianService = {
       deception_detected: boolean;
       is_genuinely_bizarre: boolean;
     }>({
+      observability: aiObservation('AI-COMPLIANCE-ADVISORY', {
+        actorUserId: userId,
+        affectedObjectType: 'TASK_DRAFT',
+      }),
       route: 'fast',
       temperature: 0.1,
       timeoutMs: 5000,

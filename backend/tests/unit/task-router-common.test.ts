@@ -10,15 +10,15 @@ afterEach(() => {
   vi.resetModules();
 });
 
-it('falls back safely when the configured R2 URL is malformed', async () => {
+it('rejects every direct proof URL even when it uses an R2 hostname', async () => {
   process.env.R2_PUBLIC_URL = 'not a valid URL';
   const { approvedProofMediaUrl } = await import('../../src/routers/task-router-common');
-  expect(approvedProofMediaUrl.safeParse('https://pub-aabbccdd.r2.dev/proof.jpg').success).toBe(true);
+  expect(approvedProofMediaUrl.safeParse('https://pub-aabbccdd.r2.dev/proof.jpg').success).toBe(false);
   expect(approvedProofMediaUrl.safeParse('https://example.com/proof.jpg').success).toBe(false);
 });
 
-it('accepts the explicitly configured R2 public hostname', async () => {
+it('does not let a configured public hostname bypass receipt finalization', async () => {
   process.env.R2_PUBLIC_URL = 'https://assets.hustlexp.example';
   const { approvedProofMediaUrl } = await import('../../src/routers/task-router-common');
-  expect(approvedProofMediaUrl.safeParse('https://assets.hustlexp.example/proof.jpg').success).toBe(true);
+  expect(approvedProofMediaUrl.safeParse('https://assets.hustlexp.example/proof.jpg').success).toBe(false);
 });

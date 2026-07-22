@@ -127,6 +127,29 @@ describe('ComplianceResult.ai_signals_computed', () => {
     expect(result.deception_detected).toBe(true);
     expect(result.ai_signals_computed).toBe(true);
   });
+
+  it('keeps model-only compliance claims advisory and non-authoritative', async () => {
+    const { AIClient } = await import('../../src/services/AIClient.js');
+    vi.mocked(AIClient.isConfigured).mockReturnValue(true);
+    vi.mocked(AIClient.callJSON).mockResolvedValue({
+      data: { score: 100, rules: ['model_only_block'], deception_detected: true, is_genuinely_bizarre: true },
+      provider: 'test',
+    } as any);
+    const { db } = await import('../../src/db.js');
+    vi.mocked(db.query).mockResolvedValue({ rows: [{ flagged_phrase_counter: [] }], rowCount: 1 } as any);
+
+    const result = await ComplianceGuardianService.evaluate({
+      description: 'Perform a normal song at the community event',
+      userId: 'user-1',
+      templateSlug: 'wildcard_bizarre',
+    });
+
+    expect(result.score).toBe(0);
+    expect(result.tier).toBe('clean');
+    expect(result.deception_detected).toBe(false);
+    expect(result.triggeredRules).not.toContain('model_only_block');
+    expect(result.ai_advisory).toMatchObject({ score: 100, authority: 'A2_PROPOSAL_ONLY' });
+  });
 });
 
 describe('First-occurrence coded phrase bump', () => {

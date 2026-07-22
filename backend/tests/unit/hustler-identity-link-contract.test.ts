@@ -23,8 +23,9 @@ describe('canonical Hustler identity link contract', () => {
     expect(runner).toContain("fileName: '20260712_hustler_identity_link.sql'");
   });
 
-  it('never promotes above trust tier one or creates an assignment/payout', () => {
-    expect(service).toContain('Math.max(user.trust_tier, 1)');
+  it('preserves the evidence-backed trust tier and creates no assignment or payout', () => {
+    expect(service).toContain('trustTier: user.trust_tier');
+    expect(service).not.toMatch(/SET\s+trust_tier/i);
     expect(service).not.toMatch(/trustTier[^\n]*[2-9]|assignment|payout|transfer|refund|stripe/i);
   });
 });

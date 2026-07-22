@@ -1,112 +1,116 @@
 /**
- * N5 Query Performance Tests
- * 
- * ============================================================================
- * PURPOSE
- * ============================================================================
- * 
- * Validate that feed query uses indexes correctly and performs within SLOs.
- * Ensures query plan doesn't regress.
- * 
- * ============================================================================
- * TESTS
- * ============================================================================
- * 
- * PERF-N5-1: Feed query uses eligibility indexes
- * PERF-N5-2: Query plan doesn't regress (EXPLAIN validation)
- * 
- * Reference: Phase N5 — Execution Hardening (LOCKED)
+ * N5 Query Performance Invariants
+ *
+ * Uses the production query builder and real PostgreSQL plans. Schema support
+ * and execution bounds are separate assertions because a small test fixture
+ * may rationally choose a sequential scan even when the correct index exists.
  */
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import pg from 'pg';
+import {
+  eligibleTaskCandidatesQuery,
+  personalizedFeedQuery,
+} from '../../src/services/TaskDiscoveryQueryBuilder';
 import { createTestPool, hasDb } from '../setup';
 
 let pool: pg.Pool;
 
+type ExplainDocument = {
+  Plan: Record<string, unknown>;
+  'Planning Time': number;
+  'Execution Time': number;
+};
+
+async function explain(sql: string, params: unknown[]): Promise<ExplainDocument> {
+  const result = await pool.query<{ 'QUERY PLAN': ExplainDocument[] }>(
+    `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${sql}`,
+    params,
+  );
+  return result.rows[0]['QUERY PLAN'][0];
+}
+
 beforeAll(async () => {
-  if (!hasDb) return; // Skip DB setup when DATABASE_URL not available
+  if (!hasDb) return;
   pool = createTestPool();
-  console.log('Connected to database for N5 query performance tests');
+  await pool.query(
+    `ANALYZE users, tasks, escrows, capability_profiles, verified_trades,
+             task_applications, disputes, zone_category_cells, task_matching_scores`,
+  );
 });
 
 afterAll(async () => {
-  await pool.end();
+  if (pool) await pool.end();
 });
 
-// =============================================================================
-// PERF-N5-1: Feed query uses eligibility indexes
-// =============================================================================
-
-describe.skipIf(!hasDb)('PERF-N5-1: Feed query uses eligibility indexes', () => {
-  
-  it('MUST PASS: EXPLAIN shows index usage for eligibility columns', async () => {
-    const userId = '00000000-0000-0000-0000-000000000001'; // Test UUID
-    
-    // Execute EXPLAIN ANALYZE on feed query
-    const explainResult = await pool.query(`
-      EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
-      SELECT 
-        t.id, t.title, t.state, t.created_at
-      FROM tasks t
-      INNER JOIN capability_profiles cp ON cp.user_id = $1::uuid
-      WHERE t.state = 'OPEN'
-        AND cp.user_id = $1::uuid
-        AND (t.required_trade IS NULL OR EXISTS (
-          SELECT 1 FROM verified_trades vt
-          WHERE vt.user_id = $1::uuid
-            AND vt.trade = t.required_trade
-            AND (vt.expires_at IS NULL OR vt.expires_at > NOW())
-        ))
-        AND (t.insurance_required = false OR cp.insurance_valid = true)
-        AND (t.background_check_required = false OR cp.background_check_valid = true)
-      ORDER BY t.created_at DESC, t.id DESC
-      LIMIT 20
-    `, [userId]);
-    
-    const plan = explainResult.rows[0]['QUERY PLAN'] as any[];
-    
-    // Parse EXPLAIN output to check for index usage
-    const planStr = JSON.stringify(plan);
-    
-    // Check that indexes are used (not sequential scans)
-    // Note: This is a basic check - actual index usage depends on data and query optimizer
-    console.log('Query Plan:', planStr);
-    
-    // This test documents expected behavior - actual index usage validated via EXPLAIN
-    expect(plan).toBeDefined();
-    expect(plan.length).toBeGreaterThan(0);
-  });
-});
-
-// =============================================================================
-// PERF-N5-2: Query plan doesn't regress
-// =============================================================================
-
-describe.skipIf(!hasDb)("PERF-N5-2: Query plan doesn't regress", () => {
-  
-  it('MUST PASS: Feed query execution time is within acceptable bounds', async () => {
+describe.skipIf(!hasDb)('PERF-N5 canonical feed query hardening', () => {
+  it('builds candidate and personalized queries from current authority fields only', () => {
     const userId = '00000000-0000-0000-0000-000000000001';
-    
-    const startTime = Date.now();
-    
-    // Execute feed query (simplified for performance test)
-    await pool.query(`
-      SELECT t.id, t.title
-      FROM tasks t
-      INNER JOIN capability_profiles cp ON cp.user_id = $1::uuid
-      WHERE t.state = 'OPEN' AND cp.user_id = $1::uuid
-      ORDER BY t.created_at DESC
-      LIMIT 20
-    `, [userId]);
-    
-    const executionTime = Date.now() - startTime;
-    
-    // Feed query should complete within reasonable time (< 1 second)
-    // This is a basic check - actual SLOs should be defined based on production load
-    console.log('Feed query execution time:', executionTime, 'ms');
-    
-    // Document expected performance (actual SLOs defined in production)
-    expect(executionTime).toBeLessThan(5000); // 5 second upper bound for test
+    const candidate = eligibleTaskCandidatesQuery(userId).sql;
+    const personalized = personalizedFeedQuery(userId, {}, 20, 0).sql;
+
+    for (const sql of [candidate, personalized]) {
+      expect(sql).toContain('JOIN capability_profiles cp');
+      expect(sql).toContain('JOIN escrows feed_escrow');
+      expect(sql).toContain('FROM license_verifications license');
+      expect(sql).toContain('FROM insurance_verifications insurance');
+      expect(sql).toContain('FROM background_checks screening');
+      expect(sql).toContain('FROM task_applications application');
+      expect(sql).toContain('FROM disputes dispute');
+      expect(sql).toContain("t.state = 'OPEN'");
+      expect(sql).not.toContain('required_trade');
+      expect(sql).not.toContain('t.payout_cents');
+      expect(sql).not.toContain('FROM applications a');
+    }
+  });
+
+  it('has indexes matching every multi-row eligibility hot predicate', async () => {
+    const expected = [
+      'idx_disputes_worker_active',
+      'idx_background_checks_user_clear',
+      'idx_escrows_task_state',
+      'idx_insurance_verifications_user_status',
+      'idx_license_verifications_user_trade',
+      'idx_matching_scores_hustler_feed',
+      'idx_task_app_active_per_hustler',
+      'idx_tasks_actionable_feed',
+      'idx_tasks_worker_active',
+    ];
+    const result = await pool.query<{ indexname: string; indexdef: string }>(
+      `SELECT indexname, indexdef
+       FROM pg_indexes
+       WHERE schemaname = 'public' AND indexname = ANY($1::text[])
+       ORDER BY indexname`,
+      [expected],
+    );
+
+    expect(result.rows.map(row => row.indexname)).toEqual([...expected].sort());
+    expect(result.rows.find(row => row.indexname === 'idx_tasks_actionable_feed')?.indexdef)
+      .toContain("WHERE (((state)::text = 'OPEN'::text) AND (worker_id IS NULL))");
+    expect(result.rows.find(row => row.indexname === 'idx_task_app_active_per_hustler')?.indexdef)
+      .toContain('task_id, hustler_id');
+  });
+
+  it('plans and executes the eligibility-bound score candidate query within 1 second', async () => {
+    const spec = eligibleTaskCandidatesQuery('00000000-0000-0000-0000-000000000001');
+    const plan = await explain(spec.sql, spec.params);
+
+    expect(plan.Plan).toBeDefined();
+    expect(Number(plan['Planning Time'])).toBeLessThan(1000);
+    expect(Number(plan['Execution Time'])).toBeLessThan(1000);
+  });
+
+  it('plans and executes the production personalized feed query within 1 second', async () => {
+    const spec = personalizedFeedQuery(
+      '00000000-0000-0000-0000-000000000001',
+      {},
+      20,
+      0,
+    );
+    const plan = await explain(spec.sql, spec.params);
+
+    expect(plan.Plan).toBeDefined();
+    expect(Number(plan['Planning Time'])).toBeLessThan(1000);
+    expect(Number(plan['Execution Time'])).toBeLessThan(1000);
   });
 });

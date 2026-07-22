@@ -39,9 +39,11 @@ vi.mock('../../src/services/IncidentDiagnosisService', () => ({
 // ---------------------------------------------------------------------------
 
 import { db } from '../../src/db';
+import { IncidentDiagnosisService } from '../../src/services/IncidentDiagnosisService';
 import incidentsRouter from '../../src/routers/incidents';
 
 const mockDb = vi.mocked(db);
+const mockDiagnosis = vi.mocked(IncidentDiagnosisService);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -88,10 +90,58 @@ function makeCaller(userId = 'admin-abc') {
   });
 }
 
+function makeNonAdminCaller() {
+  return incidentsRouter.createCaller({
+    user: {
+      id: 'ordinary-user', email: 'user@hustlexp.com', full_name: 'Ordinary User',
+      role: 'worker', default_mode: 'worker', firebase_uid: 'fb-user', is_admin: false,
+    } as any,
+    firebaseUid: 'fb-user',
+  });
+}
+
 /** Seed admin_roles mock so adminProcedure passes. */
 function seedAdminCheck() {
   mockDb.query.mockResolvedValueOnce({ rows: [{ role: 'admin' }], rowCount: 1 } as any);
 }
+
+describe('incident management authority', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it.each([
+    ['list', () => makeNonAdminCaller().list({ limit: 20, offset: 0 })],
+    ['get', () => makeNonAdminCaller().get({ id: '550e8400-e29b-41d4-a716-446655440000' })],
+    ['resolve', () => makeNonAdminCaller().resolve({ id: '550e8400-e29b-41d4-a716-446655440000' })],
+    ['diagnose', () => makeNonAdminCaller().diagnose({ id: '550e8400-e29b-41d4-a716-446655440000' })],
+    ['stats', () => makeNonAdminCaller().stats({ timeRange: '24h' })],
+  ])('denies an ordinary authenticated user before %s executes', async (_name, invoke) => {
+    await expect(invoke()).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    expect(mockDb.query).not.toHaveBeenCalled();
+    expect(mockDiagnosis.diagnoseIncident).not.toHaveBeenCalled();
+  });
+
+  it('refuses to close a canonical safety mirror through the generic incident endpoint', async () => {
+    seedAdminCheck();
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{
+        event_type: 'manual_report',
+        service: 'trust_safety',
+        safety_incident_id: '44444444-4444-4444-8444-444444444444',
+      }],
+      rowCount: 1,
+    } as any);
+
+    await expect(makeCaller().resolve({
+      id: '550e8400-e29b-41d4-a716-446655440000',
+      notes: 'This must resolve through the canonical task safety case.',
+    })).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      message: expect.stringContaining('canonical safety case'),
+    });
+    expect(mockDb.query.mock.calls.some(([sql]) => String(sql).includes('SET resolved_at = NOW()')))
+      .toBe(false);
+  });
+});
 
 // ===========================================================================
 // incidents.list — offset-based pagination (returns array)

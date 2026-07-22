@@ -12,7 +12,7 @@
  */
 
 import { TRPCError } from '@trpc/server';
-import { router, hustlerProcedure, adminProcedure, Schemas } from '../trpc.js';
+import { router, escrowAdminProcedure, financialAdminProcedure, hustlerProcedure, Schemas } from '../trpc.js';
 import { SelfInsurancePoolService } from '../services/SelfInsurancePoolService.js';
 import { z } from 'zod';
 import { db } from '../db.js';
@@ -140,7 +140,7 @@ export const insuranceRouter = router({
   /**
    * Review a claim (admin only)
    */
-  reviewClaim: adminProcedure
+  reviewClaim: financialAdminProcedure
     .input(
       z.object({
         claim_id: Schemas.uuid,
@@ -173,7 +173,7 @@ export const insuranceRouter = router({
   /**
    * Pay an approved claim (admin only)
    */
-  payClaim: adminProcedure
+  payClaim: escrowAdminProcedure
     .input(
       z.object({
         claim_id: Schemas.uuid

@@ -289,7 +289,9 @@ describe('ContentModerationService.moderateContent', () => {
   });
 
   describe('AI confidence thresholds', () => {
-    it('aiConfidence < 0.5 + recommendation=approve → auto-approve, no DB insert', async () => {
+    it('aiConfidence < 0.5 + recommendation=approve remains pending for human review', async () => {
+      const item = makeQueueItem({ status: 'pending', severity: 'LOW' });
+      mockDb.query.mockResolvedValueOnce({ rows: [item], rowCount: 1 } as never);
       const result = await ContentModerationService.moderateContent({
         contentType: 'message',
         contentId: 'msg-9',
@@ -301,9 +303,9 @@ describe('ContentModerationService.moderateContent', () => {
       });
 
       expect(result.success).toBe(true);
-      expect(result.data?.approved).toBe(true);
-      expect(result.data?.queueItemId).toBeUndefined();
-      expect(mockDb.query).not.toHaveBeenCalled();
+      expect(result.data?.approved).toBe(false);
+      expect(result.data?.queueItemId).toBe('qi-1');
+      expect(mockDb.query.mock.calls[0][0]).toContain("'pending'");
     });
 
     it('aiConfidence >= 0.7 (flag threshold) → inserts pending queue item', async () => {
@@ -328,11 +330,9 @@ describe('ContentModerationService.moderateContent', () => {
       expect(sql).toContain("'pending'");
     });
 
-    it('aiConfidence >= 0.9 + recommendation=block → auto-block (rejected status)', async () => {
-      const item = makeQueueItem({ status: 'rejected', severity: 'CRITICAL' });
-      // auto-block path: INSERT into queue + applyModerationAction (message quarantine) + notification
-      mockDb.query.mockResolvedValueOnce({ rows: [item], rowCount: 1 } as never); // INSERT
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);     // quarantine UPDATE
+    it('aiConfidence >= 0.9 + recommendation=block remains a pending proposal', async () => {
+      const item = makeQueueItem({ status: 'pending', severity: 'CRITICAL' });
+      mockDb.query.mockResolvedValueOnce({ rows: [item], rowCount: 1 } as never);
 
       const result = await ContentModerationService.moderateContent({
         contentType: 'message',
@@ -347,15 +347,14 @@ describe('ContentModerationService.moderateContent', () => {
       expect(result.success).toBe(true);
       expect(result.data?.approved).toBe(false);
       expect(result.data?.queueItemId).toBe('qi-1');
-      // First query should insert with 'rejected' status
+      expect(mockDb.query).toHaveBeenCalledTimes(1);
       const insertSql = mockDb.query.mock.calls[0][0] as string;
-      expect(insertSql).toContain("'rejected'");
+      expect(insertSql).toContain("'pending'");
     });
 
-    it('aiConfidence = 0.9 exactly → auto-block threshold is inclusive', async () => {
-      const item = makeQueueItem({ status: 'rejected', severity: 'CRITICAL' });
+    it('aiConfidence = 0.9 exactly prioritizes but does not auto-block', async () => {
+      const item = makeQueueItem({ status: 'pending', severity: 'CRITICAL' });
       mockDb.query.mockResolvedValueOnce({ rows: [item], rowCount: 1 } as never);
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
 
       const result = await ContentModerationService.moderateContent({
         contentType: 'message',
@@ -392,7 +391,6 @@ describe('ContentModerationService.moderateContent', () => {
     it('severity is CRITICAL when aiConfidence >= 0.9', async () => {
       const item = makeQueueItem({ severity: 'CRITICAL' });
       mockDb.query.mockResolvedValueOnce({ rows: [item], rowCount: 1 } as never);
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
 
       await ContentModerationService.moderateContent({
         contentType: 'message',
@@ -464,11 +462,13 @@ describe('ContentModerationService.moderateContent', () => {
       mockAIClient.isConfigured.mockReturnValue(true);
     });
 
-    it('AI returns safe category with high confidence → auto-approve without DB insert', async () => {
+    it('AI returns safe category with high confidence but cannot auto-approve', async () => {
       mockAIClient.callJSON.mockResolvedValueOnce({
         data: { category: 'safe', confidence: 0.95, recommendation: 'approve' },
       } as never);
 
+      const item = makeQueueItem({ status: 'pending' });
+      mockDb.query.mockResolvedValueOnce({ rows: [item], rowCount: 1 } as never);
       const result = await ContentModerationService.moderateContent({
         contentType: 'message',
         contentId: 'msg-17',
@@ -478,8 +478,9 @@ describe('ContentModerationService.moderateContent', () => {
       });
 
       expect(result.success).toBe(true);
-      expect(result.data?.approved).toBe(true);
-      expect(mockDb.query).not.toHaveBeenCalled();
+      expect(result.data?.approved).toBe(false);
+      expect(result.data?.queueItemId).toBe('qi-1');
+      expect(mockDb.query.mock.calls[0][0]).toContain("'pending'");
     });
 
     it('AI returns non-safe category → uses AI category for moderation', async () => {
@@ -648,6 +649,29 @@ describe('ContentModerationService.reviewQueueItem', () => {
     const updateArgs = mockDb.query.mock.calls[0][1] as unknown[];
     expect(updateArgs[0]).toBe('approved');
     expect(updateArgs[2]).toBe('approve');
+  });
+
+  it('keeps a photo message quarantined while any photo or caption review remains unresolved', async () => {
+    const item = makeQueueItem({
+      status: 'approved',
+      review_decision: 'approve',
+      content_type: 'photo',
+      content_id: 'photo-message-1',
+    });
+    mockDb.query.mockResolvedValueOnce({ rows: [item], rowCount: 1 } as never);
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+
+    const result = await ContentModerationService.reviewQueueItem(
+      'qi-photo-1',
+      'admin-1',
+      'approve',
+      'Pixels are safe',
+    );
+
+    expect(result.success).toBe(true);
+    const visibilitySql = String(mockDb.query.mock.calls[1][0]);
+    expect(visibilitySql).toContain("queue.content_type IN ('photo','message')");
+    expect(visibilitySql).toContain("queue.status<>'approved'");
   });
 
   it('reject decision → status becomes rejected, quarantine called', async () => {

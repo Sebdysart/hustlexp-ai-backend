@@ -43,9 +43,9 @@ const log = logger.child({ service: 'CapabilityRecomputeService' });
 
 interface UserRow {
   id: string;
-  trust_tier: string; // 'A' | 'B' | 'C' | 'D' or integer
-  location_state: string | null; // May not exist, will be null if missing
-  city: string | null; // From users.city
+  trust_tier: number;
+  location_state: string | null;
+  location_city: string | null;
 }
 
 interface LicenseVerificationRow {
@@ -63,6 +63,9 @@ interface InsuranceVerificationRow {
 interface BackgroundCheckRow {
   id: string;
   expires_at: string | null;
+  provider: string;
+  provider_environment: 'PRODUCTION' | 'CONTROLLED_TEST';
+  is_test: boolean;
 }
 
 /**
@@ -70,7 +73,7 @@ interface BackgroundCheckRow {
  * 
  * This is a pure function - deterministic mapping
  */
-function mapTrustTierToRiskClearance(trustTier: string): string[] {
+function mapTrustTierToRiskClearance(trustTier: string | number): string[] {
   // Simplified mapping - adjust based on your actual policy
   // Trust tier 'A' = highest trust = CRITICAL risk clearance
   // Trust tier 'D' = lowest trust = LOW risk clearance
@@ -80,13 +83,14 @@ function mapTrustTierToRiskClearance(trustTier: string): string[] {
     'B': ['low', 'medium', 'high'],
     'C': ['low', 'medium'],
     'D': ['low'],
-    '1': ['low'], // Numeric tiers
+    '0': ['low'], // Explorer remains browse-only at the acceptance boundary.
+    '1': ['low'], // Verified: launch-cell green lanes.
     '2': ['low', 'medium'],
     '3': ['low', 'medium', 'high'],
-    '4': ['low', 'medium', 'high', 'critical'],
+    '4': ['low', 'medium', 'high'],
   };
 
-  return tierMap[trustTier] || ['low'];
+  return tierMap[String(trustTier)] || ['low'];
 }
 
 /**
@@ -123,18 +127,12 @@ export async function recomputeCapabilityProfile(
   userId: string,
   reasonMeta?: { reason: string; sourceVerificationId?: string }
 ): Promise<void> {
-  // Step 1: Begin transaction (SERIALIZABLE or REPEATABLE READ for isolation)
-  // Note: Neon serverless may not support explicit transaction control
-  // We'll use a single query batch for atomicity
+  return db.transaction(async (query) => {
 
-  // Step 2: Load immutable authority inputs
-  // Note: location_state may not exist in users table yet (it's in capability_profiles)
-  // For now, we'll use city as a fallback or leave location_state null
-  const userResult = await db.query<UserRow>(
+  // Step 2: Load immutable authority inputs from the canonical user profile.
+  const userResult = await query<UserRow>(
     `
-    SELECT id, trust_tier, 
-           NULL as location_state,  -- Will be set from capability_profiles or onboarding claims
-           city
+    SELECT id, trust_tier, location_state, location_city
     FROM users
     WHERE id = $1
     LIMIT 1
@@ -153,7 +151,7 @@ export async function recomputeCapabilityProfile(
   const user = userResult.rows[0];
 
   // Load APPROVED, non-expired license verifications
-  const licensesResult = await db.query<LicenseVerificationRow>(
+  const licensesResult = await query<LicenseVerificationRow>(
     `
     SELECT id, trade_type, issuing_state, expiration_date
     FROM license_verifications
@@ -166,7 +164,7 @@ export async function recomputeCapabilityProfile(
   );
 
   // Load APPROVED, non-expired insurance verifications
-  const insuranceResult = await db.query<InsuranceVerificationRow>(
+  const insuranceResult = await query<InsuranceVerificationRow>(
     `
     SELECT id, expiration_date
     FROM insurance_verifications
@@ -180,14 +178,14 @@ export async function recomputeCapabilityProfile(
   );
 
   // Load APPROVED, non-expired background checks
-  const bgCheckResult = await db.query<BackgroundCheckRow>(
+  const bgCheckResult = await query<BackgroundCheckRow>(
     `
-    SELECT id, expires_at
+    SELECT id, expires_at, provider, provider_environment, is_test
     FROM background_checks
     WHERE user_id = $1
-      AND status = 'APPROVED'
+      AND status IN ('APPROVED', 'CLEAR')
       AND (expires_at IS NULL OR expires_at > NOW())
-    ORDER BY expires_at DESC NULLS LAST
+    ORDER BY is_test ASC, expires_at DESC NULLS LAST, initiated_at DESC
     LIMIT 1
     `,
     [userId]
@@ -217,21 +215,27 @@ export async function recomputeCapabilityProfile(
   const backgroundCheckExpiresAt = bgCheckResult.rows.length > 0 
     ? bgCheckResult.rows[0].expires_at 
     : null;
+  const backgroundCheckSourceId = bgCheckResult.rows[0]?.id ?? null;
+  const backgroundCheckProvider = bgCheckResult.rows[0]?.provider ?? null;
+  const backgroundCheckEnvironment = bgCheckResult.rows[0]?.provider_environment ?? null;
+  const backgroundCheckIsTest = bgCheckResult.rows[0]?.is_test ?? false;
 
   // Step 7: Write derived outputs atomically
   // Use a transaction-like approach: execute all writes in sequence
   // If any fails, the entire operation should be rolled back
 
   // 7.1: Update capability_profiles (UPSERT pattern)
-  await db.query(
+  await query(
     `
     INSERT INTO capability_profiles (
       user_id, trust_tier, risk_clearance, location_state, location_city,
       insurance_valid, insurance_expires_at,
       background_check_valid, background_check_expires_at,
+      background_check_source_id, background_check_provider,
+      background_check_environment, background_check_is_test,
       updated_at
     )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW())
     ON CONFLICT (user_id) DO UPDATE SET
       trust_tier = EXCLUDED.trust_tier,
       risk_clearance = EXCLUDED.risk_clearance,
@@ -241,6 +245,10 @@ export async function recomputeCapabilityProfile(
       insurance_expires_at = EXCLUDED.insurance_expires_at,
       background_check_valid = EXCLUDED.background_check_valid,
       background_check_expires_at = EXCLUDED.background_check_expires_at,
+      background_check_source_id = EXCLUDED.background_check_source_id,
+      background_check_provider = EXCLUDED.background_check_provider,
+      background_check_environment = EXCLUDED.background_check_environment,
+      background_check_is_test = EXCLUDED.background_check_is_test,
       updated_at = NOW()
     `,
     [
@@ -248,17 +256,21 @@ export async function recomputeCapabilityProfile(
       user.trust_tier,
       riskClearance,
       user.location_state,
-      user.city, // location_city
+      user.location_city,
       insuranceValid,
       insuranceExpiresAt,
       backgroundCheckValid,
       backgroundCheckExpiresAt,
+      backgroundCheckSourceId,
+      backgroundCheckProvider,
+      backgroundCheckEnvironment,
+      backgroundCheckIsTest,
     ]
   );
 
   // 7.2: Rebuild verified_trades (DELETE + INSERT pattern)
   // N2.4 ENFORCEMENT: Always rebuild, never patch
-  await db.query(
+  await query(
     `
     DELETE FROM verified_trades
     WHERE user_id = $1
@@ -269,7 +281,7 @@ export async function recomputeCapabilityProfile(
   // Insert verified trades
   if (verifiedTrades.length > 0) {
     for (const trade of verifiedTrades) {
-      await db.query(
+      await query(
         `
         INSERT INTO verified_trades (user_id, trade, state, expires_at, license_verification_id, created_at)
         VALUES ($1, $2, $3, $4, $5, NOW())
@@ -288,5 +300,15 @@ export async function recomputeCapabilityProfile(
     }
   }
 
-  log.info({ userId, verifiedTradesCount: verifiedTrades.length, riskClearance, insuranceValid, backgroundCheckValid, reason: reasonMeta?.reason }, 'Capability recompute completed');
+  log.info({
+    userId,
+    verifiedTradesCount: verifiedTrades.length,
+    riskClearance,
+    insuranceValid,
+    backgroundCheckValid,
+    backgroundCheckEnvironment,
+    backgroundCheckIsTest,
+    reason: reasonMeta?.reason,
+  }, 'Capability recompute completed');
+  });
 }

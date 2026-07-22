@@ -4,6 +4,7 @@
  * Tests proof lifecycle: getById, getByTaskId, getPhotos,
  * submit, addPhoto, review (with AI verification pipeline).
  */
+import { createHash } from 'node:crypto';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../../src/db', () => {
@@ -43,7 +44,7 @@ vi.mock('../../src/services/LogisticsAIService', () => ({
 vi.mock('../../src/services/JudgeAIService', () => ({
   JudgeAIService: {
     synthesizeVerdict: vi.fn(),
-    logVerdict: vi.fn().mockResolvedValue(undefined),
+    logVerdict: vi.fn().mockResolvedValue({ success: true, data: undefined }),
   },
 }));
 
@@ -51,6 +52,13 @@ vi.mock('../../src/services/PhotoVerificationService', () => ({
   PhotoVerificationService: {
     compareBeforeAfter: vi.fn(),
   },
+}));
+
+vi.mock('../../src/services/PrivateMediaDeliveryService', () => ({
+  issueSingleParticipantMediaAccess: vi.fn().mockResolvedValue({
+    downloadUrl: 'https://signed.example/private-proof.jpg?signature=test',
+    expiresAt: '2026-07-20T18:05:00.000Z',
+  }),
 }));
 
 // Mock the Redis cache module used by the advisory lock (FIX YY-03).
@@ -71,6 +79,8 @@ import { BiometricVerificationService } from '../../src/services/BiometricVerifi
 import { LogisticsAIService } from '../../src/services/LogisticsAIService';
 import { JudgeAIService } from '../../src/services/JudgeAIService';
 import { PhotoVerificationService } from '../../src/services/PhotoVerificationService';
+import { issueSingleParticipantMediaAccess } from '../../src/services/PrivateMediaDeliveryService';
+import { proofSubmissionHash } from '../../src/services/ProofPolicy';
 
 const mockDb = vi.mocked(db);
 const mockIsInvariantViolation = vi.mocked(isInvariantViolation);
@@ -82,8 +92,11 @@ beforeEach(() => {
   mockRedisDel.mockResolvedValue(1);
   // Restore transaction mock after resetAllMocks() wipes the implementation
   mockDb.transaction.mockImplementation(async (fn: (q: typeof mockDb.query) => Promise<unknown>) => fn(mockDb.query));
-  // Restore JudgeAIService.logVerdict — fire-and-forget call in review() needs a Promise
-  vi.mocked(JudgeAIService.logVerdict).mockResolvedValue(undefined as never);
+  vi.mocked(JudgeAIService.logVerdict).mockResolvedValue({ success: true, data: undefined } as never);
+  vi.mocked(issueSingleParticipantMediaAccess).mockResolvedValue({
+    downloadUrl: 'https://signed.example/private-proof.jpg?signature=test',
+    expiresAt: '2026-07-20T18:05:00.000Z',
+  });
 });
 
 // ============================================================================
@@ -249,6 +262,170 @@ describe('ProofService', () => {
   // submit
   // --------------------------------------------------------------------------
   describe('submit', () => {
+    const offlineSync = {
+      clientSequence: 41,
+      priorTaskVersion: 7,
+      localOccurredAt: '2026-07-20T10:00:00.000Z',
+      deviceVersion: 'web-idb-aes-gcm-v1',
+      appVersion: 'web-test',
+    };
+
+    it('rejects a stale task version before inserting synchronized proof', async () => {
+      mockDb.query
+        .mockResolvedValueOnce({ rows: [{
+          worker_id: 'user-1', state: 'ACCEPTED', version: 8,
+          scope_change_pending: false, checklist_count: 0, completed_count: 0,
+        }], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+
+      await expect(ProofService.submit({
+        taskId: 'task-1', submitterId: 'user-1', description: 'Done',
+        clientSubmissionId: 'proof-submit:offline-sync-0001', ...offlineSync,
+      })).rejects.toMatchObject({
+        code: 'CONFLICT',
+        message: expect.stringContaining('OFFLINE_SYNC_STALE_TASK_VERSION'),
+      });
+      expect(mockDb.query.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO proofs'))).toBe(false);
+    });
+
+    it('rejects an older non-replayed synchronized proof sequence', async () => {
+      mockDb.query
+        .mockResolvedValueOnce({ rows: [{
+          worker_id: 'user-1', state: 'ACCEPTED', version: 7,
+          scope_change_pending: false, checklist_count: 0, completed_count: 0,
+        }], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+        .mockResolvedValueOnce({ rows: [{ client_sequence: 41 }], rowCount: 1 } as never);
+
+      await expect(ProofService.submit({
+        taskId: 'task-1', submitterId: 'user-1', description: 'Done',
+        clientSubmissionId: 'proof-submit:offline-sync-0002', ...offlineSync,
+      })).rejects.toMatchObject({
+        code: 'CONFLICT',
+        message: expect.stringContaining('OFFLINE_SYNC_STALE_SEQUENCE'),
+      });
+    });
+
+    it('replays an exact v1 synchronized proof even after the task version advances', async () => {
+      const params = {
+        taskId: 'task-1', submitterId: 'user-1', description: 'Done',
+        clientSubmissionId: 'proof-submit:offline-sync-0003', ...offlineSync,
+      };
+      const replay = makeProof({
+        state: 'SUBMITTED', client_submission_id: params.clientSubmissionId,
+        submission_hash: proofSubmissionHash(params)!, sync_contract_version: 1,
+      });
+      mockDb.query
+        .mockResolvedValueOnce({ rows: [{
+          worker_id: 'user-1', state: 'PROOF_SUBMITTED', version: 8,
+          scope_change_pending: false, checklist_count: 0, completed_count: 0,
+        }], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [replay], rowCount: 1 } as never);
+
+      await expect(ProofService.submit(params)).resolves.toEqual({
+        success: true,
+        data: { ...replay, idempotency_replayed: true },
+      });
+      expect(mockDb.query).toHaveBeenCalledTimes(2);
+    });
+
+    it('replays an exact reconciliation-v1 proof only when the payload witness also matches', async () => {
+      const params = {
+        taskId: 'task-1', submitterId: 'user-1', description: 'Done',
+        clientSubmissionId: 'proof-submit:offline-sync-reconciliation-0001',
+        ...offlineSync, offlinePayloadHash: 'a'.repeat(64),
+      };
+      const replay = {
+        ...makeProof({ state: 'SUBMITTED', client_submission_id: params.clientSubmissionId }),
+        submission_hash: proofSubmissionHash(params)!, sync_contract_version: 1,
+        reconciliation_contract_version: 1, offline_payload_hash: params.offlinePayloadHash,
+      };
+      mockDb.query
+        .mockResolvedValueOnce({ rows: [{
+          worker_id: 'user-1', state: 'PROOF_SUBMITTED', version: 8,
+          scope_change_pending: false, checklist_count: 0, completed_count: 0,
+        }], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [replay], rowCount: 1 } as never);
+
+      await expect(ProofService.submit(params)).resolves.toEqual({
+        success: true, data: { ...replay, idempotency_replayed: true },
+      });
+    });
+
+    it('preserves replay compatibility for sync-v1 proofs written before payload witnesses', async () => {
+      const params = {
+        taskId: 'task-1', submitterId: 'user-1', description: 'Done',
+        clientSubmissionId: 'proof-submit:offline-sync-reconciliation-legacy',
+        ...offlineSync, offlinePayloadHash: 'a'.repeat(64),
+      };
+      const replay = {
+        ...makeProof({ state: 'SUBMITTED', client_submission_id: params.clientSubmissionId }),
+        submission_hash: proofSubmissionHash({ ...params, offlinePayloadHash: undefined })!,
+        sync_contract_version: 1, reconciliation_contract_version: 0, offline_payload_hash: null,
+      };
+      mockDb.query
+        .mockResolvedValueOnce({ rows: [{
+          worker_id: 'user-1', state: 'PROOF_SUBMITTED', version: 8,
+          scope_change_pending: false, checklist_count: 0, completed_count: 0,
+        }], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [replay], rowCount: 1 } as never);
+
+      await expect(ProofService.submit(params)).resolves.toMatchObject({ success: true });
+    });
+
+    it('replays the same durable submission key and payload without another insert', async () => {
+      const clientSubmissionId = 'proof-submit:attempt-1';
+      const submissionHash = createHash('sha256').update(JSON.stringify({
+        taskId: 'task-1',
+        submitterId: 'user-1',
+        description: 'Done',
+        photos: [],
+        gpsLatitude: null,
+        gpsLongitude: null,
+        gpsAccuracyMeters: null,
+        biometricHash: null,
+        scopeVersionId: null,
+        scopeHash: null,
+      })).digest('hex');
+      const replay = makeProof({
+        state: 'SUBMITTED',
+        client_submission_id: clientSubmissionId,
+        submission_hash: submissionHash,
+      });
+      mockDb.query
+        .mockResolvedValueOnce({ rows: [{ worker_id: 'user-1', state: 'PROOF_SUBMITTED' }], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [replay], rowCount: 1 } as never);
+
+      const result = await ProofService.submit({
+        taskId: 'task-1',
+        submitterId: 'user-1',
+        description: 'Done',
+        clientSubmissionId,
+      });
+
+      expect(result).toEqual({ success: true, data: { ...replay, idempotency_replayed: true } });
+      expect(mockDb.query).toHaveBeenCalledTimes(2);
+      expect(mockDb.query.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO proofs'))).toBe(false);
+    });
+
+    it('rejects a reused durable submission key with changed evidence', async () => {
+      mockDb.query
+        .mockResolvedValueOnce({ rows: [{ worker_id: 'user-1', state: 'PROOF_SUBMITTED' }], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [{
+          ...makeProof({ state: 'SUBMITTED' }),
+          submitter_id: 'user-1',
+          submission_hash: 'f'.repeat(64),
+        }], rowCount: 1 } as never);
+
+      await expect(ProofService.submit({
+        taskId: 'task-1',
+        submitterId: 'user-1',
+        description: 'Changed evidence',
+        clientSubmissionId: 'proof-submit:attempt-1',
+      })).rejects.toMatchObject({ code: 'CONFLICT' });
+      expect(mockDb.query).toHaveBeenCalledTimes(2);
+    });
+
     it('creates proof in PENDING then transitions to SUBMITTED', async () => {
       const pendingProof = makeProof({ state: 'PENDING' });
       const submittedProof = makeProof({ state: 'SUBMITTED' });
@@ -257,6 +434,7 @@ describe('ProofService', () => {
         .mockResolvedValueOnce({ rows: [{ worker_id: 'user-1', state: 'ACCEPTED' }], rowCount: 1 } as never) // task lookup (FIX 1+2)
         .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // duplicate check (FIX 6)
         .mockResolvedValueOnce({ rows: [pendingProof], rowCount: 1 } as never) // INSERT
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // proof verification metadata
         .mockResolvedValueOnce({ rows: [submittedProof], rowCount: 1 } as never); // UPDATE
 
       const result = await ProofService.submit({
@@ -267,7 +445,329 @@ describe('ProofService', () => {
 
       expect(result.success).toBe(true);
       if (result.success) expect(result.data.state).toBe('SUBMITTED');
-      expect(mockDb.query).toHaveBeenCalledTimes(4); // task lookup + dup check + INSERT + UPDATE
+      expect(mockDb.query).toHaveBeenCalledTimes(5); // task lookup + dup check + proof + signals + UPDATE
+    });
+
+    it('binds proof to the exact active scope after every checklist item is complete', async () => {
+      const scopeHash = 'b'.repeat(64);
+      const pendingProof = makeProof({
+        state: 'PENDING',
+        scope_version_id: 'scope-v1',
+        scope_version_hash: scopeHash,
+      });
+      const submittedProof = makeProof({
+        state: 'SUBMITTED',
+        scope_version_id: 'scope-v1',
+        scope_version_hash: scopeHash,
+      });
+      mockDb.query
+        .mockResolvedValueOnce({ rows: [{
+          worker_id: 'user-1',
+          state: 'ACCEPTED',
+          active_scope_version_id: 'scope-v1',
+          scope_hash: scopeHash,
+          scope_change_pending: false,
+          checklist_count: 3,
+          completed_count: 3,
+        }], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+        .mockResolvedValueOnce({ rows: [pendingProof], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [submittedProof], rowCount: 1 } as never);
+
+      const result = await ProofService.submit({
+        taskId: 'task-1',
+        submitterId: 'user-1',
+        description: 'Completed approved scope',
+        scopeVersionId: 'scope-v1',
+        scopeHash,
+      });
+
+      expect(result.success).toBe(true);
+      const proofInsert = mockDb.query.mock.calls[2];
+      expect(String(proofInsert[0])).toContain('scope_version_id, scope_version_hash');
+      expect(proofInsert[1]).toEqual([
+        'task-1', 'user-1', 'Completed approved scope', 'scope-v1', scopeHash, null, null,
+        0, null, null, null, null, null, null, null, null, 0, null,
+      ]);
+    });
+
+    it('rejects stale scope proof without creating a proof row', async () => {
+      const scopeHash = 'c'.repeat(64);
+      mockDb.query.mockResolvedValueOnce({ rows: [{
+        worker_id: 'user-1',
+        state: 'ACCEPTED',
+        active_scope_version_id: 'scope-v2',
+        scope_hash: scopeHash,
+        scope_change_pending: false,
+        checklist_count: 2,
+        completed_count: 2,
+      }], rowCount: 1 } as never);
+
+      await expect(ProofService.submit({
+        taskId: 'task-1',
+        submitterId: 'user-1',
+        description: 'Stale scope proof',
+        scopeVersionId: 'scope-v1',
+        scopeHash: 'd'.repeat(64),
+      })).rejects.toMatchObject({ code: 'CONFLICT' });
+      expect(mockDb.query).toHaveBeenCalledOnce();
+    });
+
+    it('blocks proof while a scope change is pending', async () => {
+      mockDb.query.mockResolvedValueOnce({ rows: [{
+        worker_id: 'user-1',
+        state: 'ACCEPTED',
+        active_scope_version_id: 'scope-v1',
+        scope_hash: 'e'.repeat(64),
+        scope_change_pending: true,
+        checklist_count: 1,
+        completed_count: 1,
+      }], rowCount: 1 } as never);
+
+      await expect(ProofService.submit({
+        taskId: 'task-1',
+        submitterId: 'user-1',
+        description: 'Should stay frozen',
+        scopeVersionId: 'scope-v1',
+        scopeHash: 'e'.repeat(64),
+      })).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+      expect(mockDb.query).toHaveBeenCalledOnce();
+    });
+
+    it('blocks proof until every active-scope checklist item is complete', async () => {
+      const scopeHash = 'f'.repeat(64);
+      mockDb.query.mockResolvedValueOnce({ rows: [{
+        worker_id: 'user-1',
+        state: 'ACCEPTED',
+        active_scope_version_id: 'scope-v1',
+        scope_hash: scopeHash,
+        scope_change_pending: false,
+        checklist_count: 3,
+        completed_count: 2,
+      }], rowCount: 1 } as never);
+
+      await expect(ProofService.submit({
+        taskId: 'task-1',
+        submitterId: 'user-1',
+        description: 'Missing one scope item',
+        scopeVersionId: 'scope-v1',
+        scopeHash,
+      })).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+      expect(mockDb.query).toHaveBeenCalledOnce();
+    });
+
+    it('enforces the task-specific minimum proof-photo policy before inserting', async () => {
+      mockDb.query.mockResolvedValueOnce({ rows: [{
+        worker_id: 'user-1',
+        state: 'ACCEPTED',
+        scope_change_pending: false,
+        checklist_count: 0,
+        completed_count: 0,
+        proof_min_photos: 2,
+        proof_max_photos: 5,
+        proof_gps_required: false,
+      }], rowCount: 1 } as never);
+
+      await expect(ProofService.submit({
+        taskId: 'task-1',
+        submitterId: 'user-1',
+        description: 'Description alone cannot satisfy this task policy.',
+      })).rejects.toMatchObject({
+        code: 'PRECONDITION_FAILED',
+        message: expect.stringContaining('at least 2 proof photos'),
+      });
+      expect(mockDb.query).toHaveBeenCalledOnce();
+      expect(String(mockDb.query.mock.calls[0]?.[0])).toContain('t.proof_min_photos');
+    });
+
+    it('enforces the task-specific maximum proof-photo policy before inserting', async () => {
+      mockDb.query.mockResolvedValueOnce({ rows: [{
+        worker_id: 'user-1',
+        state: 'ACCEPTED',
+        scope_change_pending: false,
+        checklist_count: 0,
+        completed_count: 0,
+        proof_min_photos: 1,
+        proof_max_photos: 2,
+        proof_gps_required: false,
+      }], rowCount: 1 } as never);
+      const photoEvidence = [1, 2, 3].map((sequence) => ({
+        uploadReceiptId: `a0000000-0000-4000-8000-00000000000${sequence}`,
+        contentType: 'image/jpeg' as const,
+        fileSizeBytes: 12_345,
+        checksumSha256: String(sequence).repeat(64),
+      }));
+
+      await expect(ProofService.submit({
+        taskId: 'task-1',
+        submitterId: 'user-1',
+        photoEvidence,
+      })).rejects.toMatchObject({
+        code: 'BAD_REQUEST',
+        message: expect.stringContaining('at most 2 proof photos'),
+      });
+      expect(mockDb.query).toHaveBeenCalledOnce();
+    });
+
+    it('requires measured GPS evidence when the task policy requires it', async () => {
+      mockDb.query.mockResolvedValueOnce({ rows: [{
+        worker_id: 'user-1',
+        state: 'ACCEPTED',
+        scope_change_pending: false,
+        checklist_count: 0,
+        completed_count: 0,
+        proof_min_photos: 0,
+        proof_max_photos: 5,
+        proof_gps_required: true,
+      }], rowCount: 1 } as never);
+
+      await expect(ProofService.submit({
+        taskId: 'task-1',
+        submitterId: 'user-1',
+        description: 'GPS evidence is required by policy.',
+      })).rejects.toMatchObject({
+        code: 'PRECONDITION_FAILED',
+        message: expect.stringContaining('requires measured GPS proof'),
+      });
+      expect(mockDb.query).toHaveBeenCalledOnce();
+    });
+
+    it('persists attributable photo evidence in the same transaction before submission', async () => {
+      const pendingProof = makeProof({ state: 'PENDING' });
+      const submittedProof = makeProof({ state: 'SUBMITTED' });
+      const checksum = 'a'.repeat(64);
+
+      mockDb.query
+        .mockResolvedValueOnce({ rows: [{ worker_id: 'user-1', state: 'ACCEPTED' }], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+        .mockResolvedValueOnce({ rows: [pendingProof], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [{
+          canonical_key: 'media/proof/task-1/user-1/a0000000-0000-4000-8000-000000000001.jpg',
+          canonical_content_type: 'image/jpeg',
+          canonical_size_bytes: 12_345,
+          canonical_checksum_sha256: checksum,
+        }], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [submittedProof], rowCount: 1 } as never);
+
+      const result = await ProofService.submit({
+        taskId: 'task-1',
+        submitterId: 'user-1',
+        photoEvidence: [{
+          uploadReceiptId: 'a0000000-0000-4000-8000-000000000001',
+          contentType: 'image/jpeg',
+          fileSizeBytes: 12_345,
+          checksumSha256: checksum,
+          capturedAt: '2026-07-18T19:00:00.000Z',
+        }],
+      });
+
+      expect(result.success).toBe(true);
+      expect(mockDb.transaction).toHaveBeenCalledOnce();
+      const receiptConsume = mockDb.query.mock.calls[3];
+      expect(receiptConsume[0]).toMatch(/UPDATE media_upload_receipts/i);
+      const photoInsert = mockDb.query.mock.calls[4];
+      expect(photoInsert[0]).toMatch(/INSERT INTO proof_photos/i);
+      expect(photoInsert[1]).toEqual([
+        'proof-1',
+        'media/proof/task-1/user-1/a0000000-0000-4000-8000-000000000001.jpg',
+        'image/jpeg',
+        12_345,
+        checksum,
+        '2026-07-18T19:00:00.000Z',
+        1,
+      ]);
+      const signalInsert = mockDb.query.mock.calls[5];
+      expect(signalInsert[0]).toMatch(/INSERT INTO proof_submissions/i);
+      expect(signalInsert[1]).toEqual(['proof-1', 'user-1', null, null]);
+    });
+
+    it('creates a proof verification row even when the submission has no GPS evidence', async () => {
+      const pendingProof = makeProof({ state: 'PENDING' });
+      const submittedProof = makeProof({ state: 'SUBMITTED' });
+      mockDb.query
+        .mockResolvedValueOnce({ rows: [{ worker_id: 'user-1', state: 'ACCEPTED' }], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+        .mockResolvedValueOnce({ rows: [pendingProof], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [submittedProof], rowCount: 1 } as never);
+
+      const result = await ProofService.submit({
+        taskId: 'task-1',
+        submitterId: 'user-1',
+        description: 'Completed the approved scope.',
+      });
+
+      expect(result.success).toBe(true);
+      const signalInsert = mockDb.query.mock.calls.find(([sql]) => (
+        typeof sql === 'string' && /INSERT INTO proof_submissions/i.test(sql)
+      ));
+      expect(signalInsert).toBeDefined();
+      expect(signalInsert?.[1]).toEqual(['proof-1', 'user-1', null, null]);
+    });
+
+    it('persists measured GPS evidence atomically for the review pipeline', async () => {
+      const pendingProof = makeProof({ state: 'PENDING' });
+      const submittedProof = makeProof({ state: 'SUBMITTED' });
+      mockDb.query
+        .mockResolvedValueOnce({ rows: [{ worker_id: 'user-1', state: 'ACCEPTED' }], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+        .mockResolvedValueOnce({ rows: [pendingProof], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [submittedProof], rowCount: 1 } as never);
+
+      const result = await ProofService.submit({
+        taskId: 'task-1',
+        submitterId: 'user-1',
+        gpsLatitude: 47.6062,
+        gpsLongitude: -122.3321,
+        gpsAccuracyMeters: 8.5,
+      });
+
+      expect(result.success).toBe(true);
+      const gpsInsert = mockDb.query.mock.calls[3];
+      expect(String(gpsInsert[0])).toContain('INSERT INTO proof_submissions');
+      expect(gpsInsert[1]).toEqual([
+        'proof-1', 'user-1', JSON.stringify({ latitude: 47.6062, longitude: -122.3321 }), 8.5,
+      ]);
+    });
+
+    it('rejects partial GPS evidence before opening a transaction', async () => {
+      await expect(ProofService.submit({
+        taskId: 'task-1',
+        submitterId: 'user-1',
+        gpsLatitude: 47.6062,
+        gpsLongitude: -122.3321,
+      })).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+      expect(mockDb.transaction).not.toHaveBeenCalled();
+    });
+
+    it('fails closed when legacy photo URLs omit durable file evidence', async () => {
+      await expect(ProofService.submit({
+        taskId: 'task-1',
+        submitterId: 'user-1',
+        photoUrls: ['https://pub-abc123def456abcd.r2.dev/proofs/task-1/photo.jpg'],
+      })).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+
+      expect(mockDb.transaction).not.toHaveBeenCalled();
+    });
+
+    it('rejects URL smuggling even when finalized photo evidence is also supplied', async () => {
+      await expect(ProofService.submit({
+        taskId: 'task-1',
+        submitterId: 'user-1',
+        photoUrls: ['https://pub-abc123def456abcd.r2.dev/proofs/task-1/unowned.jpg'],
+        photoEvidence: [{
+          uploadReceiptId: 'a0000000-0000-4000-8000-000000000001',
+          contentType: 'image/jpeg',
+          fileSizeBytes: 12_345,
+          checksumSha256: 'a'.repeat(64),
+        }],
+      })).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+
+      expect(mockDb.transaction).not.toHaveBeenCalled();
     });
 
     it('returns INVARIANT_VIOLATION on constraint failure', async () => {
@@ -317,6 +817,7 @@ describe('ProofService', () => {
         .mockResolvedValueOnce({ rows: [{ worker_id: 'user-1', state: 'ACCEPTED' }], rowCount: 1 } as never) // task FOR UPDATE
         .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)   // dup check FOR UPDATE on proofs
         .mockResolvedValueOnce({ rows: [pendingProof], rowCount: 1 } as never) // INSERT
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // proof verification metadata
         .mockResolvedValueOnce({ rows: [submittedProof], rowCount: 1 } as never); // UPDATE to SUBMITTED
 
       const result = await ProofService.submit({
@@ -386,6 +887,7 @@ describe('ProofService', () => {
         .mockResolvedValueOnce({ rows: [{ worker_id: 'user-1', state: 'ACCEPTED' }], rowCount: 1 } as never)
         .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
         .mockResolvedValueOnce({ rows: [pendingProof], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
         .mockResolvedValueOnce({ rows: [submittedProof], rowCount: 1 } as never);
 
       const result = await ProofService.submit({
@@ -619,6 +1121,13 @@ describe('ProofService', () => {
 
       expect(result.success).toBe(true);
       if (result.success) expect(result.data.state).toBe('ACCEPTED');
+      expect(JudgeAIService.logVerdict).toHaveBeenCalledWith(
+        'proof-1',
+        'task-1',
+        expect.objectContaining({ verdict: 'APPROVE' }),
+        mockDb.query,
+        expect.objectContaining({ validatorOverride: false }),
+      );
     });
 
     it('blocks acceptance when JudgeAI rejects', async () => {
@@ -685,7 +1194,7 @@ describe('ProofService', () => {
       expect(result.success).toBe(true);
     });
 
-    it('proceeds with acceptance when JudgeAI synthesis fails', async () => {
+    it('fails closed when both JudgeAI and its deterministic fallback fail', async () => {
       const proof = makeProof({ state: 'SUBMITTED' });
       const acceptedProof = makeProof({ state: 'ACCEPTED', reviewed_by: 'admin-1' });
 
@@ -708,13 +1217,44 @@ describe('ProofService', () => {
         decision: 'ACCEPTED',
       });
 
-      expect(result.success).toBe(true);
+      expect(result.success).toBe(false);
+      if (!result.success) expect(result.error.code).toBe('JUDGE_UNAVAILABLE');
+      expect(mockDb.transaction).not.toHaveBeenCalled();
     });
 
-    it('runs biometric + GPS + photo pipelines when data available', async () => {
+    it('rolls acceptance back when the Judge audit cannot be stored', async () => {
+      const proof = makeProof({ state: 'SUBMITTED' });
+      mockDb.query
+        .mockResolvedValueOnce({ rows: [proof], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [{ poster_id: 'admin-1' }], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [{ description: 'task', before_photo_url: null }], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [{ state: 'SUBMITTED', task_id: 'task-1' }], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [{ state: 'PROOF_SUBMITTED' }], rowCount: 1 } as never);
+      vi.mocked(JudgeAIService.synthesizeVerdict).mockResolvedValueOnce({
+        success: true,
+        data: {
+          verdict: 'APPROVE', confidence: 0.9, risk_score: 0.1,
+          reasoning: 'All clear', fraud_flags: [], component_scores: {}, recommended_action: 'approve',
+        },
+      } as never);
+      vi.mocked(JudgeAIService.logVerdict).mockResolvedValueOnce({
+        success: false,
+        error: { code: 'LOG_VERDICT_FAILED', message: 'audit unavailable' },
+      } as never);
+
+      const result = await ProofService.review({
+        proofId: 'proof-1', reviewerId: 'admin-1', decision: 'ACCEPTED',
+      });
+
+      expect(result.success).toBe(false);
+      if (!result.success) expect(result.error.code).toBe('JUDGE_AUDIT_FAILED');
+      expect(mockDb.query.mock.calls.some(([sql]) => String(sql).includes('UPDATE proofs'))).toBe(false);
+    });
+
+    it('uses signed proof media while rejecting legacy depth and before-photo analysis', async () => {
       const proof = makeProof({
         state: 'SUBMITTED',
-        photo_url: 'https://r2.dev/photo.jpg',
+        photo_url: 'media/proof/task-1/user-1/receipt-1.jpg',
         gps_coordinates: { lat: 40.7128, lng: -74.006 },
         gps_accuracy_meters: 10,
         lidar_depth_map_url: 'https://r2.dev/lidar.bin',
@@ -764,9 +1304,13 @@ describe('ProofService', () => {
       });
 
       expect(result.success).toBe(true);
-      expect(BiometricVerificationService.analyzeProofSubmission).toHaveBeenCalled();
+      expect(BiometricVerificationService.analyzeProofSubmission).toHaveBeenCalledWith(
+        'proof-1',
+        'https://signed.example/private-proof.jpg?signature=test',
+        undefined,
+      );
       expect(LogisticsAIService.validateGPSProof).toHaveBeenCalled();
-      expect(PhotoVerificationService.compareBeforeAfter).toHaveBeenCalled();
+      expect(PhotoVerificationService.compareBeforeAfter).not.toHaveBeenCalled();
       expect(JudgeAIService.synthesizeVerdict).toHaveBeenCalled();
     });
 

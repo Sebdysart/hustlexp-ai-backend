@@ -84,6 +84,21 @@ export async function processTrustJob(job: Job<TrustJobData>): Promise<void> {
         throw new Error(`User ${userId} not found`);
       }
 
+      // The user row lock serializes trust mutations for this account. Check
+      // replay state before computing or applying any tier/hold change; relying
+      // on the later INSERT conflict is too late because the user UPDATE would
+      // already have demoted the account a second time.
+      const replay = await query<{ exists: boolean }>(
+        `SELECT EXISTS (
+           SELECT 1 FROM trust_ledger WHERE idempotency_key = $1
+         ) AS exists`,
+        [idempotencyKey]
+      );
+      if (replay.rows[0]?.exists) {
+        log.info({ eventType, userId, idempotencyKey }, 'Trust event replay skipped');
+        return;
+      }
+
       const user = userResult.rows[0];
       const oldTier = user.trust_tier;
 

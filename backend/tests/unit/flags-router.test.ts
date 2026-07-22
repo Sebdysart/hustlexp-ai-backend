@@ -146,7 +146,7 @@ describe('flags.setFlag', () => {
 
     await expect(
       makeAdminCaller().setFlag({ name: 'test', enabled: true })
-    ).rejects.toThrow('Admin access required');
+    ).rejects.toThrow('Platform administrator access required');
   });
 
   it('rejects rollout percentage outside range', async () => {

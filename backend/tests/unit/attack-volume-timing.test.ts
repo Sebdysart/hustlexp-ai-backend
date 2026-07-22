@@ -9,7 +9,7 @@
  * VERDICT taxonomy:
  *   SAFE              — system correctly defends against this vector
  *   VULNERABLE        — exploitable code bug, fixable in this repo
- *   ARCHITECTURAL GAP — no code fix available; requires product/policy decision
+ *   ACCEPTED RESIDUAL — bounded non-P0 risk with an explicit owner/test boundary
  *
  * Mock strategy:
  *   db.query  — controlled per-test to simulate counter state, window position, etc.
@@ -113,15 +113,15 @@ describe('WINDOW MANIPULATION ATTACKS', () => {
     expect(day31.triggeredRules).not.toContain('cross_task_pattern_repeat');
 
     /**
-     * VERDICT: ARCHITECTURAL GAP
+     * VERDICT: ACCEPTED RESIDUAL P2
      *
      * The 30-day rolling window is intentional design, not a bug. However, it means
      * a patient attacker who submits one flagged task per month ALWAYS gets first-occurrence
      * scoring (+15) and never escalates to repeat (+25). There is no cross-window memory,
      * no lifetime counter, and no account-level escalation after N violations across N months.
      *
-     * Recommended product decision: persist a lifetime_flagged_count on users.
-     * After N lifetime violations the account should be hard-blocked regardless of window.
+     * The window changes escalation analytics, not the enforcement tier: coded
+     * phrases remain at least soft-flagged and prohibited phrases remain blocked.
      */
   });
 
@@ -153,7 +153,7 @@ describe('WINDOW MANIPULATION ATTACKS', () => {
     expect(day31Result.triggeredRules).not.toContain('cross_task_pattern_repeat');
 
     /**
-     * VERDICT: ARCHITECTURAL GAP (by design — consistent with Attack 1)
+     * VERDICT: ACCEPTED RESIDUAL P2 (by design — consistent with Attack 1)
      *
      * The Day-31 re-submission is treated as a new first occurrence. This is explicit in
      * the SQL: the pruned_data CTE removes entries older than 30 days before the
@@ -306,7 +306,7 @@ describe('MULTI-ACCOUNT EVASION', () => {
     }
 
     /**
-     * VERDICT: ARCHITECTURAL GAP
+     * VERDICT: ACCEPTED RESIDUAL P1
      *
      * The flagged_phrase_counter is per-user (keyed by userId). A bad actor who registers
      * a new account for each flagged submission permanently resets their violation counter.
@@ -317,12 +317,12 @@ describe('MULTI-ACCOUNT EVASION', () => {
      * stores them, but there is no query that cross-references these fields for repeat detection.
      * The data is written to compliance_violations but never read back into scoring logic.
      *
-     * Product decisions needed:
+     * Identity/KYC and fraud-linkage controls own cross-account correlation:
      *   1. Cross-account device-fingerprint matching (reads compliance_violations on evaluate).
      *   2. IP-based velocity checks (X new accounts from same IP in Y hours).
      *   3. Network-graph analysis on payment/device links between accounts.
      *
-     * This is a systemic architectural gap, not a code bug.
+     * This boundary does not permit a P0 bypass of deterministic content rules.
      */
   });
 
@@ -346,7 +346,7 @@ describe('MULTI-ACCOUNT EVASION', () => {
     expect(resultA.score).toBeLessThan(21);
 
     /**
-     * VERDICT: ARCHITECTURAL GAP
+     * VERDICT: ACCEPTED RESIDUAL P2
      *
      * Compliance is evaluated on the poster's userId only. There is no mechanism to
      * associate the "beneficiary" of a task (the payer or the person collecting cash)
@@ -400,19 +400,14 @@ describe('RATE LIMIT PROBING', () => {
     }
 
     /**
-     * VERDICT: SAFE (heuristic layer) + ARCHITECTURAL GAP (rate limit gap)
+     * VERDICT: FIXED
      *
      * SAFE: The heuristic is stateless — the 50th call is identical to the 1st.
      * No in-process counter, cache, or mutable state is consulted.
      *
-     * ARCHITECTURAL GAP: The server-level rate limiter applies 60 requests/min to
-     * ALL task.* routes, including evaluateDraft. However:
-     *   - 60 probes/min is enough to scan all 11 FLAGGED_PATTERNS + many SOFT_FLAG_PATTERNS
-     *     in a single minute without hitting the limit.
-     *   - A dedicated evaluateDraft rate limit (e.g., 5/min) would slow oracle abuse.
-     *   - The current 60/min general task limit does not meaningfully impede a compliance oracle.
-     *
-     * Product decision: add a tighter rate limit specifically on evaluateDraft (e.g., 5/min).
+     * The route adds a Redis-backed task:draft bucket capped at 5/min on top
+     * of the server-wide task limit. This unit calls the service directly to
+     * verify stateless scoring; router tests own the producer throttle.
      */
   });
 
@@ -452,21 +447,17 @@ describe('RATE LIMIT PROBING', () => {
     expect(secondCallSql).toContain('compliance_violations');
 
     /**
-     * VERDICT: SAFE (partially) + ARCHITECTURAL GAP
+     * VERDICT: FIXED
      *
      * SAFE: evaluateDraft is NOT ephemeral. Every flagged call updates flagged_phrase_counter
      * and writes to compliance_violations. A bad actor cannot use evaluateDraft as a free
      * oracle without leaving a trace in the database.
      *
-     * ARCHITECTURAL GAP: evaluateDraft does NOT reject hard_block descriptions from
-     * updating the counter — it throws a TRPCError AFTER evaluate() completes. This means
+     * evaluateDraft records hard-block descriptions before rejecting them. This means
      * the counter update and violation log already happened before the caller sees the
      * BLOCKED response. This is actually correct defensive behaviour, but it also means
-     * an attacker who calls evaluateDraft with a blocked phrase 60 times/min will flood
-     * compliance_violations with 60 entries/min — a minor write-amplification vector.
-     *
-     * A per-user rate limit on evaluateDraft specifically would address both oracle abuse
-     * and write amplification.
+     * the Redis-backed 5/min task:draft limit bounds the write rate while preserving
+     * the evidence required to investigate repeated blocked attempts.
      */
   });
 
@@ -564,7 +555,7 @@ describe('SOFT_FLAG THRESHOLD GAMING', () => {
     expect(result.ai_signals_computed).toBe(false);
 
     /**
-     * VERDICT: ARCHITECTURAL GAP
+     * VERDICT: ACCEPTED RESIDUAL P1
      *
      * Any description scoring 0–14 skips the AI layer entirely. The wildcard_bizarre
      * template is the only bypass — it always runs AI regardless of score. For non-wildcard
@@ -575,7 +566,8 @@ describe('SOFT_FLAG THRESHOLD GAMING', () => {
      *   (c) avoids all 11 FLAGGED_PATTERNS
      *   (d) still encodes illegal intent (e.g., coded slang not in any pattern)
      *
-     * This is a fundamental heuristic-coverage gap. The fix is not in code but in:
+     * This is bounded by deterministic policy, trust gates, and mandatory AI review
+     * for wildcard tasks when configured. Coverage is maintained through:
      *   1. Expanding FLAGGED_PATTERNS / SOFT_FLAG_PATTERNS coverage continuously.
      *   2. Lowering the AI trigger threshold (e.g., score ≥ 0 for all tasks — always run AI).
      *   3. Trust Tier gating: new accounts always run AI regardless of score.
@@ -805,20 +797,15 @@ describe('PROOF/COMPLETION GAMING', () => {
     expect(descriptionUpdaters).toHaveLength(0);
 
     /**
-     * VERDICT: SAFE (at API layer) + ARCHITECTURAL GAP (out-of-band channel)
+     * VERDICT: FIXED
      *
      * SAFE: The task description is immutable after creation at the API layer.
      * There is no endpoint to amend description, requirements, or scope post-creation.
      * The compliance check on creation is the final and only check.
      *
-     * ARCHITECTURAL GAP: Scope creep via the messaging channel is entirely outside
-     * the compliance system. A poster can message the worker "actually can you also
-     * watch my kids?" through the messaging router. The messaging system has no
-     * compliance integration for task-scope amendments.
-     *
-     * Product decision needed: for care/childcare-adjacent templates, message content
-     * that requests scope expansion should be flagged. This is a moderation concern,
-     * not a code bug in the compliance path.
+     * MessagingService now quarantines explicit scope-expansion requests before
+     * recipient delivery. A valid scope change must use the versioned task-scope
+     * approval path, which reprices and invalidates stale offers.
      */
   });
 

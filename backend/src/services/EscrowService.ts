@@ -26,6 +26,10 @@ import { SelfInsurancePoolService } from './SelfInsurancePoolService.js';
 import { RevenueService } from './RevenueService.js';
 import { StripeService } from './StripeService.js';
 import { notifyAdmins } from './AdminNotificationHelper.js';
+import {
+  LocalCertificationPayoutProvider,
+  localCertificationPayoutEnabled,
+} from './LocalCertificationPayoutProvider.js';
 import type {
   Escrow,
   EscrowState,
@@ -51,6 +55,8 @@ interface FundEscrowParams {
 interface ReleaseEscrowParams {
   escrowId: string;
   stripeTransferId?: string;
+  /** Explicit TEST-only provider transfer. Never accepted for production tasks. */
+  localTestTransferId?: string;
   /** When true, skips KYC payouts_enabled gate (admin-override path only). Fee/XP/insurance still run. */
   adminOverride?: boolean;
   /** Reason for admin override — recorded in escrow_events metadata. */
@@ -102,12 +108,13 @@ function isValidTransition(from: EscrowState, to: EscrowState): boolean {
 // SERVICE
 // ============================================================================
 
-async function logEscrowEvent(escrowId: string, fromState: string, toState: string, actorId?: string, actorType: string = 'system', metadata: Record<string, unknown> = {}): Promise<void> {
+async function logEscrowEvent(escrowId: string, fromState: string, toState: string, actorId?: string, actorType: string = 'system', metadata: Record<string, unknown> = {}, idempotencyKey?: string): Promise<void> {
   try {
     await db.query(
-      `INSERT INTO escrow_events (escrow_id, from_state, to_state, actor_id, actor_type, metadata)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [escrowId, fromState, toState, actorId || null, actorType, JSON.stringify(metadata)]
+      `INSERT INTO escrow_events (escrow_id, from_state, to_state, actor_id, actor_type, metadata, idempotency_key)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING`,
+      [escrowId, fromState, toState, actorId || null, actorType, JSON.stringify(metadata), idempotencyKey ?? null]
     );
   } catch (error) {
     escrowLogger.error({ err: error instanceof Error ? error.message : String(error), escrowId }, 'Failed to log escrow event');
@@ -407,17 +414,42 @@ export const EscrowService = {
    * - Attempts XP award (may be blocked by tax trigger HX201)
    */
   release: async (params: ReleaseEscrowParams): Promise<ServiceResult<Escrow>> => {
-    const { escrowId, stripeTransferId, adminOverride = false, reason } = params;
+    const {
+      escrowId,
+      stripeTransferId,
+      localTestTransferId,
+      adminOverride = false,
+      reason,
+    } = params;
+
+    if (adminOverride && !reason?.trim()) {
+      return {
+        success: false,
+        error: {
+          code: ErrorCodes.INVALID_INPUT,
+          message: 'Admin escrow release requires an attributable reason',
+        },
+      };
+    }
 
     // FIX 1A: Require stripeTransferId for non-admin releases.
     // Without this guard a poster can mark an escrow as released without
     // having ever created a Stripe transfer, producing a $0 payout.
-    if (!adminOverride && !stripeTransferId) {
+    if (!adminOverride && Boolean(stripeTransferId) === Boolean(localTestTransferId)) {
       return {
         success: false,
         error: {
           code: ErrorCodes.INVALID_STATE,
-          message: 'stripeTransferId is required to release escrow — create the Stripe transfer first',
+          message: 'Exactly one verified payout-provider transfer is required to release escrow',
+        },
+      };
+    }
+    if (localTestTransferId && !localCertificationPayoutEnabled()) {
+      return {
+        success: false,
+        error: {
+          code: ErrorCodes.INVALID_STATE,
+          message: 'Local certification payouts are disabled',
         },
       };
     }
@@ -437,6 +469,8 @@ export const EscrowService = {
       escrowStateBefore: string;
       adminManualPayoutRequired: boolean;
       posterId: string | null; // F-23: poster (the payer) is attributed the platform fee
+      payoutProvider: 'STRIPE' | 'LOCAL_CERTIFICATION_TEST' | 'MANUAL_RECONCILIATION';
+      providerTransferId: string | null;
     };
     // `post` is optional so the existing `as ServiceResult<Escrow>` failure-arm casts
     // below remain valid without modification; it is always present on the success path.
@@ -462,8 +496,11 @@ export const EscrowService = {
           platform_fee_cents: number | null;
           state: string;
           version: number;
+          stripe_transfer_id: string | null;
         }>(
-          `SELECT id, task_id, amount, platform_fee_cents, state, version FROM escrows WHERE id = $1 FOR UPDATE`,
+          `SELECT id, task_id, amount, platform_fee_cents, state, version,
+                  stripe_transfer_id
+           FROM escrows WHERE id = $1 FOR UPDATE`,
           [escrowId]
         );
 
@@ -479,6 +516,39 @@ export const EscrowService = {
 
         const escrow = escrowResult.rows[0];
 
+        // A dispute lock is a real payout hold. The ordinary release path may
+        // continue only after an authoritative dispute decision resolves in the
+        // worker's favour. Administrators use the separately authorized and
+        // audited override route, which is marked transaction-locally for the
+        // database trigger and requires a reason at the service boundary.
+        if (escrow.state === 'LOCKED_DISPUTE') {
+          if (adminOverride) {
+            await query(
+              `SELECT set_config('hustlexp.dispute_release_override', 'true', true)`,
+            );
+          } else {
+            const resolvedDispute = await query<{ resolved_dispute_id: string }>(
+              `SELECT id::text AS resolved_dispute_id
+               FROM disputes
+               WHERE escrow_id = $1
+                 AND state = 'RESOLVED'
+                 AND outcome_escrow_action = 'RELEASE'
+               ORDER BY resolved_at DESC NULLS LAST, id DESC
+               LIMIT 1`,
+              [escrowId],
+            );
+            if (!resolvedDispute.rows[0]?.resolved_dispute_id) {
+              return {
+                success: false,
+                error: {
+                  code: ErrorCodes.INVALID_STATE,
+                  message: 'Cannot release dispute-locked escrow without a resolved worker-favor dispute',
+                },
+              } as ServiceResult<Escrow>;
+            }
+          }
+        }
+
         // Get task details for worker_id, price, payment_method, and poster_id.
         // F-23: poster_id is needed so the admin_override platform_fee is attributed
         // to the poster (the payer), matching every other platform_fee call site.
@@ -487,8 +557,14 @@ export const EscrowService = {
           price: number;
           payment_method: string | null;
           poster_id: string | null;
+          automation_classification: string | null;
+          hustler_payout_cents: number | null;
+          platform_margin_cents: number | null;
         }>(
-          `SELECT worker_id, price, payment_method, poster_id FROM tasks WHERE id = $1`,
+          `SELECT worker_id, price, payment_method, poster_id,
+                  automation_classification, hustler_payout_cents,
+                  platform_margin_cents
+           FROM tasks WHERE id = $1`,
           [escrow.task_id]
         );
 
@@ -509,10 +585,64 @@ export const EscrowService = {
         // F-23: prefer poster attribution for the platform fee; worker fallback applied at use site.
         const resolvedPosterId = task.poster_id ?? null;
 
-        // KYC GATE: Verify worker has completed Stripe Connect onboarding
-        // before releasing funds (FinCEN/BSA compliance).
-        // Skipped when adminOverride=true (admin force-release path) — but fee/XP/insurance still run.
-        if (!adminOverride) {
+        // Calculate the immutable release economics before provider validation so
+        // every provider must prove the exact same gross/fee/insurance/net split.
+        const configuredFeePercent = clampFeePercent(config.stripe.platformFeePercent);
+        const breakdown = computeFeeBreakdown(
+          resolvedGross,
+          configuredFeePercent,
+          escrow.platform_fee_cents,
+        );
+        const {
+          platformFeeCents,
+          insuranceContributionCents: txInsuranceContributionCents,
+          netPayoutCents: resolvedNet,
+        } = breakdown;
+        const platformFeePercent = feeBasisPoints(resolvedGross, platformFeeCents) / 100;
+        const resolvedStripeTransferId = stripeTransferId ?? escrow.stripe_transfer_id;
+        const payoutProvider: ReleasePost['payoutProvider'] = localTestTransferId
+          ? 'LOCAL_CERTIFICATION_TEST'
+          : resolvedStripeTransferId
+            ? 'STRIPE'
+            : 'MANUAL_RECONCILIATION';
+        const providerTransferId = localTestTransferId ?? resolvedStripeTransferId ?? null;
+        const providerTransferStatus = payoutProvider === 'LOCAL_CERTIFICATION_TEST'
+          ? 'paid'
+          : payoutProvider === 'STRIPE'
+            ? 'submitted'
+            : 'manual_reconciliation';
+
+        // Provider gate: a local TEST transfer is accepted only for a completed
+        // CONTROLLED_TEST task and only when its provider ledger proves the exact
+        // worker, task, escrow, and net amount. Every other ordinary release
+        // retains the Stripe Connect KYC gate.
+        if (localTestTransferId) {
+          if (task.automation_classification !== 'CONTROLLED_TEST') {
+            return {
+              success: false,
+              error: {
+                code: ErrorCodes.INVALID_STATE,
+                message: 'Local certification payout cannot release a production-classified task',
+              },
+            } as ServiceResult<Escrow>;
+          }
+          const verified = await LocalCertificationPayoutProvider.verifyPaidTransfer(query, {
+            transferId: localTestTransferId,
+            taskId: escrow.task_id,
+            escrowId,
+            workerId: resolvedWorkerId,
+            amountCents: resolvedNet,
+          });
+          if (!verified) {
+            return {
+              success: false,
+              error: {
+                code: ErrorCodes.INVALID_STATE,
+                message: 'Local certification payout is not provider-confirmed for the exact net amount',
+              },
+            } as ServiceResult<Escrow>;
+          }
+        } else if (!adminOverride) {
           const workerKycResult = await query<{
             payouts_enabled: boolean;
             stripe_connect_id: string | null;
@@ -554,20 +684,20 @@ export const EscrowService = {
             } as ServiceResult<Escrow>;
           }
         } else {
-          // FIX 3: adminOverride skips the KYC gate above, but we still need to
-          // know whether the worker has a Stripe Connect account so ops can be
-          // alerted when a manual payout is required.
+          // An admin override without existing provider transfer evidence is a
+          // manual reconciliation state. It is never labeled paid merely because
+          // the escrow state moved to RELEASED.
           const adminWorkerRow = await query<{ stripe_connect_id: string | null }>(
             `SELECT stripe_connect_id FROM users WHERE id = $1`,
             [resolvedWorkerId]
           );
           const adminStripeConnectId = adminWorkerRow.rows[0]?.stripe_connect_id ?? null;
-          if (!adminStripeConnectId) {
+          if (!resolvedStripeTransferId) {
             // Worker has no Stripe Connect account — money cannot be transferred
             // automatically. Log a CRITICAL warning so ops acts promptly.
             escrowLogger.error(
-              { workerId: resolvedWorkerId, escrowId, adminOverride: true },
-              'CRITICAL: adminOverride release but worker has no stripe_connect_id — manual payout required'
+              { workerId: resolvedWorkerId, escrowId, adminOverride: true, hasStripeAccount: Boolean(adminStripeConnectId) },
+              'CRITICAL: adminOverride release lacks provider transfer evidence — manual payout reconciliation required'
             );
             // Stash flag in the metadata object so logEscrowEvent records it
             // and ops tooling can surface it for reconciliation.
@@ -575,27 +705,8 @@ export const EscrowService = {
           }
         }
 
-        // Calculate platform fee + insurance + net via the unified money helper
-        // (AUDIT FIX H3: single source of truth, Math.round convention — this is
-        // byte-identical to the math previously inlined here).
-        // SECURITY FIX (v2.9.3) preserved: percent clamped to [0,100] inside helper.
-        // F-22 / F54-2 preserved: insurance is 2% of GROSS, deducted from the
-        // worker transfer. Computed once inside the transaction and threaded out
-        // via `post` so post-commit side effects reuse the exact same values.
-        const configuredFeePercent = clampFeePercent(config.stripe.platformFeePercent);
-        const breakdown = computeFeeBreakdown(
-          resolvedGross,
-          configuredFeePercent,
-          escrow.platform_fee_cents,
-        );
-        const {
-          platformFeeCents,
-          insuranceContributionCents: txInsuranceContributionCents,
-          netPayoutCents: resolvedNet,
-        } = breakdown;
-        const platformFeePercent = feeBasisPoints(resolvedGross, platformFeeCents) / 100;
-
-        // 2. Release escrow (SPEC FIX: Allow release from both FUNDED and LOCKED_DISPUTE states)
+        // 2. Release escrow. LOCKED_DISPUTE reached this statement only through
+        // a resolved worker-favor dispute or an attributable administrator override.
         // The version = $3 optimistic-lock guard is a secondary safety net: if somehow
         // two transactions serialise on the same version (e.g. after a retry), the
         // second UPDATE hits version already incremented → 0 rows → clean error.
@@ -603,6 +714,10 @@ export const EscrowService = {
           `UPDATE escrows
            SET state = 'RELEASED',
                stripe_transfer_id = $2,
+               payout_provider = $4,
+               provider_transfer_id = $5,
+               provider_transfer_status = $6,
+               provider_transfer_paid_at = CASE WHEN $6 = 'paid' THEN NOW() ELSE NULL END,
                released_at = NOW(),
                version = version + 1,
                updated_at = NOW()
@@ -610,7 +725,14 @@ export const EscrowService = {
              AND state IN ('FUNDED', 'LOCKED_DISPUTE')
              AND version = $3
            RETURNING *`,
-          [escrowId, stripeTransferId ?? null, escrow.version]
+          [
+            escrowId,
+            payoutProvider === 'STRIPE' ? resolvedStripeTransferId : null,
+            escrow.version,
+            payoutProvider,
+            providerTransferId,
+            providerTransferStatus,
+          ]
         );
 
         if (result.rowCount === 0) {
@@ -633,7 +755,7 @@ export const EscrowService = {
             success: false,
             error: {
               code: ErrorCodes.INVALID_STATE,
-              message: `Cannot release escrow: current state is ${existing.data.state}, expected FUNDED or LOCKED_DISPUTE`,
+              message: `Cannot release escrow: current state is ${existing.data.state}, expected FUNDED or an authorized resolved dispute`,
             },
           } as ServiceResult<Escrow>;
         }
@@ -655,6 +777,8 @@ export const EscrowService = {
             escrowStateBefore: escrow.state,
             adminManualPayoutRequired,
             posterId: resolvedPosterId,
+            payoutProvider,
+            providerTransferId,
           },
         };
       });
@@ -686,6 +810,8 @@ export const EscrowService = {
         escrowStateBefore,
         adminManualPayoutRequired,
         posterId,
+        payoutProvider,
+        providerTransferId,
       } = post;
       const releasedEscrow = txResult.data;
 
@@ -698,7 +824,15 @@ export const EscrowService = {
         {
           ...(adminOverride && reason ? { adminOverride: true, reason } : {}),
           ...(adminManualPayoutRequired ? { admin_manual_payout_required: true } : {}),
-        }
+          payout_provider: payoutProvider,
+          provider_transfer_id: providerTransferId,
+          provider_transfer_status: payoutProvider === 'LOCAL_CERTIFICATION_TEST'
+            ? 'paid'
+            : payoutProvider === 'STRIPE'
+              ? 'submitted'
+              : 'manual_reconciliation',
+        },
+        `escrow.released:${escrowId}`
       );
 
       // F-10 FIX: Do NOT log platform_fee here for normal (non-admin-override) releases.
@@ -710,11 +844,10 @@ export const EscrowService = {
       // it and would insert a second platform_fee row — every escrow release would be
       // double-counted in the revenue ledger.
       //
-      // EXCEPTION — F-01 FIX: When adminOverride=true AND adminManualPayoutRequired=true,
-      // no Stripe transfer is ever created and no transfer.created webhook will fire.
-      // The handleTransferCreated() path is dead, so we must record the platform_fee here.
-      // Use a dedup key of 'admin_override_release' in metadata (stripe_event_id stays NULL).
-      if (adminOverride && adminManualPayoutRequired) {
+      // EXCEPTIONS: manual reconciliation and LOCAL_CERTIFICATION_TEST releases
+      // never emit a Stripe transfer webhook. Record the platform margin here;
+      // the one-platform-fee-per-escrow unique index is the durable replay guard.
+      if ((adminOverride && adminManualPayoutRequired) || payoutProvider === 'LOCAL_CERTIFICATION_TEST') {
         // F-06 FIX: Skip RevenueService.logEvent when platformFeeCents rounds to 0.
         // RevenueService has a POSITIVE_ONLY_EVENTS guard that silently rejects
         // amountCents <= 0. For tiny escrows (e.g. 1 cent * 15% = 0 after rounding),
@@ -733,10 +866,21 @@ export const EscrowService = {
               amountCents: platformFeeCents,
               grossAmountCents: grossPayoutCents!,
               platformFeeCents: platformFeeCents,
-              netAmountCents: netPayoutCents!,
+              // Revenue decomposition separates the quoted Hustler share from
+              // the separately disclosed self-insurance adjustment.
+              netAmountCents: payoutProvider === 'LOCAL_CERTIFICATION_TEST'
+                ? grossPayoutCents! - platformFeeCents
+                : netPayoutCents!,
               feeBasisPoints: Math.round(platformFeePercent! * 100),
               escrowId,
-              metadata: { event: 'admin_override_release', admin_manual_payout_required: true },
+              metadata: payoutProvider === 'LOCAL_CERTIFICATION_TEST'
+                ? {
+                    event: 'local_certification_test_release',
+                    payout_provider: payoutProvider,
+                    provider_transfer_id: providerTransferId,
+                    is_test: true,
+                  }
+                : { event: 'admin_override_release', admin_manual_payout_required: true },
             });
           } catch (feeLogErr) {
             escrowLogger.error(

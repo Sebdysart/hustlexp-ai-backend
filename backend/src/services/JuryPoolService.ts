@@ -6,7 +6,7 @@
  * When the AI Judge is < 70% confident in a dispute ruling, it escalates
  * to a "Jury Pool" of high-level workers who vote for XP credits.
  *
- * Jurors: Trust tier >= TRUSTED (3+), 50+ completed tasks
+ * Jurors: Trust tier >= Pro (3+), 50+ completed tasks
  * Reward: 5 XP per vote
  * Quorum: 5 votes minimum
  * Decision: Simple majority
@@ -39,7 +39,7 @@ interface JuryVoteTally {
 // CONSTANTS
 // ============================================================================
 
-const MIN_JUROR_TRUST_TIER = 3; // TRUSTED
+const MIN_JUROR_TRUST_TIER = 3; // Pro
 const MIN_JUROR_TASKS = 50;
 const JURY_QUORUM = 5;
 const JUROR_XP_REWARD = 5;
