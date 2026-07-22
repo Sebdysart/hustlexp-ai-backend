@@ -29,6 +29,11 @@ if [ -z "$STRIPE_WEBHOOK_SECRET" ]; then
   echo "   Get from: stripe listen --print-secret"
 fi
 
+if [ -z "$STRIPE_CONNECT_WEBHOOK_SECRET" ]; then
+  echo "⚠️  STRIPE_CONNECT_WEBHOOK_SECRET not set"
+  echo "   Production requires a separate Connect destination secret"
+fi
+
 echo ""
 echo "🚀 Starting Stripe CLI webhook forwarding..."
 echo "   Forwarding to: http://localhost:5000/webhooks/stripe"

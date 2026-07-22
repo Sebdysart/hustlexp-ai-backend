@@ -29,6 +29,7 @@ async function stripeWebhook(context: Context) {
   if (!result.success) {
     const verificationCodes = [
       'WEBHOOK_VERIFICATION_FAILED',
+      'WEBHOOK_DESTINATION_MISMATCH',
       'WEBHOOK_SECRET_MISSING',
       'STRIPE_NOT_CONFIGURED',
     ];

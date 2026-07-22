@@ -386,6 +386,8 @@ describe('validateConfig', () => {
 
   beforeEach(() => {
     exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {}) as () => never);
+    process.env.STRIPE_WEBHOOK_SECRET = 'whsec_platform_test';
+    process.env.STRIPE_CONNECT_WEBHOOK_SECRET = 'whsec_connect_test';
     process.env.S3_ENDPOINT = 'https://storage.example.test';
     process.env.AWS_ACCESS_KEY_ID = 'test-access-key';
     process.env.AWS_SECRET_ACCESS_KEY = 'test-secret-key';
@@ -607,6 +609,44 @@ describe('validateConfig', () => {
     const result = validateConfig();
     expect(exitSpy).toHaveBeenCalledWith(1);
     expect(result.errors.some((e) => e.includes('STRIPE_SECRET_KEY'))).toBe(true);
+  });
+
+  it('fails production boot when the Connect webhook secret is missing', async () => {
+    process.env.DATABASE_URL = 'postgres://prod';
+    process.env.NODE_ENV = 'production';
+    process.env.FIREBASE_PROJECT_ID = 'proj';
+    process.env.FIREBASE_PRIVATE_KEY = 'key';
+    process.env.FIREBASE_CLIENT_EMAIL = 'a@b.com';
+    process.env.STRIPE_SECRET_KEY = 'sk_live_real';
+    delete process.env.STRIPE_CONNECT_WEBHOOK_SECRET;
+    process.env.UPSTASH_REDIS_REST_URL = 'https://redis.io';
+    process.env.UPSTASH_REDIS_URL = 'redis://upstash:6379';
+    process.env.QUEUE_HMAC_SECRET = 'real-hmac-secret';
+    process.env.TAX_TIN_ENCRYPTION_KEY = 'a'.repeat(64);
+    vi.resetModules();
+    const { validateConfig } = await import('../../src/config');
+    const result = validateConfig();
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(result.errors).toContain('STRIPE_CONNECT_WEBHOOK_SECRET is required (not placeholder)');
+  });
+
+  it('fails production boot when Stripe webhook secrets are identical', async () => {
+    process.env.DATABASE_URL = 'postgres://prod';
+    process.env.NODE_ENV = 'production';
+    process.env.FIREBASE_PROJECT_ID = 'proj';
+    process.env.FIREBASE_PRIVATE_KEY = 'key';
+    process.env.FIREBASE_CLIENT_EMAIL = 'a@b.com';
+    process.env.STRIPE_SECRET_KEY = 'sk_live_real';
+    process.env.STRIPE_CONNECT_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
+    process.env.UPSTASH_REDIS_REST_URL = 'https://redis.io';
+    process.env.UPSTASH_REDIS_URL = 'redis://upstash:6379';
+    process.env.QUEUE_HMAC_SECRET = 'real-hmac-secret';
+    process.env.TAX_TIN_ENCRYPTION_KEY = 'a'.repeat(64);
+    vi.resetModules();
+    const { validateConfig } = await import('../../src/config');
+    const result = validateConfig();
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(result.errors).toContain('Stripe platform and Connect webhook secrets must be distinct');
   });
 
   it.each([
