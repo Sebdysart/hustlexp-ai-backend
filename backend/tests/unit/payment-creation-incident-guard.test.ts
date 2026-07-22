@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   newPaymentCreationFailure,
+  newPaymentCreationHealth,
   newPaymentCreationMode,
 } from '../../src/services/NewPaymentCreationGuard.js';
 
@@ -51,6 +52,20 @@ describe('new-payment incident guard', () => {
         },
       });
     }
+  });
+
+  it('publishes a non-sensitive runtime status that proves whether new money is accepted', () => {
+    expect(newPaymentCreationHealth({ NODE_ENV: 'production' })).toEqual({
+      mode: 'frozen',
+      acceptsNewCustomerMoney: false,
+    });
+    expect(newPaymentCreationHealth({
+      NODE_ENV: 'production',
+      HX_PAYMENT_CREATION_MODE: 'enabled',
+    })).toEqual({
+      mode: 'enabled',
+      acceptsNewCustomerMoney: true,
+    });
   });
 
   it('guards every checked-in Stripe surface that can create new customer money', () => {

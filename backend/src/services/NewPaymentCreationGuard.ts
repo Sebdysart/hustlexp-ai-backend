@@ -36,3 +36,14 @@ export function newPaymentCreationFailure(
     },
   };
 }
+
+export function newPaymentCreationHealth(env: Environment = process.env): {
+  mode: NewPaymentCreationMode;
+  acceptsNewCustomerMoney: boolean;
+} {
+  const mode = newPaymentCreationMode(env);
+  return {
+    mode,
+    acceptsNewCustomerMoney: mode === 'enabled',
+  };
+}
