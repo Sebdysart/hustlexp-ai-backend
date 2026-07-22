@@ -32,6 +32,8 @@ describe('Schemas.createTask', () => {
     title: 'Valid Task Title',
     description: 'This is a valid task description with enough text.',
     price: 10000,
+    regionCode: 'US-WA',
+    category: 'moving',
   };
 
   it('should accept valid minimal input', () => {
@@ -140,6 +142,17 @@ describe('Schemas.createTask', () => {
   it('should reject missing price', () => {
     const { price, ...rest } = valid;
     expect(() => Schemas.createTask.parse(rest)).toThrow();
+  });
+
+  it('should reject missing or malformed region code', () => {
+    const { regionCode, ...withoutRegion } = valid;
+    expect(() => Schemas.createTask.parse(withoutRegion)).toThrow();
+    expect(() => Schemas.createTask.parse({ ...valid, regionCode: 'WA' })).toThrow();
+  });
+
+  it('should reject missing category', () => {
+    const { category, ...withoutCategory } = valid;
+    expect(() => Schemas.createTask.parse(withoutCategory)).toThrow();
   });
 });
 

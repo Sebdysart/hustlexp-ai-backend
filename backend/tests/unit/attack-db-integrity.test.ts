@@ -242,7 +242,8 @@ describe('JSONB Counter Boundary Conditions', () => {
   // BUG CHECK: This is correct SQL behavior but could surprise product — a user who used
   // the phrase 31 days ago resets to "first occurrence" status.
   //
-  // VERDICT: CORRECT per code intent, but documents potential product gap.
+  // VERDICT: ACCEPTED RESIDUAL P2 — the rolling window changes escalation analytics,
+  // not the minimum soft-flag or deterministic hard-block enforcement tier.
   it('ATTACK 6: mix of expired/fresh entries — repeat_check uses 30-day window only', async () => {
     const db = await getDb();
     // phrase was used 31 days ago (expired) but not in the 5 fresh entries → was_repeat=false
@@ -320,10 +321,7 @@ describe('JSONB Counter Boundary Conditions', () => {
   // This means: an entry at exactly T-30days is treated as expired.
   // was_repeat=false for a phrase matched exactly 30 days ago.
   //
-  // BUG VERDICT: POTENTIAL PRODUCT GAP — the strict > means the exact boundary
-  // instant is excluded. A user who submitted exactly 30 days ago resets to first
-  // occurrence. This is a known off-by-one in the SQL that could be >= instead of >.
-  // The test documents the ACTUAL behavior.
+  // FIXED VERDICT: the current SQL uses >=, so the exact boundary remains in-window.
   it('ATTACK 9 (FIXED): phrase at exactly 30-day boundary — SQL uses >=, entry IS included (was_repeat=true)', async () => {
     const db = await getDb();
     // FIX: SQL now uses >= instead of >, so an entry at exactly 30 days IS included.

@@ -1053,6 +1053,7 @@ describe('user.register', () => {
 describe('user.updateProfile', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockDb.query.mockReset();
   });
 
   it('updates fields and returns mobile-compatible user', async () => {
@@ -1095,16 +1096,11 @@ describe('user.updateProfile', () => {
     expect(params).toContain('worker');
   });
 
-  it('updates avatar URL', async () => {
-    const updatedUser = makeFakeUser({ avatar_url: 'https://cdn.example.com/photo.jpg' });
-    mockDb.query.mockResolvedValueOnce({ rows: [updatedUser], rowCount: 1 } as any);
-    setupStatsQuery();
-
-    const result = await makeUserCaller().updateProfile({
+  it('rejects direct avatar URLs without writing to the database', async () => {
+    await expect(makeUserCaller().updateProfile({
       avatarUrl: 'https://cdn.example.com/photo.jpg',
-    });
-
-    expect(result).toHaveProperty('avatarURL', 'https://cdn.example.com/photo.jpg');
+    })).rejects.toThrow('Avatar updates are disabled');
+    expect(mockDb.query).not.toHaveBeenCalled();
   });
 
   it('rejects invalid avatar URL', async () => {

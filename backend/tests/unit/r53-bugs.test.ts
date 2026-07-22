@@ -63,7 +63,7 @@ vi.mock('../../src/services/LogisticsAIService', () => ({
 vi.mock('../../src/services/JudgeAIService', () => ({
   JudgeAIService: {
     synthesizeVerdict: vi.fn(),
-    logVerdict: vi.fn().mockResolvedValue(undefined),
+    logVerdict: vi.fn().mockResolvedValue({ success: true, data: undefined }),
   },
 }));
 vi.mock('../../src/services/PhotoVerificationService', () => ({

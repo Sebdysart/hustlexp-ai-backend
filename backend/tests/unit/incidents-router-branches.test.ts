@@ -85,6 +85,10 @@ describe('incidents.get', () => {
 describe('incidents.resolve', () => {
   it('resolves incident with notes', async () => {
     const resolved = { id: '550e8400-e29b-41d4-a716-446655440000', resolved_at: new Date() };
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ event_type: 'error_spike', service: 'api', safety_incident_id: null }],
+      rowCount: 1,
+    } as any);
     mockDb.query.mockResolvedValueOnce({ rows: [resolved], rowCount: 1 } as any);
 
     const result = await makeCaller().resolve({
@@ -96,6 +100,10 @@ describe('incidents.resolve', () => {
 
   it('resolves incident without notes (uses default "Resolved")', async () => {
     const resolved = { id: '550e8400-e29b-41d4-a716-446655440000', resolved_at: new Date() };
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ event_type: 'error_spike', service: 'api', safety_incident_id: null }],
+      rowCount: 1,
+    } as any);
     mockDb.query.mockResolvedValueOnce({ rows: [resolved], rowCount: 1 } as any);
 
     const result = await makeCaller().resolve({
@@ -104,8 +112,8 @@ describe('incidents.resolve', () => {
     expect(result.resolved_at).toBeDefined();
 
     // Check that the default 'Resolved' was used in the query
-    // calls[0] = isAdmin admin_roles check; calls[1] = the UPDATE query
-    const [, params] = mockDb.query.mock.calls[1];
+    // calls[0] = isAdmin check; calls[1] = safety-mirror pre-read; calls[2] = UPDATE
+    const [, params] = mockDb.query.mock.calls[2];
     expect(JSON.parse(params![1] as string)).toBe('Resolved');
   });
 

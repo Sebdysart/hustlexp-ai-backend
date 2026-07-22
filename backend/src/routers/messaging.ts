@@ -14,43 +14,8 @@ import { router, protectedProcedure, Schemas } from '../trpc.js';
 import { MessagingService } from '../services/MessagingService.js';
 import { db } from '../db.js';
 
-// ============================================================================
-// SECURITY: Photo URL allowlist (SSRF / tracking-pixel prevention)
-// ============================================================================
-// Only R2 public URLs are accepted. Cloudflare R2 public bucket hostnames match
-// either the custom public domain (R2_PUBLIC_URL env var) or the default
-// Cloudflare pattern: <hash>.r2.dev  (pub-*.r2.dev)
-// Any URL from a non-approved host is rejected at the Zod layer before the
-// service or DB is ever reached.
-
-const R2_PUBLIC_HOSTNAME = (() => {
-  const raw = process.env.R2_PUBLIC_URL || '';
-  try {
-    return raw ? new URL(raw).hostname : null;
-  } catch {
-    return null;
-  }
-})();
-
-function isApprovedPhotoHost(url: string): boolean {
-  try {
-    const { hostname } = new URL(url);
-    // Custom R2 public domain (configured via R2_PUBLIC_URL env var)
-    if (R2_PUBLIC_HOSTNAME && hostname === R2_PUBLIC_HOSTNAME) return true;
-    // Default Cloudflare R2 public URL pattern: pub-<hash>.r2.dev
-    if (/^pub-[a-f0-9]+\.r2\.dev$/.test(hostname)) return true;
-    return false;
-  } catch {
-    return false;
-  }
-}
-
-const approvedPhotoUrl = z
-  .string()
-  .url()
-  .refine(isApprovedPhotoHost, {
-    message: 'Photo URL must be from an approved storage domain (R2 only)',
-  });
+// Photo inputs carry opaque finalized upload receipt IDs only. Private object
+// keys and short-lived read URLs are resolved inside the service boundary.
 
 export const messagingRouter = router({
   // --------------------------------------------------------------------------
@@ -126,9 +91,9 @@ export const messagingRouter = router({
   sendPhotoMessage: protectedProcedure
     .input(z.object({
       taskId: Schemas.uuid,
-      photoUrls: z.array(approvedPhotoUrl).min(1).max(3), // 1-3 photos — approved storage domain only
+      uploadReceiptIds: z.array(z.string().uuid()).min(1).max(3),
       caption: z.string().trim().max(200).optional(),
-    }))
+    }).strict())
     .mutation(async ({ input, ctx }) => {
       if (!ctx.user) {
         throw new TRPCError({
@@ -140,7 +105,7 @@ export const messagingRouter = router({
       const result = await MessagingService.sendPhotoMessage({
         taskId: input.taskId,
         senderId: ctx.user.id,
-        photoUrls: input.photoUrls,
+        uploadReceiptIds: input.uploadReceiptIds,
         caption: input.caption,
       });
       
@@ -299,7 +264,7 @@ export const messagingRouter = router({
   getConversations: protectedProcedure
     .input(z.object({
       limit: z.number().int().min(1).max(50).default(20),
-      offset: z.number().int().min(0).default(0),
+      offset: z.number().int().min(0).max(500).default(0),
     }).optional())
     .query(async ({ ctx, input }) => {
       if (!ctx.user) {

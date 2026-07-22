@@ -32,8 +32,8 @@ describe('money — unified financial math (audit H3/M10/M11)', () => {
     it('clamps malicious/invalid percents to [0,100] (v2.9.3 security fix preserved)', () => {
       expect(computePlatformFeeCents(10000, -50)).toBe(0);
       expect(computePlatformFeeCents(10000, 250)).toBe(10000);
-      expect(clampFeePercent(undefined)).toBe(15);
-      expect(clampFeePercent(null)).toBe(15);
+      expect(clampFeePercent(undefined)).toBe(20);
+      expect(clampFeePercent(null)).toBe(20);
     });
 
     it('rejects non-integer and negative gross (INV-1/INV-5)', () => {

@@ -11,7 +11,7 @@
 
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
-import { router, adminProcedure, Schemas } from '../trpc.js';
+import { router, trustAdminProcedure, Schemas } from '../trpc.js';
 import { FraudDetectionService, type FraudPatternStatus, type RiskScoreStatus } from '../services/FraudDetectionService.js';
 import { db } from '../db.js';
 import { logger } from '../logger.js';
@@ -28,7 +28,7 @@ export const fraudRouter = router({
    *
    * FRAUD_DETECTION_SPEC.md §1.2: Risk score calculation
    */
-  calculateRiskScore: adminProcedure
+  calculateRiskScore: trustAdminProcedure
     .input(z.object({
       entityType: z.enum(['user', 'task', 'transaction']),
       entityId: Schemas.uuid,
@@ -94,7 +94,7 @@ export const fraudRouter = router({
   /**
    * Get latest risk score for an entity
    */
-  getLatestRiskScore: adminProcedure
+  getLatestRiskScore: trustAdminProcedure
     .input(z.object({
       entityType: z.enum(['user', 'task', 'transaction']),
       entityId: Schemas.uuid,
@@ -119,7 +119,7 @@ export const fraudRouter = router({
    *
    * FRAUD_DETECTION_SPEC.md §1.1: Action based on risk level
    */
-  getRiskAssessment: adminProcedure
+  getRiskAssessment: trustAdminProcedure
     .input(z.object({
       entityType: z.enum(['user', 'task', 'transaction']),
       entityId: Schemas.uuid,
@@ -146,7 +146,7 @@ export const fraudRouter = router({
   /**
    * Get active high-risk scores (for admin review queue)
    */
-  getHighRiskScores: adminProcedure
+  getHighRiskScores: trustAdminProcedure
     .input(z.object({
       minRiskScore: z.number().min(0.0).max(1.0).default(0.6),
       limit: z.number().int().min(1).max(100).default(100),
@@ -169,7 +169,7 @@ export const fraudRouter = router({
   /**
    * Update risk score status (admin review)
    */
-  updateRiskScoreStatus: adminProcedure
+  updateRiskScoreStatus: trustAdminProcedure
     .input(z.object({
       riskScoreId: Schemas.uuid,
       status: z.enum(['active', 'reviewed', 'resolved', 'dismissed']),
@@ -210,7 +210,7 @@ export const fraudRouter = router({
    *
    * FRAUD_DETECTION_SPEC.md §2: Pattern detection
    */
-  detectPattern: adminProcedure
+  detectPattern: trustAdminProcedure
     .input(z.object({
       patternType: z.enum([
         // CRITICAL patterns
@@ -280,7 +280,7 @@ export const fraudRouter = router({
   /**
    * Get fraud patterns for a user
    */
-  getUserPatterns: adminProcedure
+  getUserPatterns: trustAdminProcedure
     .input(z.object({
       userId: Schemas.uuid,
       status: z.enum(['detected', 'reviewed', 'confirmed', 'dismissed']).optional(),
@@ -303,7 +303,7 @@ export const fraudRouter = router({
   /**
    * Get detected fraud patterns (for admin review queue)
    */
-  getDetectedPatterns: adminProcedure
+  getDetectedPatterns: trustAdminProcedure
     .input(z.object({
       limit: z.number().int().min(1).max(100).default(100),
     }))
@@ -324,7 +324,7 @@ export const fraudRouter = router({
   /**
    * Update fraud pattern status (admin review)
    */
-  updatePatternStatus: adminProcedure
+  updatePatternStatus: trustAdminProcedure
     .input(z.object({
       patternId: Schemas.uuid,
       status: z.enum(['detected', 'reviewed', 'confirmed', 'dismissed']),

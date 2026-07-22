@@ -66,12 +66,15 @@ describe('BackgroundCheckService', () => {
   describe('initiateBackgroundCheck', () => {
     it('creates a new background check', async () => {
       mockDb.query
+        .mockResolvedValueOnce({ rows: [{ id: 'consent-1', provider: 'checkr', disclosure_version: 'hx-worker-screening-rights-v1' }], rowCount: 1 } as never)
         .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // No existing
-        .mockResolvedValueOnce({ rows: [makeRow()], rowCount: 1 } as never); // Insert
+        .mockResolvedValueOnce({ rows: [makeRow()], rowCount: 1 } as never) // Insert
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // Event
 
       const result = await initiateBackgroundCheck({
         userId: 'user-1',
         provider: 'checkr',
+        consentId: 'consent-1',
       });
 
       expect(result.id).toBe('bc-1');
@@ -79,39 +82,46 @@ describe('BackgroundCheckService', () => {
     });
 
     it('throws CONFLICT when check in progress', async () => {
-      mockDb.query.mockResolvedValueOnce({
-        rows: [{ id: 'bc-1', status: 'PENDING' }],
-        rowCount: 1,
-      } as never);
+      mockDb.query
+        .mockResolvedValueOnce({ rows: [{ id: 'consent-1', provider: 'checkr', disclosure_version: 'hx-worker-screening-rights-v1' }], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [{ id: 'bc-1', status: 'PENDING' }], rowCount: 1 } as never);
 
       await expect(initiateBackgroundCheck({
         userId: 'user-1',
         provider: 'checkr',
+        consentId: 'consent-1',
       })).rejects.toThrow('already in progress');
     });
 
     it('throws CONFLICT when valid check on file', async () => {
-      mockDb.query.mockResolvedValueOnce({
-        rows: [{ id: 'bc-1', status: 'CLEAR' }],
-        rowCount: 1,
-      } as never);
+      mockDb.query
+        .mockResolvedValueOnce({ rows: [{ id: 'consent-1', provider: 'checkr', disclosure_version: 'hx-worker-screening-rights-v1' }], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [{ id: 'bc-1', status: 'CLEAR' }], rowCount: 1 } as never);
 
       await expect(initiateBackgroundCheck({
         userId: 'user-1',
         provider: 'checkr',
+        consentId: 'consent-1',
       })).rejects.toThrow('already on file');
     });
 
     it('throws CONFLICT for IN_PROGRESS status', async () => {
-      mockDb.query.mockResolvedValueOnce({
-        rows: [{ id: 'bc-1', status: 'IN_PROGRESS' }],
-        rowCount: 1,
-      } as never);
+      mockDb.query
+        .mockResolvedValueOnce({ rows: [{ id: 'consent-1', provider: 'checkr', disclosure_version: 'hx-worker-screening-rights-v1' }], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [{ id: 'bc-1', status: 'IN_PROGRESS' }], rowCount: 1 } as never);
 
       await expect(initiateBackgroundCheck({
         userId: 'user-1',
         provider: 'checkr',
+        consentId: 'consent-1',
       })).rejects.toThrow('already in progress');
+    });
+
+    it('fails closed without current provider-matched written consent', async () => {
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+      await expect(initiateBackgroundCheck({
+        userId: 'user-1', provider: 'checkr', consentId: 'missing-consent',
+      })).rejects.toThrow('Current written screening consent is required');
     });
   });
 
@@ -177,16 +187,11 @@ describe('BackgroundCheckService', () => {
       expect(recomputeCapabilityProfile).toHaveBeenCalled();
     });
 
-    it('fails a CONSIDER check without recompute', async () => {
-      mockDb.query.mockResolvedValueOnce({
-        rows: [makeRow({ status: 'FAILED', reviewed_by: 'admin-1' })],
-        rowCount: 1,
-      } as never);
-
-      const result = await reviewBackgroundCheck('bc-1', 'admin-1', 'FAILED', 'Disqualifying offense');
-
-      expect(result.status).toBe('FAILED');
+    it('blocks direct failure without pre-adverse rights', async () => {
+      await expect(reviewBackgroundCheck('bc-1', 'admin-1', 'FAILED', 'Disqualifying offense'))
+        .rejects.toThrow('report access, pre-adverse notice, review time, and dispute handling');
       expect(recomputeCapabilityProfile).not.toHaveBeenCalled();
+      expect(mockDb.query).not.toHaveBeenCalled();
     });
 
     it('throws NOT_FOUND when check not found or not in CONSIDER status', async () => {

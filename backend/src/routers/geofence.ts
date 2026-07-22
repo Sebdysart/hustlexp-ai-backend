@@ -17,6 +17,13 @@ export const geofenceRouter = router({
       taskId: z.string().uuid(),
       lat: z.number().min(-90).max(90),
       lng: z.number().min(-180).max(180),
+      clientEventId: z.string().uuid(),
+      clientSequence: z.number().int().positive(),
+      priorTaskVersion: z.number().int().nonnegative(),
+      localOccurredAt: z.string().datetime(),
+      deviceVersion: z.string().min(1).max(100),
+      appVersion: z.string().min(1).max(100),
+      payloadHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
     }))
     .mutation(async ({ ctx, input }) => {
       const taskResult = await db.query('SELECT poster_id, worker_id FROM tasks WHERE id = $1', [input.taskId]);
@@ -25,7 +32,15 @@ export const geofenceRouter = router({
       if (task.poster_id !== ctx.user.id && task.worker_id !== ctx.user.id) {
         throw new TRPCError({ code: 'FORBIDDEN', message: 'Access denied' });
       }
-      return GeofenceService.checkProximity(input.taskId, ctx.user.id, input.lat, input.lng);
+      return GeofenceService.checkProximity(input.taskId, ctx.user.id, input.lat, input.lng, {
+        clientEventId: input.clientEventId,
+        clientSequence: input.clientSequence,
+        priorTaskVersion: input.priorTaskVersion,
+        localOccurredAt: input.localOccurredAt,
+        deviceVersion: input.deviceVersion,
+        appVersion: input.appVersion,
+        payloadHash: input.payloadHash,
+      });
     }),
 
   getTaskEvents: hustlerProcedure

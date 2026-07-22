@@ -19,7 +19,7 @@
 
 import { randomUUID } from 'crypto';
 import { db } from '../db.js';
-import { getQueue, signJobPayload, type QueueName } from './queues.js';
+import { enqueueJob, signJobPayload, type QueueName } from './queues.js';
 import { getClient as getRedisClient } from '../cache/redis.js';
 import { workerLogger } from '../logger.js';
 import { config } from '../config.js';
@@ -33,6 +33,7 @@ const MAX_OUTBOX_ATTEMPTS = 5;
 // Exported for test assertion (membership is financial-critical).
 export const FINANCIAL_EVENT_TYPES = new Set([
   'escrow.release_requested',
+  'escrow.released',
   'escrow.completion_release_requested',
   'escrow.refund_requested',
   'escrow.partial_refund_requested',
@@ -110,6 +111,7 @@ export async function processOutboxEvents(batchSize: number = 100): Promise<{
       const selectResult = await txQuery<OutboxEvent>(
         `SELECT * FROM outbox_events
          WHERE status = 'pending'
+           AND available_at <= NOW()
          ORDER BY created_at ASC
          LIMIT $1
          FOR UPDATE SKIP LOCKED`,
@@ -138,9 +140,6 @@ export async function processOutboxEvents(batchSize: number = 100): Promise<{
 
     for (const event of claimedEvents) {
       try {
-        // Get the appropriate queue
-        const queue = getQueue(event.queue_name);
-
         // Sign financial job payloads to prevent Redis injection (Attack 12)
         let jobPayload: Record<string, unknown> = event.payload;
         if (FINANCIAL_EVENT_TYPES.has(event.event_type)) {
@@ -149,7 +148,8 @@ export async function processOutboxEvents(batchSize: number = 100): Promise<{
         }
 
         // Enqueue job with idempotency key (outside the transaction — no DB lock held)
-        const job = await queue.add(
+        const job = await enqueueJob(
+          event.queue_name,
           event.event_type,
           {
             aggregate_type: event.aggregate_type,
@@ -157,9 +157,7 @@ export async function processOutboxEvents(batchSize: number = 100): Promise<{
             event_version: event.event_version,
             payload: jobPayload,
           },
-          {
-            jobId: event.idempotency_key, // Use idempotency key as job ID (prevents duplicates)
-          }
+          { jobId: event.idempotency_key } // Use idempotency key as job ID (prevents duplicates)
         );
 
         // Persist the BullMQ job ID now that we have it (row already 'enqueued').

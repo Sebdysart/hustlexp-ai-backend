@@ -232,18 +232,16 @@ describe('generateOccurrencesForSeries', () => {
     expect(result.data!.generated).toBe(5);
   });
 
-  it('accepts paused series and generates occurrences', async () => {
+  it('fails closed for a paused series and generates no occurrences', async () => {
     mockDb.query
       .mockResolvedValueOnce({ rows: [makeSeries({ status: 'paused' })], rowCount: 1 } as any)
-      .mockResolvedValueOnce({ rows: [{ id: SERIES_ID }], rowCount: 1 } as any) // FOR UPDATE lock (M7)
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as any)
-      .mockResolvedValueOnce({ rows: [], rowCount: 5 } as any)
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
+      ;
 
     const result = await generateOccurrencesForSeries(SERIES_ID);
 
     expect(result.success).toBe(true);
-    expect(result.data!.generated).toBeGreaterThan(0);
+    expect(result.data!.generated).toBe(0);
+    expect(mockDb.query).toHaveBeenCalledTimes(1);
   });
 
   it('respects the maxOccurrences option', async () => {

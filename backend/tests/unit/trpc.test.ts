@@ -31,7 +31,7 @@ vi.mock('../../src/logger', () => ({
 }));
 
 // ─── Imports ─────────────────────────────────────────────────────────────────
-import { createContext, Schemas, router, publicProcedure, protectedProcedure, hustlerProcedure, posterProcedure } from '../../src/trpc';
+import { createContext, Schemas, router, publicProcedure, protectedProcedure, hustlerProcedure, posterProcedure, publicTRPCErrorShape } from '../../src/trpc';
 import { firebaseAuth } from '../../src/auth/firebase';
 import { db } from '../../src/db';
 
@@ -55,6 +55,28 @@ function makeRequest(authHeader?: string, bridgeKey?: string): Request {
 
 beforeEach(() => {
   vi.clearAllMocks();
+});
+
+describe('publicTRPCErrorShape', () => {
+  it('redacts internal exception details and every stack trace', () => {
+    expect(publicTRPCErrorShape({
+      message: 'column secret_table.private_value does not exist',
+      data: { code: 'INTERNAL_SERVER_ERROR', stack: 'private stack' },
+    })).toEqual({
+      message: 'Internal server error',
+      data: { code: 'INTERNAL_SERVER_ERROR', stack: undefined },
+    });
+  });
+
+  it('preserves actionable non-internal messages while stripping the stack', () => {
+    expect(publicTRPCErrorShape({
+      message: 'Authentication required',
+      data: { code: 'UNAUTHORIZED', stack: 'private stack' },
+    })).toEqual({
+      message: 'Authentication required',
+      data: { code: 'UNAUTHORIZED', stack: undefined },
+    });
+  });
 });
 
 // ============================================================================
@@ -237,8 +259,11 @@ describe('Schemas.uuid', () => {
 });
 
 describe('Schemas.createTask', () => {
+  const policyFields = { regionCode: 'US-WA', category: 'moving' };
+
   it('accepts a valid task with required fields', () => {
     const valid = {
+      ...policyFields,
       title: 'Move furniture',
       description: 'Move furniture from apt to storage',
       price: 5000,
@@ -252,39 +277,51 @@ describe('Schemas.createTask', () => {
   });
 
   it('rejects title that is empty string', () => {
-    expect(() => Schemas.createTask.parse({ title: '', description: 'Desc', price: 500 })).toThrow();
+    expect(() => Schemas.createTask.parse({ ...policyFields, title: '', description: 'Desc', price: 500 })).toThrow();
   });
 
   it('rejects price that is zero', () => {
-    expect(() => Schemas.createTask.parse({ title: 'T', description: 'D', price: 0 })).toThrow();
+    expect(() => Schemas.createTask.parse({ ...policyFields, title: 'T', description: 'D', price: 0 })).toThrow();
   });
 
   it('rejects price that is negative', () => {
-    expect(() => Schemas.createTask.parse({ title: 'T', description: 'D', price: -100 })).toThrow();
+    expect(() => Schemas.createTask.parse({ ...policyFields, title: 'T', description: 'D', price: -100 })).toThrow();
   });
 
   it('rejects price over maximum', () => {
-    expect(() => Schemas.createTask.parse({ title: 'T', description: 'D', price: 100_000_000 })).toThrow();
+    expect(() => Schemas.createTask.parse({ ...policyFields, title: 'T', description: 'D', price: 100_000_000 })).toThrow();
   });
 
   it('rejects price that is non-integer', () => {
-    expect(() => Schemas.createTask.parse({ title: 'T', description: 'D', price: 10.5 })).toThrow();
+    expect(() => Schemas.createTask.parse({ ...policyFields, title: 'T', description: 'D', price: 10.5 })).toThrow();
   });
 
   it('accepts mode LIVE', () => {
-    const result = Schemas.createTask.parse({ title: 'T', description: 'Valid description text', price: 1500, mode: 'LIVE' });
+    const result = Schemas.createTask.parse({ ...policyFields, title: 'T', description: 'Valid description text', price: 1500, mode: 'LIVE' });
     expect(result.mode).toBe('LIVE');
   });
 
   it('rejects invalid mode', () => {
-    expect(() => Schemas.createTask.parse({ title: 'T', description: 'Valid description text', price: 1000, mode: 'INVALID' })).toThrow();
+    expect(() => Schemas.createTask.parse({ ...policyFields, title: 'T', description: 'Valid description text', price: 1000, mode: 'INVALID' })).toThrow();
   });
 
   it('accepts optional deadline as datetime string', () => {
     const result = Schemas.createTask.parse({
-      title: 'T', description: 'Valid description text', price: 1000, deadline: '2026-12-31T00:00:00Z',
+      ...policyFields, title: 'T', description: 'Valid description text', price: 1000, deadline: '2026-12-31T00:00:00Z',
     });
     expect(result.deadline).toBe('2026-12-31T00:00:00Z');
+  });
+
+  it('rejects missing or malformed region policy identity', () => {
+    const task = { title: 'T', description: 'Valid description text', price: 5000, category: 'moving' };
+    expect(() => Schemas.createTask.parse(task)).toThrow();
+    expect(() => Schemas.createTask.parse({ ...task, regionCode: 'WA' })).toThrow();
+  });
+
+  it('rejects missing category', () => {
+    expect(() => Schemas.createTask.parse({
+      title: 'T', description: 'Valid description text', price: 5000, regionCode: 'US-WA',
+    })).toThrow();
   });
 });
 

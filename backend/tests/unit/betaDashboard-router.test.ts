@@ -195,8 +195,8 @@ describe('betaDashboard.listUsers — offset-based pagination (returns array)', 
       expect(item.fullName).toBe('Jane Doe');
       expect(item.tasksPosted).toBe(3);
       expect(item.tasksCompleted).toBe(1);
-      expect(item.totalEarnedCents).toBe(500);
-      expect(item.totalSpentCents).toBe(1000);
+      expect(item).not.toHaveProperty('totalEarnedCents');
+      expect(item).not.toHaveProperty('totalSpentCents');
     });
   });
 

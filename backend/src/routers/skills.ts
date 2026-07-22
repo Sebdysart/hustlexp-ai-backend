@@ -64,17 +64,11 @@ export const skillsRouter = router({
       licenseNumber: z.string().optional(),
       licenseExpiry: z.string().datetime().optional(),
     }))
-    .mutation(async ({ ctx, input }) => {
-      const url = input.licenseUrl || input.photoUrl;
-      if (!url) {
-        throw new TRPCError({ code: 'BAD_REQUEST', message: 'licenseUrl or photoUrl is required' });
-      }
-      return WorkerSkillService.submitLicense(
-        ctx.user.id,
-        input.skillId,
-        url,
-        input.licenseExpiry ? new Date(input.licenseExpiry) : undefined
-      );
+    .mutation(async () => {
+      throw new TRPCError({
+        code: 'PRECONDITION_FAILED',
+        message: 'Direct skill-license media URLs are disabled. Use the metadata-only credential workflow until private receipt-backed upload is available.',
+      });
     }),
 
   getLicenseSubmissions: hustlerProcedure.input(z.void()).query(async ({ ctx }) => {

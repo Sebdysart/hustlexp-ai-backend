@@ -11,7 +11,7 @@
 
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
-import { router, protectedProcedure, adminProcedure } from '../trpc.js';
+import { router, protectedProcedure, platformAdminProcedure } from '../trpc.js';
 import { MatchmakerAIService } from '../services/MatchmakerAIService.js';
 import { db } from '../db.js';
 
@@ -28,7 +28,7 @@ export const matchmakerRouter = router({
    *
    * AI_INFRASTRUCTURE.md: A2 authority - proposals only, cannot assign workers.
    */
-  rankCandidates: adminProcedure
+  rankCandidates: platformAdminProcedure
     .input(z.object({
       taskId: z.string().uuid(),
     }))

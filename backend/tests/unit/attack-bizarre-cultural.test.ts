@@ -868,7 +868,7 @@ describe('Section 5 — Pricing Edge Cases for Bizarre Tasks', () => {
    * Pricing: ALL multipliers would likely apply for this stacked role task.
    * ALL 6 flags = 85% raw → capped at 50% → $500 cap applies to base prices ≥ $33,334.
    */
-  it('C27: 24-hour stacked roles (butler/driver/chef/comedian/bodyguard) → clean; $500 pricing cap applies', async () => {
+  it('C27 (FIXED): 24-hour stacked roles are blocked as an excessive continuous shift', async () => {
     const { db, AIClient } = await getMocks();
     AIClient.isConfigured.mockReturnValue(false);
     db.query.mockResolvedValue(dbNoMatch());
@@ -879,8 +879,9 @@ describe('Section 5 — Pricing Edge Cases for Bizarre Tasks', () => {
       templateSlug: 'wildcard_bizarre',
     });
 
-    expect(result.tier).toBe('clean');
-    expect(result.score).toBe(0);
+    expect(result.tier).toBe('hard_block');
+    expect(result.score).toBeGreaterThanOrEqual(61);
+    expect(result.triggeredRules).toContain('excessive_continuous_duration');
 
     // Pricing test: stacked multipliers hit constitutional $500 cap
     const base = 40000; // $400 base for 24h premium task
@@ -894,9 +895,8 @@ describe('Section 5 — Pricing Edge Cases for Bizarre Tasks', () => {
     // 65% premium → capped at 50% → $400 * 1.5 = $600 → capped at $500
     expect(withFlags).toBeLessThanOrEqual(50000); // never exceeds $500
 
-    // VERDICT: CORRECT — $500 constitutional cap works correctly.
-    // SUSPECT: Overnight-equivalent (24h presence) doesn't trigger overnight_ambiguous
-    // because "overnight" keyword is absent. The word "24-hour" is not in the pattern.
+    // VERDICT: FIXED — price caps cannot legitimize a shift that violates the
+    // worker-protection boundary; it must be split or staffed as a business workflow.
   });
 
   /**

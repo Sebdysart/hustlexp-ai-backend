@@ -32,7 +32,7 @@ vi.mock('../../src/db', () => ({
 
 vi.mock('../../src/logger', () => ({
   escrowLogger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), child: vi.fn(() => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), fatal: vi.fn() })) },
-  workerLogger: { child: vi.fn(() => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), fatal: vi.fn() })) },
+  workerLogger: { info: vi.fn(), child: vi.fn(() => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), fatal: vi.fn() })) },
   logger: { child: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }) },
 }));
 
@@ -122,7 +122,8 @@ import { db } from '../../src/db';
 import { StripeService } from '../../src/services/StripeService';
 import { processEscrowActionJob } from '../../src/jobs/escrow-action-worker';
 import { processOutboxEvents } from '../../src/jobs/outbox-worker';
-import { generateIdempotencyKey, parseIdempotencyKey, getQueue, signJobPayload, verifyJobSignature } from '../../src/jobs/queues';
+import { enqueueJob, generateIdempotencyKey, parseIdempotencyKey, signJobPayload, verifyJobSignature } from '../../src/jobs/queues';
+import { registerScheduledJobs } from '../../src/jobs/worker-schedules';
 import type { Job } from 'bullmq';
 
 // ---------------------------------------------------------------------------
@@ -236,44 +237,22 @@ describe('RED-TEAM: BullMQ Queue Attack Surface', () => {
   describe('Attack 2 – Oversized payload (1 MB string)', () => {
     /**
      * SCENARIO: A job carrying a 1 MB `reason` string hits the worker.
-     * BullMQ stores job payloads as JSON in Redis — there is no
-     * payload-size validation in queues.ts or the worker.  The huge string
-     * reaches the DB as a query parameter; Postgres will accept it (TEXT has
-     * no practical length limit) but the Redis memory and serialization
-     * overhead are not bounded.
+     * The financial worker bounds human-authored reasons to 500 characters
+     * before signature or database processing, preventing large Redis jobs
+     * from turning into large database/log payloads.
      *
-     * FINDING: Neither the outbox writer nor the worker enforces a max
-     * payload size.  A compromised internal service (or a developer who
-     * crafts a rogue outbox row) could push arbitrarily large jobs.
-     *
-     * VERDICT: GAP — no server-side size guard. BullMQ itself does not
-     *          enforce payload limits. Exploitability depends on Redis
-     *          memory limits configured at the infra layer.
+     * VERDICT: SAFE — the worker rejects the oversized field before DB access.
      */
-    it('worker processes 1 MB reason field without error (no size guard)', async () => {
+    it('worker rejects a 1 MB reason field before database access', async () => {
       const bigString = 'A'.repeat(1_000_000);
-
-      (db.query as any)
-        // SELECT FOR UPDATE — return a LOCKED_DISPUTE escrow
-        .mockResolvedValueOnce({
-          rows: [{
-            id: E.e1, state: 'LOCKED_DISPUTE', version: 1, amount: 5000,
-            stripe_payment_intent_id: 'pi_1', stripe_transfer_id: null,
-            stripe_refund_id: 'rf_1', // already has refund → idempotent path
-          }],
-          rowCount: 1,
-        });
 
       const payloadFields = { escrow_id: E.e1, task_id: T.t1, reason: bigString };
       const job = makeJob('escrow.refund_requested', {
         payload: makeSignedPayload(payloadFields),
       });
 
-      // Should NOT throw — idempotent path skips Stripe call because
-      // stripe_refund_id already set.  The 1 MB string reached the worker.
-      await expect(processEscrowActionJob(job as any)).resolves.toBeUndefined();
-
-      // No size guard fired
+      await expect(processEscrowActionJob(job as any)).rejects.toThrow('JOB_SCHEMA_INVALID');
+      expect(db.query).not.toHaveBeenCalled();
       expect(StripeService.createRefund).not.toHaveBeenCalled();
     });
   });
@@ -473,14 +452,10 @@ describe('RED-TEAM: BullMQ Queue Attack Surface', () => {
      * - Jobs enqueued via workers.ts `registerScheduledJobs` use static
      *   jobIds like 'scheduled:fraud_detection' → BullMQ deduplicates.
      *
-     * HOWEVER: The getQueue() / queue.add() function is exported and could
-     * be called directly from anywhere that can import it.  If called
-     * without a jobId (e.g., getQueue('critical_payments').add('escrow.release_requested', payload))
-     * BullMQ generates a random UUID for the jobId → deduplication fails.
+     * The raw queue factory is private. The exported producer boundary rejects
+     * any one-off job without a non-empty deterministic jobId.
      *
-     * VERDICT: GAP — the idempotency guarantee lives in the OUTBOX PATH.
-     * Any code path that bypasses the outbox and calls queue.add() directly
-     * without a deterministic jobId can flood the queue.
+     * VERDICT: FIXED — all supported one-off producers require deduplication.
      */
     it('outbox path uses deterministic jobId (deduplication is guaranteed)', async () => {
       // Simulate one pending outbox event
@@ -519,32 +494,14 @@ describe('RED-TEAM: BullMQ Queue Attack Surface', () => {
       );
     });
 
-    it('direct queue.add() without jobId has no deduplication protection', () => {
-      /**
-       * EXPLOIT SCENARIO (unit-level proof):
-       * getQueue() is exported from queues.ts and returns a live Queue instance.
-       * Any module can call getQueue('critical_payments').add('escrow.release_requested', payload)
-       * without providing a jobId.  BullMQ will generate a random UUID, so
-       * N such calls create N independent jobs.
-       *
-       * We confirm the API surface exists and the guard is missing.
-       */
-      const queue = getQueue('critical_payments');
-
-      // Call add() without a jobId — no validation fires
-      queue.add('escrow.release_requested', { payload: { escrow_id: 'victim' } });
-
-      // BullMQ mock received the call; the third argument (options) is absent,
-      // meaning no jobId was set — deduplication does not apply.
-      expect(mockQueueAdd).toHaveBeenCalledWith(
+    it('rejects a one-off producer call without a deterministic jobId', async () => {
+      await expect(enqueueJob(
+        'critical_payments',
         'escrow.release_requested',
-        expect.objectContaining({ payload: { escrow_id: 'victim' } }),
-        // No options object provided — third arg is absent (undefined)
-      );
-
-      // Confirm no jobId in the call
-      const [, , options] = mockQueueAdd.mock.calls[mockQueueAdd.mock.calls.length - 1] as [unknown, unknown, Record<string, unknown> | undefined];
-      expect(options?.jobId).toBeUndefined();
+        { payload: { escrow_id: 'victim' } },
+        {} as never,
+      )).rejects.toThrow('QUEUE_JOB_ID_REQUIRED');
+      expect(mockQueueAdd).not.toHaveBeenCalled();
     });
   });
 
@@ -557,11 +514,10 @@ describe('RED-TEAM: BullMQ Queue Attack Surface', () => {
      * SCENARIO: Is the BullMQ Queue object exposed via any HTTP endpoint
      * (admin, testing, or accidentally)?
      *
-     * FINDING: Grepping routers/ for 'getQueue' and 'queue.add' returns ZERO
+     * FINDING: Grepping routers/ for 'enqueueJob' and queue producers returns ZERO
      * hits.  The only callers of getQueue() are:
      *   - outbox-worker.ts (internal, worker process only)
-     *   - workers.ts (internal, worker process only)
-     *   - queues.ts itself
+     *   - worker-schedules.ts (internal, worker process only)
      *
      * No router imports queues.ts.  The queue object is NOT reachable via
      * the HTTP/tRPC layer.
@@ -569,13 +525,13 @@ describe('RED-TEAM: BullMQ Queue Attack Surface', () => {
      * VERDICT: SAFE — queue is isolated to the worker process.
      *
      * This test asserts the import boundary by confirming that no tRPC router
-     * exports or re-exports getQueue.
+     * exports or re-exports the producer boundary.
      */
     it('no tRPC router imports or re-exports getQueue (structural assertion)', async () => {
       /**
        * We verify this statically: routers/index.ts imports other routers,
        * none of which import queues.ts.  Only outbox-worker.ts and workers.ts
-       * (worker-process files) import getQueue.
+       * (worker-process files) import the producer boundary.
        *
        * Rather than doing a full dynamic import of the router tree (which
        * pulls in firebase-admin and other infra), we assert the invariant
@@ -586,11 +542,11 @@ describe('RED-TEAM: BullMQ Queue Attack Surface', () => {
       // mockQueueAdd starts at 0 calls — confirms no queue access from router load
       expect(mockQueueAdd).not.toHaveBeenCalled();
 
-      // Additional guard: the getQueue export exists only in jobs/queues.ts
-      // and is not re-exported from any router barrel.
-      const { getQueue: qFn } = await import('../../src/jobs/queues');
-      expect(typeof qFn).toBe('function');
-      // getQueue is NOT exported from routers/index — importing it would fail
+      // Raw Queue instances are intentionally not exported. Only validated
+      // enqueueJob/enqueueRepeatableJob functions leave this module.
+      const queueModule = await import('../../src/jobs/queues');
+      expect(queueModule).not.toHaveProperty('getQueue');
+      expect(typeof queueModule.enqueueJob).toBe('function');
     });
   });
 
@@ -652,42 +608,25 @@ describe('RED-TEAM: BullMQ Queue Attack Surface', () => {
 
   // =========================================================================
 
-  describe('Attack 9 – Delayed job cancellation (auto-release held in limbo)', () => {
+  describe('Attack 9 – Delayed job cancellation (unattended completion)', () => {
     /**
-     * SCENARIO: A delayed "auto-release escrow after 24h" job — can an
-     * attacker cancel it to keep escrow locked indefinitely?
+     * The system uses a repeatable database sweep rather than one delayed job
+     * per task. Cancelling an individual BullMQ job cannot erase eligibility:
+     * the next minute's sweep reconstructs due work from authoritative state.
+     * The completion service then rechecks delivery age, proof, escrow, dispute,
+     * value, and idempotency under its transaction.
      *
-     * FINDING: No delayed auto-release jobs exist in the codebase.
-     * The maintenance worker recovers STUCK STRIPE EVENTS, not escrow releases.
-     * Escrow transitions are driven by Stripe webhooks (transfer.created,
-     * charge.refunded) arriving via the outbox → critical_payments queue.
-     *
-     * There is no "auto-release after delay" BullMQ job to cancel.
-     *
-     * HOWEVER: If a Stripe webhook is never received (e.g., Stripe outage),
-     * the escrow can remain in FUNDED state indefinitely.  There is no
-     * time-based safety net.  This is a product gap, not an attack vector.
-     *
-     * VERDICT: GAP — no time-based escrow release safety net. An attacker
-     *          who can suppress Stripe webhook delivery (network-level attack)
-     *          can keep escrow in FUNDED state indefinitely.
+     * VERDICT: SAFE — no per-task delayed job exists to delete or hold hostage.
      */
-    it('no scheduled delayed-release job exists (design gap confirmed)', () => {
-      // The QUEUE_CONFIGS in queues.ts define these queue names:
-      // critical_payments, critical_trust, user_notifications, exports,
-      // maintenance, tax_reporting, biometric_analysis, expertise_recalc, xp_tax_reminders
-      //
-      // None of these is an "auto_release_escrow" queue.
-      // Confirming the gap is a design-level assertion.
-      const knownQueues = [
-        'critical_payments', 'critical_trust', 'user_notifications',
-        'exports', 'maintenance', 'tax_reporting', 'biometric_analysis',
-        'expertise_recalc', 'xp_tax_reminders',
-      ];
-
-      expect(knownQueues).not.toContain('auto_release_escrow');
-      expect(knownQueues).not.toContain('escrow_timeout');
-      // GAP: no timed safety net for stuck-FUNDED escrows
+    it('registers a repeatable authoritative due-task sweep', async () => {
+      await registerScheduledJobs();
+      const call = mockQueueAdd.mock.calls.find(args => args[0] === 'completion.complete_due');
+      expect(call).toBeDefined();
+      expect(call?.[1]).toEqual({ limit: 100 });
+      expect(call?.[2]).toEqual({
+        jobId: 'scheduled-maintenance-completion-complete_due',
+        repeat: { pattern: '* * * * *' },
+      });
     });
   });
 
@@ -712,11 +651,10 @@ describe('RED-TEAM: BullMQ Queue Attack Surface', () => {
      * The retry count is finite and bounded.  The failed set is not infinite
      * (removeOnFail.age = 7 days keeps storage bounded).
      *
-     * VERDICT: GAP — an attacker with DB write access can permanently park
-     *          5 retries worth of a financial job.  The critical_payments
-     *          worker runs with concurrency: 1, so 5 retries of a bad job
-     *          delay all subsequent financial jobs by up to 31 seconds
-     *          (1+2+4+8+16 s).
+     * VERDICT: ACCEPTED RESIDUAL P2 — a principal with arbitrary database
+     * write access is outside the application threat boundary. Within the
+     * boundary, retries are finite, failures are retained and alerted, and a
+     * poisoned job can delay this queue by at most 31 seconds.
      */
     it('worker re-throws on missing task — triggers BullMQ retry (5 attempts)', async () => {
       // Escrow exists and is in LOCKED_DISPUTE

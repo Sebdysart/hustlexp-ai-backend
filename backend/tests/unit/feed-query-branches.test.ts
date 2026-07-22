@@ -71,6 +71,10 @@ vi.mock('../../src/services/AIClient', () => ({
   },
 }));
 
+vi.mock('../../src/services/CapabilityRecomputeService', () => ({
+  recomputeCapabilityProfile: vi.fn().mockResolvedValue(undefined),
+}));
+
 // ---------------------------------------------------------------------------
 // Imports
 // ---------------------------------------------------------------------------
@@ -511,6 +515,7 @@ describe('TaskDiscoveryService.getFeed — filter branches', () => {
 
 describe('TaskDiscoveryService.search — query branch', () => {
   it('uses full-text search SQL when query is provided', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
     mockQuery.mockResolvedValueOnce({ rows: [makeFeedRow()], rowCount: 1 } as never);
 
     const result = await TaskDiscoveryService.search(
@@ -520,7 +525,7 @@ describe('TaskDiscoveryService.search — query branch', () => {
     );
 
     expect(result.success).toBe(true);
-    const sql = mockQuery.mock.calls[0][0] as string;
+    const sql = mockQuery.mock.calls[1][0] as string;
     expect(sql).toContain('plainto_tsquery');
     expect(sql).toContain('ts_rank');
   });

@@ -37,6 +37,7 @@ const mockUser = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockQuery.mockReset();
 });
 
 // ============================================================================
@@ -252,11 +253,11 @@ describe('UserRepository.updateProfile', () => {
     expect(sql).toContain('bio = $1');
   });
 
-  it('updates avatar_url', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [mockUser], rowCount: 1 });
-    await repo.updateProfile('user-1', { avatar_url: 'https://example.com/avatar.jpg' });
-    const sql = mockQuery.mock.calls[0][0] as string;
-    expect(sql).toContain('avatar_url = $1');
+  it('rejects legacy direct avatar URLs before database access', async () => {
+    await expect(repo.updateProfile('user-1', {
+      avatar_url: 'https://example.com/avatar.jpg',
+    })).rejects.toThrow('finalized upload receipt is required');
+    expect(mockQuery).not.toHaveBeenCalled();
   });
 
   it('updates phone', async () => {

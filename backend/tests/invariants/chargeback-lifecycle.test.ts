@@ -48,12 +48,16 @@ describe.skipIf(!hasDb)('Chargeback: payment_disputes no delete (HX811)', () => 
   it('MUST REJECT: DELETE from payment_disputes', async () => {
     // Setup: create a user, a stripe_event, and a payment_dispute
     const user = await createTestUser(pool);
+    const suffix = crypto.randomUUID();
+    const eventId = `evt_test_chargeback_${suffix}`;
+    const disputeId = `dp_test_${suffix}`;
+    const chargeId = `ch_test_${suffix}`;
 
     // Insert a stripe event for FK reference
     await pool.query(
       `INSERT INTO stripe_events (stripe_event_id, type, created, payload_json)
-       VALUES ('evt_test_chargeback_001', 'charge.dispute.created', NOW(), '{}')
-       ON CONFLICT DO NOTHING`
+       VALUES ($1, 'charge.dispute.created', NOW(), '{}')`,
+      [eventId],
     );
 
     // Insert a payment dispute
@@ -62,15 +66,15 @@ describe.skipIf(!hasDb)('Chargeback: payment_disputes no delete (HX811)', () => 
          stripe_dispute_id, stripe_charge_id, stripe_event_id,
          user_id, amount_cents, currency, status
        )
-       VALUES ('dp_test_001', 'ch_test_001', 'evt_test_chargeback_001',
-               $1, 5000, 'usd', 'open')`,
-      [user.id]
+       VALUES ($1, $2, $3, $4, 5000, 'usd', 'open')`,
+      [disputeId, chargeId, eventId, user.id]
     );
 
     // Attempt DELETE — must fail with HX811
     try {
       await pool.query(
-        `DELETE FROM payment_disputes WHERE stripe_dispute_id = 'dp_test_001'`
+        `DELETE FROM payment_disputes WHERE stripe_dispute_id = $1`,
+        [disputeId],
       );
       expect.fail('DELETE should have been rejected by trigger');
     } catch (error: any) {
@@ -248,11 +252,15 @@ describe.skipIf(!hasDb)('Chargeback: full lifecycle simulation', () => {
 
   it('payment_disputes status can advance forward but not backward', async () => {
     const user = await createTestUser(pool);
+    const suffix = crypto.randomUUID();
+    const eventId = `evt_test_lifecycle_${suffix}`;
+    const disputeId = `dp_lifecycle_${suffix}`;
+    const chargeId = `ch_lifecycle_${suffix}`;
 
     await pool.query(
       `INSERT INTO stripe_events (stripe_event_id, type, created, payload_json)
-       VALUES ('evt_test_lifecycle_001', 'charge.dispute.created', NOW(), '{}')
-       ON CONFLICT DO NOTHING`
+       VALUES ($1, 'charge.dispute.created', NOW(), '{}')`,
+      [eventId],
     );
 
     // Create dispute as 'open'
@@ -261,32 +269,35 @@ describe.skipIf(!hasDb)('Chargeback: full lifecycle simulation', () => {
          stripe_dispute_id, stripe_charge_id, stripe_event_id,
          user_id, amount_cents, currency, status
        )
-       VALUES ('dp_lifecycle_001', 'ch_lifecycle_001', 'evt_test_lifecycle_001',
-               $1, 5000, 'usd', 'open')`,
-      [user.id]
+       VALUES ($1, $2, $3, $4, 5000, 'usd', 'open')`,
+      [disputeId, chargeId, eventId, user.id]
     );
 
     // Advance to needs_response
     await pool.query(
       `UPDATE payment_disputes SET status = 'needs_response'
-       WHERE stripe_dispute_id = 'dp_lifecycle_001'`
+       WHERE stripe_dispute_id = $1`,
+      [disputeId],
     );
 
     // Advance to under_review
     await pool.query(
       `UPDATE payment_disputes SET status = 'under_review'
-       WHERE stripe_dispute_id = 'dp_lifecycle_001'`
+       WHERE stripe_dispute_id = $1`,
+      [disputeId],
     );
 
     // Advance to lost (terminal)
     await pool.query(
       `UPDATE payment_disputes SET status = 'lost', resolved_at = NOW()
-       WHERE stripe_dispute_id = 'dp_lifecycle_001'`
+       WHERE stripe_dispute_id = $1`,
+      [disputeId],
     );
 
     // Verify terminal state
     const result = await pool.query<{ status: string }>(
-      `SELECT status FROM payment_disputes WHERE stripe_dispute_id = 'dp_lifecycle_001'`
+      `SELECT status FROM payment_disputes WHERE stripe_dispute_id = $1`,
+      [disputeId],
     );
     expect(result.rows[0].status).toBe('lost');
   });

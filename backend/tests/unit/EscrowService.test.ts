@@ -33,7 +33,7 @@ vi.mock('../../src/services/XPTaxService', () => ({
 }));
 
 vi.mock('../../src/services/XPService', () => ({
-  XPService: { awardXP: vi.fn() },
+  XPService: { awardXP: vi.fn(), clawbackXP: vi.fn() },
 }));
 
 vi.mock('../../src/services/RevenueService', () => ({
@@ -45,6 +45,7 @@ vi.mock('../../src/config', () => ({
 }));
 
 import { EscrowService } from '../../src/services/EscrowService';
+import { XPService } from '../../src/services/XPService';
 import { db } from '../../src/db';
 
 describe('EscrowService', () => {
@@ -95,6 +96,19 @@ describe('EscrowService', () => {
       (db.query as any).mockResolvedValueOnce({ rowCount: 1 }); // logEscrowEvent
       const result = await EscrowService.refund({ escrowId: 'e1' });
       expect(result.success).toBe(true);
+    });
+
+    it('claws back previously awarded XP after a worker refund', async () => {
+      (db.query as any).mockResolvedValueOnce({ rows: [{ task_id: 'task-1' }], rowCount: 1 });
+      (db.query as any).mockResolvedValueOnce({ rows: [{ worker_id: 'worker-1' }], rowCount: 1 });
+      (db.query as any).mockResolvedValueOnce({ rows: [{ id: 'e1', version: 0, state: 'FUNDED' }], rowCount: 1 });
+      (db.query as any).mockResolvedValueOnce({ rows: [{ id: 'e1', state: 'REFUNDED' }], rowCount: 1 });
+      (db.query as any).mockResolvedValueOnce({ rowCount: 1 });
+
+      const result = await EscrowService.refund({ escrowId: 'e1' });
+
+      expect(result.success).toBe(true);
+      expect(XPService.clawbackXP).toHaveBeenCalledWith('worker-1', 'e1', 'task_refunded');
     });
   });
 

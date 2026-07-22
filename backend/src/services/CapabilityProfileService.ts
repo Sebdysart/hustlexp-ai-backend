@@ -25,7 +25,7 @@ const log = logger.child({ service: 'CapabilityProfileService' });
 
 export interface CapabilityProfile {
   userId: string;
-  trustTier: string;
+  trustTier: number;
   riskClearance: string[];
   locationState: string | null;
   locationCity: string | null;
@@ -33,6 +33,10 @@ export interface CapabilityProfile {
   insuranceExpiresAt: string | null;
   backgroundCheckValid: boolean;
   backgroundCheckExpiresAt: string | null;
+  backgroundCheckSourceId: string | null;
+  backgroundCheckProvider: string | null;
+  backgroundCheckEnvironment: 'PRODUCTION' | 'CONTROLLED_TEST' | null;
+  backgroundCheckIsTest: boolean;
   verifiedTrades: VerifiedTrade[];
   updatedAt: string;
 }
@@ -83,7 +87,7 @@ export async function getCapabilityProfile(userId: string): Promise<CapabilityPr
   // Load the profile
   const profileResult = await db.query<{
     user_id: string;
-    trust_tier: string;
+    trust_tier: number;
     risk_clearance: string[];
     location_state: string | null;
     location_city: string | null;
@@ -91,6 +95,10 @@ export async function getCapabilityProfile(userId: string): Promise<CapabilityPr
     insurance_expires_at: string | null;
     background_check_valid: boolean;
     background_check_expires_at: string | null;
+    background_check_source_id: string | null;
+    background_check_provider: string | null;
+    background_check_environment: 'PRODUCTION' | 'CONTROLLED_TEST' | null;
+    background_check_is_test: boolean;
     updated_at: string;
   }>(
     `
@@ -98,6 +106,8 @@ export async function getCapabilityProfile(userId: string): Promise<CapabilityPr
       user_id, trust_tier, risk_clearance, location_state, location_city,
       insurance_valid, insurance_expires_at,
       background_check_valid, background_check_expires_at,
+      background_check_source_id, background_check_provider,
+      background_check_environment, background_check_is_test,
       updated_at
     FROM capability_profiles
     WHERE user_id = $1
@@ -140,6 +150,10 @@ export async function getCapabilityProfile(userId: string): Promise<CapabilityPr
     insuranceExpiresAt: row.insurance_expires_at,
     backgroundCheckValid: row.background_check_valid,
     backgroundCheckExpiresAt: row.background_check_expires_at,
+    backgroundCheckSourceId: row.background_check_source_id,
+    backgroundCheckProvider: row.background_check_provider,
+    backgroundCheckEnvironment: row.background_check_environment,
+    backgroundCheckIsTest: row.background_check_is_test,
     verifiedTrades: tradesResult.rows.map(t => ({
       trade: t.trade,
       state: t.state,
@@ -259,7 +273,7 @@ export async function initializeProfile(userId: string): Promise<void> {
       background_check_valid, background_check_expires_at,
       updated_at
     )
-    VALUES ($1, 'D', ARRAY['low'], NULL, NULL, false, NULL, false, NULL, NOW())
+    VALUES ($1, 1, ARRAY['low'], NULL, NULL, false, NULL, false, NULL, NOW())
     ON CONFLICT (user_id) DO NOTHING
     `,
     [userId]

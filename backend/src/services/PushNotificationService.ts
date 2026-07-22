@@ -27,10 +27,11 @@ const log = logger.child({ service: 'PushNotificationService' });
 // TYPES
 // ============================================================================
 
-interface PushResult {
+export interface PushResult {
   success: boolean;
   sent: number;
   failed: number;
+  reason?: 'provider_unconfigured' | 'no_active_device' | 'provider_error';
 }
 
 // Wrap a promise with a timeout to prevent BullMQ stall-induced duplicate sends
@@ -120,7 +121,7 @@ export async function sendPushNotification(
   // Guard: If Firebase messaging not initialized, return gracefully
   if (!messaging) {
     log.warn('Firebase messaging not initialized - skipping push notification');
-    return { success: true, sent: 0, failed: 0 };
+    return { success: false, sent: 0, failed: 0, reason: 'provider_unconfigured' };
   }
 
   try {
@@ -139,7 +140,7 @@ export async function sendPushNotification(
 
     // No tokens found - return gracefully (user may not have registered a device)
     if (tokens.length === 0) {
-      return { success: true, sent: 0, failed: 0 };
+      return { success: true, sent: 0, failed: 0, reason: 'no_active_device' };
     }
 
     // Sanitize body: strip GPS coordinates / addresses; honour sensitive flag
@@ -189,14 +190,14 @@ export async function sendPushNotification(
 
     log.info({ userId, totalTokens: tokens.length, sent, failed }, 'push_notification_sent');
 
-    return { success: true, sent, failed };
+    return { success: sent > 0 || failed === 0, sent, failed };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
 
     log.error({ err: errorMessage, userId }, 'push_notification_error');
 
     // Return gracefully - push failures should not break the caller
-    return { success: false, sent: 0, failed: 0 };
+    return { success: false, sent: 0, failed: 0, reason: 'provider_error' };
   }
 }
 

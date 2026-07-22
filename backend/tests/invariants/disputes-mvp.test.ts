@@ -52,7 +52,7 @@ describe.skipIf(!hasDb)('Dispute Invariant 1: Dispute creation locks escrow FUND
   it('MUST LOCK: dispute creation atomically locks escrow to LOCKED_DISPUTE', async () => {
     const posterId = await createTestUser(pool, `test-poster-${Date.now()}@hustlexp.test`);
     const workerId = await createTestUser(pool, `test-worker-${Date.now()}@hustlexp.test`);
-    const taskId = await createTestTask(pool, posterId, 'COMPLETED');
+    const { id: taskId } = await createTestTask(pool, { posterId, workerId, state: 'COMPLETED' });
     const escrowId = await createTestEscrow(pool, taskId, 'FUNDED');
     
     // Set task completed_at to within 48h window
@@ -75,7 +75,7 @@ describe.skipIf(!hasDb)('Dispute Invariant 1: Dispute creation locks escrow FUND
       description: 'test',
     });
     
-    expect(result.success).toBe(true);
+    expect(result.success, JSON.stringify(result)).toBe(true);
     
     // Transaction should have locked escrow
     const escrowResult = await pool.query(
@@ -96,7 +96,7 @@ describe.skipIf(!hasDb)('Dispute Invariant 2: Cannot create dispute if outside 4
   it('MUST REJECT: dispute creation outside 48h window', async () => {
     const posterId = await createTestUser(pool, `test-poster-${Date.now()}@hustlexp.test`);
     const workerId = await createTestUser(pool, `test-worker-${Date.now()}@hustlexp.test`);
-    const taskId = await createTestTask(pool, posterId, 'COMPLETED');
+    const { id: taskId } = await createTestTask(pool, { posterId, workerId, state: 'COMPLETED' });
     const escrowId = await createTestEscrow(pool, taskId, 'FUNDED');
     
     // Set task completed_at to >48h ago
@@ -136,7 +136,7 @@ describe.skipIf(!hasDb)('Dispute Invariant 3: Cannot resolve unless escrow is LO
     const posterId = await createTestUser(pool, `test-poster-${Date.now()}@hustlexp.test`);
     const workerId = await createTestUser(pool, `test-worker-${Date.now()}@hustlexp.test`);
     const adminId = await createTestUser(pool, `test-admin-${Date.now()}@hustlexp.test`);
-    const taskId = await createTestTask(pool, posterId, 'COMPLETED');
+    const { id: taskId } = await createTestTask(pool, { posterId, workerId, state: 'COMPLETED' });
     const escrowId = await createTestEscrow(pool, taskId, 'FUNDED'); // NOT LOCKED_DISPUTE
     
     // Create admin role with can_resolve_disputes
@@ -189,14 +189,8 @@ describe.skipIf(!hasDb)('Dispute Invariant 4: SPLIT resolution must sum to escro
     const posterId = await createTestUser(pool, `test-poster-${Date.now()}@hustlexp.test`);
     const workerId = await createTestUser(pool, `test-worker-${Date.now()}@hustlexp.test`);
     const adminId = await createTestUser(pool, `test-admin-${Date.now()}@hustlexp.test`);
-    const taskId = await createTestTask(pool, posterId, 'COMPLETED');
+    const { id: taskId } = await createTestTask(pool, { posterId, workerId, state: 'COMPLETED' });
     const escrowId = await createTestEscrow(pool, taskId, 'FUNDED');
-    
-    // Set escrow amount to 10000 (100.00)
-    await pool.query(
-      `UPDATE escrows SET amount = 10000 WHERE id = $1`,
-      [escrowId]
-    );
     
     // Create admin role
     await pool.query(
@@ -216,6 +210,11 @@ describe.skipIf(!hasDb)('Dispute Invariant 4: SPLIT resolution must sum to escro
     );
     
     const disputeId = disputeResult.rows[0].id;
+
+    await pool.query(
+      `UPDATE escrows SET state = 'LOCKED_DISPUTE' WHERE id = $1`,
+      [escrowId]
+    );
     
     // Try to resolve with SPLIT amounts that don't sum (should fail)
     const { DisputeService } = await import('../../src/services/DisputeService');
@@ -225,8 +224,8 @@ describe.skipIf(!hasDb)('Dispute Invariant 4: SPLIT resolution must sum to escro
       resolvedBy: adminId,
       resolution: 'test',
       outcomeEscrowAction: 'SPLIT',
-      refundAmount: 3000, // 30.00
-      releaseAmount: 8000, // 80.00 = 110.00 total (should be 100.00)
+      refundAmount: 3000,
+      releaseAmount: 3000, // 6,000 total does not match the immutable 5,000-cent principal
     });
     
     expect(result.success).toBe(false);
@@ -244,7 +243,7 @@ describe.skipIf(!hasDb)('Dispute Invariant 5: Dispute is terminal (RESOLVED cann
     const posterId = await createTestUser(pool, `test-poster-${Date.now()}@hustlexp.test`);
     const workerId = await createTestUser(pool, `test-worker-${Date.now()}@hustlexp.test`);
     const adminId = await createTestUser(pool, `test-admin-${Date.now()}@hustlexp.test`);
-    const taskId = await createTestTask(pool, posterId, 'COMPLETED');
+    const { id: taskId } = await createTestTask(pool, { posterId, workerId, state: 'COMPLETED' });
     const escrowId = await createTestEscrow(pool, taskId, 'FUNDED');
     
     // Create admin role

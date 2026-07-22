@@ -64,7 +64,7 @@ function minutesFromNow(minutes: number): Date {
 beforeEach(() => {
   vi.clearAllMocks();
   // Default: db.query succeeds (the UPDATE to proof_submissions)
-  mockDb.query.mockResolvedValue({ rows: [], rowCount: 0 } as never);
+  mockDb.query.mockResolvedValue({ rows: [{ id: 'signal-1' }], rowCount: 1 } as never);
 });
 
 // ===========================================================================
@@ -104,7 +104,7 @@ describe('PhotoVerificationService', () => {
       expect(result.success).toBe(true);
       // unknown source alone is a warning, not a hard failure
       expect(result.data!.failures).toHaveLength(0);
-      expect(result.data!.warnings.some(w => w.includes('CAPTURE_SOURCE_UNKNOWN'))).toBe(true);
+      expect(result.data!.warnings.some((w) => w.includes('CAPTURE_SOURCE_UNKNOWN'))).toBe(true);
     });
 
     it('passes when capture_source is "live_camera" with a fresh timestamp', async () => {
@@ -136,7 +136,7 @@ describe('PhotoVerificationService', () => {
       });
 
       expect(result.data!.passed).toBe(false);
-      expect(result.data!.failures.some(f => f.includes('STALE_PHOTO'))).toBe(true);
+      expect(result.data!.failures.some((f) => f.includes('STALE_PHOTO'))).toBe(true);
     });
 
     it('passes when the photo is exactly 1 minute old (within the 5-minute window)', async () => {
@@ -162,7 +162,7 @@ describe('PhotoVerificationService', () => {
       });
 
       expect(result.data!.passed).toBe(false);
-      expect(result.data!.failures.some(f => f.includes('FUTURE_TIMESTAMP'))).toBe(true);
+      expect(result.data!.failures.some((f) => f.includes('FUTURE_TIMESTAMP'))).toBe(true);
     });
 
     it('adds a warning when no EXIF timestamp is present', async () => {
@@ -175,7 +175,7 @@ describe('PhotoVerificationService', () => {
       });
 
       expect(result.data!.failures).toHaveLength(0);
-      expect(result.data!.warnings.some(w => w.includes('NO_EXIF_TIMESTAMP'))).toBe(true);
+      expect(result.data!.warnings.some((w) => w.includes('NO_EXIF_TIMESTAMP'))).toBe(true);
     });
   });
 
@@ -198,7 +198,7 @@ describe('PhotoVerificationService', () => {
       );
 
       expect(result.data!.passed).toBe(false);
-      expect(result.data!.failures.some(f => f.includes('GPS_MISMATCH'))).toBe(true);
+      expect(result.data!.failures.some((f) => f.includes('GPS_MISMATCH'))).toBe(true);
     });
 
     it('passes when the photo GPS is within 500m of the task location', async () => {
@@ -233,7 +233,7 @@ describe('PhotoVerificationService', () => {
       );
 
       expect(result.data!.failures).toHaveLength(0);
-      expect(result.data!.warnings.some(w => w.includes('NO_GPS_DATA'))).toBe(true);
+      expect(result.data!.warnings.some((w) => w.includes('NO_GPS_DATA'))).toBe(true);
     });
   });
 
@@ -254,6 +254,47 @@ describe('PhotoVerificationService', () => {
       const [sql] = mockDb.query.mock.calls[0] as [string, unknown[]];
       expect(sql).toContain('UPDATE proof_submissions');
       expect(sql).toContain('capture_validation_passed');
+      expect(sql).toMatch(/WHERE\s+proof_id\s*=\s*\$4/i);
+    });
+
+    it('uses raw EXIF only in memory and strips it before persistence', async () => {
+      const timestamp = minutesAgo(1);
+      await PhotoVerificationService.validateCapture(
+        PROOF_ID,
+        {
+          capture_source: 'live_camera',
+          exif_timestamp: timestamp,
+          exif_gps_lat: TASK_LOCATION.lat,
+          exif_gps_lng: TASK_LOCATION.lng,
+          exif_device_model: 'private-device-fingerprint',
+        },
+        TASK_LOCATION
+      );
+
+      const [sql, params] = mockDb.query.mock.calls[0] as [string, unknown[]];
+      expect(sql).toMatch(/exif_timestamp\s*=\s*NULL/i);
+      expect(sql).toMatch(/exif_gps_lat\s*=\s*NULL/i);
+      expect(sql).toMatch(/exif_gps_lng\s*=\s*NULL/i);
+      expect(sql).toMatch(/exif_device_model\s*=\s*NULL/i);
+      expect(params).not.toContain(timestamp);
+      expect(params).not.toContain(TASK_LOCATION.lat);
+      expect(params).not.toContain(TASK_LOCATION.lng);
+      expect(params).not.toContain('private-device-fingerprint');
+    });
+
+    it('fails closed when the canonical proof has no verification row', async () => {
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+      const result = await PhotoVerificationService.validateCapture(PROOF_ID, {
+        capture_source: 'live_camera',
+        exif_timestamp: minutesAgo(1),
+        exif_gps_lat: null,
+        exif_gps_lng: null,
+        exif_device_model: null,
+      });
+      expect(result).toMatchObject({
+        success: false,
+        error: { code: 'PROOF_SIGNAL_TARGET_NOT_FOUND' },
+      });
     });
   });
 

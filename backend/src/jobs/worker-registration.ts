@@ -1,7 +1,7 @@
 import type { Job, Worker } from 'bullmq';
 import { db } from '../db.js';
 import { workerLogger as log } from '../logger.js';
-import { sendPushNotification } from '../services/PushNotificationService.js';
+import { NotificationService } from '../services/NotificationService.js';
 import { processBiometricAnalysisJob } from './biometric-analyzer-worker.js';
 import { processEmailJob } from './email-worker.js';
 import { processExpertiseRecalcJob } from './expertise-recalc-worker.js';
@@ -13,21 +13,30 @@ type JobHandler = (job: Job) => Promise<void>;
 
 async function notifyEscrow(job: Job, kind: 'funded' | 'refunded'): Promise<void> {
   const { escrowId } = job.data.payload as { escrowId: string };
-  const result = await db.query<{ poster_id: string | null }>(
-    'SELECT t.poster_id FROM escrows e JOIN tasks t ON t.id = e.task_id WHERE e.id = $1',
+  const result = await db.query<{ poster_id: string | null; task_id: string }>(
+    'SELECT t.poster_id, t.id AS task_id FROM escrows e JOIN tasks t ON t.id = e.task_id WHERE e.id = $1',
     [escrowId]
   );
   const posterId = result.rows[0]?.poster_id;
   if (!posterId) return;
   const funded = kind === 'funded';
-  await sendPushNotification(
-    posterId,
-    funded ? 'Payment Captured' : 'Refund Processed',
-    funded
+  const taskId = result.rows[0].task_id;
+  const notification = await NotificationService.createNotification({
+    userId: posterId,
+    category: funded ? 'escrow_funded' : 'refund_issued',
+    title: funded ? 'Payment Captured' : 'Refund Processed',
+    body: funded
       ? 'Your payment was captured. The task is now funded and ready to be accepted.'
       : 'Your payment has been refunded. Funds will appear in your account within a few business days.',
-    { screen: 'task_detail', escrow_id: escrowId, type: `escrow_${kind}` }
-  );
+    deepLink: `/tasks/${taskId}`,
+    taskId,
+    objectRef: { type: 'escrow', id: escrowId },
+    dedupeKey: `escrow:${escrowId}:${kind}:v${job.data.event_version}`,
+    metadata: { escrowId, eventVersion: job.data.event_version },
+    channels: ['in_app', 'push'],
+    priority: funded ? 'HIGH' : 'MEDIUM',
+  });
+  if (!notification.success) throw new Error(notification.error.message);
 }
 
 async function notifyPaymentFailed(job: Job): Promise<void> {
@@ -37,12 +46,38 @@ async function notifyPaymentFailed(job: Job): Promise<void> {
     taskId: string;
   };
   if (!posterId) return;
-  await sendPushNotification(
-    posterId,
-    'Payment Failed',
-    'Your payment could not be processed. Please update your payment method and try again.',
-    { screen: 'task_detail', task_id: taskId, escrow_id: escrowId, type: 'payment_failed' }
-  );
+  const notification = await NotificationService.createNotification({
+    userId: posterId,
+    category: 'payment_failed',
+    title: 'Payment Failed',
+    body: 'Your payment could not be processed. Please update your payment method and try again.',
+    deepLink: `/tasks/${taskId}`,
+    taskId,
+    objectRef: { type: 'escrow', id: escrowId },
+    dedupeKey: `escrow:${escrowId}:payment_failed:v${job.data.event_version}`,
+    metadata: { escrowId, eventVersion: job.data.event_version },
+    channels: ['in_app', 'push'],
+    priority: 'HIGH',
+  });
+  if (!notification.success) throw new Error(notification.error.message);
+}
+
+async function notifyTransferFailed(job: Job): Promise<void> {
+  const { escrowId, workerId } = job.data.payload as { escrowId: string; workerId: string | null };
+  if (!workerId) return;
+  const notification = await NotificationService.createNotification({
+    userId: workerId,
+    category: 'payout_failed',
+    title: 'Payment Transfer Failed',
+    body: 'Your payment transfer failed. Our team has been alerted and will resolve this urgently. No action required from you.',
+    deepLink: '/earnings',
+    objectRef: { type: 'escrow', id: escrowId },
+    dedupeKey: `escrow:${escrowId}:transfer_failed:v${job.data.event_version}`,
+    metadata: { escrowId, eventVersion: job.data.event_version },
+    channels: ['in_app', 'push'],
+    priority: 'CRITICAL',
+  });
+  if (!notification.success) throw new Error(notification.error.message);
 }
 
 const notificationHandlers: Record<string, JobHandler> = {
@@ -54,6 +89,7 @@ const notificationHandlers: Record<string, JobHandler> = {
   'escrow.funded': async (job) => notifyEscrow(job, 'funded'),
   'escrow.refunded': async (job) => notifyEscrow(job, 'refunded'),
   'escrow.payment_failed': notifyPaymentFailed,
+  'escrow.transfer_failed': notifyTransferFailed,
 };
 
 function inferredNotificationHandler(job: Job): JobHandler | undefined {
@@ -75,6 +111,7 @@ async function processNotificationJob(job: Job): Promise<void> {
 
 const paymentHandlers: Record<string, JobHandler> = {
   'escrow.release_requested': async (job) => (await import('./escrow-action-worker.js')).processEscrowActionJob(job),
+  'escrow.released': async (job) => (await import('./escrow-release-reconciliation-worker.js')).processEscrowReleaseReconciliationJob(job),
   'escrow.refund_requested': async (job) => {
     const action = (job.data.payload as { financial_action?: unknown } | undefined)?.financial_action;
     if (action === 'cancel_pending_payment_intent') {
@@ -86,7 +123,7 @@ const paymentHandlers: Record<string, JobHandler> = {
   },
   'escrow.partial_refund_requested': async (job) => (await import('./escrow-action-worker.js')).processEscrowActionJob(job),
   'escrow.completion_release_requested': async (job) => (await import('./completion-release-worker.js')).processCompletionReleaseJob(job),
-  'stripe.event_received': async (job) => (await import('./stripe-event-worker.js')).processStripeEventJob(job),
+  'stripe.event_received': async (job) => (await import('./stripe-event-dispatcher.js')).processStripeEventDispatchJob(job),
   'task.instant_matching_started': async (job) => (await import('./instant-matching-worker.js')).processInstantMatchingJob(job),
   'task.instant_surge_evaluate': async (job) => (await import('./instant-surge-worker.js')).processInstantSurgeJob(job),
 };

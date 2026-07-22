@@ -21,6 +21,7 @@ import { BiometricVerificationService } from '../services/BiometricVerificationS
 import { notifyAdmins } from '../services/AdminNotificationHelper.js';
 import { workerLogger } from '../logger.js';
 import type { Job } from 'bullmq';
+import { issueSingleSystemMediaAccess } from '../services/PrivateMediaDeliveryService.js';
 
 const log = workerLogger.child({ worker: 'biometric-analyzer' });
 
@@ -30,8 +31,16 @@ const log = workerLogger.child({ worker: 'biometric-analyzer' });
 
 interface BiometricAnalysisJobData {
   proof_id: string;
-  photo_url: string;
+  // Rolling-upgrade fields are deliberately ignored. Queue payloads are not
+  // media authority; the worker resolves a consumed proof receipt below.
+  photo_url?: string;
   lidar_depth_map_url?: string;
+}
+
+interface BiometricProofMediaContext {
+  biometric_analysis: Record<string, unknown> | null;
+  task_id: string;
+  storage_key: string | null;
 }
 
 // ============================================================================
@@ -43,7 +52,7 @@ interface BiometricAnalysisJobData {
  * Analyzes proof photo and updates database
  */
 export const processBiometricAnalysisJob = async (job: Job<BiometricAnalysisJobData>): Promise<void> => {
-  const { proof_id, photo_url, lidar_depth_map_url } = job.data;
+  const { proof_id } = job.data;
 
   try {
     log.info({ proofId: proof_id }, 'Processing biometric analysis');
@@ -51,25 +60,57 @@ export const processBiometricAnalysisJob = async (job: Job<BiometricAnalysisJobD
     // W-17 FIX: Check if biometric analysis was already completed for this proof
     // before calling Rekognition. On BullMQ retry, without this guard, the worker
     // would make a duplicate (costly and potentially incorrect) Rekognition API call.
-    const existingAnalysis = await db.query<{ biometric_analysis: Record<string, unknown> | null }>(
-      `SELECT metadata->>'biometric_analysis' as biometric_analysis
-       FROM proof_submissions
-       WHERE id = $1`,
+    const existingAnalysis = await db.query<BiometricProofMediaContext>(
+      `SELECT ps.metadata->>'biometric_analysis' AS biometric_analysis,
+              p.task_id::TEXT AS task_id,
+              pp.storage_key
+       FROM proofs p
+       LEFT JOIN LATERAL (
+         SELECT metadata
+         FROM proof_submissions
+         WHERE proof_id = p.id
+         ORDER BY created_at DESC, id DESC
+         LIMIT 1
+       ) ps ON TRUE
+       LEFT JOIN LATERAL (
+         SELECT storage_key
+         FROM proof_photos
+         WHERE proof_id = p.id
+         ORDER BY sequence_number ASC, created_at ASC, id ASC
+         LIMIT 1
+       ) pp ON TRUE
+       WHERE p.id = $1`,
       [proof_id]
     );
-    if (existingAnalysis.rows[0]?.biometric_analysis) {
+    const proofMedia = existingAnalysis.rows[0];
+    if (proofMedia?.biometric_analysis) {
       log.info({ proofId: proof_id }, 'Biometric analysis already complete, skipping Rekognition call');
       return;
     }
+    if (!proofMedia?.storage_key || !proofMedia.task_id) {
+      throw new Error('PROOF_MEDIA_RECEIPT_REQUIRED');
+    }
+    const privatePhoto = await issueSingleSystemMediaAccess({
+      taskId: proofMedia.task_id,
+      purpose: 'PROOF',
+      accessReason: 'BIOMETRIC_ANALYSIS',
+      consumerId: proof_id,
+      storageKey: proofMedia.storage_key,
+    });
+    if (!privatePhoto) throw new Error('PROOF_MEDIA_RECEIPT_REQUIRED');
 
     // Run biometric analysis
     const result = await BiometricVerificationService.analyzeProofSubmission(
       proof_id,
-      photo_url,
-      lidar_depth_map_url
+      privatePhoto.downloadUrl,
+      undefined,
     );
 
     if (!result.success) {
+      if (result.error?.code === 'BIOMETRIC_PROVIDER_UNAVAILABLE') {
+        log.warn({ proofId: proof_id }, 'Biometric provider unavailable; proof requires human review');
+        return;
+      }
       throw new Error(result.error?.message || 'Biometric analysis failed');
     }
 
@@ -77,14 +118,22 @@ export const processBiometricAnalysisJob = async (job: Job<BiometricAnalysisJobD
 
     // Update proof_submissions table (scores already stored by service)
     // Add analysis recommendation to proof metadata
-    await db.query(
-      `UPDATE proof_submissions
+    const metadataWrite = await db.query(
+      `WITH target AS (
+         SELECT id FROM proof_submissions
+         WHERE proof_id = $2
+         ORDER BY created_at DESC, id DESC
+         LIMIT 1
+       )
+       UPDATE proof_submissions ps
        SET metadata = jsonb_set(
          COALESCE(metadata, '{}'::jsonb),
          '{biometric_analysis}',
          $1::jsonb
        )
-       WHERE id = $2`,
+       FROM target
+       WHERE ps.id = target.id
+       RETURNING ps.id`,
       [
         JSON.stringify({
           recommendation: analysis.recommendation,
@@ -95,22 +144,36 @@ export const processBiometricAnalysisJob = async (job: Job<BiometricAnalysisJobD
         proof_id
       ]
     );
+    if ((metadataWrite.rowCount ?? 0) === 0) {
+      throw new Error('PROOF_SIGNAL_TARGET_NOT_FOUND');
+    }
 
     // If HIGH/CRITICAL risk, flag for manual review
     if (analysis.recommendation === 'reject' || analysis.recommendation === 'manual_review') {
       log.warn({ proofId: proof_id, recommendation: analysis.recommendation, reasoning: analysis.reasoning, riskLevel: analysis.scores.risk_level, flags: analysis.flags }, 'Biometric proof flagged for review');
 
       // Flag in DB for manual review queue
-      await db.query(
-        `UPDATE proof_submissions
+      const reviewWrite = await db.query(
+        `WITH target AS (
+           SELECT id FROM proof_submissions
+           WHERE proof_id = $1
+           ORDER BY created_at DESC, id DESC
+           LIMIT 1
+         )
+         UPDATE proof_submissions ps
          SET metadata = jsonb_set(
            COALESCE(metadata, '{}'::jsonb),
            '{manual_review_required}',
            'true'::jsonb
          )
-         WHERE id = $1`,
+         FROM target
+         WHERE ps.id = target.id
+         RETURNING ps.id`,
         [proof_id]
       );
+      if ((reviewWrite.rowCount ?? 0) === 0) {
+        throw new Error('PROOF_SIGNAL_TARGET_NOT_FOUND');
+      }
 
       // Notify admins of flagged proof
       await notifyAdmins({

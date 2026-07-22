@@ -6,6 +6,10 @@ const migration = readFileSync(
   new URL('../../database/migrations/20260710_engine_automation_contracts.sql', import.meta.url),
   'utf8'
 );
+const locationEncryptionMigration = readFileSync(
+  new URL('../../database/migrations/20260718_task_location_encryption.sql', import.meta.url),
+  'utf8'
+);
 
 describe('engine automation contract schema', () => {
   it('pins task.create idempotency with a database uniqueness witness', () => {
@@ -18,9 +22,15 @@ describe('engine automation contract schema', () => {
     expect(migration).toContain('ADD COLUMN IF NOT EXISTS rough_location TEXT');
     expect(migration).toContain('CREATE TABLE IF NOT EXISTS task_location_vault');
     expect(migration).toContain('CREATE TABLE IF NOT EXISTS task_location_access_log');
-    expect(migration).toContain('UNIQUE (task_id, worker_id)');
     expect(migration).toContain('INSERT INTO task_location_vault (task_id, exact_location)');
     expect(migration).toContain("location = COALESCE(rough_location, 'Location protected until reservation')");
+    expect(locationEncryptionMigration).toContain('ALTER COLUMN exact_location DROP NOT NULL');
+    expect(locationEncryptionMigration).toContain('location_ciphertext TEXT');
+    expect(locationEncryptionMigration).toContain('location_auth_tag TEXT');
+    expect(locationEncryptionMigration).toContain('DROP CONSTRAINT IF EXISTS task_location_access_log_task_id_worker_id_key');
+    expect(locationEncryptionMigration).toContain('CREATE TRIGGER task_location_expire_terminal');
+    expect(locationEncryptionMigration).toContain("NEW.state IN ('COMPLETED', 'CANCELLED', 'EXPIRED')");
+    expect(locationEncryptionMigration).toContain("t.state IN ('COMPLETED', 'CANCELLED', 'EXPIRED')");
   });
 
   it('pins one canonical reservation per engine task plus request idempotency', () => {
@@ -55,6 +65,8 @@ describe('engine automation contract schema', () => {
       roughArea: 'Bellevue, WA',
       clientIdempotencyKey: 'quote-accept:abc_123',
       dispatchExpiresAt: '2026-07-11T12:00:00.000Z',
+      regionCode: 'US-WA',
+      category: 'yard',
     });
     expect(valid.success).toBe(true);
 

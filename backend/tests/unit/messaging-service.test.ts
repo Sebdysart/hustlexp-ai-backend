@@ -6,7 +6,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../../src/db', () => ({
-  db: { query: vi.fn() },
+  db: { query: vi.fn(), transaction: vi.fn() },
   isInvariantViolation: vi.fn().mockReturnValue(false),
   getErrorMessage: vi.fn().mockReturnValue('Invariant violation'),
 }));
@@ -36,6 +36,7 @@ import { MessagingService } from '../../src/services/MessagingService';
 import { db } from '../../src/db';
 import { NotificationService } from '../../src/services/NotificationService';
 import { ContentModerationService } from '../../src/services/ContentModerationService';
+import { detectForbiddenPatterns } from '../../src/services/MessagingPolicy';
 
 // ============================================================================
 // HELPER FACTORIES
@@ -51,12 +52,26 @@ const msg = {
   created_at: new Date(), updated_at: new Date(),
 };
 
+const RECEIPT_1 = 'c0000000-0000-4000-8000-000000000001';
+const RECEIPT_2 = 'c0000000-0000-4000-8000-000000000002';
+const RECEIPT_3 = 'c0000000-0000-4000-8000-000000000003';
+
+function finalizedMedia(storageKey: string) {
+  return {
+    canonical_key: storageKey,
+    canonical_content_type: 'image/jpeg',
+    canonical_size_bytes: 300,
+    canonical_checksum_sha256: 'a'.repeat(64),
+  };
+}
+
 // ============================================================================
 // TESTS
 // ============================================================================
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(db.query as any));
 });
 
 describe('MessagingService.getMessagesForTask', () => {
@@ -129,6 +144,25 @@ describe('MessagingService.getUnreadCount', () => {
   });
 });
 
+describe('deterministic communication quarantine policy', () => {
+  it.each([
+    ['phone', 'Text me at 555-867-5309'],
+    ['email', 'Email me at worker@example.com'],
+    ['payment_handle', 'Pay my Cash App $directpay'],
+    ['street_address', 'Meet at 123 Main Street'],
+    ['off_platform_request', 'Call me and we can avoid the fees'],
+    ['harassment', 'You are a worthless idiot'],
+    ['prohibited_content', 'I can sell weapons'],
+    ['scope_change_request', 'Can you also add another task?'],
+  ])('detects %s before recipient delivery', (expected, content) => {
+    expect(detectForbiddenPatterns(content)).toContain(expected);
+  });
+
+  it('does not flag ordinary task coordination', () => {
+    expect(detectForbiddenPatterns('I will bring the requested hand truck at 2 PM.')).toEqual([]);
+  });
+});
+
 describe('MessagingService.sendMessage', () => {
   it('returns NOT_FOUND when task does not exist', async () => {
     (db.query as any).mockResolvedValueOnce({ rows: [] });
@@ -155,6 +189,45 @@ describe('MessagingService.sendMessage', () => {
     });
     expect(result.success).toBe(false);
     expect(result.error.code).toBe('INVALID_STATE');
+  });
+
+  it('allows the Poster and the one active shortlisted worker to message in OPEN state', async () => {
+    const quoteTask = {
+      ...taskRow,
+      state: 'OPEN',
+      worker_id: null,
+      quote_worker_id: 'quote-worker-1',
+    };
+    (db.query as any)
+      .mockResolvedValueOnce({ rows: [quoteTask] })
+      .mockResolvedValueOnce({ rows: [{ ...msg, receiver_id: 'quote-worker-1' }] });
+
+    const result = await MessagingService.sendMessage({
+      taskId: 'task-1', senderId: 'poster-1', messageType: 'TEXT', content: 'Which tools are included?',
+    });
+
+    expect(result.success).toBe(true);
+    const insertParams = (db.query as any).mock.calls[1][1];
+    expect(insertParams).toEqual(expect.arrayContaining(['poster-1', 'quote-worker-1']));
+  });
+
+  it('rejects every non-shortlisted worker from an OPEN quote conversation', async () => {
+    (db.query as any).mockResolvedValueOnce({
+      rows: [{
+        ...taskRow,
+        state: 'OPEN',
+        worker_id: null,
+        quote_worker_id: 'quote-worker-1',
+      }],
+    });
+
+    const result = await MessagingService.sendMessage({
+      taskId: 'task-1', senderId: 'other-worker', messageType: 'TEXT', content: 'Cold outreach',
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error.code).toBe('FORBIDDEN');
+    expect((db.query as any).mock.calls).toHaveLength(1);
   });
 
   it('returns FORBIDDEN when sender is not a participant', async () => {
@@ -252,7 +325,7 @@ describe('MessagingService.sendMessage', () => {
 describe('MessagingService.sendPhotoMessage', () => {
   it('returns INVALID_INPUT when no photos provided', async () => {
     const result = await MessagingService.sendPhotoMessage({
-      taskId: 't1', senderId: 'u1', photoUrls: [],
+      taskId: 't1', senderId: 'u1', uploadReceiptIds: [],
     });
     expect(result.success).toBe(false);
     expect(result.error.code).toBe('INVALID_INPUT');
@@ -260,7 +333,7 @@ describe('MessagingService.sendPhotoMessage', () => {
 
   it('returns INVALID_INPUT when more than 3 photos provided', async () => {
     const result = await MessagingService.sendPhotoMessage({
-      taskId: 't1', senderId: 'u1', photoUrls: ['a', 'b', 'c', 'd'],
+      taskId: 't1', senderId: 'u1', uploadReceiptIds: [RECEIPT_1, RECEIPT_2, RECEIPT_3, 'c0000000-0000-4000-8000-000000000004'],
     });
     expect(result.success).toBe(false);
     expect(result.error.code).toBe('INVALID_INPUT');
@@ -269,7 +342,7 @@ describe('MessagingService.sendPhotoMessage', () => {
   it('returns NOT_FOUND when task does not exist', async () => {
     (db.query as any).mockResolvedValueOnce({ rows: [] });
     const result = await MessagingService.sendPhotoMessage({
-      taskId: 't1', senderId: 'u1', photoUrls: ['photo1.jpg'],
+      taskId: 't1', senderId: 'u1', uploadReceiptIds: [RECEIPT_1],
     });
     expect(result.success).toBe(false);
     expect(result.error.code).toBe('NOT_FOUND');
@@ -278,7 +351,7 @@ describe('MessagingService.sendPhotoMessage', () => {
   it('returns INVALID_STATE when task is CANCELLED (read-only)', async () => {
     (db.query as any).mockResolvedValueOnce({ rows: [{ ...taskRow, state: 'CANCELLED' }] });
     const result = await MessagingService.sendPhotoMessage({
-      taskId: 't1', senderId: 'poster-1', photoUrls: ['p.jpg'],
+      taskId: 't1', senderId: 'poster-1', uploadReceiptIds: [RECEIPT_1],
     });
     expect(result.success).toBe(false);
     expect(result.error.code).toBe('INVALID_STATE');
@@ -287,13 +360,15 @@ describe('MessagingService.sendPhotoMessage', () => {
   it('successfully sends a photo message with 1 photo', async () => {
     const photoMsg = {
       ...msg, message_type: 'PHOTO',
-      photo_urls: ['https://example.com/photo.jpg'], photo_count: 1,
+      photo_urls: ['media/message/task-1/poster-1/photo-1.jpg'], photo_count: 1,
     };
     (db.query as any)
       .mockResolvedValueOnce({ rows: [taskRow] })
-      .mockResolvedValue({ rows: [photoMsg] }); // photo evidence INSERT + message INSERT
+      .mockResolvedValueOnce({ rows: [finalizedMedia('media/message/task-1/poster-1/photo-1.jpg')] })
+      .mockResolvedValueOnce({ rows: [photoMsg] })
+      .mockResolvedValue({ rows: [] });
     const result = await MessagingService.sendPhotoMessage({
-      taskId: 'task-1', senderId: 'poster-1', photoUrls: ['https://example.com/photo.jpg'],
+      taskId: 'task-1', senderId: 'poster-1', uploadReceiptIds: [RECEIPT_1],
     });
     expect(result.success).toBe(true);
     expect(result.data.message_type).toBe('PHOTO');
@@ -303,9 +378,13 @@ describe('MessagingService.sendPhotoMessage', () => {
     const photoMsg = { ...msg, message_type: 'PHOTO', photo_count: 3 };
     (db.query as any)
       .mockResolvedValueOnce({ rows: [taskRow] })
-      .mockResolvedValue({ rows: [photoMsg] });
+      .mockResolvedValueOnce({ rows: [finalizedMedia('media/message/task-1/worker-1/p1.jpg')] })
+      .mockResolvedValueOnce({ rows: [finalizedMedia('media/message/task-1/worker-1/p2.jpg')] })
+      .mockResolvedValueOnce({ rows: [finalizedMedia('media/message/task-1/worker-1/p3.jpg')] })
+      .mockResolvedValueOnce({ rows: [photoMsg] })
+      .mockResolvedValue({ rows: [] });
     const result = await MessagingService.sendPhotoMessage({
-      taskId: 'task-1', senderId: 'worker-1', photoUrls: ['p1.jpg', 'p2.jpg', 'p3.jpg'],
+      taskId: 'task-1', senderId: 'worker-1', uploadReceiptIds: [RECEIPT_1, RECEIPT_2, RECEIPT_3],
     });
     expect(result.success).toBe(true);
   });

@@ -57,10 +57,11 @@ async function main() {
     connectionString: DATABASE_URL,
     ...(needsSSL ? { ssl: { rejectUnauthorized: false } } : {})
   });
+  let client;
 
   try {
     // Step 1: Check current state
-    const client = await pool.connect();
+    client = await pool.connect();
     console.log('\n📊 Step 1: Checking current database state...');
     const tablesResult = await client.query(`
       SELECT table_name 
@@ -134,7 +135,7 @@ async function main() {
     }
     throw error;
   } finally {
-    client.release();
+    client?.release();
     await pool.end();
   }
 }

@@ -82,7 +82,7 @@ describe('BUSINESS', () => {
     // orphan that could silently diverge from config.stripe.platformFeePercent.
     // Fee math lives in lib/money.ts.
     expect('PLATFORM_FEE_PERCENT' in BUSINESS).toBe(false);
-    expect(BUSINESS.MIN_TASK_VALUE_CENTS).toBe(500);
+    expect(BUSINESS.MIN_TASK_VALUE_CENTS).toBe(1500);
     expect(BUSINESS.MAX_TASK_VALUE_CENTS).toBe(100_000);
   });
 
@@ -90,8 +90,8 @@ describe('BUSINESS', () => {
     expect(BUSINESS.MAX_TASK_VALUE_CENTS).toBeGreaterThan(BUSINESS.MIN_TASK_VALUE_CENTS);
   });
 
-  it('min task value should be at least $5', () => {
-    expect(BUSINESS.MIN_TASK_VALUE_CENTS).toBeGreaterThanOrEqual(500);
+  it('min task value should be at least the binding $15 floor', () => {
+    expect(BUSINESS.MIN_TASK_VALUE_CENTS).toBeGreaterThanOrEqual(1500);
   });
 
   it('subscription pricing should be sensible', () => {

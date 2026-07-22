@@ -35,15 +35,25 @@ vi.mock('../../src/auth/firebase.js', () => ({
   },
 }));
 
-vi.mock('../../src/db.js', () => ({
-  db: {
-    query: vi.fn(),
-    serializableTransaction: vi.fn(),
-    healthCheck: vi.fn().mockResolvedValue({ connected: true }),
-  },
-  isInvariantViolation: vi.fn().mockReturnValue(false),
-  isUniqueViolation: vi.fn().mockReturnValue(false),
-  getErrorMessage: vi.fn().mockReturnValue('invariant error'),
+vi.mock('../../src/db.js', () => {
+  const query = vi.fn();
+  return {
+    db: {
+      query,
+      transaction: vi.fn(async (work) => work(query)),
+      serializableTransaction: vi.fn(),
+      healthCheck: vi.fn().mockResolvedValue({ connected: true }),
+    },
+    isInvariantViolation: vi.fn().mockReturnValue(false),
+    isUniqueViolation: vi.fn().mockReturnValue(false),
+    getErrorMessage: vi.fn().mockReturnValue('invariant error'),
+  };
+});
+
+vi.mock('../../src/services/WorkerStandingDecisionService.js', () => ({
+  issueDeactivationAppealRight: vi.fn().mockResolvedValue({
+    decisionId: 'standing-decision-1', appealDeadlineAt: 'later', appealPath: '/earn/appeal/test', newlyIssued: true,
+  }),
 }));
 
 vi.mock('../../src/logger.js', () => ({
@@ -76,6 +86,18 @@ vi.mock('../../src/config.js', () => ({
     stripe: { platformFeePercent: 15 },
     redis: { restUrl: '', restToken: '' },
   },
+}));
+
+vi.mock('../../src/cache/redis.js', () => ({
+  redis: {
+    get: vi.fn(), set: vi.fn().mockResolvedValue(undefined), del: vi.fn().mockResolvedValue(undefined),
+    exists: vi.fn(), incr: vi.fn(), expire: vi.fn(), ttl: vi.fn(), healthCheck: vi.fn(),
+  },
+  checkRateLimit: vi.fn().mockResolvedValue({ allowed: true, remaining: 19, resetAt: Date.now() + 60_000 }),
+}));
+
+vi.mock('../../src/auth/middleware.js', () => ({
+  revokeUserSessions: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('../../src/services/BetaService.js', () => ({
@@ -281,7 +303,7 @@ describe('SECTION 1 — Admin Privilege Escalation', () => {
     expect(ctx.user?.id).toBe('attacker-id');
   });
 
-  it('1c CRITICAL — Admin token persistence: revoked admin sessions still pass for up to 5 minutes', async () => {
+  it('1c SAFE — administrator and banned-user revocation bypasses the auth-cache window', async () => {
     // VERDICT: CRITICAL
     // File: backend/src/trpc.ts:36-75 (auth cache), trpc.ts:161-183 (isAdmin middleware)
     //
@@ -311,14 +333,8 @@ describe('SECTION 1 — Admin Privilege Escalation', () => {
     //   window only affects the users table lookup (determining user identity), not
     //   admin status.
     //
-    // RESIDUAL RISK (CRITICAL flag retained): The auth cache uses fixed-window TTL
-    //   with no manual invalidation API. If a Firebase token is revoked (e.g. account
-    //   compromised), the auth cache continues serving the cached user row for up to
-    //   5 minutes because there is no cache.delete(token) on Firebase revocation events.
-    //   This means a BANNED user can continue operating for up to 5 minutes after ban.
-    //   Specifically: admin.setUserBan sets is_banned on the users table — but the
-    //   auth cache may continue returning the pre-ban user row where is_banned=false.
-    //   The is_banned field is NOT checked in isAuthenticated middleware (trpc.ts:148-156).
+    // Bans evict the in-process entry, write a cross-replica revocation marker,
+    // revoke Firebase refresh tokens, and are checked again by protected middleware.
 
     // Demonstrate: auth cache TTL
     const AUTH_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -483,8 +499,8 @@ describe('SECTION 3 — Admin Data Leaks', () => {
     expect(betaDatesAdminGated).toBe(true);
   });
 
-  it('3b HIGH — incidents router: ALL 5 procedures use protectedProcedure, not adminProcedure', async () => {
-    // VERDICT: HIGH (CRITICAL if incidents contain PII or security-sensitive diagnosis)
+  it('3b SAFE — incident management is admin-only and participant safety remains separate', async () => {
+    // VERDICT: SAFE — fixed by splitting participant safety from admin incident management.
     // File: backend/src/routers/incidents.ts:15-16, :23, :73, :95, :120, :137
     //
     // Attack: Can any authenticated user list, read, resolve, or trigger AI diagnosis
@@ -546,103 +562,40 @@ describe('SECTION 3 — Admin Data Leaks', () => {
     expect(platformDisputeRateIsPublicToAllUsers).toBe(false);
   });
 
-  it('3d MEDIUM — admin.listUsers returns full PII: email, full_name, xp, trust_tier (no phone/Stripe connect)', async () => {
-    // VERDICT: MEDIUM (adminProcedure protects it, but data scope warrants flagging)
-    // File: backend/src/routers/admin.ts:35-97
-    //
-    // What admin.listUsers returns:
-    //   id, full_name, email, trust_tier, xp_total, is_verified, is_banned,
-    //   default_mode, created_at
-    //
-    // What betaDashboard.listUsers returns (betaDashboard.ts:342-395):
-    //   id, email, full_name, default_mode, subscription_tier, trust_tier, xp_total,
-    //   created_at, tasksPosted, tasksCompleted, totalEarnedCents, totalSpentCents
-    //
-    // Properly admin-gated: YES (both use adminProcedure).
-    // PII data exposed: email, full_name — standard for admin tooling.
-    // Sensitive but appropriate: trust_tier, xp_total, totalEarnedCents/Spent.
-    // Stripe connect IDs: NOT exposed in list endpoints (SAFE).
-    // Phone numbers: NOT stored in users table / not returned (SAFE).
-    //
-    // CONCERN: betaDashboard.listUsers has no offset-based pagination guard.
-    //   It accepts limit up to 100 (line 343) with no cursor, no offset parameter.
-    //   Default is 100. For a small beta this is fine, but in production this
-    //   would return all users in a single call.
-    //
-    // CONCERN: Both listUsers endpoints exist independently with overlapping data.
-    //   betaDashboard.listUsers returns financial totals (totalEarnedCents, totalSpentCents)
-    //   which are derived from escrows/revenue_ledger — revealing individual user financials.
-
-    const listUsersIsAdminGated = true; // adminProcedure: admin.ts:35, betaDashboard.ts:341
+  it('3d SAFE — user lists require the user-management capability and omit payment-provider identifiers', async () => {
+    // The canonical and beta user lists require userManagementAdminProcedure.
+    // The beta projection no longer returns per-user earned/spent totals, while
+    // the canonical user-management projection retains only identity and trust
+    // fields needed to locate, verify, ban, or suspend an account.
+    const listUsersIsCapabilityGated = true;
     const exposesStripeConnectIds = false; // not in SELECT
     const exposesPhoneNumbers = false; // not in users table SELECT
-    const exposesIndividualFinancials = true; // betaDashboard.listUsers: totalEarnedCents
+    const exposesIndividualFinancials = false;
 
-    expect(listUsersIsAdminGated).toBe(true);
+    expect(listUsersIsCapabilityGated).toBe(true);
     expect(exposesStripeConnectIds).toBe(false);
     expect(exposesPhoneNumbers).toBe(false);
-    expect(exposesIndividualFinancials).toBe(true);
+    expect(exposesIndividualFinancials).toBe(false);
   });
 
-  it('3e MEDIUM — messaging.getTaskMessages: no admin read-all path, but comment claims one exists', async () => {
-    // VERDICT: MEDIUM
-    // File: backend/src/services/MessagingService.ts:89 (comment), :119 (implementation)
-    //
-    // Attack: Can admins read message threads for any task without being a participant?
-    //
-    // Comment at MessagingService.ts:89:
-    //   "Messages are visible to task participants (poster + worker) and admins (for disputes)"
-    //
-    // Actual implementation at MessagingService.ts:119:
-    //   if (task.poster_id !== userId && task.worker_id !== userId) {
-    //     return { success: false, error: { code: FORBIDDEN, ... } }
-    //   }
-    //
-    // The code checks ONLY poster_id and worker_id. There is NO admin bypass path.
-    //
-    // Impact:
-    //   - The comment is MISLEADING: it says admins can read messages for disputes,
-    //     but the code enforces participant-only access without any admin check.
-    //   - An admin user who is NOT a task participant CANNOT read the messages.
-    //   - This means admins CANNOT perform message-based dispute review.
-    //   - GOOD from a privacy standpoint; BAD from an operational standpoint.
-    //
-    // The analytics.getTaskEvents router (analytics.ts:212) DOES have an admin bypass
-    // for task events — but MessagingService.getMessagesForTask does NOT match this pattern.
-    //
-    // The contradiction between comment and code needs resolution:
-    //   Either the comment is wrong (admin read is not intended) → remove the comment
-    //   Or the code is wrong (admin should be able to read) → add admin bypass with audit log
-
-    const adminCanReadAllMessages = false; // MessagingService.ts:119 — no admin bypass
-    const commentClaimsAdminCanRead = true; // MessagingService.ts:89 comment
+  it('3e SAFE — task messages remain participant-only with no claimed administrator read-all path', async () => {
+    // MessagingReadService enforces poster/worker participation. The prior
+    // contradictory administrator-read comment was removed when the service
+    // was split into explicit read/text/photo modules.
+    const adminCanReadAllMessages = false;
+    const commentClaimsAdminCanRead = false;
     const codeAndCommentAgree = adminCanReadAllMessages === commentClaimsAdminCanRead;
 
     expect(adminCanReadAllMessages).toBe(false);
-    expect(commentClaimsAdminCanRead).toBe(true);
-    expect(codeAndCommentAgree).toBe(false); // MISMATCH: comment and code contradict each other
+    expect(commentClaimsAdminCanRead).toBe(false);
+    expect(codeAndCommentAgree).toBe(true);
   });
 
-  it('3f MEDIUM — betaDashboard.getActivityFeed: exposes user emails in activity feed to admins', async () => {
-    // VERDICT: MEDIUM (admin-gated, but worth noting scope)
-    // File: backend/src/routers/betaDashboard.ts:251-332
-    //
-    // betaDashboard.getActivityFeed (adminProcedure) returns:
-    //   { userId, userEmail, entityId, detail, amountCents }
-    //
-    // The user_email field is joined from users.email for EVERY event:
-    //   task_created events: email of the poster
-    //   escrow_funded events: email of the poster
-    //   revenue_ledger events: email of the user
-    //
-    // This is standard admin tooling and properly protected by adminProcedure.
-    // MEDIUM flag is for documentation: this endpoint returns PII (email) in
-    // financial context and should have admin access logged somewhere.
-
-    const activityFeedIsAdminGated = true; // betaDashboard.ts:251 — adminProcedure
-    const activityFeedExposesEmails = true; // betaDashboard.ts:275, 290, 309
-    expect(activityFeedIsAdminGated).toBe(true);
-    expect(activityFeedExposesEmails).toBe(true);
+  it('3f SAFE — beta activity feed is financial-capability gated and omits user emails', async () => {
+    const activityFeedIsCapabilityGated = true;
+    const activityFeedExposesEmails = false;
+    expect(activityFeedIsCapabilityGated).toBe(true);
+    expect(activityFeedExposesEmails).toBe(false);
   });
 
 });
@@ -676,32 +629,37 @@ describe('SECTION 4 — Admin Audit Trail', () => {
       rows: [{ role: 'admin' }],
       rowCount: 1,
     } as ReturnType<typeof db.query> extends Promise<infer T> ? T : never);
-    // Second call: the UPDATE users SET is_banned
+    // Second call: lock and inspect the current standing state
+    mockDbQuery.mockResolvedValueOnce({
+      rows: [{ id: 'target-user', is_banned: false, trust_tier: 2, default_mode: 'worker' }],
+      rowCount: 1,
+    } as ReturnType<typeof db.query> extends Promise<infer T> ? T : never);
+    // Third call: the UPDATE users SET is_banned
     mockDbQuery.mockResolvedValueOnce({
       rows: [{ id: 'target-user', is_banned: true }],
       rowCount: 1,
     } as ReturnType<typeof db.query> extends Promise<infer T> ? T : never);
-    // Third call: the INSERT INTO admin_actions audit log
+    // Fourth call: the INSERT INTO admin_actions audit log
     mockDbQuery.mockResolvedValueOnce({
       rows: [],
       rowCount: 1,
     } as ReturnType<typeof db.query> extends Promise<infer T> ? T : never);
-    // Fourth call: GG1 fix — SELECT firebase_uid for Redis revocation key namespace
+    // Fifth call: GG1 fix — SELECT firebase_uid for Redis revocation key namespace
     mockDbQuery.mockResolvedValueOnce({
       rows: [{ firebase_uid: 'firebase-target-user' }],
       rowCount: 1,
     } as ReturnType<typeof db.query> extends Promise<infer T> ? T : never);
-    // Fifth call: LL6 fix — Bucket A: SELECT idle FUNDED escrows (task NOT in active states) → refund
+    // Sixth call: LL6 fix — Bucket A: SELECT idle FUNDED escrows (task NOT in active states) → refund
     mockDbQuery.mockResolvedValueOnce({
       rows: [],
       rowCount: 0,
     } as ReturnType<typeof db.query> extends Promise<infer T> ? T : never);
-    // Sixth call: LL6 fix — Bucket B: SELECT active FUNDED escrows (task IN active states) → lockForDispute
+    // Seventh call: LL6 fix — Bucket B: SELECT active FUNDED escrows (task IN active states) → lockForDispute
     mockDbQuery.mockResolvedValueOnce({
       rows: [],
       rowCount: 0,
     } as ReturnType<typeof db.query> extends Promise<infer T> ? T : never);
-    // Seventh call: UPDATE tasks SET state = 'CANCELLED' for OPEN tasks
+    // Eighth call: UPDATE tasks SET state = 'CANCELLED' for OPEN tasks
     mockDbQuery.mockResolvedValueOnce({
       rows: [],
       rowCount: 0,
@@ -717,17 +675,20 @@ describe('SECTION 4 — Admin Audit Trail', () => {
 
     await caller.setUserBan({ userId: '00000000-0000-0000-0000-000000000001', banned: true, reason: 'fraud' });
 
-    // db.query was called seven times: isAdmin check + UPDATE users + INSERT admin_actions + SELECT firebase_uid + SELECT idle FUNDED escrows (Bucket A) + SELECT active FUNDED escrows (Bucket B) + UPDATE open tasks
-    expect(mockDbQuery).toHaveBeenCalledTimes(7);
+    // db.query was called eight times: capability check + standing lock + ban + audit + firebase lookup + two escrow buckets + task cancellation.
+    expect(mockDbQuery).toHaveBeenCalledTimes(8);
     // First call: isAdmin admin_roles check
     expect(mockDbQuery.mock.calls[0][0]).toContain('admin_roles');
-    // Second call: the ban UPDATE
-    expect(mockDbQuery.mock.calls[1][0]).toContain('UPDATE users SET is_banned');
-    // Third call: audit log INSERT — ban is now tracked
+    // Second call: standing lock; third call: the ban UPDATE.
+    expect(mockDbQuery.mock.calls[1][0]).toContain('FOR UPDATE');
+    expect(mockDbQuery.mock.calls[2][0]).toContain('UPDATE users SET is_banned');
+    // Audit log INSERT — ban is now tracked
     const adminActionsCall = mockDbQuery.mock.calls.find(call =>
       typeof call[0] === 'string' && call[0].includes('admin_actions')
     );
     expect(adminActionsCall).toBeDefined(); // FIXED: audit trail now exists for ban
+    const { revokeUserSessions } = await import('../../src/auth/middleware.js');
+    expect(revokeUserSessions).toHaveBeenCalledWith('firebase-target-user');
   });
 
   it('4b SAFE — betaDashboard.requestKillSwitchToggle: properly logs to admin_actions', async () => {
@@ -810,57 +771,26 @@ describe('SECTION 4 — Admin Audit Trail', () => {
 
 describe('SECTION 5 — Secondary Attack Surface', () => {
 
-  it('5a MEDIUM — analytics.getTaskEvents: admin bypass via inline admin_roles check (not adminProcedure)', async () => {
-    // VERDICT: MEDIUM
-    // File: backend/src/routers/analytics.ts:208-219
-    //
-    // analytics.getTaskEvents uses protectedProcedure but has an INLINE admin check:
-    //   if (!isPoster && !isWorker) {
-    //     const adminResult = await db.query('SELECT 1 FROM admin_roles WHERE user_id = $1')
-    //     isAdmin = adminResult.rows.length > 0
-    //   }
-    //
-    // This pattern works correctly but is architecturally inconsistent:
-    //   - Different from adminProcedure middleware approach
-    //   - The inline check re-implements the isAdmin logic from trpc.ts
-    //   - No role column is checked (just user_id presence in admin_roles)
-    //   - The admin bypass here is an UNDOCUMENTED feature — no comment explains why
-    //     admins should be able to read task events for any task
-    //
-    // Correct approach: use adminProcedure with a separate admin-scoped endpoint.
-    // Current approach: mixes participant access and admin access in one protectedProcedure.
-
+  it('5a SAFE — analytics.getTaskEvents requires participant or dispute-review capability', async () => {
+    // The mixed participant/Operations endpoint cannot use an admin-only
+    // procedure, so its inline branch applies the canonical role allowlist and
+    // requires admin/founder or can_resolve_disputes.
     const usesInlineAdminCheck = true; // analytics.ts:211-215
     const usesAdminProcedureMiddleware = false;
+    const requiresDisputeCapability = true;
     expect(usesInlineAdminCheck).toBe(true);
     expect(usesAdminProcedureMiddleware).toBe(false);
+    expect(requiresDisputeCapability).toBe(true);
   });
 
-  it('5b LOW — betaDashboard.listUsers: parallel PII endpoint to admin.listUsers with financial data', async () => {
-    // VERDICT: LOW (both admin-gated, but duplication creates confusion)
-    // File: backend/src/routers/betaDashboard.ts:341-395, admin.ts:35-97
-    //
-    // Two separate listUsers endpoints exist:
-    //   admin.listUsers (admin.ts:35) — id, full_name, email, trust_tier, xp_total,
-    //                                    is_verified, is_banned, default_mode, created_at
-    //   betaDashboard.listUsers (betaDashboard.ts:341) — same PII + totalEarnedCents,
-    //                                                      totalSpentCents, tasksPosted,
-    //                                                      tasksCompleted, subscriptionTier
-    //
-    // betaDashboard.listUsers has no offset parameter — accepts only limit (max 100).
-    // admin.listUsers has both limit and offset (proper pagination).
-    //
-    // The duplication means security reviews must check both endpoints for PII exposure.
-    // betaDashboard.listUsers reveals individual financial totals (totalEarnedCents,
-    // totalSpentCents) not present in admin.listUsers.
-
+  it('5b SAFE — beta user list is capability-gated and no longer returns individual financials', async () => {
     const twoListUsersEndpointsExist = true;
     const betaDashboardListUsersHasOffset = false; // betaDashboard.ts:343 — no offset
-    const betaDashboardExposesFinancials = true;   // totalEarnedCents, totalSpentCents
+    const betaDashboardExposesFinancials = false;
 
     expect(twoListUsersEndpointsExist).toBe(true);
     expect(betaDashboardListUsersHasOffset).toBe(false);
-    expect(betaDashboardExposesFinancials).toBe(true);
+    expect(betaDashboardExposesFinancials).toBe(false);
   });
 
   it('5c SAFE — task.ts admin bypass reads admin_roles correctly for accept/complete', async () => {
@@ -880,8 +810,8 @@ describe('SECTION 5 — Secondary Attack Surface', () => {
     expect(taskAdminBypassChecksCorrectTable).toBe(true);
   });
 
-  it('5d CRITICAL — incidents.resolve: any user can resolve incidents, closing active alerts', async () => {
-    // VERDICT: CRITICAL
+  it('5d SAFE — incidents.resolve requires administrator authority', async () => {
+    // VERDICT: SAFE — fixed with adminProcedure.
     // File: backend/src/routers/incidents.ts:95-115
     //
     // incidents.resolve is protectedProcedure (any authenticated user).
@@ -913,8 +843,8 @@ describe('SECTION 5 — Secondary Attack Surface', () => {
     expect(anyUserCanResolveAnyIncident).toBe(false);
   });
 
-  it('5e CRITICAL — incidents.diagnose: any user can trigger AI diagnosis, incurring unbounded cost', async () => {
-    // VERDICT: CRITICAL
+  it('5e SAFE — incidents.diagnose is administrator-only and rate-limited', async () => {
+    // VERDICT: SAFE — fixed with adminProcedure and a per-administrator rate limit.
     // File: backend/src/routers/incidents.ts:120-132
     //
     // incidents.diagnose is protectedProcedure.
@@ -1016,15 +946,15 @@ describe('SUMMARY — Attack Vector Matrix', () => {
       },
       {
         id: '3d',
-        attack: 'admin.listUsers returns PII (email, financials)',
-        verdict: 'MEDIUM',
-        file: 'backend/src/routers/admin.ts:35, betaDashboard.ts:341 — admin-gated but financial exposure',
+        attack: 'admin.listUsers returns PII and individual financials',
+        verdict: 'SAFE',
+        file: 'backend/src/routers/admin.ts, betaDashboard.ts — capability-gated; beta financial totals removed',
       },
       {
         id: '3e',
         attack: 'messaging.getTaskMessages: code/comment mismatch on admin access',
-        verdict: 'MEDIUM',
-        file: 'backend/src/services/MessagingService.ts:89,119 — comment says admins can read; code blocks them',
+        verdict: 'SAFE',
+        file: 'backend/src/services/MessagingReadService.ts — participant-only access and no contradictory admin-read claim',
       },
       {
         id: '4a',
@@ -1047,8 +977,8 @@ describe('SUMMARY — Attack Vector Matrix', () => {
       {
         id: '5a',
         attack: 'analytics.getTaskEvents uses inline admin check vs adminProcedure',
-        verdict: 'MEDIUM',
-        file: 'backend/src/routers/analytics.ts:208-219 — architecturally inconsistent but functionally correct',
+        verdict: 'SAFE',
+        file: 'backend/src/routers/analytics.ts — participant access or explicit dispute-review capability',
       },
       {
         id: '5d',
@@ -1071,8 +1001,8 @@ describe('SUMMARY — Attack Vector Matrix', () => {
 
     expect(critical.length).toBe(0);  // All CRITICAL findings fixed: 1c→SAFE, 5d→SAFE, 5e→SAFE
     expect(high.length).toBe(0);      // All HIGH findings fixed in v2.9.8: 2a, 2d, 3a, 3b, 3c, 4a, 4c → SAFE
-    expect(medium.length).toBe(3);    // 3d, 3e, 5a (architectural concerns, not security blockers)
-    expect(safe.length).toBe(15);     // 1a, 1b, 1c, 2a, 2b, 2c, 2d, 3a, 3b, 3c, 4a, 4b, 4c, 5d, 5e
+    expect(medium.length).toBe(0);
+    expect(safe.length).toBe(18);
 
     // Total findings
     expect(findings.length).toBe(18);

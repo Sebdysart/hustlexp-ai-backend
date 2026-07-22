@@ -34,6 +34,26 @@ beforeEach(() => {
 });
 
 describe('TaskProgressService changed-line edges', () => {
+  it('returns same-state retries without emitting a duplicate progress event', async () => {
+    const travelingTask = {
+      id: TASK_ID,
+      poster_id: POSTER_ID,
+      worker_id: WORKER_ID,
+      progress_state: 'TRAVELING',
+      state: 'ACCEPTED',
+      scope_change_pending: false,
+    };
+    query.mockResolvedValueOnce(rows([travelingTask]))
+      .mockResolvedValueOnce(rows([travelingTask]));
+
+    await expect(TaskProgressService.advanceProgress({
+      taskId: TASK_ID,
+      to: 'TRAVELING',
+      actor: { type: 'worker', userId: WORKER_ID },
+    })).resolves.toMatchObject({ success: true, data: travelingTask });
+    expect(mocks.outbox).not.toHaveBeenCalled();
+  });
+
   it('requires worker identity for worker-owned transitions', async () => {
     query.mockResolvedValueOnce(rows([{
       id: TASK_ID, poster_id: POSTER_ID, worker_id: WORKER_ID,

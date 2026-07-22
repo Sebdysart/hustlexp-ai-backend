@@ -1,0 +1,193 @@
+\set ON_ERROR_STOP on
+
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+CREATE TABLE users (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid()
+);
+
+CREATE TABLE tasks (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  poster_id UUID NOT NULL REFERENCES users(id),
+  worker_id UUID REFERENCES users(id),
+  state TEXT NOT NULL
+);
+
+CREATE TABLE task_applications (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  task_id UUID NOT NULL REFERENCES tasks(id),
+  hustler_id UUID NOT NULL REFERENCES users(id),
+  status TEXT NOT NULL
+);
+
+CREATE TABLE task_messages (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  task_id UUID NOT NULL REFERENCES tasks(id),
+  sender_id UUID NOT NULL REFERENCES users(id),
+  receiver_id UUID NOT NULL REFERENCES users(id),
+  message_type TEXT NOT NULL
+);
+
+\ir ../../database/migrations/20260721_task_quote_shortlist_messaging_contract.sql
+
+INSERT INTO users(id) VALUES
+  ('10000000-0000-4000-8000-000000000001'),
+  ('10000000-0000-4000-8000-000000000002'),
+  ('10000000-0000-4000-8000-000000000003'),
+  ('10000000-0000-4000-8000-000000000004');
+
+INSERT INTO tasks(id,poster_id,state) VALUES
+  ('20000000-0000-4000-8000-000000000001','10000000-0000-4000-8000-000000000001','OPEN'),
+  ('20000000-0000-4000-8000-000000000002','10000000-0000-4000-8000-000000000001','MATCHING');
+
+INSERT INTO task_applications(id,task_id,hustler_id,status) VALUES
+  ('30000000-0000-4000-8000-000000000001','20000000-0000-4000-8000-000000000001','10000000-0000-4000-8000-000000000002','pending'),
+  ('30000000-0000-4000-8000-000000000002','20000000-0000-4000-8000-000000000001','10000000-0000-4000-8000-000000000003','pending'),
+  ('30000000-0000-4000-8000-000000000003','20000000-0000-4000-8000-000000000002','10000000-0000-4000-8000-000000000003','countered');
+
+INSERT INTO task_quote_shortlists(
+  id,task_id,worker_id,shortlisted_by,status
+) VALUES (
+  '40000000-0000-4000-8000-000000000001',
+  '20000000-0000-4000-8000-000000000001',
+  '10000000-0000-4000-8000-000000000002',
+  '10000000-0000-4000-8000-000000000001','ACTIVE'
+);
+
+INSERT INTO task_messages(id,task_id,sender_id,receiver_id,message_type) VALUES (
+  '50000000-0000-4000-8000-000000000001',
+  '20000000-0000-4000-8000-000000000001',
+  '10000000-0000-4000-8000-000000000001',
+  '10000000-0000-4000-8000-000000000002','TEXT'
+);
+
+DO $$
+BEGIN
+  BEGIN
+    INSERT INTO task_quote_shortlists(task_id,worker_id,shortlisted_by,status)
+    VALUES (
+      '20000000-0000-4000-8000-000000000001',
+      '10000000-0000-4000-8000-000000000003',
+      '10000000-0000-4000-8000-000000000001','ACTIVE'
+    );
+    RAISE EXCEPTION 'second active quote shortlist unexpectedly succeeded';
+  EXCEPTION WHEN unique_violation THEN NULL;
+  END;
+
+  BEGIN
+    INSERT INTO task_quote_shortlists(task_id,worker_id,shortlisted_by,status)
+    VALUES (
+      '20000000-0000-4000-8000-000000000002',
+      '10000000-0000-4000-8000-000000000003',
+      '10000000-0000-4000-8000-000000000004','ACTIVE'
+    );
+    RAISE EXCEPTION 'non-Poster quote grant unexpectedly succeeded';
+  EXCEPTION WHEN SQLSTATE 'P0001' THEN
+    IF SQLERRM NOT LIKE 'HXCHAT5:%' THEN RAISE; END IF;
+  END;
+
+  BEGIN
+    INSERT INTO task_quote_shortlists(task_id,worker_id,shortlisted_by,status)
+    VALUES (
+      '20000000-0000-4000-8000-000000000002',
+      '10000000-0000-4000-8000-000000000004',
+      '10000000-0000-4000-8000-000000000001','ACTIVE'
+    );
+    RAISE EXCEPTION 'worker without active application unexpectedly received quote access';
+  EXCEPTION WHEN SQLSTATE 'P0001' THEN
+    IF SQLERRM NOT LIKE 'HXCHAT7:%' THEN RAISE; END IF;
+  END;
+
+  BEGIN
+    INSERT INTO task_messages(task_id,sender_id,receiver_id,message_type) VALUES (
+      '20000000-0000-4000-8000-000000000001',
+      '10000000-0000-4000-8000-000000000003',
+      '10000000-0000-4000-8000-000000000001','TEXT'
+    );
+    RAISE EXCEPTION 'non-shortlisted candidate message unexpectedly succeeded';
+  EXCEPTION WHEN SQLSTATE 'P0001' THEN
+    IF SQLERRM NOT LIKE 'HXCHAT8:%' THEN RAISE; END IF;
+  END;
+
+  BEGIN
+    UPDATE task_quote_shortlists
+       SET worker_id='10000000-0000-4000-8000-000000000003'
+     WHERE id='40000000-0000-4000-8000-000000000001';
+    RAISE EXCEPTION 'quote shortlist identity mutation unexpectedly succeeded';
+  EXCEPTION WHEN SQLSTATE 'P0001' THEN
+    IF SQLERRM NOT LIKE 'HXCHAT2:%' THEN RAISE; END IF;
+  END;
+
+  BEGIN
+    DELETE FROM task_quote_shortlists
+     WHERE id='40000000-0000-4000-8000-000000000001';
+    RAISE EXCEPTION 'quote shortlist history deletion unexpectedly succeeded';
+  EXCEPTION WHEN SQLSTATE 'P0001' THEN
+    IF SQLERRM NOT LIKE 'HXCHAT1:%' THEN RAISE; END IF;
+  END;
+END
+$$;
+
+UPDATE task_applications
+   SET status='rejected'
+ WHERE id='30000000-0000-4000-8000-000000000001';
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM task_quote_shortlists
+     WHERE id='40000000-0000-4000-8000-000000000001'
+       AND status='REVOKED' AND closed_at IS NOT NULL
+  ) THEN
+    RAISE EXCEPTION 'application exit did not revoke quote access';
+  END IF;
+
+  BEGIN
+    INSERT INTO task_messages(task_id,sender_id,receiver_id,message_type) VALUES (
+      '20000000-0000-4000-8000-000000000001',
+      '10000000-0000-4000-8000-000000000001',
+      '10000000-0000-4000-8000-000000000002','TEXT'
+    );
+    RAISE EXCEPTION 'message after quote revocation unexpectedly succeeded';
+  EXCEPTION WHEN SQLSTATE 'P0001' THEN
+    IF SQLERRM NOT LIKE 'HXCHAT8:%' THEN RAISE; END IF;
+  END;
+END
+$$;
+
+INSERT INTO task_quote_shortlists(
+  id,task_id,worker_id,shortlisted_by,status
+) VALUES (
+  '40000000-0000-4000-8000-000000000002',
+  '20000000-0000-4000-8000-000000000002',
+  '10000000-0000-4000-8000-000000000003',
+  '10000000-0000-4000-8000-000000000001','ACTIVE'
+);
+
+UPDATE tasks
+   SET state='ACCEPTED',worker_id='10000000-0000-4000-8000-000000000003'
+ WHERE id='20000000-0000-4000-8000-000000000002';
+
+INSERT INTO task_messages(id,task_id,sender_id,receiver_id,message_type) VALUES (
+  '50000000-0000-4000-8000-000000000002',
+  '20000000-0000-4000-8000-000000000002',
+  '10000000-0000-4000-8000-000000000003',
+  '10000000-0000-4000-8000-000000000001','TEXT'
+);
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM task_quote_shortlists
+     WHERE id='40000000-0000-4000-8000-000000000002'
+       AND status='CONVERTED' AND closed_at IS NOT NULL
+  ) THEN
+    RAISE EXCEPTION 'assignment did not convert the matching quote grant';
+  END IF;
+  IF (SELECT count(*) FROM task_messages) <> 2 THEN
+    RAISE EXCEPTION 'only the two authorized pair messages should exist';
+  END IF;
+END
+$$;
+
+SELECT 'TASK_QUOTE_SHORTLIST_MESSAGING_DATABASE_CONTRACT_OK' AS result;

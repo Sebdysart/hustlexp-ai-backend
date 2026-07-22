@@ -79,6 +79,20 @@ describe('StripeService (configured client) — createPaymentIntent', () => {
     expect(body.metadata.platform_fee).toBe('750');
   });
 
+  it('uses the immutable escrow margin in metadata instead of the configured fallback', async () => {
+    stripeClient.paymentIntents.create.mockResolvedValueOnce({ id: 'pi_canonical', client_secret: 'cs_canonical' });
+
+    const r = await StripeService.createPaymentIntent({
+      taskId: 't-price-book', posterId: 'p1', escrowId: 'e-price-book', amount: 5000,
+      platformFeeCents: 1000,
+    });
+
+    expect(r.success).toBe(true);
+    const body = stripeClient.paymentIntents.create.mock.calls[0][0];
+    expect(body.amount).toBe(5000);
+    expect(body.metadata.platform_fee).toBe('1000');
+  });
+
   it('rejects amounts below the minimum task value', async () => {
     const r = await StripeService.createPaymentIntent({
       taskId: 't1', posterId: 'p1', escrowId: 'e1', amount: 499,

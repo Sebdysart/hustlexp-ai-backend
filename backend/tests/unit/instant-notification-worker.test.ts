@@ -181,6 +181,25 @@ describe('processInstantNotificationJob', () => {
         })
       );
     });
+
+    it('never copies an exact address into lock-screen copy or notification metadata', async () => {
+      const privateAddress = '123 Private Home Dr, Apt 4B';
+      const job = makeJob({ location: privateAddress, sensitive: true });
+
+      mockTaskRow('MATCHING');
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+      mockCreateNotification.mockResolvedValueOnce({ success: true, data: { id: 'notif-private' } } as never);
+
+      await processInstantNotificationJob(job);
+
+      const notification = mockCreateNotification.mock.calls[0]?.[0];
+      expect(notification).toBeDefined();
+      expect(notification?.body).toBe('Help move boxes — $25.00');
+      expect(notification?.body).not.toContain(privateAddress);
+      expect(notification?.metadata).not.toHaveProperty('location');
+      expect(JSON.stringify(notification)).not.toContain(privateAddress);
+    });
   });
 
   // ──────────────────────────────────────────────────────────────────────────

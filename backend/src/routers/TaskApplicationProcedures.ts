@@ -4,8 +4,10 @@ import { invalidateTask } from '../cache/db-cache.js';
 import { db } from '../db.js';
 import { notifyApplicationReceived } from '../lib/task-lifecycle-notifications.js';
 import { TaskService } from '../services/TaskService.js';
+import { assertTaskMutationEligibility } from '../services/TaskEligibilityPolicy.js';
 import { hustlerProcedure, posterProcedure, Schemas } from '../trpc.js';
 import { ErrorCodes } from '../types.js';
+import { detectForbiddenPatterns } from '../services/MessagingPolicy.js';
 
 export const TaskApplicationProcedures = {
 applyForTask: hustlerProcedure
@@ -14,6 +16,13 @@ applyForTask: hustlerProcedure
       message: z.string().trim().max(500).optional(),
     }))
     .mutation(async ({ ctx, input }) => {
+      const message = input.message?.trim() || null;
+      if (message && detectForbiddenPatterns(message).length > 0) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: 'Application notes cannot include contact details, payment instructions, off-platform requests, harassment, prohibited content, or unapproved scope changes.',
+        });
+      }
       // T60-2 FIX: Wrap the state check and INSERT in a single transaction with a
       // SELECT FOR UPDATE on the task row. Without this, a concurrent assignWorker
       // can transition the task from OPEN to ACCEPTED between the plain SELECT and
@@ -21,8 +30,8 @@ applyForTask: hustlerProcedure
       // The FOR UPDATE lock serializes concurrent callers: the second caller blocks
       // until the first transaction commits, then sees the updated task state.
       const appRow = await db.transaction(async (query) => {
-        const taskResult = await query<{ state: string; poster_id: string; trust_tier_required: number | null; title: string }>(
-          `SELECT state, poster_id, trust_tier_required, title FROM tasks WHERE id = $1 FOR UPDATE`,
+        const taskResult = await query<{ state: string; poster_id: string; title: string }>(
+          `SELECT state, poster_id, title FROM tasks WHERE id = $1 FOR UPDATE`,
           [input.taskId]
         );
         if (taskResult.rows.length === 0) {
@@ -38,9 +47,9 @@ applyForTask: hustlerProcedure
         if (task.poster_id === ctx.user.id) {
           throw new TRPCError({ code: 'BAD_REQUEST', message: 'Cannot apply for your own task' });
         }
-        if (task.trust_tier_required !== null && ctx.user.trust_tier < task.trust_tier_required) {
-          throw new TRPCError({ code: 'FORBIDDEN', message: 'Your trust tier is insufficient for this task' });
-        }
+        // Request context is not eligibility authority. Re-evaluate the same
+        // database policy used by discovery while the task row is locked.
+        await assertTaskMutationEligibility(query, input.taskId, ctx.user.id);
 
         // Use ON CONFLICT DO NOTHING against the partial unique index
         // (idx_task_app_active_per_hustler covers status NOT IN rejected/counter_rejected/withdrawn/expired)
@@ -50,7 +59,7 @@ applyForTask: hustlerProcedure
            VALUES (gen_random_uuid(), $1, $2, $3, 'pending', 0, NOW(), NOW())
            ON CONFLICT (task_id, hustler_id) WHERE status NOT IN ('rejected', 'counter_rejected', 'withdrawn', 'expired') DO NOTHING
            RETURNING *`,
-          [input.taskId, ctx.user.id, input.message || null]
+          [input.taskId, ctx.user.id, message]
         );
         if ((result.rowCount ?? 0) === 0) {
           throw new TRPCError({ code: 'CONFLICT', message: 'You already have an active application for this task' });
@@ -73,7 +82,7 @@ listApplicants: posterProcedure
     .input(z.object({
       taskId: Schemas.uuid,
       limit: z.number().int().min(1).max(100).default(50),
-      offset: z.number().int().min(0).default(0),
+      offset: z.number().int().min(0).max(500).default(0),
     }))
     .query(async ({ ctx, input }) => {
       const taskResult = await db.query(
@@ -96,7 +105,21 @@ listApplicants: posterProcedure
            COALESCE(ct.completed_tasks, 0) AS completed_tasks,
            COALESCE(u.trust_tier, 1) AS tier,
            ta.created_at AS applied_at,
-           ta.message
+           ta.message,
+           teo.source_channel,
+           teo.availability_start,
+           teo.availability_end,
+           teo.scope_hash AS offered_scope_hash,
+           teo.payout_cents AS offered_payout_cents,
+           teo.eligibility_policy_version,
+           teo.status AS external_offer_status,
+           teo.offer_kind,
+           EXISTS (
+             SELECT 1 FROM task_quote_shortlists shortlist
+              WHERE shortlist.task_id=ta.task_id
+                AND shortlist.worker_id=ta.hustler_id
+                AND shortlist.status='ACTIVE'
+           ) AS is_shortlisted
          FROM task_applications ta
          LEFT JOIN users u ON u.id = ta.hustler_id
          LEFT JOIN LATERAL (
@@ -107,7 +130,8 @@ listApplicants: posterProcedure
            SELECT COUNT(*) AS completed_tasks
            FROM tasks WHERE worker_id = u.id AND state = 'COMPLETED'
          ) ct ON true
-         WHERE ta.task_id = $1 AND ta.status = 'pending'
+         LEFT JOIN task_external_offers teo ON teo.application_id = ta.id
+         WHERE ta.task_id = $1 AND ta.status IN ('pending','countered')
          ORDER BY ta.created_at ASC
          LIMIT $2 OFFSET $3`,
         [input.taskId, input.limit, input.offset]

@@ -10,7 +10,7 @@
 
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
-import { router, protectedProcedure, adminProcedure, Schemas } from '../trpc.js';
+import { router, protectedProcedure, platformAdminProcedure, Schemas } from '../trpc.js';
 import { AnalyticsService, type EventType } from '../services/AnalyticsService.js';
 import { db } from '../db.js';
 
@@ -153,7 +153,7 @@ export const analyticsRouter = router({
     .input(z.object({
       eventTypes: z.array(z.string()).optional(), // Optional filter by event types
       limit: z.number().int().min(1).max(100).default(100),
-      offset: z.number().int().min(0).default(0),
+      offset: z.number().int().min(0).max(500).default(0),
     }))
     .query(async ({ input, ctx }) => {
       if (!ctx.user) {
@@ -216,14 +216,19 @@ export const analyticsRouter = router({
       const isWorker = task.worker_id === ctx.user.id;
       
       // Check if user is admin.
-      // A63-3 FIX: Use role allowlist consistent with adminProcedure — a bare
+      // A63-3 FIX: Use capability-scoped Operations access — a bare
       // SELECT without a role filter would grant admin access to any admin_roles
       // row regardless of role value, allowing privilege escalation.
       let isAdmin = false;
       if (!isPoster && !isWorker) {
         const VALID_ADMIN_ROLES = ['admin', 'support', 'finance', 'moderator', 'founder'];
         const adminResult = await db.query(
-          'SELECT 1 FROM admin_roles WHERE user_id = $1 AND role = ANY($2::text[]) LIMIT 1',
+          `SELECT 1
+           FROM admin_roles
+           WHERE user_id = $1
+             AND role = ANY($2::text[])
+             AND (role IN ('admin', 'founder') OR COALESCE(can_resolve_disputes, false))
+           LIMIT 1`,
           [ctx.user.id, VALID_ADMIN_ROLES]
         );
         isAdmin = adminResult.rows.length > 0;
@@ -261,7 +266,7 @@ export const analyticsRouter = router({
    * 
    * ANALYTICS_SPEC.md §2: Track conversion rates through multi-step processes
    */
-  calculateFunnel: adminProcedure
+  calculateFunnel: platformAdminProcedure
     .input(z.object({
       funnelName: z.string().min(1),
       steps: z.array(z.string()).min(2), // At least 2 steps required
@@ -293,7 +298,7 @@ export const analyticsRouter = router({
    * 
    * ANALYTICS_SPEC.md §3: Track user cohorts and retention
    */
-  calculateCohortRetention: adminProcedure
+  calculateCohortRetention: platformAdminProcedure
     .input(z.object({
       cohortMonth: z.string().regex(/^\d{4}-\d{2}$/), // Format: "2025-01"
     }))
@@ -371,7 +376,7 @@ export const analyticsRouter = router({
   /**
    * Get event counts by type (for dashboards)
    */
-  getEventCounts: adminProcedure
+  getEventCounts: platformAdminProcedure
     .input(z.object({
       eventTypes: z.array(z.string()).min(1),
       timeWindowDays: z.number().int().min(1).max(365).default(30),

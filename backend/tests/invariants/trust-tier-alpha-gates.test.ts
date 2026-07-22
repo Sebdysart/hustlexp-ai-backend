@@ -1,387 +1,262 @@
 /**
  * Trust Tier Alpha Gate Tests
- * 
- * Pre-Alpha Prerequisite: Required test cases for trust-tier system.
- * 
- * All tests must pass before alpha launch.
+ *
+ * PostgreSQL-backed proof for the authoritative 0-4 trust model, terminal ban
+ * flag, immutable task risk, and centralized eligibility guard.
  */
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import pg from 'pg';
 import { db, hasDb } from '../../src/db';
-import { TrustTierService, TrustTier } from '../../src/services/TrustTierService';
-import { TaskRiskClassifier, TaskRisk } from '../../src/services/TaskRiskClassifier';
-import { EligibilityGuard, EligibilityErrorCode } from '../../src/services/EligibilityGuard';
+import { EligibilityErrorCode, EligibilityGuard } from '../../src/services/EligibilityGuard';
+import { TaskRisk, TaskRiskClassifier } from '../../src/services/TaskRiskClassifier';
+import { TaskService } from '../../src/services/TaskService';
+import { TrustTier, TrustTierService } from '../../src/services/TrustTierService';
+import { createTestPool, createTestTask as createPolicyTask } from '../setup';
 
-// Test helpers
-async function createTestUser(overrides: Partial<{
-  trust_tier: number;
-  is_verified: boolean;
-  phone: string;
-  stripe_customer_id: string;
-}> = {}): Promise<string> {
-  const userId = crypto.randomUUID();
-  // Map enum to schema: UNVERIFIED=0, VERIFIED=1, TRUSTED=2, IN_HOME=3, BANNED=9
-  const schemaTier = overrides.trust_tier ?? TrustTier.UNVERIFIED;
+let pool: pg.Pool;
+
+type UserOverrides = {
+  trustTier?: TrustTier;
+  isBanned?: boolean;
+  isVerified?: boolean;
+  phone?: string;
+  stripeCustomerId?: string;
+};
+
+async function createAlphaUser(overrides: UserOverrides = {}): Promise<string> {
+  const id = crypto.randomUUID();
+  const verified = overrides.isVerified ?? false;
   await db.query(
-    `INSERT INTO users (id, email, full_name, default_mode, trust_tier, is_verified, phone, stripe_customer_id, created_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())`,
+    `INSERT INTO users (
+       id, email, full_name, default_mode, trust_tier, is_banned,
+       is_verified, verified_at, phone, stripe_customer_id, created_at
+     ) VALUES ($1, $2, 'Test User', 'worker', $3, $4, $5,
+               CASE WHEN $5 THEN NOW() ELSE NULL END, $6, $7, NOW())`,
     [
-      userId,
-      `test-${userId}@example.com`,
-      'Test User',
-      'worker',
-      schemaTier,
-      overrides.is_verified ?? false,
+      id,
+      `test-alpha-${id}@hustlexp.test`,
+      overrides.trustTier ?? TrustTier.EXPLORER,
+      overrides.isBanned ?? false,
+      verified,
       overrides.phone ?? null,
-      overrides.stripe_customer_id ?? null,
+      overrides.stripeCustomerId ?? null,
     ]
   );
-  return userId;
+  return id;
 }
 
-async function createTestTask(overrides: Partial<{
-  risk_level: string;
-  instant_mode: boolean;
-  sensitive: boolean;
-}> = {}): Promise<string> {
-  const taskId = crypto.randomUUID();
-  const posterId = crypto.randomUUID();
-  
-  // Create poster if needed
-  await db.query(
-    `INSERT INTO users (id, email, full_name, default_mode, trust_tier, created_at)
-     VALUES ($1, $2, $3, $4, $5, NOW())
-     ON CONFLICT DO NOTHING`,
-    [posterId, `poster-${posterId}@example.com`, 'Test Poster', 'poster', TrustTier.VERIFIED]
-  );
-  
-  await db.query(
-    `INSERT INTO tasks (id, poster_id, title, description, price, state, risk_level, instant_mode, sensitive, created_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())`,
-    [
-      taskId,
-      posterId,
-      'Test Task',
-      'Test Description',
-      1000, // $10.00
-      'OPEN',
-      overrides.risk_level ?? 'LOW',
-      overrides.instant_mode ?? false,
-      overrides.sensitive ?? false,
-    ]
-  );
-  return taskId;
+async function createAlphaTask(riskLevel: 'LOW' | 'MEDIUM' | 'HIGH' | 'IN_HOME'): Promise<string> {
+  const posterId = await createAlphaUser({ trustTier: TrustTier.LICENSED_SPECIALIST });
+  await db.query(`UPDATE users SET default_mode = 'poster', plan = 'premium' WHERE id = $1`, [posterId]);
+  const result = await TaskService.create({
+    posterId,
+    title: 'Alpha eligibility task',
+    description: 'Controlled invariant fixture',
+    price: 5000,
+    hustlerPayoutCents: 4000,
+    platformMarginCents: 1000,
+    regionCode: 'US-ZZ',
+    category: 'alpha',
+    riskLevel,
+    requiresProof: true,
+    automationClassification: 'CONTROLLED_TEST',
+  });
+  if (!result.success) throw new Error(`${result.error.code}: ${result.error.message}`);
+  return result.data.id;
 }
 
-async function cleanupTestData(userIds: string[], taskIds: string[]): Promise<void> {
-  if (taskIds.length > 0) {
-    await db.query(`DELETE FROM tasks WHERE id = ANY($1)`, [taskIds]);
-  }
-  if (userIds.length > 0) {
-    await db.query(`DELETE FROM users WHERE id = ANY($1)`, [userIds]);
-  }
-}
+beforeAll(async () => {
+  if (!hasDb) return;
+  pool = createTestPool();
+  const document = {
+    schemaVersion: 'hxos-region-policy-v1',
+    categories: {
+      alpha: {
+        allowedRiskLevels: ['LOW', 'MEDIUM', 'HIGH', 'IN_HOME'],
+        credentials: {
+          licenseRequired: false,
+          insuranceRequired: false,
+          backgroundCheckRequired: false,
+        },
+        evidence: { proofRequired: true, minPhotos: 1, maxPhotos: 5, gpsRequired: false },
+      },
+    },
+    recording: { allowed: false, standaloneConsentRequired: true },
+    workerRights: {
+      standaloneScreeningConsentRequired: true,
+      reportAccessRequired: true,
+      disputeAndAppealRequired: true,
+      adverseActionNoticeRequired: true,
+    },
+    financial: {
+      currency: 'usd',
+      minimumCustomerCents: 5000,
+      minimumPayoutCents: 4000,
+      minimumMarginCents: 500,
+    },
+    safety: {
+      incidentIntakeRequired: true,
+      timedCheckinRiskLevels: ['MEDIUM', 'HIGH', 'IN_HOME'],
+      checkinIntervalsMinutes: [15, 30, 60],
+      locationRetentionDays: 30,
+      alternateEmergencyActionRequired: true,
+    },
+  };
+  await pool.query(
+    `WITH policy AS (SELECT $1::jsonb AS document)
+     INSERT INTO region_policies (
+       region_code, version, policy_state, production_enabled, approval_state,
+       effective_from, policy_document, policy_hash
+     )
+     SELECT 'US-ZZ', 'hx-alpha-controlled-v1', 'ACTIVE', FALSE,
+            'COUNSEL_APPROVAL_REQUIRED', NOW() - INTERVAL '1 day', document,
+            encode(digest(document::text, 'sha256'), 'hex')
+     FROM policy
+     ON CONFLICT (region_code, version) DO NOTHING`,
+    [JSON.stringify(document)]
+  );
+});
+
+afterAll(async () => {
+  if (pool) await pool.end();
+});
 
 describe.skipIf(!hasDb)('Trust Tier Alpha Gate Tests', () => {
-  const testUserIds: string[] = [];
-  const testTaskIds: string[] = [];
-
-  afterAll(async () => {
-    await cleanupTestData(testUserIds, testTaskIds);
-  });
-
   describe('TrustTierService', () => {
-    it('should not promote user without meeting all requirements', async () => {
-      const userId = await createTestUser({ trust_tier: TrustTier.UNVERIFIED });
-      testUserIds.push(userId);
-
+    it('does not promote an Explorer without verification requirements', async () => {
+      const userId = await createAlphaUser({ trustTier: TrustTier.EXPLORER });
       const eligibility = await TrustTierService.evaluatePromotion(userId);
       expect(eligibility.eligible).toBe(false);
       expect(eligibility.reasons.length).toBeGreaterThan(0);
     });
 
-    it('should not allow skipping tiers (A → C directly fails)', async () => {
-      const uniquePhone = `+1${Math.floor(Math.random() * 10000000000)}`;
-      const userId = await createTestUser({ 
-        trust_tier: TrustTier.VERIFIED,
-        is_verified: true,
-        phone: uniquePhone,
-        stripe_customer_id: `cus_test_${crypto.randomUUID()}`,
-      });
-      testUserIds.push(userId);
-
-      // Attempt to promote directly to IN_HOME (3) from VERIFIED (1)
+    it('does not allow skipping tiers', async () => {
+      const userId = await createAlphaUser({ trustTier: TrustTier.VERIFIED });
       await expect(
-        TrustTierService.applyPromotion(userId, TrustTier.IN_HOME, 'system')
-      ).rejects.toThrow();
+        TrustTierService.applyPromotion(userId, TrustTier.LICENSED_SPECIALIST, 'system')
+      ).rejects.toThrow('preconditions not met');
     });
 
-    it('should not promote banned user', async () => {
-      const userId = await createTestUser({ trust_tier: TrustTier.BANNED });
-      testUserIds.push(userId);
-
+    it('does not promote a terminally banned user', async () => {
+      const userId = await createAlphaUser({ trustTier: TrustTier.VERIFIED, isBanned: true });
       const eligibility = await TrustTierService.evaluatePromotion(userId);
-      expect(eligibility.eligible).toBe(false);
-      expect(eligibility.reasons).toContain('User is banned');
+      expect(eligibility).toEqual({ eligible: false, reasons: ['User is banned'] });
     });
 
-    it('should be idempotent (re-run does nothing)', async () => {
-      const uniquePhone = `+1${Math.floor(Math.random() * 10000000000)}`;
-      const userId = await createTestUser({ 
-        trust_tier: TrustTier.VERIFIED,
-        is_verified: true,
-        phone: uniquePhone,
-        stripe_customer_id: `cus_test_${crypto.randomUUID()}`,
-      });
-      testUserIds.push(userId);
-
-      // Set account age to 7+ days (required for TRUSTED)
+    it('applies Verified to Home Ready once with current production screening and five completions', async () => {
+      const userId = await createAlphaUser({ trustTier: TrustTier.VERIFIED });
       await db.query(
-        `UPDATE users SET created_at = NOW() - INTERVAL '8 days' WHERE id = $1`,
-        [userId]
+        `INSERT INTO background_checks(
+           user_id,provider,status,provider_environment,is_test,initiated_at,expires_at
+         ) VALUES($1,'production-test-provider','CLEAR','PRODUCTION',FALSE,NOW(),NOW()+INTERVAL '1 year')`,
+        [userId],
       );
-
-      // Create 10 completed tasks to meet TRUSTED requirements
-      for (let i = 0; i < 10; i++) {
-        const taskId = crypto.randomUUID();
-        const posterId = crypto.randomUUID();
-        await db.query(
-          `INSERT INTO users (id, email, full_name, default_mode, trust_tier, created_at)
-           VALUES ($1, $2, $3, $4, $5, NOW())
-           ON CONFLICT DO NOTHING`,
-          [posterId, `poster-${posterId}@example.com`, 'Test Poster', 'poster', TrustTier.VERIFIED]
-        );
-        // Ensure tasks are completed on time (deadline in future if column exists)
-        // Note: deadline column may not exist in all schemas
-        await db.query(
-          `INSERT INTO tasks (id, poster_id, title, description, price, state, risk_level, worker_id, completed_at, created_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())`,
-          [taskId, posterId, 'Test Task', 'Test', 1000, 'COMPLETED', 'LOW', userId]
-        );
-        testTaskIds.push(taskId);
+      const posterId = await createAlphaUser({ trustTier: TrustTier.LICENSED_SPECIALIST });
+      await db.query(`UPDATE users SET default_mode = 'poster' WHERE id = $1`, [posterId]);
+      for (let index = 0; index < 5; index += 1) {
+        await createPolicyTask(pool, { posterId, workerId: userId, state: 'COMPLETED' });
       }
 
-      // First promotion attempt
-      const eligibility1 = await TrustTierService.evaluatePromotion(userId);
-      expect(eligibility1.eligible).toBe(true);
-      expect(eligibility1.targetTier).toBe(TrustTier.TRUSTED);
-      
-      await TrustTierService.applyPromotion(userId, TrustTier.TRUSTED, 'system');
+      const eligibility = await TrustTierService.evaluatePromotion(userId);
+      expect(eligibility).toEqual({ eligible: true, targetTier: TrustTier.HOME_READY, reasons: [] });
+      await TrustTierService.applyPromotion(userId, TrustTier.HOME_READY, 'system');
+      await expect(
+        TrustTierService.applyPromotion(userId, TrustTier.HOME_READY, 'system')
+      ).rejects.toThrow('Cannot promote');
 
-      // Get tier after first promotion
-      const tierAfterFirst = await TrustTierService.getTrustTier(userId);
-      expect(tierAfterFirst).toBe(TrustTier.TRUSTED); // Should be promoted to TRUSTED (2)
-
-      // Second evaluation (should not be eligible for same tier again)
-      // User is now TRUSTED (2), not at max tier (IN_HOME is 3)
-      // So they won't be eligible for IN_HOME without meeting those requirements
-      const eligibility2 = await TrustTierService.evaluatePromotion(userId);
-      expect(eligibility2.eligible).toBe(false);
-      // Reasons should indicate missing requirements for IN_HOME, not "already at max"
-      expect(eligibility2.reasons.length).toBeGreaterThan(0);
+      expect(await TrustTierService.getTrustTier(userId)).toBe(TrustTier.HOME_READY);
+      const ledger = await db.query<{ count: string }>(
+        `SELECT COUNT(*)::text AS count FROM trust_ledger
+         WHERE user_id=$1 AND old_tier=1 AND new_tier=2
+           AND reason_details->>'policyVersion'='hustler-trust-progression-v1'`,
+        [userId]
+      );
+      expect(Number(ledger.rows[0].count)).toBe(1);
     });
   });
 
   describe('Task Risk Classification', () => {
-    it('should classify inside-home task as TIER_2', () => {
-      const risk = TaskRiskClassifier.classifyTaskRisk({
-        insideHome: true,
-        peoplePresent: false,
-        petsPresent: false,
-        caregiving: false,
-      });
-      expect(risk).toBe(TaskRisk.TIER_2);
+    it('classifies inside-home work as TIER_2', () => {
+      expect(TaskRiskClassifier.classifyTaskRisk({
+        insideHome: true, peoplePresent: false, petsPresent: false, caregiving: false,
+      })).toBe(TaskRisk.TIER_2);
     });
 
-    it('should classify task with people/pets/care as TIER_3', () => {
-      const risk1 = TaskRiskClassifier.classifyTaskRisk({
-        insideHome: false,
-        peoplePresent: true,
-        petsPresent: false,
-        caregiving: false,
-      });
-      expect(risk1).toBe(TaskRisk.TIER_3);
-
-      const risk2 = TaskRiskClassifier.classifyTaskRisk({
-        insideHome: false,
-        peoplePresent: false,
-        petsPresent: true,
-        caregiving: false,
-      });
-      expect(risk2).toBe(TaskRisk.TIER_3);
-
-      const risk3 = TaskRiskClassifier.classifyTaskRisk({
-        insideHome: false,
-        peoplePresent: false,
-        petsPresent: false,
-        caregiving: true,
-      });
-      expect(risk3).toBe(TaskRisk.TIER_3);
+    it('classifies people, pets, or caregiving as TIER_3', () => {
+      expect(TaskRiskClassifier.classifyTaskRisk({
+        insideHome: false, peoplePresent: true, petsPresent: false, caregiving: false,
+      })).toBe(TaskRisk.TIER_3);
+      expect(TaskRiskClassifier.classifyTaskRisk({
+        insideHome: false, peoplePresent: false, petsPresent: true, caregiving: false,
+      })).toBe(TaskRisk.TIER_3);
+      expect(TaskRiskClassifier.classifyTaskRisk({
+        insideHome: false, peoplePresent: false, petsPresent: false, caregiving: true,
+      })).toBe(TaskRisk.TIER_3);
     });
 
-    it('should not allow modifying risk_tier after creation', async () => {
-      const taskId = await createTestTask({ risk_level: 'LOW' });
-      testTaskIds.push(taskId);
-
-      // Attempt to update risk_level (should be blocked by schema or application logic)
-      // Note: This test verifies the application enforces immutability
-      // The actual enforcement may be at the schema level or application level
-      const result = await db.query(
-        `UPDATE tasks SET risk_level = 'HIGH' WHERE id = $1 RETURNING risk_level`,
-        [taskId]
+    it('rejects risk-level mutation after creation', async () => {
+      const taskId = await createAlphaTask('LOW');
+      await expect(
+        db.query(`UPDATE tasks SET risk_level = 'HIGH' WHERE id = $1`, [taskId])
+      ).rejects.toThrow();
+      const task = await db.query<{ risk_level: string }>(
+        `SELECT risk_level FROM tasks WHERE id = $1`, [taskId]
       );
-      
-      // If update succeeds, we need to verify it's blocked at the application level
-      // For now, we'll check that the risk level is what we expect
-      const taskResult = await db.query<{ risk_level: string }>(
-        `SELECT risk_level FROM tasks WHERE id = $1`,
-        [taskId]
-      );
-      
-      // The risk level should remain as originally set (or be immutable)
-      // This test documents the expected behavior
-      expect(taskResult.rows[0]?.risk_level).toBeDefined();
+      expect(task.rows[0].risk_level).toBe('LOW');
     });
   });
 
   describe('EligibilityGuard', () => {
-    it('should reject when tier < required (TRUST_TIER_INSUFFICIENT)', async () => {
-      const userId = await createTestUser({ trust_tier: TrustTier.VERIFIED }); // Tier 1
-      testUserIds.push(userId);
-      
-      const taskId = await createTestTask({ risk_level: 'HIGH' }); // Requires Tier 3
-      testTaskIds.push(taskId);
-
-      const result = await EligibilityGuard.assertEligibility({
-        userId,
-        taskId,
-        isInstant: false,
-      });
-
-      expect(result.allowed).toBe(false);
-      expect(result.code).toBe(EligibilityErrorCode.TRUST_TIER_INSUFFICIENT);
+    it('rejects when tier is below the HIGH-risk requirement', async () => {
+      const userId = await createAlphaUser({ trustTier: TrustTier.VERIFIED });
+      const taskId = await createAlphaTask('HIGH');
+      const result = await EligibilityGuard.assertEligibility({ userId, taskId, isInstant: false });
+      expect(result).toMatchObject({ allowed: false, code: EligibilityErrorCode.TRUST_TIER_INSUFFICIENT });
     });
 
-    it('should allow when tier ≥ required', async () => {
-      const userId = await createTestUser({ trust_tier: TrustTier.IN_HOME }); // Tier 3
-      testUserIds.push(userId);
-      
-      const taskId = await createTestTask({ risk_level: 'HIGH' }); // Requires Tier 3
-      testTaskIds.push(taskId);
-
-      const result = await EligibilityGuard.assertEligibility({
-        userId,
-        taskId,
-        isInstant: false,
-      });
-
-      expect(result.allowed).toBe(true);
+    it('allows Pro users on HIGH-risk tasks', async () => {
+      const userId = await createAlphaUser({ trustTier: TrustTier.PRO });
+      const taskId = await createAlphaTask('HIGH');
+      expect(await EligibilityGuard.assertEligibility({ userId, taskId, isInstant: false }))
+        .toEqual({ allowed: true });
     });
 
-    it('should block Tier 3 tasks (TASK_RISK_BLOCKED_ALPHA)', async () => {
-      const userId = await createTestUser({ trust_tier: TrustTier.IN_HOME }); // Tier 3
-      testUserIds.push(userId);
-      
-      const taskId = await createTestTask({ risk_level: 'IN_HOME' }); // Tier 3 task
-      testTaskIds.push(taskId);
-
-      const result = await EligibilityGuard.assertEligibility({
-        userId,
-        taskId,
-        isInstant: false,
-      });
-
-      expect(result.allowed).toBe(false);
-      expect(result.code).toBe(EligibilityErrorCode.TASK_RISK_BLOCKED_ALPHA);
+    it('blocks IN_HOME tasks during alpha even for Licensed Specialist users', async () => {
+      const userId = await createAlphaUser({ trustTier: TrustTier.LICENSED_SPECIALIST });
+      const taskId = await createAlphaTask('IN_HOME');
+      const result = await EligibilityGuard.assertEligibility({ userId, taskId, isInstant: false });
+      expect(result).toMatchObject({ allowed: false, code: EligibilityErrorCode.TASK_RISK_BLOCKED_ALPHA });
     });
 
-    it('should not bypass risk gates for Instant Mode', async () => {
-      const userId = await createTestUser({ trust_tier: TrustTier.VERIFIED }); // Tier 1
-      testUserIds.push(userId);
-      
-      const taskId = await createTestTask({ 
-        risk_level: 'HIGH', // Requires Tier 3
-        instant_mode: true,
-      });
-      testTaskIds.push(taskId);
-
-      const result = await EligibilityGuard.assertEligibility({
-        userId,
-        taskId,
-        isInstant: true,
-      });
-
-      // Instant Mode should NOT bypass risk gates
-      expect(result.allowed).toBe(false);
-      expect(result.code).toBe(EligibilityErrorCode.TRUST_TIER_INSUFFICIENT);
+    it('does not let Instant Mode bypass the HIGH-risk tier gate', async () => {
+      const userId = await createAlphaUser({ trustTier: TrustTier.VERIFIED });
+      const taskId = await createAlphaTask('HIGH');
+      const result = await EligibilityGuard.assertEligibility({ userId, taskId, isInstant: true });
+      expect(result).toMatchObject({ allowed: false, code: EligibilityErrorCode.TRUST_TIER_INSUFFICIENT });
     });
 
-    it('should reject banned users (USER_BANNED)', async () => {
-      const userId = await createTestUser({ trust_tier: TrustTier.BANNED });
-      testUserIds.push(userId);
-      
-      const taskId = await createTestTask({ risk_level: 'LOW' });
-      testTaskIds.push(taskId);
-
-      const result = await EligibilityGuard.assertEligibility({
-        userId,
-        taskId,
-        isInstant: false,
-      });
-
-      expect(result.allowed).toBe(false);
-      expect(result.code).toBe(EligibilityErrorCode.USER_BANNED);
+    it('rejects users whose terminal ban flag is set', async () => {
+      const userId = await createAlphaUser({ trustTier: TrustTier.LICENSED_SPECIALIST, isBanned: true });
+      const taskId = await createAlphaTask('LOW');
+      const result = await EligibilityGuard.assertEligibility({ userId, taskId, isInstant: false });
+      expect(result).toMatchObject({ allowed: false, code: EligibilityErrorCode.USER_BANNED });
     });
   });
 
-  describe('Adversarial Tests', () => {
-    it('should ignore client-supplied tier', async () => {
-      const userId = await createTestUser({ trust_tier: TrustTier.VERIFIED }); // Real tier: 1
-      testUserIds.push(userId);
-      
-      // Attempt to manually set tier in DB (simulating client manipulation)
-      await db.query(
-        `UPDATE users SET trust_tier = $1 WHERE id = $2`,
-        [TrustTier.IN_HOME, userId] // Try to set to 3
-      );
-
-      // EligibilityGuard should read from DB, not trust client input
-      const taskId = await createTestTask({ risk_level: 'HIGH' }); // Requires Tier 3
-      testTaskIds.push(taskId);
-
-      // If client manipulation worked, this would pass
-      // But we're testing that the system reads from authoritative source
-      const tier = await TrustTierService.getTrustTier(userId);
-      expect(tier).toBe(TrustTier.IN_HOME); // The DB update succeeded, but...
-
-      // The EligibilityGuard should still check against the real tier
-      // This test documents that manual DB edits can happen, but
-      // the system should detect and prevent them at the guard level
-      // For alpha, we rely on application-level enforcement
+  describe('Adversarial database constraints', () => {
+    it('rejects an out-of-range tier below Explorer', async () => {
+      const userId = await createAlphaUser();
+      await expect(db.query(`UPDATE users SET trust_tier = -1 WHERE id = $1`, [userId]))
+        .rejects.toThrow();
     });
 
-    it('should catch manual DB edits at guard level', async () => {
-      const userId = await createTestUser({ trust_tier: TrustTier.VERIFIED });
-      testUserIds.push(userId);
-      
-      // Manually lower tier (simulating malicious edit)
-      await db.query(
-        `UPDATE users SET trust_tier = $1 WHERE id = $2`,
-        [TrustTier.UNVERIFIED, userId]
-      );
-
-      const taskId = await createTestTask({ risk_level: 'LOW' }); // Requires Tier 1
-      testTaskIds.push(taskId);
-
-      const result = await EligibilityGuard.assertEligibility({
-        userId,
-        taskId,
-        isInstant: false,
-      });
-
-      // Should reject because tier is now UNVERIFIED (0) < VERIFIED (1)
-      expect(result.allowed).toBe(false);
-      expect(result.code).toBe(EligibilityErrorCode.TRUST_TIER_INSUFFICIENT);
+    it('rejects a sentinel tier and requires the separate ban flag', async () => {
+      const userId = await createAlphaUser({ trustTier: TrustTier.LICENSED_SPECIALIST });
+      await expect(db.query(`UPDATE users SET trust_tier = 9 WHERE id = $1`, [userId]))
+        .rejects.toThrow();
+      await db.query(`UPDATE users SET is_banned = TRUE WHERE id = $1`, [userId]);
+      expect(await TrustTierService.getTrustTier(userId)).toBe(TrustTier.BANNED);
     });
   });
 });

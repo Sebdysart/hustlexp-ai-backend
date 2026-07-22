@@ -41,12 +41,13 @@ function assertIntegerCents(value: number, label: string): void {
  * never produce a negative fee (which would overpay the worker).
  */
 export function clampFeePercent(feePercent: number | undefined | null): number {
-  return Math.min(100, Math.max(0, feePercent ?? 15));
+  return Math.min(100, Math.max(0, feePercent ?? 20));
 }
 
 /**
- * Platform fee in cents for a gross amount (PRODUCT_SPEC §9: 15% default).
- * Math.round per the unified convention.
+ * Legacy fallback platform margin in cents for a gross amount. New Price Book
+ * tasks must pass their immutable canonical margin instead of relying on this
+ * percentage. Math.round per the unified convention.
  */
 export function computePlatformFeeCents(
   grossCents: number,

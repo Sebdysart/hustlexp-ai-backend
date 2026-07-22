@@ -34,18 +34,25 @@ describe('config — default values', () => {
     expect(config.database.pgbouncer).toBe(false);
   });
 
-  it('stripe platformFeePercent defaults to 15', async () => {
+  it('stripe legacy platformFeePercent fallback defaults to the 20% Price Book floor', async () => {
     delete process.env.PLATFORM_FEE_PERCENT;
     vi.resetModules();
     const { config } = await import('../../src/config');
-    expect(config.stripe.platformFeePercent).toBe(15);
+    expect(config.stripe.platformFeePercent).toBe(20);
   });
 
-  it('stripe minimumTaskValueCents defaults to 500', async () => {
+  it('stripe minimumTaskValueCents defaults to the canonical 1500-cent floor', async () => {
     delete process.env.MIN_TASK_VALUE_CENTS;
     vi.resetModules();
     const { config } = await import('../../src/config');
-    expect(config.stripe.minimumTaskValueCents).toBe(500);
+    expect(config.stripe.minimumTaskValueCents).toBe(1500);
+  });
+
+  it('does not allow an environment override below the canonical floor', async () => {
+    process.env.MIN_TASK_VALUE_CENTS = '500';
+    vi.resetModules();
+    const { config } = await import('../../src/config');
+    expect(config.stripe.minimumTaskValueCents).toBe(1500);
   });
 
   it('app port defaults to 3000', async () => {
@@ -136,6 +143,7 @@ describe('config — default values', () => {
 
   it('r2 bucket defaults to hustlexp-storage', async () => {
     delete process.env.R2_BUCKET_NAME;
+    delete process.env.BUCKET_NAME;
     vi.resetModules();
     const { config } = await import('../../src/config');
     expect(config.cloudflare.r2.bucketName).toBe('hustlexp-storage');
@@ -378,6 +386,10 @@ describe('validateConfig', () => {
 
   beforeEach(() => {
     exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {}) as () => never);
+    process.env.S3_ENDPOINT = 'https://storage.example.test';
+    process.env.AWS_ACCESS_KEY_ID = 'test-access-key';
+    process.env.AWS_SECRET_ACCESS_KEY = 'test-secret-key';
+    process.env.BUCKET_NAME = 'test-bucket';
   });
 
   afterEach(() => {
@@ -424,9 +436,9 @@ describe('validateConfig', () => {
     const result = validateConfig();
     expect(exitSpy).toHaveBeenCalledWith(1);
     expect(result.valid).toBe(false);
-    expect(result.errors.some(e => e.includes('FIREBASE_PROJECT_ID'))).toBe(true);
-    expect(result.errors.some(e => e.includes('STRIPE_SECRET_KEY'))).toBe(true);
-    expect(result.errors.some(e => e.includes('TAX_TIN_ENCRYPTION_KEY'))).toBe(true);
+    expect(result.errors.some((e) => e.includes('FIREBASE_PROJECT_ID'))).toBe(true);
+    expect(result.errors.some((e) => e.includes('STRIPE_SECRET_KEY'))).toBe(true);
+    expect(result.errors.some((e) => e.includes('TAX_TIN_ENCRYPTION_KEY'))).toBe(true);
   });
 
   it('calls process.exit(1) in production when Firebase config is missing', async () => {
@@ -473,7 +485,7 @@ describe('validateConfig', () => {
     const { validateConfig } = await import('../../src/config');
     const result = validateConfig();
     expect(exitSpy).toHaveBeenCalledWith(1);
-    expect(result.errors.some(e => e.includes('64 hex characters'))).toBe(true);
+    expect(result.errors.some((e) => e.includes('64 hex characters'))).toBe(true);
   });
 
   it('accepts valid 64-char hex TAX_TIN_ENCRYPTION_KEY', async () => {
@@ -492,11 +504,11 @@ describe('validateConfig', () => {
     const result = validateConfig();
     // All required vars present — process.exit must NOT be called
     expect(exitSpy).not.toHaveBeenCalled();
-    const taxErrors = result.errors.filter(e => e.includes('TAX_TIN_ENCRYPTION_KEY'));
+    const taxErrors = result.errors.filter((e) => e.includes('TAX_TIN_ENCRYPTION_KEY'));
     expect(taxErrors).toHaveLength(0);
   });
 
-  it('warns about R2 storage in production when not configured', async () => {
+  it('fails closed when object storage is not configured in production', async () => {
     process.env.DATABASE_URL = 'postgres://localhost:5432/prod';
     process.env.NODE_ENV = 'production';
     process.env.FIREBASE_PROJECT_ID = 'proj';
@@ -508,14 +520,44 @@ describe('validateConfig', () => {
     process.env.QUEUE_HMAC_SECRET = 'real-hmac-secret';
     process.env.TAX_TIN_ENCRYPTION_KEY = 'a'.repeat(64);
     delete process.env.R2_ACCOUNT_ID;
+    delete process.env.R2_ENDPOINT;
+    delete process.env.S3_ENDPOINT;
     delete process.env.R2_ACCESS_KEY_ID;
+    delete process.env.AWS_ACCESS_KEY_ID;
     delete process.env.R2_SECRET_ACCESS_KEY;
+    delete process.env.AWS_SECRET_ACCESS_KEY;
+    delete process.env.R2_BUCKET_NAME;
+    delete process.env.BUCKET_NAME;
     vi.resetModules();
     const { validateConfig } = await import('../../src/config');
     const result = validateConfig();
-    // R2 absence is a warning, not a fatal error — process.exit must NOT be called
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(result.errors.some((error) => error.includes('object storage'))).toBe(true);
+  });
+
+  it('accepts the configured S3-compatible aliases used by Railway production', async () => {
+    process.env.DATABASE_URL = 'postgres://localhost:5432/prod';
+    process.env.NODE_ENV = 'production';
+    process.env.FIREBASE_PROJECT_ID = 'proj';
+    process.env.FIREBASE_PRIVATE_KEY = 'key';
+    process.env.FIREBASE_CLIENT_EMAIL = 'a@b.com';
+    process.env.STRIPE_SECRET_KEY = 'sk_live_real';
+    process.env.STRIPE_MODE = 'live';
+    process.env.UPSTASH_REDIS_REST_URL = 'https://redis.upstash.io';
+    process.env.UPSTASH_REDIS_URL = 'redis://upstash:6379';
+    process.env.QUEUE_HMAC_SECRET = 'real-hmac-secret';
+    process.env.TAX_TIN_ENCRYPTION_KEY = 'a'.repeat(64);
+    vi.resetModules();
+    const { config, validateConfig } = await import('../../src/config');
+    const result = validateConfig();
     expect(exitSpy).not.toHaveBeenCalled();
-    expect(result.warnings.some(w => w.includes('R2'))).toBe(true);
+    expect(result.errors).toHaveLength(0);
+    expect(config.cloudflare.r2).toMatchObject({
+      endpoint: 'https://storage.example.test',
+      accessKeyId: 'test-access-key',
+      secretAccessKey: 'test-secret-key',
+      bucketName: 'test-bucket',
+    });
   });
 
   it('warns about SendGrid when not configured in production', async () => {
@@ -535,7 +577,7 @@ describe('validateConfig', () => {
     const result = validateConfig();
     // SendGrid absence is a warning, not a fatal error — process.exit must NOT be called
     expect(exitSpy).not.toHaveBeenCalled();
-    expect(result.warnings.some(w => w.includes('SendGrid'))).toBe(true);
+    expect(result.warnings.some((w) => w.includes('SendGrid'))).toBe(true);
   });
 
   it('returns both errors array and warnings array', async () => {
@@ -564,7 +606,7 @@ describe('validateConfig', () => {
     const { validateConfig } = await import('../../src/config');
     const result = validateConfig();
     expect(exitSpy).toHaveBeenCalledWith(1);
-    expect(result.errors.some(e => e.includes('STRIPE_SECRET_KEY'))).toBe(true);
+    expect(result.errors.some((e) => e.includes('STRIPE_SECRET_KEY'))).toBe(true);
   });
 
   it.each([
@@ -587,7 +629,7 @@ describe('validateConfig', () => {
     const { validateConfig } = await import('../../src/config');
     const result = validateConfig();
     expect(exitSpy).toHaveBeenCalledWith(1);
-    expect(result.errors.some(error => error.includes(expected))).toBe(true);
+    expect(result.errors.some((error) => error.includes(expected))).toBe(true);
   });
 
   it.each([

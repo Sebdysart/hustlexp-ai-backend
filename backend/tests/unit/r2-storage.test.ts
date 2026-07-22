@@ -6,9 +6,11 @@ vi.mock('../../src/config', () => ({
     cloudflare: {
       r2: {
         accountId: 'test-account-id',
+        endpoint: 'https://test-account-id.r2.cloudflarestorage.com',
         accessKeyId: 'test-access-key',
         secretAccessKey: 'test-secret-key',
         bucketName: 'test-bucket',
+        region: 'auto',
       },
     },
   },

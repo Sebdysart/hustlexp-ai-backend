@@ -13,7 +13,7 @@
  */
 
 import { db } from '../db.js';
-import { TrustTierService, TrustTier } from '../services/TrustTierService.js';
+import { TrustTierService, trustTierName } from '../services/TrustTierService.js';
 import { workerLogger } from '../logger.js';
 
 const log = workerLogger.child({ worker: 'trust-tier-promotion' });
@@ -27,16 +27,19 @@ export async function processTrustTierPromotionJob(): Promise<void> {
   const startTime = Date.now();
 
   try {
-    // Fetch candidates where trust_tier < IN_HOME (3)
-    // Also exclude BANNED (9) and UNVERIFIED (0) for now
+    // Evaluate one individual-worker tier at a time, including Explorer.
+    // Enterprise Crew is a separate later-phase organization model.
     const candidatesResult = await db.query<{
       id: string;
       trust_tier: number;
     }>(
       `SELECT id, trust_tier
        FROM users
-       WHERE trust_tier < 3
-         AND trust_tier >= 1
+       WHERE trust_tier >= 0
+         AND trust_tier < 4
+         AND default_mode = 'worker'
+         AND account_status = 'ACTIVE'
+         AND is_banned = FALSE
          AND trust_hold = FALSE
        ORDER BY trust_tier ASC, created_at ASC
        LIMIT 100`,
@@ -75,7 +78,7 @@ export async function processTrustTierPromotionJob(): Promise<void> {
 
         promotedCount++;
 
-        log.info({ userId: candidate.id, oldTier: candidate.trust_tier, newTier: eligibility.targetTier, tierName: TrustTier[eligibility.targetTier] }, 'Trust tier promotion applied');
+        log.info({ userId: candidate.id, oldTier: candidate.trust_tier, newTier: eligibility.targetTier, tierName: trustTierName(eligibility.targetTier) }, 'Trust tier promotion applied');
 
         // One tier per run max (safety)
         // Break after first promotion to avoid double-promotion in same run

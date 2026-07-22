@@ -43,7 +43,7 @@ vi.mock('../../src/logger', () => ({
 // ---------------------------------------------------------------------------
 
 import { db } from '../../src/db';
-import { referralRouter } from '../../src/routers/referral';
+import { issueReferralReward, referralRouter } from '../../src/routers/referral';
 
 const mockDb = vi.mocked(db);
 
@@ -145,7 +145,8 @@ describe('referral router', () => {
       const result = await caller.redeemCode({ code: 'HXABC123' });
 
       expect(result.success).toBe(true);
-      expect(result.message).toContain('first task');
+      expect(result.message).toContain('Cash rewards are not enabled');
+      expect(result.message).not.toContain('$5');
       // M8: redemption + counter increment ran in one transaction
       expect(dbMocks.transaction).toHaveBeenCalledTimes(1);
       expect(String(dbMocks.txQuery.mock.calls[0][0])).toContain('ON CONFLICT (referred_id) DO NOTHING');
@@ -222,6 +223,17 @@ describe('referral router', () => {
 
       const codeQuery = (mockDb.query as any).mock.calls[1];
       expect(codeQuery[1]).toContain('HXABC123');
+    });
+  });
+
+  describe('Build-Now cash-incentive guard', () => {
+    it('issues no cash reward and performs no database write', async () => {
+      await expect(issueReferralReward(UUID1, UUID2, 500)).resolves.toEqual({
+        issued: false,
+        reason: 'cash_incentives_disabled_build_now',
+      });
+      expect(mockDb.query).not.toHaveBeenCalled();
+      expect(dbMocks.transaction).not.toHaveBeenCalled();
     });
   });
 

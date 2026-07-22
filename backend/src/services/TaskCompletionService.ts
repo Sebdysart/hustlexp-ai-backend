@@ -4,6 +4,7 @@ import { writeToOutbox } from '../lib/outbox-helpers.js';
 import { taskLogger } from '../logger.js';
 import type { ServiceResult, Task } from '../types.js';
 import { ErrorCodes, TERMINAL_TASK_STATES } from '../types.js';
+import { RecommendationService } from './RecommendationService.js';
 
 const log = taskLogger.child({ service: 'TaskCompletionService' });
 
@@ -238,6 +239,11 @@ async function completeTransaction(
     mode,
     options,
     requestHash,
+  });
+  await RecommendationService.recordTaskOutcome(query, {
+    taskId,
+    outcomeType: 'TASK_COMPLETED',
+    realizedValue: { taskState: 'COMPLETED', payoutReady: true },
   });
   return completed;
 }

@@ -315,7 +315,10 @@ CREATE TABLE IF NOT EXISTS plan_entitlements (
 );
 
 CREATE INDEX IF NOT EXISTS idx_plan_entitlements_user ON plan_entitlements(user_id);
-CREATE INDEX IF NOT EXISTS idx_plan_entitlements_active ON plan_entitlements(user_id, risk_level) WHERE expires_at > NOW();
+-- PostgreSQL forbids volatile time functions in index predicates. Keep expiry
+-- in the key so callers can apply `expires_at > NOW()` at query time.
+CREATE INDEX IF NOT EXISTS idx_plan_entitlements_active
+  ON plan_entitlements(user_id, risk_level, expires_at);
 CREATE INDEX IF NOT EXISTS idx_plan_entitlements_source ON plan_entitlements(source_event_id);
 
 -- ============================================================================

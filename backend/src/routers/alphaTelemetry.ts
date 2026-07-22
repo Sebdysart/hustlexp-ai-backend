@@ -5,7 +5,7 @@
  */
 
 import { z } from 'zod';
-import { router, protectedProcedure, adminProcedure } from '../trpc.js';
+import { router, protectedProcedure, disputeAdminProcedure, platformAdminProcedure } from '../trpc.js';
 import { db } from '../db.js';
 import { AlphaInstrumentation } from '../services/AlphaInstrumentation.js';
 
@@ -14,7 +14,7 @@ export const alphaTelemetryRouter = router({
    * Get edge state distribution
    * Returns count of each edge state type over time period
    */
-  getEdgeStateDistribution: adminProcedure
+  getEdgeStateDistribution: platformAdminProcedure
     .input(z.object({
       start_date: z.date(),
       end_date: z.date().optional(),
@@ -46,7 +46,7 @@ export const alphaTelemetryRouter = router({
   /**
    * Get average time spent per edge state
    */
-  getEdgeStateTimeSpent: adminProcedure
+  getEdgeStateTimeSpent: platformAdminProcedure
     .input(z.object({
       start_date: z.date(),
       end_date: z.date().optional(),
@@ -94,7 +94,7 @@ export const alphaTelemetryRouter = router({
   /**
    * Get dispute attempts per 100 tasks
    */
-  getDisputeRate: adminProcedure
+  getDisputeRate: disputeAdminProcedure
     .input(z.object({
       start_date: z.date(),
       end_date: z.date().optional(),
@@ -134,7 +134,7 @@ export const alphaTelemetryRouter = router({
   /**
    * Get proof failure → correction success rate
    */
-  getProofCorrectionRate: adminProcedure
+  getProofCorrectionRate: platformAdminProcedure
     .input(z.object({
       start_date: z.date(),
       end_date: z.date().optional(),
@@ -177,7 +177,7 @@ export const alphaTelemetryRouter = router({
   /**
    * Get trust tier movement histogram
    */
-  getTrustTierMovement: adminProcedure
+  getTrustTierMovement: platformAdminProcedure
     .input(z.object({
       start_date: z.date(),
       end_date: z.date().optional(),

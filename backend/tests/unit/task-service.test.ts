@@ -84,6 +84,12 @@ vi.mock('../../src/services/EligibilityGuard', () => ({
   },
 }));
 
+// The authoritative SQL eligibility path is exercised by the real PostgreSQL
+// N6 invariant suite. This file isolates TaskService branch orchestration.
+vi.mock('../../src/services/TaskEligibilityPolicy', () => ({
+  assertTaskMutationEligibility: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock('../../src/services/FraudDetectionService', () => ({
   FraudDetectionService: {
     getRiskAssessment: vi.fn().mockResolvedValue({
@@ -114,6 +120,45 @@ vi.mock('../../src/services/PlanService', () => ({
   },
 }));
 
+vi.mock('../../src/services/RegionPolicyService', () => ({
+  resolveRegionPolicy: vi.fn().mockResolvedValue({
+    id: '11111111-1111-4111-8111-111111111111',
+    region_code: 'US-WA',
+    version: 'us-wa-test-v1',
+    policy_hash: 'a'.repeat(64),
+  }),
+  evaluateTaskAgainstRegionPolicy: vi.fn().mockReturnValue({
+    allowed: true,
+    reasons: [],
+    snapshot: {
+      policyId: '11111111-1111-4111-8111-111111111111',
+      policyVersion: 'us-wa-test-v1',
+      policyHash: 'a'.repeat(64),
+      regionCode: 'US-WA',
+      locationState: 'WA',
+      licenseRequired: false,
+      insuranceRequired: false,
+      backgroundCheckRequired: false,
+      proofRequired: true,
+      proofMinPhotos: 1,
+      proofMaxPhotos: 5,
+      proofGpsRequired: false,
+      recordingAllowed: false,
+      recordingStandaloneConsentRequired: true,
+      screeningStandaloneConsentRequired: true,
+      screeningReportAccessRequired: true,
+      screeningDisputeAndAppealRequired: true,
+      screeningAdverseActionNoticeRequired: true,
+      safetyIncidentIntakeRequired: true,
+      safetyTimedCheckinRequired: false,
+      safetyCheckinIntervalsMinutes: [15, 30, 60],
+      safetyLocationRetentionDays: 30,
+      safetyAlternateEmergencyActionRequired: true,
+      currency: 'usd',
+    },
+  }),
+}));
+
 vi.mock('../../src/services/InstantObservability', () => ({
   InstantObservability: {
     logAcceptRace: vi.fn(),
@@ -138,6 +183,7 @@ import { EligibilityGuard } from '../../src/services/EligibilityGuard';
 import { FraudDetectionService } from '../../src/services/FraudDetectionService';
 import * as BackgroundCheckServiceModule from '../../src/services/BackgroundCheckService';
 import { ScoperAIService } from '../../src/services/ScoperAIService';
+import * as RegionPolicyService from '../../src/services/RegionPolicyService';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -169,6 +215,8 @@ function makeTask(overrides: Record<string, unknown> = {}) {
 // beforeEach
 // ---------------------------------------------------------------------------
 beforeEach(() => {
+  process.env.TASK_LOCATION_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString('base64');
+  process.env.TASK_LOCATION_ENCRYPTION_KEY_ID = 'location-test-v1';
   vi.clearAllMocks();
 
   // Test isolation: vi.clearAllMocks() resets .mock.calls but NOT the
@@ -397,6 +445,8 @@ describe('TaskService.create', () => {
     title: 'Mow lawn',
     description: 'Mow the front lawn',
     price: 2500,
+    regionCode: 'US-WA',
+    category: 'yard',
   };
 
   it('creates a standard task successfully', async () => {
@@ -410,8 +460,93 @@ describe('TaskService.create', () => {
     expect(result.data?.id).toBe('task-1');
   });
 
-  it('returns PRICE_TOO_LOW for STANDARD task under 500 cents', async () => {
-    const result = await TaskService.create({ ...baseParams, price: 499 });
+  it('binds the server-resolved region policy and every domain snapshot on task insert', async () => {
+    mockQuery
+      .mockResolvedValueOnce({ rows: [makeTask()], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [{ id: 'esc-1' }], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+    const result = await TaskService.create({
+      ...baseParams,
+      price: 7000,
+      hustlerPayoutCents: 6000,
+      platformMarginCents: 1000,
+      automationClassification: 'CONTROLLED_TEST',
+    });
+
+    expect(result.success).toBe(true);
+    expect(RegionPolicyService.resolveRegionPolicy).toHaveBeenCalledWith('US-WA');
+    expect(RegionPolicyService.evaluateTaskAgainstRegionPolicy).toHaveBeenCalledWith(
+      expect.objectContaining({ id: '11111111-1111-4111-8111-111111111111' }),
+      expect.objectContaining({
+        regionCode: 'US-WA', category: 'yard', customerTotalCents: 7000,
+        payoutCents: 6000, marginCents: 1000, automationClassification: 'CONTROLLED_TEST',
+      }),
+    );
+    const taskInsert = mockQuery.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO tasks'));
+    expect(String(taskInsert?.[0])).toContain('region_policy_snapshot');
+    expect(taskInsert?.[1]).toContain('us-wa-test-v1');
+    expect(taskInsert?.[1]).toContain('US-WA');
+  });
+
+  it('fails closed before persistence when no effective region policy exists', async () => {
+    vi.mocked(RegionPolicyService.resolveRegionPolicy).mockResolvedValueOnce(null);
+    const result = await TaskService.create(baseParams);
+    expect(result).toMatchObject({
+      success: false,
+      error: { code: 'REGION_POLICY_UNAVAILABLE' },
+    });
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+
+  it('returns the exact policy denial reasons without creating money or task state', async () => {
+    vi.mocked(RegionPolicyService.evaluateTaskAgainstRegionPolicy).mockReturnValueOnce({
+      allowed: false,
+      reasons: ['production_policy_not_approved', 'payout_below_region_floor'],
+      snapshot: null,
+    });
+    const result = await TaskService.create(baseParams);
+    expect(result).toMatchObject({
+      success: false,
+      error: {
+        code: 'REGION_POLICY_DENIED',
+        details: { reasons: ['production_policy_not_approved', 'payout_below_region_floor'] },
+      },
+    });
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+
+  it('binds checklist scope version 1 and its SHA-256 hash in the creation transaction', async () => {
+    const created = makeTask({ requirements: 'Use protective pads' });
+    mockQuery
+      .mockResolvedValueOnce({ rows: [created], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [{ id: 'esc-1' }], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+    const result = await TaskService.create({
+      ...baseParams,
+      requirements: 'Use protective pads',
+      proofSteps: ['Protect the floor', 'Assemble the desk', 'Photograph the completed desk'],
+    });
+
+    expect(result.success).toBe(true);
+    const taskInsert = mockQuery.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO tasks'));
+    const scopeInsert = mockQuery.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO task_scope_versions'));
+    const scopeHash = String(taskInsert?.[1]?.[31]);
+    const scopeVersionId = String(taskInsert?.[1]?.[32]);
+    expect(scopeHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(scopeVersionId).toMatch(/^[a-f0-9-]{36}$/);
+    expect(scopeInsert?.[1]).toEqual(expect.arrayContaining([
+      scopeVersionId,
+      'task-1',
+      scopeHash,
+      JSON.stringify(['Protect the floor', 'Assemble the desk', 'Photograph the completed desk']),
+    ]));
+    expect(db.transaction).toHaveBeenCalledOnce();
+  });
+
+  it('returns PRICE_TOO_LOW for STANDARD task under the $15 constitutional floor', async () => {
+    const result = await TaskService.create({ ...baseParams, price: 1499 });
 
     expect(result.success).toBe(false);
     expect(result.error?.code).toBe('PRICE_TOO_LOW');
@@ -470,6 +605,10 @@ describe('TaskService.create', () => {
   });
 
   it('returns PLAN_REQUIRED when plan check blocks the create', async () => {
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ active_trust_hold: false }],
+      rowCount: 1,
+    } as never);
     vi.mocked(PlanService.canCreateTaskWithRisk).mockResolvedValueOnce({
       allowed: false,
       reason: 'Premium required',
@@ -530,10 +669,11 @@ describe('TaskService.create', () => {
 
   it('creates instant mode task in MATCHING state', async () => {
     const matchingTask = makeTask({ state: 'MATCHING', instant_mode: true });
-    // INSERT task → INSERT escrow (beta contract) → UPDATE matched_at → SELECT reload
+    // INSERT task → INSERT escrow → INSERT immutable scope v1 → UPDATE matched_at → SELECT reload
     mockQuery
       .mockResolvedValueOnce({ rows: [matchingTask], rowCount: 1 } as never) // INSERT task
       .mockResolvedValueOnce({ rows: [{ id: 'esc-instant', state: 'PENDING' }], rowCount: 1 } as never) // INSERT escrow
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)             // INSERT scope v1
       .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)             // UPDATE matched_at
       .mockResolvedValueOnce({ rows: [matchingTask], rowCount: 1 } as never); // SELECT reload
 
@@ -560,6 +700,8 @@ describe('TaskService.create — escrow-at-create (beta contract)', () => {
     title: 'Mow lawn',
     description: 'Mow the front lawn',
     price: 2500,
+    regionCode: 'US-WA',
+    category: 'yard',
   };
 
   it('creates a PENDING escrow atomically with the task', async () => {
@@ -689,11 +831,17 @@ describe('TaskService.create — idempotency and location privacy', () => {
     title: 'Mow lawn',
     description: 'Mow the front lawn',
     price: 2500,
+    regionCode: 'US-WA',
+    category: 'yard',
     clientIdempotencyKey: 'web-quote-accept-0001',
   };
 
   it('preserves the pre-economics request hash for legacy replay compatibility', () => {
-    expect(buildTaskCreateRequestHash(baseParams)).toBe(
+    const legacyParams = {
+      posterId: 'poster-1', title: 'Mow lawn', description: 'Mow the front lawn',
+      price: 2500, clientIdempotencyKey: 'web-quote-accept-0001',
+    };
+    expect(buildTaskCreateRequestHash(legacyParams)).toBe(
       'e0d44905be30580d731aab58a935d552175d2f6d93832cdd877a9f082358867f',
     );
   });
@@ -784,7 +932,9 @@ describe('TaskService.create — idempotency and location privacy', () => {
     expect(taskInsert).toBeDefined();
     expect(taskInsert![1]).toContain('Bellevue, WA area');
     expect(taskInsert![1]).not.toContain('123 Main St, Bellevue, WA 98004');
-    expect(vaultInsert?.[1]).toEqual(['task-private-location', '123 Main St, Bellevue, WA 98004']);
+    expect(vaultInsert?.[1]?.[0]).toBe('task-private-location');
+    expect(vaultInsert?.[1]).not.toContain('123 Main St, Bellevue, WA 98004');
+    expect(vaultInsert?.[1]?.[4]).toBe('location-test-v1');
   });
 
   it('redacts exact addresses repeated in publicly visible task text', async () => {
@@ -802,6 +952,8 @@ describe('TaskService.create — idempotency and location privacy', () => {
       price: 2500,
       location: '123 Main Street, Bellevue, WA 98004',
       roughArea: 'Bellevue, WA',
+      regionCode: 'US-WA',
+      category: 'yard',
     });
 
     expect(result.success).toBe(true);
@@ -1045,7 +1197,7 @@ describe('TaskService.accept', () => {
       const instantRow = makeTaskRow({ instant_mode: true, state: 'MATCHING' });
       mockQuery
         .mockResolvedValueOnce({ rows: [instantRow], rowCount: 1 } as never)
-        .mockResolvedValueOnce({ rows: [{ trust_tier: 3, trust_hold: true }], rowCount: 1 } as never);
+        .mockResolvedValueOnce({ rows: [{ trust_tier: 3, active_trust_hold: true }], rowCount: 1 } as never);
 
       const result = await TaskService.accept(acceptParams);
 
@@ -1058,7 +1210,7 @@ describe('TaskService.accept', () => {
       const instantRow = makeTaskRow({ instant_mode: true, state: 'MATCHING' });
       mockQuery
         .mockResolvedValueOnce({ rows: [instantRow], rowCount: 1 } as never)
-        .mockResolvedValueOnce({ rows: [{ trust_tier: 1, trust_hold: false }], rowCount: 1 } as never);
+        .mockResolvedValueOnce({ rows: [{ trust_tier: 1, active_trust_hold: false }], rowCount: 1 } as never);
 
       const result = await TaskService.accept(acceptParams);
 
@@ -1124,7 +1276,7 @@ describe('TaskService.startWork', () => {
       .mockResolvedValueOnce({ rows: [{
         state: 'ACCEPTED',
         worker_id: 'worker-1',
-        progress_state: 'ACCEPTED',
+        progress_state: 'TRAVELING',
         started_at: null,
         active_reservation: true,
       }], rowCount: 1 } as never)
@@ -1134,6 +1286,20 @@ describe('TaskService.startWork', () => {
     const result = await TaskService.startWork('task-1', 'worker-1');
     expect(result).toMatchObject({ success: true, data: { progress_state: 'WORKING' } });
     expect(String(mockQuery.mock.calls[1]?.[0])).toContain("progress_state = 'WORKING'");
+  });
+
+  it('blocks check-in/start until the Hustler has canonically marked traveling', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{
+      state: 'ACCEPTED',
+      worker_id: 'worker-1',
+      progress_state: 'ACCEPTED',
+      started_at: null,
+      active_reservation: true,
+    }], rowCount: 1 } as never);
+
+    const result = await TaskService.startWork('task-1', 'worker-1');
+    expect(result).toMatchObject({ success: false, error: { code: 'INVALID_STATE' } });
+    if (!result.success) expect(result.error.message).toMatch(/traveling/i);
   });
 
   it('blocks start without active engine reservation evidence', async () => {
@@ -1146,6 +1312,22 @@ describe('TaskService.startWork', () => {
     }], rowCount: 1 } as never);
     const result = await TaskService.startWork('task-1', 'worker-1');
     expect(result).toMatchObject({ success: false, error: { code: 'INVALID_STATE' } });
+  });
+
+  it('freezes check-in and work start while a scope change is pending', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{
+      state: 'ACCEPTED',
+      worker_id: 'worker-1',
+      progress_state: 'TRAVELING',
+      started_at: null,
+      active_reservation: true,
+      scope_change_pending: true,
+    }], rowCount: 1 } as never);
+
+    const result = await TaskService.startWork('task-1', 'worker-1');
+    expect(result).toMatchObject({ success: false, error: { code: 'INVALID_STATE' } });
+    if (!result.success) expect(result.error.message).toMatch(/scope change/i);
+    expect(mockQuery).toHaveBeenCalledOnce();
   });
 });
 
@@ -1212,12 +1394,17 @@ describe('TaskService.complete', () => {
       .mockResolvedValueOnce({ rows: [{ state: 'ACCEPTED' }], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [{ state: 'FUNDED' }], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [completed], rowCount: 1 } as never)
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [{ conflict_count: '0' }], rowCount: 1 } as never);
 
     const result = await TaskService.complete('task-1', 'poster-1');
 
     expect(result.success).toBe(true);
     expect(result.data?.state).toBe('COMPLETED');
+    expect(mockQuery.mock.calls.some(([sql]) =>
+      String(sql).includes('INSERT INTO recommendation_outcomes')
+    )).toBe(true);
   });
 
   it('returns FORBIDDEN when posterId does not match poster_id on task', async () => {

@@ -99,7 +99,7 @@ export const liveRouter = router({
       longitude: z.number().min(-180).max(180),
       radiusMiles: z.number().positive().max(100).default(5),
       limit: z.number().int().min(1).max(100).default(50).optional(),
-      offset: z.number().int().min(0).default(0).optional(),
+      offset: z.number().int().min(0).max(500).default(0).optional(),
     }))
     .query(async ({ ctx, input }) => {
       if (!ctx.user) {

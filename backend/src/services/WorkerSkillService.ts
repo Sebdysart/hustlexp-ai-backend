@@ -249,35 +249,18 @@ export const WorkerSkillService = {
    * Upload license for hard-gated skill verification
    */
   submitLicense: async (
-    userId: string,
-    skillId: string,
-    licenseUrl: string,
-    licenseExpiry?: Date
+    _userId: string,
+    _skillId: string,
+    _licenseUrl: string,
+    _licenseExpiry?: Date
   ): Promise<ServiceResult<void>> => {
-    try {
-      const result = await db.query(
-        `UPDATE worker_skills
-         SET license_url = $3,
-             license_expiry = $4
-         WHERE user_id = $1 AND skill_id = $2`,
-        [userId, skillId, licenseUrl, licenseExpiry || null]
-      );
-
-      if (result.rowCount === 0) {
-        return {
-          success: false,
-          error: { code: 'NOT_FOUND', message: 'Worker skill not found. Add the skill first.' },
-        };
-      }
-
-      return { success: true, data: undefined };
-    } catch (error) {
-      console.error('[WorkerSkillService] DB error:', error);
-      return {
-        success: false,
-        error: { code: 'DB_ERROR', message: 'Database error' },
-      };
-    }
+    return {
+      success: false,
+      error: {
+        code: 'MEDIA_RECEIPT_REQUIRED',
+        message: 'Direct skill-license media URLs are disabled until private receipt-backed credential upload is available.',
+      },
+    };
   },
 
   /**

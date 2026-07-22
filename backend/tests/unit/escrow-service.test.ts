@@ -90,6 +90,10 @@ function makeEscrow(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Early-return authority and error-path tests can leave one-time query
+  // responses queued. Reset them so one escrow scenario cannot contaminate
+  // the next scenario while preserving the transaction mock implementation.
+  mockDb.query.mockReset();
   mockIsInvariantViolation.mockReturnValue(false);
   mockIsUniqueViolation.mockReturnValue(false);
 });
@@ -234,9 +238,9 @@ describe('EscrowService', () => {
 
       // Verify gamification: recordEarnings called with net payout
       // F54-2: insurance = 2% of gross (not net)
-      // gross=5000, fee=750, netBeforeInsurance=4250, insurance=Math.round(5000*0.02)=100, final=4250-100=4150
+      // gross=5000, fallback margin=1000, netBeforeInsurance=4000, insurance=100, final=3900
       expect(EarnedVerificationUnlockService.recordEarnings).toHaveBeenCalledWith(
-        'worker-1', 'task-1', 'esc-1', 4150
+        'worker-1', 'task-1', 'esc-1', 3900
       );
 
       // Verify XP award: price / 10
@@ -398,16 +402,16 @@ describe('EscrowService', () => {
 
       expect(vi.mocked(RevenueService.logEvent)).toHaveBeenCalledOnce();
       const logCall = vi.mocked(RevenueService.logEvent).mock.calls[0][0];
-      // gross=5000, fee=Math.round(5000*0.15)=750, insurance=Math.round(5000*0.02)=100, net=5000-750-100=4150
+      // gross=5000, fallback margin=1000, insurance=100, net=3900
       expect(logCall).toMatchObject({
         eventType: 'platform_fee',
         userId: 'poster-9',        // F-23: fee attributed to the poster (the payer), exact value
         taskId: 'task-1',
         escrowId: 'esc-1',
-        amountCents: 750,          // === platformFeeCents
+        amountCents: 1000,         // === platformFeeCents
         grossAmountCents: 5000,
-        netAmountCents: 4150,
-        platformFeeCents: 750,
+        netAmountCents: 3900,
+        platformFeeCents: 1000,
       });
       expect(logCall.userId).toBe('poster-9');     // exact attribution, not toBeDefined
       expect(logCall.stripeEventId).toBeUndefined(); // admin manual payout has no Stripe event
@@ -426,7 +430,11 @@ describe('EscrowService', () => {
         .mockResolvedValueOnce({ rows: [workerNoStripeRow], rowCount: 1 } as never)
         .mockResolvedValueOnce({ rows: [released], rowCount: 1 } as never);
 
-      const result = await EscrowService.release({ escrowId: 'esc-1', adminOverride: true });
+      const result = await EscrowService.release({
+        escrowId: 'esc-1',
+        adminOverride: true,
+        reason: 'Documented administrator payout decision',
+      });
       expect(result.success).toBe(true);
       // fee = Math.round(1 * 0.15) = 0 → F-06 skip path
       expect(vi.mocked(RevenueService.logEvent)).not.toHaveBeenCalled();
@@ -465,11 +473,26 @@ describe('EscrowService', () => {
         .mockResolvedValueOnce({ rows: [workerNoStripeRow], rowCount: 1 } as never)
         .mockResolvedValueOnce({ rows: [released], rowCount: 1 } as never);
 
-      const result = await EscrowService.release({ escrowId: 'esc-1', adminOverride: true });
+      const result = await EscrowService.release({
+        escrowId: 'esc-1',
+        adminOverride: true,
+        reason: 'Documented administrator payout decision',
+      });
       expect(result.success).toBe(true);
       const logCall = vi.mocked(RevenueService.logEvent).mock.calls[0][0];
       expect(logCall.userId).toBe('worker-1'); // F-23 fallback
       expect(logCall.userId).not.toBeNull();
+    });
+
+    it('rejects admin override release without an attributable reason', async () => {
+      const result = await EscrowService.release({ escrowId: 'esc-1', adminOverride: true });
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.code).toBe('INVALID_INPUT');
+        expect(result.error.message).toContain('requires an attributable reason');
+      }
+      expect(mockDb.query).not.toHaveBeenCalled();
     });
   });
 
@@ -619,9 +642,9 @@ describe('EscrowService', () => {
 
     it('REVIEW FIX (PR242): withholds 2% self-insurance (gross basis) and records the pool contribution', async () => {
       // 60/40 split on a $50 escrow: workerCents = round(5000×0.60) = 3000.
-      // fee = round(3000×0.15) = 450 → net = 2550.
+      // fallback margin = round(3000×0.20) = 600 → net = 2400.
       // insurance = round(3000×0.02) = 60 (GROSS basis, matching full release & worker queue).
-      // worker transfer = 2550 − 60 = 2490. pool contribution = 60.
+      // worker transfer = 2400 − 60 = 2340. pool contribution = 60.
       const partial = makeEscrow({ state: 'REFUND_PARTIAL' });
       mockDb.query.mockResolvedValueOnce({
         rows: [{ version: 0, state: 'LOCKED_DISPUTE', task_id: 'task-1', amount: 5000, stripe_payment_intent_id: 'pi_test', stripe_transfer_id: null, stripe_refund_id: null }],
@@ -644,7 +667,7 @@ describe('EscrowService', () => {
 
       // Worker transfer is net-of-fee MINUS insurance
       const transferArg = vi.mocked(MockStripe.createTransfer).mock.calls[0][0] as { amount: number };
-      expect(transferArg.amount).toBe(2490);
+      expect(transferArg.amount).toBe(2340);
 
       // Pool contribution recorded for the worker's gross share (gross basis)
       expect(SelfInsurancePoolService.recordContribution).toHaveBeenCalledWith(

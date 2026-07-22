@@ -47,6 +47,29 @@ vi.mock('../../src/services/PlanService', () => ({
   },
 }));
 
+vi.mock('../../src/services/RegionPolicyService', () => ({
+  resolveRegionPolicy: vi.fn().mockResolvedValue({
+    id: '11111111-1111-4111-8111-111111111111', region_code: 'US-WA',
+    version: 'us-wa-test-v1', policy_hash: 'a'.repeat(64),
+  }),
+  evaluateTaskAgainstRegionPolicy: vi.fn().mockReturnValue({
+    allowed: true,
+    reasons: [],
+    snapshot: {
+      policyId: '11111111-1111-4111-8111-111111111111', policyVersion: 'us-wa-test-v1',
+      policyHash: 'a'.repeat(64), regionCode: 'US-WA', locationState: 'WA',
+      licenseRequired: false, insuranceRequired: false, backgroundCheckRequired: false,
+      proofRequired: true, proofMinPhotos: 1, proofMaxPhotos: 5, proofGpsRequired: false,
+      recordingAllowed: false, recordingStandaloneConsentRequired: true,
+      screeningStandaloneConsentRequired: true, screeningReportAccessRequired: true,
+      screeningDisputeAndAppealRequired: true, screeningAdverseActionNoticeRequired: true,
+      safetyIncidentIntakeRequired: true, safetyTimedCheckinRequired: false,
+      safetyCheckinIntervalsMinutes: [15, 30, 60], safetyLocationRetentionDays: 30,
+      safetyAlternateEmergencyActionRequired: true, currency: 'usd',
+    },
+  }),
+}));
+
 // Mock RevenueService — added when Fix 1B wired RevenueService.logEvent into EscrowService.release()
 vi.mock('../../src/services/RevenueService', () => ({
   RevenueService: { logEvent: vi.fn().mockResolvedValue({ success: true, data: { id: 'rev-1' } }) },
@@ -213,6 +236,11 @@ describe('Money Path: Escrow Lifecycle', () => {
         rowCount: 1,
         rows: [{ id: 'escrow-1', task_id: 'task-1', amount: 5000, state: 'LOCKED_DISPUTE' }],
       });
+      // Authoritative worker-favor dispute resolution required before money can move.
+      db.query.mockResolvedValueOnce({
+        rowCount: 1,
+        rows: [{ resolved_dispute_id: 'dispute-worker-win-1' }],
+      });
       db.query.mockResolvedValueOnce({
         rowCount: 1,
         rows: [{ worker_id: 'worker-1', price: 5000 }],
@@ -296,12 +324,12 @@ describe('Money Path: Task Price Validation', () => {
   });
 
   describe('Price Floor Enforcement', () => {
-    it('should enforce $5.00 minimum for STANDARD tasks', async () => {
+    it('should enforce $15.00 minimum for STANDARD tasks', async () => {
       const result = await TaskService.create({
         posterId: 'poster-1',
         title: 'Test Task',
         description: 'Test description',
-        price: 499, // $4.99 - below minimum
+        price: 1499, // $14.99 - below minimum
       });
 
       expect(result.success).toBe(false);
@@ -319,18 +347,20 @@ describe('Money Path: Task Price Validation', () => {
       expect(result.success).toBe(false);
     });
 
-    it('should accept exactly $5.00 for STANDARD tasks', async () => {
+    it('should accept exactly $15.00 for STANDARD tasks', async () => {
       db.query.mockResolvedValueOnce({
         rowCount: 1,
-        rows: [{ id: 'task-new', title: 'Test', price: 500, state: 'OPEN' }],
+        rows: [{ id: 'task-new', title: 'Test', price: 1500, state: 'OPEN' }],
       });
-      db.query.mockResolvedValueOnce({ rowCount: 0, rows: [] });
+      db.query.mockResolvedValue({ rowCount: 0, rows: [] });
 
       const result = await TaskService.create({
         posterId: 'poster-1',
         title: 'Test Task',
         description: 'Test description',
-        price: 500,
+        price: 1500,
+        regionCode: 'US-WA',
+        category: 'moving',
       });
 
       expect(result.success).toBe(true);
@@ -341,7 +371,7 @@ describe('Money Path: Task Price Validation', () => {
         rowCount: 1,
         rows: [{ id: 'task-new', title: 'Live Test', price: 1500, state: 'OPEN', mode: 'LIVE' }],
       });
-      db.query.mockResolvedValueOnce({ rowCount: 0, rows: [] });
+      db.query.mockResolvedValue({ rowCount: 0, rows: [] });
 
       const result = await TaskService.create({
         posterId: 'poster-1',
@@ -349,6 +379,8 @@ describe('Money Path: Task Price Validation', () => {
         description: 'Test description',
         price: 1500,
         mode: 'LIVE',
+        regionCode: 'US-WA',
+        category: 'moving',
       });
 
       expect(result.success).toBe(true);

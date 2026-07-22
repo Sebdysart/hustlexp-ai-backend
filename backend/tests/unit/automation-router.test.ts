@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../src/services/AutomationLifecycleService', () => ({
   AutomationLifecycleService: {
+    getBridgeTaskState: vi.fn(),
     listTasks: vi.fn(),
     expireUnfilled: vi.fn(),
     expireDue: vi.fn(),
@@ -24,6 +25,15 @@ vi.mock('../../src/services/VerifiedPosterRatingService', () => ({
 vi.mock('../../src/services/HustlerIdentityLinkService', () => ({
   HustlerIdentityLinkService: { link: vi.fn() },
 }));
+vi.mock('../../src/services/EscrowService', () => ({
+  EscrowService: { release: vi.fn() },
+}));
+vi.mock('../../src/services/LocalCertificationPayoutProvider', () => ({
+  LocalCertificationPayoutProvider: { createPaidTransfer: vi.fn() },
+}));
+vi.mock('../../src/lib/task-lifecycle-notifications', () => ({
+  notifyPaymentReleased: vi.fn(),
+}));
 vi.mock('../../src/db', () => ({ db: { query: vi.fn() } }));
 vi.mock('../../src/auth/firebase', () => ({ firebaseAuth: { verifyIdToken: vi.fn() } }));
 vi.mock('../../src/logger', () => ({
@@ -36,6 +46,11 @@ import { TaskService } from '../../src/services/TaskService';
 import { VerifiedPosterCompletionService } from '../../src/services/VerifiedPosterCompletionService';
 import { VerifiedPosterRatingService } from '../../src/services/VerifiedPosterRatingService';
 import { HustlerIdentityLinkService } from '../../src/services/HustlerIdentityLinkService';
+import { EscrowService } from '../../src/services/EscrowService';
+import { LocalCertificationPayoutProvider } from '../../src/services/LocalCertificationPayoutProvider';
+import { notifyPaymentReleased } from '../../src/lib/task-lifecycle-notifications';
+import { db } from '../../src/db';
+import { ErrorCodes } from '../../src/types';
 
 const TASK_ID = '550e8400-e29b-41d4-a716-446655440000';
 const ADMIN_ID = '550e8400-e29b-41d4-a716-446655440002';
@@ -44,6 +59,14 @@ const tasks = vi.mocked(TaskService);
 const completion = vi.mocked(VerifiedPosterCompletionService);
 const rating = vi.mocked(VerifiedPosterRatingService);
 const identityLink = vi.mocked(HustlerIdentityLinkService);
+const escrows = vi.mocked(EscrowService);
+const localPayout = vi.mocked(LocalCertificationPayoutProvider);
+const mockNotifyPaymentReleased = vi.mocked(notifyPaymentReleased);
+const mockDb = vi.mocked(db);
+
+function seedPlatformAdmin() {
+  mockDb.query.mockResolvedValueOnce({ rows: [{ role: 'admin' }], rowCount: 1 } as any);
+}
 
 function caller(isAdmin = true) {
   return automationRouter.createCaller({
@@ -69,9 +92,68 @@ function bridgeCaller() {
   });
 }
 
-beforeEach(() => vi.clearAllMocks());
+function unauthorizedCaller() {
+  return automationRouter.createCaller({
+    user: null,
+    firebaseUid: null,
+    engineBridgeAuthorized: false,
+    engineBridgeActorId: null,
+    ip: null,
+  });
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  mockDb.query.mockResolvedValue({ rows: [{ role: 'admin' }], rowCount: 1 } as any);
+});
 
 describe('automation E1/E2/E4 contracts', () => {
+  it('lets only an authenticated engine bridge read one decomposed task state', async () => {
+    lifecycle.getBridgeTaskState.mockResolvedValueOnce({
+      success: true,
+      data: {
+        engineTaskId: TASK_ID,
+        lifecycleState: 'SETTLED',
+        taskState: 'COMPLETED',
+        progressState: 'COMPLETED',
+        workerId: ADMIN_ID,
+        automationClassification: 'CONTROLLED_TEST',
+        environment: 'TEST',
+        isTest: true,
+        completedAt: '2026-07-20T20:36:12.000Z',
+        completionConfirmedAt: '2026-07-20T20:36:12.000Z',
+        payoutReadyAt: '2026-07-20T20:36:12.000Z',
+        escrow: {
+          id: '550e8400-e29b-41d4-a716-446655440009',
+          state: 'RELEASED',
+          payoutProvider: 'LOCAL_CERTIFICATION_TEST',
+          providerTransferId: 'tr_hxos_test_0123456789abcdef0123456789abcdef',
+          providerTransferStatus: 'paid',
+          releasedAt: '2026-07-20T20:38:00.000Z',
+        },
+        reservation: { id: ADMIN_ID, state: 'ACTIVE', hustlerRef: ADMIN_ID },
+        proof: { id: ADMIN_ID, state: 'ACCEPTED' },
+        payoutState: 'PAID',
+        sourceUpdatedAt: '2026-07-20T20:38:00.000Z',
+      },
+    });
+
+    await expect(bridgeCaller().getBridgeTaskState({ engineTaskId: TASK_ID }))
+      .resolves.toMatchObject({ lifecycleState: 'SETTLED', payoutState: 'PAID', isTest: true });
+    expect(lifecycle.getBridgeTaskState).toHaveBeenCalledWith(TASK_ID);
+
+    await expect(unauthorizedCaller().getBridgeTaskState({ engineTaskId: TASK_ID }))
+      .rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+  });
+
+  it('fails closed when the bridge task read is inconsistent', async () => {
+    lifecycle.getBridgeTaskState.mockResolvedValueOnce({
+      success: false, error: { code: 'INCONSISTENT_STATE', message: 'broken evidence' },
+    });
+    await expect(bridgeCaller().getBridgeTaskState({ engineTaskId: TASK_ID }))
+      .rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+  });
+
   it('links a capability-proven existing roster identity through the canonical engine', async () => {
     identityLink.link.mockResolvedValueOnce({
       success: true,
@@ -100,6 +182,7 @@ describe('automation E1/E2/E4 contracts', () => {
   });
 
   it('admin reads a bounded lifecycle page', async () => {
+    seedPlatformAdmin();
     lifecycle.listTasks.mockResolvedValueOnce({ success: true, data: { tasks: [], nextCursor: null } });
     await expect(caller().listTasks({ limit: 50 })).resolves.toEqual({ tasks: [], nextCursor: null });
     expect(lifecycle.listTasks).toHaveBeenCalledWith({ limit: 50 });
@@ -111,6 +194,7 @@ describe('automation E1/E2/E4 contracts', () => {
   });
 
   it('exposes idempotent unfilled expiry', async () => {
+    seedPlatformAdmin();
     lifecycle.expireUnfilled.mockResolvedValueOnce({
       success: true,
       data: {
@@ -320,6 +404,7 @@ describe('automation E1/E2/E4 contracts', () => {
   });
 
   it('maps lifecycle read errors without leaking service internals', async () => {
+    seedPlatformAdmin();
     lifecycle.listTasks.mockResolvedValueOnce({
       success: false, error: { code: 'INVALID_CURSOR', message: 'bad cursor' },
     });
@@ -328,6 +413,7 @@ describe('automation E1/E2/E4 contracts', () => {
   });
 
   it('maps idempotency conflicts on expiry', async () => {
+    seedPlatformAdmin();
     lifecycle.expireUnfilled.mockResolvedValueOnce({
       success: false, error: { code: 'IDEMPOTENCY_CONFLICT', message: 'different task' },
     });
@@ -337,6 +423,7 @@ describe('automation E1/E2/E4 contracts', () => {
   });
 
   it('maps expiry scheduler database failures', async () => {
+    seedPlatformAdmin();
     lifecycle.expireDue.mockResolvedValueOnce({
       success: false, error: { code: 'DB_ERROR', message: 'offline' },
     });
@@ -345,6 +432,7 @@ describe('automation E1/E2/E4 contracts', () => {
   });
 
   it('returns a successful bounded expiry scheduler result', async () => {
+    seedPlatformAdmin();
     lifecycle.expireDue.mockResolvedValueOnce({
       success: true,
       data: { inspected: 1, expired: 1, blocked: 0, results: [] },
@@ -372,6 +460,135 @@ describe('automation E1/E2/E4 contracts', () => {
     });
     await expect(caller().completeUnattended({
       engineTaskId: TASK_ID, idempotencyKey: 'unattended-complete-0001',
+    })).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+  });
+
+  it('notifies the worker only after a fresh local TEST payout reaches escrow release', async () => {
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{
+        task_id: TASK_ID,
+        worker_id: ADMIN_ID,
+        automation_classification: 'CONTROLLED_TEST',
+        escrow_id: '550e8400-e29b-41d4-a716-446655440009',
+      }],
+      rowCount: 1,
+    } as any);
+    localPayout.createPaidTransfer.mockResolvedValueOnce({
+      success: true,
+      data: {
+        transferId: 'tr_hxos_test_0123456789abcdef0123456789abcdef',
+        provider: 'LOCAL_CERTIFICATION_TEST',
+        status: 'paid',
+        amountCents: 9490,
+        isTest: true,
+        idempotencyReplayed: false,
+      },
+    });
+    escrows.release.mockResolvedValueOnce({
+      success: true,
+      data: { id: '550e8400-e29b-41d4-a716-446655440009', state: 'RELEASED' } as any,
+    });
+
+    await expect(bridgeCaller().settleLocalTestPayout({
+      engineTaskId: TASK_ID,
+      idempotencyKey: 'settle:test:fresh-0001',
+    })).resolves.toMatchObject({
+      provider: 'LOCAL_CERTIFICATION_TEST',
+      providerStatus: 'paid',
+      escrowState: 'RELEASED',
+      idempotencyReplayed: false,
+    });
+    expect(mockNotifyPaymentReleased).toHaveBeenCalledOnce();
+    expect(mockNotifyPaymentReleased).toHaveBeenCalledWith(ADMIN_ID, TASK_ID, 9490);
+  });
+
+  it('treats a canonical terminal escrow code as successful exact TEST settlement convergence', async () => {
+    mockDb.query
+      .mockResolvedValueOnce({
+        rows: [{
+          task_id: TASK_ID,
+          worker_id: ADMIN_ID,
+          automation_classification: 'CONTROLLED_TEST',
+          escrow_id: '550e8400-e29b-41d4-a716-446655440009',
+        }],
+        rowCount: 1,
+      } as any)
+      .mockResolvedValueOnce({
+        rows: [{
+          state: 'RELEASED',
+          payout_provider: 'LOCAL_CERTIFICATION_TEST',
+          provider_transfer_id: 'tr_hxos_test_0123456789abcdef0123456789abcdef',
+          provider_transfer_status: 'paid',
+        }],
+        rowCount: 1,
+      } as any);
+    localPayout.createPaidTransfer.mockResolvedValueOnce({
+      success: true,
+      data: {
+        transferId: 'tr_hxos_test_0123456789abcdef0123456789abcdef',
+        provider: 'LOCAL_CERTIFICATION_TEST',
+        status: 'paid',
+        amountCents: 9490,
+        isTest: true,
+        idempotencyReplayed: true,
+      },
+    });
+    escrows.release.mockResolvedValueOnce({
+      success: false,
+      error: { code: ErrorCodes.ESCROW_TERMINAL, message: 'already released' },
+    });
+
+    await expect(bridgeCaller().settleLocalTestPayout({
+      engineTaskId: TASK_ID,
+      idempotencyKey: 'settle:test:replay-0001',
+    })).resolves.toMatchObject({
+      transferId: 'tr_hxos_test_0123456789abcdef0123456789abcdef',
+      escrowState: 'RELEASED',
+      idempotencyReplayed: true,
+    });
+    expect(mockNotifyPaymentReleased).toHaveBeenCalledOnce();
+    expect(mockNotifyPaymentReleased).toHaveBeenCalledWith(ADMIN_ID, TASK_ID, 9490);
+  });
+
+  it('fails a terminal TEST settlement replay when exact transfer convergence is absent', async () => {
+    mockDb.query
+      .mockResolvedValueOnce({
+        rows: [{
+          task_id: TASK_ID,
+          worker_id: ADMIN_ID,
+          automation_classification: 'CONTROLLED_TEST',
+          escrow_id: '550e8400-e29b-41d4-a716-446655440009',
+        }],
+        rowCount: 1,
+      } as any)
+      .mockResolvedValueOnce({
+        rows: [{
+          state: 'RELEASED',
+          payout_provider: 'LOCAL_CERTIFICATION_TEST',
+          provider_transfer_id: 'tr_hxos_test_ffffffffffffffffffffffffffffffff',
+          provider_transfer_status: 'paid',
+        }],
+        rowCount: 1,
+      } as any);
+    localPayout.createPaidTransfer.mockResolvedValueOnce({
+      success: true,
+      data: {
+        transferId: 'tr_hxos_test_0123456789abcdef0123456789abcdef',
+        provider: 'LOCAL_CERTIFICATION_TEST',
+        status: 'paid',
+        amountCents: 9490,
+        isTest: true,
+        idempotencyReplayed: true,
+      },
+    });
+    escrows.release.mockResolvedValueOnce({
+      success: false,
+      error: { code: ErrorCodes.ESCROW_TERMINAL, message: 'already released' },
+    });
+
+    await expect(bridgeCaller().settleLocalTestPayout({
+      engineTaskId: TASK_ID,
+      idempotencyKey: 'settle:test:replay-0002',
     })).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
   });
 });

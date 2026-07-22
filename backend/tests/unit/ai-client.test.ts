@@ -5,6 +5,12 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+const mockRecordObservation = vi.hoisted(() => vi.fn());
+const observationReceipt = {
+  observationId: '11111111-1111-4111-8111-111111111111',
+  surfaceId: 'AI-SCOPER-PROPOSAL',
+};
+
 // Mock all external dependencies BEFORE imports
 const mockCreate = vi.fn().mockResolvedValue({
   choices: [{ message: { content: 'AI response text' } }],
@@ -60,6 +66,10 @@ vi.mock('../../src/logger', () => ({
   logger: { child: () => ({ warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() }) },
 }));
 
+vi.mock('../../src/services/AIObservabilityService.js', () => ({
+  AIObservabilityService: { record: mockRecordObservation },
+}));
+
 vi.mock('../../src/middleware/circuit-breaker', () => ({
   openaiBreaker: { execute: vi.fn((fn: () => Promise<unknown>) => fn()) },
   groqBreaker: { execute: vi.fn((fn: () => Promise<unknown>) => fn()) },
@@ -79,6 +89,7 @@ beforeEach(() => {
   mockGroqCreate.mockResolvedValue({
     choices: [{ message: { content: 'Groq response text' } }],
   });
+  mockRecordObservation.mockResolvedValue({ success: true, data: observationReceipt });
 });
 
 // ============================================================================
@@ -163,6 +174,78 @@ describe('AIClient.call', () => {
         ]),
       }),
     );
+  });
+
+  it('returns a persisted observation receipt for a governed provider call', async () => {
+    const result = await AIClient.call({
+      route: 'primary',
+      prompt: 'Structure this task',
+      enableCache: false,
+      observability: {
+        surfaceId: 'AI-SCOPER-PROPOSAL',
+        authorityLevel: 'A2_PROPOSAL_ONLY',
+        action: 'Propose editable scope',
+        scopeAffected: 'task_draft_scope',
+        reason: 'The Poster supplied free-form scope.',
+        evidenceClasses: ['SANITIZED_TASK_DESCRIPTION'],
+        expectedBenefit: 'Faster draft review.',
+        uncertainty: 'Physical conditions remain unknown.',
+        downside: 'The proposal may under-scope work.',
+        policyVersion: 'hxos-scoper-proposal-v1',
+        confidenceBand: 'UNKNOWN',
+        controls: {
+          apply: true, edit: true, dismiss: true, snooze: true, why: true,
+          approve: false, override: true, autoExecute: false, reversible: true,
+        },
+        outcomeSource: 'task creation and outcomes',
+        actorUserId: '22222222-2222-4222-8222-222222222222',
+        affectedObjectType: 'TASK_DRAFT',
+        affectedObjectId: 'draft-1',
+      },
+    });
+
+    expect(result.observation).toEqual(observationReceipt);
+    expect(mockRecordObservation).toHaveBeenCalledWith(expect.objectContaining({
+      provider: 'openai',
+      modelVersion: 'gpt-4o',
+      executionResult: 'GENERATED',
+      output: 'AI response text',
+    }));
+  });
+
+  it('withholds provider output when the observability write fails', async () => {
+    mockRecordObservation.mockResolvedValueOnce({
+      success: false,
+      error: { code: 'AI_OBSERVABILITY_REQUIRED', message: 'audit unavailable' },
+    });
+
+    await expect(AIClient.call({
+      route: 'primary',
+      prompt: 'Governed task',
+      enableCache: false,
+      observability: {
+        surfaceId: 'AI-INCIDENT-DIAGNOSIS',
+        authorityLevel: 'INFORMATIONAL_ONLY',
+        action: 'Suggest a diagnosis',
+        scopeAffected: 'operations_incident_diagnosis',
+        reason: 'An operator requested assistance.',
+        evidenceClasses: ['INCIDENT_FACTS'],
+        expectedBenefit: 'Faster diagnosis.',
+        uncertainty: 'The diagnosis is a hypothesis.',
+        downside: 'It may be wrong.',
+        policyVersion: 'hxos-incident-diagnosis-v1',
+        confidenceBand: 'UNKNOWN',
+        controls: {
+          apply: false, edit: false, dismiss: true, snooze: false, why: true,
+          approve: false, override: true, autoExecute: false, reversible: true,
+        },
+        outcomeSource: 'incident recovery telemetry',
+        actorUserId: null,
+        affectedObjectType: 'INCIDENT',
+        affectedObjectId: 'incident-1',
+      },
+    })).rejects.toThrow('AI_OBSERVABILITY_REQUIRED');
+    expect(mockGroqCreate).not.toHaveBeenCalled();
   });
 });
 

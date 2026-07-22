@@ -5,6 +5,7 @@ import { authCache, authCacheKey, authCacheGet, authCacheSet } from './auth-cach
 import { redis } from './cache/redis.js';
 import { db } from './db.js';
 import { logger } from './logger.js';
+import { verifyLocalCertificationToken } from './auth/local-certification-token.js';
 import type { User } from './types.js';
 
 const log = logger.child({ module: 'trpc-context' });
@@ -99,7 +100,8 @@ function safeAuthError(error: unknown): string {
 }
 
 async function verifiedContext(token: string, req: Request): Promise<Context> {
-  const decoded = await firebaseAuth.verifyIdToken(token, true);
+  const decoded = verifyLocalCertificationToken(token)
+    ?? await firebaseAuth.verifyIdToken(token, true);
   const user = await loadUser(decoded.uid);
   if (user && !isInactive(user)) {
     authCacheSet(token, { user, firebaseUid: decoded.uid }, decoded.exp);

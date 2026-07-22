@@ -128,14 +128,14 @@ afterEach(async () => {
 describe('publishToRoom', () => {
   it.skip('publishes message to Redis and delivers to local subscribers', async () => {
     // First subscribe a user to a room
-    subscribeToRoom('user-pub-1', 'room:test:pub');
+    subscribeToRoom('user-pub-1', getUserRoomKey('user-pub-1'));
 
     // Set up a mock connection for delivery
     const mockEnqueue = vi.fn();
     const mockConn = { userId: 'user-pub-1', closed: false, controller: { enqueue: mockEnqueue } };
     mockGetConnections.mockReturnValue(new Set([mockConn as any]));
 
-    await publishToRoom('room:test:pub', {
+    await publishToRoom(getUserRoomKey('user-pub-1'), {
       type: 'task.update',
       payload: { taskId: 'task-1', status: 'ACCEPTED' },
       timestamp: new Date().toISOString(),
@@ -145,7 +145,7 @@ describe('publishToRoom', () => {
     const pub = mockInstances.find(i => typeof i.publish === 'function');
     expect(pub).toBeDefined();
     expect(pub!.publish).toHaveBeenCalledWith(
-      'room:test:pub',
+      getUserRoomKey('user-pub-1'),
       expect.stringContaining('task.update')
     );
 
@@ -155,11 +155,11 @@ describe('publishToRoom', () => {
     );
 
     // Cleanup
-    unsubscribeFromRoom('user-pub-1', 'room:test:pub');
+    unsubscribeFromRoom('user-pub-1', getUserRoomKey('user-pub-1'));
   });
 
   it('handles delivery to closed connection gracefully', async () => {
-    subscribeToRoom('user-closed-1', 'room:test:closed');
+    subscribeToRoom('user-closed-1', getUserRoomKey('user-closed-1'));
 
     // Mock a closed connection — enqueue will throw
     const mockClosedConn = {
@@ -172,7 +172,7 @@ describe('publishToRoom', () => {
     mockGetConnections.mockReturnValue(new Set([mockClosedConn as any]));
 
     // Should not throw
-    await expect(publishToRoom('room:test:closed', {
+    await expect(publishToRoom(getUserRoomKey('user-closed-1'), {
       type: 'test',
       payload: {},
       timestamp: new Date().toISOString(),
@@ -181,11 +181,11 @@ describe('publishToRoom', () => {
     // Connection should be marked as closed
     expect(mockClosedConn.closed).toBe(true);
 
-    unsubscribeFromRoom('user-closed-1', 'room:test:closed');
+    unsubscribeFromRoom('user-closed-1', getUserRoomKey('user-closed-1'));
   });
 
   it('skips delivery to already-closed connections', async () => {
-    subscribeToRoom('user-skip-1', 'room:test:skip');
+    subscribeToRoom('user-skip-1', getUserRoomKey('user-skip-1'));
 
     const mockEnqueue = vi.fn();
     const closedConn = {
@@ -195,7 +195,7 @@ describe('publishToRoom', () => {
     };
     mockGetConnections.mockReturnValue(new Set([closedConn as any]));
 
-    await publishToRoom('room:test:skip', {
+    await publishToRoom(getUserRoomKey('user-skip-1'), {
       type: 'test',
       payload: {},
       timestamp: new Date().toISOString(),
@@ -204,7 +204,7 @@ describe('publishToRoom', () => {
     // enqueue should NOT have been called for closed connection
     expect(mockEnqueue).not.toHaveBeenCalled();
 
-    unsubscribeFromRoom('user-skip-1', 'room:test:skip');
+    unsubscribeFromRoom('user-skip-1', getUserRoomKey('user-skip-1'));
   });
 
   it('does not crash when room has no local subscribers', async () => {
@@ -224,7 +224,7 @@ describe('publishToRoom', () => {
 describe('broadcastToTask', () => {
   it('publishes to task room key', async () => {
     const mockEnqueue = vi.fn();
-    subscribeToRoom('user-task-1', getTaskRoomKey('task-abc'));
+    expect(() => subscribeToTask('user-task-1', 'task-abc')).toThrow('SSE_TASK_ROOMS_DISABLED');
     mockGetConnections.mockReturnValue(new Set([{
       userId: 'user-task-1',
       closed: false,
@@ -274,7 +274,7 @@ describe('broadcastToUser', () => {
 // ============================================================================
 describe('initializePubSub — message handler', () => {
   it('delivers valid Redis message to local subscribers via message handler', () => {
-    subscribeToRoom('user-msg-1', 'room:test:handler');
+    subscribeToRoom('user-msg-1', getUserRoomKey('user-msg-1'));
 
     const mockEnqueue = vi.fn();
     mockGetConnections.mockReturnValue(new Set([{
@@ -294,16 +294,16 @@ describe('initializePubSub — message handler', () => {
     const message = JSON.stringify({
       type: 'task.update',
       payload: { taskId: 'task-1' },
-      room: 'room:test:handler',
+      room: getUserRoomKey('user-msg-1'),
       timestamp: new Date().toISOString(),
     });
 
-    sub._messageHandler!('room:test:handler', message);
+    sub._messageHandler!(getUserRoomKey('user-msg-1'), message);
 
     // Local delivery should have been triggered
     expect(mockEnqueue).toHaveBeenCalled();
 
-    unsubscribeFromRoom('user-msg-1', 'room:test:handler');
+    unsubscribeFromRoom('user-msg-1', getUserRoomKey('user-msg-1'));
   });
 
   it('handles malformed JSON in Redis message without throwing', () => {
@@ -368,7 +368,7 @@ describe('shutdownPubSub', () => {
 // ============================================================================
 describe('deliverToLocalSubscribers — multiple connections', () => {
   it('delivers to all connections for a user', async () => {
-    subscribeToRoom('user-multi-conn', 'room:test:multi-conn');
+    subscribeToRoom('user-multi-conn', getUserRoomKey('user-multi-conn'));
 
     const enqueue1 = vi.fn();
     const enqueue2 = vi.fn();
@@ -378,7 +378,7 @@ describe('deliverToLocalSubscribers — multiple connections', () => {
     // mockGetConnections returns both connections when called for 'user-multi-conn'
     mockGetConnections.mockReturnValue(new Set([conn1 as any, conn2 as any]));
 
-    await publishToRoom('room:test:multi-conn', {
+    await publishToRoom(getUserRoomKey('user-multi-conn'), {
       type: 'ping',
       payload: {},
       timestamp: new Date().toISOString(),
@@ -387,6 +387,6 @@ describe('deliverToLocalSubscribers — multiple connections', () => {
     expect(enqueue1).toHaveBeenCalled();
     expect(enqueue2).toHaveBeenCalled();
 
-    unsubscribeFromRoom('user-multi-conn', 'room:test:multi-conn');
+    unsubscribeFromRoom('user-multi-conn', getUserRoomKey('user-multi-conn'));
   });
 });

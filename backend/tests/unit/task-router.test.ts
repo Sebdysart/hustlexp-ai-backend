@@ -87,12 +87,22 @@ vi.mock('../../src/services/TaskService', () => ({
     lookupCreateRequest: vi.fn(),
     create: vi.fn(),
     accept: vi.fn(),
+    advanceProgress: vi.fn(),
     startWork: vi.fn(),
     submitProof: vi.fn(),
     rejectProof: vi.fn(),
     complete: vi.fn(),
     cancel: vi.fn(),
     workerAbandon: vi.fn(),
+  },
+}));
+
+vi.mock('../../src/services/TaskScopeService', () => ({
+  TaskScopeService: {
+    getForParticipant: vi.fn(),
+    proposeChange: vi.fn(),
+    reviewChange: vi.fn(),
+    setChecklistItem: vi.fn(),
   },
 }));
 
@@ -178,10 +188,19 @@ vi.mock('../../src/services/TaskTemplateRegistry', () => ({
 }));
 
 vi.mock('../../src/services/TaskRiskClassifier', () => ({
+  TaskRisk: { TIER_0: 0, TIER_1: 1, TIER_2: 2, TIER_3: 3 },
   TaskRiskClassifier: {
     classifyWithTemplate: vi.fn().mockReturnValue(0),
+    toLegacyRiskLevel: vi.fn((risk: number) => (
+      risk >= 3 ? 'IN_HOME' : risk >= 2 ? 'HIGH' : 'LOW'
+    )),
   },
 }));
+
+vi.mock('../../src/services/TaskEligibilityPolicy', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/services/TaskEligibilityPolicy')>();
+  return { ...actual, assertTaskMutationEligibility: vi.fn() };
+});
 
 // Mock Redis so rate-limit checks are controlled in tests.
 // Default: allowed=true (no rate limiting). Individual tests can override.
@@ -194,21 +213,26 @@ vi.mock('../../src/cache/redis', () => ({
 // ---------------------------------------------------------------------------
 
 import { db } from '../../src/db';
+import { TRPCError } from '@trpc/server';
 import { TaskService } from '../../src/services/TaskService';
+import { TaskScopeService } from '../../src/services/TaskScopeService';
 import { VerifiedPosterCompletionService } from '../../src/services/VerifiedPosterCompletionService';
 import { TaskLocationService } from '../../src/services/TaskLocationService';
 import { ProofService } from '../../src/services/ProofService';
 import { ComplianceGuardianService } from '../../src/services/ComplianceGuardianService';
 import { getTemplate, isCareContent, isContentReleaseRequired, getManifest } from '../../src/services/TaskTemplateRegistry';
 import { TaskRiskClassifier } from '../../src/services/TaskRiskClassifier';
+import { assertTaskMutationEligibility } from '../../src/services/TaskEligibilityPolicy';
 import { cachedDbQuery, invalidateTask } from '../../src/cache/db-cache';
 import { taskRouter } from '../../src/routers/task';
 import { checkRateLimit } from '../../src/cache/redis';
+import { notifyProofSubmitted, notifyTaskCompleted } from '../../src/lib/task-lifecycle-notifications';
 
 const mockCheckRateLimit = vi.mocked(checkRateLimit);
 
 const mockDb = vi.mocked(db);
 const mockTaskService = vi.mocked(TaskService);
+const mockTaskScopeService = vi.mocked(TaskScopeService);
 const mockVerifiedPosterCompletion = vi.mocked(VerifiedPosterCompletionService);
 const mockTaskLocationService = vi.mocked(TaskLocationService);
 const mockProofService = vi.mocked(ProofService);
@@ -218,8 +242,11 @@ const mockIsCareContent = vi.mocked(isCareContent);
 const mockIsContentReleaseRequired = vi.mocked(isContentReleaseRequired);
 const mockGetManifest = vi.mocked(getManifest);
 const mockTaskRiskClassifier = vi.mocked(TaskRiskClassifier);
+const mockMutationEligibility = vi.mocked(assertTaskMutationEligibility);
 const mockCachedDbQuery = vi.mocked(cachedDbQuery);
 const mockInvalidateTask = vi.mocked(invalidateTask);
+const mockNotifyProofSubmitted = vi.mocked(notifyProofSubmitted);
+const mockNotifyTaskCompleted = vi.mocked(notifyTaskCompleted);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -321,6 +348,10 @@ beforeEach(() => {
     success: true,
     data: { status: 'missing' },
   } as any);
+  mockMutationEligibility.mockResolvedValue(undefined);
+  // Read procedures may perform an additional authorization lookup (for
+  // example the active quote shortlist). Tests that need rows override this.
+  mockDb.query.mockResolvedValue({ rows: [], rowCount: 0 } as any);
 
   // Rate limiting: allowed by default
   mockCheckRateLimit.mockResolvedValue({ allowed: true, remaining: 10 });
@@ -378,7 +409,12 @@ describe('task.getById', () => {
 
     const result = await makeCaller().getById({ taskId: TASK_ID });
 
-    expect(result).toEqual({ ...task, viewer_role: 'poster' });
+    expect(result).toEqual({
+      ...task,
+      viewer_role: 'poster',
+      quote_chat_role: null,
+      quote_shortlisted_worker_id: null,
+    });
     expect(mockTaskService.getById).toHaveBeenCalledWith(TASK_ID);
   });
 
@@ -389,6 +425,26 @@ describe('task.getById', () => {
     const result = await makeCaller().getById({ taskId: TASK_ID });
 
     expect(result).toMatchObject({ id: TASK_ID, viewer_role: 'hustler' });
+  });
+
+  it('returns only an observer projection for a discoverable task viewed by a non-participant', async () => {
+    const task = makeTaskRow({ state: 'OPEN', poster_id: OTHER_USER_ID, worker_id: null });
+    mockTaskService.getById.mockResolvedValueOnce({ success: true, data: task as any });
+
+    const result = await makeCaller().getById({ taskId: TASK_ID });
+
+    expect(result.viewer_role).toBe('observer');
+    expect(result.poster_id).toBeUndefined();
+    expect(result.worker_id).toBeUndefined();
+  });
+
+  it('denies a non-participant access to a non-discoverable task', async () => {
+    const task = makeTaskRow({ state: 'IN_PROGRESS', poster_id: OTHER_USER_ID, worker_id: 'worker-other' });
+    mockTaskService.getById.mockResolvedValueOnce({ success: true, data: task as any });
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+
+    await expect(makeCaller().getById({ taskId: TASK_ID }))
+      .rejects.toMatchObject({ code: 'FORBIDDEN' });
   });
 
   it('throws NOT_FOUND when task does not exist', async () => {
@@ -444,6 +500,18 @@ describe('task.getState', () => {
 
   it('rejects invalid UUID input', async () => {
     await expect(makeCaller().getState({ taskId: 'bad' })).rejects.toThrow();
+  });
+
+  it('denies a non-participant from polling task state', async () => {
+    mockDb.query
+      .mockResolvedValueOnce({
+        rows: [{ state: 'IN_PROGRESS', poster_id: OTHER_USER_ID, worker_id: 'worker-other' }],
+        rowCount: 1,
+      } as any)
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+
+    await expect(makeCaller().getState({ taskId: TASK_ID }))
+      .rejects.toMatchObject({ code: 'FORBIDDEN' });
   });
 });
 
@@ -669,6 +737,8 @@ describe('task.create', () => {
     title: 'Mow the lawn',
     description: 'Front and back yard',
     price: 5000,
+    regionCode: 'US-WA',
+    category: 'yard',
   };
 
   it('returns created task from TaskService', async () => {
@@ -768,6 +838,8 @@ describe('task.create', () => {
       instantMode: true,
       clientIdempotencyKey: 'quote-accept-0001',
       roughArea: 'Bellevue, WA',
+      regionCode: 'US-WA',
+      proof_steps: [{ step: 'Mow the front lawn' }, { step: 'Mow the back lawn' }],
     });
 
     expect(mockTaskService.create).toHaveBeenCalledWith(
@@ -781,6 +853,8 @@ describe('task.create', () => {
         instantMode: true,
         clientIdempotencyKey: 'quote-accept-0001',
         roughArea: 'Bellevue, WA',
+        regionCode: 'US-WA',
+        proofSteps: ['Mow the front lawn', 'Mow the back lawn'],
       })
     );
   });
@@ -1019,6 +1093,29 @@ describe('task.start', () => {
   });
 });
 
+describe('task.markTraveling', () => {
+  it('records an assigned Hustler as traveling through the canonical progress service', async () => {
+    const traveling = makeTaskRow({ progress_state: 'TRAVELING' });
+    mockTaskService.advanceProgress.mockResolvedValueOnce({ success: true, data: traveling as any });
+
+    await expect(makeCaller().markTraveling({ taskId: TASK_ID })).resolves.toEqual(traveling);
+    expect(mockTaskService.advanceProgress).toHaveBeenCalledWith({
+      taskId: TASK_ID,
+      to: 'TRAVELING',
+      actor: { type: 'worker', userId: USER_ID },
+    });
+  });
+
+  it('fails closed when the Hustler does not own the reservation', async () => {
+    mockTaskService.advanceProgress.mockResolvedValueOnce({
+      success: false,
+      error: { code: 'FORBIDDEN', message: 'Worker does not own task' },
+    });
+
+    await expect(makeCaller().markTraveling({ taskId: TASK_ID })).rejects.toMatchObject({ code: 'FORBIDDEN' });
+  });
+});
+
 // ===========================================================================
 // task.getProof
 // ===========================================================================
@@ -1094,6 +1191,8 @@ describe('task.submitProof', () => {
     expect(result).toHaveProperty('proof');
     expect(result.task).toEqual(task);
     expect(result.proof).toEqual(proof);
+    expect(mockDb.transaction).toHaveBeenCalledOnce();
+    expect(mockTaskService.submitProof).toHaveBeenCalledWith(TASK_ID, expect.any(Function));
   });
 
   it('passes extended fields to ProofService.submit', async () => {
@@ -1108,13 +1207,21 @@ describe('task.submitProof', () => {
       data: makeTaskRow({ state: 'PROOF_SUBMITTED' }) as any,
     });
 
+    const photoEvidence = {
+      uploadReceiptId: 'a0000000-0000-4000-8000-000000000001',
+      contentType: 'image/jpeg' as const,
+      fileSizeBytes: 12_345,
+      checksumSha256: 'a'.repeat(64),
+      capturedAt: '2026-07-18T19:00:00.000Z',
+    };
     await makeCaller().submitProof({
       taskId: TASK_ID,
       description: 'Done',
-      photoUrls: ['https://pub-abc123def456abcd.r2.dev/proof/photo.jpg'],
+      photoEvidence: [photoEvidence],
       notes: 'Extra notes',
       gpsLatitude: 37.7749,
       gpsLongitude: -122.4194,
+      gpsAccuracyMeters: 12,
       biometricHash: 'abc123',
     });
 
@@ -1123,12 +1230,68 @@ describe('task.submitProof', () => {
         taskId: TASK_ID,
         submitterId: USER_ID,
         description: 'Done',
-        photoUrls: ['https://pub-abc123def456abcd.r2.dev/proof/photo.jpg'],
+        photoEvidence: [photoEvidence],
         gpsLatitude: 37.7749,
         gpsLongitude: -122.4194,
+        gpsAccuracyMeters: 12,
         biometricHash: 'abc123',
-      })
+      }),
+      expect.any(Function),
     );
+  });
+
+  it('returns an exact synchronized replay without duplicating task, media, or notification effects', async () => {
+    const proof = makeProofRow({ idempotency_replayed: true });
+    const task = makeTaskRow({
+      state: 'PROOF_SUBMITTED',
+      worker_id: USER_ID,
+      poster_id: OTHER_USER_ID,
+      version: 8,
+    });
+    mockDb.query
+      .mockResolvedValueOnce({ rows: [{ worker_id: USER_ID }], rowCount: 1 } as any)
+      .mockResolvedValueOnce({ rows: [task], rowCount: 1 } as any);
+    mockProofService.submit.mockResolvedValueOnce({ success: true, data: proof as any });
+    mockProofService.addVideo = vi.fn().mockResolvedValue({ success: true, data: { id: 'video-id' } });
+
+    const result = await makeCallerAsHustler().submitProof({
+      taskId: TASK_ID,
+      description: 'Completed once',
+      clientSubmissionId: 'proof:offline:device:41',
+      clientSequence: 41,
+      priorTaskVersion: 7,
+      localOccurredAt: '2026-07-20T10:00:00.000Z',
+      deviceVersion: 'web.desktop',
+      appVersion: '1.0.0',
+    });
+
+    expect(result).toEqual({ task, proof });
+    expect(mockTaskService.submitProof).not.toHaveBeenCalled();
+    expect(mockProofService.addVideo).not.toHaveBeenCalled();
+    expect(mockNotifyProofSubmitted).not.toHaveBeenCalled();
+    expect(mockInvalidateTask).toHaveBeenCalledWith(TASK_ID);
+  });
+
+  it('rejects a partial offline sync tuple before any database or service work', async () => {
+    await expect(makeCallerAsHustler().submitProof({
+      taskId: TASK_ID,
+      description: 'Completed once',
+      clientSubmissionId: 'proof:offline:device:42',
+      clientSequence: 42,
+    })).rejects.toThrow('Offline sync evidence must be supplied as one complete tuple.');
+
+    expect(mockDb.query).not.toHaveBeenCalled();
+    expect(mockProofService.submit).not.toHaveBeenCalled();
+  });
+
+  it('rejects a payload witness unless the legacy-compatible sync tuple is complete', async () => {
+    await expect(makeCallerAsHustler().submitProof({
+      taskId: TASK_ID,
+      description: 'Completed once',
+      clientSubmissionId: 'proof:offline:device:43',
+      offlinePayloadHash: 'a'.repeat(64),
+    })).rejects.toThrow('Offline payload evidence requires the complete sync tuple.');
+    expect(mockDb.query).not.toHaveBeenCalled();
   });
 
   it('falls back to notes when description is not provided', async () => {
@@ -1151,7 +1314,8 @@ describe('task.submitProof', () => {
     expect(mockProofService.submit).toHaveBeenCalledWith(
       expect.objectContaining({
         description: 'Used as description',
-      })
+      }),
+      expect.any(Function),
     );
   });
 
@@ -1468,7 +1632,11 @@ describe('task.complete', () => {
   });
 
   it('returns completed task when poster calls', async () => {
-    const completed = makeTaskRow({ state: 'COMPLETED' });
+    const completed = makeTaskRow({
+      state: 'COMPLETED',
+      worker_id: OTHER_USER_ID,
+      completion_idempotency_replayed: false,
+    });
 
     mockVerifiedPosterCompletion.confirm.mockResolvedValueOnce({ success: true, data: completed as any });
 
@@ -1482,6 +1650,26 @@ describe('task.complete', () => {
       channel: 'WEB',
       expectedPosterId: USER_ID,
     });
+    expect(mockNotifyTaskCompleted).toHaveBeenCalledOnce();
+    expect(mockNotifyTaskCompleted).toHaveBeenCalledWith(
+      OTHER_USER_ID,
+      TASK_ID,
+      'Test Task',
+    );
+  });
+
+  it('does not duplicate the completion notification on an idempotent replay', async () => {
+    const replayed = makeTaskRow({
+      state: 'COMPLETED',
+      worker_id: OTHER_USER_ID,
+      completion_idempotency_replayed: true,
+    });
+    mockVerifiedPosterCompletion.confirm.mockResolvedValueOnce({ success: true, data: replayed as any });
+
+    const result = await makeCallerAsPoster().complete({ taskId: TASK_ID });
+
+    expect(result).toEqual(replayed);
+    expect(mockNotifyTaskCompleted).not.toHaveBeenCalled();
   });
 
   it('throws NOT_FOUND when service returns NOT_FOUND', async () => {
@@ -1631,6 +1819,16 @@ describe('task.applyForTask', () => {
       message: 'I can do this',
       appliedAt: now,
     });
+  });
+
+  it('rejects unsafe contact or off-platform content before writing an application', async () => {
+    await expect(makeCaller().applyForTask({
+      taskId: TASK_ID,
+      message: 'Text me at 555-867-5309 and pay me directly',
+    })).rejects.toThrow(/cannot include contact details/i);
+
+    expect(mockDb.transaction).not.toHaveBeenCalled();
+    expect(mockDb.query).not.toHaveBeenCalled();
   });
 
   it('throws NOT_FOUND when task does not exist', async () => {
@@ -1838,6 +2036,7 @@ describe('task.listApplicants', () => {
     const applicantsSql = String(mockDb.query.mock.calls[1][0]);
     expect(applicantsSql).not.toContain("'rookie'");
     expect(applicantsSql).toMatch(/COALESCE\(u\.trust_tier,\s*1\)/);
+    expect(applicantsSql).toContain("ta.status IN ('pending','countered')");
   });
 
   it('throws NOT_FOUND when task does not exist', async () => {
@@ -1881,6 +2080,101 @@ describe('task.listApplicants', () => {
     await makeCallerAsPoster().listApplicants({ taskId: TASK_ID });
 
     expect(mockDb.query).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ===========================================================================
+// task quote shortlist — the sole pre-assignment private-chat grant
+// ===========================================================================
+
+describe('task quote shortlist', () => {
+  it('creates one explicit grant without assigning work or touching escrow', async () => {
+    const createdAt = new Date('2026-07-21T08:00:00.000Z');
+    mockDb.query
+      .mockResolvedValueOnce({
+        rows: [{ id: TASK_ID, poster_id: USER_ID, worker_id: null, state: 'OPEN' }],
+        rowCount: 1,
+      } as any)
+      .mockResolvedValueOnce({ rows: [{ id: APP_ID }], rowCount: 1 } as any)
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as any)
+      .mockResolvedValueOnce({
+        rows: [{
+          id: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+          task_id: TASK_ID,
+          worker_id: OTHER_USER_ID,
+          status: 'ACTIVE',
+          created_at: createdAt,
+        }],
+        rowCount: 1,
+      } as any);
+
+    const result = await makeCallerAsPoster().shortlistApplicant({
+      taskId: TASK_ID,
+      workerId: OTHER_USER_ID,
+    });
+
+    expect(result).toMatchObject({
+      task_id: TASK_ID,
+      worker_id: OTHER_USER_ID,
+      status: 'ACTIVE',
+      replayed: false,
+    });
+    expect(mockMutationEligibility).toHaveBeenCalledWith(
+      expect.any(Function), TASK_ID, OTHER_USER_ID, { requireCurrentOffer: true },
+    );
+    const sql = mockDb.query.mock.calls.map((call) => String(call[0])).join('\n');
+    expect(sql).toContain('INSERT INTO task_quote_shortlists');
+    expect(sql).not.toContain('UPDATE tasks SET state');
+    expect(sql).not.toContain('UPDATE escrows');
+  });
+
+  it('is replay-safe for the same active provider and does not insert a second grant', async () => {
+    const shortlistId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+    mockDb.query
+      .mockResolvedValueOnce({
+        rows: [{ id: TASK_ID, poster_id: USER_ID, worker_id: null, state: 'OPEN' }],
+        rowCount: 1,
+      } as any)
+      .mockResolvedValueOnce({ rows: [{ id: APP_ID }], rowCount: 1 } as any)
+      .mockResolvedValueOnce({
+        rows: [{ id: shortlistId, worker_id: OTHER_USER_ID, created_at: new Date() }],
+        rowCount: 1,
+      } as any);
+
+    const result = await makeCallerAsPoster().shortlistApplicant({
+      taskId: TASK_ID,
+      workerId: OTHER_USER_ID,
+    });
+
+    expect(result).toMatchObject({ id: shortlistId, status: 'ACTIVE', replayed: true });
+    expect(mockDb.query.mock.calls.some((call) => String(call[0]).includes('INSERT INTO task_quote_shortlists'))).toBe(false);
+  });
+
+  it('rejects a provider without an active application', async () => {
+    mockDb.query
+      .mockResolvedValueOnce({
+        rows: [{ id: TASK_ID, poster_id: USER_ID, worker_id: null, state: 'OPEN' }],
+        rowCount: 1,
+      } as any)
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+
+    await expect(makeCallerAsPoster().shortlistApplicant({
+      taskId: TASK_ID,
+      workerId: OTHER_USER_ID,
+    })).rejects.toThrow(/no active provider application/i);
+  });
+
+  it('revokes only the named active grant', async () => {
+    const shortlistId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+    mockDb.query
+      .mockResolvedValueOnce({ rows: [{ poster_id: USER_ID, state: 'OPEN' }], rowCount: 1 } as any)
+      .mockResolvedValueOnce({ rows: [{ id: shortlistId }], rowCount: 1 } as any);
+
+    await expect(makeCallerAsPoster().revokeShortlist({
+      taskId: TASK_ID,
+      workerId: OTHER_USER_ID,
+    })).resolves.toEqual({ success: true, shortlistId });
+    expect(String(mockDb.query.mock.calls[1][0])).toContain("status='ACTIVE'");
   });
 });
 
@@ -2601,7 +2895,7 @@ describe('task.acceptWithConsent', () => {
     mockDb.query
       .mockResolvedValueOnce({
         // SELECT state, template_slug, poster_id FOR UPDATE
-        rows: [{ state: 'OPEN', template_slug: 'wildcard_bizarre', poster_id: OTHER_USER_ID }],
+        rows: [{ state: 'OPEN', template_slug: 'wildcard_bizarre', poster_id: OTHER_USER_ID, mutual_consent_required: true }],
         rowCount: 1,
       } as any)
       .mockResolvedValueOnce({
@@ -2629,7 +2923,7 @@ describe('task.acceptWithConsent', () => {
     mockDb.query
       .mockResolvedValueOnce({
         // SELECT state, template_slug, poster_id FOR UPDATE
-        rows: [{ state: 'OPEN', template_slug: 'wildcard_bizarre', poster_id: OTHER_USER_ID }],
+        rows: [{ state: 'OPEN', template_slug: 'wildcard_bizarre', poster_id: OTHER_USER_ID, mutual_consent_required: true }],
         rowCount: 1,
       } as any)
       .mockResolvedValueOnce({
@@ -2662,7 +2956,7 @@ describe('task.acceptWithConsent', () => {
   it('throws BAD_REQUEST when template does not require consent', async () => {
     // FOR UPDATE lock — returns task with non-consent template
     mockDb.query.mockResolvedValueOnce({
-      rows: [{ state: 'OPEN', template_slug: 'standard_physical', poster_id: OTHER_USER_ID }],
+      rows: [{ state: 'OPEN', template_slug: 'standard_physical', poster_id: OTHER_USER_ID, mutual_consent_required: false }],
       rowCount: 1,
     } as any);
     mockGetTemplate.mockReturnValueOnce(NO_CONSENT_TEMPLATE as any);
@@ -2672,13 +2966,13 @@ describe('task.acceptWithConsent', () => {
         taskId: TASK_ID,
         consentItems: ['I agree'],
       })
-    ).rejects.toThrow('does not require consent checklist');
+    ).rejects.toThrow('does not require a consent checklist');
   });
 
   it('throws PRECONDITION_FAILED when task is no longer available', async () => {
     mockDb.query.mockResolvedValueOnce({
       // FOR UPDATE — task is already claimed/non-OPEN
-      rows: [{ state: 'ACCEPTED', template_slug: 'wildcard_bizarre', poster_id: OTHER_USER_ID }],
+      rows: [{ state: 'ACCEPTED', template_slug: 'wildcard_bizarre', poster_id: OTHER_USER_ID, mutual_consent_required: true }],
       rowCount: 1,
     } as any);
 
@@ -2744,53 +3038,26 @@ describe('task.getComplianceStatus', () => {
 });
 
 // ===========================================================================
-// task.submitProof — video attachment branch
+// task.submitProof — video receipt boundary
 // ===========================================================================
 
-describe('task.submitProof — video URLs branch', () => {
-  beforeEach(() => {
-    // reset handled by global beforeEach
-  });
-
-  it('attaches video URLs to proof when videoUrls provided', async () => {
-    const proofRow = makeProofRow();
-    // KK4: ownership check
-    mockDb.query.mockResolvedValueOnce({ rows: [{ worker_id: USER_ID }], rowCount: 1 } as any);
-    // YY-02: no BEGIN/COMMIT — each service owns its own internal transaction
-    mockProofService.submit.mockResolvedValueOnce({
-      success: true,
-      data: proofRow as any,
-    });
-    mockProofService.addVideo = vi.fn().mockResolvedValue({
-      success: true,
-      data: { id: 'vid-1' },
-    });
-    mockTaskService.submitProof.mockResolvedValueOnce({
-      success: true,
-      data: makeTaskRow() as any,
-    });
-
-    const result = await makeCallerAsHustler().submitProof({
+describe('task.submitProof — video URL rejection', () => {
+  it('rejects a valid-looking hosted video before database or service work', async () => {
+    await expect(makeCallerAsHustler().submitProof({
       taskId: TASK_ID,
       description: 'Done',
       videoUrls: ['https://pub-abc123def456abcd.r2.dev/proof/video1.mp4'],
-    });
+    })).rejects.toThrow('Video proof requires receipt-backed upload finalization.');
 
-    expect(mockProofService.addVideo).toHaveBeenCalledWith(
-      expect.objectContaining({
-        proofId: proofRow.id,
-        storageKey: 'https://pub-abc123def456abcd.r2.dev/proof/video1.mp4',
-        contentType: 'video/mp4',
-      })
-    );
-    expect(result).toBeDefined();
+    expect(mockDb.query).not.toHaveBeenCalled();
+    expect(mockProofService.submit).not.toHaveBeenCalled();
+    expect(mockProofService.addVideo).not.toHaveBeenCalled();
+    expect(mockTaskService.submitProof).not.toHaveBeenCalled();
   });
 
-  it('does not call addVideo when no videoUrls provided', async () => {
+  it('continues to accept proof submissions without video URLs', async () => {
     const proofRow = makeProofRow();
-    // KK4: ownership check
     mockDb.query.mockResolvedValueOnce({ rows: [{ worker_id: USER_ID }], rowCount: 1 } as any);
-    // YY-02: no BEGIN/COMMIT — each service owns its own internal transaction
     mockProofService.submit.mockResolvedValueOnce({
       success: true,
       data: proofRow as any,
@@ -2807,34 +3074,6 @@ describe('task.submitProof — video URLs branch', () => {
     });
 
     expect(mockProofService.addVideo).not.toHaveBeenCalled();
-  });
-
-  it('continues submission when addVideo fails (non-blocking)', async () => {
-    const proofRow = makeProofRow();
-    // KK4: ownership check
-    mockDb.query.mockResolvedValueOnce({ rows: [{ worker_id: USER_ID }], rowCount: 1 } as any);
-    // YY-02: no BEGIN/COMMIT — each service owns its own internal transaction
-    mockProofService.submit.mockResolvedValueOnce({
-      success: true,
-      data: proofRow as any,
-    });
-    mockProofService.addVideo = vi.fn().mockResolvedValue({
-      success: false,
-      error: { code: 'DB_ERROR', message: 'Storage error' },
-    });
-    mockTaskService.submitProof.mockResolvedValueOnce({
-      success: true,
-      data: makeTaskRow() as any,
-    });
-
-    // Should not throw even though addVideo failed
-    const result = await makeCallerAsHustler().submitProof({
-      taskId: TASK_ID,
-      description: 'Done',
-      videoUrls: ['https://pub-abc123def456abcd.r2.dev/proof/video1.mp4'],
-    });
-
-    expect(result).toBeDefined();
     expect(mockTaskService.submitProof).toHaveBeenCalled();
   });
 });
@@ -2848,6 +3087,8 @@ describe('task router changed-line adversarial edges', () => {
     title: 'Mow the lawn',
     description: 'Front and back yard',
     price: 5000,
+    regionCode: 'US-WA',
+    category: 'yard',
   };
 
   function callerWithTrust(mode: 'worker' | 'poster', trustTier: number) {
@@ -2863,19 +3104,19 @@ describe('task router changed-line adversarial edges', () => {
     });
   }
 
-  it('fails closed for an unknown mutual-consent template', async () => {
+  it('uses the persisted consent requirement instead of trusting a mutable registry lookup', async () => {
     mockDb.query.mockResolvedValueOnce({
-      rows: [{ state: 'OPEN', template_slug: 'deleted-template', poster_id: OTHER_USER_ID }], rowCount: 1,
+      rows: [{ state: 'OPEN', template_slug: 'deleted-template', poster_id: OTHER_USER_ID, mutual_consent_required: false }], rowCount: 1,
     } as any);
     mockGetTemplate.mockReturnValueOnce(undefined as any);
     await expect(makeCallerAsHustler().acceptWithConsent({
       taskId: TASK_ID, consentItems: ['I agree'],
-    })).rejects.toMatchObject({ code: 'INTERNAL_SERVER_ERROR' });
+    })).rejects.toMatchObject({ code: 'BAD_REQUEST' });
   });
 
   it('fails closed when mutual-consent acceptance loses its update race', async () => {
     mockDb.query
-      .mockResolvedValueOnce({ rows: [{ state: 'OPEN', template_slug: 'wildcard_bizarre', poster_id: OTHER_USER_ID }], rowCount: 1 } as any)
+      .mockResolvedValueOnce({ rows: [{ state: 'OPEN', template_slug: 'wildcard_bizarre', poster_id: OTHER_USER_ID, mutual_consent_required: true }], rowCount: 1 } as any)
       .mockResolvedValueOnce({ rows: [{ id: APP_ID }], rowCount: 1 } as any)
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
     mockGetTemplate.mockReturnValueOnce({ requiresMutualConsent: true } as any);
@@ -2897,10 +3138,14 @@ describe('task router changed-line adversarial edges', () => {
       .rejects.toMatchObject({ code: 'FORBIDDEN' });
   });
 
-  it('rejects an application below the task trust tier', async () => {
+  it('rejects an application denied by current database eligibility authority', async () => {
     mockDb.query.mockResolvedValueOnce({
       rows: [{ state: 'OPEN', poster_id: OTHER_USER_ID, trust_tier_required: 3, title: 'Trusted work' }], rowCount: 1,
     } as any);
+    mockMutationEligibility.mockRejectedValueOnce(new TRPCError({
+      code: 'FORBIDDEN',
+      message: 'This task is not currently eligible for this worker.',
+    }));
     await expect(callerWithTrust('worker', 1).applyForTask({ taskId: TASK_ID }))
       .rejects.toMatchObject({ code: 'FORBIDDEN' });
   });
@@ -2927,19 +3172,23 @@ describe('task router changed-line adversarial edges', () => {
     expect(mockInvalidateTask).toHaveBeenCalledWith(TASK_ID);
   });
 
-  it('enforces the poster template trust level during assignment', async () => {
-    mockDb.query.mockResolvedValueOnce({
-      rows: [{ id: TASK_ID, state: 'OPEN', poster_id: USER_ID, trust_tier_required: null, template_slug: 'care', title: 'Care' }], rowCount: 1,
-    } as any);
-    mockGetTemplate.mockReturnValueOnce({ requiredTrustTier: 'trusted' } as any);
+  it('does not confuse poster trust with the persisted worker trust requirement', async () => {
+    mockDb.query
+      .mockResolvedValueOnce({ rows: [{ id: TASK_ID, state: 'OPEN', poster_id: USER_ID, trust_tier_required: 3, template_slug: 'care', mutual_consent_required: false, title: 'Care' }], rowCount: 1 } as any)
+      .mockResolvedValueOnce({ rows: [{ trust_tier: 3 }], rowCount: 1 } as any)
+      .mockResolvedValueOnce({ rows: [{ id: APP_ID }], rowCount: 1 } as any)
+      .mockResolvedValueOnce({ rows: [{ state: 'FUNDED' }], rowCount: 1 } as any)
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as any)
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as any)
+      .mockResolvedValueOnce({ rows: [{ id: TASK_ID, state: 'ACCEPTED', worker_id: OTHER_USER_ID }], rowCount: 1 } as any);
     await expect(callerWithTrust('poster', 1).assignWorker({ taskId: TASK_ID, workerId: OTHER_USER_ID }))
-      .rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+      .resolves.toMatchObject({ state: 'ACCEPTED', worker_id: OTHER_USER_ID });
   });
 
   it('allows assignment to continue when a legacy task template is no longer registered', async () => {
     mockGetTemplate.mockReturnValueOnce(undefined as any);
     mockDb.query
-      .mockResolvedValueOnce({ rows: [{ id: TASK_ID, state: 'OPEN', poster_id: USER_ID, trust_tier_required: null, template_slug: 'legacy', title: 'Legacy' }], rowCount: 1 } as any)
+      .mockResolvedValueOnce({ rows: [{ id: TASK_ID, state: 'OPEN', poster_id: USER_ID, trust_tier_required: null, template_slug: 'legacy', mutual_consent_required: false, title: 'Legacy' }], rowCount: 1 } as any)
       .mockResolvedValueOnce({ rows: [{ id: APP_ID }], rowCount: 1 } as any)
       .mockResolvedValueOnce({ rows: [{ state: 'FUNDED' }], rowCount: 1 } as any)
       .mockResolvedValueOnce({ rows: [], rowCount: 1 } as any)
@@ -2974,10 +3223,22 @@ describe('task router changed-line adversarial edges', () => {
       .rejects.toMatchObject({ code: 'BAD_REQUEST' });
   });
 
-  it('rejects create when poster trust is below template policy', async () => {
-    mockGetTemplate.mockReturnValueOnce({ requiredTrustTier: 'trusted' } as any);
-    await expect(callerWithTrust('poster', 1).create(validCreateInput))
-      .rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+  it('allows any eligible poster to request licensed work while worker policy remains authoritative', async () => {
+    mockTaskService.create.mockResolvedValueOnce({
+      success: true,
+      data: makeTaskRow({ template_slug: 'specialized_licensed' } as any),
+    } as any);
+    mockGetTemplate.mockReturnValueOnce({
+      slug: 'specialized_licensed', displayName: 'Specialized / Licensed', one_line_desc: 'Licensed work',
+      defaultRiskTier: 1, requiredTrustTier: 'licensed', completionCriteriaType: 'photo_proof',
+      autoReleaseHours: 24, lateCancelPct: 0, requiresMutualConsent: false,
+      requiresContentRelease: false, scoperContext: '',
+    } as any);
+    await expect(callerWithTrust('poster', 1).create({
+      ...validCreateInput,
+      templateSlug: 'specialized_licensed',
+    })).resolves.toBeDefined();
+    expect(mockTaskService.create).toHaveBeenCalled();
   });
 
   it('maps service idempotency conflicts to tRPC conflicts', async () => {
@@ -3062,5 +3323,70 @@ describe('task router changed-line adversarial edges', () => {
     } as any);
     await expect(makeCallerAsPoster().complete({ taskId: TASK_ID }))
       .resolves.toMatchObject({ state: 'COMPLETED' });
+  });
+});
+
+describe('task execution scope procedures', () => {
+  it('reads scope only through participant-authorized service policy', async () => {
+    mockTaskScopeService.getForParticipant.mockResolvedValueOnce({
+      role: 'HUSTLER', legacy: false, version: { id: PROOF_ID }, checklist: [], pendingChange: null,
+    } as never);
+
+    await expect(makeCallerAsHustler().getExecutionScope({ taskId: TASK_ID }))
+      .resolves.toMatchObject({ role: 'HUSTLER', legacy: false });
+    expect(mockTaskScopeService.getForParticipant).toHaveBeenCalledWith(TASK_ID, USER_ID);
+  });
+
+  it('creates a checklist-only scope proposal and invalidates cached task state', async () => {
+    mockTaskScopeService.proposeChange.mockResolvedValueOnce({ id: PROOF_ID, status: 'PENDING' } as never);
+
+    await expect(makeCallerAsHustler().proposeScopeChange({
+      taskId: TASK_ID,
+      observedScopeSummary: 'The cable tray is included.',
+      proposedChecklist: ['Protect the floor', 'Assemble the desk', 'Attach the cable tray'],
+    })).resolves.toMatchObject({ status: 'PENDING' });
+    expect(mockTaskScopeService.proposeChange).toHaveBeenCalledWith(expect.objectContaining({
+      taskId: TASK_ID,
+      userId: USER_ID,
+    }));
+    expect(mockInvalidateTask).toHaveBeenCalledWith(TASK_ID);
+  });
+
+  it('routes scope approval through server-side Poster ownership enforcement', async () => {
+    mockTaskScopeService.reviewChange.mockResolvedValueOnce({
+      proposal: { id: PROOF_ID, status: 'APPROVED' },
+      version: { id: APP_ID, version: 2 },
+    } as never);
+
+    await expect(makeCallerAsPoster().reviewScopeChange({
+      taskId: TASK_ID,
+      proposalId: PROOF_ID,
+      decision: 'APPROVED',
+      reason: 'This remains within the paid desk assembly scope.',
+    })).resolves.toMatchObject({ version: { version: 2 } });
+    expect(mockTaskScopeService.reviewChange).toHaveBeenCalledWith(expect.objectContaining({
+      posterId: USER_ID,
+      proposalId: PROOF_ID,
+    }));
+  });
+
+  it('routes checklist completion with an exact version and item index', async () => {
+    mockTaskScopeService.setChecklistItem.mockResolvedValueOnce({
+      versionId: APP_ID, itemIndex: 1, completed: true,
+    } as never);
+
+    await expect(makeCallerAsHustler().setScopeChecklistItem({
+      taskId: TASK_ID,
+      versionId: APP_ID,
+      itemIndex: 1,
+      completed: true,
+    })).resolves.toMatchObject({ completed: true });
+    expect(mockTaskScopeService.setChecklistItem).toHaveBeenCalledWith({
+      taskId: TASK_ID,
+      versionId: APP_ID,
+      itemIndex: 1,
+      completed: true,
+      workerId: USER_ID,
+    });
   });
 });

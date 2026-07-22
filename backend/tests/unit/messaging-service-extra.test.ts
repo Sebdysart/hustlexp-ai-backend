@@ -15,7 +15,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../../src/db', () => ({
-  db: { query: vi.fn() },
+  db: { query: vi.fn(), transaction: vi.fn() },
   isInvariantViolation: vi.fn().mockReturnValue(false),
   getErrorMessage: vi.fn().mockReturnValue('Invariant violation'),
 }));
@@ -54,10 +54,12 @@ vi.mock('../../src/logger', () => {
 import { MessagingService } from '../../src/services/MessagingService';
 import { db, isInvariantViolation } from '../../src/db';
 import { ContentModerationService } from '../../src/services/ContentModerationService';
+import { NotificationService } from '../../src/services/NotificationService';
 
 const mockDb = vi.mocked(db);
 const mockIsInvariantViolation = vi.mocked(isInvariantViolation);
 const mockModerateContent = vi.mocked(ContentModerationService.moderateContent);
+const mockCreateNotification = vi.mocked(NotificationService.createNotification);
 
 // ============================================================================
 // FIXTURES
@@ -76,10 +78,23 @@ const msg = {
   created_at: new Date(), updated_at: new Date(),
 };
 
+const RECEIPT_1 = 'c0000000-0000-4000-8000-000000000001';
+const RECEIPT_2 = 'c0000000-0000-4000-8000-000000000002';
+
+function finalizedMedia(storageKey: string) {
+  return {
+    canonical_key: storageKey,
+    canonical_content_type: 'image/jpeg',
+    canonical_size_bytes: 300,
+    canonical_checksum_sha256: 'a'.repeat(64),
+  };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   // mockReset() clears once-queue to prevent mockRejectedValueOnce leakage between tests.
   mockDb.query.mockReset();
+  mockDb.transaction.mockImplementation(async (fn: any) => fn(mockDb.query as any));
   mockIsInvariantViolation.mockReturnValue(false);
   mockModerateContent.mockResolvedValue({ success: true } as never);
 });
@@ -150,7 +165,7 @@ describe('MessagingService.markAsRead', () => {
 describe('MessagingService.markAllAsRead', () => {
   it('successfully marks all messages as read', async () => {
     mockDb.query
-      .mockResolvedValueOnce({ rows: [{ poster_id: 'poster-1', worker_id: 'worker-1' }] }) // task
+      .mockResolvedValueOnce({ rows: [taskRow] }) // authorized task pair
       // Fix Bug 1: rowCount (not RETURNING COUNT(*)) is the source of truth
       .mockResolvedValueOnce({ rows: [], rowCount: 3 });                                     // UPDATE
 
@@ -184,7 +199,7 @@ describe('MessagingService.markAllAsRead', () => {
 
   it('returns 0 when no unread messages exist', async () => {
     mockDb.query
-      .mockResolvedValueOnce({ rows: [{ poster_id: 'poster-1', worker_id: 'worker-1' }] })
+      .mockResolvedValueOnce({ rows: [taskRow] })
       .mockResolvedValueOnce({ rows: [] }); // 0 rows updated
 
     const result = await MessagingService.markAllAsRead('task-1', 'poster-1');
@@ -310,6 +325,57 @@ describe('MessagingService.sendMessage (extra)', () => {
     expect(mockModerateContent).toHaveBeenCalled();
   });
 
+  it.each([
+    ['payment_handle', 'Pay me directly on Venmo @offplatform'],
+    ['payment_handle', 'Send the rest to my Cash App $offplatform'],
+    ['payment_handle', 'Use Zelle instead of HustleXP'],
+    ['street_address', 'Meet me instead at 1842 Market Street'],
+    ['unsafe_markup', '<script>alert(document.cookie)</script>'],
+    ['unsafe_scheme', 'Open javascript:alert(1)'],
+    ['scope_change_request', "While you're cleaning, can you also babysit my kids?"],
+  ])('quarantines %s content before realtime or notification delivery', async (expectedFlag, content) => {
+    mockDb.query
+      .mockResolvedValueOnce({ rows: [taskRow] })
+      .mockResolvedValueOnce({ rows: [{ ...msg, content, moderation_status: 'pending', moderation_flags: null }] });
+
+    const result = await MessagingService.sendMessage({
+      taskId: 'task-1', senderId: 'poster-1', messageType: 'TEXT', content,
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.moderation_status).toBe('flagged');
+      expect(result.data.moderation_flags).toContain(expectedFlag);
+    }
+
+    const insertCall = mockDb.query.mock.calls.find((call: any[]) =>
+      typeof call[0] === 'string' && call[0].includes('INSERT INTO task_messages')
+    );
+    expect(insertCall?.[0]).toContain('moderation_flags');
+    expect(insertCall?.[1]).toContain('flagged');
+    expect(insertCall?.[1]).toContainEqual(expect.arrayContaining([expectedFlag]));
+    expect(mockRedisPublish).not.toHaveBeenCalled();
+    expect(mockCreateNotification).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'I am on my way and should arrive in ten minutes.',
+    'The supplies are beside the blue planter.',
+    'Please use the original task instructions.',
+  ])('delivers an ordinary task message: %s', async (content) => {
+    mockDb.query
+      .mockResolvedValueOnce({ rows: [taskRow] })
+      .mockResolvedValueOnce({ rows: [{ ...msg, content, moderation_status: 'pending', moderation_flags: null }] });
+
+    const result = await MessagingService.sendMessage({
+      taskId: 'task-1', senderId: 'poster-1', messageType: 'TEXT', content,
+    });
+
+    expect(result.success).toBe(true);
+    expect(mockRedisPublish).toHaveBeenCalledTimes(1);
+    expect(mockCreateNotification).toHaveBeenCalledTimes(1);
+  });
+
   it('calls ContentModerationService asynchronously for clean message (no patterns)', async () => {
     const cleanContent = 'Please complete the task by 3pm today';
 
@@ -398,13 +464,13 @@ describe('MessagingService.sendMessage (extra)', () => {
 describe('MessagingService.sendPhotoMessage (extra)', () => {
   const photoMsg = {
     ...msg, message_type: 'PHOTO',
-    photo_urls: ['https://example.com/photo.jpg'], photo_count: 1,
+    photo_urls: ['media/message/task-1/poster-1/photo-1.jpg'], photo_count: 1,
   };
 
   it('returns FORBIDDEN when sender is not a participant', async () => {
     mockDb.query.mockResolvedValueOnce({ rows: [taskRow] });
     const result = await MessagingService.sendPhotoMessage({
-      taskId: 'task-1', senderId: 'stranger-99', photoUrls: ['photo.jpg'],
+      taskId: 'task-1', senderId: 'stranger-99', uploadReceiptIds: [RECEIPT_1],
     });
     expect(result.success).toBe(false);
     if (!result.success) {
@@ -415,7 +481,7 @@ describe('MessagingService.sendPhotoMessage (extra)', () => {
   it('returns INVALID_STATE when no worker assigned (null worker_id)', async () => {
     mockDb.query.mockResolvedValueOnce({ rows: [{ ...taskRow, worker_id: null }] });
     const result = await MessagingService.sendPhotoMessage({
-      taskId: 'task-1', senderId: 'poster-1', photoUrls: ['photo.jpg'],
+      taskId: 'task-1', senderId: 'poster-1', uploadReceiptIds: [RECEIPT_1],
     });
     expect(result.success).toBe(false);
     if (!result.success) {
@@ -427,7 +493,7 @@ describe('MessagingService.sendPhotoMessage (extra)', () => {
   it('returns INVALID_STATE when task is in non-allowed state (OPEN)', async () => {
     mockDb.query.mockResolvedValueOnce({ rows: [{ ...taskRow, state: 'OPEN' }] });
     const result = await MessagingService.sendPhotoMessage({
-      taskId: 'task-1', senderId: 'poster-1', photoUrls: ['photo.jpg'],
+      taskId: 'task-1', senderId: 'poster-1', uploadReceiptIds: [RECEIPT_1],
     });
     expect(result.success).toBe(false);
     if (!result.success) {
@@ -437,12 +503,14 @@ describe('MessagingService.sendPhotoMessage (extra)', () => {
 
   it('flags caption with phone number in photo message', async () => {
     mockDb.query
-      .mockResolvedValueOnce({ rows: [taskRow] })             // task
-      .mockResolvedValue({ rows: [photoMsg] });               // evidence INSERT + message INSERT
+      .mockResolvedValueOnce({ rows: [taskRow] })
+      .mockResolvedValueOnce({ rows: [finalizedMedia('media/message/task-1/poster-1/photo.jpg')] })
+      .mockResolvedValueOnce({ rows: [photoMsg] })
+      .mockResolvedValue({ rows: [] });
 
     const result = await MessagingService.sendPhotoMessage({
       taskId: 'task-1', senderId: 'poster-1',
-      photoUrls: ['https://example.com/photo.jpg'],
+      uploadReceiptIds: [RECEIPT_1],
       caption: 'Contact me at 555-867-5309',
     });
     expect(result.success).toBe(true);
@@ -454,13 +522,47 @@ describe('MessagingService.sendPhotoMessage (extra)', () => {
     }));
   });
 
+  it('quarantines a prohibited photo caption before recipient delivery', async () => {
+    const caption = 'Send a tip to my Cash App $offplatform';
+    mockDb.query
+      .mockResolvedValueOnce({ rows: [taskRow] })
+      .mockResolvedValueOnce({ rows: [finalizedMedia('media/message/task-1/poster-1/photo.jpg')] })
+      .mockResolvedValueOnce({
+        rows: [{ ...photoMsg, content: caption, moderation_status: 'pending', moderation_flags: null }],
+      })
+      .mockResolvedValue({ rows: [] });
+
+    const result = await MessagingService.sendPhotoMessage({
+      taskId: 'task-1', senderId: 'poster-1',
+      uploadReceiptIds: [RECEIPT_1], caption,
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.moderation_status).toBe('quarantined');
+      expect(result.data.moderation_flags).toContain('pixel_review_required');
+      expect(result.data.moderation_flags).toContain('payment_handle');
+    }
+    const messageInsert = mockDb.query.mock.calls.find((call: any[]) =>
+      typeof call[0] === 'string' && call[0].includes('INSERT INTO task_messages')
+    );
+    expect(messageInsert?.[0]).toContain('moderation_flags');
+    expect(messageInsert?.[1]).toContain('quarantined');
+    expect(messageInsert?.[1]).toEqual(expect.arrayContaining([
+      expect.arrayContaining(['pixel_review_required', 'payment_handle']),
+    ]));
+    expect(mockRedisPublish).not.toHaveBeenCalled();
+    expect(mockCreateNotification).not.toHaveBeenCalled();
+  });
+
   it('returns DB_ERROR when db throws during photo message INSERT', async () => {
     mockDb.query
       .mockResolvedValueOnce({ rows: [taskRow] })
+      .mockResolvedValueOnce({ rows: [finalizedMedia('media/message/task-1/poster-1/photo.jpg')] })
       .mockRejectedValueOnce(new Error('DB fail'));
 
     const result = await MessagingService.sendPhotoMessage({
-      taskId: 'task-1', senderId: 'poster-1', photoUrls: ['photo.jpg'],
+      taskId: 'task-1', senderId: 'poster-1', uploadReceiptIds: [RECEIPT_1],
     });
     expect(result.success).toBe(false);
     if (!result.success) {
@@ -471,11 +573,14 @@ describe('MessagingService.sendPhotoMessage (extra)', () => {
   it('calls ContentModerationService for each photo URL (async)', async () => {
     mockDb.query
       .mockResolvedValueOnce({ rows: [taskRow] })
-      .mockResolvedValue({ rows: [{ ...photoMsg, photo_count: 2 }] });
+      .mockResolvedValueOnce({ rows: [finalizedMedia('media/message/task-1/poster-1/photo1.jpg')] })
+      .mockResolvedValueOnce({ rows: [finalizedMedia('media/message/task-1/poster-1/photo2.jpg')] })
+      .mockResolvedValueOnce({ rows: [{ ...photoMsg, photo_count: 2 }] })
+      .mockResolvedValue({ rows: [] });
 
     await MessagingService.sendPhotoMessage({
       taskId: 'task-1', senderId: 'poster-1',
-      photoUrls: ['photo1.jpg', 'photo2.jpg'],
+      uploadReceiptIds: [RECEIPT_1, RECEIPT_2],
     });
 
     // moderateContent called once per photo (2 photos)
@@ -485,16 +590,22 @@ describe('MessagingService.sendPhotoMessage (extra)', () => {
     expect(photoCalls.length).toBe(2);
   });
 
-  it('extracts storage key from URL with slashes (R2 format)', async () => {
+  it('stores the private canonical key directly without persisting a public URL', async () => {
+    const canonicalKey = 'media/message/task-1/poster-1/photo.jpg';
     mockDb.query
       .mockResolvedValueOnce({ rows: [taskRow] })
-      .mockResolvedValue({ rows: [photoMsg] });
+      .mockResolvedValueOnce({ rows: [finalizedMedia(canonicalKey)] })
+      .mockResolvedValueOnce({ rows: [photoMsg] })
+      .mockResolvedValue({ rows: [] });
 
     const result = await MessagingService.sendPhotoMessage({
       taskId: 'task-1', senderId: 'poster-1',
-      photoUrls: ['https://cdn.r2.example.com/bucket/user123/photo.jpg'],
+      uploadReceiptIds: [RECEIPT_1],
     });
-    // Should succeed — storage key extraction shouldn't break
     expect(result.success).toBe(true);
+    expect(mockDb.query).toHaveBeenCalledWith(
+      expect.stringContaining('INSERT INTO evidence'),
+      ['task-1', 'poster-1', canonicalKey],
+    );
   });
 });

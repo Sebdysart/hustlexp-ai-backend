@@ -10,10 +10,12 @@
 
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
-import { router, protectedProcedure, adminProcedure, Schemas } from '../trpc.js';
+import { router, protectedProcedure, platformAdminProcedure, Schemas } from '../trpc.js';
 import { NotificationService } from '../services/NotificationService.js';
 import { sendPushNotification } from '../services/PushNotificationService.js';
 import { db } from '../db.js';
+
+export const DEVICE_TOKEN_CAP = 10;
 
 export const notificationRouter = router({
   // --------------------------------------------------------------------------
@@ -28,7 +30,7 @@ export const notificationRouter = router({
   getList: protectedProcedure
     .input(z.object({
       limit: z.number().int().min(1).max(100).default(50),
-      offset: z.number().int().min(0).default(0),
+      offset: z.number().int().min(0).max(500).default(0),
       unreadOnly: z.boolean().default(false),
     }))
     .query(async ({ input, ctx }) => {
@@ -298,8 +300,6 @@ export const notificationRouter = router({
         });
       }
 
-      const DEVICE_TOKEN_CAP = 10;
-
       try {
         // ----------------------------------------------------------------
         // Token cap enforcement: max DEVICE_TOKEN_CAP active tokens per user.
@@ -420,11 +420,11 @@ export const notificationRouter = router({
    * Used for E2E push notification verification on real devices.
    * Calls PushNotificationService.sendPushNotification() directly.
    */
-  sendTestPush: adminProcedure
+  sendTestPush: platformAdminProcedure
     .input(z.object({
       userId: Schemas.uuid,
-      title: z.string().trim().max(200).default('HustleXP Test Push'),
-      body: z.string().trim().max(1000).default('If you see this, push notifications are working!'),
+      title: z.string().trim().min(1).max(120).regex(/^[^\r\n]*$/, 'Title must be one line.').default('HustleXP Test Push'),
+      body: z.string().trim().min(1).max(500).regex(/^[^\r\n]*$/, 'Body must be one line.').default('If you see this, push notifications are working!'),
     }))
     .mutation(async ({ input }) => {
       const result = await sendPushNotification(

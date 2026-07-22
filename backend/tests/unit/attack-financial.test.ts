@@ -86,11 +86,12 @@ function makeEscrow(overrides: Record<string, unknown> = {}) {
 
 /**
  * Wire up the standard happy-path mock sequence for release().
- * release() fires exactly 4 db.query calls in order:
+ * release() fires 4 db.query calls for FUNDED and 5 for a resolved dispute:
  *   1. SELECT escrow row
- *   2. SELECT task row (worker_id, price)
- *   3. SELECT user KYC row (payouts_enabled, stripe_connect_id, stripe_connect_status)
- *   4. UPDATE escrows SET state = 'RELEASED' … RETURNING *
+ *   2. SELECT resolved worker-favor dispute (LOCKED_DISPUTE only)
+ *   3. SELECT task row (worker_id, price)
+ *   4. SELECT user KYC row (payouts_enabled, stripe_connect_id, stripe_connect_status)
+ *   5. UPDATE escrows SET state = 'RELEASED' … RETURNING *
  */
 function mockReleaseHappyPath(
   escrowAmount: number,
@@ -98,6 +99,7 @@ function mockReleaseHappyPath(
   escrowState = 'FUNDED',
   workerHasConnect = true,
   payoutsEnabled = true,
+  resolvedWorkerFavor = escrowState === 'LOCKED_DISPUTE',
 ) {
   const escrowRow = { id: 'esc-1', task_id: 'task-1', amount: escrowAmount, state: escrowState };
   const taskRow = { worker_id: 'worker-1', price: taskPrice };
@@ -108,8 +110,14 @@ function mockReleaseHappyPath(
   };
   const released = makeEscrow({ state: 'RELEASED', amount: escrowAmount });
 
+  mockDb.query.mockResolvedValueOnce({ rows: [escrowRow], rowCount: 1 } as never);
+  if (escrowState === 'LOCKED_DISPUTE') {
+    mockDb.query.mockResolvedValueOnce({
+      rows: resolvedWorkerFavor ? [{ resolved_dispute_id: 'dispute-resolved-1' }] : [],
+      rowCount: resolvedWorkerFavor ? 1 : 0,
+    } as never);
+  }
   mockDb.query
-    .mockResolvedValueOnce({ rows: [escrowRow], rowCount: 1 } as never)
     .mockResolvedValueOnce({ rows: [taskRow], rowCount: 1 } as never)
     .mockResolvedValueOnce({ rows: [kycRow], rowCount: 1 } as never)
     .mockResolvedValueOnce({ rows: [released], rowCount: 1 } as never);
@@ -117,6 +125,10 @@ function mockReleaseHappyPath(
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Several attack cases intentionally return before consuming the remainder
+  // of a queued happy-path response sequence. clearAllMocks() only clears call
+  // history, so reset the queue as well to keep every attack isolated.
+  mockDb.query.mockReset();
 });
 
 // ===========================================================================
@@ -151,17 +163,17 @@ describe('ATTACK 1: Fee calculation base (escrow.amount vs task.price)', () => {
     const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_atk' });
     expect(result.success).toBe(true);
 
-    // Platform fee is 15% of escrow.amount ($40) = $6, NOT 15% of task.price ($60) = $9
-    const expectedFeeOnEscrow = Math.round(4000 * 0.15); // 600 cents
-    const expectedFeeOnTaskPrice = Math.round(6000 * 0.15); // 900 cents
+    // Legacy fallback margin is 20% of escrow.amount ($40) = $8, NOT 20% of task.price ($60) = $12
+    const expectedFeeOnEscrow = Math.round(4000 * 0.20); // 800 cents
+    const expectedFeeOnTaskPrice = Math.round(6000 * 0.20); // 1200 cents
 
     // recordEarnings receives finalPayout = escrowAmount - platformFee - 2% insurance on gross
-    // net = 4000 - 600 = 3400; insurance = Math.round(4000*0.02) = 80; final = 3400 - 80 = 3320
+    // net = 4000 - 800 = 3200; insurance = Math.round(4000*0.02) = 80; final = 3200 - 80 = 3120
     expect(EarnedVerificationUnlockService.recordEarnings).toHaveBeenCalledWith(
       'worker-1',
       'task-1',
       'esc-1',
-      3320, // F54-2: insurance = 2% of gross 4000 = 80; resolvedNet = 3400 - 80 = 3320
+      3120, // F54-2: insurance = 2% of gross 4000 = 80; resolvedNet = 3200 - 80 = 3120
     );
 
     // Confirm fee was NOT deducted on task.price basis
@@ -223,38 +235,13 @@ describe('ATTACK 2: Zero-fee path — small task rounds platform fee to 0', () =
 
 describe('ATTACK 3: Fee percentage stored in env — no DB manipulation possible', () => {
   /**
-   * EscrowService.release() line 385:
-   *   `const platformFeePercent = config.stripe.platformFeePercent || 15`
-   *
-   * config.ts line 33:
-   *   `parseInt(process.env.PLATFORM_FEE_PERCENT || '15', 10)`
-   *
-   * The fee percentage is read from an environment variable at module load time.
-   * It is NOT stored in the database. A user-level actor cannot manipulate it
-   * via any API endpoint.
-   *
-   * Risk: if an attacker gains server env access, they can set PLATFORM_FEE_PERCENT=0
-   * but `|| 15` prevents that from working (0 is falsy). They'd need to set it
-   * to a negative number: `-1 || 15` = -1 (truthy). That would give negative fee,
-   * meaning the worker gets MORE than escrow.amount.
-   *
-   * VERDICT: EXPLOIT (requires env write access) — PLATFORM_FEE_PERCENT=-1 would
-   * cause negative platform fee (worker overpaid). But this requires server access.
-   * At the application level: SAFE.
+   * Platform configuration rejects negative values at load time and every money
+   * path clamps the percentage again before calculating a fallback margin.
    */
-  it('negative PLATFORM_FEE_PERCENT would produce negative fee (worker overpaid)', () => {
-    const maliciousPercent = -5; // attacker sets PLATFORM_FEE_PERCENT=-5
-    const effectivePercent = maliciousPercent || 15; // -5 is truthy → -5
-    expect(effectivePercent).toBe(-5); // negative percent passes the || guard
-
-    const grossPayoutCents = 10000; // $100
-    const platformFeeCents = Math.round(grossPayoutCents * (effectivePercent / 100));
-    expect(platformFeeCents).toBe(-500); // NEGATIVE fee — worker gets $105 instead of $85
-
-    const netPayoutCents = grossPayoutCents - platformFeeCents;
-    expect(netPayoutCents).toBe(10500); // worker overpaid by $5
-    // VERDICT: EXPLOIT (env-level) — no guard against negative fee percentage.
-    // Fix: add `Math.max(0, ...)` or validate config on startup.
+  it('negative fee input is clamped and cannot overpay the worker', async () => {
+    const { clampFeePercent, computePlatformFeeCents } = await import('../../src/lib/money.js');
+    expect(clampFeePercent(-5)).toBe(0);
+    expect(computePlatformFeeCents(10000, -5)).toBe(0);
   });
 });
 
@@ -264,39 +251,20 @@ describe('ATTACK 3: Fee percentage stored in env — no DB manipulation possible
 
 describe('ATTACK 4: Concurrent release + dispute (TOCTOU race)', () => {
   /**
-   * RACE CONDITION ANALYSIS:
-   *
-   * release() SQL (EscrowService.ts:390-399):
-   *   UPDATE escrows SET state='RELEASED' WHERE id=$1 AND state IN ('FUNDED','LOCKED_DISPUTE')
-   *
-   * lockForDispute() SQL (EscrowService.ts:602-609):
-   *   UPDATE escrows SET state='LOCKED_DISPUTE' WHERE id=$1 AND state='FUNDED'
-   *
-   * Both use atomic WHERE-clause state checks. PostgreSQL row-level locking
-   * means only one UPDATE can win — the loser gets rowCount=0.
-   *
-   * HOWEVER: release() permits release from LOCKED_DISPUTE state (line 396).
-   * This means: if dispute lock wins first, release() can still succeed on
-   * the LOCKED_DISPUTE row. This is intentional per SPEC (dispute resolved in
-   * worker's favor) but means `lockForDispute` does NOT prevent release().
-   *
-   * VERDICT: WRONG (by design, not exploitable) — lockForDispute does not block
-   * release(). The state machine explicitly allows LOCKED_DISPUTE → RELEASED.
-   * A dispute cannot prevent payout; an admin must call partialRefund() instead.
-   * This is a product design decision, not a code bug, but it does mean the
-   * "lock" name is misleading — it does not prevent release.
+   * A normal completion or Poster release must not bypass an unresolved dispute.
+   * Worker-favor resolution is a separate authoritative path: the dispute must
+   * already be RESOLVED with outcome_escrow_action=RELEASE, or an administrator
+   * must use the audited override path with a reason.
    */
-  it('release() succeeds on LOCKED_DISPUTE state — dispute lock does not prevent payout', async () => {
-    // Simulate: dispute lock won the race, escrow is now LOCKED_DISPUTE
-    mockReleaseHappyPath(5000, 5000, 'LOCKED_DISPUTE');
+  it('rejects ordinary release from LOCKED_DISPUTE while no resolved worker-favor decision exists', async () => {
+    mockReleaseHappyPath(5000, 5000, 'LOCKED_DISPUTE', true, true, false);
 
     const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_atk' });
-    // This SUCCEEDS — confirming dispute lock does not block release
-    expect(result.success).toBe(true);
-
-    // VERDICT: WRONG (design issue) — "lock" does not lock against release().
-    // File: backend/src/services/EscrowService.ts:396 (AND state IN ('FUNDED', 'LOCKED_DISPUTE'))
-    // File: backend/src/services/EscrowService.ts:74 (LOCKED_DISPUTE → RELEASED is valid)
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.code).toBe('INVALID_STATE');
+      expect(result.error.message).toMatch(/resolved worker-favor dispute/i);
+    }
   });
 
   it('lockForDispute cannot transition from PENDING state (correct guard)', async () => {
@@ -492,21 +460,21 @@ describe('ATTACK 8: Partial payout math — pennies lost or gained', () => {
     expect(platformFeeCents + netPayoutCents).toBe(grossPayoutCents);
   });
 
-  it('platform_fee + net_payout = escrow.amount exactly at $500 minimum / 15%', async () => {
+  it('platform_fee + net_payout = escrow.amount exactly at $500 minimum / 20% fallback', async () => {
     // Also verify recordEarnings receives the correct net amount
     mockReleaseHappyPath(500, 500);
 
     await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_atk' });
 
     const grossPayoutCents = 500;
-    const platformFeePercent = 15;
-    const platformFeeCents = Math.round(grossPayoutCents * (platformFeePercent / 100)); // 75
-    const netPayoutCents = grossPayoutCents - platformFeeCents; // 425
+    const platformFeePercent = 20;
+    const platformFeeCents = Math.round(grossPayoutCents * (platformFeePercent / 100)); // 100
+    const netPayoutCents = grossPayoutCents - platformFeeCents; // 400
 
-    // F54-2: insurance = 2% of gross (500), not net (425)
-    // insurance = Math.round(500 * 0.02) = 10; resolvedNet = 425 - 10 = 415
+    // F54-2: insurance = 2% of gross (500), not net (400)
+    // insurance = Math.round(500 * 0.02) = 10; resolvedNet = 400 - 10 = 390
     expect(EarnedVerificationUnlockService.recordEarnings).toHaveBeenCalledWith(
-      'worker-1', 'task-1', 'esc-1', netPayoutCents - Math.round(grossPayoutCents * 0.02), // 425 - 10 = 415
+      'worker-1', 'task-1', 'esc-1', netPayoutCents - Math.round(grossPayoutCents * 0.02), // 400 - 10 = 390
     );
     expect(platformFeeCents + netPayoutCents).toBe(grossPayoutCents);
     // VERDICT: SAFE
@@ -520,9 +488,9 @@ describe('ATTACK 8: Partial payout math — pennies lost or gained', () => {
      * Per spec: contribution = 2% of task price (gross), matching
      * SelfInsurancePoolService.calculateContribution(taskPriceCents).
      *
-     * gross=10000, fee=1500 (15%), netBeforeInsurance=8500,
+     * gross=10000, fallback margin=2000 (20%), netBeforeInsurance=8000,
      * insurance=Math.round(10000*0.02)=200
-     * resolvedNet = 8500 - 200 = 8300
+     * resolvedNet = 8000 - 200 = 7800
      *
      * VERDICT: FIXED (F54-2) — insurance is now on gross, matching the spec.
      */
@@ -535,8 +503,8 @@ describe('ATTACK 8: Partial payout math — pennies lost or gained', () => {
     );
 
     // Net payout to worker is gross minus platform fee minus 2% insurance on gross
-    const expectedNet = 10000 - Math.round(10000 * 0.15); // 8500
-    const expectedTransfer = expectedNet - Math.round(10000 * 0.02); // 8500 - 200 = 8300
+    const expectedNet = 10000 - Math.round(10000 * 0.20); // 8000
+    const expectedTransfer = expectedNet - Math.round(10000 * 0.02); // 8000 - 200 = 7800
     expect(EarnedVerificationUnlockService.recordEarnings).toHaveBeenCalledWith(
       'worker-1', 'task-1', 'esc-1', expectedTransfer,
     );
@@ -674,8 +642,9 @@ describe('ATTACK 12: Pool contribution path', () => {
 
   it('pool contribution is also called when releasing from LOCKED_DISPUTE (dispute worker-win)', async () => {
     mockReleaseHappyPath(10000, 10000, 'LOCKED_DISPUTE');
-    await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_atk' });
+    const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_atk' });
 
+    expect(result.success).toBe(true);
     expect(SelfInsurancePoolService.recordContribution).toHaveBeenCalledTimes(1);
     // VERDICT: SAFE — pool is funded even on dispute-resolution releases.
   });

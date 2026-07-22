@@ -13,8 +13,6 @@
 
 import { db } from '../db.js';
 import type { ServiceResult } from '../types.js';
-// AUDIT FIX M6: equipment-scan OpenAI call must be breaker-protected and metered.
-import { openaiBreaker } from '../middleware/circuit-breaker.js';
 
 // ============================================================================
 // TYPES
@@ -190,101 +188,14 @@ export const TutorialQuestService = {
    * GAP 14: Equipment Inventory Scan
    * Analyze photo of worker's equipment using AI vision
    */
-  scanEquipment: async (photoUrl: string): Promise<ServiceResult<EquipmentScanResult>> => {
-    try {
-      const apiKey = process.env.OPENAI_API_KEY ?? '';
-      if (!apiKey) {
-        return {
-          success: true,
-          data: { detected_items: [], suggested_skills: [], confidence: 0 },
-        };
-      }
-
-      // AUDIT FIX M6: breaker-protected (was a bare fetch with no fast-fail)
-      const response = await openaiBreaker.execute(() => fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          model: 'gpt-4o',
-          messages: [
-            {
-              role: 'system',
-              content: `You analyze photos of tools and equipment for a gig work platform.
-Identify tools/equipment and suggest related skills.
-Respond with JSON only: {"items": ["item1", "item2"], "skills": ["skill_name1", "skill_name2"], "confidence": 0.0-1.0}
-Map items to these skill names: lawn_mowing, furniture_assembly, painting_interior, tv_mounting, car_jumpstart, pressure_washing, etc.`,
-            },
-            {
-              role: 'user',
-              content: [
-                { type: 'text', text: 'What tools/equipment do you see in this photo?' },
-                { type: 'image_url', image_url: { url: photoUrl } },
-              ],
-            },
-          ],
-          max_tokens: 300,
-          temperature: 0.1,
-        }),
-      }));
-
-      if (!response.ok) {
-        throw new Error(`OpenAI API error: ${response.status}`);
-      }
-
-      // Minimal OpenAI Chat Completion response shape (only fields we access)
-      interface OpenAIChoice {
-        message?: { content?: string };
-      }
-      interface OpenAIChatResponse {
-        choices?: OpenAIChoice[];
-        usage?: { total_tokens?: number };
-      }
-      const data = await response.json() as OpenAIChatResponse;
-
-      // AUDIT FIX M6: meter the spend (non-fatal on failure)
-      const tokensUsed = data.usage?.total_tokens ?? 0;
-      if (tokensUsed > 0) {
-        try {
-          // REVIEW FIX (PR242): model column is NOT NULL — omitting it made
-          // this INSERT fail silently on real Postgres.
-          await db.query(
-            `INSERT INTO ai_cost_logs (agent_type, user_id, provider, model, tokens_used, estimated_cost_cents, created_at)
-             VALUES ($1, NULL, $2, $3, $4, $5, NOW())`,
-            // gpt-4o ≈ $2.50/1M input + $10/1M output → conservative blended ¢ estimate
-            ['tutorial_equipment_scan', 'openai', 'gpt-4o', tokensUsed, Math.ceil(tokensUsed * 0.001)]
-          );
-        } catch {
-          // cost logging must never break the scan
-        }
-      }
-
-      const content = data.choices?.[0]?.message?.content ?? '';
-      const jsonMatch = content.match(/\{[\s\S]*\}/);
-      const parsed = JSON.parse(jsonMatch?.[0] || '{}');
-
-      return {
-        success: true,
-        data: {
-          detected_items: parsed.items || [],
-          suggested_skills: parsed.skills || [],
-          confidence: parsed.confidence || 0,
-        },
-      };
-    } catch (error) {
-      // AUDIT FIX M6: a real OpenAI/network failure previously returned
-      // success:true with an EMPTY scan — outages masqueraded as "no tools
-      // detected" and the failure was invisible to callers and monitoring.
-      return {
-        success: false,
-        error: {
-          code: 'EQUIPMENT_SCAN_FAILED',
-          message: error instanceof Error ? error.message : 'Equipment scan failed',
-        },
-      };
-    }
+  scanEquipment: async (_photoUrl: string): Promise<ServiceResult<EquipmentScanResult>> => {
+    return {
+      success: false,
+      error: {
+        code: 'MEDIA_RECEIPT_REQUIRED',
+        message: 'Equipment photo scanning is disabled until receipt-backed metadata stripping is implemented.',
+      },
+    };
   },
 };
 

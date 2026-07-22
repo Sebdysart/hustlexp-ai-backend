@@ -566,7 +566,8 @@ describe('T62-1: DisputeService.resolve RELEASE accepts REJECTED proof (concurre
     const result = await DisputeService.resolve({
       disputeId: 'd-t62',
       resolvedBy: 'admin-1',
-      resolution: 'Worker wins — proof was valid despite prior rejection',
+      resolution: 'WORKER_RELEASE',
+      resolutionNotes: 'Worker wins — proof was valid despite prior rejection',
       outcomeEscrowAction: 'RELEASE',
     });
 

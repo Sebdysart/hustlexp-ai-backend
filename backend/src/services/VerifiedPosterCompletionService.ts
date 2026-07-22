@@ -83,7 +83,7 @@ async function writeEvidence(params: VerifiedPosterCompletionParams): Promise<bo
   if (existing.rows[0]) return true;
   await db.query(
     `INSERT INTO engine_automation_events (task_id, event_type, idempotency_key, payload)
-     VALUES ($1, 'POSTER_COMPLETION_CONFIRMED', $2, $3::jsonb)
+     VALUES ($1, 'POSTER_CONFIRMED_COMPLETION', $2, $3::jsonb)
      ON CONFLICT (idempotency_key) DO NOTHING`,
     [params.taskId, key, JSON.stringify({
       providerConfirmationId: params.providerConfirmationId,

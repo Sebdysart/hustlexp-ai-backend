@@ -59,6 +59,7 @@ type UserRow = {
   xp_total: number;
   is_verified: boolean;
   is_banned: boolean;
+  account_status: string;
   default_mode: string;
   created_at: Date;
 };
@@ -73,6 +74,7 @@ function makeUser(overrides: Partial<UserRow & { id: string }> = {}): UserRow {
     xp_total: 0,
     is_verified: false,
     is_banned: false,
+    account_status: 'ACTIVE',
     default_mode: 'hustler',
     created_at: new Date('2025-01-01T00:00:00Z'),
     ...overrides,
@@ -148,6 +150,16 @@ describe('admin.listUsers — offset-based pagination', () => {
       expect(Array.isArray(result.users)).toBe(true);
       expect(result.users).toHaveLength(1);
       expect(result.users[0].email).toBe('a@test.com');
+    });
+
+    it('selects account_status so deleted users are operationally distinguishable', async () => {
+      setupAdminAndUsers([makeUser({ account_status: 'DELETED' })]);
+
+      const result = await makeAdminCaller().listUsers({ limit: 20, offset: 0 });
+
+      const [sql] = (mockDb.query as any).mock.calls[1];
+      expect(sql).toContain('u.account_status');
+      expect(result.users[0].account_status).toBe('DELETED');
     });
 
     it('total reflects the full count, not the page size', async () => {

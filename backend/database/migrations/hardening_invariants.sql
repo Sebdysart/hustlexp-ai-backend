@@ -119,6 +119,32 @@ CREATE TRIGGER task_risk_level_immutable
 CREATE OR REPLACE FUNCTION prevent_task_terminal_mutation()
 RETURNS TRIGGER AS $$
 BEGIN
+    IF OLD.state = 'COMPLETED' AND NEW.state = 'DISPUTED' THEN
+        IF OLD.completed_at IS NULL OR clock_timestamp() > OLD.completed_at + INTERVAL '48 hours' THEN
+            RAISE EXCEPTION 'TERMINAL_STATE_VIOLATION: Completed task % is outside the dispute window', OLD.id
+                USING ERRCODE = 'HX001';
+        END IF;
+        IF NEW.price IS DISTINCT FROM OLD.price OR
+           NEW.poster_id IS DISTINCT FROM OLD.poster_id OR
+           NEW.worker_id IS DISTINCT FROM OLD.worker_id OR
+           NEW.title IS DISTINCT FROM OLD.title OR
+           NEW.description IS DISTINCT FROM OLD.description OR
+           NEW.risk_level IS DISTINCT FROM OLD.risk_level OR
+           NOT EXISTS (
+               SELECT 1 FROM disputes d
+               JOIN escrows e ON e.id = d.escrow_id
+               WHERE d.task_id = OLD.id
+                 AND d.poster_id = OLD.poster_id
+                 AND d.worker_id = OLD.worker_id
+                 AND d.state IN ('OPEN', 'EVIDENCE_REQUESTED', 'ESCALATED')
+                 AND e.state = 'LOCKED_DISPUTE'
+           ) THEN
+            RAISE EXCEPTION 'TERMINAL_STATE_VIOLATION: Completed task % lacks a valid locked dispute', OLD.id
+                USING ERRCODE = 'HX001';
+        END IF;
+        RETURN NEW;
+    END IF;
+
     -- Check if OLD state is terminal
     IF OLD.state IN ('COMPLETED', 'CANCELLED', 'EXPIRED') THEN
         -- Only allow updates to audit-related fields (updated_at, etc.)

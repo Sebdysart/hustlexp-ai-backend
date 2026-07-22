@@ -85,6 +85,9 @@ export class UserRepository extends BaseRepository<User> {
     },
     ctx?: RepositoryContext
   ): Promise<User | null> {
+    if (data.avatar_url !== undefined) {
+      throw new Error('Direct avatar media is disabled; a finalized upload receipt is required.');
+    }
     const query = this.getQuery(ctx);
     const setClauses: string[] = [];
     const params: unknown[] = [];
@@ -97,10 +100,6 @@ export class UserRepository extends BaseRepository<User> {
     if (data.bio !== undefined) {
       setClauses.push(`bio = $${paramIndex++}`);
       params.push(data.bio);
-    }
-    if (data.avatar_url !== undefined) {
-      setClauses.push(`avatar_url = $${paramIndex++}`);
-      params.push(data.avatar_url);
     }
     if (data.phone !== undefined) {
       setClauses.push(`phone = $${paramIndex++}`);
