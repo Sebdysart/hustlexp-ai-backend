@@ -22,6 +22,7 @@ import { stripeBreaker } from '../middleware/circuit-breaker.js';
 import { stripeLogger } from '../logger.js';
 import { notifyAdmins } from './AdminNotificationHelper.js';
 import { resolvePlatformFeeCents } from '../lib/money.js';
+import { newPaymentCreationFailure } from './NewPaymentCreationGuard.js';
 
 // ============================================================================
 // INITIALIZATION
@@ -170,6 +171,8 @@ export const StripeService = {
   createPaymentIntent: async (
     params: CreatePaymentIntentParams
   ): Promise<ServiceResult<CreatePaymentIntentResult>> => {
+    const frozen = newPaymentCreationFailure('escrow_funding');
+    if (frozen) return frozen;
     if (!stripe) {
       return {
         success: false,
@@ -266,6 +269,8 @@ export const StripeService = {
     amountCents: number,
     timestamp: number,
   ): Promise<ServiceResult<CreatePaymentIntentResult>> => {
+    const frozen = newPaymentCreationFailure('xp_tax');
+    if (frozen) return frozen;
     if (!stripe) {
       return {
         success: false,

@@ -6,6 +6,7 @@ import { db } from './db.js';
 import { logger } from './logger.js';
 import { publicIpRateLimitMiddleware, rateLimitMiddleware } from './middleware/security.js';
 import type { HustleApp } from './serverTypes.js';
+import { newPaymentCreationHealth } from './services/NewPaymentCreationGuard.js';
 
 function secretMatches(provided: string | null, expected: string): boolean {
   const rawProvided = Buffer.from(provided || '', 'utf8');
@@ -94,6 +95,7 @@ async function detailedHealth(context: Context) {
         waitingClients: pool.waitingCount,
       },
       circuitBreakers: await circuitBreakerStates(),
+      paymentCreation: newPaymentCreationHealth(),
       uptime: process.uptime(),
       memory: process.memoryUsage(),
     },
@@ -113,6 +115,7 @@ export function registerHealthRoutes(app: HustleApp): void {
           status: production && !trustedBuild ? 'unhealthy' : 'healthy',
           timestamp: new Date().toISOString(),
           build: buildIdentity,
+          paymentCreation: newPaymentCreationHealth(),
         },
         production && !trustedBuild ? 503 : 200
       );
@@ -122,6 +125,7 @@ export function registerHealthRoutes(app: HustleApp): void {
           status: 'unhealthy',
           timestamp: new Date().toISOString(),
           build: buildIdentity,
+          paymentCreation: newPaymentCreationHealth(),
         },
         503
       );
@@ -132,9 +136,17 @@ export function registerHealthRoutes(app: HustleApp): void {
       await db.query('SELECT 1');
       const trustedBuild = isTrustedBuildIdentity(buildIdentity);
       const ready = config.app.env !== 'production' || trustedBuild;
-      return context.json({ ready, build: buildIdentity }, ready ? 200 : 503);
+      return context.json({
+        ready,
+        build: buildIdentity,
+        paymentCreation: newPaymentCreationHealth(),
+      }, ready ? 200 : 503);
     } catch {
-      return context.json({ ready: false, build: buildIdentity }, 503);
+      return context.json({
+        ready: false,
+        build: buildIdentity,
+        paymentCreation: newPaymentCreationHealth(),
+      }, 503);
     }
   });
   app.get('/health/liveness', (context) =>
@@ -142,6 +154,7 @@ export function registerHealthRoutes(app: HustleApp): void {
       alive: true,
       uptime: process.uptime(),
       build: buildIdentity,
+      paymentCreation: newPaymentCreationHealth(),
     })
   );
   app.get('/health/detailed', rateLimitMiddleware('auth'), detailedHealth);
