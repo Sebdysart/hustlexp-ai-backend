@@ -34,13 +34,24 @@ describe('engine automation production container contract', () => {
     expect(procfile).toContain('worker: npm run start:workers');
   });
 
-  it('keeps the API as the default role and makes worker health role-aware', () => {
+  it('keeps the API as the default role and requires real health from both runtimes', () => {
     const dockerfile = read('Dockerfile');
-    expect(dockerfile).toContain("process.env.SERVICE_ROLE==='worker'");
     expect(dockerfile).toContain("require('http').get('http://localhost:3000/health'");
+    expect(dockerfile).not.toContain("process.env.SERVICE_ROLE==='worker'){process.exit(0)");
 
     const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string> };
     expect(pkg.scripts.start).toContain('else node dist/backend/src/server.js');
+
+    const railway = JSON.parse(read('railway.json')) as {
+      deploy: Record<string, unknown>;
+    };
+    expect(railway.deploy).toMatchObject({
+      healthcheckPath: '/health',
+      healthcheckTimeout: 300,
+      drainingSeconds: 35,
+      restartPolicyType: 'ON_FAILURE',
+      restartPolicyMaxRetries: 10,
+    });
   });
 
   it('pins every canonical E2-E5 persistence witness in the packaged SQL', () => {
