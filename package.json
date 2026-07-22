@@ -51,7 +51,9 @@
     "verify:properties": "vitest run backend/tests/unit/engine-automation-properties.test.ts backend/tests/unit/pending-payment-cancellation-properties.test.ts --reporter=dot",
     "verify:differential": "vitest run backend/tests/unit/engine-automation-differential.test.ts --reporter=dot",
     "verify:schema": "node scripts/verify-automation-contracts.mjs",
-    "verify:build-identity": "node --test scripts/write-build-identity.test.mjs"
+    "verify:build-identity": "node --test scripts/write-build-identity.test.mjs",
+    "verify:production-role-readiness:contract": "node --test scripts/verify-production-role-readiness.test.mjs",
+    "verify:production-role-readiness": "npm run verify:production-role-readiness:contract && node scripts/verify-production-role-readiness.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-rekognition": "3.994.0",
