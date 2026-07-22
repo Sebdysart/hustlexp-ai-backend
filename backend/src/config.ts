@@ -244,6 +244,14 @@ function stripeModeErrors(): string[] {
   return [];
 }
 
+function paymentCreationModeErrors(): string[] {
+  const mode = process.env.HX_PAYMENT_CREATION_MODE?.trim().toLowerCase();
+  if (mode && mode !== 'enabled' && mode !== 'frozen') {
+    return ['HX_PAYMENT_CREATION_MODE must be either enabled or frozen'];
+  }
+  return [];
+}
+
 function stripeWebhookSecretErrors(name: string, value: string): string[] {
   if (!value || value.includes('placeholder')) return [`${name} is required (not placeholder)`];
   if (!value.startsWith('whsec_')) return [`${name} must be a Stripe webhook signing secret`];
@@ -269,6 +277,7 @@ function stripeConfigurationErrors(): string[] {
   return [
     ...stripeSecretKeyErrors(),
     ...stripeModeErrors(),
+    ...paymentCreationModeErrors(),
     ...stripeWebhookConfigurationErrors(),
   ];
 }

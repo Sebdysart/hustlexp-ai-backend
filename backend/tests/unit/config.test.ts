@@ -672,6 +672,28 @@ describe('validateConfig', () => {
     expect(result.errors.some((error) => error.includes(expected))).toBe(true);
   });
 
+  it('fails production boot for an invalid payment-creation mode', async () => {
+    process.env.DATABASE_URL = 'postgres://prod';
+    process.env.NODE_ENV = 'production';
+    process.env.FIREBASE_PROJECT_ID = 'proj';
+    process.env.FIREBASE_PRIVATE_KEY = 'key';
+    process.env.FIREBASE_CLIENT_EMAIL = 'a@b.com';
+    process.env.STRIPE_SECRET_KEY = 'sk_live_real';
+    process.env.STRIPE_MODE = 'live';
+    process.env.HX_PAYMENT_CREATION_MODE = 'open';
+    process.env.UPSTASH_REDIS_REST_URL = 'https://redis.io';
+    process.env.UPSTASH_REDIS_URL = 'redis://upstash:6379';
+    process.env.QUEUE_HMAC_SECRET = 'real-hmac-secret';
+    process.env.TAX_TIN_ENCRYPTION_KEY = 'a'.repeat(64);
+    vi.resetModules();
+
+    const { validateConfig } = await import('../../src/config');
+    const result = validateConfig();
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(result.errors).toContain('HX_PAYMENT_CREATION_MODE must be either enabled or frozen');
+  });
+
   it.each([
     ['test', 'sk_test_real'],
     ['live', 'sk_live_real'],

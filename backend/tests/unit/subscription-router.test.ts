@@ -11,7 +11,7 @@
  * the router takes the non-Stripe path for subscribe and cancel.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -57,6 +57,10 @@ import { db } from '../../src/db';
 import { subscriptionRouter } from '../../src/routers/subscription';
 
 const mockDb = vi.mocked(db);
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -154,6 +158,19 @@ describe('subscription.getMySubscription', () => {
 
 describe('subscription.subscribe (Stripe bypass)', () => {
   beforeEach(() => vi.clearAllMocks());
+
+  it('fails closed in production before reading or changing subscription state', async () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv('HX_PAYMENT_CREATION_MODE', 'frozen');
+
+    await expect(
+      makeCaller().subscribe({ plan: 'premium', interval: 'month' })
+    ).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      message: expect.stringContaining('No new charge was created'),
+    });
+    expect(mockDb.query).not.toHaveBeenCalled();
+  });
 
   it('subscribes to premium monthly (no real Stripe)', async () => {
     // User lookup
