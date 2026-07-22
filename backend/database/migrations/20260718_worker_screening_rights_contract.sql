@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS background_checks (
 );
 
 ALTER TABLE background_checks
+  ADD COLUMN IF NOT EXISTS result TEXT,
   ADD COLUMN IF NOT EXISTS check_id TEXT,
   ADD COLUMN IF NOT EXISTS initiated_at TIMESTAMPTZ,
   ADD COLUMN IF NOT EXISTS result_summary TEXT,
