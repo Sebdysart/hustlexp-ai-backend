@@ -214,6 +214,12 @@ describe('engine automation production container contract', () => {
     expect(migration).toContain('CREATE TABLE IF NOT EXISTS worker_screening_consents');
     expect(migration).toContain('CREATE TABLE IF NOT EXISTS worker_screening_disputes');
     expect(migration).toContain('CREATE TABLE IF NOT EXISTS worker_screening_appeals');
+    const legacyResultRepair = migration.indexOf('ADD COLUMN IF NOT EXISTS result TEXT');
+    const legacyResultBackfill = migration.indexOf(
+      'result_summary = COALESCE(result_summary, result)'
+    );
+    expect(legacyResultRepair).toBeGreaterThanOrEqual(0);
+    expect(legacyResultRepair).toBeLessThan(legacyResultBackfill);
     expect(migration).toContain('HXWS2: a new screening check requires explicit consent');
     expect(migration).toContain('HXWS5: final adverse action requires delivered report, rights notice, and elapsed review window');
     expect(migration).toContain('HXWS6: final adverse action is blocked while a dispute is open');
