@@ -185,7 +185,7 @@ describe('StripeWebhookService', () => {
 
       expect(result.success).toBe(false);
       expect(result.error?.code).toBe('STRIPE_NOT_CONFIGURED');
-      expect(result.error?.message).toContain('webhook secret not configured');
+      expect(result.error?.message).toContain('webhook secrets not configured');
     });
 
     it('returns error when webhook secret contains placeholder', async () => {
@@ -206,13 +206,15 @@ describe('StripeWebhookService', () => {
 
       // Mock Stripe to throw on construction/verification
       const StripeMock = (await import('stripe')).default as ReturnType<typeof vi.fn>;
-      StripeMock.mockImplementationOnce(() => ({
-        webhooks: {
-          constructEvent: vi.fn().mockImplementation(() => {
-            throw new Error('Invalid signature');
-          }),
-        },
-      }));
+      StripeMock.mockImplementationOnce(function StripeClientMock() {
+        return {
+          webhooks: {
+            constructEvent: vi.fn().mockImplementation(() => {
+              throw new Error('Invalid signature');
+            }),
+          },
+        };
+      });
 
       const result = await processWebhook('raw-body', 'bad-sig');
 

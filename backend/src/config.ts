@@ -29,7 +29,11 @@ export const config = {
   // Payments (Stripe)
   stripe: {
     secretKey: process.env.STRIPE_SECRET_KEY || '',
+    // Platform-account events cover customer funding, refunds, disputes, and
+    // transfers. Connect events cover worker account and bank-payout state.
+    // Stripe assigns a distinct signing secret to each destination.
     webhookSecret: process.env.STRIPE_WEBHOOK_SECRET || '',
+    connectWebhookSecret: process.env.STRIPE_CONNECT_WEBHOOK_SECRET || '',
     // SECURITY FIX (v2.9.3): Clamp to [0, 100] at parse time. A negative or
     // non-numeric env var would silently pass through parseInt and could cause
     // the fee calculation to produce a negative value (overpaying the worker).
@@ -219,20 +223,54 @@ function firebaseConfigurationErrors(): string[] {
   return errors;
 }
 
-function stripeConfigurationErrors(): string[] {
-  const errors: string[] = [];
+function stripeSecretKeyErrors(): string[] {
   if (!config.stripe.secretKey || config.stripe.secretKey.includes('placeholder')) {
-    errors.push('STRIPE_SECRET_KEY is required (not placeholder)');
+    return ['STRIPE_SECRET_KEY is required (not placeholder)'];
   }
+  return [];
+}
+
+function stripeModeErrors(): string[] {
   const stripeMode = process.env.STRIPE_MODE?.trim().toLowerCase();
   if (stripeMode && stripeMode !== 'test' && stripeMode !== 'live') {
-    errors.push('STRIPE_MODE must be either test or live');
-  } else if (stripeMode === 'test' && config.stripe.secretKey.startsWith('sk_live_')) {
-    errors.push('STRIPE_MODE=test cannot be used with a live Stripe secret key');
-  } else if (stripeMode === 'live' && config.stripe.secretKey.startsWith('sk_test_')) {
-    errors.push('STRIPE_MODE=live cannot be used with a test Stripe secret key');
+    return ['STRIPE_MODE must be either test or live'];
+  }
+  if (stripeMode === 'test' && config.stripe.secretKey.startsWith('sk_live_')) {
+    return ['STRIPE_MODE=test cannot be used with a live Stripe secret key'];
+  }
+  if (stripeMode === 'live' && config.stripe.secretKey.startsWith('sk_test_')) {
+    return ['STRIPE_MODE=live cannot be used with a test Stripe secret key'];
+  }
+  return [];
+}
+
+function stripeWebhookSecretErrors(name: string, value: string): string[] {
+  if (!value || value.includes('placeholder')) return [`${name} is required (not placeholder)`];
+  if (!value.startsWith('whsec_')) return [`${name} must be a Stripe webhook signing secret`];
+  return [];
+}
+
+function stripeWebhookConfigurationErrors(): string[] {
+  const webhookSecrets = [
+    ['STRIPE_WEBHOOK_SECRET', config.stripe.webhookSecret],
+    ['STRIPE_CONNECT_WEBHOOK_SECRET', config.stripe.connectWebhookSecret],
+  ] as const;
+  const errors = webhookSecrets.flatMap(([name, value]) => stripeWebhookSecretErrors(name, value));
+  if (
+    config.stripe.webhookSecret
+    && config.stripe.webhookSecret === config.stripe.connectWebhookSecret
+  ) {
+    errors.push('Stripe platform and Connect webhook secrets must be distinct');
   }
   return errors;
+}
+
+function stripeConfigurationErrors(): string[] {
+  return [
+    ...stripeSecretKeyErrors(),
+    ...stripeModeErrors(),
+    ...stripeWebhookConfigurationErrors(),
+  ];
 }
 
 function redisConfigurationErrors(): string[] {
@@ -256,21 +294,11 @@ function taxConfigurationErrors(): string[] {
   return [];
 }
 
-function storageConfigurationErrors(): string[] {
+function storageEndpointErrors(endpointValue: string): string[] {
   const errors: string[] = [];
-  const r2 = config.cloudflare.r2;
-  if (!r2.endpoint)
-    errors.push('R2_ENDPOINT, S3_ENDPOINT, or R2_ACCOUNT_ID is required for object storage');
-  if (!r2.accessKeyId)
-    errors.push('R2_ACCESS_KEY_ID or AWS_ACCESS_KEY_ID is required for object storage');
-  if (!r2.secretAccessKey)
-    errors.push('R2_SECRET_ACCESS_KEY or AWS_SECRET_ACCESS_KEY is required for object storage');
-  if (!(process.env.R2_BUCKET_NAME || process.env.BUCKET_NAME)) {
-    errors.push('R2_BUCKET_NAME or BUCKET_NAME is required for object storage');
-  }
-  if (r2.endpoint) {
+  if (endpointValue) {
     try {
-      const endpoint = new URL(r2.endpoint);
+      const endpoint = new URL(endpointValue);
       if (endpoint.protocol !== 'https:') errors.push('Object storage endpoint must use HTTPS');
       if (endpoint.username || endpoint.password)
         errors.push('Object storage endpoint cannot embed credentials');
@@ -279,6 +307,27 @@ function storageConfigurationErrors(): string[] {
     }
   }
   return errors;
+}
+
+function storageCredentialErrors(): string[] {
+  const errors: string[] = [];
+  const r2 = config.cloudflare.r2;
+  if (!r2.endpoint)
+    errors.push('R2_ENDPOINT, S3_ENDPOINT, or R2_ACCOUNT_ID is required for object storage');
+  if (!r2.accessKeyId)
+    errors.push('R2_ACCESS_KEY_ID or AWS_ACCESS_KEY_ID is required for object storage');
+  if (!r2.secretAccessKey)
+    errors.push('R2_SECRET_ACCESS_KEY or AWS_SECRET_ACCESS_KEY is required for object storage');
+  if (!(process.env.R2_BUCKET_NAME || process.env.BUCKET_NAME))
+    errors.push('R2_BUCKET_NAME or BUCKET_NAME is required for object storage');
+  return errors;
+}
+
+function storageConfigurationErrors(): string[] {
+  return [
+    ...storageCredentialErrors(),
+    ...storageEndpointErrors(config.cloudflare.r2.endpoint),
+  ];
 }
 
 function productionConfigurationWarnings(): string[] {

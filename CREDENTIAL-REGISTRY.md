@@ -26,7 +26,7 @@
 | 5 | Cloudflare R2 | Infrastructure | Optional | `R2_ACCOUNT_ID` `R2_ACCESS_KEY_ID` `R2_SECRET_ACCESS_KEY` `R2_BUCKET_NAME` `R2_PUBLIC_URL` | ☐ |
 | 6 | Firebase | Auth & Mobile | ✅ Required | `FIREBASE_PROJECT_ID` `FIREBASE_PRIVATE_KEY` `FIREBASE_CLIENT_EMAIL` | ☐ |
 | 7 | Apple Developer | Auth & Mobile | ✅ Required | — (Xcode config) | ☐ |
-| 8 | Stripe | Payments | ✅ Required | `STRIPE_SECRET_KEY` `STRIPE_WEBHOOK_SECRET` | ☐ |
+| 8 | Stripe | Payments | ✅ Required | `STRIPE_SECRET_KEY` `STRIPE_WEBHOOK_SECRET` `STRIPE_CONNECT_WEBHOOK_SECRET` | ☐ |
 | 9 | Checkr | Payments | Optional (B3) | `CHECKR_API_KEY` | ⏸ Blocked |
 | 10 | OpenAI | AI Services | Optional | `OPENAI_API_KEY` | ☐ |
 | 11 | Groq | AI Services | Optional | `GROQ_API_KEY` | ☐ |
@@ -169,14 +169,14 @@
 
 | Field | Value |
 |-------|-------|
-| Credential Type | Secret key + Webhook signing secret + Publishable key (iOS) |
-| Env Var(s) | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` |
+| Credential Type | Secret key + separate platform and Connect webhook signing secrets + Publishable key (iOS) |
+| Env Var(s) | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_CONNECT_WEBHOOK_SECRET` |
 | Where to Get It | dashboard.stripe.com → Developers → API Keys / Webhooks |
 | Where It Lives | Railway env vars |
 | Required? | ✅ Required |
 | Setup Complexity | High |
 
-**Notes:** Use `sk_test_` for dev, `sk_live_` for production. Stripe Connect required for worker payouts. Add webhook in Stripe dashboard pointing to: `https://your-railway-url.up.railway.app/api/stripe/webhook`
+**Notes:** Use `sk_test_` for dev, `sk_live_` for production. Stripe Connect required for worker payouts. Configure separate platform and Connect destinations at `https://your-railway-url.up.railway.app/webhooks/stripe`; never reuse one destination secret for the other.
 
 ---
 
