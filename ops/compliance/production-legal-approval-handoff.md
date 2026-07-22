@@ -8,6 +8,8 @@
 
 **Controlled policy:** `US-WA` / `us-wa-price-book-2026-07-20-v2`
 
+**Controlled implementation:** `5936ea0b675f17038feaf9565e5baa7d3b1e8211`
+
 This is an engineering control and review packet, not legal advice or legal approval. The machine-readable source of truth is `ops/compliance/production-legal-approval.json`; the verifier must remain red until qualified Washington counsel and the named HustleXP policy owner approve the exact policy, public copy, launch jurisdictions, release revisions, and exceptions.
 
 ## Decision requested

@@ -97,9 +97,17 @@
     {
       "id": "region-policy-runtime",
       "repository": "Sebdysart/hustlexp-ai-backend",
-      "revision": "d861f25984d0bebcbdfe7176bdee9f869222a5d1",
+      "revision": "5936ea0b675f17038feaf9565e5baa7d3b1e8211",
       "path": "backend/src/services/RegionPolicyService.ts",
-      "sha256": "7205f1fa25bd62c31138aa8c7af89d39f3ab292c58d8ca312dc865e58242c00e",
+      "sha256": "a2ab4a8b890cb162b1046a6de9f28e749904339b45c87335256945e3f7fd8d1f",
+      "local": true
+    },
+    {
+      "id": "region-policy-legal-approval-activation",
+      "repository": "Sebdysart/hustlexp-ai-backend",
+      "revision": "5936ea0b675f17038feaf9565e5baa7d3b1e8211",
+      "path": "backend/database/migrations/20260722_region_policy_legal_approval_activation.sql",
+      "sha256": "2be054f21aa0168aad360dd755d52fd5b028a8106129206f47ccfbbc7f081e02",
       "local": true
     },
     {
@@ -130,7 +138,7 @@
   "release_bindings": {
     "engine": {
       "repository": "Sebdysart/hustlexp-ai-backend",
-      "policy_source_revision": "d861f25984d0bebcbdfe7176bdee9f869222a5d1",
+      "policy_source_revision": "5936ea0b675f17038feaf9565e5baa7d3b1e8211",
       "approved_revision": null,
       "deployed_revision": "790333909da8c71de5049fcf7f4a2aaeaf726996",
       "deployment_id": "3a0e8520-3943-4484-90c9-c8aedb07e4c3"

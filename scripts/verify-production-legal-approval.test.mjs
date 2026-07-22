@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import {
   EXPECTED_CATEGORIES,
   auditProductionLegalApproval,
@@ -75,7 +76,7 @@ function approvedPacket(overrides = {}) {
     release_bindings: {
       engine: {
         repository: 'Sebdysart/hustlexp-ai-backend',
-        policy_source_revision: 'd861f25984d0bebcbdfe7176bdee9f869222a5d1',
+        policy_source_revision: '5936ea0b675f17038feaf9565e5baa7d3b1e8211',
         approved_revision: '1'.repeat(40),
         deployed_revision: '1'.repeat(40),
         deployment_id: 'engine-deployment-1',
@@ -236,5 +237,29 @@ test('errors expose findings but never echo approval evidence content', async ()
       assert.ok(error.report.findings.some((finding) => finding.code === 'evidence_uri_invalid'));
       return true;
     }
+  );
+});
+
+test('checked-in pending packet has exact local provenance and only external findings', async () => {
+  const packet = JSON.parse(
+    await readFile(
+      new URL('../ops/compliance/production-legal-approval.json', import.meta.url),
+      'utf8'
+    )
+  );
+  const report = await auditProductionLegalApproval({
+    packet,
+    now: () => new Date('2026-07-22T16:30:00.000Z'),
+  });
+  assert.deepEqual(
+    report.findings.map((finding) => finding.code).sort(),
+    [
+      'approval_missing',
+      'decision_not_approved',
+      'engine_revision_unbound',
+      'local_jurisdiction_missing',
+      'policy_hash_missing',
+      'site_revision_unbound',
+    ]
   );
 });

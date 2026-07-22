@@ -89,9 +89,17 @@ export const EXPECTED_ARTIFACTS = Object.freeze([
   Object.freeze({
     id: 'region-policy-runtime',
     repository: 'Sebdysart/hustlexp-ai-backend',
-    revision: 'd861f25984d0bebcbdfe7176bdee9f869222a5d1',
+    revision: '5936ea0b675f17038feaf9565e5baa7d3b1e8211',
     path: 'backend/src/services/RegionPolicyService.ts',
-    sha256: '7205f1fa25bd62c31138aa8c7af89d39f3ab292c58d8ca312dc865e58242c00e',
+    sha256: 'a2ab4a8b890cb162b1046a6de9f28e749904339b45c87335256945e3f7fd8d1f',
+    local: true,
+  }),
+  Object.freeze({
+    id: 'region-policy-legal-approval-activation',
+    repository: 'Sebdysart/hustlexp-ai-backend',
+    revision: '5936ea0b675f17038feaf9565e5baa7d3b1e8211',
+    path: 'backend/database/migrations/20260722_region_policy_legal_approval_activation.sql',
+    sha256: '2be054f21aa0168aad360dd755d52fd5b028a8106129206f47ccfbbc7f081e02',
     local: true,
   }),
   Object.freeze({
@@ -391,7 +399,7 @@ export async function auditProductionLegalApproval({
   validateReleaseBinding('site', document.release_bindings?.site, add);
   if (
     document.release_bindings?.engine?.policy_source_revision !==
-    'd861f25984d0bebcbdfe7176bdee9f869222a5d1'
+    '5936ea0b675f17038feaf9565e5baa7d3b1e8211'
   ) {
     add(
       'engine_policy_source_mismatch',
