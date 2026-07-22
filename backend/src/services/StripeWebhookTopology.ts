@@ -1,3 +1,5 @@
+import type Stripe from 'stripe';
+
 export const STRIPE_WEBHOOK_API_VERSION = '2025-11-17.clover' as const;
 
 export const STRIPE_PLATFORM_WEBHOOK_EVENTS = Object.freeze([
@@ -14,8 +16,7 @@ export const STRIPE_PLATFORM_WEBHOOK_EVENTS = Object.freeze([
   'payment_intent.payment_failed',
   'payment_intent.succeeded',
   'transfer.created',
-  'transfer.failed',
-] as const);
+] as const satisfies readonly Stripe.WebhookEndpointCreateParams.EnabledEvent[]);
 
 export const STRIPE_CONNECT_WEBHOOK_EVENTS = Object.freeze([
   'account.updated',
@@ -24,7 +25,7 @@ export const STRIPE_CONNECT_WEBHOOK_EVENTS = Object.freeze([
   'payout.failed',
   'payout.paid',
   'payout.updated',
-] as const);
+] as const satisfies readonly Stripe.WebhookEndpointCreateParams.EnabledEvent[]);
 
 export type StripeWebhookDestination = 'platform' | 'connect';
 
