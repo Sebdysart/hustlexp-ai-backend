@@ -17,6 +17,14 @@ describe('Stripe webhook destination topology', () => {
     expect(STRIPE_CONNECT_WEBHOOK_EVENTS.filter((type) => platform.has(type as never))).toEqual([]);
   });
 
+  it('excludes the legacy transfer.failed event from modern Connect transfers', () => {
+    // `stripe.transfers.create` failures are synchronous and normalized by
+    // StripeService.createTransfer. Stripe's current webhook endpoint enum does
+    // not expose the legacy Transfers API event for modern Connect transfers.
+    expect(STRIPE_PLATFORM_WEBHOOK_EVENTS).not.toContain('transfer.failed');
+    expect(stripeWebhookEventAllowed('platform', 'transfer.failed')).toBe(false);
+  });
+
   it('routes every declared event to an implemented worker authority', () => {
     for (const eventType of STRIPE_PLATFORM_WEBHOOK_EVENTS) {
       expect(['payment', 'stripe']).toContain(stripeEventDestination(eventType));
