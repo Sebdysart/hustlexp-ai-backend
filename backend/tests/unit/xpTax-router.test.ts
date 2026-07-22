@@ -174,6 +174,27 @@ describe('xpTax.createPaymentIntent', () => {
     await expect(makeCaller().createPaymentIntent()).rejects.toThrow('Failed to create tax payment intent');
   });
 
+  it('preserves the frozen-payment application code from the tax payment lane', async () => {
+    mockStripeService.isConfigured.mockReturnValueOnce(true);
+    mockTaxService.checkTaxStatus.mockResolvedValueOnce({
+      success: true,
+      data: { unpaid_tax_cents: 300 },
+    } as any);
+    mockStripeService.createTaxPaymentIntent.mockResolvedValueOnce({
+      success: false,
+      error: {
+        code: 'PAYMENT_CREATION_FROZEN',
+        message: 'New payments are temporarily paused. No new charge was created.',
+      },
+    } as any);
+
+    await expect(makeCaller().createPaymentIntent()).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      message: expect.stringContaining('No new charge was created'),
+      cause: { applicationCode: 'PAYMENT_CREATION_FROZEN' },
+    });
+  });
+
   it('throws BAD_REQUEST when no tax balance', async () => {
     mockTaxService.checkTaxStatus.mockResolvedValueOnce({
       success: true,

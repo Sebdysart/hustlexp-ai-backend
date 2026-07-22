@@ -77,6 +77,26 @@ describe('publicTRPCErrorShape', () => {
       data: { code: 'UNAUTHORIZED', stack: undefined },
     });
   });
+
+  it('publishes only the allowlisted payment incident application code', () => {
+    const shape = {
+      message: 'New payments are temporarily paused.',
+      data: { code: 'PRECONDITION_FAILED', stack: 'private stack' },
+    };
+    expect(publicTRPCErrorShape(shape, {
+      cause: { applicationCode: 'PAYMENT_CREATION_FROZEN' },
+    })).toEqual({
+      message: 'New payments are temporarily paused.',
+      data: {
+        code: 'PRECONDITION_FAILED',
+        stack: undefined,
+        applicationCode: 'PAYMENT_CREATION_FROZEN',
+      },
+    });
+    expect(publicTRPCErrorShape(shape, {
+      cause: { applicationCode: 'PRIVATE_PROVIDER_FAILURE' },
+    }).data).not.toHaveProperty('applicationCode');
+  });
 });
 
 // ============================================================================

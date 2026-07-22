@@ -12,6 +12,7 @@
 import { initTRPC, TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { db } from './db.js';
+import { PAYMENT_CREATION_FROZEN_CODE } from './services/NewPaymentCreationGuard.js';
 import { type AuthedContext, type Context } from './trpc-context.js';
 
 // Re-export so existing callers (admin.ts etc.) don't need to change their import.
@@ -31,13 +32,24 @@ export type { AuthedContext, Context } from './trpc-context.js';
 // TRPC INITIALIZATION
 // ============================================================================
 
-export function publicTRPCErrorShape<T extends { message: string; data: { code?: string; stack?: string } }>(shape: T): T {
+function publicApplicationCode(cause: unknown): string | undefined {
+  if (typeof cause !== 'object' || cause === null || Array.isArray(cause)) return undefined;
+  const code = (cause as { applicationCode?: unknown }).applicationCode;
+  return code === PAYMENT_CREATION_FROZEN_CODE ? code : undefined;
+}
+
+export function publicTRPCErrorShape<T extends { message: string; data: { code?: string; stack?: string } }>(
+  shape: T,
+  error?: { cause?: unknown },
+): T & { data: T['data'] & { applicationCode?: string } } {
+  const applicationCode = publicApplicationCode(error?.cause);
   return {
     ...shape,
     message: shape.data.code === 'INTERNAL_SERVER_ERROR' ? 'Internal server error' : shape.message,
     data: {
       ...shape.data,
       stack: undefined,
+      ...(applicationCode ? { applicationCode } : {}),
     },
   };
 }
@@ -45,7 +57,7 @@ export function publicTRPCErrorShape<T extends { message: string; data: { code?:
 const t = initTRPC.context<Context>().create({
   // Never expose raw database/provider exception messages or stack traces on
   // INTERNAL_SERVER_ERROR responses. Safe 4xx messages remain actionable.
-  errorFormatter: ({ shape }) => publicTRPCErrorShape(shape),
+  errorFormatter: ({ shape, error }) => publicTRPCErrorShape(shape, error),
 });
 
 export const router = t.router;

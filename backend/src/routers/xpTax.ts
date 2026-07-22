@@ -14,6 +14,7 @@ import { TRPCError } from '@trpc/server';
 import { router, hustlerProcedure } from '../trpc.js';
 import { XPTaxService } from '../services/XPTaxService.js';
 import { StripeService } from '../services/StripeService.js';
+import { paymentCreationErrorCause } from '../services/NewPaymentCreationGuard.js';
 import { z } from 'zod';
 import { logger } from '../logger.js';
 
@@ -97,7 +98,17 @@ export const xpTaxRouter = router({
       // Create real Stripe PaymentIntent for XP tax payment
       const piResult = await StripeService.createTaxPaymentIntent(ctx.user.id, amountCents, Date.now());
 
-      if (!piResult.success || !piResult.data) {
+      if (!piResult.success) {
+        const cause = paymentCreationErrorCause(piResult.error?.code ?? '');
+        throw new TRPCError({
+          code: cause ? 'PRECONDITION_FAILED' : 'INTERNAL_SERVER_ERROR',
+          message: cause
+            ? piResult.error?.message ?? 'New payments are temporarily paused. No new charge was created.'
+            : 'Failed to create tax payment intent',
+          ...(cause ? { cause } : {}),
+        });
+      }
+      if (!piResult.data) {
         throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: 'Failed to create tax payment intent' });
       }
 

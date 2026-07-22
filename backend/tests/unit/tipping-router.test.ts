@@ -104,6 +104,24 @@ describe('tipping.createTip', () => {
     ).rejects.toThrow('Task not completed');
   });
 
+  it('preserves the frozen-payment application code from the tip lane', async () => {
+    mockService.createTip.mockResolvedValueOnce({
+      success: false,
+      error: {
+        code: 'PAYMENT_CREATION_FROZEN',
+        message: 'New payments are temporarily paused. No new charge was created.',
+      },
+    } as any);
+
+    await expect(
+      makePosterCaller().createTip({ taskId: TEST_UUID, amountCents: 500 })
+    ).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      message: expect.stringContaining('No new charge was created'),
+      cause: { applicationCode: 'PAYMENT_CREATION_FROZEN' },
+    });
+  });
+
   it('enforces minimum amount of 100 cents', async () => {
     await expect(
       makePosterCaller().createTip({ taskId: TEST_UUID, amountCents: 50 })
