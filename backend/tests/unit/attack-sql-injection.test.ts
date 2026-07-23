@@ -257,7 +257,8 @@ describe('Attack 4 — LIKE wildcard injection', () => {
       search: "%",
     });
     expect(result.success).toBe(true);
-    expect(ADMIN_SOURCE).toContain("input.search.replace(/%/g, '\\\\%').replace(/_/g, '\\\\_')");
+    expect(ADMIN_SOURCE).toContain("value.replace(/[\\\\%_]/g");
+    expect(ADMIN_SOURCE).toContain("ESCAPE '\\\\'");
     expect(ADMIN_SOURCE).toContain('params.push(`%${safeLike}%`)');
   });
 
@@ -266,7 +267,7 @@ describe('Attack 4 — LIKE wildcard injection', () => {
       search: "_",
     });
     expect(result.success).toBe(true);
-    expect(ADMIN_SOURCE).toContain("replace(/_/g, '\\\\_')");
+    expect(ADMIN_SOURCE).toContain("value.replace(/[\\\\%_]/g");
   });
 
   it('full-text search query uses plainto_tsquery — immune to LIKE injection', () => {
