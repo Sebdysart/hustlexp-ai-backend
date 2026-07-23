@@ -20,6 +20,7 @@ import { RevenueService } from '../services/RevenueService.js';
 import { logger } from '../logger.js';
 import { getSharedStripe } from '../lib/stripe-client.js'; // AUDIT FIX M5
 import { stripeBreaker } from '../middleware/circuit-breaker.js';
+import { newPaymentCreationFailure, paymentCreationErrorCause } from '../services/NewPaymentCreationGuard.js';
 
 const log = logger.child({ router: 'subscription' });
 
@@ -96,6 +97,15 @@ export const subscriptionRouter = router({
     }))
     .mutation(async ({ ctx, input }) => {
       const userId = ctx.user.id;
+      const frozen = newPaymentCreationFailure('subscription');
+      if (frozen) {
+        const cause = paymentCreationErrorCause(frozen.error.code);
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: frozen.error.message,
+          ...(cause ? { cause } : {}),
+        });
+      }
 
       // 1. Get plan pricing from config
       const planConfig = config.stripe.plans[input.plan];

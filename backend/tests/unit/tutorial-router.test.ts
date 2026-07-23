@@ -132,16 +132,11 @@ describe('tutorial.submitAnswers', () => {
 describe('tutorial.scanEquipment', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('scans equipment from photo URL', async () => {
-    const scanResult = { equipment: ['drill', 'safety glasses'], confidence: 0.85 };
-    mockService.scanEquipment.mockResolvedValueOnce(scanResult as any);
-
-    const result = await makeCaller().scanEquipment({
+  it('rejects direct equipment photo URLs without invoking analysis', async () => {
+    await expect(makeCaller().scanEquipment({
       photoUrl: 'https://example.com/equipment.jpg',
-    });
-
-    expect(result).toEqual(scanResult);
-    expect(mockService.scanEquipment).toHaveBeenCalledWith('https://example.com/equipment.jpg');
+    })).rejects.toThrow('Equipment photo scanning is unavailable');
+    expect(mockService.scanEquipment).not.toHaveBeenCalled();
   });
 
   it('rejects invalid URL', async () => {

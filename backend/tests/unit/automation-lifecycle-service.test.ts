@@ -19,11 +19,14 @@ import {
   AutomationLifecycleService,
   decodeLifecycleCursor,
   encodeLifecycleCursor,
+  mapBridgeTaskState,
   mapLifecycleRow,
+  type RawBridgeTaskStateRow,
   type RawLifecycleRow,
 } from '../../src/services/AutomationLifecycleService';
 
 const TASK_ID = '11111111-1111-4111-8111-111111111111';
+const WORKER_ID = '22222222-2222-4222-8222-222222222222';
 
 function row(overrides: Partial<RawLifecycleRow> = {}): RawLifecycleRow {
   return {
@@ -53,9 +56,107 @@ function row(overrides: Partial<RawLifecycleRow> = {}): RawLifecycleRow {
   };
 }
 
+function bridgeRow(overrides: Partial<RawBridgeTaskStateRow> = {}): RawBridgeTaskStateRow {
+  return {
+    id: TASK_ID,
+    task_state: 'COMPLETED',
+    progress_state: 'COMPLETED',
+    worker_id: WORKER_ID,
+    automation_classification: 'CONTROLLED_TEST',
+    completed_at: '2026-07-20T20:36:12.000Z',
+    completion_confirmed_at: '2026-07-20T20:36:12.000Z',
+    payout_ready_at: '2026-07-20T20:36:12.000Z',
+    task_updated_at: '2026-07-20T20:36:12.000Z',
+    escrow_id: '33333333-3333-4333-8333-333333333333',
+    escrow_state: 'RELEASED',
+    payout_provider: 'LOCAL_CERTIFICATION_TEST',
+    provider_transfer_id: 'tr_hxos_test_0123456789abcdef0123456789abcdef',
+    provider_transfer_status: 'paid',
+    escrow_released_at: '2026-07-20T20:38:00.000Z',
+    escrow_updated_at: '2026-07-20T20:38:00.000Z',
+    reservation_id: '44444444-4444-4444-8444-444444444444',
+    reservation_state: 'ACTIVE',
+    reserved_hustler_ref: WORKER_ID,
+    reservation_updated_at: '2026-07-20T20:15:00.000Z',
+    proof_id: '55555555-5555-4555-8555-555555555555',
+    proof_state: 'ACCEPTED',
+    proof_updated_at: '2026-07-20T20:35:00.000Z',
+    ...overrides,
+  };
+}
+
 beforeEach(() => vi.clearAllMocks());
 
 describe('AutomationLifecycleService E1 lifecycle read', () => {
+  it('returns decomposed bridge truth for one settled controlled TEST task', async () => {
+    query.mockResolvedValueOnce({ rows: [bridgeRow()], rowCount: 1 });
+
+    const result = await AutomationLifecycleService.getBridgeTaskState(TASK_ID);
+
+    expect(result).toMatchObject({
+      success: true,
+      data: {
+        engineTaskId: TASK_ID,
+        lifecycleState: 'SETTLED',
+        taskState: 'COMPLETED',
+        progressState: 'COMPLETED',
+        workerId: WORKER_ID,
+        environment: 'TEST',
+        isTest: true,
+        payoutState: 'PAID',
+        escrow: {
+          state: 'RELEASED',
+          payoutProvider: 'LOCAL_CERTIFICATION_TEST',
+          providerTransferStatus: 'paid',
+        },
+        proof: { state: 'ACCEPTED' },
+        reservation: { state: 'ACTIVE', hustlerRef: WORKER_ID },
+        sourceUpdatedAt: '2026-07-20T20:38:00.000Z',
+      },
+    });
+    const sql = String(query.mock.calls[0]?.[0]);
+    expect(sql).not.toMatch(/task_location_vault|exact_location|t\.location\b/i);
+  });
+
+  it('keeps production completion distinct from provider settlement', async () => {
+    const mapped = mapBridgeTaskState(bridgeRow({
+      automation_classification: 'PRODUCTION',
+      escrow_state: 'FUNDED',
+      payout_provider: null,
+      provider_transfer_id: null,
+      provider_transfer_status: null,
+      escrow_released_at: null,
+    }));
+
+    expect(mapped).toMatchObject({
+      lifecycleState: 'PAYOUT_READY',
+      environment: 'PRODUCTION',
+      isTest: false,
+      payoutState: 'READY',
+    });
+  });
+
+  it('fails closed on missing and inconsistent bridge state', async () => {
+    query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+    await expect(AutomationLifecycleService.getBridgeTaskState(TASK_ID)).resolves.toMatchObject({
+      success: false, error: { code: 'NOT_FOUND' },
+    });
+
+    query.mockResolvedValueOnce({
+      rows: [bridgeRow({ provider_transfer_status: 'processing' })], rowCount: 1,
+    });
+    await expect(AutomationLifecycleService.getBridgeTaskState(TASK_ID)).resolves.toMatchObject({
+      success: false, error: { code: 'INCONSISTENT_STATE' },
+    });
+  });
+
+  it('maps bridge state database failures to DB_ERROR', async () => {
+    query.mockRejectedValueOnce(new Error('read unavailable'));
+    await expect(AutomationLifecycleService.getBridgeTaskState(TASK_ID)).resolves.toMatchObject({
+      success: false, error: { code: 'DB_ERROR' },
+    });
+  });
+
   it('derives the canonical lifecycle and never exposes exact address fields', async () => {
     query.mockResolvedValueOnce({ rows: [row()], rowCount: 1 });
 
@@ -128,7 +229,7 @@ describe('AutomationLifecycleService E1 lifecycle read', () => {
     expect(mapLifecycleRow(row({
       task_state: 'COMPLETED', progress_state: 'COMPLETED', escrow_state: 'RELEASED',
       payout_ready_at: '2026-07-10T13:00:00.000Z',
-    }))).toMatchObject({ payoutState: 'RELEASED' });
+    }))).toMatchObject({ payoutState: 'RELEASED', nextAutomaticAction: null });
   });
 
   it('maps lifecycle read database failures to DB_ERROR', async () => {

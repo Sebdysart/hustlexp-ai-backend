@@ -9,7 +9,7 @@
  * of every payment method, plus the idempotency-key construction and the
  * resource_already_exists reversal special case.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Controllable mock Stripe client — every method is a spy we can resolve/reject.
 const stripeClient = vi.hoisted(() => ({
@@ -59,7 +59,24 @@ beforeEach(() => {
   delete process.env.HX_STRIPE_STUB; // ensure real bodies run, not the stub branch
 });
 
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
 describe('StripeService (configured client) — createPaymentIntent', () => {
+  it('fails closed in production before creating an escrow PaymentIntent', async () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv('HX_PAYMENT_CREATION_MODE', 'frozen');
+
+    const r = await StripeService.createPaymentIntent({
+      taskId: 't-frozen', posterId: 'p-frozen', escrowId: 'e-frozen', amount: 5000,
+    });
+
+    expect(r.success).toBe(false);
+    if (!r.success) expect(r.error.code).toBe('PAYMENT_CREATION_FROZEN');
+    expect(stripeClient.paymentIntents.create).not.toHaveBeenCalled();
+  });
+
   it('creates a PI and returns id/clientSecret/amount on success', async () => {
     stripeClient.paymentIntents.create.mockResolvedValueOnce({ id: 'pi_1', client_secret: 'cs_1' });
     const r = await StripeService.createPaymentIntent({
@@ -77,6 +94,20 @@ describe('StripeService (configured client) — createPaymentIntent', () => {
     // platform_fee metadata = round(5000×15%) = 750
     const body = stripeClient.paymentIntents.create.mock.calls[0][0];
     expect(body.metadata.platform_fee).toBe('750');
+  });
+
+  it('uses the immutable escrow margin in metadata instead of the configured fallback', async () => {
+    stripeClient.paymentIntents.create.mockResolvedValueOnce({ id: 'pi_canonical', client_secret: 'cs_canonical' });
+
+    const r = await StripeService.createPaymentIntent({
+      taskId: 't-price-book', posterId: 'p1', escrowId: 'e-price-book', amount: 5000,
+      platformFeeCents: 1000,
+    });
+
+    expect(r.success).toBe(true);
+    const body = stripeClient.paymentIntents.create.mock.calls[0][0];
+    expect(body.amount).toBe(5000);
+    expect(body.metadata.platform_fee).toBe('1000');
   });
 
   it('rejects amounts below the minimum task value', async () => {
@@ -102,6 +133,17 @@ describe('StripeService (configured client) — createPaymentIntent', () => {
 });
 
 describe('StripeService (configured) — createTaxPaymentIntent', () => {
+  it('fails closed in production before creating an XP-tax PaymentIntent', async () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv('HX_PAYMENT_CREATION_MODE', 'frozen');
+
+    const r = await StripeService.createTaxPaymentIntent('u-frozen', 1200, 1700000000000);
+
+    expect(r.success).toBe(false);
+    if (!r.success) expect(r.error.code).toBe('PAYMENT_CREATION_FROZEN');
+    expect(stripeClient.paymentIntents.create).not.toHaveBeenCalled();
+  });
+
   it('creates a tax PI (no platform fee, distinct idempotency key)', async () => {
     stripeClient.paymentIntents.create.mockResolvedValueOnce({ id: 'pi_tax', client_secret: 'cs_tax' });
     const r = await StripeService.createTaxPaymentIntent('u1', 1200, 1700000000000);

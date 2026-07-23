@@ -312,7 +312,8 @@ Three types:
 | `UPSTASH_REDIS_REST_TOKEN` | Redis REST token |
 | `UPSTASH_REDIS_URL` | Redis TCP (BullMQ) |
 | `STRIPE_SECRET_KEY` | Stripe API key |
-| `STRIPE_WEBHOOK_SECRET` | Stripe webhook signing secret |
+| `STRIPE_WEBHOOK_SECRET` | Stripe platform-account webhook signing secret |
+| `STRIPE_CONNECT_WEBHOOK_SECRET` | Stripe Connect webhook signing secret for worker account and bank-payout events |
 | `FIREBASE_PROJECT_ID` | Firebase project ID |
 | `FIREBASE_PRIVATE_KEY` | Firebase Admin SDK private key |
 | `FIREBASE_CLIENT_EMAIL` | Firebase Admin SDK email |

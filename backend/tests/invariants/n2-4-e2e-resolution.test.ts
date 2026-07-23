@@ -23,6 +23,7 @@
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import pg from 'pg';
+import { recomputeCapabilityProfile } from '../../src/services/CapabilityRecomputeService';
 import { 
   createTestPool, 
   cleanupTestData, 
@@ -57,7 +58,7 @@ describe.skipIf(!hasDb)('E2E-N2.4-1: Submit → Pending → Approve → Recomput
     
     // Set user trust tier
     await pool.query(
-      `UPDATE users SET trust_tier = 'A' WHERE id = $1`,
+      `UPDATE users SET trust_tier = 4 WHERE id = $1`,
       [userId]
     );
     
@@ -83,34 +84,18 @@ describe.skipIf(!hasDb)('E2E-N2.4-1: Submit → Pending → Approve → Recomput
     // Step 3: Resolve to APPROVED (simulate admin action)
     await pool.query(
       `UPDATE license_verifications 
-       SET status = 'APPROVED', reviewed_at = NOW(), reviewed_by_system = true
+       SET status = 'APPROVED', reviewed_at = NOW()
        WHERE id = $1`,
       [verificationId]
     );
     
-    // Step 4: Emit recompute trigger (simulate job queue)
-    await pool.query(
-      `INSERT INTO job_queue (id, type, payload, status, scheduled_at)
-       VALUES ($1, 'recompute_capability', $2, 'pending', NOW())
-       ON CONFLICT (id) DO NOTHING`,
-      [
-        `recompute_${userId}_${Date.now()}`,
-        JSON.stringify({
-          userId,
-          reason: 'VERIFICATION_RESOLVED',
-          sourceVerificationId: verificationId,
-        }),
-      ]
-    );
-    
-    // Step 5: Run recompute (simulate worker processing)
-    const { recomputeCapabilityProfile } = await import('../../../src/services/CapabilityRecomputeService');
+    // Step 4: Run the active synchronous recompute authority.
     await recomputeCapabilityProfile(userId, {
       reason: 'VERIFICATION_RESOLVED',
       sourceVerificationId: verificationId,
     });
     
-    // Step 6: Verify capability granted
+    // Step 5: Verify capability granted
     const afterProfile = await pool.query(
       `SELECT * FROM capability_profiles WHERE user_id = $1`,
       [userId]
@@ -138,7 +123,7 @@ describe.skipIf(!hasDb)('E2E-N2.4-2: Submit → Pending → Reject → Recompute
     const userId = await createTestUser(pool, `test-user-${Date.now()}@hustlexp.test`);
     
     await pool.query(
-      `UPDATE users SET trust_tier = 'A' WHERE id = $1`,
+      `UPDATE users SET trust_tier = 4 WHERE id = $1`,
       [userId]
     );
     
@@ -156,13 +141,12 @@ describe.skipIf(!hasDb)('E2E-N2.4-2: Submit → Pending → Reject → Recompute
     // Step 2: Resolve to REJECTED
     await pool.query(
       `UPDATE license_verifications 
-       SET status = 'REJECTED', reviewed_at = NOW(), reviewed_by_system = true
+       SET status = 'REJECTED', reviewed_at = NOW()
        WHERE id = $1`,
       [verificationId]
     );
     
     // Step 3: Run recompute
-    const { recomputeCapabilityProfile } = await import('../../../src/services/CapabilityRecomputeService');
     await recomputeCapabilityProfile(userId, {
       reason: 'VERIFICATION_RESOLVED',
       sourceVerificationId: verificationId,
@@ -189,7 +173,7 @@ describe.skipIf(!hasDb)('E2E-N2.4-3: Approve → Expire → Recompute → Capabi
     const userId = await createTestUser(pool, `test-user-${Date.now()}@hustlexp.test`);
     
     await pool.query(
-      `UPDATE users SET trust_tier = 'A' WHERE id = $1`,
+      `UPDATE users SET trust_tier = 4 WHERE id = $1`,
       [userId]
     );
     
@@ -208,7 +192,6 @@ describe.skipIf(!hasDb)('E2E-N2.4-3: Approve → Expire → Recompute → Capabi
     const verificationId = licenseResult.rows[0].id;
     
     // Step 2: Initial recompute (grants capability)
-    const { recomputeCapabilityProfile } = await import('../../../src/services/CapabilityRecomputeService');
     await recomputeCapabilityProfile(userId, { reason: 'TEST' });
     
     const initialTrades = await pool.query(

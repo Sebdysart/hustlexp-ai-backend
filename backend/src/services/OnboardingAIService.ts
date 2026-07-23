@@ -22,6 +22,7 @@ import { aiLogger } from '../logger.js';
 import { scrubPII } from '../lib/pii-scrubber.js';
 import { z } from 'zod';
 import { AIClient } from './AIClient.js';
+import { aiObservation } from './AIObservabilityPolicy.js';
 import { PromptInjectionGuard } from '../ai/PromptInjectionGuard.js';
 
 const log = aiLogger.child({ service: 'OnboardingAIService' });
@@ -144,6 +145,11 @@ User response: "${safePrompt}"
 Respond with JSON only: {"worker": 0.0-1.0, "poster": 0.0-1.0, "certainty": "STRONG"|"MODERATE"|"WEAK"}`;
 
             const aiResult = await AIClient.callJSON({
+              observability: aiObservation('AI-ONBOARDING-ROLE-INFERENCE', {
+                actorUserId: userId,
+                affectedObjectType: 'USER_ONBOARDING',
+                affectedObjectId: userId,
+              }),
               route: 'safety', // Anthropic Claude — designated for high-stakes inference
               prompt,
               maxTokens: 200,

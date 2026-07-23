@@ -18,8 +18,9 @@ import { vi, describe, it, expect, beforeEach } from 'vitest';
 // Mocks (must be declared before any imports that trigger module evaluation)
 // ────────────────────────────────────────────────────────────────────────────
 
-const { mockTransaction } = vi.hoisted(() => ({
+const { mockTransaction, mockQueueAdd } = vi.hoisted(() => ({
   mockTransaction: vi.fn(),
+  mockQueueAdd: vi.fn(),
 }));
 
 vi.mock('../../src/db.js', () => ({
@@ -29,9 +30,8 @@ vi.mock('../../src/db.js', () => ({
   },
 }));
 
-const mockQueueAdd = vi.fn();
 vi.mock('../../src/jobs/queues.js', () => ({
-  getQueue: vi.fn(() => ({ add: mockQueueAdd })),
+  enqueueJob: mockQueueAdd,
   signJobPayload: vi.fn(() => 'mock-signature'),
 }));
 
@@ -200,6 +200,7 @@ describe('processOutboxEvents', () => {
       expect(capturedSql).toContain('FOR UPDATE');
       expect(capturedSql).toContain('SKIP LOCKED');
       expect(capturedSql).toContain("WHERE status = 'pending'");
+      expect(capturedSql).toContain('available_at <= NOW()');
       expect(capturedSql).toContain('ORDER BY created_at ASC');
       expect(capturedSql).toContain('LIMIT $1');
     });
@@ -400,7 +401,7 @@ describe('processOutboxEvents', () => {
       await processOutboxEvents(10);
 
       // The payload passed to queue.add should contain the _sig field
-      const jobData = mockQueueAdd.mock.calls[0][1];
+      const jobData = mockQueueAdd.mock.calls[0][2];
       expect(jobData.payload).toHaveProperty('_sig', 'mock-signature');
     });
   });

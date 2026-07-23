@@ -59,6 +59,7 @@ type UserRow = {
   xp_total: number;
   is_verified: boolean;
   is_banned: boolean;
+  account_status: string;
   default_mode: string;
   created_at: Date;
 };
@@ -73,6 +74,7 @@ function makeUser(overrides: Partial<UserRow & { id: string }> = {}): UserRow {
     xp_total: 0,
     is_verified: false,
     is_banned: false,
+    account_status: 'ACTIVE',
     default_mode: 'hustler',
     created_at: new Date('2025-01-01T00:00:00Z'),
     ...overrides,
@@ -150,6 +152,16 @@ describe('admin.listUsers — offset-based pagination', () => {
       expect(result.users[0].email).toBe('a@test.com');
     });
 
+    it('selects account_status so deleted users are operationally distinguishable', async () => {
+      setupAdminAndUsers([makeUser({ account_status: 'DELETED' })]);
+
+      const result = await makeAdminCaller().listUsers({ limit: 20, offset: 0 });
+
+      const [sql] = (mockDb.query as any).mock.calls[1];
+      expect(sql).toContain('u.account_status');
+      expect(result.users[0].account_status).toBe('DELETED');
+    });
+
     it('total reflects the full count, not the page size', async () => {
       // Page has 2 users, but total is 50
       const users = [makeUser(), makeUser()];
@@ -220,11 +232,16 @@ describe('admin.listUsers — offset-based pagination', () => {
     it('passes search filter as ILIKE parameter on both full_name and email', async () => {
       setupAdminAndUsers([]);
 
-      await makeAdminCaller().listUsers({ limit: 10, offset: 0, search: 'alice' });
+      await makeAdminCaller().listUsers({
+        limit: 10,
+        offset: 0,
+        search: String.raw`ali\ce_%`,
+      });
 
       const [sql, params] = (mockDb.query as any).mock.calls[1];
       expect(sql).toContain('ILIKE');
-      expect(params).toContain('%alice%');
+      expect(sql.match(/ESCAPE '\\'/g)).toHaveLength(2);
+      expect(params).toContain(String.raw`%ali\\ce\_\%%`);
       // Both OR branches must reference the same $N
       const ilikeParts = sql.match(/ILIKE \$(\d+)/g);
       expect(ilikeParts).toHaveLength(2);

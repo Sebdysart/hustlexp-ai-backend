@@ -92,9 +92,17 @@ export function getUserRoomKey(userId: string): string {
 }
 
 /**
- * Subscribe a user to a room
+ * Subscribe a user to their own personal room.
+ *
+ * SECURITY: raw task-room subscription was removed because a predictable
+ * `room:task:<id>` channel cannot prove participation. Task progress is fanned
+ * out by the authorization-aware realtime dispatcher; Redis rooms are only for
+ * personal, authenticated user delivery.
  */
 export function subscribeToRoom(userId: string, roomKey: string): void {
+  if (roomKey !== getUserRoomKey(userId)) {
+    throw new Error('SSE_ROOM_FORBIDDEN: users may subscribe only to their personal room');
+  }
   // Add to room subscriptions
   if (!roomSubscriptions.has(roomKey)) {
     roomSubscriptions.set(roomKey, new Set());
@@ -295,11 +303,11 @@ export async function broadcastToUser(
 }
 
 /**
- * Subscribe user to task updates
+ * Task-room subscriptions are deliberately disabled. Task events must pass
+ * through the authorization-aware realtime dispatcher and personal rooms.
  */
-export function subscribeToTask(userId: string, taskId: string): void {
-  const roomKey = getTaskRoomKey(taskId);
-  subscribeToRoom(userId, roomKey);
+export function subscribeToTask(_userId: string, _taskId: string): never {
+  throw new Error('SSE_TASK_ROOMS_DISABLED');
 }
 
 /**

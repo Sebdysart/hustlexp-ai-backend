@@ -1,17 +1,23 @@
 /**
  * Cloudflare R2 Storage Service v1.0.0
- * 
+ *
  * SYSTEM GUARANTEES: File Storage with Signed URLs
- * 
+ *
  * R2 is S3-compatible object storage.
  * Uses @aws-sdk/client-s3 and @aws-sdk/s3-request-presigner.
- * 
+ *
  * Hard rule: Never serve files directly from API - always use signed URLs
- * 
+ *
  * @see ARCHITECTURE.md §2.5 (File Storage)
  */
 
-import { S3Client, PutObjectCommand, GetObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
+import {
+  DeleteObjectCommand,
+  GetObjectCommand,
+  HeadObjectCommand,
+  PutObjectCommand,
+  S3Client,
+} from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { createHash } from 'crypto';
 import { config } from '../config.js';
@@ -26,17 +32,16 @@ import { config } from '../config.js';
  * Format: https://{accountId}.r2.cloudflarestorage.com
  */
 function createR2Client(): S3Client {
-  const { accountId, accessKeyId, secretAccessKey } = config.cloudflare.r2;
-  
-  if (!accountId || !accessKeyId || !secretAccessKey) {
-    throw new Error('R2 configuration missing (R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY required)');
+  const { endpoint, accessKeyId, secretAccessKey, region } = config.cloudflare.r2;
+
+  if (!endpoint || !accessKeyId || !secretAccessKey) {
+    throw new Error(
+      'Object storage configuration missing (endpoint, access key, and secret key required)'
+    );
   }
-  
-  // R2 endpoint format: https://{accountId}.r2.cloudflarestorage.com
-  const endpoint = `https://${accountId}.r2.cloudflarestorage.com`;
-  
+
   return new S3Client({
-    region: 'auto', // R2 uses 'auto' for region
+    region,
     endpoint,
     credentials: {
       accessKeyId,
@@ -58,7 +63,11 @@ function getR2Client(): S3Client {
   }
   return r2ClientInstance;
 }
-const bucketName = config.cloudflare.r2.bucketName;
+function getBucketName(): string {
+  const bucketName = config.cloudflare?.r2?.bucketName;
+  if (!bucketName) throw new Error('R2 configuration missing (R2_BUCKET_NAME required)');
+  return bucketName;
+}
 
 // ============================================================================
 // KEY GENERATION
@@ -74,7 +83,7 @@ export function generateTaskProofKey(taskId: string, timestamp: number): string 
 /**
  * Generate R2 object key for GDPR exports
  * Format: exports/{user_id}/{export_id}/{yyyy-mm-dd}/{filename}
- * 
+ *
  * CRITICAL: Date must be deterministic based on export's created_at, not "now"
  * This ensures retries overwrite the same key instead of creating duplicates
  */
@@ -102,7 +111,7 @@ export interface UploadResult {
 
 /**
  * Upload file to R2
- * 
+ *
  * @param key R2 object key (e.g., exports/{user_id}/{export_id}/{date}/{filename})
  * @param data File data (Buffer)
  * @param contentType MIME type (optional, defaults to application/octet-stream)
@@ -111,24 +120,26 @@ export interface UploadResult {
 export async function uploadFile(
   key: string,
   data: Buffer,
-  contentType: string = 'application/octet-stream'
+  contentType: string = 'application/octet-stream',
+  metadata: Record<string, string> = {}
 ): Promise<UploadResult> {
   // Calculate SHA256 checksum
   const sha256 = createHash('sha256').update(data).digest('hex');
-  
+
   // Upload to R2
   const command = new PutObjectCommand({
-    Bucket: bucketName,
+    Bucket: getBucketName(),
     Key: key,
     Body: data,
     ContentType: contentType,
     Metadata: {
+      ...metadata,
       sha256, // Store checksum in metadata for verification
     },
   });
-  
+
   await getR2Client().send(command);
-  
+
   return {
     key,
     size: data.length,
@@ -137,15 +148,61 @@ export async function uploadFile(
   };
 }
 
+export interface DownloadedFile {
+  data: Buffer;
+  size: number;
+  contentType?: string;
+  metadata: Record<string, string>;
+}
+
+/**
+ * Download one bounded object for server-side validation. The HEAD check avoids
+ * buffering an oversized object even if a storage policy was misconfigured.
+ */
+export async function downloadFile(key: string, maxBytes: number): Promise<DownloadedFile> {
+  const head = await getR2Client().send(
+    new HeadObjectCommand({
+      Bucket: getBucketName(),
+      Key: key,
+    })
+  );
+  const declaredSize = Number(head.ContentLength ?? -1);
+  if (!Number.isInteger(declaredSize) || declaredSize < 0 || declaredSize > maxBytes) {
+    throw new Error('R2 object exceeds the permitted download size.');
+  }
+
+  const response = await getR2Client().send(
+    new GetObjectCommand({
+      Bucket: getBucketName(),
+      Key: key,
+    })
+  );
+  if (!response.Body) throw new Error('R2 object body is missing.');
+  const bytes = await response.Body.transformToByteArray();
+  if (bytes.byteLength !== declaredSize || bytes.byteLength > maxBytes) {
+    throw new Error('R2 object size changed during download.');
+  }
+  return {
+    data: Buffer.from(bytes),
+    size: bytes.byteLength,
+    contentType: response.ContentType ?? head.ContentType,
+    metadata: { ...(head.Metadata ?? {}), ...(response.Metadata ?? {}) },
+  };
+}
+
+export async function deleteFile(key: string): Promise<void> {
+  await getR2Client().send(new DeleteObjectCommand({ Bucket: getBucketName(), Key: key }));
+}
+
 // ============================================================================
 // SIGNED URLS
 // ============================================================================
 
 /**
  * Generate signed URL for R2 object (presigned GET request)
- * 
+ *
  * Hard rule: Never serve files directly from API - always use signed URLs
- * 
+ *
  * @param key R2 object key
  * @param expiresInSeconds URL expiration time in seconds (default: 15 minutes)
  * @returns Signed URL that expires after specified time
@@ -156,26 +213,26 @@ export async function getSignedUrlForObject(
 ): Promise<string> {
   // Verify object exists
   const headCommand = new HeadObjectCommand({
-    Bucket: bucketName,
+    Bucket: getBucketName(),
     Key: key,
   });
-  
+
   try {
     await getR2Client().send(headCommand);
   } catch (_error) {
     throw new Error(`R2 object not found: ${key}`);
   }
-  
+
   // Generate presigned URL
   const getCommand = new GetObjectCommand({
-    Bucket: bucketName,
+    Bucket: getBucketName(),
     Key: key,
   });
-  
+
   const signedUrl = await getSignedUrl(getR2Client(), getCommand, {
     expiresIn: expiresInSeconds,
   });
-  
+
   return signedUrl;
 }
 
@@ -195,12 +252,12 @@ export async function verifyFile(key: string): Promise<{
 }> {
   try {
     const command = new HeadObjectCommand({
-      Bucket: bucketName,
+      Bucket: getBucketName(),
       Key: key,
     });
-    
+
     const response = await getR2Client().send(command);
-    
+
     return {
       exists: true,
       size: response.ContentLength,
@@ -221,6 +278,8 @@ export const r2 = {
   generateTaskProofKey,
   generateExportKey,
   uploadFile,
+  downloadFile,
+  deleteFile,
   getSignedUrlForObject,
   verifyFile,
 };

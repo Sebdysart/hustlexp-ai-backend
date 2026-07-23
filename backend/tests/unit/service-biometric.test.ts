@@ -227,20 +227,17 @@ describe('BiometricVerificationService.getLivenessSessionResult', () => {
 // ---------------------------------------------------------------------------
 
 describe('BiometricVerificationService.analyzeFacePhoto', () => {
-  it('returns default scores when neither AWS nor GCP is configured', async () => {
+  it('returns unavailable when neither AWS nor GCP is configured', async () => {
     delete process.env.AWS_REGION;
     delete process.env.AWS_DEFAULT_REGION;
     delete process.env.GOOGLE_CLOUD_VISION_API_KEY;
 
     const result = await BiometricVerificationService.analyzeFacePhoto('https://example.com/photo.jpg');
 
-    expect(result.success).toBe(true);
-    if (result.success) {
-      // Default values from service source
-      expect(result.data.liveness_score).toBe(0.85);
-      expect(result.data.deepfake_score).toBe(0.15);
-      expect(result.data.risk_level).toBe('LOW');
-    }
+    expect(result).toMatchObject({
+      success: false,
+      error: { code: 'BIOMETRIC_PROVIDER_UNAVAILABLE' },
+    });
   });
 
   it('blocks unsafe URLs before fetching', async () => {
@@ -250,10 +247,8 @@ describe('BiometricVerificationService.analyzeFacePhoto', () => {
 
     mockValidateSafeUrl.mockReturnValue({ safe: false, reason: 'private IP' });
 
-    // No AWS or GCP, so analyzeFacePhoto returns defaults without touching URL
-    // The URL safety check only fires when client is available
     const result = await BiometricVerificationService.analyzeFacePhoto('http://192.168.1.1/photo.jpg');
-    expect(result.success).toBe(true);
+    expect(result).toMatchObject({ success: false, error: { code: 'UNSAFE_PROOF_MEDIA_URL' } });
   });
 
   it('clamps liveness score to 0-1 range', async () => {
@@ -356,7 +351,7 @@ describe('BiometricVerificationService.analyzeFacePhoto', () => {
     }
   });
 
-  it('handles GCP API error gracefully, falls back to conservative defaults', async () => {
+  it('reports provider unavailability when GCP fails', async () => {
     delete process.env.AWS_REGION;
     delete process.env.AWS_DEFAULT_REGION;
     process.env.GOOGLE_CLOUD_VISION_API_KEY = 'gcp-test-key';
@@ -365,12 +360,10 @@ describe('BiometricVerificationService.analyzeFacePhoto', () => {
     global.fetch = vi.fn().mockRejectedValue(new Error('GCP API timeout'));
 
     const result = await BiometricVerificationService.analyzeFacePhoto('https://example.com/photo.jpg');
-    expect(result.success).toBe(true);
-    if (result.success) {
-      // GCP error fallback: livenessScore = 0.6, deepfakeScore = 0.3
-      expect(result.data.liveness_score).toBe(0.6);
-      expect(result.data.deepfake_score).toBe(0.3);
-    }
+    expect(result).toMatchObject({
+      success: false,
+      error: { code: 'BIOMETRIC_PROVIDER_UNAVAILABLE' },
+    });
   });
 });
 
@@ -379,16 +372,29 @@ describe('BiometricVerificationService.analyzeFacePhoto', () => {
 // ---------------------------------------------------------------------------
 
 describe('BiometricVerificationService.detectDeepfake', () => {
-  it('returns conservative score when no AWS client', async () => {
+  it('reports provider unavailability instead of fabricating a score when no AWS client exists', async () => {
     delete process.env.AWS_REGION;
     delete process.env.AWS_DEFAULT_REGION;
 
     const result = await BiometricVerificationService.detectDeepfake('https://example.com/photo.jpg');
 
-    expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.data).toBe(0.08); // Fallback conservative score
-    }
+    expect(result).toMatchObject({
+      success: false,
+      error: { code: 'BIOMETRIC_PROVIDER_UNAVAILABLE' },
+    });
+  });
+
+  it('rejects an unsafe URL before checking provider availability', async () => {
+    delete process.env.AWS_REGION;
+    delete process.env.AWS_DEFAULT_REGION;
+    mockValidateSafeUrl.mockReturnValue({ safe: false, reason: 'private IP' });
+
+    const result = await BiometricVerificationService.detectDeepfake('http://192.168.1.1/photo.jpg');
+
+    expect(result).toMatchObject({
+      success: false,
+      error: { code: 'UNSAFE_PROOF_MEDIA_URL' },
+    });
   });
 });
 
@@ -567,24 +573,26 @@ describe('BiometricVerificationService.validateLiDARDepthMap', () => {
 // ---------------------------------------------------------------------------
 
 describe('BiometricVerificationService.analyzeProofSubmission', () => {
-  it('approves proof with healthy scores', async () => {
+  it('does not fabricate healthy scores when no biometric provider is configured', async () => {
     delete process.env.AWS_REGION;
     delete process.env.AWS_DEFAULT_REGION;
     delete process.env.GOOGLE_CLOUD_VISION_API_KEY;
 
-    mockDb.query.mockResolvedValue({ rows: [], rowCount: 0 } as never);
+    mockDb.query.mockResolvedValue({ rows: [{ id: 'signal-1' }], rowCount: 1 } as never);
 
     const result = await BiometricVerificationService.analyzeProofSubmission(
       'proof-1',
       'https://example.com/photo.jpg',
     );
 
-    expect(result.success).toBe(true);
-    if (result.success) {
-      // Defaults: liveness=0.85, deepfake=0.15 → should approve
-      expect(result.data.recommendation).toBe('approve');
-      expect(result.data.flags).toHaveLength(0);
-    }
+    expect(result).toMatchObject({
+      success: false,
+      error: { code: 'BIOMETRIC_PROVIDER_UNAVAILABLE' },
+    });
+    const unavailableWrite = mockDb.query.mock.calls.find(([sql]) => (
+      typeof sql === 'string' && sql.includes("biometric_signal_status = 'UNAVAILABLE'")
+    ));
+    expect(unavailableWrite).toBeDefined();
   });
 
   it('flags low liveness (< 0.5) as reject', async () => {
@@ -595,10 +603,10 @@ describe('BiometricVerificationService.analyzeProofSubmission', () => {
     // Spy on analyzeFacePhoto to return controlled scores
     const spy = vi.spyOn(BiometricVerificationService, 'analyzeFacePhoto').mockResolvedValue({
       success: true,
-      data: { liveness_score: 0.3, deepfake_score: 0.2, risk_level: 'CRITICAL' },
+      data: { liveness_score: 0.3, deepfake_score: 0.2, risk_level: 'CRITICAL', provider: 'AWS_REKOGNITION' },
     });
 
-    mockDb.query.mockResolvedValue({ rows: [], rowCount: 0 } as never);
+    mockDb.query.mockResolvedValue({ rows: [{ id: 'signal-1' }], rowCount: 1 } as never);
 
     const result = await BiometricVerificationService.analyzeProofSubmission(
       'proof-1',
@@ -622,10 +630,10 @@ describe('BiometricVerificationService.analyzeProofSubmission', () => {
 
     const spy = vi.spyOn(BiometricVerificationService, 'analyzeFacePhoto').mockResolvedValue({
       success: true,
-      data: { liveness_score: 0.6, deepfake_score: 0.2, risk_level: 'HIGH' },
+      data: { liveness_score: 0.6, deepfake_score: 0.2, risk_level: 'HIGH', provider: 'AWS_REKOGNITION' },
     });
 
-    mockDb.query.mockResolvedValue({ rows: [], rowCount: 0 } as never);
+    mockDb.query.mockResolvedValue({ rows: [{ id: 'signal-1' }], rowCount: 1 } as never);
 
     const result = await BiometricVerificationService.analyzeProofSubmission(
       'proof-1',
@@ -648,10 +656,10 @@ describe('BiometricVerificationService.analyzeProofSubmission', () => {
 
     const spy = vi.spyOn(BiometricVerificationService, 'analyzeFacePhoto').mockResolvedValue({
       success: true,
-      data: { liveness_score: 0.8, deepfake_score: 0.9, risk_level: 'CRITICAL' },
+      data: { liveness_score: 0.8, deepfake_score: 0.9, risk_level: 'CRITICAL', provider: 'AWS_REKOGNITION' },
     });
 
-    mockDb.query.mockResolvedValue({ rows: [], rowCount: 0 } as never);
+    mockDb.query.mockResolvedValue({ rows: [{ id: 'signal-1' }], rowCount: 1 } as never);
 
     const result = await BiometricVerificationService.analyzeProofSubmission(
       'proof-1',
@@ -674,7 +682,7 @@ describe('BiometricVerificationService.analyzeProofSubmission', () => {
 
     const analysisSpy = vi.spyOn(BiometricVerificationService, 'analyzeFacePhoto').mockResolvedValue({
       success: true,
-      data: { liveness_score: 0.9, deepfake_score: 0.1, risk_level: 'LOW' },
+      data: { liveness_score: 0.9, deepfake_score: 0.1, risk_level: 'LOW', provider: 'AWS_REKOGNITION' },
     });
 
     const lidarSpy = vi.spyOn(BiometricVerificationService, 'validateLiDARDepthMap').mockResolvedValue({
@@ -686,7 +694,7 @@ describe('BiometricVerificationService.analyzeProofSubmission', () => {
       },
     });
 
-    mockDb.query.mockResolvedValue({ rows: [], rowCount: 0 } as never);
+    mockDb.query.mockResolvedValue({ rows: [{ id: 'signal-1' }], rowCount: 1 } as never);
 
     const result = await BiometricVerificationService.analyzeProofSubmission(
       'proof-1',
@@ -709,7 +717,11 @@ describe('BiometricVerificationService.analyzeProofSubmission', () => {
     delete process.env.AWS_DEFAULT_REGION;
     delete process.env.GOOGLE_CLOUD_VISION_API_KEY;
 
-    mockDb.query.mockResolvedValue({ rows: [], rowCount: 0 } as never);
+    const spy = vi.spyOn(BiometricVerificationService, 'analyzeFacePhoto').mockResolvedValue({
+      success: true,
+      data: { liveness_score: 0.9, deepfake_score: 0.1, risk_level: 'LOW', provider: 'AWS_REKOGNITION' },
+    });
+    mockDb.query.mockResolvedValue({ rows: [{ id: 'signal-1' }], rowCount: 1 } as never);
 
     const result = await BiometricVerificationService.analyzeProofSubmission(
       'proof-1',
@@ -720,6 +732,7 @@ describe('BiometricVerificationService.analyzeProofSubmission', () => {
       expect(result.data.reasoning).toContain('passed');
       expect(result.data.reasoning).toContain('Liveness');
     }
+    spy.mockRestore();
   });
 
   it('returns error when analyzeFacePhoto fails', async () => {
@@ -727,6 +740,7 @@ describe('BiometricVerificationService.analyzeProofSubmission', () => {
       success: false,
       error: { code: 'BIOMETRIC_ANALYSIS_FAILED', message: 'AWS error' },
     });
+    mockDb.query.mockResolvedValue({ rows: [{ id: 'signal-1' }], rowCount: 1 } as never);
 
     const result = await BiometricVerificationService.analyzeProofSubmission(
       'proof-1',
@@ -746,7 +760,11 @@ describe('BiometricVerificationService.analyzeProofSubmission', () => {
     delete process.env.AWS_DEFAULT_REGION;
     delete process.env.GOOGLE_CLOUD_VISION_API_KEY;
 
-    mockDb.query.mockResolvedValue({ rows: [], rowCount: 0 } as never);
+    const spy = vi.spyOn(BiometricVerificationService, 'analyzeFacePhoto').mockResolvedValue({
+      success: true,
+      data: { liveness_score: 0.9, deepfake_score: 0.1, risk_level: 'LOW', provider: 'AWS_REKOGNITION' },
+    } as never);
+    mockDb.query.mockResolvedValue({ rows: [{ id: 'signal-1' }], rowCount: 1 } as never);
 
     await BiometricVerificationService.analyzeProofSubmission(
       'proof-1',
@@ -758,5 +776,7 @@ describe('BiometricVerificationService.analyzeProofSubmission', () => {
       ([sql]) => typeof sql === 'string' && sql.includes('UPDATE proof_submissions'),
     );
     expect(updateCall).toBeDefined();
+    expect(String(updateCall?.[0])).toMatch(/WHERE\s+proof_id\s*=\s*\$3/i);
+    spy.mockRestore();
   });
 });

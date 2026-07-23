@@ -185,7 +185,7 @@ describe('StripeWebhookService', () => {
 
       expect(result.success).toBe(false);
       expect(result.error?.code).toBe('STRIPE_NOT_CONFIGURED');
-      expect(result.error?.message).toContain('webhook secret not configured');
+      expect(result.error?.message).toContain('webhook secrets not configured');
     });
 
     it('returns error when webhook secret contains placeholder', async () => {
@@ -206,13 +206,15 @@ describe('StripeWebhookService', () => {
 
       // Mock Stripe to throw on construction/verification
       const StripeMock = (await import('stripe')).default as ReturnType<typeof vi.fn>;
-      StripeMock.mockImplementationOnce(() => ({
-        webhooks: {
-          constructEvent: vi.fn().mockImplementation(() => {
-            throw new Error('Invalid signature');
-          }),
-        },
-      }));
+      StripeMock.mockImplementationOnce(function StripeClientMock() {
+        return {
+          webhooks: {
+            constructEvent: vi.fn().mockImplementation(() => {
+              throw new Error('Invalid signature');
+            }),
+          },
+        };
+      });
 
       const result = await processWebhook('raw-body', 'bad-sig');
 
@@ -946,13 +948,14 @@ describe('AdminNotificationHelper', () => {
 
 describe('PushNotificationService', () => {
   describe('sendPushNotification', () => {
-    it('returns success gracefully when Firebase messaging is null', async () => {
+    it('reports provider unavailability when Firebase messaging is null', async () => {
       // firebase mock already returns messaging: null
       const result = await sendPushNotification('user-1', 'Title', 'Body');
 
-      expect(result.success).toBe(true);
+      expect(result.success).toBe(false);
       expect(result.sent).toBe(0);
       expect(result.failed).toBe(0);
+      expect(result.reason).toBe('provider_unconfigured');
     });
 
     it('returns success with zero counts when no device tokens found', async () => {

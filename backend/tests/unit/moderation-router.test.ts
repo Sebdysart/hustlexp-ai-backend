@@ -45,6 +45,10 @@ vi.mock('../../src/services/ContentModerationService', () => ({
   },
 }));
 
+vi.mock('../../src/services/PrivateMediaDeliveryService', () => ({
+  projectModerationMediaForAdmin: vi.fn(async (_adminId: string, items: unknown[]) => items),
+}));
+
 // ---------------------------------------------------------------------------
 // Imports
 // ---------------------------------------------------------------------------
@@ -52,9 +56,11 @@ vi.mock('../../src/services/ContentModerationService', () => ({
 import { db } from '../../src/db';
 import { moderationRouter } from '../../src/routers/moderation';
 import { ContentModerationService } from '../../src/services/ContentModerationService';
+import { projectModerationMediaForAdmin } from '../../src/services/PrivateMediaDeliveryService';
 
 const mockDb = vi.mocked(db);
 const mockModeration = vi.mocked(ContentModerationService);
+const mockProjectModerationMedia = vi.mocked(projectModerationMediaForAdmin);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -138,6 +144,7 @@ describe('moderation router', () => {
 
       expect(result).toEqual(data);
       expect(mockModeration.getPendingQueue).toHaveBeenCalledWith(undefined, 100);
+      expect(mockProjectModerationMedia).toHaveBeenCalledWith(UUID1, data);
     });
 
     it('passes severity filter', async () => {
@@ -162,6 +169,7 @@ describe('moderation router', () => {
       const result = await caller.getQueueItemById({ queueItemId: UUID2 });
 
       expect(result).toEqual(data);
+      expect(mockProjectModerationMedia).toHaveBeenCalledWith(UUID1, [data]);
     });
 
     it('throws NOT_FOUND', async () => {
@@ -195,6 +203,7 @@ describe('moderation router', () => {
       expect(mockModeration.reviewQueueItem).toHaveBeenCalledWith(
         UUID2, UUID1, 'approve', 'Content is fine',
       );
+      expect(mockProjectModerationMedia).toHaveBeenCalledWith(UUID1, [data]);
     });
   });
 

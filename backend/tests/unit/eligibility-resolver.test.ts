@@ -51,7 +51,7 @@ const PAST = new Date(Date.now() - 1000).toISOString();
 function makeProfile(overrides: Partial<CapabilityProfile> = {}): CapabilityProfile {
   return {
     userId: 'user-123',
-    trustTier: 'B',
+    trustTier: 3,
     riskClearance: ['low', 'medium'],
     locationState: 'CA',
     locationCity: 'Los Angeles',
@@ -363,9 +363,9 @@ describe('isEligible — HX407 background check', () => {
 
 describe('isEligible — HX408 trust tier', () => {
   it('blocks when user tier is below required minimum', () => {
-    const profile = makeProfile({ trustTier: 'D' });
+    const profile = makeProfile({ trustTier: 1 });
     const result = isEligible(
-      makeTask({ minTrustTier: 'B' }),
+      makeTask({ minTrustTier: 3 }),
       makeContext({ capabilityProfile: profile }),
     );
     expect(result.eligible).toBe(false);
@@ -374,34 +374,34 @@ describe('isEligible — HX408 trust tier', () => {
   });
 
   it('blocks C tier when A required', () => {
-    const profile = makeProfile({ trustTier: 'C' });
+    const profile = makeProfile({ trustTier: 2 });
     const result = isEligible(
-      makeTask({ minTrustTier: 'A' }),
+      makeTask({ minTrustTier: 4 }),
       makeContext({ capabilityProfile: profile }),
     );
     expect(result.code).toBe('HX408');
   });
 
   it('passes when user tier exactly meets minimum', () => {
-    const profile = makeProfile({ trustTier: 'B' });
+    const profile = makeProfile({ trustTier: 3 });
     const result = isEligible(
-      makeTask({ minTrustTier: 'B' }),
+      makeTask({ minTrustTier: 3 }),
       makeContext({ capabilityProfile: profile }),
     );
     expect(result.code).toBe('HX200');
   });
 
   it('passes when user tier exceeds minimum', () => {
-    const profile = makeProfile({ trustTier: 'A' });
+    const profile = makeProfile({ trustTier: 4 });
     const result = isEligible(
-      makeTask({ minTrustTier: 'C' }),
+      makeTask({ minTrustTier: 2 }),
       makeContext({ capabilityProfile: profile }),
     );
     expect(result.code).toBe('HX200');
   });
 
   it('passes when no minTrustTier is specified', () => {
-    const profile = makeProfile({ trustTier: 'D' }); // worst tier, but no min required
+    const profile = makeProfile({ trustTier: 1 }); // lowest tier, but no min required
     const result = isEligible(
       makeTask({ minTrustTier: undefined }),
       makeContext({ capabilityProfile: profile }),

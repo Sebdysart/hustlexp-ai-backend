@@ -42,7 +42,7 @@ export const BUSINESS = {
   // AUDIT FIX M10: PLATFORM_FEE_PERCENT removed — it was an orphan constant
   // (zero consumers) that could silently diverge from the real env-driven
   // config.stripe.platformFeePercent. Fee math lives in lib/money.ts.
-  MIN_TASK_VALUE_CENTS: 500,       // $5.00
+  MIN_TASK_VALUE_CENTS: 1500,      // $15.00 binding global floor
   MAX_TASK_VALUE_CENTS: 100_000,   // $1,000
   PREMIUM_MONTHLY_CENTS: 1499,
   PREMIUM_YEARLY_CENTS: 14999,

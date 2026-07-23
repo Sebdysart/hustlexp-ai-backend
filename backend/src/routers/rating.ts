@@ -10,10 +10,19 @@
 
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
-import { router, protectedProcedure, adminProcedure, Schemas } from '../trpc.js';
+import { router, protectedProcedure, trustAdminProcedure, Schemas } from '../trpc.js';
 import { RatingService } from '../services/RatingService.js';
 import { db } from '../db.js';
 import { logger } from '../logger.js';
+
+const structuredFeedbackSchema = z.object({
+  communication: z.number().int().min(1).max(5),
+  scopeAccuracy: z.number().int().min(1).max(5),
+  punctuality: z.number().int().min(1).max(5),
+  care: z.number().int().min(1).max(5),
+  resultQuality: z.number().int().min(1).max(5),
+  value: z.number().int().min(1).max(5),
+}).strict();
 
 const log = logger.child({ router: 'rating' });
 
@@ -41,6 +50,7 @@ export const ratingRouter = router({
       stars: z.number().int().min(1).max(5), // RATE-6: Stars must be 1-5
       comment: z.string().trim().max(500).optional(), // RATE-7: Comment max 500 characters
       tags: z.array(z.string().trim().max(50)).max(20).optional(), // Optional tags (e.g., "On Time", "Professional")
+      structuredFeedback: structuredFeedbackSchema.optional(),
     }))
     .mutation(async ({ input, ctx }) => {
       if (!ctx.user) {
@@ -56,6 +66,7 @@ export const ratingRouter = router({
         stars: input.stars,
         comment: input.comment,
         tags: input.tags,
+        structuredFeedback: input.structuredFeedback,
       });
       
       if (!result.success) {
@@ -153,7 +164,7 @@ export const ratingRouter = router({
   getMyRatings: protectedProcedure
     .input(z.object({
       limit: z.number().int().min(1).max(100).default(50),
-      offset: z.number().int().min(0).default(0),
+      offset: z.number().int().min(0).max(500).default(0),
     }))
     .query(async ({ input, ctx }) => {
       if (!ctx.user) {
@@ -188,7 +199,7 @@ export const ratingRouter = router({
   getRatingsReceived: protectedProcedure
     .input(z.object({
       limit: z.number().int().min(1).max(100).default(50),
-      offset: z.number().int().min(0).default(0),
+      offset: z.number().int().min(0).max(500).default(0),
     }))
     .query(async ({ input, ctx }) => {
       if (!ctx.user) {
@@ -223,7 +234,7 @@ export const ratingRouter = router({
     .input(z.object({
       userId: Schemas.uuid.optional(), // If omitted, current user
       limit: z.number().int().min(1).max(100).default(50),
-      offset: z.number().int().min(0).default(0),
+      offset: z.number().int().min(0).max(500).default(0),
     }))
     .query(async ({ input, ctx }) => {
       if (!ctx.user) {
@@ -257,7 +268,7 @@ export const ratingRouter = router({
    * RATE-3: Auto-rate tasks where both parties haven't rated within 7 days
    * This should be called by a background job daily
    */
-  processAutoRatings: adminProcedure
+  processAutoRatings: trustAdminProcedure
     .input(z.void())
     .mutation(async () => {
       // BUG FIX: A single call to processAutoRatings processes at most 500

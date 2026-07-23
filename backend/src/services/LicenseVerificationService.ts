@@ -101,6 +101,12 @@ export const RECIPROCITY_AGREEMENTS: Record<string, string[]> = {
 export async function submitLicense(
   submission: LicenseSubmission
 ): Promise<LicenseVerification> {
+  if (submission.documentUrl?.trim()) {
+    throw new TRPCError({
+      code: 'PRECONDITION_FAILED',
+      message: 'Direct license document URLs are disabled until private receipt-backed credential upload is available.',
+    });
+  }
   // Validate trade type
   if (!(LICENSED_TRADES as readonly string[]).includes(submission.tradeType)) {
     throw new TRPCError({

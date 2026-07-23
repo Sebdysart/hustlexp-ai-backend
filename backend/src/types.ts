@@ -50,6 +50,11 @@ export interface User {
   streak_grace_expires_at?: Date;
   is_verified: boolean;
   verified_at?: Date;
+  identity_verification_status?: string;
+  identity_verification_environment?: 'PRODUCTION' | 'CONTROLLED_TEST';
+  identity_verification_case_id?: string;
+  identity_verification_expires_at?: Date;
+  identity_verification_policy_version?: string;
   student_id_verified: boolean;
   is_banned?: boolean;
   is_admin?: boolean;
@@ -81,6 +86,7 @@ export interface User {
 
 export interface Task {
   id: string;
+  version?: number;
   poster_id: string;
   worker_id?: string;
   title: string;
@@ -94,8 +100,12 @@ export interface Task {
   price: number;
   hustler_payout_cents?: number;
   platform_margin_cents?: number;
+  repeat_source_task_id?: string;
+  preferred_worker_id?: string;
+  retention_conversion?: 'REBOOK';
   risk_level: RiskLevel;
   scope_hash?: string;
+  active_scope_version_id?: string;
   state: TaskState;
   progress_state: TaskProgressState;
   progress_updated_at: Date;
@@ -125,6 +135,14 @@ export interface Task {
   payout_ready_at?: Date;
   payout_ready_reason?: string;
   requires_proof: boolean;
+  trust_tier_required?: number;
+  completion_criteria?: { type: string };
+  content_release?: boolean;
+  mutual_consent_required?: boolean;
+  mutual_consent_accepted?: boolean;
+  cancellation_window_hours?: number;
+  late_cancel_pct?: number;
+  cancellation_policy_version?: string;
   proof_instructions?: string;
   created_at: Date;
   updated_at: Date;
@@ -133,6 +151,7 @@ export interface Task {
 export interface Escrow {
   id: string;
   task_id: string;
+  version: number;
   amount: number;
   platform_fee_cents?: number;
   state: EscrowState;
@@ -141,6 +160,10 @@ export interface Escrow {
   stripe_payment_intent_id?: string;
   stripe_transfer_id?: string;
   stripe_refund_id?: string;
+  payout_provider?: 'STRIPE' | 'LOCAL_CERTIFICATION_TEST' | 'MANUAL_RECONCILIATION';
+  provider_transfer_id?: string;
+  provider_transfer_status?: 'submitted' | 'processing' | 'paid' | 'manual_reconciliation';
+  provider_transfer_paid_at?: Date;
   poster_id?: string;
   worker_id?: string;
   funded_at?: Date;
@@ -156,6 +179,17 @@ export interface Proof {
   submitter_id: string;
   state: ProofState;
   description?: string;
+  client_submission_id?: string;
+  submission_hash?: string;
+  sync_contract_version?: number;
+  client_sequence?: number;
+  prior_task_version?: number;
+  local_occurred_at?: Date;
+  device_version?: string;
+  app_version?: string;
+  idempotency_replayed?: boolean;
+  scope_version_id?: string;
+  scope_version_hash?: string;
   reviewed_by?: string;
   reviewed_at?: Date;
   rejection_reason?: string;

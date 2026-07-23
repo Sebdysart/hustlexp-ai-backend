@@ -18,9 +18,10 @@
  * @see schema.sql v1.8.0 (ai_agent_decisions)
  */
 
-import { db } from '../db.js';
+import { db, type QueryFn } from '../db.js';
 import type { ServiceResult } from '../types.js';
 import { AIClient } from './AIClient.js';
+import { aiObservation } from './AIObservabilityPolicy.js';
 import { JudgeVerdictSchema } from '../lib/ai-response-schemas.js';
 import { scrubPII } from '../lib/pii-scrubber.js';
 import { aiLogger } from '../logger.js';
@@ -39,8 +40,8 @@ export interface BiometricSignals {
 
 export interface LogisticsSignals {
   gps_proximity: { passed: boolean; distance_meters?: number };
-  impossible_travel: { passed: boolean; speed_kmh?: number };
-  time_lock: { passed: boolean; time_delta_seconds?: number };
+  impossible_travel?: { passed: boolean; speed_kmh?: number };
+  time_lock?: { passed: boolean; time_delta_seconds?: number };
   gps_accuracy: { passed: boolean; accuracy_meters: number };
 }
 
@@ -83,7 +84,6 @@ export interface JudgeVerdict {
 
 const BIOMETRIC_WEIGHT = 0.35;
 const LOGISTICS_WEIGHT = 0.35;
-const PHOTO_WEIGHT = 0.30;
 
 const APPROVE_THRESHOLD = 0.30;   // weighted_score < 0.30 → APPROVE
 const REJECT_THRESHOLD = 0.70;    // weighted_score > 0.70 → REJECT
@@ -125,11 +125,11 @@ function scoreLogistics(signals: LogisticsSignals): { score: number; flags: stri
     risk += 0.40;
     flags.push('gps_out_of_range');
   }
-  if (!signals.impossible_travel.passed) {
+  if (signals.impossible_travel && !signals.impossible_travel.passed) {
     risk += 0.30;
     flags.push('impossible_travel');
   }
-  if (!signals.time_lock.passed) {
+  if (signals.time_lock && !signals.time_lock.passed) {
     risk += 0.20;
     flags.push('time_manipulation');
   }
@@ -177,13 +177,14 @@ function deterministicVerdict(input: JudgeInput): JudgeVerdict {
   // Score each available component
   const biometric = input.biometric ? scoreBiometric(input.biometric) : null;
   const logistics = input.logistics ? scoreLogistics(input.logistics) : null;
-  const photo = input.photo_verification ? scorePhotoVerification(input.photo_verification) : null;
+  const photoAdvisory = input.photo_verification ? scorePhotoVerification(input.photo_verification) : null;
 
   // Renormalize weights over available components
   const components: { score: number; flags: string[]; weight: number; label: string }[] = [];
   if (biometric) components.push({ ...biometric, weight: BIOMETRIC_WEIGHT, label: 'Biometric' });
   if (logistics) components.push({ ...logistics, weight: LOGISTICS_WEIGHT, label: 'Logistics' });
-  if (photo) components.push({ ...photo, weight: PHOTO_WEIGHT, label: 'Photo' });
+  // Photo comparison currently comes from a generative vision model. Preserve
+  // it as review evidence, but never weight it into the authoritative verdict.
 
   const allFlags: string[] = [];
   let weightedScore: number;
@@ -204,7 +205,8 @@ function deterministicVerdict(input: JudgeInput): JudgeVerdict {
     // Flag if any component was missing
     if (!biometric) allFlags.push('biometric_unavailable');
     if (!logistics) allFlags.push('logistics_unavailable');
-    if (!photo) allFlags.push('photo_unavailable');
+    if (photoAdvisory) allFlags.push('photo_ai_advisory_only');
+    else allFlags.push('photo_unavailable');
   }
 
   let verdict: 'APPROVE' | 'MANUAL_REVIEW' | 'REJECT';
@@ -230,7 +232,7 @@ function deterministicVerdict(input: JudgeInput): JudgeVerdict {
   const componentBreakdown = [
     biometric ? `Biometric: ${(biometric.score * 100).toFixed(0)}%` : 'Biometric: N/A',
     logistics ? `Logistics: ${(logistics.score * 100).toFixed(0)}%` : 'Logistics: N/A',
-    photo ? `Photo: ${(photo.score * 100).toFixed(0)}%` : 'Photo: N/A',
+    photoAdvisory ? `Photo advisory: ${(photoAdvisory.score * 100).toFixed(0)}%` : 'Photo: N/A',
   ].join(', ');
 
   const reasoning = allFlags.filter(f => !f.endsWith('_unavailable')).length === 0
@@ -245,7 +247,7 @@ function deterministicVerdict(input: JudgeInput): JudgeVerdict {
     component_scores: {
       biometric: biometric?.score ?? -1,
       logistics: logistics?.score ?? -1,
-      photo_verification: photo?.score ?? -1,
+      photo_verification: photoAdvisory?.score ?? -1,
     },
     fraud_flags: allFlags,
     recommended_action: recommendedAction,
@@ -257,15 +259,21 @@ function deterministicVerdict(input: JudgeInput): JudgeVerdict {
 // ============================================================================
 
 /**
- * Synthesize a final verdict by combining biometric, logistics, and photo signals.
- * Uses DeepSeek (reasoning route) for AI synthesis, with deterministic fallback.
+ * Synthesize the authoritative verdict from typed signals. AI may produce an
+ * A2 advisory for comparison and audit, but cannot approve or reject proof.
  */
 async function synthesizeVerdict(input: JudgeInput): Promise<ServiceResult<JudgeVerdict>> {
   try {
-    // Attempt AI-based synthesis if configured
+    const authoritativeVerdict = deterministicVerdict(input);
+
+    // Compute an advisory when configured. Never return it as authority.
     if (AIClient.isConfigured()) {
       try {
         const aiResult = await AIClient.callJSON<JudgeVerdict>({
+          observability: aiObservation('AI-PROOF-JUDGE-ADVISORY', {
+            affectedObjectType: 'PROOF',
+            affectedObjectId: input.proof_id,
+          }),
           route: 'reasoning',
           schema: JudgeVerdictSchema,
           temperature: 0.1,
@@ -307,8 +315,8 @@ BIOMETRIC SIGNALS:${input.biometric ? `
 
 LOGISTICS SIGNALS:${input.logistics ? `
 - GPS proximity: ${input.logistics.gps_proximity.passed ? 'PASSED' : 'FAILED'}${input.logistics.gps_proximity.distance_meters != null ? ` (${input.logistics.gps_proximity.distance_meters.toFixed(0)}m)` : ''}
-- Impossible travel: ${input.logistics.impossible_travel.passed ? 'PASSED' : 'FAILED'}${input.logistics.impossible_travel.speed_kmh != null ? ` (${input.logistics.impossible_travel.speed_kmh.toFixed(0)} km/h)` : ''}
-- Time lock: ${input.logistics.time_lock.passed ? 'PASSED' : 'FAILED'}${input.logistics.time_lock.time_delta_seconds != null ? ` (${input.logistics.time_lock.time_delta_seconds}s delta)` : ''}
+- Impossible travel: ${input.logistics.impossible_travel ? `${input.logistics.impossible_travel.passed ? 'PASSED' : 'FAILED'}${input.logistics.impossible_travel.speed_kmh != null ? ` (${input.logistics.impossible_travel.speed_kmh.toFixed(0)} km/h)` : ''}` : 'UNAVAILABLE'}
+- Time lock: ${input.logistics.time_lock ? `${input.logistics.time_lock.passed ? 'PASSED' : 'FAILED'}${input.logistics.time_lock.time_delta_seconds != null ? ` (${input.logistics.time_lock.time_delta_seconds}s delta)` : ''}` : 'UNAVAILABLE'}
 - GPS accuracy: ${input.logistics.gps_accuracy.passed ? 'PASSED' : 'FAILED'} (${input.logistics.gps_accuracy.accuracy_meters}m)` : '\n- UNAVAILABLE (logistics subsystem did not return signals)'}
 
 PHOTO VERIFICATION SIGNALS:${input.photo_verification ? `
@@ -323,18 +331,23 @@ Produce your verdict.`),
         });
 
         const aiVerdict = aiResult.data;
-        // Zod schema validated the response — safe to use
-        log.info({ verdict: aiVerdict.verdict, confidence: aiVerdict.confidence, riskScore: aiVerdict.risk_score, provider: aiResult.provider, proofId: input.proof_id }, 'AI verdict produced');
-        return { success: true, data: aiVerdict };
+        // Zod schema validates shape, not authority.
+        log.info({
+          advisoryVerdict: aiVerdict.verdict,
+          authoritativeVerdict: authoritativeVerdict.verdict,
+          advisoryConfidence: aiVerdict.confidence,
+          advisoryRiskScore: aiVerdict.risk_score,
+          provider: aiResult.provider,
+          proofId: input.proof_id,
+          authority: 'A2_PROPOSAL_ONLY',
+        }, 'AI proof-verification advisory produced');
       } catch (aiError) {
-        log.warn({ err: aiError instanceof Error ? (aiError as Error).message : String(aiError), proofId: input.proof_id }, 'AI synthesis failed, using deterministic fallback');
+        log.warn({ err: aiError instanceof Error ? (aiError as Error).message : String(aiError), proofId: input.proof_id }, 'AI proof-verification advisory failed');
       }
     }
 
-    // Deterministic fallback
-    const fallbackVerdict = deterministicVerdict(input);
-    log.info({ verdict: fallbackVerdict.verdict, riskScore: fallbackVerdict.risk_score, method: 'deterministic', proofId: input.proof_id }, 'Deterministic verdict produced');
-    return { success: true, data: fallbackVerdict };
+    log.info({ verdict: authoritativeVerdict.verdict, riskScore: authoritativeVerdict.risk_score, method: 'deterministic', proofId: input.proof_id }, 'Deterministic verdict produced');
+    return { success: true, data: authoritativeVerdict };
   } catch (error) {
     log.error({ err: error instanceof Error ? error.message : String(error), proofId: input.proof_id, taskId: input.task_id }, 'Failed to synthesize verdict');
     return {
@@ -353,14 +366,16 @@ Produce your verdict.`),
 async function logVerdict(
   proofId: string,
   taskId: string,
-  verdict: JudgeVerdict
+  verdict: JudgeVerdict,
+  query: QueryFn = db.query,
+  audit: { validatorOverride?: boolean; validatorReason?: string | null } = {},
 ): Promise<ServiceResult<void>> {
   try {
-    await db.query(
+    await query(
       `INSERT INTO ai_agent_decisions (
         agent_type, proof_id, task_id, proposal, confidence_score,
-        reasoning, accepted, authority_level
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        reasoning, accepted, authority_level, validator_override, validator_reason
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
       [
         'judge',
         proofId,
@@ -376,6 +391,8 @@ async function logVerdict(
         verdict.reasoning,
         verdict.verdict === 'APPROVE',
         'A2',
+        audit.validatorOverride ?? false,
+        audit.validatorReason ?? null,
       ]
     );
 

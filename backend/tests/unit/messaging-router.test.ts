@@ -69,6 +69,10 @@ const mockMessaging = vi.mocked(MessagingService);
 
 const TASK_ID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const MESSAGE_ID = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+const RECEIPT_1 = 'c0000000-0000-4000-8000-000000000001';
+const RECEIPT_2 = 'c0000000-0000-4000-8000-000000000002';
+const RECEIPT_3 = 'c0000000-0000-4000-8000-000000000003';
+const RECEIPT_4 = 'c0000000-0000-4000-8000-000000000004';
 const USER_ID = 'user-poster-1';
 const WORKER_ID = 'user-worker-1';
 
@@ -417,7 +421,7 @@ describe('messaging.sendPhotoMessage', () => {
 
       const result = await makeUserCaller().sendPhotoMessage({
         taskId: TASK_ID,
-        photoUrls: ['https://pub-abc123def456.r2.dev/photo1.jpg'],
+        uploadReceiptIds: [RECEIPT_1],
         caption: 'Look at this',
       });
 
@@ -432,7 +436,7 @@ describe('messaging.sendPhotoMessage', () => {
 
       await makeUserCaller('worker-abc').sendPhotoMessage({
         taskId: TASK_ID,
-        photoUrls: ['https://pub-abc123def456.r2.dev/photo1.jpg'],
+        uploadReceiptIds: [RECEIPT_1],
       });
 
       expect(mockMessaging.sendPhotoMessage).toHaveBeenCalledWith(
@@ -453,7 +457,7 @@ describe('messaging.sendPhotoMessage', () => {
 
       const result = await makeUserCaller().sendPhotoMessage({
         taskId: TASK_ID,
-        photoUrls: urls,
+        uploadReceiptIds: [RECEIPT_1, RECEIPT_2, RECEIPT_3],
       });
 
       expect(result.photo_urls).toHaveLength(3);
@@ -467,7 +471,7 @@ describe('messaging.sendPhotoMessage', () => {
 
       const result = await makeUserCaller().sendPhotoMessage({
         taskId: TASK_ID,
-        photoUrls: ['https://pub-abc123def456.r2.dev/p1.jpg'],
+        uploadReceiptIds: [RECEIPT_1],
       });
 
       expect(mockMessaging.sendPhotoMessage).toHaveBeenCalledWith(
@@ -478,11 +482,11 @@ describe('messaging.sendPhotoMessage', () => {
   });
 
   describe('input validation — router-level (zod)', () => {
-    it('rejects empty photoUrls array', async () => {
+    it('rejects an empty uploadReceiptIds array', async () => {
       await expect(
         makeUserCaller().sendPhotoMessage({
           taskId: TASK_ID,
-          photoUrls: [],
+          uploadReceiptIds: [],
         }),
       ).rejects.toThrow();
     });
@@ -491,21 +495,16 @@ describe('messaging.sendPhotoMessage', () => {
       await expect(
         makeUserCaller().sendPhotoMessage({
           taskId: TASK_ID,
-          photoUrls: [
-            'https://pub-abc123def456.r2.dev/p1.jpg',
-            'https://pub-abc123def456.r2.dev/p2.jpg',
-            'https://pub-abc123def456.r2.dev/p3.jpg',
-            'https://pub-abc123def456.r2.dev/p4.jpg',
-          ],
+          uploadReceiptIds: [RECEIPT_1, RECEIPT_2, RECEIPT_3, RECEIPT_4],
         }),
       ).rejects.toThrow();
     });
 
-    it('rejects non-URL strings in photoUrls', async () => {
+    it('rejects malformed upload receipt identities', async () => {
       await expect(
         makeUserCaller().sendPhotoMessage({
           taskId: TASK_ID,
-          photoUrls: ['not-a-url'],
+          uploadReceiptIds: ['not-a-receipt'],
         }),
       ).rejects.toThrow();
     });
@@ -514,7 +513,7 @@ describe('messaging.sendPhotoMessage', () => {
       await expect(
         makeUserCaller().sendPhotoMessage({
           taskId: 'bad-uuid',
-          photoUrls: ['https://pub-abc123def456.r2.dev/p1.jpg'],
+          uploadReceiptIds: [RECEIPT_1],
         }),
       ).rejects.toThrow();
     });
@@ -523,7 +522,7 @@ describe('messaging.sendPhotoMessage', () => {
       await expect(
         makeUserCaller().sendPhotoMessage({
           taskId: TASK_ID,
-          photoUrls: ['https://pub-abc123def456.r2.dev/p1.jpg'],
+          uploadReceiptIds: [RECEIPT_1],
           caption: 'x'.repeat(201),
         }),
       ).rejects.toThrow();
@@ -540,7 +539,7 @@ describe('messaging.sendPhotoMessage', () => {
       await expect(
         makeUserCaller().sendPhotoMessage({
           taskId: TASK_ID,
-          photoUrls: ['https://pub-abc123def456.r2.dev/p1.jpg'],
+          uploadReceiptIds: [RECEIPT_1],
         }),
       ).rejects.toThrow(/Task not found/);
     });
@@ -554,7 +553,7 @@ describe('messaging.sendPhotoMessage', () => {
       await expect(
         makeUserCaller().sendPhotoMessage({
           taskId: TASK_ID,
-          photoUrls: ['https://pub-abc123def456.r2.dev/p1.jpg'],
+          uploadReceiptIds: [RECEIPT_1],
         }),
       ).rejects.toThrow(/You are not a participant/);
     });
@@ -568,7 +567,7 @@ describe('messaging.sendPhotoMessage', () => {
       await expect(
         makeUserCaller().sendPhotoMessage({
           taskId: TASK_ID,
-          photoUrls: ['https://pub-abc123def456.r2.dev/p1.jpg'],
+          uploadReceiptIds: [RECEIPT_1],
         }),
       ).rejects.toThrow(/Task is CANCELLED/);
     });
@@ -579,7 +578,7 @@ describe('messaging.sendPhotoMessage', () => {
       await expect(
         makeAnonCaller().sendPhotoMessage({
           taskId: TASK_ID,
-          photoUrls: ['https://pub-abc123def456.r2.dev/p1.jpg'],
+          uploadReceiptIds: [RECEIPT_1],
         }),
       ).rejects.toThrow();
     });

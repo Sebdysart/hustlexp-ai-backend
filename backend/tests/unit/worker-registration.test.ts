@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   query: vi.fn(),
   createWorker: vi.fn(),
-  push: vi.fn(),
+  notification: vi.fn(),
   email: vi.fn(),
   biometric: vi.fn(),
   expertise: vi.fn(),
@@ -29,7 +29,9 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('../../src/db', () => ({ db: { query: mocks.query } }));
 vi.mock('../../src/logger', () => ({ workerLogger: { info: mocks.info, error: mocks.error } }));
-vi.mock('../../src/services/PushNotificationService', () => ({ sendPushNotification: mocks.push }));
+vi.mock('../../src/services/NotificationService', () => ({
+  NotificationService: { createNotification: mocks.notification },
+}));
 vi.mock('../../src/jobs/queues', () => ({ createWorker: mocks.createWorker }));
 vi.mock('../../src/jobs/email-worker', () => ({ processEmailJob: mocks.email }));
 vi.mock('../../src/jobs/biometric-analyzer-worker', () => ({ processBiometricAnalysisJob: mocks.biometric }));
@@ -46,6 +48,7 @@ vi.mock('../../src/jobs/dispatch-expiry-payment-cancel-worker', () => ({
 }));
 vi.mock('../../src/jobs/completion-release-worker', () => ({ processCompletionReleaseJob: mocks.completionRelease }));
 vi.mock('../../src/jobs/stripe-event-worker', () => ({ processStripeEventJob: mocks.stripeEvent }));
+vi.mock('../../src/jobs/stripe-event-dispatcher', () => ({ processStripeEventDispatchJob: mocks.stripeEvent }));
 vi.mock('../../src/jobs/instant-matching-worker', () => ({ processInstantMatchingJob: mocks.instantMatching }));
 vi.mock('../../src/jobs/instant-surge-worker', () => ({ processInstantSurgeJob: mocks.instantSurge }));
 vi.mock('../../src/jobs/payment-worker', () => ({ processPaymentJob: mocks.payment }));
@@ -78,6 +81,7 @@ function registeredHandlers(): Map<string, Handler> {
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.query.mockReset();
+  mocks.notification.mockResolvedValue({ success: true });
 });
 
 describe('worker registration executable routing', () => {
@@ -103,7 +107,7 @@ describe('worker registration executable routing', () => {
     expect(mocks.smsJob).toHaveBeenCalledTimes(2);
     expect(mocks.instantNotification).toHaveBeenCalledOnce();
     expect(mocks.realtime).toHaveBeenCalledOnce();
-    expect(mocks.push).toHaveBeenCalledTimes(3);
+    expect(mocks.notification).toHaveBeenCalledTimes(3);
     expect(mocks.info).toHaveBeenCalledWith(
       { eventType: 'unimplemented' },
       'Notification type not yet implemented',
@@ -115,7 +119,7 @@ describe('worker registration executable routing', () => {
     mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
     await handler(job('escrow.funded', { escrowId: 'esc-1' }));
     await handler(job('escrow.payment_failed', { escrowId: 'esc-2', posterId: null, taskId: 'task-1' }));
-    expect(mocks.push).not.toHaveBeenCalled();
+    expect(mocks.notification).not.toHaveBeenCalled();
   });
 
   it('routes all payment events and fails loud for unknown money work', async () => {

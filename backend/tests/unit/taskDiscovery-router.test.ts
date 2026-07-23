@@ -55,14 +55,38 @@ vi.mock('../../src/services/TaskDiscoveryService', () => ({
   },
 }));
 
+vi.mock('../../src/services/TaskSuggestionAIService', () => ({
+  TaskSuggestionAIService: { getSuggestions: vi.fn() },
+}));
+
+vi.mock('../../src/services/RecommendationService', () => ({
+  RecommendationService: {
+    recordUserEvent: vi.fn(),
+    listCurrent: vi.fn(),
+  },
+}));
+
+vi.mock('../../src/services/ControlledTestOfferReviewService', () => ({
+  ControlledTestOfferReviewService: {
+    review: vi.fn(),
+    accept: vi.fn(),
+  },
+}));
+
 // ---------------------------------------------------------------------------
 // Imports
 // ---------------------------------------------------------------------------
 
 import { taskDiscoveryRouter } from '../../src/routers/taskDiscovery';
 import { TaskDiscoveryService } from '../../src/services/TaskDiscoveryService';
+import { TaskSuggestionAIService } from '../../src/services/TaskSuggestionAIService';
+import { RecommendationService } from '../../src/services/RecommendationService';
+import { ControlledTestOfferReviewService } from '../../src/services/ControlledTestOfferReviewService';
 
 const mockService = vi.mocked(TaskDiscoveryService);
+const mockSuggestionService = vi.mocked(TaskSuggestionAIService);
+const mockRecommendations = vi.mocked(RecommendationService);
+const mockControlledOffer = vi.mocked(ControlledTestOfferReviewService);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -84,6 +108,61 @@ function makePublicCaller() {
   });
 }
 
+describe('taskDiscovery controlled TEST worker offer', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('binds offer review to the authenticated hustler', async () => {
+    mockControlledOffer.review.mockResolvedValueOnce({
+      success: true,
+      data: { taskId: TEST_UUID, workerId: TEST_UUID, eventType: 'VIEWED' },
+    } as any);
+
+    await makeCaller(TEST_UUID).reviewControlledTestOffer({
+      taskId: TEST_UUID,
+      idempotencyKey: 'offer-review-router-0001',
+    });
+
+    expect(mockControlledOffer.review).toHaveBeenCalledWith({
+      taskId: TEST_UUID,
+      workerId: TEST_UUID,
+      idempotencyKey: 'offer-review-router-0001',
+    });
+  });
+
+  it('binds explicit acceptance to the authenticated hustler and reviewed decision', async () => {
+    mockControlledOffer.accept.mockResolvedValueOnce({
+      success: true,
+      data: { taskId: TEST_UUID, workerId: TEST_UUID, eventType: 'ACCEPTED' },
+    } as any);
+
+    await makeCaller(TEST_UUID).acceptControlledTestOffer({
+      taskId: TEST_UUID,
+      offerDecisionId: TEST_UUID,
+      idempotencyKey: 'offer-accept-router-0001',
+    });
+
+    expect(mockControlledOffer.accept).toHaveBeenCalledWith({
+      taskId: TEST_UUID,
+      offerDecisionId: TEST_UUID,
+      workerId: TEST_UUID,
+      idempotencyKey: 'offer-accept-router-0001',
+    });
+  });
+
+  it('fails closed with a precondition error for stale evidence', async () => {
+    mockControlledOffer.accept.mockResolvedValueOnce({
+      success: false,
+      error: { code: 'LOCAL_TEST_OFFER_ACCEPT_NOT_READY', message: 'Offer stale' },
+    } as any);
+
+    await expect(makeCaller(TEST_UUID).acceptControlledTestOffer({
+      taskId: TEST_UUID,
+      offerDecisionId: TEST_UUID,
+      idempotencyKey: 'offer-accept-router-stale',
+    })).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Tests — browseTasks (public)
 // ---------------------------------------------------------------------------
@@ -98,10 +177,26 @@ describe('taskDiscovery.browseTasks', () => {
     const result = await makePublicCaller().browseTasks({});
 
     expect(result.tasks).toHaveLength(1);
-    expect(result.tasks[0].canAccept).toBe(true); // 1500 < 2000 (tier 0 limit)
+    expect(result.tasks[0].canAccept).toBe(false); // public browse is read-only and has no personalized distance
     expect(result.tasks[0].requiredTrustTier).toBe(0);
     expect(result.userTrustTier).toBe(0);
     expect(result.isReadOnly).toBe(true);
+  });
+
+  it('never exposes an exact address through anonymous discovery', async () => {
+    mockService.browsePublicFeed.mockResolvedValueOnce({
+      success: true,
+      data: [{
+        id: 'task-1', title: 'Fix sink', price: 1500,
+        location: '123 Main St, Bellevue, WA 98004',
+        rough_location: 'Bellevue area',
+      }],
+    } as any);
+
+    const result = await makePublicCaller().browseTasks({});
+
+    expect(result.tasks[0].location).toBe('Bellevue area');
+    expect(JSON.stringify(result.tasks[0])).not.toContain('123 Main St');
   });
 
   it('annotates expensive tasks as requiring higher tier', async () => {
@@ -115,14 +210,15 @@ describe('taskDiscovery.browseTasks', () => {
     expect(result.tasks[0].verificationCTA).toContain('Level 2');
   });
 
-  it('authenticated user with high tier can accept expensive tasks', async () => {
+  it('requires a personalized decision-ready offer even for a high-trust user', async () => {
     const tasks = [{ id: 'task-1', title: 'Big job', price: 15000 }];
     mockService.browsePublicFeed.mockResolvedValueOnce({ success: true, data: tasks } as any);
 
     const result = await makeCaller('user-1', 3).browseTasks({});
 
-    expect(result.tasks[0].canAccept).toBe(true);
+    expect(result.tasks[0].canAccept).toBe(false);
     expect(result.tasks[0].verificationCTA).toBeNull();
+    expect(result.tasks[0].decisionCTA).toMatch(/personalized offer/i);
   });
 
   it('throws INTERNAL_SERVER_ERROR when service fails', async () => {
@@ -144,7 +240,7 @@ describe('taskDiscovery.getFeed', () => {
 
   it('returns annotated feed items', async () => {
     const feedItems = [
-      { task: { id: 'task-1', price: 3000 }, matchingScore: 0.85 },
+      { task: { id: 'task-1', price: 3000 }, matchingScore: 0.85, offer_decision: { decisionReady: true } },
     ];
     mockService.getFeed.mockResolvedValueOnce({ success: true, data: feedItems } as any);
 
@@ -192,6 +288,7 @@ describe('taskDiscovery.getFeed', () => {
         matching_score: 0.8,
         relevance_score: 0.85,
         distance_miles: 1.5,
+        offer_decision: { decisionReady: true },
       },
     ];
     mockService.getFeed.mockResolvedValueOnce({ success: true, data: feedItems } as any);
@@ -216,6 +313,7 @@ describe('taskDiscovery.getFeed', () => {
         matching_score: 0.9,
         relevance_score: 0.9,
         distance_miles: 0.5,
+        offer_decision: { decisionReady: true },
       },
     ];
     mockService.getFeed.mockResolvedValueOnce({ success: true, data: feedItems } as any);
@@ -243,6 +341,31 @@ describe('taskDiscovery.getFeed', () => {
     expect(result.tasks).toHaveLength(1);
     // poster_id must not be in the public browseTasks response
     expect((result.tasks[0] as any).poster_id).toBeUndefined();
+  });
+
+  it.each([
+    ['unassigned', null],
+    ['assigned', 'test-uid'],
+  ])('strips exact location and coordinates from the %s personalized feed', async (_state, workerId) => {
+    mockService.getFeed.mockResolvedValueOnce({ success: true, data: [{
+      task: {
+        id: TEST_UUID, title: 'Private-address task', price: 5000,
+        worker_id: workerId, poster_id: 'poster-secret-id',
+        location: '123 Main St, Bellevue, WA 98004', rough_location: 'Bellevue area',
+        location_lat: 47.6101, location_lng: -122.2015, location_geo: 'private-geo',
+      },
+      matching_score: 0.8, relevance_score: 0.8, distance_miles: 2,
+      explanation: 'Nearby', offer_decision: { decisionReady: false },
+    }] } as any);
+
+    const result = await makeCaller('test-uid', 2).getFeed({});
+    const task = result[0].task as Record<string, unknown>;
+
+    expect(task.location).toBe('Bellevue area');
+    expect(task).not.toHaveProperty('location_lat');
+    expect(task).not.toHaveProperty('location_lng');
+    expect(task).not.toHaveProperty('location_geo');
+    expect(JSON.stringify(task)).not.toContain('123 Main St');
   });
 });
 
@@ -314,6 +437,97 @@ describe('taskDiscovery.getExplanation', () => {
     const result = await makeCaller().getExplanation({ taskId: TEST_UUID });
 
     expect(result.explanation).toBe(explanation);
+  });
+});
+
+describe('taskDiscovery.recordRecommendationAction', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('binds neutral recommendation feedback to the authenticated Hustler', async () => {
+    mockRecommendations.recordUserEvent.mockResolvedValueOnce({
+      success: true,
+      data: { eventId: 'event-1', rankingPenalty: 0 },
+    } as any);
+
+    const result = await makeCaller(TEST_UUID).recordRecommendationAction({
+      recommendationId: '22222222-2222-4222-8222-222222222222',
+      action: 'DISMISSED',
+      idempotencyKey: 'dismiss:recommendation:1',
+    });
+
+    expect(result).toEqual({ eventId: 'event-1', rankingPenalty: 0 });
+    expect(mockRecommendations.recordUserEvent).toHaveBeenCalledWith({
+      actorId: TEST_UUID,
+      recommendationId: '22222222-2222-4222-8222-222222222222',
+      eventType: 'DISMISSED',
+      idempotencyKey: 'dismiss:recommendation:1',
+      publicNote: null,
+    });
+  });
+
+  it('does not convert an unavailable recommendation into a successful action', async () => {
+    mockRecommendations.recordUserEvent.mockResolvedValueOnce({
+      success: false,
+      error: { code: 'RECOMMENDATION_NOT_FOUND', message: 'Unavailable' },
+    } as any);
+
+    await expect(makeCaller(TEST_UUID).recordRecommendationAction({
+      recommendationId: '22222222-2222-4222-8222-222222222222',
+      action: 'SNOOZED',
+      idempotencyKey: 'snooze:recommendation:1',
+    })).rejects.toThrow('Unavailable');
+  });
+});
+
+describe('taskDiscovery.listRecommendations', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('retrieves Recommendation evidence for the authenticated Hustler only', async () => {
+    mockRecommendations.listCurrent.mockResolvedValueOnce({
+      success: true,
+      data: [{ id: '22222222-2222-4222-8222-222222222222', subjectType: 'TASK' }],
+    } as any);
+
+    const result = await makeCaller(TEST_UUID).listRecommendations({ limit: 10, offset: 0 });
+
+    expect(result).toHaveLength(1);
+    expect(mockRecommendations.listCurrent).toHaveBeenCalledWith(TEST_UUID, { limit: 10, offset: 0 });
+  });
+});
+
+describe('taskDiscovery.getAISuggestions', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('returns the server-authoritative offer decision with every Recommendation', async () => {
+    mockSuggestionService.getSuggestions.mockResolvedValueOnce({ success: true, data: [{
+      recommendationId: '22222222-2222-4222-8222-222222222222',
+      task: {
+        id: TEST_UUID, title: 'Repair fence', description: 'Replace two damaged boards.',
+        price: 14_000, hustler_payout_cents: 10_500, distance_miles: 2.3,
+        estimated_duration_minutes: 120, rough_location: 'North Bellevue', risk_level: 'LOW',
+        required_tools: ['drill'], scope_hash: 'a'.repeat(64),
+        cancellation_policy_version: 'cancel-v1', late_cancel_pct: 0.5,
+        cancellation_window_hours: 24,
+      },
+      matching_score: 0.91, distance_miles: 2.3,
+      offerDecision: {
+        decisionReady: true,
+        economics: { customerTotalCents: 14_000, payoutCents: 10_500 },
+        logistics: { distanceMiles: 2.3, estimatedDurationMinutes: 120 },
+        scope: { risk: 'LOW', requiredTools: ['drill'] },
+        rights: { passingHasRankPenalty: false },
+      },
+    }] } as any);
+
+    const result = await makeCaller(TEST_UUID).getAISuggestions({ limit: 1 });
+
+    expect(result.suggestions[0].offerDecision).toMatchObject({
+      decisionReady: true,
+      economics: { customerTotalCents: 14_000, payoutCents: 10_500 },
+      logistics: { distanceMiles: 2.3, estimatedDurationMinutes: 120 },
+      scope: { risk: 'LOW', requiredTools: ['drill'] },
+      rights: { passingHasRankPenalty: false },
+    });
   });
 });
 

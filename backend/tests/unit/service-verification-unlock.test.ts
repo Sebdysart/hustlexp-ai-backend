@@ -10,11 +10,15 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Mocks
 // ---------------------------------------------------------------------------
 
-vi.mock('../../src/db', () => ({
-  db: {
-    query: vi.fn(),
-  },
-}));
+vi.mock('../../src/db', () => {
+  const query = vi.fn();
+  return {
+    db: {
+      query,
+      transaction: vi.fn((fn: (txQuery: typeof query) => Promise<unknown>) => fn(query)),
+    },
+  };
+});
 
 vi.mock('../../src/logger', () => ({
   logger: {
@@ -41,13 +45,12 @@ beforeEach(() => {
 
 describe('EarnedVerificationUnlockService.recordEarnings', () => {
   it('records earnings below threshold without notification', async () => {
-    // SELECT cumulative earnings
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // seed tracking
     mockDb.query.mockResolvedValueOnce({
-      rows: [{ total_net_earnings_cents: 1000 }],
+      rows: [{ total_net_earnings_cents: 1000, earned_unlock_threshold_cents: 4000 }],
       rowCount: 1,
     } as never);
-    // INSERT ledger
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+    mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'ledger-1' }], rowCount: 1 } as never);
 
     const result = await EarnedVerificationUnlockService.recordEarnings(
       'user-1', 'task-1', 'escrow-1', 500,
@@ -55,20 +58,17 @@ describe('EarnedVerificationUnlockService.recordEarnings', () => {
 
     expect(result.success).toBe(true);
     // No notification query — total is 1500, still below 4000 threshold
-    expect(mockDb.query).toHaveBeenCalledTimes(2);
+    expect(mockDb.query).toHaveBeenCalledTimes(3);
   });
 
   it('triggers notification when user crosses $40 threshold', async () => {
-    // cumulativeBefore = 3900, netPayout = 200 → cumulativeAfter = 4100 (crosses 4000)
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // seed tracking
     mockDb.query.mockResolvedValueOnce({
-      rows: [{ total_net_earnings_cents: 3900 }],
+      rows: [{ total_net_earnings_cents: 3900, earned_unlock_threshold_cents: 4000 }],
       rowCount: 1,
     } as never);
-    // INSERT ledger
+    mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'ledger-2' }], rowCount: 1 } as never);
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
-    // UPDATE verification_earnings_tracking SET earned_unlock_achieved = true (dedup guard)
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
-    // INSERT notification (fire-and-forget)
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
 
     const result = await EarnedVerificationUnlockService.recordEarnings(
@@ -77,33 +77,38 @@ describe('EarnedVerificationUnlockService.recordEarnings', () => {
 
     expect(result.success).toBe(true);
 
-    // Wait for the fire-and-forget notification promise to settle
-    await new Promise(r => setTimeout(r, 10));
-
-    // Should have made 4 query calls (tracking, ledger insert, dedup UPDATE, notification)
-    expect(mockDb.query).toHaveBeenCalledTimes(4);
+    expect(mockDb.query).toHaveBeenCalledTimes(5);
+    const [notificationSql] = mockDb.query.mock.calls[4];
+    expect(notificationSql).toContain('category');
+    expect(notificationSql).toContain('deep_link');
+    expect(notificationSql).toContain('metadata');
+    expect(notificationSql).not.toContain(' type,');
+    expect(notificationSql).not.toContain(' data,');
   });
 
   it('exactly at threshold (4000 before, 0 after) does NOT trigger notification', async () => {
-    // cumulativeBefore = 4000, after = 4500 → NOT < 4000, so no notification
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
     mockDb.query.mockResolvedValueOnce({
-      rows: [{ total_net_earnings_cents: 4000 }],
+      rows: [{ total_net_earnings_cents: 4000, earned_unlock_threshold_cents: 4000 }],
       rowCount: 1,
     } as never);
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+    mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'ledger-3' }], rowCount: 1 } as never);
 
     const result = await EarnedVerificationUnlockService.recordEarnings(
       'user-1', 'task-3', 'escrow-3', 500,
     );
 
     expect(result.success).toBe(true);
-    expect(mockDb.query).toHaveBeenCalledTimes(2);
+    expect(mockDb.query).toHaveBeenCalledTimes(3);
   });
 
-  it('uses 0 as cumulativeBefore when user has no tracking record', async () => {
-    // No rows → cumulativeBefore defaults to 0
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+  it('creates and locks a zero-value tracking record for a new worker', async () => {
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ total_net_earnings_cents: 0, earned_unlock_threshold_cents: 4000 }],
+      rowCount: 1,
+    } as never);
+    mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'ledger-new' }], rowCount: 1 } as never);
 
     const result = await EarnedVerificationUnlockService.recordEarnings(
       'user-new', 'task-1', 'escrow-1', 1000,
@@ -112,9 +117,10 @@ describe('EarnedVerificationUnlockService.recordEarnings', () => {
     expect(result.success).toBe(true);
 
     // Verify ledger insert was called with cumulative_before = 0
-    const insertCall = mockDb.query.mock.calls[1];
+    const insertCall = mockDb.query.mock.calls[2];
     expect(insertCall[1]).toContain(0); // cumulativeBefore = 0
     expect(insertCall[1]).toContain(1000); // cumulativeAfter = 0 + 1000
+    expect(String(mockDb.query.mock.calls[1][0])).toContain('FOR UPDATE');
   });
 
   it('returns error on database failure', async () => {
@@ -132,15 +138,13 @@ describe('EarnedVerificationUnlockService.recordEarnings', () => {
   });
 
   it('handles notification insert failure gracefully (fire-and-forget)', async () => {
-    // Crosses threshold
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
     mockDb.query.mockResolvedValueOnce({
-      rows: [{ total_net_earnings_cents: 3000 }],
+      rows: [{ total_net_earnings_cents: 3000, earned_unlock_threshold_cents: 4000 }],
       rowCount: 1,
     } as never);
+    mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'ledger-5' }], rowCount: 1 } as never);
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
-    // Dedup UPDATE succeeds (first to set earned_unlock_achieved = true)
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
-    // Notification query fails
     mockDb.query.mockRejectedValueOnce(new Error('Notification table error'));
 
     const result = await EarnedVerificationUnlockService.recordEarnings(
@@ -152,8 +156,9 @@ describe('EarnedVerificationUnlockService.recordEarnings', () => {
   });
 
   it('is idempotent — ON CONFLICT DO NOTHING prevents duplicate ledger entries', async () => {
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
     mockDb.query.mockResolvedValueOnce({
-      rows: [{ total_net_earnings_cents: 2000 }],
+      rows: [{ total_net_earnings_cents: 3900, earned_unlock_threshold_cents: 4000 }],
       rowCount: 1,
     } as never);
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // conflict → nothing inserted
@@ -164,10 +169,11 @@ describe('EarnedVerificationUnlockService.recordEarnings', () => {
 
     expect(result.success).toBe(true);
 
-    // Verify the ledger INSERT uses ON CONFLICT DO NOTHING
-    const [insertSql] = mockDb.query.mock.calls[1];
+    expect(mockDb.query).toHaveBeenCalledTimes(3);
+    const [insertSql] = mockDb.query.mock.calls[2];
     expect(insertSql).toContain('ON CONFLICT');
     expect(insertSql).toContain('DO NOTHING');
+    expect(insertSql).toContain('RETURNING id');
   });
 });
 

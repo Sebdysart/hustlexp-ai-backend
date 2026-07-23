@@ -29,6 +29,11 @@ import {
   anthropicBreaker,
 } from '../middleware/circuit-breaker.js';
 import { validateAIOutput } from '../middleware/ai-guard.js';
+import type { AIObservationContext } from './AIObservabilityPolicy.js';
+import {
+  AIObservabilityService,
+  type AIObservationReceipt,
+} from './AIObservabilityService.js';
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -45,6 +50,8 @@ export interface AICallOptions {
   enableCache?: boolean;      // default: true
   fallbackChain?: AIRoute[];  // default: auto-generated from route
   userId?: string;            // optional: namespaces cache key per user to prevent cache poisoning
+  /** Required on every production provider call; tests may omit it when exercising transport only. */
+  observability?: AIObservationContext;
 }
 
 export interface AICallResult {
@@ -53,6 +60,7 @@ export interface AICallResult {
   model: string;
   cached: boolean;
   latencyMs: number;
+  observation: AIObservationReceipt | null;
 }
 
 // ─── Provider Clients (lazy singletons) ────────────────────────────────────
@@ -223,6 +231,31 @@ async function callProvider(
 
 // ─── Public API ────────────────────────────────────────────────────────────
 
+async function recordObservation(
+  options: AICallOptions,
+  result: {
+    provider: string;
+    model: string;
+    executionResult: 'GENERATED' | 'CACHED' | 'FAILED';
+    output: string | null;
+    latencyMs: number;
+  },
+): Promise<AIObservationReceipt | null> {
+  if (!options.observability) return null;
+  const recorded = await AIObservabilityService.record({
+    context: options.observability,
+    provider: result.provider,
+    modelVersion: result.model,
+    executionResult: result.executionResult,
+    output: result.output,
+    latencyMs: result.latencyMs,
+  });
+  if (!recorded.success) {
+    throw new Error(`AI_OBSERVABILITY_REQUIRED:${recorded.error.code}`);
+  }
+  return recorded.data;
+}
+
 /**
  * Call an AI model with automatic routing, caching, and fallback.
  *
@@ -246,12 +279,21 @@ export async function call(options: AICallOptions): Promise<AICallResult> {
     const cacheKey = CACHE_KEYS.aiCache(cacheHash);
     const cached = await redis.get<string>(cacheKey);
     if (cached) {
+      const latencyMs = Date.now() - startTime;
+      const observation = await recordObservation(options, {
+        provider: routeConfig.name,
+        model: routeConfig.model,
+        executionResult: 'CACHED',
+        output: cached,
+        latencyMs,
+      });
       return {
         content: cached,
         provider: routeConfig.name,
         model: routeConfig.model,
         cached: true,
-        latencyMs: Date.now() - startTime,
+        latencyMs,
+        observation,
       };
     }
   }
@@ -279,16 +321,41 @@ export async function call(options: AICallOptions): Promise<AICallResult> {
         await redis.set(cacheKey, content, CACHE_TTL.aiCache);
       }
 
+      const latencyMs = Date.now() - startTime;
+      const observation = await recordObservation(options, {
+        provider: cfg.name,
+        model: cfg.model,
+        executionResult: 'GENERATED',
+        output: content,
+        latencyMs,
+      });
+
       return {
         content,
         provider: cfg.name,
         model: cfg.model,
         cached: false,
-        latencyMs: Date.now() - startTime,
+        latencyMs,
+        observation,
       };
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
+      if (lastError.message.startsWith('AI_OBSERVABILITY_REQUIRED:')) throw lastError;
       log.warn({ err: lastError.message, provider: cfg.name, model: cfg.model, route }, 'Provider failed, trying next in fallback chain');
+    }
+  }
+
+  if (options.observability) {
+    try {
+      await recordObservation(options, {
+        provider: routeConfig.name,
+        model: routeConfig.model,
+        executionResult: 'FAILED',
+        output: null,
+        latencyMs: Date.now() - startTime,
+      });
+    } catch (auditError) {
+      log.error({ err: auditError instanceof Error ? auditError.message : String(auditError) }, 'Failed AI call could not be audited');
     }
   }
 

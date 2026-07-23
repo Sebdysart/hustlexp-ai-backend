@@ -120,8 +120,8 @@ describe('ScoperAI wildcard multiplier — no complianceResult', () => {
   });
 });
 
-describe('ScoperAI wildcard multiplier — deception override requires AI confirmation', () => {
-  it('does NOT zero multipliers when deception_detected=true but ai_signals_computed=false', async () => {
+describe('ScoperAI wildcard multiplier — unconfirmed deception fails closed', () => {
+  it('does not award a caller-claimed premium when bizarreness is unproven', async () => {
     const complianceResult = makeComplianceResult({
       deception_detected: true,
       ai_signals_computed: false, // AI didn't run — heuristic path only
@@ -138,14 +138,12 @@ describe('ScoperAI wildcard multiplier — deception override requires AI confir
     expect(result.success).toBe(true);
     if (!result.success) return;
 
-    // Without ai_signals_computed, deception override should NOT fire.
-    // Base ~7500, multipliers 0.30x → ~9750. Should be > base 7500.
-    expect(result.data.suggested_price_cents).toBeGreaterThan(7500);
+    expect(result.data.suggested_price_cents).toBe(7500);
   });
 });
 
-describe('ScoperAI wildcard multiplier — no AI signals (ai_signals_computed=false)', () => {
-  it('does NOT cap when ai_signals_computed is false even if is_genuinely_bizarre is false', async () => {
+describe('ScoperAI wildcard multiplier — deterministic bizarre content', () => {
+  it('awards the premium without AI only when deterministic content signals prove it', async () => {
     const complianceResult = makeComplianceResult({
       ai_signals_computed: false,  // AI didn't run
       is_genuinely_bizarre: false,  // default false — should NOT trigger cap
@@ -164,6 +162,25 @@ describe('ScoperAI wildcard multiplier — no AI signals (ai_signals_computed=fa
     // Without AI signals, cap should NOT apply. travel+performance = 0.40x on base ~7500
     // = 7500 * 1.40 = 10500. Should be > 1.1x cap of 8250.
     expect(result.data.suggested_price_cents).toBeGreaterThan(8250);
+  });
+
+  it('uses the deterministic policy signal without requiring an AI execution marker', async () => {
+    const complianceResult = makeComplianceResult({
+      ai_signals_computed: false,
+      is_genuinely_bizarre: true,
+      deception_detected: false,
+    });
+
+    const result = await ScoperAIService.analyzeTaskScope({
+      description: 'Perform a ceremonial serenade at a private birthday dinner',
+      templateSlug: TEMPLATE_SLUGS.WILDCARD_BIZARRE,
+      wildcardFlags: ['performance_element_flag', 'audience_present_flag'],
+      complianceResult,
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.suggested_price_cents).toBeGreaterThan(7500);
   });
 });
 

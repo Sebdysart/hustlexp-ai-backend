@@ -190,7 +190,7 @@ describe('ContentModerationService.reviewQueueItem — rating content type', () 
 // ============================================================================
 
 describe('ContentModerationService.reviewQueueItem — photo content type', () => {
-  it('approve on photo → evidence moderation_status = approved', async () => {
+  it('approve on photo → publishes the canonical photo message only after every queue item is approved', async () => {
     const item = makeQueueItem({
       status: 'approved',
       review_decision: 'approve',
@@ -198,18 +198,22 @@ describe('ContentModerationService.reviewQueueItem — photo content type', () =
       content_id: 'photo-1',
     });
     mockDb.query.mockResolvedValueOnce({ rows: [item], rowCount: 1 } as never);
-    // applyModerationAction approve → evidence SET moderation_status = 'approved'
+    // applyModerationAction approve → publish the canonical PHOTO task message
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
 
     const result = await ContentModerationService.reviewQueueItem('qi-1', 'admin-1', 'approve');
 
     expect(result.success).toBe(true);
     const secondSql = mockDb.query.mock.calls[1][0] as string;
-    expect(secondSql).toContain('evidence');
-    expect(secondSql).toContain("moderation_status = 'approved'");
+    expect(secondSql).toContain('UPDATE task_messages message');
+    expect(secondSql).toContain("message.message_type='PHOTO'");
+    expect(secondSql).toContain('NOT EXISTS');
+    expect(secondSql).toContain("queue.content_type IN ('photo','message')");
+    expect(secondSql).toContain("queue.status<>'approved'");
+    expect(secondSql).toContain("moderation_status='approved'");
   });
 
-  it('reject on photo → evidence moderation_status = quarantined', async () => {
+  it('reject on photo → quarantines the canonical photo message', async () => {
     const item = makeQueueItem({
       status: 'rejected',
       review_decision: 'reject',
@@ -217,15 +221,16 @@ describe('ContentModerationService.reviewQueueItem — photo content type', () =
       content_id: 'photo-2',
     });
     mockDb.query.mockResolvedValueOnce({ rows: [item], rowCount: 1 } as never);
-    // applyModerationAction quarantine → evidence SET moderation_status = 'quarantined'
+    // applyModerationAction quarantine → quarantine the canonical PHOTO task message
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
 
     const result = await ContentModerationService.reviewQueueItem('qi-1', 'admin-1', 'reject');
 
     expect(result.success).toBe(true);
     const secondSql = mockDb.query.mock.calls[1][0] as string;
-    expect(secondSql).toContain('evidence');
-    expect(secondSql).toContain("moderation_status = 'quarantined'");
+    expect(secondSql).toContain('UPDATE task_messages');
+    expect(secondSql).toContain("message_type='PHOTO'");
+    expect(secondSql).toContain("moderation_status='quarantined'");
   });
 });
 
@@ -233,18 +238,15 @@ describe('ContentModerationService.reviewQueueItem — photo content type', () =
 // moderateContent auto-block (confidence >= 0.9) with rating and photo types
 // ============================================================================
 
-describe('ContentModerationService.moderateContent — auto-block on rating/photo', () => {
-  it('auto-block on rating → inserts rejected queue item + quarantines rating', async () => {
+describe('ContentModerationService.moderateContent — high-confidence AI proposals', () => {
+  it('does not let an AI block quarantine a rating', async () => {
     const item = makeQueueItem({
       id: 'qi-rating-block',
-      status: 'rejected',
+      status: 'pending',
       severity: 'CRITICAL',
       content_type: 'rating',
     });
-    // INSERT rejected queue item
     mockDb.query.mockResolvedValueOnce({ rows: [item], rowCount: 1 } as never);
-    // applyModerationAction quarantine → UPDATE task_ratings SET is_public = false
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
 
     const result = await ContentModerationService.moderateContent({
       contentType: 'rating',
@@ -258,20 +260,18 @@ describe('ContentModerationService.moderateContent — auto-block on rating/phot
 
     expect(result.success).toBe(true);
     expect(result.data?.approved).toBe(false);
-    // Second query is the quarantine action
-    const secondSql = mockDb.query.mock.calls[1][0] as string;
-    expect(secondSql).toContain('task_ratings');
+    expect(mockDb.query).toHaveBeenCalledTimes(1);
+    expect(mockDb.query.mock.calls[0][0]).toContain("'pending'");
   });
 
-  it('auto-block on photo → inserts rejected queue item + quarantines evidence', async () => {
+  it('does not let an AI block quarantine photo evidence', async () => {
     const item = makeQueueItem({
       id: 'qi-photo-block',
-      status: 'rejected',
+      status: 'pending',
       severity: 'CRITICAL',
       content_type: 'photo',
     });
     mockDb.query.mockResolvedValueOnce({ rows: [item], rowCount: 1 } as never);
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
 
     const result = await ContentModerationService.moderateContent({
       contentType: 'photo',
@@ -284,9 +284,8 @@ describe('ContentModerationService.moderateContent — auto-block on rating/phot
 
     expect(result.success).toBe(true);
     expect(result.data?.approved).toBe(false);
-    const secondSql = mockDb.query.mock.calls[1][0] as string;
-    expect(secondSql).toContain('evidence');
-    expect(secondSql).toContain("moderation_status = 'quarantined'");
+    expect(mockDb.query).toHaveBeenCalledTimes(1);
+    expect(mockDb.query.mock.calls[0][0]).toContain("'pending'");
   });
 });
 
@@ -325,7 +324,7 @@ describe('ContentModerationService.reviewAppeal — overturned with content type
     expect(thirdSql).toContain('is_public');
   });
 
-  it('overturned appeal with photo queue item → restores evidence visibility', async () => {
+  it('overturned appeal with photo queue item → restores the canonical photo message after all approvals', async () => {
     const appeal = makeAppeal({
       status: 'overturned',
       review_decision: 'overturned',
@@ -339,15 +338,19 @@ describe('ContentModerationService.reviewAppeal — overturned with content type
 
     mockDb.query.mockResolvedValueOnce({ rows: [appeal], rowCount: 1 } as never);
     mockDb.query.mockResolvedValueOnce({ rows: [queueItem], rowCount: 1 } as never);
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // evidence approve
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // canonical photo message approve
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // queue status update
 
     const result = await ContentModerationService.reviewAppeal('appeal-1', 'admin-1', 'overturned');
 
     expect(result.success).toBe(true);
     const thirdSql = mockDb.query.mock.calls[2][0] as string;
-    expect(thirdSql).toContain('evidence');
-    expect(thirdSql).toContain("moderation_status = 'approved'");
+    expect(thirdSql).toContain('UPDATE task_messages message');
+    expect(thirdSql).toContain("message.message_type='PHOTO'");
+    expect(thirdSql).toContain('NOT EXISTS');
+    expect(thirdSql).toContain("queue.content_type IN ('photo','message')");
+    expect(thirdSql).toContain("queue.status<>'approved'");
+    expect(thirdSql).toContain("moderation_status='approved'");
   });
 
   it('upheld appeal → no content restoration, status becomes upheld', async () => {

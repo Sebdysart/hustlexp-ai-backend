@@ -65,10 +65,22 @@ vi.mock('../../src/lib/outbox-helpers', () => ({
   writeToOutbox: vi.fn().mockResolvedValue({ id: 'outbox-1', idempotencyKey: 'key-1' }),
 }));
 
+vi.mock('../../src/services/WorkerStandingDecisionService', () => ({
+  issueDeactivationAppealRight: vi.fn().mockResolvedValue({
+    decisionId: 'standing-decision-1', appealDeadlineAt: 'later', appealPath: '/earn/appeal/test', newlyIssued: true,
+  }),
+}));
+
 import { TrustTierService, TrustTier } from '../../src/services/TrustTierService';
+import { issueDeactivationAppealRight } from '../../src/services/WorkerStandingDecisionService';
 import { db } from '../../src/db';
 
 const mockQuery = db.query as ReturnType<typeof vi.fn>;
+const productionIdentity = {
+  identity_verification_status: 'VERIFIED',
+  identity_verification_environment: 'PRODUCTION',
+  identity_verification_expires_at: new Date('2099-01-01T00:00:00.000Z'),
+};
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -78,32 +90,38 @@ beforeEach(() => {
 // getTrustTier
 // ============================================================================
 describe('TrustTierService.getTrustTier', () => {
-  it('returns ROOKIE for tier 1', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }], rowCount: 1 });
+  it('returns Explorer for tier 0', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 0, is_banned: false }], rowCount: 1 });
     const tier = await TrustTierService.getTrustTier('u1');
-    expect(tier).toBe(TrustTier.ROOKIE);
+    expect(tier).toBe(TrustTier.EXPLORER);
   });
 
-  it('returns VERIFIED for tier 2', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 2 }], rowCount: 1 });
+  it('returns Verified for tier 1', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }], rowCount: 1 });
     const tier = await TrustTierService.getTrustTier('u1');
     expect(tier).toBe(TrustTier.VERIFIED);
   });
 
-  it('returns TRUSTED for tier 3', async () => {
+  it('returns Home Ready for tier 2', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 2 }], rowCount: 1 });
+    const tier = await TrustTierService.getTrustTier('u1');
+    expect(tier).toBe(TrustTier.HOME_READY);
+  });
+
+  it('returns Pro for tier 3', async () => {
     mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 3 }], rowCount: 1 });
     const tier = await TrustTierService.getTrustTier('u1');
-    expect(tier).toBe(TrustTier.TRUSTED);
+    expect(tier).toBe(TrustTier.PRO);
   });
 
-  it('returns ELITE for tier 4', async () => {
+  it('returns Licensed Specialist for tier 4', async () => {
     mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 4 }], rowCount: 1 });
     const tier = await TrustTierService.getTrustTier('u1');
-    expect(tier).toBe(TrustTier.ELITE);
+    expect(tier).toBe(TrustTier.LICENSED_SPECIALIST);
   });
 
-  it('returns BANNED for tier 9', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 9 }], rowCount: 1 });
+  it('returns BANNED when the terminal ban flag is set', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 2, is_banned: true }], rowCount: 1 });
     const tier = await TrustTierService.getTrustTier('u1');
     expect(tier).toBe(TrustTier.BANNED);
   });
@@ -113,10 +131,9 @@ describe('TrustTierService.getTrustTier', () => {
     await expect(TrustTierService.getTrustTier('u_missing')).rejects.toThrow('not found');
   });
 
-  it('returns ELITE for tier >= 4 (e.g., tier 5)', async () => {
+  it('fails closed for unsupported Tier 5 rather than treating Enterprise Crew as an individual tier', async () => {
     mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 5 }], rowCount: 1 });
-    const tier = await TrustTierService.getTrustTier('u1');
-    expect(tier).toBe(TrustTier.ELITE);
+    await expect(TrustTierService.getTrustTier('u1')).rejects.toThrow('Invalid persisted trust tier 5');
   });
 });
 
@@ -126,14 +143,14 @@ describe('TrustTierService.getTrustTier', () => {
 describe('TrustTierService.evaluatePromotion', () => {
   it('returns not eligible for banned user', async () => {
     // getTrustTier call
-    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 9 }], rowCount: 1 });
+    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 2, is_banned: true }], rowCount: 1 });
 
     const result = await TrustTierService.evaluatePromotion('u1');
     expect(result.eligible).toBe(false);
     expect(result.reasons).toContain('User is banned');
   });
 
-  it('returns not eligible for ELITE user', async () => {
+  it('returns not eligible for a Licensed Specialist', async () => {
     mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 4 }], rowCount: 1 });
 
     const result = await TrustTierService.evaluatePromotion('u1');
@@ -141,12 +158,12 @@ describe('TrustTierService.evaluatePromotion', () => {
     expect(result.reasons).toContain('Already at maximum tier');
   });
 
-  it('evaluates ROOKIE -> VERIFIED: eligible when verified with phone and stripe', async () => {
+  it('evaluates Explorer -> Verified when identity, phone, and payout onboarding are current', async () => {
     // getTrustTier
-    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }], rowCount: 1 });
+    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 0, is_banned: false }], rowCount: 1 });
     // user details query
     mockQuery.mockResolvedValueOnce({
-      rows: [{ is_verified: true, verified_at: new Date(), phone: '+1234', stripe_customer_id: 'cus_123' }],
+      rows: [{ is_verified: true, verified_at: new Date(), ...productionIdentity, phone: '+1234', stripe_connect_id: 'acct_123', payouts_enabled: true }],
       rowCount: 1,
     });
 
@@ -155,10 +172,10 @@ describe('TrustTierService.evaluatePromotion', () => {
     expect(result.targetTier).toBe(TrustTier.VERIFIED);
   });
 
-  it('evaluates ROOKIE -> VERIFIED: not eligible without phone', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }], rowCount: 1 });
+  it('does not promote Explorer without a verified phone', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 0, is_banned: false }], rowCount: 1 });
     mockQuery.mockResolvedValueOnce({
-      rows: [{ is_verified: true, verified_at: new Date(), phone: null, stripe_customer_id: 'cus_123' }],
+      rows: [{ is_verified: true, verified_at: new Date(), ...productionIdentity, phone: null, stripe_connect_id: 'acct_123', payouts_enabled: true }],
       rowCount: 1,
     });
 
@@ -167,10 +184,10 @@ describe('TrustTierService.evaluatePromotion', () => {
     expect(result.reasons).toContain('Phone verification required');
   });
 
-  it('evaluates ROOKIE -> VERIFIED: not eligible without verification', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }], rowCount: 1 });
+  it('does not promote Explorer without verified identity', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 0, is_banned: false }], rowCount: 1 });
     mockQuery.mockResolvedValueOnce({
-      rows: [{ is_verified: false, verified_at: null, phone: '+1234', stripe_customer_id: 'cus_123' }],
+      rows: [{ is_verified: false, verified_at: null, phone: '+1234', stripe_connect_id: 'acct_123', payouts_enabled: true }],
       rowCount: 1,
     });
 
@@ -179,34 +196,47 @@ describe('TrustTierService.evaluatePromotion', () => {
     expect(result.reasons).toContain('ID verification required');
   });
 
-  it('evaluates VERIFIED -> TRUSTED: eligible with 20+ tasks and clean record', async () => {
+  it('evaluates Verified -> Home Ready using current production screening and production history', async () => {
     // getTrustTier
-    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 2 }], rowCount: 1 });
-    // account age
-    mockQuery.mockResolvedValueOnce({ rows: [{ account_age_days: 30 }] });
-    // task stats
+    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1, is_banned: false }], rowCount: 1 });
+    mockQuery.mockResolvedValueOnce({ rows: [{ current_screening: true }] });
     mockQuery.mockResolvedValueOnce({
-      rows: [{ completed_count: '25', dispute_count: '0', on_time_count: '25', total_count: '25' }],
+      rows: [{ completed_count: '5', active_dispute_count: '0' }],
     });
-    // risk check
-    mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] });
 
     const result = await TrustTierService.evaluatePromotion('u1');
     expect(result.eligible).toBe(true);
-    expect(result.targetTier).toBe(TrustTier.TRUSTED);
+    expect(result.targetTier).toBe(TrustTier.HOME_READY);
   });
 
-  it('evaluates VERIFIED -> TRUSTED: not eligible with disputes', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 2 }], rowCount: 1 });
-    mockQuery.mockResolvedValueOnce({ rows: [{ account_age_days: 30 }] });
+  it('does not grant Home Ready from test screening, insufficient history, or an active dispute', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1, is_banned: false }], rowCount: 1 });
+    mockQuery.mockResolvedValueOnce({ rows: [{ current_screening: false }] });
     mockQuery.mockResolvedValueOnce({
-      rows: [{ completed_count: '25', dispute_count: '2', on_time_count: '25', total_count: '25' }],
+      rows: [{ completed_count: '2', active_dispute_count: '1' }],
     });
-    mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] });
 
     const result = await TrustTierService.evaluatePromotion('u1');
     expect(result.eligible).toBe(false);
-    expect(result.reasons.some(r => r.includes('dispute'))).toBe(true);
+    expect(result.reasons).toEqual(expect.arrayContaining([
+      'Current production enhanced screening required',
+      expect.stringContaining('verified production completions'),
+      expect.stringContaining('Active dispute review'),
+    ]));
+  });
+
+  it('classifies Pro and Licensed Specialist progression as unavailable in Build Now', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 2, is_banned: false }], rowCount: 1 });
+    await expect(TrustTierService.evaluatePromotion('u1')).resolves.toMatchObject({
+      eligible: false,
+      reasons: [expect.stringContaining('Pro progression is not enabled')],
+    });
+
+    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 3, is_banned: false }], rowCount: 1 });
+    await expect(TrustTierService.evaluatePromotion('u1')).resolves.toMatchObject({
+      eligible: false,
+      reasons: [expect.stringContaining('Licensed Specialist progression is not enabled')],
+    });
   });
 });
 
@@ -215,7 +245,7 @@ describe('TrustTierService.evaluatePromotion', () => {
 // ============================================================================
 describe('TrustTierService.applyPromotion', () => {
   it('throws for banned user', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 9 }], rowCount: 1 });
+    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 3, is_banned: true }], rowCount: 1 });
 
     await expect(
       TrustTierService.applyPromotion('u1', TrustTier.VERIFIED, 'system'),
@@ -232,14 +262,14 @@ describe('TrustTierService.applyPromotion', () => {
 
   it('throws when preconditions not met', async () => {
     // getTrustTier for applyPromotion (pre-flight)
-    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }], rowCount: 1 });
+    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 0, is_banned: false }], rowCount: 1 });
     // serializableTransaction → txQuery: SELECT trust_tier FOR UPDATE
-    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }], rowCount: 1 });
+    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 0, is_banned: false }], rowCount: 1 });
     // evaluatePromotion -> getTrustTier (inside transaction)
-    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }], rowCount: 1 });
+    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 0, is_banned: false }], rowCount: 1 });
     // evaluatePromotion -> user details (missing verification — not eligible)
     mockQuery.mockResolvedValueOnce({
-      rows: [{ is_verified: false, verified_at: null, phone: null, stripe_customer_id: null }],
+      rows: [{ is_verified: false, verified_at: null, phone: null, stripe_connect_id: null, payouts_enabled: false }],
       rowCount: 1,
     });
 
@@ -250,22 +280,26 @@ describe('TrustTierService.applyPromotion', () => {
 
   it('successfully promotes when eligible', async () => {
     // getTrustTier for applyPromotion (pre-flight)
-    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }], rowCount: 1 });
+    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 0, is_banned: false }], rowCount: 1 });
     // serializableTransaction → txQuery: SELECT trust_tier FOR UPDATE
-    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }], rowCount: 1 });
+    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 0, is_banned: false }], rowCount: 1 });
     // evaluatePromotion -> getTrustTier (inside transaction)
-    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }], rowCount: 1 });
+    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 0, is_banned: false }], rowCount: 1 });
     // evaluatePromotion -> user details (inside transaction)
     mockQuery.mockResolvedValueOnce({
-      rows: [{ is_verified: true, verified_at: new Date(), phone: '+1234', stripe_customer_id: 'cus_1' }],
+      rows: [{ is_verified: true, verified_at: new Date(), ...productionIdentity, phone: '+1234', stripe_connect_id: 'acct_1', payouts_enabled: true }],
       rowCount: 1,
     });
+    // transaction-local promotion authority
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 });
     // serializableTransaction → txQuery: UPDATE users SET trust_tier (CAS matched → rowCount=1)
-    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'u1', trust_tier: 2 }], rowCount: 1 });
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'u1', trust_tier: 1 }], rowCount: 1 });
+    // synchronized capability profile
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+    // append-only trust ledger
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 });
     // A59-2 FIX: SELECT firebase_uid FROM users for invalidateAuthCacheForUser
     mockQuery.mockResolvedValueOnce({ rows: [{ firebase_uid: 'firebase-u1' }], rowCount: 1 });
-    // INSERT trust_ledger
-    mockQuery.mockResolvedValueOnce({ rows: [] });
     // SELECT default_mode for AlphaInstrumentation
     mockQuery.mockResolvedValueOnce({ rows: [{ default_mode: 'worker' }] });
 
@@ -275,23 +309,24 @@ describe('TrustTierService.applyPromotion', () => {
 
   it('returns alreadyApplied when concurrent promotion beats CAS', async () => {
     // getTrustTier for applyPromotion (pre-flight)
-    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }], rowCount: 1 });
+    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 0, is_banned: false }], rowCount: 1 });
     // serializableTransaction → txQuery: SELECT trust_tier FOR UPDATE
-    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }], rowCount: 1 });
+    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 0, is_banned: false }], rowCount: 1 });
     // evaluatePromotion -> getTrustTier (inside transaction)
-    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }], rowCount: 1 });
+    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 0, is_banned: false }], rowCount: 1 });
     // evaluatePromotion -> user details (inside transaction)
     mockQuery.mockResolvedValueOnce({
-      rows: [{ is_verified: true, verified_at: new Date(), phone: '+1234', stripe_customer_id: 'cus_1' }],
+      rows: [{ is_verified: true, verified_at: new Date(), ...productionIdentity, phone: '+1234', stripe_connect_id: 'acct_1', payouts_enabled: true }],
       rowCount: 1,
     });
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 }); // authority marker
     // serializableTransaction → txQuery: UPDATE users SET trust_tier — rowCount=0: concurrent promotion already applied
     mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
 
     const result = await TrustTierService.applyPromotion('u1', TrustTier.VERIFIED, 'system');
     expect(result).toEqual({ success: true, alreadyApplied: true });
     // No further queries (trust_ledger, instrumentation) should be fired
-    expect(mockQuery).toHaveBeenCalledTimes(5);
+    expect(mockQuery).toHaveBeenCalledTimes(6);
   });
 
   it('A59-2: invalidateAuthCacheForUser is called with both userId AND firebaseUid on successful promotion', async () => {
@@ -299,22 +334,23 @@ describe('TrustTierService.applyPromotion', () => {
     const mockInvalidate = vi.mocked(invalidateAuthCacheForUser);
 
     // getTrustTier for applyPromotion (pre-flight)
-    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }], rowCount: 1 });
+    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 0, is_banned: false }], rowCount: 1 });
     // serializableTransaction → txQuery: SELECT trust_tier FOR UPDATE
-    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }], rowCount: 1 });
+    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 0, is_banned: false }], rowCount: 1 });
     // evaluatePromotion -> getTrustTier (inside transaction)
-    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }], rowCount: 1 });
+    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 0, is_banned: false }], rowCount: 1 });
     // evaluatePromotion -> user details (inside transaction)
     mockQuery.mockResolvedValueOnce({
-      rows: [{ is_verified: true, verified_at: new Date(), phone: '+1234', stripe_customer_id: 'cus_1' }],
+      rows: [{ is_verified: true, verified_at: new Date(), ...productionIdentity, phone: '+1234', stripe_connect_id: 'acct_1', payouts_enabled: true }],
       rowCount: 1,
     });
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 }); // authority marker
     // serializableTransaction → txQuery: UPDATE users SET trust_tier (CAS matched → rowCount=1)
-    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'u1', trust_tier: 2 }], rowCount: 1 });
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'u1', trust_tier: 1 }], rowCount: 1 });
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 }); // capability profile
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 }); // trust ledger
     // A59-2 FIX: SELECT firebase_uid FROM users
     mockQuery.mockResolvedValueOnce({ rows: [{ firebase_uid: 'firebase-abc' }], rowCount: 1 });
-    // INSERT trust_ledger
-    mockQuery.mockResolvedValueOnce({ rows: [] });
     // SELECT default_mode for AlphaInstrumentation
     mockQuery.mockResolvedValueOnce({ rows: [{ default_mode: 'worker' }] });
 
@@ -330,10 +366,10 @@ describe('TrustTierService.applyPromotion', () => {
 // ============================================================================
 describe('TrustTierService.banUser', () => {
   it('bans a normal user with no active tasks', async () => {
-    // getTrustTier
-    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 2 }], rowCount: 1 });
-    // UPDATE users SET trust_tier = BANNED
-    mockQuery.mockResolvedValueOnce({ rows: [] });
+    // Lock current worker standing before deactivation.
+    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 2, is_banned: false, default_mode: 'worker' }], rowCount: 1 });
+    // UPDATE users SET is_banned = TRUE
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 });
     // SELECT firebase_uid FROM users (for revokeUserSessions)
     mockQuery.mockResolvedValueOnce({ rows: [{ firebase_uid: 'firebase-u1' }], rowCount: 1 });
     // SELECT active tasks — none
@@ -350,10 +386,13 @@ describe('TrustTierService.banUser', () => {
     await expect(
       TrustTierService.banUser('u1', 'fraud'),
     ).resolves.toBeUndefined();
+    expect(issueDeactivationAppealRight).toHaveBeenCalledWith(expect.objectContaining({
+      workerId: 'u1', currentTier: 2, decisionSource: 'SYSTEM', reason: 'fraud',
+    }));
   });
 
   it('does nothing for already banned user', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 9 }], rowCount: 1 });
+    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 4, is_banned: true }], rowCount: 1 });
 
     await TrustTierService.banUser('u1', 'repeated offenses');
     // Only one query (getTrustTier), no update
@@ -482,11 +521,11 @@ describe('TrustTierService.banUser', () => {
     expect(cancelCall).toBeDefined();
   });
 
-  // A60-1: banUser must set is_banned = TRUE in addition to trust_tier = 9
-  it('A60-1: banUser UPDATE includes is_banned = TRUE', async () => {
+  // A60-1: the terminal ban flag is authoritative; the valid 1-4 trust tier is preserved.
+  it('A60-1: banUser sets is_banned = TRUE without corrupting trust_tier', async () => {
     // transaction -> SELECT trust_tier FOR UPDATE
     mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 2 }], rowCount: 1 });
-    // transaction -> UPDATE users SET trust_tier = BANNED (the call under test)
+    // transaction -> UPDATE users SET is_banned = TRUE (the call under test)
     mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 });
     // SELECT firebase_uid FROM users
     mockQuery.mockResolvedValueOnce({ rows: [{ firebase_uid: 'firebase-u1' }], rowCount: 1 });
@@ -503,15 +542,16 @@ describe('TrustTierService.banUser', () => {
 
     await TrustTierService.banUser('u1', 'fraud');
 
-    // The UPDATE query that sets trust_tier = BANNED must also set is_banned = TRUE
+    // The ban UPDATE must set the terminal flag without writing an out-of-range tier.
     const banUpdateCall = mockQuery.mock.calls.find(
       (call) =>
         typeof call[0] === 'string' &&
         call[0].includes('UPDATE users') &&
-        call[0].includes('trust_tier') &&
-        (call[1] as unknown[])?.includes(9)
+        call[0].includes('is_banned = TRUE')
     );
     expect(banUpdateCall).toBeDefined();
     expect(banUpdateCall![0]).toMatch(/is_banned\s*=\s*TRUE/i);
+    expect(banUpdateCall![0]).not.toMatch(/SET\s+trust_tier\s*=/i);
+    expect(banUpdateCall![1]).toEqual(['u1']);
   });
 });

@@ -32,6 +32,10 @@ import { db } from '../db.js';
 import type { QueryFn } from '../db.js';
 import { StripeService } from '../services/StripeService.js';
 import { EscrowService } from '../services/EscrowService.js';
+import {
+  LocalCertificationPayoutProvider,
+  localCertificationPayoutEnabled,
+} from '../services/LocalCertificationPayoutProvider.js';
 import { notifyAdmins } from '../services/AdminNotificationHelper.js';
 import { workerLogger } from '../logger.js';
 import { config } from '../config.js';
@@ -40,6 +44,7 @@ import { notifyPaymentReleased } from '../lib/task-lifecycle-notifications.js';
 import { verifyJobSignature } from './queues.js';
 import { z } from 'zod';
 import type { Job } from 'bullmq';
+import { ErrorCodes } from '../types.js';
 
 const log = workerLogger.child({ worker: 'completion-release' });
 
@@ -82,6 +87,7 @@ interface TaskSnapshot {
   worker_id: string | null;
   payment_method: string | null;
   poster_id: string | null;
+  automation_classification: string | null;
 }
 
 type CriticalSectionResult =
@@ -151,7 +157,9 @@ export async function processCompletionReleaseJob(job: Job<{ payload: object }>)
     }
 
     const taskResult = await trx<TaskSnapshot>(
-      `SELECT state, worker_id, payment_method, poster_id FROM tasks WHERE id = $1`,
+      `SELECT state, worker_id, payment_method, poster_id,
+              automation_classification
+       FROM tasks WHERE id = $1`,
       [taskId]
     );
 
@@ -186,6 +194,62 @@ export async function processCompletionReleaseJob(job: Job<{ payload: object }>)
 
   if (!task.worker_id) {
     throw new Error(`Task ${taskId} is COMPLETED but has no worker_id — cannot pay out`);
+  }
+
+  // CONTROLLED_TEST tasks use a separately labeled local provider only when
+  // every non-production kill switch is explicitly enabled. This branch never
+  // creates a Stripe-shaped identifier or claims external bank settlement.
+  if (task.automation_classification === 'CONTROLLED_TEST' && localCertificationPayoutEnabled()) {
+    const transfer = await LocalCertificationPayoutProvider.createPaidTransfer({
+      taskId,
+      escrowId,
+      workerId: task.worker_id,
+      idempotencyKey: `completion-release-local-test:${escrowId}`,
+    });
+    if (!transfer.success) {
+      throw new Error(`Completion release: local TEST payout failed — ${transfer.error.message}`);
+    }
+    const release = await EscrowService.release({
+      escrowId,
+      localTestTransferId: transfer.data.transferId,
+    });
+    if (!release.success) {
+      if (release.error.code !== ErrorCodes.ESCROW_TERMINAL
+          && release.error.code !== ErrorCodes.INVALID_STATE) {
+        throw new Error(`Completion release: local TEST escrow release failed — ${release.error.message}`);
+      }
+      const converged = await db.query<{
+        state: string;
+        payout_provider: string | null;
+        provider_transfer_id: string | null;
+        provider_transfer_status: string | null;
+      }>(
+        `SELECT state, payout_provider, provider_transfer_id,
+                provider_transfer_status
+         FROM escrows WHERE id = $1`,
+        [escrowId],
+      );
+      if (
+        converged.rows[0]?.state !== 'RELEASED'
+        || converged.rows[0]?.payout_provider !== 'LOCAL_CERTIFICATION_TEST'
+        || converged.rows[0]?.provider_transfer_id !== transfer.data.transferId
+        || converged.rows[0]?.provider_transfer_status !== 'paid'
+      ) {
+        throw new Error(`Completion release: local TEST release did not converge — ${release.error.message}`);
+      }
+    }
+    await notifyPaymentReleased(task.worker_id, taskId, transfer.data.amountCents);
+    log.info(
+      {
+        escrowId,
+        taskId,
+        transferId: transfer.data.transferId,
+        amountCents: transfer.data.amountCents,
+        provider: transfer.data.provider,
+      },
+      'Completion release: local TEST provider paid and escrow RELEASED',
+    );
+    return;
   }
 
   let stripeTransferId = escrow.stripe_transfer_id;
@@ -306,7 +370,7 @@ export async function processCompletionReleaseJob(job: Job<{ payload: object }>)
     // Terminal codes mean another path (webhook transfer.created / admin) already
     // finished the job — that is idempotent success, not an error.
     const code = releaseResult.error.code;
-    if (code === 'ESCROW_TERMINAL' || code === 'INVALID_STATE') {
+    if (code === ErrorCodes.ESCROW_TERMINAL || code === ErrorCodes.INVALID_STATE) {
       log.info({ escrowId, code }, 'Completion release: escrow already terminal at release step — idempotent no-op');
       return;
     }

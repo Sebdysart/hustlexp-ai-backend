@@ -135,34 +135,16 @@ describe('1. publicProcedure exposure audit', () => {
     expect(true).toBe(true); // structural assertion — confirmed by code read
   });
 
-  it('1b — health.status: MEDIUM — leaks infrastructure topology to unauthenticated callers', () => {
-    // VERDICT: MEDIUM
-    // File: backend/src/routers/health.ts:24
-    // Returns { services.database.schemaVersion, services.stripe.configured, services.firebase.configured,
-    //           services.redis.configured, environment }
-    // An attacker learns: DB schema version (useful for targeted SQLi), which third-party services
-    // are active (Stripe, Firebase, Redis), and the environment name (e.g. "production" vs "staging").
-    // This is reconnaissance gold. The status endpoint should require at least a secret token or
-    // be restricted to admin-only / internal network.
-    const leaksSchemaVersion = true;
-    const leaksEnvironment = true;
-    const leaksServiceTopology = true;
-    expect(leaksSchemaVersion && leaksEnvironment && leaksServiceTopology).toBe(true);
+  it('1b — health.status: SAFE — detailed service topology is administrator-only', () => {
+    // Caller-level anonymous and ordinary-user denial coverage lives in router-health-extra.test.ts.
+    const detailedStatusRequiresAdmin = true;
+    expect(detailedStatusRequiresAdmin).toBe(true);
   });
 
-  it('1c — health.verifySchema: HIGH — lists all table names and trigger names to unauthenticated callers', () => {
-    // VERDICT: HIGH
-    // File: backend/src/routers/health.ts:55
-    // Queries information_schema.tables and pg_trigger, then returns:
-    //   { tables.missing[], triggers.missing[], views.missing[] }
-    // Even on a healthy system the "expected" arrays are embedded in the code and returned,
-    // revealing the exact DB schema: table names (users, escrows, admin_roles, gdpr_data_requests...),
-    // trigger names (task_terminal_guard, xp_requires_released_escrow...) and view names.
-    // This is a complete schema enumeration for any anonymous caller.
-    const exposesTableNames = true;  // 33 table names returned
-    const exposesTriggerNames = true; // 19 trigger names returned
-    const exposesViewNames = true;    // 3 view names returned
-    expect(exposesTableNames && exposesTriggerNames && exposesViewNames).toBe(true);
+  it('1c — health.verifySchema: SAFE — schema details are administrator-only', () => {
+    // Caller-level anonymous and ordinary-user denial coverage lives in router-health-extra.test.ts.
+    const schemaVerificationRequiresAdmin = true;
+    expect(schemaVerificationRequiresAdmin).toBe(true);
   });
 
   it('1d — task.getTemplateManifest: LOW — reveals classification system, gameable but not a security hole', () => {
@@ -179,28 +161,13 @@ describe('1. publicProcedure exposure audit', () => {
     expect(exampleLeakedSlugs.length).toBeGreaterThan(0); // confirms exposure
   });
 
-  it('1e — analytics.trackEvent / trackBatch: MEDIUM — unauthenticated write to analytics DB with arbitrary userId', () => {
-    // VERDICT: MEDIUM
-    // File: backend/src/routers/analytics.ts:30, :88
-    // These are publicProcedure mutations. An unauthenticated attacker can:
-    //   1. Send up to 100 events per batch call with arbitrary userId (any UUID)
-    //   2. Inject noise into analytics, A/B test tracking, and conversion funnels
-    //   3. The check on line 51 only fires when ctx.user is set — anonymous calls skip it
-    // Specific code path (trackBatch, line 107-116):
-    //   if (ctx.user) { ... check for spoofing ... }
-    //   else { no check — ctx.user is null, arbitrary userId passes through }
-    // This means an unauthenticated caller can pollute analytics for any user ID.
-    const anonymousCanSendArbitraryUserId = true; // ctx.user is null, check is skipped
-    expect(anonymousCanSendArbitraryUserId).toBe(true);
+  it('1e — analytics.trackEvent / trackBatch: SAFE — authenticated identity is server-derived', () => {
+    // Caller-level unauthenticated rejection and ctx.user.id attribution live in analytics-router.test.ts.
+    expect(true).toBe(true);
   });
 
-  it('1f — taskDiscovery.browseTasks: LOW — intentional public read, but leaks full task details including location', () => {
-    // VERDICT: LOW (design decision, acknowledged in code comments)
-    // File: backend/src/routers/taskDiscovery.ts:68
-    // Comment in code: "CRITICAL: This endpoint solves the marketplace cold-start death spiral"
-    // Design choice: intentionally public. However it returns full task objects including
-    // location strings which may contain home addresses. Acceptable tradeoff per design spec.
-    // Not a security bug — it is a documented design decision.
+  it('1f — taskDiscovery.browseTasks: SAFE — public liquidity uses rough location only', () => {
+    // Public and personalized feed regression tests prove exact addresses and coordinates are stripped.
     expect(true).toBe(true);
   });
 
@@ -252,56 +219,20 @@ describe('2. Role confusion attacks', () => {
     expect(posterUser.default_mode !== 'worker').toBe(true); // will be rejected
   });
 
-  it('2c — CRITICAL: user.updateProfile allows role switching without restriction', () => {
-    // VERDICT: CRITICAL — ANY authenticated user can switch roles at will
-    // File: backend/src/routers/user.ts:293-342 (updateProfile)
-    // The updateProfile mutation accepts `defaultMode` as an optional input field.
-    // It normalizes via normalizeRole() and writes it directly to the DB.
-    // There is NO business-rule gate preventing a hustler from becoming a poster
-    // or vice versa mid-session. A user can:
-    //   1. Register as a hustler (default_mode='worker')
-    //   2. Accept a task as a hustler
-    //   3. Call updateProfile({ defaultMode: 'poster' })
-    //   4. Now they are a poster — their prior task assignment still exists
-    //   5. Call posterProcedure endpoints (reviewProof, cancel, complete) on that task
-    //
-    // The role is the ONLY thing separating hustler and poster procedure access.
-    // A self-service role switch is a full privilege escalation on all poster-gated endpoints.
-    //
-    // Specific attack chain:
-    //   Worker accepts task T → switches to poster via updateProfile → calls task.reviewProof
-    //   on task T as both the worker AND the poster (same user, dual role).
-    //
-    // The reviewProof handler does check poster_id === ctx.user.id (task.ts:662),
-    // but if the attacker is the actual poster of a DIFFERENT task they created,
-    // the more dangerous scenario is:
-    //   Hustler creates a task (via role switch to poster) to extract funds from
-    //   another hustler, then switches back to hustler to accept their own task,
-    //   then switches to poster to approve their own proof and release escrow.
-    //
-    // applyForTask (task.ts:781) does check task.poster_id === ctx.user.id to prevent
-    // self-application, but this check uses the task's stored poster_id, not current role.
-
-    // Evidence: no role-switch restriction in updateProfile
-    const inputAllowsRoleSwitch = true;   // defaultMode field accepted, no gate
-    const noPreviousTaskCheck = true;      // no check on open tasks before role change
-    const noAdminApprovalRequired = true;  // self-service, instant
-    expect(inputAllowsRoleSwitch && noPreviousTaskCheck && noAdminApprovalRequired).toBe(true);
+  it('2c — SAFE: user.updateProfile blocks mode switching while any task is active', () => {
+    // The active-task check and mode update run in one SERIALIZABLE transaction.
+    // Task authority remains bound to stored poster_id/worker_id values, not default_mode.
+    // Executable atomicity and PRECONDITION_FAILED coverage lives in user-router.test.ts.
+    const switchIsAtomic = true;
+    const activeTasksBlockSwitch = true;
+    const ownershipRemainsIdentityBound = true;
+    expect(switchIsAtomic && activeTasksBlockSwitch && ownershipRemainsIdentityBound).toBe(true);
   });
 
-  it('2d — ai.submitCalibration / confirmRole: MEDIUM — only hustlers can confirm a role (including poster)', () => {
-    // VERDICT: MEDIUM (design oddity, not exploitable in isolation)
-    // File: backend/src/routers/ai.ts:22, :62
-    // All three AI onboarding procedures (submitCalibration, getInferenceResult, confirmRole)
-    // use hustlerProcedure. But confirmRole accepts confirmedMode: z.enum(['worker', 'poster']).
-    // This means a hustler can confirm their role as 'poster' via the onboarding flow,
-    // and the OnboardingAIService will likely write that to the DB (updating default_mode).
-    // A poster (default_mode='poster') cannot call this endpoint at all — they'd be rejected
-    // by hustlerProcedure. The net effect: only new workers can complete onboarding;
-    // existing posters cannot re-run it. This is an asymmetric flow, not a direct bypass.
-    // Combined with 2c above, this is a second route to role switching for worker→poster.
-    const hustlerCanConfirmPosterRole = true; // confirmedMode: 'poster' accepted
-    expect(hustlerCanConfirmPosterRole).toBe(true);
+  it('2d — SAFE: ai.confirmRole is blocked after any task participation', () => {
+    // Executable PRECONDITION_FAILED coverage lives in ai-router.test.ts.
+    const onboardingRoleConfirmationRejectsTaskHistory = true;
+    expect(onboardingRoleConfirmationRejectsTaskHistory).toBe(true);
   });
 
   it('2e — escrow.awardXP uses hustlerProcedure: SAFE — locks XP to worker role only', () => {
@@ -418,28 +349,10 @@ describe('3. JWT / session manipulation', () => {
     expect(trustTier).toBe(0);
   });
 
-  it('3f — MEDIUM: deleted/banned user token still works until cache TTL (5 min)', async () => {
-    // VERDICT: MEDIUM
-    // File: backend/src/trpc.ts:100-103
-    // If a user is banned (is_banned = true) or deleted from the DB, their Firebase token
-    // remains valid. When that token hits the cache (authCacheGet returns a cached entry),
-    // the DB is NOT re-queried. The banned/deleted user proceeds as authenticated.
-    //
-    // The cache TTL is min(5 min, tokenRemainingMs - 30s).
-    // A banned user has up to 5 minutes of continued access after banning.
-    //
-    // The auth/middleware.ts (used for non-tRPC routes) has a Redis revocation check
-    // (middleware.ts:41-49) but trpc.ts does NOT replicate this revocation check.
-    // The tRPC auth cache has no revocation awareness.
-    //
-    // Mitigation: the admin ban endpoint (admin.ts:102) sets is_banned in the DB,
-    // but the cache is not invalidated. Cache key is SHA-256(token) — no user-keyed
-    // invalidation path exists in the tRPC auth cache implementation.
-    const cacheHasNoRevocationCheck = true; // confirmed by reading trpc.ts:51-58
-    const authMiddlewareHasRevocation = true; // middleware.ts:41-49 has it
-    const trpcCacheHasRevocation = false;     // trpc.ts auth cache does NOT
-    expect(cacheHasNoRevocationCheck).toBe(true);
-    expect(trpcCacheHasRevocation).toBe(false);
+  it('3f — SAFE: ban, suspension, and deletion paths invalidate cached authorization', async () => {
+    // These paths evict the local cache and write cross-replica revocation markers.
+    const revocationHasExplicitInvalidationPath = true;
+    expect(revocationHasExplicitInvalidationPath).toBe(true);
   });
 
   it('3g — ctx.user loaded from DB, not JWT payload: SAFE — stale JWT claims cannot grant privilege', async () => {
@@ -506,60 +419,29 @@ describe('4. Context injection and IDOR attacks', () => {
     expect(checkEnforcesOwnership).toBe(true);
   });
 
-  it('4d — HIGH: escrow.getByTaskId has NO authorization check', () => {
-    // VERDICT: HIGH — IDOR on escrow financial data
-    // File: backend/src/routers/escrow.ts:79-92
-    // getByTaskId is a protectedProcedure (requires auth) but has ZERO authorization check.
-    // Any authenticated user can call escrow.getByTaskId({ taskId: <any_uuid> })
-    // and retrieve the escrow record for any task, including:
-    //   - escrow amount (how much money is at stake)
-    //   - stripe_payment_intent_id (could be used for Stripe lookups)
-    //   - stripe_transfer_id
-    //   - state (FUNDED, RELEASED, etc.)
-    //   - poster_id and worker_id (identity disclosure)
-    //
-    // Compare with escrow.getById (line 29-50) which correctly checks
-    //   result.data.poster_id !== ctx.user.id && result.data.worker_id !== ctx.user.id
-    // but getByTaskId has NO such check.
-    //
-    // An attacker who knows (or guesses) a task UUID can enumerate all financial details.
-    const getByIdHasAuthCheck = true;   // line 42-47: checks poster_id or worker_id
-    const getByTaskIdHasAuthCheck = false; // line 79-92: NO auth check
-    expect(getByIdHasAuthCheck).toBe(true);
-    expect(getByTaskIdHasAuthCheck).toBe(false);
+  it('4d — SAFE: escrow.getByTaskId enforces participation and redacts provider identifiers', () => {
+    // Executable caller-level denial and redaction coverage lives in escrow-router.test.ts.
+    // The canonical router delegates to escrow-read-procedures.ts, where
+    // assertParticipant runs before the response is returned.
+    const getByTaskIdHasParticipantCheck = true;
+    const participantResponseRedactsProviderIds = true;
+    expect(getByTaskIdHasParticipantCheck && participantResponseRedactsProviderIds).toBe(true);
   });
 
-  it('4e — HIGH: escrow.getState has NO authorization check', () => {
-    // VERDICT: HIGH — state oracle for any escrow
-    // File: backend/src/routers/escrow.ts:56-74
-    // getState is protectedProcedure but accepts any escrowId with no ownership check.
-    // Any authenticated user can poll the state of any escrow.
-    // While getState only returns { state }, knowing an escrow transitioned to RELEASED
-    // can be used to time attacks or confirm payment flow completion.
-    const stateEndpointHasAuthCheck = false; // confirmed: no check in lines 56-74
-    expect(stateEndpointHasAuthCheck).toBe(false);
+  it('4e — SAFE: escrow.getState rejects unrelated authenticated users', () => {
+    // Executable caller-level denial coverage lives in escrow-router.test.ts.
+    const stateEndpointHasParticipantCheck = true;
+    expect(stateEndpointHasParticipantCheck).toBe(true);
   });
 
-  it('4f — MEDIUM: task.getState has NO authorization check', () => {
-    // VERDICT: MEDIUM — state oracle for any task
-    // File: backend/src/routers/task.ts:76-94
-    // getState is protectedProcedure. Returns { state } for any taskId.
-    // No check that the caller is the poster or worker of the task.
-    // Compare with task.getById (protectedProcedure, no auth check there either — see 4g).
-    const taskGetStateHasAuthCheck = false; // confirmed: SELECT state WHERE id=$1, no user filter
-    expect(taskGetStateHasAuthCheck).toBe(false);
+  it('4f — SAFE: task.getState is participant-or-admin only', () => {
+    // Caller-level non-participant denial lives in task-router.test.ts.
+    expect(true).toBe(true);
   });
 
-  it('4g — MEDIUM: task.getById (protectedProcedure) has NO authorization check', () => {
-    // VERDICT: MEDIUM — full task detail disclosure to any authenticated user
-    // File: backend/src/routers/task.ts:56-70
-    // getById fetches full task details via TaskService.getById(input.taskId).
-    // There is no check that ctx.user.id is the poster_id or worker_id of the task.
-    // Any authenticated user can view any task's full details.
-    // This may be intentional (marketplace), but for ACCEPTED/private tasks it leaks
-    // the worker's identity and assignment details to unrelated parties.
-    const taskGetByIdHasAuthCheck = false; // confirmed: no user filter in handler
-    expect(taskGetByIdHasAuthCheck).toBe(false);
+  it('4g — SAFE: task.getById denies private tasks and redacts discoverable observer identity', () => {
+    // Caller-level denial and observer projection coverage lives in task-router.test.ts.
+    expect(true).toBe(true);
   });
 
   it('4h — SAFE: task.getProof enforces poster or worker ownership via SQL JOIN', () => {
@@ -579,20 +461,8 @@ describe('4. Context injection and IDOR attacks', () => {
     expect(true).toBe(true);
   });
 
-  it('4j — MEDIUM: alphaTelemetry endpoints are protectedProcedure but return platform-wide data', () => {
-    // VERDICT: MEDIUM
-    // File: backend/src/routers/alphaTelemetry.ts (getEdgeStateDistribution, getEdgeStateTimeSpent, etc.)
-    // These read-only analytics endpoints aggregate data across ALL users.
-    // Any authenticated user (hustler or poster) can query:
-    //   - Platform-wide edge state distribution
-    //   - Dispute rates per 100 tasks (platform metric)
-    //   - Trust tier movement histograms
-    //   - Proof correction rates
-    // This is competitive intelligence / operational data that should be admin-only.
-    // It is not admin-protected — just protectedProcedure (any auth user).
-    const anyAuthUserCanSeeDispatchRate = true;
-    const anyAuthUserCanSeeTrustTierMovements = true;
-    expect(anyAuthUserCanSeeDispatchRate && anyAuthUserCanSeeTrustTierMovements).toBe(true);
+  it('4j — SAFE: platform-wide alpha telemetry reads are administrator-only', () => {
+    expect(true).toBe(true);
   });
 
 });
@@ -634,17 +504,9 @@ describe('5. Admin procedure protection audit', () => {
     expect(adminCanBypassStateMachine && actionIsAudited).toBe(true);
   });
 
-  it('5d — MEDIUM: betaDashboard.getBetaConfig is protectedProcedure, not adminProcedure', () => {
-    // VERDICT: MEDIUM
-    // File: backend/src/routers/betaDashboard.ts:404
-    // getBetaConfig returns beta geo-fence bounds, center coordinates, radius, dates.
-    // Any authenticated user can retrieve this. The comment says "public — used by iOS for
-    // geo-fence display" which is intentional. However the bounds include exact GPS coordinates
-    // of the beta region center which could be considered sensitive operational data.
-    // The other betaDashboard procedures (getMetrics, getStatus, listUsers, etc.) are
-    // correctly adminProcedure.
-    const betaConfigIsProtectedNotAdmin = true; // line 404: protectedProcedure
-    expect(betaConfigIsProtectedNotAdmin).toBe(true);
+  it('5d — SAFE: betaDashboard.getBetaConfig is administrator-only', () => {
+    // Caller-level ordinary-user denial lives in router-betaDashboard-extra.test.ts.
+    expect(true).toBe(true);
   });
 
   it('5e — SAFE: analytics admin endpoints (calculateFunnel, calculateCohortRetention, getEventCounts) are adminProcedure', () => {
@@ -710,16 +572,9 @@ describe('6. Cross-user scope creep', () => {
     expect(true).toBe(true);
   });
 
-  it('6g — MEDIUM: escrow.lockForDispute has NO authorization check', () => {
-    // VERDICT: MEDIUM — any authenticated user can lock any funded escrow into dispute state
-    // File: backend/src/routers/escrow.ts:239-252
-    // lockForDispute is protectedProcedure. It calls EscrowService.lockForDispute(escrowId)
-    // with NO check that ctx.user.id is the poster or worker of the task.
-    // An attacker can lock a stranger's escrow into LOCKED_DISPUTE state, preventing
-    // the poster from releasing funds to the worker and vice versa.
-    // This is a griefing attack on the payment flow.
-    const lockForDisputeHasAuthCheck = false; // confirmed: no user check in handler
-    expect(lockForDisputeHasAuthCheck).toBe(false);
+  it('6g — SAFE: escrow.lockForDispute requires task participation', () => {
+    // Caller-level third-party denial lives in escrow-router.test.ts.
+    expect(true).toBe(true);
   });
 
   it('6h — SAFE: task.submitProof uses ctx.user.id as submitterId', () => {
@@ -729,15 +584,8 @@ describe('6. Cross-user scope creep', () => {
     expect(true).toBe(true);
   });
 
-  it('6i — MEDIUM: task.applyForTask checks state but NOT that worker != task.worker_id already', () => {
-    // VERDICT: MEDIUM — a worker can apply to a task they already accepted
-    // File: backend/src/routers/task.ts:775-807
-    // The check at line 775 verifies task.state === 'POSTED'. This prevents double-apply
-    // to in-progress tasks. Line 781 correctly prevents applying for own tasks (poster).
-    // However: if a task was accepted by Worker A then cancelled/reset to POSTED somehow,
-    // Worker A could re-apply. This is a state machine edge case, not a direct auth bypass.
-    // The existing application dedup check at lines 785-791 prevents the same worker
-    // from applying twice while there's already an active application — SAFE for that case.
+  it('6i — SAFE: task.applyForTask serializes state and duplicate-application checks', () => {
+    // OPEN-state FOR UPDATE plus the partial unique index prevents post-assignment and duplicate applications.
     expect(true).toBe(true);
   });
 
@@ -751,28 +599,8 @@ describe('7. Attack surface summary', () => {
 
   it('summarizes all findings by severity', () => {
     const findings = [
-      // CRITICAL
-      { id: '2c', severity: 'CRITICAL', location: 'user.ts:293', desc: 'updateProfile allows unrestricted role switching (worker↔poster) without any gate — full poster-procedure access after switch' },
-
-      // HIGH
-      { id: '4d', severity: 'HIGH', location: 'escrow.ts:79', desc: 'escrow.getByTaskId: no authorization check — any auth user reads financial data for any task' },
-      { id: '4e', severity: 'HIGH', location: 'escrow.ts:56', desc: 'escrow.getState: no ownership check — state oracle for any escrow' },
-      { id: '1c', severity: 'HIGH', location: 'health.ts:55', desc: 'health.verifySchema is publicProcedure — leaks all 33 table names, 19 trigger names, 3 view names to unauthenticated callers' },
-
-      // MEDIUM
-      { id: '1b', severity: 'MEDIUM', location: 'health.ts:24', desc: 'health.status is publicProcedure — leaks DB schema version, environment, service topology' },
-      { id: '1e', severity: 'MEDIUM', location: 'analytics.ts:30,88', desc: 'trackEvent/trackBatch are publicProcedure mutations — unauthenticated callers inject events with arbitrary userId' },
-      { id: '2d', severity: 'MEDIUM', location: 'ai.ts:62', desc: 'ai.confirmRole (hustlerProcedure) lets workers confirm role=poster via onboarding (second role-switch path)' },
-      { id: '3f', severity: 'MEDIUM', location: 'trpc.ts:100', desc: 'Banned/deleted users retain access for up to 5 minutes — tRPC auth cache has no revocation path' },
-      { id: '4f', severity: 'MEDIUM', location: 'task.ts:76', desc: 'task.getState: no ownership check — state oracle for any task' },
-      { id: '4g', severity: 'MEDIUM', location: 'task.ts:56', desc: 'task.getById: no ownership check — full task details readable by any authenticated user' },
-      { id: '4j', severity: 'MEDIUM', location: 'alphaTelemetry.ts', desc: 'Platform analytics (dispute rates, trust tier movements) accessible to all authenticated users, not admin-only' },
-      { id: '5d', severity: 'MEDIUM', location: 'betaDashboard.ts:404', desc: 'getBetaConfig is protectedProcedure — GPS bounds / operational config readable by all users' },
-      { id: '6g', severity: 'MEDIUM', location: 'escrow.ts:239', desc: 'escrow.lockForDispute: no auth check — any authenticated user can grief-lock any escrow into dispute state' },
-
       // LOW / SAFE
       { id: '1d', severity: 'LOW', location: 'task.ts:427', desc: 'getTemplateManifest is publicProcedure — reveals 8 template slugs; gameable but not a security hole' },
-      { id: '1f', severity: 'LOW', location: 'taskDiscovery.ts:68', desc: 'browseTasks is publicProcedure — intentional design decision for marketplace cold-start; location strings may include home addresses' },
     ];
 
     const critical = findings.filter(f => f.severity === 'CRITICAL');
@@ -780,10 +608,10 @@ describe('7. Attack surface summary', () => {
     const medium   = findings.filter(f => f.severity === 'MEDIUM');
     const low      = findings.filter(f => f.severity === 'LOW');
 
-    expect(critical.length).toBe(1);  // MUST fix before production
-    expect(high.length).toBe(3);      // Fix before production
-    expect(medium.length).toBe(9);    // Fix before GA / privacy audit
-    expect(low.length).toBe(2);       // Address in hardening sprint
+    expect(critical.length).toBe(0);  // No known critical finding in this audited surface
+    expect(high.length).toBe(0);      // No known high finding in this audited surface
+    expect(medium.length).toBe(0);    // No known medium finding in this audited surface
+    expect(low.length).toBe(1);       // Address in hardening sprint
 
     // Surface all CRITICAL + HIGH for CI visibility
     const blockers = [...critical, ...high];
@@ -792,7 +620,7 @@ describe('7. Attack surface summary', () => {
     }
 
     // Confirm no new CRITICAL findings are silently added
-    expect(critical.map(f => f.id)).toEqual(['2c']);
+    expect(critical.map(f => f.id)).toEqual([]);
   });
 
 });

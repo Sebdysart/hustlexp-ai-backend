@@ -4,7 +4,7 @@
  * Tests tip creation (validation, Stripe), tip confirmation,
  * getting tips for tasks, and total tips received.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
 
 // vi.hoisted() runs before vi.mock() hoisting, so these refs are safe to use
 // inside the MockStripe class initializer even though vi.mock is hoisted.
@@ -59,11 +59,31 @@ beforeEach(() => {
   vi.resetAllMocks();
 });
 
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
 describe('TippingService', () => {
   // --------------------------------------------------------------------------
   // createTip
   // --------------------------------------------------------------------------
   describe('createTip', () => {
+    it('fails closed in production before reading task state or creating a PaymentIntent', async () => {
+      vi.stubEnv('NODE_ENV', 'production');
+      vi.stubEnv('HX_PAYMENT_CREATION_MODE', 'frozen');
+
+      const result = await TippingService.createTip({
+        taskId: 'task-frozen',
+        posterId: 'poster-frozen',
+        amountCents: 500,
+      });
+
+      expect(result.success).toBe(false);
+      if (!result.success) expect(result.error.code).toBe('PAYMENT_CREATION_FROZEN');
+      expect(mockDb.query).not.toHaveBeenCalled();
+      expect(mockPaymentIntentsCreate).not.toHaveBeenCalled();
+    });
+
     it('returns NOT_FOUND when task does not exist', async () => {
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
 

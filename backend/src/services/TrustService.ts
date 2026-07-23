@@ -1,20 +1,17 @@
 /**
  * TrustService v1.0.0
  * 
- * CONSTITUTIONAL: Manages trust tier promotions
- * 
- * Trust tier changes are automatically audited via database trigger.
- * This service orchestrates the promotion logic.
+ * Compatibility facade over the canonical TrustTierService.
  * 
  * @see schema.sql §3 (trust_ledger table)
- * @see PRODUCT_SPEC.md §8.2
+ * @see HustleXP Local Work Network blueprint §5
  * @see ARCHITECTURE.md §2.2
  */
 
-import { db, isInvariantViolation, getErrorMessage } from '../db.js';
+import { db } from '../db.js';
 import type { ServiceResult, TrustLedgerEntry, User } from '../types.js';
 import { ErrorCodes } from '../types.js';
-import { invalidateAuthCacheForUser } from '../auth-cache.js';
+import { TrustTier, TrustTierService } from './TrustTierService.js';
 
 // ============================================================================
 // TYPES
@@ -22,21 +19,13 @@ import { invalidateAuthCacheForUser } from '../auth-cache.js';
 
 interface PromoteTrustParams {
   userId: string;
-  newTier: number; // 1-4
+  newTier: number; // 1-4; Explorer is the starting state, not a promotion target.
   reason: string;
   reasonDetails?: Record<string, unknown>;
   taskId?: string;
   disputeId?: string;
   changedBy: string; // 'system' or 'admin:usr_xxx'
 }
-
-// Trust tier requirements (PRODUCT_SPEC §8.2)
-const TRUST_TIER_REQUIREMENTS = {
-  1: { minTasks: 0 },      // Rookie
-  2: { minTasks: 5 },      // Reliable
-  3: { minTasks: 20 },     // Trusted
-  4: { minTasks: 50 },     // Elite
-} as const;
 
 // ============================================================================
 // SERVICE
@@ -106,11 +95,11 @@ export const TrustService = {
   // --------------------------------------------------------------------------
   
   /**
-   * Promote user to a new trust tier
-   * Database trigger will automatically log to trust_ledger
+   * Promote through the canonical evidence evaluator. Caller-supplied reason
+   * text and task counts never authorize a tier transition.
    */
   promote: async (params: PromoteTrustParams): Promise<ServiceResult<User>> => {
-    const { userId, newTier, reason, reasonDetails, taskId, disputeId, changedBy } = params;
+    const { userId, newTier, changedBy } = params;
     
     // Validate tier range
     if (newTier < 1 || newTier > 4) {
@@ -124,80 +113,31 @@ export const TrustService = {
     }
     
     try {
-      // Get current tier
-      const currentResult = await db.query<{ trust_tier: number }>(
-        'SELECT trust_tier FROM users WHERE id = $1',
-        [userId]
+      await TrustTierService.applyPromotion(
+        userId,
+        newTier as TrustTier,
+        changedBy === 'system' ? 'system' : 'admin',
       );
-      
-      if (currentResult.rows.length === 0) {
-        return {
-          success: false,
-          error: {
-            code: ErrorCodes.NOT_FOUND,
-            message: `User ${userId} not found`,
-          },
-        };
-      }
-      
-      const currentTier = currentResult.rows[0].trust_tier;
-      
-      // Only allow promotion (not demotion) via this service
-      if (newTier < currentTier) {
-        return {
-          success: false,
-          error: {
-            code: 'INVALID_TRANSITION',
-            message: `Cannot demote trust tier from ${currentTier} to ${newTier}. Use admin override if needed.`,
-          },
-        };
-      }
-      
-      if (newTier === currentTier) {
-        // No change needed, but return current user
-        const userResult = await db.query<User>(
-          'SELECT * FROM users WHERE id = $1',
-          [userId]
-        );
-        return { success: true, data: userResult.rows[0] };
-      }
-      
-      // Update trust tier (trigger will log to trust_ledger)
-      const updateResult = await db.query<User>(
-        'UPDATE users SET trust_tier = $1 WHERE id = $2 RETURNING *',
-        [newTier, userId]
-      );
-
-      // Invalidate auth cache so the updated tier is visible immediately
-      // A60-4 FIX: trust_tier change without cache invalidation leaves cached
-      // sessions with stale tier for up to 5 minutes.
-      const fbUidResult = await db.query<{ firebase_uid: string }>(
-        'SELECT firebase_uid FROM users WHERE id = $1',
-        [userId]
-      );
-      const fbUid = fbUidResult.rows[0]?.firebase_uid;
-      await invalidateAuthCacheForUser(userId, fbUid, false); // writeRevocationMarker=false — tier change is not a security event
-
-      // Manually insert ledger entry with full context (trigger only logs basic info)
-      await db.query(
-        `INSERT INTO trust_ledger (
-          user_id, old_tier, new_tier, reason, reason_details,
-          task_id, dispute_id, changed_by
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-        [userId, currentTier, newTier, reason, reasonDetails ? JSON.stringify(reasonDetails) : null, taskId, disputeId, changedBy]
-      );
-      
-      return { success: true, data: updateResult.rows[0] };
     } catch (error) {
-      if (isInvariantViolation(error)) {
+      return {
+        success: false,
+        error: {
+          code: 'PROMOTION_NOT_AUTHORIZED',
+          message: error instanceof Error ? error.message : 'Unknown error',
+        },
+      };
+    }
+
+    try {
+      const userResult = await db.query<User>('SELECT * FROM users WHERE id = $1', [userId]);
+      if (!userResult.rows[0]) {
         return {
           success: false,
-          error: {
-            code: error.code || 'INVARIANT_VIOLATION',
-            message: getErrorMessage(error.code || ''),
-          },
+          error: { code: ErrorCodes.NOT_FOUND, message: `User ${userId} not found` },
         };
       }
+      return { success: true, data: userResult.rows[0] };
+    } catch (error) {
       return {
         success: false,
         error: {
@@ -209,53 +149,22 @@ export const TrustService = {
   },
   
   /**
-   * Check if user qualifies for trust tier promotion
-   * Based on completed tasks count
+   * Read the canonical evidence decision. XP and raw task counts are never a
+   * parallel promotion authority.
    */
   checkPromotionEligibility: async (userId: string): Promise<ServiceResult<{ eligible: boolean; currentTier: number; nextTier?: number }>> => {
     try {
-      // Get current tier and completed tasks count
-      const userResult = await db.query<{ trust_tier: number }>(
-        'SELECT trust_tier FROM users WHERE id = $1',
-        [userId]
-      );
-      
-      if (userResult.rows.length === 0) {
-        return {
-          success: false,
-          error: {
-            code: ErrorCodes.NOT_FOUND,
-            message: `User ${userId} not found`,
-          },
-        };
-      }
-      
-      const currentTier = userResult.rows[0].trust_tier;
-      
-      // Count completed tasks
-      const tasksResult = await db.query<{ count: string }>(
-        `SELECT COUNT(*) as count FROM tasks 
-         WHERE worker_id = $1 AND state = 'COMPLETED'`,
-        [userId]
-      );
-      
-      const completedTasks = parseInt(tasksResult.rows[0].count, 10);
-      
-      // Check if eligible for next tier
-      const nextTier = currentTier + 1;
-      if (nextTier > 4) {
+      const currentTier = await TrustTierService.getTrustTier(userId);
+      if (currentTier === TrustTier.BANNED) {
         return { success: true, data: { eligible: false, currentTier } };
       }
-      
-      const requirement = TRUST_TIER_REQUIREMENTS[nextTier as keyof typeof TRUST_TIER_REQUIREMENTS];
-      const eligible = completedTasks >= requirement.minTasks;
-      
+      const decision = await TrustTierService.evaluatePromotion(userId);
       return {
         success: true,
         data: {
-          eligible,
+          eligible: decision.eligible,
           currentTier,
-          nextTier: eligible ? nextTier : undefined,
+          nextTier: decision.eligible ? decision.targetTier : undefined,
         },
       };
     } catch (error) {

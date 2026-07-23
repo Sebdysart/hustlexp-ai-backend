@@ -6,6 +6,7 @@ import { MIN_INSTANT_TIER, MIN_SENSITIVE_INSTANT_TIER } from './InstantTrustConf
 import { PlanService } from './PlanService.js';
 import { TaskProgressService } from './TaskProgressService.js';
 import { TaskReadService } from './TaskReadService.js';
+import { assertTaskMutationEligibility } from './TaskEligibilityPolicy.js';
 import type { AcceptTaskParams, TaskRiskLevel } from './TaskServiceShared.js';
 
 const log = taskLogger.child({ service: 'TaskAcceptService' });
@@ -19,6 +20,7 @@ type TaskCandidate = {
   worker_id: string | null;
   poster_id: string;
   trust_tier_required: number | null;
+  mutual_consent_required: boolean;
 };
 
 class AcceptFailure extends Error {
@@ -33,7 +35,8 @@ function fail(code: string, message: string, details?: Record<string, unknown>):
 
 async function loadTask(query: Query, taskId: string): Promise<TaskCandidate> {
   const result = await query<TaskCandidate>(
-    `SELECT risk_level, instant_mode, sensitive, price, state, worker_id, poster_id, trust_tier_required
+    `SELECT risk_level, instant_mode, sensitive, price, state, worker_id, poster_id,
+            trust_tier_required, mutual_consent_required
      FROM tasks WHERE id = $1 FOR UPDATE`,
     [taskId]
   );
@@ -43,6 +46,9 @@ async function loadTask(query: Query, taskId: string): Promise<TaskCandidate> {
 
 function assertBasicState(task: TaskCandidate, workerId: string): void {
   if (task.poster_id === workerId) fail('FORBIDDEN', 'You cannot accept your own task.');
+  if (task.mutual_consent_required) {
+    fail('CONSENT_REQUIRED', 'This task must be accepted through the consent checklist.');
+  }
   if (task.state !== 'MATCHING') {
     fail(
       ErrorCodes.INVALID_STATE,
@@ -102,13 +108,15 @@ async function assertInstantRate(workerId: string): Promise<void> {
 }
 
 async function assertInstantTrust(query: Query, task: TaskCandidate, workerId: string): Promise<void> {
-  const result = await query<{ trust_tier: number; trust_hold: boolean }>(
-    'SELECT trust_tier, trust_hold FROM users WHERE id = $1',
+  const result = await query<{ trust_tier: number; active_trust_hold: boolean }>(
+    `SELECT trust_tier,
+            COALESCE(trust_hold AND (trust_hold_until IS NULL OR trust_hold_until > NOW()), FALSE) AS active_trust_hold
+     FROM users WHERE id = $1`,
     [workerId]
   );
   const worker = result.rows[0];
   if (!worker) fail(ErrorCodes.NOT_FOUND, `Worker ${workerId} not found`);
-  if (worker.trust_hold) {
+  if (worker.active_trust_hold) {
     fail(ErrorCodes.INSTANT_TASK_TRUST_INSUFFICIENT, 'Your account is currently on hold');
   }
   const minimum = task.sensitive ? MIN_SENSITIVE_INSTANT_TIER : MIN_INSTANT_TIER;
@@ -199,6 +207,9 @@ async function assignTask(query: Query, task: TaskCandidate, taskId: string, wor
 async function acceptTransaction(query: Query, params: AcceptTaskParams): Promise<ServiceResult<Task>> {
   const task = await loadTask(query, params.taskId);
   assertBasicState(task, params.workerId);
+  await assertTaskMutationEligibility(query, params.taskId, params.workerId, {
+    requireCurrentOffer: true,
+  });
   await assertEligibility(task, params.taskId, params.workerId);
   await assertPosterTrustRequirement(query, task, params.workerId);
   await assertInstantAcceptance(query, task, params.taskId, params.workerId);

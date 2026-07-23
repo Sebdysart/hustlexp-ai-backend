@@ -120,6 +120,16 @@ vi.mock('../../src/services/ScoperAIService', () => ({
 }));
 
 vi.mock('../../src/services/TaskTemplateRegistry', () => ({
+  TEMPLATE_SLUGS: {
+    STANDARD_PHYSICAL: 'standard_physical',
+    IN_HOME: 'in_home',
+    CARE: 'care',
+    CONTENT_CREATOR: 'content_creator',
+    EVENT_APPEARANCE: 'event_appearance',
+    CREATIVE_PRODUCTION: 'creative_production',
+    SPECIALIZED_LICENSED: 'specialized_licensed',
+    WILDCARD_BIZARRE: 'wildcard_bizarre',
+  },
   getTemplate: vi.fn().mockReturnValue({
     slug: 'standard_physical',
     requiredTrustTier: 'rookie',
@@ -134,9 +144,21 @@ vi.mock('../../src/services/TaskTemplateRegistry', () => ({
 }));
 
 vi.mock('../../src/services/TaskRiskClassifier', () => ({
+  TaskRisk: {
+    TIER_0: 0,
+    TIER_1: 1,
+    TIER_2: 2,
+    TIER_3: 3,
+  },
   TaskRiskClassifier: {
     classifyWithTemplate: vi.fn().mockReturnValue('LOW'),
   },
+}));
+
+// The real eligibility contract is covered against PostgreSQL by N6. These
+// concurrency tests isolate assignment locking and ordered writes.
+vi.mock('../../src/services/TaskEligibilityPolicy', () => ({
+  assertTaskMutationEligibility: vi.fn().mockResolvedValue(undefined),
 }));
 
 // ---------------------------------------------------------------------------

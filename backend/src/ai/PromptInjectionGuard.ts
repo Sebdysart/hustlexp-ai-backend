@@ -61,13 +61,28 @@ const PATTERNS: PatternRule[] = [
   },
   {
     id: 'delimiter_attack:xml_tag_injection',
-    weight: 30,
+    weight: 70,
     test: (s) => /<(system|instruction|prompt|human|assistant|user)\s*>/i.test(s),
+  },
+  {
+    id: 'delimiter_attack:end_of_task_marker',
+    weight: 70,
+    test: (s) => /-{2,}\s*end\s+of\s+(task|prompt|instructions?)\s*-{2,}/i.test(s),
   },
   {
     id: 'misc:payload_injection_marker',
     weight: 65,
-    test: (s) => /^(INJECTION|PAYLOAD|OVERRIDE|SYSTEM)[:>]/im.test(s),
+    test: (s) => /\b(?:JSON[_\s-]?OVERRIDE|INJECTION|PAYLOAD|OVERRIDE|SYSTEM)\s*[:>]/i.test(s),
+  },
+  {
+    id: 'response_control:set_protected_fields',
+    weight: 70,
+    test: (s) => /\b(?:return|respond|set|always\s+return).{0,80}\b(?:score|suggested_price_cents|confidence_score|deception_detected|is_genuinely_bizarre)\b/i.test(s),
+  },
+  {
+    id: 'authority_forgery:developer_bypass',
+    weight: 70,
+    test: (s) => /\b(?:i\s*(?:am|'m)\s+(?:an?\s+)?(?:hustlexp\s+)?developer|developer\s+authority)\b.{0,100}\b(?:skip|bypass|override|disable|return)\b/i.test(s),
   },
 ];
 
@@ -85,7 +100,7 @@ function sanitize(input: string, patterns: string[]): string {
     sanitized = sanitized.replace(/<(system|instruction|prompt|human|assistant|user)\s*>/gi, '[TAG_REMOVED]');
   }
   if (patterns.some((p) => p === 'misc:payload_injection_marker')) {
-    sanitized = sanitized.replace(/^(INJECTION|PAYLOAD|OVERRIDE|SYSTEM)[:>]/gim, '[MARKER_REMOVED]:');
+    sanitized = sanitized.replace(/\b(?:JSON[_\s-]?OVERRIDE|INJECTION|PAYLOAD|OVERRIDE|SYSTEM)\s*[:>]/gi, '[MARKER_REMOVED]:');
   }
   return sanitized.trim();
 }

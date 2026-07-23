@@ -13,8 +13,9 @@
 
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
-import { router, protectedProcedure, adminProcedure, Schemas } from '../trpc.js';
+import { router, protectedProcedure, trustAdminProcedure, Schemas } from '../trpc.js';
 import { ContentModerationService, type ReviewDecision, type ReportStatus, type AppealStatus } from '../services/ContentModerationService.js';
+import { projectModerationMediaForAdmin } from '../services/PrivateMediaDeliveryService.js';
 
 export const moderationRouter = router({
   // --------------------------------------------------------------------------
@@ -28,7 +29,7 @@ export const moderationRouter = router({
    * 
    * This is typically called internally by the system, but exposed for admin use
    */
-  moderateContent: adminProcedure
+  moderateContent: trustAdminProcedure
     .input(z.object({
       contentType: z.enum(['task', 'message', 'rating', 'profile', 'photo']),
       contentId: Schemas.uuid,
@@ -70,12 +71,12 @@ export const moderationRouter = router({
   /**
    * Get pending moderation queue items (for admin review)
    */
-  getPendingQueue: adminProcedure
+  getPendingQueue: trustAdminProcedure
     .input(z.object({
       severity: z.enum(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']).optional(),
       limit: z.number().int().min(1).max(100).default(100),
     }))
-    .query(async ({ input }) => {
+    .query(async ({ input, ctx }) => {
       const result = await ContentModerationService.getPendingQueue(
         input.severity,
         input.limit
@@ -88,17 +89,24 @@ export const moderationRouter = router({
         });
       }
       
-      return result.data;
+      if (!ctx.user) {
+        throw new TRPCError({
+          code: 'UNAUTHORIZED',
+          message: 'Authentication required',
+        });
+      }
+
+      return projectModerationMediaForAdmin(ctx.user.id, result.data);
     }),
   
   /**
    * Get queue item by ID
    */
-  getQueueItemById: adminProcedure
+  getQueueItemById: trustAdminProcedure
     .input(z.object({
       queueItemId: Schemas.uuid,
     }))
-    .query(async ({ input }) => {
+    .query(async ({ input, ctx }) => {
       const result = await ContentModerationService.getQueueItemById(
         input.queueItemId
       );
@@ -115,13 +123,21 @@ export const moderationRouter = router({
         });
       }
       
-      return result.data;
+      if (!ctx.user) {
+        throw new TRPCError({
+          code: 'UNAUTHORIZED',
+          message: 'Authentication required',
+        });
+      }
+
+      const [queueItem] = await projectModerationMediaForAdmin(ctx.user.id, [result.data]);
+      return queueItem;
     }),
   
   /**
    * Review queue item (admin action)
    */
-  reviewQueueItem: adminProcedure
+  reviewQueueItem: trustAdminProcedure
     .input(z.object({
       queueItemId: Schemas.uuid,
       decision: z.enum(['approve', 'reject', 'escalate', 'no_action']),
@@ -154,7 +170,8 @@ export const moderationRouter = router({
         });
       }
       
-      return result.data;
+      const [queueItem] = await projectModerationMediaForAdmin(ctx.user.id, [result.data]);
+      return queueItem;
     }),
   
   // --------------------------------------------------------------------------
@@ -209,7 +226,7 @@ export const moderationRouter = router({
   /**
    * Get reports for a user (admin view)
    */
-  getUserReports: adminProcedure
+  getUserReports: trustAdminProcedure
     .input(z.object({
       userId: Schemas.uuid,
       status: z.enum(['pending', 'reviewed', 'resolved', 'dismissed']).optional(),
@@ -235,7 +252,7 @@ export const moderationRouter = router({
   /**
    * Review content report (admin action)
    */
-  reviewReport: adminProcedure
+  reviewReport: trustAdminProcedure
     .input(z.object({
       reportId: Schemas.uuid,
       decision: z.string(), // e.g., 'action_taken', 'no_action', 'dismissed'
@@ -348,7 +365,7 @@ export const moderationRouter = router({
   /**
    * Review appeal (admin action)
    */
-  reviewAppeal: adminProcedure
+  reviewAppeal: trustAdminProcedure
     .input(z.object({
       appealId: Schemas.uuid,
       decision: z.enum(['upheld', 'overturned']),
@@ -387,7 +404,7 @@ export const moderationRouter = router({
   /**
    * Get pending appeals (for admin review)
    */
-  getPendingAppeals: adminProcedure
+  getPendingAppeals: trustAdminProcedure
     .input(z.object({
       limit: z.number().int().min(1).max(100).default(100),
     }))

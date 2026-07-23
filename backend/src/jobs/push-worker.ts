@@ -22,6 +22,13 @@ import { sendPushNotification } from '../services/PushNotificationService.js';
 import { markOutboxEventProcessed, markOutboxEventFailed } from './outbox-worker.js';
 import { workerLogger } from '../logger.js';
 import type { Job } from 'bullmq';
+import {
+  authorizeNotificationDelivery,
+  markNotificationCancelled,
+  markNotificationDeliveryFailure,
+  markNotificationProviderAccepted,
+  markNotificationSuppressed,
+} from '../services/NotificationDeliveryState.js';
 
 const log = workerLogger.child({ worker: 'push' });
 
@@ -60,6 +67,22 @@ export async function processPushJob(job: Job<PushJobData>): Promise<void> {
     // Structured log: job started
     log.info({ notificationId, jobId: job.id, idempotencyKey, userId }, 'Push job started');
 
+    const authorization = await authorizeNotificationDelivery(notificationId, 'push');
+    if (!authorization.allowed) {
+      if (authorization.reason === 'not_due') {
+        await markOutboxEventFailed(idempotencyKey, 'notification_not_due');
+        return;
+      }
+      if (authorization.reason === 'superseded' || authorization.reason === 'cancelled_superseded') {
+        await markNotificationCancelled(notificationId, 'push', authorization.reason);
+      }
+      if (['superseded', 'cancelled_superseded', 'provider_accepted', 'delivered', 'suppressed', 'failed_terminal'].includes(authorization.reason)) {
+        await markOutboxEventProcessed(idempotencyKey);
+        return;
+      }
+      throw new Error(`Push delivery refused: ${authorization.reason}`);
+    }
+
     // W-20 FIX: Atomic claim before FCM call to prevent concurrent workers from
     // both passing the idempotency check and both sending the push notification.
     // The prior SELECT→FCM pattern had a race: two workers could both read status
@@ -91,6 +114,15 @@ export async function processPushJob(job: Job<PushJobData>): Promise<void> {
     // Send push notification via PushNotificationService
     const result = await sendPushNotification(userId, title, body, data);
 
+    if (result.reason === 'no_active_device') {
+      await markNotificationSuppressed(notificationId, 'push', 'no_active_device');
+    } else if (!result.success) {
+      throw new Error(`Push provider failed: ${result.reason ?? 'unknown_provider_error'}`);
+    } else {
+      // FCM multicast acceptance is provider acceptance, not device delivery.
+      await markNotificationProviderAccepted(notificationId, 'push', 'fcm', null);
+    }
+
     // Structured log: push result
     log.info({ notificationId, jobId: job.id, idempotencyKey, userId, sent: result.sent, failed: result.failed, success: result.success }, 'Push job completed');
 
@@ -104,6 +136,8 @@ export async function processPushJob(job: Job<PushJobData>): Promise<void> {
 
     // Mark outbox event as failed
     await markOutboxEventFailed(idempotencyKey, errorMessage);
+
+    await markNotificationDeliveryFailure(notificationId, 'push', errorMessage);
 
     // Re-throw for BullMQ retry logic
     throw error;

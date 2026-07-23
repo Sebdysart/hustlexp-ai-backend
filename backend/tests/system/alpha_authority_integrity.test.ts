@@ -37,6 +37,8 @@ async function createTestUser(overrides: Partial<{
   is_verified: boolean;
   phone: string;
   stripe_customer_id: string;
+  stripe_connect_id: string;
+  payouts_enabled: boolean;
   created_at: Date;
 }> = {}): Promise<string> {
   const userId = crypto.randomUUID();
@@ -44,19 +46,23 @@ async function createTestUser(overrides: Partial<{
   const createdAt = overrides.created_at || new Date();
   
   // Set plan to pro (lowercase) for high-risk task acceptance (if trust_tier >= 3)
-  const plan = (overrides.trust_tier ?? TrustTier.UNVERIFIED) >= TrustTier.IN_HOME ? 'pro' : null;
+  const plan = (overrides.trust_tier ?? TrustTier.EXPLORER) >= TrustTier.PRO ? 'pro' : 'free';
   await db.query(
-    `INSERT INTO users (id, email, full_name, default_mode, trust_tier, is_verified, phone, stripe_customer_id, plan, created_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+    `INSERT INTO users (
+       id,email,full_name,default_mode,trust_tier,is_verified,verified_at,phone,
+       stripe_customer_id,stripe_connect_id,payouts_enabled,plan,created_at
+     ) VALUES ($1,$2,$3,$4,$5,$6,CASE WHEN $6 THEN NOW() ELSE NULL END,$7,$8,$9,$10,$11,$12)`,
     [
       userId,
       `test-${userId}@example.com`,
       'Test User',
       'worker',
-      overrides.trust_tier ?? TrustTier.UNVERIFIED,
+      overrides.trust_tier ?? TrustTier.EXPLORER,
       overrides.is_verified ?? false,
       uniquePhone,
       overrides.stripe_customer_id ?? null,
+      overrides.stripe_connect_id ?? null,
+      overrides.payouts_enabled ?? false,
       plan,
       createdAt,
     ]
@@ -172,24 +178,20 @@ describe.skipIf(!hasLocalDb)('Alpha Authority Integrity Test', () => {
   // ============================================================================
   describe('Phase 1: Trust Tier Authority', () => {
     it('1.1 — Tier promotion is earned, not assigned', async () => {
-      const userId = await createTestUser({ trust_tier: TrustTier.VERIFIED }); // Start at VERIFIED to avoid trigger constraint
+      const userId = await createTestUser({ trust_tier: TrustTier.VERIFIED });
       testUserIds.push(userId);
 
-      // Attempt manual DB update to TRUSTED (bypassing service)
-      // This simulates someone trying to bypass the promotion service
-      await db.query(
+      await expect(db.query(
         `UPDATE users SET trust_tier = $1 WHERE id = $2`,
-        [TrustTier.TRUSTED, userId]
-      );
+        [TrustTier.PRO, userId]
+      )).rejects.toThrow(/HXTRUST2|HXTRUST3/);
 
-      // Create a TIER_2 task (requires IN_HOME)
+      // Create a high-risk task; Verified is insufficient.
       const taskId = await createTestTask({ risk_level: 'HIGH' });
       testTaskIds.push(taskId);
 
-      // Call assertEligibility - should reject because user didn't earn TRUSTED
-      // Actually, the DB shows TRUSTED, but they need IN_HOME for HIGH risk
-      // Let's test with a task that requires TRUSTED
-      const taskId2 = await createTestTask({ risk_level: 'LOW' }); // Requires VERIFIED
+      // Confirm the unchanged Verified user still retains low-risk access.
+      const taskId2 = await createTestTask({ risk_level: 'LOW' });
       testTaskIds.push(taskId2);
 
       const result = await EligibilityGuard.assertEligibility({
@@ -198,11 +200,7 @@ describe.skipIf(!hasLocalDb)('Alpha Authority Integrity Test', () => {
         isInstant: false,
       });
 
-      // Even though DB shows TRUSTED, the guard should check against actual requirements
-      // For LOW risk, VERIFIED is required, so TRUSTED should pass
-      // But the point is: the guard reads from DB, not from service state
-      // This test verifies the guard uses DB as source of truth
-      expect(result.allowed).toBe(true); // TRUSTED >= VERIFIED required for LOW
+      expect(result.allowed).toBe(true);
     });
 
     it('1.2 — Promotion job is idempotent', async () => {
@@ -245,10 +243,12 @@ describe.skipIf(!hasLocalDb)('Alpha Authority Integrity Test', () => {
       console.log('worker_id column check:', workerIdColumn.rows);
 
       const userId = await createTestUser({
-        trust_tier: TrustTier.VERIFIED,
+        trust_tier: TrustTier.EXPLORER,
         is_verified: true,
         phone: `+1${Math.floor(Math.random() * 10000000000)}`,
         stripe_customer_id: `cus_test_${crypto.randomUUID()}`,
+        stripe_connect_id: `acct_test_${crypto.randomUUID()}`,
+        payouts_enabled: true,
         created_at: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000), // 8 days ago
       });
       testUserIds.push(userId);
@@ -278,19 +278,17 @@ describe.skipIf(!hasLocalDb)('Alpha Authority Integrity Test', () => {
       }
 
       const tierAfterFirst = await TrustTierService.getTrustTier(userId);
-      expect(tierAfterFirst).toBe(TrustTier.TRUSTED);
+      expect(tierAfterFirst).toBe(TrustTier.VERIFIED);
 
       // Second promotion attempt (should be idempotent)
-      // This will evaluate for IN_HOME (TRUSTED → IN_HOME)
-      console.log('About to call evaluatePromotion second time (for IN_HOME evaluation)...');
+      console.log('About to call evaluatePromotion a second time...');
       try {
         const eligibility2 = await TrustTierService.evaluatePromotion(userId);
-        // User is TRUSTED, not eligible for IN_HOME without meeting those requirements
         expect(eligibility2.eligible).toBe(false);
         
         // Verify tier didn't change
         const tierAfterSecond = await TrustTierService.getTrustTier(userId);
-        expect(tierAfterSecond).toBe(TrustTier.TRUSTED);
+        expect(tierAfterSecond).toBe(TrustTier.VERIFIED);
       } catch (error: any) {
         console.error('Error in second evaluatePromotion:', error.message);
         console.error('Error code:', error.code);
@@ -300,7 +298,7 @@ describe.skipIf(!hasLocalDb)('Alpha Authority Integrity Test', () => {
     });
 
     it('1.3 — Ban is terminal', async () => {
-      const userId = await createTestUser({ trust_tier: TrustTier.IN_HOME });
+      const userId = await createTestUser({ trust_tier: TrustTier.LICENSED_SPECIALIST });
       testUserIds.push(userId);
 
       // Ban user
@@ -363,7 +361,7 @@ describe.skipIf(!hasLocalDb)('Alpha Authority Integrity Test', () => {
     });
 
     it('2.2 — Tier 3 is absolutely blocked', async () => {
-      const userId = await createTestUser({ trust_tier: TrustTier.IN_HOME });
+      const userId = await createTestUser({ trust_tier: TrustTier.LICENSED_SPECIALIST });
       testUserIds.push(userId);
 
       // Create TIER_3 task (caregiving)
@@ -427,7 +425,7 @@ describe.skipIf(!hasLocalDb)('Alpha Authority Integrity Test', () => {
   // ============================================================================
   describe('Phase 4: Instant Mode Inheritance', () => {
     it('4.1 — Instant ≠ Override', async () => {
-      const userId = await createTestUser({ trust_tier: TrustTier.TRUSTED }); // Tier 2
+      const userId = await createTestUser({ trust_tier: TrustTier.HOME_READY });
       testUserIds.push(userId);
 
       // Create TIER_2 task with instant_mode = true
@@ -437,31 +435,31 @@ describe.skipIf(!hasLocalDb)('Alpha Authority Integrity Test', () => {
       });
       testTaskIds.push(taskId);
 
-      // User TRUSTED (Tier 2) tries to accept instant
+      // A Home Ready (Tier 2) user tries to accept an instant high-risk task.
       const result = await EligibilityGuard.assertEligibility({
         userId,
         taskId,
         isInstant: true,
       });
 
-      // Should be rejected (needs IN_HOME, not just TRUSTED)
+      // Instant mode cannot override the Pro requirement.
       expect(result.allowed).toBe(false);
       expect(result.code).toBe(EligibilityErrorCode.TRUST_TIER_INSUFFICIENT);
 
-      // Promote user to IN_HOME
-      await db.query(
+      // A direct promotion cannot bypass the canonical authority.
+      await expect(db.query(
         `UPDATE users SET trust_tier = $1 WHERE id = $2`,
-        [TrustTier.IN_HOME, userId]
-      );
+        [TrustTier.PRO, userId]
+      )).rejects.toThrow(/HXTRUST2/);
 
-      // Now should be allowed
+      // Instant mode remains blocked at the unchanged tier.
       const result2 = await EligibilityGuard.assertEligibility({
         userId,
         taskId,
         isInstant: true,
       });
 
-      expect(result2.allowed).toBe(true);
+      expect(result2.allowed).toBe(false);
     });
   });
 
@@ -524,8 +522,8 @@ describe.skipIf(!hasLocalDb)('Alpha Authority Integrity Test', () => {
   // ============================================================================
   describe('Phase 7: Time & Race Conditions', () => {
     it('7.1 — Concurrent accept race', async () => {
-      const user1 = await createTestUser({ trust_tier: TrustTier.IN_HOME });
-      const user2 = await createTestUser({ trust_tier: TrustTier.IN_HOME });
+      const user1 = await createTestUser({ trust_tier: TrustTier.LICENSED_SPECIALIST });
+      const user2 = await createTestUser({ trust_tier: TrustTier.LICENSED_SPECIALIST });
       testUserIds.push(user1, user2);
 
       const taskId = await createTestTask({ 

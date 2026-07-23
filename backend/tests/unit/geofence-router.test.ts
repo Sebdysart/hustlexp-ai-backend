@@ -53,6 +53,14 @@ const mockService = vi.mocked(GeofenceService);
 // ---------------------------------------------------------------------------
 
 const TEST_UUID = '11111111-1111-1111-1111-111111111111';
+const CLIENT_EVIDENCE = {
+  clientEventId: '22222222-2222-4222-8222-222222222222',
+  clientSequence: 1,
+  priorTaskVersion: 0,
+  localOccurredAt: '2026-07-20T00:00:00.000Z',
+  deviceVersion: 'test-device',
+  appVersion: 'test-app',
+};
 
 function makeCaller(userId = 'test-uid') {
   return geofenceRouter.createCaller({
@@ -78,23 +86,24 @@ describe('geofence.checkProximity', () => {
       taskId: TEST_UUID,
       lat: 37.7749,
       lng: -122.4194,
+      ...CLIENT_EVIDENCE,
     });
 
     expect(result).toEqual(result_);
     expect(mockService.checkProximity).toHaveBeenCalledWith(
-      TEST_UUID, 'test-uid', 37.7749, -122.4194
+      TEST_UUID, 'test-uid', 37.7749, -122.4194, CLIENT_EVIDENCE,
     );
   });
 
   it('rejects invalid latitude', async () => {
     await expect(
-      makeCaller().checkProximity({ taskId: TEST_UUID, lat: 91, lng: 0 })
+      makeCaller().checkProximity({ taskId: TEST_UUID, lat: 91, lng: 0, ...CLIENT_EVIDENCE })
     ).rejects.toThrow();
   });
 
   it('rejects invalid longitude', async () => {
     await expect(
-      makeCaller().checkProximity({ taskId: TEST_UUID, lat: 0, lng: -181 })
+      makeCaller().checkProximity({ taskId: TEST_UUID, lat: 0, lng: -181, ...CLIENT_EVIDENCE })
     ).rejects.toThrow();
   });
 });

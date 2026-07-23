@@ -55,7 +55,7 @@ export const HustlerIdentityLinkService = {
           return matches
             ? { success: true, data: {
                 engineHustlerRef: user.id,
-                trustTier: Math.max(user.trust_tier, 1),
+                trustTier: user.trust_tier,
                 idempotencyReplayed: true,
               } }
             : { success: false, error: { code: 'IDEMPOTENCY_CONFLICT', message: 'Identity claim conflicts with prior evidence' } };
@@ -78,10 +78,9 @@ export const HustlerIdentityLinkService = {
           return { success: false, error: { code: 'IDENTITY_CONFLICT', message: 'Roster identity is already linked' } };
         }
 
-        const trustTier = Math.max(user.trust_tier, 1);
         await query(
-          `UPDATE users SET phone = $1, trust_tier = $2, updated_at = NOW() WHERE id = $3`,
-          [input.phoneE164, trustTier, input.engineHustlerRef],
+          `UPDATE users SET phone = $1, updated_at = NOW() WHERE id = $2`,
+          [input.phoneE164, input.engineHustlerRef],
         );
         await query(
           `INSERT INTO engine_hustler_identity_links(provider_claim_id,user_id,phone_hash)
@@ -90,7 +89,7 @@ export const HustlerIdentityLinkService = {
         );
         return { success: true, data: {
           engineHustlerRef: input.engineHustlerRef,
-          trustTier,
+          trustTier: user.trust_tier,
           idempotencyReplayed: false,
         } };
       });

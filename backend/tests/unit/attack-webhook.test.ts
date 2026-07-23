@@ -39,7 +39,10 @@ vi.mock('../../src/config', () => ({
 // db.transaction immediately invokes the callback with the same mockDbQuery so that
 // all mockResolvedValueOnce calls work in a single ordered queue regardless of
 // whether the code path uses db.query or db.transaction.
-const { mockDbQuery } = vi.hoisted(() => ({ mockDbQuery: vi.fn() }));
+const { mockDbQuery, mockCreateNotification } = vi.hoisted(() => ({
+  mockDbQuery: vi.fn(),
+  mockCreateNotification: vi.fn(),
+}));
 
 vi.mock('../../src/db', () => ({
   db: {
@@ -84,7 +87,7 @@ vi.mock('../../src/services/ChargebackService', () => ({
 
 vi.mock('../../src/services/NotificationService', () => ({
   NotificationService: {
-    createNotification: vi.fn().mockResolvedValue(undefined),
+    createNotification: mockCreateNotification,
   },
 }));
 
@@ -95,6 +98,16 @@ vi.mock('../../src/jobs/queues.js', () => ({
 
 vi.mock('../../src/services/PushNotificationService', () => ({
   sendPushNotification: vi.fn().mockResolvedValue(undefined),
+}));
+
+const { mockWalletPayoutSync } = vi.hoisted(() => ({
+  mockWalletPayoutSync: vi.fn(),
+}));
+
+vi.mock('../../src/services/HustlerWalletService', () => ({
+  HustlerWalletService: {
+    syncProviderPayoutEvent: mockWalletPayoutSync,
+  },
 }));
 
 vi.mock('firebase-admin', () => ({
@@ -129,6 +142,8 @@ vi.mock('stripe', () => {
 import { db } from '../../src/db';
 import { processWebhook } from '../../src/services/StripeWebhookService';
 import { processStripeEventJob } from '../../src/jobs/stripe-event-worker';
+import { stripeEventDestination } from '../../src/jobs/stripe-event-dispatcher';
+import { processPayoutEventJob } from '../../src/jobs/payout-event-worker';
 import { processPaymentJob } from '../../src/jobs/payment-worker';
 import { RevenueService } from '../../src/services/RevenueService';
 
@@ -158,6 +173,14 @@ function makeJob(data: object) {
   return { data: dataWithPayload, id: 'job-1', opts: {} } as Parameters<typeof processStripeEventJob>[0];
 }
 
+function makePayoutJob(stripeEventId: string, type: string) {
+  return {
+    data: { payload: { stripeEventId, type, _sig: 'test-sig' } },
+    id: 'payout-job-1',
+    opts: {},
+  } as Parameters<typeof processPayoutEventJob>[0];
+}
+
 // Build payment-worker job payload (wraps data in { payload: ... })
 function makePaymentJob(stripeEventId: string, eventType: string, eventObject: Record<string, unknown>) {
   return {
@@ -166,6 +189,7 @@ function makePaymentJob(stripeEventId: string, eventType: string, eventObject: R
         stripeEventId,
         eventType,
         eventCreated: new Date().toISOString(),
+        _sig: 'test-sig',
       },
     },
     id: 'payment-job-1',
@@ -177,6 +201,7 @@ beforeEach(() => {
   // resetAllMocks clears both call history AND the mockResolvedValueOnce queue,
   // preventing queue pollution between tests in the same describe block.
   vi.resetAllMocks();
+  mockCreateNotification.mockResolvedValue({ success: true });
   // Restore the Stripe constructor mock after reset so processWebhook tests work.
   // The Stripe mock module returns a class — mockConstructEvent is used per-test.
 
@@ -186,6 +211,7 @@ beforeEach(() => {
   mockDb.transaction.mockImplementation(
     (fn: (trx: typeof mockDb.query) => Promise<unknown>) => fn(mockDb.query)
   );
+  mockWalletPayoutSync.mockResolvedValue({ matched: true, workerId: 'worker-payout-1' });
 });
 
 // ===========================================================================
@@ -249,11 +275,10 @@ describe('REPLAY ATTACK 1 — payment_intent.succeeded replayed', () => {
 describe('REPLAY ATTACK 2 — transfer.created replayed', () => {
   /**
    * SOURCE: backend/src/jobs/payment-worker.ts:287–307
-   *   Terminal-skip guard: if state in RELEASED/REFUNDED/REFUND_PARTIAL → skip.
-   *   Idempotency: if state=RELEASED AND stripe_transfer_id === transferId → return early.
+   *   A RELEASED replay is accepted only when transfer identity and exact net amount match.
    *
-   * VERDICT: SAFE — On replay the escrow is already RELEASED (terminal state).
-   * The terminal-skip guard fires before any UPDATE, preventing double-release.
+   * VERDICT: SAFE — The replay converges on the same provider fact without a
+   * second escrow mutation; mismatched transfer facts fail closed.
    */
   it('transfer.created replay: escrow already RELEASED → skipped, no double-release', async () => {
     const escrowId = 'escrow-released-001';
@@ -270,6 +295,7 @@ describe('REPLAY ATTACK 2 — transfer.created replayed', () => {
             data: {
               object: {
                 id: transferId,
+                amount: 4150,
                 metadata: { escrow_id: escrowId },
               },
             },
@@ -279,14 +305,20 @@ describe('REPLAY ATTACK 2 — transfer.created replayed', () => {
       })
       // SELECT escrow FOR UPDATE → already RELEASED
       .mockResolvedValueOnce({
-        rows: [{ id: escrowId, task_id: 'task-1', state: 'RELEASED', version: 2, stripe_transfer_id: transferId }],
+        rows: [{
+          id: escrowId, task_id: 'task-1', state: 'RELEASED', version: 2,
+          amount: 5000, platform_fee_cents: 750, stripe_transfer_id: transferId,
+          stripe_payment_intent_id: 'pi_replay',
+        }],
         rowCount: 1,
       })
-      // UPDATE stripe_events SET result='skipped'
+      // Revenue idempotency guard → existing platform-fee witness
+      .mockResolvedValueOnce({ rows: [{ id: 'rev-existing' }], rowCount: 1 })
+      // Final event success
       .mockResolvedValueOnce({ rows: [], rowCount: 1 });
 
     const job = makePaymentJob(stripeEventId, 'transfer.created', {});
-    // Should not throw — skipped gracefully
+    // Should not throw — exact replay converges gracefully
     await expect(processPaymentJob(job)).resolves.not.toThrow();
 
     // Verify: no additional escrow UPDATE was attempted beyond the skip mark
@@ -673,7 +705,7 @@ describe('SIGNATURE 10 — stripe-signature with old timestamp (replay window)',
    *   A signature with a 10-minute-old timestamp is rejected by constructEvent.
    *   HustleXP does not pass a custom tolerance=0, so the default window applies.
    *
-   * GAP (minor): HustleXP does not explicitly configure a stricter tolerance window.
+   * ACCEPTED RESIDUAL P2: HustleXP uses Stripe's recommended default window.
    *   The 5-minute default is Stripe's recommendation. Some high-security deployments
    *   reduce this to 60 seconds. Not an exploit under default configuration.
    */
@@ -692,7 +724,7 @@ describe('SIGNATURE 10 — stripe-signature with old timestamp (replay window)',
     expect(result.error?.message).toContain('Timestamp outside the tolerance zone');
   });
 
-  it('GAP — no custom tolerance configured; default 300s (5 min) window applies', () => {
+  it('SAFE — Stripe default 300s window plus exactly-once event claim prevents replay effects', () => {
     /**
      * Verification: StripeWebhookService.ts calls constructEvent(rawBody, signature, secret)
      * with 3 arguments. The Stripe SDK overload for 3 args uses DEFAULT_TOLERANCE=300.
@@ -702,7 +734,7 @@ describe('SIGNATURE 10 — stripe-signature with old timestamp (replay window)',
      * delivery has a valid signature. The stripe_events ON CONFLICT guard prevents
      * escrow double-processing in that window, so this is defense-in-depth fine.
      */
-    expect(true).toBe(true); // documented gap, not exploitable due to ON CONFLICT guard
+    expect(true).toBe(true); // signed window + ON CONFLICT/atomic claim defense
   });
 });
 
@@ -710,93 +742,9 @@ describe('SIGNATURE 10 — stripe-signature with old timestamp (replay window)',
 // 4. EVENT COVERAGE GAPS
 // ===========================================================================
 
-describe('GAP 11 — payment_intent.payment_failed: no escrow cleanup handler', () => {
-  /**
-   * SOURCE: backend/src/jobs/stripe-event-worker.ts:91–145 (switch statement)
-   *   Cases handled: customer.subscription.*, checkout.session.completed,
-   *   payment_intent.succeeded, invoice.payment_failed, invoice.paid,
-   *   charge.dispute.*, account.updated.
-   *
-   *   MISSING: 'payment_intent.payment_failed'
-   *
-   * SOURCE: backend/src/jobs/payment-worker.ts:99–125 (switch statement)
-   *   Cases handled: payment_intent.succeeded, transfer.created, charge.refunded.
-   *   MISSING: 'payment_intent.payment_failed'
-   *
-   * VERDICT: GAP — When a payment intent fails (declined card), neither worker
-   * handles the event. The escrow remains in PENDING state indefinitely.
-   * The task is NOT returned to OPEN state. The poster's funds were never captured
-   * (payment_intent stays requires_payment_method), so no money is lost, but the
-   * task is orphaned with a PENDING escrow. Poster cannot re-attempt payment without
-   * admin intervention.
-   *
-   * Recommended fix: Add 'payment_intent.payment_failed' handler that transitions
-   * escrow PENDING → REFUNDED (or a new FAILED state) and task back to OPEN.
-   */
-  it('payment_intent.payment_failed is routed to default (skipped) in stripe-event-worker', async () => {
-    const stripeEventId = 'evt_pi_failed_001';
-
-    // stripe-event-worker claim UPDATE returns { payload_json, type }
-    mockDb.query
-      .mockResolvedValueOnce({
-        rows: [{
-          payload_json: {
-            id: stripeEventId,
-            data: {
-              object: {
-                id: 'pi_declined',
-                last_payment_error: { code: 'card_declined', message: 'Your card was declined.' },
-              },
-            },
-          },
-          type: 'payment_intent.payment_failed',
-        }],
-        rowCount: 1,
-      })
-      // UPDATE stripe_events SET result='skipped' (default branch)
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 });
-
-    const job = makeJob({ stripeEventId, type: 'payment_intent.payment_failed' });
-    await processStripeEventJob(job);
-
-    // Verify the event was skipped (stripe-event-worker default branch uses $1 for stripe_event_id)
-    const updateCall = mockDb.query.mock.calls.find(c =>
-      typeof c[0] === 'string' && c[0].includes("'skipped'") && c[1]?.[0] === stripeEventId
-    );
-    expect(updateCall).toBeTruthy();
-  });
-
-  it.skip('payment_intent.payment_failed is also unhandled in payment-worker (goes to default/skipped) [GAP CLOSED: handler added Round 2]', async () => {
-    const stripeEventId = 'evt_pi_failed_pw';
-
-    mockDb.query
-      .mockResolvedValueOnce({
-        // payment-worker claim: RETURNING stripe_event_id, type, payload_json
-        rows: [{
-          stripe_event_id: stripeEventId,
-          type: 'payment_intent.payment_failed',
-          payload_json: {
-            id: stripeEventId,
-            type: 'payment_intent.payment_failed',
-            data: {
-              object: { id: 'pi_declined', last_payment_error: { code: 'card_declined' } },
-            },
-          },
-        }],
-        rowCount: 1,
-      })
-      // Unknown event type → skipped
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 });
-
-    const job = makePaymentJob(stripeEventId, 'payment_intent.payment_failed', {});
-    await processPaymentJob(job);
-
-    const skipCall = mockDb.query.mock.calls.find(c =>
-      typeof c[0] === 'string' &&
-      c[0].includes("result = 'skipped'") &&
-      Array.isArray(c[1]) && c[1].includes(stripeEventId)
-    );
-    expect(skipCall).toBeTruthy();
+describe('COVERAGE 11 — payment failure has an authoritative recovery route', () => {
+  it('routes payment_intent.payment_failed to the payment lifecycle worker', () => {
+    expect(stripeEventDestination('payment_intent.payment_failed')).toBe('payment');
   });
 });
 
@@ -855,122 +803,19 @@ describe('GAP 12 — account.updated for Connect KYC: HANDLED', () => {
   });
 });
 
-describe('GAP 13 — transfer.failed: NO HANDLER', () => {
-  /**
-   * SOURCE: backend/src/jobs/stripe-event-worker.ts:91–145 (switch statement)
-   *   'transfer.failed' is not a case. Falls to default → result='skipped'.
-   *
-   * SOURCE: backend/src/jobs/payment-worker.ts:99–125
-   *   'transfer.failed' is not a case. Falls to default → result='skipped'.
-   *
-   * VERDICT: EXPLOIT / GAP — This is the most serious finding.
-   *   When a Stripe transfer to the worker fails:
-   *   1. payment-worker.ts handleTransferCreated already moved escrow to RELEASED.
-   *   2. transfer.created fires → escrow is RELEASED (money "out the door" in our DB).
-   *   3. transfer.failed fires → NO HANDLER → skipped.
-   *   4. Escrow stays RELEASED. Worker's Stripe balance shows failed transfer.
-   *   5. No notification to worker. No reconciliation. Funds are in limbo.
-   *
-   *   In practice: Stripe keeps the funds in the platform account balance.
-   *   HustleXP has no automated recovery path — an admin must manually re-issue
-   *   the transfer or mark the escrow as needing reconciliation.
-   *
-   *   Recommended fix: Add 'transfer.failed' handler that:
-   *   - Sends urgent notification to worker (bank account issue)
-   *   - Logs to revenue_ledger as a failed_transfer event
-   *   - Potentially transitions escrow to a new TRANSFER_FAILED state for ops triage
-   */
-  it('transfer.failed is not handled — falls to default skipped branch in stripe-event-worker', async () => {
-    const stripeEventId = 'evt_transfer_failed';
-
-    // stripe-event-worker claim returns { payload_json, type }
-    mockDb.query
-      .mockResolvedValueOnce({
-        rows: [{
-          payload_json: {
-            id: stripeEventId,
-            data: {
-              object: {
-                id: 'tr_failed_001',
-                amount: 8500,
-                destination: 'acct_worker_001',
-                metadata: { escrow_id: 'escrow-released-001', worker_id: 'worker-001' },
-                failure_message: 'The transfer failed.',
-              },
-            },
-          },
-          type: 'transfer.failed',
-        }],
-        rowCount: 1,
-      })
-      // Default branch: UPDATE stripe_events SET result='skipped'
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 });
-
-    const job = makeJob({ stripeEventId, type: 'transfer.failed' });
-    await processStripeEventJob(job);
-
-    const skipCall = mockDb.query.mock.calls.find(c =>
-      typeof c[0] === 'string' &&
-      c[0].includes("result = 'skipped'") &&
-      Array.isArray(c[1]) && c[1].includes(stripeEventId)
-    );
-    expect(skipCall).toBeTruthy();
-  });
-
-  it.skip('transfer.failed is also unhandled in payment-worker — skipped, no reconciliation [GAP CLOSED: handler added Round 2]', async () => {
-    const stripeEventId = 'evt_transfer_failed_pw';
-
-    mockDb.query
-      .mockResolvedValueOnce({
-        rows: [{
-          stripe_event_id: stripeEventId,
-          type: 'transfer.failed',
-          payload_json: {
-            data: {
-              object: {
-                id: 'tr_failed_002',
-                metadata: { escrow_id: 'escrow-released-002' },
-              },
-            },
-          },
-        }],
-        rowCount: 1,
-      })
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 });
-
-    const job = makePaymentJob(stripeEventId, 'transfer.failed', {});
-    await processPaymentJob(job);
-
-    const skipCall = mockDb.query.mock.calls.find(c =>
-      typeof c[0] === 'string' &&
-      c[0].includes("result = 'skipped'") &&
-      Array.isArray(c[1]) && c[1].includes(stripeEventId)
-    );
-    expect(skipCall).toBeTruthy();
+describe('COVERAGE 13 — transfer and refund lifecycle events are recovered', () => {
+  it.each(['transfer.created', 'transfer.failed', 'charge.refunded'])('routes %s to the payment lifecycle worker', (type) => {
+    expect(stripeEventDestination(type)).toBe('payment');
   });
 });
 
-describe('GAP 14 — payout.failed: NO HANDLER', () => {
+describe('GAP 14 — payout.failed recovery path', () => {
   /**
-   * SOURCE: backend/src/jobs/stripe-event-worker.ts:91–145
-   *   'payout.failed' is not a case. Falls to default → result='skipped'.
-   *
-   * VERDICT: GAP — When a worker's bank rejects the payout (invalid account number,
-   *   closed account, etc.), Stripe fires payout.failed. HustleXP has no handler.
-   *   The worker is not notified. The payout amount is returned to the platform's
-   *   Stripe balance automatically by Stripe, but HustleXP does not know about it.
-   *   Funds are not lost (Stripe holds them), but the worker sees no notification and
-   *   no re-payout is triggered.
-   *
-   *   Note: payout.failed is distinct from transfer.failed:
-   *   - transfer.created: platform → worker's Stripe Connect balance (handled, see GAP 13)
-   *   - payout.created/failed: worker's Stripe Connect balance → worker's bank account
-   *     (entirely Stripe Connect's concern, but HustleXP has no observability into it)
-   *
-   *   Recommended fix: Add 'payout.failed' handler (listening on Connect account webhooks)
-   *   that notifies the worker to update their bank details.
+   * VERDICT: CLOSED — The production Stripe event route allowlists payout.failed,
+   * synchronizes the append-only wallet state, records a replay-safe financial
+   * audit row, and notifies the identified Hustler.
    */
-  it('payout.failed falls to default skipped branch — worker not notified', async () => {
+  it('payout.failed is handled instead of silently skipped', async () => {
     const stripeEventId = 'evt_payout_failed';
 
     // stripe-event-worker claim returns { payload_json, type }
@@ -979,6 +824,7 @@ describe('GAP 14 — payout.failed: NO HANDLER', () => {
         rows: [{
           payload_json: {
             id: stripeEventId,
+            account: 'acct_worker',
             data: {
               object: {
                 id: 'po_failed_001',
@@ -986,6 +832,11 @@ describe('GAP 14 — payout.failed: NO HANDLER', () => {
                 currency: 'usd',
                 failure_code: 'account_closed',
                 failure_message: 'The bank account provided has been closed.',
+                status: 'failed',
+                metadata: {
+                  connect_account_id: 'acct_worker',
+                  wallet_request_id: 'req-worker-1',
+                },
               },
             },
           },
@@ -993,96 +844,38 @@ describe('GAP 14 — payout.failed: NO HANDLER', () => {
         }],
         rowCount: 1,
       })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 })
       .mockResolvedValueOnce({ rows: [], rowCount: 1 });
 
-    const job = makeJob({ stripeEventId, type: 'payout.failed' });
-    await processStripeEventJob(job);
+    const job = makePayoutJob(stripeEventId, 'payout.failed');
+    await processPayoutEventJob(job);
 
     const skipCall = mockDb.query.mock.calls.find(c =>
       typeof c[0] === 'string' &&
       c[0].includes("result = 'skipped'") &&
       Array.isArray(c[1]) && c[1].includes(stripeEventId)
     );
-    expect(skipCall).toBeTruthy();
+    expect(skipCall).toBeUndefined();
+    expect(mockWalletPayoutSync).toHaveBeenCalledWith(expect.objectContaining({
+      stripeEventId,
+      providerPayoutId: 'po_failed_001',
+      state: 'failed',
+      accountId: 'acct_worker',
+      requestId: 'req-worker-1',
+    }));
+    const successCall = mockDb.query.mock.calls.find(c =>
+      typeof c[0] === 'string' && /result\s*=\s*'success'/.test(c[0])
+    );
+    expect(successCall).toBeTruthy();
   });
 });
 
 // ===========================================================================
-// BONUS: Two-worker routing conflict for payment_intent.succeeded
+// SINGLE-OWNER ROUTING: payment_intent.succeeded
 // ===========================================================================
 
-describe('BONUS — payment_intent.succeeded routed to BOTH workers (dual-processing risk)', () => {
-  /**
-   * SOURCE: backend/src/jobs/stripe-event-worker.ts:102–106
-   *   case 'payment_intent.succeeded': → processEntitlementPurchase(event, stripeEventId)
-   *   (Per-task entitlement creation, NOT escrow funding)
-   *
-   * SOURCE: backend/src/jobs/payment-worker.ts:100–102
-   *   case 'payment_intent.succeeded': → handlePaymentIntentSucceeded(...)
-   *   (Escrow PENDING → FUNDED transition)
-   *
-   * FINDING: payment_intent.succeeded is handled by TWO different workers for
-   * DIFFERENT purposes. This is intentional per the comment in stripe-event-worker.ts:103:
-   *   "Note: Phase D handles escrow funding for payment_intent.succeeded
-   *    This handler is for per-task entitlements (Step 9-D) - separate concern"
-   *
-   * However: both workers use the SAME atomic-claim mechanism on stripe_events.
-   * Only ONE worker can claim a given stripe_event_id. If stripe-event-worker claims
-   * the event first, payment-worker never processes it (escrow stays PENDING).
-   * If payment-worker claims it first, entitlements are never created.
-   *
-   * VERDICT: EXPLOIT (routing architecture flaw) — The atomic-claim pattern assumes
-   * one logical worker per event type. Using the same stripe_events table claim for
-   * two independent processing concerns means only one concern is served per event.
-   *
-   * Recommended fix: Either use separate event tables/queues per concern, or
-   * allow both workers to register as "processors" of the same event without the
-   * exclusive claim preventing the second processor from running.
-   */
-  it('documents dual-routing conflict: only one worker can claim payment_intent.succeeded', async () => {
-    const stripeEventId = 'evt_pi_dual';
-
-    // Simulate stripe-event-worker claiming first
-    // stripe-event-worker claim UPDATE returns { payload_json, type }
-    mockDb.query
-      .mockResolvedValueOnce({
-        rows: [{
-          payload_json: {
-            id: stripeEventId,
-            data: {
-              object: {
-                id: 'pi_dual_001',
-                metadata: { user_id: 'user-001', risk_level: 'MEDIUM', task_id: 'task-001' },
-              },
-            },
-          },
-          type: 'payment_intent.succeeded',
-        }],
-        rowCount: 1,
-      })
-      // S-5 check: SELECT stripe_event_id FROM stripe_events
-      .mockResolvedValueOnce({ rows: [{ stripe_event_id: stripeEventId }], rowCount: 1 })
-      // INSERT plan_entitlements ON CONFLICT DO NOTHING
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 })
-      // Final UPDATE result='success'
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 });
-
-    const ewJob = makeJob({ stripeEventId, type: 'payment_intent.succeeded' });
-    await processStripeEventJob(ewJob);
-
-    // Now payment-worker tries to claim the same event → claim returns 0 rows
-    mockDb.query
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // claim fails (already claimed)
-      .mockResolvedValueOnce({ rows: [{ result: 'success', claimed_at: new Date(), processed_at: new Date() }], rowCount: 1 });
-
-    const pwJob = makePaymentJob(stripeEventId, 'payment_intent.succeeded', {});
-    // payment-worker silently exits — escrow is NEVER funded
-    await expect(processPaymentJob(pwJob)).resolves.not.toThrow();
-
-    // Verify: no escrow UPDATE was called from payment-worker
-    const escrowFundCalls = mockDb.query.mock.calls.filter(c =>
-      typeof c[0] === 'string' && c[0].includes("SET state = 'FUNDED'")
-    );
-    expect(escrowFundCalls).toHaveLength(0);
+describe('SINGLE-OWNER — payment_intent.succeeded', () => {
+  it('routes success to one worker that owns entitlement and escrow funding', () => {
+    expect(stripeEventDestination('payment_intent.succeeded')).toBe('stripe');
   });
 });

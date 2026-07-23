@@ -36,7 +36,7 @@ describe('HustlerIdentityLinkService', () => {
     });
   });
 
-  it('atomically links the verified phone and raises only the outdoor trust floor', async () => {
+  it('atomically links the phone without treating a phone claim as complete verification', async () => {
     query
       .mockResolvedValueOnce({ rows: [user] })
       .mockResolvedValueOnce({ rows: [] })
@@ -46,13 +46,14 @@ describe('HustlerIdentityLinkService', () => {
       .mockResolvedValueOnce({ rows: [] });
     await expect(HustlerIdentityLinkService.link(input)).resolves.toEqual({
       success: true,
-      data: { engineHustlerRef: input.engineHustlerRef, trustTier: 1, idempotencyReplayed: false },
+      data: { engineHustlerRef: input.engineHustlerRef, trustTier: 0, idempotencyReplayed: false },
     });
     expect(serializableTransaction).toHaveBeenCalledOnce();
     expect(query).toHaveBeenCalledWith(
-      expect.stringContaining('UPDATE users SET phone = $1, trust_tier = $2'),
-      [input.phoneE164, 1, input.engineHustlerRef],
+      expect.stringContaining('UPDATE users SET phone = $1'),
+      [input.phoneE164, input.engineHustlerRef],
     );
+    expect(query.mock.calls.some(([sql]) => String(sql).includes('trust_tier ='))).toBe(false);
     expect(query).toHaveBeenCalledWith(
       expect.stringContaining('INSERT INTO engine_hustler_identity_links'),
       [input.providerClaimId, input.engineHustlerRef, expect.stringMatching(/^[0-9a-f]{64}$/)],

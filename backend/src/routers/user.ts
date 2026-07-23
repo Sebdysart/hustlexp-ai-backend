@@ -22,31 +22,6 @@ import { firebaseAuth } from '../auth/firebase.js';
 const log = logger.child({ router: 'user' });
 
 // --------------------------------------------------------------------------
-// Avatar URL allowlist — mirrors isApprovedPhotoHost in messaging.ts
-// Only R2-hosted URLs are accepted to prevent SSRF / tracking-pixel attacks.
-// R2_PUBLIC_URL is read lazily inside the function so test environments can
-// set the env var without relying on module-load-time evaluation.
-// --------------------------------------------------------------------------
-function isApprovedAvatarHost(url: string): boolean {
-  try {
-    const { hostname } = new URL(url);
-    // Custom R2 public domain (configured via R2_PUBLIC_URL env var)
-    const r2Raw = process.env.R2_PUBLIC_URL || '';
-    if (r2Raw) {
-      try {
-        const r2Hostname = new URL(r2Raw).hostname;
-        if (hostname === r2Hostname) return true;
-      } catch { /* ignore malformed env var */ }
-    }
-    // Default Cloudflare R2 public URL pattern: pub-<hash>.r2.dev
-    if (/^pub-[a-f0-9]+\.r2\.dev$/.test(hostname)) return true;
-    return false;
-  } catch {
-    return false;
-  }
-}
-
-// --------------------------------------------------------------------------
 // Helper: Transform DB user row → iOS-compatible JSON
 // --------------------------------------------------------------------------
 // The iOS app expects camelCase keys and some field name differences.
@@ -512,7 +487,7 @@ export const userRouter = router({
     .input(z.object({
       fullName: z.string().trim().min(1).max(255).optional(),
       bio: z.string().trim().max(500).optional(),
-      avatarUrl: z.string().url().max(2048).refine(isApprovedAvatarHost, { message: 'Avatar must be hosted on approved storage (R2 only)' }).optional(),
+      avatarUrl: z.string().url().max(2048).optional(),
       phone: z.string().trim().max(20).regex(/^[+\d\s\-().]{7,20}$/, 'Invalid phone number format').optional(),
       // Accept "hustler", "worker", or "poster" from frontend
       defaultMode: z.string().trim().max(20).optional(),
@@ -531,8 +506,10 @@ export const userRouter = router({
         values.push(input.bio);
       }
       if (input.avatarUrl !== undefined) {
-        updates.push(`avatar_url = $${paramIndex++}`);
-        values.push(input.avatarUrl);
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'Avatar updates are disabled until receipt-backed metadata stripping is available.',
+        });
       }
       if (input.phone !== undefined) {
         updates.push(`phone = $${paramIndex++}`);

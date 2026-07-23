@@ -32,10 +32,10 @@ describe('TaskRiskClassifier deception tier', () => {
     expect(tier).toBeGreaterThanOrEqual(TaskRisk.TIER_2);
   });
 
-  it('deception_detected=true but ai_signals_computed=false does NOT force TIER_2', () => {
+  it('deterministic deception enforces TIER_2 even when no AI ran', () => {
     const complianceResult = makeComplianceResult({
       deception_detected: true,
-      ai_signals_computed: false,  // AI didn't run — don't trust deception signal
+      ai_signals_computed: false,
     });
 
     const tier = TaskRiskClassifier.classifyWithTemplate(
@@ -45,8 +45,7 @@ describe('TaskRiskClassifier deception tier', () => {
       complianceResult,
     );
 
-    // Should be template minimum for wildcard_bizarre (TIER_1), NOT forced to TIER_2
-    expect(tier).toBeLessThan(TaskRisk.TIER_2);
+    expect(tier).toBeGreaterThanOrEqual(TaskRisk.TIER_2);
   });
 
   it('care template TIER_3 still wins over deception TIER_2', () => {

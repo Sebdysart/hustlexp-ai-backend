@@ -10,6 +10,20 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+const controlledMocks = vi.hoisted(() => ({
+  create: vi.fn(),
+  list: vi.fn(),
+  generate: vi.fn(),
+  record: vi.fn(),
+  recover: vi.fn(),
+  compliance: vi.fn(),
+  classifyRisk: vi.fn(),
+  legacyRisk: vi.fn(),
+  careContent: vi.fn(),
+  resolveRegionPolicy: vi.fn(),
+  evaluateRegionPolicy: vi.fn(),
+}));
+
 // ---------------------------------------------------------------------------
 // Mocks — must come before any imports that transitively touch these modules
 // ---------------------------------------------------------------------------
@@ -32,6 +46,34 @@ vi.mock('../../src/logger', () => ({
   },
   escrowLogger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
   stripeLogger: { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() },
+}));
+
+vi.mock('../../src/services/RecurringWorkService', () => ({
+  createControlledRecurringTemplate: controlledMocks.create,
+  listControlledRecurringTemplates: controlledMocks.list,
+  generateControlledRecurringOccurrence: controlledMocks.generate,
+  recordControlledRecurringSafeguard: controlledMocks.record,
+  recoverControlledRecurringTemplate: controlledMocks.recover,
+}));
+
+vi.mock('../../src/services/ComplianceGuardianService', () => ({
+  ComplianceGuardianService: { evaluate: controlledMocks.compliance },
+}));
+
+vi.mock('../../src/services/TaskRiskClassifier', () => ({
+  TaskRiskClassifier: {
+    classifyWithTemplate: controlledMocks.classifyRisk,
+    toLegacyRiskLevel: controlledMocks.legacyRisk,
+  },
+}));
+
+vi.mock('../../src/services/TaskTemplateRegistry', () => ({
+  isCareContent: controlledMocks.careContent,
+}));
+
+vi.mock('../../src/services/RegionPolicyService', () => ({
+  resolveRegionPolicy: controlledMocks.resolveRegionPolicy,
+  evaluateTaskAgainstRegionPolicy: controlledMocks.evaluateRegionPolicy,
 }));
 
 // ---------------------------------------------------------------------------
@@ -152,6 +194,185 @@ function makePosterCaller(userId = 'poster-abc') {
     firebaseUid: 'fb-poster',
   });
 }
+
+const CONTROLLED_INPUT = {
+  title: 'Weekly common-area clean',
+  description: 'Complete the approved common-area cleaning recipe.',
+  category: 'cleaning',
+  taskRecipe: { serviceStandard: 'Common areas cleaned' },
+  exactLocation: '42 Private Lane',
+  roughLocation: 'Bellevue, WA',
+  accessProcedure: 'Use the rear gate after assignment.',
+  regionCode: 'US-WA',
+  insideHome: false,
+  peoplePresent: false,
+  petsPresent: false,
+  caregiving: false,
+  pattern: 'weekly' as const,
+  dayOfWeek: 6,
+  dayOfMonth: null,
+  timeOfDay: '09:00',
+  startDate: '2026-07-25',
+  endDate: null,
+  timezone: 'America/Los_Angeles',
+  serviceWindowStart: '09:00',
+  serviceWindowEnd: '11:00',
+  expectedDurationMinutes: 120,
+  customerTotalCents: 10_000,
+  corridorMinimumCents: 9_000,
+  corridorMaximumCents: 12_000,
+  maximumAdjustmentCents: 3_000,
+  requiredTools: ['vacuum'],
+  requiredVehicle: null,
+  completionChecklist: ['Complete checklist', 'Upload completion proof'],
+  preferredWorkerId: null,
+  backupWorkerIds: [],
+  cancellationRules: { noticeHours: 24 },
+  holidayRules: { skipPublicHolidays: true },
+  budgetCapCents: 50_000,
+  escalationRules: { onException: 'pause' },
+  invoiceGrouping: { groupBy: 'monthly' },
+  nextReviewDate: '2026-08-18',
+};
+
+describe('recurringTask.createControlled — server-owned economics', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    controlledMocks.compliance.mockResolvedValue({ tier: 'allow', score: 0, notes: [] });
+    controlledMocks.classifyRisk.mockReturnValue(0);
+    controlledMocks.legacyRisk.mockReturnValue('LOW');
+    controlledMocks.careContent.mockReturnValue(false);
+    controlledMocks.resolveRegionPolicy.mockResolvedValue({
+      id: '40000000-0000-0000-0000-000000000001',
+      region_code: 'US-WA',
+      version: 'us-wa-production-v1',
+      policy_hash: 'a'.repeat(64),
+      production_enabled: true,
+      policy_document: {},
+    });
+    controlledMocks.evaluateRegionPolicy.mockReturnValue({
+      allowed: true,
+      reasons: [],
+      snapshot: {
+        policyId: '40000000-0000-0000-0000-000000000001',
+        policyVersion: 'us-wa-production-v1',
+        policyHash: 'a'.repeat(64),
+        licenseRequired: false,
+        insuranceRequired: false,
+        backgroundCheckRequired: false,
+        proofRequired: true,
+        proofMinPhotos: 1,
+        proofMaxPhotos: 5,
+        proofGpsRequired: false,
+      },
+    });
+    controlledMocks.create.mockResolvedValue({
+      success: true,
+      data: { id: '10000000-0000-0000-0000-000000000001', status: 'active', revisionId: 'rev-1' },
+    });
+  });
+
+  it('derives the configured platform fee and payout instead of trusting browser amounts', async () => {
+    await makePosterCaller('poster-abc').createControlled(CONTROLLED_INPUT);
+
+    expect(controlledMocks.create).toHaveBeenCalledWith(expect.objectContaining({
+      customerTotalCents: 10_000,
+      platformMarginCents: 2_000,
+      providerPayoutCents: 8_000,
+      posterId: 'poster-abc',
+      clientPrincipalType: 'HOUSEHOLD',
+      clientPrincipalId: 'poster-abc',
+      approverId: 'poster-abc',
+      riskLevel: 'LOW',
+      requiredTrustTier: 1,
+      licenseRequirements: {},
+      insuranceRequirements: {},
+      credentialsValidUntil: null,
+      taskRecipe: expect.objectContaining({
+        regionPolicy: expect.objectContaining({ policyVersion: 'us-wa-production-v1' }),
+      }),
+    }));
+    expect(controlledMocks.compliance).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 'poster-abc',
+      templateSlug: 'standard_physical',
+    }));
+    expect(controlledMocks.classifyRisk).toHaveBeenCalledWith(expect.objectContaining({
+      insideHome: false,
+      peoplePresent: false,
+      petsPresent: false,
+      caregiving: false,
+    }), 'standard_physical', [], expect.objectContaining({ tier: 'allow' }));
+  });
+
+  it('rejects caller-supplied payout or margin fields at the strict input boundary', async () => {
+    await expect(makePosterCaller().createControlled({
+      ...CONTROLLED_INPUT,
+      providerPayoutCents: 9_999,
+      platformMarginCents: 1,
+    } as never)).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+    expect(controlledMocks.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects browser-owned trust and credential policy fields', async () => {
+    await expect(makePosterCaller().createControlled({
+      ...CONTROLLED_INPUT,
+      requiredTrustTier: 1,
+      licenseRequirements: {},
+      insuranceRequirements: {},
+      credentialsValidUntil: null,
+    } as never)).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+    expect(controlledMocks.create).not.toHaveBeenCalled();
+  });
+
+  it('derives in-home care risk from factual answers and detected care content', async () => {
+    controlledMocks.careContent.mockReturnValue(true);
+    controlledMocks.classifyRisk.mockReturnValue(3);
+    controlledMocks.legacyRisk.mockReturnValue('IN_HOME');
+
+    await makePosterCaller().createControlled({
+      ...CONTROLLED_INPUT,
+      insideHome: true,
+      peoplePresent: true,
+    });
+
+    expect(controlledMocks.classifyRisk).toHaveBeenCalledWith(expect.objectContaining({
+      insideHome: true,
+      peoplePresent: true,
+      caregiving: true,
+    }), 'care', [], expect.any(Object));
+    expect(controlledMocks.create).toHaveBeenCalledWith(expect.objectContaining({ riskLevel: 'IN_HOME' }));
+  });
+
+  it('hard-blocks prohibited recurring work before creating a template', async () => {
+    controlledMocks.compliance.mockResolvedValue({ tier: 'hard_block', score: 99, notes: ['blocked'] });
+
+    await expect(makePosterCaller().createControlled(CONTROLLED_INPUT)).rejects.toMatchObject({
+      code: 'BAD_REQUEST',
+    });
+    expect(controlledMocks.create).not.toHaveBeenCalled();
+  });
+
+  it('fails closed before persistence when the region is not production-activated', async () => {
+    controlledMocks.evaluateRegionPolicy.mockReturnValue({
+      allowed: false,
+      reasons: ['production_policy_not_approved'],
+      snapshot: null,
+    });
+
+    await expect(makePosterCaller().createControlled(CONTROLLED_INPUT)).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+    });
+    expect(controlledMocks.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects a browser-supplied binding risk verdict', async () => {
+    await expect(makePosterCaller().createControlled({
+      ...CONTROLLED_INPUT,
+      riskLevel: 'LOW',
+    } as never)).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+    expect(controlledMocks.create).not.toHaveBeenCalled();
+  });
+});
 
 // ===========================================================================
 // recurringTask.listMine — offset-based pagination (returns array)

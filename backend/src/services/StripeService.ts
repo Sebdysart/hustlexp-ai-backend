@@ -21,7 +21,8 @@ import type { ServiceResult } from '../types.js';
 import { stripeBreaker } from '../middleware/circuit-breaker.js';
 import { stripeLogger } from '../logger.js';
 import { notifyAdmins } from './AdminNotificationHelper.js';
-import { computePlatformFeeCents } from '../lib/money.js';
+import { resolvePlatformFeeCents } from '../lib/money.js';
+import { newPaymentCreationFailure } from './NewPaymentCreationGuard.js';
 
 // ============================================================================
 // INITIALIZATION
@@ -47,6 +48,9 @@ interface CreatePaymentIntentParams {
   posterId: string;
   escrowId: string;
   amount: number; // USD cents
+  /** Immutable Price Book margin stored on the escrow. When present, this is
+   * authoritative; the configured percentage is only a legacy fallback. */
+  platformFeeCents?: number | null;
   description?: string;
 }
 
@@ -167,6 +171,8 @@ export const StripeService = {
   createPaymentIntent: async (
     params: CreatePaymentIntentParams
   ): Promise<ServiceResult<CreatePaymentIntentResult>> => {
+    const frozen = newPaymentCreationFailure('escrow_funding');
+    if (frozen) return frozen;
     if (!stripe) {
       return {
         success: false,
@@ -177,9 +183,10 @@ export const StripeService = {
       };
     }
 
-    const { taskId, posterId, escrowId, amount, description } = params;
+    const { taskId, posterId, escrowId, amount, platformFeeCents, description } = params;
 
-    // PRODUCT_SPEC §9: Minimum task value $5.00 (500 cents)
+    // Binding task-price floor. Configuration may raise this value but cannot
+    // lower it below the canonical $15.00 contract.
     if (amount < config.stripe.minimumTaskValueCents) {
       return {
         success: false,
@@ -191,11 +198,13 @@ export const StripeService = {
     }
 
     try {
-      // Calculate platform fee (PRODUCT_SPEC §9: 15% platform fee)
-      // AUDIT FIX H3: was Math.floor while every release path used Math.round —
-      // the same gross produced path-dependent fees differing by 1¢, breaking
-      // ledger reconciliation. Unified on Math.round via lib/money.
-      const platformFee = computePlatformFeeCents(amount);
+      // The escrow's immutable Price Book margin is authoritative. Only legacy
+      // rows without canonical evidence may use the configured fallback.
+      const platformFee = resolvePlatformFeeCents(
+        amount,
+        config.stripe.platformFeePercent,
+        platformFeeCents,
+      );
 
       // NOTE on application_fee_amount (FIX 2 analysis):
       // `application_fee_amount` only works on Connect charges where the payment
@@ -260,6 +269,8 @@ export const StripeService = {
     amountCents: number,
     timestamp: number,
   ): Promise<ServiceResult<CreatePaymentIntentResult>> => {
+    const frozen = newPaymentCreationFailure('xp_tax');
+    if (frozen) return frozen;
     if (!stripe) {
       return {
         success: false,

@@ -3,7 +3,8 @@
  *
  * CONSTITUTIONAL: Admin-only endpoints for platform management.
  *
- * All procedures use adminProcedure (requires admin_roles table entry).
+ * Procedures use consequence-specific administrator capabilities; no generic
+ * staff role receives universal platform authority.
  *
  * Handles:
  * - User management (list, ban/unban)
@@ -16,11 +17,22 @@
  */
 
 import { TRPCError } from '@trpc/server';
-import { router, adminProcedure, Schemas, invalidateAuthCacheForUser } from '../trpc.js';
+import { randomUUID } from 'node:crypto';
+import {
+  router,
+  disputeAdminProcedure,
+  escrowAdminProcedure,
+  financialAdminProcedure,
+  platformAdminProcedure,
+  Schemas,
+  userManagementAdminProcedure,
+  invalidateAuthCacheForUser,
+} from '../trpc.js';
 import { authCache } from '../auth-cache.js';
 import { redis } from '../cache/redis.js';
 import { db } from '../db.js';
 import { z } from 'zod';
+import { issueDeactivationAppealRight } from '../services/WorkerStandingDecisionService.js';
 import { EscrowService } from '../services/EscrowService.js';
 import { forceDisconnectUser } from '../realtime/connection-registry.js';
 import { revokeUserSessions } from '../auth/middleware.js';
@@ -29,6 +41,10 @@ import { logger } from '../logger.js';
 import { notifyAdmins } from '../services/AdminNotificationHelper.js';
 
 const log = logger.child({ router: 'admin' });
+
+function escapeLikePattern(value: string): string {
+  return value.replace(/[\\%_]/g, (character) => `\\${character}`);
+}
 
 // ============================================================================
 // ROUTER
@@ -42,10 +58,10 @@ export const adminRouter = router({
   /**
    * List users with pagination and optional filters
    */
-  listUsers: adminProcedure
+  listUsers: userManagementAdminProcedure
     .input(z.object({
       limit: z.number().int().min(1).max(100).default(20),
-      offset: z.number().int().min(0).default(0),
+      offset: z.number().int().min(0).max(500).default(0),
       search: z.string().max(255).optional(),
       trustTier: z.enum(['0', '1', '2', '3', '4']).optional(),
       isBanned: z.boolean().optional(),
@@ -57,8 +73,10 @@ export const adminRouter = router({
 
       if (input.search) {
         // Escape LIKE metacharacters so user input cannot craft wildcard patterns.
-        const safeLike = input.search.replace(/%/g, '\\%').replace(/_/g, '\\_');
-        conditions.push(`(u.full_name ILIKE $${paramIndex} OR u.email ILIKE $${paramIndex})`);
+        const safeLike = escapeLikePattern(input.search);
+        conditions.push(
+          `(u.full_name ILIKE $${paramIndex} ESCAPE '\\' OR u.email ILIKE $${paramIndex} ESCAPE '\\')`,
+        );
         params.push(`%${safeLike}%`);
         paramIndex++;
       }
@@ -85,11 +103,13 @@ export const adminRouter = router({
         xp_total: number;
         is_verified: boolean;
         is_banned: boolean;
+        account_status: string;
         default_mode: string;
         created_at: Date;
       }>(
         `SELECT u.id, u.full_name, u.email, u.trust_tier, u.xp_total,
-                u.is_verified, COALESCE(u.is_banned, false) as is_banned, u.default_mode, u.created_at
+                u.is_verified, COALESCE(u.is_banned, false) as is_banned,
+                u.account_status, u.default_mode, u.created_at
          FROM users u
          WHERE ${conditions.join(' AND ')}
          ORDER BY u.created_at DESC
@@ -111,17 +131,44 @@ export const adminRouter = router({
   /**
    * Ban or unban a user
    */
-  setUserBan: adminProcedure
+  setUserBan: userManagementAdminProcedure
     .input(z.object({
       userId: Schemas.uuid,
       banned: z.boolean(),
       reason: z.string().max(500).optional(),
     }))
     .mutation(async ({ ctx, input }) => {
-      const result = await db.query<{ id: string; is_banned: boolean }>(
-        `UPDATE users SET is_banned = $1, updated_at = NOW() WHERE id = $2 RETURNING id, is_banned`,
-        [input.banned, input.userId]
-      );
+      const result = await db.transaction(async (query) => {
+        const current = await query<{
+          id: string;
+          is_banned: boolean;
+          trust_tier: number;
+          default_mode: string;
+        }>(
+          `SELECT id,is_banned,trust_tier,default_mode FROM users WHERE id=$1 FOR UPDATE`,
+          [input.userId],
+        );
+        if (!current.rows[0]) return { rows: [] as Array<{ id: string; is_banned: boolean }> };
+        if (current.rows[0].is_banned === input.banned) {
+          return { rows: [{ id: current.rows[0].id, is_banned: current.rows[0].is_banned }] };
+        }
+        const updated = await query<{ id: string; is_banned: boolean }>(
+          `UPDATE users SET is_banned = $1, updated_at = NOW() WHERE id = $2 RETURNING id, is_banned`,
+          [input.banned, input.userId],
+        );
+        if (input.banned && current.rows[0].default_mode === 'worker') {
+          await issueDeactivationAppealRight({
+            query,
+            workerId: input.userId,
+            currentTier: current.rows[0].trust_tier,
+            decidedBy: ctx.user.id,
+            decisionSource: 'ADMIN',
+            reason: input.reason ?? 'Administrative deactivation under the worker standing policy.',
+            sourceIdempotencyKey: `admin-ban:${randomUUID()}`,
+          });
+        }
+        return updated;
+      });
 
       if (result.rows.length === 0) {
         throw new TRPCError({ code: 'NOT_FOUND', message: 'User not found' });
@@ -298,7 +345,7 @@ export const adminRouter = router({
    * On suspend: full session revocation + SSE disconnect.
    * On unsuspend: local in-process cache eviction only (no Redis marker written).
    */
-  setSuspension: adminProcedure
+  setSuspension: userManagementAdminProcedure
     .input(z.object({
       userId: Schemas.uuid,
       suspended: z.boolean(),
@@ -437,7 +484,7 @@ export const adminRouter = router({
    * so the next request picks up the new is_admin=true status immediately
    * rather than waiting up to 5 minutes for the in-process TTL.
    */
-  grantAdminRole: adminProcedure
+  grantAdminRole: platformAdminProcedure
     .input(z.object({
       userId: Schemas.uuid,
       role: z.enum(['admin', 'support', 'finance', 'moderator', 'founder']),
@@ -481,6 +528,22 @@ export const adminRouter = router({
         });
       }
 
+      // A65-1: "grant" is not an implicit role-replacement endpoint. Without
+      // this precondition, ON CONFLICT could let an administrator overwrite a
+      // founder or peer row by requesting a lower role, bypassing the audited
+      // revocation hierarchy. Same-role replay remains idempotent.
+      const existingTargetRole = await db.query<{ role: string }>(
+        'SELECT role FROM admin_roles WHERE user_id = $1',
+        [input.userId]
+      );
+      const currentTargetRole = existingTargetRole.rows[0]?.role;
+      if (currentTargetRole && currentTargetRole !== input.role) {
+        throw new TRPCError({
+          code: 'CONFLICT',
+          message: `Target already has role '${currentTargetRole}'; revoke it before granting another role`,
+        });
+      }
+
       // Precondition: verify firebase_uid FIRST — before any DB writes — so that
       // if the user has no Firebase UID the role is never granted and no audit
       // row is written, making the check a true precondition rather than a
@@ -500,9 +563,37 @@ export const adminRouter = router({
 
       // Upsert so a duplicate grant is idempotent
       await db.query(
-        `INSERT INTO admin_roles (user_id, role)
-         VALUES ($1, $2)
-         ON CONFLICT (user_id, role) DO NOTHING`,
+        `INSERT INTO admin_roles (
+           user_id,
+           role,
+           can_resolve_disputes,
+           can_override_escrow,
+           can_modify_trust,
+           can_ban_users,
+           can_access_financials,
+           can_manage_incidents,
+           can_manage_operations
+         )
+         VALUES (
+           $1,
+           $2,
+           $2 IN ('moderator', 'admin', 'founder'),
+           $2 IN ('finance', 'admin', 'founder'),
+           $2 IN ('moderator', 'admin', 'founder'),
+           $2 IN ('moderator', 'admin', 'founder'),
+           $2 IN ('finance', 'admin', 'founder'),
+           $2 IN ('moderator', 'admin', 'founder'),
+           $2 IN ('support', 'admin', 'founder')
+         )
+         ON CONFLICT (user_id) DO UPDATE SET
+           role = EXCLUDED.role,
+           can_resolve_disputes = EXCLUDED.can_resolve_disputes,
+           can_override_escrow = EXCLUDED.can_override_escrow,
+           can_modify_trust = EXCLUDED.can_modify_trust,
+           can_ban_users = EXCLUDED.can_ban_users,
+           can_access_financials = EXCLUDED.can_access_financials,
+           can_manage_incidents = EXCLUDED.can_manage_incidents,
+           can_manage_operations = EXCLUDED.can_manage_operations`,
         [input.userId, input.role]
       );
 
@@ -531,7 +622,7 @@ export const adminRouter = router({
    * so the revoked role takes effect immediately — without this, a removed
    * admin retains adminOverride=true access for up to 5 minutes.
    */
-  revokeAdminRole: adminProcedure
+  revokeAdminRole: platformAdminProcedure
     .input(z.object({
       userId: Schemas.uuid,
       role: z.enum(['admin', 'support', 'finance', 'moderator', 'founder']),
@@ -560,9 +651,10 @@ export const adminRouter = router({
         0
       );
       const targetRoleRank = ROLE_RANK[input.role] ?? 0;
-      // A46-3 FIX: Use strict `>` — mirrors the fix in grantAdminRole. A founder
-      // must be able to revoke another founder's role. With `>=`, (5 >= 5) = FORBIDDEN.
-      if (targetRoleRank > callerMaxRank) {
+      // Peer revocation is forbidden except founder-to-founder break-glass
+      // recovery. In particular, one admin cannot silently revoke another.
+      const isFounderPeerRevoke = input.role === 'founder' && callerMaxRank >= 5;
+      if (targetRoleRank >= callerMaxRank && !isFounderPeerRevoke) {
         throw new TRPCError({
           code: 'FORBIDDEN',
           message: 'Insufficient rank to revoke this role',
@@ -619,10 +711,10 @@ export const adminRouter = router({
   /**
    * List tasks with pagination and optional filters
    */
-  listTasks: adminProcedure
+  listTasks: platformAdminProcedure
     .input(z.object({
       limit: z.number().int().min(1).max(100).default(20),
-      offset: z.number().int().min(0).default(0),
+      offset: z.number().int().min(0).max(500).default(0),
       state: z.enum(['OPEN', 'MATCHING', 'ACCEPTED', 'IN_PROGRESS', 'PROOF_SUBMITTED', 'COMPLETED', 'CANCELLED', 'DISPUTED', 'EXPIRED']).optional(),
     }))
     .query(async ({ input }) => {
@@ -664,10 +756,10 @@ export const adminRouter = router({
   /**
    * List disputes with pagination
    */
-  listDisputes: adminProcedure
+  listDisputes: disputeAdminProcedure
     .input(z.object({
       limit: z.number().int().min(1).max(100).default(20),
-      offset: z.number().int().min(0).default(0),
+      offset: z.number().int().min(0).max(500).default(0),
       status: z.enum(['OPEN', 'EVIDENCE_REQUESTED', 'RESOLVED', 'ESCALATED']).optional(),
     }))
     .query(async ({ input }) => {
@@ -712,7 +804,7 @@ export const adminRouter = router({
   /**
    * Revenue breakdown by time period
    */
-  revenueBreakdown: adminProcedure
+  revenueBreakdown: financialAdminProcedure
     .input(z.object({
       days: z.number().int().min(1).max(365).default(30),
     }))
@@ -746,7 +838,7 @@ export const adminRouter = router({
   /**
    * AI cost summary - aggregated AI decision costs
    */
-  aiCostSummary: adminProcedure
+  aiCostSummary: financialAdminProcedure
     .input(z.object({
       days: z.number().int().min(1).max(365).default(30),
     }))
@@ -810,7 +902,7 @@ export const adminRouter = router({
    *   - force_refund now calls EscrowService.refund() (correct state name: LOCKED_DISPUTE).
    *   - Both actions write to admin_actions audit table.
    */
-  escrowOverride: adminProcedure
+  escrowOverride: escrowAdminProcedure
     .input(z.object({
       escrowId: Schemas.uuid,
       action: z.enum(['force_release', 'force_refund']),

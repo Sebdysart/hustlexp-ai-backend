@@ -1,286 +1,247 @@
 /**
  * N4 Feed Eligibility Invariant Tests
- * 
- * ============================================================================
- * PURPOSE
- * ============================================================================
- * 
- * Prove that the feed query enforces eligibility invariants.
- * These tests MUST FAIL if eligibility enforcement is broken.
- * 
- * ============================================================================
- * INVARIANTS TESTED
- * ============================================================================
- * 
- * INV-N4-1: Feed query returns ONLY eligible tasks
- * INV-N4-2: Feed query uses SQL JOIN for eligibility (no post-query filtering)
- * INV-N4-3: Tasks without capability_profiles are excluded
- * INV-N4-4: Frontend trusts all returned tasks are eligible
- * 
- * ============================================================================
- * AUTHORITY MODEL
- * ============================================================================
- * 
- * - Feed query: SQL JOIN with capability_profiles enforces eligibility
- * - Frontend: Trusts all returned tasks are eligible (no client filtering)
- * - No disabled cards: All tasks in feed are actionable
- * 
- * Reference: Phase N4 — Feed Query Migration (LOCKED)
+ *
+ * These tests execute the production FeedQueryService against PostgreSQL.
+ * A copied or simplified SQL query is not acceptable evidence for this gate.
  */
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import pg from 'pg';
-import { 
-  createTestPool, 
-  cleanupTestData, 
+import type { CapabilityProfile } from '../../src/services/CapabilityProfileService';
+import { queryFeed } from '../../src/services/FeedQueryService';
+import { TaskDiscoveryService } from '../../src/services/TaskDiscoveryService';
+import {
+  cleanupTestData,
+  createTestEscrow,
+  createTestPool,
+  createTestTask,
   createTestUser,
   hasDb,
 } from '../setup';
 
 let pool: pg.Pool;
 
+type WorkerOptions = {
+  profile?: boolean;
+  trustTier?: number;
+  riskClearance?: string[];
+  isMinor?: boolean;
+  isBanned?: boolean;
+  trustHold?: boolean;
+  trustHoldUntil?: Date | null;
+  payoutsEnabled?: boolean;
+};
+
+function profileFor(userId: string, options: WorkerOptions = {}): CapabilityProfile {
+  return {
+    userId,
+    trustTier: options.trustTier ?? 2,
+    riskClearance: options.riskClearance ?? ['low', 'medium'],
+    locationState: 'WA',
+    locationCity: 'Seattle',
+    insuranceValid: false,
+    insuranceExpiresAt: null,
+    backgroundCheckValid: false,
+    backgroundCheckExpiresAt: null,
+    verifiedTrades: [],
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+async function createWorker(options: WorkerOptions = {}): Promise<{
+  id: string;
+  profile: CapabilityProfile;
+}> {
+  const { id } = await createTestUser(pool);
+  await pool.query(
+    `UPDATE users
+     SET default_mode = 'worker',
+         trust_tier = $2,
+         date_of_birth = DATE '1990-01-01',
+         is_minor = $3,
+         is_banned = $4,
+         trust_hold = $5,
+         trust_hold_until = $6,
+         account_status = 'ACTIVE',
+         is_verified = TRUE,
+         phone = '+1206' || substr(replace(id::text, '-', ''), 1, 7),
+         stripe_connect_id = $7,
+         payouts_enabled = $8,
+         location_state = 'WA',
+         location_city = 'Seattle'
+     WHERE id = $1`,
+    [
+      id,
+      options.trustTier ?? 2,
+      options.isMinor ?? false,
+      options.isBanned ?? false,
+      options.trustHold ?? false,
+      options.trustHoldUntil ?? null,
+      `acct_test_${id.replaceAll('-', '')}`,
+      options.payoutsEnabled ?? true,
+    ],
+  );
+  const profile = profileFor(id, options);
+  if (options.profile !== false) {
+    await pool.query(
+      `INSERT INTO capability_profiles (
+         user_id, trust_tier, risk_clearance, location_state, location_city,
+         insurance_valid, background_check_valid, updated_at
+       ) VALUES ($1, $2, $3, 'WA', 'Seattle', FALSE, FALSE, NOW())`,
+      [id, profile.trustTier, profile.riskClearance],
+    );
+  }
+  return { id, profile };
+}
+
+async function createPoster(): Promise<string> {
+  const { id } = await createTestUser(pool);
+  await pool.query(
+    `UPDATE users SET default_mode = 'poster', is_minor = FALSE, date_of_birth = DATE '1990-01-01'
+     WHERE id = $1`,
+    [id],
+  );
+  return id;
+}
+
+async function createFundedTask(posterId: string, state = 'OPEN', trustTierRequired = 1): Promise<string> {
+  const task = await createTestTask(pool, { posterId, state, trustTierRequired });
+  await createTestEscrow(pool, task.id, 'FUNDED');
+  return task.id;
+}
+
+function loadFeed(userId: string, profile: CapabilityProfile) {
+  return queryFeed({ userId, capabilityProfile: profile, pagination: { limit: 50 } });
+}
+
 beforeAll(async () => {
-  if (!hasDb) return; // Skip DB setup when DATABASE_URL not available
+  if (!hasDb) return;
   pool = createTestPool();
-  console.log('Connected to database for N4 feed eligibility tests');
 });
 
 afterAll(async () => {
-  await pool.end();
+  if (pool) await pool.end();
 });
 
 beforeEach(async () => {
-  await cleanupTestData(pool);
+  if (pool) await cleanupTestData(pool);
 });
 
-// =============================================================================
-// INV-N4-1: Feed query returns ONLY eligible tasks
-// =============================================================================
+describe.skipIf(!hasDb)('INV-N4 production feed SQL authority', () => {
+  it('returns a funded, policy-bound, eligible OPEN task as immediately actionable', async () => {
+    const worker = await createWorker();
+    const taskId = await createFundedTask(await createPoster());
 
-describe.skipIf(!hasDb)('INV-N4-1: Feed query returns ONLY eligible tasks', () => {
-  
-  it('MUST PASS: Feed query excludes non-OPEN tasks', async () => {
-    const userId = await createTestUser(pool, `test-user-${Date.now()}@hustlexp.test`);
-    
-    // Create capability profile for user
-    await pool.query(
-      `INSERT INTO capability_profiles (user_id, trust_tier, risk_clearance)
-       VALUES ($1, 'A', ARRAY['low'])`,
-      [userId]
-    );
-    
-    // Create OPEN task (should appear in feed)
-    await pool.query(
-      `INSERT INTO tasks (poster_id, title, description, price, state, category, risk_level)
-       VALUES ($1, 'Open Task', 'Description', 5000, 'OPEN', 'cleaning', 'LOW')`,
-      [userId]
-    );
-    
-    // Create COMPLETED task (should NOT appear in feed)
-    await pool.query(
-      `INSERT INTO tasks (poster_id, title, description, price, state, category, risk_level)
-       VALUES ($1, 'Completed Task', 'Description', 5000, 'COMPLETED', 'cleaning', 'LOW')`,
-      [userId]
-    );
-    
-    // Execute feed query (simulate tasks.list)
-    const feedResult = await pool.query(
-      `
-      SELECT t.id, t.title, t.state
-      FROM tasks t
-      INNER JOIN capability_profiles cp ON cp.user_id = $1
-      WHERE t.state = 'OPEN' AND cp.user_id = $1
-      ORDER BY t.created_at DESC
-      LIMIT 20
-      `,
-      [userId]
-    );
-    
-    // All returned tasks must be OPEN
-    feedResult.rows.forEach((row: any) => {
-      expect(row.state).toBe('OPEN');
+    const feed = await loadFeed(worker.id, worker.profile);
+    const task = feed.tasks.find(candidate => candidate.id === taskId);
+
+    expect(task).toMatchObject({
+      id: taskId,
+      payout: { cents: 4000, currency: 'usd' },
+      riskLevel: 'low',
+      eligibility: { eligible: true, code: 'HX200' },
     });
-    
-    // COMPLETED task must not appear
-    const completedTask = feedResult.rows.find((r: any) => r.title === 'Completed Task');
-    expect(completedTask).toBeUndefined();
+    expect(feed.filters).toEqual({ applied: ['database_eligibility'], excluded: 0 });
   });
-  
-  it('MUST PASS: Feed query excludes tasks for users without capability_profiles', async () => {
-    const userIdWithProfile = await createTestUser(pool, `test-user-1-${Date.now()}@hustlexp.test`);
-    const userIdWithoutProfile = await createTestUser(pool, `test-user-2-${Date.now()}@hustlexp.test`);
-    
-    // Create profile for first user only
-    await pool.query(
-      `INSERT INTO capability_profiles (user_id, trust_tier, risk_clearance)
-       VALUES ($1, 'A', ARRAY['low'])`,
-      [userIdWithProfile]
-    );
-    
-    // Create tasks
-    await pool.query(
-      `INSERT INTO tasks (poster_id, title, description, price, state, category, risk_level)
-       VALUES ($1, 'Task 1', 'Description', 5000, 'OPEN', 'cleaning', 'LOW')`,
-      [userIdWithProfile]
-    );
-    
-    // Query feed for user WITH profile
-    const feedWithProfile = await pool.query(
-      `
-      SELECT t.id, t.title
-      FROM tasks t
-      INNER JOIN capability_profiles cp ON cp.user_id = $1
-      WHERE t.state = 'OPEN' AND cp.user_id = $1
-      LIMIT 20
-      `,
-      [userIdWithProfile]
-    );
-    
-    expect(feedWithProfile.rows.length).toBeGreaterThan(0);
-    
-    // Query feed for user WITHOUT profile (should return 0 tasks)
-    const feedWithoutProfile = await pool.query(
-      `
-      SELECT t.id, t.title
-      FROM tasks t
-      INNER JOIN capability_profiles cp ON cp.user_id = $1
-      WHERE t.state = 'OPEN' AND cp.user_id = $1
-      LIMIT 20
-      `,
-      [userIdWithoutProfile]
-    );
-    
-    expect(feedWithoutProfile.rows.length).toBe(0);
+
+  it('excludes terminal and unfunded tasks before application mapping', async () => {
+    const worker = await createWorker();
+    const posterId = await createPoster();
+    const completedId = await createFundedTask(posterId, 'COMPLETED');
+    const unfunded = await createTestTask(pool, { posterId });
+
+    const ids = (await loadFeed(worker.id, worker.profile)).tasks.map(task => task.id);
+    expect(ids).not.toContain(completedId);
+    expect(ids).not.toContain(unfunded.id);
   });
-});
 
-// =============================================================================
-// INV-N4-2: Feed query uses SQL JOIN for eligibility (no post-query filtering)
-// =============================================================================
+  it('fails closed when the authoritative capability profile is missing', async () => {
+    const worker = await createWorker({ profile: false });
+    const taskId = await createFundedTask(await createPoster());
 
-describe.skipIf(!hasDb)('INV-N4-2: Feed query uses SQL JOIN for eligibility (no post-query filtering)', () => {
-  
-  it('MUST PASS: Feed query eligibility is enforced at SQL level, not application level', async () => {
-    const userId = await createTestUser(pool, `test-user-${Date.now()}@hustlexp.test`);
-    
-    await pool.query(
-      `INSERT INTO capability_profiles (user_id, trust_tier, risk_clearance)
-       VALUES ($1, 'A', ARRAY['low'])`,
-      [userId]
-    );
-    
-    // Create multiple tasks
-    await pool.query(
-      `INSERT INTO tasks (poster_id, title, description, price, state, category, risk_level)
-       VALUES 
-       ($1, 'Task 1', 'Description', 5000, 'OPEN', 'cleaning', 'LOW'),
-       ($1, 'Task 2', 'Description', 5000, 'OPEN', 'delivery', 'LOW'),
-       ($1, 'Task 3', 'Description', 5000, 'COMPLETED', 'cleaning', 'LOW')`,
-      [userId]
-    );
-    
-    // Execute feed query with JOIN (eligibility enforced at SQL level)
-    const feedResult = await pool.query(
-      `
-      SELECT t.id, t.title, t.state
-      FROM tasks t
-      INNER JOIN capability_profiles cp ON cp.user_id = $1
-      WHERE t.state = 'OPEN' AND cp.user_id = $1
-      ORDER BY t.created_at DESC
-      `,
-      [userId]
-    );
-    
-    // Verify all returned tasks are OPEN (filtered at SQL level)
-    feedResult.rows.forEach((row: any) => {
-      expect(row.state).toBe('OPEN');
+    const ids = (await loadFeed(worker.id, worker.profile)).tasks.map(task => task.id);
+    expect(ids).not.toContain(taskId);
+  });
+
+  it.each([
+    ['minor account', { isMinor: true }],
+    ['terminal ban', { isBanned: true }],
+    ['active trust hold', { trustHold: true, trustHoldUntil: new Date(Date.now() + 60_000) }],
+    ['missing payout readiness', { payoutsEnabled: false }],
+  ] satisfies Array<[string, WorkerOptions]>)('excludes %s', async (_label, options) => {
+    const worker = await createWorker(options);
+    const taskId = await createFundedTask(await createPoster());
+
+    const ids = (await loadFeed(worker.id, worker.profile)).tasks.map(task => task.id);
+    expect(ids).not.toContain(taskId);
+  });
+
+  it('treats an expired trust hold as inactive', async () => {
+    const worker = await createWorker({
+      trustHold: true,
+      trustHoldUntil: new Date(Date.now() - 60_000),
     });
-    
-    // Verify COMPLETED task is not in results (filtered out by SQL)
-    const completedTask = feedResult.rows.find((r: any) => r.title === 'Task 3');
-    expect(completedTask).toBeUndefined();
+    const taskId = await createFundedTask(await createPoster());
+
+    const ids = (await loadFeed(worker.id, worker.profile)).tasks.map(task => task.id);
+    expect(ids).toContain(taskId);
   });
-});
 
-// =============================================================================
-// INV-N4-3: Tasks without capability_profiles are excluded
-// =============================================================================
+  it('uses database trust state even when caller profile data attempts to widen access', async () => {
+    const worker = await createWorker({ trustTier: 1, riskClearance: ['low'] });
+    const taskId = await createFundedTask(await createPoster(), 'OPEN', 3);
+    const forgedProfile: CapabilityProfile = {
+      ...worker.profile,
+      trustTier: 4,
+      riskClearance: ['low', 'medium', 'high', 'critical'],
+    };
 
-describe.skipIf(!hasDb)('INV-N4-3: Tasks without capability_profiles are excluded', () => {
-  
-  it('MUST PASS: INNER JOIN excludes users without capability_profiles', async () => {
-    const userId = await createTestUser(pool, `test-user-${Date.now()}@hustlexp.test`);
-    
-    // Create task BUT no capability profile
-    await pool.query(
-      `INSERT INTO tasks (poster_id, title, description, price, state, category, risk_level)
-       VALUES ($1, 'Task Without Profile', 'Description', 5000, 'OPEN', 'cleaning', 'LOW')`,
-      [userId]
-    );
-    
-    // Query feed with INNER JOIN (should return 0 tasks)
-    const feedResult = await pool.query(
-      `
-      SELECT t.id, t.title
-      FROM tasks t
-      INNER JOIN capability_profiles cp ON cp.user_id = $1
-      WHERE t.state = 'OPEN' AND cp.user_id = $1
-      LIMIT 20
-      `,
-      [userId]
-    );
-    
-    // INNER JOIN should exclude tasks from users without profiles
-    expect(feedResult.rows.length).toBe(0);
+    const ids = (await loadFeed(worker.id, forgedProfile)).tasks.map(task => task.id);
+    expect(ids).not.toContain(taskId);
   });
-});
 
-// =============================================================================
-// INV-N4-4: Frontend trusts all returned tasks are eligible
-// =============================================================================
+  it('suppresses active applications and restores withdrawn work for legitimate reapplication', async () => {
+    const worker = await createWorker();
+    const taskId = await createFundedTask(await createPoster());
+    const application = await pool.query<{ id: string }>(
+      `INSERT INTO task_applications (task_id, hustler_id, message)
+       VALUES ($1, $2, 'I can do this work') RETURNING id`,
+      [taskId, worker.id],
+    );
 
-describe.skipIf(!hasDb)('INV-N4-4: Frontend trusts all returned tasks are eligible', () => {
-  
-  it('MUST PASS: All tasks returned by feed query are actionable (no disabled states)', async () => {
-    const userId = await createTestUser(pool, `test-user-${Date.now()}@hustlexp.test`);
-    
+    expect((await loadFeed(worker.id, worker.profile)).tasks.map(task => task.id)).not.toContain(taskId);
     await pool.query(
-      `INSERT INTO capability_profiles (user_id, trust_tier, risk_clearance)
-       VALUES ($1, 'A', ARRAY['low'])`,
-      [userId]
+      `UPDATE task_applications SET status = 'withdrawn', updated_at = NOW() WHERE id = $1`,
+      [application.rows[0].id],
     );
-    
-    // Create OPEN tasks
-    await pool.query(
-      `INSERT INTO tasks (poster_id, title, description, price, state, category, risk_level)
-       VALUES 
-       ($1, 'Actionable Task 1', 'Description', 5000, 'OPEN', 'cleaning', 'LOW'),
-       ($1, 'Actionable Task 2', 'Description', 5000, 'OPEN', 'delivery', 'LOW')`,
-      [userId]
+    expect((await loadFeed(worker.id, worker.profile)).tasks.map(task => task.id)).toContain(taskId);
+  });
+
+  it('rejects a capability profile belonging to a different worker before querying', async () => {
+    const worker = await createWorker();
+    const other = await createWorker();
+    await expect(loadFeed(worker.id, other.profile)).rejects.toThrow(
+      'Capability profile does not belong to the requested user',
     );
-    
-    // Execute feed query
-    const feedResult = await pool.query(
-      `
-      SELECT t.id, t.title, t.state
-      FROM tasks t
-      INNER JOIN capability_profiles cp ON cp.user_id = $1
-      WHERE t.state = 'OPEN' AND cp.user_id = $1
-      ORDER BY t.created_at DESC
-      `,
-      [userId]
-    );
-    
-    // All returned tasks must be actionable (OPEN state)
-    feedResult.rows.forEach((row: any) => {
-      expect(row.state).toBe('OPEN');
-      // Frontend can trust this task is eligible and actionable
+  });
+
+  it('keeps the primary personalized and search feeds on the same actionable SQL authority', async () => {
+    const worker = await createWorker();
+    const taskId = await createFundedTask(await createPoster());
+    const personalized = await TaskDiscoveryService.getFeed(worker.id, {}, 50, 0);
+    expect(personalized.success).toBe(true);
+    if (!personalized.success) throw new Error(personalized.error.message);
+    const feedItem = personalized.data.find(item => item.task.id === taskId);
+    expect(feedItem?.offer_decision).toMatchObject({
+      decisionReady: true,
+      blockingReasons: [],
+      economics: { payoutCents: 4000, netPayoutCents: 3900 },
+      logistics: { estimatedDurationMinutes: 60, area: 'Seattle, WA' },
     });
-    
-    // No disabled or non-actionable states should appear
-    const nonActionableStates = ['COMPLETED', 'CANCELLED', 'EXPIRED', 'DISPUTED'];
-    feedResult.rows.forEach((row: any) => {
-      expect(nonActionableStates).not.toContain(row.state);
-    });
+
+    const search = await TaskDiscoveryService.search(worker.id, { query: 'Test Task' }, 50, 0);
+    expect(search.success).toBe(true);
+    if (!search.success) throw new Error(search.error.message);
+    expect(search.data.map(item => item.task.id)).toContain(taskId);
   });
 });

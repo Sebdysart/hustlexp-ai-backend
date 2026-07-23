@@ -22,6 +22,12 @@ import { sendSMS } from '../services/TwilioSMSService.js';
 import { markOutboxEventProcessed, markOutboxEventFailed } from './outbox-worker.js';
 import { workerLogger } from '../logger.js';
 import type { Job } from 'bullmq';
+import {
+  authorizeNotificationDelivery,
+  markNotificationCancelled,
+  markNotificationDeliveryFailure,
+  markNotificationProviderAccepted,
+} from '../services/NotificationDeliveryState.js';
 
 const log = workerLogger.child({ worker: 'sms' });
 
@@ -35,6 +41,7 @@ interface SMSJobData {
   event_version: number;
   payload: {
     smsId: string;
+    notificationId?: string;
     userId?: string;
     toPhone: string;
     body: string;
@@ -53,10 +60,28 @@ interface SMSJobData {
  */
 export async function processSMSJob(job: Job<SMSJobData>): Promise<void> {
   // Extract data from job payload (structured as outbox event)
-  const { smsId, toPhone, body } = job.data.payload;
+  const { smsId, notificationId, toPhone, body } = job.data.payload;
   const jobIdempotencyKey = job.id || `sms:${smsId}`;
 
   try {
+    if (notificationId) {
+      const authorization = await authorizeNotificationDelivery(notificationId, 'sms');
+      if (!authorization.allowed) {
+        if (authorization.reason === 'not_due') {
+          await markOutboxEventFailed(jobIdempotencyKey, 'notification_not_due');
+          return;
+        }
+        if (authorization.reason === 'superseded' || authorization.reason === 'cancelled_superseded') {
+          await markNotificationCancelled(notificationId, 'sms', authorization.reason);
+        }
+        if (['superseded', 'cancelled_superseded', 'provider_accepted', 'delivered', 'suppressed', 'failed_terminal'].includes(authorization.reason)) {
+          await markOutboxEventProcessed(jobIdempotencyKey);
+          return;
+        }
+        throw new Error(`SMS delivery refused: ${authorization.reason}`);
+      }
+    }
+
     // Phase 1: Atomic claim inside a transaction
     // SELECT FOR UPDATE + all idempotency/crash-recovery checks + CAS UPDATE must be atomic.
     // The row lock is held for the entire transaction, preventing concurrent workers from
@@ -163,6 +188,11 @@ export async function processSMSJob(job: Job<SMSJobData>): Promise<void> {
 
     // Handle early-return cases from the transaction (already-sent, crash-recovery, claim-lost)
     if (claimResult.shouldReturn) {
+      if (notificationId && claimResult.smsRecord.twilio_sid) {
+        await markNotificationProviderAccepted(
+          notificationId, 'sms', 'twilio', claimResult.smsRecord.twilio_sid,
+        );
+      }
       if (claimResult.outboxKey) {
         await markOutboxEventProcessed(claimResult.outboxKey);
       }
@@ -217,6 +247,15 @@ export async function processSMSJob(job: Job<SMSJobData>): Promise<void> {
 
     const finalSMS = finalUpdateResult.rows[0];
 
+    if (notificationId) {
+      await markNotificationProviderAccepted(
+        notificationId,
+        'sms',
+        'twilio',
+        finalSMS.twilio_sid || twilioSid || null,
+      );
+    }
+
     // Mark outbox event as processed (if processing from outbox)
     const outboxKey = smsRecord.idempotency_key || jobIdempotencyKey;
     if (outboxKey) {
@@ -269,6 +308,10 @@ export async function processSMSJob(job: Job<SMSJobData>): Promise<void> {
        WHERE id = $3`,
       [shouldMarkFailed ? 'failed' : 'pending', errorMessage, smsId]
     );
+
+    if (notificationId) {
+      await markNotificationDeliveryFailure(notificationId, 'sms', errorMessage);
+    }
 
     if (shouldMarkFailed) {
       log.error({ smsId, jobId: job.id, idempotencyKey: outboxKey, retryCount: currentRetryCount, maxRetries, err: errorMessage }, 'SMS poison message: max retries exceeded');

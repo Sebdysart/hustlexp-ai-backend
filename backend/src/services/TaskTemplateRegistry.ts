@@ -24,7 +24,7 @@ export interface TaskTemplate {
   displayName: string;
   one_line_desc: string;
   defaultRiskTier: 0 | 1 | 2 | 3;
-  requiredTrustTier: 'rookie' | 'verified' | 'trusted';
+  requiredTrustTier: 'rookie' | 'verified' | 'trusted' | 'licensed';
   completionCriteriaType: CompletionCriteriaType;
   autoReleaseHours: number;
   lateCancelPct: number;
@@ -164,7 +164,7 @@ Never under $50 for any production task.`,
     displayName: 'Specialized / Licensed',
     one_line_desc: 'Trade work, therapy, notary, or licensed skill services',
     defaultRiskTier: 1,
-    requiredTrustTier: 'trusted',
+    requiredTrustTier: 'licensed',
     completionCriteriaType: 'photo_proof',
     autoReleaseHours: 24,
     lateCancelPct: 0,

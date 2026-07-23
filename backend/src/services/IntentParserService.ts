@@ -16,6 +16,7 @@
 
 import { ServiceResult } from '../types.js';
 import { AIClient } from './AIClient.js';
+import { aiObservation } from './AIObservabilityPolicy.js';
 import { KnowledgeGraphService } from './KnowledgeGraphService.js';
 
 export interface IntentAnalysis {
@@ -57,6 +58,9 @@ export const IntentParserService = {
 
       try {
         const aiResponse = await AIClient.call({
+          observability: aiObservation('AI-ENGINEERING-INTENT', {
+            affectedObjectType: 'ENGINEERING_REQUEST',
+          }),
           route: 'reasoning',
           
           systemPrompt: 'You are an expert software architect analyzing implementation requirements.',

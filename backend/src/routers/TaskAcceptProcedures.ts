@@ -4,7 +4,8 @@ import { invalidateTask } from '../cache/db-cache.js';
 import { db } from '../db.js';
 import { notifyTaskAccepted } from '../lib/task-lifecycle-notifications.js';
 import { TaskService } from '../services/TaskService.js';
-import { getManifest, getTemplate } from '../services/TaskTemplateRegistry.js';
+import { assertTaskMutationEligibility } from '../services/TaskEligibilityPolicy.js';
+import { getManifest } from '../services/TaskTemplateRegistry.js';
 import { hustlerProcedure, protectedProcedure, publicProcedure, Schemas } from '../trpc.js';
 
 export const TaskAcceptProcedures = {
@@ -19,8 +20,14 @@ acceptWithConsent: hustlerProcedure
         // FOR UPDATE acquires a row-level lock held until COMMIT.
         // Fetch template_slug and poster_id from the locked row — values are
         // authoritative because no other writer can modify this row until we commit.
-        const lockResult = await query<{ state: string; template_slug: string; poster_id: string }>(
-          `SELECT state, template_slug, poster_id FROM tasks WHERE id = $1 FOR UPDATE`,
+        const lockResult = await query<{
+          state: string;
+          template_slug: string;
+          poster_id: string;
+          mutual_consent_required: boolean;
+        }>(
+          `SELECT state, template_slug, poster_id, mutual_consent_required
+             FROM tasks WHERE id = $1 FOR UPDATE`,
           [input.taskId]
         );
         // BUG 6 FIX: Collapse NOT_FOUND and self-dealing (poster == caller) into a
@@ -31,13 +38,10 @@ acceptWithConsent: hustlerProcedure
           throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found or unavailable' });
         }
 
-        const template = getTemplate(lockResult.rows[0].template_slug) ?? (() => {
-          throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: 'Unknown template on task' });
-        })();
-        if (!template.requiresMutualConsent) {
+        if (!lockResult.rows[0].mutual_consent_required) {
           throw new TRPCError({
             code: 'BAD_REQUEST',
-            message: 'This template does not require consent checklist',
+            message: 'This task does not require a consent checklist',
           });
         }
 
@@ -60,6 +64,10 @@ acceptWithConsent: hustlerProcedure
             message: 'You must apply for this task before accepting it',
           });
         }
+
+        await assertTaskMutationEligibility(query, input.taskId, ctx.user.id, {
+          requireCurrentOffer: true,
+        });
 
         const updateResult = await query(
           `UPDATE tasks

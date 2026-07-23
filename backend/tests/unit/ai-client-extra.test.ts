@@ -79,6 +79,13 @@ vi.mock('../../src/logger', () => ({
   logger:   { child: () => ({ warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() }) },
 }));
 
+// These tests exercise provider routing without an observability context. Mock
+// the persistence boundary so importing AIClient does not pull the real DB into
+// this otherwise infrastructure-free unit suite.
+vi.mock('../../src/services/AIObservabilityService', () => ({
+  AIObservabilityService: { record: vi.fn() },
+}));
+
 vi.mock('../../src/middleware/circuit-breaker', () => ({
   openaiBreaker:   { execute: vi.fn((fn: () => Promise<unknown>) => fn()) },
   groqBreaker:     { execute: vi.fn((fn: () => Promise<unknown>) => fn()) },

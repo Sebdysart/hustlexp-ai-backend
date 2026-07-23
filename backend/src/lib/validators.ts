@@ -8,7 +8,6 @@ const taskDescription = z.string().min(20).max(5000);
 const message = z.string().min(1).max(2000);
 const reviewText = z.string().max(1000);
 const email = z.string().email().max(254);
-const url = z.string().url().max(2048);
 
 export const paginationSchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
@@ -22,7 +21,22 @@ export const idSchema = z.string().uuid();
 export const monetaryAmountSchema = z.number().positive().multipleOf(0.01).max(999999.99);
 
 export function stripHtml(input: string): string {
-  return input.replace(/<[^>]*>/g, '');
+  let output = '';
+  let insideTag = false;
+
+  for (const character of input) {
+    if (character === '<') {
+      insideTag = true;
+      continue;
+    }
+    if (insideTag) {
+      if (character === '>') insideTag = false;
+      continue;
+    }
+    if (character !== '>') output += character;
+  }
+
+  return output;
 }
 
 export function normalizeEmail(email: string): string {
@@ -33,7 +47,7 @@ export const userProfileSchema = z.object({
   username,
   displayName: displayName.optional(),
   bio: bio.optional(),
-  avatarUrl: url.optional(),
+  avatarUrl: z.string().max(0, 'Direct avatar media is disabled; a finalized upload receipt is required.').optional(),
 });
 
 export const taskCreateSchema = z.object({

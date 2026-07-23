@@ -13,7 +13,7 @@
  *   - acceptInvite: Accept a waitlist invitation
  *   - checkCapacity: Preview capacity for an expertise
  *
- * Admin endpoints (adminProcedure):
+ * Platform-administrator endpoints:
  *   - getSupplyDashboard: Full supply/demand dashboard
  *   - updateCapacity: Override capacity settings
  *   - triggerRecalc: Force ratio recalculation
@@ -24,10 +24,21 @@
 
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
-import { router, hustlerProcedure, adminProcedure } from '../trpc.js';
+import { router, hustlerProcedure, platformAdminProcedure, publicProcedure } from '../trpc.js';
 import { ExpertiseSupplyService } from '../services/ExpertiseSupplyService.js';
+import { LiquidityCellService } from '../services/LiquidityCellService.js';
 
 export const expertiseSupplyRouter = router({
+  getPublicCells: publicProcedure
+    .input(z.object({ geoZone: z.string().regex(/^[a-z0-9][a-z0-9_-]{1,79}$/).optional() }).optional())
+    .query(async ({ input }) => {
+      const result = await LiquidityCellService.getPublicSnapshot(input?.geoZone);
+      if (!result.success) {
+        throw new TRPCError({ code: 'SERVICE_UNAVAILABLE', message: result.error.message });
+      }
+      return result.data;
+    }),
+
   // ==========================================================================
   // USER: Browse & Select Expertise
   // ==========================================================================
@@ -39,7 +50,7 @@ export const expertiseSupplyRouter = router({
   listExpertise: hustlerProcedure
     .input(z.object({
       limit: z.number().int().min(1).max(100).default(50).optional(),
-      offset: z.number().int().min(0).default(0).optional(),
+      offset: z.number().int().min(0).max(500).default(0).optional(),
     }).optional())
     .query(async ({ input }) => {
       const limit = Math.min(input?.limit ?? 50, 100);
@@ -213,7 +224,7 @@ export const expertiseSupplyRouter = router({
   /**
    * Get full supply/demand dashboard for all expertise categories.
    */
-  getSupplyDashboard: adminProcedure
+  getSupplyDashboard: platformAdminProcedure
     .input(z.object({
       geoZone: z.string().default('seattle_metro'),
     }).optional())
@@ -233,7 +244,7 @@ export const expertiseSupplyRouter = router({
   /**
    * Admin: Override capacity settings for an expertise.
    */
-  updateCapacity: adminProcedure
+  updateCapacity: platformAdminProcedure
     .input(z.object({
       expertiseId: z.string().uuid(),
       geoZone: z.string().default('seattle_metro'),
@@ -259,11 +270,61 @@ export const expertiseSupplyRouter = router({
       return result.data;
     }),
 
+  recalculateLiquidityCell: platformAdminProcedure
+    .input(z.object({ cellId: z.string().uuid() }))
+    .mutation(async ({ ctx, input }) => {
+      const result = await LiquidityCellService.recalculateCell(input.cellId, ctx.user.id);
+      if (!result.success) {
+        throw new TRPCError({
+          code: result.error.code === 'NOT_FOUND' ? 'NOT_FOUND' : 'INTERNAL_SERVER_ERROR',
+          message: result.error.message,
+        });
+      }
+      return result.data;
+    }),
+
+  requestAdjacentExpansion: platformAdminProcedure
+    .input(z.object({
+      sourceCellId: z.string().uuid(),
+      targetGeoZone: z.string().regex(/^[a-z0-9][a-z0-9_-]{1,79}$/),
+      targetGeographyLabel: z.string().trim().min(2).max(120),
+      targetCategory: z.string().trim().min(1).max(100),
+      targetOperatingWindow: z.string().trim().min(2).max(160),
+      idempotencyKey: z.string().trim().min(8).max(128),
+      override: z.object({
+        owner: z.string().trim().min(3).max(120),
+        reason: z.string().trim().min(20).max(500),
+        expiresAt: z.string().datetime(),
+      }).optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const result = await LiquidityCellService.requestAdjacentExpansion(input, ctx.user.id);
+      if (!result.success) {
+        throw new TRPCError({
+          code: result.error.code === 'NOT_FOUND' ? 'NOT_FOUND'
+            : result.error.code === 'CONFLICT' ? 'CONFLICT'
+              : result.error.code === 'INVALID_INPUT' ? 'BAD_REQUEST' : 'INTERNAL_SERVER_ERROR',
+          message: result.error.message,
+        });
+      }
+      return result.data;
+    }),
+
+  bindTaskLiquidityCell: platformAdminProcedure
+    .input(z.object({ taskId: z.string().uuid(), cellId: z.string().uuid() }))
+    .mutation(async ({ input }) => {
+      const result = await LiquidityCellService.bindTaskToCell(input.taskId, input.cellId);
+      if (!result.success) {
+        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: result.error.message });
+      }
+      return result.data;
+    }),
+
   /**
    * Admin: Force recalculation of all capacity metrics.
    * Normally runs via daily cron — this is for manual trigger.
    */
-  triggerRecalc: adminProcedure
+  triggerRecalc: platformAdminProcedure
     .input(z.void())
     .mutation(async () => {
       const result = await ExpertiseSupplyService.recalculateAllCapacity();

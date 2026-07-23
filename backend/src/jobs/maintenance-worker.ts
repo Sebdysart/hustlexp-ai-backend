@@ -129,45 +129,107 @@ async function cleanupExpiredNotifications(): Promise<void> {
   }
 }
 
+function boundedJobLimit(job: Job, fallback: number): number {
+  const rawLimit = Number((job.data as DispatchExpiryPayload | undefined)?.limit) || fallback;
+  return Math.max(1, Math.min(rawLimit, 100));
+}
+
+async function expireUnfilledDispatch(job: Job): Promise<void> {
+  const { AutomationLifecycleService } = await import('../services/AutomationLifecycleService.js');
+  const result = await AutomationLifecycleService.expireDue({ limit: boundedJobLimit(job, 50) });
+  if (!result.success) throw new Error(`Dispatch expiry batch failed: ${result.error.code}`);
+  log.info(result.data, 'Dispatch expiry batch completed');
+}
+
+async function escalateSafetyCheckins(job: Job): Promise<void> {
+  const { TaskSafetyCheckinService } = await import('../services/TaskSafetyCheckinService.js');
+  const result = await TaskSafetyCheckinService.escalateDue(boundedJobLimit(job, 100));
+  log.info(result, 'Overdue safety check-in escalation batch completed');
+}
+
+async function expireSafetyLocation(job: Job): Promise<void> {
+  const { TaskSafetyLocationService } = await import('../services/TaskSafetyLocationService.js');
+  const result = await TaskSafetyLocationService.expireDue(boundedJobLimit(job, 100));
+  log.info(result, 'Expired safety location evidence batch completed');
+}
+
+async function expireMediaUploads(job: Job): Promise<void> {
+  const { expireMediaUploadReceipts } = await import('../services/MediaUploadFinalizationService.js');
+  const result = await expireMediaUploadReceipts(boundedJobLimit(job, 100));
+  if (result.failed > 0) {
+    throw new Error(`Media upload expiry left ${result.failed} object cleanup failure(s).`);
+  }
+  log.info(result, 'Expired abandoned media uploads');
+}
+
+async function generateRecurringDue(job: Job): Promise<void> {
+  const { generateDueControlledRecurringOccurrences } = await import('../services/RecurringWorkService.js');
+  const result = await generateDueControlledRecurringOccurrences(boundedJobLimit(job, 100));
+  log.info(result, 'Controlled recurring generation batch completed');
+}
+
+async function advanceRecurringReservations(job: Job): Promise<void> {
+  const { advanceControlledReservationWaves } = await import('../services/RecurringWorkService.js');
+  const result = await advanceControlledReservationWaves(boundedJobLimit(job, 100));
+  log.info(result, 'Controlled recurring reservation batch completed');
+}
+
+async function completeUnattendedDue(job: Job): Promise<void> {
+  const { UnattendedCompletionSweepService } = await import('../services/UnattendedCompletionSweepService.js');
+  const result = await UnattendedCompletionSweepService.completeDue(boundedJobLimit(job, 50));
+  log.info(result, 'Unattended completion sweep completed');
+}
+
+async function recoverNotificationDelivery(job: Job): Promise<void> {
+  const { NotificationDeliveryRecoveryService } = await import('../services/NotificationDeliveryRecoveryService.js');
+  const result = await NotificationDeliveryRecoveryService.recoverDue(boundedJobLimit(job, 100));
+  log.info(result, 'Notification delivery recovery batch completed');
+}
+
+async function releaseFocusDeferredNotifications(job: Job): Promise<void> {
+  const { NotificationDeliveryRecoveryService } = await import('../services/NotificationDeliveryRecoveryService.js');
+  const result = await NotificationDeliveryRecoveryService.releaseFocusDeferred(boundedJobLimit(job, 100));
+  log.info(result, 'Focus-deferred notification release batch completed');
+}
+
+async function createBusinessWeeklyDigests(job: Job): Promise<void> {
+  const { BusinessNotificationDigestService } = await import('../services/BusinessNotificationDigestService.js');
+  const result = await BusinessNotificationDigestService.createPreviousWeekDigests(
+    new Date(),
+    boundedJobLimit(job, 100),
+  );
+  log.info(result, 'Business operational digest batch completed');
+}
+
+async function processAnnualTaxFiling(job: Job): Promise<void> {
+  const { processTaxReportingJob } = await import('./tax-reporting-worker.js');
+  await processTaxReportingJob(job);
+}
+
+type MaintenanceHandler = (job: Job) => Promise<void>;
+
+const MAINTENANCE_HANDLERS: Record<string, MaintenanceHandler> = {
+  recover_stuck_stripe_events: (job) => recoverStuckStripeEvents(job as Job<RecoveryStuckStripeEventsPayload>),
+  cleanup_expired_exports: cleanupExpiredExports,
+  cleanup_expired_notifications: cleanupExpiredNotifications,
+  'dispatch.expire_unfilled': expireUnfilledDispatch,
+  'safety.escalate_overdue_checkins': escalateSafetyCheckins,
+  'safety.expire_location_evidence': expireSafetyLocation,
+  'media.expire_uploads': expireMediaUploads,
+  'recurring.generate_due': generateRecurringDue,
+  'recurring.advance_reservations': advanceRecurringReservations,
+  'completion.complete_due': completeUnattendedDue,
+  'notification.recover_due': recoverNotificationDelivery,
+  'notification.release_focus_deferred': releaseFocusDeferredNotifications,
+  'notification.business_weekly_digest': createBusinessWeeklyDigests,
+  'tax.annual_filing_requested': processAnnualTaxFiling,
+};
+
 /**
  * Process maintenance job
  */
 export async function processMaintenanceJob(job: Job): Promise<void> {
-  const jobType = job.name;
-  
-  switch (jobType) {
-    case 'recover_stuck_stripe_events':
-      await recoverStuckStripeEvents(job as Job<RecoveryStuckStripeEventsPayload>);
-      break;
-    
-    case 'cleanup_expired_exports':
-      await cleanupExpiredExports();
-      break;
-
-    case 'cleanup_expired_notifications':
-      await cleanupExpiredNotifications();
-      break;
-
-    case 'dispatch.expire_unfilled': {
-      const { AutomationLifecycleService } = await import('../services/AutomationLifecycleService.js');
-      const rawLimit = Number((job.data as DispatchExpiryPayload | undefined)?.limit) || 50;
-      const result = await AutomationLifecycleService.expireDue({
-        limit: Math.max(1, Math.min(rawLimit, 100)),
-      });
-      if (!result.success) {
-        throw new Error(`Dispatch expiry batch failed: ${result.error.code}`);
-      }
-      log.info(result.data, 'Dispatch expiry batch completed');
-      break;
-    }
-
-    case 'tax.annual_filing_requested': {
-      const { processTaxReportingJob } = await import('./tax-reporting-worker.js');
-      await processTaxReportingJob(job);
-      break;
-    }
-
-    default:
-      throw new Error(`Unknown maintenance job type: ${jobType}`);
-  }
+  const handler = MAINTENANCE_HANDLERS[job.name];
+  if (!handler) throw new Error(`Unknown maintenance job type: ${job.name}`);
+  await handler(job);
 }

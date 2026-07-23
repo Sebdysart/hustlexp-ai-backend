@@ -22,6 +22,11 @@ import { db } from '../db.js';
 import { writeToOutbox } from '../lib/outbox-helpers.js';
 import Stripe from 'stripe';
 import { config } from '../config.js';
+import {
+  STRIPE_WEBHOOK_API_VERSION,
+  stripeWebhookEventAllowed,
+  type StripeWebhookDestination,
+} from './StripeWebhookTopology.js';
 
 // ============================================================================
 // TYPES
@@ -51,13 +56,91 @@ export interface WebhookResult {
 
 let stripe: Stripe | null = null;
 
+interface VerifiedStripeEvent {
+  destination: StripeWebhookDestination;
+  event: Stripe.Event;
+}
+
+function usableWebhookSecret(secret: string | undefined): secret is string {
+  return Boolean(secret && !secret.includes('placeholder'));
+}
+
+function webhookDestinations(): Array<{
+  destination: StripeWebhookDestination;
+  secret: string;
+}> {
+  const platformSecret = config.stripe.webhookSecret;
+  const connectSecret = config.stripe.connectWebhookSecret;
+  if (
+    usableWebhookSecret(platformSecret)
+    && usableWebhookSecret(connectSecret)
+    && platformSecret === connectSecret
+  ) {
+    return [];
+  }
+  return [
+    ...(usableWebhookSecret(platformSecret)
+      ? [{ destination: 'platform' as const, secret: platformSecret }]
+      : []),
+    ...(usableWebhookSecret(connectSecret)
+      ? [{ destination: 'connect' as const, secret: connectSecret }]
+      : []),
+  ];
+}
+
+function eventHasConnectAccount(event: Stripe.Event): boolean {
+  return typeof event.account === 'string' && event.account.length > 0;
+}
+
+function destinationMatches(
+  destination: StripeWebhookDestination,
+  event: Stripe.Event,
+): boolean {
+  const connectScoped = eventHasConnectAccount(event);
+  return destination === 'connect' ? connectScoped : !connectScoped;
+}
+
+function verifyStripeEvent(
+  rawBody: string,
+  signature: string,
+): VerifiedStripeEvent | { error: string; mismatch: boolean } {
+  const destinations = webhookDestinations();
+  if (destinations.length === 0) {
+    return { error: 'Stripe webhook secrets not configured or are ambiguous', mismatch: false };
+  }
+  const stripeClient = getStripeClient();
+  let firstError: string | null = null;
+  for (const candidate of destinations) {
+    try {
+      const event = stripeClient.webhooks.constructEvent(
+        rawBody,
+        signature,
+        candidate.secret,
+      );
+      if (
+        !destinationMatches(candidate.destination, event)
+        || !stripeWebhookEventAllowed(candidate.destination, event.type)
+      ) {
+        return {
+          error: `Stripe ${candidate.destination} webhook received an event outside its authority`,
+          mismatch: true,
+        };
+      }
+      return { destination: candidate.destination, event };
+    } catch (error) {
+      firstError ??= error instanceof Error ? error.message : 'Webhook verification failed';
+    }
+  }
+  return { error: firstError ?? 'Webhook verification failed', mismatch: false };
+}
+
 function getStripeClient(): Stripe {
   if (!stripe) {
     if (!config.stripe.secretKey || config.stripe.secretKey.includes('placeholder')) {
       throw new Error('Stripe not configured');
     }
     stripe = new Stripe(config.stripe.secretKey, {
-      apiVersion: '2025-11-17.clover',
+      apiVersion: STRIPE_WEBHOOK_API_VERSION,
     });
   }
   return stripe;
@@ -89,24 +172,9 @@ export async function processWebhook(
     };
   }
 
-  if (!config.stripe.webhookSecret || config.stripe.webhookSecret.includes('placeholder')) {
-    return {
-      success: false,
-      error: {
-        code: 'STRIPE_NOT_CONFIGURED',
-        message: 'Stripe webhook secret not configured',
-      },
-    };
-  }
-
-  let event: Stripe.Event;
+  let verified: ReturnType<typeof verifyStripeEvent>;
   try {
-    const stripeClient = getStripeClient();
-    event = stripeClient.webhooks.constructEvent(
-      rawBody,
-      signature,
-      config.stripe.webhookSecret
-    );
+    verified = verifyStripeEvent(rawBody, signature);
   } catch (error) {
     return {
       success: false,
@@ -116,9 +184,22 @@ export async function processWebhook(
       },
     };
   }
+  if ('error' in verified) {
+    return {
+      success: false,
+      error: {
+        code: verified.mismatch
+          ? 'WEBHOOK_DESTINATION_MISMATCH'
+          : webhookDestinations().length === 0
+            ? 'STRIPE_NOT_CONFIGURED'
+            : 'WEBHOOK_VERIFICATION_FAILED',
+        message: verified.error,
+      },
+    };
+  }
 
   // Store event and enqueue processing
-  return await handleStripeWebhook(event);
+  return await handleStripeWebhook(verified.event);
 }
 
 /**

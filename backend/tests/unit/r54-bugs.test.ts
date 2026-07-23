@@ -385,6 +385,8 @@ describe('A63-3: task.getById inline admin check uses role allowlist', () => {
     const sql: string = adminCall![0] as string;
     // Must include role/ANY filter — no bare SELECT 1 without role filter
     expect(sql).toMatch(/role\s*=\s*ANY/i);
+    expect(sql).toContain('can_resolve_disputes');
+    expect(sql).toContain('can_manage_incidents');
   });
 
   it('task.getById throws FORBIDDEN when non-participant has no valid admin role', async () => {
@@ -434,6 +436,8 @@ describe('A63-3: task.getState inline admin check uses role allowlist', () => {
     expect(adminCall).toBeDefined();
     const sql: string = adminCall![0] as string;
     expect(sql).toMatch(/role\s*=\s*ANY/i);
+    expect(sql).toContain('can_resolve_disputes');
+    expect(sql).toContain('can_manage_incidents');
   });
 
   it('task.getState throws FORBIDDEN when non-participant has no valid admin role', async () => {

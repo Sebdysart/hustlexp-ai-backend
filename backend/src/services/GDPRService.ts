@@ -1038,7 +1038,8 @@ export async function collectUserDataForExport(userId: string): Promise<Record<s
     // 5. Message history (last 90 days)
     const messagesResult = await db.query(
       `SELECT id, task_id, sender_id, receiver_id, message_type, content,
-              photo_urls, created_at
+              CARDINALITY(COALESCE(photo_urls, '{}'::TEXT[])) AS photo_count,
+              created_at
        FROM task_messages
        WHERE (sender_id = $1 OR receiver_id = $1)
        AND created_at >= NOW() - INTERVAL '90 days'
@@ -1205,19 +1206,23 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
         const cancelResult = await TaskService.cancel(row.id);
         if (!cancelResult.success) {
           const errMsg = cancelResult.error?.message ?? '';
-          if (errMsg.includes('INVALID_STATE') || errMsg.includes('TASK_TERMINAL')) {
-            log.warn({ taskId: row.id, userId, err: errMsg }, 'GDPR: poster task already in terminal state — skipping cancel (idempotent retry)');
-          } else {
-            log.warn({ taskId: row.id, userId, err: errMsg }, 'GDPR: could not cancel poster task — continuing');
-          }
+          return {
+            success: false,
+            error: {
+              code: 'ACTIVE_TASK_RESOLUTION_FAILED',
+              message: `Cannot erase account until task ${row.id} is resolved: ${errMsg || 'task cancellation failed'}`,
+            },
+          };
         }
       } catch (cancelErr) {
         const errMsg = cancelErr instanceof Error ? cancelErr.message : String(cancelErr);
-        if (errMsg.includes('INVALID_STATE') || errMsg.includes('TASK_TERMINAL')) {
-          log.warn({ taskId: row.id, userId, err: errMsg }, 'GDPR: poster task cancel threw INVALID_STATE — skipping (idempotent retry)');
-        } else {
-          log.warn({ taskId: row.id, userId, err: errMsg }, 'GDPR: poster task cancel threw unexpectedly — continuing');
-        }
+        return {
+          success: false,
+          error: {
+            code: 'ACTIVE_TASK_RESOLUTION_FAILED',
+            message: `Cannot erase account until task ${row.id} is resolved: ${errMsg}`,
+          },
+        };
       }
       // Refund any FUNDED or PENDING escrow attached to this task.
       // PENDING escrows have a PaymentIntent created but not yet confirmed by
@@ -1233,14 +1238,27 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
       );
       for (const escrow of escrowResult.rows) {
         if (escrow.state === 'PENDING' && escrow.stripe_payment_intent_id) {
+          if (!stripe) {
+            return {
+              success: false,
+              error: {
+                code: 'ACTIVE_ESCROW_RESOLUTION_FAILED',
+                message: `Cannot erase account until pending payment ${escrow.id} is cancelled.`,
+              },
+            };
+          }
           try {
-            if (stripe) {
-              // AUDIT FIX M3: via stripeBreaker — GDPR deletion must not hold
-              // open calls against a failing Stripe.
-              await stripeBreaker.execute(() => stripe!.paymentIntents.cancel(escrow.stripe_payment_intent_id!));
-            }
-          } catch (stripeErr) {
-            log.warn({ escrowId: escrow.id, paymentIntentId: escrow.stripe_payment_intent_id, taskId: row.id, userId, err: stripeErr instanceof Error ? stripeErr.message : String(stripeErr) }, 'GDPR: could not cancel Stripe PaymentIntent for PENDING escrow — continuing with refund');
+            // AUDIT FIX M3: via stripeBreaker — GDPR deletion must not hold
+            // open calls against a failing Stripe.
+            await stripeBreaker.execute(() => stripe!.paymentIntents.cancel(escrow.stripe_payment_intent_id!));
+          } catch {
+            return {
+              success: false,
+              error: {
+                code: 'ACTIVE_ESCROW_RESOLUTION_FAILED',
+                message: `Cannot erase account until pending payment ${escrow.id} is cancelled.`,
+              },
+            };
           }
         }
         if (escrow.state === 'LOCKED_DISPUTE') {
@@ -1250,38 +1268,46 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
             const refundResult = await EscrowService.partialRefund({ escrowId: escrow.id, workerPercent: 0, posterPercent: 100 });
             if (!refundResult.success) {
               const errMsg = refundResult.error?.message ?? '';
-              if (errMsg.includes('INVALID_STATE')) {
-                log.warn({ escrowId: escrow.id, taskId: row.id, userId, err: errMsg }, 'GDPR: poster LOCKED_DISPUTE escrow already in terminal state — skipping (idempotent retry)');
-              } else {
-                log.warn({ escrowId: escrow.id, taskId: row.id, userId, err: errMsg }, 'GDPR: could not partialRefund poster LOCKED_DISPUTE escrow — continuing');
-              }
+              return {
+                success: false,
+                error: {
+                  code: 'ACTIVE_ESCROW_RESOLUTION_FAILED',
+                  message: `Cannot erase account until disputed escrow ${escrow.id} is resolved: ${errMsg || 'settlement failed'}`,
+                },
+              };
             }
           } catch (refundErr) {
             const errMsg = refundErr instanceof Error ? refundErr.message : String(refundErr);
-            if (errMsg.includes('INVALID_STATE')) {
-              log.warn({ escrowId: escrow.id, taskId: row.id, userId, err: errMsg }, 'GDPR: poster LOCKED_DISPUTE escrow partialRefund threw INVALID_STATE — skipping (idempotent retry)');
-            } else {
-              log.warn({ escrowId: escrow.id, taskId: row.id, userId, err: errMsg }, 'GDPR: poster LOCKED_DISPUTE escrow partialRefund threw unexpectedly — continuing');
-            }
+            return {
+              success: false,
+              error: {
+                code: 'ACTIVE_ESCROW_RESOLUTION_FAILED',
+                message: `Cannot erase account until disputed escrow ${escrow.id} is resolved: ${errMsg}`,
+              },
+            };
           }
         } else {
           try {
             const refundResult = await EscrowService.refund({ escrowId: escrow.id });
             if (!refundResult.success) {
               const errMsg = refundResult.error?.message ?? '';
-              if (errMsg.includes('INVALID_STATE')) {
-                log.warn({ escrowId: escrow.id, taskId: row.id, userId, err: errMsg }, 'GDPR: poster task escrow already in terminal state — skipping (idempotent retry)');
-              } else {
-                log.warn({ escrowId: escrow.id, taskId: row.id, userId, err: errMsg }, 'GDPR: could not refund poster task escrow — continuing');
-              }
+              return {
+                success: false,
+                error: {
+                  code: 'ACTIVE_ESCROW_RESOLUTION_FAILED',
+                  message: `Cannot erase account until escrow ${escrow.id} is refunded: ${errMsg || 'refund failed'}`,
+                },
+              };
             }
           } catch (refundErr) {
             const errMsg = refundErr instanceof Error ? refundErr.message : String(refundErr);
-            if (errMsg.includes('INVALID_STATE')) {
-              log.warn({ escrowId: escrow.id, taskId: row.id, userId, err: errMsg }, 'GDPR: poster task escrow refund threw INVALID_STATE — skipping (idempotent retry)');
-            } else {
-              log.warn({ escrowId: escrow.id, taskId: row.id, userId, err: errMsg }, 'GDPR: poster task escrow refund threw unexpectedly — continuing');
-            }
+            return {
+              success: false,
+              error: {
+                code: 'ACTIVE_ESCROW_RESOLUTION_FAILED',
+                message: `Cannot erase account until escrow ${escrow.id} is refunded: ${errMsg}`,
+              },
+            };
           }
         }
       }
@@ -1305,19 +1331,23 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
           const refundResult = await EscrowService.refund({ escrowId: row.id });
           if (!refundResult.success) {
             const errMsg = refundResult.error?.message ?? '';
-            if (errMsg.includes('INVALID_STATE')) {
-              log.warn({ escrowId: row.id, userId, err: errMsg }, 'GDPR: worker FUNDED escrow already in terminal state — skipping (idempotent retry)');
-            } else {
-              log.warn({ escrowId: row.id, userId, err: errMsg }, 'GDPR: could not refund worker FUNDED escrow — continuing');
-            }
+            return {
+              success: false,
+              error: {
+                code: 'ACTIVE_ESCROW_RESOLUTION_FAILED',
+                message: `Cannot erase account until worker escrow ${row.id} is refunded: ${errMsg || 'refund failed'}`,
+              },
+            };
           }
         } catch (refundErr) {
           const errMsg = refundErr instanceof Error ? refundErr.message : String(refundErr);
-          if (errMsg.includes('INVALID_STATE')) {
-            log.warn({ escrowId: row.id, userId, err: errMsg }, 'GDPR: worker FUNDED escrow refund threw INVALID_STATE — skipping (idempotent retry)');
-          } else {
-            log.warn({ escrowId: row.id, userId, err: errMsg }, 'GDPR: worker FUNDED escrow refund threw unexpectedly — continuing');
-          }
+          return {
+            success: false,
+            error: {
+              code: 'ACTIVE_ESCROW_RESOLUTION_FAILED',
+              message: `Cannot erase account until worker escrow ${row.id} is refunded: ${errMsg}`,
+            },
+          };
         }
       } else if (row.state === 'LOCKED_DISPUTE') {
         // Return full amount to poster (0% to deleted worker)
@@ -1325,19 +1355,23 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
           const refundResult = await EscrowService.partialRefund({ escrowId: row.id, workerPercent: 0, posterPercent: 100 });
           if (!refundResult.success) {
             const errMsg = refundResult.error?.message ?? '';
-            if (errMsg.includes('INVALID_STATE')) {
-              log.warn({ escrowId: row.id, userId, err: errMsg }, 'GDPR: worker LOCKED_DISPUTE escrow already in terminal state — skipping (idempotent retry)');
-            } else {
-              log.warn({ escrowId: row.id, userId, err: errMsg }, 'GDPR: could not partialRefund worker LOCKED_DISPUTE escrow — continuing');
-            }
+            return {
+              success: false,
+              error: {
+                code: 'ACTIVE_ESCROW_RESOLUTION_FAILED',
+                message: `Cannot erase account until worker dispute ${row.id} is resolved: ${errMsg || 'settlement failed'}`,
+              },
+            };
           }
         } catch (refundErr) {
           const errMsg = refundErr instanceof Error ? refundErr.message : String(refundErr);
-          if (errMsg.includes('INVALID_STATE')) {
-            log.warn({ escrowId: row.id, userId, err: errMsg }, 'GDPR: worker LOCKED_DISPUTE escrow partialRefund threw INVALID_STATE — skipping (idempotent retry)');
-          } else {
-            log.warn({ escrowId: row.id, userId, err: errMsg }, 'GDPR: worker LOCKED_DISPUTE escrow partialRefund threw unexpectedly — continuing');
-          }
+          return {
+            success: false,
+            error: {
+              code: 'ACTIVE_ESCROW_RESOLUTION_FAILED',
+              message: `Cannot erase account until worker dispute ${row.id} is resolved: ${errMsg}`,
+            },
+          };
         }
       }
     }
@@ -1692,7 +1726,20 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
              biometric_verified = FALSE,
              biometric_confidence = NULL,
              face_match_score = NULL,
-             liveness_score = NULL
+             liveness_score = NULL,
+             deepfake_score = NULL,
+             biometric_analyzed_at = NULL,
+             biometric_signal_status = 'NOT_RUN',
+             biometric_provider = NULL,
+             biometric_failure_reason_code = NULL,
+             metadata = '{}'::jsonb,
+             capture_source = NULL,
+             exif_timestamp = NULL,
+             exif_gps_lat = NULL,
+             exif_gps_lng = NULL,
+             exif_device_model = NULL,
+             capture_validation_passed = NULL,
+             capture_validation_failures = ARRAY[]::TEXT[]
          WHERE user_id = $1`,
         [userId]
       );

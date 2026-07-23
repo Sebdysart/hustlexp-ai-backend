@@ -318,6 +318,31 @@ describe('escrow.getState', () => {
     });
   });
 
+  describe('authorization', () => {
+    it('throws FORBIDDEN when an unrelated authenticated user polls escrow state', async () => {
+      mockEscrowService.getById.mockResolvedValueOnce({
+        success: true,
+        data: makeEscrow({ state: 'RELEASED' }) as any,
+      });
+
+      await expect(makeCaller(OTHER_USER_ID).getState({ escrowId: ESCROW_ID }))
+        .rejects.toMatchObject({
+          code: 'FORBIDDEN',
+          message: 'You do not have access to this escrow',
+        });
+    });
+
+    it('allows an administrator to inspect escrow state', async () => {
+      mockEscrowService.getById.mockResolvedValueOnce({
+        success: true,
+        data: makeEscrow({ state: 'LOCKED_DISPUTE' }) as any,
+      });
+
+      await expect(makeCaller(OTHER_USER_ID, 'admin').getState({ escrowId: ESCROW_ID }))
+        .resolves.toEqual({ state: 'LOCKED_DISPUTE' });
+    });
+  });
+
   describe('service delegation', () => {
     it('calls EscrowService.getById with the correct escrowId', async () => {
       mockEscrowService.getById.mockResolvedValueOnce({
@@ -372,6 +397,45 @@ describe('escrow.getByTaskId', () => {
     });
   });
 
+  describe('authorization and redaction', () => {
+    it('throws FORBIDDEN when an unrelated authenticated user reads task escrow details', async () => {
+      mockEscrowService.getByTaskId.mockResolvedValueOnce({
+        success: true,
+        data: makeEscrow() as any,
+      });
+
+      await expect(makeCaller(OTHER_USER_ID).getByTaskId({ taskId: TASK_ID }))
+        .rejects.toMatchObject({
+          code: 'FORBIDDEN',
+          message: 'You do not have access to this escrow',
+        });
+    });
+
+    it('redacts payment-provider identifiers from a participant response', async () => {
+      mockEscrowService.getByTaskId.mockResolvedValueOnce({
+        success: true,
+        data: makeEscrow({ stripe_transfer_id: 'tr_private_123' }) as any,
+      });
+
+      const result = await makeCaller(POSTER_ID).getByTaskId({ taskId: TASK_ID });
+
+      expect(result).not.toHaveProperty('stripe_payment_intent_id');
+      expect(result).not.toHaveProperty('stripe_transfer_id');
+    });
+
+    it('allows an administrator to inspect provider reconciliation identifiers', async () => {
+      mockEscrowService.getByTaskId.mockResolvedValueOnce({
+        success: true,
+        data: makeEscrow({ stripe_transfer_id: 'tr_private_123' }) as any,
+      });
+
+      const result = await makeCaller(OTHER_USER_ID, 'admin').getByTaskId({ taskId: TASK_ID });
+
+      expect(result).toHaveProperty('stripe_payment_intent_id', 'pi_test_123');
+      expect(result).toHaveProperty('stripe_transfer_id', 'tr_private_123');
+    });
+  });
+
   describe('service delegation', () => {
     it('calls EscrowService.getByTaskId with the correct taskId', async () => {
       // R-14 FIX: getByTaskId now JOINs tasks — poster_id/worker_id in single result.
@@ -404,7 +468,7 @@ describe('escrow.createPaymentIntent', () => {
       // "USD cents"; TaskService validates integer cents; live rows store cents).
       mockDb.query.mockResolvedValueOnce({ rows: [{ price: 5000 }], rowCount: 1 } as any);
       // Router then looks up the pending escrow for this task
-      mockDb.query.mockResolvedValueOnce({ rows: [{ id: ESCROW_ID }], rowCount: 1 } as any);
+      mockDb.query.mockResolvedValueOnce({ rows: [{ id: ESCROW_ID, platform_fee_cents: 1000 }], rowCount: 1 } as any);
       mockStripeService.createPaymentIntent.mockResolvedValueOnce({
         success: true,
         data: {
@@ -425,6 +489,9 @@ describe('escrow.createPaymentIntent', () => {
       expect(result).toHaveProperty('paymentIntentId', 'pi_test_abc');
       expect(result).toHaveProperty('clientSecret', 'cs_test_abc');
       expect(result).toHaveProperty('amountCents', 5000);
+      expect(mockStripeService.createPaymentIntent).toHaveBeenCalledWith(
+        expect.objectContaining({ amount: 5000, platformFeeCents: 1000 }),
+      );
     });
 
     it('derives amount from task price when amount is omitted — price is CENTS, no ×100', async () => {
@@ -561,6 +628,27 @@ describe('escrow.createPaymentIntent', () => {
       await expect(caller.createPaymentIntent({ taskId: TASK_ID, amount: 5000 }))
         .rejects.toMatchObject({ code: 'INTERNAL_SERVER_ERROR' });
     });
+
+    it('preserves the frozen-payment application code without calling a provider again', async () => {
+      mockStripeService.isConfigured.mockReturnValue(true);
+      mockDb.query.mockResolvedValueOnce({ rows: [{ price: 5000 }], rowCount: 1 } as any);
+      mockDb.query.mockResolvedValueOnce({ rows: [{ id: ESCROW_ID }], rowCount: 1 } as any);
+      mockStripeService.createPaymentIntent.mockResolvedValueOnce({
+        success: false,
+        error: {
+          code: 'PAYMENT_CREATION_FROZEN',
+          message: 'New payments are temporarily paused. No new charge was created.',
+        },
+      });
+
+      await expect(makeCaller(POSTER_ID).createPaymentIntent({ taskId: TASK_ID, amount: 5000 }))
+        .rejects.toMatchObject({
+          code: 'PRECONDITION_FAILED',
+          message: expect.stringContaining('No new charge was created'),
+          cause: { applicationCode: 'PAYMENT_CREATION_FROZEN' },
+        });
+      expect(mockStripeService.createPaymentIntent).toHaveBeenCalledOnce();
+    });
   });
 
   describe('service delegation', () => {
@@ -582,6 +670,7 @@ describe('escrow.createPaymentIntent', () => {
         posterId: POSTER_ID,
         escrowId: ESCROW_ID,
         amount: 1000,
+        platformFeeCents: null,
       });
     });
   });

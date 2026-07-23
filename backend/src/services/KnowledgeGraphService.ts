@@ -12,6 +12,8 @@ import OpenAI from 'openai';
 // no cost accounting — unmetered, unprotected spend invisible to AI governance.
 import { openaiBreaker } from '../middleware/circuit-breaker.js';
 import { logger } from '../logger.js';
+import { aiObservation } from './AIObservabilityPolicy.js';
+import { AIObservabilityService, aiObservationHash } from './AIObservabilityService.js';
 
 const kgLog = logger.child({ service: 'KnowledgeGraphService' });
 
@@ -42,6 +44,7 @@ function getOpenAI(): OpenAI {
 
 async function generateQueryEmbedding(text: string): Promise<number[]> {
   const openai = getOpenAI();
+  const startedAt = Date.now();
   // AUDIT FIX H5: breaker-protected — an OpenAI outage fast-fails instead of
   // hanging every doc query.
   const response = await openaiBreaker.execute(() => openai.embeddings.create({
@@ -49,6 +52,21 @@ async function generateQueryEmbedding(text: string): Promise<number[]> {
     input: text,
     dimensions: 1536,
   }));
+
+  const observed = await AIObservabilityService.record({
+    context: aiObservation('AI-KNOWLEDGE-EMBEDDING', {
+      affectedObjectType: 'DOCUMENT_QUERY',
+      affectedObjectId: aiObservationHash(text),
+    }),
+    provider: 'openai',
+    modelVersion: 'text-embedding-3-small',
+    executionResult: 'GENERATED',
+    output: response.data[0]?.embedding.join(',') ?? '',
+    latencyMs: Date.now() - startedAt,
+  });
+  if (!observed.success) {
+    throw new Error(`AI_OBSERVABILITY_REQUIRED:${observed.error.code}`);
+  }
 
   // AUDIT FIX H5: record token usage in the AI cost ledger (system call —
   // no user attribution; user_id is nullable per GDPR D63-2). Non-fatal:

@@ -29,15 +29,36 @@ getById: protectedProcedure
       const isParticipant = viewerRole !== null;
       // Tasks in OPEN/MATCHING state are discoverable (hustler feed)
       const isDiscoverable = ['OPEN', 'MATCHING'].includes(task.state);
+      const shortlist = isDiscoverable
+        ? await db.query<{ worker_id: string }>(
+          `SELECT worker_id FROM task_quote_shortlists
+            WHERE task_id=$1 AND status='ACTIVE' LIMIT 1`,
+          [input.taskId],
+        )
+        : { rows: [] as Array<{ worker_id: string }> };
+      const quoteWorkerId = shortlist.rows[0]?.worker_id ?? null;
+      const quoteChatRole = task.poster_id === ctx.user.id
+        ? (quoteWorkerId ? 'poster' as const : null)
+        : quoteWorkerId === ctx.user.id
+          ? 'hustler' as const
+          : null;
 
       if (!isParticipant && !isDiscoverable) {
         // Last resort: check admin role before throwing.
-        // A63-3 FIX: Use the same role allowlist as adminProcedure — a bare
+        // A63-3 FIX: Use consequence-scoped Operations capabilities — a bare
         // SELECT without a role filter would grant admin access to any row in
         // admin_roles regardless of role value, allowing privilege escalation.
         const VALID_ADMIN_ROLES = ['admin', 'support', 'finance', 'moderator', 'founder'];
         const adminResult = await db.query(
-          'SELECT 1 FROM admin_roles WHERE user_id = $1 AND role = ANY($2::text[]) LIMIT 1',
+          `SELECT 1 FROM admin_roles
+           WHERE user_id = $1
+             AND role = ANY($2::text[])
+             AND (
+               role IN ('admin', 'founder')
+               OR COALESCE(can_resolve_disputes, false)
+               OR COALESCE(can_manage_incidents, false)
+             )
+           LIMIT 1`,
           [ctx.user.id, VALID_ADMIN_ROLES]
         );
         if (adminResult.rows.length === 0) {
@@ -54,10 +75,17 @@ getById: protectedProcedure
           poster_id: undefined,
           worker_id: undefined,
           viewer_role: 'observer' as const,
+          quote_chat_role: quoteChatRole,
+          quote_shortlisted_worker_id: quoteChatRole ? quoteWorkerId : null,
         };
       }
 
-      return { ...task, viewer_role: viewerRole };
+      return {
+        ...task,
+        viewer_role: viewerRole,
+        quote_chat_role: quoteChatRole,
+        quote_shortlisted_worker_id: quoteChatRole ? quoteWorkerId : null,
+      };
     }),
 getState: protectedProcedure
     .input(z.object({ taskId: Schemas.uuid }))
@@ -77,10 +105,18 @@ getState: protectedProcedure
       const task = result.rows[0];
       const isParticipant = task.poster_id === ctx.user.id || task.worker_id === ctx.user.id;
       if (!isParticipant) {
-        // A63-3 FIX: Use role allowlist consistent with adminProcedure.
+        // A63-3 FIX: Use consequence-scoped Operations capabilities.
         const VALID_ADMIN_ROLES = ['admin', 'support', 'finance', 'moderator', 'founder'];
         const adminResult = await db.query(
-          'SELECT 1 FROM admin_roles WHERE user_id = $1 AND role = ANY($2::text[]) LIMIT 1',
+          `SELECT 1 FROM admin_roles
+           WHERE user_id = $1
+             AND role = ANY($2::text[])
+             AND (
+               role IN ('admin', 'founder')
+               OR COALESCE(can_resolve_disputes, false)
+               OR COALESCE(can_manage_incidents, false)
+             )
+           LIMIT 1`,
           [ctx.user.id, VALID_ADMIN_ROLES]
         );
         if (adminResult.rows.length === 0) {

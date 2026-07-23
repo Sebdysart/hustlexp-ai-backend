@@ -5,21 +5,13 @@
 
 import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
-import { router, hustlerProcedure, adminProcedure } from '../trpc.js';
+import { router, financialAdminProcedure, hustlerProcedure } from '../trpc.js';
 import { db } from '../db.js';
-import { logger } from '../logger.js';
-
-const referralLog = logger.child({ service: 'ReferralRouter' });
-
-// Maximum number of referral reward payouts a single referrer can receive
-const REFERRAL_REWARD_CAP = 20;
 
 /**
- * Issue a referral reward for the referrer when a referred user completes
- * their first task and the redemption is marked qualified.
- *
- * Enforces a lifetime cap of REFERRAL_REWARD_CAP paid rewards per referrer.
- * If the cap is already reached the reward is silently skipped (logged at warn).
+ * Build Now carries a zero cash-incentive budget. Referral relationships may be
+ * recorded, but no cash liability or paid-state claim may be created until a
+ * capped, settled-task-bound, ledger-backed reward rail is separately approved.
  *
  * @param redemptionId - The referral_redemptions.id to mark as paid
  * @param referrerId   - The user_id of the referrer (for cap check)
@@ -27,61 +19,11 @@ const REFERRAL_REWARD_CAP = 20;
  * @returns { issued: boolean; reason?: string }
  */
 export async function issueReferralReward(
-  redemptionId: string,
-  referrerId: string,
-  rewardCents: number,
+  _redemptionId: string,
+  _referrerId: string,
+  _rewardCents: number,
 ): Promise<{ issued: boolean; reason?: string }> {
-  return db.transaction(async (trx) => {
-    // Lock the specific redemption row to prevent concurrent double-issue
-    const redemptionLock = await trx(
-      `SELECT id FROM referral_redemptions
-       WHERE id = $1 AND referrer_id = $2 AND referrer_reward_paid = FALSE
-       FOR UPDATE`,
-      [redemptionId, referrerId],
-    );
-
-    if (redemptionLock.rows.length === 0) {
-      // Either already paid or not found — skip silently
-      referralLog.warn(
-        { referrerId, redemptionId },
-        'Referral reward skipped — already paid or not found',
-      );
-      return { issued: false, reason: 'already_paid_or_not_found' };
-    }
-
-    // --- Cap check: count already-paid rewards for this referrer (inside the transaction) ---
-    const capCheck = await trx<{ count: string }>(
-      `SELECT COUNT(*) AS count
-       FROM referral_redemptions
-       WHERE referrer_id = $1 AND referrer_reward_paid = TRUE`,
-      [referrerId],
-    );
-    const paidCount = parseInt(capCheck.rows[0]?.count || '0', 10);
-
-    if (paidCount >= REFERRAL_REWARD_CAP) {
-      referralLog.warn(
-        { referrerId, paidCount, cap: REFERRAL_REWARD_CAP, redemptionId },
-        'Referral reward skipped — lifetime cap reached',
-      );
-      return { issued: false, reason: 'lifetime_cap_reached' };
-    }
-
-    // --- Mark the redemption as qualified and paid (atomic, inside same transaction) ---
-    await trx(
-      `UPDATE referral_redemptions
-       SET qualified = TRUE,
-           referrer_reward_paid = TRUE,
-           referrer_reward_cents = $1
-       WHERE id = $2 AND referrer_id = $3 AND referrer_reward_paid = FALSE`,
-      [rewardCents, redemptionId, referrerId],
-    );
-
-    referralLog.info(
-      { referrerId, redemptionId, rewardCents, paidCount: paidCount + 1 },
-      'Referral reward issued',
-    );
-    return { issued: true };
-  });
+  return { issued: false, reason: 'cash_incentives_disabled_build_now' };
 }
 
 // Generate a random referral code
@@ -185,8 +127,11 @@ export const referralRouter = router({
       const redeemed = await db.transaction(async (q) => {
         // Create redemption (rewards given after first task completion)
         const insertResult = await q(
-          `INSERT INTO referral_redemptions (referral_code_id, referrer_id, referred_id)
-           VALUES ($1, $2, $3)
+          `INSERT INTO referral_redemptions (
+             referral_code_id, referrer_id, referred_id,
+             referrer_reward_cents, referred_reward_cents
+           )
+           VALUES ($1, $2, $3, 0, 0)
            ON CONFLICT (referred_id) DO NOTHING`,
           [referralCode.id, referralCode.user_id, referredId]
         );
@@ -207,7 +152,10 @@ export const referralRouter = router({
         throw new TRPCError({ code: 'BAD_REQUEST', message: 'Already used a referral code' });
       }
 
-      return { success: true, message: 'Referral code applied! Complete your first task to earn $5.' };
+      return {
+        success: true,
+        message: 'Referral code applied. Cash rewards are not enabled in the Build-Now release.',
+      };
     }),
 
   getReferralStats: hustlerProcedure
@@ -243,32 +191,17 @@ export const referralRouter = router({
    *   redemptionId  — referral_redemptions.id
    *   rewardCents   — reward amount (defaults to 500 = $5)
    */
-  issueReward: adminProcedure
+  issueReward: financialAdminProcedure
     .input(
       z.object({
         redemptionId: z.string().uuid(),
         rewardCents: z.number().int().positive().default(500),
       }),
     )
-    .mutation(async ({ input }) => {
-      // Fetch referrer_id from the redemption row
-      const redemption = await db.query<{ referrer_id: string }>(
-        'SELECT referrer_id FROM referral_redemptions WHERE id = $1',
-        [input.redemptionId],
-      );
-
-      if (redemption.rows.length === 0) {
-        throw new TRPCError({ code: 'NOT_FOUND', message: 'Referral redemption not found' });
-      }
-
-      const referrerId = redemption.rows[0].referrer_id;
-
-      const result = await issueReferralReward(
-        input.redemptionId,
-        referrerId,
-        input.rewardCents,
-      );
-
-      return result;
+    .mutation(() => {
+      throw new TRPCError({
+        code: 'PRECONDITION_FAILED',
+        message: 'Cash referral rewards are not available in the Build-Now release.',
+      });
     }),
 });

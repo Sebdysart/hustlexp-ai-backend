@@ -7,7 +7,7 @@
  *   HUSTLER  — Procedures requiring default_mode='worker' (hustlerProcedure)
  *   POSTER   — Procedures requiring default_mode='poster' (posterProcedure)
  *   SHARED   — Both roles use these (protectedProcedure)
- *   ADMIN    — Requires admin_roles entry (adminProcedure)
+ *   ADMIN    — Requires the consequence-specific admin_roles capability
  *   SYSTEM   — Internal / public infrastructure
  *
  * @see ARCHITECTURE.md §1
@@ -20,9 +20,11 @@ import { router } from '../trpc.js';
 // Workers discovering, claiming, and completing tasks.
 // All procedures gated by hustlerProcedure (default_mode = 'worker').
 import { taskDiscoveryRouter } from './taskDiscovery.js';
+import { taskExternalBridgeRouter } from './taskExternalBridge.js';
 import { instantRouter } from './instant.js';
 import { liveRouter } from './live.js';
 import { stripeConnectRouter } from './stripeConnect.js';
+import { hustlerWalletRouter } from './hustlerWallet.js';
 import { xpTaxRouter } from './xpTax.js';
 import { skillsRouter } from './skills.js';
 import { referralRouter } from './referral.js';
@@ -38,6 +40,7 @@ import { expertiseSupplyRouter } from './expertiseSupply.js';
 import { biometricRouter } from './biometric.js';
 import { aiRouter } from './ai.js';
 import { intentRouter } from './intent.js';
+import { identityVerificationRouter } from './identityVerification.js';
 
 // ── POSTER DOMAIN ───────────────────────────────────────────────────────
 // Employers creating, managing, and paying for tasks.
@@ -67,6 +70,7 @@ import { uiRouter } from './ui.js';
 import { disputeRouter } from './dispute.js';
 import { assignmentRouter } from './assignment.js';
 import { automationRouter } from './automation.js';
+import { businessWorkspaceRouter } from './businessWorkspace.js';
 
 // ── ADMIN DOMAIN ────────────────────────────────────────────────────────
 // Requires admin_roles table entry. Platform operations.
@@ -77,6 +81,7 @@ import { moderationRouter } from './moderation.js';
 import { matchmakerRouter } from './matchmaker.js';
 import { betaDashboardRouter } from './betaDashboard.js';
 import { reputationRouter } from './reputation.js';
+import { operationsRouter } from './operations.js';
 
 // ── SYSTEM DOMAIN ───────────────────────────────────────────────────────
 // Health checks, fraud detection, feature flags, telemetry.
@@ -93,9 +98,11 @@ import { alphaTelemetryRouter } from './alphaTelemetry.js';
 export const appRouter = router({
   // ── Hustler Domain ─────────────────────────────────────────────────────
   taskDiscovery: taskDiscoveryRouter,
+  externalTaskBridge: taskExternalBridgeRouter,
   instant: instantRouter,
   live: liveRouter,
   stripeConnect: stripeConnectRouter,
+  wallet: hustlerWalletRouter,
   xpTax: xpTaxRouter,
   skills: skillsRouter,
   referral: referralRouter,
@@ -111,6 +118,7 @@ export const appRouter = router({
   biometric: biometricRouter,
   ai: aiRouter,
   intent: intentRouter,
+  identityVerification: identityVerificationRouter,
 
   // ── Poster Domain ──────────────────────────────────────────────────────
   recurringTask: recurringTaskRouter,
@@ -136,6 +144,7 @@ export const appRouter = router({
   dispute: disputeRouter,
   assignment: assignmentRouter,
   automation: automationRouter,
+  businessWorkspace: businessWorkspaceRouter,
 
   // ── Admin Domain ───────────────────────────────────────────────────────
   admin: adminRouter,
@@ -145,6 +154,7 @@ export const appRouter = router({
   matchmaker: matchmakerRouter,
   betaDashboard: betaDashboardRouter,
   reputation: reputationRouter,
+  operations: operationsRouter,
 
   // ── System Domain ──────────────────────────────────────────────────────
   health: healthRouter,

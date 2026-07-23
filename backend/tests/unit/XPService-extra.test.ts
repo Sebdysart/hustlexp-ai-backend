@@ -69,7 +69,7 @@ describe('XPService.calculateAward', () => {
     }
   });
 
-  it('calculates XP with ROOKIE trust tier (1.0x) and no streak', async () => {
+  it('calculates XP with Verified trust tier (1.0x) and no streak', async () => {
     mockQuery.mockResolvedValueOnce({
       rows: [{ current_streak: 0, trust_tier: 1 }],
     });
@@ -84,7 +84,7 @@ describe('XPService.calculateAward', () => {
     }
   });
 
-  it('calculates XP with VERIFIED trust tier (1.5x)', async () => {
+  it('calculates XP with Home Ready trust tier (1.5x)', async () => {
     mockQuery.mockResolvedValueOnce({
       rows: [{ current_streak: 0, trust_tier: 2 }],
     });
@@ -97,7 +97,7 @@ describe('XPService.calculateAward', () => {
     }
   });
 
-  it('calculates XP with TRUSTED trust tier (2.0x)', async () => {
+  it('calculates XP with Pro trust tier (2.0x)', async () => {
     mockQuery.mockResolvedValueOnce({
       rows: [{ current_streak: 0, trust_tier: 3 }],
     });
@@ -110,7 +110,7 @@ describe('XPService.calculateAward', () => {
     }
   });
 
-  it('calculates XP with ELITE trust tier (2.0x same as TRUSTED)', async () => {
+  it('calculates XP with Licensed Specialist trust tier (2.0x same as Pro)', async () => {
     mockQuery.mockResolvedValueOnce({
       rows: [{ current_streak: 0, trust_tier: 4 }],
     });

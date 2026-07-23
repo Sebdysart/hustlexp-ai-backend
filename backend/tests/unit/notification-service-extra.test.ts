@@ -144,6 +144,40 @@ describe('NotificationService (extra coverage)', () => {
   // createNotification — frequency limit paths (Redis active)
   // =========================================================================
   describe('createNotification — frequency limiting', () => {
+    it('returns an authorized explicit replay before exhausted frequency counters are read', async () => {
+      mockRedisGet
+        .mockResolvedValueOnce(5)
+        .mockResolvedValueOnce(20);
+
+      const replay = makeNotification({
+        category: 'new_matching_task',
+        dedupe_key: 'matching-event:replay',
+        object_type: 'task',
+        object_id: TASK_ID,
+      });
+      mockDb.query
+        .mockResolvedValueOnce({
+          rows: [{ poster_id: USER_ID, worker_id: null }],
+          rowCount: 1,
+        } as never)
+        .mockResolvedValueOnce({ rows: [replay], rowCount: 1 } as never);
+
+      const result = await NotificationService.createNotification({
+        userId: USER_ID,
+        category: 'new_matching_task',
+        title: 'New Task',
+        body: 'Body',
+        deepLink: `hustlexp://tasks/${TASK_ID}`,
+        taskId: TASK_ID,
+        dedupeKey: 'matching-event:replay',
+      });
+
+      expect(result).toEqual({ success: true, data: replay });
+      expect(mockRedisGet).not.toHaveBeenCalled();
+      expect(mockDb.query).toHaveBeenCalledTimes(2);
+      expect(String(mockDb.query.mock.calls[1]?.[0])).toContain('AND user_id = $2');
+    });
+
     it('returns RATE_LIMIT_EXCEEDED when hourly limit exceeded and no batch target found', async () => {
       // Category 'new_matching_task' has perHour: 5
       // checkFrequency uses redis.get() — return values >= limit to trigger enforcement.
@@ -222,7 +256,10 @@ describe('NotificationService (extra coverage)', () => {
 
       mockDb.query
         // getPreferences
-        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+        .mockResolvedValueOnce({
+          rows: [makePreferences({ category_preferences: { welcome: { enabled: true } } })],
+          rowCount: 1,
+        } as never);
 
       const result = await NotificationService.createNotification({
         userId: USER_ID,
@@ -230,6 +267,7 @@ describe('NotificationService (extra coverage)', () => {
         title: 'Welcome!',
         body: 'Body',
         deepLink: 'hustlexp://welcome',
+        objectRef: { type: 'user', id: USER_ID },
       });
 
       expect(result.success).toBe(false);
@@ -247,7 +285,10 @@ describe('NotificationService (extra coverage)', () => {
 
       const notif = makeNotification({ category: 'badge_earned' });
       mockDb.query
-        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)  // getPreferences
+        .mockResolvedValueOnce({
+          rows: [makePreferences({ category_preferences: { badge_earned: { enabled: true } } })],
+          rowCount: 1,
+        } as never)  // getPreferences
         .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)  // findGroupableNotification
         .mockResolvedValueOnce({ rows: [notif], rowCount: 1 } as never) // INSERT
         .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)  // push outbox check
@@ -271,7 +312,7 @@ describe('NotificationService (extra coverage)', () => {
   // createNotification — quiet hours and DND bypass
   // =========================================================================
   describe('createNotification — quiet hours', () => {
-    it('still creates notification during quiet hours with CRITICAL priority (DND bypass)', async () => {
+    it('still creates an active-task notification during quiet hours', async () => {
       // Prefs with quiet hours enabled
       const prefs = makePreferences({
         quiet_hours_enabled: true,
@@ -322,6 +363,7 @@ describe('NotificationService (extra coverage)', () => {
         title: 'Security Alert',
         body: 'Body',
         deepLink: 'hustlexp://security',
+        objectRef: { type: 'user', id: USER_ID },
         priority: 'MEDIUM',
       });
 
@@ -640,7 +682,7 @@ describe('NotificationService (extra coverage)', () => {
   describe('createNotification — multi-channel with email and sms enabled', () => {
     it('sends to enabled channels: push + email when email_enabled is true', async () => {
       const prefs = makePreferences({ email_enabled: true });
-      const notif = makeNotification({ channels: ['push', 'email'] });
+      const notif = makeNotification({ category: 'payment_failed', channels: ['push', 'email'] });
 
       mockDb.query
         .mockResolvedValueOnce({ rows: [prefs], rowCount: 1 } as never) // getPreferences
@@ -655,8 +697,8 @@ describe('NotificationService (extra coverage)', () => {
 
       const result = await NotificationService.createNotification({
         userId: USER_ID,
-        category: 'task_accepted',
-        title: 'Task Accepted',
+        category: 'payment_failed',
+        title: 'Payment failed',
         body: 'Body',
         deepLink: 'hustlexp://tasks/t1',
         channels: ['push', 'email'],

@@ -2,9 +2,9 @@ name: CI — Lint, Typecheck, Test
 
 on:
   push:
-    branches: [main, "feat/*"]
+    branches: [main, "feat/*", codex/adult-hustler-gate]
   pull_request:
-    branches: [main, "feat/*"]
+    branches: [main, "feat/*", codex/adult-hustler-gate]
   workflow_call:
     outputs:
       typecheck_result:
@@ -74,6 +74,10 @@ jobs:
       - name: "Tests — zero failures"
         run: npx vitest run --reporter=verbose
         timeout-minutes: 10
+      - name: Production role readiness contract
+        run: npm run verify:production-role-readiness:contract
+      - name: Production legal approval contract
+        run: npm run verify:production-legal-approval:contract
 
   audit:
     name: "Security audit — no NEW high/critical vulnerabilities"

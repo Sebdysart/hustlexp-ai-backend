@@ -14,6 +14,7 @@
 
 import { ServiceResult } from '../types.js';
 import { AIClient } from './AIClient.js';
+import { aiObservation } from './AIObservabilityPolicy.js';
 import { db } from '../db.js';
 
 export interface IncidentDiagnosis {
@@ -65,6 +66,10 @@ export const IncidentDiagnosisService = {
 
       try {
         const aiResponse = await AIClient.call({
+          observability: aiObservation('AI-INCIDENT-DIAGNOSIS', {
+            affectedObjectType: 'INCIDENT',
+            affectedObjectId: incidentId,
+          }),
           route: 'reasoning',
           
           systemPrompt: 'You are an expert DevOps engineer diagnosing production incidents.',

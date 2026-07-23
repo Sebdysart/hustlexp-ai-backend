@@ -9,8 +9,17 @@ CREATE INDEX IF NOT EXISTS idx_tasks_state_category
   ON tasks(state, category, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tasks_state_price
   ON tasks(state, price DESC, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tasks_actionable_feed
+  ON tasks(risk_level, created_at DESC, id DESC)
+  WHERE state = 'OPEN' AND worker_id IS NULL;
+CREATE INDEX IF NOT EXISTS idx_tasks_worker_active
+  ON tasks(worker_id, state)
+  WHERE worker_id IS NOT NULL AND state IN ('ACCEPTED', 'PROOF_SUBMITTED', 'DISPUTED');
 CREATE INDEX IF NOT EXISTS idx_escrows_task_state
   ON escrows(task_id, state);
+CREATE INDEX IF NOT EXISTS idx_disputes_worker_active
+  ON disputes(worker_id, state)
+  WHERE state IN ('OPEN', 'EVIDENCE_REQUESTED', 'ESCALATED');
 CREATE INDEX IF NOT EXISTS idx_task_messages_task_created
   ON task_messages(task_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_xp_ledger_user_created

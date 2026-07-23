@@ -1,17 +1,17 @@
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { invalidateTask } from '../cache/db-cache.js';
-import { db } from '../db.js';
 import { ComplianceGuardianService } from '../services/ComplianceGuardianService.js';
 import { ScoperAIService } from '../services/ScoperAIService.js';
+import { AIObservabilityService } from '../services/AIObservabilityService.js';
 import { TaskLocationService } from '../services/TaskLocationService.js';
-import { TaskRiskClassifier } from '../services/TaskRiskClassifier.js';
+import { assertImplementedFields } from '../services/TaskCreationPolicy.js';
 import { TaskService } from '../services/TaskService.js';
 import type { CreateTaskParams } from '../services/TaskServiceShared.js';
-import { getTemplate, isCareContent, isContentReleaseRequired } from '../services/TaskTemplateRegistry.js';
+import { getTemplate } from '../services/TaskTemplateRegistry.js';
 import { hustlerProcedure, posterProcedure, Schemas } from '../trpc.js';
 import type { AuthedContext } from '../trpc-context.js';
-import type { Task, User } from '../types.js';
+import type { Task } from '../types.js';
 import { checkDraftEvalRateLimit, checkTaskCreateRateLimit } from './task-router-common.js';
 
 type CreateInput = z.infer<typeof Schemas.createTask>;
@@ -21,15 +21,6 @@ function hasUnsupportedLocationCharacter(value: string): boolean {
     const code = character.charCodeAt(0);
     return code <= 31 || code === 127;
   });
-}
-
-function assertImplementedFields(input: CreateInput): void {
-  if (input.prorate_on_abort || (input.proof_steps?.length ?? 0) > 0) {
-    throw new TRPCError({
-      code: 'BAD_REQUEST',
-      message: 'Multi-leg proof and partial payout features are not yet available.',
-    });
-  }
 }
 
 function assertQuoteEconomics(input: CreateInput, ctx: AuthedContext): void {
@@ -47,7 +38,12 @@ function assertQuoteEconomics(input: CreateInput, ctx: AuthedContext): void {
   }
 }
 
-function createParams(input: CreateInput, ctx: AuthedContext, templateSlug: string): CreateTaskParams {
+function createParams(
+  input: CreateInput,
+  ctx: AuthedContext,
+  templateSlug: string,
+  compliance?: Awaited<ReturnType<typeof ComplianceGuardianService.evaluate>>,
+): CreateTaskParams {
   if (input.isTest === true && ctx.engineBridgeAuthorized !== true) {
     throw new TRPCError({ code: 'FORBIDDEN', message: 'Controlled-test provenance requires engine bridge authority.' });
   }
@@ -60,6 +56,7 @@ function createParams(input: CreateInput, ctx: AuthedContext, templateSlug: stri
     platformMarginCents: input.platformMarginCents,
     requirements: input.requirements,
     location: input.location,
+    regionCode: input.regionCode,
     category: input.category,
     deadline: input.deadline ? new Date(input.deadline) : undefined,
     dispatchExpiresAt: input.dispatchExpiresAt ? new Date(input.dispatchExpiresAt) : undefined,
@@ -68,9 +65,22 @@ function createParams(input: CreateInput, ctx: AuthedContext, templateSlug: stri
     liveBroadcastRadiusMiles: input.liveBroadcastRadiusMiles,
     instantMode: input.instantMode,
     templateSlug,
+    wildcardFlags: input.wildcardFlags,
+    insideHome: input.insideHome,
+    peoplePresent: input.peoplePresent,
+    petsPresent: input.petsPresent,
+    complianceAiSignalsComputed: compliance?.ai_signals_computed,
+    complianceDeceptionDetected: compliance?.deception_detected,
+    complianceGenuinelyBizarre: compliance?.is_genuinely_bizarre,
+    illegalRiskScore: compliance?.score,
+    complianceGuardianNotes: compliance?.notes,
     clientIdempotencyKey: input.clientIdempotencyKey,
     roughArea: input.roughArea,
     automationClassification: input.isTest === true ? 'CONTROLLED_TEST' : 'PRODUCTION',
+    proofSteps: input.proof_steps?.map(({ step }) => step),
+    estimatedDurationMinutes: input.estimatedDurationMinutes,
+    requiredTools: input.requiredTools,
+    aiScopeObservationId: input.aiScopeObservationId,
   };
 }
 
@@ -111,20 +121,6 @@ function requiredTemplate(templateSlug: string) {
   return template;
 }
 
-function assertTemplateTrust(user: User, template: ReturnType<typeof requiredTemplate>): void {
-  const order = ['rookie', 'verified', 'trusted'];
-  const numeric: Record<number, string> = { 1: 'rookie', 2: 'verified', 3: 'trusted', 4: 'trusted' };
-  const currentName = numeric[user.trust_tier ?? 1] ?? 'rookie';
-  const current = order.indexOf(currentName);
-  const required = order.indexOf(template.requiredTrustTier ?? 'rookie');
-  if (current < required) {
-    throw new TRPCError({
-      code: 'PRECONDITION_FAILED',
-      message: `This task type requires ${template.requiredTrustTier} trust level. Your current level is ${currentName}.`,
-    });
-  }
-}
-
 function unwrapCreated(result: Awaited<ReturnType<typeof TaskService.create>>): Task {
   if (result.success) return result.data;
   let code: 'BAD_REQUEST' | 'PRECONDITION_FAILED' | 'CONFLICT' = 'BAD_REQUEST';
@@ -133,42 +129,18 @@ function unwrapCreated(result: Awaited<ReturnType<typeof TaskService.create>>): 
   throw new TRPCError({ code, message: result.error.message });
 }
 
-async function persistTemplatePolicy(
-  taskId: string,
-  input: CreateInput,
-  compliance: Awaited<ReturnType<typeof ComplianceGuardianService.evaluate>>,
-  template: ReturnType<typeof requiredTemplate>
-): Promise<void> {
-  const caregiving = template.slug === 'care' || isCareContent(input.description);
-  const contentRelease = template.requiresContentRelease || isContentReleaseRequired(input.description);
-  const autoReleaseHours = caregiving ? 0 : template.autoReleaseHours;
-  TaskRiskClassifier.classifyWithTemplate({
-    insideHome: input.insideHome ?? false,
-    peoplePresent: input.peoplePresent ?? false,
-    petsPresent: input.petsPresent ?? false,
-    caregiving,
-  }, template.slug, input.wildcardFlags ?? [], compliance);
-  await db.query(
-    `UPDATE tasks SET illegal_risk_score = $2, compliance_guardian_notes = $3,
-     late_cancel_pct = $4, content_release = $5, cancellation_window_hours = $6 WHERE id = $1`,
-    [taskId, compliance.score, JSON.stringify(compliance.notes), template.lateCancelPct, contentRelease, autoReleaseHours]
-  );
-}
-
 async function handleCreateTask({ ctx, input }: { ctx: AuthedContext; input: CreateInput }): Promise<Task> {
   assertImplementedFields(input);
   assertQuoteEconomics(input, ctx);
   const templateSlug = input.templateSlug ?? 'standard_physical';
-  const params = createParams(input, ctx, templateSlug);
-  const replay = await preflightReplay(params);
+  requiredTemplate(templateSlug);
+  const replay = await preflightReplay(createParams(input, ctx, templateSlug));
   if (replay) return replay;
   await checkTaskCreateRateLimit(ctx.user.id);
   const compliance = await assertCompliance(input, ctx.user.id);
-  const template = requiredTemplate(templateSlug);
-  assertTemplateTrust(ctx.user, template);
+  const params = createParams(input, ctx, templateSlug, compliance);
   const task = unwrapCreated(await TaskService.create(params));
   await invalidateTask(task.id);
-  await persistTemplatePolicy(task.id, input, compliance, template);
   return task;
 }
 
@@ -238,6 +210,7 @@ evaluateDraft: posterProcedure
       }
 
       const scopeResult = await ScoperAIService.analyzeTaskScope({
+        userId: ctx.user.id,
         description: input.description,
         templateSlug: input.templateSlug,
         wildcardFlags: input.wildcardFlags,
@@ -252,5 +225,30 @@ evaluateDraft: posterProcedure
         notes: complianceResult.notes,
         scopeProposal: scopeResult.success ? scopeResult.data : null,
       };
+    }),
+respondToScopeProposal: posterProcedure
+    .input(z.object({
+      observationId: Schemas.uuid,
+      action: z.enum(['ACCEPTED', 'EDITED', 'DISMISSED', 'SNOOZED', 'OVERRIDDEN']),
+      editedFields: z.array(z.string().trim().min(1).max(100)).max(24).default([]),
+      idempotencyKey: Schemas.uuid,
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const result = await AIObservabilityService.recordUserResponse({
+        observationId: input.observationId,
+        actorUserId: ctx.user.id,
+        action: input.action,
+        editedFields: input.editedFields,
+        idempotencyKey: input.idempotencyKey,
+      });
+      if (!result.success) {
+        const code = result.error.code === 'AI_OBSERVATION_NOT_FOUND'
+          ? 'NOT_FOUND'
+          : result.error.code === 'IDEMPOTENCY_CONFLICT'
+            ? 'CONFLICT'
+            : 'INTERNAL_SERVER_ERROR';
+        throw new TRPCError({ code, message: result.error.message });
+      }
+      return result.data;
     })
 };

@@ -160,61 +160,37 @@ describe('skills.getMySkills', () => {
 describe('skills.submitLicense', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('submits license with licenseUrl', async () => {
-    mockService.submitLicense.mockResolvedValueOnce({ submitted: true });
-
-    const result = await makeCaller().submitLicense({
+  it('rejects licenseUrl without calling the legacy service', async () => {
+    await expect(makeCaller().submitLicense({
       skillId: TEST_UUID,
       licenseUrl: 'https://example.com/license.jpg',
-    });
-
-    expect(result).toEqual({ submitted: true });
-    expect(mockService.submitLicense).toHaveBeenCalledWith(
-      'test-uid',
-      TEST_UUID,
-      'https://example.com/license.jpg',
-      undefined
-    );
+    })).rejects.toThrow('Direct skill-license media URLs are disabled');
+    expect(mockService.submitLicense).not.toHaveBeenCalled();
   });
 
-  it('submits license with photoUrl fallback', async () => {
-    mockService.submitLicense.mockResolvedValueOnce({ submitted: true });
-
-    await makeCaller().submitLicense({
+  it('rejects the legacy photoUrl fallback', async () => {
+    await expect(makeCaller().submitLicense({
       skillId: TEST_UUID,
       photoUrl: 'https://example.com/photo.jpg',
-    });
-
-    expect(mockService.submitLicense).toHaveBeenCalledWith(
-      'test-uid',
-      TEST_UUID,
-      'https://example.com/photo.jpg',
-      undefined
-    );
+    })).rejects.toThrow('Direct skill-license media URLs are disabled');
+    expect(mockService.submitLicense).not.toHaveBeenCalled();
   });
 
-  it('throws BAD_REQUEST when neither licenseUrl nor photoUrl provided', async () => {
+  it('keeps the legacy endpoint closed without a URL', async () => {
     await expect(
       makeCaller().submitLicense({ skillId: TEST_UUID })
-    ).rejects.toThrow('licenseUrl or photoUrl is required');
+    ).rejects.toThrow('Direct skill-license media URLs are disabled');
   });
 
-  it('passes licenseExpiry as Date when provided', async () => {
-    mockService.submitLicense.mockResolvedValueOnce({ submitted: true });
+  it('does not let an expiry field revive direct URL ingestion', async () => {
     const expiry = '2026-12-31T00:00:00.000Z';
 
-    await makeCaller().submitLicense({
+    await expect(makeCaller().submitLicense({
       skillId: TEST_UUID,
       licenseUrl: 'https://example.com/license.jpg',
       licenseExpiry: expiry,
-    });
-
-    expect(mockService.submitLicense).toHaveBeenCalledWith(
-      'test-uid',
-      TEST_UUID,
-      'https://example.com/license.jpg',
-      new Date(expiry)
-    );
+    })).rejects.toThrow('Direct skill-license media URLs are disabled');
+    expect(mockService.submitLicense).not.toHaveBeenCalled();
   });
 });
 

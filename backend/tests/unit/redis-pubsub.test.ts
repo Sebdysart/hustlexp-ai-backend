@@ -90,45 +90,40 @@ describe('Redis PubSub', () => {
   // ===========================================================================
   describe('subscribeToRoom', () => {
     it('adds user to room subscriptions', () => {
-      subscribeToRoom('user1', 'room:test:1');
-      const subs = getRoomSubscribers('room:test:1');
+      subscribeToRoom('user1', getUserRoomKey('user1'));
+      const subs = getRoomSubscribers(getUserRoomKey('user1'));
       expect(subs).toBeDefined();
       expect(subs!.has('user1')).toBe(true);
     });
 
     it('creates a new set when room does not exist', () => {
-      subscribeToRoom('userNew', 'room:test:new');
-      const subs = getRoomSubscribers('room:test:new');
+      subscribeToRoom('userNew', getUserRoomKey('userNew'));
+      const subs = getRoomSubscribers(getUserRoomKey('userNew'));
       expect(subs).toBeDefined();
       expect(subs!.size).toBe(1);
     });
 
-    it('adds multiple users to same room', () => {
-      subscribeToRoom('userA', 'room:test:multi');
-      subscribeToRoom('userB', 'room:test:multi');
-      const subs = getRoomSubscribers('room:test:multi');
-      expect(subs!.size).toBe(2);
-      expect(subs!.has('userA')).toBe(true);
-      expect(subs!.has('userB')).toBe(true);
+    it('rejects cross-user and task-room subscriptions', () => {
+      expect(() => subscribeToRoom('userA', getUserRoomKey('userB'))).toThrow('SSE_ROOM_FORBIDDEN');
+      expect(() => subscribeToRoom('userA', getTaskRoomKey('task-1'))).toThrow('SSE_ROOM_FORBIDDEN');
     });
   });
 
   describe('unsubscribeFromRoom', () => {
     it('removes user from room', () => {
-      subscribeToRoom('userX', 'room:test:unsub');
-      unsubscribeFromRoom('userX', 'room:test:unsub');
-      const subs = getRoomSubscribers('room:test:unsub');
+      const room = getUserRoomKey('userX');
+      subscribeToRoom('userX', room);
+      unsubscribeFromRoom('userX', room);
+      const subs = getRoomSubscribers(room);
       expect(subs).toBeUndefined();
     });
 
-    it('keeps room when other users remain', () => {
-      subscribeToRoom('u1', 'room:test:partial');
-      subscribeToRoom('u2', 'room:test:partial');
-      unsubscribeFromRoom('u1', 'room:test:partial');
-      const subs = getRoomSubscribers('room:test:partial');
-      expect(subs).toBeDefined();
-      expect(subs!.size).toBe(1);
-      expect(subs!.has('u2')).toBe(true);
+    it('cannot remove another user personal room with a mismatched user id', () => {
+      const room = getUserRoomKey('u2');
+      subscribeToRoom('u2', room);
+      unsubscribeFromRoom('u1', room);
+      const subs = getRoomSubscribers(room);
+      expect(subs?.has('u2')).toBe(true);
     });
 
     it('handles unsubscribing from non-existent room gracefully', () => {
@@ -138,11 +133,10 @@ describe('Redis PubSub', () => {
 
   describe('unsubscribeAllRooms', () => {
     it('removes user from all rooms', () => {
-      subscribeToRoom('userAll', 'room:test:all1');
-      subscribeToRoom('userAll', 'room:test:all2');
+      const room = getUserRoomKey('userAll');
+      subscribeToRoom('userAll', room);
       unsubscribeAllRooms('userAll');
-      expect(getRoomSubscribers('room:test:all1')).toBeUndefined();
-      expect(getRoomSubscribers('room:test:all2')).toBeUndefined();
+      expect(getRoomSubscribers(room)).toBeUndefined();
     });
 
     it('handles user with no rooms gracefully', () => {
@@ -164,17 +158,14 @@ describe('Redis PubSub', () => {
   // ===========================================================================
 
   describe('subscribeToTask', () => {
-    it('subscribes user to task room', () => {
-      subscribeToTask('user1', 'task1');
-      const subs = getRoomSubscribers('room:task:task1');
-      expect(subs).toBeDefined();
-      expect(subs!.has('user1')).toBe(true);
+    it('rejects task rooms because they cannot prove participant authorization', () => {
+      expect(() => subscribeToTask('user1', 'task1')).toThrow('SSE_TASK_ROOMS_DISABLED');
+      expect(getRoomSubscribers('room:task:task1')).toBeUndefined();
     });
   });
 
   describe('unsubscribeFromTask', () => {
-    it('unsubscribes user from task room', () => {
-      subscribeToTask('user1', 'task2');
+    it('is safe when no task room can be created', () => {
       unsubscribeFromTask('user1', 'task2');
       expect(getRoomSubscribers('room:task:task2')).toBeUndefined();
     });

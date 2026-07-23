@@ -77,6 +77,15 @@ vi.mock('../../src/services/AIClient', () => ({
   },
 }));
 
+const mockAIObservationRecord = vi.hoisted(() => vi.fn());
+
+vi.mock('../../src/services/AIObservabilityService', () => ({
+  AIObservabilityService: {
+    record: mockAIObservationRecord,
+  },
+  aiObservationHash: vi.fn(() => 'a'.repeat(64)),
+}));
+
 vi.mock('../../src/services/StripeService', () => ({
   StripeService: {
     isConfigured: vi.fn(() => true),
@@ -136,6 +145,10 @@ beforeEach(() => {
   mockStripe.isConfigured.mockReturnValue(true);
   // AIClient not configured by default (avoids real AI calls).
   mockAIClient.isConfigured.mockReturnValue(false);
+  mockAIObservationRecord.mockResolvedValue({
+    success: true,
+    data: { observationId: '11111111-1111-4111-8111-111111111111' },
+  });
 });
 
 // ============================================================================
@@ -217,10 +230,16 @@ function makeFeedRow(overrides = {}) {
 function makeCapabilityProfile(overrides = {}) {
   return {
     userId: 'user-1',
+    trustTier: 2,
     verifiedTrades: [{ trade: 'plumbing', level: 'basic' }],
     riskClearance: ['low', 'medium'],
-    insuranceStatus: 'none',
-    backgroundCheckStatus: 'none',
+    locationState: 'CA',
+    locationCity: 'San Francisco',
+    insuranceValid: false,
+    insuranceExpiresAt: null,
+    backgroundCheckValid: false,
+    backgroundCheckExpiresAt: null,
+    updatedAt: '2026-03-01T00:00:00Z',
     ...overrides,
   };
 }
@@ -790,11 +809,11 @@ describe('queryFeed', () => {
 
     expect(result.tasks).toHaveLength(1);
     expect(result.tasks[0].id).toBe('task-1');
-    expect(result.filters.applied).toContain('risk_clearance');
+    expect(result.filters.applied).toContain('database_eligibility');
     expect(result.filters.excluded).toBe(0);
   });
 
-  it('excludes ineligible tasks from feed', async () => {
+  it('does not perform a second application-level eligibility pass', async () => {
     mockDb.query.mockResolvedValueOnce({
       rows: [makeFeedRow(), makeFeedRow({ id: 'task-2' })],
       rowCount: 2,
@@ -805,8 +824,9 @@ describe('queryFeed', () => {
 
     const result = await queryFeed(baseQuery);
 
-    expect(result.tasks).toHaveLength(1);
-    expect(result.filters.excluded).toBe(1);
+    expect(result.tasks).toHaveLength(2);
+    expect(result.filters.excluded).toBe(0);
+    expect(mockIsEligible).not.toHaveBeenCalled();
   });
 
   it('returns empty feed when db has no results', async () => {
@@ -899,25 +919,28 @@ describe('queryFeed', () => {
 
 describe('getNearbyTasks', () => {
   it('returns nearby tasks from db', async () => {
-    const rows = [
-      { id: 'task-1', title: 'Fix pipe', lat: 37.775, lng: -122.419, payoutCents: 8000 },
-    ];
+    const rows = [makeFeedRow({
+      id: 'task-1', title: 'Fix pipe', location_lat: 37.775,
+      location_lng: -122.419, payout_cents: 8000,
+    })];
     mockDb.query.mockResolvedValueOnce({ rows, rowCount: 1 });
 
-    const result = await getNearbyTasks(37.7749, -122.4194, 5, 10);
+    const profile = makeCapabilityProfile() as any;
+    const result = await getNearbyTasks('user-1', profile, 37.7749, -122.4194, 5, 10);
 
     expect(result).toHaveLength(1);
     expect(result[0].id).toBe('task-1');
-    expect(mockDb.query).toHaveBeenCalledWith(
-      expect.stringContaining('3959 * acos('),
-      [37.7749, -122.4194, 5, 10]
-    );
+    expect(mockDb.query).toHaveBeenCalledWith(expect.stringContaining('3959 * acos('), [
+      'user-1', 37.7749, -122.4194, 5, 10,
+    ]);
   });
 
   it('returns empty array when no nearby tasks', async () => {
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
 
-    const result = await getNearbyTasks(37.7749, -122.4194, 5);
+    const result = await getNearbyTasks(
+      'user-1', makeCapabilityProfile() as any, 37.7749, -122.4194, 5,
+    );
 
     expect(result).toHaveLength(0);
   });
@@ -929,7 +952,7 @@ describe('getTasksByTrade', () => {
       id: 'task-1',
       title: 'Plumbing job',
       description: 'Fix the sink',
-      trade_type: 'plumbing',
+      trade: 'plumbing',
       location_address: '123 Main',
       location_city: 'SF',
       location_state: 'CA',
@@ -944,11 +967,13 @@ describe('getTasksByTrade', () => {
       created_at: '2026-03-01T00:00:00Z',
       poster_id: 'poster-1',
       poster_rating: 4.5,
-      completed_tasks_count: 8,
+      poster_completed_tasks: 8,
     };
     mockDb.query.mockResolvedValueOnce({ rows: [row], rowCount: 1 });
 
-    const result = await getTasksByTrade('plumbing', 'CA', 10);
+    const result = await getTasksByTrade(
+      'user-1', makeCapabilityProfile() as any, 'plumbing', 'CA', 10,
+    );
 
     expect(result).toHaveLength(1);
     expect(result[0].trade).toBe('plumbing');
@@ -959,7 +984,9 @@ describe('getTasksByTrade', () => {
   it('returns empty array when no tasks match', async () => {
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
 
-    const result = await getTasksByTrade('welding', 'TX');
+    const result = await getTasksByTrade(
+      'user-1', makeCapabilityProfile() as any, 'welding', 'TX',
+    );
 
     expect(result).toHaveLength(0);
   });

@@ -18,6 +18,7 @@
 import { db } from '../db.js';
 import type { ServiceResult } from '../types.js';
 import { AIClient } from './AIClient.js';
+import { aiObservation } from './AIObservabilityPolicy.js';
 import { TrustScoreSchema, UserInsightSchema } from '../lib/ai-response-schemas.js';
 import { aiLogger } from '../logger.js';
 
@@ -240,6 +241,11 @@ export const ReputationAIService = {
       if (AIClient.isConfigured()) {
         try {
           const aiResult = await AIClient.callJSON<TrustScoreResult>({
+            observability: aiObservation('AI-REPUTATION-ADVISORY', {
+              actorUserId: userId,
+              affectedObjectType: 'USER_REPUTATION',
+              affectedObjectId: userId,
+            }),
             route: 'fast',
             temperature: 0.1,
             timeoutMs: 10000,
@@ -590,6 +596,11 @@ SCORING GUIDELINES:
           const truncatedContextJson = [...contextJson].slice(0, 2000).join('');
 
           const aiResult = await AIClient.callJSON<{ summary: string }>({
+            observability: aiObservation('AI-REPUTATION-ADVISORY', {
+              actorUserId: userId,
+              affectedObjectType: 'USER_REPUTATION',
+              affectedObjectId: userId,
+            }),
             route: 'fast',
             temperature: 0.3,
             timeoutMs: 8000,

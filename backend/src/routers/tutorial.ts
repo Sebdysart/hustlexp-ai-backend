@@ -5,6 +5,7 @@
  */
 
 import { z } from 'zod';
+import { TRPCError } from '@trpc/server';
 import { router, protectedProcedure } from '../trpc.js';
 import { TutorialQuestService } from '../services/TutorialQuestService.js';
 
@@ -26,7 +27,10 @@ export const tutorialRouter = router({
 
   scanEquipment: protectedProcedure
     .input(z.object({ photoUrl: z.string().url() }))
-    .mutation(async ({ input }) => {
-      return TutorialQuestService.scanEquipment(input.photoUrl);
+    .mutation(async () => {
+      throw new TRPCError({
+        code: 'PRECONDITION_FAILED',
+        message: 'Equipment photo scanning is unavailable until receipt-backed metadata stripping is implemented.',
+      });
     }),
 });

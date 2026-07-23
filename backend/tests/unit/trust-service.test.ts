@@ -1,312 +1,234 @@
 /**
- * TrustService Unit Tests
+ * TrustService compatibility-facade tests.
  *
- * Tests getLedger, getCurrentTier, promote, and checkPromotionEligibility.
+ * The facade may preserve its legacy call shape, but it must never preserve a
+ * second promotion policy. All writes and eligibility decisions delegate to
+ * the canonical TrustTierService evidence evaluator.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../src/db', () => ({
   db: { query: vi.fn() },
-  isInvariantViolation: vi.fn(() => false),
-  isUniqueViolation: vi.fn(() => false),
-  getErrorMessage: vi.fn((code: string) => `Error ${code}`),
 }));
 
-vi.mock('../../src/logger', () => ({
-  logger: {
-    child: () => ({ warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() }),
-    warn: vi.fn(),
-    error: vi.fn(),
-    info: vi.fn(),
-    debug: vi.fn(),
+vi.mock('../../src/services/TrustTierService', () => ({
+  TrustTier: {
+    EXPLORER: 0,
+    VERIFIED: 1,
+    HOME_READY: 2,
+    PRO: 3,
+    LICENSED_SPECIALIST: 4,
+    BANNED: 9,
   },
-  escrowLogger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
+  TrustTierService: {
+    applyPromotion: vi.fn(),
+    evaluatePromotion: vi.fn(),
+    getTrustTier: vi.fn(),
+  },
 }));
 
-vi.mock('../../src/auth-cache', () => ({
-  invalidateAuthCacheForUser: vi.fn().mockResolvedValue(undefined),
-}));
-
+import { db } from '../../src/db';
 import { TrustService } from '../../src/services/TrustService';
-import { db, isInvariantViolation } from '../../src/db';
-import { invalidateAuthCacheForUser } from '../../src/auth-cache';
+import { TrustTier, TrustTierService } from '../../src/services/TrustTierService';
 
-const mockQuery = db.query as ReturnType<typeof vi.fn>;
+const mockQuery = vi.mocked(db.query);
+const mockTrustTier = vi.mocked(TrustTierService);
 
 beforeEach(() => {
   vi.clearAllMocks();
 });
 
-// ============================================================================
-// getLedger
-// ============================================================================
 describe('TrustService.getLedger', () => {
-  it('returns ledger entries for a user', async () => {
+  it('returns ledger evidence newest first', async () => {
     const entries = [
-      { id: 'le1', user_id: 'u1', old_tier: 1, new_tier: 2 },
-      { id: 'le2', user_id: 'u1', old_tier: 2, new_tier: 3 },
+      { id: 'le2', user_id: 'u1', old_tier: 1, new_tier: 2 },
+      { id: 'le1', user_id: 'u1', old_tier: 0, new_tier: 1 },
     ];
-    mockQuery.mockResolvedValueOnce({ rows: entries });
+    mockQuery.mockResolvedValueOnce({ rows: entries } as never);
 
-    const result = await TrustService.getLedger('u1');
-    expect(result.success).toBe(true);
-    expect(result.data).toEqual(entries);
+    await expect(TrustService.getLedger('u1')).resolves.toMatchObject({
+      success: true,
+      data: entries,
+    });
     expect(mockQuery).toHaveBeenCalledWith(
-      expect.stringContaining('trust_ledger'),
+      expect.stringContaining('ORDER BY changed_at DESC'),
       ['u1'],
     );
   });
 
-  it('returns empty array when user has no ledger entries', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [] });
-
-    const result = await TrustService.getLedger('u1');
-    expect(result.success).toBe(true);
-    expect(result.data).toEqual([]);
-  });
-
-  it('returns error on DB failure', async () => {
+  it('returns a database error without fabricating evidence', async () => {
     mockQuery.mockRejectedValueOnce(new Error('connection lost'));
 
-    const result = await TrustService.getLedger('u1');
-    expect(result.success).toBe(false);
-    expect(result.error?.code).toBe('DB_ERROR');
-    expect(result.error?.message).toContain('connection lost');
+    await expect(TrustService.getLedger('u1')).resolves.toMatchObject({
+      success: false,
+      error: { code: 'DB_ERROR', message: 'connection lost' },
+    });
   });
 });
 
-// ============================================================================
-// getCurrentTier
-// ============================================================================
 describe('TrustService.getCurrentTier', () => {
-  it('returns current trust tier for a user', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 3 }] });
+  it('returns Explorer as a valid persisted tier', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 0 }] } as never);
 
-    const result = await TrustService.getCurrentTier('u1');
-    expect(result.success).toBe(true);
-    expect(result.data).toBe(3);
+    await expect(TrustService.getCurrentTier('u1')).resolves.toMatchObject({
+      success: true,
+      data: 0,
+    });
   });
 
-  it('returns NOT_FOUND for missing user', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [] });
+  it('returns NOT_FOUND for a missing user', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [] } as never);
 
-    const result = await TrustService.getCurrentTier('u_missing');
-    expect(result.success).toBe(false);
-    expect(result.error?.code).toBe('NOT_FOUND');
+    await expect(TrustService.getCurrentTier('missing')).resolves.toMatchObject({
+      success: false,
+      error: { code: 'NOT_FOUND' },
+    });
   });
 
-  it('returns error on DB failure', async () => {
+  it('returns a database error on read failure', async () => {
     mockQuery.mockRejectedValueOnce(new Error('timeout'));
 
-    const result = await TrustService.getCurrentTier('u1');
-    expect(result.success).toBe(false);
-    expect(result.error?.code).toBe('DB_ERROR');
+    await expect(TrustService.getCurrentTier('u1')).resolves.toMatchObject({
+      success: false,
+      error: { code: 'DB_ERROR', message: 'timeout' },
+    });
   });
 });
 
-// ============================================================================
-// promote
-// ============================================================================
 describe('TrustService.promote', () => {
   const baseParams = {
     userId: 'u1',
     newTier: 2,
-    reason: 'Completed 5 tasks',
+    reason: 'legacy caller text cannot authorize promotion',
     changedBy: 'system',
   };
 
-  it('promotes user from tier 1 to tier 2', async () => {
-    // Current tier query
-    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }] });
-    // Update query
-    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'u1', trust_tier: 2 }] });
-    // A60-4: SELECT firebase_uid for cache invalidation
-    mockQuery.mockResolvedValueOnce({ rows: [{ firebase_uid: 'fb-u1' }] });
-    // Ledger insert
-    mockQuery.mockResolvedValueOnce({ rows: [] });
+  it('delegates a system promotion to the canonical policy and returns the committed user', async () => {
+    mockTrustTier.applyPromotion.mockResolvedValueOnce({ success: true });
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'u1', trust_tier: 2 }] } as never);
 
-    const result = await TrustService.promote(baseParams);
-    expect(result.success).toBe(true);
-    expect(result.data?.trust_tier).toBe(2);
+    await expect(TrustService.promote(baseParams)).resolves.toMatchObject({
+      success: true,
+      data: { id: 'u1', trust_tier: 2 },
+    });
+    expect(mockTrustTier.applyPromotion).toHaveBeenCalledWith(
+      'u1',
+      TrustTier.HOME_READY,
+      'system',
+    );
+    expect(mockQuery).toHaveBeenCalledTimes(1);
   });
 
-  it('rejects invalid tier below 1', async () => {
-    const result = await TrustService.promote({ ...baseParams, newTier: 0 });
-    expect(result.success).toBe(false);
-    expect(result.error?.code).toBe('INVALID_TIER');
+  it('maps non-system callers to the canonical admin audit source', async () => {
+    mockTrustTier.applyPromotion.mockResolvedValueOnce({ success: true });
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'u1', trust_tier: 1 }] } as never);
+
+    await TrustService.promote({ ...baseParams, newTier: 1, changedBy: 'admin:reviewer' });
+
+    expect(mockTrustTier.applyPromotion).toHaveBeenCalledWith(
+      'u1',
+      TrustTier.VERIFIED,
+      'admin',
+    );
   });
 
-  it('rejects invalid tier above 4', async () => {
-    const result = await TrustService.promote({ ...baseParams, newTier: 5 });
-    expect(result.success).toBe(false);
-    expect(result.error?.code).toBe('INVALID_TIER');
+  it.each([0, 5, 9])('rejects unsupported promotion target %s before policy evaluation', async (newTier) => {
+    await expect(TrustService.promote({ ...baseParams, newTier })).resolves.toMatchObject({
+      success: false,
+      error: { code: 'INVALID_TIER' },
+    });
+    expect(mockTrustTier.applyPromotion).not.toHaveBeenCalled();
+    expect(mockQuery).not.toHaveBeenCalled();
   });
 
-  it('rejects demotion (new tier < current)', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 3 }] });
+  it('cannot bypass failed evidence with caller-supplied reason text or task IDs', async () => {
+    mockTrustTier.applyPromotion.mockRejectedValueOnce(
+      new Error('Promotion preconditions not met: Current production enhanced screening required'),
+    );
 
-    const result = await TrustService.promote({ ...baseParams, newTier: 2 });
-    expect(result.success).toBe(false);
-    expect(result.error?.code).toBe('INVALID_TRANSITION');
-  });
-
-  it('returns user unchanged when newTier equals currentTier', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 2 }] });
-    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'u1', trust_tier: 2 }] });
-
-    const result = await TrustService.promote({ ...baseParams, newTier: 2 });
-    expect(result.success).toBe(true);
-  });
-
-  it('returns NOT_FOUND for missing user', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [] });
-
-    const result = await TrustService.promote(baseParams);
-    expect(result.success).toBe(false);
-    expect(result.error?.code).toBe('NOT_FOUND');
-  });
-
-  it('handles invariant violation', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }] });
-    const invError = Object.assign(new Error('inv'), { code: 'INV_ERR' });
-    mockQuery.mockRejectedValueOnce(invError);
-    (isInvariantViolation as ReturnType<typeof vi.fn>).mockReturnValueOnce(true);
-
-    const result = await TrustService.promote(baseParams);
-    expect(result.success).toBe(false);
-    expect(result.error?.code).toBe('INV_ERR');
-  });
-
-  it('handles generic DB error during promote', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }] });
-    mockQuery.mockRejectedValueOnce(new Error('deadlock'));
-
-    const result = await TrustService.promote(baseParams);
-    expect(result.success).toBe(false);
-    expect(result.error?.code).toBe('DB_ERROR');
-  });
-
-  it('passes reasonDetails and optional fields to ledger insert', async () => {
-    const params = {
+    await expect(TrustService.promote({
       ...baseParams,
-      reasonDetails: { note: 'auto-promoted' },
-      taskId: 'task1',
-      disputeId: 'disp1',
-    };
-    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }] });
-    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'u1', trust_tier: 2 }] });
-    // A60-4: SELECT firebase_uid for cache invalidation
-    mockQuery.mockResolvedValueOnce({ rows: [{ firebase_uid: 'fb-u1' }] });
-    mockQuery.mockResolvedValueOnce({ rows: [] });
+      reason: 'Completed 500 tasks',
+      taskId: 'task-claimed-by-caller',
+      reasonDetails: { xp: 999999 },
+    })).resolves.toMatchObject({
+      success: false,
+      error: {
+        code: 'PROMOTION_NOT_AUTHORIZED',
+        message: expect.stringContaining('production enhanced screening'),
+      },
+    });
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
 
-    await TrustService.promote(params);
-    // index 0: getCurrentTier, 1: UPDATE, 2: SELECT firebase_uid, 3: ledger insert
-    const ledgerCall = mockQuery.mock.calls[3];
-    expect(ledgerCall[1]).toContain('task1');
-    expect(ledgerCall[1]).toContain('disp1');
+  it('returns NOT_FOUND if the committed user cannot be re-read', async () => {
+    mockTrustTier.applyPromotion.mockResolvedValueOnce({ success: true });
+    mockQuery.mockResolvedValueOnce({ rows: [] } as never);
+
+    await expect(TrustService.promote(baseParams)).resolves.toMatchObject({
+      success: false,
+      error: { code: 'NOT_FOUND' },
+    });
+  });
+
+  it('distinguishes a post-commit read failure from policy rejection', async () => {
+    mockTrustTier.applyPromotion.mockResolvedValueOnce({ success: true });
+    mockQuery.mockRejectedValueOnce(new Error('read replica unavailable'));
+
+    await expect(TrustService.promote(baseParams)).resolves.toMatchObject({
+      success: false,
+      error: { code: 'DB_ERROR', message: 'read replica unavailable' },
+    });
   });
 });
 
-// ============================================================================
-// checkPromotionEligibility
-// ============================================================================
 describe('TrustService.checkPromotionEligibility', () => {
-  it('returns eligible=true when tasks exceed next tier threshold', async () => {
-    // User at tier 1
-    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }] });
-    // 6 completed tasks (>= 5 for tier 2)
-    mockQuery.mockResolvedValueOnce({ rows: [{ count: '6' }] });
+  it('delegates eligibility without querying raw task counts', async () => {
+    mockTrustTier.getTrustTier.mockResolvedValueOnce(TrustTier.VERIFIED);
+    mockTrustTier.evaluatePromotion.mockResolvedValueOnce({
+      eligible: true,
+      targetTier: TrustTier.HOME_READY,
+      reasons: [],
+    });
 
-    const result = await TrustService.checkPromotionEligibility('u1');
-    expect(result.success).toBe(true);
-    expect(result.data?.eligible).toBe(true);
-    expect(result.data?.nextTier).toBe(2);
+    await expect(TrustService.checkPromotionEligibility('u1')).resolves.toMatchObject({
+      success: true,
+      data: { eligible: true, currentTier: 1, nextTier: 2 },
+    });
+    expect(mockTrustTier.evaluatePromotion).toHaveBeenCalledWith('u1');
+    expect(mockQuery).not.toHaveBeenCalled();
   });
 
-  it('returns eligible=false when tasks below threshold', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }] });
-    mockQuery.mockResolvedValueOnce({ rows: [{ count: '3' }] });
+  it('does not expose a next tier when evidence is insufficient', async () => {
+    mockTrustTier.getTrustTier.mockResolvedValueOnce(TrustTier.VERIFIED);
+    mockTrustTier.evaluatePromotion.mockResolvedValueOnce({
+      eligible: false,
+      targetTier: undefined,
+      reasons: ['Current production enhanced screening required'],
+    });
 
-    const result = await TrustService.checkPromotionEligibility('u1');
-    expect(result.success).toBe(true);
-    expect(result.data?.eligible).toBe(false);
-    expect(result.data?.nextTier).toBeUndefined();
+    await expect(TrustService.checkPromotionEligibility('u1')).resolves.toMatchObject({
+      success: true,
+      data: { eligible: false, currentTier: 1, nextTier: undefined },
+    });
   });
 
-  it('returns eligible=false when already at max tier (4)', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 4 }] });
-    // Count query still runs
-    mockQuery.mockResolvedValueOnce({ rows: [{ count: '200' }] });
+  it('does not evaluate a banned worker for promotion', async () => {
+    mockTrustTier.getTrustTier.mockResolvedValueOnce(TrustTier.BANNED);
 
-    const result = await TrustService.checkPromotionEligibility('u1');
-    expect(result.success).toBe(true);
-    expect(result.data?.eligible).toBe(false);
-    expect(result.data?.currentTier).toBe(4);
+    await expect(TrustService.checkPromotionEligibility('u1')).resolves.toMatchObject({
+      success: true,
+      data: { eligible: false, currentTier: 9 },
+    });
+    expect(mockTrustTier.evaluatePromotion).not.toHaveBeenCalled();
   });
 
-  it('returns NOT_FOUND for missing user', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [] });
+  it('returns an error when the canonical evaluator cannot establish evidence', async () => {
+    mockTrustTier.getTrustTier.mockRejectedValueOnce(new Error('User u1 not found'));
 
-    const result = await TrustService.checkPromotionEligibility('u_missing');
-    expect(result.success).toBe(false);
-    expect(result.error?.code).toBe('NOT_FOUND');
-  });
-
-  it('handles DB error', async () => {
-    mockQuery.mockRejectedValueOnce(new Error('fail'));
-
-    const result = await TrustService.checkPromotionEligibility('u1');
-    expect(result.success).toBe(false);
-    expect(result.error?.code).toBe('DB_ERROR');
-  });
-
-  it('eligible for tier 3 with 20+ tasks from tier 2', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 2 }] });
-    mockQuery.mockResolvedValueOnce({ rows: [{ count: '25' }] });
-
-    const result = await TrustService.checkPromotionEligibility('u1');
-    expect(result.success).toBe(true);
-    expect(result.data?.eligible).toBe(true);
-    expect(result.data?.nextTier).toBe(3);
-  });
-
-  it('eligible for tier 4 with 50+ tasks from tier 3', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 3 }] });
-    mockQuery.mockResolvedValueOnce({ rows: [{ count: '55' }] });
-
-    const result = await TrustService.checkPromotionEligibility('u1');
-    expect(result.success).toBe(true);
-    expect(result.data?.eligible).toBe(true);
-    expect(result.data?.nextTier).toBe(4);
-  });
-});
-
-// ============================================================================
-// A60-4: invalidateAuthCacheForUser after trust_tier update in TrustService.promote
-// ============================================================================
-describe('TrustService.promote A60-4: auth cache invalidation', () => {
-  const baseParams = {
-    userId: 'u1',
-    newTier: 2,
-    reason: 'Completed 5 tasks',
-    changedBy: 'system',
-  };
-
-  it('calls invalidateAuthCacheForUser with userId after trust_tier update', async () => {
-    const mockInvalidate = vi.mocked(invalidateAuthCacheForUser);
-    mockInvalidate.mockClear();
-
-    // Current tier query
-    mockQuery.mockResolvedValueOnce({ rows: [{ trust_tier: 1 }] });
-    // Update query
-    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'u1', trust_tier: 2 }] });
-    // SELECT firebase_uid (for cache invalidation)
-    mockQuery.mockResolvedValueOnce({ rows: [{ firebase_uid: 'fb-u1' }] });
-    // Ledger insert
-    mockQuery.mockResolvedValueOnce({ rows: [] });
-
-    await TrustService.promote(baseParams);
-
-    expect(mockInvalidate).toHaveBeenCalledWith('u1', 'fb-u1', false);
+    await expect(TrustService.checkPromotionEligibility('u1')).resolves.toMatchObject({
+      success: false,
+      error: { code: 'DB_ERROR', message: 'User u1 not found' },
+    });
   });
 });

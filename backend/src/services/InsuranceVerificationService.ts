@@ -99,6 +99,12 @@ export const MIN_COVERAGE_REQUIREMENTS: Record<string, number> = {
 export async function submitInsurance(
   submission: InsuranceSubmission
 ): Promise<InsuranceVerification> {
+  if (submission.documentUrl?.trim()) {
+    throw new TRPCError({
+      code: 'PRECONDITION_FAILED',
+      message: 'Direct insurance document URLs are disabled until private receipt-backed credential upload is available.',
+    });
+  }
   // Check for existing valid verification
   const existingResult = await db.query<InsuranceStatusRow>(
     `

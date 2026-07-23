@@ -363,7 +363,7 @@ export const DisputeService = {
             version: 1,
           },
           queueName: 'critical_trust',
-        });
+        }, query);
 
         // T59-3 FIX: Update task state to DISPUTED atomically within this transaction.
         // Prevents proof review racing between dispute-created commit and a separate
@@ -521,6 +521,17 @@ export const DisputeService = {
       refundAmount,
       releaseAmount,
     } = params;
+
+    const normalizedResolution = resolution.trim();
+    if (normalizedResolution.length < 1 || normalizedResolution.length > 50) {
+      return {
+        success: false,
+        error: {
+          code: ErrorCodes.INVALID_INPUT,
+          message: 'Resolution must be a decision code between 1 and 50 characters; use resolution notes for narrative detail',
+        },
+      };
+    }
     
     try {
       // Precondition: Check admin permission
@@ -622,7 +633,7 @@ export const DisputeService = {
            RETURNING *`,
           [
             resolvedBy,
-            resolution,
+            normalizedResolution,
             resolutionNotes || null,
             outcomeEscrowAction,
             workerPenalty,

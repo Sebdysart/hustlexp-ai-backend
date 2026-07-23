@@ -119,6 +119,7 @@ function makeUserCaller() {
       email: 'user@hustlexp.com',
       full_name: 'Regular User',
       role: 'hustler',
+      is_admin: false,
       firebase_uid: 'fb-user',
     } as any,
     firebaseUid: 'fb-user',
@@ -450,7 +451,11 @@ describe('betaDashboard.getActivityFeed', () => {
     expect(result).toHaveLength(2);
     expect(result[0].eventType).toBe('task_created');
     expect(result[0].amountCents).toBe(5000);
+    expect(result[0]).not.toHaveProperty('userEmail');
     expect(result[1].amountCents).toBeNull(); // null amount_cents
+
+    const activitySql = (mockDb.query as any).mock.calls[1][0];
+    expect(activitySql).not.toContain('u.email');
   });
 
   it('uses custom limit', async () => {
@@ -465,14 +470,14 @@ describe('betaDashboard.getActivityFeed', () => {
 });
 
 // ---------------------------------------------------------------------------
-// getBetaConfig (protectedProcedure — regular user can call)
+// getBetaConfig (administrator-only operational configuration)
 // ---------------------------------------------------------------------------
 
 describe('betaDashboard.getBetaConfig', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('returns beta config from config module', async () => {
-    const result = await makeUserCaller().getBetaConfig();
+  it('returns beta config from config module for an administrator', async () => {
+    const result = await makeAdminCaller().getBetaConfig();
 
     expect(result.enabled).toBe(true);
     expect(result.region).toBe('Seattle');
@@ -480,6 +485,10 @@ describe('betaDashboard.getBetaConfig', () => {
     expect(result.startDate).toBe('2025-01-01');
     expect(result.bounds).toBeDefined();
     expect(result.center).toBeDefined();
+  });
+
+  it('rejects an ordinary authenticated user', async () => {
+    await expect(makeUserCaller().getBetaConfig()).rejects.toMatchObject({ code: 'FORBIDDEN' });
   });
 });
 

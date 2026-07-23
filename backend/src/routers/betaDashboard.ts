@@ -24,7 +24,13 @@
 
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
-import { router, adminProcedure } from '../trpc.js';
+import {
+  router,
+  disputeAdminProcedure,
+  financialAdminProcedure,
+  platformAdminProcedure,
+  userManagementAdminProcedure,
+} from '../trpc.js';
 import { BetaService } from '../services/BetaService.js';
 import { RevenueService } from '../services/RevenueService.js';
 import { ChargebackService } from '../services/ChargebackService.js';
@@ -40,7 +46,7 @@ export const betaDashboardRouter = router({
    * Get all 6 core beta metrics + extended behavioral data.
    * This is the primary admin dashboard endpoint.
    */
-  getMetrics: adminProcedure
+  getMetrics: platformAdminProcedure
     .input(z.object({
       windowDays: z.number().int().min(1).max(365).default(30),
     }).optional())
@@ -58,7 +64,7 @@ export const betaDashboardRouter = router({
   /**
    * Get beta status — caps, guardrails, remaining capacity.
    */
-  getStatus: adminProcedure
+  getStatus: platformAdminProcedure
     .input(z.void())
     .query(async () => {
       const result = await BetaService.getBetaStatus();
@@ -74,7 +80,7 @@ export const betaDashboardRouter = router({
   /**
    * Get kill signals — conditions that indicate beta should be stopped.
    */
-  getKillSignals: adminProcedure
+  getKillSignals: platformAdminProcedure
     .input(z.void())
     .query(async () => {
       const result = await BetaService.getKillSignals();
@@ -94,7 +100,7 @@ export const betaDashboardRouter = router({
   /**
    * Get revenue summary by event type (last N days).
    */
-  getRevenueSummary: adminProcedure
+  getRevenueSummary: financialAdminProcedure
     .input(z.object({
       days: z.number().int().min(1).max(365).default(30),
     }).optional())
@@ -112,7 +118,7 @@ export const betaDashboardRouter = router({
   /**
    * Get monthly P&L from the revenue ledger.
    */
-  getMonthlyPnl: adminProcedure
+  getMonthlyPnl: financialAdminProcedure
     .input(z.object({
       months: z.number().int().min(1).max(24).default(6),
     }).optional())
@@ -131,7 +137,7 @@ export const betaDashboardRouter = router({
    * Verify revenue ledger financial integrity.
    * SUM(gross) - SUM(net) should = SUM(platform_fee) for platform_fee events.
    */
-  verifyLedgerIntegrity: adminProcedure
+  verifyLedgerIntegrity: financialAdminProcedure
     .input(z.void())
     .query(async () => {
       const result = await RevenueService.verifyLedgerIntegrity();
@@ -147,7 +153,7 @@ export const betaDashboardRouter = router({
   /**
    * Get platform dispute rate (30d + 90d rolling windows).
    */
-  getDisputeRate: adminProcedure
+  getDisputeRate: disputeAdminProcedure
     .input(z.void())
     .query(async () => {
       const result = await ChargebackService.getPlatformDisputeRate();
@@ -167,7 +173,7 @@ export const betaDashboardRouter = router({
   /**
    * Get daily task creation & completion counts for charting.
    */
-  getDailyTaskCounts: adminProcedure
+  getDailyTaskCounts: platformAdminProcedure
     .input(z.object({
       days: z.number().int().min(1).max(90).default(30),
     }).optional())
@@ -209,7 +215,7 @@ export const betaDashboardRouter = router({
   /**
    * Get daily revenue time series (from revenue_report_daily view).
    */
-  getDailyRevenue: adminProcedure
+  getDailyRevenue: financialAdminProcedure
     .input(z.object({
       days: z.number().int().min(1).max(90).default(30),
     }).optional())
@@ -248,7 +254,7 @@ export const betaDashboardRouter = router({
    * Get recent activity feed for manual oversight.
    * Shows latest tasks, escrows, disputes, and revenue events.
    */
-  getActivityFeed: adminProcedure
+  getActivityFeed: financialAdminProcedure
     .input(z.object({
       limit: z.number().int().min(1).max(100).default(50),
     }).optional())
@@ -261,7 +267,6 @@ export const betaDashboardRouter = router({
         entity_type: string;
         entity_id: string;
         user_id: string;
-        user_email: string;
         detail: string;
         amount_cents: string | null;
       }>(
@@ -272,11 +277,9 @@ export const betaDashboardRouter = router({
              'task' as entity_type,
              t.id as entity_id,
              t.poster_id as user_id,
-             u.email as user_email,
              t.title as detail,
              t.price::TEXT as amount_cents
            FROM tasks t
-           JOIN users u ON u.id = t.poster_id
            ORDER BY t.created_at DESC
            LIMIT $1
          )
@@ -288,12 +291,10 @@ export const betaDashboardRouter = router({
              'escrow' as entity_type,
              e.id as entity_id,
              t.poster_id as user_id,
-             u.email as user_email,
              'Escrow funded for: ' || t.title as detail,
              e.amount::TEXT as amount_cents
            FROM escrows e
            JOIN tasks t ON t.id = e.task_id
-           JOIN users u ON u.id = t.poster_id
            WHERE e.funded_at IS NOT NULL
            ORDER BY e.funded_at DESC
            LIMIT $1
@@ -306,11 +307,9 @@ export const betaDashboardRouter = router({
              'revenue' as entity_type,
              rl.id as entity_id,
              rl.user_id as user_id,
-             u.email as user_email,
              rl.event_type || ': ' || rl.amount_cents || ' cents' as detail,
              rl.amount_cents::TEXT as amount_cents
            FROM revenue_ledger rl
-           JOIN users u ON u.id = rl.user_id
            ORDER BY rl.created_at DESC
            LIMIT $1
          )
@@ -325,7 +324,6 @@ export const betaDashboardRouter = router({
         entityType: r.entity_type,
         entityId: r.entity_id,
         userId: r.user_id,
-        userEmail: r.user_email,
         detail: r.detail,
         amountCents: r.amount_cents ? parseInt(r.amount_cents, 10) : null,
       }));
@@ -338,7 +336,7 @@ export const betaDashboardRouter = router({
   /**
    * List all beta users with their stats.
    */
-  listUsers: adminProcedure
+  listUsers: userManagementAdminProcedure
     .input(z.object({
       limit: z.number().int().min(1).max(100).default(100),
       sortBy: z.enum(['created_at', 'xp_total', 'tasks_posted', 'tasks_completed']).default('created_at'),
@@ -356,8 +354,6 @@ export const betaDashboardRouter = router({
         created_at: string;
         tasks_posted: string;
         tasks_completed: string;
-        total_earned_cents: string;
-        total_spent_cents: string;
       }>(
         `SELECT
            u.id,
@@ -369,9 +365,7 @@ export const betaDashboardRouter = router({
            u.xp_total,
            u.created_at,
            (SELECT COUNT(*) FROM tasks WHERE poster_id = u.id) as tasks_posted,
-           (SELECT COUNT(*) FROM tasks WHERE worker_id = u.id AND state = 'COMPLETED') as tasks_completed,
-           COALESCE((SELECT SUM(amount_cents) FROM revenue_ledger WHERE user_id = u.id AND event_type = 'platform_fee'), 0) as total_earned_cents,
-           COALESCE((SELECT SUM(amount) FROM escrows e JOIN tasks t ON t.id = e.task_id WHERE t.poster_id = u.id AND e.state != 'REFUNDED'), 0) as total_spent_cents
+           (SELECT COUNT(*) FROM tasks WHERE worker_id = u.id AND state = 'COMPLETED') as tasks_completed
          FROM users u
          ORDER BY u.created_at DESC
          LIMIT $1`,
@@ -389,8 +383,6 @@ export const betaDashboardRouter = router({
         createdAt: r.created_at,
         tasksPosted: parseInt(r.tasks_posted, 10),
         tasksCompleted: parseInt(r.tasks_completed, 10),
-        totalEarnedCents: parseInt(r.total_earned_cents, 10),
-        totalSpentCents: parseInt(r.total_spent_cents, 10),
       }));
     }),
 
@@ -401,10 +393,10 @@ export const betaDashboardRouter = router({
   /**
    * Get beta configuration (admin-only — contains operational GPS bounding box and beta dates).
    *
-   * v2.9.8: Changed from protectedProcedure to adminProcedure to prevent GPS boundary
-   * and beta timeline leakage to all authenticated users.
+   * Restricted to platform administrators to prevent GPS boundary and beta
+   * timeline leakage to ordinary users or unrelated staff roles.
    */
-  getBetaConfig: adminProcedure
+  getBetaConfig: platformAdminProcedure
     .input(z.void())
     .query(async () => {
       return {
@@ -434,7 +426,7 @@ export const betaDashboardRouter = router({
    *   2. No accidental toggles via API
    *   3. Deploy-gated — requires explicit action
    */
-  requestKillSwitchToggle: adminProcedure
+  requestKillSwitchToggle: platformAdminProcedure
     .input(z.object({
       action: z.enum(['ENABLE', 'DISABLE']),
       reason: z.string().min(1).max(500),
@@ -470,7 +462,7 @@ export const betaDashboardRouter = router({
   /**
    * Get kill switch audit history — all beta state changes.
    */
-  getKillSwitchHistory: adminProcedure
+  getKillSwitchHistory: platformAdminProcedure
     .input(z.void())
     .query(async () => {
       const result = await db.query<{

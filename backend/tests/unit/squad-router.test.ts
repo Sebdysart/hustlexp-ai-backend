@@ -538,6 +538,8 @@ const TEAM_TASK_INPUT = {
   totalPriceCents: 20000,
   requiredWorkers: 2,
   paymentSplit: 'equal' as const,
+  regionCode: 'US-WA',
+  category: 'cleaning',
 };
 
 describe('squad.createTeamTask — creation via TaskService + compensation', () => {

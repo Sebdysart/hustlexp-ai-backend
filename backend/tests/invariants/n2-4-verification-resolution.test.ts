@@ -30,6 +30,7 @@
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import pg from 'pg';
+import { recomputeCapabilityProfile } from '../../src/services/CapabilityRecomputeService';
 import { 
   createTestPool, 
   cleanupTestData, 
@@ -70,8 +71,8 @@ describe.skipIf(!hasDb)('INV-N2.4-1: Resolution cannot mutate capability_profile
     await expect(
       pool.query(
         `INSERT INTO capability_profiles (user_id, trust_tier, risk_clearance)
-         VALUES ($1, 'A', ARRAY['low', 'medium'])
-         ON CONFLICT (user_id) DO UPDATE SET trust_tier = 'B'`,
+         VALUES ($1, 4, ARRAY['low', 'medium'])
+         ON CONFLICT (user_id) DO UPDATE SET trust_tier = 3`,
         [userId]
       )
     ).resolves.toBeDefined(); // This will succeed at DB level, but CI should block it
@@ -86,14 +87,14 @@ describe.skipIf(!hasDb)('INV-N2.4-1: Resolution cannot mutate capability_profile
     // Create a profile first (via recompute, not direct)
     await pool.query(
       `INSERT INTO capability_profiles (user_id, trust_tier, risk_clearance)
-       VALUES ($1, 'A', ARRAY['low'])`,
+       VALUES ($1, 4, ARRAY['low'])`,
       [userId]
     );
     
     // Attempt direct update (should be blocked by CI, but test documents expectation)
     await expect(
       pool.query(
-        `UPDATE capability_profiles SET trust_tier = 'B' WHERE user_id = $1`,
+        `UPDATE capability_profiles SET trust_tier = 3 WHERE user_id = $1`,
         [userId]
       )
     ).resolves.toBeDefined(); // DB allows it, CI should block
@@ -156,7 +157,7 @@ describe.skipIf(!hasDb)('INV-N2.4-3: Recompute is deterministic (same inputs →
     
     // Set up user with trust tier
     await pool.query(
-      `UPDATE users SET trust_tier = 'A' WHERE id = $1`,
+      `UPDATE users SET trust_tier = 4 WHERE id = $1`,
       [userId]
     );
     
@@ -168,9 +169,6 @@ describe.skipIf(!hasDb)('INV-N2.4-3: Recompute is deterministic (same inputs →
        RETURNING id`,
       [userId]
     );
-    
-    // Import recompute service
-    const { recomputeCapabilityProfile } = await import('../../../src/services/CapabilityRecomputeService');
     
     // Run recompute first time
     await recomputeCapabilityProfile(userId, { reason: 'TEST' });
@@ -204,11 +202,9 @@ describe.skipIf(!hasDb)('INV-N2.4-3: Recompute is deterministic (same inputs →
     const userId = await createTestUser(pool, `test-user-${Date.now()}@hustlexp.test`);
     
     await pool.query(
-      `UPDATE users SET trust_tier = 'A' WHERE id = $1`,
+      `UPDATE users SET trust_tier = 4 WHERE id = $1`,
       [userId]
     );
-    
-    const { recomputeCapabilityProfile } = await import('@/backend/src/services/CapabilityRecomputeService');
     
     await recomputeCapabilityProfile(userId, { reason: 'TEST' });
     
@@ -231,7 +227,7 @@ describe.skipIf(!hasDb)('INV-N2.4-4: Expired verifications remove capability', (
     const userId = await createTestUser(pool, `test-user-${Date.now()}@hustlexp.test`);
     
     await pool.query(
-      `UPDATE users SET trust_tier = 'A' WHERE id = $1`,
+      `UPDATE users SET trust_tier = 4 WHERE id = $1`,
       [userId]
     );
     
@@ -245,8 +241,6 @@ describe.skipIf(!hasDb)('INV-N2.4-4: Expired verifications remove capability', (
        VALUES ($1, 'electrician', 'LIC123', 'WA', 'APPROVED', $2)`,
       [userId, futureDate]
     );
-    
-    const { recomputeCapabilityProfile } = await import('@/backend/src/services/CapabilityRecomputeService');
     
     // First recompute: license is valid
     await recomputeCapabilityProfile(userId, { reason: 'TEST' });
@@ -286,7 +280,7 @@ describe.skipIf(!hasDb)('INV-N2.4-4: Expired verifications remove capability', (
     const userId = await createTestUser(pool, `test-user-${Date.now()}@hustlexp.test`);
     
     await pool.query(
-      `UPDATE users SET trust_tier = 'A' WHERE id = $1`,
+      `UPDATE users SET trust_tier = 4 WHERE id = $1`,
       [userId]
     );
     
@@ -296,12 +290,10 @@ describe.skipIf(!hasDb)('INV-N2.4-4: Expired verifications remove capability', (
     
     await pool.query(
       `INSERT INTO insurance_verifications 
-       (user_id, provider_name, policy_number, expiration_date, status, trade_scope)
-       VALUES ($1, 'Test Insurance', 'POL123', $2, 'APPROVED', ARRAY['electrician'])`,
+       (user_id, provider, policy_number, coverage_amount_cents, expiration_date, status)
+       VALUES ($1, 'Test Insurance', 'POL123', 100000000, $2, 'APPROVED')`,
       [userId, futureDate]
     );
-    
-    const { recomputeCapabilityProfile } = await import('@/backend/src/services/CapabilityRecomputeService');
     
     // First recompute: insurance is valid
     await recomputeCapabilityProfile(userId, { reason: 'TEST' });

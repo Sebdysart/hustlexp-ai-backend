@@ -362,6 +362,17 @@ describe('DisputeService.resolve', () => {
     outcomeEscrowAction: 'RELEASE' as const,
   };
 
+  it('rejects an oversized resolution code before permission or transaction queries', async () => {
+    const result = await DisputeService.resolve({
+      ...baseResolveParams,
+      resolution: 'x'.repeat(51),
+      resolutionNotes: 'Narrative detail belongs here.',
+    });
+    expect(result).toMatchObject({ success: false, error: { code: 'INVALID_INPUT' } });
+    expect(mockDb.query).not.toHaveBeenCalled();
+    expect(mockDb.transaction).not.toHaveBeenCalled();
+  });
+
   it('rejects when user lacks permission', async () => {
     // canResolveDisputes returns no rows
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);

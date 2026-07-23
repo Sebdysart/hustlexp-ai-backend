@@ -74,6 +74,8 @@ CREATE TABLE IF NOT EXISTS users (
     urgency_bias NUMERIC(4,3),
     authority_expectation NUMERIC(4,3),
     price_sensitivity NUMERIC(4,3),
+    location_state TEXT,
+    location_city TEXT,
     
     -- Trust (PRODUCT_SPEC §6, 4-tier system)
     trust_tier INTEGER DEFAULT 1 NOT NULL 
@@ -225,17 +227,76 @@ CREATE INDEX IF NOT EXISTS idx_tasks_worker ON tasks(worker_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_state ON tasks(state);
 CREATE INDEX IF NOT EXISTS idx_tasks_risk_level ON tasks(risk_level);
 CREATE INDEX IF NOT EXISTS idx_tasks_created ON tasks(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tasks_actionable_feed
+    ON tasks(risk_level, created_at DESC, id DESC)
+    WHERE state = 'OPEN' AND worker_id IS NULL;
+CREATE INDEX IF NOT EXISTS idx_tasks_worker_active
+    ON tasks(worker_id, state)
+    WHERE worker_id IS NOT NULL AND state IN ('ACCEPTED', 'PROOF_SUBMITTED', 'DISPUTED');
+
+-- Standard worker applications are the authoritative bridge between an
+-- actionable OPEN task and poster assignment. Keep active offers unique while
+-- allowing a worker to reapply after a terminal rejection or withdrawal.
+CREATE TABLE IF NOT EXISTS task_applications (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    task_id UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    hustler_id UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    message TEXT,
+    status VARCHAR(30) NOT NULL DEFAULT 'pending'
+        CHECK (status IN (
+            'pending', 'accepted', 'rejected', 'countered',
+            'counter_rejected', 'withdrawn', 'expired'
+        )),
+    counter_offer_round INTEGER NOT NULL DEFAULT 0 CHECK (counter_offer_round >= 0),
+    rejection_reason TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_applications_task_status
+    ON task_applications(task_id, status, created_at);
+CREATE INDEX IF NOT EXISTS idx_task_applications_hustler_created
+    ON task_applications(hustler_id, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_task_app_active_per_hustler
+    ON task_applications(task_id, hustler_id)
+    WHERE status NOT IN ('rejected', 'counter_rejected', 'withdrawn', 'expired');
 
 -- ----------------------------------------------------------------------------
 -- 1.2.1 TASK TERMINAL STATE TRIGGER (AUDIT-4)
 -- ----------------------------------------------------------------------------
--- Invariant: Once task reaches terminal state, it is FROZEN
--- No outbound transitions, no field modifications (except audit fields)
+-- Invariant: terminal tasks are frozen except for a timely, evidence-bound
+-- COMPLETED -> DISPUTED transition under the constitutional dispute window.
 -- ----------------------------------------------------------------------------
 
 CREATE OR REPLACE FUNCTION prevent_task_terminal_mutation()
 RETURNS TRIGGER AS $$
 BEGIN
+    IF OLD.state = 'COMPLETED' AND NEW.state = 'DISPUTED' THEN
+        IF OLD.completed_at IS NULL OR clock_timestamp() > OLD.completed_at + INTERVAL '48 hours' THEN
+            RAISE EXCEPTION 'TERMINAL_STATE_VIOLATION: Completed task % is outside the dispute window', OLD.id
+                USING ERRCODE = 'HX001';
+        END IF;
+        IF NEW.price IS DISTINCT FROM OLD.price OR
+           NEW.poster_id IS DISTINCT FROM OLD.poster_id OR
+           NEW.worker_id IS DISTINCT FROM OLD.worker_id OR
+           NEW.title IS DISTINCT FROM OLD.title OR
+           NEW.description IS DISTINCT FROM OLD.description OR
+           NEW.risk_level IS DISTINCT FROM OLD.risk_level OR
+           NOT EXISTS (
+               SELECT 1 FROM disputes d
+               JOIN escrows e ON e.id = d.escrow_id
+               WHERE d.task_id = OLD.id
+                 AND d.poster_id = OLD.poster_id
+                 AND d.worker_id = OLD.worker_id
+                 AND d.state IN ('OPEN', 'EVIDENCE_REQUESTED', 'ESCALATED')
+                 AND e.state = 'LOCKED_DISPUTE'
+           ) THEN
+            RAISE EXCEPTION 'TERMINAL_STATE_VIOLATION: Completed task % lacks a valid locked dispute', OLD.id
+                USING ERRCODE = 'HX001';
+        END IF;
+        RETURN NEW;
+    END IF;
+
     -- Check if OLD state is terminal
     IF OLD.state IN ('COMPLETED', 'CANCELLED', 'EXPIRED') THEN
         -- Only allow updates to audit-related fields
@@ -347,9 +408,13 @@ BEGIN
     -- This prevents entire classes of bugs (double refund, release after refund, etc.)
     IF OLD.state IN ('RELEASED', 'REFUNDED', 'REFUND_PARTIAL')
        AND NEW.state <> OLD.state THEN
-        RAISE EXCEPTION 'HX301: Cannot transition terminal escrow state % (escrow % is terminal and immutable)', 
+        RAISE EXCEPTION 'HX002: Cannot transition terminal escrow state % (escrow % is terminal and immutable)',
             OLD.state, OLD.id
-            USING ERRCODE = 'HX301';
+            USING ERRCODE = 'HX002';
+    END IF;
+    IF OLD.state = 'LOCKED_DISPUTE' AND NEW.state = 'RELEASED' THEN
+        RAISE EXCEPTION 'HX002: Cannot release dispute-locked escrow % before dispute resolution', OLD.id
+            USING ERRCODE = 'HX002';
     END IF;
     RETURN NEW;
 END;
@@ -364,15 +429,14 @@ CREATE TRIGGER escrow_terminal_guard
 -- ----------------------------------------------------------------------------
 -- 1.3.2 ESCROW AMOUNT IMMUTABILITY TRIGGER (INV-4)
 -- ----------------------------------------------------------------------------
--- INV-4: Escrow amount = task price (immutable after funding)
+-- INV-4: Escrow amount = task price (immutable after creation)
 -- ----------------------------------------------------------------------------
 
 CREATE OR REPLACE FUNCTION prevent_escrow_amount_change()
 RETURNS TRIGGER AS $$
 BEGIN
-    -- Amount cannot change after escrow is funded
-    IF OLD.state != 'PENDING' AND NEW.amount != OLD.amount THEN
-        RAISE EXCEPTION 'INV-4_VIOLATION: Cannot change escrow amount after funding. Escrow: %, Old: %, New: %', 
+    IF NEW.amount IS DISTINCT FROM OLD.amount THEN
+        RAISE EXCEPTION 'INV-4_VIOLATION: Cannot change escrow amount after creation. Escrow: %, Old: %, New: %',
             OLD.id, OLD.amount, NEW.amount
             USING ERRCODE = 'HX004';
     END IF;
@@ -493,6 +557,27 @@ CREATE TABLE IF NOT EXISTS proof_submissions (
     biometric_confidence NUMERIC(4,3),
     face_match_score NUMERIC(4,3),
     liveness_score NUMERIC(4,3),
+    deepfake_score NUMERIC(4,3),
+    biometric_analyzed_at TIMESTAMPTZ,
+    biometric_signal_status TEXT NOT NULL DEFAULT 'NOT_RUN'
+      CONSTRAINT proof_submissions_biometric_signal_status_ck
+      CHECK (biometric_signal_status IN ('NOT_RUN','PENDING','AVAILABLE','UNAVAILABLE','FAILED')),
+    biometric_provider TEXT
+      CONSTRAINT proof_submissions_biometric_provider_ck
+      CHECK (biometric_provider IS NULL OR biometric_provider IN ('AWS_REKOGNITION','GCP_VISION_HEURISTIC')),
+    biometric_failure_reason_code TEXT,
+    biometric_policy_version TEXT NOT NULL DEFAULT 'hxos-proof-consistency-v1',
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+      CONSTRAINT proof_submissions_metadata_object_ck CHECK (jsonb_typeof(metadata) = 'object'),
+    capture_source TEXT
+      CONSTRAINT proof_submissions_capture_source_ck
+      CHECK (capture_source IS NULL OR capture_source IN ('live_camera','gallery','unknown')),
+    exif_timestamp TIMESTAMPTZ,
+    exif_gps_lat NUMERIC,
+    exif_gps_lng NUMERIC,
+    exif_device_model TEXT,
+    capture_validation_passed BOOLEAN,
+    capture_validation_failures TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -618,8 +703,8 @@ CREATE TABLE IF NOT EXISTS trust_ledger (
     user_id UUID NOT NULL REFERENCES users(id),
     
     -- Change
-    old_tier INTEGER NOT NULL CHECK (old_tier >= 1 AND old_tier <= 4),
-    new_tier INTEGER NOT NULL CHECK (new_tier >= 1 AND new_tier <= 4),
+    old_tier INTEGER NOT NULL CHECK (old_tier BETWEEN 0 AND 4),
+    new_tier INTEGER NOT NULL CHECK (new_tier BETWEEN 0 AND 4),
     
     -- Reason
     reason VARCHAR(100) NOT NULL,
@@ -788,6 +873,9 @@ CREATE TABLE IF NOT EXISTS disputes (
 CREATE INDEX IF NOT EXISTS idx_disputes_task ON disputes(task_id);
 CREATE INDEX IF NOT EXISTS idx_disputes_state ON disputes(state);
 CREATE INDEX IF NOT EXISTS idx_disputes_initiated ON disputes(initiated_by);
+CREATE INDEX IF NOT EXISTS idx_disputes_worker_active
+ON disputes(worker_id, state)
+WHERE state IN ('OPEN', 'EVIDENCE_REQUESTED', 'ESCALATED');
 CREATE UNIQUE INDEX IF NOT EXISTS idx_disputes_escrow_unique ON disputes(escrow_id);
 
 -- ----------------------------------------------------------------------------
@@ -1051,14 +1139,16 @@ CREATE TABLE IF NOT EXISTS admin_roles (
     user_id UUID NOT NULL REFERENCES users(id) UNIQUE,
     
     role VARCHAR(50) NOT NULL
-        CHECK (role IN ('support', 'moderator', 'admin', 'founder')),
+        CHECK (role IN ('support', 'finance', 'moderator', 'admin', 'founder')),
     
     -- Permissions
-    can_resolve_disputes BOOLEAN DEFAULT FALSE,
-    can_override_escrow BOOLEAN DEFAULT FALSE,
-    can_modify_trust BOOLEAN DEFAULT FALSE,
-    can_ban_users BOOLEAN DEFAULT FALSE,
-    can_access_financials BOOLEAN DEFAULT FALSE,
+    can_resolve_disputes BOOLEAN NOT NULL DEFAULT FALSE,
+    can_override_escrow BOOLEAN NOT NULL DEFAULT FALSE,
+    can_modify_trust BOOLEAN NOT NULL DEFAULT FALSE,
+    can_ban_users BOOLEAN NOT NULL DEFAULT FALSE,
+    can_access_financials BOOLEAN NOT NULL DEFAULT FALSE,
+    can_manage_incidents BOOLEAN NOT NULL DEFAULT FALSE,
+    can_manage_operations BOOLEAN NOT NULL DEFAULT FALSE,
     
     -- Timestamps
     granted_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
@@ -1642,6 +1732,28 @@ CREATE TABLE IF NOT EXISTS notifications (
   -- Delivery
   channels TEXT[] NOT NULL DEFAULT ARRAY['push'],  -- 'push', 'email', 'sms', 'in_app'
   priority VARCHAR(10) NOT NULL CHECK (priority IN ('LOW', 'MEDIUM', 'HIGH', 'CRITICAL')),
+  notification_class TEXT NOT NULL CONSTRAINT notifications_class_chk CHECK (notification_class IN (
+    'transaction_critical','action_required','status','operational_digest','growth'
+  )),
+  object_type TEXT NOT NULL,
+  object_id TEXT NOT NULL,
+  dedupe_key TEXT NOT NULL,
+  supersession_key TEXT NOT NULL,
+  superseded_at TIMESTAMPTZ,
+  superseded_by_notification_id UUID CONSTRAINT notifications_superseded_by_fk
+    REFERENCES notifications(id) ON DELETE SET NULL,
+  focus_task_id UUID CONSTRAINT notifications_focus_task_fk REFERENCES tasks(id) ON DELETE SET NULL,
+  focus_deferred_at TIMESTAMPTZ,
+  focus_released_at TIMESTAMPTZ,
+  available_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  delivery_state TEXT NOT NULL DEFAULT 'pending' CONSTRAINT notifications_delivery_state_chk CHECK (
+    delivery_state IN ('pending','deferred_quiet_hours','deferred_focus','queued','partially_queued',
+      'provider_accepted','delivered','retry_pending','failed_terminal','suppressed','cancelled_superseded')
+  ),
+  delivery_attempts INTEGER NOT NULL DEFAULT 0 CONSTRAINT notifications_delivery_attempts_chk
+    CHECK (delivery_attempts BETWEEN 0 AND 5),
+  terminal_failure_at TIMESTAMPTZ,
+  terminal_failure_reason TEXT,
   
   -- Status
   sent_at TIMESTAMPTZ,  -- NULL = pending
@@ -1655,11 +1767,17 @@ CREATE TABLE IF NOT EXISTS notifications (
   
   -- Timestamps
   created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
+  updated_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
   expires_at TIMESTAMPTZ,  -- NULL = no expiration
   
   CHECK (sent_at IS NULL OR sent_at >= created_at),
   CHECK (delivered_at IS NULL OR delivered_at >= sent_at),
-  CHECK (read_at IS NULL OR read_at >= delivered_at)
+  CHECK (read_at IS NULL OR read_at >= delivered_at),
+  CONSTRAINT notifications_terminal_failure_truth_chk CHECK (
+    (delivery_state = 'failed_terminal' AND terminal_failure_at IS NOT NULL
+      AND terminal_failure_reason IS NOT NULL)
+    OR (delivery_state <> 'failed_terminal' AND terminal_failure_at IS NULL)
+  )
 );
 
 CREATE INDEX IF NOT EXISTS idx_notifications_user_unread ON notifications(user_id, read_at) WHERE read_at IS NULL;
@@ -1667,6 +1785,16 @@ CREATE INDEX IF NOT EXISTS idx_notifications_user_recent ON notifications(user_i
 CREATE INDEX IF NOT EXISTS idx_notifications_pending ON notifications(sent_at) WHERE sent_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_notifications_task ON notifications(task_id) WHERE task_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_notifications_expires ON notifications(expires_at) WHERE expires_at IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_dedupe_key ON notifications(dedupe_key);
+CREATE INDEX IF NOT EXISTS idx_notifications_delivery_due
+  ON notifications(delivery_state, available_at, created_at)
+  WHERE delivery_state IN ('pending','deferred_quiet_hours','retry_pending');
+CREATE INDEX IF NOT EXISTS idx_notifications_supersession
+  ON notifications(supersession_key, created_at DESC) WHERE superseded_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_notifications_terminal_failure
+  ON notifications(terminal_failure_at DESC) WHERE delivery_state = 'failed_terminal';
+CREATE INDEX IF NOT EXISTS idx_notifications_focus_deferred
+  ON notifications(user_id, focus_deferred_at, id) WHERE delivery_state = 'deferred_focus';
 
 -- User notification preferences
 CREATE TABLE IF NOT EXISTS notification_preferences (
@@ -1677,6 +1805,7 @@ CREATE TABLE IF NOT EXISTS notification_preferences (
   quiet_hours_enabled BOOLEAN DEFAULT true,
   quiet_hours_start TIME DEFAULT '22:00:00',
   quiet_hours_end TIME DEFAULT '07:00:00',
+  quiet_hours_timezone TEXT NOT NULL DEFAULT 'America/Los_Angeles',
   
   -- Channel preferences
   push_enabled BOOLEAN DEFAULT true,
@@ -2282,7 +2411,8 @@ CREATE TABLE IF NOT EXISTS outbox_events (
     )),
     
     -- Status
-    status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'enqueued', 'processed', 'failed')),
+    status VARCHAR(20) NOT NULL DEFAULT 'pending' CONSTRAINT outbox_events_status_chk
+      CHECK (status IN ('pending', 'enqueued', 'processing', 'processed', 'failed')),
     enqueued_at TIMESTAMPTZ,
     processed_at TIMESTAMPTZ,
     error_message TEXT,
@@ -2292,13 +2422,17 @@ CREATE TABLE IF NOT EXISTS outbox_events (
     bullmq_job_id VARCHAR(255),  -- Store BullMQ job ID after enqueueing (for tracking and idempotency)
     
     -- Timestamps
-    created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL
+    created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
+    available_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_outbox_status ON outbox_events(status, created_at) WHERE status = 'pending';
 CREATE INDEX IF NOT EXISTS idx_outbox_queue ON outbox_events(queue_name, status, created_at);
 CREATE INDEX IF NOT EXISTS idx_outbox_idempotency ON outbox_events(idempotency_key);
 CREATE INDEX IF NOT EXISTS idx_outbox_aggregate ON outbox_events(aggregate_type, aggregate_id, event_version);
+CREATE INDEX IF NOT EXISTS idx_outbox_delivery_due
+  ON outbox_events(status, available_at, created_at) WHERE status = 'pending';
 
 -- ----------------------------------------------------------------------------
 -- EXPORTS TABLE (GDPR Export State Machine)
@@ -2421,6 +2555,10 @@ CREATE TABLE IF NOT EXISTS email_outbox (
     sent_at TIMESTAMPTZ,
     delivered_at TIMESTAMPTZ,  -- Provider webhook confirmation
     next_retry_at TIMESTAMPTZ  -- Exponential backoff
+    ,notification_id UUID CONSTRAINT email_outbox_notification_fk
+      REFERENCES notifications(id) ON DELETE SET NULL
+    ,available_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    ,updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_email_outbox_status ON email_outbox(status, created_at) WHERE status = 'pending';
@@ -2432,6 +2570,97 @@ CREATE INDEX IF NOT EXISTS idx_email_outbox_suppressed ON email_outbox(to_email,
 -- UNIQUE constraint: Ensure idempotency key uniqueness (prevents duplicate email sends)
 -- CRITICAL: This ensures deterministic idempotency keys don't allow duplicate sends
 CREATE UNIQUE INDEX IF NOT EXISTS idx_email_outbox_idempotency ON email_outbox(idempotency_key);
+CREATE INDEX IF NOT EXISTS idx_email_outbox_notification
+  ON email_outbox(notification_id) WHERE notification_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_email_outbox_available
+  ON email_outbox(status, available_at, created_at) WHERE status IN ('pending','failed');
+
+CREATE TABLE IF NOT EXISTS device_tokens (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  fcm_token TEXT NOT NULL,
+  device_type VARCHAR(20) NOT NULL DEFAULT 'ios',
+  device_name VARCHAR(100),
+  app_version VARCHAR(20),
+  is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (user_id, fcm_token)
+);
+CREATE INDEX IF NOT EXISTS idx_device_tokens_user_active
+  ON device_tokens(user_id) WHERE is_active = TRUE;
+
+CREATE TABLE IF NOT EXISTS sms_outbox (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  to_phone VARCHAR(20) NOT NULL,
+  body TEXT NOT NULL,
+  priority VARCHAR(10) NOT NULL DEFAULT 'MEDIUM',
+  status VARCHAR(20) NOT NULL DEFAULT 'pending' CONSTRAINT sms_outbox_status_chk
+    CHECK (status IN ('pending','sending','sent','failed','suppressed')),
+  twilio_sid VARCHAR(100),
+  error_message TEXT,
+  retry_count INTEGER NOT NULL DEFAULT 0 CONSTRAINT sms_outbox_retry_count_chk
+    CHECK (retry_count BETWEEN 0 AND 5),
+  max_retries INTEGER NOT NULL DEFAULT 3 CONSTRAINT sms_outbox_max_retries_chk
+    CHECK (max_retries BETWEEN 1 AND 5),
+  idempotency_key TEXT UNIQUE,
+  notification_id UUID CONSTRAINT sms_outbox_notification_fk
+    REFERENCES notifications(id) ON DELETE SET NULL,
+  provider_status TEXT CONSTRAINT sms_outbox_provider_status_chk CHECK (
+    provider_status IS NULL OR provider_status IN (
+      'queued','accepted','sent','delivered','undelivered','failed','canceled'
+    )
+  ),
+  delivered_at TIMESTAMPTZ,
+  available_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  sent_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_sms_outbox_status
+  ON sms_outbox(status) WHERE status IN ('pending','failed');
+CREATE INDEX IF NOT EXISTS idx_sms_outbox_notification
+  ON sms_outbox(notification_id) WHERE notification_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_sms_outbox_available
+  ON sms_outbox(status, available_at, created_at) WHERE status IN ('pending','failed');
+
+CREATE TABLE IF NOT EXISTS notification_deliveries (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  notification_id UUID NOT NULL REFERENCES notifications(id) ON DELETE CASCADE,
+  channel TEXT NOT NULL CHECK (channel IN ('in_app','push','email','sms')),
+  state TEXT NOT NULL CONSTRAINT notification_deliveries_state_chk CHECK (state IN (
+    'pending','deferred_quiet_hours','deferred_focus','queued','provider_accepted','delivered',
+    'retry_pending','failed_terminal','suppressed','cancelled_superseded'
+  )),
+  provider_name TEXT,
+  provider_message_id TEXT,
+  attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count BETWEEN 0 AND 5),
+  max_attempts INTEGER NOT NULL DEFAULT 3 CHECK (max_attempts BETWEEN 1 AND 5),
+  available_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  next_retry_at TIMESTAMPTZ,
+  last_error TEXT,
+  terminal_failure_at TIMESTAMPTZ,
+  terminal_visibility TEXT NOT NULL DEFAULT 'operator_exception'
+    CHECK (terminal_visibility = 'operator_exception'),
+  provider_accepted_at TIMESTAMPTZ,
+  delivered_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (notification_id, channel),
+  CHECK (
+    (state = 'failed_terminal' AND terminal_failure_at IS NOT NULL AND last_error IS NOT NULL)
+    OR (state <> 'failed_terminal' AND terminal_failure_at IS NULL)
+  )
+);
+CREATE INDEX IF NOT EXISTS idx_notification_deliveries_due
+  ON notification_deliveries(state, available_at, next_retry_at)
+  WHERE state IN ('pending','deferred_quiet_hours','retry_pending');
+CREATE INDEX IF NOT EXISTS idx_notification_deliveries_provider
+  ON notification_deliveries(provider_name, provider_message_id) WHERE provider_message_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_notification_deliveries_terminal
+  ON notification_deliveries(terminal_failure_at DESC)
+  WHERE state = 'failed_terminal' AND terminal_visibility = 'operator_exception';
 
 -- ----------------------------------------------------------------------------
 -- TRIGGERS
@@ -2864,6 +3093,22 @@ CREATE TABLE IF NOT EXISTS proof_submissions (
   biometric_confidence NUMERIC(4,3),
   face_match_score NUMERIC(4,3),
   liveness_score NUMERIC(4,3),
+  deepfake_score NUMERIC(4,3),
+  biometric_analyzed_at TIMESTAMPTZ,
+  biometric_signal_status TEXT NOT NULL DEFAULT 'NOT_RUN'
+    CHECK (biometric_signal_status IN ('NOT_RUN','PENDING','AVAILABLE','UNAVAILABLE','FAILED')),
+  biometric_provider TEXT
+    CHECK (biometric_provider IS NULL OR biometric_provider IN ('AWS_REKOGNITION','GCP_VISION_HEURISTIC')),
+  biometric_failure_reason_code TEXT,
+  biometric_policy_version TEXT NOT NULL DEFAULT 'hxos-proof-consistency-v1',
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(metadata) = 'object'),
+  capture_source TEXT CHECK (capture_source IS NULL OR capture_source IN ('live_camera','gallery','unknown')),
+  exif_timestamp TIMESTAMPTZ,
+  exif_gps_lat NUMERIC,
+  exif_gps_lng NUMERIC,
+  exif_device_model TEXT,
+  capture_validation_passed BOOLEAN,
+  capture_validation_failures TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_proof_submissions_proof ON proof_submissions(proof_id);

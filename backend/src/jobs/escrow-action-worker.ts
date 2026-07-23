@@ -139,7 +139,7 @@ const FinancialJobPayloadSchema = z.object({
   escrow_id: z.string().uuid(),
   task_id: z.string().uuid(),
   dispute_id: z.string().uuid().optional(),
-  reason: z.string().min(1),
+  reason: z.string().min(1).max(500),
   refund_amount: z.number().int().nonnegative().optional(),
   release_amount: z.number().int().nonnegative().optional(),
   _sig: z.string().length(64), // SHA256 hex = 64 chars

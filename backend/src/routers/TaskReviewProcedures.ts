@@ -140,8 +140,14 @@ async function completeTask(ctx: AuthedContext, taskId: string) {
     throw new TRPCError({ code: completeErrorCode(result.error.code), message: result.error.message });
   }
   await invalidateTask(taskId);
-  const task = result.data as { worker_id?: string | null; title?: string | null };
-  if (task.worker_id) await notifyTaskCompleted(task.worker_id, taskId, task.title ?? 'your task');
+  const task = result.data as {
+    worker_id?: string | null;
+    title?: string | null;
+    completion_idempotency_replayed?: boolean;
+  };
+  if (task.worker_id && task.completion_idempotency_replayed !== true) {
+    await notifyTaskCompleted(task.worker_id, taskId, task.title ?? 'your task');
+  }
   return result.data;
 }
 

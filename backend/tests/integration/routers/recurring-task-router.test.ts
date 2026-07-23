@@ -1,7 +1,8 @@
 /**
  * Recurring Task Router Structure Tests
  *
- * Verifies the recurringTask tRPC router has all 10 expected procedures
+ * Verifies the recurringTask tRPC router exposes legacy compatibility plus
+ * the controlled recurring-work contract.
  * with correct types (query vs mutation).
  */
 
@@ -31,9 +32,9 @@ describe('Recurring Task Router', () => {
   describe('procedure definitions', () => {
     const procedures = recurringTaskRouter._def.procedures as Record<string, any>;
 
-    it('should have exactly 10 procedures', () => {
+    it('should have exactly 15 procedures', () => {
       const procedureNames = Object.keys(procedures);
-      expect(procedureNames).toHaveLength(10);
+      expect(procedureNames).toHaveLength(15);
     });
 
     it('should have all expected procedure names', () => {
@@ -48,6 +49,11 @@ describe('Recurring Task Router', () => {
         'generateOccurrences',
         'skipOccurrence',
         'setPreferredWorker',
+        'createControlled',
+        'generateControlled',
+        'recordControlledSafeguard',
+        'recoverControlled',
+        'listControlled',
       ];
 
       const procedureNames = Object.keys(procedures);
@@ -60,8 +66,21 @@ describe('Recurring Task Router', () => {
       expect(procedures.create._def.type).toBe('mutation');
     });
 
+    it.each([
+      'createControlled',
+      'generateControlled',
+      'recordControlledSafeguard',
+      'recoverControlled',
+    ])('should have %s as a mutation', (name) => {
+      expect(procedures[name]._def.type).toBe('mutation');
+    });
+
     it('should have listMine as a query', () => {
       expect(procedures.listMine._def.type).toBe('query');
+    });
+
+    it('should have listControlled as a query', () => {
+      expect(procedures.listControlled._def.type).toBe('query');
     });
 
     it('should have getById as a query', () => {

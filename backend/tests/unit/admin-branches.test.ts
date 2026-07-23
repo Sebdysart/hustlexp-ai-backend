@@ -16,9 +16,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Mocks
 // ---------------------------------------------------------------------------
 
-vi.mock('../../src/db', () => ({
-  db: { query: vi.fn() },
-}));
+vi.mock('../../src/db', () => {
+  const query = vi.fn();
+  return { db: { query, transaction: vi.fn(async (work) => work(query)) } };
+});
 
 vi.mock('../../src/auth/firebase', () => ({
   firebaseAuth: { verifyIdToken: vi.fn() },
@@ -32,6 +33,7 @@ vi.mock('../../src/logger', () => ({
     info: vi.fn(),
     debug: vi.fn(),
   },
+  authLogger: { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() },
   escrowLogger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
   stripeLogger: { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }));
@@ -44,12 +46,19 @@ vi.mock('../../src/services/EscrowService', () => ({
   },
 }));
 
+vi.mock('../../src/services/WorkerStandingDecisionService', () => ({
+  issueDeactivationAppealRight: vi.fn().mockResolvedValue({
+    decisionId: 'standing-decision-1', appealDeadlineAt: 'later', appealPath: '/earn/appeal/test', newlyIssued: true,
+  }),
+}));
+
 // ---------------------------------------------------------------------------
 // Imports
 // ---------------------------------------------------------------------------
 
 import { db } from '../../src/db';
 import { EscrowService } from '../../src/services/EscrowService';
+import { issueDeactivationAppealRight } from '../../src/services/WorkerStandingDecisionService';
 import { adminRouter } from '../../src/routers/admin';
 
 const mockDb = vi.mocked(db);
@@ -90,6 +99,10 @@ describe('admin.setUserBan branches', () => {
 
   it('returns updated row on success (ban=true)', async () => {
     prependAdminCheck();
+    // SELECT current status under lock
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ id: USER_UUID, is_banned: false, trust_tier: 2, default_mode: 'worker' }], rowCount: 1,
+    } as any);
     // UPDATE users SET is_banned
     mockDb.query.mockResolvedValueOnce({
       rows: [{ id: USER_UUID, is_banned: true }],
@@ -113,10 +126,17 @@ describe('admin.setUserBan branches', () => {
 
     expect(result.is_banned).toBe(true);
     expect(result.id).toBe(USER_UUID);
+    expect(issueDeactivationAppealRight).toHaveBeenCalledWith(expect.objectContaining({
+      workerId: USER_UUID, currentTier: 2, decisionSource: 'ADMIN',
+    }));
   });
 
   it('returns updated row on success (ban=false)', async () => {
     prependAdminCheck();
+    // SELECT current status under lock
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ id: USER_UUID, is_banned: true, trust_tier: 2, default_mode: 'worker' }], rowCount: 1,
+    } as any);
     // UPDATE users SET is_banned
     mockDb.query.mockResolvedValueOnce({
       rows: [{ id: USER_UUID, is_banned: false }],
@@ -146,6 +166,10 @@ describe('admin.setUserBan branches', () => {
 
   it('includes optional reason in call', async () => {
     prependAdminCheck();
+    // SELECT current status under lock
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ id: USER_UUID, is_banned: false, trust_tier: 2, default_mode: 'worker' }], rowCount: 1,
+    } as any);
     // UPDATE users SET is_banned
     mockDb.query.mockResolvedValueOnce({
       rows: [{ id: USER_UUID, is_banned: true }],
@@ -468,5 +492,36 @@ describe('admin.listUsers — isBanned filter branches', () => {
     const result = await makeAdminCaller().listUsers({});
     // parseInt(undefined || '0', 10) === 0
     expect(result.total).toBe(0);
+  });
+});
+
+describe('admin role hierarchy', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('rejects grant-based replacement of an existing founder role before any write', async () => {
+    prependAdminCheck();
+    mockDb.query.mockResolvedValueOnce({ rows: [{ role: 'founder' }], rowCount: 1 } as any);
+    mockDb.query.mockResolvedValueOnce({ rows: [{ role: 'founder' }], rowCount: 1 } as any);
+
+    await expect(makeAdminCaller().grantAdminRole({
+      userId: USER_UUID,
+      role: 'support',
+    })).rejects.toMatchObject({ code: 'CONFLICT' });
+
+    expect(mockDb.query).toHaveBeenCalledTimes(3);
+    expect(mockDb.query.mock.calls.every(([sql]) => !String(sql).includes('INSERT INTO admin_roles'))).toBe(true);
+  });
+
+  it('rejects peer administrator revocation before user or role writes', async () => {
+    prependAdminCheck();
+    mockDb.query.mockResolvedValueOnce({ rows: [{ role: 'admin' }], rowCount: 1 } as any);
+
+    await expect(makeAdminCaller().revokeAdminRole({
+      userId: USER_UUID,
+      role: 'admin',
+    })).rejects.toMatchObject({ code: 'FORBIDDEN' });
+
+    expect(mockDb.query).toHaveBeenCalledTimes(2);
+    expect(mockDb.query.mock.calls.every(([sql]) => !String(sql).includes('DELETE FROM admin_roles'))).toBe(true);
   });
 });

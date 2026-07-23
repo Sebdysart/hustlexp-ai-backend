@@ -20,6 +20,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Hoisted spy so vi.mock('../../src/config') and the tests share one reference.
 const validateConfigSpy = vi.hoisted(() => vi.fn());
+const workerHealthHandle = vi.hoisted(() => ({
+  markReady: vi.fn(),
+  markShuttingDown: vi.fn(),
+  close: vi.fn().mockResolvedValue(undefined),
+}));
+const startWorkerHealthServerSpy = vi.hoisted(() => vi.fn(async () => workerHealthHandle));
 
 // ── Mock workers.ts's heavy module-load dependencies (mirrors scheduled-jobs.test.ts) ──
 vi.mock('../../src/jobs/queues', () => {
@@ -27,6 +33,9 @@ vi.mock('../../src/jobs/queues', () => {
   const queues: Record<string, ReturnType<typeof mockQueue>> = {};
   return {
     getQueue: vi.fn((name: string) => (queues[name] ??= mockQueue(name))),
+    enqueueRepeatableJob: vi.fn(async (queueName: string, jobName: string) => ({
+      id: `mock-${queueName}-${jobName}`,
+    })),
     createWorker: vi.fn(() => ({ name: 'mock-worker', close: vi.fn() })),
     Queue: class {},
     Worker: class {},
@@ -34,6 +43,9 @@ vi.mock('../../src/jobs/queues', () => {
 });
 
 vi.mock('../../src/jobs/outbox-worker', () => ({ startOutboxWorker: vi.fn() }));
+vi.mock('../../src/jobs/worker-health-server', () => ({
+  startWorkerHealthServer: startWorkerHealthServerSpy,
+}));
 vi.mock('../../src/jobs/export-worker', () => ({ processExportJob: vi.fn() }));
 vi.mock('../../src/jobs/email-worker', () => ({ processEmailJob: vi.fn() }));
 vi.mock('../../src/jobs/biometric-analyzer-worker', () => ({ processBiometricAnalysisJob: vi.fn() }));
@@ -41,6 +53,14 @@ vi.mock('../../src/jobs/expertise-recalc-worker', () => ({ processExpertiseRecal
 vi.mock('../../src/jobs/xp-tax-reminder-worker', () => ({ processXPTaxReminderJob: vi.fn() }));
 
 vi.mock('../../src/logger', () => ({
+  logger: {
+    child: () => ({
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      debug: vi.fn(),
+    }),
+  },
   workerLogger: {
     info: vi.fn(),
     warn: vi.fn(),
@@ -71,6 +91,7 @@ describe('validateConfig boot wiring (supersedes #232)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     validateConfigSpy.mockReset();
+    startWorkerHealthServerSpy.mockImplementation(async () => workerHealthHandle);
   });
 
   it('startWorkers() does NOT invoke validateConfig (direct unit calls stay safe)', async () => {
@@ -85,6 +106,8 @@ describe('validateConfig boot wiring (supersedes #232)', () => {
     const { bootWorkerProcess } = await import('../../src/jobs/workers');
     await bootWorkerProcess();
     expect(validateConfigSpy).toHaveBeenCalledTimes(1);
+    expect(startWorkerHealthServerSpy).toHaveBeenCalledTimes(1);
+    expect(workerHealthHandle.markReady).toHaveBeenCalledTimes(1);
   });
 
   it('bootWorkerProcess() surfaces a validateConfig failure (fail-fast)', async () => {
@@ -93,5 +116,6 @@ describe('validateConfig boot wiring (supersedes #232)', () => {
     });
     const { bootWorkerProcess } = await import('../../src/jobs/workers');
     await expect(bootWorkerProcess()).rejects.toThrow('FATAL config');
+    expect(startWorkerHealthServerSpy).not.toHaveBeenCalled();
   });
 });

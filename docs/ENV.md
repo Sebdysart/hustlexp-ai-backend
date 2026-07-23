@@ -22,6 +22,8 @@
 | `FIREBASE_PRIVATE_KEY` | Firebase Admin SDK private key (multiline; use `\n` in .env). |
 | `FIREBASE_CLIENT_EMAIL` | Firebase Admin SDK client email. |
 | `STRIPE_SECRET_KEY` | Stripe secret key (not a placeholder). |
+| `STRIPE_WEBHOOK_SECRET` | Platform-account webhook signing secret. |
+| `STRIPE_CONNECT_WEBHOOK_SECRET` | Connect webhook signing secret; must differ from the platform secret. |
 | `UPSTASH_REDIS_REST_URL` | Upstash Redis REST URL (caching, rate limiting). |
 | `UPSTASH_REDIS_URL` or `REDIS_URL` | Redis TCP URL for BullMQ job queues. |
 | `TAX_TIN_ENCRYPTION_KEY` | 64 hex chars (32 bytes) for TIN encryption. Generate: `openssl rand -hex 32`. |
@@ -34,7 +36,6 @@
 | Variable | Description |
 |----------|-------------|
 | **Stripe** | |
-| `STRIPE_WEBHOOK_SECRET` | Webhook signing secret. |
 | `PLATFORM_FEE_PERCENT` | Default 15. |
 | `MIN_TASK_VALUE_CENTS` | Default 500 ($5). |
 | `STRIPE_PREMIUM_MONTHLY_PRICE_ID`, `STRIPE_PREMIUM_YEARLY_PRICE_ID` | Plan price IDs. |

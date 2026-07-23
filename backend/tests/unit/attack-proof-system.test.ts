@@ -79,7 +79,7 @@ vi.mock('../../src/services/JudgeAIService', () => ({
         reasoning: 'All signals nominal',
       },
     }),
-    logVerdict: vi.fn().mockResolvedValue(undefined),
+    logVerdict: vi.fn().mockResolvedValue({ success: true, data: undefined }),
   },
 }));
 
@@ -152,6 +152,7 @@ import { db, isInvariantViolation, isUniqueViolation } from '../../src/db';
 import { ProofService } from '../../src/services/ProofService';
 import { EscrowService } from '../../src/services/EscrowService';
 import { XPService } from '../../src/services/XPService';
+import { assertImplementedFields } from '../../src/services/TaskCreationPolicy';
 import { EarnedVerificationUnlockService } from '../../src/services/EarnedVerificationUnlockService';
 import { SelfInsurancePoolService } from '../../src/services/SelfInsurancePoolService.js';
 import { JudgeAIService } from '../../src/services/JudgeAIService';
@@ -235,7 +236,7 @@ beforeEach(() => {
       reasoning: 'All signals nominal',
     },
   } as never);
-  vi.mocked(JudgeAIService.logVerdict).mockResolvedValue(undefined);
+  vi.mocked(JudgeAIService.logVerdict).mockResolvedValue({ success: true, data: undefined } as never);
   vi.mocked(PhotoVerificationService.compareBeforeAfter).mockResolvedValue({ success: false } as never);
 });
 
@@ -294,31 +295,32 @@ describe('Attack #2 — Submit proof twice for the same step', () => {
 
 describe('Attack #3 — Skip to final step on a multi-step task', () => {
   /**
-   * ATTACK: On a task with proof_steps = [{step:1},{step:2},{step:3}], submit
-   * proof claiming step 3 completion while skipping steps 1 and 2.
-   * ProofService.submit() has NO concept of proof_steps ordering. It takes a
-   * plain description + photoUrls. There is no step parameter in SubmitProofParams.
-   * The proof_steps JSONB column exists in the schema (task_template_v2_7.sql
-   * migration) but ProofService never reads or validates step ordering.
-   *
-   * VERDICT: VULNERABLE — multi-step task ordering is entirely unenforced at service level.
+   * ATTACK: Submit final proof while only one of three approved checklist items
+   * is complete. The proof must bind to the active immutable scope version and
+   * the service must reject submission until every checklist item is complete.
    */
-  it('VULNERABLE — no step-order enforcement; final-step proof accepted without prior steps', async () => {
-    const proof = makeProof({ description: 'Final leg done (skipped steps 1 & 2)' });
-    mockDb.query
-      .mockResolvedValueOnce({ rows: [makeTask({ worker_id: 'hustler-1', state: 'ACCEPTED' })], rowCount: 1 } as never) // task lookup
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)                                                       // duplicate check
-      .mockResolvedValueOnce({ rows: [proof], rowCount: 1 } as never)                                                  // INSERT PENDING
-      .mockResolvedValueOnce({ rows: [{ ...proof, state: 'SUBMITTED' }], rowCount: 1 } as never);                      // UPDATE SUBMITTED
+  it('SAFE — incomplete active-scope checklist blocks final proof', async () => {
+    const scopeHash = 'a'.repeat(64);
+    mockDb.query.mockResolvedValueOnce({
+      rows: [makeTask({
+        worker_id: 'hustler-1',
+        state: 'ACCEPTED',
+        active_scope_version_id: 'scope-v1',
+        scope_hash: scopeHash,
+        scope_change_pending: false,
+        checklist_count: 3,
+        completed_count: 1,
+      })],
+      rowCount: 1,
+    } as never);
 
-    const result = await ProofService.submit({
+    await expect(ProofService.submit({
       taskId: 'task-multi-step',
       submitterId: 'hustler-1',
       description: 'Final leg done (skipped steps 1 & 2)',
-    });
-
-    // VULNERABLE: succeeds — proof_steps ordering is not checked
-    expect(result.success).toBe(true);
+      scopeVersionId: 'scope-v1',
+      scopeHash,
+    })).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
   });
 });
 
@@ -349,7 +351,7 @@ describe('Attack #4 — Submit proof for an already COMPLETED task', () => {
 
 describe('Attack #5 — Submit proof for a CANCELLED task', () => {
   /**
-   * Same gap as #4 but for CANCELLED state.
+   * Same closed vector as #4 but for CANCELLED state.
    *
    * FIX 2: ProofService.submit() now checks task.state.
    *
@@ -433,6 +435,7 @@ describe('Attack #7 — Injected payload in proof content', () => {
       .mockResolvedValueOnce({ rows: [makeTask({ worker_id: 'hustler-1', state: 'ACCEPTED' })], rowCount: 1 } as never) // task lookup
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)                                                       // duplicate check
       .mockResolvedValueOnce({ rows: [proofRow], rowCount: 1 } as never)                                               // INSERT PENDING
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)                                                       // INSERT verification evidence row
       .mockResolvedValueOnce({ rows: [{ ...proofRow, state: 'SUBMITTED' }], rowCount: 1 } as never);                   // UPDATE SUBMITTED
 
     const result = await ProofService.submit({
@@ -443,6 +446,10 @@ describe('Attack #7 — Injected payload in proof content', () => {
 
     // Submission succeeds but the description content is just a string
     expect(result.success).toBe(true);
+    expect(mockDb.query).toHaveBeenCalledWith(
+      expect.stringContaining('INSERT INTO proof_submissions'),
+      expect.arrayContaining([proofRow.id, 'hustler-1']),
+    );
     // Verify that XPService was NOT called (escrow not released by submit())
     expect(XPService.awardXP).not.toHaveBeenCalled();
   });
@@ -454,98 +461,26 @@ describe('Attack #7 — Injected payload in proof content', () => {
 
 describe('Attack #8 — Abort after completing 2 of 3 steps to maximize prorate payout', () => {
   /**
-   * prorate_on_abort=true on a 3-step task. Steps 1 and 2 approved, then abort.
-   * Expected payout: 2/3 of task amount.
-   *
-   * FINDING: Neither ProofService nor EscrowService implements prorate_on_abort logic.
-   * The column exists in the DB (migration v2.7) but there is NO service code that:
-   *   1. Reads prorate_on_abort from tasks
-   *   2. Counts completed steps
-   *   3. Calculates a prorated release amount
-   *
-   * There is no ProofService.abort() or EscrowService.proratePayout() method.
-   * EscrowService.release() always releases the full escrow.amount.
-   *
-   * VERDICT: VULNERABLE — prorate_on_abort is schema-only. The feature is not
-   * implemented. An operator running a cron-based "release on abort" job would
-   * need to implement the proration math independently — and there is no
-   * service to call. This means either:
-   *   (a) aborts always release $0 (unfair to Hustler), or
-   *   (b) some background job always releases the full amount (financial loss to platform)
-   * depending on which path the cron takes.
+   * Partial payout is intentionally unavailable. Creation must reject the flag
+   * rather than persisting a configuration the settlement path cannot honor.
    */
-  it('VULNERABLE — no prorate_on_abort implementation; feature is schema-only', async () => {
-    // Simulate calling release() — it will always release the full amount
-    const escrowRow = { id: 'esc-1', task_id: 'task-prorate', amount: 9000, state: 'FUNDED' };
-    const taskRow = makeTask({ prorate_on_abort: true, worker_id: 'hustler-1', price: 9000 });
-    const workerKyc = { payouts_enabled: true, stripe_connect_id: 'acct_test', stripe_connect_status: 'complete' };
-    const released = makeEscrow({ state: 'RELEASED', amount: 9000 });
-
-    mockDb.query
-      .mockResolvedValueOnce({ rows: [escrowRow], rowCount: 1 } as never)   // SELECT escrow
-      .mockResolvedValueOnce({ rows: [taskRow], rowCount: 1 } as never)     // SELECT task
-      .mockResolvedValueOnce({ rows: [workerKyc], rowCount: 1 } as never)   // KYC check
-      .mockResolvedValueOnce({ rows: [released], rowCount: 1 } as never);   // UPDATE released
-
-    const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_proof' });
-
-    // Service succeeds — but the prorate calculation was NEVER applied
-    expect(result.success).toBe(true);
-    if (result.success) {
-      // Full 9000 released, not 6000 (2/3 of 9000)
-      expect(result.data.amount).toBe(9000);
-    }
+  it('SAFE — task creation rejects mid-task proration', () => {
+    expect(() => assertImplementedFields({ prorate_on_abort: true } as Parameters<typeof assertImplementedFields>[0]))
+      .toThrow(expect.objectContaining({ code: 'BAD_REQUEST', message: 'Partial payout features are not yet available.' }));
   });
 });
 
 describe('Attack #9 — Abort before any steps with prorate_on_abort=true', () => {
-  /**
-   * EXPECTED: $0 payout (0 steps completed / 3 total).
-   * ACTUAL: Same gap — no prorate logic exists. If escrow is released by a cron
-   * after abort, full amount is transferred.
-   *
-   * VERDICT: VULNERABLE (same root cause as #8).
-   */
-  it('VULNERABLE — no prorate check; pre-step abort may release full amount', async () => {
-    const escrowRow = { id: 'esc-1', task_id: 'task-prorate-0', amount: 6000, state: 'FUNDED' };
-    const taskRow = makeTask({ prorate_on_abort: true, worker_id: 'hustler-1', price: 6000 });
-    const workerKyc = { payouts_enabled: true, stripe_connect_id: 'acct_test', stripe_connect_status: 'complete' };
-    const released = makeEscrow({ state: 'RELEASED', amount: 6000 });
-
-    mockDb.query
-      .mockResolvedValueOnce({ rows: [escrowRow], rowCount: 1 } as never)
-      .mockResolvedValueOnce({ rows: [taskRow], rowCount: 1 } as never)
-      .mockResolvedValueOnce({ rows: [workerKyc], rowCount: 1 } as never)
-      .mockResolvedValueOnce({ rows: [released], rowCount: 1 } as never);
-
-    const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_proof' });
-    expect(result.success).toBe(true);
-    // VULNERABLE: 6000 released despite 0 steps completed
+  it('SAFE — task creation rejects pre-step proration', () => {
+    expect(() => assertImplementedFields({ prorate_on_abort: true } as Parameters<typeof assertImplementedFields>[0]))
+      .toThrow(expect.objectContaining({ code: 'BAD_REQUEST', message: 'Partial payout features are not yet available.' }));
   });
 });
 
 describe('Attack #10 — Abort on final step (2/3 completed)', () => {
-  /**
-   * EXPECTED: 2/3 payout (same prorate logic as #8).
-   * ACTUAL: Still no prorate logic. Full amount released.
-   *
-   * VERDICT: VULNERABLE (same root cause as #8/#9).
-   */
-  it('VULNERABLE — abort on last step still releases full amount', async () => {
-    const escrowRow = { id: 'esc-1', task_id: 'task-prorate-2of3', amount: 3000, state: 'FUNDED' };
-    const taskRow = makeTask({ prorate_on_abort: true, worker_id: 'hustler-1', price: 3000 });
-    const workerKyc = { payouts_enabled: true, stripe_connect_id: 'acct_test', stripe_connect_status: 'complete' };
-    const released = makeEscrow({ state: 'RELEASED', amount: 3000 });
-
-    mockDb.query
-      .mockResolvedValueOnce({ rows: [escrowRow], rowCount: 1 } as never)
-      .mockResolvedValueOnce({ rows: [taskRow], rowCount: 1 } as never)
-      .mockResolvedValueOnce({ rows: [workerKyc], rowCount: 1 } as never)
-      .mockResolvedValueOnce({ rows: [released], rowCount: 1 } as never);
-
-    const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_proof' });
-    expect(result.success).toBe(true);
-    // VULNERABLE: full 3000 released even though step 3 was aborted
+  it('SAFE — task creation rejects final-step proration', () => {
+    expect(() => assertImplementedFields({ prorate_on_abort: true } as Parameters<typeof assertImplementedFields>[0]))
+      .toThrow(expect.objectContaining({ code: 'BAD_REQUEST', message: 'Partial payout features are not yet available.' }));
   });
 });
 
@@ -737,47 +672,13 @@ describe('Attack #15 — Reviewer approves proof with wrong taskId', () => {
   });
 });
 
+// Daily XP cap behavior is covered in attack-xp-economy.test.ts against the
+// real XPService. This file mocks XPService for escrow isolation and therefore
+// must not issue production cap verdicts from that mock.
+
 // ===========================================================================
 // XP GAMING
 // ===========================================================================
-
-describe('Attack #16 — Daily XP cap enforcement', () => {
-  /**
-   * XPService has a DAILY_XP_CAP = 10000 enforced via Redis (key: xp:daily:<userId>:<date>).
-   * If Redis is unavailable (restUrl=null in config), the cap check returns { allowed: true }
-   * as a fail-open degradation.
-   *
-   * XPService is mocked at module level in this test file (required for EscrowService tests).
-   * We test the anti-farming behavior by examining the documented source code logic
-   * and verifying the awardXP mock stub enforces cap semantics when configured to do so.
-   *
-   * VERDICT #16a: VULNERABLE (degraded mode) — checkDailyXPCap returns allowed:true when
-   *   Redis client is null (no UPSTASH_REDIS_REST_URL env). Attacker who triggers Redis
-   *   outage bypasses the daily 10,000 XP cap entirely.
-   *
-   * VERDICT #16b: SAFE (soft control) — checkVelocity detects >5 events/hour and flags
-   *   suspicious activity, but the flag is advisory (logs + allows). Not a hard block.
-   */
-  it('VULNERABLE (documented) — XPService.awardXP does not block when cap mock returns allowed:true', async () => {
-    // The mock is already configured to return { success: true } for awardXP.
-    // In production with no Redis, checkDailyXPCap() returns { allowed: true }
-    // meaning a user can earn XP indefinitely.
-    // Verify: awardXP mock succeeds without cap enforcement
-    const result = await XPService.awardXP({ userId: 'grinder', taskId: 'task-1', escrowId: 'esc-1', baseXP: 9999 });
-    expect(result).toEqual({ success: true });
-    // In the real implementation with no Redis, this would also return success
-    // because checkDailyXPCap({ restUrl: '' }) fails open with { allowed: true }
-  });
-
-  it('SAFE (soft control) — velocity check flags suspicious activity but does not hard-block', async () => {
-    // When velocity is suspicious, XPService logs a warning but allows the award.
-    // This is a design choice: hard-blocking would penalize legitimate high-velocity workers.
-    // Test verifies the mock correctly represents this advisory-only behavior.
-    const result = await XPService.awardXP({ userId: 'fast-worker', taskId: 'task-2', escrowId: 'esc-2', baseXP: 100 });
-    expect(result).toEqual({ success: true });
-    // In the real implementation, suspicious velocity is logged but not blocked
-  });
-});
 
 describe('Attack #17 — XP for self-assigned task (poster == worker)', () => {
   /**

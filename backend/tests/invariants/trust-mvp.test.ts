@@ -25,6 +25,7 @@ import {
   hasDb,
 } from '../setup';
 import { TaskService } from '../../src/services/TaskService';
+import { TaskReservationService } from '../../src/services/TaskReservationService';
 import type { Job } from 'bullmq';
 
 let pool: pg.Pool;
@@ -45,6 +46,47 @@ beforeEach(async () => {
   await cleanupTestData(pool);
 });
 
+async function createReservableTask(posterId: string, workerId: string): Promise<string> {
+  await pool.query(
+    `UPDATE users
+     SET is_minor = FALSE,
+         date_of_birth = CURRENT_DATE - INTERVAL '25 years',
+         trust_tier = 2,
+         stripe_connect_id = $2,
+         payouts_enabled = TRUE,
+         account_status = 'ACTIVE'
+     WHERE id = $1`,
+    [workerId, `acct_test_${crypto.randomUUID()}`]
+  );
+  await pool.query(
+    `INSERT INTO capability_profiles (user_id, trust_tier, risk_clearance, updated_at)
+     VALUES ($1, 2, ARRAY['low','medium']::text[], NOW())
+     ON CONFLICT (user_id) DO UPDATE SET
+       trust_tier = 2,
+       risk_clearance = ARRAY['low','medium']::text[],
+       updated_at = NOW()`,
+    [workerId],
+  );
+  const task = await createTestTask(pool, { posterId });
+  await createTestEscrow(pool, task.id, 'FUNDED');
+  await pool.query(
+    `INSERT INTO worker_offer_decisions (
+       task_id, worker_id, policy_version, payload_hash, decision_ready,
+       blocking_reasons, customer_total_cents, payout_cents,
+       estimated_net_hourly_cents, distance_miles, estimated_duration_minutes,
+       scope_hash, cancellation_policy_version, rank_score, rank_reasons,
+       snapshot, expires_at
+     )
+     SELECT id, $2, 'hx-test-v1', repeat('b', 64), TRUE,
+            '[]', price, hustler_payout_cents, 4000, 0, 60,
+            scope_hash, cancellation_policy_version, 1, '[]', '{}',
+            NOW() + INTERVAL '1 hour'
+     FROM tasks WHERE id = $1`,
+    [task.id, workerId]
+  );
+  return task.id;
+}
+
 // =============================================================================
 // TRUST INVARIANT 1: Idempotency
 // =============================================================================
@@ -54,7 +96,7 @@ describe.skipIf(!hasDb)('Trust Invariant 1: Idempotency - Same event processed t
   it('MUST BE IDEMPOTENT: processing same trust event twice does not create duplicate ledger rows or demote tier twice', async () => {
     const workerId = await createTestUser(pool, `test-worker-${Date.now()}@hustlexp.test`);
     const posterId = await createTestUser(pool, `test-poster-${Date.now()}@hustlexp.test`);
-    const taskId = await createTestTask(pool, posterId, 'COMPLETED');
+    const { id: taskId } = await createTestTask(pool, { posterId, workerId, state: 'COMPLETED' });
     const escrowId = await createTestEscrow(pool, taskId, 'FUNDED');
     
     // Set worker to tier 3
@@ -64,7 +106,7 @@ describe.skipIf(!hasDb)('Trust Invariant 1: Idempotency - Same event processed t
     );
     
     // Create mock job for trust.dispute_resolved.worker
-    const disputeId = 'test-dispute-' + Date.now();
+    const disputeId = crypto.randomUUID();
     const idempotencyKey = `trust.dispute_resolved.worker:${disputeId}:1`;
     
     const mockJob = {
@@ -130,7 +172,7 @@ describe.skipIf(!hasDb)('Trust Invariant 2: Worker penalty demotes tier by exact
   it('MUST DEMOTE: worker penalty demotes tier by 1, floored at 1', async () => {
     const workerId = await createTestUser(pool, `test-worker-${Date.now()}@hustlexp.test`);
     const posterId = await createTestUser(pool, `test-poster-${Date.now()}@hustlexp.test`);
-    const taskId = await createTestTask(pool, posterId, 'COMPLETED');
+    const { id: taskId } = await createTestTask(pool, { posterId, workerId, state: 'COMPLETED' });
     const escrowId = await createTestEscrow(pool, taskId, 'FUNDED');
     
     // Set worker to tier 2
@@ -140,7 +182,7 @@ describe.skipIf(!hasDb)('Trust Invariant 2: Worker penalty demotes tier by exact
     );
     
     // Create mock job for trust.dispute_resolved.worker with penalty
-    const disputeId = 'test-dispute-' + Date.now();
+    const disputeId = crypto.randomUUID();
     
     const mockJob = {
       name: 'trust.dispute_resolved.worker',
@@ -185,7 +227,7 @@ describe.skipIf(!hasDb)('Trust Invariant 2: Worker penalty demotes tier by exact
   it('MUST FLOOR: worker at tier 1 with penalty stays at tier 1', async () => {
     const workerId = await createTestUser(pool, `test-worker-${Date.now()}@hustlexp.test`);
     const posterId = await createTestUser(pool, `test-poster-${Date.now()}@hustlexp.test`);
-    const taskId = await createTestTask(pool, posterId, 'COMPLETED');
+    const { id: taskId } = await createTestTask(pool, { posterId, workerId, state: 'COMPLETED' });
     const escrowId = await createTestEscrow(pool, taskId, 'FUNDED');
     
     // Set worker to tier 1 (already at floor)
@@ -195,7 +237,7 @@ describe.skipIf(!hasDb)('Trust Invariant 2: Worker penalty demotes tier by exact
     );
     
     // Create mock job for trust.dispute_resolved.worker with penalty
-    const disputeId = 'test-dispute-' + Date.now();
+    const disputeId = crypto.randomUUID();
     
     const mockJob = {
       name: 'trust.dispute_resolved.worker',
@@ -236,7 +278,7 @@ describe.skipIf(!hasDb)('Trust Invariant 3: Worker demoted to tier 1 with REFUND
   it('MUST HOLD: worker demoted to tier 1 with REFUND enters hold', async () => {
     const workerId = await createTestUser(pool, `test-worker-${Date.now()}@hustlexp.test`);
     const posterId = await createTestUser(pool, `test-poster-${Date.now()}@hustlexp.test`);
-    const taskId = await createTestTask(pool, posterId, 'COMPLETED');
+    const { id: taskId } = await createTestTask(pool, { posterId, workerId, state: 'COMPLETED' });
     const escrowId = await createTestEscrow(pool, taskId, 'FUNDED');
     
     // Set worker to tier 2
@@ -246,7 +288,7 @@ describe.skipIf(!hasDb)('Trust Invariant 3: Worker demoted to tier 1 with REFUND
     );
     
     // Create mock job for trust.dispute_resolved.worker with penalty and REFUND
-    const disputeId = 'test-dispute-' + Date.now();
+    const disputeId = crypto.randomUUID();
     
     const mockJob = {
       name: 'trust.dispute_resolved.worker',
@@ -284,7 +326,7 @@ describe.skipIf(!hasDb)('Trust Invariant 3: Worker demoted to tier 1 with REFUND
   it('MUST HOLD: worker demoted to tier 1 with SPLIT enters hold', async () => {
     const workerId = await createTestUser(pool, `test-worker-${Date.now()}@hustlexp.test`);
     const posterId = await createTestUser(pool, `test-poster-${Date.now()}@hustlexp.test`);
-    const taskId = await createTestTask(pool, posterId, 'COMPLETED');
+    const { id: taskId } = await createTestTask(pool, { posterId, workerId, state: 'COMPLETED' });
     const escrowId = await createTestEscrow(pool, taskId, 'FUNDED');
     
     // Set worker to tier 2
@@ -294,7 +336,7 @@ describe.skipIf(!hasDb)('Trust Invariant 3: Worker demoted to tier 1 with REFUND
     );
     
     // Create mock job for trust.dispute_resolved.worker with penalty and SPLIT
-    const disputeId = 'test-dispute-' + Date.now();
+    const disputeId = crypto.randomUUID();
     
     const mockJob = {
       name: 'trust.dispute_resolved.worker',
@@ -339,25 +381,25 @@ describe.skipIf(!hasDb)('Trust Invariant 4: Poster receives hold after 2 penalti
     const posterId = await createTestUser(pool, `test-poster-${Date.now()}@hustlexp.test`);
     const workerId1 = await createTestUser(pool, `test-worker1-${Date.now()}@hustlexp.test`);
     const workerId2 = await createTestUser(pool, `test-worker2-${Date.now()}@hustlexp.test`);
-    const taskId1 = await createTestTask(pool, posterId, 'COMPLETED');
-    const taskId2 = await createTestTask(pool, posterId, 'COMPLETED');
+    const { id: taskId1 } = await createTestTask(pool, { posterId, workerId: workerId1, state: 'COMPLETED' });
+    const { id: taskId2 } = await createTestTask(pool, { posterId, workerId: workerId2, state: 'COMPLETED' });
     const escrowId1 = await createTestEscrow(pool, taskId1, 'FUNDED');
     const escrowId2 = await createTestEscrow(pool, taskId2, 'FUNDED');
     
     // Insert first penalty in trust_ledger (within last 30 days)
-    const disputeId1 = 'test-dispute-1-' + Date.now();
+    const disputeId1 = crypto.randomUUID();
     await pool.query(
       `INSERT INTO trust_ledger (
         user_id, old_tier, new_tier, reason, 
         task_id, dispute_id, changed_by,
         idempotency_key, event_source, source_event_id
       ) VALUES ($1, 2, 1, 'dispute_penalty', $2, $3, 'admin:usr_test',
-        $4, 'dispute', $3)`,
-      [posterId, taskId1, disputeId1, `trust.dispute_resolved.poster:${disputeId1}:1`]
+        $4, 'dispute', $5)`,
+      [posterId, taskId1, disputeId1, `trust.dispute_resolved.poster:${disputeId1}:1`, disputeId1]
     );
     
     // Create mock job for second penalty
-    const disputeId2 = 'test-dispute-2-' + Date.now();
+    const disputeId2 = crypto.randomUUID();
     
     const mockJob = {
       name: 'trust.dispute_resolved.poster',
@@ -402,9 +444,9 @@ describe.skipIf(!hasDb)('Trust Invariant 4: Poster receives hold after 2 penalti
 // TRUST INVARIANT 5: Gating enforcement
 // =============================================================================
 
-describe.skipIf(!hasDb)('Trust Invariant 5: Gating enforcement - Hold blocks non-LOW tasks', () => {
+describe.skipIf(!hasDb)('Trust Invariant 5: Gating enforcement', () => {
   
-  it('MUST BLOCK: poster on hold cannot create HIGH risk task', async () => {
+  it('MUST BLOCK: poster on active hold cannot create non-LOW risk task', async () => {
     const posterId = await createTestUser(pool, `test-poster-${Date.now()}@hustlexp.test`);
     
     // Set poster on hold
@@ -416,13 +458,20 @@ describe.skipIf(!hasDb)('Trust Invariant 5: Gating enforcement - Hold blocks non
       ['dispute_penalty_abuse_pattern', holdUntil, posterId]
     );
     
-    // Attempt to create HIGH risk task (should fail)
+    // MEDIUM is allowed by the controlled US-WA moving policy, so trust hold is
+    // the only expected rejection authority.
     const result = await TaskService.create({
       posterId,
       title: 'Test Task',
       description: 'Test Description',
       price: 5000,
-      risk_level: 'HIGH',
+      riskLevel: 'MEDIUM',
+      regionCode: 'US-WA',
+      category: 'moving',
+      requiresProof: true,
+      hustlerPayoutCents: 4000,
+      platformMarginCents: 1000,
+      automationClassification: 'CONTROLLED_TEST',
     });
     
     expect(result.success).toBe(false);
@@ -449,15 +498,22 @@ describe.skipIf(!hasDb)('Trust Invariant 5: Gating enforcement - Hold blocks non
       title: 'Test Task',
       description: 'Test Description',
       price: 5000,
-      risk_level: 'LOW',
+      riskLevel: 'LOW',
+      regionCode: 'US-WA',
+      category: 'yard',
+      requiresProof: true,
+      hustlerPayoutCents: 4000,
+      platformMarginCents: 1000,
+      automationClassification: 'CONTROLLED_TEST',
     });
     
     expect(result.success).toBe(true);
   });
   
-  it('MUST BLOCK: worker on hold cannot accept IN_HOME risk task', async () => {
+  it('MUST BLOCK: worker on an active refund hold cannot reserve even a LOW risk task', async () => {
     const posterId = await createTestUser(pool, `test-poster-${Date.now()}@hustlexp.test`);
     const workerId = await createTestUser(pool, `test-worker-${Date.now()}@hustlexp.test`);
+    const taskId = await createReservableTask(posterId, workerId);
     
     // Set worker on hold
     const holdUntil = new Date();
@@ -468,33 +524,22 @@ describe.skipIf(!hasDb)('Trust Invariant 5: Gating enforcement - Hold blocks non
       ['dispute_penalty_tier_1_refund', holdUntil, workerId]
     );
     
-    // Create IN_HOME risk task
-    const taskResult = await TaskService.create({
-      posterId,
-      title: 'Test Task',
-      description: 'Test Description',
-      price: 5000,
-      risk_level: 'IN_HOME',
-    });
-    
-    expect(taskResult.success).toBe(true);
-    const taskId = taskResult.data.id;
-    
-    // Attempt to accept task (should fail)
-    const acceptResult = await TaskService.accept({
-      taskId,
-      workerId,
+    const acceptResult = await TaskReservationService.reserve({
+      engineTaskId: taskId,
+      hustlerRef: workerId,
+      idempotencyKey: `trust-hold-refund-${crypto.randomUUID()}`,
+      actorId: posterId,
     });
     
     expect(acceptResult.success).toBe(false);
-    expect(acceptResult.error?.code).toBe('FORBIDDEN');
-    expect(acceptResult.error?.message).toContain('trust hold');
-    expect(acceptResult.error?.message).toContain('HIGH or IN_HOME');
+    expect(acceptResult.error?.code).toBe('HUSTLER_INELIGIBLE');
+    expect(acceptResult.error?.message).toContain('not eligible');
   });
   
-  it('MUST BLOCK: worker on hold cannot accept HIGH risk task', async () => {
+  it('MUST BLOCK: worker on an active abuse hold cannot reserve a task', async () => {
     const posterId = await createTestUser(pool, `test-poster-${Date.now()}@hustlexp.test`);
     const workerId = await createTestUser(pool, `test-worker-${Date.now()}@hustlexp.test`);
+    const taskId = await createReservableTask(posterId, workerId);
     
     // Set worker on hold
     const holdUntil = new Date();
@@ -502,62 +547,37 @@ describe.skipIf(!hasDb)('Trust Invariant 5: Gating enforcement - Hold blocks non
     
     await pool.query(
       'UPDATE users SET trust_hold = true, trust_hold_reason = $1, trust_hold_until = $2 WHERE id = $3',
-      ['dispute_penalty_tier_1_refund', holdUntil, workerId]
+      ['dispute_penalty_abuse_pattern', holdUntil, workerId]
     );
-    
-    // Create HIGH risk task
-    const taskResult = await TaskService.create({
-      posterId,
-      title: 'Test Task',
-      description: 'Test Description',
-      price: 5000,
-      risk_level: 'HIGH',
-    });
-    
-    expect(taskResult.success).toBe(true);
-    const taskId = taskResult.data.id;
-    
-    // Attempt to accept task (should fail)
-    const acceptResult = await TaskService.accept({
-      taskId,
-      workerId,
+
+    const acceptResult = await TaskReservationService.reserve({
+      engineTaskId: taskId,
+      hustlerRef: workerId,
+      idempotencyKey: `trust-hold-abuse-${crypto.randomUUID()}`,
+      actorId: posterId,
     });
     
     expect(acceptResult.success).toBe(false);
-    expect(acceptResult.error?.code).toBe('FORBIDDEN');
-    expect(acceptResult.error?.message).toContain('trust hold');
-    expect(acceptResult.error?.message).toContain('HIGH or IN_HOME');
+    expect(acceptResult.error?.code).toBe('HUSTLER_INELIGIBLE');
   });
   
-  it('MUST ALLOW: worker on hold can accept LOW risk task', async () => {
+  it('MUST ALLOW: an expired worker hold does not block reservation', async () => {
     const posterId = await createTestUser(pool, `test-poster-${Date.now()}@hustlexp.test`);
     const workerId = await createTestUser(pool, `test-worker-${Date.now()}@hustlexp.test`);
+    const taskId = await createReservableTask(posterId, workerId);
     
-    // Set worker on hold
-    const holdUntil = new Date();
-    holdUntil.setDate(holdUntil.getDate() + 7); // 7 days from now
+    const holdUntil = new Date(Date.now() - 24 * 60 * 60 * 1000);
     
     await pool.query(
       'UPDATE users SET trust_hold = true, trust_hold_reason = $1, trust_hold_until = $2 WHERE id = $3',
       ['dispute_penalty_tier_1_refund', holdUntil, workerId]
     );
     
-    // Create LOW risk task
-    const taskResult = await TaskService.create({
-      posterId,
-      title: 'Test Task',
-      description: 'Test Description',
-      price: 5000,
-      risk_level: 'LOW',
-    });
-    
-    expect(taskResult.success).toBe(true);
-    const taskId = taskResult.data.id;
-    
-    // Attempt to accept task (should succeed - hold doesn't block LOW)
-    const acceptResult = await TaskService.accept({
-      taskId,
-      workerId,
+    const acceptResult = await TaskReservationService.reserve({
+      engineTaskId: taskId,
+      hustlerRef: workerId,
+      idempotencyKey: `trust-hold-expired-${crypto.randomUUID()}`,
+      actorId: posterId,
     });
     
     expect(acceptResult.success).toBe(true);

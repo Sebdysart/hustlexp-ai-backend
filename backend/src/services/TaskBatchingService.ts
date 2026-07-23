@@ -12,6 +12,7 @@
 
 import type { ServiceResult } from '../types.js';
 import { AIClient } from './AIClient.js';
+import { aiObservation } from './AIObservabilityPolicy.js';
 import { aiLogger } from '../logger.js';
 import { z } from 'zod';
 
@@ -85,6 +86,11 @@ export const TaskBatchingService = {
       if (AIClient.isConfigured()) {
         try {
           const aiResult = await AIClient.callJSON<BatchRecommendation>({
+            observability: aiObservation('AI-TASK-BATCHING-PROPOSAL', {
+              actorUserId: workerId,
+              affectedObjectType: 'TASK_SET',
+              affectedObjectId: availableTasks.map((task) => task.id).join(','),
+            }),
             route: 'reasoning',
             schema: z.object({
               primaryTask: z.object({

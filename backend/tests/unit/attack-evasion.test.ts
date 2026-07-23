@@ -107,7 +107,7 @@ describe('Section 1 — Unicode & Encoding Attacks', () => {
     // _codeLevelPatternMatch normalizes with _normalizeDescription: step 3 strips
     // [^\w\s]; 'è' is NOT \w (JS \w = [a-zA-Z0-9_]) and NOT \s, so it IS stripped.
     // After stripping: "happy nding massage" — still no match for "happy ending".
-    // EXPECTED BUG: both heuristic and coded-phrase checks miss this. Tier = clean.
+    // REGRESSION: homoglyph normalization must reconstruct the blocked phrase.
     const result = await ComplianceGuardianService.evaluate({
       description: 'happy \u00E8nding massage',
       userId: 'atk-01',
@@ -117,7 +117,7 @@ describe('Section 1 — Unicode & Encoding Attacks', () => {
     // If the system correctly blocks this, the test documents that. If it slips through,
     // the assertion below captures the BUG verdict.
     // Expected to be hard_block. If it is NOT, that is a BUG.
-    expect(result.tier).toBe('hard_block'); // WILL FAIL if BUG — accented char evades
+    expect(result.tier).toBe('hard_block');
   });
 
   it('ATK-02: Cyrillic small i (U+0456) in "no questіons asked" — should be hard_block', async () => {
@@ -158,15 +158,8 @@ describe('Section 1 — Unicode & Encoding Attacks', () => {
       userId: 'atk-04',
     });
     console.log('ATK-04 result:', result.tier, result.score, result.triggeredRules);
-    // v2.8.4 behavior: [^\w\s] → SPACE (not empty), so ZWNJ between every letter
-    // produces "d i s c r e e t delivery" — spaced-out letters, not a collapsed word.
-    // Neither the hard_block regex nor FLAGGED_PATTERNS substring "discreet delivery"
-    // match the spaced-out form. Result: clean (remaining gap — AI-layer concern).
-    // This is a KNOWN REMAINING BUG: ZWNJ between individual letters creates
-    // letter-spaced output that no heuristic regex can catch.
-    console.log('ATK-04 KNOWN BUG: ZWNJ between every letter creates spaced form → clean (AI-layer concern)');
-    // Accept clean as documented behavior — this gap is not addressed in v2.8.4
-    expect(['clean', 'soft_flag', 'hard_block']).toContain(result.tier);
+    // Normalization compacts the separated letters and restores the blocked phrase.
+    expect(result.tier).toBe('hard_block');
   });
 
   it('ATK-05: non-breaking space (U+00A0) in "no questions\u00A0asked" — should be hard_block', async () => {
@@ -210,15 +203,13 @@ describe('Section 1 — Unicode & Encoding Attacks', () => {
     // The spaced form "h a p p y e n d i n g" can never match — 'happy' is not a
     // contiguous substring. After normalization (collapse whitespace): still individual
     // letters with single spaces.
-    // EXPECTED BUG: letter-spacing fully evades the regex pattern.
+    // REGRESSION: letter compaction must restore the blocked phrase.
     const result = await ComplianceGuardianService.evaluate({
       description: 'h a p p y e n d i n g massage',
       userId: 'atk-08',
     });
     console.log('ATK-08 result:', result.tier, result.score, result.triggeredRules);
-    // massage SOFT_FLAG fires (score=35), hard_block missed.
-    // BUG: letter-spacing evades hard_block.
-    expect(result.tier).toBe('hard_block'); // WILL FAIL — letter spacing evades
+    expect(result.tier).toBe('hard_block');
   });
 
 });
@@ -241,11 +232,8 @@ describe('Section 2 — Synonym Substitution Attacks', () => {
       userId: 'atk-09',
     });
     console.log('ATK-09 result:', result.tier, result.score, result.triggeredRules);
-    // BUG: "intimate" is a common sex-work euphemism; only caught via massage.
-    // Correct outcome should be at least soft_flag. Hard_block is more appropriate
-    // but not currently achievable with these patterns.
-    expect(result.tier).not.toBe('clean'); // should catch at least soft_flag
-    console.log('ATK-09 NOTE: "intimate" synonym not in any pattern; caught only via massage rule');
+    // The combined phrase is routed to review rather than allowed cleanly.
+    expect(result.tier).not.toBe('clean');
   });
 
   it('ATK-10: "sensual massage, discreet service" — sensual + discreet combo', async () => {
@@ -258,36 +246,30 @@ describe('Section 2 — Synonym Substitution Attacks', () => {
     console.log('ATK-10 result:', result.tier, result.score, result.triggeredRules);
     expect(result.tier).toBe('hard_block'); // discreet service → hard_block
     expect(result.triggeredRules).toContain('hard_block_pattern');
-    // NOTE: "sensual" alone is not in any pattern — BUG if discreet service wasn't present
   });
 
-  it.skip('ATK-11: "adult fun gig, no queries asked" — queries instead of questions [KNOWN GAP: synonym coverage]', async () => {
+  it('ATK-11: "adult fun gig, no queries asked" — synonym variant is blocked', async () => {
     // ANALYSIS: /no\s+questions?\s+asked/i uses literal 'question'.
     // "queries" is a synonym not covered. "adult fun" doesn't match
     // /adult\s+(service|entertainment|modeling)/i (fun ≠ service/entertainment/modeling).
-    // EXPECTED BUG: synonym substitution evades both patterns.
+    // REGRESSION: the no-queries synonym variant must be blocked.
     const result = await ComplianceGuardianService.evaluate({
       description: 'adult fun gig, no queries asked',
       userId: 'atk-11',
     });
     console.log('ATK-11 result:', result.tier, result.score, result.triggeredRules);
-    // Should be hard_block (adult service context + no-questions analog).
-    // BUG: likely returns clean (score=0).
-    expect(result.tier).toBe('hard_block'); // WILL FAIL — synonym gap
+    expect(result.tier).toBe('hard_block');
   });
 
   it('ATK-12: "private escort needed, professional only" — escort without adult qualifier', async () => {
-    // ANALYSIS: No pattern for "escort" alone in HARD_BLOCK_PATTERNS.
-    // "professional" is a LICENSE_AFFIRMER — would suppress soft flags.
-    // EXPECTED BUG: "escort" (known sex-work term) not in any pattern; returns clean.
+    // Ambiguous escort wording is routed to review even with a professional qualifier.
     const result = await ComplianceGuardianService.evaluate({
       description: 'private escort needed, professional only',
       userId: 'atk-12',
     });
     console.log('ATK-12 result:', result.tier, result.score, result.triggeredRules);
-    // BUG: escort without "adult" qualifier slips through entirely.
-    expect(result.tier).not.toBe('clean'); // WILL FAIL — escort not in patterns
-    console.log('ATK-12 BUG: "escort" term not covered by any heuristic pattern');
+    expect(result.tier).not.toBe('clean');
+    expect(result.triggeredRules).toContain('escort_ambiguous');
   });
 
   it('ATK-13: "GFE service available" (girlfriend experience industry code) — should be flagged', async () => {
@@ -316,17 +298,13 @@ describe('Section 2 — Synonym Substitution Attacks', () => {
   });
 
   it('ATK-15: "b&e needed at neighbor\'s house" (breaking & entering) — should be flagged', async () => {
-    // ANALYSIS: "b&e" = breaking and entering. Not in any pattern.
-    // "alone" not present. No other patterns fire.
-    // EXPECTED BUG: criminal activity abbreviation completely evades all patterns.
+    // REGRESSION: criminal-activity abbreviations must remain blocked.
     const result = await ComplianceGuardianService.evaluate({
       description: "b&e needed at neighbor's house",
       userId: 'atk-15',
     });
     console.log('ATK-15 result:', result.tier, result.score, result.triggeredRules);
-    // BUG: "b&e" (breaking and entering) not in any pattern.
-    expect(result.tier).not.toBe('clean'); // WILL FAIL — B&E abbreviation not recognized
-    console.log('ATK-15 BUG: "b&e" (breaking and entering) abbreviation not covered');
+    expect(result.tier).toBe('hard_block');
   });
 
 });
@@ -340,25 +318,20 @@ describe('Section 2 — Synonym Substitution Attacks', () => {
 
 describe('Section 3 — Splitting & Fragmentation Attacks', () => {
 
-  it.skip('ATK-16: "no questions. just asked to deliver" — sentence split of "no questions asked" [KNOWN GAP: fragmented phrase]', async () => {
+  it('ATK-16: "no questions. just asked to deliver" — fragmented phrase is blocked', async () => {
     // ANALYSIS: /no\s+questions?\s+asked/i needs "no questions asked" in sequence.
     // "no questions. just asked" — period and "just" between → no match on raw.
     // _normalizeDescription strips punctuation → "no questions just asked to deliver"
     // but the FLAGGED_PATTERNS check is substring match: "no questions asked" is NOT
     // a substring of "no questions just asked to deliver".
     // HARD_BLOCK regex also won't match because "just asked" ≠ "asked" preceded by \s+.
-    // EXPECTED BUG: sentence break evades both heuristic and coded-phrase checks.
+    // REGRESSION: sentence fragmentation must not weaken the block.
     const result = await ComplianceGuardianService.evaluate({
       description: 'no questions. just asked to deliver',
       userId: 'atk-16',
     });
     console.log('ATK-16 result:', result.tier, result.score, result.triggeredRules);
-    // BUG: simple sentence split evades "no questions asked" pattern.
-    // However: "no questions" alone is a FLAGGED_PATTERN — check if that fires.
-    // FLAGGED_PATTERNS includes 'no questions' (standalone) → normalized includes it → soft_flag.
-    // So this may be a PARTIAL (soft_flag not hard_block).
-    expect(result.tier).toBe('hard_block'); // WILL FAIL — gets soft_flag at best
-    console.log('ATK-16 PARTIAL: "no questions" coded phrase fires (soft_flag), but hard_block missed');
+    expect(result.tier).toBe('hard_block');
   });
 
   it('ATK-17: "deliver this package — friend of mine, no need for details" — split/variant', async () => {
@@ -366,15 +339,13 @@ describe('Section 3 — Splitting & Fragmentation Attacks', () => {
     // "package for a friend no details". Normalized: "deliver this package  friend of mine
     // no need for details". None of the exact flagged strings match as substrings.
     // HARD_BLOCK_PATTERNS: /no\s+address.{0,20}deliver/i — "no need for details" ≠ "no address".
-    // EXPECTED BUG: novel phrasing evades all pattern and coded-phrase checks.
+    // REGRESSION: novel anonymous-delivery phrasing must remain blocked.
     const result = await ComplianceGuardianService.evaluate({
       description: "deliver this package — friend of mine, no need for details",
       userId: 'atk-17',
     });
     console.log('ATK-17 result:', result.tier, result.score, result.triggeredRules);
-    // BUG: clean — no patterns match this variant phrasing.
-    expect(result.tier).not.toBe('clean'); // WILL FAIL — variant phrasing evades
-    console.log('ATK-17 BUG: variant "no need for details" phrasing not in patterns');
+    expect(result.tier).toBe('hard_block');
   });
 
   it('ATK-18: "cash payment only. no records needed" — cross-sentence split of "cash only no record"', async () => {
@@ -383,15 +354,14 @@ describe('Section 3 — Splitting & Fragmentation Attacks', () => {
     // The word "payment" breaks the "cash only" match. Also normalized:
     // "cash payment only no records needed" — still no match for /cash\s+only/i.
     // FLAGGED_PATTERNS: "cash only no record" — normalized won't contain it.
-    // EXPECTED BUG: "cash payment" instead of "cash only" evades the pattern.
+    // REGRESSION: cash-payment/no-record variants must route to review.
     const result = await ComplianceGuardianService.evaluate({
       description: 'cash payment only. no records needed',
       userId: 'atk-18',
     });
     console.log('ATK-18 result:', result.tier, result.score, result.triggeredRules);
-    // BUG: "cash payment" (not "cash only") evades unreported_payment pattern.
-    expect(result.tier).not.toBe('clean'); // WILL FAIL — variant evades
-    console.log('ATK-18 BUG: "cash payment only" variant not covered; only "cash only" matched');
+    expect(result.tier).not.toBe('clean');
+    expect(result.triggeredRules).toContain('unreported_payment');
   });
 
   it('ATK-19: "drop it off. address info not needed." — split of "drop it off no details"', async () => {
@@ -399,15 +369,13 @@ describe('Section 3 — Splitting & Fragmentation Attacks', () => {
     // Normalized: "drop it off address info not needed" — "no details" not present,
     // different wording.
     // HARD_BLOCK_PATTERNS: /no\s+address.{0,20}deliver/i — "address info not needed" ≠ "no address...deliver".
-    // EXPECTED BUG: variant wording evades.
+    // REGRESSION: address-suppression variants must remain blocked.
     const result = await ComplianceGuardianService.evaluate({
       description: 'drop it off. address info not needed.',
       userId: 'atk-19',
     });
     console.log('ATK-19 result:', result.tier, result.score, result.triggeredRules);
-    // BUG: "address info not needed" evades both hard_block and flagged_pattern checks.
-    expect(result.tier).not.toBe('clean'); // WILL FAIL — variant evades
-    console.log('ATK-19 BUG: "address info not needed" variant not in any pattern');
+    expect(result.tier).toBe('hard_block');
   });
 
   it('ATK-20: multi-sentence "package for a friend. just drop and go, no further details" — fragmented FLAGGED_PATTERN', async () => {
@@ -415,15 +383,13 @@ describe('Section 3 — Splitting & Fragmentation Attacks', () => {
     // Normalized: "package for a friend just drop and go no further details"
     // Does this include the substring "package for a friend no details"?
     // No — "just drop and go" is inserted between "friend" and "no details".
-    // EXPECTED BUG: insertion of "just drop and go" breaks the exact substring match.
+    // REGRESSION: fragmented anonymous-delivery phrasing must route to review.
     const result = await ComplianceGuardianService.evaluate({
       description: 'package for a friend. just drop and go, no further details',
       userId: 'atk-20',
     });
     console.log('ATK-20 result:', result.tier, result.score, result.triggeredRules);
-    // BUG: fragmentation of flagged phrase via sentence insertion.
-    expect(result.tier).not.toBe('clean'); // WILL FAIL — fragmented phrase evades
-    console.log('ATK-20 BUG: sentence fragment insertion breaks exact coded-phrase match');
+    expect(result.tier).not.toBe('clean');
   });
 
 });
@@ -549,34 +515,29 @@ describe('Section 5 — Legitimate-Sounding Wrappers Around Illegal Content', ()
     expect(result.triggeredRules).toContain('hard_block_pattern');
   });
 
-  it.skip('ATK-29: criminal reconnaissance dressed as security testing [KNOWN GAP: recon heuristics absent]', async () => {
+  it('ATK-29: criminal reconnaissance dressed as security testing is flagged', async () => {
     // ANALYSIS: "walk around my neighborhood at night and check which houses look easy to enter"
-    // No patterns for "security testing", "houses look easy to enter", or break-in related content.
-    // EXPECTED BUG: clean — criminal recon not in any heuristic.
+    // The entry-reconnaissance rule must route this wording to review.
     const result = await ComplianceGuardianService.evaluate({
       description: "Security testing: walk around my neighborhood at night and check which houses look easy to enter",
       userId: 'atk-29',
     });
     console.log('ATK-29 result:', result.tier, result.score, result.triggeredRules);
-    // BUG: criminal reconnaissance not in heuristics at all.
-    expect(result.tier).not.toBe('clean'); // WILL FAIL
-    console.log('ATK-29 BUG: criminal reconnaissance / "easy to enter" not in any heuristic pattern');
+    expect(result.tier).not.toBe('clean');
+    expect(result.triggeredRules).toContain('property_entry_reconnaissance');
   });
 
   it('ATK-30: drug/contraband mule with thin cover story ("personal shopper, cash payment, no need to know what\'s inside")', async () => {
     // ANALYSIS: "cash payment" — note SOFT_FLAG_PATTERNS uses /cash\s+only.{0,20}no\s+record/i.
     // "cash payment" ≠ "cash only" (different wording). "no need to know" is not in patterns.
     // "various locations" — not in patterns. "packages" — not in patterns.
-    // EXPECTED BUG: cash payment variant evades unreported_payment; cover story fully clean.
+    // REGRESSION: contraband-cover phrasing must remain blocked.
     const result = await ComplianceGuardianService.evaluate({
       description: "I need a 'personal shopper' to pick up some packages from various locations around the city, cash payment, no need to know what's inside",
       userId: 'atk-30',
     });
     console.log('ATK-30 result:', result.tier, result.score, result.triggeredRules);
-    // BUG: "cash payment" (not "cash only") evades unreported_payment.
-    // "no need to know what's inside" is a classic drug-mule cover phrase — not in patterns.
-    expect(result.tier).not.toBe('clean'); // WILL FAIL — thin cover story evades all heuristics
-    console.log('ATK-30 BUG: "cash payment" variant + "no need to know" cover story not in any pattern');
+    expect(result.tier).toBe('hard_block');
   });
 
 });
@@ -614,16 +575,10 @@ describe('Section 6 — _normalizeDescription Direct Behavior Audit', () => {
     const input = 'd\u200Ci\u200Cs\u200Cc\u200Cr\u200Ce\u200Ce\u200Ct delivery';
     const result = ComplianceGuardianService._normalizeDescription(input);
     console.log('NORM-03 normalized:', JSON.stringify(result));
-    // v2.8.4 behavior: [^\w\s] → SPACE (not empty), so ZWNJ between every letter
-    // produces "d i s c r e e t delivery" — the spaced-out form, not the collapsed word.
-    // This is different from v2.7 behavior (strip → "discreet delivery").
-    // ATK-04 accepts soft_flag or hard_block via _codeLevelPatternMatch (flagged phrase).
-    // The normalized form has 'd i s c r e e t' spaced out — "discreet delivery" is not
-    // a substring. This remains a known partial gap (letter-spacing, AI-layer concern).
+    // ZWNJ becomes spaces, then the 3+-single-character run normalizer rejoins
+    // the underlying word so deterministic phrase matching still works.
     expect(result).not.toContain('\u200C'); // ZWNJ removed
-    // ZWNJ between every letter creates spaced-out word — word-level reassembly is a
-    // separate concern (not addressed in this normalization layer by design).
-    expect(result).toContain('delivery');
+    expect(result).toBe('discreet delivery');
   });
 
   it('NORM-04: NBSP (U+00A0) is treated as whitespace and collapsed', () => {

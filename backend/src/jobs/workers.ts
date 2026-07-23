@@ -25,10 +25,15 @@ import { validateConfig } from '../config.js';
 import type { Worker } from 'bullmq';
 import { registerWorkers as registerWorkerSet } from './worker-registration.js';
 import { registerScheduledJobs } from './worker-schedules.js';
+import {
+  startWorkerHealthServer,
+  type WorkerHealthServer,
+} from './worker-health-server.js';
 
 // Track all registered workers and outbox interval handles for graceful shutdown
 const activeWorkers: Worker[] = [];
 let outboxHandles: OutboxWorkerHandles | null = null;
+let workerHealthServer: WorkerHealthServer | null = null;
 
 // ============================================================================
 // WORKER REGISTRATION
@@ -97,6 +102,7 @@ async function gracefulShutdown(signal: string): Promise<void> {
   }
 
   shutdownInProgress = true;
+  workerHealthServer?.markShuttingDown();
   log.info({ signal }, 'Received signal, shutting down gracefully...');
 
   // Clear all outbox interval timers to prevent accumulation on hot-reload
@@ -131,6 +137,15 @@ async function gracefulShutdown(signal: string): Promise<void> {
     timeout,
   ]);
 
+  if (workerHealthServer) {
+    try {
+      await workerHealthServer.close();
+    } catch (err) {
+      log.error({ err }, 'Error closing worker health server');
+    }
+    workerHealthServer = null;
+  }
+
   log.info('Worker runtime shutdown complete');
   process.exit(0);
 }
@@ -158,7 +173,9 @@ process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
  */
 export async function bootWorkerProcess(): Promise<void> {
   validateConfig();
+  workerHealthServer = await startWorkerHealthServer();
   await startWorkers();
+  workerHealthServer.markReady();
 }
 
 // Start workers if this file is run directly (ESM-compatible entry point guard)

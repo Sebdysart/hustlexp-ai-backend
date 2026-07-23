@@ -10,6 +10,7 @@
  */
 
 import { AIClient } from './AIClient.js';
+import { aiObservation } from './AIObservabilityPolicy.js';
 import { logger } from '../logger.js';
 
 const log = logger.child({ service: 'InstantTaskGate' });
@@ -335,9 +336,9 @@ export async function checkInstantEligibility(
 }
 
 /**
- * Call AI model to check instant eligibility
- * Temperature = 0 for determinism
- * Falls back to heuristic if AI unavailable
+ * Run the deterministic eligibility policy and optionally compute an AI
+ * advisory. The advisory is observable, but it cannot authorize or deny the
+ * execution lane.
  */
 async function callAIGate(task: TaskDraft): Promise<InstantGateResult> {
   // Always run heuristic first (it's fast and catches hard blockers)
@@ -352,6 +353,9 @@ async function callAIGate(task: TaskDraft): Promise<InstantGateResult> {
   if (AIClient.isConfigured()) {
     try {
       const aiResult = await AIClient.callJSON<InstantGateResult>({
+        observability: aiObservation('AI-INSTANT-TASK-ADVISORY', {
+          affectedObjectType: 'TASK_DRAFT',
+        }),
         route: 'primary',
         temperature: 0,
         timeoutMs: 10000,
@@ -375,20 +379,18 @@ Deadline: ${task.deadline || 'Not specified'}`,
       });
 
       const aiGateResult = aiResult.data;
-
-      // If AI disagrees with heuristic, log for monitoring but trust AI
-      if (!aiGateResult.instantEligible && heuristicResult.instantEligible) {
-        log.info({ blockReason: aiGateResult.blockReason, questions: aiGateResult.questions }, 'AI blocked task that heuristic passed');
-        return aiGateResult;
-      }
-
-      return aiGateResult;
+      log.info({
+        advisoryEligible: aiGateResult.instantEligible,
+        authoritativeEligible: heuristicResult.instantEligible,
+        advisoryBlockReason: aiGateResult.blockReason,
+        authority: 'A2_PROPOSAL_ONLY',
+      }, 'AI instant-task advisory computed');
     } catch (aiError) {
       log.warn({ err: aiError instanceof Error ? aiError.message : String(aiError) }, 'AI call failed, using heuristic result');
     }
   }
 
-  // Fallback: trust heuristic result
+  // Typed deterministic policy is the sole authority.
   return heuristicResult;
 }
 

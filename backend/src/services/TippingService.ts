@@ -22,6 +22,7 @@ import { logger } from '../logger.js';
 // AUDIT FIX H4: every Stripe call in this service must go through the breaker —
 // a Stripe outage on the tip path previously piled up with no fast-fail.
 import { stripeBreaker } from '../middleware/circuit-breaker.js';
+import { newPaymentCreationFailure } from './NewPaymentCreationGuard.js';
 
 // H3 FIX: Module-level Stripe singleton — instantiated once, not per request.
 // Matches the pattern used in StripeService.ts. Per-request instantiation
@@ -60,6 +61,8 @@ export const TippingService = {
    */
   createTip: async (params: CreateTipParams): Promise<ServiceResult<{ clientSecret: string; tipId: string; amountCents: number }>> => {
     const { taskId, posterId, amountCents } = params;
+    const frozen = newPaymentCreationFailure('tip');
+    if (frozen) return frozen;
 
     try {
       // Validate task is completed and poster owns it

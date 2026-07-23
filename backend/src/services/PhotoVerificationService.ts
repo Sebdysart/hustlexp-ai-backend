@@ -15,6 +15,8 @@ import { db } from '../db.js';
 import type { ServiceResult } from '../types.js';
 import { openaiBreaker } from '../middleware/circuit-breaker.js';
 import { logger } from '../logger.js';
+import { aiObservation } from './AIObservabilityPolicy.js';
+import { AIObservabilityService } from './AIObservabilityService.js';
 
 const log = logger.child({ service: 'PhotoVerificationService' });
 
@@ -52,7 +54,7 @@ interface BeforeAfterComparisonResult {
 const MAX_CAPTURE_AGE_MINUTES = 5; // Photo must be taken within 5 minutes
 const MAX_GPS_DISTANCE_METERS = 500; // Photo GPS must be within 500m of task
 const COMPLETION_THRESHOLD = 0.65; // 65% completion score = auto-approve
-const REVIEW_THRESHOLD = 0.40; // Below 40% = reject, 40-65% = manual review
+const REVIEW_THRESHOLD = 0.4; // Below 40% = reject, 40-65% = manual review
 
 // ============================================================================
 // SERVICE
@@ -88,7 +90,9 @@ export const PhotoVerificationService = {
     if (metadata.exif_timestamp) {
       const ageMinutes = (Date.now() - new Date(metadata.exif_timestamp).getTime()) / 60000;
       if (ageMinutes > MAX_CAPTURE_AGE_MINUTES) {
-        failures.push(`STALE_PHOTO: Photo is ${Math.round(ageMinutes)} minutes old (max ${MAX_CAPTURE_AGE_MINUTES})`);
+        failures.push(
+          `STALE_PHOTO: Photo is ${Math.round(ageMinutes)} minutes old (max ${MAX_CAPTURE_AGE_MINUTES})`
+        );
       }
       if (ageMinutes < 0) {
         failures.push('FUTURE_TIMESTAMP: Photo timestamp is in the future — possible manipulation');
@@ -107,35 +111,47 @@ export const PhotoVerificationService = {
       );
 
       if (distance > MAX_GPS_DISTANCE_METERS) {
-        failures.push(`GPS_MISMATCH: Photo taken ${Math.round(distance)}m from task location (max ${MAX_GPS_DISTANCE_METERS}m)`);
+        failures.push(
+          `GPS_MISMATCH: Photo taken ${Math.round(distance)}m from task location (max ${MAX_GPS_DISTANCE_METERS}m)`
+        );
       }
     } else if (!metadata.exif_gps_lat && taskLocation) {
       warnings.push('NO_GPS_DATA: Could not verify photo location');
     }
 
-    // 4. Store validation results
+    // 4. Store only derived validation results. Raw EXIF timestamp, GPS, and
+    // device model are purpose-bound request data and are stripped here.
     const passed = failures.length === 0;
-    await db.query(
-      `UPDATE proof_submissions
+    const persisted = await db.query(
+      `WITH target AS (
+         SELECT id FROM proof_submissions
+         WHERE proof_id = $4
+         ORDER BY created_at DESC, id DESC
+         LIMIT 1
+       )
+       UPDATE proof_submissions ps
        SET capture_source = $1,
-           exif_timestamp = $2,
-           exif_gps_lat = $3,
-           exif_gps_lng = $4,
-           exif_device_model = $5,
-           capture_validation_passed = $6,
-           capture_validation_failures = $7
-       WHERE id = $8`,
-      [
-        metadata.capture_source,
-        metadata.exif_timestamp,
-        metadata.exif_gps_lat,
-        metadata.exif_gps_lng,
-        metadata.exif_device_model,
-        passed,
-        [...failures, ...warnings],
-        proofId,
-      ]
+           exif_timestamp = NULL,
+           exif_gps_lat = NULL,
+           exif_gps_lng = NULL,
+           exif_device_model = NULL,
+           capture_validation_passed = $2,
+           capture_validation_failures = $3
+       FROM target
+       WHERE ps.id = target.id
+       RETURNING ps.id`,
+      [metadata.capture_source, passed, [...failures, ...warnings], proofId]
     );
+
+    if ((persisted.rowCount ?? 0) === 0) {
+      return {
+        success: false,
+        error: {
+          code: 'PROOF_SIGNAL_TARGET_NOT_FOUND',
+          message: 'The canonical proof verification record was not found.',
+        },
+      };
+    }
 
     return {
       success: true,
@@ -175,18 +191,20 @@ export const PhotoVerificationService = {
         };
       }
 
-      const response = await openaiBreaker.execute(() => fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          model: 'gpt-4o',
-          messages: [
-            {
-              role: 'system',
-              content: `You are a task completion verification AI for a gig work platform.
+      const startedAt = Date.now();
+      const response = await openaiBreaker.execute(() =>
+        fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify({
+            model: 'gpt-4o',
+            messages: [
+              {
+                role: 'system',
+                content: `You are a task completion verification AI for a gig work platform.
 You compare before and after photos to determine if a physical task was completed.
 Respond with JSON only: {"similarity_score": 0-1, "completion_score": 0-1, "change_detected": bool, "assessment": "string", "confidence": 0-1}
 - similarity_score: how similar the scene/location is (should be high if same place)
@@ -194,27 +212,48 @@ Respond with JSON only: {"similarity_score": 0-1, "completion_score": 0-1, "chan
 - change_detected: whether meaningful change occurred between photos
 - assessment: brief explanation
 - confidence: how confident you are in this judgment`,
-            },
-            {
-              role: 'user',
-              content: [
-                { type: 'text', text: `Task description: "${taskDescription}". Compare the BEFORE photo (first) with the AFTER photo (second). Was this task completed?` },
-                { type: 'image_url', image_url: { url: beforePhotoUrl } },
-                { type: 'image_url', image_url: { url: afterPhotoUrl } },
-              ],
-            },
-          ],
-          max_tokens: 500,
-          temperature: 0.1, // Low temperature for consistent scoring
-        }),
-      }));
+              },
+              {
+                role: 'user',
+                content: [
+                  {
+                    type: 'text',
+                    text: `Task description: "${taskDescription}". Compare the BEFORE photo (first) with the AFTER photo (second). Was this task completed?`,
+                  },
+                  { type: 'image_url', image_url: { url: beforePhotoUrl } },
+                  { type: 'image_url', image_url: { url: afterPhotoUrl } },
+                ],
+              },
+            ],
+            max_tokens: 500,
+            temperature: 0.1, // Low temperature for consistent scoring
+          }),
+        })
+      );
 
       if (!response.ok) {
         throw new Error(`OpenAI API error: ${response.status}`);
       }
 
-      const data = await response.json() as { choices?: Array<{ message?: { content?: string } }>; usage?: { total_tokens?: number } };
+      const data = (await response.json()) as {
+        choices?: Array<{ message?: { content?: string } }>;
+        usage?: { total_tokens?: number };
+      };
       const content = data.choices?.[0]?.message?.content;
+      const observed = await AIObservabilityService.record({
+        context: aiObservation('AI-PHOTO-COMPARISON-ADVISORY', {
+          affectedObjectType: 'TASK_PROOF_MEDIA',
+          affectedObjectId: taskId,
+        }),
+        provider: 'openai',
+        modelVersion: 'gpt-4o',
+        executionResult: 'GENERATED',
+        output: content ?? '',
+        latencyMs: Date.now() - startedAt,
+      });
+      if (!observed.success) {
+        throw new Error(`AI_OBSERVABILITY_REQUIRED:${observed.error.code}`);
+      }
 
       // AUDIT FIX L5: photo-verification AI spend was invisible to the cost
       // ledger (breaker was present, metering was not). Non-fatal on failure.
@@ -226,7 +265,13 @@ Respond with JSON only: {"similarity_score": 0-1, "completion_score": 0-1, "chan
           await db.query(
             `INSERT INTO ai_cost_logs (agent_type, user_id, provider, model, tokens_used, estimated_cost_cents, created_at)
              VALUES ($1, NULL, $2, $3, $4, $5, NOW())`,
-            ['photo_verification', 'openai', 'gpt-4o', pvTokensUsed, Math.ceil(pvTokensUsed * 0.001)]
+            [
+              'photo_verification',
+              'openai',
+              'gpt-4o',
+              pvTokensUsed,
+              Math.ceil(pvTokensUsed * 0.001),
+            ]
           );
         } catch {
           // cost logging must never break verification
@@ -279,7 +324,10 @@ Respond with JSON only: {"similarity_score": 0-1, "completion_score": 0-1, "chan
         },
       };
     } catch (error) {
-      log.error({ err: error instanceof Error ? error.message : String(error) }, 'compareBeforeAfter error');
+      log.error(
+        { err: error instanceof Error ? error.message : String(error) },
+        'compareBeforeAfter error'
+      );
       return {
         success: true,
         data: {

@@ -12,24 +12,29 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import pg from 'pg';
 import { db, hasDb } from '../../src/db';
 import { TaskService } from '../../src/services/TaskService';
 import { PlanService } from '../../src/services/PlanService';
-import type { User, Task } from '../../src/types';
+import type { User } from '../../src/types';
+import { createTestPool, createTestTask } from '../setup';
 
 describe.skipIf(!hasDb)('Plan Gating Invariant: Data Truth vs Delivery', () => {
   let freeUser: User;
   let premiumUser: User;
   let taskId: string;
+  let pool: pg.Pool;
 
   beforeAll(async () => {
+    pool = createTestPool();
+    const runId = `${Date.now()}-${crypto.randomUUID()}`;
     // Create test users
     const freeResult = await db.query<User>(
       `INSERT INTO users (email, full_name, firebase_uid, default_mode, role_was_overridden, plan)
        VALUES ($1, $2, $3, $4, $5, $6)
        ON CONFLICT (email) DO UPDATE SET plan = 'free'
        RETURNING *`,
-      ['free@test.com', 'Free User', `firebase_${Date.now()}_free`, 'poster', false, 'free']
+      [`test-plan-${runId}-free@hustlexp.test`, 'Free User', `firebase_${runId}_free`, 'poster', false, 'free']
     );
     freeUser = freeResult.rows[0];
 
@@ -38,44 +43,38 @@ describe.skipIf(!hasDb)('Plan Gating Invariant: Data Truth vs Delivery', () => {
        VALUES ($1, $2, $3, $4, $5, $6)
        ON CONFLICT (email) DO UPDATE SET plan = 'premium'
        RETURNING *`,
-      ['premium@test.com', 'Premium User', `firebase_${Date.now()}_premium`, 'poster', false, 'premium']
+      [`test-plan-${runId}-premium@hustlexp.test`, 'Premium User', `firebase_${runId}_premium`, 'poster', false, 'premium']
     );
     premiumUser = premiumResult.rows[0];
 
-    // Create a task and advance to TRAVELING
-    const taskResult = await TaskService.create({
+    // Create a policy-bound task with a current offer decision and accepted worker.
+    const task = await createTestTask(pool, {
       posterId: premiumUser.id,
-      title: 'Test Task',
-      description: 'Test',
-      price: 1000,
-      riskLevel: 'MEDIUM',
+      workerId: freeUser.id,
+      state: 'ACCEPTED',
     });
+    taskId = task.id;
 
-    if (!taskResult.success) {
-      throw new Error('Failed to create test task');
-    }
-
-    taskId = taskResult.data.id;
-
-    // Accept task (moves to ACCEPTED)
-    // Note: In real flow, this would be done by a worker
-    await db.query(
-      `UPDATE tasks SET worker_id = $1, state = 'ACCEPTED', accepted_at = NOW() WHERE id = $2`,
-      [freeUser.id, taskId]
-    );
+    const acceptedProgress = await TaskService.advanceProgress({
+      taskId,
+      to: 'ACCEPTED',
+      actor: { type: 'system' },
+    });
+    if (!acceptedProgress.success) throw new Error(acceptedProgress.error.message);
 
     // Advance progress to TRAVELING
-    await TaskService.advanceProgress({
+    const travelingProgress = await TaskService.advanceProgress({
       taskId,
       to: 'TRAVELING',
       actor: { type: 'worker', userId: freeUser.id },
     });
+    if (!travelingProgress.success) throw new Error(travelingProgress.error.message);
   });
 
   afterAll(async () => {
-    // Cleanup
-    await db.query('DELETE FROM tasks WHERE id = $1', [taskId]);
-    await db.query('DELETE FROM users WHERE id IN ($1, $2)', [freeUser.id, premiumUser.id]);
+    // Offer decisions emit append-only offer events, so these uniquely named
+    // fixtures intentionally remain in the disposable invariant database.
+    await pool.end();
   });
 
   it('REST endpoint returns full progress_state for free users', async () => {

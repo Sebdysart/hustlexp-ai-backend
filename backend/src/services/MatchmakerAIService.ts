@@ -18,6 +18,7 @@
 import { db } from '../db.js';
 import type { ServiceResult } from '../types.js';
 import { AIClient } from './AIClient.js';
+import { aiObservation } from './AIObservabilityPolicy.js';
 import { MatchmakerRankingsSchema, MatchExplanationSchema, PriceSuggestionSchema } from '../lib/ai-response-schemas.js';
 import { scrubPII } from '../lib/pii-scrubber.js';
 import { aiLogger } from '../logger.js';
@@ -142,6 +143,10 @@ export const MatchmakerAIService = {
           }));
 
           const aiResult = await AIClient.callJSON({
+            observability: aiObservation('AI-MATCHMAKER-PROPOSALS', {
+              affectedObjectType: 'TASK',
+              affectedObjectId: task.id,
+            }),
             route: 'fast',
             schema: MatchmakerRankingsSchema,
             temperature: 0.3,
@@ -237,6 +242,11 @@ ${JSON.stringify(candidateSummaries, null, 2)}`),
       if (AIClient.isConfigured()) {
         try {
           const aiResult = await AIClient.callJSON({
+            observability: aiObservation('AI-MATCHMAKER-PROPOSALS', {
+              actorUserId: worker.userId,
+              affectedObjectType: 'TASK',
+              affectedObjectId: task.id,
+            }),
             route: 'fast',
             schema: MatchExplanationSchema,
             temperature: 0.3,
@@ -339,6 +349,9 @@ Worker profile:
       if (AIClient.isConfigured()) {
         try {
           const aiResult = await AIClient.callJSON({
+            observability: aiObservation('AI-MATCHMAKER-PROPOSALS', {
+              affectedObjectType: 'TASK_DRAFT',
+            }),
             route: 'fast',
             schema: PriceSuggestionSchema,
             temperature: 0.3,

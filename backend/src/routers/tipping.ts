@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
 import { router, hustlerProcedure, posterProcedure } from '../trpc.js';
 import { TippingService } from '../services/TippingService.js';
+import { paymentCreationErrorCause } from '../services/NewPaymentCreationGuard.js';
 import { db } from '../db.js';
 
 export const tippingRouter = router({
@@ -21,9 +22,11 @@ export const tippingRouter = router({
         amountCents: input.amountCents,
       });
       if (!result.success) {
+        const cause = paymentCreationErrorCause(result.error?.code ?? '');
         throw new TRPCError({
-          code: 'BAD_REQUEST',
+          code: cause ? 'PRECONDITION_FAILED' : 'BAD_REQUEST',
           message: result.error?.message || 'Failed to create tip',
+          ...(cause ? { cause } : {}),
         });
       }
       return result.data;
@@ -103,7 +106,7 @@ export const tippingRouter = router({
   getMyTipsSent: posterProcedure
     .input(z.object({
       limit: z.number().int().min(1).max(100).default(50),
-      offset: z.number().int().min(0).default(0),
+      offset: z.number().int().min(0).max(500).default(0),
     }).default({ limit: 50, offset: 0 }))
     .query(async ({ ctx, input }) => {
       const result = await TippingService.getTipsSentByUser(
