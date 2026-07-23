@@ -26,8 +26,8 @@ SELECT pg_temp.hxupgrade_assert(
   'legacy safety case must remain an explicit v0 record'
 );
 SELECT pg_temp.hxupgrade_assert(
-  (SELECT count(*)=95 AND count(DISTINCT name)=95 FROM applied_migrations),
-  'the exact 95-migration engine chain must be recorded once'
+  (SELECT count(*)=96 AND count(DISTINCT name)=96 FROM applied_migrations),
+  'the exact 96-migration engine chain must be recorded once'
 );
 SELECT pg_temp.hxupgrade_assert(
   (SELECT count(*)=19 FROM major_action_class_contracts),

@@ -98,6 +98,7 @@ import {
   CONTROLLED_TEST_RETAKE_GUARD_CONVERGENCE_MIGRATION,
   SAME_WORKER_RETAKE_ASSIGNMENT_GUARD_REPAIR_MIGRATION,
   REGION_POLICY_LEGAL_APPROVAL_ACTIVATION_MIGRATION,
+  RECURRING_PAYMENT_DISPATCH_GATE_MIGRATION,
   applyEngineAutomationMigration,
   backfillLegacyTaskLocations,
   loadMigrationSql,
@@ -259,6 +260,7 @@ describe('required engine automation migration', () => {
       CONTROLLED_TEST_RETAKE_GUARD_CONVERGENCE_MIGRATION,
       SAME_WORKER_RETAKE_ASSIGNMENT_GUARD_REPAIR_MIGRATION,
       REGION_POLICY_LEGAL_APPROVAL_ACTIVATION_MIGRATION,
+      RECURRING_PAYMENT_DISPATCH_GATE_MIGRATION,
     ]);
     expect(actual.bootstrapSpec?.candidatePaths).toContain(
       '/app/backend/database/constitutional-schema.sql'
@@ -267,7 +269,7 @@ describe('required engine automation migration', () => {
       '/app/backend/database/migrations/add_missing_tables_v2.sql'
     );
     expect(actual.migrationSpecs.at(-1)?.candidatePaths).toContain(
-      '/app/backend/database/migrations/20260722_region_policy_legal_approval_activation.sql'
+      '/app/backend/database/migrations/20260722_recurring_payment_dispatch_gate.sql'
     );
     await expect(actual.readText(actual.migrationSpecs[1].candidatePaths[0]!)).resolves.toContain(
       'CREATE TABLE IF NOT EXISTS task_reservations'

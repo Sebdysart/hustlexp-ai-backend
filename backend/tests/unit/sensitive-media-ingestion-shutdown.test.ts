@@ -61,7 +61,10 @@ describe('sensitive media ingestion shutdown', () => {
   });
 
   it('is startup ordered and packaged as the final migration', () => {
-    const runner = source('backend/src/jobs/engine-automation-migration.ts');
+    const runner = [
+      source('backend/src/jobs/engine-automation-migration.ts'),
+      source('backend/src/jobs/engine-automation-migration-files.ts'),
+    ].join('\n');
     const dockerfile = source('Dockerfile');
     expect(runner).toContain('20260721_sensitive_media_ingestion_shutdown');
     expect(dockerfile).toContain('20260721_sensitive_media_ingestion_shutdown.sql');

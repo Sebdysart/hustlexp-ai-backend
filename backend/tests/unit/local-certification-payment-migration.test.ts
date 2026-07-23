@@ -5,7 +5,10 @@ const migration = readFileSync(
   'backend/database/migrations/20260720_local_certification_payment_provider.sql',
   'utf8',
 );
-const runner = readFileSync('backend/src/jobs/engine-automation-migration.ts', 'utf8');
+const runner = [
+  readFileSync('backend/src/jobs/engine-automation-migration.ts', 'utf8'),
+  readFileSync('backend/src/jobs/engine-automation-migration-files.ts', 'utf8'),
+].join('\n');
 const dockerfile = readFileSync('Dockerfile', 'utf8');
 
 describe('local certification payment provider migration', () => {

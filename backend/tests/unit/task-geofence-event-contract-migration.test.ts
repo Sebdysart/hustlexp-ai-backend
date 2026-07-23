@@ -11,10 +11,13 @@ const SERVICE = readFileSync(
   'utf8',
 );
 const ROUTER = readFileSync(resolve(process.cwd(), 'backend/src/routers/geofence.ts'), 'utf8');
-const RUNNER = readFileSync(
-  resolve(process.cwd(), 'backend/src/jobs/engine-automation-migration.ts'),
-  'utf8',
-);
+const RUNNER = [
+  readFileSync(resolve(process.cwd(), 'backend/src/jobs/engine-automation-migration.ts'), 'utf8'),
+  readFileSync(
+    resolve(process.cwd(), 'backend/src/jobs/engine-automation-migration-files.ts'),
+    'utf8',
+  ),
+].join('\n');
 const DOCKERFILE = readFileSync(resolve(process.cwd(), 'Dockerfile'), 'utf8');
 
 describe('purpose-bound geofence event contract', () => {

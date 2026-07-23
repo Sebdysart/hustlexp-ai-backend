@@ -7,7 +7,10 @@ const SQL = read(
   'backend/database/migrations/20260722_region_policy_legal_approval_activation.sql'
 );
 const HARNESS = read('backend/tests/integration/region-policy-legal-approval-activation.pg.sql');
-const RUNNER = read('backend/src/jobs/engine-automation-migration.ts');
+const RUNNER = [
+  read('backend/src/jobs/engine-automation-migration.ts'),
+  read('backend/src/jobs/engine-automation-migration-files.ts'),
+].join('\n');
 
 describe('region policy legal approval activation contract', () => {
   it('persists one immutable hash-verified approval for the exact policy', () => {

@@ -8,7 +8,10 @@ const REPAIR = read('backend/database/migrations/20260720_schema_convergence_rep
 const CONSTITUTIONAL = read('backend/database/constitutional-schema.sql');
 const LAUNCH = read('backend/database/launch-schema.sql');
 const FINGERPRINT = read('backend/tests/integration/hxos-catalog-fingerprint.sql');
-const RUNNER = read('backend/src/jobs/engine-automation-migration.ts');
+const RUNNER = [
+  read('backend/src/jobs/engine-automation-migration.ts'),
+  read('backend/src/jobs/engine-automation-migration-files.ts'),
+].join('\n');
 const UPGRADE_ASSERT = read('backend/tests/integration/upgrade-convergence-assert.pg.sql');
 
 describe('HX/OS clean and upgraded schema convergence repair', () => {
@@ -58,7 +61,7 @@ describe('HX/OS clean and upgraded schema convergence repair', () => {
   });
 
   it('requires the exact current migration chain and preserves legacy reconciliation classification', () => {
-    expect(UPGRADE_ASSERT).toContain('count(*)=95 AND count(DISTINCT name)=95');
+    expect(UPGRADE_ASSERT).toContain('count(*)=96 AND count(DISTINCT name)=96');
     expect(UPGRADE_ASSERT).toContain('reconciliation_contract_version=0');
     expect(UPGRADE_ASSERT).toContain('offline_payload_hash IS NULL');
   });

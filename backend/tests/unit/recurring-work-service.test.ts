@@ -35,6 +35,7 @@ vi.mock('../../src/logger.js', () => ({
 
 import {
   createControlledRecurringTemplate,
+  activateFundedControlledReservationOffers,
   advanceControlledReservationWaves,
   listControlledRecurringTemplates,
   generateControlledRecurringOccurrence,
@@ -236,6 +237,9 @@ describe('controlled recurring work orchestration', () => {
     }));
     expect(query.mock.calls.some((call) => String(call[0]).includes('recurring_task_occurrences'))).toBe(true);
     expect(query.mock.calls.some((call) => String(call[0]).includes('recurring_provider_reservations'))).toBe(true);
+    expect(query.mock.calls.some((call) => String(call[0]).includes("'AWAITING_PAYMENT'"))).toBe(true);
+    expect(query.mock.calls.some((call) => Array.isArray(call[1])
+      && call[1].includes('PREFERRED_AWAITING_PAYMENT'))).toBe(true);
     expect(query.mock.calls.some((call) => String(call[0]).includes('budget_spend_cents=budget_spend_cents+payment_cents'))).toBe(true);
   });
 
@@ -374,6 +378,27 @@ describe('controlled recurring work orchestration', () => {
     expect(query.mock.calls.some((call) => String(call[0]).includes('INSERT INTO recurring_task_occurrences'))).toBe(false);
   });
 
+  it('activates a recurring provider offer only after the canonical escrow is funded', async () => {
+    query
+      .mockResolvedValueOnce({ rows: [{
+        reservation_id: '40000000-0000-0000-0000-000000000001',
+        occurrence_id: '21000000-0000-0000-0000-000000000001',
+        pool_type: 'PREFERRED',
+      }] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] });
+
+    const result = await activateFundedControlledReservationOffers(10);
+
+    expect(result).toEqual({ activated: 1 });
+    expect(String(query.mock.calls[0]?.[0])).toContain("r.status='AWAITING_PAYMENT'");
+    expect(String(query.mock.calls[0]?.[0])).toContain("escrow.state='FUNDED'");
+    expect(query.mock.calls.some((call) => String(call[0]).includes("SET status='PENDING'"))).toBe(true);
+    expect(query.mock.calls.some((call) => Array.isArray(call[1])
+      && call[1].includes('PREFERRED_PENDING'))).toBe(true);
+  });
+
   it('times out an expired preferred reservation and opens exactly one backup wave', async () => {
     query
       .mockResolvedValueOnce({ rows: [{
@@ -391,6 +416,7 @@ describe('controlled recurring work orchestration', () => {
     const result = await advanceControlledReservationWaves(10);
 
     expect(result).toEqual({ processed: 1, backupsOpened: 1, exhausted: 0 });
+    expect(String(query.mock.calls[0]?.[0])).toContain("escrow.state='FUNDED'");
     expect(query.mock.calls.filter((call) => String(call[0]).includes('INSERT INTO recurring_provider_reservations'))).toHaveLength(1);
     expect(query.mock.calls.some((call) => String(call[0]).includes("status='TIMED_OUT'"))).toBe(true);
   });

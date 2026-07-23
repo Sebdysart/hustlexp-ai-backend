@@ -4,7 +4,10 @@ import { describe, expect, it } from 'vitest';
 
 const read = (file: string) => readFileSync(resolve(process.cwd(), file), 'utf8');
 const MIGRATION = read('backend/database/migrations/20260721_ai_observability_contract.sql');
-const RUNNER = read('backend/src/jobs/engine-automation-migration.ts');
+const RUNNER = [
+  read('backend/src/jobs/engine-automation-migration.ts'),
+  read('backend/src/jobs/engine-automation-migration-files.ts'),
+].join('\n');
 const DOCKERFILE = read('Dockerfile');
 
 describe('HX/OS AI observability contract migration', () => {
@@ -54,7 +57,9 @@ describe('HX/OS AI observability contract migration', () => {
   });
 
   it('ships through fail-closed startup and the production image', () => {
-    expect(RUNNER).toContain("AI_OBSERVABILITY_CONTRACT_MIGRATION =\n  '20260721_ai_observability_contract'");
+    expect(RUNNER).toMatch(
+      /AI_OBSERVABILITY_CONTRACT_MIGRATION\s*=\s*'20260721_ai_observability_contract'/,
+    );
     expect(RUNNER).toContain("fileName: '20260721_ai_observability_contract.sql'");
     expect(DOCKERFILE).toContain('/app/backend/database/migrations/20260721_ai_observability_contract.sql');
   });
