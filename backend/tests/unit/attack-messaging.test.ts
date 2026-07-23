@@ -497,7 +497,7 @@ describe('ATTACK-10 · SSE connection flood — per-user connection limit now en
     const sseEndpoint = '/realtime/stream';
     const covered = protectedPatterns.some(p =>
       p.includes('*')
-        ? sseEndpoint.startsWith(p.replace('*', ''))
+        ? sseEndpoint.startsWith(p.replaceAll('*', ''))
         : sseEndpoint === p
     );
     expect(covered).toBe(true); // SSE endpoint IS now rate-limited

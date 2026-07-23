@@ -232,11 +232,16 @@ describe('admin.listUsers — offset-based pagination', () => {
     it('passes search filter as ILIKE parameter on both full_name and email', async () => {
       setupAdminAndUsers([]);
 
-      await makeAdminCaller().listUsers({ limit: 10, offset: 0, search: 'alice' });
+      await makeAdminCaller().listUsers({
+        limit: 10,
+        offset: 0,
+        search: String.raw`ali\ce_%`,
+      });
 
       const [sql, params] = (mockDb.query as any).mock.calls[1];
       expect(sql).toContain('ILIKE');
-      expect(params).toContain('%alice%');
+      expect(sql.match(/ESCAPE '\\'/g)).toHaveLength(2);
+      expect(params).toContain(String.raw`%ali\\ce\_\%%`);
       // Both OR branches must reference the same $N
       const ilikeParts = sql.match(/ILIKE \$(\d+)/g);
       expect(ilikeParts).toHaveLength(2);

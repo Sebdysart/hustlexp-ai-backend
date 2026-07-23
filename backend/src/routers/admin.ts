@@ -42,6 +42,10 @@ import { notifyAdmins } from '../services/AdminNotificationHelper.js';
 
 const log = logger.child({ router: 'admin' });
 
+function escapeLikePattern(value: string): string {
+  return value.replace(/[\\%_]/g, (character) => `\\${character}`);
+}
+
 // ============================================================================
 // ROUTER
 // ============================================================================
@@ -69,8 +73,10 @@ export const adminRouter = router({
 
       if (input.search) {
         // Escape LIKE metacharacters so user input cannot craft wildcard patterns.
-        const safeLike = input.search.replace(/%/g, '\\%').replace(/_/g, '\\_');
-        conditions.push(`(u.full_name ILIKE $${paramIndex} OR u.email ILIKE $${paramIndex})`);
+        const safeLike = escapeLikePattern(input.search);
+        conditions.push(
+          `(u.full_name ILIKE $${paramIndex} ESCAPE '\\' OR u.email ILIKE $${paramIndex} ESCAPE '\\')`,
+        );
         params.push(`%${safeLike}%`);
         paramIndex++;
       }

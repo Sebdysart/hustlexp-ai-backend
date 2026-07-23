@@ -21,7 +21,22 @@ export const idSchema = z.string().uuid();
 export const monetaryAmountSchema = z.number().positive().multipleOf(0.01).max(999999.99);
 
 export function stripHtml(input: string): string {
-  return input.replace(/<[^>]*>/g, '');
+  let output = '';
+  let insideTag = false;
+
+  for (const character of input) {
+    if (character === '<') {
+      insideTag = true;
+      continue;
+    }
+    if (insideTag) {
+      if (character === '>') insideTag = false;
+      continue;
+    }
+    if (character !== '>') output += character;
+  }
+
+  return output;
 }
 
 export function normalizeEmail(email: string): string {

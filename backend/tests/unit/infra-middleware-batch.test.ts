@@ -1158,6 +1158,14 @@ describe('stripHtml', () => {
   it('handles self-closing tags', () => {
     expect(stripHtml('line1<br/>line2')).toBe('line1line2');
   });
+
+  it('cannot reconstruct a tag from nested or malformed markup', () => {
+    const stripped = stripHtml('<scr<script>ipt>alert(1)</script>');
+
+    expect(stripped).not.toContain('<');
+    expect(stripped).not.toContain('>');
+    expect(stripped).toBe('iptalert(1)');
+  });
 });
 
 describe('normalizeEmail', () => {
