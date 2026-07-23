@@ -16,6 +16,8 @@
 import { vi, describe, it, expect, beforeEach } from 'vitest';
 import type { Job } from 'bullmq';
 
+const payoutDestination = vi.hoisted(() => vi.fn());
+
 vi.mock('../../src/db', () => {
   const queryFn = vi.fn();
   const transactionFn = vi.fn(async (fn: (q: typeof queryFn) => Promise<unknown>) => fn(queryFn));
@@ -28,6 +30,10 @@ vi.mock('../../src/services/StripeService.js', () => ({
 
 vi.mock('../../src/services/EscrowService.js', () => ({
   EscrowService: { release: vi.fn() },
+}));
+
+vi.mock('../../src/services/TaskPayoutDestinationService.js', () => ({
+  loadCurrentTaskPayoutDestination: payoutDestination,
 }));
 
 vi.mock('../../src/logger', () => {
@@ -71,6 +77,7 @@ const escrowRelease = EscrowService.release as unknown as ReturnType<typeof vi.f
 const ESCROW_ID = '00000000-0000-0000-0000-0000000000aa';
 const TASK_ID = '10000000-0000-0000-0000-0000000000aa';
 const WORKER_ID = '20000000-0000-0000-0000-0000000000aa';
+const PAYOUT_RECIPIENT_ID = '25000000-0000-0000-0000-0000000000aa';
 const POSTER_ID = '30000000-0000-0000-0000-0000000000aa';
 const CONNECT_ID = 'acct_completion_test';
 const AMOUNT = 10000; // $100.00 in cents
@@ -99,6 +106,13 @@ beforeEach(() => {
   vi.clearAllMocks();
   dbTransaction.mockImplementation(async (fn: (q: typeof dbQuery) => Promise<unknown>) => fn(dbQuery));
   escrowRelease.mockResolvedValue({ success: true, data: { id: ESCROW_ID, state: 'RELEASED' } });
+  payoutDestination.mockImplementation(async (query,binding) => {
+    const result=await query('SELECT stripe_connect_id FROM users WHERE id=$1',[binding.payoutRecipientUserId]);
+    const stripeConnectId=result.rows[0]?.stripe_connect_id ?? null;
+    return stripeConnectId
+      ? { ready:true,stripeConnectId,reason:'READY' }
+      : { ready:false,stripeConnectId:null,reason:'PAYOUT_ACCOUNT_NOT_READY' };
+  });
 });
 
 describe('processCompletionReleaseJob — happy path', () => {
@@ -157,6 +171,27 @@ describe('processCompletionReleaseJob — happy path', () => {
 
     expect(createTransfer).toHaveBeenCalledWith(expect.objectContaining({ amount: 7300 }));
     expect(notifyPaymentReleased).toHaveBeenCalledWith(WORKER_ID, TASK_ID, 7300);
+  });
+
+  it('routes Service Business funds and financial notice to the authorized provider recipient', async () => {
+    dbQuery
+      .mockResolvedValueOnce({ rows: [escrowRow()] })
+      .mockResolvedValueOnce({ rows: [taskRow({ payout_recipient_user_id: PAYOUT_RECIPIENT_ID })] })
+      .mockResolvedValueOnce({ rows: [{ stripe_connect_id: CONNECT_ID }] })
+      .mockResolvedValueOnce({ rows: [escrowRow()] })
+      .mockResolvedValueOnce({ rows: [{ id: ESCROW_ID }], rowCount: 1 });
+    createTransfer.mockResolvedValue({ success: true, data: { transferId: 'tr_business_recipient' } });
+
+    await processCompletionReleaseJob(makeJob(signed(basePayload())));
+
+    expect(dbQuery.mock.calls[2]?.[1]).toEqual([PAYOUT_RECIPIENT_ID]);
+    expect(createTransfer).toHaveBeenCalledWith(expect.objectContaining({
+      workerId: PAYOUT_RECIPIENT_ID,
+      workerStripeAccountId: CONNECT_ID,
+    }));
+    const net = computeFeeBreakdown(AMOUNT, 15).netPayoutCents;
+    expect(notifyPaymentReleased).toHaveBeenCalledWith(PAYOUT_RECIPIENT_ID, TASK_ID, net);
+    expect(notifyPaymentReleased).not.toHaveBeenCalledWith(WORKER_ID, TASK_ID, net);
   });
 });
 

@@ -97,8 +97,10 @@ export function analyzeMigrationFile(file: string, sql: string): SafetyIssue[] {
     const add = (severity: Severity, message: string) =>
       issues.push({ severity, message: `${message} in ${file}:${lineNo}`, file, line: lineNo });
 
-    // TRUNCATE — always destructive.
-    if (/\bTRUNCATE\b/i.test(line)) {
+    // TRUNCATE statements are always destructive. Match only at a statement
+    // boundary so protective trigger clauses such as `BEFORE TRUNCATE ON ...`
+    // are not misclassified as data-loss operations.
+    if (/(?:^|;)\s*TRUNCATE\s+(?:TABLE\s+)?["'`]?\w+/i.test(line)) {
       add('BLOCKER', 'TRUNCATE detected (irreversible data loss)');
     }
 

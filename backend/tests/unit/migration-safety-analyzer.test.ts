@@ -95,6 +95,24 @@ describe('analyzeMigrationFile', () => {
     expect(issues.some((i) => i.severity === 'BLOCKER' && i.message.includes('TRUNCATE'))).toBe(true);
   });
 
+  it('allows a protective BEFORE TRUNCATE trigger while still blocking a later statement', () => {
+    const protectiveSql = `
+      CREATE TRIGGER evidence_no_truncate
+      BEFORE TRUNCATE ON immutable_evidence
+      FOR EACH STATEMENT EXECUTE FUNCTION prevent_append_only_truncate();
+    `;
+    expect(analyzeMigrationFile('migrations/protect.sql', protectiveSql))
+      .not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ severity: 'BLOCKER' }),
+      ]));
+
+    const destructiveSql = `BEGIN; TRUNCATE immutable_evidence;`;
+    expect(analyzeMigrationFile('migrations/destructive.sql', destructiveSql))
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ severity: 'BLOCKER' }),
+      ]));
+  });
+
   it('should detect DELETE FROM without WHERE as WARNING', () => {
     const sql = `DELETE FROM old_records;`;
     const issues = analyzeMigrationFile('migrations/011_delete.sql', sql);

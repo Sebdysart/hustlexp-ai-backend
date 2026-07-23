@@ -148,6 +148,8 @@ export const SAME_WORKER_RETAKE_ASSIGNMENT_GUARD_REPAIR_MIGRATION =
 export const REGION_POLICY_LEGAL_APPROVAL_ACTIVATION_MIGRATION =
   '20260722_region_policy_legal_approval_activation';
 export const RECURRING_PAYMENT_DISPATCH_GATE_MIGRATION = '20260722_recurring_payment_dispatch_gate';
+export const SERVICE_BUSINESS_ASSIGNMENT_CONTRACT_MIGRATION =
+  '20260722_service_business_assignment_contract';
 
 type QueryResult<Row extends Record<string, unknown> = Record<string, unknown>> = {
   rows: Row[];

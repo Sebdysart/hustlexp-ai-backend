@@ -25,6 +25,8 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+const payoutDestination = vi.hoisted(() => vi.fn());
+
 // ---------------------------------------------------------------------------
 // Module mocks
 // ---------------------------------------------------------------------------
@@ -81,6 +83,10 @@ vi.mock('../../src/services/StripeService', () => ({
   },
 }));
 
+vi.mock('../../src/services/TaskPayoutDestinationService.js', () => ({
+  loadCurrentTaskPayoutDestination: payoutDestination,
+}));
+
 // ---------------------------------------------------------------------------
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
@@ -91,6 +97,19 @@ import { XPService } from '../../src/services/XPService';
 
 const mockQuery       = vi.mocked(db.query);
 const mockIsInvariant = vi.mocked(isInvariantViolation);
+
+beforeEach(() => {
+  payoutDestination.mockImplementation(async (query,binding) => {
+    const result=await query(
+      'SELECT payouts_enabled,stripe_connect_id,stripe_connect_status FROM users WHERE id=$1',
+      [binding.payoutRecipientUserId],
+    );
+    const row=result.rows[0];
+    return row?.stripe_connect_id && row.payouts_enabled!==false
+      ? { ready:true,stripeConnectId:row.stripe_connect_id,reason:'READY' }
+      : { ready:false,stripeConnectId:null,reason:'PAYOUT_ACCOUNT_NOT_READY' };
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -230,7 +249,7 @@ describe('EscrowService.release — no worker assigned', () => {
 // ===========================================================================
 
 describe('EscrowService.release — KYC gate', () => {
-  it('returns NOT_FOUND when worker user row is missing', async () => {
+  it('fails closed when the canonical payout destination is missing', async () => {
     // 1: escrow
     mockQuery.mockResolvedValueOnce({
       rows: [{ id: 'esc-1', task_id: 'task-1', amount: 5000, state: 'FUNDED' }],
@@ -244,8 +263,8 @@ describe('EscrowService.release — KYC gate', () => {
     const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_branch' });
 
     expect(result.success).toBe(false);
-    expect(result.error?.code).toBe('NOT_FOUND');
-    expect(result.error?.message).toContain('Worker');
+    expect(result.error?.code).toBe('INVALID_STATE');
+    expect(result.error?.message).toContain('PAYOUT_ACCOUNT_NOT_READY');
   });
 
   it('returns INVALID_STATE when stripe_connect_id is missing', async () => {
@@ -258,7 +277,7 @@ describe('EscrowService.release — KYC gate', () => {
 
     expect(result.success).toBe(false);
     expect(result.error?.code).toBe('INVALID_STATE');
-    expect(result.error?.message).toContain('Stripe Connect');
+    expect(result.error?.message).toContain('PAYOUT_ACCOUNT_NOT_READY');
   });
 
   it('returns INVALID_STATE when payouts_enabled is false', async () => {
@@ -271,7 +290,7 @@ describe('EscrowService.release — KYC gate', () => {
 
     expect(result.success).toBe(false);
     expect(result.error?.code).toBe('INVALID_STATE');
-    expect(result.error?.message).toContain('KYC incomplete');
+    expect(result.error?.message).toContain('PAYOUT_ACCOUNT_NOT_READY');
   });
 });
 

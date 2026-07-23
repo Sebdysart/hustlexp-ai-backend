@@ -14,6 +14,8 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+const payoutDestination = vi.hoisted(() => vi.fn());
+
 // ---------------------------------------------------------------------------
 // Mocks — shared across ProofService and EscrowService suites
 // ---------------------------------------------------------------------------
@@ -117,6 +119,10 @@ vi.mock('../../src/services/SelfInsurancePoolService.js', () => ({
 
 vi.mock('../../src/services/RevenueService', () => ({
   RevenueService: { logEvent: vi.fn().mockResolvedValue({ success: true, data: { id: 'rev-1' } }) },
+}));
+
+vi.mock('../../src/services/TaskPayoutDestinationService.js', () => ({
+  loadCurrentTaskPayoutDestination: payoutDestination,
 }));
 
 // Mocks needed when TaskService is imported (it pulls in ScoperAIService → AIClient)
@@ -224,6 +230,13 @@ beforeEach(() => {
   vi.mocked(EarnedVerificationUnlockService.recordEarnings).mockResolvedValue(undefined);
   vi.mocked(XPService.awardXP).mockResolvedValue({ success: true } as never);
   vi.mocked(SelfInsurancePoolService.recordContribution).mockResolvedValue({ success: true } as never);
+  payoutDestination.mockImplementation(async (query,binding) => {
+    const result=await query('SELECT payouts_enabled,stripe_connect_id,stripe_connect_status FROM users WHERE id=$1',[binding.payoutRecipientUserId]);
+    const row=result.rows[0];
+    return row?.stripe_connect_id && row.payouts_enabled!==false
+      ? { ready:true,stripeConnectId:row.stripe_connect_id,reason:'READY' }
+      : { ready:false,stripeConnectId:null,reason:'PAYOUT_ACCOUNT_NOT_READY' };
+  });
   vi.mocked(BiometricVerificationService.analyzeProofSubmission).mockResolvedValue({ success: false } as never);
   vi.mocked(JudgeAIService.synthesizeVerdict).mockResolvedValue({
     success: true,
@@ -808,6 +821,13 @@ describe('Attack #19 — Double release (idempotency check)', () => {
     vi.mocked(EarnedVerificationUnlockService.recordEarnings).mockResolvedValue(undefined);
     vi.mocked(XPService.awardXP).mockResolvedValue({ success: true } as never);
     vi.mocked(SelfInsurancePoolService.recordContribution).mockResolvedValue({ success: true } as never);
+    payoutDestination.mockImplementation(async (query,binding) => {
+      const result=await query('SELECT payouts_enabled,stripe_connect_id,stripe_connect_status FROM users WHERE id=$1',[binding.payoutRecipientUserId]);
+      const row=result.rows[0];
+      return row?.stripe_connect_id && row.payouts_enabled!==false
+        ? { ready:true,stripeConnectId:row.stripe_connect_id,reason:'READY' }
+        : { ready:false,stripeConnectId:null,reason:'PAYOUT_ACCOUNT_NOT_READY' };
+    });
 
     // Second release attempt — DB still shows RELEASED, UPDATE returns 0 rows
     mockDb.query

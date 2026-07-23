@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+const payoutDestination = vi.hoisted(() => vi.fn());
+
 // Mock db module
 // transaction() and serializableTransaction() call the provided callback with
 // the same `query` spy so mockResolvedValueOnce sequences work seamlessly
@@ -44,6 +46,10 @@ vi.mock('../../src/config', () => ({
   config: { stripe: { platformFeePercent: 15 } },
 }));
 
+vi.mock('../../src/services/TaskPayoutDestinationService.js', () => ({
+  loadCurrentTaskPayoutDestination: payoutDestination,
+}));
+
 import { EscrowService } from '../../src/services/EscrowService';
 import { XPService } from '../../src/services/XPService';
 import { db } from '../../src/db';
@@ -51,6 +57,13 @@ import { db } from '../../src/db';
 describe('EscrowService', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    payoutDestination.mockImplementation(async (query,binding) => {
+      const result=await query('SELECT payouts_enabled,stripe_connect_id,stripe_connect_status FROM users WHERE id=$1',[binding.payoutRecipientUserId]);
+      const row=result.rows[0];
+      return row?.stripe_connect_id && row.payouts_enabled!==false
+        ? { ready:true,stripeConnectId:row.stripe_connect_id,reason:'READY' }
+        : { ready:false,stripeConnectId:null,reason:'PAYOUT_ACCOUNT_NOT_READY' };
+    });
   });
 
   describe('create', () => {

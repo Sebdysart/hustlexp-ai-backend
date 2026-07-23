@@ -14,6 +14,8 @@
 
 import { vi, describe, it, expect, beforeEach } from 'vitest';
 
+const payoutDestination = vi.hoisted(() => vi.fn());
+
 // ---------------------------------------------------------------------------
 // Module mocks — must be declared before any imports that trigger the module
 // ---------------------------------------------------------------------------
@@ -34,6 +36,10 @@ vi.mock('../../src/db', () => {
 
 vi.mock('../../src/services/StripeService.js', () => ({
   StripeService: { createTransfer: vi.fn(), createRefund: vi.fn() },
+}));
+
+vi.mock('../../src/services/TaskPayoutDestinationService.js', () => ({
+  loadCurrentTaskPayoutDestination: payoutDestination,
 }));
 
 vi.mock('../../src/logger', () => {
@@ -93,6 +99,7 @@ import { StripeService } from '../../src/services/StripeService.js';
 import { processEscrowActionJob } from '../../src/jobs/escrow-action-worker.js';
 import { signJobPayload } from '../../src/jobs/queues.js';
 import { notifyAdmins } from '../../src/services/AdminNotificationHelper.js';
+import { SelfInsurancePoolService } from '../../src/services/SelfInsurancePoolService.js';
 import type { Job } from 'bullmq';
 
 // ---------------------------------------------------------------------------
@@ -113,6 +120,16 @@ const TASK_ID = '10000000-0000-0000-0000-000000000001';
 const WORKER_ID = 'worker-001';
 const STRIPE_CONNECT_ID = 'acct_test_123';
 const ESCROW_VERSION = 1;
+
+beforeEach(() => {
+  payoutDestination.mockImplementation(async (query, binding) => {
+    const result=await query('SELECT stripe_connect_id FROM users WHERE id = $1',[binding.payoutRecipientUserId]);
+    const stripeConnectId=result.rows[0]?.stripe_connect_id ?? null;
+    return stripeConnectId
+      ? { ready:true,stripeConnectId,reason:'READY' }
+      : { ready:false,stripeConnectId:null,reason:'PAYOUT_ACCOUNT_NOT_READY' };
+  });
+});
 
 /** Standard locked-dispute escrow row returned by the FOR UPDATE SELECT */
 function makeEscrowRow(overrides: Partial<{
@@ -145,7 +162,7 @@ function makeEscrowRow(overrides: Partial<{
  * Note: RevenueService.logEvent is module-mocked (vi.mock) so it does NOT
  * issue an additional db.query call — no query #3 needed here.
  */
-function setupReleaseMocks(escrowAmountCents = 10_000, escrowOverrides = {}) {
+function setupReleaseMocks(escrowAmountCents = 10_000, escrowOverrides = {}, taskOverrides = {}) {
   const dbQuery = vi.mocked(db.query);
   const dbTransaction = vi.mocked(db.transaction);
 
@@ -177,7 +194,7 @@ function setupReleaseMocks(escrowAmountCents = 10_000, escrowOverrides = {}) {
   // After both transactions: auxiliary db.query calls (in execution order)
   dbQuery
     // SELECT worker_id FROM tasks
-    .mockResolvedValueOnce({ rows: [{ worker_id: WORKER_ID }], rowCount: 1 } as never)
+    .mockResolvedValueOnce({ rows: [{ worker_id: WORKER_ID, ...taskOverrides }], rowCount: 1 } as never)
     // SELECT stripe_connect_id FROM users
     .mockResolvedValueOnce({ rows: [{ stripe_connect_id: STRIPE_CONNECT_ID }], rowCount: 1 } as never);
 }
@@ -243,6 +260,23 @@ describe('escrow-action-worker — platform fee deduction (P0 revenue bug)', () 
     // EscrowService.release): 10000 − 1500 fee − round(10000×2%)=200 → 8300.
     // (Old NET basis gave 8330 — the two release paths paid different amounts.)
     expect(transferCall.amount).toBe(8_300);
+  });
+
+  it('routes a Service Business dispute release to the provider payee', async () => {
+    const payoutRecipientUserId='service-business-payee';
+    setupReleaseMocks(10_000,{}, { payout_recipient_user_id:payoutRecipientUserId });
+
+    await processEscrowActionJob(makeJob('escrow.release_requested',
+      makeSignedPayload({ escrow_id:ESCROW_ID,task_id:TASK_ID,reason:'provider wins dispute' }),
+    ) as never);
+
+    expect(vi.mocked(db.query).mock.calls[1]?.[1]).toEqual([payoutRecipientUserId]);
+    expect(StripeService.createTransfer).toHaveBeenCalledWith(expect.objectContaining({
+      workerId:payoutRecipientUserId,workerStripeAccountId:STRIPE_CONNECT_ID,
+    }));
+    expect(SelfInsurancePoolService.recordContribution).toHaveBeenCalledWith(
+      TASK_ID,WORKER_ID,200,
+    );
   });
 
   it('does NOT transfer the full escrow amount (confirms the bug is fixed)', async () => {

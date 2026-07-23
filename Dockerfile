@@ -146,6 +146,7 @@ COPY --from=builder /app/backend/database/migrations/20260721_controlled_test_re
 COPY --from=builder /app/backend/database/migrations/20260721_same_worker_retake_assignment_guard_repair.sql ./backend/database/migrations/20260721_same_worker_retake_assignment_guard_repair.sql
 COPY --from=builder /app/backend/database/migrations/20260722_region_policy_legal_approval_activation.sql ./backend/database/migrations/20260722_region_policy_legal_approval_activation.sql
 COPY --from=builder /app/backend/database/migrations/20260722_recurring_payment_dispatch_gate.sql ./backend/database/migrations/20260722_recurring_payment_dispatch_gate.sql
+COPY --from=builder /app/backend/database/migrations/20260722_service_business_assignment_contract.sql ./backend/database/migrations/20260722_service_business_assignment_contract.sql
 
 # Change ownership
 RUN chown -R hustlexp:nodejs /app
