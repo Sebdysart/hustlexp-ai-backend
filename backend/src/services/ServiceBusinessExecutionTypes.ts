@@ -43,10 +43,41 @@ export interface ServiceBusinessOpportunity {
   eligibleCrewCount: number;
 }
 
+export interface ServiceBusinessEligibleCrew {
+  crewAssignmentId: string;
+  fulfillerName: string;
+  memberRole: 'CREW' | 'DISPATCHER' | 'ADMIN' | 'OWNER';
+}
+
+export interface ServiceBusinessAssignment {
+  taskId: string;
+  title: string;
+  category: string;
+  roughLocation: string;
+  taskState: string;
+  progressState: string;
+  fulfillerName: string;
+  grossPayoutCents: number;
+  payoutState:
+    | 'NOT_AVAILABLE'
+    | 'PENDING_CLEARANCE'
+    | 'CONNECTED_BALANCE_CONFIRMED'
+    | 'HELD'
+    | 'PARTIALLY_SETTLED_OR_REFUNDED'
+    | 'REFUNDED_OR_REVERSED';
+  payoutDestination: { kind: 'ORGANIZATION_ACCOUNT' };
+  acceptedAt: string;
+  completedAt: string | null;
+}
+
 export interface ServiceBusinessOfferReview {
   offerDecisionId: string;
-  fulfillerUserId: string;
-  payoutRecipientUserId: string;
+  crewAssignmentId: string;
+  fulfillerName: string;
+  payoutDestination: {
+    kind: 'ORGANIZATION_ACCOUNT';
+    state: 'ACTIVE';
+  };
   decision: WorkerOfferDecision;
   expiresAt: string;
   idempotencyReplayed: boolean;

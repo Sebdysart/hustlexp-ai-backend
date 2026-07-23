@@ -7,6 +7,8 @@ import {
   clarifyServiceBusinessOpportunity,
   declineServiceBusinessOpportunity,
   linkServiceBusinessPayoutAccount,
+  listServiceBusinessAssignments,
+  listServiceBusinessEligibleCrew,
   listServiceBusinessOpportunities,
   quoteServiceBusinessOpportunity,
   reviewServiceBusinessOpportunity,
@@ -50,6 +52,25 @@ export const serviceBusinessRouter = router({
       await listServiceBusinessOpportunities(ctx.user.id, input.organizationId),
     )),
 
+  listEligibleCrew: protectedProcedure
+    .input(z.object({
+      organizationId: uuid,
+      serviceProfileId: uuid,
+      taskId: uuid,
+    }).strict())
+    .query(async ({ ctx, input }) => unwrap(
+      await listServiceBusinessEligibleCrew({
+        ...input,
+        actorId: ctx.user.id,
+      }),
+    )),
+
+  listAssignments: protectedProcedure
+    .input(organizationInput)
+    .query(async ({ ctx, input }) => unwrap(
+      await listServiceBusinessAssignments(ctx.user.id, input.organizationId),
+    )),
+
   reviewOpportunity: protectedProcedure
     .input(z.object({
       organizationId: uuid,
@@ -68,7 +89,6 @@ export const serviceBusinessRouter = router({
       organizationId: uuid,
       serviceProfileId: uuid,
       crewAssignmentId: uuid,
-      fulfillerUserId: uuid,
       offerDecisionId: uuid,
       taskId: uuid,
       idempotencyKey,

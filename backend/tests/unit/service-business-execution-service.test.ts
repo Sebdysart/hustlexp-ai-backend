@@ -23,6 +23,8 @@ import {
   clarifyServiceBusinessOpportunity,
   declineServiceBusinessOpportunity,
   linkServiceBusinessPayoutAccount,
+  listServiceBusinessEligibleCrew,
+  listServiceBusinessAssignments,
   listServiceBusinessOpportunities,
   quoteServiceBusinessOpportunity,
   reviewServiceBusinessOpportunity,
@@ -63,8 +65,12 @@ describe('Service Business execution service', () => {
       idempotencyKey: 'business:payout:001',
     });
     expect(result).toEqual({ success: true, data: {
-      payoutAccountId: PAYOUT, payoutRecipientUserId: ACTOR, status: 'ACTIVE',
+      destinationKind: 'ORGANIZATION_ACCOUNT', status: 'ACTIVE',
     } });
+    expect((result as { data?: Record<string, unknown> }).data)
+      .not.toHaveProperty('payoutAccountId');
+    expect((result as { data?: Record<string, unknown> }).data)
+      .not.toHaveProperty('payoutRecipientUserId');
     expect(String(mocks.query.mock.calls[0]?.[0])).toContain('link_business_provider_payout_account');
   });
 
@@ -87,13 +93,74 @@ describe('Service Business execution service', () => {
     expect(sql).not.toMatch(/exact_address|location_ciphertext|access_ciphertext/i);
   });
 
+  it('lists only task-eligible crew through a safe organization projection', async () => {
+    mocks.query.mockResolvedValueOnce({ rows: [{
+      crew_assignment_id: CREW,
+      fulfiller_name: 'Verified Crew Member',
+      member_role: 'CREW',
+    }] });
+    const result = await listServiceBusinessEligibleCrew({
+      actorId: ACTOR,
+      organizationId: ORG,
+      serviceProfileId: PROFILE,
+      taskId: TASK,
+    });
+    expect(result).toEqual({ success: true, data: [{
+      crewAssignmentId: CREW,
+      fulfillerName: 'Verified Crew Member',
+      memberRole: 'CREW',
+    }] });
+    const sql = String(mocks.query.mock.calls[0]?.[0]);
+    expect(sql).toContain('evaluate_service_business_assignment');
+    expect(sql).toContain('evaluation.ready=TRUE');
+    expect(sql).not.toMatch(/payout_recipient_user_id|stripe_connect_id|exact_address/i);
+  });
+
+  it('lists provider assignments with distinct work, fulfiller, and connected-balance states', async () => {
+    mocks.query.mockResolvedValueOnce({ rows: [{
+      task_id: TASK,
+      title: 'Storefront cleanup',
+      category: 'CLEANUP',
+      rough_location: 'Bellevue',
+      task_state: 'COMPLETED',
+      progress_state: 'COMPLETED',
+      fulfiller_name: 'Verified Crew Member',
+      payout_cents: 8_500,
+      escrow_state: 'RELEASED',
+      stripe_transfer_id: 'tr_provider_evidence',
+      provider_transfer_status: 'paid',
+      accepted_at: '2026-07-23T01:00:00.000Z',
+      completed_at: '2026-07-23T03:00:00.000Z',
+    }] });
+    const result = await listServiceBusinessAssignments(ACTOR, ORG);
+    expect(result).toEqual({ success: true, data: [{
+      taskId: TASK,
+      title: 'Storefront cleanup',
+      category: 'CLEANUP',
+      roughLocation: 'Bellevue',
+      taskState: 'COMPLETED',
+      progressState: 'COMPLETED',
+      fulfillerName: 'Verified Crew Member',
+      grossPayoutCents: 8_500,
+      payoutState: 'CONNECTED_BALANCE_CONFIRMED',
+      payoutDestination: { kind: 'ORGANIZATION_ACCOUNT' },
+      acceptedAt: '2026-07-23T01:00:00.000Z',
+      completedAt: '2026-07-23T03:00:00.000Z',
+    }] });
+    const sql = String(mocks.query.mock.calls[0]?.[0]);
+    expect(sql).toContain("business_require_action($1,$2,'READ_WORKSPACE')");
+    expect(sql).toContain('business_service_task_assignments');
+    expect(sql).not.toMatch(/exact_address|access_ciphertext|payout_recipient_user_id/i);
+    expect(JSON.stringify(result)).not.toContain('tr_provider_evidence');
+  });
+
   it('persists a decision-complete provider offer bound to the organization and chosen crew', async () => {
     mocks.query
       .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({ rows: [opportunityRow()] })
       .mockResolvedValueOnce({ rows: [{
         ready: true, blockers: [], payout_recipient_user_id: ACTOR,
-        fulfiller_user_id: WORKER,
+        fulfiller_user_id: WORKER, fulfiller_name: 'Verified Crew Member',
       }] })
       .mockResolvedValueOnce({ rows: [{ id: OFFER, expires_at: '2026-07-23T01:00:00.000Z' }] })
       .mockResolvedValueOnce({ rowCount: 1 });
@@ -102,8 +169,16 @@ describe('Service Business execution service', () => {
       crewAssignmentId: CREW, taskId: TASK, idempotencyKey: 'business:offer:001',
     });
     expect(result).toMatchObject({ success: true, data: {
-      offerDecisionId: OFFER, decision: { decisionReady: true },
+      offerDecisionId: OFFER,
+      crewAssignmentId: CREW,
+      fulfillerName: 'Verified Crew Member',
+      payoutDestination: { kind: 'ORGANIZATION_ACCOUNT', state: 'ACTIVE' },
+      decision: { decisionReady: true },
     } });
+    expect((result as { data?: Record<string, unknown> }).data)
+      .not.toHaveProperty('fulfillerUserId');
+    expect((result as { data?: Record<string, unknown> }).data)
+      .not.toHaveProperty('payoutRecipientUserId');
     const insert = mocks.query.mock.calls.find((call) => String(call[0]).includes('INSERT INTO worker_offer_decisions'));
     expect(insert).toBeTruthy();
     expect(String(insert?.[0])).toContain('provider_organization_id');
@@ -111,13 +186,20 @@ describe('Service Business execution service', () => {
   });
 
   it('accepts through the canonical reservation transaction with organization, crew, offer, and payee context', async () => {
+    mocks.query.mockResolvedValueOnce({ rows: [{
+      ready: true,
+      blockers: [],
+      payout_recipient_user_id: ACTOR,
+      fulfiller_user_id: WORKER,
+      fulfiller_name: 'Verified Crew Member',
+    }] });
     mocks.reserve.mockResolvedValueOnce({ success: true, data: {
       reservationId: 'reservation-id', engineTaskId: TASK, hustlerRef: WORKER,
       state: 'ENGINE_RESERVED', idempotencyReplayed: false,
     } });
     const result = await acceptServiceBusinessOpportunity({
       actorId: ACTOR, organizationId: ORG, serviceProfileId: PROFILE,
-      crewAssignmentId: CREW, fulfillerUserId: WORKER, offerDecisionId: OFFER,
+      crewAssignmentId: CREW, offerDecisionId: OFFER,
       taskId: TASK, idempotencyKey: 'business:accept:001',
     });
     expect(result.success).toBe(true);

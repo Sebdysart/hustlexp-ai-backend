@@ -16,6 +16,10 @@ import type {
 import { buildWorkerOfferDecision, type WorkerOfferDecision } from './WorkerOfferDecisionPolicy.js';
 import { serviceBusinessFailure } from './ServiceBusinessErrors.js';
 export { quoteServiceBusinessOpportunity } from './ServiceBusinessQuoteService.js';
+export {
+  listServiceBusinessAssignments,
+  listServiceBusinessEligibleCrew,
+} from './ServiceBusinessAssignmentReadService.js';
 
 class ServiceBusinessFailure extends Error {
   constructor(readonly code: string, message: string) { super(message); }
@@ -41,7 +45,10 @@ export async function linkServiceBusinessPayoutAccount(input: {
   organizationId: string;
   payoutMembershipId: string;
   idempotencyKey: string;
-}): Promise<ServiceResult<{ payoutAccountId: string; payoutRecipientUserId: string; status: 'ACTIVE' }>> {
+}): Promise<ServiceResult<{
+  destinationKind: 'ORGANIZATION_ACCOUNT';
+  status: 'ACTIVE';
+}>> {
   try {
     const result = await db.query<{
       payout_account_id: string;
@@ -54,8 +61,7 @@ export async function linkServiceBusinessPayoutAccount(input: {
     );
     const row = result.rows[0] ?? fail('PAYOUT_ACCOUNT_LINK_FAILED', 'The provider payout account was not linked.');
     return { success: true, data: {
-      payoutAccountId: row.payout_account_id,
-      payoutRecipientUserId: row.payout_recipient_user_id,
+      destinationKind: 'ORGANIZATION_ACCOUNT',
       status: row.payout_status,
     } };
   } catch (error) { return failure(error); }
@@ -103,6 +109,7 @@ interface AssignmentEvaluation {
   blockers: string[];
   payout_recipient_user_id: string;
   fulfiller_user_id: string;
+  fulfiller_name: string;
 }
 
 async function evaluateAssignment(query: QueryFn, input: {
@@ -110,8 +117,11 @@ async function evaluateAssignment(query: QueryFn, input: {
   crewAssignmentId: string; taskId: string; offerDecisionId?: string | null;
 }): Promise<AssignmentEvaluation> {
   const result = await query<AssignmentEvaluation>(
-    `SELECT ready,blockers,payout_recipient_user_id,fulfiller_user_id
-     FROM evaluate_service_business_assignment($1,$2,$3,$4,$5,$6)`,
+    `SELECT evaluation.ready,evaluation.blockers,
+            evaluation.payout_recipient_user_id,evaluation.fulfiller_user_id,
+            COALESCE(NULLIF(BTRIM(fulfiller.full_name),''),'Verified crew member') AS fulfiller_name
+       FROM evaluate_service_business_assignment($1,$2,$3,$4,$5,$6) evaluation
+       LEFT JOIN users fulfiller ON fulfiller.id=evaluation.fulfiller_user_id`,
     [input.organizationId,input.actorId,input.serviceProfileId,input.crewAssignmentId,
       input.taskId,input.offerDecisionId ?? null],
   );
@@ -137,8 +147,9 @@ export async function reviewServiceBusinessOpportunity(input: {
         const current = await evaluateAssignment(query, { ...input, offerDecisionId: replay.rows[0].offer_decision_id });
         return {
           offerDecisionId: replay.rows[0].offer_decision_id,
-          fulfillerUserId: current.fulfiller_user_id,
-          payoutRecipientUserId: current.payout_recipient_user_id,
+          crewAssignmentId: input.crewAssignmentId,
+          fulfillerName: current.fulfiller_name,
+          payoutDestination: { kind: 'ORGANIZATION_ACCOUNT' as const, state: 'ACTIVE' as const },
           decision: replay.rows[0].snapshot,
           expiresAt: new Date(replay.rows[0].expires_at).toISOString(),
           idempotencyReplayed: true,
@@ -190,8 +201,9 @@ export async function reviewServiceBusinessOpportunity(input: {
       );
       return {
         offerDecisionId: offer.id,
-        fulfillerUserId: evaluation.fulfiller_user_id,
-        payoutRecipientUserId: evaluation.payout_recipient_user_id,
+        crewAssignmentId: input.crewAssignmentId,
+        fulfillerName: evaluation.fulfiller_name,
+        payoutDestination: { kind: 'ORGANIZATION_ACCOUNT' as const, state: 'ACTIVE' as const },
         decision,
         expiresAt: new Date(offer.expires_at).toISOString(),
         idempotencyReplayed: false,
@@ -203,11 +215,26 @@ export async function reviewServiceBusinessOpportunity(input: {
 
 export async function acceptServiceBusinessOpportunity(input: {
   actorId: string; organizationId: string; serviceProfileId: string;
-  crewAssignmentId: string; fulfillerUserId: string; offerDecisionId: string;
+  crewAssignmentId: string; offerDecisionId: string;
   taskId: string; idempotencyKey: string;
 }): Promise<ServiceResult<{ action: 'ACCEPTED'; reservationId: string; idempotencyReplayed: boolean }>> {
+  let evaluation: AssignmentEvaluation;
+  try {
+    evaluation = await evaluateAssignment(db.query.bind(db), {
+      ...input,
+      offerDecisionId: input.offerDecisionId,
+    });
+    if (!evaluation.ready) {
+      fail(
+        'SERVICE_BUSINESS_INELIGIBLE',
+        `Resolve: ${evaluation.blockers.join(', ')}`,
+      );
+    }
+  } catch (error) {
+    return failure(error);
+  }
   const reserved = await TaskReservationService.reserve({
-    engineTaskId: input.taskId,hustlerRef: input.fulfillerUserId,
+    engineTaskId: input.taskId,hustlerRef: evaluation.fulfiller_user_id,
     actorId: input.actorId,idempotencyKey: input.idempotencyKey,
     serviceBusiness: {
       organizationId: input.organizationId,serviceProfileId: input.serviceProfileId,

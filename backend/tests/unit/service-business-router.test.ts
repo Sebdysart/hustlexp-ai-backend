@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const execution = vi.hoisted(() => ({
   linkServiceBusinessPayoutAccount: vi.fn(),
   listServiceBusinessOpportunities: vi.fn(),
+  listServiceBusinessEligibleCrew: vi.fn(),
+  listServiceBusinessAssignments: vi.fn(),
   reviewServiceBusinessOpportunity: vi.fn(),
   acceptServiceBusinessOpportunity: vi.fn(),
   declineServiceBusinessOpportunity: vi.fn(),
@@ -46,12 +48,29 @@ describe('Service Business authenticated router', () => {
     vi.clearAllMocks();
     execution.linkServiceBusinessPayoutAccount.mockResolvedValue({
       success: true,
-      data: { payoutAccountId: '80000000-0000-4000-8000-000000000001', payoutRecipientUserId: ACTOR, status: 'ACTIVE' },
+      data: { destinationKind: 'ORGANIZATION_ACCOUNT', status: 'ACTIVE' },
     });
     execution.listServiceBusinessOpportunities.mockResolvedValue({ success: true, data: [] });
+    execution.listServiceBusinessEligibleCrew.mockResolvedValue({
+      success: true,
+      data: [{
+        crewAssignmentId: CREW,
+        fulfillerName: 'Verified Crew Member',
+        memberRole: 'CREW',
+      }],
+    });
+    execution.listServiceBusinessAssignments.mockResolvedValue({
+      success: true,
+      data: [],
+    });
     execution.reviewServiceBusinessOpportunity.mockResolvedValue({
       success: true,
-      data: { offerDecisionId: OFFER, fulfillerUserId: FULFILLER, payoutRecipientUserId: ACTOR },
+      data: {
+        offerDecisionId: OFFER,
+        crewAssignmentId: CREW,
+        fulfillerName: 'Verified Crew Member',
+        payoutDestination: { kind: 'ORGANIZATION_ACCOUNT', state: 'ACTIVE' },
+      },
     });
     execution.acceptServiceBusinessOpportunity.mockResolvedValue({
       success: true,
@@ -79,6 +98,12 @@ describe('Service Business authenticated router', () => {
       idempotencyKey: 'payout:provider:001',
     });
     await caller.listOpportunities({ organizationId: ORG });
+    await caller.listEligibleCrew({
+      organizationId: ORG,
+      serviceProfileId: PROFILE,
+      taskId: TASK,
+    });
+    await caller.listAssignments({ organizationId: ORG });
     await caller.reviewOpportunity({
       organizationId: ORG,
       serviceProfileId: PROFILE,
@@ -90,7 +115,6 @@ describe('Service Business authenticated router', () => {
       organizationId: ORG,
       serviceProfileId: PROFILE,
       crewAssignmentId: CREW,
-      fulfillerUserId: FULFILLER,
       offerDecisionId: OFFER,
       taskId: TASK,
       idempotencyKey: 'accept:provider:001',
@@ -117,8 +141,22 @@ describe('Service Business authenticated router', () => {
 
     expect(execution.linkServiceBusinessPayoutAccount).toHaveBeenCalledWith(expect.objectContaining({ actorId: ACTOR }));
     expect(execution.listServiceBusinessOpportunities).toHaveBeenCalledWith(ACTOR, ORG);
+    expect(execution.listServiceBusinessEligibleCrew).toHaveBeenCalledWith(expect.objectContaining({
+      actorId: ACTOR,
+      organizationId: ORG,
+      serviceProfileId: PROFILE,
+      taskId: TASK,
+    }));
+    expect(execution.listServiceBusinessAssignments).toHaveBeenCalledWith(ACTOR, ORG);
     expect(execution.reviewServiceBusinessOpportunity).toHaveBeenCalledWith(expect.objectContaining({ actorId: ACTOR }));
-    expect(execution.acceptServiceBusinessOpportunity).toHaveBeenCalledWith(expect.objectContaining({ actorId: ACTOR }));
+    expect(execution.acceptServiceBusinessOpportunity).toHaveBeenCalledWith(expect.objectContaining({
+      actorId: ACTOR,
+      organizationId: ORG,
+      crewAssignmentId: CREW,
+    }));
+    expect(execution.acceptServiceBusinessOpportunity).not.toHaveBeenCalledWith(
+      expect.objectContaining({ fulfillerUserId: expect.anything() }),
+    );
     expect(execution.declineServiceBusinessOpportunity).toHaveBeenCalledWith(expect.objectContaining({ actorId: ACTOR }));
     expect(execution.clarifyServiceBusinessOpportunity).toHaveBeenCalledWith(expect.objectContaining({ actorId: ACTOR }));
     expect(execution.quoteServiceBusinessOpportunity).toHaveBeenCalledWith(expect.objectContaining({ actorId: ACTOR }));
@@ -135,11 +173,11 @@ describe('Service Business authenticated router', () => {
       organizationId: ORG,
       serviceProfileId: PROFILE,
       crewAssignmentId: CREW,
-      fulfillerUserId: FULFILLER,
       offerDecisionId: OFFER,
       taskId: TASK,
       idempotencyKey: 'accept:provider:002',
       actorId: FULFILLER,
+      fulfillerUserId: FULFILLER,
       payoutStatus: 'ACTIVE',
       verificationStatus: 'VERIFIED',
     } as any)).rejects.toThrow();
@@ -162,7 +200,6 @@ describe('Service Business authenticated router', () => {
       organizationId: ORG,
       serviceProfileId: PROFILE,
       crewAssignmentId: CREW,
-      fulfillerUserId: FULFILLER,
       offerDecisionId: OFFER,
       taskId: TASK,
       idempotencyKey: 'accept:provider:003',
