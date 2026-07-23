@@ -15,6 +15,8 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+const payoutDestination = vi.hoisted(() => vi.fn());
+
 // ---------------------------------------------------------------------------
 // Shared mocks (declared before any imports that resolve them)
 // ---------------------------------------------------------------------------
@@ -72,6 +74,10 @@ vi.mock('../../src/services/XPTaxService', () => ({
 
 vi.mock('../../src/services/SelfInsurancePoolService', () => ({
   SelfInsurancePoolService: { recordContribution: vi.fn() },
+}));
+
+vi.mock('../../src/services/TaskPayoutDestinationService.js', () => ({
+  loadCurrentTaskPayoutDestination: payoutDestination,
 }));
 
 // BullMQ mock — Queue and Worker must be classes (new Queue(...)).
@@ -182,6 +188,13 @@ const T = {
 describe('RED-TEAM: BullMQ Queue Attack Surface', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    payoutDestination.mockImplementation(async (query,binding) => {
+      const result=await query('SELECT stripe_connect_id FROM users WHERE id=$1',[binding.payoutRecipientUserId]);
+      const stripeConnectId=result.rows[0]?.stripe_connect_id ?? null;
+      return stripeConnectId
+        ? { ready:true,stripeConnectId,reason:'READY' }
+        : { ready:false,stripeConnectId:null,reason:'PAYOUT_ACCOUNT_NOT_READY' };
+    });
     // Default db.transaction() implementation: call the callback with db.query
     // as the trx function so that existing db.query mock sequences continue to
     // work after the critical-section FOR UPDATE was moved inside db.transaction().

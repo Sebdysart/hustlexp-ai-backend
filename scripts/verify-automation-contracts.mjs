@@ -29,7 +29,10 @@ const assignment = source('backend/src/routers/assignment.ts');
 const trpc = source('backend/src/trpc.ts');
 const index = source('backend/src/routers/index.ts');
 const location = source('backend/src/services/TaskLocationService.ts');
-const reservation = source('backend/src/services/TaskReservationService.ts');
+const reservation = [
+  'backend/src/services/TaskReservationService.ts',
+  'backend/src/services/TaskReservationRepository.ts',
+].map(source).join('\n');
 const automation = source('backend/src/routers/automation.ts');
 const lifecycle = source('backend/src/services/AutomationLifecycleService.ts');
 const lifecycleRead = source('backend/src/services/AutomationLifecycleReadService.ts');

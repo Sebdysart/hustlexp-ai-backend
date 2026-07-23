@@ -22,11 +22,25 @@ const query = vi.mocked(db.query);
 const TASK_ID = '550e8400-e29b-41d4-a716-446655440000';
 const WORKER_ID = '550e8400-e29b-41d4-a716-446655440001';
 const ACTOR_ID = '550e8400-e29b-41d4-a716-446655440002';
+const ORGANIZATION_ID = '550e8400-e29b-41d4-a716-446655440003';
+const SERVICE_PROFILE_ID = '550e8400-e29b-41d4-a716-446655440004';
+const CREW_ASSIGNMENT_ID = '550e8400-e29b-41d4-a716-446655440005';
+const OFFER_DECISION_ID = '550e8400-e29b-41d4-a716-446655440006';
 const params = {
   engineTaskId: TASK_ID,
   hustlerRef: WORKER_ID,
   idempotencyKey: 'dispatch-wave-0001-attempt-01',
   actorId: ACTOR_ID,
+};
+const businessParams = {
+  ...params,
+  idempotencyKey: 'service-business-accept-0001',
+  serviceBusiness: {
+    organizationId: ORGANIZATION_ID,
+    serviceProfileId: SERVICE_PROFILE_ID,
+    crewAssignmentId: CREW_ASSIGNMENT_ID,
+    offerDecisionId: OFFER_DECISION_ID,
+  },
 };
 const originalEnv = { ...process.env };
 
@@ -110,6 +124,85 @@ describe('TaskReservationService.reserve', () => {
     });
     const update = query.mock.calls.find(([sql]) => String(sql).includes('UPDATE tasks'));
     expect(String(update?.[0])).toContain("state = 'ACCEPTED'");
+  });
+
+  it('commits a Service Business assignment while preserving the actual fulfiller and organization payee boundary', async () => {
+    query
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      .mockResolvedValueOnce({ rows: [eligibleTask()], rowCount: 1 } as never)
+      .mockResolvedValueOnce({
+        rows: [eligibleWorker({ stripe_connect_id: null, payouts_enabled: false })],
+        rowCount: 1,
+      } as never)
+      .mockResolvedValueOnce({ rows: [{
+        ready: true,
+        blockers: [],
+        payout_recipient_user_id: ACTOR_ID,
+        fulfiller_user_id: WORKER_ID,
+      }], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      .mockResolvedValueOnce({ rows: [{
+        assignment_id: 'service-assignment-1',
+        fulfiller_user_id: WORKER_ID,
+        payout_recipient_user_id: ACTOR_ID,
+      }], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [{ id: 'reservation-business-1' }], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [{ event_id: 'accept-event', replayed: false }], rowCount: 1 } as never);
+
+    await expect(TaskReservationService.reserve(businessParams)).resolves.toMatchObject({
+      success: true,
+      data: {
+        reservationId: 'reservation-business-1',
+        hustlerRef: WORKER_ID,
+      },
+    });
+    const evaluation = query.mock.calls.find(([sql]) =>
+      String(sql).includes('evaluate_service_business_assignment'));
+    expect(evaluation?.[1]).toEqual([
+      ORGANIZATION_ID,ACTOR_ID,SERVICE_PROFILE_ID,CREW_ASSIGNMENT_ID,TASK_ID,OFFER_DECISION_ID,
+    ]);
+    const commit = query.mock.calls.find(([sql]) =>
+      String(sql).includes('commit_service_business_task_assignment'));
+    expect(commit?.[1]).toEqual(expect.arrayContaining([
+      TASK_ID,ORGANIZATION_ID,ACTOR_ID,SERVICE_PROFILE_ID,CREW_ASSIGNMENT_ID,OFFER_DECISION_ID,
+    ]));
+    expect(query.mock.calls.some(([sql]) =>
+      String(sql).includes("record_business_service_offer_response")
+      && String(sql).includes("'ACCEPTED'"))).toBe(true);
+  });
+
+  it('rejects Service Business acceptance when the verified crew no longer resolves to the requested fulfiller', async () => {
+    query
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      .mockResolvedValueOnce({ rows: [eligibleTask()], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [eligibleWorker()], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [{
+        ready: true,
+        blockers: [],
+        payout_recipient_user_id: ACTOR_ID,
+        fulfiller_user_id: '550e8400-e29b-41d4-a716-446655440099',
+      }], rowCount: 1 } as never);
+
+    await expect(TaskReservationService.reserve(businessParams)).resolves.toMatchObject({
+      success: false,
+      error: { code: 'SERVICE_BUSINESS_FULFILLER_MISMATCH' },
+    });
+    expect(query.mock.calls.some(([sql]) =>
+      String(sql).includes('commit_service_business_task_assignment'))).toBe(false);
+  });
+
+  it('binds the idempotency hash to the complete Service Business provider context', () => {
+    const individualHash = buildReservationRequestHash(params);
+    const businessHash = buildReservationRequestHash(businessParams);
+    const otherOrganizationHash = buildReservationRequestHash({
+      ...businessParams,
+      serviceBusiness: { ...businessParams.serviceBusiness, organizationId: ACTOR_ID },
+    });
+    expect(businessHash).not.toBe(individualHash);
+    expect(otherOrganizationHash).not.toBe(businessHash);
   });
 
   it('allows a fully verified Tier 1 worker to reserve a low-risk green-lane task', async () => {
@@ -234,7 +327,7 @@ describe('TaskReservationService.reserve', () => {
       error: { code: 'WORKER_OFFER_REQUIRED' },
     });
     const taskQuery = query.mock.calls.find(([sql]) => String(sql).includes('FROM tasks t'));
-    expect(String(taskQuery?.[0])).toContain("hxos_local_test_offer_action_current(t.id,$2,offer.id,'ACCEPTED')");
+    expect(String(taskQuery?.[0])).toContain("hxos_local_test_offer_action_current(task.id,$2,offer.id,'ACCEPTED')");
   });
 
   it('rejects a hustler below the task trust requirement', async () => {

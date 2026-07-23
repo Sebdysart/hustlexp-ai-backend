@@ -10,6 +10,8 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+const payoutDestination = vi.hoisted(() => vi.fn());
+
 // ---------------------------------------------------------------------------
 // SHARED DB / SERVICE MOCKS
 // ---------------------------------------------------------------------------
@@ -91,6 +93,10 @@ vi.mock('../../src/services/RevenueService', () => ({
   RevenueService: { logEvent: vi.fn().mockResolvedValue({ success: true, data: { id: 'rev-1' } }) },
 }));
 
+vi.mock('../../src/services/TaskPayoutDestinationService.js', () => ({
+  loadCurrentTaskPayoutDestination: payoutDestination,
+}));
+
 vi.mock('../../src/services/AlphaInstrumentation', () => ({
   AlphaInstrumentation: { emitTrustDeltaApplied: vi.fn().mockResolvedValue(undefined) },
 }));
@@ -137,6 +143,13 @@ function setupTransaction() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  payoutDestination.mockImplementation(async (query,binding) => {
+    const result=await query('SELECT payouts_enabled,stripe_connect_id,stripe_connect_status FROM users WHERE id=$1',[binding.payoutRecipientUserId]);
+    const row=result.rows[0];
+    return row?.stripe_connect_id && row.payouts_enabled!==false
+      ? { ready:true,stripeConnectId:row.stripe_connect_id,reason:'READY' }
+      : { ready:false,stripeConnectId:null,reason:'PAYOUT_ACCOUNT_NOT_READY' };
+  });
   // D53-4: reset in-memory rate-limit Map so each test starts with an empty bucket
   _resetGDPRRateLimitMapForTesting();
 });

@@ -6,6 +6,8 @@
  */
 import { vi, describe, it, expect, beforeEach } from 'vitest';
 
+const payoutDestination = vi.hoisted(() => vi.fn());
+
 // ---------------------------------------------------------------------------
 // Mocks for F53-6 (TippingService.confirmTip platform cut)
 // ---------------------------------------------------------------------------
@@ -81,6 +83,10 @@ vi.mock('../../src/services/TaskService.js', () => ({
   TaskService: { updateStatus: vi.fn(), advanceProgress: vi.fn() },
 }));
 
+vi.mock('../../src/services/TaskPayoutDestinationService.js', () => ({
+  loadCurrentTaskPayoutDestination: payoutDestination,
+}));
+
 // ---------------------------------------------------------------------------
 // Imports
 // ---------------------------------------------------------------------------
@@ -105,6 +111,13 @@ beforeEach(() => {
   mockDb.transaction.mockImplementation(async (fn: (q: typeof mockDb.query) => Promise<unknown>) => fn(mockDb.query));
   mockRevenueService.logEvent.mockResolvedValue({ success: true, data: { id: 'rev_mock_id' } } as any);
   mockSelfInsurancePool.recordContribution.mockResolvedValue({ success: true } as any);
+  payoutDestination.mockImplementation(async (query,binding) => {
+    const result=await query('SELECT stripe_connect_id FROM users WHERE id=$1',[binding.payoutRecipientUserId]);
+    const stripeConnectId=result.rows[0]?.stripe_connect_id ?? null;
+    return stripeConnectId
+      ? { ready:true,stripeConnectId,reason:'READY' }
+      : { ready:false,stripeConnectId:null,reason:'PAYOUT_ACCOUNT_NOT_READY' };
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -214,7 +227,9 @@ function makeSignedPayload(fields: Record<string, unknown>): Record<string, unkn
 const ESCROW_ID = '00000000-0000-0000-0000-000000000099';
 const TASK_ID = '10000000-0000-0000-0000-000000000099';
 const WORKER_ID = 'worker-f53-7';
+const BUSINESS_PAYOUT_USER_ID = 'business-payout-f53-7';
 const STRIPE_CONNECT_ID = 'acct_f53_7';
+const BUSINESS_STRIPE_CONNECT_ID = 'acct_business_f53_7';
 const ESCROW_VERSION = 1;
 
 function makeEscrowRow(overrides: Partial<{
@@ -244,6 +259,13 @@ describe('F53-7: handlePartialRefundRequest — self-insurance pool funding path
     mockStripeService.createRefund.mockResolvedValue({ success: true, data: { refundId: 'ref_test' } } as any);
     mockStripeService.createTransfer.mockResolvedValue({ success: true, data: { transferId: 'tr_test' } } as any);
     mockDb.transaction.mockImplementation(async (fn: any) => fn(mockDb.query));
+    payoutDestination.mockImplementation(async (query,binding) => {
+      const result=await query('SELECT stripe_connect_id FROM users WHERE id=$1',[binding.payoutRecipientUserId]);
+      const stripeConnectId=result.rows[0]?.stripe_connect_id ?? null;
+      return stripeConnectId
+        ? { ready:true,stripeConnectId,reason:'READY' }
+        : { ready:false,stripeConnectId:null,reason:'PAYOUT_ACCOUNT_NOT_READY' };
+    });
   });
 
   it('fails closed before Stripe for a canonical quote split', async () => {
@@ -339,6 +361,77 @@ describe('F53-7: handlePartialRefundRequest — self-insurance pool funding path
     expect(contributionCall[0]).toBe(TASK_ID);   // taskId
     expect(contributionCall[1]).toBe(WORKER_ID); // hustlerId
     expect(contributionCall[2]).toBe(120);        // splitInsuranceContributionCents (gross basis: round(6000×0.02))
+  });
+
+  it('routes a queued partial Service Business payout to the organization payee while insuring the actual fulfiller', async () => {
+    const dbTransaction = vi.mocked(db.transaction);
+    let txCallIndex = 0;
+
+    dbTransaction.mockImplementation(async (fn: any) => {
+      const callIndex = txCallIndex++;
+      if (callIndex === 0) {
+        const trxQuery = vi.fn().mockResolvedValueOnce({
+          rows: [makeEscrowRow({ amount: 10_000 })],
+          rowCount: 1,
+        });
+        return fn(trxQuery);
+      }
+      if (callIndex === 1) {
+        const trxQuery = vi.fn().mockResolvedValueOnce({
+          rows: [{ stripe_transfer_id: null }],
+          rowCount: 1,
+        });
+        return fn(trxQuery);
+      }
+      const trxQuery = vi.fn()
+        .mockResolvedValueOnce({
+          rows: [{ id: ESCROW_ID, version: ESCROW_VERSION, state: 'LOCKED_DISPUTE' }],
+          rowCount: 1,
+        })
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [{ id: ESCROW_ID, state: 'REFUND_PARTIAL' }],
+        });
+      return fn(trxQuery);
+    });
+
+    mockDb.query
+      .mockResolvedValueOnce({
+        rows: [{
+          worker_id: WORKER_ID,
+          payout_recipient_user_id: BUSINESS_PAYOUT_USER_ID,
+          poster_id: 'poster-f53',
+        }],
+        rowCount: 1,
+      } as never)
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
+      .mockResolvedValueOnce({
+        rows: [{ stripe_connect_id: BUSINESS_STRIPE_CONNECT_ID }],
+        rowCount: 1,
+      } as never);
+
+    await processEscrowActionJob(makeJob(
+      'escrow.partial_refund_requested',
+      makeSignedPayload({
+        escrow_id: ESCROW_ID,
+        task_id: TASK_ID,
+        reason: 'service business split resolution',
+        refund_amount: 4_000,
+        release_amount: 6_000,
+      }),
+    ) as never);
+
+    expect(mockStripeService.createTransfer).toHaveBeenCalledWith(expect.objectContaining({
+      taskId: TASK_ID,
+      workerId: BUSINESS_PAYOUT_USER_ID,
+      workerStripeAccountId: BUSINESS_STRIPE_CONNECT_ID,
+    }));
+    expect(mockSelfInsurancePool.recordContribution).toHaveBeenCalledWith(
+      TASK_ID,
+      WORKER_ID,
+      120,
+    );
   });
 
   it('does NOT call recordContribution when releaseAmount is 0 (refund-only SPLIT, F53-7)', async () => {

@@ -56,7 +56,7 @@ const taskSource = fs.readFileSync(
   'utf-8'
 );
 const escrowSource = fs.readFileSync(
-  path.join(servicesDir, 'EscrowService.ts'),
+  path.join(servicesDir, 'EscrowServiceShared.ts'),
   'utf-8'
 );
 

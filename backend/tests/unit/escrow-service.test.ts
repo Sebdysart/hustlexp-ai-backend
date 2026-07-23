@@ -6,6 +6,8 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+const payoutDestination = vi.hoisted(() => vi.fn());
+
 // ---------------------------------------------------------------------------
 // Mocks
 // ---------------------------------------------------------------------------
@@ -60,6 +62,10 @@ vi.mock('../../src/services/StripeService', () => ({
   },
 }));
 
+vi.mock('../../src/services/TaskPayoutDestinationService.js', () => ({
+  loadCurrentTaskPayoutDestination: payoutDestination,
+}));
+
 import { db, isInvariantViolation, isUniqueViolation, getErrorMessage } from '../../src/db';
 import { EscrowService } from '../../src/services/EscrowService';
 import { EarnedVerificationUnlockService } from '../../src/services/EarnedVerificationUnlockService';
@@ -96,6 +102,16 @@ beforeEach(() => {
   mockDb.query.mockReset();
   mockIsInvariantViolation.mockReturnValue(false);
   mockIsUniqueViolation.mockReturnValue(false);
+  payoutDestination.mockImplementation(async (query,binding) => {
+    const result=await query(
+      'SELECT payouts_enabled,stripe_connect_id,stripe_connect_status FROM users WHERE id=$1',
+      [binding.payoutRecipientUserId],
+    );
+    const row=result.rows[0];
+    return row?.stripe_connect_id && row.payouts_enabled!==false
+      ? { ready:true,stripeConnectId:row.stripe_connect_id,reason:'READY' }
+      : { ready:false,stripeConnectId:null,reason:'PAYOUT_ACCOUNT_NOT_READY' };
+  });
 });
 
 // ===========================================================================
@@ -253,6 +269,34 @@ describe('EscrowService', () => {
       expect(SelfInsurancePoolService.recordContribution).toHaveBeenCalledWith(
         'task-1', 'worker-1', 100,
       );
+    });
+
+    it('validates the Service Business payee while preserving fulfiller safety and performance attribution', async () => {
+      const escrowRow = { id: 'esc-1', task_id: 'task-1', amount: 5000, state: 'FUNDED' };
+      const taskRow = {
+        worker_id: 'crew-worker-1', payout_recipient_user_id: 'business-payee-1',
+        provider_organization_id: 'provider-org-1', price: 5000,
+      };
+      const payeeKyc = { payouts_enabled: true, stripe_connect_id: 'acct_business', stripe_connect_status: 'complete' };
+      mockDb.query
+        .mockResolvedValueOnce({ rows: [escrowRow], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [taskRow], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [payeeKyc], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [makeEscrow({ state: 'RELEASED' })], rowCount: 1 } as never);
+
+      const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_business' });
+
+      expect(result.success).toBe(true);
+      const kycQuery = mockDb.query.mock.calls.find(([sql]) =>
+        String(sql).includes('stripe_connect_status'));
+      expect(kycQuery?.[1]).toEqual(['business-payee-1']);
+      expect(EarnedVerificationUnlockService.recordEarnings).not.toHaveBeenCalled();
+      expect(SelfInsurancePoolService.recordContribution).toHaveBeenCalledWith(
+        'task-1','crew-worker-1',100,
+      );
+      expect(XPService.awardXP).toHaveBeenCalledWith(expect.objectContaining({
+        userId:'crew-worker-1',taskId:'task-1',escrowId:'esc-1',
+      }));
     });
 
     it('continues release even if self-insurance contribution fails', async () => {
@@ -672,6 +716,38 @@ describe('EscrowService', () => {
       // Pool contribution recorded for the worker's gross share (gross basis)
       expect(SelfInsurancePoolService.recordContribution).toHaveBeenCalledWith(
         'task-1', 'worker-1', 60,
+      );
+    });
+
+    it('routes a Service Business partial settlement to the provider payee while insuring the fulfiller', async () => {
+      const partial = makeEscrow({ state: 'REFUND_PARTIAL' });
+      mockDb.query.mockResolvedValueOnce({
+        rows: [{ version: 0, state: 'LOCKED_DISPUTE', task_id: 'task-1', amount: 5000,
+          stripe_payment_intent_id: 'pi_test', stripe_transfer_id: null, stripe_refund_id: null }],
+        rowCount: 1,
+      } as never);
+      mockDb.query.mockResolvedValueOnce({ rows: [{
+        worker_id: 'crew-worker-1', payout_recipient_user_id: 'business-payee-1', poster_id: 'poster-1',
+      }], rowCount: 1 } as never);
+      mockDb.query.mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_business' }], rowCount: 1 } as never);
+      mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'esc-1', version: 0, state: 'LOCKED_DISPUTE' }], rowCount: 1 } as never);
+      mockDb.query.mockResolvedValueOnce({ rows: [partial], rowCount: 1 } as never);
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      const { StripeService: MockStripe } = await import('../../src/services/StripeService');
+
+      const result = await EscrowService.partialRefund({
+        escrowId: 'esc-1', workerPercent: 60, posterPercent: 40,
+      });
+
+      expect(result.success).toBe(true);
+      const connectQuery = mockDb.query.mock.calls.find(([sql]) =>
+        String(sql).includes('SELECT payouts_enabled,stripe_connect_id,stripe_connect_status'));
+      expect(connectQuery?.[1]).toEqual(['business-payee-1']);
+      expect(vi.mocked(MockStripe.createTransfer)).toHaveBeenCalledWith(expect.objectContaining({
+        workerId: 'business-payee-1', workerStripeAccountId: 'acct_business', amount: 2340,
+      }));
+      expect(SelfInsurancePoolService.recordContribution).toHaveBeenCalledWith(
+        'task-1','crew-worker-1',60,
       );
     });
 
