@@ -10,7 +10,10 @@ const REPAIR = read(
 const FOCUS = read('backend/database/migrations/20260720_notification_focus_suppression.sql');
 const CONSTITUTIONAL = read('backend/database/constitutional-schema.sql');
 const LAUNCH = read('backend/database/launch-schema.sql');
-const RUNNER = read('backend/src/jobs/engine-automation-migration.ts');
+const RUNNER = [
+  read('backend/src/jobs/engine-automation-migration.ts'),
+  read('backend/src/jobs/engine-automation-migration-files.ts'),
+].join('\n');
 const DOCKERFILE = read('Dockerfile');
 
 describe('HX/OS notification delivery database contract', () => {

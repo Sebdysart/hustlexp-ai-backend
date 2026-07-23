@@ -42,7 +42,16 @@ describe('private identity verification migration', () => {
   });
 
   it('is startup ordered and packaged', () => {
-    const runner = readFileSync(resolve(process.cwd(), 'backend/src/jobs/engine-automation-migration.ts'), 'utf8');
+    const runner = [
+      readFileSync(
+        resolve(process.cwd(), 'backend/src/jobs/engine-automation-migration.ts'),
+        'utf8',
+      ),
+      readFileSync(
+        resolve(process.cwd(), 'backend/src/jobs/engine-automation-migration-files.ts'),
+        'utf8',
+      ),
+    ].join('\n');
     const dockerfile = readFileSync(resolve(process.cwd(), 'Dockerfile'), 'utf8');
     expect(runner).toContain('20260721_private_identity_verification_contract');
     expect(dockerfile).toContain('20260721_private_identity_verification_contract.sql');

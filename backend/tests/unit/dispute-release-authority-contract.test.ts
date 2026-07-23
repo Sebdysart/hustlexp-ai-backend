@@ -7,7 +7,10 @@ const BASELINE = read('backend/database/constitutional-schema.sql');
 const MIGRATION = read(
   'backend/database/migrations/20260720_dispute_release_authority_contract.sql'
 );
-const RUNNER = read('backend/src/jobs/engine-automation-migration.ts');
+const RUNNER = [
+  read('backend/src/jobs/engine-automation-migration.ts'),
+  read('backend/src/jobs/engine-automation-migration-files.ts'),
+].join('\n');
 const DOCKERFILE = read('Dockerfile');
 const HARNESS = read('backend/tests/integration/dispute-release-authority.pg.sql');
 

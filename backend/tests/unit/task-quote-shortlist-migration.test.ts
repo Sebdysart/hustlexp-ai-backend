@@ -12,7 +12,10 @@ const migration = source(
 const harness = source(
   'backend/tests/integration/task-quote-shortlist-messaging.pg.sql',
 );
-const runner = source('backend/src/jobs/engine-automation-migration.ts');
+const runner = [
+  source('backend/src/jobs/engine-automation-migration.ts'),
+  source('backend/src/jobs/engine-automation-migration-files.ts'),
+].join('\n');
 
 describe('task quote shortlist messaging database contract', () => {
   it('defines one append-preserved active quote grant controlled by the task Poster', () => {

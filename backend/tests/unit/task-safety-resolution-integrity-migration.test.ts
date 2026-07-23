@@ -4,7 +4,10 @@ import { describe, expect, it } from 'vitest';
 
 const read = (path: string) => readFileSync(resolve(process.cwd(), path), 'utf8');
 const MIGRATION = read('backend/database/migrations/20260720_task_safety_resolution_integrity.sql');
-const RUNNER = read('backend/src/jobs/engine-automation-migration.ts');
+const RUNNER = [
+  read('backend/src/jobs/engine-automation-migration.ts'),
+  read('backend/src/jobs/engine-automation-migration-files.ts'),
+].join('\n');
 const DOCKERFILE = read('Dockerfile');
 const ADMIN_SERVICE = read('backend/src/services/IncidentSafetyAdminService.ts');
 const ADMIN_ROUTES = read('backend/src/routers/incidentAdminRoutes.ts');

@@ -12,7 +12,10 @@ const migration = source(
 const harness = source(
   'backend/tests/integration/build-now-spend-promotion-guardrails.pg.sql',
 );
-const runner = source('backend/src/jobs/engine-automation-migration.ts');
+const runner = [
+  source('backend/src/jobs/engine-automation-migration.ts'),
+  source('backend/src/jobs/engine-automation-migration-files.ts'),
+].join('\n');
 
 describe('Build-Now spend and promotion database guardrails', () => {
   it('sets prospective incentive defaults to zero and rejects cash-spend transitions', () => {

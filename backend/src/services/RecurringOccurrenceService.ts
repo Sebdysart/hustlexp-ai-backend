@@ -190,7 +190,7 @@ async function createProviderReservation(
   await query(
     `INSERT INTO recurring_provider_reservations (
        occurrence_id,worker_id,pool_type,wave_rank,status,expires_at
-     ) VALUES ($1,$2,$3,0,'PENDING',NOW()+INTERVAL '30 minutes')`,
+     ) VALUES ($1,$2,$3,0,'AWAITING_PAYMENT',NOW())`,
     [occurrenceId, provider.providerId, provider.poolType],
   );
 }
@@ -225,7 +225,7 @@ async function persistOccurrence(
     [row.id, taskId, occurrenceNumber, scheduledStart.toISOString().slice(0, 10),
       row.current_revision_id, scheduledStart, scheduledEnd, row.payment_cents,
       row.provider_payout_cents, row.platform_margin_cents,
-      provider.providerId ? `${provider.poolType}_PENDING` : 'NO_PROVIDER', generationKey,
+      provider.providerId ? `${provider.poolType}_AWAITING_PAYMENT` : 'NO_PROVIDER', generationKey,
       approvalRequestId],
   );
   const occurrenceId = occurrence.rows[0].id;

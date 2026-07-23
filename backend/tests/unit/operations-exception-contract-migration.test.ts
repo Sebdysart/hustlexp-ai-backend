@@ -4,7 +4,10 @@ import { describe, expect, it } from 'vitest';
 
 const read = (path: string) => readFileSync(resolve(process.cwd(), path), 'utf8');
 const MIGRATION = read('backend/database/migrations/20260720_operations_exception_contract.sql');
-const RUNNER = read('backend/src/jobs/engine-automation-migration.ts');
+const RUNNER = [
+  read('backend/src/jobs/engine-automation-migration.ts'),
+  read('backend/src/jobs/engine-automation-migration-files.ts'),
+].join('\n');
 const DOCKERFILE = read('Dockerfile');
 const TRPC = read('backend/src/trpc.ts');
 const ROUTER = read('backend/src/routers/operations.ts');
@@ -48,7 +51,9 @@ describe('HX/OS Operations exception migration 82', () => {
   });
 
   it('ships migration 82 through startup, routing, and the production image', () => {
-    expect(RUNNER).toContain("OPERATIONS_EXCEPTION_CONTRACT_MIGRATION =\n  '20260720_operations_exception_contract'");
+    expect(RUNNER).toMatch(
+      /OPERATIONS_EXCEPTION_CONTRACT_MIGRATION\s*=\s*'20260720_operations_exception_contract'/,
+    );
     expect(RUNNER).toContain("fileName: '20260720_operations_exception_contract.sql'");
     expect(DOCKERFILE).toContain('/app/backend/database/migrations/20260720_operations_exception_contract.sql');
     expect(ROUTER).toContain('operationsAdminProcedure');

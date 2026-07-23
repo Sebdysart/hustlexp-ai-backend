@@ -50,7 +50,10 @@ describe('HX/OS proof verification signal contract', () => {
     expect(minimizationMigration).toContain('proof_submissions_raw_media_metadata_stripped_ck');
     expect(minimizationMigration).toMatch(/SET\s+exif_timestamp\s*=\s*NULL/i);
 
-    const runner = source('backend/src/jobs/engine-automation-migration.ts');
+    const runner = [
+      source('backend/src/jobs/engine-automation-migration.ts'),
+      source('backend/src/jobs/engine-automation-migration-files.ts'),
+    ].join('\n');
     const dockerfile = source('Dockerfile');
     expect(runner).toMatch(
       /PROOF_VERIFICATION_SIGNAL_CONTRACT_MIGRATION\s*=\s*'20260720_proof_verification_signal_contract'/

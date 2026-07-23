@@ -9,7 +9,10 @@ function source(path: string): string {
 const migration = source(
   'backend/database/migrations/20260721_unit_economics_guardrails.sql',
 );
-const runner = source('backend/src/jobs/engine-automation-migration.ts');
+const runner = [
+  source('backend/src/jobs/engine-automation-migration.ts'),
+  source('backend/src/jobs/engine-automation-migration-files.ts'),
+].join('\n');
 
 describe('HX/OS unit-economics database guardrails', () => {
   it('requires versioned worker-earnings policy and mature-category evidence', () => {

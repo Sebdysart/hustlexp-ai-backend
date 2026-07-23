@@ -169,9 +169,14 @@ async function generateRecurringDue(job: Job): Promise<void> {
 }
 
 async function advanceRecurringReservations(job: Job): Promise<void> {
-  const { advanceControlledReservationWaves } = await import('../services/RecurringWorkService.js');
-  const result = await advanceControlledReservationWaves(boundedJobLimit(job, 100));
-  log.info(result, 'Controlled recurring reservation batch completed');
+  const {
+    activateFundedControlledReservationOffers,
+    advanceControlledReservationWaves,
+  } = await import('../services/RecurringWorkService.js');
+  const limit = boundedJobLimit(job, 100);
+  const activated = await activateFundedControlledReservationOffers(limit);
+  const advanced = await advanceControlledReservationWaves(limit);
+  log.info({ ...activated, ...advanced }, 'Controlled recurring reservation batch completed');
 }
 
 async function completeUnattendedDue(job: Job): Promise<void> {

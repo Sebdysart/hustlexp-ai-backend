@@ -166,6 +166,55 @@ type ExpiredReservationRow = {
   backup_worker_ids: string[];
 };
 
+type FundedReservationOfferRow = {
+  reservation_id: string;
+  occurrence_id: string;
+  pool_type: 'PREFERRED' | 'BACKUP';
+};
+
+/**
+ * Recurring provider timeboxes start only after the canonical escrow is
+ * funded. Generating an occurrence is not permission to dispatch it.
+ */
+export async function activateFundedControlledReservationOffers(
+  limit = 100,
+): Promise<{ activated: number }> {
+  const boundedLimit = Math.max(1, Math.min(limit, 100));
+  let activated = 0;
+  for (let index = 0; index < boundedLimit; index += 1) {
+    const didActivate = await db.transaction(async (query) => {
+      const ready = await query<FundedReservationOfferRow>(
+        `SELECT r.id AS reservation_id,r.occurrence_id,r.pool_type
+         FROM recurring_provider_reservations r
+         JOIN recurring_task_occurrences occurrence ON occurrence.id=r.occurrence_id
+         JOIN tasks task ON task.id=occurrence.task_id
+         JOIN escrows escrow ON escrow.task_id=task.id
+         WHERE r.status='AWAITING_PAYMENT' AND escrow.state='FUNDED'
+           AND task.state IN ('OPEN','MATCHING') AND task.worker_id IS NULL
+         ORDER BY occurrence.scheduled_start,r.wave_rank,r.id
+         LIMIT 1 FOR UPDATE OF r,occurrence,task SKIP LOCKED`,
+      );
+      const row = ready.rows[0];
+      if (!row) return false;
+      await query(
+        `UPDATE recurring_provider_reservations
+         SET status='PENDING',offered_at=NOW(),expires_at=NOW()+INTERVAL '30 minutes'
+         WHERE id=$1 AND status='AWAITING_PAYMENT'`,
+        [row.reservation_id],
+      );
+      await query(
+        `UPDATE recurring_task_occurrences
+         SET reservation_state=$2,updated_at=NOW() WHERE id=$1`,
+        [row.occurrence_id, `${row.pool_type}_PENDING`],
+      );
+      return true;
+    });
+    if (!didActivate) break;
+    activated += 1;
+  }
+  return { activated };
+}
+
 export async function advanceControlledReservationWaves(
   limit = 100,
 ): Promise<{ processed: number; backupsOpened: number; exhausted: number }> {
@@ -178,7 +227,10 @@ export async function advanceControlledReservationWaves(
          FROM recurring_provider_reservations r
          JOIN recurring_task_occurrences o ON o.id=r.occurrence_id
          JOIN recurring_task_series s ON s.id=o.series_id
+         JOIN tasks task ON task.id=o.task_id
+         JOIN escrows escrow ON escrow.task_id=task.id
          WHERE r.status='PENDING' AND r.expires_at <= NOW()
+           AND escrow.state='FUNDED'
          ORDER BY r.expires_at,r.id
          LIMIT 1 FOR UPDATE OF r,o,s SKIP LOCKED`,
       );

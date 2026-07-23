@@ -4,7 +4,10 @@ import { describe, expect, it } from 'vitest';
 const router = fs.readFileSync('backend/src/routers/automation.ts', 'utf8');
 const service = fs.readFileSync('backend/src/services/HustlerIdentityLinkService.ts', 'utf8');
 const migration = fs.readFileSync('backend/database/migrations/20260712_hustler_identity_link.sql', 'utf8');
-const runner = fs.readFileSync('backend/src/jobs/engine-automation-migration.ts', 'utf8');
+const runner = [
+  fs.readFileSync('backend/src/jobs/engine-automation-migration.ts', 'utf8'),
+  fs.readFileSync('backend/src/jobs/engine-automation-migration-files.ts', 'utf8'),
+].join('\n');
 
 describe('canonical Hustler identity link contract', () => {
   it('is service-authenticated and validates engine id, claim id and E.164 phone', () => {

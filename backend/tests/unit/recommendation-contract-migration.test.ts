@@ -6,10 +6,13 @@ const SQL = readFileSync(
   resolve(process.cwd(), 'backend/database/migrations/20260719_recommendation_contract.sql'),
   'utf8',
 );
-const MIGRATION_RUNNER = readFileSync(
-  resolve(process.cwd(), 'backend/src/jobs/engine-automation-migration.ts'),
-  'utf8',
-);
+const MIGRATION_RUNNER = [
+  readFileSync(resolve(process.cwd(), 'backend/src/jobs/engine-automation-migration.ts'), 'utf8'),
+  readFileSync(
+    resolve(process.cwd(), 'backend/src/jobs/engine-automation-migration-files.ts'),
+    'utf8',
+  ),
+].join('\n');
 const DOCKERFILE = readFileSync(resolve(process.cwd(), 'Dockerfile'), 'utf8');
 const TASK_COMPLETION = readFileSync(
   resolve(process.cwd(), 'backend/src/services/TaskCompletionService.ts'),
