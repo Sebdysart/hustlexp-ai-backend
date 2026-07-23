@@ -35,7 +35,7 @@ import { notifyAdmins } from '../services/AdminNotificationHelper.js';
 import { workerLogger } from '../logger.js';
 import { verifyJobSignature } from './queues.js';
 import { config } from '../config.js';
-import { computePlatformFeeCents, clampFeePercent } from '../lib/money.js';
+import { clampFeePercent, feeBasisPoints, resolvePlatformFeeCents } from '../lib/money.js';
 import type { Job } from 'bullmq';
 import type Stripe from 'stripe';
 import type { QueryFn } from '../db.js';
@@ -340,7 +340,7 @@ async function handleTransferCreated(transfer: Stripe.Transfer, stripeEventId: s
   // -------------------------------------------------------------------------
   // Critical section: lock escrow row, validate state, update atomically
   // -------------------------------------------------------------------------
-  const { updatedEscrow, taskId, escrowAmount, skipped } = await db.transaction(async (trx: QueryFn) => {
+  const { updatedEscrow, taskId, escrowAmount, escrowPlatformFeeCents, stripePaymentIntentId, skipped } = await db.transaction(async (trx: QueryFn) => {
     // Find escrow by id (with version check) — FOR UPDATE holds the lock
     const escrowResult = await trx<{
       id: string;
@@ -348,9 +348,11 @@ async function handleTransferCreated(transfer: Stripe.Transfer, stripeEventId: s
       state: string;
       version: number;
       amount: number;
+      platform_fee_cents: number | null;
       stripe_transfer_id: string | null;
+      stripe_payment_intent_id: string | null;
     }>(
-      `SELECT id, task_id, state, version, amount, stripe_transfer_id
+      `SELECT id, task_id, state, version, amount, platform_fee_cents, stripe_transfer_id, stripe_payment_intent_id
        FROM escrows
        WHERE id = $1
        FOR UPDATE`,
@@ -374,13 +376,14 @@ async function handleTransferCreated(transfer: Stripe.Transfer, stripeEventId: s
         [`Escrow ${escrowId} already terminal (${escrow.state})`, stripeEventId]
       );
       log.warn({ escrowId, state: escrow.state, stripeEventId }, 'Stripe event skipped: escrow already terminal');
-      return { updatedEscrow: null, taskId: escrow.task_id, escrowAmount: escrow.amount, skipped: true };
-    }
-
-    // Idempotency check: If already released with this transfer_id, skip
-    if (escrow.state === 'RELEASED' && escrow.stripe_transfer_id === transferId) {
-      log.info({ escrowId, transferId }, 'Escrow already released with this transfer, idempotent replay');
-      return { updatedEscrow: null, taskId: escrow.task_id, escrowAmount: escrow.amount, skipped: true };
+      return {
+        updatedEscrow: null,
+        taskId: escrow.task_id,
+        escrowAmount: escrow.amount,
+        escrowPlatformFeeCents: escrow.platform_fee_cents,
+        stripePaymentIntentId: escrow.stripe_payment_intent_id,
+        skipped: true,
+      };
     }
 
     // Validate state transition: FUNDED|LOCKED_DISPUTE → RELEASED
@@ -415,7 +418,14 @@ async function handleTransferCreated(transfer: Stripe.Transfer, stripeEventId: s
       throw new Error(`Escrow ${escrowId} state or version changed during update (version mismatch or state changed)`);
     }
 
-    return { updatedEscrow: updateResult.rows[0], taskId: escrow.task_id, escrowAmount: escrow.amount, skipped: false };
+    return {
+      updatedEscrow: updateResult.rows[0],
+      taskId: escrow.task_id,
+      escrowAmount: escrow.amount,
+      escrowPlatformFeeCents: escrow.platform_fee_cents,
+      stripePaymentIntentId: escrow.stripe_payment_intent_id,
+      skipped: false,
+    };
   });
 
   // Skipped paths: already handled inside the transaction
@@ -471,9 +481,26 @@ async function handleTransferCreated(transfer: Stripe.Transfer, stripeEventId: s
       if (workerId && escrowAmount > 0) {
         // AUDIT FIX H3: unified money helper (same Math.round result, adds clamping)
         const platformFeePercent = clampFeePercent(config.stripe.platformFeePercent);
-        const platformFeeCents = computePlatformFeeCents(escrowAmount, platformFeePercent);
+        const platformFeeCents = resolvePlatformFeeCents(
+          escrowAmount,
+          platformFeePercent,
+          escrowPlatformFeeCents,
+        );
         if (platformFeeCents > 0) {
           const netAmountCents = escrowAmount - platformFeeCents;
+          const processingFee = stripePaymentIntentId
+            ? await StripeService.getPaymentIntentProcessingFee(stripePaymentIntentId)
+            : null;
+          if (processingFee && !processingFee.success) {
+            log.warn(
+              {
+                escrowId,
+                stripePaymentIntentId,
+                code: processingFee.error.code,
+              },
+              'handleTransferCreated: actual Stripe processing fee unavailable; contribution remains unknown',
+            );
+          }
           await RevenueService.logEvent({
             eventType: 'platform_fee',
             userId: posterId ?? workerId, // F-23: prefer poster_id; fall back to workerId if missing
@@ -482,11 +509,23 @@ async function handleTransferCreated(transfer: Stripe.Transfer, stripeEventId: s
             grossAmountCents: escrowAmount,
             platformFeeCents,
             netAmountCents,
-            feeBasisPoints: Math.round(platformFeePercent * 100),
+            feeBasisPoints: feeBasisPoints(escrowAmount, platformFeeCents),
+            stripeProcessingFeeCents: processingFee?.success
+              ? processingFee.data.feeCents
+              : undefined,
             escrowId,
             stripeTransferId: transferId,
             stripeEventId,
-            metadata: { event: 'escrow_release_transfer_created_fallback' },
+            stripeChargeId: processingFee?.success
+              ? processingFee.data.chargeId
+              : undefined,
+            stripePaymentIntentId: stripePaymentIntentId ?? undefined,
+            metadata: {
+              event: 'escrow_release_transfer_created_fallback',
+              ...(processingFee?.success
+                ? { stripe_balance_transaction_id: processingFee.data.balanceTransactionId }
+                : { stripe_processing_fee_status: 'unknown' }),
+            },
           });
           log.info({ escrowId, platformFeeCents, posterId, workerId }, 'handleTransferCreated: platform_fee fallback ledger entry written');
         }
@@ -544,6 +583,7 @@ async function handleChargeRefunded(charge: Stripe.Charge, stripeEventId: string
     state: string;
     version: number;
     amount: number;
+    platform_fee_cents: number | null;
     stripe_refund_id: string | null;
     stripe_transfer_id: string | null;
   };
@@ -552,7 +592,7 @@ async function handleChargeRefunded(charge: Stripe.Charge, stripeEventId: string
     if (escrowId) {
       // Find by metadata (preferred - explicit correlation)
       escrowResult = await trx<EscrowReadRow>(
-        `SELECT id, task_id, state, version, amount, stripe_refund_id, stripe_transfer_id
+        `SELECT id, task_id, state, version, amount, platform_fee_cents, stripe_refund_id, stripe_transfer_id
          FROM escrows
          WHERE id = $1
          FOR UPDATE`,
@@ -591,7 +631,7 @@ async function handleChargeRefunded(charge: Stripe.Charge, stripeEventId: string
       }
 
       escrowResult = await trx<EscrowReadRow>(
-        `SELECT id, task_id, state, version, amount, stripe_refund_id, stripe_transfer_id
+        `SELECT id, task_id, state, version, amount, platform_fee_cents, stripe_refund_id, stripe_transfer_id
          FROM escrows
          WHERE stripe_payment_intent_id = $1
          FOR UPDATE`,
@@ -677,7 +717,11 @@ async function handleChargeRefunded(charge: Stripe.Charge, stripeEventId: string
           if (priorFromState === 'RELEASED') {
             // AUDIT FIX H3: unified money helper (same Math.round result, adds clamping)
             const platformFeePercent = clampFeePercent(config.stripe.platformFeePercent);
-            const platformFeeCents = computePlatformFeeCents(phase1Escrow.amount, platformFeePercent);
+            const platformFeeCents = resolvePlatformFeeCents(
+              phase1Escrow.amount,
+              platformFeePercent,
+              phase1Escrow.platform_fee_cents,
+            );
             await RevenueService.logEvent({
               eventType: 'platform_fee_reversal',
               userId: null,
@@ -688,7 +732,7 @@ async function handleChargeRefunded(charge: Stripe.Charge, stripeEventId: string
               metadata: {
                 reason: 'charge_refunded_after_release',
                 escrow_amount_cents: phase1Escrow.amount,
-                platform_fee_percent: platformFeePercent,
+                platform_fee_basis_points: feeBasisPoints(phase1Escrow.amount, platformFeeCents),
                 refund_id: refundId,
                 retry_recovery: true,
               },
@@ -844,7 +888,11 @@ async function handleChargeRefunded(charge: Stripe.Charge, stripeEventId: string
   if (escrow.state === 'RELEASED') {
     // AUDIT FIX H3: unified money helper (same Math.round result, adds clamping)
     const platformFeePercent = clampFeePercent(config.stripe.platformFeePercent);
-    const platformFeeCents = computePlatformFeeCents(escrow.amount, platformFeePercent);
+    const platformFeeCents = resolvePlatformFeeCents(
+      escrow.amount,
+      platformFeePercent,
+      escrow.platform_fee_cents,
+    );
     await RevenueService.logEvent({
       eventType: 'platform_fee_reversal',
       userId: null,
@@ -855,7 +903,7 @@ async function handleChargeRefunded(charge: Stripe.Charge, stripeEventId: string
       metadata: {
         reason: 'charge_refunded_after_release',
         escrow_amount_cents: escrow.amount,
-        platform_fee_percent: platformFeePercent,
+        platform_fee_basis_points: feeBasisPoints(escrow.amount, platformFeeCents),
         refund_id: refundId,
       },
     }).catch(err => log.error({ err }, 'Failed to log platform_fee_reversal'));

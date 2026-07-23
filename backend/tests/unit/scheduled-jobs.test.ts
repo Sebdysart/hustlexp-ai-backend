@@ -123,6 +123,18 @@ describe('Scheduled Jobs Registration', () => {
     expect((recoverJob!.data as Record<string, unknown>).timeoutMinutes).toBe(10);
   });
 
+  it('registers the bounded unfilled-dispatch expiry sweep every minute', async () => {
+    const { startWorkers } = await import('../../src/jobs/workers');
+    await startWorkers();
+
+    const expiryJob = queueAddCalls.find(
+      c => c.queueName === 'maintenance' && c.jobName === 'dispatch.expire_unfilled'
+    );
+    expect(expiryJob).toBeDefined();
+    expect(((expiryJob!.opts as Record<string, Record<string, string>>).repeat).pattern).toBe('* * * * *');
+    expect((expiryJob!.data as Record<string, unknown>).limit).toBe(100);
+  });
+
   it('registers cleanup_expired_exports on maintenance queue', async () => {
     const { startWorkers } = await import('../../src/jobs/workers');
     await startWorkers();
@@ -174,20 +186,20 @@ describe('Scheduled Jobs Registration', () => {
 });
 
 describe('Worker Routing', () => {
-  it('workers.ts file routes fraud.scan_requested to fraud-detection-worker', async () => {
+  it('worker registration routes fraud.scan_requested to fraud-detection-worker', async () => {
     const fs = await import('fs');
     const path = await import('path');
-    const workersPath = path.resolve(__dirname, '../../src/jobs/workers.ts');
+    const workersPath = path.resolve(__dirname, '../../src/jobs/worker-registration.ts');
     const workersSource = fs.readFileSync(workersPath, 'utf-8');
 
     expect(workersSource).toContain("'fraud.scan_requested'");
     expect(workersSource).toContain('./fraud-detection-worker');
   });
 
-  it('workers.ts registers workers for all 9 queues', async () => {
+  it('worker registration registers workers for all 9 queues', async () => {
     const fs = await import('fs');
     const path = await import('path');
-    const workersPath = path.resolve(__dirname, '../../src/jobs/workers.ts');
+    const workersPath = path.resolve(__dirname, '../../src/jobs/worker-registration.ts');
     const workersSource = fs.readFileSync(workersPath, 'utf-8');
 
     expect(workersSource).toContain("'exports'");

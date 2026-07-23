@@ -720,6 +720,29 @@ describe('user.register', () => {
       expect(result).toHaveProperty('id', 'existing-user-id');
     });
 
+    it('replaces fail-closed lazy age state after the same Firebase identity supplies an adult DOB', async () => {
+      const lazyUser = makeFakeUser({
+        id: 'lazy-user-id',
+        firebase_uid: validInput.firebaseUid,
+        email: 'newuser@hustlexp.com',
+        is_minor: true,
+      });
+      const verifiedAdult = { ...lazyUser, date_of_birth: validInput.dateOfBirth, is_minor: false };
+
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+      mockDb.query.mockResolvedValueOnce({ rows: [lazyUser], rowCount: 1 } as any);
+      mockDb.query.mockResolvedValueOnce({ rows: [verifiedAdult], rowCount: 1 } as any);
+      setupStatsQuery();
+
+      const result = await makePublicCaller().register(validInput);
+
+      expect(result).toHaveProperty('id', 'lazy-user-id');
+      expect(mockDb.query).toHaveBeenCalledWith(
+        expect.stringContaining('SET date_of_birth = $2, is_minor = false'),
+        ['lazy-user-id', validInput.dateOfBirth, validInput.firebaseUid],
+      );
+    });
+
     // A56-2: existing-user path must block SUSPENDED accounts
     it('A56-2: throws FORBIDDEN when existing user has account_status=SUSPENDED', async () => {
       const suspendedUser = makeFakeUser({
@@ -872,28 +895,16 @@ describe('user.register', () => {
       ).rejects.toThrow('COPPA_AGE_RESTRICTION');
     });
 
-    it('allows users aged 13-17 (flags as minor)', async () => {
+    it('rejects users aged 13-17 because HustleXP earning accounts are 18+', async () => {
       // 15 years old
       const now = new Date();
       const fifteenYearsAgo = `${now.getFullYear() - 15}-01-01`;
 
-      const newUser = makeFakeUser();
-      // Email ban check → not banned
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
-      mockDb.query.mockResolvedValueOnce({ rows: [newUser], rowCount: 1 } as any);
-      setupStatsQuery();
-
-      const result = await makePublicCaller().register({
+      await expect(makePublicCaller().register({
         ...validInput,
         dateOfBirth: fifteenYearsAgo,
-      });
-
-      expect(result).toHaveProperty('id');
-
-      // Verify is_minor=true was passed to INSERT (third db.query call, index 2)
-      const [, params] = (mockDb.query as any).mock.calls[2];
-      expect(params).toContain(true); // is_minor
+      })).rejects.toThrow('ADULT_AGE_RESTRICTION');
+      expect(mockDb.query).not.toHaveBeenCalled();
     });
 
     it('allows adults (is_minor=false)', async () => {

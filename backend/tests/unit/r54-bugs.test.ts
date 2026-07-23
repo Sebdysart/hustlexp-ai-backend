@@ -31,6 +31,10 @@ vi.mock('../../src/logger', () => ({
     child: () => ({ warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() }),
     warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn(),
   },
+  taskLogger: {
+    child: () => ({ warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() }),
+    warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn(),
+  },
 }));
 
 vi.mock('../../src/services/MatchmakerAIService', () => ({
@@ -196,6 +200,7 @@ describe('A63-2: matchmaker rankCandidates candidate query uses correct case', (
     expect(sql).toContain("'worker'");
     expect(sql).toContain("'poster'");
     expect(sql).toContain("'ACTIVE'");
+    expect(sql).toMatch(/is_minor\s*=\s*false/);
 
     // Must NOT include the wrong values
     expect(sql).not.toContain("'hustler'");

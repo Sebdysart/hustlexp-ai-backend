@@ -18,7 +18,7 @@ import { TRPCError } from '@trpc/server';
 import { db, isInvariantViolation, isUniqueViolation, getErrorMessage } from '../db.js';
 import type { QueryFn } from '../db.js';
 import { config } from '../config.js';
-import { computeFeeBreakdown, computePlatformFeeCents, clampFeePercent, computeInsuranceContributionCents } from '../lib/money.js';
+import { computeFeeBreakdown, computePlatformFeeCents, clampFeePercent, computeInsuranceContributionCents, feeBasisPoints } from '../lib/money.js';
 import { EarnedVerificationUnlockService } from './EarnedVerificationUnlockService.js';
 import { XPTaxService } from './XPTaxService.js';
 import { XPService } from './XPService.js';
@@ -459,10 +459,11 @@ export const EscrowService = {
           id: string;
           task_id: string;
           amount: number;
+          platform_fee_cents: number | null;
           state: string;
           version: number;
         }>(
-          `SELECT id, task_id, amount, state, version FROM escrows WHERE id = $1 FOR UPDATE`,
+          `SELECT id, task_id, amount, platform_fee_cents, state, version FROM escrows WHERE id = $1 FOR UPDATE`,
           [escrowId]
         );
 
@@ -581,12 +582,18 @@ export const EscrowService = {
         // F-22 / F54-2 preserved: insurance is 2% of GROSS, deducted from the
         // worker transfer. Computed once inside the transaction and threaded out
         // via `post` so post-commit side effects reuse the exact same values.
-        const platformFeePercent = clampFeePercent(config.stripe.platformFeePercent);
+        const configuredFeePercent = clampFeePercent(config.stripe.platformFeePercent);
+        const breakdown = computeFeeBreakdown(
+          resolvedGross,
+          configuredFeePercent,
+          escrow.platform_fee_cents,
+        );
         const {
           platformFeeCents,
           insuranceContributionCents: txInsuranceContributionCents,
           netPayoutCents: resolvedNet,
-        } = computeFeeBreakdown(resolvedGross, platformFeePercent);
+        } = breakdown;
+        const platformFeePercent = feeBasisPoints(resolvedGross, platformFeeCents) / 100;
 
         // 2. Release escrow (SPEC FIX: Allow release from both FUNDED and LOCKED_DISPUTE states)
         // The version = $3 optimistic-lock guard is a secondary safety net: if somehow
@@ -1380,6 +1387,7 @@ export const EscrowService = {
     let partialRefundEscrow: Escrow;
     let txTaskId: string = '';
     let txAmount: number = 0;
+    let txPlatformFeeCents: number | null = null;
     let txStripePaymentIntentId: string | null = null;
     let txWorkerId: string | null = null;
     let txPosterId: string | null = null; // F-23: poster is charged the platform fee
@@ -1401,11 +1409,12 @@ export const EscrowService = {
           state: string;
           task_id: string;
           amount: number;
+          platform_fee_cents: number | null;
           stripe_payment_intent_id: string | null;
           stripe_transfer_id: string | null;
           stripe_refund_id: string | null;
         }>(
-          `SELECT version, state, task_id, amount, stripe_payment_intent_id, stripe_transfer_id, stripe_refund_id FROM escrows WHERE id = $1 FOR UPDATE`,
+          `SELECT version, state, task_id, amount, platform_fee_cents, stripe_payment_intent_id, stripe_transfer_id, stripe_refund_id FROM escrows WHERE id = $1 FOR UPDATE`,
           [escrowId]
         );
 
@@ -1429,9 +1438,20 @@ export const EscrowService = {
 
         txTaskId = row.task_id;
         txAmount = row.amount;
+        txPlatformFeeCents = row.platform_fee_cents;
         txStripePaymentIntentId = row.stripe_payment_intent_id ?? null;
         txExistingTransferId = row.stripe_transfer_id ?? null;
         txExistingRefundId = row.stripe_refund_id ?? null;
+
+        if (txPlatformFeeCents != null) {
+          return {
+            success: false,
+            error: {
+              code: ErrorCodes.INVALID_STATE,
+              message: 'Canonical quote partial payout is fail-closed pending exact split reconciliation',
+            },
+          } as ServiceResult<Escrow>;
+        }
 
         // Fetch worker_id, poster_id and stripe_connect_id inside the transaction
         if (txTaskId) {

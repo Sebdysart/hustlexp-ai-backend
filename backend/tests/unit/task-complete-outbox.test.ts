@@ -127,12 +127,11 @@ import { db } from '../../src/db';
 import { writeToOutbox } from '../../src/lib/outbox-helpers';
 
 /**
- * task-complete-outbox.test.ts — TDD (red-first)
+ * Completion financial-boundary tests.
  *
- * INV-6 (atomicity): when a task transitions PROOF_SUBMITTED→COMPLETED and its
- * escrow is FUNDED with in-app payment, TaskService.complete must write the
- * 'escrow.completion_release_requested' outbox event IN THE SAME TRANSACTION
- * (transactional outbox) so completion and payout-request commit atomically.
+ * COMPLETED persists PAYOUT_READY evidence and transactionally emits the
+ * canonical completion-release event. The worker remains the only component
+ * allowed to move money.
  */
 const dbQuery = db.query as unknown as ReturnType<typeof vi.fn>;
 const dbTransaction = db.transaction as unknown as ReturnType<typeof vi.fn>;
@@ -158,61 +157,104 @@ beforeEach(() => {
   outboxSpy.mockResolvedValue({ id: 'outbox-evt-1', idempotencyKey: 'k1' });
 });
 
-describe('TaskService.complete — transactional outbox for completion release', () => {
-  it('FUNDED escrow + in-app payment → writes escrow.completion_release_requested inside the SAME transaction', async () => {
+describe('TaskService.complete — payout-ready safety boundary', () => {
+  it('accepted proof + FUNDED escrow → persists PAYOUT_READY and atomically queues canonical release', async () => {
     txQueryFn
       .mockResolvedValueOnce({ rows: [{ state: 'PROOF_SUBMITTED', poster_id: POSTER_ID }] }) // FOR UPDATE lock
-      .mockResolvedValueOnce({ rows: [completedTaskRow()], rowCount: 1 })                    // UPDATE → COMPLETED
-      .mockResolvedValueOnce({ rows: [{ id: ESCROW_ID, state: 'FUNDED' }] });               // escrow lookup
+      .mockResolvedValueOnce({ rows: [{ state: 'ACCEPTED' }] })                              // proof gate
+      .mockResolvedValueOnce({ rows: [{ id: ESCROW_ID, state: 'FUNDED' }] })                 // escrow gate
+      .mockResolvedValueOnce({ rows: [completedTaskRow({ payout_ready_at: new Date() })], rowCount: 1 }) // update
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 });                                    // evidence event
 
     const result = await TaskService.complete(TASK_ID, POSTER_ID);
 
     expect(result.success).toBe(true);
-    expect(outboxSpy).toHaveBeenCalledTimes(1);
-    const [input, qfn] = outboxSpy.mock.calls[0];
-    expect(input.eventType).toBe('escrow.completion_release_requested');
-    expect(input.aggregateType).toBe('escrow');
-    expect(input.aggregateId).toBe(ESCROW_ID);
-    expect(input.queueName).toBe('critical_payments');
-    expect(input.payload).toEqual(
-      expect.objectContaining({ escrow_id: ESCROW_ID, task_id: TASK_ID, reason: 'task_completed' })
-    );
-    // Transactional-outbox proof: the write used the tx query fn, not db.query
-    expect(qfn).toBe(txQueryFn);
+    expect(outboxSpy).toHaveBeenCalledWith({
+      eventType: 'escrow.completion_release_requested',
+      aggregateType: 'escrow',
+      aggregateId: ESCROW_ID,
+      payload: {
+        escrow_id: ESCROW_ID,
+        task_id: TASK_ID,
+        reason: 'poster_confirmed_completion',
+      },
+      queueName: 'critical_payments',
+      idempotencyKey: `completion-release:${TASK_ID}`,
+    }, txQueryFn);
+    const updateSql = String(txQueryFn.mock.calls[3]?.[0]);
+    expect(updateSql).toContain('payout_ready_at = NOW()');
+    expect(updateSql).toContain("payout_ready_reason");
     expect(dbQuery).not.toHaveBeenCalled();
   });
 
-  it('no escrow row → completes successfully, NO outbox event', async () => {
+  it('missing accepted proof blocks completion', async () => {
     txQueryFn
       .mockResolvedValueOnce({ rows: [{ state: 'PROOF_SUBMITTED', poster_id: POSTER_ID }] })
-      .mockResolvedValueOnce({ rows: [completedTaskRow()], rowCount: 1 })
-      .mockResolvedValueOnce({ rows: [] }); // no escrow
+      .mockResolvedValueOnce({ rows: [{ state: 'SUBMITTED' }] });
 
     const result = await TaskService.complete(TASK_ID, POSTER_ID);
-    expect(result.success).toBe(true);
+    expect(result).toMatchObject({ success: false, error: { code: 'HX301' } });
     expect(outboxSpy).not.toHaveBeenCalled();
   });
 
-  it('escrow not FUNDED (PENDING) → completes, NO outbox event (never auto-release unfunded money)', async () => {
+  it('escrow not FUNDED blocks payout-ready', async () => {
     txQueryFn
       .mockResolvedValueOnce({ rows: [{ state: 'PROOF_SUBMITTED', poster_id: POSTER_ID }] })
-      .mockResolvedValueOnce({ rows: [completedTaskRow()], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [{ state: 'ACCEPTED' }] })
       .mockResolvedValueOnce({ rows: [{ id: ESCROW_ID, state: 'PENDING' }] });
 
     const result = await TaskService.complete(TASK_ID, POSTER_ID);
-    expect(result.success).toBe(true);
+    expect(result).toMatchObject({ success: false, error: { code: 'PAYOUT_NOT_FUNDED' } });
     expect(outboxSpy).not.toHaveBeenCalled();
   });
 
-  it('offline payment task → completes, NO outbox event', async () => {
+  it('unattended completion requires delivered-message evidence', async () => {
     txQueryFn
-      .mockResolvedValueOnce({ rows: [{ state: 'PROOF_SUBMITTED', poster_id: POSTER_ID }] })
-      .mockResolvedValueOnce({ rows: [completedTaskRow({ payment_method: 'offline_venmo' })], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [] }) // advisory lock
+      .mockResolvedValueOnce({ rows: [] }) // request witness
+      .mockResolvedValueOnce({ rows: [{ state: 'PROOF_SUBMITTED', poster_id: POSTER_ID, price: 100, completion_message_delivered_at: null }] })
+      .mockResolvedValueOnce({ rows: [{ state: 'ACCEPTED' }] })
       .mockResolvedValueOnce({ rows: [{ id: ESCROW_ID, state: 'FUNDED' }] });
 
-    const result = await TaskService.complete(TASK_ID, POSTER_ID);
-    expect(result.success).toBe(true);
+    const result = await TaskService.complete(TASK_ID, undefined, {
+      mode: 'UNATTENDED',
+      idempotencyKey: 'unattended-complete-0001',
+    });
+    expect(result).toMatchObject({ success: false, error: { code: 'COMPLETION_DELIVERY_REQUIRED' } });
     expect(outboxSpy).not.toHaveBeenCalled();
+  });
+
+  it('unattended completion after delivered evidence and wait atomically queues canonical release', async () => {
+    txQueryFn
+      .mockResolvedValueOnce({ rows: [] }) // advisory lock
+      .mockResolvedValueOnce({ rows: [] }) // prior witness
+      .mockResolvedValueOnce({ rows: [{
+        state: 'PROOF_SUBMITTED',
+        poster_id: POSTER_ID,
+        price: 100,
+        payout_ready_at: null,
+        completion_message_delivered_at: new Date(Date.now() - 25 * 60 * 60 * 1000),
+      }] })
+      .mockResolvedValueOnce({ rows: [{ state: 'ACCEPTED' }] })
+      .mockResolvedValueOnce({ rows: [{ id: ESCROW_ID, state: 'FUNDED' }] })
+      .mockResolvedValueOnce({ rows: [completedTaskRow({ payout_ready_at: new Date() })], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // automation event
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 }); // request witness
+
+    const result = await TaskService.complete(TASK_ID, undefined, {
+      mode: 'UNATTENDED',
+      idempotencyKey: 'unattended-complete-0001',
+    });
+    expect(result.success).toBe(true);
+    expect(outboxSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: 'escrow.completion_release_requested',
+        aggregateId: ESCROW_ID,
+        payload: expect.objectContaining({ reason: 'unattended_policy_completion' }),
+      }),
+      txQueryFn,
+    );
+    expect(String(txQueryFn.mock.calls[5]?.[0])).toContain('payout_ready_at = NOW()');
   });
 
   it('completion rejected (wrong state) → NO outbox event', async () => {
@@ -222,17 +264,26 @@ describe('TaskService.complete — transactional outbox for completion release',
     expect(outboxSpy).not.toHaveBeenCalled();
   });
 
-  it('outbox write failure → transaction propagates the error (completion must NOT commit without the release request)', async () => {
-    txQueryFn
-      .mockResolvedValueOnce({ rows: [{ state: 'PROOF_SUBMITTED', poster_id: POSTER_ID }] })
-      .mockResolvedValueOnce({ rows: [completedTaskRow()], rowCount: 1 })
-      .mockResolvedValueOnce({ rows: [{ id: ESCROW_ID, state: 'FUNDED' }] });
-    outboxSpy.mockRejectedValueOnce(new Error('outbox insert failed'));
+});
 
-    const result = await TaskService.complete(TASK_ID, POSTER_ID);
-    // db.transaction would roll back; service surfaces a failure result (DB_ERROR path)
-    expect(result.success).toBe(false);
-    expect(result.success === false && result.error.code).toBeTruthy();
+describe('TaskService.recordCompletionDelivery', () => {
+  it('persists provider evidence and is safe to replay', async () => {
+    const deliveredAt = new Date('2026-07-10T12:00:00.000Z');
+    txQueryFn
+      .mockResolvedValueOnce({ rows: [{ state: 'PROOF_SUBMITTED' }], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [{ task_id: TASK_ID }], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 });
+    const result = await TaskService.recordCompletionDelivery({
+      taskId: TASK_ID,
+      providerDeliveryId: 'SM-delivered-1',
+      channel: 'SMS',
+      deliveredAt,
+      actorId: POSTER_ID,
+    });
+    expect(result).toMatchObject({ success: true, data: { idempotencyReplayed: false } });
+    expect(String(txQueryFn.mock.calls[1]?.[0])).toContain('task_completion_delivery_events');
+    expect(String(txQueryFn.mock.calls[2]?.[0])).toContain('completion_message_delivered_at');
   });
 });
 

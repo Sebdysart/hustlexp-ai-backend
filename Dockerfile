@@ -35,6 +35,16 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/Procfile ./Procfile
+COPY --from=builder /app/backend/database/migrations/20260710_engine_automation_contracts.sql ./backend/database/migrations/20260710_engine_automation_contracts.sql
+COPY --from=builder /app/backend/database/migrations/011-proof-alignment.sql ./backend/database/migrations/011-proof-alignment.sql
+COPY --from=builder /app/backend/database/migrations/expertise_supply_control.sql ./backend/database/migrations/expertise_supply_control.sql
+COPY --from=builder /app/backend/database/migrations/20260711_task_outcome_classification.sql ./backend/database/migrations/20260711_task_outcome_classification.sql
+COPY --from=builder /app/backend/database/migrations/20260712_hustler_identity_link.sql ./backend/database/migrations/20260712_hustler_identity_link.sql
+COPY --from=builder /app/backend/database/migrations/20260712_dispatch_expiry_pending_payment_cancel.sql ./backend/database/migrations/20260712_dispatch_expiry_pending_payment_cancel.sql
+COPY --from=builder /app/backend/database/migrations/20260712_dispatch_expiry_no_payment_reconcile.sql ./backend/database/migrations/20260712_dispatch_expiry_no_payment_reconcile.sql
+COPY --from=builder /app/backend/database/migrations/20260713_performance_indexes_alignment.sql ./backend/database/migrations/20260713_performance_indexes_alignment.sql
+COPY --from=builder /app/backend/database/migrations/20260718_revenue_audit_rail.sql ./backend/database/migrations/20260718_revenue_audit_rail.sql
+COPY --from=builder /app/backend/database/migrations/20260718_quote_economics_contract.sql ./backend/database/migrations/20260718_quote_economics_contract.sql
 
 # Change ownership
 RUN chown -R hustlexp:nodejs /app
@@ -44,6 +54,6 @@ EXPOSE 3000
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
-  CMD node -e "require('http').get('http://localhost:3000/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"
+  CMD node -e "if(process.env.SERVICE_ROLE==='worker'){process.exit(0)}require('http').get('http://localhost:3000/health',(r)=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
 
-CMD ["node", "dist/backend/src/server.js"]
+CMD ["npm", "start"]

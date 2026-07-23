@@ -125,6 +125,7 @@ interface EscrowRow {
   state: string;
   version: number;
   amount: number;
+  platform_fee_cents: number | null;
   stripe_payment_intent_id: string | null;
   stripe_transfer_id: string | null;
   stripe_refund_id: string | null;
@@ -193,7 +194,7 @@ export async function processEscrowActionJob(job: Job<EscrowActionJobData>): Pro
     const criticalSectionResult = await db.transaction(async (trx: QueryFn) => {
       // Lock escrow FOR UPDATE — held until COMMIT at end of transaction
       const escrowResult = await trx<EscrowRow>(
-        `SELECT id, state, version, amount, stripe_payment_intent_id, stripe_transfer_id, stripe_refund_id
+        `SELECT id, state, version, amount, platform_fee_cents, stripe_payment_intent_id, stripe_transfer_id, stripe_refund_id
          FROM escrows
          WHERE id = $1
          FOR UPDATE`,
@@ -328,7 +329,7 @@ async function handleReleaseRequest(
   // amounts for identical escrows. Unified on the gross basis — the dispute
   // release now pays exactly what a normal release pays.
   const { platformFeeCents, insuranceContributionCents, netPayoutCents: transferAmountCents, netBeforeInsuranceCents: netPayoutCents } =
-    computeFeeBreakdown(escrow.amount, config.stripe.platformFeePercent);
+    computeFeeBreakdown(escrow.amount, config.stripe.platformFeePercent, escrow.platform_fee_cents);
 
   log.info({ escrowId: escrow.id, escrowAmount: escrow.amount, platformFeeCents, netPayoutCents, insuranceContributionCents, transferAmountCents }, 'Platform fee and insurance contribution applied to transfer');
 
@@ -692,11 +693,9 @@ async function handlePartialRefundRequest(
   refundAmount: number,
   releaseAmount: number
 ): Promise<void> {
-  // Validate amounts
-  if (refundAmount < 0 || releaseAmount < 0) {
-    throw new Error('SPLIT amounts must be non-negative');
+  if (escrow.platform_fee_cents != null) {
+    throw new Error('CANONICAL_QUOTE_SPLIT_REQUIRES_RECONCILIATION: partial dispute payout is fail-closed');
   }
-
   // F-26: Validate using the same amounts that will be passed to Stripe, not raw inputs.
   // The worker receives netReleaseCents (after platform fee), not releaseAmount.
   // The fee absorbs any rounding residual so all three components sum to escrow.amount.

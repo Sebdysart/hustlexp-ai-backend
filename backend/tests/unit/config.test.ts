@@ -566,6 +566,51 @@ describe('validateConfig', () => {
     expect(exitSpy).toHaveBeenCalledWith(1);
     expect(result.errors.some(e => e.includes('STRIPE_SECRET_KEY'))).toBe(true);
   });
+
+  it.each([
+    ['test', 'sk_live_real', 'STRIPE_MODE=test'],
+    ['live', 'sk_test_real', 'STRIPE_MODE=live'],
+    ['preview', 'sk_live_real', 'STRIPE_MODE must be either test or live'],
+  ])('fails production boot for Stripe mode/key mismatch %s', async (mode, secret, expected) => {
+    process.env.DATABASE_URL = 'postgres://prod';
+    process.env.NODE_ENV = 'production';
+    process.env.FIREBASE_PROJECT_ID = 'proj';
+    process.env.FIREBASE_PRIVATE_KEY = 'key';
+    process.env.FIREBASE_CLIENT_EMAIL = 'a@b.com';
+    process.env.STRIPE_SECRET_KEY = secret;
+    process.env.STRIPE_MODE = mode;
+    process.env.UPSTASH_REDIS_REST_URL = 'https://redis.io';
+    process.env.UPSTASH_REDIS_URL = 'redis://upstash:6379';
+    process.env.QUEUE_HMAC_SECRET = 'real-hmac-secret';
+    process.env.TAX_TIN_ENCRYPTION_KEY = 'a'.repeat(64);
+    vi.resetModules();
+    const { validateConfig } = await import('../../src/config');
+    const result = validateConfig();
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(result.errors.some(error => error.includes(expected))).toBe(true);
+  });
+
+  it.each([
+    ['test', 'sk_test_real'],
+    ['live', 'sk_live_real'],
+  ])('accepts a matching Stripe %s mode/key pair', async (mode, secret) => {
+    process.env.DATABASE_URL = 'postgres://prod';
+    process.env.NODE_ENV = 'production';
+    process.env.FIREBASE_PROJECT_ID = 'proj';
+    process.env.FIREBASE_PRIVATE_KEY = 'key';
+    process.env.FIREBASE_CLIENT_EMAIL = 'a@b.com';
+    process.env.STRIPE_SECRET_KEY = secret;
+    process.env.STRIPE_MODE = mode;
+    process.env.UPSTASH_REDIS_REST_URL = 'https://redis.io';
+    process.env.UPSTASH_REDIS_URL = 'redis://upstash:6379';
+    process.env.QUEUE_HMAC_SECRET = 'real-hmac-secret';
+    process.env.TAX_TIN_ENCRYPTION_KEY = 'a'.repeat(64);
+    vi.resetModules();
+    const { validateConfig } = await import('../../src/config');
+    const result = validateConfig();
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(result.errors).toHaveLength(0);
+  });
 });
 
 // ============================================================================

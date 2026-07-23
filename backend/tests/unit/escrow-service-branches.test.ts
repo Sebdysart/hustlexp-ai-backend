@@ -498,6 +498,29 @@ describe('EscrowService.partialRefund', () => {
     expect(result.error?.message).toContain('expected LOCKED_DISPUTE');
   });
 
+  it('fails closed before Stripe when a canonical quote split would be partially disputed', async () => {
+    mockQuery.mockResolvedValueOnce({
+      rows: [makeEscrow({
+        state: 'LOCKED_DISPUTE',
+        version: 1,
+        task_id: 'task-1',
+        amount: 5000,
+        platform_fee_cents: 1250,
+        stripe_payment_intent_id: 'pi_test',
+      })],
+      rowCount: 1,
+    } as never);
+
+    const result = await EscrowService.partialRefund({
+      escrowId: 'esc-1',
+      workerPercent: 70,
+      posterPercent: 30,
+    });
+
+    expect(result).toMatchObject({ success: false, error: { code: 'INVALID_STATE' } });
+    expect(result.error?.message).toContain('Canonical quote partial payout');
+  });
+
   it('succeeds when escrow is LOCKED_DISPUTE and percentages sum to 100', async () => {
     const updated = makeEscrow({ state: 'REFUND_PARTIAL' });
     mockQuery

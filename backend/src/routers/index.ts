@@ -65,6 +65,8 @@ import { tutorialRouter } from './tutorial.js';
 import { batchQuestRouter } from './batchQuest.js';
 import { uiRouter } from './ui.js';
 import { disputeRouter } from './dispute.js';
+import { assignmentRouter } from './assignment.js';
+import { automationRouter } from './automation.js';
 
 // ── ADMIN DOMAIN ────────────────────────────────────────────────────────
 // Requires admin_roles table entry. Platform operations.
@@ -132,6 +134,8 @@ export const appRouter = router({
   batchQuest: batchQuestRouter,
   ui: uiRouter,
   dispute: disputeRouter,
+  assignment: assignmentRouter,
+  automation: automationRouter,
 
   // ── Admin Domain ───────────────────────────────────────────────────────
   admin: adminRouter,

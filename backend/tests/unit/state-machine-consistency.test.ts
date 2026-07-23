@@ -19,7 +19,7 @@ const __dirname = path.dirname(__filename);
 
 function extractTransitions(source: string): Record<string, string[]> | null {
   const blockMatch = source.match(
-    /const\s+VALID_TRANSITIONS[\s\S]*?=\s*\{([\s\S]*?)\};/
+    /const\s+(?:VALID|VALID_TASK)_TRANSITIONS[\s\S]*?=\s*\{([\s\S]*?)\};/
   );
   if (!blockMatch) return null;
 
@@ -52,7 +52,7 @@ function extractTransitions(source: string): Record<string, string[]> | null {
 const servicesDir = path.resolve(__dirname, '../../src/services');
 
 const taskSource = fs.readFileSync(
-  path.join(servicesDir, 'TaskService.ts'),
+  path.join(servicesDir, 'TaskServiceShared.ts'),
   'utf-8'
 );
 const escrowSource = fs.readFileSync(

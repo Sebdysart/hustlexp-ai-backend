@@ -18,7 +18,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Use vi.hoisted so that mockQuery is available inside the vi.mock factory.
 // vi.mock factories are hoisted above all imports (and above top-level const),
 // so a plain `const mockQuery = vi.fn()` cannot be closed over inside them.
-const { mockQuery } = vi.hoisted(() => ({ mockQuery: vi.fn() }));
+const { mockQuery, paymentLogWarn } = vi.hoisted(() => ({
+  mockQuery: vi.fn(),
+  paymentLogWarn: vi.fn(),
+}));
 
 vi.mock('../../src/db', () => ({
   db: {
@@ -29,10 +32,10 @@ vi.mock('../../src/db', () => ({
 
 vi.mock('../../src/logger', () => ({
   workerLogger: {
-    child: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
+    child: () => ({ info: vi.fn(), warn: paymentLogWarn, error: vi.fn() }),
   },
   logger: {
-    child: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
+    child: () => ({ info: vi.fn(), warn: paymentLogWarn, error: vi.fn() }),
   },
   // F-15 FIX: payment-worker now imports StripeService which uses stripeLogger
   stripeLogger: {
@@ -68,6 +71,16 @@ vi.mock('../../src/jobs/queues.js', () => ({
 vi.mock('../../src/services/StripeService.js', () => ({
   StripeService: {
     createTransferReversal: vi.fn().mockResolvedValue({ success: true, data: { reversalId: 'trr_test' } }),
+    getPaymentIntentProcessingFee: vi.fn().mockResolvedValue({
+      success: true,
+      data: {
+        paymentIntentId: 'pi_transfer_fee',
+        chargeId: 'ch_transfer_fee',
+        balanceTransactionId: 'txn_transfer_fee',
+        feeCents: 320,
+        currency: 'usd',
+      },
+    }),
   },
 }));
 
@@ -686,6 +699,41 @@ describe('processPaymentJob', () => {
       expect(vi.mocked(RevenueService.logEvent)).not.toHaveBeenCalled();
     });
 
+    it('recovers a canonical platform-fee reversal exactly once after a terminal retry', async () => {
+      const charge = {
+        id: 'ch_retry_canonical',
+        metadata: { escrow_id: 'escrow-retry-canonical' },
+        refunds: { data: [{ id: 'ref_retry_canonical' }] },
+        payment_intent: 'pi_retry_canonical',
+      };
+      setupClaim('charge.refunded', charge, 'evt_charge_retry_canonical');
+      mockQuery.mockResolvedValueOnce({
+        rows: [{
+          id: 'escrow-retry-canonical',
+          task_id: 'task-retry-canonical',
+          state: 'REFUNDED',
+          version: 5,
+          amount: 10_000,
+          platform_fee_cents: 2500,
+          stripe_refund_id: 'ref_retry_canonical',
+          stripe_transfer_id: 'tr_existing',
+        }],
+        rowCount: 1,
+      } as never);
+      mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+      mockQuery.mockResolvedValueOnce({ rows: [{ from_state: 'RELEASED' }], rowCount: 1 } as never);
+
+      await processPaymentJob(makeJob('charge.refunded', 'evt_charge_retry_canonical'));
+
+      expect(vi.mocked(RevenueService.logEvent)).toHaveBeenCalledWith(expect.objectContaining({
+        eventType: 'platform_fee_reversal',
+        amountCents: -2500,
+        escrowId: 'escrow-retry-canonical',
+        metadata: expect.objectContaining({ platform_fee_basis_points: 2500, retry_recovery: true }),
+      }));
+    });
+
     it('charge.refunded succeeds end-to-end (processed_at set, result=success)', async () => {
       setupSuccessfulChargeRefundedFromFunded('escrow-refund-4', 5000);
 
@@ -715,12 +763,28 @@ describe('processPaymentJob — transfer.created platform_fee double-log guard (
   const ESCROW_ID = 'escrow-dup-fee';
 
   /** Mocks the release transaction (claim → SELECT escrow → UPDATE → RELEASED) up to the fee guard. */
-  function setupReleaseUpToFeeGuard() {
+  function setupReleaseUpToFeeGuard(options: {
+    amount?: number;
+    platformFeeCents?: number | null;
+    paymentIntentId?: string | null;
+  } = {}) {
+    const amount = options.amount ?? 10_000;
+    const platformFeeCents = options.platformFeeCents === undefined ? 2500 : options.platformFeeCents;
+    const paymentIntentId = options.paymentIntentId === undefined ? 'pi_transfer_fee' : options.paymentIntentId;
     // 1. atomic claim
     setupClaim('transfer.created', { id: 'tr_dup', metadata: { escrow_id: ESCROW_ID } }, STRIPE_EVENT_ID);
     // 2. SELECT escrow FOR UPDATE → LOCKED_DISPUTE (releasable, not terminal)
     mockQuery.mockResolvedValueOnce({
-      rows: [{ id: ESCROW_ID, task_id: 'task-dup', state: 'LOCKED_DISPUTE', version: 3, amount: 10_000, stripe_transfer_id: null }],
+      rows: [{
+        id: ESCROW_ID,
+        task_id: 'task-dup',
+        state: 'LOCKED_DISPUTE',
+        version: 3,
+        amount,
+        platform_fee_cents: platformFeeCents,
+        stripe_transfer_id: null,
+        stripe_payment_intent_id: paymentIntentId,
+      }],
       rowCount: 1,
     } as never);
     // 3. UPDATE escrows → RELEASED
@@ -768,7 +832,95 @@ describe('processPaymentJob — transfer.created platform_fee double-log guard (
     expect(vi.mocked(RevenueService.logEvent)).toHaveBeenCalledTimes(1);
     const arg = vi.mocked(RevenueService.logEvent).mock.calls[0][0];
     expect(arg.eventType).toBe('platform_fee');
+    expect(arg.userId).toBe('poster-dup');
     expect(arg.escrowId).toBe(ESCROW_ID);
     expect(arg.stripeEventId).toBe(STRIPE_EVENT_ID);
+    expect(arg.stripePaymentIntentId).toBe('pi_transfer_fee');
+    expect(arg.amountCents).toBe(2500);
+    expect(arg.grossAmountCents).toBe(10_000);
+    expect(arg.netAmountCents).toBe(7500);
+    expect(arg.feeBasisPoints).toBe(2500);
+    expect(arg.stripeChargeId).toBe('ch_transfer_fee');
+    expect(arg.stripeProcessingFeeCents).toBe(320);
+    expect(arg.metadata).toMatchObject({ stripe_balance_transaction_id: 'txn_transfer_fee' });
+  });
+
+  it('fails contribution closed but still records revenue when Stripe fee retrieval is unavailable', async () => {
+    setupReleaseUpToFeeGuard();
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+    mockQuery.mockResolvedValueOnce({ rows: [{ worker_id: 'worker-dup', poster_id: 'poster-dup' }], rowCount: 1 } as never);
+    vi.mocked(StripeService.getPaymentIntentProcessingFee).mockResolvedValueOnce({
+      success: false,
+      error: { code: 'STRIPE_FEE_UNAVAILABLE', message: 'not settled' },
+    });
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+    await expect(processPaymentJob(makeJob('transfer.created', STRIPE_EVENT_ID))).resolves.toBeUndefined();
+
+    const arg = vi.mocked(RevenueService.logEvent).mock.calls[0][0];
+    expect(arg.stripeProcessingFeeCents).toBeUndefined();
+    expect(arg.stripeChargeId).toBeUndefined();
+    expect(arg.metadata).toMatchObject({ stripe_processing_fee_status: 'unknown' });
+    expect(paymentLogWarn).toHaveBeenCalledWith(
+      expect.objectContaining({ code: 'STRIPE_FEE_UNAVAILABLE' }),
+      expect.stringContaining('actual Stripe processing fee unavailable'),
+    );
+  });
+
+  it('falls back to the worker for ledger attribution only when poster identity is absent', async () => {
+    setupReleaseUpToFeeGuard();
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+    mockQuery.mockResolvedValueOnce({ rows: [{ worker_id: 'worker-only', poster_id: null }], rowCount: 1 } as never);
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+    await processPaymentJob(makeJob('transfer.created', STRIPE_EVENT_ID));
+
+    expect(vi.mocked(RevenueService.logEvent)).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 'worker-only',
+    }));
+  });
+
+  it.each([
+    { label: 'missing worker', amount: 10_000, workerId: null },
+    { label: 'zero gross', amount: 0, workerId: 'worker-dup' },
+  ])('does not fabricate fee revenue for $label', async ({ amount, workerId }) => {
+    setupReleaseUpToFeeGuard({ amount });
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+    mockQuery.mockResolvedValueOnce({ rows: [{ worker_id: workerId, poster_id: 'poster-dup' }], rowCount: 1 } as never);
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+    await processPaymentJob(makeJob('transfer.created', STRIPE_EVENT_ID));
+
+    expect(vi.mocked(RevenueService.logEvent)).not.toHaveBeenCalled();
+    expect(paymentLogWarn).not.toHaveBeenCalled();
+  });
+
+  it('treats canonical zero margin as real evidence and writes no platform revenue', async () => {
+    setupReleaseUpToFeeGuard({ platformFeeCents: 0 });
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+    mockQuery.mockResolvedValueOnce({ rows: [{ worker_id: 'worker-dup', poster_id: 'poster-dup' }], rowCount: 1 } as never);
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+    await processPaymentJob(makeJob('transfer.created', STRIPE_EVENT_ID));
+
+    expect(vi.mocked(RevenueService.logEvent)).not.toHaveBeenCalled();
+    expect(StripeService.getPaymentIntentProcessingFee).not.toHaveBeenCalled();
+  });
+
+  it('records unknown actual contribution without optional-field leakage when no PaymentIntent exists', async () => {
+    setupReleaseUpToFeeGuard({ paymentIntentId: null });
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+    mockQuery.mockResolvedValueOnce({ rows: [{ worker_id: 'worker-dup', poster_id: 'poster-dup' }], rowCount: 1 } as never);
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+    await processPaymentJob(makeJob('transfer.created', STRIPE_EVENT_ID));
+
+    expect(StripeService.getPaymentIntentProcessingFee).not.toHaveBeenCalled();
+    expect(vi.mocked(RevenueService.logEvent)).toHaveBeenCalledWith(expect.objectContaining({
+      stripeProcessingFeeCents: undefined,
+      stripeChargeId: undefined,
+      stripePaymentIntentId: undefined,
+      metadata: { event: 'escrow_release_transfer_created_fallback', stripe_processing_fee_status: 'unknown' },
+    }));
   });
 });

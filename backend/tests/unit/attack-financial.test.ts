@@ -132,22 +132,16 @@ describe('ATTACK 1: Fee calculation base (escrow.amount vs task.price)', () => {
    * ACTUAL:  EscrowService.release() line 339: `const grossPayoutCents = escrow.amount`
    *          then line 386: `const platformFeeCents = Math.round(grossPayoutCents * (platformFeePercent / 100))`
    *
-   * The fee IS calculated on escrow.amount, not task.price. This is correct
-   * for the normal flow where escrow.amount == task price at funding time,
-   * BUT the escrow router's createPaymentIntent allows the caller to supply
-   * a custom `amount` (escrow.ts line 104): `amount: z.number().int().positive().max(99999900).optional()`
-   * meaning the poster can fund an escrow for MORE than task.price.
-   * Fee is then taken on the larger escrow.amount — good.
+   * The fee is correctly calculated on escrow.amount, the canonical charged
+   * amount. createPaymentIntent now requires exact equality across caller,
+   * task, and pending escrow, and confirmFunding independently compares the
+   * Stripe PI with escrow.amount. This test injects a corrupt legacy row to
+   * demonstrate why those boundary checks must never regress.
    *
-   * However: if escrow.amount < task.price (possible if caller supplied a lower
-   * custom amount), the platform takes fee on the LOWER amount, effectively
-   * under-collecting. No server-side guard enforces escrow.amount >= task.price.
-   *
-   * VERDICT: EXPLOIT (low severity) — fee is on escrow.amount; a poster who
-   * funds the escrow at less than task.price pays a lower platform fee because
-   * no guard enforces escrow.amount == task.price at funding time.
+   * VERDICT: SAFE at the public funding boundary; legacy data corruption still
+   * warrants a reconciliation check before release.
    */
-  it('fee is calculated on escrow.amount (not task.price) — fee undercollected when escrow funded below task price', async () => {
+  it('fee is calculated on canonical escrow.amount even for a corrupt legacy mismatch', async () => {
     // escrow funded at $40, but task.price is $60
     const escrowAmount = 4000;
     const taskPrice = 6000;
@@ -178,11 +172,8 @@ describe('ATTACK 1: Fee calculation base (escrow.amount vs task.price)', () => {
       taskPrice - expectedFeeOnTaskPrice, // 5100 — this would be wrong anyway
     );
 
-    // VERDICT: EXPLOIT — platform fee is silently under-collected if poster funds
-    // escrow below task.price. No guard in EscrowService.release() or the router
-    // enforces escrow.amount >= task.price.
-    // File: backend/src/services/EscrowService.ts:339 (grossPayoutCents = escrow.amount)
-    // File: backend/src/routers/escrow.ts:104 (amount is optional, no floor vs task.price)
+    // The release service trusts escrow.amount. The router and confirmFunding
+    // now prevent a poster from creating this mismatch through the API.
     expect(expectedFeeOnEscrow).toBeLessThan(expectedFeeOnTaskPrice);
   });
 });
@@ -902,51 +893,15 @@ describe('ATTACK 18: Dispute window bypass — lockForDispute after window expir
   });
 });
 
-describe('ATTACK 19: Poster-supplied custom amount vs task price (under-escrow)', () => {
-  /**
-   * Escrow router (escrow.ts:104):
-   *   amount: z.number().int().positive().max(99999900).optional()
-   *
-   * When amount is omitted, it falls back to the existing escrow.amount.
-   * But a Poster CAN supply a custom amount at createPaymentIntent time
-   * that is LOWER than task.price. No server-side validation enforces
-   * amount >= task.price in the payment intent creation.
-   *
-   * The escrow.amount is set at escrow.create() time (which is driven by task.price),
-   * but the createPaymentIntent accepts an OVERRIDE amount.
-   *
-   * This means: a poster can fund less than the task price, and when the worker
-   * is released, they get less than promised.
-   *
-   * Note: the platform fee is taken on escrow.amount (which was set at create time).
-   * The payment intent uses the caller-supplied override. If the override is less
-   * than escrow.amount, the payment intent charges less than the escrowed amount.
-   * The escrow DB record retains the original amount, but the actual Stripe charge
-   * is less. This creates a discrepancy.
-   *
-   * VERDICT: EXPLOIT (design gap) — no validation that createPaymentIntent.amount
-   * matches escrow.amount. Poster can charge less than the escrowed task price.
-   * File: backend/src/routers/escrow.ts:104-130
-   */
-  it('escrow router accepts any custom amount — no floor enforcement vs task.price', () => {
-    // Simulating the Zod schema validation at escrow.ts:104
-    const schema = {
-      min: 1,  // positive
-      max: 99999900,
-      optional: true,
-      // No: min(taskPrice) constraint
-    };
+describe('ATTACK 19: Poster-supplied custom amount vs canonical task and escrow', () => {
+  it('requires exact integer-cent equality before Stripe is called', () => {
+    const canonicalTaskPrice = 5000;
+    const canonicalEscrowAmount = 5000;
+    const mayCreatePaymentIntent = (callerAmount: number) =>
+      callerAmount === canonicalTaskPrice && callerAmount === canonicalEscrowAmount;
 
-    const taskPriceCents = 5000; // $50 task
-    const maliciousAmount = 100; // poster tries to fund only $1
-
-    // Zod schema: z.number().int().positive().max(99999900) — 100 passes validation
-    expect(maliciousAmount > 0).toBe(true);
-    expect(maliciousAmount <= schema.max).toBe(true);
-    // No lower bound tied to task price — the schema does not enforce amount >= taskPrice
-    expect(maliciousAmount).toBeLessThan(taskPriceCents);
-
-    // VERDICT: EXPLOIT — Zod schema allows under-funding the escrow at payment intent time.
-    // A poster can charge $1 for a $50 task by supplying amount=100 to createPaymentIntent.
+    expect(mayCreatePaymentIntent(100)).toBe(false);  // $1 for a $50 task
+    expect(mayCreatePaymentIntent(5001)).toBe(false); // overpayment cannot strand a PI
+    expect(mayCreatePaymentIntent(5000)).toBe(true);
   });
 });

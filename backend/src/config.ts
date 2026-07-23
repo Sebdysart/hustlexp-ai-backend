@@ -194,46 +194,77 @@ export const config = {
   },
 };
 
-/**
- * Validate required configuration for production
- */
-export function validateConfig(): { valid: boolean; errors: string[]; warnings: string[] } {
+function firebaseConfigurationErrors(): string[] {
   const errors: string[] = [];
-  const warnings: string[] = [];
+  if (!config.firebase.projectId) errors.push('FIREBASE_PROJECT_ID is required');
+  if (!config.firebase.privateKey) errors.push('FIREBASE_PRIVATE_KEY is required');
+  if (!config.firebase.clientEmail) errors.push('FIREBASE_CLIENT_EMAIL is required');
+  return errors;
+}
 
-  // Always required
-  if (!config.database.url) {
-    errors.push('DATABASE_URL is required');
+function stripeConfigurationErrors(): string[] {
+  const errors: string[] = [];
+  if (!config.stripe.secretKey || config.stripe.secretKey.includes('placeholder')) {
+    errors.push('STRIPE_SECRET_KEY is required (not placeholder)');
   }
+  const stripeMode = process.env.STRIPE_MODE?.trim().toLowerCase();
+  if (stripeMode && stripeMode !== 'test' && stripeMode !== 'live') {
+    errors.push('STRIPE_MODE must be either test or live');
+  } else if (stripeMode === 'test' && config.stripe.secretKey.startsWith('sk_live_')) {
+    errors.push('STRIPE_MODE=test cannot be used with a live Stripe secret key');
+  } else if (stripeMode === 'live' && config.stripe.secretKey.startsWith('sk_test_')) {
+    errors.push('STRIPE_MODE=live cannot be used with a test Stripe secret key');
+  }
+  return errors;
+}
 
-  // Required in production
+function redisConfigurationErrors(): string[] {
+  const errors: string[] = [];
+  if (!config.redis.restUrl) errors.push('UPSTASH_REDIS_REST_URL is required for caching/rate limiting');
+  if (!config.redis.url) errors.push('UPSTASH_REDIS_URL or REDIS_URL is required for BullMQ job queues');
+  return errors;
+}
+
+function taxConfigurationErrors(): string[] {
+  if (!config.tax.encryptionKey) {
+    return ['TAX_TIN_ENCRYPTION_KEY is required in production (AES-256-GCM TIN encryption)'];
+  }
+  if (!/^[0-9a-fA-F]{64}$/.test(config.tax.encryptionKey)) {
+    return ['TAX_TIN_ENCRYPTION_KEY must be exactly 64 hex characters (32 bytes) for AES-256-GCM — generate with: openssl rand -hex 32'];
+  }
+  return [];
+}
+
+function productionConfigurationWarnings(): string[] {
+  const warnings: string[] = [];
+  const r2 = config.cloudflare.r2;
+  if (!r2.accountId || !r2.accessKeyId || !r2.secretAccessKey) {
+    warnings.push('R2 storage not configured — exports will fail');
+  }
+  if (!config.identity.sendgrid.apiKey) warnings.push('SendGrid not configured — email notifications will fail');
+  return warnings;
+}
+
+function productionConfigurationErrors(): string[] {
+  const queueErrors = process.env.QUEUE_HMAC_SECRET
+    ? []
+    : ['QUEUE_HMAC_SECRET is required in production (HMAC signing for financial BullMQ jobs)'];
+  return [
+    ...queueErrors,
+    ...firebaseConfigurationErrors(),
+    ...stripeConfigurationErrors(),
+    ...redisConfigurationErrors(),
+    ...taxConfigurationErrors(),
+  ];
+}
+
+/** Validate required configuration and fail closed in production. */
+export function validateConfig(): { valid: boolean; errors: string[]; warnings: string[] } {
+  const errors = config.database.url ? [] : ['DATABASE_URL is required'];
+  const warnings: string[] = [];
   if (config.app.isProduction) {
-    if (!process.env.QUEUE_HMAC_SECRET) {
-      errors.push('QUEUE_HMAC_SECRET is required in production (HMAC signing for financial BullMQ jobs)');
-    }
-    if (!config.firebase.projectId) errors.push('FIREBASE_PROJECT_ID is required');
-    if (!config.firebase.privateKey) errors.push('FIREBASE_PRIVATE_KEY is required');
-    if (!config.firebase.clientEmail) errors.push('FIREBASE_CLIENT_EMAIL is required');
-    if (!config.stripe.secretKey || config.stripe.secretKey.includes('placeholder')) {
-      errors.push('STRIPE_SECRET_KEY is required (not placeholder)');
-    }
-    if (!config.redis.restUrl) {
-      errors.push('UPSTASH_REDIS_REST_URL is required for caching/rate limiting');
-    }
-    if (!config.redis.url) {
-      errors.push('UPSTASH_REDIS_URL or REDIS_URL is required for BullMQ job queues');
-    }
-    if (!config.cloudflare.r2.accountId || !config.cloudflare.r2.accessKeyId || !config.cloudflare.r2.secretAccessKey) {
-      warnings.push('R2 storage not configured — exports will fail');
-    }
-    if (!config.identity.sendgrid.apiKey) {
-      warnings.push('SendGrid not configured — email notifications will fail');
-    }
-    if (!config.tax.encryptionKey) {
-      errors.push('TAX_TIN_ENCRYPTION_KEY is required in production (AES-256-GCM TIN encryption)');
-    } else if (!/^[0-9a-fA-F]{64}$/.test(config.tax.encryptionKey)) {
-      errors.push('TAX_TIN_ENCRYPTION_KEY must be exactly 64 hex characters (32 bytes) for AES-256-GCM — generate with: openssl rand -hex 32');
-    }
+    errors.push(...productionConfigurationErrors());
+    warnings.push(...productionConfigurationWarnings());
   }
 
   // SECURITY FIX (v2.9.4): In production, fatal config errors must crash the

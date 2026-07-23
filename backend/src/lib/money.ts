@@ -68,6 +68,31 @@ export interface FeeBreakdown {
   netBeforeInsuranceCents: number;
 }
 
+export function resolvePlatformFeeCents(
+  grossCents: number,
+  feePercent: number,
+  canonicalPlatformFeeCents?: number | null,
+): number {
+  assertIntegerCents(grossCents, 'grossCents');
+  if (canonicalPlatformFeeCents === undefined || canonicalPlatformFeeCents === null) {
+    return computePlatformFeeCents(grossCents, feePercent);
+  }
+  assertIntegerCents(canonicalPlatformFeeCents, 'canonicalPlatformFeeCents');
+  if (canonicalPlatformFeeCents >= grossCents) {
+    throw new RangeError('canonicalPlatformFeeCents must be non-negative and less than grossCents');
+  }
+  return canonicalPlatformFeeCents;
+}
+
+export function feeBasisPoints(grossCents: number, platformFeeCents: number): number {
+  assertIntegerCents(grossCents, 'grossCents');
+  assertIntegerCents(platformFeeCents, 'platformFeeCents');
+  if (platformFeeCents >= grossCents) {
+    throw new RangeError('Fee basis requires positive gross and a fee below gross');
+  }
+  return Math.round((platformFeeCents * 10_000) / grossCents);
+}
+
 /**
  * Full release decomposition for an escrow payout.
  * Guarantee: platformFeeCents + insuranceContributionCents + netPayoutCents === grossCents.
@@ -79,9 +104,10 @@ export interface FeeBreakdown {
  */
 export function computeFeeBreakdown(
   grossCents: number,
-  feePercent: number = config.stripe.platformFeePercent
+  feePercent: number = config.stripe.platformFeePercent,
+  canonicalPlatformFeeCents?: number | null,
 ): FeeBreakdown {
-  const platformFeeCents = computePlatformFeeCents(grossCents, feePercent);
+  const platformFeeCents = resolvePlatformFeeCents(grossCents, feePercent, canonicalPlatformFeeCents);
   const insuranceContributionCents = Math.round(grossCents * INSURANCE_RATE);
   const netBeforeInsuranceCents = grossCents - platformFeeCents;
   const netPayoutCents = netBeforeInsuranceCents - insuranceContributionCents;

@@ -1,0 +1,35 @@
+{
+  "language": "typescript",
+  "package_manager": "npm",
+  "tools": {
+    "apply_patch": "builtin:apply_patch",
+    "run_typecheck": "npm run typecheck",
+    "run_linter": "npm run lint",
+    "run_arch_linter": "npm run verify:architecture",
+    "run_complexity_check": "npm run verify:complexity",
+    "run_sast_scan": "npm run verify:sast",
+    "run_sca_scan": "npm run verify:supply-chain",
+    "run_tests_impacted": "npx vitest run --reporter=dot",
+    "run_coverage_diff": "npm run verify:coverage-diff",
+    "run_mutation_test": "npm run verify:mutation",
+    "run_property_tests": "npm run verify:properties",
+    "run_diff_test": "npm run verify:differential",
+    "run_schema_check": "npm run verify:schema",
+    "run_build": "npm run build",
+    "run_container_build": "docker build -t hustlexp-engine:automation-contracts .",
+    "inspect_source": "rg",
+    "read_source": "sed",
+    "inspect_dependencies": "npm view",
+    "install_dependencies": "npm install",
+    "inspect_filesystem": "df; du",
+    "manage_tool_cache": "rm disposable package-manager caches only",
+    "start_local_service": "npm run dev",
+    "git_status": "git status --short",
+    "git_diff": "git diff --check",
+    "git_worktree": "git worktree"
+  },
+  "complexity_limits": {
+    "max_cyclomatic": 10,
+    "max_file_loc": 400
+  }
+}

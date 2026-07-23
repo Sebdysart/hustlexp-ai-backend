@@ -46,9 +46,10 @@ const mockUser = {
   default_mode: 'worker',
 };
 
-function makeRequest(authHeader?: string): Request {
+function makeRequest(authHeader?: string, bridgeKey?: string): Request {
   const headers = new Headers();
   if (authHeader) headers.set('authorization', authHeader);
+  if (bridgeKey) headers.set('x-engine-bridge-key', bridgeKey);
   return new Request('http://localhost/', { headers });
 }
 
@@ -65,6 +66,32 @@ describe('createContext', () => {
     const ctx = await createContext({ req: makeRequest(), resHeaders: new Headers() });
     expect(ctx.user).toBeNull();
     expect(ctx.firebaseUid).toBeNull();
+  });
+
+  it('authenticates a valid engine bridge key without creating a user session', async () => {
+    const key = 'bridge-key-that-is-longer-than-thirty-two-characters';
+    vi.stubEnv('ENGINE_BRIDGE_WRITE_KEY', key);
+    vi.stubEnv('ENGINE_BRIDGE_ACTOR_ID', '550e8400-e29b-41d4-a716-446655440002');
+    try {
+      const ctx = await createContext({ req: makeRequest(undefined, key), resHeaders: new Headers() });
+      expect(ctx.user).toBeNull();
+      expect(ctx.engineBridgeAuthorized).toBe(true);
+      expect(ctx.engineBridgeActorId).toBe('550e8400-e29b-41d4-a716-446655440002');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('rejects a wrong engine bridge key without leaking an actor identity', async () => {
+    vi.stubEnv('ENGINE_BRIDGE_WRITE_KEY', 'bridge-key-that-is-longer-than-thirty-two-characters');
+    vi.stubEnv('ENGINE_BRIDGE_ACTOR_ID', '550e8400-e29b-41d4-a716-446655440002');
+    try {
+      const ctx = await createContext({ req: makeRequest(undefined, 'wrong-key-that-is-also-longer-than-thirty-two'), resHeaders: new Headers() });
+      expect(ctx.engineBridgeAuthorized).toBe(false);
+      expect(ctx.engineBridgeActorId).toBeNull();
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('returns null user when authorization does not start with Bearer', async () => {
@@ -500,6 +527,16 @@ describe('hustlerProcedure', () => {
     });
     await expect(caller.hustlerOnly()).rejects.toThrow(
       expect.objectContaining({ code: 'FORBIDDEN', message: 'Hustler access required' })
+    );
+  });
+
+  it('rejects a minor worker from all hustler procedures', async () => {
+    const caller = testRouter.createCaller({
+      user: { ...mockUser, default_mode: 'worker', is_minor: true } as any,
+      firebaseUid: 'uid-1',
+    });
+    await expect(caller.hustlerOnly()).rejects.toThrow(
+      expect.objectContaining({ code: 'FORBIDDEN', message: 'Hustlers must be at least 18 years old.' })
     );
   });
 

@@ -275,7 +275,7 @@ describe('TaskService.complete — INV-3 violation (HX301)', () => {
     mockIsInvariant.mockReturnValue(true);
     mockQuery.mockRejectedValueOnce(hx301Error as never);
 
-    const result = await TaskService.complete('task-1');
+    const result = await TaskService.complete('task-1', 'poster-1');
 
     expect(result.success).toBe(false);
     // The code for INV-3 violation (mapped from ErrorCodes.INV_3_VIOLATION)

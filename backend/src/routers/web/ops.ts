@@ -13,6 +13,7 @@ import { db } from '../../db.js';
 import { logger } from '../../logger.js';
 import { TRPCError } from '@trpc/server';
 import crypto from 'crypto';
+import { AutomationLifecycleService } from '../../services/AutomationLifecycleService.js';
 
 const log = logger.child({ router: 'web.ops' });
 
@@ -22,7 +23,89 @@ function checkAdminKey(key: string) {
   }
 }
 
+const UpsertHustlerSchema = z.object({
+  adminKey: z.string(),
+  id: z.string().uuid().optional(),
+  name: z.string().min(1),
+  phone: z.string().optional(),
+  email: z.string().email().optional(),
+  home_zip: z.string().optional(),
+  radius_miles: z.number().optional(),
+  vehicle: z.string().default('none'),
+  max_lift_lbs: z.number().optional(),
+  status: z.string().default('new_applicant'),
+  available: z.boolean().default(true),
+  availability_note: z.string().optional(),
+  notes: z.string().optional(),
+  skills: z.array(z.string()).default([]),
+});
+
+type UpsertHustlerInput = z.infer<typeof UpsertHustlerSchema>;
+
+function hustlerValues(input: UpsertHustlerInput): unknown[] {
+  return [
+    input.name, input.phone ?? null, input.email ?? null, input.home_zip ?? null,
+    input.radius_miles ?? null, input.vehicle, input.max_lift_lbs ?? null,
+    input.status, input.available, input.availability_note ?? null,
+    input.notes ?? null, input.skills,
+  ];
+}
+
+async function updateHustler(input: UpsertHustlerInput): Promise<string> {
+  await db.query(
+    `UPDATE leads SET name=$1, phone=$2, email=$3, home_zip=$4, radius_miles=$5,
+     vehicle=$6, max_lift_lbs=$7, status=$8, available=$9,
+     availability_note=$10, notes=$11, skills=$12::text[], updated_at=now()
+     WHERE id=$13 AND lead_type='hustler'`,
+    [...hustlerValues(input), input.id]
+  );
+  return input.id!;
+}
+
+async function insertHustler(input: UpsertHustlerInput): Promise<string> {
+  const result = await db.query<{ id: string }>(
+    `INSERT INTO leads
+      (lead_type, name, phone, email, home_zip, radius_miles, vehicle,
+       max_lift_lbs, status, available, availability_note, notes, skills,
+       submission_id, consent_version)
+     VALUES ('hustler',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::text[],
+             gen_random_uuid(),'v1')
+     RETURNING id`,
+    hustlerValues(input)
+  );
+  return result.rows[0].id;
+}
+
+async function handleUpsertHustler({ input }: { input: UpsertHustlerInput }) {
+  checkAdminKey(input.adminKey);
+  const id = input.id ? await updateHustler(input) : await insertHustler(input);
+  return { ok: true, id };
+}
+
 export const webOpsRouter = router({
+
+  // ── Canonical engine lifecycle (E1) ────────────────────────────────────────
+
+  listEngineTasks: publicProcedure
+    .input(z.object({
+      adminKey: z.string(),
+      limit: z.number().int().min(1).max(100).default(20),
+      cursor: z.string().max(512).nullish(),
+    }))
+    .query(async ({ input }) => {
+      checkAdminKey(input.adminKey);
+      const result = await AutomationLifecycleService.listTasks({
+        limit: input.limit,
+        cursor: input.cursor,
+      });
+      if (!result.success) {
+        throw new TRPCError({
+          code: result.error.code === 'INVALID_CURSOR' ? 'BAD_REQUEST' : 'INTERNAL_SERVER_ERROR',
+          message: result.error.message,
+        });
+      }
+      return { ok: true, ...result.data };
+    }),
 
   // ── Task Drafts ─────────────────────────────────────────────────────────────
 
@@ -174,9 +257,8 @@ export const webOpsRouter = router({
 
       const conditions: string[] = [];
       const params: unknown[] = [];
-      if (input.status) conditions.push(`h.status = $${params.push(input.status)}`);
-      if (input.available !== undefined) conditions.push(`h.available = $${params.push(input.available)}`);
-      const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+      if (input.status) conditions.push(`status = $${params.push(input.status)}`);
+      if (input.available !== undefined) conditions.push(`available = $${params.push(input.available)}`);
 
       // leads.skills is a text[] column — no join needed
       const baseWhere = conditions.length
@@ -196,57 +278,8 @@ export const webOpsRouter = router({
     }),
 
   upsertHustler: publicProcedure
-    .input(z.object({
-      adminKey: z.string(),
-      id: z.string().uuid().optional(),
-      name: z.string().min(1),
-      phone: z.string().optional(),
-      email: z.string().email().optional(),
-      home_zip: z.string().optional(),
-      radius_miles: z.number().optional(),
-      vehicle: z.string().default('none'),
-      max_lift_lbs: z.number().optional(),
-      status: z.string().default('new_applicant'),
-      available: z.boolean().default(true),
-      availability_note: z.string().optional(),
-      notes: z.string().optional(),
-      skills: z.array(z.string()).default([]),
-    }))
-    .mutation(async ({ input }) => {
-      checkAdminKey(input.adminKey);
-
-      // skills is a text[] column on leads — update inline, no join table
-      let id = input.id;
-      if (id) {
-        await db.query(
-          `UPDATE leads SET name=$1, phone=$2, email=$3, home_zip=$4, radius_miles=$5,
-           vehicle=$6, max_lift_lbs=$7, status=$8, available=$9,
-           availability_note=$10, notes=$11, skills=$12::text[], updated_at=now()
-           WHERE id=$13 AND lead_type='hustler'`,
-          [input.name, input.phone ?? null, input.email ?? null, input.home_zip ?? null,
-           input.radius_miles ?? null, input.vehicle, input.max_lift_lbs ?? null,
-           input.status, input.available, input.availability_note ?? null,
-           input.notes ?? null, input.skills, id]
-        );
-      } else {
-        const r = await db.query<{ id: string }>(
-          `INSERT INTO leads
-            (lead_type, name, phone, email, home_zip, radius_miles, vehicle,
-             max_lift_lbs, status, available, availability_note, notes, skills,
-             submission_id, consent_version)
-           VALUES ('hustler',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::text[],
-                   gen_random_uuid(),'v1')
-           RETURNING id`,
-          [input.name, input.phone ?? null, input.email ?? null, input.home_zip ?? null,
-           input.radius_miles ?? null, input.vehicle, input.max_lift_lbs ?? null,
-           input.status, input.available, input.availability_note ?? null,
-           input.notes ?? null, input.skills]
-        );
-        id = r.rows[0].id;
-      }
-
-      return { ok: true, id };
-    }),
+    .input(UpsertHustlerSchema)
+    .mutation(handleUpsertHustler),
 
   // ── Feature flags ────────────────────────────────────────────────────────────
 
