@@ -28,6 +28,8 @@
     "db:validate": "npx tsx scripts/validate-schema.ts",
     "db:migrate:consolidate": "npx tsx scripts/consolidate-migrations.ts",
     "health": "curl http://localhost:3000/health",
+    "package:role-fixture-evidence": "node scripts/package-role-fixture-evidence.mjs",
+    "verify:alert-inventory": "node scripts/verify-alert-inventory.mjs",
     "lint": "eslint backend/src --ext .ts",
     "lint:fix": "eslint backend/src --ext .ts --fix",
     "format": "prettier --write \"backend/src/**/*.ts\"",

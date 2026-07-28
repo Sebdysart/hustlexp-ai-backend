@@ -39,7 +39,7 @@
   - `escrow_terminal_guard`
 - [ ] Connection pool sized for expected load (max 20)
 - [ ] Performance indexes created (`performance_indexes_v1`)
-- [ ] Backup schedule configured (Neon automated backups)
+- [ ] Backup / PITR configured (Railway Postgres PITR — see ops/runbooks/RAILWAY_POSTGRES_PITR_ENABLE.md)
 
 ### Monitoring
 
@@ -104,6 +104,6 @@
 ## Rollback Plan
 
 1. **Immediate:** Railway instant rollback to previous deployment
-2. **Database:** Neon point-in-time recovery (PITR)
+2. **Database:** Railway Postgres point-in-time recovery (PITR)
 3. **Stripe:** Webhook endpoint can be disabled in Stripe Dashboard
 4. **DNS:** Cloudflare can redirect to maintenance page in <30s

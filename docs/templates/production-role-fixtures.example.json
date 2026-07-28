@@ -1,0 +1,54 @@
+{
+  "fixtures": [
+    {
+      "role": "poster",
+      "identity_redacted": "poster+fixture@example.test",
+      "expires_at": "2026-08-10T00:00:00.000Z",
+      "entry": "/get-help",
+      "destination": "/task-preview",
+      "recovery": "/get-help",
+      "test_exclusion": true,
+      "journey_evidence": null
+    },
+    {
+      "role": "hustler",
+      "identity_redacted": "hustler+fixture@example.test",
+      "expires_at": "2026-08-10T00:00:00.000Z",
+      "entry": "/earn",
+      "destination": "/earn/setup",
+      "recovery": "/earn",
+      "test_exclusion": true,
+      "journey_evidence": null
+    },
+    {
+      "role": "business-client",
+      "identity_redacted": "bizclient+fixture@example.test",
+      "expires_at": "2026-08-10T00:00:00.000Z",
+      "entry": "/business",
+      "destination": "/business/workspace",
+      "recovery": "/business",
+      "test_exclusion": true,
+      "journey_evidence": null
+    },
+    {
+      "role": "service-business",
+      "identity_redacted": "svcbusiness+fixture@example.test",
+      "expires_at": "2026-08-10T00:00:00.000Z",
+      "entry": "/business/provide",
+      "destination": "/business/workspace?mode=provider",
+      "recovery": "/business/provide",
+      "test_exclusion": true,
+      "journey_evidence": null
+    },
+    {
+      "role": "operations",
+      "identity_redacted": "ops-admin-key-fixture",
+      "expires_at": "2026-08-10T00:00:00.000Z",
+      "entry": "/ops",
+      "destination": "/ops",
+      "recovery": "/",
+      "test_exclusion": true,
+      "journey_evidence": null
+    }
+  ]
+}
