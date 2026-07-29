@@ -125,6 +125,12 @@ npm run dev:workers            # Start background workers (separate terminal)
 
 ---
 
+> **Note**
+>
+> The npm development scripts automatically load `.env` when present. Environment variables provided by the shell or deployment platform continue to take precedence.
+>
+> Docker is intended for production and container-parity workflows. It is not required for normal local backend development.
+
 ## Core Business Logic
 
 ### 1. Task Lifecycle
