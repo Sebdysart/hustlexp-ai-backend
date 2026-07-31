@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "kind": "epic03_stripe_test_mode_receipts",
+  "as_of": "2026-07-31T10:42:23.733Z",
+  "key_mode": "sk_test",
+  "key_fingerprint": "sk_test_…xk9s",
+  "production_unfreeze": false,
+  "summary": {
+    "proven": 7,
+    "failed": 0,
+    "open_or_partial": 0,
+    "total": 7
+  },
+  "cases": [
+    {
+      "case": 1,
+      "title": "Authorization / PaymentIntent create",
+      "status": "PROVEN",
+      "stripe_id": "pi_3TzDmh97UdWM2cEw0BrqqrqV",
+      "stripe_status": "requires_payment_method",
+      "http_status": 200,
+      "error": null
+    },
+    {
+      "case": 2,
+      "title": "Confirm / capture success",
+      "status": "PROVEN",
+      "payment_intent": "pi_3TzDmh97UdWM2cEw0BrqqrqV",
+      "confirm_status": "requires_capture",
+      "capture_status": "succeeded",
+      "charge_id": "ch_3TzDmh97UdWM2cEw0DXYqTO5",
+      "error": null
+    },
+    {
+      "case": 3,
+      "title": "Customer refund",
+      "status": "PROVEN",
+      "stripe_id": "re_3TzDmh97UdWM2cEw0FaWqs15",
+      "stripe_status": "succeeded",
+      "payment_intent": "pi_3TzDmh97UdWM2cEw0BrqqrqV",
+      "error": null
+    },
+    {
+      "case": 4,
+      "title": "Connect / payout path (test)",
+      "status": "PROVEN",
+      "connect_account_id": "acct_1TzCeu7BxLRGjXMY",
+      "destination_payment_intent": "pi_3TzDmm97UdWM2cEw1zvlyhrT",
+      "destination_charge": "ch_3TzDmm97UdWM2cEw1ngoTfU4"
+    },
+    {
+      "case": 5,
+      "title": "Webhook replay (deliver same event twice)",
+      "status": "PROVEN",
+      "stripe_event_id": "evt_3TzDtM97UdWM2cEw1PvHp5ud",
+      "deliveries": 3,
+      "stored_once": true,
+      "duplicate_acks": 2,
+      "evidence_file": "ops/runbooks/EPIC03_WEBHOOK_REPLAY_EVIDENCE.json"
+    },
+    {
+      "case": 6,
+      "title": "Card decline / failure",
+      "status": "PROVEN",
+      "stripe_id": "pi_3TzDmi97UdWM2cEw1q6FbjYt",
+      "stripe_status": "requires_payment_method",
+      "error_code": "card_declined",
+      "http_status": 402
+    },
+    {
+      "case": 7,
+      "title": "Kill switch: prod still frozen",
+      "status": "PROVEN",
+      "evidence": {
+        "name": "kill_switch_prod_health",
+        "pass": true,
+        "paymentCreation": {
+          "mode": "frozen",
+          "acceptsNewCustomerMoney": false
+        },
+        "engine_revision": "140ce19f4f77926249b1e7c0e5d2aac29bd4c9ef",
+        "timestamp": "2026-07-31T10:35:22.725Z"
+      }
+    }
+  ],
+  "next": "All seven rows PROVEN. Keep production frozen until unfreeze gate."
+}

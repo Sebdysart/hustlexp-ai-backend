@@ -30,6 +30,8 @@
     "health": "curl http://localhost:3000/health",
     "package:role-fixture-evidence": "node scripts/package-role-fixture-evidence.mjs",
     "verify:alert-inventory": "node scripts/verify-alert-inventory.mjs",
+    "verify:epic03-stripe-test": "node scripts/epic03-stripe-test-cert.mjs",
+    "verify:epic03-webhook-replay": "node scripts/epic03-webhook-replay-cert.mjs",
     "lint": "eslint backend/src --ext .ts",
     "lint:fix": "eslint backend/src --ext .ts --fix",
     "format": "prettier --write \"backend/src/**/*.ts\"",

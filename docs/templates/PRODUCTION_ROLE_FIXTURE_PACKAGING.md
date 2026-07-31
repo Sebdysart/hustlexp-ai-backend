@@ -8,11 +8,13 @@ Audit script (read-only): `scripts/verify-production-role-readiness.mjs`
 
 | Role | Identity provider | Account ID (redacted) | Expires (UTC) | Intended entry | Intended destination | Recovery | Payout destination controlled | Test-exclusion tagged | Journey evidence | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Poster | Firebase / Supabase | | | `/get-help` | `/task-preview` | `/get-help` | n/a | | | |
-| Hustler | Firebase | | | `/earn` | `/earn/setup` | `/earn` | test Connect only | | | |
-| Business Client | Firebase | | | `/business` | `/business/workspace` | `/business` | | | | |
-| Service Business | Firebase | | | `/business/provide` | `/business/workspace?mode=provider` | `/business/provide` | test Connect only | | | |
-| Operations | ops admin key / magic link | | | `/ops` | `/ops` | `/` | n/a | | | |
+| Poster | Firebase | `poster+epic04@…` | 2026-08-14 | `/get-help` | `/task-preview` | `/get-help` | n/a | yes | | REQUESTED |
+| Hustler | Firebase | `hustler+epic04@…` | 2026-08-14 | `/earn` | `/earn/setup` | `/earn` | test Connect only | yes | | REQUESTED |
+| Business Client | Firebase | `bizclient+epic04@…` | 2026-08-14 | `/business` | `/business/workspace` | `/business` | n/a | yes | | REQUESTED |
+| Service Business | Firebase | `svcbusiness+epic04@…` | 2026-08-14 | `/business/provide` | `/business/workspace?mode=provider` | `/business/provide` | test Connect only | yes | | REQUESTED |
+| Operations | Firebase + admin_roles | `ops+epic04@…` | 2026-08-14 | `/ops` | `/ops` | `/` | n/a | yes | | REQUESTED |
+
+Live request pack: `ops/runbooks/EPIC04_FIXTURE_REQUEST.json` · Execution: `ops/runbooks/EPIC04_ROLE_FIXTURE_EXECUTION.md`
 
 ## Packaging rules
 

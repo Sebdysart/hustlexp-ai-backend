@@ -49,15 +49,25 @@ const ready = ROLES.map((role) => ({
   fixtures: byRole[role],
 }));
 
+const packagingComplete = ready.every((row) => row.ready_accounts > 0);
+const anyProvisioned = fixtures.some(
+  (f) => String(f.provision_status || '').toUpperCase() === 'PROVISIONED',
+);
 const payload = {
   schema_version: 1,
   kind: 'production_role_fixture_evidence',
   generated_at: new Date().toISOString(),
-  claim_boundary: 'Fixture packaging only. Does not create accounts or claim GMV.',
-  gates_proven: ready.filter((row) => row.ready_accounts > 0).length,
+  claim_boundary:
+    'Fixture packaging only. Does not create accounts or claim GMV. Live gate still requires verify:production-role-readiness 5/5 + journeys.',
+  gates_packaged: ready.filter((row) => row.ready_accounts > 0).length,
   gates_total: ROLES.length,
   roles: ready,
-  status: ready.every((row) => row.ready_accounts > 0) ? 'PROVEN' : 'BLOCKED_AUTHORITY',
+  // PACKAGED = request matrix complete; PROVEN reserved for after live readiness + journeys.
+  status: packagingComplete
+    ? anyProvisioned
+      ? 'PACKAGED_WITH_PROVISION_CLAIMS'
+      : 'PACKAGED'
+    : 'BLOCKED_AUTHORITY',
 };
 
 writeFileSync(outputPath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
