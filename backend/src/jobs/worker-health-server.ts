@@ -82,7 +82,7 @@ export async function startWorkerHealthServer(
     }));
   });
 
-  await listen(server, options.port ?? resolvePort(process.env.PORT), options.host ?? '0.0.0.0');
+  await listen(server, options.port ?? resolvePort(process.env.WORKER_PORT), options.host ?? '0.0.0.0');
 
   return {
     server,
