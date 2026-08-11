@@ -131,6 +131,11 @@ npm run dev:workers            # Start background workers (separate terminal)
 >
 > Docker is intended for production and container-parity workflows. It is not required for normal local backend development.
 
+### UPDATE
+
+> Please refer to changes_2_Aug.md for setting up all required dependencies to run the servers
+
+
 ## Core Business Logic
 
 ### 1. Task Lifecycle
@@ -390,6 +395,12 @@ npm test               # Run all tests (vitest)
 npm run test:coverage  # Coverage report
 npm run test:invariants # Database integrity tests (requires live DATABASE_URL)
 ```
+
+
+
+### UPDATE
+
+> Please refer to changes_2_Aug.md for setting up all required dependencies to run the servers
 
 | Metric | Value |
 |--------|-------|
