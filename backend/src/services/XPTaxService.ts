@@ -10,7 +10,7 @@
  * if unpaid offline taxes exist (Error code: HX201)
  *
  * @see XP_TAX_SYSTEM_SPEC_LOCKED.md
- * @see schema.sql v1.8.0 (xp_tax_ledger, user_xp_tax_status, trigger)
+ * @see backend/database/constitutional-schema.sql v1.8.0 (xp_tax_ledger, user_xp_tax_status, trigger)
  */
 
 import { db } from '../db.js';

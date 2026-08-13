@@ -6,7 +6,7 @@
  * Deterministic validators evaluate AI proposals and make final decisions.
  * Decisions track what was actually written (if accepted).
  * 
- * @see schema.sql §7.4 (ai_decisions table)
+ * @see backend/database/constitutional-schema.sql §7.4 (ai_decisions table)
  * @see AI_INFRASTRUCTURE.md §6.4, §7.3
  */
 

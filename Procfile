@@ -8,8 +8,6 @@ web: npm start
 # Background job workers - separate process
 worker: npm run start:workers
 
-# Release phase - READ-ONLY schema validation before deploying new code.
-# MUST NOT run anything destructive here. `db:migrate` was removed because it
-# runs `DROP SCHEMA public CASCADE` (full data wipe). Schema changes are applied
-# out-of-band via the reviewed alignment process — never in the deploy release phase.
+# Release phase is read-only. Web and worker startup apply the reviewed,
+# idempotent runtime migration manifest before accepting work.
 release: npm run db:validate

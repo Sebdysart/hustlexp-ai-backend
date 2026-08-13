@@ -5,7 +5,7 @@
  * Tracks worker location from task acceptance → arrival → completion.
  * Validates GPS trail integrity and detects anomalies.
  *
- * @see schema.sql (movement_events table)
+ * @see backend/database/constitutional-schema.sql (movement_events table)
  */
 
 import { db } from '../db.js';

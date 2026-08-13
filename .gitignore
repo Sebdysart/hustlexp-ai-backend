@@ -18,6 +18,8 @@ build/
 .env.staging
 .env.production
 .env.*.local
+.env.epic03.local
+.env.epic04.local
 
 # Agent coordination files
 .env.agent-coordinator

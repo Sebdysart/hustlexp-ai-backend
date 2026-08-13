@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000" role="img" aria-labelledby="title desc">
+  <title id="title">HustleXP current architecture</title>
+  <desc id="desc">Current split architecture showing the canonical Railway engine and the duplicate Supabase website backend.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#08111f"/>
+      <stop offset="1" stop-color="#13233b"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="7" stdDeviation="8" flood-color="#000" flood-opacity=".28"/>
+    </filter>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0 0L12 6L0 12Z" fill="#9fb4cc"/>
+    </marker>
+    <style>
+      .title{font:700 42px Inter,Arial,sans-serif;fill:#f7fbff}.sub{font:400 20px Inter,Arial,sans-serif;fill:#a9bed5}
+      .h{font:700 24px Inter,Arial,sans-serif;fill:#f7fbff}.t{font:400 18px Inter,Arial,sans-serif;fill:#d8e5f2}.small{font:400 15px Inter,Arial,sans-serif;fill:#b9ccdf}
+      .box{stroke-width:2;rx:20;filter:url(#shadow)}.line{stroke:#9fb4cc;stroke-width:4;fill:none;marker-end:url(#arrow)}
+      .dash{stroke:#f6b84a;stroke-width:4;fill:none;stroke-dasharray:12 9;marker-end:url(#arrow)}
+    </style>
+  </defs>
+  <rect width="1600" height="1000" fill="url(#bg)"/>
+  <text x="70" y="72" class="title">HustleXP — Current Architecture</text>
+  <text x="70" y="108" class="sub">Verified code paths • August 2026 • orange indicates the temporary duplicate backend</text>
+
+  <rect x="80" y="170" width="300" height="125" class="box" fill="#17395c" stroke="#62b7ff"/>
+  <text x="230" y="215" text-anchor="middle" class="h">React Website</text>
+  <text x="230" y="250" text-anchor="middle" class="t">hustlexp-site</text>
+  <text x="230" y="278" text-anchor="middle" class="small">public pages, lead intake, ops UI</text>
+
+  <rect x="80" y="390" width="300" height="125" class="box" fill="#17395c" stroke="#62b7ff"/>
+  <text x="230" y="435" text-anchor="middle" class="h">iOS Client</text>
+  <text x="230" y="470" text-anchor="middle" class="t">SwiftUI + Firebase JWT</text>
+  <text x="230" y="498" text-anchor="middle" class="small">marketplace application</text>
+
+  <rect x="515" y="165" width="430" height="285" class="box" fill="#402a19" stroke="#f6a83b"/>
+  <text x="730" y="207" text-anchor="middle" class="h">Supabase Website Backend</text>
+  <text x="730" y="240" text-anchor="middle" class="t">Temporary duplicate authority</text>
+  <line x1="555" y1="263" x2="905" y2="263" stroke="#b7772d"/>
+  <text x="555" y="300" class="t">• 49 executable Edge Functions</text>
+  <text x="555" y="335" class="t">• 145 SQL migrations</text>
+  <text x="555" y="370" class="t">• leads + website automation tables</text>
+  <text x="555" y="405" class="t">• classifier / quote / lifecycle jobs</text>
+  <text x="730" y="432" text-anchor="middle" class="small">This is why Supabase cannot be deleted before cutover.</text>
+
+  <rect x="515" y="530" width="430" height="305" class="box" fill="#123d36" stroke="#4bd3af"/>
+  <text x="730" y="575" text-anchor="middle" class="h">Canonical Railway Engine</text>
+  <text x="730" y="608" text-anchor="middle" class="t">Hono + tRPC + REST/webhooks</text>
+  <line x1="555" y1="632" x2="905" y2="632" stroke="#2a8b77"/>
+  <text x="555" y="670" class="t">• routers: typed API + authorization</text>
+  <text x="555" y="705" class="t">• services: marketplace state machines</text>
+  <text x="555" y="740" class="t">• PostgreSQL triggers: final invariants</text>
+  <text x="555" y="775" class="t">• outbox + BullMQ orchestration</text>
+  <text x="555" y="810" class="t">• web replacement routers already exist</text>
+
+  <rect x="1080" y="175" width="410" height="180" class="box" fill="#402a19" stroke="#f6a83b"/>
+  <text x="1285" y="218" text-anchor="middle" class="h">Supabase PostgreSQL</text>
+  <text x="1285" y="253" text-anchor="middle" class="t">website leads + automation state</text>
+  <text x="1285" y="288" text-anchor="middle" class="small">separate schema, migrations, and runtime</text>
+  <text x="1285" y="320" text-anchor="middle" class="small">must be exported and reconciled</text>
+
+  <rect x="1080" y="455" width="410" height="180" class="box" fill="#123d36" stroke="#4bd3af"/>
+  <text x="1285" y="498" text-anchor="middle" class="h">Railway PostgreSQL</text>
+  <text x="1285" y="533" text-anchor="middle" class="t">canonical marketplace datastore</text>
+  <text x="1285" y="568" text-anchor="middle" class="small">constitutional baseline + migration ledger</text>
+  <text x="1285" y="600" text-anchor="middle" class="small">standard pg driver, no vendor ORM</text>
+
+  <rect x="1080" y="730" width="410" height="160" class="box" fill="#2c2851" stroke="#a993ff"/>
+  <text x="1285" y="773" text-anchor="middle" class="h">Workers + Integrations</text>
+  <text x="1285" y="808" text-anchor="middle" class="t">Redis / BullMQ • Stripe • Firebase</text>
+  <text x="1285" y="841" text-anchor="middle" class="small">notifications • storage • AI providers</text>
+  <text x="1285" y="870" text-anchor="middle" class="small">Railway worker service</text>
+
+  <path d="M380 230H515" class="dash"/>
+  <path d="M380 455C450 455 445 682 515 682" class="line"/>
+  <path d="M380 265C450 265 445 600 515 600" class="line" opacity=".7"/>
+  <path d="M945 275H1080" class="dash"/>
+  <path d="M945 610H1080" class="line"/>
+  <path d="M945 742C1015 742 1010 810 1080 810" class="line"/>
+  <path d="M1285 635V730" class="line"/>
+
+  <rect x="80" y="905" width="1410" height="58" rx="16" fill="#132d45" stroke="#31516d"/>
+  <text x="785" y="941" text-anchor="middle" class="t">Cutover goal: Website → Canonical Railway Engine → Railway PostgreSQL; retire Supabase only after data + automation parity verification.</text>
+</svg>

@@ -12,7 +12,7 @@
  * 3. Track last reminder sent to avoid spam
  *
  * @see XPTaxService.ts
- * @see schema.sql v1.8.0 (user_xp_tax_status)
+ * @see backend/database/constitutional-schema.sql v1.8.0 (user_xp_tax_status)
  */
 
 import { db } from '../db.js';

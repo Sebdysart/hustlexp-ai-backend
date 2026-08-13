@@ -12,7 +12,7 @@
  *   suggestPrice     - Lightweight price hint for posters (heuristic-first)
  *
  * @see AI_INFRASTRUCTURE.md
- * @see schema.sql v1.8.0 (ai_agent_decisions)
+ * @see backend/database/constitutional-schema.sql v1.8.0 (ai_agent_decisions)
  */
 
 import { db } from '../db.js';

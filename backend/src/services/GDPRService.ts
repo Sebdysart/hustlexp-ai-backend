@@ -8,7 +8,7 @@
  * 
  * CRITICAL: Legal requirement. Non-negotiable.
  * 
- * @see schema.sql §11.9 (gdpr_data_requests, user_consents tables)
+ * @see backend/database/constitutional-schema.sql §11.9 (gdpr_data_requests, user_consents tables)
  * @see PRODUCT_SPEC.md §16
  * @see staging/GDPR_COMPLIANCE_SPEC.md
  */
@@ -1404,7 +1404,7 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
       // 1. Immediate deletion (GDPR_COMPLIANCE_SPEC.md §3.1)
 
       // D53-2 FIX: Delete from tables that contain PII but were missing from the
-      // original scrub. All confirmed in schema.sql with user_id FK columns.
+      // original scrub. All confirmed in constitutional-schema.sql with user_id FK columns.
       // Identity verification data — contains email, phone, status
       await query('DELETE FROM users_identity WHERE user_id = $1', [userId]);
       // Verification attempt records — contains target (email/phone), code_hash, ip_address
@@ -1419,7 +1419,7 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
       await query('DELETE FROM leaderboard_cache WHERE user_id = $1', [userId]);
       // Proactive AI preferences — stores categories, schedule, device_tokens
       await query('DELETE FROM proactive_preferences WHERE user_id = $1', [userId]);
-      // Direct messages (messages table) — sender_id is the author column per schema.sql
+      // Direct messages (messages table) — sender_id is the author column per constitutional-schema.sql
       // messages.sender_id references users(id); content and image_url are PII
       await query('DELETE FROM messages WHERE sender_id = $1', [userId]);
 

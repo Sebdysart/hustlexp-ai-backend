@@ -14,7 +14,7 @@
  * Deterministic fallbacks for each method when AI is unavailable.
  *
  * @see DisputeService.ts (state machine: OPEN -> EVIDENCE_REQUESTED -> RESOLVED/ESCALATED)
- * @see schema.sql v1.8.0 (ai_agent_decisions)
+ * @see backend/database/constitutional-schema.sql v1.8.0 (ai_agent_decisions)
  * @see AI_INFRASTRUCTURE.md §7.3
  */
 

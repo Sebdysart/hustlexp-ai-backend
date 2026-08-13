@@ -6,7 +6,7 @@
  * Implements notification system with priority tiers, quiet hours, and preferences.
  * Core Principle: Notifications are information, not interruptions.
  * 
- * @see schema.sql §11.3 (notifications, notification_preferences tables)
+ * @see backend/database/constitutional-schema.sql §11.3 (notifications, notification_preferences tables)
  * @see PRODUCT_SPEC.md §11
  * @see staging/NOTIFICATION_SPEC.md
  */

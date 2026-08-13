@@ -6,7 +6,7 @@
  * All AI inputs are logged to ai_events table with payload hashing.
  * This provides an audit trail and enables replay/debugging.
  * 
- * @see schema.sql §7.1 (ai_events table)
+ * @see backend/database/constitutional-schema.sql §7.1 (ai_events table)
  * @see AI_INFRASTRUCTURE.md §6.1
  */
 

@@ -1,7 +1,7 @@
 # HustleXP Backend — Domain Code Ownership
 #
 # Maps routers and services to domain teams for PR review routing.
-# See docs/plans/2026-03-14-domain-reorganization.md for domain definitions.
+# The sections below define the maintained domain boundaries.
 #
 # Format: <pattern> <owner>
 # GitHub expands @org/team-name to team members.

@@ -7,7 +7,7 @@
  * Formula: $40 profit = $200 in tasks × 20% platform fee
  *
  * @see EARNED_VERIFICATION_UNLOCK_SPEC_LOCKED.md
- * @see schema.sql v1.8.0 (verification_earnings_tracking, verification_earnings_ledger)
+ * @see backend/database/constitutional-schema.sql v1.8.0 (verification_earnings_tracking, verification_earnings_ledger)
  */
 
 import { db } from '../db.js';

@@ -6,10 +6,8 @@ on:
     branches: [main]
 
 # ---------------------------------------------------------------------------
-# ENFORCING security gate = the GHSA-baseline `npm audit` check in ci.yml
-# ("Security audit — no NEW high/critical vulnerabilities"). That job runs on
-# every PR and FAILS on any new high/critical advisory not triaged into the
-# documented baseline.
+# ENFORCING security gate = the production-dependency `npm audit` check in
+# ci.yml. It runs on every PR and fails on high or critical advisories.
 #
 # The jobs below are BEST-EFFORT. codeql and dependency-review both require
 # GitHub Advanced Security (code scanning / dependency graph), which is not
@@ -23,7 +21,7 @@ on:
 #
 # TO MAKE THESE ENFORCING: enable GitHub Advanced Security (Settings →
 # Code security and analysis) for codeql + dependency-review, and add a
-# SNYK_TOKEN repo secret for snyk. See PRODUCTION_READINESS doc.
+# SNYK_TOKEN repo secret for snyk.
 # ---------------------------------------------------------------------------
 
 jobs:
@@ -33,7 +31,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
       - run: npm ci
       - run: npm audit --audit-level=high
         continue-on-error: true
@@ -71,7 +69,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
       - run: npm ci
       # Only run the scan when a token is actually configured — avoids a
       # guaranteed auth-error on repos/forks without the secret.

@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "kind": "production_role_fixture_evidence",
+  "generated_at": "2026-07-31T14:12:40.223Z",
+  "claim_boundary": "Fixture packaging only. Does not create accounts or claim GMV. Live gate still requires verify:production-role-readiness 5/5 + journeys.",
+  "gates_packaged": 5,
+  "gates_total": 5,
+  "roles": [
+    {
+      "role": "poster",
+      "ready_accounts": 1,
+      "fixtures": [
+        {
+          "role": "poster",
+          "identity_redacted": "poster+epic04@hustlexp-fixtures.test",
+          "expires_at": "2026-08-14T00:00:00.000Z",
+          "entry": "/get-help",
+          "destination": "/task-preview",
+          "recovery": "/get-help",
+          "journey_evidence": null
+        }
+      ]
+    },
+    {
+      "role": "hustler",
+      "ready_accounts": 1,
+      "fixtures": [
+        {
+          "role": "hustler",
+          "identity_redacted": "hustler+epic04@hustlexp-fixtures.test",
+          "expires_at": "2026-08-14T00:00:00.000Z",
+          "entry": "/earn",
+          "destination": "/earn/setup",
+          "recovery": "/earn",
+          "journey_evidence": null
+        }
+      ]
+    },
+    {
+      "role": "business-client",
+      "ready_accounts": 1,
+      "fixtures": [
+        {
+          "role": "business-client",
+          "identity_redacted": "bizclient+epic04@hustlexp-fixtures.test",
+          "expires_at": "2026-08-14T00:00:00.000Z",
+          "entry": "/business",
+          "destination": "/business/workspace",
+          "recovery": "/business",
+          "journey_evidence": null
+        }
+      ]
+    },
+    {
+      "role": "service-business",
+      "ready_accounts": 1,
+      "fixtures": [
+        {
+          "role": "service-business",
+          "identity_redacted": "svcbusiness+epic04@hustlexp-fixtures.test",
+          "expires_at": "2026-08-14T00:00:00.000Z",
+          "entry": "/business/provide",
+          "destination": "/business/workspace?mode=provider",
+          "recovery": "/business/provide",
+          "journey_evidence": null
+        }
+      ]
+    },
+    {
+      "role": "operations",
+      "ready_accounts": 1,
+      "fixtures": [
+        {
+          "role": "operations",
+          "identity_redacted": "ops+epic04@hustlexp-fixtures.test",
+          "expires_at": "2026-08-14T00:00:00.000Z",
+          "entry": "/ops",
+          "destination": "/ops",
+          "recovery": "/",
+          "journey_evidence": null
+        }
+      ]
+    }
+  ],
+  "status": "PACKAGED"
+}

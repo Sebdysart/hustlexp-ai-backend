@@ -7,7 +7,7 @@
  */
 
 export const config = {
-  // Database (Neon PostgreSQL)
+  // Database (standard PostgreSQL; Railway in production)
   database: {
     url: process.env.DATABASE_URL || '',
     pgbouncer: process.env.DB_PGBOUNCER === 'true',

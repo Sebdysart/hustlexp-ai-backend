@@ -6,7 +6,7 @@
  * Disputes link to AI proposals (A2 authority) for resolution recommendations.
  * Final decisions are made by deterministic validators or admins.
  * 
- * @see schema.sql §5 (disputes table)
+ * @see backend/database/constitutional-schema.sql §5 (disputes table)
  * @see PRODUCT_SPEC.md §7
  * @see AI_INFRASTRUCTURE.md §7.3
  */

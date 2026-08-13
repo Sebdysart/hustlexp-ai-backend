@@ -8,7 +8,7 @@
  * 
  * This service aligns the existing RiskScoreService with the constitutional schema.
  * 
- * @see schema.sql §11.7 (fraud_risk_scores, fraud_patterns tables)
+ * @see backend/database/constitutional-schema.sql §11.7 (fraud_risk_scores, fraud_patterns tables)
  * @see PRODUCT_SPEC.md §14
  * @see staging/FRAUD_DETECTION_SPEC.md
  * @see src/services/RiskScoreService.ts (existing implementation to align)

@@ -3,11 +3,10 @@
  *
  * CONSTITUTIONAL: Layer 0 - Highest Authority
  *
- * Uses standard pg driver (compatible with Railway Postgres, Neon, Supabase, etc.)
+ * Uses the standard pg driver (Railway PostgreSQL in production).
  * Handles HustleXP-specific error codes from triggers.
  *
- * @see schema.sql v1.0.0
- * @see ARCHITECTURE.md §1
+ * @see ../database/constitutional-schema.sql
  */
 
 import pg from 'pg';
@@ -15,10 +14,9 @@ const { Pool } = pg;
 import { logger } from './logger.js';
 
 // ============================================================================
-// CONNECTION POOLING (PgBouncer via Neon)
+// CONNECTION POOLING
 // ============================================================================
-// Neon Serverless PostgreSQL includes built-in PgBouncer-like connection pooling
-// For high-scale deployments, explicit PgBouncer can be added:
+// Railway may be paired with PgBouncer for transaction-level pooling:
 // 
 // PGBOUNCER_CONFIG = {
 //   pool_mode: 'transaction',     // Transaction-level pooling
@@ -32,10 +30,6 @@ import { logger } from './logger.js';
 //   server_connect_timeout: 15,   // Connection attempt timeout
 // }
 //
-// Current: Using Neon serverless pooling (sufficient for 10K users)
-// Future: Add explicit PgBouncer at 100K+ users
-
-
 const dbLog = logger.child({ module: 'db' });
 
 // ============================================================================
@@ -164,7 +158,7 @@ export function getPoolStats() {
  * These map to invariant violations.
  * 
  * @see PRODUCT_SPEC.md §10 (Error Codes)
- * @see schema.sql (Error code reference)
+ * @see backend/database/constitutional-schema.sql (Error code reference)
  */
 export const HX_ERROR_CODES = {
   // Terminal state violations

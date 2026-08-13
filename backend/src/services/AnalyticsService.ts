@@ -6,7 +6,7 @@
  * Implements event tracking, conversion funnels, cohort analysis, and A/B testing.
  * Core Principle: Track everything, but respect user privacy (consent-based).
  * 
- * @see schema.sql §11.6 (analytics_events table)
+ * @see backend/database/constitutional-schema.sql §11.6 (analytics_events table)
  * @see PRODUCT_SPEC.md §13
  * @see staging/ANALYTICS_SPEC.md
  */

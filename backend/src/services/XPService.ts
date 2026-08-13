@@ -9,7 +9,7 @@
  * The database triggers enforce these invariants. This service
  * catches the violations and returns appropriate errors.
  * 
- * @see schema.sql §2.1 (xp_ledger table)
+ * @see backend/database/constitutional-schema.sql §2.1 (xp_ledger table)
  * @see PRODUCT_SPEC.md §5
  */
 
