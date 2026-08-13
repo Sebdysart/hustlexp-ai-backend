@@ -92,6 +92,9 @@ import { fraudRouter } from './fraud.js';
 import { flagsRouter } from './flags.js';
 import { alphaTelemetryRouter } from './alphaTelemetry.js';
 
+// Post Task Endpoint
+import { webPostTaskRouter } from './web/postTask.js';
+
 // ============================================================================
 // APP ROUTER
 // ============================================================================
@@ -164,6 +167,9 @@ export const appRouter = router({
   flags: flagsRouter,
   alphaTelemetry: alphaTelemetryRouter,
 
+  // ── Post Task ──────────────────────────────────────────────────────
+  webPostTask: webPostTaskRouter,
+  
   // ── Web Platform Domain ─────────────────────────────────────────────────
   // Replaces Supabase edge functions for the website and ops cockpit.
   webLeads: (await import('./web/leads.js')).webLeadsRouter,
