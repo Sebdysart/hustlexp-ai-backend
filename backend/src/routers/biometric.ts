@@ -6,7 +6,7 @@
  * Validates: GPS proximity, liveness score, deepfake score, time-lock hash
  * Calls: BiometricVerificationService, LogisticsAIService
  *
- * @see schema.sql v1.8.0 (proof_submissions biometric fields)
+ * @see backend/database/constitutional-schema.sql v1.8.0 (proof_submissions biometric fields)
  * @see BiometricVerificationService.ts, LogisticsAIService.ts
  */
 

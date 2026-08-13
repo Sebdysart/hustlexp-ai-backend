@@ -13,7 +13,7 @@
  * 4. Flag for manual review if HIGH/CRITICAL risk
  *
  * @see BiometricVerificationService.ts
- * @see schema.sql v1.8.0 (proof_submissions biometric fields)
+ * @see backend/database/constitutional-schema.sql v1.8.0 (proof_submissions biometric fields)
  */
 
 import { db } from '../db.js';

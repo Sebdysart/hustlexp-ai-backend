@@ -3,7 +3,7 @@
  * 
  * Compatibility facade over the canonical TrustTierService.
  * 
- * @see schema.sql §3 (trust_ledger table)
+ * @see backend/database/constitutional-schema.sql §3 (trust_ledger table)
  * @see HustleXP Local Work Network blueprint §5
  * @see ARCHITECTURE.md §2.2
  */

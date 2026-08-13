@@ -26,7 +26,7 @@
  *
  * Cost: ~$0.015 per Face Liveness check + $0.001 per CompareFaces call
  *
- * @see schema.sql v1.8.0 (proof_submissions biometric fields)
+ * @see backend/database/constitutional-schema.sql v1.8.0 (proof_submissions biometric fields)
  */
 
 import { db } from '../db.js';

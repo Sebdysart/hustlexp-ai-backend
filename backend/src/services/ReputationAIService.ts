@@ -12,7 +12,7 @@
  *
  * @see PRODUCT_SPEC.md §8.2 (Trust Tiers)
  * @see AI_INFRASTRUCTURE.md §6 (A2 Authority)
- * @see schema.sql (ai_agent_decisions, task_ratings, disputes)
+ * @see backend/database/constitutional-schema.sql (ai_agent_decisions, task_ratings, disputes)
  */
 
 import { db } from '../db.js';

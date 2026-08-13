@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  NODE_VERSION: '20'
+  NODE_VERSION: '22'
   RAILWAY_WEB_SERVICE: hustlexp-ai-backend-staging
   RAILWAY_WORKER_SERVICE: hustlexp-automation-worker
   RAILWAY_ENVIRONMENT: production

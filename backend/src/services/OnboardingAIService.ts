@@ -6,7 +6,7 @@
  * AI infers user role (worker/poster) from calibration prompts.
  * Final decision is made by deterministic validator.
  * 
- * @see schema.sql (users table - onboarding fields)
+ * @see backend/database/constitutional-schema.sql (users table - onboarding fields)
  * @see AI_INFRASTRUCTURE.md §3.2
  * @see ONBOARDING_SPEC.md
  */

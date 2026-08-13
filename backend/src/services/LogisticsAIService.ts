@@ -7,7 +7,7 @@
  * and physical feasibility. Cannot directly approve/reject proofs.
  *
  * @see LOGISTICS_AGENT_SPEC_LOCKED.md
- * @see schema.sql v1.8.0 (ai_agent_decisions, fraud_detection_events)
+ * @see backend/database/constitutional-schema.sql v1.8.0 (ai_agent_decisions, fraud_detection_events)
  */
 
 import { db } from '../db.js';

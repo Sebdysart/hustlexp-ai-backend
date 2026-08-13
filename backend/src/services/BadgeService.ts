@@ -6,7 +6,7 @@
  * Badges are append-only (INV-BADGE-2). Once awarded, they cannot be revoked.
  * Animation tracking is server-side (INV-BADGE-3).
  * 
- * @see schema.sql §4 (badges table)
+ * @see backend/database/constitutional-schema.sql §4 (badges table)
  * @see ARCHITECTURE.md §2.3
  */
 

@@ -7,7 +7,7 @@
  * Claims: Filed by hustlers for damages/disputes
  * Coverage: 80% of claim amount (default), max $5000
  *
- * @see schema.sql v1.8.0 (self_insurance_pool, insurance_contributions, insurance_claims)
+ * @see backend/database/constitutional-schema.sql v1.8.0 (self_insurance_pool, insurance_contributions, insurance_claims)
  * @see SelfInsurancePoolService.ts
  */
 

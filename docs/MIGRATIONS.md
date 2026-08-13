@@ -1,62 +1,37 @@
-# Migrations — Single Source of Truth
+# PostgreSQL schema and migrations
 
-**Last updated:** 2026-03-13
+There are two intentionally different schema artifacts:
 
----
+- `backend/database/constitutional-schema.sql` is the fresh-database baseline and core invariant definition.
+- `backend/database/migrations/` contains incremental production changes. The authoritative ordered subset is `backend/src/jobs/engine-automation-migration-files.ts`.
 
-## How migrations work
+## Production startup
 
-The **canonical** way to apply the schema is:
+`npm start` and `npm run start:workers` call `runEngineAutomationMigration()` before starting their process. The runner:
 
-```bash
-npm run db:migrate
-# or
-npm run db:check
-```
+1. connects with `DATABASE_URL` using the standard `pg` driver;
+2. installs the constitutional baseline only when `schema_versions` is absent;
+3. takes a PostgreSQL advisory lock for each migration;
+4. applies each required migration transactionally;
+5. records it in `applied_migrations`, making subsequent starts idempotent.
 
-Both run **`migrate-pg.mjs`** at the repo root, which:
+The API also performs narrow startup checks for the baseline, legacy user columns, the missing-table compatibility migration, and performance indexes. These paths are idempotent and exist to support local API-only startup.
 
-1. Connects using `DATABASE_URL`
-2. **Drops** the `public` schema and recreates it
-3. Reads **one file**: `backend/database/constitutional-schema.sql`
-4. Applies that full schema (tables, triggers, functions, etc.)
-5. Verifies tables and triggers and reads `schema_versions`
+## Operator commands
 
-So the **single source of truth** for “what the database looks like” is:
+| Command | Effect |
+|---|---|
+| `npm run db:validate` | Read-only live schema and invariant validation |
+| `npm run db:check` | Alias of the schema validator |
+| `npm run db:migrate` | Disabled because the old command was destructive |
+| `npm run db:reset:destructive` | Drops and rebuilds `public`; disposable development databases only |
 
-- **File:** `backend/database/constitutional-schema.sql`
-- **Runner:** `migrate-pg.mjs` (via `npm run db:migrate`)
+## Adding a migration
 
----
+1. Add an idempotent SQL file under `backend/database/migrations/`.
+2. Add its stable name and filename to `REQUIRED_MIGRATION_FILES` in order.
+3. Add tests for the schema contract and repeat-application behavior.
+4. Fold the final shape into `constitutional-schema.sql` so new databases and upgraded databases converge.
+5. Run schema validation against a disposable PostgreSQL database before production.
 
-## Other SQL files in the repo
-
-| Location | Purpose |
-|----------|--------|
-| `backend/database/migrations/` | Reference / incremental SQL; **not** run by `migrate-pg.mjs`. Used for docs and one-off reference. |
-| `backend/src/migrations/` | Schema alignment / seed scripts; **not** run by `migrate-pg.mjs`. |
-
-The **canonical** schema is `backend/database/constitutional-schema.sql`. For a fresh or reset database, use only:
-
-```bash
-npm run db:migrate
-```
-
-For “consolidating” many migration files into one schema, the project has:
-
-```bash
-npm run db:migrate:consolidate
-```
-
-That runs `scripts/consolidate-migrations.ts` and produces a registry; it does **not** replace `migrate-pg.mjs` as the migration runner.
-
----
-
-## Summary
-
-| Question | Answer |
-|----------|--------|
-| How do I apply the schema? | `npm run db:migrate` |
-| Which file is the schema? | `backend/database/constitutional-schema.sql` |
-| Where do I add new schema changes? | Edit `constitutional-schema.sql` (or add a new migration file and then fold it into that schema when appropriate). |
-| Are `backend/database/migrations/` files applied automatically? | No; only `constitutional-schema.sql` is applied by `npm run db:migrate`. |
+Never rewrite or delete an already-applied production migration. Add a repair migration instead.

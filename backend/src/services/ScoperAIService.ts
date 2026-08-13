@@ -7,7 +7,7 @@
  * Cannot directly set task.price or task.xp_reward - proposals validated by deterministic rules.
  *
  * @see SCOPER_AGENT_SPEC_LOCKED.md
- * @see schema.sql v1.8.0 (ai_agent_decisions)
+ * @see backend/database/constitutional-schema.sql v1.8.0 (ai_agent_decisions)
  */
 
 import { db } from '../db.js';

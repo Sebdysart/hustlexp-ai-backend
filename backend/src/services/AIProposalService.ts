@@ -6,7 +6,7 @@
  * AI proposals are suggestions only. Deterministic validators make final decisions.
  * Proposals include confidence scoring and certainty tiers.
  * 
- * @see schema.sql §7.3 (ai_proposals table)
+ * @see backend/database/constitutional-schema.sql §7.3 (ai_proposals table)
  * @see AI_INFRASTRUCTURE.md §6.3, §7.2
  */
 

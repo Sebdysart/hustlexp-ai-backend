@@ -6,7 +6,7 @@
  * Tracks AI job lifecycle: PENDING → PROCESSING → COMPLETED/FAILED/TIMED_OUT/KILLED
  * Supports retry logic and timeout handling.
  * 
- * @see schema.sql §7.2 (ai_jobs table)
+ * @see backend/database/constitutional-schema.sql §7.2 (ai_jobs table)
  * @see AI_INFRASTRUCTURE.md §6.2
  */
 

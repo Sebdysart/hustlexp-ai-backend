@@ -15,7 +15,7 @@
  * @see BiometricVerificationService
  * @see LogisticsAIService
  * @see PhotoVerificationService
- * @see schema.sql v1.8.0 (ai_agent_decisions)
+ * @see backend/database/constitutional-schema.sql v1.8.0 (ai_agent_decisions)
  */
 
 import { db, type QueryFn } from '../db.js';

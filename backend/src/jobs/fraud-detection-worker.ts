@@ -13,7 +13,7 @@
  * 4. Flag HIGH/CRITICAL events for admin review
  *
  * @see LogisticsAIService.ts
- * @see schema.sql v1.8.0 (fraud_detection_events)
+ * @see backend/database/constitutional-schema.sql v1.8.0 (fraud_detection_events)
  */
 
 import { db } from '../db.js';

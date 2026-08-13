@@ -8,7 +8,7 @@
  * 
  * This service aligns existing ModerationService/SafetyService with the constitutional schema.
  * 
- * @see schema.sql §11.8 (content_moderation_queue, content_reports, content_appeals tables)
+ * @see backend/database/constitutional-schema.sql §11.8 (content_moderation_queue, content_reports, content_appeals tables)
  * @see PRODUCT_SPEC.md §15
  * @see staging/CONTENT_MODERATION_SPEC.md
  * @see src/services/ModerationService.ts (existing implementation)
