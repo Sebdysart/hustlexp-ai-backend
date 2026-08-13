@@ -96,4 +96,5 @@ export const REQUIRED_MIGRATION_FILES = [
   { name: '20260722_region_policy_legal_approval_activation', fileName: '20260722_region_policy_legal_approval_activation.sql' },
   { name: '20260722_recurring_payment_dispatch_gate', fileName: '20260722_recurring_payment_dispatch_gate.sql' },
   { name: '20260722_service_business_assignment_contract', fileName: '20260722_service_business_assignment_contract.sql' },
+  { name: '010_web_platform_tables', fileName: '010_web_platform_tables.sql' },
 ] as const;
