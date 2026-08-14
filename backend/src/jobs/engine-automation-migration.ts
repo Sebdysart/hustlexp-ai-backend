@@ -241,7 +241,16 @@ export function productionMigrationRuntime(): MigrationRuntime {
       ],
     })),
     readText: (filePath) => readFile(filePath, 'utf8'),
-    createClient: (databaseUrl) => new Client({ connectionString: databaseUrl }) as MigrationClient,
+    createClient: (databaseUrl): MigrationClient => {
+      const client = new Client({ connectionString: databaseUrl });
+      return {
+        connect: async () => {
+          await client.connect();
+        },
+        end: () => client.end(),
+        query: (sql, values) => client.query(sql, values),
+      };
+    },
   };
 }
 
