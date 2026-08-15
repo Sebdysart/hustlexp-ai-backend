@@ -97,4 +97,8 @@ export const REQUIRED_MIGRATION_FILES = [
   { name: '20260722_recurring_payment_dispatch_gate', fileName: '20260722_recurring_payment_dispatch_gate.sql' },
   { name: '20260722_service_business_assignment_contract', fileName: '20260722_service_business_assignment_contract.sql' },
   { name: '010_web_platform_tables', fileName: '010_web_platform_tables.sql' },
+  { name: '20260814_quote_price_book', fileName: '20260814_quote_price_book.sql' },
+  { name: '20260814_price_book_quote_decisions', fileName: '20260814_price_book_quote_decisions.sql' },
+  { name: '20260814_task_supply_confidence', fileName: '20260814_task_supply_confidence.sql' },
+  { name: '20260815_quote_columns_extra_v4' , fileName: '20260815_quote_columns_extra_v4.sql' },
 ] as const;
