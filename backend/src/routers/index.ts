@@ -96,6 +96,8 @@ import { alphaTelemetryRouter } from './alphaTelemetry.js';
 // Post Task Endpoint
 import { webPostTaskRouter } from './web/postTask.js';
 
+import { quotePaymentRouter } from './quotePayment.js';
+
 // ============================================================================
 // APP ROUTER
 // ============================================================================
@@ -171,6 +173,8 @@ export const appRouter = router({
 
   // ── Post Task ──────────────────────────────────────────────────────
   webPostTask: webPostTaskRouter,
+
+  quotePayment: quotePaymentRouter,
   
   // ── Web Platform Domain ─────────────────────────────────────────────────
   // Replaces Supabase edge functions for the website and ops cockpit.

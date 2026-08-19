@@ -13,3 +13,10 @@ CREATE TABLE IF NOT EXISTS quote_payments (
   UNIQUE (provider, provider_payment_id),
   UNIQUE (quote_id, quote_version_id)
 );
+ALTER TABLE public.quote_payments
+  ADD COLUMN IF NOT EXISTS task_id UUID
+    REFERENCES public.tasks(id) ON DELETE RESTRICT;
+
+CREATE UNIQUE INDEX IF NOT EXISTS quote_payments_task_id_uq
+  ON public.quote_payments(task_id)
+  WHERE task_id IS NOT NULL;
